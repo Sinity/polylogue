@@ -23,6 +23,8 @@ from polylogue.sources.parsers.claude import (
     find_sessions_index,
     parse_sessions_index,
 )
+from polylogue.storage.backends.async_sqlite import SQLiteBackend
+from polylogue.storage.backends.connection import connection_context
 from polylogue.storage.backends.schema import (
     _ensure_vec0_table,
     _migrate_v6_to_v7,
@@ -30,11 +32,8 @@ from polylogue.storage.backends.schema import (
     _migrate_v8_to_v9,
     _migrate_v9_to_v10,
 )
-from polylogue.storage.backends.async_sqlite import SQLiteBackend
-from polylogue.storage.backends.connection import connection_context
 from polylogue.storage.store import ConversationRecord
 from tests.infra.helpers import make_hash
-
 
 # Schema constants for migration tests
 V6_CONVERSATIONS_TABLE = """

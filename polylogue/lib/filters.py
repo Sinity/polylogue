@@ -32,6 +32,7 @@ from typing import TYPE_CHECKING, Any, Literal, TypeVar
 
 from polylogue.lib.dates import parse_date
 from polylogue.lib.log import get_logger
+from polylogue.types import Provider
 
 logger = get_logger(__name__)
 
@@ -72,8 +73,8 @@ class ConversationFilter:
         self._predicates: list[Callable[[Conversation], bool]] = []
         self._fts_terms: list[str] = []
         self._negative_fts_terms: list[str] = []
-        self._providers: list[str] = []
-        self._excluded_providers: list[str] = []
+        self._providers: list[Provider] = []
+        self._excluded_providers: list[Provider] = []
         self._tags: list[str] = []
         self._excluded_tags: list[str] = []
         self._has_types: list[str] = []
@@ -99,14 +100,18 @@ class ConversationFilter:
         self._negative_fts_terms.append(text)
         return self
 
-    def provider(self, *names: str) -> ConversationFilter:
+    def provider(self, *names: Provider | str) -> ConversationFilter:
         """Filter to conversations from specific providers."""
-        self._providers.extend(names)
+        self._providers.extend(
+            n if isinstance(n, Provider) else Provider.from_string(n) for n in names
+        )
         return self
 
-    def exclude_provider(self, *names: str) -> ConversationFilter:
+    def exclude_provider(self, *names: Provider | str) -> ConversationFilter:
         """Exclude conversations from specific providers."""
-        self._excluded_providers.extend(names)
+        self._excluded_providers.extend(
+            n if isinstance(n, Provider) else Provider.from_string(n) for n in names
+        )
         return self
 
     def tag(self, *tags: str) -> ConversationFilter:

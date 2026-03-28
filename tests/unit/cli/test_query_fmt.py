@@ -260,12 +260,12 @@ class TestConvToHtml:
         assert '<div class="message-user">' not in result
 
     def test_role_class_sanitized(self) -> None:
-        """Role names with special chars get sanitized CSS classes."""
+        """Tool-use role normalizes to 'tool' for CSS class."""
         msgs = [_make_msg("tool_use", "tool output")]
         conv = _make_conv(messages=msgs)
         result = self._fn(conv)
-        # Special chars should be replaced with hyphens
-        assert "message-tool-use" in result
+        # "tool_use" normalizes to Role.TOOL → "tool"
+        assert "message-tool" in result
 
     def test_has_closing_tags(self) -> None:
         conv = _make_conv()

@@ -17,7 +17,6 @@ import pytest
 from polylogue.lib.security import sanitize_path
 from polylogue.sources.token_store import FileTokenStore
 
-
 # =============================================================================
 # sanitize_path: traversal prevention (3796914)
 # =============================================================================
@@ -154,6 +153,7 @@ class TestRegexReDoSSafety:
     def test_path_pattern_adversarial_input(self):
         """_PATH_PATTERN must handle long strings without backtracking."""
         import time
+
         from polylogue.lib.viewports import _PATH_PATTERN
 
         # Adversarial: long string of dots and slashes that could cause
@@ -167,6 +167,7 @@ class TestRegexReDoSSafety:
     def test_path_pattern_many_quoted_segments(self):
         """Quoted path segments must not cause exponential matching."""
         import time
+
         from polylogue.lib.viewports import _PATH_PATTERN
 
         # Many alternating quote/space boundaries
@@ -180,6 +181,7 @@ class TestRegexReDoSSafety:
     def test_uuid_pattern_adversarial_input(self):
         """UUID_PATTERN must reject near-miss inputs quickly."""
         import time
+
         from polylogue.schemas.schema_inference import UUID_PATTERN
 
         # Almost-UUIDs that require scanning to reject
@@ -197,6 +199,7 @@ class TestRegexReDoSSafety:
     def test_fts5_special_adversarial_input(self):
         """FTS5 escape patterns must handle pathological input."""
         import time
+
         from polylogue.storage.search import _FTS5_SPECIAL
 
         # Long string of special characters
@@ -209,6 +212,7 @@ class TestRegexReDoSSafety:
     def test_unsafe_pattern_adversarial_input(self):
         """CLI editor unsafe pattern must not backtrack."""
         import time
+
         from polylogue.cli.editor import _UNSAFE_PATTERN
 
         adversarial = ";" * 10_000 + "|" * 10_000 + "`" * 10_000

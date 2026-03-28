@@ -15,9 +15,7 @@ from polylogue.schemas.unified import (
     extract_harmonized_message,
     is_message_record,
 )
-from polylogue.schemas.unified import (
-    normalize_role as new_normalize_role,
-)
+from polylogue.lib.roles import normalize_role as new_normalize_role
 from polylogue.sources.parsers.base import normalize_role as old_normalize_role
 from polylogue.sources.parsers.claude import (
     extract_text_from_segments as old_extract_segments,
@@ -592,7 +590,7 @@ class TestPruneAttachments:
         assert conv2_atts[0].attachment_id == "shared-att"
 
         # Check in database that attachment still exists
-        async with backend._get_connection() as conn:
+        async with backend.connection() as conn:
             cursor = await conn.execute("SELECT COUNT(*) FROM attachments WHERE attachment_id = 'shared-att'")
             row = await cursor.fetchone()
             assert row[0] == 1
@@ -614,7 +612,7 @@ class TestPruneAttachments:
         await backend.prune_attachments("conv-sole", set())
 
         # Attachment should be removed
-        async with backend._get_connection() as conn:
+        async with backend.connection() as conn:
             cursor = await conn.execute("SELECT COUNT(*) FROM attachments WHERE attachment_id = 'sole-att'")
             row = await cursor.fetchone()
             assert row[0] == 0
@@ -900,7 +898,7 @@ class TestTransactionAtomicity:
             await backend.rollback()
 
         # Verify all tables are empty
-        async with backend._get_connection() as conn:
+        async with backend.connection() as conn:
             cursor = await conn.execute("SELECT COUNT(*) FROM conversations")
             row = await cursor.fetchone()
             assert row[0] == 0

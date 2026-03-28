@@ -8,6 +8,7 @@ import sqlite3
 import pytest
 
 from polylogue.lib.viewports import ContentType, ToolCategory
+from polylogue.lib.roles import normalize_role
 from polylogue.schemas.unified import (
     HarmonizedMessage,
     extract_chatgpt_text,
@@ -15,7 +16,6 @@ from polylogue.schemas.unified import (
     extract_from_provider_meta,
     extract_harmonized_message,
     is_message_record,
-    normalize_role,
 )
 
 # =============================================================================
@@ -131,7 +131,9 @@ class TestClaudeCodeExtraction:
         assert len(msg.reasoning_traces) == 1
         assert msg.reasoning_traces[0].text == "Let me analyze this..."
         assert msg.has_reasoning is True
-        assert "Let me analyze this..." in msg.text
+        # Thinking is surfaced via reasoning_traces, not mixed into text
+        assert msg.text == "Here's my conclusion."
+        assert "Let me analyze this..." not in msg.text
 
     def test_content_blocks_extraction(self):
         raw = {

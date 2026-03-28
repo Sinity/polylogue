@@ -17,9 +17,6 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-import pytest
-from click.testing import CliRunner
-
 # =============================================================================
 # _handle_query_mode internal routing
 # =============================================================================
@@ -252,72 +249,68 @@ class TestHandleQueryMode:
 class TestQueryFirstGroupParseArgs:
     """Test positional arg → --query-term conversion."""
 
-    @pytest.fixture
-    def runner(self):
-        return CliRunner()
-
-    def test_subcommand_dispatches_normally(self, runner):
+    def test_subcommand_dispatches_normally(self, cli_runner):
         """Known subcommand (e.g., 'check') is not treated as a query term."""
         from polylogue.cli.click_app import cli
 
-        result = runner.invoke(cli, ["check", "--help"], catch_exceptions=False)
+        result = cli_runner.invoke(cli, ["check", "--help"], catch_exceptions=False)
         assert result.exit_code == 0
         assert "health" in result.output.lower() or "repair" in result.output.lower()
 
-    def test_positional_args_become_query_terms(self, runner):
+    def test_positional_args_become_query_terms(self, cli_runner):
         """Positional args are converted to --query-term options."""
         from polylogue.cli.click_app import cli
 
         with patch("polylogue.cli.query.execute_query") as mock_execute:
-            runner.invoke(cli, ["hello", "world", "--plain"], catch_exceptions=False)
-            if mock_execute.called:
-                _, params = mock_execute.call_args[0]
-                assert "hello" in params.get("query", ())
-                assert "world" in params.get("query", ())
+            cli_runner.invoke(cli, ["hello", "world", "--plain"], catch_exceptions=False)
+            mock_execute.assert_called_once()
+            _, params = mock_execute.call_args[0]
+            assert "hello" in params.get("query", ())
+            assert "world" in params.get("query", ())
 
-    def test_option_args_preserved(self, runner):
+    def test_option_args_preserved(self, cli_runner):
         """Option args with values are preserved correctly alongside positional args."""
         from polylogue.cli.click_app import cli
 
         with patch("polylogue.cli.query.execute_query") as mock_execute:
-            runner.invoke(
+            cli_runner.invoke(
                 cli, ["-p", "claude", "search_term", "--plain"], catch_exceptions=False
             )
-            if mock_execute.called:
-                _, params = mock_execute.call_args[0]
-                assert params.get("provider") == "claude"
-                assert "search_term" in params.get("query", ())
+            mock_execute.assert_called_once()
+            _, params = mock_execute.call_args[0]
+            assert params.get("provider") == "claude"
+            assert "search_term" in params.get("query", ())
 
-    def test_mixed_options_and_positionals(self, runner):
+    def test_mixed_options_and_positionals(self, cli_runner):
         """Options interspersed with positional args all parse correctly."""
         from polylogue.cli.click_app import cli
 
         with patch("polylogue.cli.query.execute_query") as mock_execute:
-            runner.invoke(
+            cli_runner.invoke(
                 cli,
                 ["error", "-p", "claude", "handling", "--latest", "--plain"],
                 catch_exceptions=False,
             )
-            if mock_execute.called:
-                _, params = mock_execute.call_args[0]
-                assert "error" in params.get("query", ())
-                assert "handling" in params.get("query", ())
-                assert params.get("provider") == "claude"
-                assert params.get("latest") is True
+            mock_execute.assert_called_once()
+            _, params = mock_execute.call_args[0]
+            assert "error" in params.get("query", ())
+            assert "handling" in params.get("query", ())
+            assert params.get("provider") == "claude"
+            assert params.get("latest") is True
 
-    def test_no_args_shows_stats(self, runner):
+    def test_no_args_shows_stats(self, cli_runner):
         """No args → stats mode (dispatched by invoke)."""
         from polylogue.cli.click_app import cli
 
         with patch("polylogue.cli.click_app._show_stats") as mock_stats:
-            runner.invoke(cli, ["--plain"], catch_exceptions=False)
+            cli_runner.invoke(cli, ["--plain"], catch_exceptions=False)
             mock_stats.assert_called_once()
 
-    def test_help_flag(self, runner):
+    def test_help_flag(self, cli_runner):
         """--help shows help text with all options."""
         from polylogue.cli.click_app import cli
 
-        result = runner.invoke(cli, ["--help"], catch_exceptions=False)
+        result = cli_runner.invoke(cli, ["--help"], catch_exceptions=False)
         assert result.exit_code == 0
         assert "polylogue" in result.output.lower()
         assert "--provider" in result.output
@@ -331,31 +324,27 @@ class TestQueryFirstGroupParseArgs:
 class TestQueryFirstGroupInvoke:
     """Tests for invoke() method dispatching."""
 
-    @pytest.fixture
-    def runner(self):
-        return CliRunner()
-
-    def test_subcommand_invokes_super(self, runner):
+    def test_subcommand_invokes_super(self, cli_runner):
         """When parse_args sets _has_subcommand=True, super().invoke() is called."""
         from polylogue.cli.click_app import cli
 
-        result = runner.invoke(cli, ["check", "--help"])
+        result = cli_runner.invoke(cli, ["check", "--help"])
         assert result.exit_code == 0
 
-    def test_no_subcommand_calls_callback_then_query_mode(self, runner):
+    def test_no_subcommand_calls_callback_then_query_mode(self, cli_runner):
         """Without subcommand, callback is invoked then _handle_query_mode runs."""
         from polylogue.cli.click_app import cli
 
         with patch("polylogue.cli.click_app._show_stats") as mock_stats:
-            runner.invoke(cli, ["--plain"], catch_exceptions=False)
+            cli_runner.invoke(cli, ["--plain"], catch_exceptions=False)
             mock_stats.assert_called_once()
 
-    def test_query_mode_with_positional_args(self, runner):
+    def test_query_mode_with_positional_args(self, cli_runner):
         """Positional args route through invoke() to query mode."""
         from polylogue.cli.click_app import cli
 
         with patch("polylogue.cli.query.execute_query") as mock_exec:
-            runner.invoke(cli, ["hello", "--plain"], catch_exceptions=False)
+            cli_runner.invoke(cli, ["hello", "--plain"], catch_exceptions=False)
             mock_exec.assert_called_once()
 
 
@@ -367,31 +356,27 @@ class TestQueryFirstGroupInvoke:
 class TestCliSetup:
     """Tests for cli() callback: logging, UI, plain mode."""
 
-    @pytest.fixture
-    def runner(self):
-        return CliRunner()
-
-    def test_verbose_configures_debug_logging(self, runner):
+    def test_verbose_configures_debug_logging(self, cli_runner):
         """--verbose should call configure_logging(verbose=True)."""
         from polylogue.cli.click_app import cli
 
         with patch("polylogue.cli.click_app.configure_logging") as mock_log, patch(
             "polylogue.cli.click_app._show_stats"
         ):
-            runner.invoke(cli, ["--verbose", "--plain"], catch_exceptions=False)
+            cli_runner.invoke(cli, ["--verbose", "--plain"], catch_exceptions=False)
             mock_log.assert_called_once_with(verbose=True)
 
-    def test_no_verbose_configures_info_logging(self, runner):
+    def test_no_verbose_configures_info_logging(self, cli_runner):
         """Without --verbose, configure_logging(verbose=False)."""
         from polylogue.cli.click_app import cli
 
         with patch("polylogue.cli.click_app.configure_logging") as mock_log, patch(
             "polylogue.cli.click_app._show_stats"
         ):
-            runner.invoke(cli, ["--plain"], catch_exceptions=False)
+            cli_runner.invoke(cli, ["--plain"], catch_exceptions=False)
             mock_log.assert_called_once_with(verbose=False)
 
-    def test_plain_flag_creates_plain_ui(self, runner):
+    def test_plain_flag_creates_plain_ui(self, cli_runner):
         """--plain flag should create plain UI."""
         from polylogue.cli.click_app import cli
 
@@ -399,10 +384,10 @@ class TestCliSetup:
             "polylogue.cli.click_app._show_stats"
         ):
             mock_ui.return_value = MagicMock()
-            runner.invoke(cli, ["--plain"], catch_exceptions=False)
+            cli_runner.invoke(cli, ["--plain"], catch_exceptions=False)
             mock_ui.assert_called_once_with(True)
 
-    def test_plain_mode_announcement_when_auto_detected(self, runner):
+    def test_plain_mode_announcement_when_auto_detected(self, cli_runner):
         """When plain mode is auto-detected (not --plain, not env), announce_plain_mode() is called."""
         from polylogue.cli.click_app import cli
 
@@ -413,10 +398,10 @@ class TestCliSetup:
         ), patch(
             "polylogue.cli.click_app._show_stats"
         ):
-            runner.invoke(cli, [], catch_exceptions=False, env={"POLYLOGUE_FORCE_PLAIN": ""})
+            cli_runner.invoke(cli, [], catch_exceptions=False, env={"POLYLOGUE_FORCE_PLAIN": ""})
             mock_announce.assert_called_once()
 
-    def test_no_announcement_when_plain_flag_explicit(self, runner):
+    def test_no_announcement_when_plain_flag_explicit(self, cli_runner):
         """When --plain is explicitly passed, no announcement."""
         from polylogue.cli.click_app import cli
 
@@ -427,10 +412,10 @@ class TestCliSetup:
         ), patch(
             "polylogue.cli.click_app._show_stats"
         ):
-            runner.invoke(cli, ["--plain"], catch_exceptions=False)
+            cli_runner.invoke(cli, ["--plain"], catch_exceptions=False)
             mock_announce.assert_not_called()
 
-    def test_no_announcement_when_env_force_plain(self, runner):
+    def test_no_announcement_when_env_force_plain(self, cli_runner):
         """When POLYLOGUE_FORCE_PLAIN is set truthy, no announcement."""
         from polylogue.cli.click_app import cli
 
@@ -441,10 +426,10 @@ class TestCliSetup:
         ), patch(
             "polylogue.cli.click_app._show_stats"
         ):
-            runner.invoke(cli, [], catch_exceptions=False, env={"POLYLOGUE_FORCE_PLAIN": "1"})
+            cli_runner.invoke(cli, [], catch_exceptions=False, env={"POLYLOGUE_FORCE_PLAIN": "1"})
             mock_announce.assert_not_called()
 
-    def test_env_force_plain_false_values_dont_block_announcement(self, runner):
+    def test_env_force_plain_false_values_dont_block_announcement(self, cli_runner):
         """POLYLOGUE_FORCE_PLAIN set to '0', 'false', 'no' should NOT suppress announcement."""
         from polylogue.cli.click_app import cli
 
@@ -456,12 +441,12 @@ class TestCliSetup:
             ), patch(
                 "polylogue.cli.click_app._show_stats"
             ):
-                runner.invoke(
+                cli_runner.invoke(
                     cli, [], catch_exceptions=False, env={"POLYLOGUE_FORCE_PLAIN": val}
                 )
                 mock_announce.assert_called_once()
 
-    def test_ctx_obj_set_to_appenv(self, runner):
+    def test_ctx_obj_set_to_appenv(self, cli_runner):
         """ctx.obj should be an AppEnv instance after cli() callback."""
         from polylogue.cli.click_app import cli
         from polylogue.cli.types import AppEnv
@@ -472,7 +457,7 @@ class TestCliSetup:
             captured_env["env"] = env
 
         with patch("polylogue.cli.click_app._show_stats", side_effect=capture_stats):
-            runner.invoke(cli, ["--plain"], catch_exceptions=False)
+            cli_runner.invoke(cli, ["--plain"], catch_exceptions=False)
             assert isinstance(captured_env.get("env"), AppEnv)
 
 
@@ -509,21 +494,17 @@ class TestShowStats:
 class TestCliMetadata:
     """Tests for CLI metadata."""
 
-    @pytest.fixture
-    def runner(self):
-        return CliRunner()
-
-    def test_version_flag(self, runner):
+    def test_version_flag(self, cli_runner):
         from polylogue.cli.click_app import cli
 
-        result = runner.invoke(cli, ["--version"])
+        result = cli_runner.invoke(cli, ["--version"])
         assert result.exit_code == 0
         assert "polylogue" in result.output.lower()
 
-    def test_help_flag_lists_subcommands(self, runner):
+    def test_help_flag_lists_subcommands(self, cli_runner):
         from polylogue.cli.click_app import cli
 
-        result = runner.invoke(cli, ["--help"])
+        result = cli_runner.invoke(cli, ["--help"])
         assert result.exit_code == 0
         for cmd in ("run", "check", "embed", "site", "mcp", "tags"):
             assert cmd in result.output

@@ -19,7 +19,6 @@ import pytest
 
 from polylogue.storage.backends.schema import SCHEMA_DDL, SCHEMA_VERSION
 
-
 # =============================================================================
 # Schema DDL parity: sync and async must use the same DDL (f33ef29)
 # =============================================================================
@@ -35,6 +34,7 @@ class TestSchemaDDLParity:
     def test_async_backend_imports_shared_schema_ddl(self):
         """Async backend must import SCHEMA_DDL from schema.py, not define its own."""
         import inspect
+
         from polylogue.storage.backends import async_sqlite
 
         source = inspect.getsource(async_sqlite)

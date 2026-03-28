@@ -17,11 +17,10 @@ from polylogue.cli.commands.run import (
     sources_command,
 )
 from polylogue.config import Source, get_config
-from polylogue.pipeline.events import (
-    ExecHandler,
-    NotificationHandler,
-    SyncEvent,
-    WebhookHandler,
+from polylogue.pipeline.observers import (
+    ExecObserver,
+    NotificationObserver,
+    WebhookObserver,
 )
 from polylogue.pipeline.runner import latest_run, plan_sources, run_sources
 from polylogue.pipeline.services.parsing import ParsingService
@@ -62,7 +61,9 @@ async def test_plan_and_run_sources(workspace_env, tmp_path, with_plan):
 
     if with_plan:
         plan = plan_sources(config)
-        assert plan.counts["conversations"] == 1
+        assert plan.counts["scan"] == 1
+        assert plan.counts["store_raw"] == 1
+        assert plan.counts["parse"] == 1
         result = await run_sources(config=config, stage="all", plan=plan)
     else:
         result = await run_sources(config=config, stage="all")
@@ -336,8 +337,8 @@ def mock_plan_result():
 def mock_repository():
     """Mock ConversationRepository."""
     repo = MagicMock()
-    repo._backend = MagicMock()
-    repo._backend._get_connection = MagicMock()
+    repo.backend = MagicMock()
+    repo.backend._get_connection = MagicMock()
     return repo
 
 
@@ -346,8 +347,13 @@ def mock_backend():
     """Mock SQLite backend."""
     backend = MagicMock()
     backend._get_connection = MagicMock()
-    backend.iter_raw_conversations = MagicMock(return_value=[])
-    backend.get_raw_conversation = MagicMock(return_value=None)
+    async def _empty_iter():
+        if False:
+            yield None
+
+    backend.iter_raw_conversations = MagicMock(return_value=_empty_iter())
+    backend.get_raw_conversation = AsyncMock(return_value=None)
+    backend.get_raw_conversations_batch = AsyncMock(return_value=[])
     return backend
 
 
@@ -499,48 +505,48 @@ class TestRunCommandWatch:
 
 
 class TestWatchModeCallbacks:
-    """Test watch mode event handler callbacks."""
+    """Test watch mode observer callbacks."""
 
     def test_notify_callback_executes_with_count(self):
-        """NotificationHandler calls notify-send with conversation count."""
+        """NotificationObserver calls notify-send with conversation count."""
         with patch("subprocess.run") as mock_run:
-            handler = NotificationHandler()
-            handler.on_sync(SyncEvent(new_conversations=5, run_result=None))  # type: ignore[arg-type]
+            handler = NotificationObserver()
+            handler.on_completed(MagicMock(counts={"conversations": 5}))
             mock_run.assert_called_once()
             call_args = mock_run.call_args[0][0]
             assert "notify-send" in call_args
             assert "5" in str(call_args)
 
     def test_exec_callback_executes_with_count(self):
-        """ExecHandler runs command with correct environment."""
+        """ExecObserver runs command with correct environment."""
         with patch("subprocess.run") as mock_run:
-            handler = ExecHandler("echo $POLYLOGUE_NEW_COUNT")
-            handler.on_sync(SyncEvent(new_conversations=3, run_result=None))  # type: ignore[arg-type]
+            handler = ExecObserver("echo $POLYLOGUE_NEW_COUNT")
+            handler.on_completed(MagicMock(counts={"conversations": 3}))
             mock_run.assert_called_once()
             call_kwargs = mock_run.call_args[1]
             assert call_kwargs["env"]["POLYLOGUE_NEW_COUNT"] == "3"
             assert call_kwargs.get("shell") is not True
 
     def test_webhook_callback_executes_with_count(self):
-        """WebhookHandler sends POST with conversation count."""
+        """WebhookObserver sends POST with conversation count."""
         fake_addrinfo = [(2, 1, 6, "", ("93.184.216.34", 80))]
-        with patch("polylogue.pipeline.events.socket.getaddrinfo", return_value=fake_addrinfo):
+        with patch("polylogue.pipeline.observers.socket.getaddrinfo", return_value=fake_addrinfo):
             with patch("urllib.request.urlopen") as mock_urlopen:
-                handler = WebhookHandler("http://example.com/webhook")
-                handler.on_sync(SyncEvent(new_conversations=2, run_result=None))  # type: ignore[arg-type]
+                handler = WebhookObserver("http://example.com/webhook")
+                handler.on_completed(MagicMock(counts={"conversations": 2}))
                 mock_urlopen.assert_called_once()
                 call_args = mock_urlopen.call_args[0][0]
                 assert call_args.get_full_url() == "http://example.com/webhook"
                 assert call_args.get_method() == "POST"
 
     def test_webhook_on_new_payload_format(self):
-        """WebhookHandler includes correct JSON payload."""
+        """WebhookObserver includes correct JSON payload."""
         fake_addrinfo = [(2, 1, 6, "", ("93.184.216.34", 80))]
-        with patch("polylogue.pipeline.events.socket.getaddrinfo", return_value=fake_addrinfo):
+        with patch("polylogue.pipeline.observers.socket.getaddrinfo", return_value=fake_addrinfo):
             with patch("urllib.request.urlopen"):
                 with patch("urllib.request.Request") as mock_request:
-                    handler = WebhookHandler("http://example.com/webhook")
-                    handler.on_sync(SyncEvent(new_conversations=7, run_result=None))  # type: ignore[arg-type]
+                    handler = WebhookObserver("http://example.com/webhook")
+                    handler.on_completed(MagicMock(counts={"conversations": 7}))
                     call_kwargs = mock_request.call_args[1]
                     payload = json.loads(call_kwargs["data"].decode())
                     assert payload["event"] == "sync"
@@ -586,7 +592,7 @@ class TestParsingService:
     async def test_parse_from_raw(self, mock_backend, backend_initialized, provider):
         """parse_from_raw validates backend and filters by provider."""
         repo = MagicMock()
-        repo._backend = mock_backend if backend_initialized else None
+        repo.backend = mock_backend if backend_initialized else None
         service = ParsingService(repository=repo, archive_root=Path("/tmp"), config=MagicMock())
         if not backend_initialized:
             with pytest.raises(RuntimeError, match="backend is not initialized"):
@@ -611,13 +617,13 @@ class TestParsingService:
     async def test_parse_raw_record_content_types(self, mock_backend, format_type, content, provider, is_bytes):
         """_parse_raw_record handles JSONL, JSON, and string content."""
         repo = MagicMock()
-        repo._backend = mock_backend
+        repo.backend = mock_backend
         service = ParsingService(repository=repo, archive_root=Path("/tmp"), config=MagicMock())
         raw_record = MagicMock()
         raw_record.raw_content = content.encode("utf-8") if is_bytes else content
         raw_record.provider_name = provider
         raw_record.raw_id = "raw-123"
-        with patch("polylogue.pipeline.services.parsing._parse_json_payload") as mock_parse:
+        with patch("polylogue.pipeline.services.parsing.parse_payload") as mock_parse:
             mock_parse.return_value = [] if format_type == "string" else [ParsedConversation(provider_name=provider, provider_conversation_id=f"conv-{format_type}", messages=[])]
             await service._parse_raw_record(raw_record)
             mock_parse.assert_called_once()

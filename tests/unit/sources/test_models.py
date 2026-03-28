@@ -26,23 +26,24 @@ from polylogue.sources.providers.claude_code import (
     ClaudeCodeUsage,
     ClaudeCodeUserMessage,
 )
-from polylogue.sources.providers.gemini import GeminiMessage, GeminiPart, GeminiThoughtSignature
 from polylogue.sources.providers.codex import CodexRecord
+from polylogue.sources.providers.gemini import GeminiMessage, GeminiPart, GeminiThoughtSignature
 
 # =============================================================================
 # Test Data Tables — all from shared infra (single source of truth)
 # =============================================================================
-
 from tests.infra.tables import (
     CHATGPT_ROLE_MAPPING,
     CLAUDE_CODE_IS_ACTUAL_MESSAGE,
     CLAUDE_CODE_IS_CONTEXT_COMPACTION,
     CLAUDE_CODE_IS_TOOL_PROGRESS,
-    CLAUDE_CODE_TIMESTAMP_CASES as CLAUDE_CODE_TIMESTAMP_PARSING,
     CLAUDE_CODE_TYPE_ROLE_MAPPING,
     GEMINI_ROLE_MAPPING,
     NORMALIZE_ROLE_CANONICAL,
     UNIFIED_ROLE_NORMALIZATION,
+)
+from tests.infra.tables import (
+    CLAUDE_CODE_TIMESTAMP_CASES as CLAUDE_CODE_TIMESTAMP_PARSING,
 )
 
 CLAUDE_AI_ROLE_MAPPING = [

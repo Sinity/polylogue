@@ -10,12 +10,18 @@ from pathlib import Path
 from polylogue.config import Source
 from polylogue.lib.timestamps import format_timestamp
 
+_FALSEY_ENV_VALUES = frozenset({"0", "false", "no"})
+
+
+def plain_forced_by_env() -> bool:
+    env_force = os.environ.get("POLYLOGUE_FORCE_PLAIN")
+    return bool(env_force and env_force.lower() not in _FALSEY_ENV_VALUES)
+
 
 def should_use_plain(*, plain: bool) -> bool:
     if plain:
         return True
-    env_force = os.environ.get("POLYLOGUE_FORCE_PLAIN")
-    if env_force and env_force.lower() not in {"0", "false", "no"}:
+    if plain_forced_by_env():
         return True
     return not (sys.stdout.isatty() and sys.stderr.isatty())
 
@@ -64,6 +70,42 @@ def format_counts(counts: Mapping[str, object]) -> str:
     if rendered:
         parts.append(f"{rendered} rendered")
     return ", ".join(parts)
+
+
+def format_plan_counts(counts: Mapping[str, object]) -> str:
+    labels = [
+        ("scan", "scan"),
+        ("store_raw", "store"),
+        ("validate", "validate"),
+        ("parse", "parse"),
+        ("render", "render"),
+        ("index", "index"),
+    ]
+    parts: list[str] = []
+    for key, label in labels:
+        value = counts.get(key)
+        if isinstance(value, int) and value:
+            parts.append(f"{value} {label}")
+    if not parts:
+        return "no pipeline actions"
+    return ", ".join(parts)
+
+
+def format_plan_details(details: Mapping[str, object]) -> str | None:
+    labels = [
+        ("new_raw", "new raw"),
+        ("existing_raw", "existing raw"),
+        ("backlog_validate", "validate backlog"),
+        ("backlog_parse", "parse backlog"),
+        ("preview_invalid", "would fail validation"),
+        ("preview_skipped_no_schema", "no schema"),
+    ]
+    parts: list[str] = []
+    for key, label in labels:
+        value = details.get(key)
+        if isinstance(value, int) and value:
+            parts.append(f"{value} {label}")
+    return ", ".join(parts) if parts else None
 
 
 def format_index_status(stage: str, indexed: bool, index_error: str | None) -> str:

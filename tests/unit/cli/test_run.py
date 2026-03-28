@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
@@ -11,7 +12,9 @@ from click.testing import CliRunner
 
 from polylogue.cli.click_app import cli
 from polylogue.sources import DriveError
+from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.store import PlanResult, RunResult
+from tests.infra.helpers import DbFactory
 
 
 @pytest.fixture
@@ -118,6 +121,33 @@ RENDER_FAILURE_CASES = [
     ("displays_truncated", 15, 5, False, "Render failures (15)", None),
     ("no_section_when_empty", 0, 0, False, None, False),
 ]
+
+
+def _seed_tag_counts(
+    db_path: Path,
+    tag_counts: dict[str, int],
+    *,
+    provider: str = "chatgpt",
+) -> None:
+    """Seed an isolated CLI database with tagged conversations."""
+    factory = DbFactory(db_path)
+    backend = SQLiteBackend(db_path=db_path)
+
+    async def _seed() -> None:
+        index = 0
+        try:
+            for tag, count in tag_counts.items():
+                for _ in range(count):
+                    conversation_id = factory.create_conversation(
+                        id=f"{provider}-{tag}-{index}",
+                        provider=provider,
+                    )
+                    await backend.add_tag(conversation_id, tag)
+                    index += 1
+        finally:
+            await backend.close()
+
+    asyncio.run(_seed())
 
 
 # ============================================================================
@@ -286,7 +316,7 @@ class TestRunCommandSourceOption:
         from unittest.mock import patch
 
         mock_config = MagicMock(sources=[])
-        with patch("polylogue.services.get_service_config", return_value=mock_config):
+        with patch("polylogue.config.get_config", return_value=mock_config):
             with patch("polylogue.cli.commands.run.run_sources", new_callable=AsyncMock) as mock_run:
                 with patch("polylogue.cli.commands.run.resolve_sources") as mock_resolve:
                     with patch("polylogue.cli.commands.run.maybe_prompt_sources", return_value=resolved_sources):
@@ -657,17 +687,8 @@ class TestTagsCommand:
 
     def test_tags_list_all(self, runner, cli_workspace):
         """Tags command displays all tags with counts."""
-        from unittest.mock import patch
-
-        with patch("polylogue.storage.backends.async_sqlite.SQLiteBackend") as mock_backend_class:
-            with patch("polylogue.storage.repository.ConversationRepository") as mock_repo_class:
-                mock_backend = MagicMock()
-                mock_backend_class.return_value = mock_backend
-                mock_repo = AsyncMock()
-                mock_repo_class.return_value = mock_repo
-                mock_repo.list_tags.return_value = {"important": 5, "review": 3, "draft": 1}
-
-                result = runner.invoke(cli, ["tags"])
+        _seed_tag_counts(cli_workspace["db_path"], {"important": 5, "review": 3, "draft": 1})
+        result = runner.invoke(cli, ["tags"])
 
         assert result.exit_code == 0
         assert "important" in result.output
@@ -679,17 +700,9 @@ class TestTagsCommand:
     def test_tags_json_output(self, runner, cli_workspace):
         """Tags --json outputs valid JSON dict."""
         import json
-        from unittest.mock import patch
 
-        with patch("polylogue.storage.backends.async_sqlite.SQLiteBackend") as mock_backend_class:
-            with patch("polylogue.storage.repository.ConversationRepository") as mock_repo_class:
-                mock_backend = MagicMock()
-                mock_backend_class.return_value = mock_backend
-                mock_repo = AsyncMock()
-                mock_repo_class.return_value = mock_repo
-                mock_repo.list_tags.return_value = {"tag1": 10, "tag2": 2}
-
-                result = runner.invoke(cli, ["tags", "--json"])
+        _seed_tag_counts(cli_workspace["db_path"], {"tag1": 10, "tag2": 2})
+        result = runner.invoke(cli, ["tags", "--json"])
 
         assert result.exit_code == 0
         data = json.loads(result.output)
@@ -697,35 +710,18 @@ class TestTagsCommand:
 
     def test_tags_provider_filter(self, runner, cli_workspace):
         """Tags -p passes provider to list_tags."""
-        from unittest.mock import patch
-
-        with patch("polylogue.storage.backends.async_sqlite.SQLiteBackend") as mock_backend_class:
-            with patch("polylogue.storage.repository.ConversationRepository") as mock_repo_class:
-                mock_backend = MagicMock()
-                mock_backend_class.return_value = mock_backend
-                mock_repo = AsyncMock()
-                mock_repo_class.return_value = mock_repo
-                mock_repo.list_tags.return_value = {"claude-tag": 3}
-
-                result = runner.invoke(cli, ["tags", "-p", "claude"])
+        _seed_tag_counts(cli_workspace["db_path"], {"claude-tag": 3}, provider="claude")
+        _seed_tag_counts(cli_workspace["db_path"], {"chatgpt-tag": 4}, provider="chatgpt")
+        result = runner.invoke(cli, ["tags", "-p", "claude"])
 
         assert result.exit_code == 0
-        mock_repo.list_tags.assert_called_once_with(provider="claude")
         assert "claude-tag" in result.output
+        assert "chatgpt-tag" not in result.output
 
     def test_tags_count_limit(self, runner, cli_workspace):
         """Tags -n truncates to top N."""
-        from unittest.mock import patch
-
-        with patch("polylogue.storage.backends.async_sqlite.SQLiteBackend") as mock_backend_class:
-            with patch("polylogue.storage.repository.ConversationRepository") as mock_repo_class:
-                mock_backend = MagicMock()
-                mock_backend_class.return_value = mock_backend
-                mock_repo = AsyncMock()
-                mock_repo_class.return_value = mock_repo
-                mock_repo.list_tags.return_value = {"a": 10, "b": 5, "c": 1}
-
-                result = runner.invoke(cli, ["tags", "-n", "2"])
+        _seed_tag_counts(cli_workspace["db_path"], {"a": 10, "b": 5, "c": 1})
+        result = runner.invoke(cli, ["tags", "-n", "2"])
 
         assert result.exit_code == 0
         assert "a" in result.output
@@ -734,17 +730,7 @@ class TestTagsCommand:
 
     def test_tags_empty(self, runner, cli_workspace):
         """Tags with no tags shows hint."""
-        from unittest.mock import patch
-
-        with patch("polylogue.storage.backends.async_sqlite.SQLiteBackend") as mock_backend_class:
-            with patch("polylogue.storage.repository.ConversationRepository") as mock_repo_class:
-                mock_backend = MagicMock()
-                mock_backend_class.return_value = mock_backend
-                mock_repo = AsyncMock()
-                mock_repo_class.return_value = mock_repo
-                mock_repo.list_tags.return_value = {}
-
-                result = runner.invoke(cli, ["tags"])
+        result = runner.invoke(cli, ["tags"])
 
         assert result.exit_code == 0
         assert "No tags found" in result.output
@@ -752,17 +738,7 @@ class TestTagsCommand:
 
     def test_tags_empty_with_provider_filter(self, runner, cli_workspace):
         """Tags with provider filter and no tags shows provider-specific hint."""
-        from unittest.mock import patch
-
-        with patch("polylogue.storage.backends.async_sqlite.SQLiteBackend") as mock_backend_class:
-            with patch("polylogue.storage.repository.ConversationRepository") as mock_repo_class:
-                mock_backend = MagicMock()
-                mock_backend_class.return_value = mock_backend
-                mock_repo = AsyncMock()
-                mock_repo_class.return_value = mock_repo
-                mock_repo.list_tags.return_value = {}
-
-                result = runner.invoke(cli, ["tags", "-p", "chatgpt"])
+        result = runner.invoke(cli, ["tags", "-p", "chatgpt"])
 
         assert result.exit_code == 0
         assert "No tags found for provider 'chatgpt'" in result.output

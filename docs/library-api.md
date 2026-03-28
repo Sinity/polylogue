@@ -117,10 +117,10 @@ continuations = await ConversationFilter(repo).is_continuation().list()
 
 ```python
 import asyncio
+from polylogue.config import get_config
 from polylogue.pipeline.runner import run_sources
-from polylogue.services import get_service_config
 
-config = get_service_config()
+config = get_config()
 result = asyncio.run(run_sources(config=config, stage="all"))
 ```
 

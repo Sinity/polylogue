@@ -15,7 +15,7 @@ import csv
 import io
 import json
 from datetime import datetime
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 import yaml
@@ -80,6 +80,10 @@ def mock_env():
 
     env = MagicMock()
     env.ui = mock_ui
+    env.repository = MagicMock()
+    env.repository.update_metadata = AsyncMock()
+    env.repository.add_tag = AsyncMock()
+    env.repository.delete_conversation = AsyncMock(return_value=True)
 
     return env
 
@@ -300,14 +304,9 @@ class TestBulkOperationConfirmation:
 
         mock_backend = MagicMock()
         mock_backend.add_tag = AsyncMock()
-        with (
-            patch("polylogue.cli.helpers.load_effective_config"),
-            patch("polylogue.services.get_repository", return_value=mock_backend),
-        ):
-            await query._apply_modifiers(mock_env, convs, params)
-
-            # Should have called add_tag 15 times
-            assert mock_backend.add_tag.call_count == 15
+        mock_env.repository = mock_backend
+        await query._apply_modifiers(mock_env, convs, params)
+        assert mock_backend.add_tag.call_count == 15
 
     async def test_delete_requires_confirmation_for_bulk(self, mock_env, capsys):
         """Delete prompts for confirmation for >10 items."""
@@ -332,14 +331,9 @@ class TestBulkOperationConfirmation:
 
         mock_backend = MagicMock()
         mock_backend.delete_conversation = AsyncMock(return_value=True)
-        with (
-            patch("polylogue.cli.helpers.load_effective_config"),
-            patch("polylogue.services.get_repository", return_value=mock_backend),
-        ):
-            await query._delete_conversations(mock_env, convs, params)
-
-            # Should have called delete_conversation 15 times
-            assert mock_backend.delete_conversation.call_count == 15
+        mock_env.repository = mock_backend
+        await query._delete_conversations(mock_env, convs, params)
+        assert mock_backend.delete_conversation.call_count == 15
 
     async def test_small_operations_proceed_without_force(self, mock_env):
         """Operations with <=10 items proceed without --force."""
@@ -348,14 +342,9 @@ class TestBulkOperationConfirmation:
 
         mock_backend = MagicMock()
         mock_backend.add_tag = AsyncMock()
-        with (
-            patch("polylogue.cli.helpers.load_effective_config"),
-            patch("polylogue.services.get_repository", return_value=mock_backend),
-        ):
-            # Should not raise
-            await query._apply_modifiers(mock_env, convs, params)
-
-            assert mock_backend.add_tag.call_count == 5
+        mock_env.repository = mock_backend
+        await query._apply_modifiers(mock_env, convs, params)
+        assert mock_backend.add_tag.call_count == 5
 
 
 class TestOperationReporting:
@@ -367,15 +356,11 @@ class TestOperationReporting:
 
         mock_backend = MagicMock()
         mock_backend.add_tag = AsyncMock()
-        with (
-            patch("polylogue.cli.helpers.load_effective_config"),
-            patch("polylogue.services.get_repository", return_value=mock_backend),
-        ):
-            await query._apply_modifiers(mock_env, sample_conversations, params)
-
-            captured = capsys.readouterr()
-            assert "Added tags" in captured.out
-            assert "3" in captured.out  # Number of conversations
+        mock_env.repository = mock_backend
+        await query._apply_modifiers(mock_env, sample_conversations, params)
+        captured = capsys.readouterr()
+        assert "Added tags" in captured.out
+        assert "3" in captured.out
 
     async def test_delete_reports_count(self, mock_env, sample_conversations, capsys):
         """Delete reports count of deleted conversations."""
@@ -383,15 +368,11 @@ class TestOperationReporting:
 
         mock_backend = MagicMock()
         mock_backend.delete_conversation = AsyncMock(return_value=True)
-        with (
-            patch("polylogue.cli.helpers.load_effective_config"),
-            patch("polylogue.services.get_repository", return_value=mock_backend),
-        ):
-            await query._delete_conversations(mock_env, sample_conversations, params)
-
-            captured = capsys.readouterr()
-            assert "Deleted" in captured.out
-            assert "3" in captured.out
+        mock_env.repository = mock_backend
+        await query._delete_conversations(mock_env, sample_conversations, params)
+        captured = capsys.readouterr()
+        assert "Deleted" in captured.out
+        assert "3" in captured.out
 
 
 class TestQueryConvToJson:

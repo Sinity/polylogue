@@ -15,19 +15,23 @@ import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any
 
 import aiosqlite
 
 import polylogue.paths as _paths
 from polylogue.lib.json import dumps as json_dumps
 from polylogue.lib.log import get_logger
-from polylogue.storage.backends.connection import DB_TIMEOUT, _build_conversation_filters
+from polylogue.storage.backends.connection import (
+    DB_TIMEOUT,
+    _build_conversation_filters,
+    _build_source_scope_filter,
+)
 from polylogue.storage.store import (
     AttachmentRecord,
     ConversationRecord,
     MessageRecord,
     RawConversationRecord,
+    RawConversationState,
     RunRecord,
     _json_or_none,
     _make_ref_id,
@@ -106,6 +110,17 @@ class SQLiteBackend:
 
         # Connection pool for concurrent read operations (e.g., rendering)
         self._read_pool: asyncio.Queue[aiosqlite.Connection] | None = None
+
+    @property
+    def db_path(self) -> Path:
+        """Return the backing SQLite database path."""
+        return self._db_path
+
+    @asynccontextmanager
+    async def connection(self) -> AsyncIterator[aiosqlite.Connection]:
+        """Public connection context for read/query helpers."""
+        async with self._get_connection() as conn:
+            yield conn
 
     async def _ensure_schema_once(self) -> None:
         """Ensure schema is initialized exactly once (thread-safe via asyncio lock)."""
@@ -247,12 +262,12 @@ class SQLiteBackend:
         """
         import sqlite3
 
+        from polylogue.storage.backends.connection import _load_sqlite_vec
         from polylogue.storage.backends.schema import (
             _VEC0_DDL,
             SCHEMA_DDL,
             SCHEMA_VERSION,
         )
-        from polylogue.storage.backends.connection import _load_sqlite_vec
         from polylogue.storage.backends.schema import (
             _ensure_schema as _sync_ensure_schema,
         )
@@ -1115,14 +1130,71 @@ class SQLiteBackend:
             row = await cursor.fetchone()
             return row["last"] if row and row["last"] else None
 
+    async def list_conversation_ids(
+        self,
+        *,
+        source_names: list[str] | None = None,
+    ) -> list[str]:
+        """List conversation IDs, optionally scoped to source names or legacy provider names."""
+        predicate, params = _build_source_scope_filter(
+            source_names,
+            provider_column="provider_name",
+            source_column="source_name",
+        )
+        sql = "SELECT conversation_id FROM conversations"
+        if predicate:
+            sql += f" WHERE {predicate}"
+
+        async with self._get_connection() as conn:
+            cursor = await conn.execute(sql, tuple(params))
+            rows = await cursor.fetchall()
+
+        return [str(row["conversation_id"]) for row in rows]
+
+    async def list_raw_ids(
+        self,
+        *,
+        source_names: list[str] | None = None,
+        require_unparsed: bool = False,
+        require_unvalidated: bool = False,
+        validation_statuses: list[str] | None = None,
+    ) -> list[str]:
+        """List raw conversation IDs for a pipeline state slice."""
+        where_clauses: list[str] = []
+        params: list[str] = []
+
+        if require_unparsed:
+            where_clauses.append("parsed_at IS NULL")
+        if require_unvalidated:
+            where_clauses.append("validated_at IS NULL")
+        if validation_statuses:
+            placeholders = ",".join("?" for _ in validation_statuses)
+            where_clauses.append(f"validation_status IN ({placeholders})")
+            params.extend(validation_statuses)
+
+        predicate, scope_params = _build_source_scope_filter(
+            source_names,
+            provider_column="provider_name",
+            source_column="source_name",
+        )
+        if predicate:
+            where_clauses.append(predicate)
+            params.extend(scope_params)
+
+        sql = "SELECT raw_id FROM raw_conversations"
+        if where_clauses:
+            sql += f" WHERE {' AND '.join(where_clauses)}"
+
+        async with self._get_connection() as conn:
+            cursor = await conn.execute(sql, tuple(params))
+            rows = await cursor.fetchall()
+
+        return [str(row["raw_id"]) for row in rows]
+
     async def search_conversations(
         self, query: str, limit: int = 100, providers: list[str] | None = None
     ) -> list[str]:
-        """Search conversations using full-text search with BM25 ranking.
-
-        Escapes user input for safe FTS5 MATCH, then ranks results using
-        BM25 (via FTS5's built-in rank function). Results are grouped by
-        conversation with the best matching message determining position.
+        """Search conversations using the canonical ranked FTS conversation query.
 
         Args:
             query: Raw search query string (will be escaped for FTS5)
@@ -1132,7 +1204,7 @@ class SQLiteBackend:
         Returns:
             List of conversation IDs matching the query, ordered by relevance
         """
-        from polylogue.storage.search import escape_fts5_query
+        from polylogue.storage.search import build_ranked_conversation_search_query
 
         async with self._get_connection() as conn:
             # Check if FTS table exists before querying
@@ -1146,24 +1218,17 @@ class SQLiteBackend:
 
                 raise DatabaseError("Search index not built. Run indexing first or use a different backend.")
 
-            fts_query = escape_fts5_query(query)
-            if not fts_query:
+            query_spec = build_ranked_conversation_search_query(
+                query=query,
+                limit=limit,
+                scope_names=providers,
+            )
+            if query_spec is None:
                 return []
 
-            if providers:
-                placeholders = ",".join("?" for _ in providers)
-                from_clause = "messages_fts JOIN conversations ON conversations.conversation_id = messages_fts.conversation_id"
-                provider_filter = f" AND (conversations.provider_name IN ({placeholders}) OR conversations.source_name IN ({placeholders}))"
-                params: tuple[Any, ...] = (fts_query, *providers, *providers, limit)
-            else:
-                from_clause = "messages_fts"
-                provider_filter = ""
-                params = (fts_query, limit)
+            sql, params = query_spec
 
-            cursor = await conn.execute(
-                f"SELECT DISTINCT messages_fts.conversation_id FROM {from_clause} WHERE messages_fts MATCH ?{provider_filter} LIMIT ?",
-                params,
-            )
+            cursor = await conn.execute(sql, params)
             rows = await cursor.fetchall()
 
         return [str(row["conversation_id"]) for row in rows]
@@ -1527,6 +1592,97 @@ class SQLiteBackend:
 
         return {row["conversation_id"]: row["cnt"] for row in rows}
 
+    async def get_stats_by(self, group_by: str = "provider") -> dict[str, int]:
+        """Get conversation counts grouped by provider, month, or year."""
+        async with self._get_connection() as conn:
+            if group_by == "month":
+                cursor = await conn.execute(
+                    """
+                    SELECT strftime('%Y-%m', updated_at) as period, COUNT(*) as count
+                    FROM conversations
+                    WHERE updated_at IS NOT NULL
+                    GROUP BY period ORDER BY period DESC
+                    """
+                )
+            elif group_by == "year":
+                cursor = await conn.execute(
+                    """
+                    SELECT strftime('%Y', updated_at) as period, COUNT(*) as count
+                    FROM conversations
+                    WHERE updated_at IS NOT NULL
+                    GROUP BY period ORDER BY period DESC
+                    """
+                )
+            else:
+                cursor = await conn.execute(
+                    """
+                    SELECT provider_name as period, COUNT(*) as count
+                    FROM conversations
+                    GROUP BY provider_name ORDER BY count DESC
+                    """
+                )
+            rows = await cursor.fetchall()
+        return {row["period"]: row["count"] for row in rows}
+
+    async def get_provider_metrics_rows(self) -> list[dict[str, object]]:
+        """Return raw provider aggregation rows for analytics reporting."""
+        async with self._get_connection() as conn:
+            cursor = await conn.execute(
+                """
+                SELECT
+                    c.provider_name,
+                    COUNT(DISTINCT c.conversation_id) AS conversation_count,
+                    COUNT(m.message_id) AS message_count,
+                    SUM(CASE WHEN m.role = 'user' THEN 1 ELSE 0 END) AS user_message_count,
+                    SUM(CASE WHEN m.role = 'assistant' THEN 1 ELSE 0 END) AS assistant_message_count,
+                    SUM(CASE WHEN m.role = 'user' AND m.text IS NOT NULL AND TRIM(m.text) != ''
+                        THEN LENGTH(TRIM(m.text)) - LENGTH(REPLACE(TRIM(m.text), ' ', '')) + 1
+                        ELSE 0 END) AS user_word_sum,
+                    SUM(CASE WHEN m.role = 'assistant' AND m.text IS NOT NULL AND TRIM(m.text) != ''
+                        THEN LENGTH(TRIM(m.text)) - LENGTH(REPLACE(TRIM(m.text), ' ', '')) + 1
+                        ELSE 0 END) AS assistant_word_sum,
+                    SUM(CASE WHEN m.provider_meta LIKE '%"type":"tool_use"%'
+                             OR m.role = 'tool'
+                        THEN 1 ELSE 0 END) AS tool_use_count,
+                    SUM(CASE WHEN m.provider_meta LIKE '%"type":"thinking"%'
+                        THEN 1 ELSE 0 END) AS thinking_count,
+                    COUNT(DISTINCT CASE
+                        WHEN m.provider_meta LIKE '%"type":"tool_use"%'
+                             OR m.role = 'tool'
+                        THEN c.conversation_id END) AS conversations_with_tools,
+                    COUNT(DISTINCT CASE
+                        WHEN m.provider_meta LIKE '%"type":"thinking"%'
+                        THEN c.conversation_id END) AS conversations_with_thinking
+                FROM conversations c
+                LEFT JOIN messages m ON c.conversation_id = m.conversation_id
+                GROUP BY c.provider_name
+                ORDER BY conversation_count DESC
+                """
+            )
+            rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+    async def get_latest_run(self) -> RunRecord | None:
+        """Fetch the most recent pipeline run record."""
+        async with self._get_connection() as conn:
+            cursor = await conn.execute(
+                "SELECT * FROM runs ORDER BY timestamp DESC LIMIT 1"
+            )
+            row = await cursor.fetchone()
+
+        if not row:
+            return None
+
+        return RunRecord(
+            run_id=row["run_id"],
+            timestamp=row["timestamp"],
+            plan_snapshot=_parse_json(row["plan_snapshot"], field="plan_snapshot", record_id=row["run_id"]),
+            counts=_parse_json(row["counts_json"], field="counts_json", record_id=row["run_id"]),
+            drift=_parse_json(row["drift_json"], field="drift_json", record_id=row["run_id"]),
+            indexed=bool(row["indexed"]) if row["indexed"] is not None else None,
+            duration_ms=row["duration_ms"],
+        )
+
     async def close(self) -> None:
         """Close database connections.
 
@@ -1850,6 +2006,46 @@ class SQLiteBackend:
                     break
                 records.extend(_row_to_raw_conversation(row) for row in rows)
             return records
+
+    async def get_raw_conversation_states(
+        self,
+        raw_ids: list[str],
+    ) -> dict[str, RawConversationState]:
+        """Fetch persisted processing state for raw conversation IDs."""
+        if not raw_ids:
+            return {}
+
+        async with self._get_connection() as conn:
+            placeholders = ",".join("?" * len(raw_ids))
+            cursor = await conn.execute(
+                f"""
+                SELECT
+                    raw_id,
+                    source_name,
+                    source_path,
+                    parsed_at,
+                    parse_error,
+                    validation_status,
+                    validation_provider
+                FROM raw_conversations
+                WHERE raw_id IN ({placeholders})
+                """,
+                raw_ids,
+            )
+            rows = await cursor.fetchall()
+
+        return {
+            row["raw_id"]: RawConversationState(
+                raw_id=row["raw_id"],
+                source_name=row["source_name"],
+                source_path=row["source_path"],
+                parsed_at=row["parsed_at"],
+                parse_error=row["parse_error"],
+                validation_status=row["validation_status"],
+                validation_provider=row["validation_provider"],
+            )
+            for row in rows
+        }
 
     async def iter_raw_conversations(
         self,

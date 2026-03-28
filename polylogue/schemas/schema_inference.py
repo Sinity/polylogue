@@ -31,6 +31,11 @@ except ImportError:
     GENSON_AVAILABLE = False
 
 
+from polylogue.lib.raw_payload import (
+    build_raw_payload_envelope,
+    extract_payload_samples,
+    limit_samples,
+)
 from polylogue.storage.backends.connection import default_db_path
 
 # UUID pattern for detecting dynamic keys
@@ -55,7 +60,6 @@ class ProviderConfig:
     db_provider_name: str | None = None  # Provider name in polylogue DB
     session_dir: Path | None = None  # For JSONL session-based providers
     max_sessions: int | None = None
-    wire_format: str = "json"  # "json" | "jsonl"
     sample_granularity: str = "document"  # "document" | "record"
     record_type_key: str | None = None  # best-effort stratification key
 
@@ -66,14 +70,12 @@ PROVIDERS: dict[str, ProviderConfig] = {
         name="chatgpt",
         description="ChatGPT message format",
         db_provider_name="chatgpt",
-        wire_format="json",
         sample_granularity="document",
     ),
     "claude-code": ProviderConfig(
         name="claude-code",
         description="Claude Code message format",
         db_provider_name="claude-code",
-        wire_format="jsonl",
         sample_granularity="record",
         record_type_key="type",
     ),
@@ -81,14 +83,12 @@ PROVIDERS: dict[str, ProviderConfig] = {
         name="claude-ai",
         description="Claude AI web message format",
         db_provider_name="claude",  # DB uses "claude"
-        wire_format="json",
         sample_granularity="document",
     ),
     "gemini": ProviderConfig(
         name="gemini",
         description="Gemini AI Studio message format",
         db_provider_name="gemini",
-        wire_format="json",
         sample_granularity="document",
     ),
     "codex": ProviderConfig(
@@ -96,7 +96,6 @@ PROVIDERS: dict[str, ProviderConfig] = {
         description="OpenAI Codex CLI session format",
         session_dir=Path.home() / ".codex/sessions",
         max_sessions=100,
-        wire_format="jsonl",
         sample_granularity="record",
         record_type_key="type",
     ),
@@ -542,9 +541,7 @@ def _looks_identifier_field_name(name: str) -> bool:
     lowered = name.lower()
     if lowered.endswith(("_id", "-id", "_ids", "-ids")):
         return True
-    if name.endswith(("Id", "ID", "Ids", "IDs")):
-        return True
-    return False
+    return bool(name.endswith(("Id", "ID", "Ids", "IDs")))
 
 
 def _is_identifier_field(path: str) -> bool:
@@ -604,9 +601,7 @@ def _is_safe_enum_value(value: str, *, path: str = "$") -> bool:
     if re.match(r"^[A-Z][a-z]+(?:[A-Z][a-z]+)*$", value):
         return False
     # Block domain-name-like values (contain dots with known TLDs)
-    if "." in value and re.search(r"\.(com|org|net|pl|io|de|uk|ru|fr|co)\b", lower):
-        return False
-    return True
+    return not ("." in value and re.search(r"\.(com|org|net|pl|io|de|uk|ru|fr|co)\b", lower))
 
 
 def _annotate_schema(
@@ -723,12 +718,6 @@ def _annotate_schema(
 # =============================================================================
 
 
-_RECORD_CANDIDATE_KEYS = frozenset({
-    "type", "record_type", "role", "content", "message", "uuid", "id",
-    "timestamp", "parentUuid", "sessionId", "payload",
-})
-
-
 def _resolve_provider_config(provider_name: str) -> ProviderConfig:
     config = next((c for c in PROVIDERS.values() if c.db_provider_name == provider_name), None)
     if config is not None:
@@ -737,119 +726,8 @@ def _resolve_provider_config(provider_name: str) -> ProviderConfig:
         name=provider_name,
         description=f"{provider_name} export format",
         db_provider_name=provider_name,
-        wire_format="json",
         sample_granularity="document",
     )
-
-
-def _decode_raw_content(raw_content: Any) -> str | None:
-    if isinstance(raw_content, str):
-        return raw_content
-    if isinstance(raw_content, bytes):
-        with contextlib.suppress(UnicodeDecodeError):
-            return raw_content.decode("utf-8")
-    return None
-
-
-def _parse_payload(text: str, *, wire_format: str) -> Any | None:
-    if wire_format == "jsonl":
-        records: list[dict[str, Any]] = []
-        for line in text.strip().split("\n"):
-            if not line.strip():
-                continue
-            with contextlib.suppress(json.JSONDecodeError):
-                parsed = json.loads(line)
-                if isinstance(parsed, dict):
-                    records.append(parsed)
-        return records
-    with contextlib.suppress(json.JSONDecodeError):
-        return json.loads(text)
-    return None
-
-
-def _is_record_candidate(item: dict[str, Any]) -> bool:
-    if any(key in item for key in _RECORD_CANDIDATE_KEYS):
-        return True
-    payload = item.get("payload")
-    return isinstance(payload, dict)
-
-
-def _extract_samples_from_payload(
-    payload: Any,
-    *,
-    sample_granularity: str,
-) -> list[dict[str, Any]]:
-    if sample_granularity == "document":
-        if isinstance(payload, dict):
-            return [payload]
-        if isinstance(payload, list):
-            return [item for item in payload if isinstance(item, dict)]
-        return []
-
-    if isinstance(payload, list):
-        return [
-            item for item in payload
-            if isinstance(item, dict) and _is_record_candidate(item)
-        ]
-    if isinstance(payload, dict) and _is_record_candidate(payload):
-        return [payload]
-    return []
-
-
-def _record_bucket_key(sample: dict[str, Any], record_type_key: str | None) -> str:
-    if record_type_key:
-        value = sample.get(record_type_key)
-        if isinstance(value, str) and value:
-            return f"{record_type_key}:{value}"
-    value = sample.get("record_type")
-    if isinstance(value, str) and value:
-        return f"record_type:{value}"
-    payload = sample.get("payload")
-    if isinstance(payload, dict):
-        value = payload.get("type")
-        if isinstance(value, str) and value:
-            return f"payload.type:{value}"
-    return "unknown"
-
-
-def _limit_samples(
-    samples: list[dict[str, Any]],
-    *,
-    limit: int,
-    stratify: bool,
-    record_type_key: str | None,
-) -> list[dict[str, Any]]:
-    if limit <= 0 or len(samples) <= limit:
-        return samples
-    if not stratify:
-        return samples[:limit]
-
-    buckets: dict[str, list[dict[str, Any]]] = {}
-    for sample in samples:
-        buckets.setdefault(_record_bucket_key(sample, record_type_key), []).append(sample)
-
-    ordered_keys = sorted(buckets, key=lambda key: len(buckets[key]), reverse=True)
-    selected: list[dict[str, Any]] = []
-
-    for key in ordered_keys:
-        if len(selected) >= limit:
-            break
-        selected.append(buckets[key].pop(0))
-
-    while len(selected) < limit:
-        progressed = False
-        for key in ordered_keys:
-            bucket = buckets[key]
-            if not bucket:
-                continue
-            selected.append(bucket.pop(0))
-            progressed = True
-            if len(selected) >= limit:
-                break
-        if not progressed:
-            break
-
-    return selected
 
 
 def _iter_samples_from_db(
@@ -862,7 +740,7 @@ def _iter_samples_from_db(
     try:
         cursor = conn.execute(
             """
-            SELECT raw_content
+            SELECT raw_content, source_path, provider_name
             FROM raw_conversations
             WHERE provider_name = ?
             ORDER BY acquired_at DESC
@@ -874,17 +752,21 @@ def _iter_samples_from_db(
             if not rows:
                 break
             for row in rows:
-                text = _decode_raw_content(row[0])
-                if text is None:
+                try:
+                    envelope = build_raw_payload_envelope(
+                        row[0],
+                        source_path=row[1],
+                        fallback_provider=row[2],
+                        jsonl_dict_only=True,
+                    )
+                except Exception:
                     continue
-                payload = _parse_payload(text, wire_format=config.wire_format)
-                if payload is None:
-                    continue
-                for sample in _extract_samples_from_payload(
-                    payload,
+                yield from extract_payload_samples(
+                    envelope.payload,
                     sample_granularity=config.sample_granularity,
-                ):
-                    yield sample
+                    max_samples=None,
+                    record_type_key=config.record_type_key,
+                )
     finally:
         conn.close()
 
@@ -935,7 +817,7 @@ def load_samples_from_db(
     samples = list(_iter_samples_from_db(provider_name, db_path=db_path, config=config))
     if max_samples is None:
         return samples
-    return _limit_samples(
+    return limit_samples(
         samples,
         limit=max_samples,
         stratify=config.sample_granularity == "record",
@@ -953,7 +835,7 @@ def load_samples_from_sessions(
     samples = list(_iter_samples_from_sessions(session_dir, max_sessions=max_sessions))
     if max_samples is None:
         return samples
-    return _limit_samples(
+    return limit_samples(
         samples,
         limit=max_samples,
         stratify=True,

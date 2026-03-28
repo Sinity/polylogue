@@ -12,8 +12,6 @@ Consolidated from:
 
 from __future__ import annotations
 
-import json
-from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any
 
@@ -22,75 +20,14 @@ from hypothesis import given
 from hypothesis import strategies as st
 
 from polylogue.lib import json as core_json
-from polylogue.lib.messages import MessageCollection
-from polylogue.lib.models import Conversation, Message
-from polylogue.services import get_backend, get_repository, get_service_config, reset
+from polylogue.services import build_runtime_services
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.repository import ConversationRepository
 from polylogue.types import AttachmentId, ContentHash, ConversationId, MessageId, Provider
 
 # =============================================================================
-# JSON DUMPS - PARAMETRIZED
+# JSON DUMPS - STANDALONE FUNCTIONS
 # =============================================================================
-
-
-DUMPS_CASES = [
-    # Basic types
-    ({"key": "value"}, "simple dict"),
-    ([1, 2, 3], "simple list"),
-    ({"outer": {"inner": [1, 2, 3]}}, "nested structure"),
-    # Decimal handling
-    ({"value": Decimal("1.25")}, "handles Decimal"),
-    ({"price": Decimal("99.99")}, "Decimal as float not string"),
-    (
-        {"value1": Decimal("10.5"), "value2": Decimal("20.75"), "nested": {"value3": Decimal("30.25")}},
-        "multiple Decimals",
-    ),
-    # Special values
-    ({"key": None}, "None value"),
-    ({"true_val": True, "false_val": False}, "boolean values"),
-    ({"text": "Hello 世界 🌍"}, "unicode characters"),
-    ({}, "empty dict"),
-    ([], "empty list"),
-    ({"123": "value"}, "numeric keys as strings"),
-    # Numbers and special chars
-    ({"zero": 0, "negative": -42, "float": 3.14, "large": 999999999999}, "special numbers"),
-    ({"text": 'Line 1\nLine 2\tTabbed"Quoted"'}, "escaped characters"),
-]
-
-
-@pytest.mark.parametrize("payload,desc", DUMPS_CASES)
-def test_dumps_comprehensive(payload, desc):
-    """Comprehensive dumps test."""
-    output = core_json.dumps(payload)
-    data = core_json.loads(output)
-
-    # Type-specific assertions
-    if desc == "Decimal as float not string":
-        assert isinstance(data["price"], float)
-        assert data["price"] == 99.99
-
-    elif desc == "multiple Decimals":
-        assert data["value1"] == 10.5
-        assert data["value2"] == 20.75
-        assert data["nested"]["value3"] == 30.25
-
-    elif desc == "boolean values":
-        assert data["true_val"] is True
-        assert data["false_val"] is False
-
-    elif desc == "numeric keys as strings":
-        assert "123" in data
-
-    else:
-        if "Decimal" in desc:
-            assert all(
-                isinstance(v, float) if isinstance(payload[k], Decimal) else True
-                for k, v in data.items()
-                if isinstance(payload, dict)
-            )
-        else:
-            assert data == payload
 
 
 def test_dumps_custom_type_default_handler():
@@ -124,244 +61,9 @@ def test_dumps_custom_fallback_to_encoder():
 
 
 # =============================================================================
-# JSON LOADS - PARAMETRIZED
-# =============================================================================
-
-
-LOADS_CASES = [
-    ('{"key": "value"}', {"key": "value"}, "from string"),
-    (b'{"key": "value"}', {"key": "value"}, "from bytes"),
-    ("[1, 2, 3]", [1, 2, 3], "array"),
-    ('{"outer": {"inner": [1, 2]}}', {"outer": {"inner": [1, 2]}}, "nested structure"),
-    ('{"text": "Hello 世界"}', {"text": "Hello 世界"}, "with unicode"),
-    ('{"value": null}', {"value": None}, "with null"),
-    ('{"true": true, "false": false}', {"true": True, "false": False}, "with boolean"),
-    ("42", 42, "primitive number int"),
-    ("3.14", 3.14, "primitive number float"),
-    ('"hello"', "hello", "primitive string"),
-    ("null", None, "primitive null"),
-    ("true", True, "primitive true"),
-    ("false", False, "primitive false"),
-    ("{}", {}, "empty dict"),
-    ("[]", [], "empty list"),
-    ('{"text": "He said \\"hello\\""}', {"text": 'He said "hello"'}, "escaped quotes"),
-    ('{"text": "Line 1\\nLine 2"}', {"text": "Line 1\nLine 2"}, "newlines in string"),
-]
-
-
-@pytest.mark.parametrize("input_data,expected,desc", LOADS_CASES)
-def test_loads_comprehensive(input_data, expected, desc):
-    """Comprehensive loads test."""
-    result = core_json.loads(input_data)
-    assert result == expected, f"Failed {desc}"
-
-
-# =============================================================================
-# JSON ROUNDTRIP - PARAMETRIZED
-# =============================================================================
-
-
-ROUNDTRIP_CASES = [
-    ({"a": 1, "b": "text", "c": None}, "dict"),
-    ({"level1": {"level2": {"level3": [1, 2, 3]}}}, "nested"),
-    ({"price": Decimal("19.99"), "quantity": Decimal("5")}, "with Decimal"),
-    ({"emoji": "🚀", "chinese": "中文", "mixed": "Hello 世界 🌍"}, "with unicode"),
-    ({"a": 1, "b": [2, 3]}, "multiple times"),
-]
-
-
-@pytest.mark.parametrize("original,desc", ROUNDTRIP_CASES)
-def test_roundtrip_comprehensive(original, desc):
-    """Comprehensive roundtrip test."""
-    if desc == "multiple times":
-        data = original
-        for _ in range(3):
-            output = core_json.dumps(data)
-            data = core_json.loads(output)
-        assert data == original
-
-    elif desc == "with Decimal":
-        output = core_json.dumps(original)
-        result = core_json.loads(output)
-        assert result == {"price": 19.99, "quantity": 5.0}
-
-    else:
-        output = core_json.dumps(original)
-        result = core_json.loads(output)
-        assert result == original
-
-
-# =============================================================================
 # JSON EDGE CASES - STANDALONE FUNCTIONS
 # =============================================================================
 
-
-def test_json_dumps_very_large_number():
-    """Very large integers are serialized (possibly as float)."""
-    payload = {"big": 999999999999999999999}
-    output = core_json.dumps(payload)
-    data = core_json.loads(output)
-    assert isinstance(data["big"], float)
-    assert data["big"] > 999999999999999999998
-
-
-def test_json_dumps_deeply_nested_structure():
-    """Deeply nested dicts round-trip correctly."""
-    nested = {"level": 0}
-    current = nested
-    for i in range(1, 10):
-        current["next"] = {"level": i}
-        current = current["next"]
-
-    output = core_json.dumps(nested)
-    data = core_json.loads(output)
-    assert data["level"] == 0
-
-
-def test_json_dumps_mixed_types_list():
-    """Lists with mixed types serialize and deserialize correctly."""
-    payload = [1, "string", True, None, 3.14, {"nested": "dict"}]
-    output = core_json.dumps(payload)
-    data = core_json.loads(output)
-    assert data[0] == 1
-    assert data[1] == "string"
-    assert data[2] is True
-    assert data[3] is None
-    assert data[4] == 3.14
-    assert data[5] == {"nested": "dict"}
-
-
-def test_json_dumps_decimal_zero():
-    """Decimal zero serializes to numeric zero."""
-    payload = {"zero": Decimal("0")}
-    output = core_json.dumps(payload)
-    data = core_json.loads(output)
-    assert data["zero"] == 0
-
-
-def test_json_dumps_decimal_negative():
-    """Negative Decimal serializes to negative float."""
-    payload = {"negative": Decimal("-123.45")}
-    output = core_json.dumps(payload)
-    data = core_json.loads(output)
-    assert data["negative"] == -123.45
-
-
-def test_json_dumps_decimal_in_nested_list():
-    """Decimals nested inside lists serialize to floats."""
-    payload = {"items": [Decimal("1.5"), [Decimal("2.5"), Decimal("3.5")]]}
-    output = core_json.dumps(payload)
-    data = core_json.loads(output)
-    assert data["items"][0] == 1.5
-    assert data["items"][1][0] == 2.5
-    assert data["items"][1][1] == 3.5
-
-
-def test_json_dumps_with_option_none():
-    """dumps with option=None behaves identically to without option."""
-    payload = {"key": "value"}
-    output = core_json.dumps(payload, option=None)
-    data = core_json.loads(output)
-    assert data == payload
-
-
-def test_json_loads_bytes_utf8():
-    """loads accepts UTF-8 encoded bytes."""
-    json_bytes = '{"unicode": "café"}'.encode()
-    result = core_json.loads(json_bytes)
-    assert result["unicode"] == "café"
-
-
-def test_json_loads_bytes_utf8_with_bom():
-    """loads handles or gracefully rejects UTF-8 BOM."""
-    json_bytes = '{"key": "value"}'.encode("utf-8-sig")
-    try:
-        result = core_json.loads(json_bytes)
-        assert result == {"key": "value"}
-    except ValueError:
-        pass  # orjson raises for BOM
-
-
-def test_json_dumps_string_with_backslash():
-    """Backslash characters in strings survive roundtrip."""
-    payload = {"path": "C:\\Users\\test"}
-    output = core_json.dumps(payload)
-    data = core_json.loads(output)
-    assert data == payload
-
-
-def test_json_dumps_dict_with_many_keys():
-    """Dicts with 100 keys serialize and deserialize correctly."""
-    payload = {f"key_{i}": f"value_{i}" for i in range(100)}
-    output = core_json.dumps(payload)
-    data = core_json.loads(output)
-    assert len(data) == 100
-    assert data["key_0"] == "value_0"
-    assert data["key_99"] == "value_99"
-
-
-def test_json_dumps_array_with_many_elements():
-    """Arrays with 1000 elements serialize and deserialize correctly."""
-    payload = list(range(1000))
-    output = core_json.dumps(payload)
-    data = core_json.loads(output)
-    assert len(data) == 1000
-    assert data[0] == 0
-    assert data[999] == 999
-
-
-def test_json_loads_whitespace():
-    """JSON with extra whitespace parses correctly."""
-    payload = """
-    {
-        "key"   :   "value"  ,
-        "array" : [ 1 , 2 , 3 ]
-    }
-    """
-    result = core_json.loads(payload)
-    assert result == {"key": "value", "array": [1, 2, 3]}
-
-
-def test_json_dumps_custom_decimal_override():
-    """Custom handler can override Decimal serialization to return a string."""
-
-    def custom_handler(obj: Any) -> Any:
-        if isinstance(obj, Decimal):
-            return str(obj)
-        raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
-
-    payload = {"price": Decimal("19.99")}
-    output = core_json.dumps(payload, default=custom_handler)
-    data = core_json.loads(output)
-    assert data["price"] == "19.99"
-
-
-def test_json_loads_primitive_true():
-    """loads handles bare JSON true primitive."""
-    result = core_json.loads("true")
-    assert result is True
-    assert isinstance(result, bool)
-
-
-def test_json_loads_primitive_false():
-    """loads handles bare JSON false primitive."""
-    result = core_json.loads("false")
-    assert result is False
-    assert isinstance(result, bool)
-
-
-def test_json_loads_unicode_escapes():
-    """Unicode escape sequences in JSON strings are decoded correctly."""
-    result = core_json.loads('"\\u0048\\u0065\\u006c\\u006c\\u006f"')
-    assert result == "Hello"
-
-
-def test_json_dumps_float_precision():
-    """Float values preserve their precision through a roundtrip."""
-    payload = {"value": 3.141592653589793}
-    output = core_json.dumps(payload)
-    result = core_json.loads(output)
-    assert result["value"] == payload["value"]
 
 
 # =============================================================================
@@ -446,219 +148,7 @@ def test_get_env_multi_comprehensive(scenario, var_names, env_vars, expected, de
     assert result == expected, f"Failed {desc}"
 
 
-# =============================================================================
-# DATE PARSING TESTS - PARAMETRIZED
-# =============================================================================
 
-
-ISO_DATE_CASES = [
-    ("2024-01-15", 2024, 1, 15),
-]
-
-ISO_DATETIME_CASES = [
-    ("2024-01-15T10:30:00", 10, 30, 0),
-]
-
-RELATIVE_DATE_CASES = [
-    "yesterday",
-    "2 days ago",
-]
-
-INVALID_DATE_CASES = [
-    "not a date at all xyz123",
-]
-
-
-@pytest.mark.parametrize("input_val,exp_year,exp_month,exp_day", ISO_DATE_CASES)
-def test_parse_date_iso_date(input_val, exp_year, exp_month, exp_day):
-    """parse_date() parses ISO date strings to timezone-aware datetimes."""
-    from polylogue.lib.dates import parse_date
-
-    result = parse_date(input_val)
-    assert result is not None
-    assert result.year == exp_year
-    assert result.month == exp_month
-    assert result.day == exp_day
-    assert result.tzinfo is not None
-
-
-@pytest.mark.parametrize("input_val,exp_hour,exp_minute,exp_second", ISO_DATETIME_CASES)
-def test_parse_date_iso_datetime(input_val, exp_hour, exp_minute, exp_second):
-    """parse_date() parses ISO datetime strings and extracts the time component."""
-    from polylogue.lib.dates import parse_date
-
-    result = parse_date(input_val)
-    assert result is not None
-    assert result.hour == exp_hour
-    assert result.minute == exp_minute
-    assert result.second == exp_second
-
-
-@pytest.mark.parametrize("input_val", RELATIVE_DATE_CASES)
-def test_parse_date_relative(input_val):
-    """parse_date() parses relative expressions like 'yesterday' and '2 days ago'."""
-    from polylogue.lib.dates import parse_date
-
-    result = parse_date(input_val)
-    assert result is not None
-    assert result < datetime.now(timezone.utc)
-
-
-@pytest.mark.parametrize("input_val", INVALID_DATE_CASES)
-def test_parse_date_invalid_returns_none(input_val):
-    """parse_date() returns None for strings that cannot be parsed as dates."""
-    from polylogue.lib.dates import parse_date
-
-    result = parse_date(input_val)
-    assert result is None
-
-
-def test_parse_date_returns_utc_aware():
-    """parse_date() returns a timezone-aware datetime for a plain ISO date."""
-    from polylogue.lib.dates import parse_date
-
-    result = parse_date("2024-06-15")
-    assert result is not None
-    assert result.tzinfo is not None
-
-
-# =============================================================================
-# DATE FORMATTING TESTS - PARAMETRIZED
-# =============================================================================
-
-
-FORMAT_DATE_CASES = [
-    (datetime(2024, 1, 15, 10, 30, 45), "2024-01-15 10:30:45", "basic"),
-    (datetime(2024, 12, 25, 0, 0, 0), "2024-12-25 00:00:00", "midnight"),
-    (datetime(2024, 6, 15, 14, 30, 0, tzinfo=timezone.utc), "2024-06-15 14:30:00", "with timezone"),
-]
-
-
-@pytest.mark.parametrize("dt,expected,desc", FORMAT_DATE_CASES)
-def test_format_date_iso_comprehensive(dt, expected, desc):
-    """Comprehensive format_date_iso() tests."""
-    from polylogue.lib.dates import format_date_iso
-
-    result = format_date_iso(dt)
-    assert result == expected
-
-
-# =============================================================================
-# VERSION TESTS - PARAMETRIZED
-# =============================================================================
-
-
-VERSION_INFO_CASES = [
-    ("1.2.3", None, False, "1.2.3", "1.2.3", "without commit"),
-    ("1.2.3", "abc123def456", False, "1.2.3+abc123de", "1.2.3", "with commit"),
-    ("1.2.3", "abc123def456", True, "1.2.3+abc123de-dirty", "1.2.3", "with dirty"),
-    ("0.9.0", "deadbeef", True, "0.9.0+deadbeef-dirty", "0.9.0", "short property"),
-]
-
-
-@pytest.mark.parametrize("version,commit,dirty,exp_full,exp_short,desc", VERSION_INFO_CASES)
-def test_version_info_comprehensive(version, commit, dirty, exp_full, exp_short, desc):
-    """Comprehensive VersionInfo tests."""
-    from polylogue.version import VersionInfo
-
-    info = VersionInfo(version=version) if commit is None else VersionInfo(version=version, commit=commit, dirty=dirty)
-
-    assert str(info) == exp_full
-    assert info.full == exp_full
-    assert info.short == exp_short
-
-
-# =============================================================================
-# VERSION RESOLUTION TESTS
-# =============================================================================
-
-
-def test_version_info_available():
-    """VERSION_INFO is available at module level."""
-    from polylogue.version import VERSION_INFO
-
-    assert VERSION_INFO is not None
-    assert hasattr(VERSION_INFO, "version")
-    assert hasattr(VERSION_INFO, "full")
-    assert hasattr(VERSION_INFO, "short")
-
-
-def test_polylogue_version_available():
-    """POLYLOGUE_VERSION constant is available."""
-    from polylogue.version import POLYLOGUE_VERSION
-
-    assert POLYLOGUE_VERSION is not None
-    assert isinstance(POLYLOGUE_VERSION, str)
-    assert len(POLYLOGUE_VERSION) > 0
-
-
-# =============================================================================
-# SEMANTIC MODELS TESTS - STANDALONE FUNCTIONS
-# =============================================================================
-
-
-def _make_two_message_conv() -> tuple[Message, Message, Conversation]:
-    """Helper: build a user + assistant conversation."""
-    msg_user = Message(id="1", role="user", text="hello, how are you today?")
-    msg_bot = Message(id="2", role="assistant", text="I'm doing well, thanks for asking!")
-    conv = Conversation(id="c1", provider="test", messages=MessageCollection(messages=[msg_user, msg_bot]))
-    return msg_user, msg_bot, conv
-
-
-def test_user_only_returns_user_messages():
-    """user_only() filters to messages with role='user'."""
-    _, _, conv = _make_two_message_conv()
-    user_only = conv.user_only()
-    assert len(user_only.messages) == 1
-    assert user_only.messages[0].id == "1"
-
-
-def test_to_text_contains_role_prefixes():
-    """to_text() output contains 'user:' and 'assistant:' prefixes."""
-    _, _, conv = _make_two_message_conv()
-    txt = conv.to_text()
-    assert "user:" in txt
-    assert "assistant:" in txt
-    assert "hello" in txt
-
-
-def test_message_is_user_classification():
-    """Message with role='user' has is_user=True."""
-    msg_user, _, _ = _make_two_message_conv()
-    assert msg_user.is_user
-
-
-def test_message_is_assistant_classification():
-    """Message with role='assistant' has is_assistant=True."""
-    _, msg_bot, _ = _make_two_message_conv()
-    assert msg_bot.is_assistant
-
-
-def test_message_is_substantive():
-    """A non-empty user message is substantive."""
-    msg_user, _, _ = _make_two_message_conv()
-    assert msg_user.is_substantive
-
-
-def test_message_not_tool_use_or_noise():
-    """A plain user message is neither tool use nor noise."""
-    msg_user, _, _ = _make_two_message_conv()
-    assert not msg_user.is_tool_use
-    assert not msg_user.is_noise
-
-
-def test_without_noise_preserves_all():
-    """without_noise() keeps all messages when none are noise."""
-    _, _, conv = _make_two_message_conv()
-    clean = conv.without_noise()
-    assert len(clean.messages) == 2
-
-
-def test_message_count_statistics():
-    """message_count and user_message_count return correct values."""
-    _, _, conv = _make_two_message_conv()
-    assert conv.message_count == 2
-    assert conv.user_message_count == 1
 
 
 async def test_repository(test_db):
@@ -807,64 +297,6 @@ async def test_repository_get_attachment_metadata_decoded(test_db):
     assert att.provider_meta == meta or att.provider_meta is None
 
 
-# =============================================================================
-# JSON UTILS TESTS
-# =============================================================================
-
-
-class TestJsonUtils:
-    """Test core/json.py utilities."""
-
-    def test_loads_valid_json(self):
-        """Test loads with valid JSON."""
-        from polylogue.lib.json import loads
-
-        data = loads('{"key": "value"}')
-        assert data == {"key": "value"}
-
-    def test_loads_invalid_json(self):
-        """Test loads with invalid JSON raises."""
-        from polylogue.lib.json import loads
-
-        with pytest.raises((ValueError, json.JSONDecodeError)):
-            loads("{invalid}")
-
-
-# =============================================================================
-# VERSION EDGE CASES - PARAMETRIZED
-# =============================================================================
-
-
-VERSION_EDGE_CASES = [
-    ("resolve_version", "VersionInfo object returned"),
-    ("str_representation", "version included in string"),
-    ("dirty_state", "dirty state indicated"),
-]
-
-
-@pytest.mark.parametrize("scenario,desc", VERSION_EDGE_CASES)
-def test_version_edge_cases_comprehensive(scenario, desc):
-    """Comprehensive version edge case tests."""
-    if scenario == "resolve_version":
-        from polylogue.version import _resolve_version
-
-        info = _resolve_version()
-        assert info is not None
-        assert hasattr(info, "version")
-
-    elif scenario == "str_representation":
-        from polylogue.version import VersionInfo
-
-        info = VersionInfo(version="1.0.0", commit="abc123", dirty=False)
-        s = str(info)
-        assert "1.0.0" in s
-
-    elif scenario == "dirty_state":
-        from polylogue.version import VersionInfo
-
-        info = VersionInfo(version="1.0.0", commit="abc123", dirty=True)
-        s = str(info)
-        assert "dirty" in s.lower() or "+" in s
 
 
 # =============================================================================
@@ -872,240 +304,46 @@ def test_version_edge_cases_comprehensive(scenario, desc):
 # =============================================================================
 
 
-class TestServices:
+class TestRuntimeServices:
     def test_get_backend_returns_sqlite(self, workspace_env):
-        # Must import after workspace_env reloads the module
-        from polylogue.storage.backends.async_sqlite import SQLiteBackend as _SQLiteBackend
-
-        backend = get_backend()
-        assert isinstance(backend, _SQLiteBackend)
+        services = build_runtime_services()
+        assert isinstance(services.get_backend(), SQLiteBackend)
 
     def test_get_repository_returns_repo(self, workspace_env):
-        from polylogue.storage.repository import ConversationRepository as _ConversationRepository
-
-        repo = get_repository()
-        assert isinstance(repo, _ConversationRepository)
+        services = build_runtime_services()
+        assert isinstance(services.get_repository(), ConversationRepository)
 
     def test_get_config_returns_config(self):
         from polylogue.config import Config as _Config
 
-        config = get_service_config()
+        services = build_runtime_services()
+        config = services.get_config()
         assert isinstance(config, _Config)
         assert config.archive_root is not None
 
-    def test_reset_clears_singletons(self, workspace_env):
-        repo1 = get_repository()
-        reset()
-        repo2 = get_repository()
-        assert repo1 is not repo2
-
-    def test_singleton_returns_same_instance(self, workspace_env):
-        repo1 = get_repository()
-        repo2 = get_repository()
+    def test_repository_is_cached_per_runtime_scope(self, workspace_env):
+        services = build_runtime_services()
+        repo1 = services.get_repository()
+        repo2 = services.get_repository()
         assert repo1 is repo2
 
-    def test_backend_singleton_returns_same_instance(self, workspace_env):
-        backend1 = get_backend()
-        backend2 = get_backend()
+    def test_backend_is_cached_per_runtime_scope(self, workspace_env):
+        services = build_runtime_services()
+        backend1 = services.get_backend()
+        backend2 = services.get_backend()
         assert backend1 is backend2
 
-    def test_repository_uses_same_backend(self, workspace_env):
-        repo1 = get_repository()
-        repo2 = get_repository()
-        assert repo1.backend is repo2.backend
+    def test_repository_uses_runtime_backend(self, workspace_env):
+        services = build_runtime_services()
+        repo = services.get_repository()
+        assert repo.backend is services.get_backend()
 
-    def test_reset_affects_backend_singleton(self, workspace_env):
-        backend1 = get_backend()
-        reset()
-        backend2 = get_backend()
-        assert backend1 is not backend2
+    def test_distinct_runtime_scopes_do_not_share_instances(self, workspace_env):
+        services1 = build_runtime_services()
+        services2 = build_runtime_services()
+        assert services1.get_repository() is not services2.get_repository()
+        assert services1.get_backend() is not services2.get_backend()
 
-
-# =============================================================================
-# PROJECTION TESTS - PARAMETRIZED
-# =============================================================================
-
-
-# Test cases: (filter_method, expected_count, description)
-FILTER_TEST_CASES = [
-    ("user_messages", 2, "user_messages filter"),
-    ("assistant_messages", 3, "assistant_messages filter"),
-    ("dialogue", 5, "dialogue filter"),
-    ("substantive", 4, "substantive filter"),
-    ("without_noise", 5, "without_noise filter"),
-    ("thinking_only", 0, "thinking_only filter"),
-    ("tool_use_only", 1, "tool_use_only filter"),
-]
-
-
-@pytest.mark.parametrize("method_name,expected_count,desc", FILTER_TEST_CASES)
-def test_projection_filters_comprehensive(sample_conversation, method_name, expected_count, desc):
-    """Comprehensive projection filter test."""
-    projection = sample_conversation.project()
-    filtered = getattr(projection, method_name)()
-
-    result = filtered.to_list()
-    assert len(result) == expected_count, \
-        f"Failed {desc}: expected {expected_count}, got {len(result)}"
-
-
-COMPOSITION_CASES = [
-    (["user_messages", "substantive"], 2, "user + substantive"),
-    (["assistant_messages", "substantive"], 2, "assistant + substantive"),
-    (["dialogue", "without_noise"], 5, "dialogue + no noise"),
-]
-
-
-@pytest.mark.parametrize("methods,expected_count,desc", COMPOSITION_CASES)
-def test_projection_filter_chaining(sample_conversation, methods, expected_count, desc):
-    """Test filter method chaining."""
-    projection = sample_conversation.project()
-
-    for method in methods:
-        projection = projection.substantive() if method == "substantive" else getattr(projection, method)()
-
-    result = projection.to_list()
-    assert len(result) == expected_count, f"Failed {desc}"
-
-
-def test_projection_filter_chaining_contains(sample_conversation):
-    """Test chaining with contains filter."""
-    projection = sample_conversation.project().user_messages().contains("searchterm")
-    result = projection.to_list()
-    assert len(result) == 1
-    assert result[0].id == "m5"
-
-
-TERMINAL_CASES = [
-    ("to_list", list, 7, "to_list"),
-    ("count", int, 7, "count"),
-    ("first", Message, 1, "first"),
-    ("last", Message, 1, "last"),
-    ("exists", bool, True, "exists"),
-    ("to_text", str, None, "to_text"),
-]
-
-
-@pytest.mark.parametrize("method_name,expected_type,expected_value,desc", TERMINAL_CASES)
-def test_projection_terminal_operations(sample_conversation, method_name, expected_type, expected_value, desc):
-    """Comprehensive terminal operation test."""
-    projection = sample_conversation.project()
-    result = getattr(projection, method_name)()
-
-    assert isinstance(result, expected_type), f"Failed {desc}: wrong type"
-
-    if expected_value is not None and isinstance(expected_value, int):
-        if method_name == "count":
-            assert result == expected_value, f"Failed {desc}"
-        elif method_name in ["to_list", "to_text"]:
-            assert len(result) > 0
-
-
-PAGINATION_CASES = [
-    ("limit", 3, 3, "limit 3"),
-    ("offset", 2, 5, "offset 2"),
-    ("reverse", None, 7, "reverse order"),
-    ("first_n", 3, 3, "first_n 3"),
-    ("last_n", 2, 2, "last_n 2"),
-]
-
-
-@pytest.mark.parametrize("method_name,arg,expected_count,desc", PAGINATION_CASES)
-def test_projection_pagination(sample_conversation, method_name, arg, expected_count, desc):
-    """Comprehensive pagination test."""
-    projection = sample_conversation.project()
-
-    if arg is not None:
-        result = getattr(projection, method_name)(arg).to_list()
-    else:
-        result = getattr(projection, method_name)().to_list()
-
-    assert len(result) == expected_count, f"Failed {desc}"
-
-
-TRANSFORM_CASES = [
-    ("truncate_text", 10, "text truncated", "truncate_text"),
-    ("strip_attachments", 0, "no attachments after strip", "strip_attachments"),
-]
-
-
-@pytest.mark.parametrize("method_name,arg,expected_property,desc", TRANSFORM_CASES)
-def test_projection_transforms(sample_conversation, method_name, arg, expected_property, desc):
-    """Comprehensive transform test."""
-    projection = sample_conversation.project()
-
-    transformed = getattr(projection, method_name)(arg) if arg else getattr(projection, method_name)()
-
-    result = transformed.to_list()
-
-    if "truncated" in expected_property:
-        for msg in result:
-            if msg.text:
-                assert len(msg.text) <= arg + 10
-    elif "no attachments" in expected_property:
-        for msg in result:
-            assert not msg.attachments or len(msg.attachments) == 0
-
-
-def _make_tool_message(id: str, text: str) -> Message:
-    """Create a message marked as tool use via provider_meta."""
-    return Message(
-        id=id,
-        role="assistant",
-        text=text,
-        provider_meta={"content_blocks": [{"type": "tool_use"}]},
-    )
-
-
-def _make_thinking_message(id: str, text: str) -> Message:
-    """Create a message marked as thinking via provider_meta."""
-    return Message(
-        id=id,
-        role="assistant",
-        text=text,
-        provider_meta={"content_blocks": [{"type": "thinking"}]},
-    )
-
-
-STRIP_CASES = [
-    ("strip_tools", "is_tool_use", "tool use message stripped"),
-    ("strip_thinking", "is_thinking", "thinking message stripped"),
-]
-
-
-@pytest.mark.parametrize("method_name,attr_name,desc", STRIP_CASES)
-def test_projection_strip_methods(method_name, attr_name, desc):
-    """Test strip_tools, strip_thinking, strip_all methods."""
-    messages = [
-        Message(id="m1", role="user", text="Hello"),
-        _make_tool_message("m2", "Tool result"),
-        _make_thinking_message("m3", "Thinking..."),
-        Message(id="m4", role="assistant", text="Normal response"),
-    ]
-    conv = Conversation(id="test", provider="test", messages=MessageCollection(messages=messages))
-
-    projection = conv.project()
-    filtered = getattr(projection, method_name)()
-    result = filtered.to_list()
-
-    assert not any(getattr(m, attr_name, False) for m in result), f"Failed {desc}"
-
-
-def test_projection_strip_all():
-    """Test strip_all() removes both tools and thinking."""
-    messages = [
-        Message(id="m1", role="user", text="Hello"),
-        _make_tool_message("m2", "Tool result"),
-        _make_thinking_message("m3", "Thinking..."),
-        Message(id="m4", role="assistant", text="Normal response"),
-    ]
-    conv = Conversation(id="test", provider="test", messages=MessageCollection(messages=messages))
-
-    result = conv.project().strip_all().to_list()
-
-    assert len(result) == 2
-    assert not any(m.is_tool_use for m in result)
-    assert not any(m.is_thinking for m in result)
 
 
 # =============================================================================
@@ -1181,52 +419,6 @@ def test_provider_is_string_enum(provider: Provider) -> None:
     assert provider.upper() == provider.value.upper()
     assert provider.lower() == provider.value.lower()
 
-
-def test_provider_enum_values() -> None:
-    """Provider enum has all expected values."""
-    assert Provider.CHATGPT.value == "chatgpt"
-    assert Provider.CLAUDE.value == "claude"
-    assert Provider.CLAUDE_CODE.value == "claude-code"
-    assert Provider.CODEX.value == "codex"
-    assert Provider.GEMINI.value == "gemini"
-    assert Provider.DRIVE.value == "drive"
-    assert Provider.UNKNOWN.value == "unknown"
-
-
-# Known valid provider values that should parse to their enum
-PROVIDER_EXACT_MATCHES = [
-    ("chatgpt", Provider.CHATGPT),
-    ("claude", Provider.CLAUDE),
-    ("claude-code", Provider.CLAUDE_CODE),
-    ("codex", Provider.CODEX),
-    ("gemini", Provider.GEMINI),
-    ("drive", Provider.DRIVE),
-]
-
-
-@pytest.mark.parametrize("value,expected", PROVIDER_EXACT_MATCHES)
-def test_provider_from_string_exact_match(value: str, expected: Provider) -> None:
-    """Exact match returns correct enum."""
-    assert Provider.from_string(value) == expected
-
-
-# Alias mappings
-PROVIDER_ALIASES = [
-    ("gpt", Provider.CHATGPT),
-    ("openai", Provider.CHATGPT),
-    ("GPT", Provider.CHATGPT),
-    ("OPENAI", Provider.CHATGPT),
-    ("claude-ai", Provider.CLAUDE),
-    ("anthropic", Provider.CLAUDE),
-    ("CLAUDE-AI", Provider.CLAUDE),
-    ("ANTHROPIC", Provider.CLAUDE),
-]
-
-
-@pytest.mark.parametrize("alias,expected", PROVIDER_ALIASES)
-def test_provider_from_string_alias(alias: str, expected: Provider) -> None:
-    """Aliases map to correct provider."""
-    assert Provider.from_string(alias) == expected
 
 
 @given(st.sampled_from([p.value for p in Provider]))

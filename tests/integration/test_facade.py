@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -483,7 +482,11 @@ class TestPolylogueSearch:
         # Search for Python
         results = await archive.search("Python")
         assert results is not None
-        # Note: Results might be empty if FTS indexing is async
+        assert results.hits
+        first_hit = results.hits[0]
+        assert first_hit.conversation_id
+        assert first_hit.title
+        assert first_hit.conversation_path.name == "conversation.md"
 
     @pytest.mark.asyncio
     async def test_search_with_limit(self, workspace_env, sample_chatgpt_file):
@@ -503,6 +506,8 @@ class TestPolylogueSearch:
         results = await archive.search("Python", limit=5)
         assert results is not None
         assert len(results.hits) <= 5
+        if results.hits:
+            assert all(hit.provider_name for hit in results.hits)
 
 
 class TestPolylogueEdgeCases:
@@ -648,7 +653,7 @@ class TestPolylogueGetConversation:
         """Test retrieving a conversation after adding data."""
         db_path = tmp_path / "test.db"
         archive = Polylogue(archive_root=tmp_path, db_path=db_path)
-        backend = archive._backend
+        backend = archive.backend
 
         # Create and save a conversation
         conv_record = ConversationRecord(
@@ -707,7 +712,7 @@ class TestPolylogueGetConversations:
         """Test batch retrieval of multiple conversations."""
         db_path = tmp_path / "test.db"
         archive = Polylogue(archive_root=tmp_path, db_path=db_path)
-        backend = archive._backend
+        backend = archive.backend
 
         # Create multiple conversations
         for i in range(3):
@@ -733,7 +738,7 @@ class TestPolylogueGetConversations:
         """Test batch retrieval with some missing IDs."""
         db_path = tmp_path / "test.db"
         archive = Polylogue(archive_root=tmp_path, db_path=db_path)
-        backend = archive._backend
+        backend = archive.backend
 
         # Create only conv-1
         conv_record = ConversationRecord(
@@ -771,7 +776,7 @@ class TestPolylogueListConversations:
         """Test listing conversations with various filter combinations."""
         db_path = tmp_path / "test.db"
         archive = Polylogue(archive_root=tmp_path, db_path=db_path)
-        backend = archive._backend
+        backend = archive.backend
 
         # Setup conversations
         for i in range(setup_count):
@@ -910,7 +915,7 @@ class TestPolylogueStats:
         """Test stats() with conversations in database."""
         db_path = tmp_path / "test.db"
         archive = Polylogue(archive_root=tmp_path, db_path=db_path)
-        backend = archive._backend
+        backend = archive.backend
 
         # Create conversations with different providers
         for i in range(2):
@@ -980,7 +985,7 @@ class TestPolylogueStats:
         """Test that stats includes recent conversations."""
         db_path = tmp_path / "test.db"
         archive = Polylogue(archive_root=tmp_path, db_path=db_path)
-        backend = archive._backend
+        backend = archive.backend
 
         # Create a single conversation
         conv_record = ConversationRecord(
