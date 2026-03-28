@@ -57,11 +57,25 @@ def default_db_path() -> Path:
 
 
 async def configure_connection(conn: aiosqlite.Connection) -> None:
-    """Apply canonical connection settings."""
+    """Apply canonical connection settings.
+
+    Performance pragmas (cache_size, synchronous, mmap_size) are critical
+    for large databases. With a 28 GB DB and 2 MB default cache, every
+    operation thrashes disk. These settings bring throughput from ~0.5/s
+    to expected levels.
+    """
     conn.row_factory = aiosqlite.Row
     await conn.execute("PRAGMA foreign_keys = ON")
     await conn.execute("PRAGMA journal_mode=WAL")
     await conn.execute(f"PRAGMA busy_timeout = {DB_TIMEOUT * 1000}")
+    # Performance: 128 MB page cache (default is 2 MB — unusable for large DBs)
+    await conn.execute("PRAGMA cache_size = -131072")
+    # Performance: NORMAL sync is safe with WAL and avoids fsync per write
+    await conn.execute("PRAGMA synchronous = NORMAL")
+    # Performance: 256 MB memory-mapped I/O for faster reads
+    await conn.execute("PRAGMA mmap_size = 268435456")
+    # Performance: keep temp tables in memory
+    await conn.execute("PRAGMA temp_store = MEMORY")
 
 
 # ---------------------------------------------------------------------------
