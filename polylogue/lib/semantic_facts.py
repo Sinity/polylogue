@@ -8,10 +8,16 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 from polylogue.lib.roles import Role
+from polylogue.lib.viewports import (
+    ReasoningTrace,
+    ToolCall,
+    ToolCategory,
+    classify_tool,
+)
 
 if TYPE_CHECKING:
     from polylogue.lib.models import Conversation, ConversationSummary, Message
-    from polylogue.lib.viewports import ReasoningTrace, TokenUsage, ToolCall
+    from polylogue.lib.viewports import TokenUsage
     from polylogue.storage.state_views import ConversationRenderProjection
     from polylogue.storage.store import MessageRecord
 
@@ -34,18 +40,20 @@ def message_has_text(message: Message | MessageRecord) -> bool:
 
 def message_tool_calls(message: Message) -> tuple[ToolCall, ...]:
     harmonized = message.harmonized
-    if harmonized is None:
-        return ()
-    calls = getattr(harmonized, "tool_calls", None)
-    return tuple(calls) if calls else ()
+    if harmonized is not None:
+        calls = getattr(harmonized, "tool_calls", None)
+        if calls:
+            return tuple(calls)
+    return _message_content_block_tool_calls(message)
 
 
 def message_reasoning_traces(message: Message) -> tuple[ReasoningTrace, ...]:
     harmonized = message.harmonized
-    if harmonized is None:
-        return ()
-    traces = getattr(harmonized, "reasoning_traces", None)
-    return tuple(traces) if traces else ()
+    if harmonized is not None:
+        traces = getattr(harmonized, "reasoning_traces", None)
+        if traces:
+            return tuple(traces)
+    return _message_content_block_reasoning_traces(message)
 
 
 def message_tokens(message: Message) -> TokenUsage | None:
@@ -62,6 +70,84 @@ def message_model_name(message: Message) -> str | None:
         return None
     model = getattr(harmonized, "model", None)
     return str(model) if model else None
+
+
+def _tool_category_from_semantic(value: object) -> ToolCategory | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        return ToolCategory(value)
+    except ValueError:
+        return None
+
+
+def _message_content_block_tool_calls(message: Message) -> tuple[ToolCall, ...]:
+    tool_result_outputs: dict[str, str] = {}
+    for block in message.content_blocks:
+        if str(block.get("type")) != "tool_result":
+            continue
+        tool_id = block.get("tool_id")
+        text = block.get("text")
+        if isinstance(tool_id, str) and tool_id and isinstance(text, str) and text:
+            tool_result_outputs.setdefault(tool_id, text)
+
+    calls: list[ToolCall] = []
+    for block in message.content_blocks:
+        if str(block.get("type")) != "tool_use":
+            continue
+        name = block.get("tool_name")
+        if not isinstance(name, str) or not name:
+            continue
+        tool_id = block.get("tool_id")
+        tool_input = block.get("tool_input")
+        normalized_input = tool_input if isinstance(tool_input, dict) else {}
+        semantic_category = _tool_category_from_semantic(block.get("semantic_type"))
+        category = semantic_category or classify_tool(name, normalized_input)
+        raw = {
+            "type": block.get("type"),
+            "tool_name": name,
+            "tool_id": tool_id,
+            "tool_input": normalized_input,
+            "media_type": block.get("media_type"),
+            "metadata": block.get("metadata"),
+            "semantic_type": block.get("semantic_type"),
+            "text": block.get("text"),
+        }
+        calls.append(
+            ToolCall(
+                name=name,
+                id=tool_id if isinstance(tool_id, str) and tool_id else None,
+                input=normalized_input,
+                output=tool_result_outputs.get(tool_id) if isinstance(tool_id, str) else None,
+                category=category,
+                provider=message.provider,
+                raw=raw,
+            )
+        )
+    return tuple(calls)
+
+
+def _message_content_block_reasoning_traces(message: Message) -> tuple[ReasoningTrace, ...]:
+    traces: list[ReasoningTrace] = []
+    for block in message.content_blocks:
+        if str(block.get("type")) != "thinking":
+            continue
+        text = block.get("text")
+        if not isinstance(text, str) or not text:
+            continue
+        traces.append(
+            ReasoningTrace(
+                text=text,
+                provider=message.provider,
+                raw={
+                    "type": block.get("type"),
+                    "media_type": block.get("media_type"),
+                    "metadata": block.get("metadata"),
+                    "semantic_type": block.get("semantic_type"),
+                },
+            )
+        )
+    return tuple(traces)
 
 
 @dataclass(frozen=True, slots=True)
