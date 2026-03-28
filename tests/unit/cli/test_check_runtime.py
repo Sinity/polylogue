@@ -19,7 +19,8 @@ import os
 import pytest
 
 from polylogue.config import Config
-from polylogue.health import HealthReport, VerifyStatus, run_runtime_health
+from polylogue.health_models import HealthReport, VerifyStatus
+from polylogue.health_runtime import run_runtime_health
 from polylogue.paths import Source
 
 pytestmark = pytest.mark.machine_contract

@@ -1,14 +1,11 @@
-"""Source walking, raw ingestion, and conversation iteration."""
+"""Source iteration facade over traversal/raw-acquisition helpers."""
 
 from __future__ import annotations
 
 import json
-import os
 import zipfile
 from collections.abc import Iterable
-from dataclasses import dataclass
 from io import BytesIO
-from pathlib import Path
 from typing import Any
 
 from polylogue.config import Source
@@ -39,9 +36,12 @@ from .parsers.base import (
     ParsedMessage,
     RawConversationData,
 )
-from .parsers.claude import (
-    SessionIndexEntry,
-    parse_sessions_index,
+from .source_walk import (
+    _build_session_indices,
+    _has_supported_extension,
+    _resolve_source_paths,
+    _setup_source_walk,
+    _walk_source_paths,
 )
 
 logger = get_logger(__name__)
@@ -53,101 +53,7 @@ ijson = _decoders.ijson
 _decode_json_bytes = _decoders._decode_json_bytes
 _iter_json_stream = _decoders._iter_json_stream
 _get_file_mtime = _cursor._get_file_mtime
-_SUPPORTED_EXTENSIONS = frozenset({".json", ".jsonl", ".ndjson", ".zip"})
-_SUPPORTED_DOUBLE_EXTENSIONS = frozenset({".jsonl.txt"})
 
-# Directories to skip during source parsing.
-# These contain derived/analysis artifacts, not raw conversation data.
-_SKIP_DIRS = frozenset({"analysis", "__pycache__", ".git", "node_modules"})
-
-def _has_supported_extension(path: Path) -> bool:
-    """Check if path has a supported file extension (case-insensitive)."""
-    name_lower = path.name.lower()
-    # Check double extensions first (e.g., .jsonl.txt)
-    for ext in _SUPPORTED_DOUBLE_EXTENSIONS:
-        if name_lower.endswith(ext):
-            return True
-    # Check single extensions
-    return path.suffix.lower() in _SUPPORTED_EXTENSIONS
-
-
-def _walk_source_paths(base: Path) -> list[Path]:
-    """Walk a directory and return sorted paths with supported extensions.
-
-    Prunes ``_SKIP_DIRS`` during traversal.
-    """
-    paths: list[Path] = []
-    for root, dirs, files in os.walk(base, followlinks=True):
-        dirs[:] = [d for d in dirs if d not in _SKIP_DIRS]
-        for filename in files:
-            file_path = Path(root) / filename
-            if _has_supported_extension(file_path):
-                paths.append(file_path)
-    return sorted(paths)
-
-
-def _build_session_indices(paths: list[Path]) -> dict[Path, dict[str, SessionIndexEntry]]:
-    """Load ``sessions-index.json`` for each unique parent directory."""
-    indices: dict[Path, dict[str, SessionIndexEntry]] = {}
-    for path in paths:
-        parent = path.parent
-        if parent not in indices:
-            index_path = parent / "sessions-index.json"
-            indices[parent] = parse_sessions_index(index_path)
-    return indices
-
-
-def _resolve_source_paths(source: Source) -> list[Path]:
-    """Resolve a source path into sorted candidate files."""
-    if not source.path:
-        return []
-
-    base = source.path.expanduser()
-    if base.is_dir():
-        return _walk_source_paths(base)
-    if base.is_file():
-        return [base]
-    return []
-
-
-@dataclass
-class _SourceWalkSetup:
-    """Result of shared source-path setup used by both public iterators."""
-
-    paths: list[Path]
-    paths_to_process: list[tuple[Path, str | None]]
-    skipped_mtime: int
-    session_indices: dict[Path, dict[str, SessionIndexEntry]]
-
-
-def _setup_source_walk(
-    source: Source,
-    *,
-    cursor_state: dict[str, Any] | None,
-    include_mtime: bool,
-    known_mtimes: dict[str, str] | None,
-    build_session_indices: bool,
-) -> _SourceWalkSetup | None:
-    """Resolve source paths and prepare iteration state.
-
-    Returns None when the source yields no paths (callers should return early).
-    """
-    paths = _resolve_source_paths(source)
-    _initialize_cursor_state(cursor_state, paths)
-    if not paths:
-        return None
-    paths_to_process, skipped_mtime = _select_paths_for_processing(
-        paths,
-        include_file_mtime=include_mtime,
-        known_mtimes=known_mtimes,
-    )
-    session_indices = _build_session_indices(paths) if build_session_indices else {}
-    return _SourceWalkSetup(
-        paths=paths,
-        paths_to_process=paths_to_process,
-        skipped_mtime=skipped_mtime,
-        session_indices=session_indices,
-    )
 
 def iter_source_conversations(
     source: Source, *, cursor_state: dict[str, Any] | None = None
@@ -367,6 +273,22 @@ __all__ = [
     "ParsedMessage",
     "ParsedAttachment",
     "RawConversationData",
+    "_ConversationEmitter",
+    "_ParseContext",
+    "_ZipEntryValidator",
+    "_build_session_indices",
+    "_decode_json_bytes",
+    "_get_file_mtime",
+    "_has_supported_extension",
+    "_initialize_cursor_state",
+    "_iter_json_stream",
+    "_log_source_iteration_summary",
+    "_record_cursor_failure",
+    "_resolve_source_paths",
+    "_select_paths_for_processing",
+    "_setup_source_walk",
+    "_walk_source_paths",
+    "_zip_entry_provider_hint",
     "iter_source_conversations",
     "iter_source_conversations_with_raw",
     "iter_source_raw_data",

@@ -208,7 +208,7 @@ def cli(
         polylogue tags      List tags with counts
         polylogue site      Build static HTML archive
         polylogue sources   List configured sources
-        polylogue schema    Schema inference and versioning
+        polylogue schema    Schema generation, package versioning, and evidence
         polylogue mcp       Start MCP server
 
     Run `polylogue <command> --help` for subcommand details.

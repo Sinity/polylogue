@@ -268,7 +268,7 @@ def run_command(
 
     # Reset parse tracking if --reparse was requested
     if reparse:
-        reset_count = run_coroutine_sync(env.backend.reset_parse_status())
+        reset_count = run_coroutine_sync(env.repository.reset_parse_status())
         click.echo(f"Reset parse status for {reset_count:,} raw records.", err=False)
 
     # Preview mode

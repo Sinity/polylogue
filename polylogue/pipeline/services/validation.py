@@ -12,14 +12,15 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from polylogue.logging import get_logger
 from polylogue.lib.raw_payload import build_raw_payload_envelope
+from polylogue.logging import get_logger
 from polylogue.protocols import ProgressCallback
 from polylogue.storage.store import RawConversationRecord
 from polylogue.types import Provider, ValidationMode, ValidationStatus
 
 if TYPE_CHECKING:
     from polylogue.storage.backends.async_sqlite import SQLiteBackend
+    from polylogue.storage.repository import ConversationRepository
 
 logger = get_logger(__name__)
 
@@ -245,6 +246,9 @@ class ValidationService:
 
     def __init__(self, backend: SQLiteBackend):
         self.backend = backend
+        from polylogue.storage.repository import ConversationRepository
+
+        self.repository: ConversationRepository = ConversationRepository(backend=backend)
 
     def _schema_validation_mode(self) -> ValidationMode:
         """Return configured schema validation mode."""
@@ -285,7 +289,7 @@ class ValidationService:
             result = ValidateResult()
             for index, raw_id in enumerate(raw_ids, start=1):
                 if persist:
-                    await self.backend.mark_raw_validated(
+                    await self.repository.mark_raw_validated(
                         raw_id,
                         status=ValidationStatus.SKIPPED,
                         mode=validation_mode,
@@ -298,7 +302,7 @@ class ValidationService:
         result = ValidateResult()
         for batch_start in range(0, len(raw_ids), self.RAW_BATCH_SIZE):
             batch_ids = raw_ids[batch_start : batch_start + self.RAW_BATCH_SIZE]
-            raw_records = await self.backend.get_raw_conversations_batch(batch_ids)
+            raw_records = await self.repository.get_raw_conversations_batch(batch_ids)
             batch_result = await self.evaluate_raw_records(
                 raw_records=raw_records,
                 progress_callback=progress_callback,
@@ -349,7 +353,7 @@ class ValidationService:
         if validation_mode is ValidationMode.OFF:
             for raw_record in raw_records:
                 if persist:
-                    await self.backend.mark_raw_validated(
+                    await self.repository.mark_raw_validated(
                         raw_record.raw_id,
                         status=ValidationStatus.SKIPPED,
                         mode=validation_mode,
@@ -377,7 +381,7 @@ class ValidationService:
             ])
 
         # Phase 2: sequential DB writes + result accumulation.
-        for index, (raw_record, outcome) in enumerate(zip(raw_records, outcomes), start=1):
+        for index, (raw_record, outcome) in enumerate(zip(raw_records, outcomes, strict=True), start=1):
             for key, val in outcome.counts_delta.items():
                 result.counts[key] += val
             for prov, cnt in outcome.drift_counts_delta.items():
@@ -389,7 +393,7 @@ class ValidationService:
                 result.invalid_raw_ids.append(raw_record.raw_id)
 
             if persist:
-                await self.backend.mark_raw_validated(
+                await self.repository.mark_raw_validated(
                     raw_record.raw_id,
                     status=outcome.validation_status,
                     error=outcome.validation_error,
@@ -399,7 +403,7 @@ class ValidationService:
                     payload_provider=outcome.payload_provider,
                 )
                 if not outcome.parseable and outcome.validation_error is not None:
-                    await self.backend.mark_raw_parsed(
+                    await self.repository.mark_raw_parsed(
                         raw_record.raw_id,
                         error=outcome.validation_error,
                         payload_provider=outcome.payload_provider,

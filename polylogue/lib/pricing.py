@@ -10,6 +10,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from polylogue.lib.semantic_facts import message_model_name, message_tokens
+
 if TYPE_CHECKING:
     from polylogue.lib.models import Conversation
 
@@ -86,7 +88,7 @@ def estimate_cost(
     )
 
 
-def harmonize_session_cost(conversation: "Conversation") -> tuple[float, bool]:
+def harmonize_session_cost(conversation: Conversation) -> tuple[float, bool]:
     """Return (cost_usd, is_estimated) for a conversation.
 
     - If actual session cost metadata is present, use it directly (is_estimated=False).
@@ -100,19 +102,13 @@ def harmonize_session_cost(conversation: "Conversation") -> tuple[float, bool]:
 
     # Try to estimate from token counts
     total_estimated = 0.0
-    found_tokens = False
     for msg in conversation.messages:
-        harmonized = msg.harmonized
-        if harmonized is None:
-            continue
-        tokens = getattr(harmonized, "tokens", None)
+        tokens = message_tokens(msg)
         if tokens is None:
             continue
-        meta = getattr(harmonized, "meta", None)
-        model_name = getattr(meta, "model", None) if meta else None
+        model_name = message_model_name(msg)
         if not model_name:
             continue
-        found_tokens = True
         input_tok = getattr(tokens, "input_tokens", 0) or 0
         output_tok = getattr(tokens, "output_tokens", 0) or 0
         cache_tok = getattr(tokens, "cache_read_tokens", 0) or 0

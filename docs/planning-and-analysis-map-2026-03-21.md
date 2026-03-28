@@ -24,7 +24,10 @@ Read in this order:
 
 | Document | Role | Current status |
 | --- | --- | --- |
-| [programs/core-architecture-convergence-program-2026-03-23.md](./programs/core-architecture-convergence-program-2026-03-23.md) | Current planned execution program for collapsing the remaining parallel truth surfaces in query, storage, CLI front-door, showcase, schema, and package-root API shape | Planned; canonical next implementation campaign |
+| [programs/state-and-schema-platform-convergence-program-2026-03-23.md](./programs/state-and-schema-platform-convergence-program-2026-03-23.md) | Current planned execution program for runtime state-model normalization, async backend narrowing, raw/validation/prepare convergence, and schema operator/tooling collapse | Planned; canonical next implementation campaign |
+| [programs/semantic-stack-convergence-program-2026-03-23.md](./programs/semantic-stack-convergence-program-2026-03-23.md) | Most recent executed convergence program for harmonization, canonical semantic facts, downstream semantic products, and semantic proof/export contract convergence | Executed; current canonical record of the semantic-stack convergence campaign |
+| [programs/schema-and-evidence-pipeline-convergence-program-2026-03-23.md](./programs/schema-and-evidence-pipeline-convergence-program-2026-03-23.md) | Executed convergence program for schema tooling, synthetic generation, raw-to-record preparation, proof workflows, and the evidence write path around the canonical package model | Executed; predecessor evidence-pipeline convergence campaign |
+| [programs/core-architecture-convergence-program-2026-03-23.md](./programs/core-architecture-convergence-program-2026-03-23.md) | Executed convergence campaign for collapsing the remaining parallel truth surfaces in query, storage, CLI front-door, showcase, schema, and package-root API shape | Executed; canonical record of the convergence campaign |
 | [programs/runtime-contract-and-validation-lanes-program-2026-03-22.md](./programs/runtime-contract-and-validation-lanes-program-2026-03-22.md) | Most recent executed closure slice for the remaining machine/runtime/testing frontier | Executed; current canonical record of the runtime-contract and validation-lane closure |
 | [programs/read-surface-proof-and-showcase-hardening-program-2026-03-22.md](./programs/read-surface-proof-and-showcase-hardening-program-2026-03-22.md) | Most recent executed proof program covering query summary/list surfaces, stream surfaces, MCP read payloads, and showcase hardening | Executed; current canonical record of the read-surface proof lane |
 | [programs/multi-surface-semantic-proof-program-2026-03-22.md](./programs/multi-surface-semantic-proof-program-2026-03-22.md) | Executed semantic/export proof program extending proof from canonical markdown to broader export/query surfaces | Executed; predecessor proof-lane record |
@@ -110,8 +113,31 @@ These are outputs and evidence, not planning authorities:
 
 As of this map:
 
-- the next live implementation campaign is now [programs/core-architecture-convergence-program-2026-03-23.md](./programs/core-architecture-convergence-program-2026-03-23.md)
-- that program specifically targets remaining architectural drag inside main code rather than a missing product surface:
+- the current live implementation queue is now [programs/state-and-schema-platform-convergence-program-2026-03-23.md](./programs/state-and-schema-platform-convergence-program-2026-03-23.md)
+- it targets the strongest remaining internal platform mass after semantic-stack convergence:
+  - runtime state models still split across raw envelopes, validation outcomes, prepare bundles, and durable storage records
+  - `async_sqlite.py` still remains one of the largest infrastructure/business boundary files in the repo
+  - the raw -> validate -> parse -> prepare -> persist path is better than before but still not yet one fully typed staged contract
+  - schema tooling still behaves like a mini-platform spread across generation analysis, workflow assembly, tooling registry, roundtrip proof, and the schema CLI
+  - schema CLI and roundtrip proof still know more about internal workflow shaping than they should
+- the semantic-stack convergence program is now executed via [programs/semantic-stack-convergence-program-2026-03-23.md](./programs/semantic-stack-convergence-program-2026-03-23.md)
+- it closed the strongest remaining semantic-cluster drag around:
+  - harmonization boundary cleanup around `schemas/unified.py` and `lib/provider_semantics.py`
+  - a missing canonical semantic facts layer shared by profiles, tags, and proof
+  - downstream semantic products that still composed several separate extraction passes
+  - a large semantic proof stack that mixed facts, surface policy, and suite orchestration
+  - semantic preservation/loss contracts that were not previously declared once in one registry
+- the schema-and-evidence pipeline campaign is now executed via [programs/schema-and-evidence-pipeline-convergence-program-2026-03-23.md](./programs/schema-and-evidence-pipeline-convergence-program-2026-03-23.md)
+- it closed the remaining evidence-pipeline drag around:
+  - runtime-safe schema observation helpers living too close to tooling
+  - monolithic schema generation orchestration
+  - monolithic synthetic corpus generation
+  - overbroad prepare/source transformation boundaries
+  - fragmented artifact proof and verification workflows
+  - an overbroad async SQLite evidence/write path
+  - a missing named roundtrip proof lane for the full schema-and-evidence loop
+- the convergence campaign in [programs/core-architecture-convergence-program-2026-03-23.md](./programs/core-architecture-convergence-program-2026-03-23.md) is now executed
+- it closed the previously identified main-code drag around:
   - query spec vs mutable filter execution
   - backend/query-store/repository overlap
   - Click front-door routing semantics
@@ -126,7 +152,7 @@ As of this map:
 - the multi-surface proof lane is now executed via [programs/multi-surface-semantic-proof-program-2026-03-22.md](./programs/multi-surface-semantic-proof-program-2026-03-22.md), which extended semantic proof across export/query surfaces and routed that suite through QA/publication/showcase
 - the read-surface proof and showcase-hardening lane is now executed via [programs/read-surface-proof-and-showcase-hardening-program-2026-03-22.md](./programs/read-surface-proof-and-showcase-hardening-program-2026-03-22.md), which covers query summary/list surfaces, stream surfaces, MCP read payloads, and matching showcase proof coverage
 - the remaining runtime/testing reservoir has now been executed via [programs/runtime-contract-and-validation-lanes-program-2026-03-22.md](./programs/runtime-contract-and-validation-lanes-program-2026-03-22.md), which closes the root machine contract, query/TUI hardening, and named validation lanes for chaos/scale/live operator workflows
-- the next frontier is therefore no longer the old testing-reliability backlog bucket; the live queue is now the convergence campaign above, and later work should be selected intentionally from the strategic-reference programs rather than assumed from unresolved reservoir notes
+- later work should be selected intentionally from the strategic-reference programs or from a fresh code-outward review rather than assumed from an unresolved reservoir note
 
 ## Maintenance Rule
 

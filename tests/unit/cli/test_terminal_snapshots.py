@@ -16,8 +16,7 @@ import pytest
 
 syrupy = pytest.importorskip("syrupy")
 
-from tests.infra.pty_cli import HAS_PYTE, PtyResult, grid_to_text, run_in_pty, sanitize_grid
-
+from tests.infra.pty_cli import HAS_PYTE, grid_to_text, run_in_pty, sanitize_grid
 
 # Mark all tests as requiring pyte
 pytestmark = pytest.mark.skipif(not HAS_PYTE, reason="pyte not installed")

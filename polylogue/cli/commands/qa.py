@@ -247,11 +247,11 @@ def qa_command(
             run_invariants = False
 
     # --- Execute QA session ---
+    from polylogue.showcase.qa_report import generate_qa_session
     from polylogue.showcase.qa_runner import (
         format_qa_summary,
         run_qa_session,
     )
-    from polylogue.showcase.report import generate_qa_session
 
     result = run_qa_session(
         live=live,

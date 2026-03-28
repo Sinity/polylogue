@@ -7,16 +7,28 @@ import pytest
 
 from polylogue.version import VersionInfo, _get_git_info, _resolve_version
 
-
 # =============================================================================
 # Merged from test_lazy_exports.py (2024-03-15)
 # =============================================================================
 
 
-def test_lazy_import_conversation_repository_root() -> None:
+@pytest.mark.parametrize(
+    "name",
+    [
+        "ArchiveStats",
+        "Conversation",
+        "ConversationFilter",
+        "Message",
+        "Polylogue",
+        "PolylogueError",
+        "SearchResult",
+        "SyncPolylogue",
+    ],
+)
+def test_lazy_import_archive_core_exports_root(name: str) -> None:
     import polylogue
 
-    assert polylogue.ConversationRepository.__name__ == "ConversationRepository"
+    assert getattr(polylogue, name).__name__ == name
 
 
 def test_lazy_import_unknown_raises_root() -> None:
@@ -26,22 +38,59 @@ def test_lazy_import_unknown_raises_root() -> None:
         _ = polylogue.NonExistentThing
 
 
-def test_lazy_import_conversation_repository_lib() -> None:
+@pytest.mark.parametrize(
+    "name",
+    [
+        "ArchiveCoverage",
+        "ConversationAttribution",
+        "ConversationRepository",
+        "DaySessionSummary",
+        "Decision",
+        "ModelPricing",
+        "SessionProfile",
+        "WeekSessionSummary",
+        "WorkEvent",
+        "WorkEventKind",
+        "WorkThread",
+        "build_session_threads",
+        "estimate_cost",
+        "harmonize_session_cost",
+        "infer_tags",
+    ],
+)
+def test_root_does_not_export_semantic_or_storage_helpers(name: str) -> None:
+    import polylogue
+
+    with pytest.raises(AttributeError, match="has no attribute"):
+        _ = getattr(polylogue, name)
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "Attachment",
+        "BranchType",
+        "Conversation",
+        "ConversationFilter",
+        "ConversationProjection",
+        "DialoguePair",
+        "Message",
+        "MessageCollection",
+        "Role",
+    ],
+)
+def test_lazy_import_domain_exports_lib(name: str) -> None:
     import polylogue.lib
 
-    assert polylogue.lib.ConversationRepository.__name__ == "ConversationRepository"
+    assert getattr(polylogue.lib, name).__name__ == name
 
 
-def test_lazy_import_conversation_projection_lib() -> None:
+@pytest.mark.parametrize("name", ["ArchiveStats", "ConversationRepository"])
+def test_lib_root_does_not_export_archive_runtime_surfaces(name: str) -> None:
     import polylogue.lib
 
-    assert polylogue.lib.ConversationProjection.__name__ == "ConversationProjection"
-
-
-def test_lazy_import_archive_stats_lib() -> None:
-    import polylogue.lib
-
-    assert polylogue.lib.ArchiveStats.__name__ == "ArchiveStats"
+    with pytest.raises(AttributeError, match="has no attribute"):
+        _ = getattr(polylogue.lib, name)
 
 
 def test_lazy_import_unknown_raises_lib() -> None:

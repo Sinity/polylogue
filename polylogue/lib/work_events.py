@@ -6,13 +6,18 @@ debugging, research, etc.) based on tool call categories and message content.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
 from typing import TYPE_CHECKING
 
+from polylogue.lib.semantic_facts import (
+    ConversationSemanticFacts,
+    MessageSemanticFacts,
+    build_conversation_semantic_facts,
+)
+
 if TYPE_CHECKING:
-    from polylogue.lib.models import Conversation, Message
-    from polylogue.lib.viewports import ToolCall, ToolCategory
+    from polylogue.lib.models import Conversation
 
 
 class WorkEventKind(str, Enum):
@@ -56,23 +61,12 @@ _CONFIGURATION_PATTERNS = ("config", "toml", "yaml", "nix", "flake", "settings",
 _DATA_ANALYSIS_PATTERNS = ("data", "analysis", "query", "sql", "duckdb", "pandas", "plot", "chart", "csv")
 
 
-def _get_tool_calls(message: Message) -> list[ToolCall]:
-    """Extract tool calls from a message's harmonized viewport."""
-    harmonized = message.harmonized
-    if harmonized is None:
-        return []
-    calls = getattr(harmonized, "tool_calls", None)
-    return list(calls) if calls else []
-
-
 def _classify_message_range(
-    messages: list[Message],
+    messages: list[MessageSemanticFacts],
     start: int,
     end: int,
 ) -> tuple[WorkEventKind, float, list[str]]:
     """Classify a contiguous range of messages into a work event kind."""
-    from polylogue.lib.viewports import ToolCategory
-
     category_counts: dict[str, int] = {}
     all_tools: list[str] = []
     user_text = ""
@@ -82,7 +76,7 @@ def _classify_message_range(
         msg = messages[i]
         if msg.is_user and msg.text:
             user_text += " " + msg.text.lower()
-        for tc in _get_tool_calls(msg):
+        for tc in msg.tool_calls:
             cat = tc.category.value
             category_counts[cat] = category_counts.get(cat, 0) + 1
             all_tools.append(tc.name)
@@ -139,7 +133,11 @@ def _classify_message_range(
     return WorkEventKind.IMPLEMENTATION, 0.4, ["weak_signal"]
 
 
-def _compute_phase_ranges(conversation: Conversation) -> list[tuple[int, int]]:
+def _compute_phase_ranges(
+    conversation: Conversation,
+    *,
+    facts: ConversationSemanticFacts | None = None,
+) -> list[tuple[int, int]]:
     """Compute chunk ranges aligned to phase boundaries.
 
     Uses temporal phase detection (5-min gaps) to find natural work
@@ -148,14 +146,15 @@ def _compute_phase_ranges(conversation: Conversation) -> list[tuple[int, int]]:
     """
     from polylogue.lib.phases import extract_phases
 
-    phases = extract_phases(conversation)
+    semantic_facts = facts or build_conversation_semantic_facts(conversation)
+    phases = extract_phases(conversation, facts=semantic_facts)
     if not phases:
         # Fallback: single chunk for entire conversation
-        msg_count = len(list(conversation.messages))
+        msg_count = len(semantic_facts.message_facts)
         return [(0, msg_count)] if msg_count > 0 else []
 
     ranges: list[tuple[int, int]] = []
-    messages = list(conversation.messages)
+    messages = list(semantic_facts.message_facts)
 
     for phase in phases:
         start, end = phase.message_range
@@ -169,11 +168,8 @@ def _compute_phase_ranges(conversation: Conversation) -> list[tuple[int, int]]:
         sub_start = start
         prev_dominant = None
         for i in range(start, end):
-            calls = _get_tool_calls(messages[i])
-            if calls:
-                dominant = calls[0].category.value
-            else:
-                dominant = None
+            calls = messages[i].tool_calls
+            dominant = calls[0].category.value if calls else None
             if (
                 prev_dominant is not None
                 and dominant is not None
@@ -189,19 +185,24 @@ def _compute_phase_ranges(conversation: Conversation) -> list[tuple[int, int]]:
     return ranges if ranges else [(0, len(messages))]
 
 
-def extract_work_events(conversation: Conversation) -> list[WorkEvent]:
+def extract_work_events(
+    conversation: Conversation,
+    *,
+    facts: ConversationSemanticFacts | None = None,
+) -> list[WorkEvent]:
     """Extract work events from a conversation.
 
     Uses phase-boundary-aligned chunking: temporal phases (5-min gaps)
     define natural work boundaries. Long phases are sub-chunked at
     tool-category shift points.
     """
-    messages = list(conversation.messages)
+    semantic_facts = facts or build_conversation_semantic_facts(conversation)
+    messages = list(semantic_facts.message_facts)
     if not messages:
         return []
 
     events: list[WorkEvent] = []
-    ranges = _compute_phase_ranges(conversation)
+    ranges = _compute_phase_ranges(conversation, facts=semantic_facts)
 
     for chunk_start, chunk_end in ranges:
         kind, confidence, evidence = _classify_message_range(messages, chunk_start, chunk_end)
@@ -210,7 +211,7 @@ def extract_work_events(conversation: Conversation) -> list[WorkEvent]:
         file_paths: list[str] = []
         tools_used: list[str] = []
         for j in range(chunk_start, chunk_end):
-            for tc in _get_tool_calls(messages[j]):
+            for tc in messages[j].tool_calls:
                 tools_used.append(tc.name)
                 file_paths.extend(tc.affected_paths)
 

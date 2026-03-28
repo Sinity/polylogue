@@ -12,20 +12,16 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 
+from polylogue.lib.semantic_facts import (
+    ConversationSemanticFacts,
+    MessageSemanticFacts,
+    build_conversation_semantic_facts,
+)
+
 if TYPE_CHECKING:
-    from polylogue.lib.models import Conversation, Message
-    from polylogue.lib.viewports import ToolCall
+    from polylogue.lib.models import Conversation
 
 _PHASE_GAP = timedelta(minutes=5)
-
-
-def _get_tool_calls(message: Message) -> list[ToolCall]:
-    """Extract tool calls from a message's harmonized viewport."""
-    harmonized = message.harmonized
-    if harmonized is None:
-        return []
-    calls = getattr(harmonized, "tool_calls", None)
-    return list(calls) if calls else []
 
 
 @dataclass(frozen=True)
@@ -61,13 +57,18 @@ def _classify_phase(tool_counts: dict[str, int], word_count: int) -> str:
     return "mixed"
 
 
-def extract_phases(conversation: Conversation) -> list[SessionPhase]:
+def extract_phases(
+    conversation: Conversation,
+    *,
+    facts: ConversationSemanticFacts | None = None,
+) -> list[SessionPhase]:
     """Extract temporal phases from a conversation.
 
     Phase boundaries are defined by gaps of 5+ minutes between
     consecutive messages with timestamps.
     """
-    messages = list(conversation.messages)
+    semantic_facts = facts or build_conversation_semantic_facts(conversation)
+    messages = list(semantic_facts.message_facts)
     if not messages:
         return []
 
@@ -101,7 +102,7 @@ def extract_phases(conversation: Conversation) -> list[SessionPhase]:
 
 
 def _build_phase(
-    messages: list[Message],
+    messages: list[MessageSemanticFacts],
     start_idx: int,
     end_idx: int,
     start_time: datetime | None,
@@ -113,7 +114,7 @@ def _build_phase(
 
     for msg in messages[start_idx:end_idx]:
         word_count += msg.word_count
-        for tc in _get_tool_calls(msg):
+        for tc in msg.tool_calls:
             tool_counts[tc.category.value] += 1
 
     duration_ms = 0

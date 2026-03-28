@@ -28,7 +28,7 @@ except ImportError:
     ValidationError = Exception
 
 from polylogue.lib.raw_payload import extract_payload_samples
-from polylogue.schemas.registry import SchemaRegistry, canonical_schema_provider
+from polylogue.schemas.runtime_registry import SchemaRegistry, canonical_schema_provider
 from polylogue.types import Provider
 
 _RECORD_VALIDATION_PROVIDERS = {Provider.CLAUDE_CODE, Provider.CODEX}
