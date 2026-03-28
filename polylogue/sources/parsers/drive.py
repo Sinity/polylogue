@@ -17,7 +17,15 @@ def extract_text_from_chunk(chunk: dict[str, object]) -> str | None:
             return value
     parts = chunk.get("parts")
     if isinstance(parts, list):
-        return "\n".join(str(part) for part in parts if part)
+        texts: list[str] = []
+        for part in parts:
+            if isinstance(part, str) and part:
+                texts.append(part)
+            elif isinstance(part, dict):
+                part_text = part.get("text")
+                if isinstance(part_text, str) and part_text:
+                    texts.append(part_text)
+        return "\n".join(texts) or None
     return None
 
 
@@ -170,16 +178,26 @@ def parse_chunked_prompt(provider: str, payload: dict[str, object], fallback_id:
             if token_count:
                 meta["tokenCount"] = token_count
             block_type = "thinking" if chunk_obj.get("isThought") else "text"
-            meta["content_blocks"] = [{"type": block_type, "text": text}]
+            content_blocks = [{"type": block_type, "text": text}]
             exec_code = chunk_obj.get("executableCode")
             if isinstance(exec_code, dict) and exec_code:
                 meta["executableCode"] = exec_code
+                code = exec_code.get("code")
+                if isinstance(code, str) and code:
+                    content_blocks.append({"type": "code", "text": code})
             exec_result = chunk_obj.get("codeExecutionResult")
             if isinstance(exec_result, dict) and exec_result:
                 meta["codeExecutionResult"] = exec_result
+                output = exec_result.get("output")
+                outcome = exec_result.get("outcome")
+                if isinstance(output, str) and output:
+                    content_blocks.append({"type": "tool_result", "text": output})
+                elif isinstance(outcome, str) and outcome:
+                    content_blocks.append({"type": "tool_result", "text": f"[{outcome}]"})
             error_msg = chunk_obj.get("errorMessage")
             if isinstance(error_msg, str) and error_msg:
                 meta["errorMessage"] = error_msg
+            meta["content_blocks"] = content_blocks
 
         messages.append(
             ParsedMessage(

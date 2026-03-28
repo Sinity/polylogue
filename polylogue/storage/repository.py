@@ -75,6 +75,42 @@ class ConversationRepository(ConversationReader, SearchStore, TagStore):
         else:
             self._backend = SQLiteBackend(db_path=db_path)
 
+    @staticmethod
+    def _conversation_filter_kwargs(
+        *,
+        provider: str | None = None,
+        providers: builtins.list[str] | None = None,
+        source: str | None = None,
+        since: str | None = None,
+        until: str | None = None,
+        title_contains: str | None = None,
+        has_tool_use: bool = False,
+        has_thinking: bool = False,
+        min_messages: int | None = None,
+        max_messages: int | None = None,
+        min_words: int | None = None,
+        has_file_ops: bool = False,
+        has_git_ops: bool = False,
+        has_subagent: bool = False,
+    ) -> dict[str, object]:
+        """Build the canonical conversation-filter kwargs for backend queries."""
+        return {
+            "provider": provider,
+            "providers": providers,
+            "source": source,
+            "since": since,
+            "until": until,
+            "title_contains": title_contains,
+            "has_tool_use": has_tool_use,
+            "has_thinking": has_thinking,
+            "min_messages": min_messages,
+            "max_messages": max_messages,
+            "min_words": min_words,
+            "has_file_ops": has_file_ops,
+            "has_git_ops": has_git_ops,
+            "has_subagent": has_subagent,
+        }
+
     async def __aenter__(self) -> ConversationRepository:
         """Enter async context manager."""
         return self
@@ -280,22 +316,24 @@ class ConversationRepository(ConversationReader, SearchStore, TagStore):
             List of ConversationSummary objects
         """
         conv_records = await self._backend.list_conversations(
-            source=source,
-            provider=provider,
-            providers=providers,
             limit=limit,
             offset=offset,
-            since=since,
-            until=until,
-            title_contains=title_contains,
-            has_tool_use=has_tool_use,
-            has_thinking=has_thinking,
-            min_messages=min_messages,
-            max_messages=max_messages,
-            min_words=min_words,
-            has_file_ops=has_file_ops,
-            has_git_ops=has_git_ops,
-            has_subagent=has_subagent,
+            **self._conversation_filter_kwargs(
+                source=source,
+                provider=provider,
+                providers=providers,
+                since=since,
+                until=until,
+                title_contains=title_contains,
+                has_tool_use=has_tool_use,
+                has_thinking=has_thinking,
+                min_messages=min_messages,
+                max_messages=max_messages,
+                min_words=min_words,
+                has_file_ops=has_file_ops,
+                has_git_ops=has_git_ops,
+                has_subagent=has_subagent,
+            ),
         )
         return [ConversationSummary.from_record(rec) for rec in conv_records]
 
@@ -387,21 +425,23 @@ class ConversationRepository(ConversationReader, SearchStore, TagStore):
             List of Conversation objects with all data eager-loaded
         """
         conv_records = await self._backend.list_conversations(
-            provider=provider,
-            providers=providers,
             limit=limit,
             offset=offset,
-            since=since,
-            until=until,
-            title_contains=title_contains,
-            has_tool_use=has_tool_use,
-            has_thinking=has_thinking,
-            min_messages=min_messages,
-            max_messages=max_messages,
-            min_words=min_words,
-            has_file_ops=has_file_ops,
-            has_git_ops=has_git_ops,
-            has_subagent=has_subagent,
+            **self._conversation_filter_kwargs(
+                provider=provider,
+                providers=providers,
+                since=since,
+                until=until,
+                title_contains=title_contains,
+                has_tool_use=has_tool_use,
+                has_thinking=has_thinking,
+                min_messages=min_messages,
+                max_messages=max_messages,
+                min_words=min_words,
+                has_file_ops=has_file_ops,
+                has_git_ops=has_git_ops,
+                has_subagent=has_subagent,
+            ),
         )
 
         return await self._hydrate_conversations(conv_records)
@@ -442,7 +482,7 @@ class ConversationRepository(ConversationReader, SearchStore, TagStore):
         Returns:
             Count of matching conversations
         """
-        return await self._backend.count_conversations(
+        filters = self._conversation_filter_kwargs(
             provider=provider,
             providers=providers,
             since=since,
@@ -457,6 +497,8 @@ class ConversationRepository(ConversationReader, SearchStore, TagStore):
             has_git_ops=has_git_ops,
             has_subagent=has_subagent,
         )
+        filters.pop("source")
+        return await self._backend.count_conversations(**filters)
 
     async def aggregate_message_stats(
         self,
@@ -588,12 +630,9 @@ class ConversationRepository(ConversationReader, SearchStore, TagStore):
         Returns:
             List of ConversationSummary objects matching the query
         """
-        ids = await self._backend.search_conversations(query, limit=limit, providers=providers)
+        ids, records = await self._search_records(query, limit=limit, providers=providers)
         if not ids:
             return []
-
-        # Fetch all matching conversations in parallel
-        records = await self._backend.get_conversations_batch(ids)
         return [ConversationSummary.from_record(rec) for rec in records]
 
     async def search(
@@ -612,8 +651,23 @@ class ConversationRepository(ConversationReader, SearchStore, TagStore):
         Returns:
             List of Conversation objects with all data eager-loaded
         """
+        ids, records = await self._search_records(query, limit=limit, providers=providers)
+        return await self._hydrate_conversations(records, ordered_ids=ids)
+
+    async def _search_records(
+        self,
+        query: str,
+        *,
+        limit: int,
+        providers: builtins.list[str] | None,
+    ) -> tuple[builtins.list[str], builtins.list[ConversationRecord]]:
+        """Resolve ranked search IDs once and fetch the corresponding records."""
         ids = await self._backend.search_conversations(query, limit=limit, providers=providers)
-        return await self.get_many(ids)
+        if not ids:
+            return [], []
+        records = await self._backend.get_conversations_batch(ids)
+        by_id = {record.conversation_id: record for record in records}
+        return ids, [by_id[conversation_id] for conversation_id in ids if conversation_id in by_id]
 
     async def get_many(self, conversation_ids: builtins.list[str]) -> builtins.list[Conversation]:
         """Bulk fetch conversations with eager-loaded messages and attachments.

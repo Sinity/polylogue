@@ -243,6 +243,177 @@ def codex_session_strategy(
 
 
 # =============================================================================
+# Rich semantic fixture strategies
+# =============================================================================
+
+
+_CHATGPT_SEMANTIC_MESSAGES: tuple[dict[str, Any], ...] = (
+    {
+        "id": "chatgpt-text",
+        "author": {"role": "user"},
+        "create_time": 1700000000.0,
+        "content": {"content_type": "text", "parts": ["hello", {"text": "world"}]},
+        "metadata": {"model_slug": "gpt-4o"},
+    },
+    {
+        "id": "chatgpt-code",
+        "author": {"role": "assistant"},
+        "create_time": 1700000001.0,
+        "content": {"content_type": "code", "text": "print('ok')", "language": "python"},
+        "metadata": {"model_slug": "gpt-4.1"},
+    },
+    {
+        "id": "chatgpt-browse",
+        "author": {"role": "assistant"},
+        "create_time": 1700000002.0,
+        "content": {"content_type": "tether_browsing_display", "parts": ["search result"]},
+        "metadata": {},
+    },
+)
+
+_CLAUDE_AI_SEMANTIC_MESSAGES: tuple[dict[str, Any], ...] = (
+    {
+        "uuid": "claude-ai-human",
+        "text": "question",
+        "sender": "human",
+        "created_at": "2025-01-01T00:00:00Z",
+    },
+    {
+        "uuid": "claude-ai-assistant",
+        "text": "answer",
+        "sender": "assistant",
+        "created_at": "2025-01-01T00:00:01Z",
+        "attachments": [{"file_name": "spec.pdf"}],
+        "files": [{"file_name": "result.txt"}],
+    },
+)
+
+_CLAUDE_CODE_SEMANTIC_RECORDS: tuple[dict[str, Any], ...] = (
+    {
+        "type": "assistant",
+        "uuid": "claude-code-rich",
+        "timestamp": 1700000000000,
+        "message": {
+            "role": "assistant",
+            "model": "claude-3-opus",
+            "usage": {"input_tokens": 10, "output_tokens": 12},
+            "content": [
+                {"type": "text", "text": "answer"},
+                {"type": "thinking", "thinking": "reason"},
+                {"type": "tool_use", "id": "tool-1", "name": "Read", "input": {"path": "README.md"}},
+                {"type": "tool_result", "tool_use_id": "tool-1", "content": "done"},
+                {"type": "code", "text": "print('ok')", "language": "python"},
+            ],
+        },
+        "costUSD": 0.12,
+        "durationMs": 42,
+    },
+    {
+        "type": "user",
+        "uuid": "claude-code-user",
+        "timestamp": "2025-01-01T00:00:00Z",
+        "message": {
+            "role": "user",
+            "content": [{"type": "text", "text": "question"}],
+        },
+    },
+)
+
+_GEMINI_SEMANTIC_MESSAGES: tuple[dict[str, Any], ...] = (
+    {
+        "role": "model",
+        "text": "thinking message",
+        "isThought": True,
+        "thinkingBudget": 256,
+        "tokenCount": 64,
+        "parts": [{"text": "thinking message"}],
+    },
+    {
+        "role": "model",
+        "text": "",
+        "parts": [{"text": "inline text"}, {"fileData": {"mimeType": "image/png"}}],
+        "executableCode": {"language": "python", "code": "print('ok')"},
+        "codeExecutionResult": {"outcome": "OUTCOME_OK", "output": "ok"},
+        "tokenCount": 32,
+    },
+)
+
+_CODEX_SEMANTIC_RECORDS: tuple[dict[str, Any], ...] = (
+    {
+        "type": "message",
+        "id": "codex-direct",
+        "role": "assistant",
+        "timestamp": "2025-01-01T00:00:00Z",
+        "content": [
+            {"type": "output_text", "output_text": "answer"},
+            {"type": "code", "code": "print('ok')", "language": "python"},
+            {"type": "misc", "text": "fallback"},
+        ],
+    },
+    {
+        "type": "response_item",
+        "id": "codex-envelope",
+        "timestamp": "2025-01-01T00:00:01Z",
+        "payload": {
+            "role": "user",
+            "content": [
+                {"type": "input_text", "input_text": "question"},
+                {"type": "text", "text": "more context"},
+            ],
+        },
+    },
+)
+
+
+@st.composite
+def chatgpt_semantic_message_strategy(draw: st.DrawFn) -> dict[str, Any]:
+    """Generate ChatGPT messages with richer semantic content variants."""
+    return dict(draw(st.sampled_from(_CHATGPT_SEMANTIC_MESSAGES)))
+
+
+@st.composite
+def claude_ai_semantic_message_strategy(draw: st.DrawFn) -> dict[str, Any]:
+    """Generate Claude AI messages with stable semantic metadata variants."""
+    return dict(draw(st.sampled_from(_CLAUDE_AI_SEMANTIC_MESSAGES)))
+
+
+@st.composite
+def claude_code_semantic_record_strategy(draw: st.DrawFn) -> dict[str, Any]:
+    """Generate Claude Code records with text/thinking/tool/code coverage."""
+    return dict(draw(st.sampled_from(_CLAUDE_CODE_SEMANTIC_RECORDS)))
+
+
+@st.composite
+def gemini_semantic_message_strategy(draw: st.DrawFn) -> dict[str, Any]:
+    """Generate Gemini messages exercising thought/code/file branches."""
+    return dict(draw(st.sampled_from(_GEMINI_SEMANTIC_MESSAGES)))
+
+
+@st.composite
+def codex_semantic_record_strategy(draw: st.DrawFn) -> dict[str, Any]:
+    """Generate Codex direct and envelope records with mixed block types."""
+    raw = draw(st.sampled_from(_CODEX_SEMANTIC_RECORDS))
+    return json.loads(json.dumps(raw))
+
+
+@st.composite
+def provider_semantic_case_strategy(
+    draw: st.DrawFn,
+    providers: tuple[str, ...] = ("chatgpt", "claude-ai", "claude-code", "codex", "gemini"),
+) -> tuple[str, dict[str, Any]]:
+    """Generate provider/raw pairs for semantically rich viewport laws."""
+    provider = draw(st.sampled_from(providers))
+    raw = {
+        "chatgpt": draw(chatgpt_semantic_message_strategy()),
+        "claude-ai": draw(claude_ai_semantic_message_strategy()),
+        "claude-code": draw(claude_code_semantic_record_strategy()),
+        "codex": draw(codex_semantic_record_strategy()),
+        "gemini": draw(gemini_semantic_message_strategy()),
+    }[provider]
+    return provider, raw
+
+
+# =============================================================================
 # Generic schema-driven strategy (for new tests)
 # =============================================================================
 

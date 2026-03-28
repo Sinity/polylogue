@@ -19,9 +19,11 @@ from hypothesis import strategies as st
 from polylogue.sources.parsers import chatgpt, claude, codex
 from polylogue.sources.parsers.base import (
     ParsedConversation,
+    content_blocks_from_segments,
     extract_messages_from_list,
     normalize_role,
 )
+from polylogue.sources.parsers.drive import parse_chunked_prompt
 from tests.infra.strategies import (
     chatgpt_export_strategy,
     chatgpt_message_node_strategy,
@@ -326,6 +328,131 @@ def test_extract_messages_role_normalized(msg: dict):
         parsed = result[0]
         # Role should be normalized
         assert parsed.role == normalize_role(msg.get("role"))
+
+
+def test_content_blocks_from_segments_classifies_code_and_tool_blocks() -> None:
+    """Segment parsing must preserve explicit semantic block kinds and order."""
+    blocks = content_blocks_from_segments(
+        [
+            {"type": "text", "text": "plain"},
+            {"type": "thinking", "thinking": "reason"},
+            {"type": "tool_use", "id": "tool-1", "name": "Read", "input": {"path": "README.md"}},
+            {"type": "tool_result", "tool_use_id": "tool-1", "content": [{"type": "text", "text": "done"}]},
+            {"type": "code", "code": "print('ok')", "language": "python"},
+            {"type": "document", "media_type": "application/pdf", "title": "Spec"},
+        ]
+    )
+
+    assert [block.type for block in blocks] == [
+        "text",
+        "thinking",
+        "tool_use",
+        "tool_result",
+        "code",
+        "document",
+    ]
+    assert blocks[2].tool_name == "Read"
+    assert blocks[2].tool_input == {"path": "README.md"}
+    assert blocks[3].tool_id == "tool-1"
+    assert blocks[3].text == "done"
+    assert blocks[4].text == "print('ok')"
+    assert blocks[4].metadata == {"language": "python"}
+    assert blocks[5].media_type == "application/pdf"
+
+
+def test_extract_messages_from_list_preserves_wrapped_segment_semantics() -> None:
+    """List extraction must preserve wrapped roles, text, and code/thinking blocks."""
+    messages = extract_messages_from_list(
+        [
+            {
+                "message": {
+                    "id": "m-assistant",
+                    "role": "assistant",
+                    "content": [
+                        {"type": "thinking", "thinking": "reason"},
+                        {"type": "code", "code": "print('ok')", "language": "python"},
+                    ],
+                },
+                "timestamp": "2025-01-01T00:00:00Z",
+            },
+            {
+                "id": "m-user",
+                "sender": "human",
+                "content": {"parts": ["question", "more context"]},
+            },
+        ]
+    )
+
+    assert [message.provider_message_id for message in messages] == ["m-assistant", "m-user"]
+    assert [message.role.value for message in messages] == ["assistant", "user"]
+    assert messages[0].text == "reason\nprint('ok')"
+    assert [block.type for block in messages[0].content_blocks] == ["thinking", "code"]
+    assert messages[0].content_blocks[1].metadata == {"language": "python"}
+    assert messages[1].text == "question\nmore context"
+    assert [block.type for block in messages[1].content_blocks] == ["text", "text"]
+    assert [block.text for block in messages[1].content_blocks] == ["question", "more context"]
+
+
+def test_parse_chunked_prompt_preserves_reasoning_code_and_drive_docs() -> None:
+    """Drive/Gemini chunk parsing must retain reasoning, code, and attachment metadata."""
+    payload = {
+        "id": "gemini-conv",
+        "title": "Gemini Contract",
+        "createTime": "2025-01-01T00:00:00Z",
+        "chunkedPrompt": {
+            "chunks": [
+                {
+                    "id": "msg-user",
+                    "role": "user",
+                    "text": "question",
+                    "driveDocument": {
+                        "id": "doc-1",
+                        "name": "spec.pdf",
+                        "mimeType": "application/pdf",
+                        "sizeBytes": "12",
+                    },
+                },
+                {
+                    "id": "msg-thought",
+                    "role": "model",
+                    "text": "reasoning",
+                    "isThought": True,
+                    "thinkingBudget": 32,
+                },
+                {
+                    "id": "msg-code",
+                    "role": "model",
+                    "parts": [{"text": "inline"}],
+                    "executableCode": {"language": "python", "code": "print('ok')"},
+                    "codeExecutionResult": {"outcome": "OUTCOME_OK", "output": "ok"},
+                },
+            ]
+        },
+    }
+
+    result = parse_chunked_prompt("gemini", payload, "fallback")
+
+    assert result.provider_name == "gemini"
+    assert result.provider_conversation_id == "gemini-conv"
+    assert [message.provider_message_id for message in result.messages] == [
+        "msg-user",
+        "msg-thought",
+        "msg-code",
+    ]
+    assert result.messages[0].provider_meta["content_blocks"] == [{"type": "text", "text": "question"}]
+    assert result.messages[1].provider_meta["content_blocks"] == [{"type": "thinking", "text": "reasoning"}]
+    assert result.messages[1].provider_meta["reasoning_traces"] == [
+        {"text": "reasoning", "token_count": 32, "provider": "gemini"}
+    ]
+    assert result.messages[2].provider_meta["content_blocks"] == [
+        {"type": "text", "text": "inline"},
+        {"type": "code", "text": "print('ok')"},
+        {"type": "tool_result", "text": "ok"},
+    ]
+    assert len(result.attachments) == 1
+    assert result.attachments[0].provider_attachment_id == "doc-1"
+    assert result.attachments[0].mime_type == "application/pdf"
+    assert result.attachments[0].size_bytes == 12
 
 
 # =============================================================================

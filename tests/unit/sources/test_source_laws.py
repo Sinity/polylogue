@@ -13,6 +13,14 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from polylogue.config import Source
+from polylogue.sources.drive import download_drive_files, iter_drive_raw_data
+from polylogue.sources.drive_client import DriveFile
+from polylogue.sources.parsers.base import ParsedConversation, ParsedMessage
+from polylogue.sources.parsers.claude import (
+    SessionIndexEntry,
+    enrich_conversation_from_index,
+    find_sessions_index,
+)
 from polylogue.sources.source import (
     _ConversationEmitter,
     _decode_json_bytes,
@@ -318,6 +326,54 @@ def test_decode_json_bytes_cleaning_contract(raw: bytes, expected: dict[str, obj
         assert json.loads(decoded) == expected
 
 
+def test_find_sessions_index_and_enrichment_contract(tmp_path: Path) -> None:
+    """Claude session-index lookup and enrichment must stay source-local and deterministic."""
+    session_dir = tmp_path / "claude"
+    session_dir.mkdir()
+    session_file = session_dir / "session.jsonl"
+    session_file.write_text("{}\n", encoding="utf-8")
+    index_file = session_dir / "sessions-index.json"
+    index_file.write_text('{"entries":[]}', encoding="utf-8")
+
+    assert find_sessions_index(session_file) == index_file
+
+    conversation = ParsedConversation(
+        provider_name="claude-code",
+        provider_conversation_id="session-1",
+        title="session-1",
+        created_at="2025-01-01T00:00:00Z",
+        updated_at="2025-01-01T00:00:00Z",
+        messages=[ParsedMessage(provider_message_id="m1", role="user", text="hello")],
+        provider_meta={"raw": True},
+    )
+    entry = SessionIndexEntry(
+        session_id="session-1",
+        full_path=str(session_file),
+        first_prompt="Summarize this repo",
+        summary="Investigate parser contracts",
+        message_count=12,
+        created="2025-01-02T00:00:00Z",
+        modified="2025-01-03T00:00:00Z",
+        git_branch="main",
+        project_path="/tmp/project",
+        is_sidechain=True,
+    )
+
+    enriched = enrich_conversation_from_index(conversation, entry)
+
+    assert enriched.title == "Investigate parser contracts"
+    assert enriched.created_at == "2025-01-02T00:00:00Z"
+    assert enriched.updated_at == "2025-01-03T00:00:00Z"
+    assert enriched.provider_meta == {
+        "raw": True,
+        "gitBranch": "main",
+        "projectPath": "/tmp/project",
+        "isSidechain": True,
+        "summary": "Investigate parser contracts",
+        "firstPrompt": "Summarize this repo",
+    }
+
+
 def test_conversation_emitter_individual_raw_capture_contract() -> None:
     payloads = [
         {"id": "conv-1", "messages": [{"id": "m1", "role": "user", "text": "first"}]},
@@ -418,3 +474,103 @@ def test_zip_entry_validator_rejects_suspicious_entries_contract() -> None:
     assert [entry.filename for entry in kept] == ["nested/conversations.json", "nested/other.json"]
     assert cursor_state["failed_count"] == 1
     assert cursor_state["failed_files"][0]["path"] == "/tmp/archive.zip:nested/conversations.jsonl"
+
+
+class _StubDriveRawClient:
+    def __init__(self, files: list[DriveFile], *, raw_bytes: dict[str, bytes], failures: dict[str, Exception] | None = None) -> None:
+        self.files = files
+        self.raw_bytes = raw_bytes
+        self.failures = failures or {}
+
+    def resolve_folder_id(self, folder_ref: str) -> str:
+        return f"folder:{folder_ref}"
+
+    def iter_json_files(self, folder_id: str):
+        yield from self.files
+
+    def download_bytes(self, file_id: str) -> bytes:
+        if file_id in self.failures:
+            raise self.failures[file_id]
+        return self.raw_bytes[file_id]
+
+    def download_to_path(self, file_id: str, dest: Path) -> None:
+        if file_id in self.failures:
+            raise self.failures[file_id]
+        dest.write_bytes(self.raw_bytes[file_id])
+
+
+def test_iter_drive_raw_data_contract() -> None:
+    source = Source(name="drive", folder="Google AI Studio", path=Path("/tmp/drive-cache"))
+    files = [
+        DriveFile("chatgpt-1", "chatgpt-export.json", "application/json", "2025-01-01T00:00:00Z", 12),
+        DriveFile("gemini-1", "gemini-prompt.json", "application/json", "2025-01-01T00:05:00Z", 8),
+    ]
+    client = _StubDriveRawClient(
+        files,
+        raw_bytes={"chatgpt-1": b'{"id":"chatgpt-1"}', "gemini-1": b'{"role":"model"}'},
+    )
+    cursor_state: dict[str, object] = {}
+
+    items = list(iter_drive_raw_data(source=source, client=client, cursor_state=cursor_state))
+
+    assert [item.source_path for item in items] == [
+        "/tmp/drive-cache/chatgpt-export.json",
+        "/tmp/drive-cache/gemini-prompt.json",
+    ]
+    assert [item.provider_hint for item in items] == ["chatgpt", "gemini"]
+    assert [item.file_mtime for item in items] == ["2025-01-01T00:00:00Z", "2025-01-01T00:05:00Z"]
+    assert cursor_state["file_count"] == 2
+    assert cursor_state["latest_file_id"] == "gemini-1"
+    assert cursor_state["latest_file_name"] == "gemini-prompt.json"
+
+
+def test_iter_drive_raw_data_skips_known_mtimes_and_tracks_failures() -> None:
+    source = Source(name="drive", folder="Google AI Studio", path=Path("/tmp/drive-cache"))
+    files = [
+        DriveFile("old", "cached.json", "application/json", "2025-01-01T00:00:00Z", 12),
+        DriveFile("bad", "broken.json", "application/json", "2025-01-01T00:01:00Z", 12),
+        DriveFile("new", "new.json", "application/json", "2025-01-01T00:02:00Z", 12),
+    ]
+    client = _StubDriveRawClient(
+        files,
+        raw_bytes={"old": b"{}", "new": b'{"id":"new"}'},
+        failures={"bad": RuntimeError("download failed")},
+    )
+    cursor_state: dict[str, object] = {}
+
+    items = list(
+        iter_drive_raw_data(
+            source=source,
+            client=client,
+            cursor_state=cursor_state,
+            known_mtimes={"/tmp/drive-cache/cached.json": "2025-01-01T00:00:00Z"},
+        )
+    )
+
+    assert [item.source_path for item in items] == ["/tmp/drive-cache/new.json"]
+    assert cursor_state["file_count"] == 3
+    assert cursor_state["error_count"] == 1
+    assert cursor_state["latest_error_file"] == "broken.json"
+    assert "download failed" in str(cursor_state["latest_error"])
+
+
+def test_download_drive_files_contract() -> None:
+    folder_id = "folder-law"
+    files = [
+        DriveFile("one", "session", "application/json", None, None),
+        DriveFile("two", "bad.jsonl", "application/json", None, None),
+    ]
+    client = _StubDriveRawClient(
+        files,
+        raw_bytes={"one": b'{"id":"ok"}'},
+        failures={"two": OSError("boom")},
+    )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        result = download_drive_files(client, folder_id, Path(tmp))
+
+        assert result.total_files == 2
+        assert len(result.downloaded_files) == 1
+        assert result.downloaded_files[0].name == "session.json"
+        assert result.downloaded_files[0].read_bytes() == b'{"id":"ok"}'
+        assert result.failed_files == [{"file_id": "two", "name": "bad.jsonl", "error": "boom"}]

@@ -15,7 +15,7 @@ import yaml
 from hypothesis import HealthCheck, given, settings
 from rich.console import Console
 
-from polylogue.cli.query import _async_execute_query, _no_results
+from polylogue.cli.query import _async_execute_query, _no_results, _project_query_results
 from polylogue.cli.query_actions import _apply_modifiers, _apply_transform, _delete_conversations
 from polylogue.cli.query_helpers import summary_to_dict
 from polylogue.cli.query_output import (
@@ -36,7 +36,7 @@ from polylogue.cli.query_plan import (
 )
 from polylogue.cli.types import AppEnv
 from polylogue.lib.models import Conversation, Message
-from polylogue.lib.query_spec import ConversationQuerySpec
+from polylogue.lib.query_spec import ConversationQuerySpec, QuerySpecError
 from polylogue.services import build_runtime_services
 from tests.infra.strategies import (
     ConversationSummarySpec,
@@ -118,6 +118,9 @@ def _build_plan(case: str) -> QueryExecutionPlan:
     elif case == "stats_by_summaries":
         action = QueryAction.STATS_BY
         stats_dimension = "provider"
+    elif case == "stream":
+        action = QueryAction.STREAM
+        output = QueryOutputSpec("json", ("stdout", "browser"), None, True, "strip-tools", False)
     elif case == "modify":
         action = QueryAction.MODIFY
         mutation = QueryMutationSpec((("priority", "1"),), (), False, False, True)
@@ -539,12 +542,33 @@ def test_render_conversation_rich_contract() -> None:
     assert "... (620 chars)" in rendered
 
 
+def test_project_query_results_contract() -> None:
+    plan = QueryExecutionPlan(
+        selection=ConversationQuerySpec(),
+        action=QueryAction.SHOW,
+        output=QueryOutputSpec("markdown", ("stdout",), None, True, "strip-all", False),
+        mutation=QueryMutationSpec((), (), False, False, False),
+    )
+    conversation = _sample_conversation()
+
+    projected = _project_query_results([conversation], plan)
+
+    assert [message.id for message in projected[0].messages] == ["m-user", "m-assistant"]
+    assert [message.id for message in conversation.messages] == [
+        "m-user",
+        "m-thinking",
+        "m-tool",
+        "m-assistant",
+    ]
+
+
 @pytest.mark.parametrize(
     ("case", "expected_helper"),
     [
         ("count", "count"),
         ("stats_sql", "stats_sql"),
         ("stats_by_summaries", "stats_by_summaries"),
+        ("stream", "stream"),
         ("modify", "modify"),
         ("delete", "delete"),
         ("open", "open"),
@@ -577,9 +601,11 @@ def test_async_execute_query_action_routing_contract(case, expected_helper) -> N
         patch("polylogue.cli.query._delete_conversations", new_callable=AsyncMock) as mock_delete_conversations,
         patch("polylogue.cli.query._open_result") as mock_open_result,
         patch("polylogue.cli.query._output_results") as mock_output_results,
+        patch("polylogue.cli.query.resolve_stream_target", new_callable=AsyncMock, return_value="conv-stream") as mock_stream_target,
+        patch("polylogue.cli.query.stream_conversation", new_callable=AsyncMock) as mock_stream_conversation,
     ):
         repo.get_message_counts_batch = AsyncMock(return_value={str(summary.id): 2})
-        asyncio.run(_async_execute_query(env, {}))
+        asyncio.run(_async_execute_query(env, {"limit": 7}))
 
     if expected_helper == "count":
         mock_echo.assert_called_with(3)
@@ -594,10 +620,92 @@ def test_async_execute_query_action_routing_contract(case, expected_helper) -> N
         mock_delete_conversations.assert_awaited_once()
     elif expected_helper == "open":
         mock_open_result.assert_called_once()
+    elif expected_helper == "stream":
+        mock_stream_target.assert_awaited_once()
+        mock_stream_conversation.assert_awaited_once_with(
+            env,
+            repo,
+            "conv-stream",
+            output_format="json-lines",
+            dialogue_only=True,
+            message_limit=7,
+        )
+        warnings = [call.args[0] for call in mock_echo.call_args_list if call.args]
+        assert any("--transform is ignored in --stream mode" in line for line in warnings)
+        assert any("--output stdout,browser is ignored in --stream mode" in line for line in warnings)
     elif expected_helper == "summary_list":
         mock_output_summary_list.assert_awaited_once()
     else:
         mock_output_results.assert_called_once()
+
+
+def test_async_execute_query_summary_list_no_results_contract() -> None:
+    env = _make_env(repo=MagicMock(), config=MagicMock())
+    plan = _build_plan("summary_list")
+    filter_chain = MagicMock()
+    filter_chain.can_use_summaries.return_value = True
+    filter_chain.list_summaries = AsyncMock(return_value=[])
+    plan.selection.build_filter.return_value = filter_chain
+
+    with (
+        patch("polylogue.cli.helpers.load_effective_config", return_value=MagicMock()),
+        patch("polylogue.storage.search_providers.create_vector_provider", return_value=None),
+        patch("polylogue.cli.query.build_query_execution_plan", return_value=plan),
+        patch("polylogue.cli.query._no_results", side_effect=SystemExit(2)) as mock_no_results,
+        pytest.raises(SystemExit) as exc_info,
+    ):
+        asyncio.run(_async_execute_query(env, {}))
+
+    assert exc_info.value.code == 2
+    mock_no_results.assert_called_once_with(env, plan.selection)
+
+
+def test_async_execute_query_query_spec_error_contract() -> None:
+    env = _make_env(repo=MagicMock(), config=MagicMock())
+    plan = _build_plan("show")
+    plan.selection.build_filter.side_effect = QuerySpecError("since", "not-a-date")
+
+    with (
+        patch("polylogue.cli.helpers.load_effective_config", return_value=MagicMock()),
+        patch("polylogue.storage.search_providers.create_vector_provider", return_value=None),
+        patch("polylogue.cli.query.build_query_execution_plan", return_value=plan),
+        patch("click.echo") as mock_echo,
+        pytest.raises(SystemExit) as exc_info,
+    ):
+        asyncio.run(_async_execute_query(env, {}))
+
+    assert exc_info.value.code == 1
+    assert [call.args[0] for call in mock_echo.call_args_list if call.args] == [
+        "Error: Cannot parse date: 'not-a-date'",
+        "Hint: use ISO format (2025-01-15), relative ('yesterday', 'last week'), or month (2025-01)",
+    ]
+    assert all(call.kwargs.get("err") is True for call in mock_echo.call_args_list)
+
+
+def test_async_execute_query_show_projects_results_before_output_contract() -> None:
+    env = _make_env(repo=MagicMock(), config=MagicMock())
+    selection = MagicMock()
+    plan = QueryExecutionPlan(
+        selection=selection,
+        action=QueryAction.SHOW,
+        output=QueryOutputSpec("markdown", ("stdout",), None, True, "strip-all", False),
+        mutation=QueryMutationSpec((), (), False, False, False),
+    )
+    filter_chain = MagicMock()
+    filter_chain.can_use_summaries.return_value = False
+    filter_chain.list = AsyncMock(return_value=[_sample_conversation()])
+    selection.build_filter.return_value = filter_chain
+
+    with (
+        patch("polylogue.cli.helpers.load_effective_config", return_value=MagicMock()),
+        patch("polylogue.storage.search_providers.create_vector_provider", return_value=None),
+        patch("polylogue.cli.query.build_query_execution_plan", return_value=plan),
+        patch("polylogue.cli.query._output_results") as mock_output_results,
+    ):
+        asyncio.run(_async_execute_query(env, {}))
+
+    projected_results = mock_output_results.call_args.args[1]
+    assert [message.id for message in projected_results[0].messages] == ["m-user", "m-assistant"]
 
 
 @pytest.mark.parametrize(
