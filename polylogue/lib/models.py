@@ -287,7 +287,7 @@ class Message(BaseModel):
         ts = parse_timestamp(record.timestamp)
         return cls(
             id=record.message_id,
-            role=record.role or "unknown",
+            role=(record.role or "").strip() or "unknown",
             text=record.text,
             timestamp=ts,
             attachments=[Attachment.from_record(a) for a in attachments],
