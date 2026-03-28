@@ -241,7 +241,7 @@ def _search_messages_impl(
             cid,
         )
         # Use computed source_name column directly instead of parsing JSON
-        source_name = row.get("source_name", None)
+        source_name = row["source_name"]
         hits.append(
             SearchHit(
                 conversation_id=cid,
