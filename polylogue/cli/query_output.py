@@ -314,7 +314,7 @@ async def _output_summary_list(
                 tags_str,
                 s.summary or "",
             ])
-        click.echo(buf.getvalue().rstrip())
+        click.echo(buf.getvalue().rstrip("\r\n"))
         return
 
     if env.ui.plain:

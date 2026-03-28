@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NoReturn
 
 import click
 
 from polylogue.cli import query_actions as _query_actions
 from polylogue.cli import query_output as _query_output
-from polylogue.cli.query_plan import QueryAction, QueryPlanError, build_query_execution_plan
+from polylogue.cli.query_plan import (
+    QueryPlanError,
+    QueryRoute,
+    build_query_execution_plan,
+    resolve_query_route,
+)
 from polylogue.lib.log import get_logger
 from polylogue.lib.query_spec import ConversationQuerySpec, QuerySpecError
 
@@ -35,6 +40,7 @@ _write_message_streaming = _query_output._write_message_streaming
 stream_conversation = _query_output.stream_conversation
 
 if TYPE_CHECKING:
+    from polylogue.cli.query_plan import QueryExecutionPlan
     from polylogue.cli.types import AppEnv
 
 
@@ -49,7 +55,22 @@ def _describe_filters(params: dict[str, Any] | ConversationQuerySpec) -> list[st
     return _coerce_query_spec(params).describe()
 
 
-def _no_results(env: AppEnv, params: dict[str, Any] | ConversationQuerySpec, *, exit_code: int = 2) -> None:
+def _project_query_results(results: list[Any], plan: QueryExecutionPlan) -> list[Any]:
+    """Apply post-selection transforms consistently before final output."""
+    projected = results
+    if plan.output.transform is not None:
+        projected = _apply_transform(projected, plan.output.transform)
+    if plan.output.dialogue_only:
+        projected = [conversation.dialogue_only() for conversation in projected]
+    return projected
+
+
+def _no_results(
+    env: AppEnv,
+    params: dict[str, Any] | ConversationQuerySpec,
+    *,
+    exit_code: int = 2,
+) -> NoReturn:
     """Print a helpful no-results message and exit."""
     filters = _describe_filters(params)
     if filters:
@@ -109,18 +130,20 @@ async def _async_execute_query(env: AppEnv, params: dict[str, Any]) -> None:
         )
         raise SystemExit(1) from exc
 
-    if plan.action == QueryAction.COUNT:
+    route = resolve_query_route(plan, can_use_summaries=filter_chain.can_use_summaries())
+
+    if route == QueryRoute.COUNT:
         click.echo(await filter_chain.count())
         return
 
-    if plan.prefers_summary_list() and filter_chain.can_use_summaries():
+    if route == QueryRoute.SUMMARY_LIST:
         summary_results = await filter_chain.list_summaries()
         if not summary_results:
             _no_results(env, plan.selection)
         await _output_summary_list(env, summary_results, params, repo)
         return
 
-    if plan.action == QueryAction.STREAM:
+    if route == QueryRoute.STREAM:
         full_id = await resolve_stream_target(repo, filter_chain, plan.selection)
         if plan.output.transform is not None:
             click.echo(
@@ -143,40 +166,36 @@ async def _async_execute_query(env: AppEnv, params: dict[str, Any]) -> None:
         )
         return
 
-    if plan.action == QueryAction.STATS:
+    if route == QueryRoute.STATS_SQL:
         await _output_stats_sql(env, filter_chain, repo)
         return
 
-    if plan.prefers_summary_stats() and filter_chain.can_use_summaries():
+    if route == QueryRoute.SUMMARY_STATS:
         summaries = await filter_chain.list_summaries()
         msg_counts = await repo.get_message_counts_batch([str(summary.id) for summary in summaries])
         _output_stats_by_summaries(env, summaries, msg_counts, plan.stats_dimension or "all")
         return
 
-    if plan.prefers_summary_mutation() and filter_chain.can_use_summaries():
+    if route in {QueryRoute.SUMMARY_MODIFY, QueryRoute.SUMMARY_DELETE}:
         results = await filter_chain.list_summaries()
     else:
         results = await filter_chain.list()
 
-    if plan.action == QueryAction.MODIFY:
+    if route in {QueryRoute.MODIFY, QueryRoute.SUMMARY_MODIFY}:
         await _apply_modifiers(env, results, params, repo)
         return
 
-    if plan.action == QueryAction.DELETE:
+    if route in {QueryRoute.DELETE, QueryRoute.SUMMARY_DELETE}:
         await _delete_conversations(env, results, params, repo)
         return
 
-    if plan.output.transform is not None:
-        results = _apply_transform(results, plan.output.transform)
+    results = _project_query_results(results, plan)
 
-    if plan.output.dialogue_only:
-        results = [conversation.dialogue_only() for conversation in results]
-
-    if plan.action == QueryAction.STATS_BY:
+    if route == QueryRoute.STATS_BY:
         _output_stats_by(env, results, plan.stats_dimension or "all")
         return
 
-    if plan.action == QueryAction.OPEN:
+    if route == QueryRoute.OPEN:
         _open_result(env, results, params)
         return
 

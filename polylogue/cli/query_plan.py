@@ -24,6 +24,21 @@ class QueryAction(str, Enum):
     SHOW = "show"
 
 
+class QueryRoute(str, Enum):
+    COUNT = "count"
+    SUMMARY_LIST = "summary-list"
+    STREAM = "stream"
+    STATS_SQL = "stats-sql"
+    SUMMARY_STATS = "summary-stats"
+    STATS_BY = "stats-by"
+    SUMMARY_MODIFY = "summary-modify"
+    SUMMARY_DELETE = "summary-delete"
+    MODIFY = "modify"
+    DELETE = "delete"
+    OPEN = "open"
+    SHOW = "show"
+
+
 @dataclass(frozen=True)
 class QueryOutputSpec:
     output_format: str
@@ -75,6 +90,32 @@ class QueryExecutionPlan:
 
     def prefers_summary_mutation(self) -> bool:
         return self.action in {QueryAction.MODIFY, QueryAction.DELETE}
+
+
+def resolve_query_route(
+    plan: QueryExecutionPlan,
+    *,
+    can_use_summaries: bool,
+) -> QueryRoute:
+    if plan.action == QueryAction.COUNT:
+        return QueryRoute.COUNT
+    if plan.prefers_summary_list() and can_use_summaries:
+        return QueryRoute.SUMMARY_LIST
+    if plan.action == QueryAction.STREAM:
+        return QueryRoute.STREAM
+    if plan.action == QueryAction.STATS:
+        return QueryRoute.STATS_SQL
+    if plan.prefers_summary_stats() and can_use_summaries:
+        return QueryRoute.SUMMARY_STATS
+    if plan.action == QueryAction.STATS_BY:
+        return QueryRoute.STATS_BY
+    if plan.action == QueryAction.MODIFY:
+        return QueryRoute.SUMMARY_MODIFY if can_use_summaries else QueryRoute.MODIFY
+    if plan.action == QueryAction.DELETE:
+        return QueryRoute.SUMMARY_DELETE if can_use_summaries else QueryRoute.DELETE
+    if plan.action == QueryAction.OPEN:
+        return QueryRoute.OPEN
+    return QueryRoute.SHOW
 
 
 def build_query_execution_plan(params: Mapping[str, object]) -> QueryExecutionPlan:

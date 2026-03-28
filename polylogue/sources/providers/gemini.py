@@ -17,6 +17,7 @@ from polylogue.lib.viewports import (
     MessageMeta,
     ReasoningTrace,
     TokenUsage,
+    ToolCall,
 )
 
 
@@ -217,6 +218,11 @@ class GeminiMessage(BaseModel):
                         text=part.text,
                         raw=part.model_dump(),
                     ))
+                elif getattr(part, "inlineData", None) is not None or getattr(part, "fileData", None) is not None:
+                    blocks.append(ContentBlock(
+                        type=ContentType.FILE,
+                        raw=part.model_dump(),
+                    ))
             elif isinstance(part, dict):
                 if part.get("text"):
                     blocks.append(ContentBlock(
@@ -253,3 +259,7 @@ class GeminiMessage(BaseModel):
                 ))
 
         return blocks
+
+    def extract_tool_calls(self) -> list[ToolCall]:
+        """Extract tool calls (Gemini export message model does not expose them here)."""
+        return []
