@@ -283,7 +283,7 @@ def search_messages(
     """Search for messages using FTS5 full-text search.
 
     This function uses an LRU cache for repeated queries. The cache is
-    automatically invalidated when conversations are re-ingested.
+    automatically invalidated when conversations are re-parsed.
 
     Args:
         query: Search query string (automatically escaped for FTS5)

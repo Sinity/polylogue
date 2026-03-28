@@ -126,7 +126,7 @@ FORMAT_CURSORS_CASES = [
 
 # TestFormatIndexStatus cases
 FORMAT_INDEX_STATUS_CASES = [
-    ("ingest", True, None, "Index: skipped"),
+    ("parse", True, None, "Index: skipped"),
     ("render", False, None, "Index: skipped"),
     ("full", True, "connection failed", "Index: error"),
     ("full", True, None, "Index: ok"),

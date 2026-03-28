@@ -19,7 +19,7 @@ import pytest
 
 from polylogue.config import Config, Source
 from polylogue.pipeline.runner import run_sources
-from polylogue.pipeline.services.ingestion import IngestionService
+from polylogue.pipeline.services.parsing import ParsingService
 from polylogue.storage.backends.sqlite import SQLiteBackend
 from polylogue.storage.repository import ConversationRepository
 
@@ -114,12 +114,12 @@ def test_full_workflow_per_provider(provider, sample_name, temp_config_and_repo)
     source = Source(name=f"{provider}-test", path=sample_path)
 
     # 1. IMPORT: Run ingestion
-    service = IngestionService(
+    service = ParsingService(
         repository=storage_repo,
         archive_root=archive_root,
         config=config,
     )
-    result = service.ingest_sources([source])
+    result = service.parse_sources([source])
 
     # Build FTS index for search tests (INDEX stage of pipeline)
     from polylogue.storage.backends.sqlite import open_connection
@@ -188,12 +188,12 @@ def test_render_formats(format, temp_config_and_repo, chatgpt_sample_source):
     config, storage_repo, conv_repo, archive_root, db_path = temp_config_and_repo
 
     # Import data
-    service = IngestionService(
+    service = ParsingService(
         repository=storage_repo,
         archive_root=archive_root,
         config=config,
     )
-    service.ingest_sources([chatgpt_sample_source])
+    service.parse_sources([chatgpt_sample_source])
 
     # Get conversation
     convs = conv_repo.list()
@@ -231,18 +231,18 @@ def test_incremental_sync_no_duplicates(temp_config_and_repo, chatgpt_sample_sou
 
     config, storage_repo, conv_repo, archive_root, db_path = temp_config_and_repo
 
-    service = IngestionService(
+    service = ParsingService(
         repository=storage_repo,
         archive_root=archive_root,
         config=config,
     )
 
     # First sync
-    result1 = service.ingest_sources([chatgpt_sample_source])
+    result1 = service.parse_sources([chatgpt_sample_source])
     count1 = result1.counts["conversations"]
 
     # Second sync (should deduplicate)
-    result2 = service.ingest_sources([chatgpt_sample_source])
+    result2 = service.parse_sources([chatgpt_sample_source])
     count2 = result2.counts["conversations"]
 
     # Second sync should add 0 conversations
@@ -289,12 +289,12 @@ def test_incremental_sync_with_updates(temp_config_and_repo):
     try:
         # First sync
         source_v1 = Source(name="test", path=source_path_v1)
-        service = IngestionService(
+        service = ParsingService(
             repository=storage_repo,
             archive_root=archive_root,
             config=config,
         )
-        service.ingest_sources([source_v1])
+        service.parse_sources([source_v1])
 
         # Modify conversation
         with open(source_path_v1, "w") as f:
@@ -304,7 +304,7 @@ def test_incremental_sync_with_updates(temp_config_and_repo):
             json.dump(conv_v2, f)
 
         # Second sync
-        service.ingest_sources([source_v1])
+        service.parse_sources([source_v1])
 
         # Should still have 1 conversation
         all_convs = conv_repo.list()
@@ -363,18 +363,18 @@ def test_sync_handles_deleted_conversations(temp_config_and_repo):
 
     try:
         # Sync both
-        service = IngestionService(
+        service = ParsingService(
             repository=storage_repo,
             archive_root=archive_root,
             config=config,
         )
-        service.ingest_sources([Source(name="s1", path=path1), Source(name="s2", path=path2)])
+        service.parse_sources([Source(name="s1", path=path1), Source(name="s2", path=path2)])
 
         # Should have 2 conversations
         assert len(conv_repo.list()) == 2
 
         # Remove second source, sync again
-        service.ingest_sources([Source(name="s1", path=path1)])
+        service.parse_sources([Source(name="s1", path=path1)])
 
         # Should STILL have 2 conversations (archive is append-only)
         assert len(conv_repo.list()) == 2
@@ -403,12 +403,12 @@ def test_multi_source_concurrent_sync(temp_config_and_repo, chatgpt_sample_sourc
         pytest.skip("Need at least 2 sources for this test")
 
     # Sync all sources
-    service = IngestionService(
+    service = ParsingService(
         repository=storage_repo,
         archive_root=archive_root,
         config=config,
     )
-    service.ingest_sources(sources)
+    service.parse_sources(sources)
 
     # Should have conversations from both
     all_convs = conv_repo.list()
@@ -459,12 +459,12 @@ def test_multi_source_isolated_namespaces(temp_config_and_repo):
         path2 = Path(f.name)
 
     try:
-        service = IngestionService(
+        service = ParsingService(
             repository=storage_repo,
             archive_root=archive_root,
             config=config,
         )
-        service.ingest_sources(
+        service.parse_sources(
             [
                 Source(name="source1", path=path1),
                 Source(name="source2", path=path2),
@@ -500,14 +500,14 @@ def test_sync_with_malformed_file_skips_gracefully(temp_config_and_repo):
 
     try:
         source = Source(name="bad", path=bad_path)
-        service = IngestionService(
+        service = ParsingService(
             repository=storage_repo,
             archive_root=archive_root,
             config=config,
         )
 
         # Should not crash
-        result = service.ingest_sources([source])
+        result = service.parse_sources([source])
 
         # Should report 0 conversations
         assert result.counts["conversations"] == 0
@@ -521,14 +521,14 @@ def test_sync_with_missing_file_reports_error(temp_config_and_repo):
     config, storage_repo, conv_repo, archive_root, db_path = temp_config_and_repo
 
     source = Source(name="missing", path=Path("/nonexistent/file.json"))
-    service = IngestionService(
+    service = ParsingService(
         repository=storage_repo,
         archive_root=archive_root,
         config=config,
     )
 
     # Should not crash
-    result = service.ingest_sources([source])
+    result = service.parse_sources([source])
 
     # Should report 0 conversations
     assert result.counts["conversations"] == 0
@@ -547,12 +547,12 @@ def test_sync_partial_success_with_mixed_sources(temp_config_and_repo, chatgpt_s
         Source(name="bad", path=Path("/nonexistent.json")),
     ]
 
-    service = IngestionService(
+    service = ParsingService(
         repository=storage_repo,
         archive_root=archive_root,
         config=config,
     )
-    result = service.ingest_sources(sources)
+    result = service.parse_sources(sources)
 
     # Good source should succeed
     assert result.counts["conversations"] > 0
@@ -575,12 +575,12 @@ def test_search_accuracy_basic_terms(temp_config_and_repo, chatgpt_sample_source
 
     config, storage_repo, conv_repo, archive_root, db_path = temp_config_and_repo
 
-    service = IngestionService(
+    service = ParsingService(
         repository=storage_repo,
         archive_root=archive_root,
         config=config,
     )
-    service.ingest_sources([chatgpt_sample_source])
+    service.parse_sources([chatgpt_sample_source])
 
     # Build search index
     from polylogue.storage.backends.sqlite import open_connection
@@ -647,12 +647,12 @@ def test_search_with_special_characters(temp_config_and_repo):
         path = Path(f.name)
 
     try:
-        service = IngestionService(
+        service = ParsingService(
             repository=storage_repo,
             archive_root=archive_root,
             config=config,
         )
-        service.ingest_sources([Source(name="test", path=path)])
+        service.parse_sources([Source(name="test", path=path)])
 
         # Build search index
         from polylogue.storage.backends.sqlite import open_connection
@@ -716,8 +716,8 @@ def test_pipeline_runner_with_preview_mode(workspace_env, chatgpt_sample_source)
     config = get_config()
     config.sources = [chatgpt_sample_source]
 
-    # Run ingestion stage
-    result = run_sources(config=config, stage="ingest", source_names=[chatgpt_sample_source.name])
+    # Run parse stage
+    result = run_sources(config=config, stage="parse", source_names=[chatgpt_sample_source.name])
 
     # Should report results
     assert result is not None

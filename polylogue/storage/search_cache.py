@@ -1,7 +1,7 @@
 """Search result caching for improved query performance.
 
 This module provides an LRU cache for search results that can be invalidated
-when conversations are re-ingested or modified.
+when conversations are re-parsed or modified.
 """
 
 from __future__ import annotations
@@ -9,12 +9,6 @@ from __future__ import annotations
 import threading
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    pass
-
-
 # Global cache state
 _cache_lock = threading.Lock()
 _cache_version = 0
@@ -79,7 +73,7 @@ class SearchCacheKey:
 def invalidate_search_cache() -> None:
     """Invalidate the entire search cache.
 
-    Call this when conversations are re-ingested or modified to ensure
+    Call this when conversations are re-parsed or modified to ensure
     fresh results on the next search.
 
     This is thread-safe and uses a version counter to invalidate all
@@ -92,10 +86,10 @@ def invalidate_search_cache() -> None:
 
 
 def get_cache_stats() -> dict[str, int]:
-    """Get cache statistics.
+    """Get cache version for invalidation tracking.
 
     Returns:
-        Dictionary with cache_version and hit/miss stats
+        Dictionary with current cache_version counter.
     """
     with _cache_lock:
         return {
