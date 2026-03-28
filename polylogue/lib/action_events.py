@@ -90,6 +90,10 @@ def build_tool_calls_from_content_blocks(
         classified_category = classify_tool(name, normalized_input)
         category = classified_category if semantic_category in (None, ToolCategory.OTHER) else semantic_category
         raw = {
+            "block_id": block.get("block_id"),
+            "block_index": block.get("block_index"),
+            "message_id": block.get("message_id"),
+            "conversation_id": block.get("conversation_id"),
             "type": block.get("type"),
             "tool_name": name,
             "tool_id": tool_id,

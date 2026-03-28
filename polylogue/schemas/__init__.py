@@ -1,24 +1,10 @@
-"""Schema and extraction infrastructure for polylogue.
+"""Runtime-facing schema validation and harmonization API."""
 
-Extraction path:
-- `unified.py` + `lib/viewports.py` — Full viewport extraction producing
-  `HarmonizedMessage` with tool_calls, reasoning_traces, content_blocks, etc.
-
-Supporting modules:
-- `schema_inference.py` — Infer JSON schemas from data samples
-- `validator.py` — Validate provider exports against schemas with drift detection
-- `providers/` — Bundled schema package catalogs and element schemas
-"""
-
-# Re-export main types for convenience
-from polylogue.schemas.registry import SchemaDiff, SchemaRegistry
 from polylogue.schemas.unified import HarmonizedMessage
 from polylogue.schemas.validator import SchemaValidator, ValidationResult, validate_provider_export
 
 __all__ = [
     "HarmonizedMessage",
-    "SchemaDiff",
-    "SchemaRegistry",
     "SchemaValidator",
     "ValidationResult",
     "validate_provider_export",
