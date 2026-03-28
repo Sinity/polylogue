@@ -1,7 +1,7 @@
 """SQLite schema management: DDL and version control.
 
-Schema version policy: v2 is the complete target schema. There are no migrations.
-If user_version != 0 and != 2, the database is incompatible — wipe and re-run.
+Schema version policy: v3 is the complete target schema. There are no migrations.
+If user_version != 0 and != 3, the database is incompatible — wipe and re-run.
 """
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ from polylogue.lib.log import get_logger
 from polylogue.storage.store import _make_ref_id
 
 logger = get_logger(__name__)
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 _VEC0_DDL = """
@@ -140,6 +140,7 @@ SCHEMA_DDL = """
             tool_input TEXT,
             media_type TEXT,
             metadata TEXT,
+            semantic_type TEXT,
             UNIQUE (message_id, block_index)
         );
 
@@ -154,6 +155,12 @@ SCHEMA_DDL = """
 
         CREATE INDEX IF NOT EXISTS idx_content_blocks_conv_type
         ON content_blocks(conversation_id, type);
+
+        CREATE INDEX IF NOT EXISTS idx_content_blocks_semantic_type
+        ON content_blocks(semantic_type);
+
+        CREATE INDEX IF NOT EXISTS idx_content_blocks_conv_semantic
+        ON content_blocks(conversation_id, semantic_type);
 
         CREATE TABLE IF NOT EXISTS message_meta (
             message_id TEXT PRIMARY KEY REFERENCES messages(message_id) ON DELETE CASCADE,
@@ -270,7 +277,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         conn.executescript(SCHEMA_DDL)
         conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         conn.commit()
-        logger.debug("Created fresh schema v2")
+        logger.debug("Created fresh schema v3")
         return
 
     if current_version == SCHEMA_VERSION:
@@ -281,5 +288,5 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     raise DatabaseError(
         f"Database schema version {current_version} is incompatible with expected version {SCHEMA_VERSION}. "
         "This database was created with a different schema. Delete the database file and re-run polylogue "
-        "to create a fresh v2 schema."
+        "to create a fresh v3 schema."
     )
