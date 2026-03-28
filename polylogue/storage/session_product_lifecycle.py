@@ -6,10 +6,12 @@ from polylogue.storage.session_product_rebuild import (
     rebuild_session_products_async,
     rebuild_session_products_sync,
 )
-from polylogue.storage.session_product_refresh import (
+from polylogue.storage.session_product_refresh_deletes import (
     delete_session_products_for_conversation_async,
-    refresh_session_products_for_conversation_async,
     refresh_thread_after_conversation_delete_async,
+)
+from polylogue.storage.session_product_refresh_updates import (
+    refresh_session_products_for_conversation_async,
 )
 from polylogue.storage.session_product_status import (
     session_product_status_async,

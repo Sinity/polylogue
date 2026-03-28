@@ -23,7 +23,18 @@ if TYPE_CHECKING:
 from polylogue.storage.repository_action_reads import RepositoryActionReadMixin
 from polylogue.storage.repository_archive_reads import RepositoryArchiveReadMixin
 from polylogue.storage.repository_maintenance_reads import RepositoryMaintenanceReadMixin
-from polylogue.storage.repository_product_reads import RepositoryProductReadMixin
+from polylogue.storage.repository_product_profile_reads import (
+    RepositoryProductProfileReadMixin,
+)
+from polylogue.storage.repository_product_summary_reads import (
+    RepositoryProductSummaryReadMixin,
+)
+from polylogue.storage.repository_product_thread_reads import (
+    RepositoryProductThreadReadMixin,
+)
+from polylogue.storage.repository_product_timeline_reads import (
+    RepositoryProductTimelineReadMixin,
+)
 from polylogue.storage.repository_raw import RepositoryRawMixin
 from polylogue.storage.repository_vectors import RepositoryVectorMixin
 from polylogue.storage.repository_writes import RepositoryWriteMixin
@@ -33,7 +44,10 @@ class ConversationRepository(
     RepositoryArchiveReadMixin,
     RepositoryActionReadMixin,
     RepositoryMaintenanceReadMixin,
-    RepositoryProductReadMixin,
+    RepositoryProductProfileReadMixin,
+    RepositoryProductTimelineReadMixin,
+    RepositoryProductThreadReadMixin,
+    RepositoryProductSummaryReadMixin,
     RepositoryRawMixin,
     RepositoryWriteMixin,
     RepositoryVectorMixin,
