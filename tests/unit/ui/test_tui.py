@@ -3,9 +3,7 @@ from textual.widgets import DataTable, Input, TabbedContent, Tree
 
 try:
     from polylogue.ui.tui.app import PolylogueApp
-    from polylogue.ui.tui.screens.browser import Browser
     from polylogue.ui.tui.screens.dashboard import Dashboard, ProviderBar
-    from polylogue.ui.tui.screens.search import Search
     from polylogue.ui.tui.widgets.stats import StatCard
 except ImportError:
     # Textual might not be installed in some envs

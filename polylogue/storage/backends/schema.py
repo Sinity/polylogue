@@ -2,12 +2,10 @@
 
 from __future__ import annotations
 
-import json
 import sqlite3
 
 from polylogue.lib.log import get_logger
 from polylogue.storage.store import _make_ref_id
-
 
 LOGGER = get_logger(__name__)
 SCHEMA_VERSION = 11

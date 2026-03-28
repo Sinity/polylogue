@@ -21,7 +21,7 @@ from polylogue.lib.models import ConversationSummary
 from polylogue.storage.backends.sqlite import SQLiteBackend, open_connection
 from polylogue.storage.index import rebuild_index
 from polylogue.storage.repository import ConversationRepository
-from tests.helpers import ConversationBuilder
+from tests.infra.helpers import ConversationBuilder
 
 
 @pytest.fixture

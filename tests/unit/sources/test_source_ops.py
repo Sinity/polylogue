@@ -6,7 +6,7 @@ from pathlib import Path
 
 from polylogue.config import Source
 from polylogue.sources import iter_source_conversations, parse_drive_payload
-from tests.helpers import (
+from tests.infra.helpers import (
     ChatGPTExportBuilder,
     GenericConversationBuilder,
     InboxBuilder,
@@ -28,7 +28,7 @@ def test_auto_detect_chatgpt_and_claude(tmp_path):
 
 def test_claude_chat_messages_attachments(tmp_path):
     # Use builder with custom message containing attachments
-    from tests.helpers import make_claude_chat_message
+    from tests.infra.helpers import make_claude_chat_message
     payload = {
         "chat_messages": [
             make_claude_chat_message(

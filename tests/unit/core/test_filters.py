@@ -2,33 +2,24 @@
 
 from __future__ import annotations
 
-import json
-import sys
-import tempfile
 from datetime import datetime, timezone
-from io import StringIO
-from pathlib import Path
-from unittest.mock import MagicMock, Mock, patch
+from unittest.mock import patch
 
 import pytest
 
 from polylogue.lib.filters import ConversationFilter
-from polylogue.lib.models import Conversation, ConversationSummary, Message
-from polylogue.storage.backends.sqlite import SQLiteBackend, open_connection
-from polylogue.storage.index import rebuild_index
-from polylogue.storage.repository import ConversationRepository
+from polylogue.lib.models import ConversationSummary
 from polylogue.schemas.unified import (
     HarmonizedMessage,
-    extract_reasoning_traces,
-    extract_tool_calls,
-    extract_content_blocks,
-    extract_token_usage,
-    extract_claude_code_text,
-    extract_chatgpt_text,
-    extract_codex_text,
-    extract_harmonized_message,
-    harmonize_parsed_message,
     bulk_harmonize,
+    extract_chatgpt_text,
+    extract_claude_code_text,
+    extract_codex_text,
+    extract_content_blocks,
+    extract_harmonized_message,
+    extract_reasoning_traces,
+    extract_token_usage,
+    harmonize_parsed_message,
     is_message_record,
 )
 from polylogue.schemas.validator import (
@@ -36,8 +27,10 @@ from polylogue.schemas.validator import (
     ValidationResult,
     validate_provider_export,
 )
-from tests.helpers import ConversationBuilder
-
+from polylogue.storage.backends.sqlite import SQLiteBackend, open_connection
+from polylogue.storage.index import rebuild_index
+from polylogue.storage.repository import ConversationRepository
+from tests.infra.helpers import ConversationBuilder
 
 # =============================================================================
 # TEST DATA: PARAMETRIZATION CONSTANTS (SCREAMING_CASE)
@@ -667,9 +660,7 @@ class TestFiltersPick:
                     else:
                         with patch(patch_target, return_value=input_value):
                             result = ConversationFilter(filter_repo_pick).pick()
-                            if input_value == "":
-                                assert result is not None
-                            elif input_value == "1":
+                            if input_value == "" or input_value == "1":
                                 assert result is not None
                             elif input_value == "999" or input_value == "not a number":
                                 assert result is None
@@ -758,18 +749,12 @@ class TestUnifiedExtractContentBlocks:
             assert len(result) == 1
             from polylogue.lib.viewports import ContentType
             assert result[0].type == ContentType.TEXT
-        elif expected_type == "thinking_block":
-            assert len(result) == 1
-        elif expected_type == "tool_use_block":
-            assert len(result) == 1
-        elif expected_type == "tool_result_block":
+        elif expected_type == "thinking_block" or expected_type == "tool_use_block" or expected_type == "tool_result_block":
             assert len(result) == 1
         elif expected_type == "tool_result_no_content":
             assert len(result) == 1
             assert result[0].text == ""
-        elif expected_type == "code_block":
-            assert len(result) == 1
-        elif expected_type == "code_block_code":
+        elif expected_type == "code_block" or expected_type == "code_block_code":
             assert len(result) == 1
 
 
@@ -978,7 +963,7 @@ class TestValidatorDetectDrift:
             "additionalProperties": {"type": "string"}
         }
         validator = SchemaValidator(schema, strict=True)
-        result = validator.validate({"name": "test", "extra": "value"})
+        validator.validate({"name": "test", "extra": "value"})
         assert True
 
     def test_validate_nested_object_drift(self):

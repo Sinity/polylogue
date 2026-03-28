@@ -10,59 +10,11 @@ This module contains tests for:
 
 from __future__ import annotations
 
-import hashlib
-import json
-import sqlite3
-import threading
-from collections import Counter
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
-from pydantic import ValidationError
 
-from polylogue.schemas.unified import (
-    extract_harmonized_message,
-    is_message_record,
-)
-from polylogue.schemas.unified import (
-    normalize_role as new_normalize_role,
-)
-from polylogue.sources.parsers.base import normalize_role as old_normalize_role
-from polylogue.sources.parsers.claude import (
-    extract_text_from_segments as old_extract_segments,
-)
-from polylogue.storage.backends import SQLiteBackend
-from polylogue.storage.backends.sqlite import (
-    SCHEMA_VERSION,
-    SQLiteBackend,
-    DatabaseError,
-    _apply_schema,
-    _ensure_schema,
-    _json_or_none,
-    _run_migrations,
-    connection_context,
-    default_db_path,
-    open_connection,
-)
-from polylogue.storage.store import (
-    MAX_ATTACHMENT_SIZE,
-    AttachmentRecord,
-    ConversationRecord,
-    MessageRecord,
-)
-from tests.helpers import (
-    _make_ref_id,
-    _prune_attachment_refs,
-    make_attachment,
-    make_conversation,
-    make_message,
-    store_records,
-    upsert_attachment,
-    upsert_conversation,
-    upsert_message,
-)
+from polylogue.storage.backends.sqlite import SQLiteBackend
 
 # test_db and test_conn fixtures are in conftest.py
 
@@ -81,6 +33,7 @@ class TestRawConversationStorage:
     def test_save_raw_conversation_new(self, backend: SQLiteBackend) -> None:
         """Saving a new raw conversation returns True."""
         from datetime import datetime, timezone
+
         from polylogue.storage.store import RawConversationRecord
 
         record = RawConversationRecord(
@@ -100,6 +53,7 @@ class TestRawConversationStorage:
     def test_save_raw_conversation_duplicate(self, backend: SQLiteBackend) -> None:
         """Saving a duplicate raw_id returns False (INSERT OR IGNORE)."""
         from datetime import datetime, timezone
+
         from polylogue.storage.store import RawConversationRecord
 
         record = RawConversationRecord(
@@ -152,6 +106,7 @@ class TestRawConversationStorage:
     def test_iter_raw_conversations(self, backend: SQLiteBackend) -> None:
         """Iterate over all raw conversations."""
         from datetime import datetime, timezone
+
         from polylogue.storage.store import RawConversationRecord
 
         records = [
@@ -174,6 +129,7 @@ class TestRawConversationStorage:
     def test_iter_raw_conversations_by_provider(self, backend: SQLiteBackend) -> None:
         """Filter iteration by provider name."""
         from datetime import datetime, timezone
+
         from polylogue.storage.store import RawConversationRecord
 
         records = [
@@ -199,6 +155,7 @@ class TestRawConversationStorage:
     def test_iter_raw_conversations_with_limit(self, backend: SQLiteBackend) -> None:
         """Limit the number of records returned."""
         from datetime import datetime, timezone
+
         from polylogue.storage.store import RawConversationRecord
 
         for i in range(10):
@@ -222,6 +179,7 @@ class TestRawConversationStorage:
         (data flows from raw to parsed, FK points backward to origin)
         """
         from datetime import datetime, timezone
+
         from polylogue.storage.store import ConversationRecord, RawConversationRecord
 
         # First store the raw conversation
@@ -280,6 +238,7 @@ class TestRawConversationStorage:
     def test_get_raw_conversation_count(self, backend: SQLiteBackend) -> None:
         """Count raw conversations."""
         from datetime import datetime, timezone
+
         from polylogue.storage.store import RawConversationRecord
 
         # Initially empty
@@ -371,27 +330,21 @@ class TestContentHashing:
     For parsing tests, see test_fixtures_contract.py.
     """
 
-    def test_raw_ids_are_sha256(self, raw_db_samples: list) -> None:
+    def test_raw_ids_are_sha256(self, raw_synthetic_samples: list) -> None:
         """Raw IDs are valid SHA256 hashes."""
-        if not raw_db_samples:
-            pytest.skip("No raw conversations in database")
-
-        for sample in raw_db_samples:
+        for sample in raw_synthetic_samples:
             assert len(sample.raw_id) == 64, f"Invalid hash length: {sample.raw_id}"
             assert all(c in "0123456789abcdef" for c in sample.raw_id)
 
-    def test_content_matches_hash(self, raw_db_samples: list) -> None:
+    def test_content_matches_hash(self, raw_synthetic_samples: list) -> None:
         """Content hashes match stored raw_id."""
-        if not raw_db_samples:
-            pytest.skip("No raw conversations in database")
-
         import hashlib
 
         mismatches = []
-        for sample in raw_db_samples:
+        for sample in raw_synthetic_samples:
             computed = hashlib.sha256(sample.raw_content).hexdigest()
             if computed != sample.raw_id:
                 mismatches.append((sample.raw_id[:16], computed[:16]))
 
         if mismatches:
-            pytest.fail(f"{len(mismatches)} hash mismatches: {mismatches[:5]}")
+            pytest.fail(f"{len(mismatches)}/{len(raw_synthetic_samples)} hash mismatches: {mismatches[:5]}")

@@ -11,42 +11,40 @@ usage() {
 Usage: $(basename "$0") [OPTIONS]
 
 Generate animated terminal screencasts for polylogue demos.
+Demo data is always generated synthetically via SyntheticCorpus.
 
 Options:
-    --synthetic     Use synthetic fixtures (no real exports needed)
-    --fixtures-dir  Custom fixtures directory (default: tests/fixtures/real/)
     --tape NAME     Run only a specific tape (e.g., 01-overview)
     --seed-only     Only seed the demo database, don't record tapes
     --skip-seed     Skip seeding, use existing demo database
+    --count N       Conversations per provider (default: 3)
     --verbose       Verbose output
     -h, --help      Show this help
 
 Examples:
-    # Full generation with synthetic data
-    ./demos/generate.sh --synthetic
+    # Full generation
+    ./demos/generate.sh
 
     # Re-record a single tape (uses existing seeded data)
     ./demos/generate.sh --skip-seed --tape 03-search
 
-    # Seed with real data, then record all tapes
-    ./demos/generate.sh --fixtures-dir tests/fixtures/real/
+    # Seed with more conversations for richer demos
+    ./demos/generate.sh --count 10 --verbose
 EOF
 }
 
-SYNTHETIC=""
-FIXTURES_DIR=""
 TAPE_FILTER=""
 SEED_ONLY=false
 SKIP_SEED=false
 VERBOSE=""
+COUNT=""
 
 while [[ $# -gt 0 ]]; do
     case $1 in
-        --synthetic) SYNTHETIC="--synthetic"; shift ;;
-        --fixtures-dir) FIXTURES_DIR="--fixtures-dir $2"; shift 2 ;;
         --tape) TAPE_FILTER="$2"; shift 2 ;;
         --seed-only) SEED_ONLY=true; shift ;;
         --skip-seed) SKIP_SEED=true; shift ;;
+        --count) COUNT="--count $2"; shift 2 ;;
         --verbose|-v) VERBOSE="-v"; shift ;;
         -h|--help) usage; exit 0 ;;
         *) echo "Unknown option: $1"; usage; exit 1 ;;
@@ -58,11 +56,11 @@ if [ "$SKIP_SEED" = false ]; then
     echo "==> Seeding demo database..."
     mkdir -p "$DEMO_DIR"
 
-    # Capture env vars from seed script
-    ENV_OUTPUT=$(cd "$PROJECT_ROOT" && python scripts/seed_demo.py \
+    # Capture env vars from polylogue demo command
+    ENV_OUTPUT=$(cd "$PROJECT_ROOT" && polylogue demo --seed \
         --output-dir "$DEMO_DIR" \
         --env-only \
-        $SYNTHETIC $FIXTURES_DIR $VERBOSE)
+        $COUNT)
 
     # Write env file for tape scripts
     echo "$ENV_OUTPUT" > "$ENV_FILE"

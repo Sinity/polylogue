@@ -11,7 +11,6 @@ import pytest
 from polylogue.lib.models import Conversation, Message
 from tests.integration.conftest import make_mock_filter
 
-
 # =============================================================================
 # Test data tables (SCREAMING_CASE constants)
 # =============================================================================
@@ -102,8 +101,8 @@ class TestStatsResource:
 
     def test_stats_returns_archive_statistics(self):
         """Stats resource returns conversation and message counts."""
-        from polylogue.mcp.server import _build_server
         from polylogue.lib.stats import ArchiveStats
+        from polylogue.mcp.server import _build_server
 
         with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
             mock_repo = MagicMock()
@@ -549,7 +548,7 @@ class TestSearchToolFilters:
                     try:
                         result = server._tool_manager._tools["search"].fn(**args)
                         # If no exception, check result contains error info
-                        parsed = json.loads(result)
+                        json.loads(result)
                         # Tools that catch errors may return dict with error key
                     except ValueError:
                         pass  # Expected for invalid date
@@ -565,6 +564,6 @@ class TestSearchToolFilters:
                     # For invalid_limit_type, tool should handle gracefully
                     try:
                         result = server._tool_manager._tools["search"].fn(**args)
-                        parsed = json.loads(result)
+                        json.loads(result)
                     except (TypeError, ValueError):
                         pass  # Expected for invalid limit type

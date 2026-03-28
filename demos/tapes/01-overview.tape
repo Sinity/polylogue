@@ -1,5 +1,5 @@
 # Overview tape — shows `polylogue` (no args) → stats panels
-# Generated demo data is pre-seeded via scripts/seed_demo.py
+# Generated demo data is pre-seeded via demos/seed_demo.py
 
 Output demos/output/01-overview.gif
 

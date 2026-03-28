@@ -9,6 +9,7 @@ from __future__ import annotations
 import threading
 from dataclasses import dataclass
 from pathlib import Path
+
 # Global cache state
 _cache_lock = threading.Lock()
 _cache_version = 0

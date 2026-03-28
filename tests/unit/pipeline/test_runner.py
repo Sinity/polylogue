@@ -19,7 +19,7 @@ from polylogue.pipeline.runner import (
 )
 from polylogue.storage.backends.sqlite import open_connection
 from polylogue.storage.store import PlanResult
-from tests.helpers import make_conversation, store_records
+from tests.infra.helpers import make_conversation, store_records
 
 
 class TestRenderFailureTracking:

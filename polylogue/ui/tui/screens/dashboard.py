@@ -127,7 +127,6 @@ class Dashboard(Container):
 
     def _apply_stats(self, stats) -> None:
         """Apply fetched stats to DOM widgets (runs on main thread)."""
-        from polylogue.lib.stats import ArchiveStats
 
         self.query_one("#stat-conversations", StatCard).value = str(stats.total_conversations)
         self.query_one("#stat-messages", StatCard).value = str(stats.total_messages)

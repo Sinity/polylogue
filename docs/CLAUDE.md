@@ -2,7 +2,7 @@
 
 > Update when adding features or changing behaviors. See `~/.claude/CLAUDE.md` for philosophy.
 
-**Mission**: Local-first AI chat archive (ChatGPT, Claude, Codex, Gemini → SQLite + FTS5/Qdrant)
+**Mission**: Local-first AI chat archive (ChatGPT, Claude, Codex, Gemini → SQLite + FTS5 + sqlite-vec)
 
 ---
 
@@ -10,7 +10,7 @@
 
 ```bash
 # Dev
-uv run pytest -q --ignore=tests/test_qdrant.py
+uv run pytest -q
 uv run mypy polylogue/
 uv run ruff check polylogue/ tests/
 
@@ -24,7 +24,7 @@ uv run polylogue check --repair               # Integrity check
 uv run polylogue mcp                          # MCP server (stdio)
 ```
 
-**Env vars**: `POLYLOGUE_ARCHIVE_ROOT`, `POLYLOGUE_QDRANT_URL`, `POLYLOGUE_VOYAGE_API_KEY`
+**Env vars**: `POLYLOGUE_ARCHIVE_ROOT`, `POLYLOGUE_RENDER_ROOT`
 
 **Library API**:
 ```python
@@ -32,7 +32,7 @@ with Polylogue() as archive:
     # Batch operations
     convs = archive.get_conversations(["id1", "id2", "id3"])
 
-    # Semantic search (requires Qdrant + Voyage)
+    # Semantic search (uses sqlite-vec)
     results = archive.filter().similar("error patterns").list()
 
     # Full-text search
@@ -46,7 +46,7 @@ with Polylogue() as archive:
 | Aspect | Implementation | Behavior |
 |--------|----------------|----------|
 | **Storage** | `SQLiteBackend` (only backend) | Thread-local connections, no protocol abstraction |
-| **Search** | `SearchProvider` protocol | FTS5 (local), Qdrant (vector), LRU cache |
+| **Search** | `SearchProvider` protocol | FTS5 (local), sqlite-vec (vector), LRU cache |
 | **Rendering** | Markdown/HTML renderers | Via `--format` flag |
 | **Services** | `polylogue.services` module | Singleton factories for backend + repository |
 | **Thread safety** | `_WRITE_LOCK` + thread-local | Lock in `store.py`, max 16 parallel ingests, 4 render workers |
@@ -92,8 +92,8 @@ Hash (NFC) → Store (under lock) → Render (parallel) → Index
 | `storage/repository.py` | StorageRepository (write coordination) |
 | `storage/backends/sqlite.py` | SQLiteBackend (schema v5, migrations) |
 | `storage/search_providers/fts5.py` | FTS5 search (incremental, query escaping) |
-| `storage/search_providers/qdrant.py` | Qdrant vector search (Voyage embeddings) |
-| `storage/db.py` | Thread-local connections, `connection_context()` |
+| `storage/search_providers/sqlite_vec.py` | sqlite-vec vector search |
+| `storage/backends/connection.py` | Thread-local connections, `connection_context()` |
 
 ### Sources (ingestion + parsing)
 | File | Purpose |
@@ -109,7 +109,7 @@ Hash (NFC) → Store (under lock) → Render (parallel) → Index
 |------|---------|
 | `pipeline/runner.py` | Orchestrates ingest → render → index |
 | `pipeline/services/ingestion.py` | IngestionService (parallel, bounded) |
-| `pipeline/services/indexing.py` | IndexService (FTS5/Qdrant management) |
+| `pipeline/services/indexing.py` | IndexService (FTS5 management) |
 | `pipeline/services/rendering.py` | RenderService (parallel output) |
 
 ### CLI
@@ -288,14 +288,9 @@ polylogue://conversations?provider=claude&tag=important&limit=50
 
 | Integration | Config | Behavior |
 |-------------|--------|----------|
-| **Voyage AI** | `POLYLOGUE_VOYAGE_API_KEY` / `VOYAGE_API_KEY` | voyage-2 model, 1024-dim, 5× backoff |
-| **Qdrant** | `POLYLOGUE_QDRANT_URL` / `QDRANT_URL`, `POLYLOGUE_QDRANT_API_KEY` / `QDRANT_API_KEY` | Cosine distance, 3× backoff |
-| **Anthropic** | `POLYLOGUE_ANTHROPIC_API_KEY` / `ANTHROPIC_API_KEY` | For LLM annotation (future) |
-| **OpenAI** | `POLYLOGUE_OPENAI_API_KEY` / `OPENAI_API_KEY` | For alternative embeddings (future) |
-| **Google Gemini** | `POLYLOGUE_GOOGLE_API_KEY` / `GOOGLE_API_KEY` / `GEMINI_API_KEY` | For Gemini API access (future) |
 | **Google Drive** | `~/.config/polylogue/polylogue-credentials.json` | OAuth 2.0, browser auth |
 
-**Environment Variable Precedence**: POLYLOGUE_* prefixed variables checked first, then unprefixed versions. Allows project-specific config without affecting global tools.
+**Environment Variable Precedence**: POLYLOGUE_* prefixed variables checked first, then unprefixed versions (see `lib/env.py`). Allows project-specific config without affecting global tools.
 
 ---
 
@@ -311,15 +306,15 @@ polylogue://conversations?provider=claude&tag=important&limit=50
 
 ## Extension Points
 
-Search and vector storage use protocol-based extensibility:
+Search uses protocol-based extensibility:
 
 ```python
-# SearchProvider protocol (2 implementations: FTS5, Hybrid)
-# VectorProvider protocol (Qdrant implementation)
+# SearchProvider protocol (implementations: FTS5, Hybrid)
 # See protocols.py for interfaces
 ```
 
 Storage uses `SQLiteBackend` directly (single backend, no protocol abstraction).
+Vector search uses sqlite-vec (self-contained, no external services).
 
 ---
 
@@ -353,4 +348,4 @@ Storage uses `SQLiteBackend` directly (single backend, no protocol abstraction).
 
 ## Pinned Notes
 
-@.claude/scratch/ files transcluded here. Currently empty.
+Session notes are ephemeral and not persisted.

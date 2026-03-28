@@ -26,8 +26,8 @@ except ImportError:
 import pytest
 
 
-def fuzz_chatgpt_importer(data: bytes) -> None:
-    """Fuzz the ChatGPT importer with arbitrary JSON-like data."""
+def fuzz_chatgpt_parser(data: bytes) -> None:
+    """Fuzz the ChatGPT parser with arbitrary JSON-like data."""
     from polylogue.sources.parsers import chatgpt
 
     try:
@@ -69,8 +69,8 @@ def fuzz_chatgpt_importer(data: bytes) -> None:
         raise AssertionError(f"Unexpected exception in chatgpt.parse: {type(e).__name__}: {e}") from e
 
 
-def fuzz_codex_importer(data: bytes) -> None:
-    """Fuzz the Codex importer with arbitrary JSONL-like data."""
+def fuzz_codex_parser(data: bytes) -> None:
+    """Fuzz the Codex parser with arbitrary JSONL-like data."""
     from polylogue.sources.parsers import codex
 
     try:
@@ -118,8 +118,8 @@ def fuzz_codex_importer(data: bytes) -> None:
         raise AssertionError(f"Unexpected exception in codex.parse: {type(e).__name__}: {e}") from e
 
 
-def fuzz_claude_code_importer(data: bytes) -> None:
-    """Fuzz the Claude Code importer with arbitrary JSONL-like data."""
+def fuzz_claude_code_parser(data: bytes) -> None:
+    """Fuzz the Claude Code parser with arbitrary JSONL-like data."""
     from polylogue.sources.parsers import claude
 
     try:
@@ -166,8 +166,8 @@ def fuzz_claude_code_importer(data: bytes) -> None:
         raise AssertionError(f"Unexpected exception in claude.parse_code: {type(e).__name__}: {e}") from e
 
 
-def fuzz_claude_ai_importer(data: bytes) -> None:
-    """Fuzz the Claude AI importer with arbitrary JSON data."""
+def fuzz_claude_ai_parser(data: bytes) -> None:
+    """Fuzz the Claude AI parser with arbitrary JSON data."""
     from polylogue.sources.parsers import claude
 
     try:
@@ -204,12 +204,12 @@ def fuzz_claude_ai_importer(data: bytes) -> None:
         raise AssertionError(f"Unexpected exception in claude.parse_ai: {type(e).__name__}: {e}") from e
 
 
-def fuzz_all_importers(data: bytes) -> None:
-    """Combined fuzzer that tries all importers."""
-    fuzz_chatgpt_importer(data)
-    fuzz_codex_importer(data)
-    fuzz_claude_code_importer(data)
-    fuzz_claude_ai_importer(data)
+def fuzz_all_parsers(data: bytes) -> None:
+    """Combined fuzzer that tries all parsers."""
+    fuzz_chatgpt_parser(data)
+    fuzz_codex_parser(data)
+    fuzz_claude_code_parser(data)
+    fuzz_claude_ai_parser(data)
 
 
 # =============================================================================
@@ -304,50 +304,50 @@ MALFORMED_CORPUS = [
 # =============================================================================
 
 
-class TestImporterFuzz:
+class TestParserFuzz:
     """Pytest-compatible fuzz tests using seed corpus."""
 
     @pytest.mark.parametrize("data", CHATGPT_CORPUS + MALFORMED_CORPUS)
-    def test_chatgpt_importer_corpus(self, data: bytes):
-        """Run ChatGPT importer fuzz with seed corpus."""
-        fuzz_chatgpt_importer(data)
+    def test_chatgpt_parser_corpus(self, data: bytes):
+        """Run ChatGPT parser fuzz with seed corpus."""
+        fuzz_chatgpt_parser(data)
 
     @pytest.mark.parametrize("data", CODEX_CORPUS + MALFORMED_CORPUS)
-    def test_codex_importer_corpus(self, data: bytes):
-        """Run Codex importer fuzz with seed corpus."""
-        fuzz_codex_importer(data)
+    def test_codex_parser_corpus(self, data: bytes):
+        """Run Codex parser fuzz with seed corpus."""
+        fuzz_codex_parser(data)
 
     @pytest.mark.parametrize("data", CLAUDE_CODE_CORPUS + MALFORMED_CORPUS)
-    def test_claude_code_importer_corpus(self, data: bytes):
-        """Run Claude Code importer fuzz with seed corpus."""
-        fuzz_claude_code_importer(data)
+    def test_claude_code_parser_corpus(self, data: bytes):
+        """Run Claude Code parser fuzz with seed corpus."""
+        fuzz_claude_code_parser(data)
 
-    def test_chatgpt_importer_random(self):
-        """Run ChatGPT importer with random bytes."""
+    def test_chatgpt_parser_random(self):
+        """Run ChatGPT parser with random bytes."""
         import random
 
         for _ in range(500):
             length = random.randint(1, 500)
             data = bytes(random.randint(0, 255) for _ in range(length))
-            fuzz_chatgpt_importer(data)
+            fuzz_chatgpt_parser(data)
 
-    def test_codex_importer_random(self):
-        """Run Codex importer with random bytes."""
+    def test_codex_parser_random(self):
+        """Run Codex parser with random bytes."""
         import random
 
         for _ in range(500):
             length = random.randint(1, 500)
             data = bytes(random.randint(0, 255) for _ in range(length))
-            fuzz_codex_importer(data)
+            fuzz_codex_parser(data)
 
-    def test_claude_code_importer_random(self):
-        """Run Claude Code importer with random bytes."""
+    def test_claude_code_parser_random(self):
+        """Run Claude Code parser with random bytes."""
         import random
 
         for _ in range(500):
             length = random.randint(1, 500)
             data = bytes(random.randint(0, 255) for _ in range(length))
-            fuzz_claude_code_importer(data)
+            fuzz_claude_code_parser(data)
 
 
 # =============================================================================
@@ -367,7 +367,7 @@ def main():
 
     atheris.Setup(
         sys.argv + ["-max_total_time=300", f"-runs={iterations}"],
-        fuzz_all_importers,
+        fuzz_all_parsers,
     )
     atheris.Fuzz()
 

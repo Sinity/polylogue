@@ -38,19 +38,16 @@ def parse_raw_content(sample: RawConversationRecord) -> tuple[list | dict, str]:
     return json.loads(content), provider
 
 
-@pytest.mark.slow
 class TestParserExtractsFromRealData:
     """Each parser must extract meaningful data from real exports."""
 
-    def test_all_parsers_extract(self, raw_db_samples: list[RawConversationRecord]) -> None:
+    def test_all_parsers_extract(self, raw_synthetic_samples: list[RawConversationRecord]) -> None:
         """Every raw conversation can be parsed without crashing."""
-        if not raw_db_samples:
-            pytest.skip("No raw conversations (run: polylogue run --stage acquire)")
 
         failures = []
         unrecognized = 0  # Records that don't match expected provider format
 
-        for sample in raw_db_samples:
+        for sample in raw_synthetic_samples:
             try:
                 data, provider = parse_raw_content(sample)
                 fallback_id = sample.raw_id[:16]
@@ -104,9 +101,8 @@ class TestParserExtractsFromRealData:
                 # Verify extraction produced something
                 # Claude Code sessions may contain only metadata records
                 # (e.g. file-history-snapshot) with no chat messages — that's valid.
-                if not result.messages and result.provider_conversation_id == fallback_id:
-                    if provider != "claude-code":
-                        failures.append((sample.raw_id[:16], provider, "No messages extracted"))
+                if not result.messages and result.provider_conversation_id == fallback_id and provider != "claude-code":
+                    failures.append((sample.raw_id[:16], provider, "No messages extracted"))
 
             except Exception as e:
                 failures.append((sample.raw_id[:16], sample.provider_name, str(e)[:80]))
@@ -114,28 +110,25 @@ class TestParserExtractsFromRealData:
         if unrecognized:
             import warnings
             warnings.warn(
-                f"{unrecognized}/{len(raw_db_samples)} records not recognized by looks_like "
+                f"{unrecognized}/{len(raw_synthetic_samples)} records not recognized by looks_like "
                 f"(conversation stubs or metadata — expected for ChatGPT exports)",
                 stacklevel=2,
             )
 
         if failures:
-            msg = f"{len(failures)}/{len(raw_db_samples)} failed:\n"
+            msg = f"{len(failures)}/{len(raw_synthetic_samples)} failed:\n"
             for raw_id, provider, error in failures[:10]:
                 msg += f"  {provider}:{raw_id}: {error}\n"
             pytest.fail(msg)
 
 
-@pytest.mark.slow
 class TestEdgeCaseHandling:
     """Verify parsers handle known edge cases in real data."""
 
-    def test_codex_continuations(self, raw_db_samples: list[RawConversationRecord]) -> None:
+    def test_codex_continuations(self, raw_synthetic_samples: list[RawConversationRecord]) -> None:
         """Codex conversations with multiple session_meta are continuations."""
-        if not raw_db_samples:
-            pytest.skip("No raw conversations")
 
-        codex_samples = [s for s in raw_db_samples if s.provider_name == "codex"]
+        codex_samples = [s for s in raw_synthetic_samples if s.provider_name == "codex"]
         if not codex_samples:
             pytest.skip("No Codex samples")
 
@@ -159,12 +152,10 @@ class TestEdgeCaseHandling:
         if failures:
             pytest.fail(f"{len(failures)} continuation detection failures: {failures[:5]}")
 
-    def test_claude_code_sidechains(self, raw_db_samples: list[RawConversationRecord]) -> None:
+    def test_claude_code_sidechains(self, raw_synthetic_samples: list[RawConversationRecord]) -> None:
         """Claude Code conversations with isSidechain markers are detected."""
-        if not raw_db_samples:
-            pytest.skip("No raw conversations")
 
-        cc_samples = [s for s in raw_db_samples if s.provider_name == "claude-code"]
+        cc_samples = [s for s in raw_synthetic_samples if s.provider_name == "claude-code"]
         if not cc_samples:
             pytest.skip("No Claude Code samples")
 
@@ -189,12 +180,10 @@ class TestEdgeCaseHandling:
         if failures:
             pytest.fail(f"{len(failures)} sidechain detection failures: {failures[:5]}")
 
-    def test_chatgpt_branching(self, raw_db_samples: list[RawConversationRecord]) -> None:
+    def test_chatgpt_branching(self, raw_synthetic_samples: list[RawConversationRecord]) -> None:
         """ChatGPT conversations with multiple children have branch_index > 0."""
-        if not raw_db_samples:
-            pytest.skip("No raw conversations")
 
-        chatgpt_samples = [s for s in raw_db_samples if s.provider_name == "chatgpt"]
+        chatgpt_samples = [s for s in raw_synthetic_samples if s.provider_name == "chatgpt"]
         if not chatgpt_samples:
             pytest.skip("No ChatGPT samples")
 

@@ -20,7 +20,6 @@ from polylogue.ui.facade import (
 )
 from polylogue.version import VersionInfo, _get_git_info, _resolve_version
 
-
 # --- Merged from test_ui_facade_coverage.py ---
 
 
@@ -188,7 +187,6 @@ class TestConfirm:
         # Invalid string doesn't match yes/no patterns, so questionary would be called
         # Mock it to return None so default is used
         import questionary
-        original_confirm = questionary.confirm
         mock_confirm = MagicMock()
         mock_confirm.return_value.ask.return_value = None
         monkeypatch.setattr(questionary, "confirm", lambda *args, **kwargs: mock_confirm.return_value)
@@ -404,10 +402,7 @@ class TestRenderMarkdown:
     ], ids=["plain_simple", "plain_multiline", "rich"])
     def test_render_markdown(self, capsys, plain, multiline):
         facade = ConsoleFacade(plain=plain)
-        if multiline:
-            content = "# Title\n\n**Bold** text\n\n- List\n- Items"
-        else:
-            content = "# Hello\n\nWorld"
+        content = "# Title\n\n**Bold** text\n\n- List\n- Items" if multiline else "# Hello\n\nWorld"
         facade.render_markdown(content)
         if plain:
             output = capsys.readouterr().out
@@ -628,8 +623,8 @@ class TestResolveVersion:
 
 class TestVersionConstants:
     def test_all_version_exports(self):
-        from polylogue.version import POLYLOGUE_VERSION, VERSION_INFO, VersionInfo
         from polylogue import version
+        from polylogue.version import POLYLOGUE_VERSION, VERSION_INFO, VersionInfo
 
         # Test POLYLOGUE_VERSION
         assert isinstance(POLYLOGUE_VERSION, str)
@@ -668,6 +663,7 @@ class TestResolveVersionEdgeCases:
 
         # Test fallback to pyproject.toml
         from importlib.metadata import PackageNotFoundError
+
         import polylogue.version as version_module
 
         def mock_metadata_version(name):

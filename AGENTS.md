@@ -5,7 +5,7 @@
 - `polylogue/cli/`: CLI commands (run, check, dashboard, mcp, auth, reset, completions).
 - `polylogue/sources/`: Source detection, provider parsers (ChatGPT, Claude, Codex, Gemini), Drive integration.
 - `polylogue/pipeline/`: Ingestion → rendering → indexing orchestration.
-- `polylogue/storage/`: SQLite backend, async repository, FTS5/Qdrant search providers.
+- `polylogue/storage/`: SQLite backend, async repository, FTS5/sqlite-vec search providers.
 - `polylogue/schemas/`: Unified schema, provider-specific models, schema inference.
 - `polylogue/lib/`: Core domain models, filters, projections, hashing, dates.
 - `polylogue/rendering/`: Markdown/HTML output renderers.
@@ -147,4 +147,4 @@ git log --first-parent --oneline  # or: git lg
 git log --graph --all --oneline   # or: git lga
 ```
 
-See [CONTRIBUTING.md](.github/CONTRIBUTING.md) for detailed Git workflow.
+See `AGENTS.md` (this file) for full project guidelines.

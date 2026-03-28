@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.helpers import ConversationBuilder
+from tests.infra.helpers import ConversationBuilder
 
 
 @pytest.fixture
