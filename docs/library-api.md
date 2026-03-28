@@ -9,7 +9,7 @@ Polylogue is designed library-first. The CLI wraps the Python API.
 ```python
 from polylogue.lib.filters import ConversationFilter
 from polylogue.storage.repository import ConversationRepository
-from polylogue.storage.backends.sqlite import SQLiteBackend
+from polylogue.storage.backends.async_sqlite import SQLiteBackend
 
 backend = SQLiteBackend()
 repo = ConversationRepository(backend=backend)

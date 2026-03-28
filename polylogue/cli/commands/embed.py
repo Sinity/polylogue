@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-import logging
 from typing import TYPE_CHECKING
 
-import click  # noqa: F401
+import click
 
-logger = logging.getLogger(__name__)
+from polylogue.lib.log import get_logger
+
+logger = get_logger(__name__)
 
 if TYPE_CHECKING:
     from polylogue.cli.types import AppEnv
@@ -69,7 +70,7 @@ def embed_command(
     """
     import os
 
-    from polylogue.storage.backends.sqlite import SQLiteBackend
+    from polylogue.storage.backends.async_sqlite import SQLiteBackend
     from polylogue.storage.repository import ConversationRepository
     from polylogue.storage.search_providers import create_vector_provider
 

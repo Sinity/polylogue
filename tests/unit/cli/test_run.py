@@ -657,7 +657,7 @@ class TestTagsCommand:
         """Tags command displays all tags with counts."""
         from unittest.mock import patch
 
-        with patch("polylogue.storage.backends.sqlite.SQLiteBackend") as mock_backend_class:
+        with patch("polylogue.storage.backends.async_sqlite.SQLiteBackend") as mock_backend_class:
             with patch("polylogue.storage.repository.ConversationRepository") as mock_repo_class:
                 mock_backend = MagicMock()
                 mock_backend_class.return_value = mock_backend
@@ -679,7 +679,7 @@ class TestTagsCommand:
         import json
         from unittest.mock import patch
 
-        with patch("polylogue.storage.backends.sqlite.SQLiteBackend") as mock_backend_class:
+        with patch("polylogue.storage.backends.async_sqlite.SQLiteBackend") as mock_backend_class:
             with patch("polylogue.storage.repository.ConversationRepository") as mock_repo_class:
                 mock_backend = MagicMock()
                 mock_backend_class.return_value = mock_backend
@@ -697,7 +697,7 @@ class TestTagsCommand:
         """Tags -p passes provider to list_tags."""
         from unittest.mock import patch
 
-        with patch("polylogue.storage.backends.sqlite.SQLiteBackend") as mock_backend_class:
+        with patch("polylogue.storage.backends.async_sqlite.SQLiteBackend") as mock_backend_class:
             with patch("polylogue.storage.repository.ConversationRepository") as mock_repo_class:
                 mock_backend = MagicMock()
                 mock_backend_class.return_value = mock_backend
@@ -715,7 +715,7 @@ class TestTagsCommand:
         """Tags -n truncates to top N."""
         from unittest.mock import patch
 
-        with patch("polylogue.storage.backends.sqlite.SQLiteBackend") as mock_backend_class:
+        with patch("polylogue.storage.backends.async_sqlite.SQLiteBackend") as mock_backend_class:
             with patch("polylogue.storage.repository.ConversationRepository") as mock_repo_class:
                 mock_backend = MagicMock()
                 mock_backend_class.return_value = mock_backend
@@ -734,7 +734,7 @@ class TestTagsCommand:
         """Tags with no tags shows hint."""
         from unittest.mock import patch
 
-        with patch("polylogue.storage.backends.sqlite.SQLiteBackend") as mock_backend_class:
+        with patch("polylogue.storage.backends.async_sqlite.SQLiteBackend") as mock_backend_class:
             with patch("polylogue.storage.repository.ConversationRepository") as mock_repo_class:
                 mock_backend = MagicMock()
                 mock_backend_class.return_value = mock_backend
@@ -752,7 +752,7 @@ class TestTagsCommand:
         """Tags with provider filter and no tags shows provider-specific hint."""
         from unittest.mock import patch
 
-        with patch("polylogue.storage.backends.sqlite.SQLiteBackend") as mock_backend_class:
+        with patch("polylogue.storage.backends.async_sqlite.SQLiteBackend") as mock_backend_class:
             with patch("polylogue.storage.repository.ConversationRepository") as mock_repo_class:
                 mock_backend = MagicMock()
                 mock_backend_class.return_value = mock_backend
@@ -889,7 +889,7 @@ class TestRunEmbedCommand:
         """--conversation with nonexistent ID should print error."""
         from unittest.mock import patch
 
-        with patch("polylogue.storage.backends.sqlite.SQLiteBackend") as mock_backend_class:
+        with patch("polylogue.storage.backends.async_sqlite.SQLiteBackend") as mock_backend_class:
             with patch("polylogue.storage.repository.ConversationRepository") as mock_repo_class:
                 with patch("polylogue.storage.search_providers.create_vector_provider") as mock_create:
                     mock_backend = MagicMock()
@@ -914,7 +914,7 @@ class TestRunEmbedCommand:
         """--rebuild flag is passed to _embed_batch."""
         from unittest.mock import patch
 
-        with patch("polylogue.storage.backends.sqlite.SQLiteBackend") as mock_backend_class:
+        with patch("polylogue.storage.backends.async_sqlite.SQLiteBackend") as mock_backend_class:
             with patch("polylogue.storage.repository.ConversationRepository") as mock_repo_class:
                 with patch("polylogue.storage.search_providers.create_vector_provider") as mock_create:
                     with patch("polylogue.cli.commands.embed._embed_batch") as mock_batch:
@@ -941,7 +941,7 @@ class TestRunEmbedCommand:
         """--limit flag is passed to _embed_batch."""
         from unittest.mock import patch
 
-        with patch("polylogue.storage.backends.sqlite.SQLiteBackend") as mock_backend_class:
+        with patch("polylogue.storage.backends.async_sqlite.SQLiteBackend") as mock_backend_class:
             with patch("polylogue.storage.repository.ConversationRepository") as mock_repo_class:
                 with patch("polylogue.storage.search_providers.create_vector_provider") as mock_create:
                     with patch("polylogue.cli.commands.embed._embed_batch") as mock_batch:
@@ -968,7 +968,7 @@ class TestRunEmbedCommand:
         """--model flag selects embedding model."""
         from unittest.mock import patch
 
-        with patch("polylogue.storage.backends.sqlite.SQLiteBackend") as mock_backend_class:
+        with patch("polylogue.storage.backends.async_sqlite.SQLiteBackend") as mock_backend_class:
             with patch("polylogue.storage.repository.ConversationRepository") as mock_repo_class:
                 with patch("polylogue.storage.search_providers.create_vector_provider") as mock_create:
                     with patch("polylogue.cli.commands.embed._embed_batch"):
@@ -993,7 +993,7 @@ class TestRunEmbedCommand:
         """POLYLOGUE_VOYAGE_API_KEY env var is accepted as fallback."""
         from unittest.mock import patch
 
-        with patch("polylogue.storage.backends.sqlite.SQLiteBackend") as mock_backend_class:
+        with patch("polylogue.storage.backends.async_sqlite.SQLiteBackend") as mock_backend_class:
             with patch("polylogue.storage.repository.ConversationRepository") as mock_repo_class:
                 with patch("polylogue.storage.search_providers.create_vector_provider") as mock_create:
                     with patch("polylogue.cli.commands.embed._embed_batch"):
