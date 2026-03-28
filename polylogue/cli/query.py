@@ -1029,7 +1029,7 @@ def _write_message_streaming(msg: Message, output_format: str) -> None:
     elif output_format == "markdown":
         # Markdown format with headers — skip empty-text messages (tool progress, etc.)
         if msg.text:
-            role_label = msg.role.capitalize() if msg.role else "Unknown"
+            role_label = (msg.role or "unknown").capitalize()
             sys.stdout.write(f"## {role_label}\n\n{msg.text}\n\n")
             sys.stdout.flush()
 
