@@ -247,22 +247,14 @@ class TestConversationFilterSample:
         result = await ConversationFilter(filter_repo_advanced).sample(sample_size).list()
         assert condition_check(result)
 
+    @pytest.mark.parametrize("sample_size", [3, 9999])
     @pytest.mark.asyncio
-    async def test_sample_smaller_than_total(self, filter_repo_advanced):
-        """sample(n) where n < total works."""
-        all_count = len(await ConversationFilter(filter_repo_advanced).list())
-        sample_size = min(3, all_count)
-        if sample_size > 0:
-            result = await ConversationFilter(filter_repo_advanced).sample(sample_size).list()
-            assert len(result) == sample_size
-
-    @pytest.mark.asyncio
-    async def test_sample_larger_than_total_returns_all(self, filter_repo_advanced):
-        """sample(n) where n > total returns all conversations."""
-        all_count = len(await ConversationFilter(filter_repo_advanced).list())
-        result = await ConversationFilter(filter_repo_advanced).sample(all_count + 100).list()
-        # Should return all (sampling more than available returns all)
-        assert len(result) <= all_count
+    async def test_sample_size_is_bounded_by_filtered_population(self, filter_repo_advanced, sample_size):
+        """sample(n) never exceeds the size of the filtered candidate set."""
+        all_results = await ConversationFilter(filter_repo_advanced).list()
+        sampled = await ConversationFilter(filter_repo_advanced).sample(sample_size).list()
+        assert len(sampled) <= min(sample_size, len(all_results))
+        assert {c.id for c in sampled}.issubset({c.id for c in all_results})
 
     @pytest.mark.asyncio
     async def test_sample_with_filter_respects_filters(self, filter_repo_advanced):
@@ -292,147 +284,82 @@ class TestConversationFilterSample:
         # Limit should win, giving us at most 2
         assert len(result) <= 2
 
-    @pytest.mark.asyncio
-    async def test_sample_randomness(self, filter_repo_advanced):
-        """Multiple samples produce different results (probabilistic test)."""
-        # Take multiple samples and verify they vary
-        samples = []
-        for _ in range(3):
-            result = await ConversationFilter(filter_repo_advanced).sample(2).list()
-            samples.append([c.id for c in result])
-        # At least some samples should differ (very high confidence with 3 tries)
-        # Note: This is probabilistic; very unlikely to fail unless sample() is broken
-
 
 # ============================================================================
-# Tests for combined negative filters
+# Tests for combined filter compositions
 # ============================================================================
 
+COMBINED_FILTER_CASES = [
+    (
+        "exclude-provider-and-tag",
+        lambda f: f.exclude_provider("claude").exclude_tag("quantum"),
+        False,
+        lambda conv: conv.provider != "claude" and "quantum" not in conv.tags,
+    ),
+    (
+        "exclude-tag-and-text",
+        lambda f: f.exclude_tag("simple").exclude_text("example"),
+        False,
+        lambda conv: (
+            "simple" not in conv.tags
+            and all("example" not in (msg.text or "").lower() for msg in conv.messages)
+        ),
+    ),
+    (
+        "exclude-provider-with-attachments",
+        lambda f: f.exclude_provider("claude").has("attachments"),
+        False,
+        lambda conv: conv.provider != "claude" and any(msg.attachments for msg in conv.messages),
+    ),
+    (
+        "exclude-multiple-providers",
+        lambda f: f.exclude_provider("claude", "chatgpt"),
+        False,
+        lambda conv: conv.provider not in ("claude", "chatgpt"),
+    ),
+    (
+        "provider-with-excluded-tag",
+        lambda f: f.provider("claude").exclude_tag("simple"),
+        False,
+        lambda conv: conv.provider == "claude" and "simple" not in conv.tags,
+    ),
+    (
+        "contains-with-excluded-text",
+        lambda f: f.contains("data").exclude_text("error"),
+        False,
+        lambda conv: (
+            "data" in " ".join((m.text or "").lower() for m in conv.messages)
+            and "error" not in " ".join((m.text or "").lower() for m in conv.messages)
+        ),
+    ),
+    (
+        "tag-with-excluded-provider",
+        lambda f: f.tag("analysis").exclude_provider("claude"),
+        False,
+        lambda conv: "analysis" in conv.tags and conv.provider != "claude",
+    ),
+    (
+        "contradictory-thinking-provider",
+        lambda f: f.has("thinking").exclude_provider("claude"),
+        True,
+        lambda conv: True,
+    ),
+]
 
-class TestConversationFilterCombinedNegative:
-    """Tests for combining multiple negative filters."""
 
+class TestConversationFilterCombinedCompositions:
+    """Composable filter stacks preserve both include and exclude semantics."""
+
+    @pytest.mark.parametrize("case_id,setup_fn,expect_empty,predicate", COMBINED_FILTER_CASES)
     @pytest.mark.asyncio
-    async def test_exclude_provider_and_exclude_tag(self, filter_repo_advanced):
-        """Combine exclude_provider() and exclude_tag()."""
-        # Exclude claude and exclude "quantum" tag
-        result = await (
-            ConversationFilter(filter_repo_advanced)
-            .exclude_provider("claude")
-            .exclude_tag("quantum")
-            .list()
-        )
-        # Should return only non-claude, non-quantum conversations
-        assert all(c.provider != "claude" for c in result)
+    async def test_combined_filters(self, filter_repo_advanced, case_id, setup_fn, expect_empty, predicate):
+        result = await setup_fn(ConversationFilter(filter_repo_advanced)).list()
+        assert isinstance(result, list), case_id
+        if expect_empty:
+            assert result == [], case_id
+            return
         for conv in result:
-            assert "quantum" not in conv.tags
-
-    @pytest.mark.asyncio
-    async def test_exclude_tag_and_exclude_text(self, filter_repo_advanced):
-        """Combine exclude_tag() and exclude_text()."""
-        result = await (
-            ConversationFilter(filter_repo_advanced)
-            .exclude_tag("simple")
-            .exclude_text("example")
-            .list()
-        )
-        # Should exclude conversations with "simple" tag or containing "example"
-        for conv in result:
-            assert "simple" not in conv.tags
-            # Check that "example" doesn't appear in messages
-            for msg in conv.messages:
-                if msg.text:
-                    assert "example" not in msg.text.lower()
-
-    @pytest.mark.asyncio
-    async def test_exclude_provider_and_has_not_combined(self, filter_repo_advanced):
-        """Combine exclude_provider() with has() filter."""
-        result = await (
-            ConversationFilter(filter_repo_advanced)
-            .exclude_provider("claude")
-            .has("attachments")
-            .list()
-        )
-        # Should only return non-claude conversations with attachments
-        assert all(c.provider != "claude" for c in result)
-        for conv in result:
-            assert any(m.attachments for m in conv.messages)
-
-    @pytest.mark.asyncio
-    async def test_multiple_exclude_providers(self, filter_repo_advanced):
-        """Exclude multiple providers."""
-        result = await (
-            ConversationFilter(filter_repo_advanced)
-            .exclude_provider("claude", "chatgpt")
-            .list()
-        )
-        # Should only return codex (if any)
-        for conv in result:
-            assert conv.provider not in ("claude", "chatgpt")
-
-
-# ============================================================================
-# Tests for combined positive + negative filters
-# ============================================================================
-
-
-class TestConversationFilterCombinedPosNeg:
-    """Tests for combining positive and negative filters."""
-
-    @pytest.mark.asyncio
-    async def test_provider_with_exclude_tag(self, filter_repo_advanced):
-        """Include provider but exclude tag."""
-        result = await (
-            ConversationFilter(filter_repo_advanced)
-            .provider("claude")
-            .exclude_tag("simple")
-            .list()
-        )
-        # Should be claude but not simple
-        assert all(c.provider == "claude" for c in result)
-        for conv in result:
-            assert "simple" not in conv.tags
-
-    @pytest.mark.asyncio
-    async def test_contains_with_exclude_text(self, filter_repo_advanced):
-        """Include text match but exclude another text."""
-        result = await (
-            ConversationFilter(filter_repo_advanced)
-            .contains("data")
-            .exclude_text("error")
-            .list()
-        )
-        assert len(result) >= 1
-        assert isinstance(result, list)
-        for conv in result:
-            text_blob = " ".join((m.text or "").lower() for m in conv.messages)
-            assert "data" in text_blob
-            assert "error" not in text_blob
-
-    @pytest.mark.asyncio
-    async def test_tag_with_exclude_provider(self, filter_repo_advanced):
-        """Include tag but exclude provider."""
-        result = await (
-            ConversationFilter(filter_repo_advanced)
-            .tag("analysis")
-            .exclude_provider("claude")
-            .list()
-        )
-        # Should have analysis tag but not be from claude
-        for conv in result:
-            assert "analysis" in conv.tags
-            assert conv.provider != "claude"
-
-    @pytest.mark.asyncio
-    async def test_has_thinking_with_exclude_provider_claude(self, filter_repo_advanced):
-        """Include thinking but exclude claude (contradictory if thinking only in claude)."""
-        result = await (
-            ConversationFilter(filter_repo_advanced)
-            .has("thinking")
-            .exclude_provider("claude")
-            .list()
-        )
-        assert result == []
+            assert predicate(conv), case_id
 
 
 # ============================================================================

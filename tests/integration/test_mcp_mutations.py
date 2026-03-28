@@ -13,6 +13,12 @@ from polylogue.lib.models import ConversationSummary
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.repository import ConversationRepository
 from polylogue.storage.store import ConversationRecord, MessageRecord
+from tests.integration.mcp_contract import (
+    EXPECTED_PROMPT_NAMES,
+    EXPECTED_RESOURCE_TEMPLATE_URIS,
+    EXPECTED_RESOURCE_URIS,
+    EXPECTED_TOOL_NAMES,
+)
 
 # =============================================================================
 # Helper Function Tests
@@ -22,8 +28,8 @@ from polylogue.storage.store import ConversationRecord, MessageRecord
 class TestServerBuilding:
     """Tests for server construction."""
 
-    def test_build_server_returns_fastmcp_instance(self):
-        """_build_server returns a FastMCP server instance."""
+    def test_build_server_exposes_managers(self):
+        """_build_server returns a server with tool/resource/prompt managers."""
         from polylogue.mcp.server import _build_server
 
         server = _build_server()
@@ -32,43 +38,27 @@ class TestServerBuilding:
         assert hasattr(server, "_resource_manager")
         assert hasattr(server, "_prompt_manager")
 
-    def test_server_has_all_tools(self):
-        """Mutation-focused MCP tools are registered."""
+    @pytest.mark.parametrize(
+        "surface_attr,actual_getter,expected",
+        [
+            ("tools", lambda server: set(server._tool_manager._tools.keys()), EXPECTED_TOOL_NAMES),
+            ("resources", lambda server: set(server._resource_manager._resources.keys()), EXPECTED_RESOURCE_URIS),
+            (
+                "resource_templates",
+                lambda server: set(server._resource_manager._templates.keys()),
+                EXPECTED_RESOURCE_TEMPLATE_URIS,
+            ),
+            ("prompts", lambda server: set(server._prompt_manager._prompts.keys()), EXPECTED_PROMPT_NAMES),
+        ],
+    )
+    def test_server_surface_contract(self, surface_attr, actual_getter, expected):
+        """Server registers every expected MCP surface."""
         from polylogue.mcp.server import _build_server
 
         server = _build_server()
-        tool_names = set(server._tool_manager._tools.keys())
-
-        assert "add_tag" in tool_names
-        assert "remove_tag" in tool_names
-        assert "list_tags" in tool_names
-        assert "get_metadata" in tool_names
-        assert "set_metadata" in tool_names
-        assert "delete_metadata" in tool_names
-        assert "delete_conversation" in tool_names
-
-    def test_server_has_all_resources(self):
-        """Built server has all expected resources and templates."""
-        from polylogue.mcp.server import _build_server
-
-        server = _build_server()
-        resource_uris = set(server._resource_manager._resources.keys())
-        template_uris = set(server._resource_manager._templates.keys())
-
-        assert "polylogue://stats" in resource_uris
-        assert "polylogue://conversations" in resource_uris
-        assert "polylogue://conversation/{conv_id}" in template_uris
-
-    def test_server_has_all_prompts(self):
-        """Built server has all expected prompts."""
-        from polylogue.mcp.server import _build_server
-
-        server = _build_server()
-        prompt_names = set(server._prompt_manager._prompts.keys())
-
-        assert "analyze_errors" in prompt_names
-        assert "summarize_week" in prompt_names
-        assert "extract_code" in prompt_names
+        actual = actual_getter(server)
+        missing = expected - actual
+        assert not missing, f"Missing {surface_attr}: {sorted(missing)}"
 
 
 async def _insert_conversation(
