@@ -127,6 +127,24 @@ def test_repository_provider_filters_are_subset_and_count_consistent(specs) -> N
 
 @settings(
     deadline=None,
+    max_examples=25,
+    suppress_health_check=[HealthCheck.too_slow],
+)
+@given(conversation_graph_strategy())
+def test_repository_provider_id_lookup_matches_generated_graph(specs) -> None:
+    """Provider-ID lookup must preserve archive sort order within each provider subset."""
+    tempdir, repo = _seed_repo(specs)
+    try:
+        for provider in sorted({spec.provider for spec in specs}):
+            expected_ids = expected_sorted_ids(tuple(spec for spec in specs if spec.provider == provider))
+            assert asyncio.run(repo.get_provider_conversation_ids(provider)) == expected_ids
+    finally:
+        asyncio.run(repo.close())
+        tempdir.cleanup()
+
+
+@settings(
+    deadline=None,
     max_examples=20,
     suppress_health_check=[HealthCheck.too_slow],
 )
@@ -222,6 +240,35 @@ def test_repository_iter_messages_and_stats_match_generated_conversation(
         assert len(limited_messages) == min(limit, len(target.messages))
         assert stats is not None
         assert stats["total_messages"] == len(target.messages)
+    finally:
+        asyncio.run(repo.close())
+        tempdir.cleanup()
+
+
+@settings(
+    deadline=None,
+    max_examples=20,
+    suppress_health_check=[HealthCheck.too_slow],
+)
+@given(conversation_graph_strategy())
+def test_repository_batch_message_counts_and_aggregate_stats_match_generated_graph(specs) -> None:
+    """Batch counts and aggregate stats must agree with the generated graph."""
+    tempdir, repo = _seed_repo(specs)
+    try:
+        ids = [spec.conversation_id for spec in specs]
+        expected_counts = {spec.conversation_id: len(spec.messages) for spec in specs}
+        expected_providers: dict[str, int] = {}
+        for spec in specs:
+            expected_providers[spec.provider] = expected_providers.get(spec.provider, 0) + 1
+
+        assert asyncio.run(repo.get_message_counts_batch(ids)) == expected_counts
+
+        stats = asyncio.run(repo.aggregate_message_stats(ids))
+        assert stats["total"] == sum(expected_counts.values())
+        assert stats["attachments"] == 0
+        assert stats["providers"] == expected_providers
+        assert stats["min_sort_key"] is not None
+        assert stats["max_sort_key"] is not None
     finally:
         asyncio.run(repo.close())
         tempdir.cleanup()
