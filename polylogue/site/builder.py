@@ -6,7 +6,9 @@ and client-side search support.
 
 from __future__ import annotations
 
+import asyncio
 import json
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -734,13 +736,28 @@ class SiteBuilder:
             loader=DictLoader({
                 "index.html": INDEX_TEMPLATE,
                 "dashboard.html": DASHBOARD_TEMPLATE,
-                "conversation.html": conv_template,
             }),
             autoescape=select_autoescape(["html", "xml"]),
         )
+        self.page_env = Environment(
+            loader=DictLoader({
+                "conversation.html": conv_template,
+            }),
+            autoescape=select_autoescape(["html", "xml"]),
+            enable_async=True,
+        )
+
+    @staticmethod
+    def _open_storage():
+        """Create the canonical storage pair used by site generation."""
+        from polylogue.storage.backends.async_sqlite import SQLiteBackend
+        from polylogue.storage.repository import ConversationRepository
+
+        backend = SQLiteBackend()
+        return backend, ConversationRepository(backend=backend)
 
     def build(self, incremental: bool = True) -> dict[str, int]:
-        """Build complete static site.
+        """Build complete static site (sync entry point).
 
         Args:
             incremental: If True, skip conversation pages whose file is newer
@@ -749,15 +766,19 @@ class SiteBuilder:
         Returns:
             Dict with counts: {"conversations": N, "index_pages": N}
         """
+        return asyncio.run(self._build_async(incremental))
+
+    async def _build_async(self, incremental: bool = True) -> dict[str, int]:
+        """Async implementation of the site build."""
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
         # Build conversation index
-        conversations = self._build_index()
+        conversations = await self._build_index()
 
         # Generate pages (index pages always rebuilt; conversation pages respect incremental)
         self._generate_root_index(conversations)
         provider_count = self._generate_provider_indexes(conversations)
-        conv_pages = self._generate_conversation_pages(conversations, incremental=incremental)
+        conv_pages = await self._generate_conversation_pages(conversations, incremental=incremental)
 
         if self.config.include_dashboard:
             self._generate_dashboard(conversations)
@@ -772,24 +793,22 @@ class SiteBuilder:
             "index_pages": 1 + provider_count + (1 if self.config.include_dashboard else 0),
         }
 
-    def _build_index(self) -> list[ConversationIndex]:
+    async def _build_index(self) -> list[ConversationIndex]:
         """Build index of all conversations.
 
         Uses lightweight summaries to avoid loading message content into memory.
         For a 4800+ conversation archive this reduces memory from ~9GB to ~100MB.
         """
-        from polylogue.storage.backends.async_sqlite import SQLiteBackend
-        from polylogue.storage.repository import ConversationRepository
-
-        backend = SQLiteBackend()
-        repo = ConversationRepository(backend=backend)
+        backend, repo = self._open_storage()
 
         # Use summaries (no message content) instead of full conversations
-        summaries = repo.list_summaries(limit=100_000)
+        summaries = await repo.list_summaries(limit=None)
+        if not summaries:
+            return []
 
         # Batch-fetch message counts
         all_ids = [str(s.id) for s in summaries]
-        msg_counts = backend.get_message_counts_batch(all_ids)
+        msg_counts = await backend.get_message_counts_batch(all_ids)
 
         conversations: list[ConversationIndex] = []
 
@@ -813,7 +832,7 @@ class SiteBuilder:
                     logger.debug("Timestamp format error for %s: %s", sid, exc)
                     updated_at_str = str(summary.updated_at)
 
-            provider = summary.provider or "unknown"
+            provider = summary.provider.value
             conversations.append(ConversationIndex(
                 id=sid,
                 title=summary.display_title or sid[:12],
@@ -834,14 +853,28 @@ class SiteBuilder:
 
         return conversations
 
-    def _generate_conversation_pages(
+    async def _iter_conversation_page_messages(
+        self,
+        repo,
+        conversation_id: str,
+    ) -> AsyncIterator[dict[str, str]]:
+        """Yield site message payloads lazily for a conversation page."""
+        async for msg in repo.iter_messages(conversation_id):
+            if not msg.text:
+                continue
+            yield {
+                "role": msg.role or "unknown",
+                "text": msg.text,
+                "html_content": self._md_renderer.render(msg.text),
+            }
+
+    async def _generate_conversation_pages(
         self, conversations: list[ConversationIndex], *, incremental: bool = True
     ) -> int:
         """Generate individual HTML pages for each conversation.
 
-        Streams messages from the database to avoid loading entire conversations
-        into memory. For a 4800+ conversation archive, this is the most expensive
-        step but produces the actual viewable conversation content.
+        Streams rendered page chunks to disk without silently truncating
+        message counts or message text.
 
         Args:
             conversations: List of conversations to generate pages for
@@ -851,13 +884,9 @@ class SiteBuilder:
         Returns:
             Number of conversation pages generated
         """
-        from polylogue.storage.backends.async_sqlite import SQLiteBackend
-        from polylogue.storage.repository import ConversationRepository
+        _backend, repo = self._open_storage()
 
-        backend = SQLiteBackend()
-        repo = ConversationRepository(backend=backend)
-
-        template = self.env.get_template("conversation.html")
+        template = self.page_env.get_template("conversation.html")
         generated = 0
 
         skipped = 0
@@ -885,33 +914,19 @@ class SiteBuilder:
                     continue
 
             try:
-                # Stream messages without loading full conversation
-                messages = []
-                for msg in repo.iter_messages(conv_idx.id, limit=500):
-                    if not msg.text:
-                        continue
-                    text = msg.text
-                    # Truncate very long messages for the static site
-                    if len(text) > 5000:
-                        text = text[:5000] + "\n\n[... truncated ...]"
-                    html_content = self._md_renderer.render(text)
-                    messages.append({
-                        "role": msg.role or "unknown",
-                        "text": text,
-                        "html_content": html_content,
-                    })
-
-                html = template.render(
+                stream = template.generate_async(
                     title=conv_idx.title,
                     provider=conv_idx.provider,
                     message_count=conv_idx.message_count,
                     updated_at=conv_idx.updated_at,
-                    messages=messages,
+                    messages=self._iter_conversation_page_messages(repo, conv_idx.id),
                 )
-
-                page_path.write_text(html, encoding="utf-8")
+                with page_path.open("w", encoding="utf-8") as handle:
+                    async for chunk in stream:
+                        handle.write(chunk)
                 generated += 1
             except Exception as exc:
+                page_path.unlink(missing_ok=True)
                 logger.warning(
                     "Skipping conversation page %s: %s", conv_idx.id, exc
                 )
