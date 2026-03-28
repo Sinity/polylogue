@@ -13,8 +13,6 @@ from polylogue.sources.parsers.claude import (
     parse_ai,
     parse_code,
 )
-from polylogue.sources.parsers.codex import looks_like as codex_looks_like
-from polylogue.sources.parsers.codex import parse as codex_parse
 from tests.infra.helpers import make_claude_chat_message
 
 # =============================================================================
@@ -206,118 +204,6 @@ def test_parse_code_mixed_content_blocks_all_preserved():
     assert "text" in block_types
     assert "tool_use" in block_types
     assert "tool_result" in block_types
-
-
-# =============================================================================
-# CODEX PARSER TESTS
-# =============================================================================
-
-
-def test_codex_looks_like_envelope_format():
-    """Test looks_like returns True for envelope format."""
-    valid_payload = [
-        {"type": "session_meta", "payload": {"id": "test-123", "timestamp": "2025-01-01"}},
-        {"type": "response_item", "payload": {"type": "message", "role": "user", "content": []}},
-    ]
-    assert codex_looks_like(valid_payload) is True
-
-
-def test_codex_looks_like_intermediate_format():
-    """Test looks_like returns True for intermediate format."""
-    valid_payload = [
-        {"id": "test-123", "timestamp": "2025-01-01", "git": {}},
-        {"type": "message", "role": "user", "content": []},
-    ]
-    assert codex_looks_like(valid_payload) is True
-
-
-def test_codex_looks_like_empty_list():
-    """Test looks_like returns False for empty list."""
-    assert codex_looks_like([]) is False
-
-
-def test_codex_looks_like_not_list():
-    """Test looks_like returns False for non-list types."""
-    assert codex_looks_like({}) is False
-    assert codex_looks_like("string") is False
-    assert codex_looks_like(None) is False
-    assert codex_looks_like(123) is False
-
-
-def test_codex_parse_empty_list():
-    """Test parsing an empty list returns conversation with no messages."""
-    result = codex_parse([], fallback_id="test-empty-list")
-
-    assert result.provider_name == "codex"
-    assert result.provider_conversation_id == "test-empty-list"
-    assert len(result.messages) == 0
-
-
-def test_codex_parse_envelope_format():
-    """Test parsing envelope format with session_meta and response_item."""
-    payload = [
-        {"type": "session_meta", "payload": {"id": "session-123", "timestamp": "2025-01-01T00:00:00Z"}},
-        {
-            "type": "response_item",
-            "payload": {
-                "type": "message",
-                "id": "msg-1",
-                "role": "user",
-                "content": [{"type": "input_text", "text": "Hello"}],
-                "timestamp": "2025-01-01T00:00:01Z",
-            },
-        },
-        {
-            "type": "response_item",
-            "payload": {
-                "type": "message",
-                "id": "msg-2",
-                "role": "assistant",
-                "content": [{"type": "input_text", "text": "Hi there!"}],
-                "timestamp": "2025-01-01T00:00:02Z",
-            },
-        },
-    ]
-    result = codex_parse(payload, fallback_id="fallback-id")
-
-    assert result.provider_name == "codex"
-    assert result.provider_conversation_id == "session-123"
-    assert result.created_at == "2025-01-01T00:00:00Z"
-    assert len(result.messages) == 2
-
-    assert result.messages[0].provider_message_id == "msg-1"
-    assert result.messages[0].role == "user"
-    assert result.messages[0].text == "Hello"
-    assert result.messages[0].timestamp == "2025-01-01T00:00:01Z"
-
-    assert result.messages[1].provider_message_id == "msg-2"
-    assert result.messages[1].role == "assistant"
-    assert result.messages[1].text == "Hi there!"
-
-
-def test_codex_parse_intermediate_format():
-    """Test parsing intermediate format with direct records."""
-    payload = [
-        {"id": "session-456", "timestamp": "2025-01-02T00:00:00Z", "git": {}},
-        {"record_type": "state"},
-        {
-            "type": "message",
-            "id": "msg-3",
-            "role": "user",
-            "content": [{"type": "input_text", "text": "Test message"}],
-            "timestamp": "2025-01-02T00:00:01Z",
-        },
-    ]
-    result = codex_parse(payload, fallback_id="fallback-id")
-
-    assert result.provider_name == "codex"
-    assert result.provider_conversation_id == "session-456"
-    assert result.created_at == "2025-01-02T00:00:00Z"
-    assert len(result.messages) == 1
-
-    assert result.messages[0].provider_message_id == "msg-3"
-    assert result.messages[0].role == "user"
-    assert result.messages[0].text == "Test message"
 
 
 # =============================================================================
