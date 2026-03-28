@@ -1,53 +1,17 @@
-# Credentials
+# Local OAuth tokens and credentials
 token.json
 credentials.json
-.env
 
-# OS
+# Synced attachment folders
+*_attachments/
+*_attachment/
+
+# Common OS cruft
 .DS_Store
 Thumbs.db
 
 # Python
 __pycache__
-*.pyc
-*.pyo
-*.egg-info/
-build/
 
-# Dev environment
-.direnv/
-.venv/
-venv/
-
-# Tool caches
-.pytest_cache/
-.hypothesis/
-.mypy_cache/
-.ruff_cache/
-.claude/
-
-# Coverage
-.coverage
-coverage.json
-htmlcov/
-
-# Nix build output
-result
-
-.scratch
-
-AGENTS.override.md
-
-# Local tooling/session artifacts
-.cclsp.json
-.mcp.json
-
-# Local generated artifacts (kept out of the repo root)
-/artifacts/*
-!/artifacts/README.md
-
-# Legacy build-tool defaults that may still appear at the repo root
-dist/
-
-# Generated agent surface
-AGENTS.md
+# not project code
+data
