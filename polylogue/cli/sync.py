@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Dict, List, Optional
@@ -9,13 +10,14 @@ import shutil
 from ..cli_common import filter_chats, sk_select
 from ..commands import CommandEnv, list_command, sync_command
 from ..drive_client import DriveClient
+from ..drive import snapshot_drive_metrics
 from ..local_sync import (
     LocalSyncResult,
     LOCAL_SYNC_PROVIDER_NAMES,
     get_local_provider,
 )
 from ..options import ListOptions, SyncOptions
-from ..util import add_run, format_run_brief, latest_run, path_order_key, get_run_by_id
+from ..util import add_run, format_run_brief, latest_run, path_order_key, get_run_by_id, sanitize_filename
 from ..schema import stamp_payload
 from .context import (
     DEFAULT_COLLAPSE,
@@ -46,8 +48,10 @@ def _apply_resume_from(args: SimpleNamespace, env: CommandEnv, *, run_id: int) -
 
     if provider == "drive":
         failed = run.get("failedChats")
+        failed_attachments = run.get("failedAttachments")
         ids: List[str] = []
         stage_counts: Dict[str, int] = {}
+        attachment_counts: Dict[str, int] = {}
         if isinstance(failed, list):
             for item in failed:
                 if isinstance(item, dict) and isinstance(item.get("id"), str) and item["id"].strip():
@@ -55,8 +59,20 @@ def _apply_resume_from(args: SimpleNamespace, env: CommandEnv, *, run_id: int) -
                     stage = item.get("stage")
                     if isinstance(stage, str) and stage.strip():
                         stage_counts[stage.strip()] = stage_counts.get(stage.strip(), 0) + 1
+        if isinstance(failed_attachments, list):
+            for item in failed_attachments:
+                if not isinstance(item, dict):
+                    continue
+                chat_id = item.get("id")
+                if isinstance(chat_id, str) and chat_id.strip():
+                    ids.append(chat_id.strip())
+                attachments = item.get("attachments")
+                if isinstance(chat_id, str) and chat_id.strip() and isinstance(attachments, list):
+                    attachment_counts[chat_id.strip()] = len([x for x in attachments if x])
         if not ids:
-            raise SystemExit(f"Run #{run_id} has no recorded failed Drive chats to resume.")
+            raise SystemExit(f"Run #{run_id} has no recorded failed Drive chats/attachments to resume.")
+        if getattr(args, "links_only", False) and failed_attachments:
+            raise SystemExit("Cannot resume attachment retries with --links-only (it disables attachment downloads).")
         args.chat_ids = list(dict.fromkeys(ids))
         args.resume_from = int(run_id)
         args.all = True
@@ -65,6 +81,9 @@ def _apply_resume_from(args: SimpleNamespace, env: CommandEnv, *, run_id: int) -
         if stage_counts:
             stage_summary = ", ".join(f"{name}={count}" for name, count in sorted(stage_counts.items()))
             extra = f" ({stage_summary})"
+        if attachment_counts:
+            attachment_total = sum(attachment_counts.values())
+            extra = f"{extra} (attachment failures={attachment_total})"
         env.ui.console.print(f"[dim]Resuming run #{run_id}: {len(args.chat_ids)} Drive chat(s){extra}[/dim]")
         return
 
@@ -96,6 +115,113 @@ def _apply_resume_from(args: SimpleNamespace, env: CommandEnv, *, run_id: int) -
         return
 
     raise SystemExit(f"--resume-from is not supported for provider={provider!r}")
+
+
+def _retry_drive_attachments_only(
+    *,
+    run: dict,
+    env: CommandEnv,
+    output_dir: Path,
+    dry_run: bool,
+    force: bool,
+) -> dict:
+    ui = env.ui
+    drive = env.drive or DriveClient(ui)
+    env.drive = drive
+
+    failed_attachments = run.get("failedAttachments")
+    if not isinstance(failed_attachments, list) or not failed_attachments:
+        raise SystemExit("Run has no recorded failedAttachments to retry.")
+
+    attempted = 0
+    downloaded = 0
+    skipped = 0
+    failures: List[Dict[str, object]] = []
+
+    for entry in failed_attachments:
+        if not isinstance(entry, dict):
+            continue
+        slug = entry.get("slug")
+        name = entry.get("name")
+        if not isinstance(slug, str) or not slug.strip():
+            if isinstance(name, str) and name.strip():
+                slug = sanitize_filename(name)
+            else:
+                continue
+        slug = slug.strip()
+        convo_dir = output_dir / slug
+        attachments = entry.get("attachments")
+        if not isinstance(attachments, list) or not attachments:
+            continue
+
+        for att in attachments:
+            att_id: Optional[str] = None
+            rel_path: Optional[str] = None
+            if isinstance(att, dict):
+                att_id = str(att.get("id") or "").strip() or None
+                rel_path_raw = att.get("path")
+                if isinstance(rel_path_raw, str) and rel_path_raw.strip():
+                    rel_path = rel_path_raw.strip()
+                else:
+                    filename = att.get("filename")
+                    if isinstance(filename, str) and filename.strip():
+                        rel_path = str(Path("attachments") / filename.strip())
+            elif isinstance(att, str) and att.strip():
+                att_id = att.strip()
+
+            if not att_id:
+                continue
+
+            if rel_path is None:
+                meta = drive.attachment_meta(att_id)
+                filename = None
+                if isinstance(meta, dict):
+                    raw_name = meta.get("name")
+                    if isinstance(raw_name, str) and raw_name.strip():
+                        filename = sanitize_filename(raw_name)
+                if not filename:
+                    filename = sanitize_filename(att_id)
+                rel_path = str(Path("attachments") / filename)
+
+            target_path = (convo_dir / rel_path).resolve()
+            attempted += 1
+            if target_path.exists() and not force:
+                skipped += 1
+                continue
+
+            if dry_run:
+                ui.console.print(f"[yellow][dry-run] Would download attachment {att_id} → {target_path}[/yellow]")
+                downloaded += 1
+                continue
+
+            meta = drive.attachment_meta(att_id)
+            ok = drive.download_attachment(att_id, target_path)
+            if not ok:
+                err = snapshot_drive_metrics(reset=False).get("lastError")
+                failure = {"id": entry.get("id"), "slug": slug, "attachment": att_id, "path": str(target_path)}
+                if isinstance(err, str) and err.strip():
+                    failure["error"] = err.strip()
+                failures.append(failure)
+                continue
+            downloaded += 1
+            if isinstance(meta, dict):
+                drive.touch_mtime(target_path, meta.get("modifiedTime"))
+
+    payload = {
+        "cmd": "sync drive",
+        "provider": "drive",
+        "attachmentsOnly": True,
+        "count": 0,
+        "out": str(output_dir),
+        "attempted": attempted,
+        "attachmentDownloads": downloaded,
+        "skipped": skipped,
+        "failures": len(failures),
+    }
+    if failures:
+        payload["failedAttachmentDownloads"] = failures
+    add_run(payload)
+    return payload
 
 
 def _apply_sync_prefs(args: SimpleNamespace, env: CommandEnv) -> SimpleNamespace:
@@ -266,21 +392,6 @@ def run_sync_cli(args: SimpleNamespace, env: CommandEnv) -> None:
         _run_sync_drive(merged, env)
     elif provider in LOCAL_SYNC_PROVIDER_NAMES:
         merged = merge_with_defaults(default_sync_namespace(provider, settings), args)
-        if getattr(args, "max_disk", None):
-            # Assume up to 20 MiB per session including attachments as a coarse estimate.
-            projected = 20 * 1024 * 1024 * max(1, len(getattr(args, "sessions", []) or []))
-            from ..util import preflight_disk_requirement
-
-            if not getattr(args, "json", False):
-                try:
-                    free_bytes = shutil.disk_usage(Path.cwd()).free
-                except Exception:
-                    free_bytes = None
-                extra = f", free={free_bytes / (1024 ** 3):.2f} GiB" if free_bytes is not None else ""
-                env.ui.console.print(
-                    f"[dim]Disk estimate: projected={projected / (1024 ** 3):.2f} GiB, limit={args.max_disk:.2f} GiB{extra}[/dim]"
-                )
-            preflight_disk_requirement(projected_bytes=projected, limit_gib=args.max_disk, ui=env.ui)
         if getattr(args, "offline", False):
             env.ui.console.print("[yellow]Offline mode: network-dependent steps will be skipped; results may be incomplete.")
         _run_local_sync(provider, merged, env)
@@ -303,6 +414,55 @@ def _run_sync_drive(args: SimpleNamespace, env: CommandEnv) -> None:
             name_filter=args.name_filter,
         )
         run_list_cli(list_args, env, json_output=json_mode)
+        return
+
+    if getattr(args, "attachments_only", False):
+        run_id = getattr(args, "resume_from", None)
+        if run_id is None:
+            raise SystemExit("--attachments-only requires --resume-from <run-id> (to load failedAttachments).")
+        if getattr(args, "links_only", False):
+            raise SystemExit("--attachments-only cannot be combined with --links-only.")
+        if getattr(args, "offline", False):
+            raise SystemExit("--attachments-only does not support --offline for Drive.")
+
+        run = get_run_by_id(int(run_id))
+        if not run:
+            raise SystemExit(f"Unknown run id: {run_id}")
+        cmd = str(run.get("cmd") or "")
+        if not cmd.startswith("sync drive"):
+            raise SystemExit(f"Run #{run_id} is not a sync drive run (cmd={cmd!r}).")
+        if run.get("failedChats"):
+            raise SystemExit("Run has failedChats; rerun without --attachments-only to retry full chat processing.")
+
+        out = args.out
+        if out is None:
+            stored = run.get("out")
+            if isinstance(stored, str) and stored.strip():
+                out = stored.strip()
+        output_dir = resolve_output_path(out, DEFAULT_SYNC_OUT)
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        retries_override = getattr(args, "drive_retries", None)
+        retry_base_override = getattr(args, "drive_retry_base", None)
+        drive_cfg = getattr(env.config, "drive", None)
+        drive_retries = retries_override if retries_override is not None else getattr(drive_cfg, "retries", None)
+        drive_retry_base = retry_base_override if retry_base_override is not None else getattr(drive_cfg, "retry_base", None)
+
+        env.drive = env.drive or DriveClient(ui, retries=drive_retries, retry_base=drive_retry_base)
+        result_payload = _retry_drive_attachments_only(
+            run=run,
+            env=env,
+            output_dir=output_dir,
+            dry_run=bool(getattr(args, "dry_run", False)),
+            force=bool(getattr(args, "force", False)),
+        )
+        if json_mode:
+            print(json.dumps(stamp_payload(result_payload), indent=2, sort_keys=True))
+            return
+        console.print(
+            f"Attachment retry complete: downloaded={result_payload.get('attachmentDownloads', 0)} "
+            f"skipped={result_payload.get('skipped', 0)} failures={result_payload.get('failures', 0)}"
+        )
         return
 
     download_attachments = not args.links_only
@@ -412,8 +572,8 @@ def _run_sync_drive(args: SimpleNamespace, env: CommandEnv) -> None:
         record_failure(args, exc, phase="sync")
         raise
 
-        if json_mode:
-            payload = {
+    if json_mode:
+        payload = {
             "cmd": "sync drive",
             "provider": "drive",
             "count": result.count,
@@ -435,16 +595,20 @@ def _run_sync_drive(args: SimpleNamespace, env: CommandEnv) -> None:
             ],
             "total_stats": result.total_stats,
             "retries": getattr(result, "retries", None),
-                "retry_base": drive_retry_base,
-            }
-            if getattr(args, "resume_from", None) is not None:
-                payload["resumeFrom"] = int(getattr(args, "resume_from") or 0)
-            failed_chats = getattr(result, "failed_chats", None)
-            if isinstance(failed_chats, list) and failed_chats:
-                payload["failedChats"] = failed_chats
-                payload["failures"] = len(failed_chats)
-            if meta:
-                payload["meta"] = dict(meta)
+            "retry_base": drive_retry_base,
+        }
+        if getattr(args, "resume_from", None) is not None:
+            payload["resumeFrom"] = int(getattr(args, "resume_from") or 0)
+        failed_chats = getattr(result, "failed_chats", None)
+        if isinstance(failed_chats, list) and failed_chats:
+            payload["failedChats"] = failed_chats
+            payload["failures"] = len(failed_chats)
+        failed_attachments = getattr(result, "failed_attachments", None)
+        if isinstance(failed_attachments, list) and failed_attachments:
+            payload["failedAttachments"] = failed_attachments
+            payload["attachmentFailures"] = int(result.total_stats.get("attachmentFailures", 0) or 0)
+        if meta:
+            payload["meta"] = dict(meta)
         if getattr(args, "sanitize_html", False):
             payload["redacted"] = True
         if previous_run_note:
@@ -456,6 +620,9 @@ def _run_sync_drive(args: SimpleNamespace, env: CommandEnv) -> None:
     failed_chats = getattr(result, "failed_chats", None)
     if isinstance(failed_chats, list) and failed_chats:
         lines.append(f"Failures: {len(failed_chats)}")
+    attachment_failures_total = int(result.total_stats.get("attachmentFailures", 0) or 0)
+    if attachment_failures_total:
+        lines.append(f"Attachment failures: {attachment_failures_total}")
     if getattr(args, "print_paths", False):
         lines.append("Written paths:")
         for item in result.items:
@@ -564,6 +731,30 @@ def _run_local_sync(provider_name: str, args: SimpleNamespace, env: CommandEnv) 
             return
         selected_paths = selection
 
+    disk_estimate = bool(getattr(args, "disk_estimate", False))
+    max_disk = getattr(args, "max_disk", None)
+    disk_estimate_bytes: Optional[int] = None
+    disk_free_bytes: Optional[int] = None
+    if disk_estimate or max_disk is not None:
+        if selected_paths is not None:
+            session_count = len(selected_paths)
+        else:
+            session_count = len(provider.list_sessions(base_dir))
+        projected = 20 * 1024 * 1024 * max(1, session_count)
+        disk_estimate_bytes = projected
+        try:
+            disk_free_bytes = int(shutil.disk_usage(Path.cwd()).free)
+        except Exception:
+            disk_free_bytes = None
+        if not getattr(args, "json", False):
+            extra = f", free={disk_free_bytes / (1024 ** 3):.2f} GiB" if disk_free_bytes is not None else ""
+            limit = f", limit={max_disk:.2f} GiB" if max_disk is not None else ""
+            ui.console.print(f"[dim]Disk estimate: projected={projected / (1024 ** 3):.2f} GiB{limit}{extra}[/dim]")
+        if max_disk is not None:
+            from ..util import preflight_disk_requirement
+
+            preflight_disk_requirement(projected_bytes=projected, limit_gib=max_disk, ui=ui)
+
     if prune and getattr(args, "prune_snapshot", False):
         from ..paths import STATE_HOME
         from ..util import preflight_disk_requirement
@@ -648,6 +839,12 @@ def _run_local_sync(provider_name: str, args: SimpleNamespace, env: CommandEnv) 
             "diffs": result.diffs,
             "files": files_payload,
         }
+        if disk_estimate_bytes is not None:
+            payload["diskEstimateBytes"] = int(disk_estimate_bytes)
+        if disk_free_bytes is not None:
+            payload["diskFreeBytes"] = int(disk_free_bytes)
+        if max_disk is not None:
+            payload["maxDiskGiB"] = float(max_disk)
         if getattr(args, "resume_from", None) is not None:
             payload["resumeFrom"] = int(getattr(args, "resume_from") or 0)
         if getattr(result, "failures", 0):
@@ -683,6 +880,12 @@ def _run_local_sync(provider_name: str, args: SimpleNamespace, env: CommandEnv) 
         "pruned": result.pruned,
         "diffs": result.diffs,
     }
+    if disk_estimate_bytes is not None:
+        run_payload["diskEstimateBytes"] = int(disk_estimate_bytes)
+    if disk_free_bytes is not None:
+        run_payload["diskFreeBytes"] = int(disk_free_bytes)
+    if max_disk is not None:
+        run_payload["maxDiskGiB"] = float(max_disk)
     if getattr(args, "resume_from", None) is not None:
         run_payload["resumeFrom"] = int(getattr(args, "resume_from") or 0)
     if getattr(result, "failures", 0):
