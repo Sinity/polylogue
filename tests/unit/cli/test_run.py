@@ -13,6 +13,7 @@ from click.testing import CliRunner
 from polylogue.cli.click_app import cli
 from polylogue.sources import DriveError
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
+from polylogue.storage.repository import ConversationRepository
 from polylogue.storage.store import PlanResult, RunResult
 from tests.infra.storage_records import DbFactory
 
@@ -103,6 +104,7 @@ def _seed_tag_counts(
 ) -> None:
     factory = DbFactory(db_path)
     backend = SQLiteBackend(db_path=db_path)
+    repository = ConversationRepository(backend=backend)
 
     async def _seed() -> None:
         index = 0
@@ -113,7 +115,7 @@ def _seed_tag_counts(
                         id=f"{provider}-{tag}-{index}",
                         provider=provider,
                     )
-                    await backend.add_tag(conversation_id, tag)
+                    await repository.add_tag(conversation_id, tag)
                     index += 1
         finally:
             await backend.close()

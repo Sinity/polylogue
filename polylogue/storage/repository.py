@@ -42,12 +42,44 @@ if TYPE_CHECKING:
     from polylogue.lib.stats import ArchiveStats
     from polylogue.storage.backends.query_store import SQLiteQueryStore
 
+<<<<<<< ours
 from polylogue.protocols import ConversationReader, SearchStore, TagStore, VectorProvider
+||||||| base
+from polylogue.storage.repository_reads import RepositoryReadMixin
+from polylogue.storage.repository_vectors import RepositoryVectorMixin
+from polylogue.storage.repository_writes import RepositoryWriteMixin
+=======
+from polylogue.storage.repository_raw import RepositoryRawMixin
+from polylogue.storage.repository_reads import RepositoryReadMixin
+from polylogue.storage.repository_vectors import RepositoryVectorMixin
+from polylogue.storage.repository_writes import RepositoryWriteMixin
+>>>>>>> theirs
 
 logger = get_logger(__name__)
 
+<<<<<<< ours
 
 class ConversationRepository(ConversationReader, SearchStore, TagStore):
+||||||| base
+class ConversationRepository(
+    RepositoryReadMixin,
+    RepositoryWriteMixin,
+    RepositoryVectorMixin,
+    ConversationReader,
+    SearchStore,
+    TagStore,
+):
+=======
+class ConversationRepository(
+    RepositoryReadMixin,
+    RepositoryRawMixin,
+    RepositoryWriteMixin,
+    RepositoryVectorMixin,
+    ConversationReader,
+    SearchStore,
+    TagStore,
+):
+>>>>>>> theirs
     """Async repository for conversation storage operations.
 
     Wraps SQLiteBackend to provide high-level async storage interface with

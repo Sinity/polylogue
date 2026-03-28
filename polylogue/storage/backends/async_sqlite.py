@@ -36,13 +36,7 @@ from polylogue.storage.backends.queries import (
     messages as messages_q,
 )
 from polylogue.storage.backends.queries import (
-    publications as publications_q,
-)
-from polylogue.storage.backends.queries import (
     raw as raw_queries,
-)
-from polylogue.storage.backends.queries import (
-    runs as runs_q,
 )
 from polylogue.storage.backends.queries import (
     stats as stats_q,
@@ -54,7 +48,6 @@ from polylogue.storage.store import (
     ContentBlockRecord,
     ConversationRecord,
     MessageRecord,
-    PublicationRecord,
     RawConversationRecord,
     RawConversationState,
     RunRecord,
@@ -137,6 +130,11 @@ class SQLiteBackend:
     def db_path(self) -> Path:
         """Return the backing SQLite database path."""
         return self._db_path
+
+    @property
+    def transaction_depth(self) -> int:
+        """Return the active transaction nesting depth."""
+        return self._transaction_depth
 
     @asynccontextmanager
     async def connection(self) -> AsyncIterator[aiosqlite.Connection]:
@@ -501,6 +499,7 @@ class SQLiteBackend:
                 conn, record, self._transaction_depth
             )
 
+<<<<<<< ours
     async def save_conversation(
         self,
         conversation: ConversationRecord,
@@ -535,6 +534,44 @@ class SQLiteBackend:
 
         return counts
 
+||||||| base
+    async def save_conversation(
+        self,
+        conversation: ConversationRecord,
+        messages: list[MessageRecord],
+        attachments: list[AttachmentRecord],
+    ) -> dict[str, int]:
+        """Save a conversation with messages and attachments atomically."""
+        counts: dict[str, int] = {
+            "conversations_created": 0,
+            "messages_created": 0,
+            "attachments_created": 0,
+        }
+
+        existing = await self.get_conversation(conversation.conversation_id)
+        await self.save_conversation_record(conversation)
+        if not existing or existing.content_hash != conversation.content_hash:
+            counts["conversations_created"] = 1
+
+        if messages:
+            existing_messages = {
+                msg.message_id: msg
+                for msg in await self.queries.get_messages(conversation.conversation_id)
+            }
+            for message in messages:
+                existing_msg = existing_messages.get(message.message_id)
+                if not existing_msg or existing_msg.content_hash != message.content_hash:
+                    counts["messages_created"] += 1
+            await self.save_messages(messages)
+
+        if attachments:
+            await self.save_attachments(attachments)
+            counts["attachments_created"] = len(attachments)
+
+        return counts
+
+=======
+>>>>>>> theirs
     # --- Message CRUD ---
 
     async def get_messages(self, conversation_id: str) -> list[MessageRecord]:
@@ -688,108 +725,6 @@ class SQLiteBackend:
         """Search conversations using the canonical ranked FTS conversation query."""
         return await self.queries.search_conversations(query, limit, providers)
 
-    # --- Metadata CRUD ---
-
-    async def get_metadata(self, conversation_id: str) -> dict[str, object]:
-        """Get metadata dict for a conversation."""
-        async with self._get_connection() as conn:
-            return await conversations_q.get_metadata(conn, conversation_id)
-
-    async def _metadata_read_modify_write(
-        self, conversation_id: str, mutator: callable[[dict[str, object]], bool]
-    ) -> None:
-        """Atomically read-modify-write conversation metadata."""
-        async with self._write_lock:
-            if self._txn_conn is None:
-                self._txn_conn = await aiosqlite.connect(self._db_path, timeout=DB_TIMEOUT)
-                self._txn_conn.row_factory = aiosqlite.Row
-                await self._txn_conn.execute("PRAGMA foreign_keys = ON")
-                await self._txn_conn.execute("PRAGMA journal_mode=WAL")
-                await self._txn_conn.execute(f"PRAGMA busy_timeout = {DB_TIMEOUT * 1000}")
-
-            try:
-                await self._txn_conn.execute("BEGIN IMMEDIATE")
-                current = await conversations_q.get_metadata(self._txn_conn, conversation_id)
-                if mutator(current):
-                    await conversations_q.update_metadata_raw(
-                        self._txn_conn, conversation_id, current
-                    )
-                await self._txn_conn.commit()
-            except Exception:
-                await self._txn_conn.rollback()
-                raise
-            finally:
-                if self._txn_conn is not None:
-                    await self._txn_conn.close()
-                    self._txn_conn = None
-
-    async def update_metadata(self, conversation_id: str, key: str, value: object) -> None:
-        """Set a single metadata key."""
-
-        def _set(meta: dict[str, object]) -> bool:
-            meta[key] = value
-            return True
-
-        await self._metadata_read_modify_write(conversation_id, _set)
-
-    async def delete_metadata(self, conversation_id: str, key: str) -> None:
-        """Remove a metadata key."""
-
-        def _delete(meta: dict[str, object]) -> bool:
-            if key in meta:
-                del meta[key]
-                return True
-            return False
-
-        await self._metadata_read_modify_write(conversation_id, _delete)
-
-    async def add_tag(self, conversation_id: str, tag: str) -> None:
-        """Add a tag to the conversation's tags list."""
-
-        def _add(meta: dict[str, object]) -> bool:
-            tags = meta.get("tags", [])
-            if not isinstance(tags, list):
-                tags = []
-            if tag not in tags:
-                tags.append(tag)
-                meta["tags"] = tags
-                return True
-            return False
-
-        await self._metadata_read_modify_write(conversation_id, _add)
-
-    async def remove_tag(self, conversation_id: str, tag: str) -> None:
-        """Remove a tag from the conversation's tags list."""
-
-        def _remove(meta: dict[str, object]) -> bool:
-            tags = meta.get("tags", [])
-            if isinstance(tags, list) and tag in tags:
-                tags.remove(tag)
-                meta["tags"] = tags
-                return True
-            return False
-
-        await self._metadata_read_modify_write(conversation_id, _remove)
-
-    async def list_tags(self, *, provider: str | None = None) -> dict[str, int]:
-        """List all tags with counts."""
-        async with self._get_connection() as conn:
-            return await conversations_q.list_tags(conn, provider=provider)
-
-    async def set_metadata(self, conversation_id: str, metadata: dict[str, object]) -> None:
-        """Replace entire metadata dict."""
-        async with self._get_connection() as conn:
-            await conversations_q.set_metadata(
-                conn, conversation_id, metadata, self._transaction_depth
-            )
-
-    async def delete_conversation(self, conversation_id: str) -> bool:
-        """Delete conversation and all related records."""
-        async with self.transaction(), self._get_connection() as conn:
-            return await conversations_q.delete_conversation_sql(
-                conn, conversation_id, self._transaction_depth
-            )
-
     async def iter_messages(
         self,
         conversation_id: str,
@@ -833,29 +768,12 @@ class SQLiteBackend:
         """Fetch the most recent pipeline run record."""
         return await self.queries.get_latest_run()
 
-    async def get_latest_publication(
-        self,
-        publication_kind: str,
-    ) -> PublicationRecord | None:
-        """Fetch the most recent publication record for one publication kind."""
-        return await self.queries.get_latest_publication(publication_kind)
-
     async def close(self) -> None:
         """Close database connections."""
         if self._txn_conn is not None:
             await self._txn_conn.close()
             self._txn_conn = None
         self._transaction_depth = 0
-
-    async def record_run(self, record: RunRecord) -> None:
-        """Record a pipeline run audit entry."""
-        async with self.transaction(), self._get_connection() as conn:
-            await runs_q.record_run(conn, record, self._transaction_depth)
-
-    async def record_publication(self, record: PublicationRecord) -> None:
-        """Persist one publication manifest."""
-        async with self.transaction(), self._get_connection() as conn:
-            await publications_q.record_publication(conn, record, self._transaction_depth)
 
     # --- Raw Conversation Storage ---
 
