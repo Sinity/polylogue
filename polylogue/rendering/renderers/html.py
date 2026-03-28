@@ -17,7 +17,7 @@ from polylogue.render_paths import render_root
 from polylogue.rendering.core import ConversationFormatter
 
 if TYPE_CHECKING:
-    pass
+    from polylogue.lib.models import Conversation
 
 
 class PygmentsHighlighter:
@@ -132,366 +132,63 @@ class MarkdownRenderer:
         return html
 
 
-# Default template with enhanced styling and syntax highlighting
-DEFAULT_HTML_TEMPLATE = """<!DOCTYPE html>
-<html lang="en" data-theme="{{ theme }}">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{{ title }} | Polylogue</title>
-    <style>
-        :root {
-            --bg-primary: #0a0a0c;
-            --bg-secondary: #16161a;
-            --bg-elevated: #1e1e24;
-            --bg-code: #282c34;
-            --text-primary: #f8f9fa;
-            --text-secondary: #94a3b8;
-            --text-muted: #6b7280;
-            --accent: #6366f1;
-            --accent-glow: rgba(99, 102, 241, 0.4);
-            --border: #2d2d35;
-            --border-subtle: #1f1f23;
-            --user-bg: rgba(99, 102, 241, 0.1);
-            --user-border: rgba(99, 102, 241, 0.3);
-            --assistant-bg: rgba(16, 185, 129, 0.1);
-            --assistant-border: rgba(16, 185, 129, 0.3);
-            --system-bg: rgba(245, 158, 11, 0.1);
-            --system-border: rgba(245, 158, 11, 0.3);
-            --tool-bg: rgba(139, 92, 246, 0.1);
-            --tool-border: rgba(139, 92, 246, 0.3);
-        }
+DEFAULT_HTML_TEMPLATE = (Path(__file__).parent.parent / "templates" / "conversation.html").read_text()
 
-        [data-theme="light"] {
-            --bg-primary: #ffffff;
-            --bg-secondary: #f9fafb;
-            --bg-elevated: #ffffff;
-            --bg-code: #f6f8fa;
-            --text-primary: #111827;
-            --text-secondary: #4b5563;
-            --text-muted: #9ca3af;
-            --border: #e5e7eb;
-            --border-subtle: #f3f4f6;
-            --user-bg: #e3f2fd;
-            --assistant-bg: #f5f5f5;
-        }
+_ROLE_CLASS_RE = re.compile(r"[^a-z0-9-]")
 
-        @media (prefers-color-scheme: light) {
-            :root:not([data-theme="dark"]) {
-                --bg-primary: #ffffff;
-                --bg-secondary: #f9fafb;
-                --bg-elevated: #ffffff;
-                --bg-code: #f6f8fa;
-                --text-primary: #111827;
-                --text-secondary: #4b5563;
-                --text-muted: #9ca3af;
-                --border: #e5e7eb;
-                --border-subtle: #f3f4f6;
-                --user-bg: #e3f2fd;
-                --assistant-bg: #f5f5f5;
-            }
-        }
 
-        * { box-sizing: border-box; margin: 0; padding: 0; }
+def _role_css_class(role: str) -> str:
+    """Convert a role name to a CSS-safe class like ``message-tool-use``."""
+    return "message-" + _ROLE_CLASS_RE.sub("-", role.lower())
 
-        body {
-            font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-            background-color: var(--bg-primary);
-            color: var(--text-primary);
-            line-height: 1.7;
-            -webkit-font-smoothing: antialiased;
-        }
 
-        .nav-header {
-            position: sticky;
-            top: 0;
-            background: var(--bg-secondary);
-            border-bottom: 1px solid var(--border);
-            padding: 1rem 2rem;
-            display: flex;
-            align-items: center;
-            gap: 1rem;
-            z-index: 100;
-        }
+def _attach_branches(messages: list[dict[str, object]]) -> list[dict[str, object]]:
+    """Group branch messages under their mainline siblings.
 
-        .nav-back {
-            color: var(--accent);
-            text-decoration: none;
-            font-weight: 500;
-        }
+    Mainline messages (``branch_index == 0``) are returned as the top-level
+    list.  Messages with ``branch_index > 0`` are attached as a ``branches``
+    list on the mainline message that shares the same ``parent_message_id``.
 
-        .nav-breadcrumb {
-            color: var(--text-muted);
-            font-size: 0.875rem;
-        }
+    If no branching is present, the input is returned unchanged (all
+    messages have ``branch_index == 0`` and no ``branches`` key).
+    """
+    # Fast path: if no message has a non-zero branch_index, skip grouping
+    if not any(m.get("branch_index", 0) for m in messages):
+        return messages
 
-        .container {
-            max-width: 900px;
-            margin: 0 auto;
-            padding: 2rem;
-        }
+    # Index mainline messages by their id for parent lookups
+    mainline: list[dict[str, object]] = []
+    mainline_by_id: dict[str, dict[str, object]] = {}
 
-        .conversation-header {
-            margin-bottom: 3rem;
-            padding-bottom: 2rem;
-            border-bottom: 1px solid var(--border);
-        }
+    for msg in messages:
+        if not msg.get("branch_index"):
+            mainline.append(msg)
+            mainline_by_id[str(msg["id"])] = msg
 
-        .conversation-header h1 {
-            font-size: 2rem;
-            font-weight: 700;
-            margin-bottom: 1rem;
-            background: linear-gradient(to right, var(--text-primary), var(--text-secondary));
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-        }
+    # Attach branch messages to the mainline sibling that shares the same parent
+    for msg in messages:
+        branch_idx = msg.get("branch_index", 0)
+        parent_id = msg.get("parent_message_id")
+        if not branch_idx or not parent_id:
+            continue
 
-        .conversation-meta {
-            display: flex;
-            align-items: center;
-            gap: 1rem;
-            flex-wrap: wrap;
-        }
+        # Find the mainline sibling: the mainline message with the same parent_id
+        # This is the branch_index=0 message that shares the same parent
+        sibling = None
+        for m in mainline:
+            if m.get("parent_message_id") == parent_id and not m.get("branch_index"):
+                sibling = m
+                break
 
-        .badge {
-            padding: 0.25rem 0.75rem;
-            border-radius: 9999px;
-            font-weight: 600;
-            font-size: 0.75rem;
-            text-transform: uppercase;
-            letter-spacing: 0.05em;
-            background: var(--bg-elevated);
-            border: 1px solid var(--border);
-        }
+        if sibling is not None:
+            branches = sibling.setdefault("branches", [])
+            assert isinstance(branches, list)
+            branches.append(msg)
+        else:
+            # No mainline sibling found — include as standalone
+            mainline.append(msg)
 
-        .meta-item {
-            color: var(--text-muted);
-            font-size: 0.875rem;
-        }
-
-        .messages {
-            display: flex;
-            flex-direction: column;
-            gap: 2rem;
-        }
-
-        .message {
-            display: flex;
-            gap: 1rem;
-            padding: 1.5rem;
-            border-radius: 12px;
-            border: 1px solid var(--border-subtle);
-            transition: border-color 0.2s;
-        }
-
-        .message:hover { border-color: var(--border); }
-        .message-user { background: var(--user-bg); border-color: var(--user-border); }
-        .message-assistant { background: var(--assistant-bg); border-color: var(--assistant-border); }
-        .message-system { background: var(--system-bg); border-color: var(--system-border); }
-        .message-tool, .message-tool_use, .message-tool_result {
-            background: var(--tool-bg);
-            border-color: var(--tool-border);
-        }
-
-        .message-avatar {
-            flex-shrink: 0;
-        }
-
-        .avatar-icon {
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            width: 2.5rem;
-            height: 2.5rem;
-            border-radius: 8px;
-            background: var(--bg-elevated);
-            font-weight: 700;
-            font-size: 0.75rem;
-            color: var(--accent);
-        }
-
-        .message-user .avatar-icon {
-            background: var(--accent);
-            color: white;
-        }
-
-        .message-content {
-            flex-grow: 1;
-            min-width: 0;
-        }
-
-        .message-header {
-            display: flex;
-            align-items: center;
-            gap: 1rem;
-            margin-bottom: 0.5rem;
-        }
-
-        .role-label {
-            font-size: 0.75rem;
-            font-weight: 600;
-            text-transform: uppercase;
-            letter-spacing: 0.05em;
-            color: var(--text-muted);
-        }
-
-        .timestamp {
-            font-size: 0.75rem;
-            color: var(--text-muted);
-        }
-
-        .message-body {
-            color: var(--text-primary);
-            font-size: 0.95rem;
-        }
-
-        .message-body p { margin-bottom: 1rem; }
-        .message-body p:last-child { margin-bottom: 0; }
-
-        .message-body pre {
-            background: var(--bg-code);
-            border: 1px solid var(--border);
-            border-radius: 8px;
-            padding: 1rem;
-            overflow-x: auto;
-            margin: 1rem 0;
-        }
-
-        .message-body code {
-            font-family: 'JetBrains Mono', 'Fira Code', Consolas, monospace;
-            font-size: 0.875em;
-        }
-
-        .message-body p code {
-            background: var(--bg-elevated);
-            padding: 0.125rem 0.375rem;
-            border-radius: 4px;
-        }
-
-        /* Pygments highlight overrides */
-        .highlight {
-            background: var(--bg-code) !important;
-            border-radius: 8px;
-            overflow-x: auto;
-            margin: 1rem 0;
-        }
-
-        .highlight pre {
-            margin: 0;
-            padding: 1rem;
-            background: transparent !important;
-            border: none;
-        }
-
-        .toc {
-            position: fixed;
-            right: 2rem;
-            top: 6rem;
-            width: 200px;
-            max-height: calc(100vh - 8rem);
-            overflow-y: auto;
-            padding: 1rem;
-            background: var(--bg-secondary);
-            border: 1px solid var(--border);
-            border-radius: 8px;
-            font-size: 0.75rem;
-            display: none;
-        }
-
-        @media (min-width: 1200px) {
-            .toc { display: block; }
-        }
-
-        .toc h3 {
-            font-size: 0.75rem;
-            text-transform: uppercase;
-            letter-spacing: 0.1em;
-            color: var(--text-muted);
-            margin-bottom: 1rem;
-        }
-
-        .toc-list {
-            list-style: none;
-        }
-
-        .toc-list li { margin-bottom: 0.5rem; }
-
-        .toc-list a {
-            color: var(--text-secondary);
-            text-decoration: none;
-            display: block;
-            padding: 0.25rem 0;
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
-        }
-
-        .toc-list a:hover { color: var(--text-primary); }
-
-        @media (max-width: 768px) {
-            .container { padding: 1rem; }
-            .message { flex-direction: column; gap: 0.5rem; }
-            .conversation-header h1 { font-size: 1.5rem; }
-        }
-
-        {{ highlight_css }}
-    </style>
-</head>
-<body>
-    <nav class="nav-header">
-        <a href="../index.html" class="nav-back">← Back</a>
-        <span class="nav-breadcrumb">{{ provider }} / {{ conversation_id[:12] }}...</span>
-    </nav>
-
-    <main class="container">
-        <header class="conversation-header">
-            <h1>{{ title or "Untitled Conversation" }}</h1>
-            <div class="conversation-meta">
-                <span class="badge">{{ provider }}</span>
-                <span class="meta-item">{{ message_count }} messages</span>
-                {% if created_at %}
-                <span class="meta-item">{{ created_at }}</span>
-                {% endif %}
-            </div>
-        </header>
-
-        <div class="messages">
-            {% for msg in messages %}
-            <article class="message message-{{ msg.role or 'unknown' }}" id="msg-{{ loop.index }}">
-                <div class="message-avatar">
-                    <span class="avatar-icon">{{ (msg.role or 'msg')[:2] | upper }}</span>
-                </div>
-                <div class="message-content">
-                    <header class="message-header">
-                        <span class="role-label">{{ msg.role or 'message' }}</span>
-                        {% if msg.timestamp %}
-                        <time class="timestamp">{{ msg.timestamp }}</time>
-                        {% endif %}
-                    </header>
-                    <div class="message-body">
-                        {{ msg.html_content | safe }}
-                    </div>
-                </div>
-            </article>
-            {% endfor %}
-        </div>
-    </main>
-
-    <aside class="toc">
-        <h3>Messages</h3>
-        <ol class="toc-list">
-            {% for msg in messages %}
-            <li>
-                <a href="#msg-{{ loop.index }}">
-                    {{ msg.role or 'unknown' }}: {{ (msg.text or "")[:30] }}{% if (msg.text or "")|length > 30 %}...{% endif %}
-                </a>
-            </li>
-            {% endfor %}
-        </ol>
-    </aside>
-</body>
-</html>
-"""
+    return mainline
 
 
 class HTMLRenderer:
@@ -536,25 +233,33 @@ class HTMLRenderer:
         """
         return "html"
 
-    def _prepare_messages(self, conversation_id: str) -> list[dict[str, str | None]]:
+    async def _prepare_messages(self, conversation_id: str) -> list[dict[str, object]]:
         """Prepare messages for template rendering with HTML content.
+
+        Includes branch metadata so the template can render branch
+        points with collapsible ``<details>`` sections.
 
         Args:
             conversation_id: ID of the conversation
 
         Returns:
-            List of message dicts with html_content field
+            List of mainline message dicts.  Each dict may contain a
+            ``branches`` key holding a list of alternative branch dicts.
         """
-        from polylogue.storage.backends.sqlite import open_connection
+        from polylogue.storage.backends.async_sqlite import SQLiteBackend
 
-        messages: list[dict[str, str | None]] = []
-        with open_connection(None) as conn:
-            rows = conn.execute(
+        backend = self.formatter.backend or SQLiteBackend(db_path=self.formatter.db_path)
+        raw_messages: list[dict[str, object]] = []
+
+        async with backend._get_connection() as conn:
+            cursor = await conn.execute(
                 """
-                SELECT message_id, role, text, timestamp
+                SELECT message_id, role, text, timestamp,
+                       parent_message_id, branch_index
                 FROM messages
                 WHERE conversation_id = ?
                 ORDER BY
+                    branch_index,
                     (timestamp IS NULL),
                     CASE
                         WHEN timestamp IS NULL THEN NULL
@@ -564,24 +269,29 @@ class HTMLRenderer:
                     message_id
                 """,
                 (conversation_id,),
-            ).fetchall()
+            )
+            rows = await cursor.fetchall()
 
             for row in rows:
                 text = row["text"] or ""
                 if not text:
                     continue
+                role = row["role"] or "message"
                 html_content = self.md_renderer.render(text)
-                messages.append({
+                raw_messages.append({
                     "id": row["message_id"],
-                    "role": row["role"] or "message",
+                    "role": role,
+                    "role_class": _role_css_class(role),
                     "text": text,
                     "html_content": html_content,
                     "timestamp": row["timestamp"],
+                    "parent_message_id": row["parent_message_id"],
+                    "branch_index": row["branch_index"] or 0,
                 })
 
-        return messages
+        return _attach_branches(raw_messages)
 
-    def render(self, conversation_id: str, output_path: Path) -> Path:
+    async def render(self, conversation_id: str, output_path: Path) -> Path:
         """Render a conversation to enhanced HTML format.
 
         Args:
@@ -596,7 +306,7 @@ class HTMLRenderer:
             IOError: If output path is invalid or write fails
         """
         # Use shared formatter to get metadata
-        formatted = self.formatter.format(conversation_id)
+        formatted = await self.formatter.format(conversation_id)
 
         # Determine output path
         render_root_path = render_root(output_path, formatted.provider, conversation_id)
@@ -607,7 +317,7 @@ class HTMLRenderer:
         md_path.write_text(formatted.markdown_text, encoding="utf-8")
 
         # Prepare messages with HTML content
-        messages = self._prepare_messages(conversation_id)
+        messages = await self._prepare_messages(conversation_id)
 
         # Set up template
         loader: FileSystemLoader | DictLoader
@@ -639,4 +349,60 @@ class HTMLRenderer:
         return html_path
 
 
-__all__ = ["HTMLRenderer", "PygmentsHighlighter", "MarkdownRenderer"]
+def render_conversation_html(conv: Conversation, theme: str = "dark") -> str:
+    """Render an in-memory Conversation to a standalone HTML string.
+
+    Uses the same Jinja2 template and Pygments highlighting as
+    :class:`HTMLRenderer`, but works directly from a ``Conversation``
+    object rather than querying the database.
+
+    Args:
+        conv: Conversation with messages to render.
+        theme: ``"dark"`` or ``"light"``.
+
+    Returns:
+        Complete HTML document as a string.
+    """
+    style = "monokai" if theme == "dark" else "default"
+    highlighter = PygmentsHighlighter(style=style)
+    md_renderer = MarkdownRenderer(highlighter)
+
+    raw_messages: list[dict[str, object]] = []
+    for msg in conv.messages:
+        if not msg.text:
+            continue
+        role = msg.role or "message"
+        html_content = md_renderer.render(msg.text)
+        raw_messages.append({
+            "id": msg.id,
+            "role": role,
+            "role_class": _role_css_class(role),
+            "text": msg.text,
+            "html_content": html_content,
+            "timestamp": str(msg.timestamp) if msg.timestamp else None,
+            "parent_message_id": msg.parent_id,
+            "branch_index": msg.branch_index,
+        })
+
+    messages = _attach_branches(raw_messages)
+    title = conv.display_title or str(conv.id)
+
+    env = Environment(
+        loader=DictLoader({"conversation.html": DEFAULT_HTML_TEMPLATE}),
+        autoescape=select_autoescape(["html", "xml"]),
+    )
+    template = env.get_template("conversation.html")
+
+    return template.render(
+        title=title,
+        provider=conv.provider,
+        conversation_id=str(conv.id),
+        messages=messages,
+        message_count=len(messages),
+        created_at=str(conv.created_at) if conv.created_at else None,
+        highlight_css=highlighter.get_css(),
+        theme=theme,
+    )
+
+
+__all__ = ["HTMLRenderer", "PygmentsHighlighter", "MarkdownRenderer", "render_conversation_html"]
