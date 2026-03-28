@@ -45,4 +45,4 @@ class PolylogueApp(App[None]):
 
     def action_toggle_dark(self) -> None:
         """An action to toggle dark mode."""
-        self.dark = not self.dark
+        self.dark = not self.dark  # type: ignore[has-type]

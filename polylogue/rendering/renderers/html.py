@@ -94,7 +94,7 @@ class HTMLRenderer:
 
         env = Environment(loader=loader, autoescape=True)
         template = env.get_template(template_name)
-        return template.render(title=title, body=body_html)
+        return str(template.render(title=title, body=body_html))
 
     def render(self, conversation_id: str, output_path: Path) -> Path:
         """Render a conversation to HTML format.
