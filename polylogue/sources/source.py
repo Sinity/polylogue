@@ -293,6 +293,10 @@ def _iter_json_stream(handle: BinaryIO | IO[bytes], path_name: str, unpack_lists
 _INGEST_EXTENSIONS = frozenset({".json", ".jsonl", ".ndjson", ".zip"})
 _INGEST_DOUBLE_EXTENSIONS = frozenset({".jsonl.txt"})
 
+# Directories to skip during source ingestion.
+# These contain derived/analysis artifacts, not raw conversation data.
+_SKIP_DIRS = frozenset({"analysis", "__pycache__", ".git", "node_modules"})
+
 
 def _has_ingest_extension(path: Path) -> bool:
     """Check if path has a supported ingest extension (case-insensitive)."""
@@ -318,7 +322,9 @@ def iter_source_conversations(
         import os
 
         paths = []
-        for root, _, files in os.walk(base, followlinks=True):
+        for root, dirs, files in os.walk(base, followlinks=True):
+            # Prune directories that contain derived/analysis data
+            dirs[:] = [d for d in dirs if d not in _SKIP_DIRS]
             for filename in files:
                 file_path = Path(root) / filename
                 if _has_ingest_extension(file_path):
@@ -499,7 +505,9 @@ def iter_source_conversations_with_raw(
         import os
 
         paths = []
-        for root, _, files in os.walk(base, followlinks=True):
+        for root, dirs, files in os.walk(base, followlinks=True):
+            # Prune directories that contain derived/analysis data
+            dirs[:] = [d for d in dirs if d not in _SKIP_DIRS]
             for filename in files:
                 file_path = Path(root) / filename
                 if _has_ingest_extension(file_path):
