@@ -21,6 +21,7 @@ from polylogue.cli.commands.mcp import mcp_command
 from polylogue.cli.commands.reset import reset_command
 from polylogue.cli.commands.serve import serve_command
 from polylogue.cli.commands.sync import sources_command, sync_command
+from polylogue.core.log import configure_logging
 from polylogue.cli.formatting import announce_plain_mode, should_use_plain
 from polylogue.cli.types import AppEnv
 from polylogue.ui import create_ui
@@ -304,6 +305,9 @@ def cli(
 
     Run `polylogue <command> --help` for subcommand details.
     """
+    # Set up logging early so all output goes to stderr
+    configure_logging(verbose=verbose)
+
     # Set up environment
     use_plain = should_use_plain(plain=plain, interactive=interactive)
     env = AppEnv(ui=create_ui(use_plain))
