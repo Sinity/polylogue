@@ -27,8 +27,10 @@ from .source import (
     ParsedAttachment,
     ParsedConversation,
     ParsedMessage,
+    RawConversationData,
     ingest_bundle,
     iter_source_conversations,
+    iter_source_conversations_with_raw,
     parse_drive_payload,
 )
 
@@ -41,7 +43,9 @@ __all__ = [
     "ParsedAttachment",
     "ParsedConversation",
     "ParsedMessage",
+    "RawConversationData",
     "iter_source_conversations",
+    "iter_source_conversations_with_raw",
     "parse_drive_payload",
     # Drive integration
     "DriveDownloadResult",

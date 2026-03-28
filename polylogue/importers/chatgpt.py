@@ -33,11 +33,30 @@ def extract_messages_from_mapping(mapping: dict[str, object]) -> tuple[list[Pars
         if not isinstance(parts, list):
             continue
         text = "\n".join(str(part) for part in parts if part)
-        role = normalize_role((msg.get("author") or {}).get("role") or "user")
+        # Role is required - skip messages without one
+        raw_role = (msg.get("author") or {}).get("role")
+        if not raw_role:
+            continue
+        role = normalize_role(raw_role)
         timestamp = msg.get("create_time")
         msg_id = msg.get("id") or node.get("id") or ""
         if not msg_id:
             msg_id = f"msg-{idx}"
+
+        # Extract parent message reference and calculate branch index
+        parent_id = node.get("parent")
+        parent_message_provider_id = str(parent_id) if parent_id else None
+        branch_index = 0
+
+        # Calculate branch_index from parent's children array position
+        if parent_message_provider_id:
+            parent_node = mapping.get(parent_id)
+            if isinstance(parent_node, dict):
+                children = parent_node.get("children")
+                if isinstance(children, list):
+                    current_node_id = node.get("id")
+                    if current_node_id in children:
+                        branch_index = children.index(current_node_id)
 
         # Extract attachments from message metadata
         msg_metadata = msg.get("metadata") or {}
@@ -90,6 +109,8 @@ def extract_messages_from_mapping(mapping: dict[str, object]) -> tuple[list[Pars
             role=role,
             text=text,
             timestamp=str(timestamp) if timestamp is not None else None,
+            parent_message_provider_id=parent_message_provider_id,
+            branch_index=branch_index,
             provider_meta=meta,
         )
         entries.append((_coerce_float(timestamp), idx, parsed))

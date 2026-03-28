@@ -116,6 +116,13 @@ def test_full_workflow_per_provider(provider, sample_name, temp_config_and_repo)
     )
     result = service.ingest_sources([source])
 
+    # Build FTS index for search tests (INDEX stage of pipeline)
+    from polylogue.storage.backends.sqlite import open_connection
+    from polylogue.storage.index import update_index_for_conversations
+
+    with open_connection(db_path) as conn:
+        update_index_for_conversations(list(result.processed_ids), conn)
+
     # Verify import
     assert result.counts["conversations"] > 0, f"No conversations imported from {provider}"
     # Some providers may not have messages in the sample format (e.g., Gemini)
@@ -152,7 +159,12 @@ def test_full_workflow_per_provider(provider, sample_name, temp_config_and_repo)
     first_words = conv.messages[0].text.split()[:3]
     if first_words:
         search_term = " ".join(first_words)
-        result = search_messages(search_term, archive_root=archive_root, render_root_path=config.render_root)
+        result = search_messages(
+            search_term,
+            archive_root=archive_root,
+            render_root_path=config.render_root,
+            db_path=db_path,  # Use test database, not user's real database
+        )
         found_ids = {r.conversation_id for r in result.hits}
         assert conv.id in found_ids, \
             f"Search failed for '{search_term}'"

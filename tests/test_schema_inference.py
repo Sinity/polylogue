@@ -111,24 +111,17 @@ class TestSchemaGeneration:
 class TestProviderSchemaGeneration:
     """Test full provider schema generation."""
 
-    @pytest.fixture
-    def db_path(self):
-        path = Path.home() / ".local/state/polylogue/polylogue.db"
-        if not path.exists():
-            pytest.skip("Polylogue database not found")
-        return path
-
     def test_known_providers(self):
         """All configured providers should be known."""
         expected = {"chatgpt", "claude-code", "claude-ai", "gemini", "codex"}
         assert set(PROVIDERS.keys()) == expected
 
-    @pytest.mark.parametrize("provider", ["chatgpt", "claude-code", "claude-ai", "gemini"])
-    def test_generate_schema_from_db(self, db_path, provider):
+    @pytest.mark.parametrize("provider", ["chatgpt", "claude-code", "codex"])
+    def test_generate_schema_from_db(self, seeded_db, provider):
         """Generate schema from database for each provider."""
-        result = generate_provider_schema(provider, db_path=db_path, max_samples=100)
+        result = generate_provider_schema(provider, db_path=seeded_db, max_samples=100)
 
-        # Should succeed (unless no data)
+        # Should succeed since we have fixtures for these providers
         if result.sample_count > 0:
             assert result.success, f"Failed: {result.error}"
             assert result.schema is not None
@@ -154,21 +147,14 @@ class TestProviderSchemaGeneration:
 class TestLoadSamples:
     """Test sample loading functions."""
 
-    @pytest.fixture
-    def db_path(self):
-        path = Path.home() / ".local/state/polylogue/polylogue.db"
-        if not path.exists():
-            pytest.skip("Polylogue database not found")
-        return path
-
-    def test_load_limited_samples(self, db_path):
+    def test_load_limited_samples(self, seeded_db):
         """Should respect max_samples limit."""
-        samples = load_samples_from_db("chatgpt", db_path=db_path, max_samples=10)
+        samples = load_samples_from_db("chatgpt", db_path=seeded_db, max_samples=10)
 
         # Should have at most 10 samples (may have fewer if DB has less)
         assert len(samples) <= 10
 
-    def test_load_nonexistent_provider(self, db_path):
+    def test_load_nonexistent_provider(self, seeded_db):
         """Unknown provider returns empty list."""
-        samples = load_samples_from_db("nonexistent-provider", db_path=db_path)
+        samples = load_samples_from_db("nonexistent-provider", db_path=seeded_db)
         assert samples == []
