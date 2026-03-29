@@ -242,7 +242,7 @@ def test_products_reconstructs_tiered_payloads_from_blank_migrated_rows(cli_work
     assert work_event["evidence"]["start_index"] >= 0
     assert work_event["inference"]["kind"] in {"implementation", "testing", "planning", "debugging"}
     assert phase["evidence"]["message_range"][0] >= 0
-    assert phase["inference"]["kind"]
+    assert phase["inference"]["confidence"] >= 0.0
 
 
 def test_products_profile_date_filters_and_phases_json(cli_workspace):

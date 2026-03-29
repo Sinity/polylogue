@@ -166,6 +166,21 @@ def run_in_pty(
             # Check if process finished
             returncode = process.poll()
             if returncode is not None:
+                # Drain any remaining output after process exits.
+                # The subprocess may have written to the PTY slave just before
+                # exiting; that data can still be buffered in the kernel PTY
+                # and needs to be read from master_fd to avoid truncated
+                # snapshots (observed as ordering-dependent snapshot flakes).
+                time.sleep(0.05)
+                while True:
+                    try:
+                        trailing = os.read(master_fd, 4096)
+                        if trailing:
+                            output_chunks.append(trailing)
+                        else:
+                            break
+                    except OSError:
+                        break
                 break
 
             # Small sleep to avoid busy-waiting
