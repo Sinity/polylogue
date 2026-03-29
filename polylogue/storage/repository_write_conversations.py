@@ -100,17 +100,6 @@ async def save_via_backend(
             counts["conversations"] = 1
 
             if messages:
-                pname = conversation.provider_name
-                if pname:
-                    t0 = _time.perf_counter()
-                    messages = [
-                        message.model_copy(update={"provider_name": pname})
-                        if not message.provider_name
-                        else message
-                        for message in messages
-                    ]
-                    timings["model_copy"] = _time.perf_counter() - t0
-
                 t0 = _time.perf_counter()
                 await backend.save_messages(messages)
                 timings["save_msgs"] = _time.perf_counter() - t0
@@ -119,7 +108,7 @@ async def save_via_backend(
                 t0 = _time.perf_counter()
                 await backend.upsert_conversation_stats(
                     conversation.conversation_id,
-                    pname,
+                    conversation.provider_name,
                     messages,
                 )
                 timings["upsert_stats"] = _time.perf_counter() - t0
