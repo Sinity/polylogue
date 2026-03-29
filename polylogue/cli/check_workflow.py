@@ -52,6 +52,7 @@ class CheckCommandOptions:
     vacuum: bool
     deep: bool
     runtime: bool
+    check_blob: bool
     check_schemas: bool
     check_proof: bool
     check_artifacts: bool
@@ -95,6 +96,27 @@ def run_check_workflow(env: AppEnv, options: CheckCommandOptions) -> CheckComman
 
     if options.runtime:
         result.runtime_report = run_runtime_health(config)
+
+    if options.check_blob:
+        from polylogue.storage.blob_store import get_blob_store
+
+        blob_store = get_blob_store()
+        db_raw_ids: set[str] = set()
+        with connection_context() as conn:
+            for row in conn.execute("SELECT raw_id FROM raw_conversations"):
+                db_raw_ids.add(row[0])
+        disk_hashes = set(blob_store.iter_all())
+        missing = db_raw_ids - disk_hashes
+        orphaned = disk_hashes - db_raw_ids
+        ui.console.print(f"Blob store: {len(disk_hashes)} blobs on disk, {len(db_raw_ids)} raw records in DB")
+        if missing:
+            ui.console.print(f"  MISSING: {len(missing)} blobs referenced in DB but not on disk")
+            for h in sorted(missing)[:10]:
+                ui.console.print(f"    {h[:16]}...")
+        if orphaned:
+            ui.console.print(f"  Orphaned: {len(orphaned)} blobs on disk not in DB")
+        if not missing and not orphaned:
+            ui.console.print("  All blobs verified.")
 
     if options.check_schemas:
         result.schema_report = run_schema_verification(
