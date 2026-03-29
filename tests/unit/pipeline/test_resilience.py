@@ -359,14 +359,19 @@ async def test_acquisition_law_counts_unique_raws_and_normalizes_provider_hints(
 async def test_validation_law_matches_mode_and_payload_contract(case) -> None:
     """Validation mode, malformed JSONL, and schema verdicts must produce one stable persisted contract."""
     from polylogue.schemas import ValidationResult
+    from polylogue.storage.blob_store import get_blob_store
 
     raw_content, provider_name, source_path = build_validation_payload(case)
+    blob_store = get_blob_store()
+    raw_id, blob_size = blob_store.write_from_bytes(raw_content)
+
     raw_record = MagicMock(
-        raw_id="raw-1",
-        raw_content=raw_content,
+        raw_id=raw_id,
+        raw_content=raw_content,  # Keep for backwards compatibility in mocks
         provider_name=provider_name,
         source_path=source_path,
         payload_provider=None,
+        blob_size=blob_size,
     )
     backend = MagicMock(spec=SQLiteBackend)
     service = ValidationService(backend=backend)
@@ -399,7 +404,7 @@ async def test_validation_law_matches_mode_and_payload_contract(case) -> None:
         return_value=validator,
     ):
         with patch.dict("os.environ", {"POLYLOGUE_SCHEMA_VALIDATION": case.mode}, clear=False):
-            result = await service.validate_raw_ids(raw_ids=["raw-1"])
+            result = await service.validate_raw_ids(raw_ids=[raw_id])
 
     expected = expected_validation_contract(case)
     if expected["validation_samples_called"]:
@@ -407,19 +412,19 @@ async def test_validation_law_matches_mode_and_payload_contract(case) -> None:
     else:
         assert validator.max_samples_seen == "unset"
     assert result.counts["invalid"] == expected["invalid_count"]
-    assert result.parseable_raw_ids == (["raw-1"] if expected["parseable"] else [])
-    assert result.invalid_raw_ids == ([] if expected["parseable"] else ["raw-1"])
+    assert result.parseable_raw_ids == ([raw_id] if expected["parseable"] else [])
+    assert result.invalid_raw_ids == ([] if expected["parseable"] else [raw_id])
 
     validate_calls = service.repository.mark_raw_validated.await_args_list
     assert len(validate_calls) >= 1
-    assert validate_calls[0].args[0] == "raw-1"
+    assert validate_calls[0].args[0] == raw_id
     validation_kwargs = validate_calls[0].kwargs
     assert validation_kwargs["status"] == ValidationStatus.from_string(expected["status"])
 
     parse_calls = service.repository.mark_raw_parsed.await_args_list
     if expected["mark_raw_parsed"]:
         assert len(parse_calls) == 1
-        assert parse_calls[0].args[0] == "raw-1"
+        assert parse_calls[0].args[0] == raw_id
         assert parse_calls[0].kwargs["error"] is not None
     else:
         assert parse_calls == []
