@@ -8,7 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING
 
 from polylogue.logging import get_logger
-from polylogue.pipeline.services.acquisition_records import make_lightweight_record, make_raw_record
+from polylogue.pipeline.services.acquisition_records import make_raw_record
 from polylogue.sources.parsers.base import RawConversationData
 from polylogue.storage.store import RawConversationRecord
 
@@ -96,19 +96,8 @@ async def iter_raw_record_stream(
     ui: object | None = None,
     cursor_state: dict[str, object] | None = None,
     drive_config: DriveConfig | None = None,
-    lightweight: bool = False,
-    lightweight_full_limit: int = 50,
 ) -> AsyncIterator[RawConversationRecord]:
-    """Yield prepared RawConversationRecord values for a source.
-
-    Args:
-        lightweight: If True, strip raw_content bytes from records after
-            hashing, except for the first ``lightweight_full_limit`` records
-            (which keep bytes for preview validation). Prevents OOM on
-            large archives by not holding multi-MB payloads in memory.
-        lightweight_full_limit: How many records keep full bytes in
-            lightweight mode (for preview validation sample).
-    """
+    """Yield prepared RawConversationRecord values for a source."""
     raw_stream: AsyncIterator[RawConversationData]
     if source.is_drive:
         raw_stream = iter_drive_raw_stream(
@@ -124,15 +113,11 @@ async def iter_raw_record_stream(
             known_mtimes=known_mtimes,
         )
 
-    full_count = 0
     async for raw_data in raw_stream:
         if not raw_data.raw_bytes:
             continue
         try:
-            keep = not lightweight or full_count < lightweight_full_limit
-            record = make_raw_record(raw_data, source.name, keep_content=keep)
-            if keep:
-                full_count += 1
+            record = make_raw_record(raw_data, source.name)
             # Explicitly break reference to raw bytes so GC can collect them
             # before the next iteration reads the next file.
             del raw_data

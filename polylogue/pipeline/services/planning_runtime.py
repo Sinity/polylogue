@@ -142,7 +142,6 @@ async def build_ingest_plan(
 
     scan_result = await acquisition.visit_sources(
         sources,
-        lightweight=preview,  # Strip bytes to prevent OOM during preview
         progress_callback=progress_callback,
         ui=ui,
         drive_config=service.config.drive_config,
