@@ -142,7 +142,7 @@ async def process_raw_batch(
     # affected conversations.
     if changed_conversation_ids:
         try:
-            from polylogue.storage.session_product_refresh_updates import (
+            from polylogue.storage.session_product_refresh import (
                 refresh_session_products_for_conversation_async,
             )
 
