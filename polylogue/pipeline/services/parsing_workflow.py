@@ -141,6 +141,7 @@ async def ingest_sources(
         validation_result=validation_result,
         parse_result=parse_result,
         parse_raw_ids=parse_raw_ids,
+        timings=timings,
     )
 
 
