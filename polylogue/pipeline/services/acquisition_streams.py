@@ -126,6 +126,8 @@ async def iter_raw_record_stream(
 
     full_count = 0
     async for raw_data in raw_stream:
+        if not raw_data.raw_bytes:
+            continue
         try:
             keep = not lightweight or full_count < lightweight_full_limit
             record = make_raw_record(raw_data, source.name, keep_content=keep)
