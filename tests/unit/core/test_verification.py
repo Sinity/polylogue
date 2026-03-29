@@ -31,18 +31,18 @@ from polylogue.storage.backends.connection import open_connection
 def _insert_raw_record(
     *,
     db_path: Path,
-    raw_id: str,
+    raw_id: str = "",  # ignored — raw_id is the sha256 of content
     provider_name: str,
     payload_provider: str | None = None,
     source_name: str,
     source_path: str,
     raw_content: bytes,
-) -> None:
+) -> str:
+    """Insert a raw record, writing content to blob store. Returns actual raw_id (hash)."""
     from polylogue.storage.blob_store import get_blob_store
 
-    # Write content to blob store
     blob_store = get_blob_store()
-    _, blob_size = blob_store.write_from_bytes(raw_content)
+    raw_id, blob_size = blob_store.write_from_bytes(raw_content)
 
     with open_connection(db_path) as conn:
         conn.execute(
@@ -64,6 +64,7 @@ def _insert_raw_record(
             ),
         )
         conn.commit()
+    return raw_id
 
 
 class TestProviderSchemaVerification:

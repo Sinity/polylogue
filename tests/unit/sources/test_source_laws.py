@@ -1490,14 +1490,17 @@ def test_iter_source_raw_data_tracks_read_failures_without_stopping(tmp_path: Pa
     good.write_text('{"mapping": {}, "id": "good"}', encoding="utf-8")
     bad.write_text('{"mapping": {}, "id": "bad"}', encoding="utf-8")
 
-    original_read_bytes = Path.read_bytes
+    # Patch blob_store.write_from_path to fail for the bad file
+    from polylogue.storage.blob_store import BlobStore
 
-    def flaky_read_bytes(path: Path) -> bytes:
-        if path == bad:
+    original_write = BlobStore.write_from_path
+
+    def flaky_write(self: BlobStore, source: Path) -> tuple[str, int]:
+        if source == bad:
             raise OSError("boom")
-        return original_read_bytes(path)
+        return original_write(self, source)
 
-    monkeypatch.setattr(Path, "read_bytes", flaky_read_bytes)
+    monkeypatch.setattr(BlobStore, "write_from_path", flaky_write)
 
     cursor_state: dict[str, object] = {}
     items = list(iter_source_raw_data(Source(name="chatgpt", path=tmp_path), cursor_state=cursor_state))
