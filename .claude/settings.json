@@ -1,0 +1,21 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "intercept",
+            "command": "bash -c 'CMD=\"$CLAUDE_TOOL_INPUT_command\"; if echo \"$CMD\" | grep -qE \"git\\s+(commit|push).*\\b(master|history/rewrite)\\b\" && ! echo \"$CMD\" | grep -qE \"(push.*origin.*feature/|push.*--delete)\"; then echo \"BLOCKED: Do not commit or push directly to master or history/rewrite. Use a feature branch (feature/<category>/<description>) and squash-merge via PR.\"; exit 1; fi'",
+            "description": "Block direct commits/pushes to master and history/rewrite"
+          },
+          {
+            "type": "intercept",
+            "command": "bash -c 'CMD=\"$CLAUDE_TOOL_INPUT_command\"; if echo \"$CMD\" | grep -qE \"git\\s+push.*--force\"; then echo \"BLOCKED: Force push is not allowed. Use a feature branch and squash-merge via PR.\"; exit 1; fi'",
+            "description": "Block force pushes"
+          }
+        ]
+      }
+    ]
+  }
+}
