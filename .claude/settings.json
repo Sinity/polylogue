@@ -6,8 +6,8 @@
         "hooks": [
           {
             "type": "intercept",
-            "command": "bash -c 'CMD=\"$CLAUDE_TOOL_INPUT_command\"; if echo \"$CMD\" | grep -qE \"git\\s+(commit|push).*\\b(master|history/rewrite)\\b\" && ! echo \"$CMD\" | grep -qE \"(push.*origin.*feature/|push.*--delete)\"; then echo \"BLOCKED: Do not commit or push directly to master or history/rewrite. Use a feature branch (feature/<category>/<description>) and squash-merge via PR.\"; exit 1; fi'",
-            "description": "Block direct commits/pushes to master and history/rewrite"
+            "command": "bash -c 'CMD=\"$CLAUDE_TOOL_INPUT_command\"; if echo \"$CMD\" | grep -qE \"git\\s+(commit|push).*\\bmaster\\b\" && ! echo \"$CMD\" | grep -qE \"(push.*origin.*feature/|push.*--delete)\"; then echo \"BLOCKED: Do not commit or push directly to master. Use a feature branch (feature/<category>/<description>) and squash-merge via PR.\"; exit 1; fi'",
+            "description": "Block direct commits/pushes to master"
           },
           {
             "type": "intercept",
