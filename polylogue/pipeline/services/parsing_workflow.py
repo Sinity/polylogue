@@ -173,6 +173,12 @@ async def parse_from_raw(
             )
             batches_processed += 1
             batch_elapsed = time.perf_counter() - t_batch
+            processed_so_far = batch_start + len(batch_ids)
+            if progress_callback is not None:
+                progress_callback(
+                    0,
+                    desc=f"Parsing ({processed_so_far:,}/{total:,} raw, batch {batches_processed})",
+                )
             if batch_elapsed > 2.0:
                 logger.info(
                     "slow_batch",
@@ -207,6 +213,11 @@ async def parse_from_raw(
                 progress_callback,
             )
             batches_processed += 1
+            if progress_callback is not None:
+                progress_callback(
+                    0,
+                    desc=f"Parsing ({total_raw:,} raw, batch {batches_processed})",
+                )
             batch_ids = []
     if batch_ids:
         await service._process_raw_batch(
