@@ -95,6 +95,7 @@ async def run_sources(
             logger.info("Acquire stage complete", **sm.to_dict(), **acquire_result.counts)
 
         elif stage in INGEST_STAGES:
+            ingest_t0 = time.perf_counter()
             ingest_result = await execute_ingest_stage(
                 config=config,
                 repository=active_repository,
@@ -114,20 +115,17 @@ async def run_sources(
                     ui=ui,
                     progress_callback=progress_callback,
                 )
+            ingest_elapsed = time.perf_counter() - ingest_t0
             state.record_acquire(ingest_result.acquire_result)
-            logger.info("Acquire stage complete", **ingest_result.acquire_result.counts)
+            logger.info(
+                "Ingest complete",
+                elapsed_s=round(ingest_elapsed, 2),
+                **ingest_result.acquire_result.counts,
+            )
 
             validation_result = ingest_result.validation_result
             if validation_result is not None:
                 state.record_validation(validation_result)
-                logger.info(
-                    "Validate stage complete",
-                    parseable=len(validation_result.parseable_raw_ids),
-                    invalid=validation_result.counts["invalid"],
-                    drift=validation_result.counts["drift"],
-                    skipped_no_schema=validation_result.counts["skipped_no_schema"],
-                    errors=validation_result.counts["errors"],
-                )
 
             if stage in PARSE_STAGES:
                 state.record_parse(ingest_result.parse_result)
