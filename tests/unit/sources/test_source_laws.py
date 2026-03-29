@@ -345,7 +345,7 @@ def test_iter_source_conversations_with_raw_capture_contract(
     assert all(str(conversation.provider_name) == case["provider"] for _, conversation in items)
     if capture_raw:
         assert all(raw_data is not None for raw_data, _ in items)
-        assert all(raw_data.raw_bytes for raw_data, _ in items if raw_data is not None)
+        assert all(raw_data.blob_hash for raw_data, _ in items if raw_data is not None)
         assert all(raw_data.file_mtime is not None for raw_data, _ in items if raw_data is not None)
     else:
         assert all(raw_data is None for raw_data, _ in items)
@@ -1442,13 +1442,14 @@ def test_iter_source_raw_data_reads_plain_and_zip_sources_contract(tmp_path: Pat
     assert len(plain_items) == 1
     assert plain_items[0].source_path == str(plain_path)
     assert plain_items[0].provider_hint == Provider.CHATGPT
-    assert plain_items[0].raw_bytes == plain_path.read_bytes()
+    assert plain_items[0].blob_hash is not None
+    assert plain_items[0].blob_size == plain_path.stat().st_size
     assert plain_items[0].file_mtime is not None
 
     assert len(zip_items) == 1
     assert zip_items[0].source_path == f"{archive_path}:nested/session.jsonl"
     assert zip_items[0].provider_hint == Provider.CLAUDE_CODE
-    assert b'"type":"user"' in zip_items[0].raw_bytes
+    assert zip_items[0].blob_hash is not None
     assert zip_items[0].file_mtime is not None
 
 
