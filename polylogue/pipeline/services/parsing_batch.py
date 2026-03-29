@@ -154,6 +154,15 @@ async def process_raw_batch(
     _blob_store = _get_blob_store()
 
     async with backend.bulk_connection():
+        # Suspend FTS triggers AFTER bulk_connection opens (which ensures
+        # schema, including CREATE TRIGGER IF NOT EXISTS). Previous suspension
+        # in run_execution.py was undone by schema extension triggers.
+        from polylogue.storage.fts_lifecycle import suspend_fts_triggers_async
+
+        async with backend.connection() as fts_conn:
+            await suspend_fts_triggers_async(fts_conn)
+            await fts_conn.commit()
+
         for convo_item, source_name_item, raw_id in work_items:
             t_item = time.perf_counter()
             blob_mb = round(_blob_store.blob_path(raw_id).stat().st_size / (1024 * 1024), 1) if _blob_store.exists(raw_id) else 0
