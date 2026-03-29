@@ -345,7 +345,7 @@ def test_iter_source_conversations_with_raw_capture_contract(
     assert all(str(conversation.provider_name) == case["provider"] for _, conversation in items)
     if capture_raw:
         assert all(raw_data is not None for raw_data, _ in items)
-        assert all(raw_data.raw_bytes for raw_data, _ in items if raw_data is not None)
+        assert all(raw_data.raw_bytes or raw_data.blob_hash for raw_data, _ in items if raw_data is not None)
         assert all(raw_data.file_mtime is not None for raw_data, _ in items if raw_data is not None)
     else:
         assert all(raw_data is None for raw_data, _ in items)
@@ -1442,13 +1442,14 @@ def test_iter_source_raw_data_reads_plain_and_zip_sources_contract(tmp_path: Pat
     assert len(plain_items) == 1
     assert plain_items[0].source_path == str(plain_path)
     assert plain_items[0].provider_hint == Provider.CHATGPT
-    assert plain_items[0].raw_bytes == plain_path.read_bytes()
+    assert plain_items[0].blob_hash is not None
+    assert plain_items[0].blob_size == plain_path.stat().st_size
     assert plain_items[0].file_mtime is not None
 
     assert len(zip_items) == 1
     assert zip_items[0].source_path == f"{archive_path}:nested/session.jsonl"
     assert zip_items[0].provider_hint == Provider.CLAUDE_CODE
-    assert b'"type":"user"' in zip_items[0].raw_bytes
+    assert zip_items[0].blob_hash is not None
     assert zip_items[0].file_mtime is not None
 
 
@@ -1489,14 +1490,17 @@ def test_iter_source_raw_data_tracks_read_failures_without_stopping(tmp_path: Pa
     good.write_text('{"mapping": {}, "id": "good"}', encoding="utf-8")
     bad.write_text('{"mapping": {}, "id": "bad"}', encoding="utf-8")
 
-    original_read_bytes = Path.read_bytes
+    # Patch blob_store.write_from_path to fail for the bad file
+    from polylogue.storage.blob_store import BlobStore
 
-    def flaky_read_bytes(path: Path) -> bytes:
-        if path == bad:
+    original_write = BlobStore.write_from_path
+
+    def flaky_write(self: BlobStore, source: Path) -> tuple[str, int]:
+        if source == bad:
             raise OSError("boom")
-        return original_read_bytes(path)
+        return original_write(self, source)
 
-    monkeypatch.setattr(Path, "read_bytes", flaky_read_bytes)
+    monkeypatch.setattr(BlobStore, "write_from_path", flaky_write)
 
     cursor_state: dict[str, object] = {}
     items = list(iter_source_raw_data(Source(name="chatgpt", path=tmp_path), cursor_state=cursor_state))

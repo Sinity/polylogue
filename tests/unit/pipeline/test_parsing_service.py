@@ -295,7 +295,7 @@ class TestPlanningService:
                     provider_name=provider_name,
                     source_name=source_name,
                     source_path=source_path,
-                    raw_content=b'{"id":"x"}',
+                    blob_size=len(b'{"id":"x"}'),
                     acquired_at=datetime.now(tz=timezone.utc).isoformat(),
                 )
             )
@@ -347,7 +347,7 @@ class TestPlanningService:
                     provider_name="chatgpt",
                     source_name="inbox-a",
                     source_path=f"/tmp/backlog-{index}.json",
-                    raw_content=b'{"id":"x"}',
+                    blob_size=len(b'{"id":"x"}'),
                     acquired_at=datetime.now(tz=timezone.utc).isoformat(),
                 )
             )
@@ -382,7 +382,7 @@ class TestPlanningService:
                     provider_name="chatgpt",
                     source_name="inbox-a",
                     source_path=f"/tmp/p-{index}.json",
-                    raw_content=b'{"id":"x"}',
+                    blob_size=len(b'{"id":"x"}'),
                     acquired_at=datetime.now(tz=timezone.utc).isoformat(),
                 )
             )
@@ -419,7 +419,7 @@ class TestPlanningService:
                     provider_name="chatgpt",
                     source_name="inbox-a",
                     source_path=f"/tmp/{raw_id}.json",
-                    raw_content=b'{"id":"x"}',
+                    blob_size=len(b'{"id":"x"}'),
                     acquired_at=datetime.now(tz=timezone.utc).isoformat(),
                 )
             )

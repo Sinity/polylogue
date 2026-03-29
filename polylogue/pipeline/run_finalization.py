@@ -6,7 +6,6 @@ import time
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
-from polylogue.pipeline.run_support import write_run_json
 from polylogue.storage.backends import create_backend
 from polylogue.storage.state_views import RunResult
 from polylogue.storage.store import RunRecord
@@ -58,8 +57,6 @@ async def persist_run_result(
         index_outcome=index_outcome,
         duration_ms=duration_ms,
     )
-    write_run_json(config.archive_root, run_payload)
-
     await repository.record_run(
         RunRecord(
             run_id=str(run_payload["run_id"]),

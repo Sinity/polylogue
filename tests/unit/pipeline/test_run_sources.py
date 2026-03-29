@@ -253,18 +253,16 @@ class TestRunSourcesIntegration:
         assert second.drift["new"]["conversations"] == 0
         assert second.drift["changed"]["conversations"] == 1
 
-    def test_run_json_written(self, workspace_env):
+    def test_run_result_has_run_id(self, workspace_env):
         config = Config(
             sources=[],
             archive_root=workspace_env["archive_root"],
             render_root=workspace_env["archive_root"] / "render",
         )
         result = asyncio.run(run_sources(config=config, stage="parse"))
-        runs_dir = workspace_env["archive_root"] / "runs"
-        json_files = list(runs_dir.glob("run-*.json"))
-        assert runs_dir.exists()
-        assert json_files
-        assert json.loads(json_files[0].read_text())["run_id"] == result.run_id
+        assert result.run_id is not None
+        assert isinstance(result.run_id, str)
+        assert len(result.run_id) > 0
 
     def test_index_error_captured(self, workspace_env):
         config = Config(
@@ -282,6 +280,7 @@ class TestRunSourcesIntegration:
 
     def test_parse_stage_reuses_persisted_validation_status(self, workspace_env):
         from polylogue.storage.store import RawConversationRecord
+        from polylogue.storage.blob_store import get_blob_store
 
         backend = create_backend(workspace_env["data_root"] / "polylogue" / "polylogue.db")
         raw_content = json.dumps(
@@ -308,7 +307,9 @@ class TestRunSourcesIntegration:
                 }
             ]
         ).encode("utf-8")
-        raw_id = "raw-prevalidated"
+        blob_store = get_blob_store()
+        raw_id, blob_size = blob_store.write_from_bytes(raw_content)
+
         asyncio.run(
             backend.save_raw_conversation(
                 RawConversationRecord(
@@ -316,7 +317,7 @@ class TestRunSourcesIntegration:
                     provider_name="chatgpt",
                     source_name="seeded",
                     source_path="/tmp/prevalidated.json",
-                    raw_content=raw_content,
+                    blob_size=blob_size,
                     acquired_at="2026-03-05T00:00:00Z",
                 )
             )
@@ -430,7 +431,9 @@ class TestAcquisitionServiceIntegration:
         assert result.counts["errors"] == 0
         assert len(result.raw_ids) == 1
         stored = await backend.get_raw_conversation(result.raw_ids[0])
-        data = json.loads(stored.raw_content)
+        from polylogue.storage.blob_store import load_raw_content
+        raw_bytes = load_raw_content(result.raw_ids[0])
+        data = json.loads(raw_bytes)
         assert stored.provider_name == "chatgpt"
         assert isinstance(data, list)
         assert data[0]["id"] == "conv-1"

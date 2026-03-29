@@ -17,23 +17,21 @@ Flake-based: `pyproject.toml` is authoritative for deps. No imperative installs.
 
 ### Branch Model
 
-All work goes through **feature branches** that are **squash-merged** onto `history/rewrite` via GitHub PRs.
+All work goes through **feature branches** that are **squash-merged** onto `master` via GitHub PRs.
 
 ```
-history/rewrite          <- squash target (linear history)
+master                   <- linear history of squash commits
   |-- feature/X/Y       <- working branch (individual commits preserved)
         | squash-merge via PR
-history/rewrite          <- gains one clean narrative commit
-        | fast-forward
-master                   <- updated to match
+master                   <- gains one clean narrative commit
 ```
 
 ### Rules
 
 - **Always work on a feature branch** — `feature/<category>/<description>`
-- **Branch from `origin/history/rewrite`** — not from master
-- **Never commit directly to `master` or `history/rewrite`** — enforced by pre-commit hook
-- **Squash-merge via PR** targeting `history/rewrite` — one narrative commit per branch
+- **Branch from `origin/master`**
+- **Never commit directly to `master`** — enforced by pre-commit hook
+- **Squash-merge via PR** targeting `master` — one narrative commit per branch
 - **Link PRs to era issues** — `Ref #NNN` in PR body
 - **No force pushes** — enforced by pre-push hook
 - Conventional commits: `feat:`, `fix:`, `refactor:`, `test:`, `docs:`, `chore:`, `perf:`
@@ -46,13 +44,7 @@ master                   <- updated to match
 ### Era Issues
 
 Each major body of work gets a GitHub issue: `Era NN: Description`.
-Chain: Era Issue -> PR -> Feature Branch -> Squash commit on `history/rewrite`.
-
-### History
-
-Two histories exist (no common ancestor):
-- `history/rewrite` — canonical linear history (64+ squash commits)
-- `master-original` — original 1,110-commit history, reference only
+Chain: Era Issue -> PR -> Feature Branch -> Squash commit on `master`.
 
 ## Code Rules
 

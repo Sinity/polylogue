@@ -209,28 +209,50 @@ def iter_drive_raw_data(
         ):
             continue
 
-        try:
-            raw_bytes = drive_client.download_bytes(file_meta.file_id)
-        except Exception as exc:
-            if cursor_state is not None:
-                cursor_state["error_count"] = cursor_state.get("error_count", 0) + 1
-                cursor_state["latest_error"] = str(exc)
-                cursor_state["latest_error_file"] = file_meta.name
-            logger.warning(
-                "Failed to download Drive payload for %s (%s): %s",
-                file_meta.name,
-                file_meta.file_id,
-                exc,
-            )
-            continue
+        from polylogue.storage.blob_store import get_blob_store
+
+        blob_store = get_blob_store()
+
+        # Check if a local cache file exists (drive-cache or legacy path).
+        # If so, use it instead of re-downloading from Drive.
+        cache_path = drive_cache_file_path(
+            source.path or Path(source.name), file_meta.name
+        )
+        blob_hash: str | None = None
+        blob_size: int = 0
+
+        if cache_path.exists():
+            blob_hash, blob_size = blob_store.write_from_path(cache_path)
+        else:
+            try:
+                raw_bytes = drive_client.download_bytes(file_meta.file_id)
+            except Exception as exc:
+                if cursor_state is not None:
+                    cursor_state["error_count"] = cursor_state.get("error_count", 0) + 1
+                    cursor_state["latest_error"] = str(exc)
+                    cursor_state["latest_error_file"] = file_meta.name
+                logger.warning(
+                    "Failed to download Drive payload for %s (%s): %s",
+                    file_meta.name,
+                    file_meta.file_id,
+                    exc,
+                )
+                continue
+            blob_hash, blob_size = blob_store.write_from_bytes(raw_bytes)
+            # Write to cache for future runs
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            cache_path.write_bytes(raw_bytes)
+            del raw_bytes
 
         provider_hint = Provider.from_string(source.name)
         yield RawConversationData(
-            raw_bytes=raw_bytes,
+            raw_bytes=b"",
             source_path=source_path,
             source_index=None,
             file_mtime=file_meta.modified_time,
             provider_hint=provider_hint,
+            blob_hash=blob_hash,
+            blob_size=blob_size,
         )
 
 

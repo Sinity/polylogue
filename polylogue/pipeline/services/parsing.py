@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 
 from polylogue.lib.raw_payload import build_raw_payload_envelope
 from polylogue.pipeline.services.parsing_batch import process_raw_batch
+from polylogue.storage.blob_store import get_blob_store
 from polylogue.pipeline.services.parsing_models import (
     IngestPhase,
     IngestResult,
@@ -151,8 +152,12 @@ class ParsingService:
         stored_payload_provider = raw_record.payload_provider
         if not isinstance(stored_payload_provider, str) or not stored_payload_provider.strip():
             stored_payload_provider = None
+        # Load from blob store — passes Path for streaming JSONL decode
+        # (avoids loading multi-GB files into memory).
+        blob_store = get_blob_store()
+        raw_source = blob_store.blob_path(raw_record.raw_id)
         envelope = build_raw_payload_envelope(
-            raw_record.raw_content,
+            raw_source,
             source_path=raw_record.source_path,
             fallback_provider=raw_record.provider_name,
             payload_provider=stored_payload_provider,

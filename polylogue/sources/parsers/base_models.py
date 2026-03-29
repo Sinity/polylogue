@@ -109,13 +109,20 @@ class ParsedConversation(BaseModel):
 
 
 class RawConversationData(BaseModel):
-    """Container for raw conversation bytes with metadata."""
+    """Container for raw conversation bytes with metadata.
 
-    raw_bytes: bytes
+    When ``blob_hash`` is set, the content has been written to the blob
+    store and ``raw_bytes`` may be empty (only a detection prefix was
+    needed). Consumers should load from the blob store using ``blob_hash``.
+    """
+
+    raw_bytes: bytes = b""
     source_path: str
     source_index: int | None = None
     file_mtime: str | None = None
     provider_hint: Provider | None = None
+    blob_hash: str | None = None
+    blob_size: int | None = None
 
     @field_validator("provider_hint", mode="before")
     @classmethod

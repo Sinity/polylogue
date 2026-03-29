@@ -40,7 +40,7 @@ class TestMarkRawParsed:
             raw_id=raw_id,
             provider_name="test",
             source_path="/test.json",
-            raw_content=b'{"test": true}',
+            blob_size=len(b'{"test": true}'),
             acquired_at="2026-01-01T00:00:00Z",
             file_mtime="2026-01-01T00:00:00Z",
         )
@@ -101,7 +101,7 @@ class TestUpdateRawState:
             raw_id=raw_id,
             provider_name="test",
             source_path="/test.json",
-            raw_content=b'{"test": true}',
+            blob_size=len(b'{"test": true}'),
             acquired_at="2026-01-01T00:00:00Z",
             file_mtime="2026-01-01T00:00:00Z",
         ))
@@ -177,7 +177,7 @@ class TestMarkRawValidated:
             raw_id=raw_id,
             provider_name="test",
             source_path="/test.json",
-            raw_content=b'{"test": true}',
+            blob_size=len(b'{"test": true}'),
             acquired_at="2026-01-01T00:00:00Z",
             file_mtime="2026-01-01T00:00:00Z",
         )
@@ -241,7 +241,7 @@ class TestGetKnownSourceMtimes:
                 raw_id=f"raw-{i}",
                 provider_name="test",
                 source_path=f"/path/file{i}.json",
-                raw_content=f'{{"i": {i}}}'.encode(),
+                blob_size=len(f'{{"i": {i}}}'.encode()),
                 acquired_at="2026-01-01T00:00:00Z",
                 file_mtime=f"2026-01-0{i+1}T00:00:00Z",
             ))
@@ -257,7 +257,7 @@ class TestGetKnownSourceMtimes:
             raw_id="with-mtime",
             provider_name="test",
             source_path="/path/a.json",
-            raw_content=b'{}',
+            blob_size=len(b'{}'),
             acquired_at="2026-01-01T00:00:00Z",
             file_mtime="2026-01-01T00:00:00Z",
         ))
@@ -265,7 +265,7 @@ class TestGetKnownSourceMtimes:
             raw_id="no-mtime",
             provider_name="test",
             source_path="/path/b.json",
-            raw_content=b'{"b": 1}',
+            blob_size=len(b'{"b": 1}'),
             acquired_at="2026-01-01T00:00:00Z",
             file_mtime=None,
         ))
@@ -295,7 +295,7 @@ class TestResetParseStatus:
                 raw_id=f"raw-{i}",
                 provider_name=provider,
                 source_path=f"/path/{i}.json",
-                raw_content=f'{{"i": {i}}}'.encode(),
+                blob_size=len(f'{{"i": {i}}}'.encode()),
                 acquired_at="2026-01-01T00:00:00Z",
             ))
         await backend.mark_raw_parsed("raw-0")
@@ -335,7 +335,7 @@ class TestResetParseStatus:
             raw_id="unparsed",
             provider_name="test",
             source_path="/test.json",
-            raw_content=b'{}',
+            blob_size=len(b'{}'),
             acquired_at="2026-01-01T00:00:00Z",
         ))
         count = await backend.reset_parse_status()
@@ -355,7 +355,7 @@ class TestResetValidationStatus:
                 raw_id=f"raw-{i}",
                 provider_name=provider,
                 source_path=f"/path/{i}.json",
-                raw_content=f'{{"i": {i}}}'.encode(),
+                blob_size=len(f'{{"i": {i}}}'.encode()),
                 acquired_at="2026-01-01T00:00:00Z",
             ))
         await backend.mark_raw_validated(
