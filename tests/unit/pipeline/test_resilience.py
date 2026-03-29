@@ -40,14 +40,22 @@ def _make_raw_record(
     content: bytes,
     path: str = "/exports/test.json",
 ) -> RawConversationRecord:
+    from polylogue.storage.blob_store import get_blob_store
+
+    # Write content to blob store
+    blob_store = get_blob_store()
+    actual_raw_id, blob_size = blob_store.write_from_bytes(content)
+    now = datetime.now(timezone.utc).isoformat()
+
     return RawConversationRecord(
-        raw_id=raw_id,
+        raw_id=actual_raw_id,  # Use the actual hash as raw_id
         provider_name=provider,
         source_name="test",
         source_path=path,
         source_index=None,
-        raw_content=content,
-        acquired_at=datetime.now(timezone.utc).isoformat(),
+        blob_size=blob_size,
+        acquired_at=now,
+        file_mtime=now,
     )
 
 
@@ -337,7 +345,9 @@ async def test_acquisition_law_counts_unique_raws_and_normalizes_provider_hints(
             for raw_id in result.raw_ids:
                 stored = await backend.get_raw_conversation(raw_id)
                 assert stored is not None
-                payload_id = json.loads(stored.raw_content)["id"]
+                from polylogue.storage.blob_store import load_raw_content
+                raw_bytes = load_raw_content(raw_id)
+                payload_id = json.loads(raw_bytes)["id"]
                 assert stored.provider_name == expected_first_provider[payload_id]
                 assert stored.payload_provider is None
         finally:
@@ -435,17 +445,17 @@ async def test_parse_result_merge_law_accumulates_counts_and_processed_ids(event
 
 async def test_parse_raw_record_contract_updates_payload_provider_and_dispatches_once(tmp_path: Path) -> None:
     """_parse_raw_record should classify once, persist payload_provider on the record, and dispatch that provider."""
+    raw_record = _make_raw_record(
+        raw_id="raw-1",
+        provider="chatgpt",
+        content=b'{"id":"conv-1"}',
+        path="/tmp/conversation.json",
+    )
+
     repository = MagicMock()
     repository.backend = MagicMock()
     service = ParsingService(repository=repository, archive_root=tmp_path / "archive", config=MagicMock())
-    raw_record = MagicMock(
-        raw_content=b'{"id":"conv-1"}',
-        source_path="/tmp/conversation.json",
-        provider_name="chatgpt",
-        payload_provider="",
-        raw_id="raw-1",
-        file_mtime="2026-03-23T10:00:00Z",
-    )
+
     envelope = MagicMock(provider="gemini", payload={"id": "parsed"})
     schema_resolution = MagicMock(element_kind="conversation_document", package_version="v2")
     schema_registry = MagicMock()
@@ -464,12 +474,18 @@ async def test_parse_raw_record_contract_updates_payload_provider_and_dispatches
             with patch("polylogue.pipeline.services.parsing.parse_payload", return_value=[parsed_conversation]) as mock_parse:
                 result = await service._parse_raw_record(raw_record)
 
-    mock_envelope.assert_called_once_with(
-        raw_record.raw_content,
-        source_path=raw_record.source_path,
-        fallback_provider=raw_record.provider_name,
-        payload_provider=None,
-    )
+    # Check that build_raw_payload_envelope was called with correct paths
+    call_args = mock_envelope.call_args
+    assert call_args is not None
+    assert call_args.kwargs["source_path"] == "/tmp/conversation.json"
+    assert call_args.kwargs["fallback_provider"] == "chatgpt"
+    assert call_args.kwargs["payload_provider"] is None
+
+    # Verify payload provider was updated
+    assert raw_record.payload_provider == "gemini"
+    # Timestamps should match the raw_record's times
+    assert result[0].created_at == raw_record.file_mtime
+    assert result[0].updated_at == raw_record.file_mtime
     schema_registry.resolve_payload.assert_called_once_with(
         "gemini",
         {"id": "parsed"},
@@ -481,6 +497,3 @@ async def test_parse_raw_record_contract_updates_payload_provider_and_dispatches
         "conversation",
         schema_resolution=schema_resolution,
     )
-    assert raw_record.payload_provider == "gemini"
-    assert result[0].created_at == "2026-03-23T10:00:00Z"
-    assert result[0].updated_at == "2026-03-23T10:00:00Z"

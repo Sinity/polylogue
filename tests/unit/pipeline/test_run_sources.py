@@ -316,7 +316,7 @@ class TestRunSourcesIntegration:
                     provider_name="chatgpt",
                     source_name="seeded",
                     source_path="/tmp/prevalidated.json",
-                    raw_content=raw_content,
+                    blob_size=len(raw_content),
                     acquired_at="2026-03-05T00:00:00Z",
                 )
             )
@@ -430,7 +430,9 @@ class TestAcquisitionServiceIntegration:
         assert result.counts["errors"] == 0
         assert len(result.raw_ids) == 1
         stored = await backend.get_raw_conversation(result.raw_ids[0])
-        data = json.loads(stored.raw_content)
+        from polylogue.storage.blob_store import load_raw_content
+        raw_bytes = load_raw_content(result.raw_ids[0])
+        data = json.loads(raw_bytes)
         assert stored.provider_name == "chatgpt"
         assert isinstance(data, list)
         assert data[0]["id"] == "conv-1"

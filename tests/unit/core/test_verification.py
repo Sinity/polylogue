@@ -38,12 +38,18 @@ def _insert_raw_record(
     source_path: str,
     raw_content: bytes,
 ) -> None:
+    from polylogue.storage.blob_store import get_blob_store
+
+    # Write content to blob store
+    blob_store = get_blob_store()
+    _, blob_size = blob_store.write_from_bytes(raw_content)
+
     with open_connection(db_path) as conn:
         conn.execute(
             """
             INSERT INTO raw_conversations (
                 raw_id, provider_name, payload_provider, source_name, source_path, source_index,
-                raw_content, acquired_at
+                blob_size, acquired_at
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
@@ -53,7 +59,7 @@ def _insert_raw_record(
                 source_name,
                 source_path,
                 0,
-                raw_content,
+                blob_size,
                 datetime.now(tz=timezone.utc).isoformat(),
             ),
         )
