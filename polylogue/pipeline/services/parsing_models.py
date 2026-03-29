@@ -141,6 +141,7 @@ class IngestResult:
     validation_result: ValidateResult | None
     parse_result: ParseResult
     parse_raw_ids: list[str]
+    timings: dict[str, float] = field(default_factory=dict)
 
 
 __all__ = ["IngestPhase", "IngestResult", "IngestState", "ParseResult"]

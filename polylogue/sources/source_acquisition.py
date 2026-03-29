@@ -8,6 +8,7 @@ from typing import Any
 
 from polylogue.config import Source
 from polylogue.logging import get_logger
+from polylogue.storage.blob_store import get_blob_store
 from polylogue.types import Provider
 
 from . import cursor as _cursor
@@ -22,6 +23,8 @@ logger = get_logger(__name__)
 _cursor.logger = logger
 _decoders.logger = logger
 
+_DETECTION_PREFIX_SIZE = 8192  # 8 KB — enough for provider detection
+
 
 def iter_source_raw_data(
     source: Source,
@@ -29,7 +32,12 @@ def iter_source_raw_data(
     cursor_state: dict[str, Any] | None = None,
     known_mtimes: dict[str, str] | None = None,
 ) -> Iterable[RawConversationData]:
-    """Iterate raw source payloads without parsing provider payload semantics."""
+    """Iterate raw source payloads without parsing provider payload semantics.
+
+    For non-ZIP files, uses the blob store for streaming hash — the file is
+    never loaded fully into Python memory. Only a small prefix is read for
+    provider detection.
+    """
     if not source.path:
         return
 
@@ -43,6 +51,7 @@ def iter_source_raw_data(
     if walk is None:
         return
 
+    blob_store = get_blob_store()
     failed_count = 0
     for path, file_mtime in walk.paths_to_process:
         try:
@@ -61,31 +70,43 @@ def iter_source_raw_data(
                         entry_provider_hint = _zip_entry_provider_hint(info.filename, provider_hint)
                         with zf.open(info.filename) as handle:
                             raw_bytes = handle.read()
+                        # ZIP entries are typically small — write from bytes
+                        blob_hash, blob_size = blob_store.write_from_bytes(raw_bytes)
                         entry_provider_hint = _detect_provider_from_raw_bytes(
                             raw_bytes,
                             info.filename,
                             entry_provider_hint,
                         )
                         yield RawConversationData(
-                            raw_bytes=raw_bytes,
+                            raw_bytes=b"",
                             source_path=entry_path,
                             source_index=None,
                             file_mtime=file_mtime,
                             provider_hint=entry_provider_hint,
+                            blob_hash=blob_hash,
+                            blob_size=blob_size,
                         )
+                        del raw_bytes
             else:
-                raw_bytes = path.read_bytes()
+                # Stream-hash the file to blob store — never loads full
+                # content into Python memory. A 1.5 GB file is hashed and
+                # copied in 128 KB chunks.
+                blob_hash, blob_size = blob_store.write_from_path(path)
+                # Read a small prefix for provider detection only.
+                prefix = blob_store.read_prefix(blob_hash, _DETECTION_PREFIX_SIZE)
                 detected_provider = _detect_provider_from_raw_bytes(
-                    raw_bytes,
+                    prefix,
                     path.name,
                     provider_hint,
                 )
                 yield RawConversationData(
-                    raw_bytes=raw_bytes,
+                    raw_bytes=b"",
                     source_path=str(path),
                     source_index=None,
                     file_mtime=file_mtime,
                     provider_hint=detected_provider,
+                    blob_hash=blob_hash,
+                    blob_size=blob_size,
                 )
         except FileNotFoundError as exc:
             failed_count += 1

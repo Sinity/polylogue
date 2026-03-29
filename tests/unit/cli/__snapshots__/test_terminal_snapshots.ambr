@@ -30,6 +30,8 @@
                                     databases)
     --runtime                       Run environment and runtime verification
                                     checks
+    --blob                          Verify blob store integrity
+                                    (missing<PATH> blobs)
     --schemas                       Run raw-corpus schema verification (non-
                                     mutating)
     --proof                         Run durable artifact support proof
@@ -245,7 +247,7 @@
     mcp          Start the MCP server for AI assistant integration.
     products     Inspect durable archive data products.
     qa           Run composable QA: schema audit, exercises, and invariant...
-    reset        Reset database, assets, rendered outputs, or auth state.
+    reset        Reset database, blob store, assets, rendered outputs, or...
     run          Run pipeline stages on configured sources.
     schema       Schema generation, package versioning, and evidence...
     site         Generate a static HTML site from the archive.
@@ -440,8 +442,8 @@
     products     Inspect durable archive data products.
     qa           Run composable QA: schema audit, exercises, a
   nd invariant...
-    reset        Reset database, assets, rendered outputs, or
-  auth state.
+    reset        Reset database, blob store, assets, rendered
+  outputs, or...
     run          Run pipeline stages on configured sources.
     schema       Schema generation, package versioning, and ev
   idence...
@@ -581,7 +583,7 @@
     mcp          Start the MCP server for AI assistant integration.
     products     Inspect durable archive data products.
     qa           Run composable QA: schema audit, exercises, and invariant...
-    reset        Reset database, assets, rendered outputs, or auth state.
+    reset        Reset database, blob store, assets, rendered outputs, or...
     run          Run pipeline stages on configured sources.
     schema       Schema generation, package versioning, and evidence...
     site         Generate a static HTML site from the archive.

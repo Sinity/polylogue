@@ -10,6 +10,7 @@ from polylogue.lib.artifact_taxonomy import ArtifactKind, classify_artifact_path
 from polylogue.lib.raw_payload import build_raw_payload_envelope
 from polylogue.schemas.observation import derive_bundle_scope, schema_cluster_id
 from polylogue.schemas.runtime_registry import SchemaRegistry
+from polylogue.storage.blob_store import get_blob_store
 
 _SCHEMA_REGISTRY = SchemaRegistry()
 from polylogue.storage.store import ArtifactObservationRecord, RawConversationRecord
@@ -70,8 +71,46 @@ def _support_status(
     return ArtifactSupportStatus.UNSUPPORTED_PARSEABLE
 
 
+_INSPECTION_PREFIX_BYTES = 64 * 1024  # 64 KB — enough to classify any format
+
+
+def _inspection_prefix_from_bytes(raw_content: bytes, source_path: str | None) -> bytes:
+    """Extract a small prefix of in-memory raw content for artifact classification."""
+    if len(raw_content) <= _INSPECTION_PREFIX_BYTES:
+        return raw_content
+    normalized = (source_path or "").lower()
+    is_jsonl = normalized.endswith((".jsonl", ".jsonl.txt", ".ndjson"))
+    if is_jsonl:
+        newline_pos = raw_content.find(b"\n")
+        if newline_pos > 0:
+            return raw_content[: newline_pos + 1]
+    return raw_content[:_INSPECTION_PREFIX_BYTES]
+
+
+def _inspection_prefix(record: RawConversationRecord) -> bytes:
+    """Extract a small prefix of raw content sufficient for classification.
+
+    Reads only the first 64 KB from the blob store — multi-GB files are
+    never loaded into memory.
+    """
+    blob_store = get_blob_store()
+    prefix = blob_store.read_prefix(record.raw_id, _INSPECTION_PREFIX_BYTES)
+    normalized = (record.source_path or "").lower()
+    is_jsonl = normalized.endswith((".jsonl", ".jsonl.txt", ".ndjson"))
+    if is_jsonl and len(prefix) >= _INSPECTION_PREFIX_BYTES:
+        newline_pos = prefix.find(b"\n")
+        if newline_pos > 0:
+            return prefix[: newline_pos + 1]
+    return prefix
+
+
 def inspect_raw_artifact(record: RawConversationRecord) -> ArtifactObservationRecord:
-    """Inspect one raw record into a durable artifact observation."""
+    """Inspect one raw record into a durable artifact observation.
+
+    Uses only a small prefix of raw_content for classification — never
+    decodes the full payload. This keeps memory bounded regardless of
+    file size (a 1.5 GB JSONL file is classified from its first line).
+    """
     provider_hint = record.payload_provider or record.provider_name
     bundle_scope = derive_bundle_scope(provider_hint, record.source_path)
     observation_id = artifact_observation_id(
@@ -83,8 +122,9 @@ def inspect_raw_artifact(record: RawConversationRecord) -> ArtifactObservationRe
     registry = _SCHEMA_REGISTRY
 
     try:
+        prefix = _inspection_prefix(record)
         envelope = build_raw_payload_envelope(
-            record.raw_content,
+            prefix,
             source_path=record.source_path,
             fallback_provider=record.provider_name,
             payload_provider=record.payload_provider,

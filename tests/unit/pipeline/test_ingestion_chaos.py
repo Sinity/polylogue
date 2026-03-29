@@ -43,14 +43,22 @@ def _make_raw_record(
     content: bytes,
     path: str = "/exports/test.jsonl",
 ) -> RawConversationRecord:
+    from polylogue.storage.blob_store import get_blob_store
+
+    # Write content to blob store
+    blob_store = get_blob_store()
+    actual_raw_id, blob_size = blob_store.write_from_bytes(content)
+    now = datetime.now(timezone.utc).isoformat()
+
     return RawConversationRecord(
-        raw_id=raw_id,
+        raw_id=actual_raw_id,  # Use the actual hash as raw_id
         provider_name=provider,
         source_name="test",
         source_path=path,
         source_index=None,
-        raw_content=content,
-        acquired_at=datetime.now(timezone.utc).isoformat(),
+        blob_size=blob_size,
+        acquired_at=now,
+        file_mtime=now,
     )
 
 

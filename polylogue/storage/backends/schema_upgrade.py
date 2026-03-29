@@ -225,8 +225,7 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
 
     raise DatabaseError(
         f"Database schema version {current_version} is incompatible with expected version {SCHEMA_VERSION}. "
-        "This database was created with a different schema. Recreate the database "
-        f"or update its user_version to match v{SCHEMA_VERSION} after verifying the schema."
+        "Delete the database and re-import: `polylogue reset --database && polylogue run`."
     )
 
 

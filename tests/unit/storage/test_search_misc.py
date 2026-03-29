@@ -160,14 +160,18 @@ class TestRawConversationEdgeCases:
         backend = SQLiteBackend(db_path=tmp_path / "test.db")
 
         # First, create a raw_conversations record
+        from polylogue.storage.blob_store import get_blob_store
+        blob_store = get_blob_store()
+        _, blob_size = blob_store.write_from_bytes(b"content")
+
         with connection_context(tmp_path / "test.db") as conn:
             conn.execute(
                 """
                 INSERT INTO raw_conversations
-                (raw_id, provider_name, source_path, raw_content, acquired_at)
+                (raw_id, provider_name, source_path, blob_size, acquired_at)
                 VALUES (?, ?, ?, ?, ?)
                 """,
-                ("raw-123", "claude-ai", "/path/to/file.jsonl", b"content", "2024-01-01T00:00:00Z"),
+                ("raw-123", "claude-ai", "/path/to/file.jsonl", blob_size, "2024-01-01T00:00:00Z"),
             )
             conn.commit()
 

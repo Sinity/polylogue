@@ -249,7 +249,7 @@ class TestRowToRawConversation:
             "source_name": "inbox",
             "source_path": "/tmp/data.json",
             "source_index": "0",
-            "raw_content": '{"test": true}',
+            "blob_size": 14,
             "acquired_at": "2024-01-01T00:00:00Z",
             "file_mtime": "2024-01-01T00:00:00Z",
             "parsed_at": None,

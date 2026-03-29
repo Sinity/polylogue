@@ -21,6 +21,7 @@ from polylogue.paths_roots import (
     codex_path,
     config_home,
     config_root,
+    blob_store_root,
     data_home,
     data_root,
     db_path,
@@ -56,6 +57,7 @@ __all__ = [
     "codex_path",
     "GEMINI_DRIVE_FOLDER",
     "drive_cache_path",
+    "blob_store_root",
     # Classes
     "Source",
     "DriveConfig",
