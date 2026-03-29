@@ -24,7 +24,9 @@ venv/
 .hypothesis/
 .mypy_cache/
 .ruff_cache/
-.claude/
+.claude/scratch/
+.claude/worktrees/
+.claude/*.local.*
 
 # Coverage
 .coverage
