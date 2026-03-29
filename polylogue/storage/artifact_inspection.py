@@ -10,6 +10,7 @@ from polylogue.lib.artifact_taxonomy import ArtifactKind, classify_artifact_path
 from polylogue.lib.raw_payload import build_raw_payload_envelope
 from polylogue.schemas.observation import derive_bundle_scope, schema_cluster_id
 from polylogue.schemas.runtime_registry import SchemaRegistry
+from polylogue.storage.blob_store import get_blob_store
 
 _SCHEMA_REGISTRY = SchemaRegistry()
 from polylogue.storage.store import ArtifactObservationRecord, RawConversationRecord
@@ -73,23 +74,34 @@ def _support_status(
 _INSPECTION_PREFIX_BYTES = 64 * 1024  # 64 KB — enough to classify any format
 
 
-def _inspection_prefix(raw_content: bytes, source_path: str | None) -> bytes:
-    """Extract a small prefix of raw content sufficient for artifact classification.
-
-    For JSONL files, returns the first line (one complete JSON object).
-    For JSON files, returns up to 64 KB (enough to see top-level structure).
-    Classification only needs field names and structure, not full content.
-    """
+def _inspection_prefix_from_bytes(raw_content: bytes, source_path: str | None) -> bytes:
+    """Extract a small prefix of in-memory raw content for artifact classification."""
     if len(raw_content) <= _INSPECTION_PREFIX_BYTES:
         return raw_content
     normalized = (source_path or "").lower()
     is_jsonl = normalized.endswith((".jsonl", ".jsonl.txt", ".ndjson"))
     if is_jsonl:
-        # First non-empty line is enough for classification
         newline_pos = raw_content.find(b"\n")
         if newline_pos > 0:
             return raw_content[: newline_pos + 1]
     return raw_content[:_INSPECTION_PREFIX_BYTES]
+
+
+def _inspection_prefix(record: RawConversationRecord) -> bytes:
+    """Extract a small prefix of raw content sufficient for classification.
+
+    Reads only the first 64 KB from the blob store — multi-GB files are
+    never loaded into memory.
+    """
+    blob_store = get_blob_store()
+    prefix = blob_store.read_prefix(record.raw_id, _INSPECTION_PREFIX_BYTES)
+    normalized = (record.source_path or "").lower()
+    is_jsonl = normalized.endswith((".jsonl", ".jsonl.txt", ".ndjson"))
+    if is_jsonl and len(prefix) >= _INSPECTION_PREFIX_BYTES:
+        newline_pos = prefix.find(b"\n")
+        if newline_pos > 0:
+            return prefix[: newline_pos + 1]
+    return prefix
 
 
 def inspect_raw_artifact(record: RawConversationRecord) -> ArtifactObservationRecord:
@@ -110,7 +122,7 @@ def inspect_raw_artifact(record: RawConversationRecord) -> ArtifactObservationRe
     registry = _SCHEMA_REGISTRY
 
     try:
-        prefix = _inspection_prefix(record.raw_content, record.source_path)
+        prefix = _inspection_prefix(record)
         envelope = build_raw_payload_envelope(
             prefix,
             source_path=record.source_path,

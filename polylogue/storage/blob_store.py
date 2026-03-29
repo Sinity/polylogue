@@ -211,4 +211,14 @@ def reset_blob_store() -> None:
     _DEFAULT_STORE = None
 
 
-__all__ = ["BlobStore", "get_blob_store", "reset_blob_store"]
+def load_raw_content(raw_id: str) -> bytes:
+    """Load raw content from the blob store by raw_id.
+
+    Convenience wrapper around ``get_blob_store().read_all(raw_id)``.
+    Suitable for small-to-medium blobs. For large files (JSONL), prefer
+    streaming via ``get_blob_store().blob_path(raw_id)`` directly.
+    """
+    return get_blob_store().read_all(raw_id)
+
+
+__all__ = ["BlobStore", "get_blob_store", "load_raw_content", "reset_blob_store"]
