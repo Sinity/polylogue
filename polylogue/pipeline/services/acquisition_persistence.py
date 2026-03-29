@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from polylogue.logging import get_logger
 from polylogue.pipeline.stage_models import AcquireResult
+from polylogue.storage.artifact_inspection import inspect_raw_artifact
 from polylogue.storage.store import RawConversationRecord
 
 logger = get_logger(__name__)
@@ -15,17 +16,15 @@ async def persist_raw_record(
     *,
     result: AcquireResult,
 ) -> None:
-    """Persist one raw record and update acquisition counters.
-
-    Artifact inspection (schema resolution, payload decoding) is deferred
-    to a post-acquisition pass to prevent OOM. Inspection decodes the full
-    JSON payload (3-10x memory amplification over raw bytes), and doing
-    this for every record during streaming acquisition causes 10+ GB RSS
-    on large archives.
-    """
+    """Persist one raw record and update acquisition counters."""
     try:
         inserted = await repository.save_raw_conversation(record)
         if inserted:
+            # Only inspect new records — inspection decodes the full payload
+            # which is expensive (3-10× memory of raw bytes). For existing
+            # records, the observation is already in the DB.
+            observation = inspect_raw_artifact(record)
+            await repository.save_artifact_observation(observation)
             result.acquired += 1
             result.raw_ids.append(record.raw_id)
         else:

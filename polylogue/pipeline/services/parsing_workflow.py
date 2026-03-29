@@ -54,11 +54,6 @@ async def ingest_sources(
         **acquire_result.counts,
     )
 
-    # NOTE: Artifact inspection (inspect_raw_artifact) was removed from the
-    # acquisition path to prevent OOM. Inspection decodes full JSON payloads
-    # (3-10x memory amplification) which caused 10+ GB RSS on large archives.
-    # Artifact observations can be regenerated via `polylogue check --schemas`.
-
     ingest_state = IngestState(
         source_names=tuple(source_names),
         parse_requested=parse_records,
