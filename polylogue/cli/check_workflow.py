@@ -32,6 +32,7 @@ from polylogue.schemas.verification_requests import (
     ArtifactProofRequest,
     SchemaVerificationRequest,
 )
+from polylogue.storage.backends.connection import connection_context
 from polylogue.storage.repair import (
     CLEANUP_TARGETS,
     SAFE_REPAIR_TARGETS,
@@ -102,21 +103,21 @@ def run_check_workflow(env: AppEnv, options: CheckCommandOptions) -> CheckComman
 
         blob_store = get_blob_store()
         db_raw_ids: set[str] = set()
-        with connection_context() as conn:
+        with connection_context(config.db_path) as conn:
             for row in conn.execute("SELECT raw_id FROM raw_conversations"):
                 db_raw_ids.add(row[0])
         disk_hashes = set(blob_store.iter_all())
         missing = db_raw_ids - disk_hashes
         orphaned = disk_hashes - db_raw_ids
-        ui.console.print(f"Blob store: {len(disk_hashes)} blobs on disk, {len(db_raw_ids)} raw records in DB")
+        env.ui.console.print(f"Blob store: {len(disk_hashes)} blobs on disk, {len(db_raw_ids)} raw records in DB")
         if missing:
-            ui.console.print(f"  MISSING: {len(missing)} blobs referenced in DB but not on disk")
+            env.ui.console.print(f"  MISSING: {len(missing)} blobs referenced in DB but not on disk")
             for h in sorted(missing)[:10]:
-                ui.console.print(f"    {h[:16]}...")
+                env.ui.console.print(f"    {h[:16]}...")
         if orphaned:
-            ui.console.print(f"  Orphaned: {len(orphaned)} blobs on disk not in DB")
+            env.ui.console.print(f"  Orphaned: {len(orphaned)} blobs on disk not in DB")
         if not missing and not orphaned:
-            ui.console.print("  All blobs verified.")
+            env.ui.console.print("  All blobs verified.")
 
     if options.check_schemas:
         result.schema_report = run_schema_verification(

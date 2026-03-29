@@ -132,7 +132,7 @@ class TestLoadSamplesFromDb:
 
         from polylogue.storage.blob_store import get_blob_store
         blob_store = get_blob_store()
-        _, blob_size = blob_store.write_from_bytes(raw_content)
+        raw_id, blob_size = blob_store.write_from_bytes(raw_content)
 
         with open_connection(db) as conn:
             conn.execute(
@@ -143,7 +143,7 @@ class TestLoadSamplesFromDb:
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    "raw-claude-1",
+                    raw_id,
                     "claude-ai",
                     "claude-ai",
                     "claude-ai",
@@ -174,7 +174,7 @@ class TestLoadSamplesFromDb:
 
         from polylogue.storage.blob_store import get_blob_store
         blob_store = get_blob_store()
-        _, blob_size = blob_store.write_from_bytes(raw_content)
+        actual_raw_id, blob_size = blob_store.write_from_bytes(raw_content)
 
         with open_connection(db) as conn:
             conn.execute(
@@ -185,7 +185,7 @@ class TestLoadSamplesFromDb:
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    "raw-codex-1",
+                    actual_raw_id,
                     "codex",
                     "codex",
                     "codex",

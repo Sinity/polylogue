@@ -12,6 +12,7 @@ from polylogue.lib.provider_identity import (
     canonical_schema_provider,
 )
 from polylogue.lib.raw_payload import extract_record_samples_from_raw_content
+from polylogue.logging import get_logger
 from polylogue.paths import db_path as default_db_path
 from polylogue.storage.blob_store import get_blob_store
 from polylogue.schemas.observation import (
@@ -20,6 +21,8 @@ from polylogue.schemas.observation import (
     resolve_provider_config,
 )
 from polylogue.types import Provider
+
+logger = get_logger(__name__)
 
 
 def _sample_provider_where_clause(provider_name: str | Provider) -> tuple[str, tuple[Any, ...]]:
@@ -87,12 +90,9 @@ def _iter_schema_units_from_db(
                     if sample_limit is None:
                         sample_limit = config.schema_sample_cap or 128
 
-                    # For record-level sampling, we need bytes/str (not Path)
-                    # since extract_record_samples_from_raw_content uses BytesIO.
-                    sample_input = raw_content.read_bytes() if isinstance(raw_content, Path) else raw_content
                     try:
                         samples = extract_record_samples_from_raw_content(
-                            sample_input,
+                            raw_content,
                             max_samples=sample_limit,
                             record_type_key=config.record_type_key,
                         )
@@ -110,7 +110,7 @@ def _iter_schema_units_from_db(
                             max_samples=max_samples,
                         )
                         continue
-
+                
                 try:
                     from polylogue.schemas import sampling as sampling_root
 

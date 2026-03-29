@@ -519,9 +519,8 @@ class TestProveRawArtifactCoverage:
 
         source_name = "chatgpt"
         source_path = "/tmp/chatgpt-stale.json"
-        _insert_raw_record(
+        actual_raw_id = _insert_raw_record(
             db_path=db_path,
-            raw_id="raw-chatgpt-stale-1",
             provider_name="chatgpt",
             source_name=source_name,
             source_path=source_path,
@@ -566,7 +565,7 @@ class TestProveRawArtifactCoverage:
                 """,
                 (
                     observation_id,
-                    "raw-chatgpt-stale-1",
+                    actual_raw_id,
                     "chatgpt",
                     "chatgpt",
                     source_name,
