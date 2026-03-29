@@ -76,6 +76,36 @@ async def process_raw_batch(
 
     del raw_records
 
+    # Download Drive attachments for Gemini conversations in this batch.
+    # Build the client once if any Gemini records have un-downloaded attachments.
+    gemini_with_attachments = [
+        convo for convo, _, _ in work_items
+        if str(convo.provider_name) == "gemini"
+        and convo.attachments
+        and any(a.path is None and a.provider_attachment_id for a in convo.attachments)
+    ]
+    if gemini_with_attachments:
+        try:
+            from polylogue.sources.drive import _apply_drive_attachments
+            from polylogue.sources.drive_source_factory import build_drive_source_client
+
+            drive_client = build_drive_source_client(config=service.config.drive_config)
+            for convo in gemini_with_attachments:
+                try:
+                    _apply_drive_attachments(
+                        convo=convo,
+                        client=drive_client,
+                        archive_root=service.archive_root,
+                        download_assets=True,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to download Drive attachments: %s",
+                        exc,
+                    )
+        except Exception as exc:
+            logger.warning("Drive client unavailable for attachment download: %s", exc)
+
     if not work_items:
         for rid, error in failed_raw_ids.items():
             await service.repository.update_raw_state(
