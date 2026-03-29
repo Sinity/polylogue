@@ -54,13 +54,26 @@ async def process_raw_batch(
     skipped_raw_ids: set[str] = set()
 
     for raw_record in raw_records:
+        t_parse = time.perf_counter()
         try:
             parsed_convos = await service._parse_raw_record(raw_record)
+            parse_elapsed = time.perf_counter() - t_parse
             payload_providers[raw_record.raw_id] = raw_record.payload_provider
             if not parsed_convos:
                 skipped_raw_ids.add(raw_record.raw_id)
                 continue
             source_name = raw_record.source_name or raw_record.source_path
+            total_msgs = sum(len(c.messages) for c in parsed_convos)
+            if parse_elapsed > 1.0:
+                logger.info(
+                    "slow_decode",
+                    raw_id=raw_record.raw_id[:16],
+                    elapsed_s=round(parse_elapsed, 2),
+                    blob_mb=round(raw_record.blob_size / (1024 * 1024), 1),
+                    conversations=len(parsed_convos),
+                    messages=total_msgs,
+                    provider=raw_record.provider_name,
+                )
             for convo in parsed_convos:
                 work_items.append((convo, source_name, raw_record.raw_id))
         except (json.JSONDecodeError, orjson.JSONDecodeError, ValueError, TypeError) as exc:
@@ -136,11 +149,15 @@ async def process_raw_batch(
     succeeded_raw_ids: set[str] = set()
     changed_conversation_ids: list[str] = []
 
-    _SLOW_THRESHOLD_S = 2.0
+    from polylogue.storage.blob_store import get_blob_store as _get_blob_store
+
+    _blob_store = _get_blob_store()
 
     async with backend.bulk_connection():
         for convo_item, source_name_item, raw_id in work_items:
             t_item = time.perf_counter()
+            blob_mb = round(_blob_store.blob_path(raw_id).stat().st_size / (1024 * 1024), 1) if _blob_store.exists(raw_id) else 0
+            msg_count = len(convo_item.messages)
             try:
                 persisted = await prepare_records(
                     convo_item,
@@ -165,11 +182,15 @@ async def process_raw_batch(
                 failed_raw_ids[raw_id] = str(exc)[:500]
             finally:
                 item_elapsed = time.perf_counter() - t_item
-                if item_elapsed >= _SLOW_THRESHOLD_S:
+                if item_elapsed >= 1.0:
                     logger.info(
-                        "slow_parse_item",
-                        raw_id=raw_id,
+                        "slow_item",
+                        raw_id=raw_id[:16],
                         elapsed_s=round(item_elapsed, 2),
+                        blob_mb=blob_mb,
+                        msgs=msg_count,
+                        provider=str(convo_item.provider_name),
+                        source=source_name_item.split("/")[-1][:40] if source_name_item else "?",
                     )
                 if progress_callback:
                     progress_callback(1)
@@ -182,6 +203,7 @@ async def process_raw_batch(
     # which is O(total_conversations). Incremental refresh only touches the
     # affected conversations.
     if changed_conversation_ids:
+        t_refresh = time.perf_counter()
         try:
             from polylogue.storage.session_product_refresh import (
                 refresh_session_products_for_conversation_async,
@@ -195,6 +217,14 @@ async def process_raw_batch(
                         transaction_depth=1,
                     )
                 await conn.commit()
+            refresh_elapsed = time.perf_counter() - t_refresh
+            if refresh_elapsed > 2.0:
+                logger.info(
+                    "slow_refresh",
+                    elapsed_s=round(refresh_elapsed, 2),
+                    conversations=len(changed_conversation_ids),
+                    rate=round(len(changed_conversation_ids) / refresh_elapsed, 1) if refresh_elapsed > 0 else 0,
+                )
         except Exception as exc:
             logger.warning(
                 "Session product refresh failed (non-fatal): %s", exc,
