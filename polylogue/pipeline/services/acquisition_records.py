@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 from datetime import datetime, timezone
 
 from polylogue.lib.provider_identity import canonical_acquisition_provider
@@ -33,9 +32,14 @@ def make_raw_record(
     if raw_data.blob_hash is not None:
         raw_id = raw_data.blob_hash
         blob_size = raw_data.blob_size or 0
+    elif raw_data.raw_bytes:
+        # Bytes provided without pre-computed blob hash (e.g. from tests
+        # or legacy callers). Write to blob store and use the hash.
+        from polylogue.storage.blob_store import get_blob_store
+
+        raw_id, blob_size = get_blob_store().write_from_bytes(raw_data.raw_bytes)
     else:
-        raw_id = hashlib.sha256(raw_data.raw_bytes).hexdigest()
-        blob_size = len(raw_data.raw_bytes)
+        raise ValueError("RawConversationData has neither blob_hash nor raw_bytes")
 
     acquired_at = datetime.now(timezone.utc).isoformat()
     provider_name = canonical_acquisition_provider(

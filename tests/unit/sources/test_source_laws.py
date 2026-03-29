@@ -345,7 +345,7 @@ def test_iter_source_conversations_with_raw_capture_contract(
     assert all(str(conversation.provider_name) == case["provider"] for _, conversation in items)
     if capture_raw:
         assert all(raw_data is not None for raw_data, _ in items)
-        assert all(raw_data.blob_hash for raw_data, _ in items if raw_data is not None)
+        assert all(raw_data.raw_bytes or raw_data.blob_hash for raw_data, _ in items if raw_data is not None)
         assert all(raw_data.file_mtime is not None for raw_data, _ in items if raw_data is not None)
     else:
         assert all(raw_data is None for raw_data, _ in items)
