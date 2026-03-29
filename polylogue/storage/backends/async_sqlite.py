@@ -57,11 +57,28 @@ def default_db_path() -> Path:
 
 
 async def configure_connection(conn: aiosqlite.Connection) -> None:
-    """Apply canonical connection settings."""
+    """Apply canonical connection settings.
+
+    Performance pragmas (cache_size, synchronous, mmap_size) are critical
+    for large databases. With a 28 GB DB and 2 MB default cache, every
+    operation thrashes disk. These settings bring throughput from ~0.5/s
+    to expected levels.
+    """
     conn.row_factory = aiosqlite.Row
     await conn.execute("PRAGMA foreign_keys = ON")
     await conn.execute("PRAGMA journal_mode=WAL")
     await conn.execute(f"PRAGMA busy_timeout = {DB_TIMEOUT * 1000}")
+    # Performance: 512 MB page cache (default is 2 MB — unusable for large DBs)
+    await conn.execute("PRAGMA cache_size = -524288")
+    # Performance: NORMAL sync is safe with WAL and avoids fsync per write
+    await conn.execute("PRAGMA synchronous = NORMAL")
+    # Performance: 1 GB memory-mapped I/O for faster reads on large DBs
+    await conn.execute("PRAGMA mmap_size = 1073741824")
+    # Performance: keep temp tables in memory
+    await conn.execute("PRAGMA temp_store = MEMORY")
+    # Performance: increase WAL autocheckpoint from 1000 to 10000 pages
+    # to reduce checkpoint frequency during bulk writes
+    await conn.execute("PRAGMA wal_autocheckpoint = 10000")
 
 
 # ---------------------------------------------------------------------------
@@ -108,7 +125,29 @@ async def ensure_schema_once(backend: SQLiteBackend) -> None:
 
 @asynccontextmanager
 async def _backend_transaction(backend: SQLiteBackend) -> AsyncIterator[None]:
-    """Context manager for database transactions."""
+    """Context manager for database transactions.
+
+    When a bulk_connection is active, acts as a nested savepoint within
+    the bulk transaction instead of trying to open a new connection.
+    """
+    if backend._bulk_conn is not None:
+        # Inside bulk_connection: use savepoint on the bulk connection
+        sp_name = f"sp_bulk_{backend._transaction_depth}"
+        backend._transaction_depth += 1
+        try:
+            await backend._bulk_conn.execute(f"SAVEPOINT {sp_name}")
+            yield
+            await backend._bulk_conn.execute(f"RELEASE SAVEPOINT {sp_name}")
+        except BaseException:
+            try:
+                await backend._bulk_conn.execute(f"ROLLBACK TO SAVEPOINT {sp_name}")
+            except Exception:
+                pass
+            raise
+        finally:
+            backend._transaction_depth -= 1
+        return
+
     async with backend._write_lock:
         if backend._txn_conn is None:
             backend._txn_conn = await aiosqlite.connect(backend._db_path, timeout=DB_TIMEOUT)
@@ -186,9 +225,17 @@ async def _close_backend(backend: SQLiteBackend) -> None:
 
 @asynccontextmanager
 async def _backend_connection(backend: SQLiteBackend) -> AsyncIterator[aiosqlite.Connection]:
-    """Public connection context for read/query helpers."""
-    async with backend._get_connection() as conn:
-        yield conn
+    """Public connection context for read/query helpers.
+
+    When a bulk_connection is active, reuses it instead of opening a new
+    connection — avoids "database is locked" errors from competing for
+    the write lock.
+    """
+    if backend._bulk_conn is not None:
+        yield backend._bulk_conn
+    else:
+        async with backend._get_connection() as conn:
+            yield conn
 
 
 @asynccontextmanager

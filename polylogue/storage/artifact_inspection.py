@@ -10,6 +10,8 @@ from polylogue.lib.artifact_taxonomy import ArtifactKind, classify_artifact_path
 from polylogue.lib.raw_payload import build_raw_payload_envelope
 from polylogue.schemas.observation import derive_bundle_scope, schema_cluster_id
 from polylogue.schemas.runtime_registry import SchemaRegistry
+
+_SCHEMA_REGISTRY = SchemaRegistry()
 from polylogue.storage.store import ArtifactObservationRecord, RawConversationRecord
 from polylogue.types import ArtifactSupportStatus, Provider
 
@@ -78,7 +80,7 @@ def inspect_raw_artifact(record: RawConversationRecord) -> ArtifactObservationRe
         source_index=record.source_index,
     )
     observed_at = record.acquired_at or datetime.now(tz=timezone.utc).isoformat()
-    registry = SchemaRegistry()
+    registry = _SCHEMA_REGISTRY
 
     try:
         envelope = build_raw_payload_envelope(

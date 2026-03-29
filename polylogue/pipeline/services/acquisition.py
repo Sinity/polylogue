@@ -123,8 +123,13 @@ class AcquisitionService:
         Returns:
             AcquireResult with counts and list of acquired raw_ids
         """
+        import gc as _gc
+
         result = AcquireResult()
-        flush_interval = 500
+        # Flush every 50 records to prevent memory spikes from raw_content
+        # bytes accumulating in the SQLite WAL. With ~627 KB avg per record,
+        # 50 records ≈ 31 MB in WAL vs 500 records ≈ 313 MB.
+        flush_interval = 50
         items_since_flush = 0
 
         async def _store(record: RawConversationRecord) -> None:
@@ -134,6 +139,7 @@ class AcquisitionService:
             if items_since_flush >= flush_interval:
                 await self.backend.bulk_flush()
                 items_since_flush = 0
+                _gc.collect()  # Help Python release flushed record bytes
 
         async with self.backend.bulk_connection():
             visit_result = await self.visit_sources(

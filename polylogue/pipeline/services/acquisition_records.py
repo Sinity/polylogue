@@ -21,7 +21,10 @@ class ScanResult:
         self.cursors: dict[str, dict[str, object]] = {}
 
 
-def make_raw_record(raw_data: RawConversationData, source_name: str) -> RawConversationRecord:
+def make_raw_record(
+    raw_data: RawConversationData,
+    source_name: str,
+) -> RawConversationRecord:
     """Prepare a raw conversation record from scanned payload bytes."""
     size = len(raw_data.raw_bytes)
     if size > MAX_RAW_CONTENT_SIZE:

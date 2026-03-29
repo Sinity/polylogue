@@ -7,12 +7,10 @@ import builtins
 from polylogue.lib.conversation_models import Conversation
 from polylogue.storage.action_event_rows import attach_blocks_to_messages, build_action_event_records
 from polylogue.storage.search_cache import invalidate_search_cache
-from polylogue.storage.session_product_refresh_deletes import (
+from polylogue.storage.session_product_refresh import (
     delete_session_products_for_conversation_async,
-    refresh_thread_after_conversation_delete_async,
-)
-from polylogue.storage.session_product_refresh_updates import (
     refresh_session_products_for_conversation_async,
+    refresh_thread_after_conversation_delete_async,
 )
 from polylogue.storage.session_product_threads import thread_root_id_async
 from polylogue.storage.store import (
@@ -126,12 +124,10 @@ async def save_via_backend(
                 await backend.save_attachments(attachments)
                 counts["attachments"] = len(attachments)
 
-            async with backend.connection() as conn:
-                await refresh_session_products_for_conversation_async(
-                    conn,
-                    str(conversation.conversation_id),
-                    transaction_depth=backend.transaction_depth,
-                )
+            # Session product refresh is deferred to post-batch for performance.
+            # The caller (parsing_batch.py) collects changed conversation IDs
+            # and runs a single bulk refresh after all conversations are saved.
+            # This eliminates 14+ awaits per conversation during batch writes.
 
     invalidate_search_cache()
     return counts

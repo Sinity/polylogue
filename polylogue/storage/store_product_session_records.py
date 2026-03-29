@@ -28,7 +28,6 @@ class SessionProfileRecord(BaseModel):
     first_message_at: str | None = None
     last_message_at: str | None = None
     canonical_session_date: str | None = None
-    primary_work_kind: str | None = None
     repo_paths: tuple[str, ...] = ()
     canonical_projects: tuple[str, ...] = ()
     tags: tuple[str, ...] = ()

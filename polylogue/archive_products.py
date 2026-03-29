@@ -23,7 +23,9 @@ ARCHIVE_PRODUCT_CONTRACT_VERSION = 4
 class ArchiveProductModel(BaseModel):
     """Shared base for public archive data product payloads."""
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    # extra="ignore" tolerates legacy fields from older materialized records
+    # (e.g. primary_work_kind, decisions removed in the March 2026 cleanup)
+    model_config = ConfigDict(extra="ignore", frozen=True)
 
     def to_json(self, *, exclude_none: bool = False) -> str:
         return self.model_dump_json(indent=2, exclude_none=exclude_none)
@@ -74,7 +76,6 @@ class SessionEvidencePayload(ArchiveProductModel):
 
 
 class SessionInferencePayload(ArchiveProductModel):
-    primary_work_kind: str | None = None
     canonical_projects: tuple[str, ...] = ()
     work_event_count: int = 0
     phase_count: int = 0
@@ -84,11 +85,9 @@ class SessionInferencePayload(ArchiveProductModel):
     support_signals: tuple[str, ...] = ()
     engaged_duration_source: str = "session_total_fallback"
     project_inference_strength: str = "weak"
-    decision_signal_strength: str = "weak"
     auto_tags: tuple[str, ...] = ()
     work_events: tuple[dict[str, Any], ...] = ()
     phases: tuple[dict[str, Any], ...] = ()
-    decisions: tuple[dict[str, Any], ...] = ()
 
 
 class WorkEventEvidencePayload(ArchiveProductModel):
@@ -123,7 +122,6 @@ class SessionPhaseEvidencePayload(ArchiveProductModel):
 
 
 class SessionPhaseInferencePayload(ArchiveProductModel):
-    kind: str
     confidence: float = 0.0
     evidence: tuple[str, ...] = ()
     support_level: str = "weak"
@@ -135,7 +133,6 @@ class SessionEnrichmentPayload(ArchiveProductModel):
     intent_summary: str | None = None
     outcome_summary: str | None = None
     blockers: tuple[str, ...] = ()
-    refined_work_kind: str | None = None
     confidence: float = 0.0
     support_level: str = "weak"
     support_signals: tuple[str, ...] = ()

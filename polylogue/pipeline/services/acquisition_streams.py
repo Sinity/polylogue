@@ -114,8 +114,14 @@ async def iter_raw_record_stream(
         )
 
     async for raw_data in raw_stream:
+        if not raw_data.raw_bytes:
+            continue
         try:
-            yield make_raw_record(raw_data, source.name)
+            record = make_raw_record(raw_data, source.name)
+            # Explicitly break reference to raw bytes so GC can collect them
+            # before the next iteration reads the next file.
+            del raw_data
+            yield record
         except ValueError as exc:
             logger.warning(
                 "Skipping raw payload",

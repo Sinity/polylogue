@@ -17,7 +17,7 @@ from .validation import ValidationService
 
 _VALIDATE_STAGES = frozenset({"validate", "parse", "all"})
 _PARSE_STAGES = frozenset({"parse", "all"})
-_SCAN_STATE_BATCH_SIZE = 128
+_SCAN_STATE_BATCH_SIZE = 32  # Keep small to bound memory from raw_content bytes
 
 
 async def build_ingest_plan(
@@ -89,13 +89,17 @@ async def build_ingest_plan(
     preview_validation = ValidateResult() if preview and stage in _VALIDATE_STAGES else None
     seen_scanned_raw_ids: set[str] = set()
 
+    _MAX_PREVIEW_VALIDATION_RECORDS = 50  # Cap preview validation to bound memory
+
     async def flush_pending_records() -> None:
         nonlocal pending_records
         if not pending_records:
             return
-        scanned_states = await service.repository.get_raw_conversation_states(
-            dedupe_ids([record.raw_id for record in pending_records])
-        )
+        # Extract only the raw_ids for DB state comparison — avoid keeping
+        # full raw bytes in working set longer than necessary.
+        batch_raw_ids = dedupe_ids([record.raw_id for record in pending_records])
+        scanned_states = await service.repository.get_raw_conversation_states(batch_raw_ids)
+
         preview_records: list[RawConversationRecord] = []
         for record in pending_records:
             if record.raw_id in seen_scanned_raw_ids:
@@ -114,7 +118,9 @@ async def build_ingest_plan(
                 if parsed_at is None:
                     if current_status is None:
                         validate_raw_ids.append(record.raw_id)
-                        if preview:
+                        # Only accumulate a limited sample for preview validation
+                        # to bound memory. Full validation happens during actual runs.
+                        if preview and preview_validation is not None and len(preview_records) < _MAX_PREVIEW_VALIDATION_RECORDS:
                             preview_records.append(record)
                     elif stage in _PARSE_STAGES and current_status in {"passed", "skipped"}:
                         parse_ready_raw_ids.append(record.raw_id)
@@ -125,7 +131,7 @@ async def build_ingest_plan(
                 persist=False,
             )
             preview_validation.merge(scanned_preview_validation)
-        pending_records = []
+        pending_records.clear()
 
     async def process_record(record: RawConversationRecord) -> None:
         nonlocal scanned_count

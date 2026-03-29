@@ -294,8 +294,14 @@ def test_parse_date_accepts_relative_dates() -> None:
     assert result.utcoffset() == timezone.utc.utcoffset(result)
 
 
-def test_parse_date_returns_none_for_invalid_input() -> None:
-    assert parse_date("not a date at all!!!!") is None
+@pytest.mark.parametrize("invalid_input", [
+    "xyzzy qqq rrr !!!!",
+    "🎭🎭🎭",
+    "aaaa bbbb cccc dddd",
+    "---",
+])
+def test_parse_date_returns_none_for_invalid_input(invalid_input: str) -> None:
+    assert parse_date(invalid_input) is None
 
 
 @given(st.floats(min_value=0, max_value=2**31 - 1, allow_nan=False, allow_infinity=False))

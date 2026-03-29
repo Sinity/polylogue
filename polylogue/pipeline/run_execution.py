@@ -69,6 +69,18 @@ async def run_sources(
     try:
         selected_sources = select_sources(config, source_names)
 
+        # Suspend FTS triggers during bulk pipeline operations.
+        # Triggers fire per-row during message INSERTs, causing massive
+        # overhead (~8s per 50 updates with realistic text). The index
+        # stage rebuilds FTS at the end anyway, making trigger updates
+        # pure waste during ingest.
+        if stage in ("all", "parse", "render", "index") or stage in INGEST_STAGES:
+            from polylogue.storage.fts_lifecycle import suspend_fts_triggers_async
+
+            async with active_backend.connection() as conn:
+                await suspend_fts_triggers_async(conn)
+                await conn.commit()
+
         if stage == "acquire":
             sm = metrics.start_stage("acquire")
             acquire_result = await execute_acquire_stage(
@@ -83,6 +95,7 @@ async def run_sources(
             logger.info("Acquire stage complete", **sm.to_dict(), **acquire_result.counts)
 
         elif stage in INGEST_STAGES:
+            sm = metrics.start_stage("ingest")
             ingest_result = await execute_ingest_stage(
                 config=config,
                 repository=active_repository,
@@ -102,20 +115,20 @@ async def run_sources(
                     ui=ui,
                     progress_callback=progress_callback,
                 )
+            sm.sub_timings.update({
+                f"{k}_s": v for k, v in ingest_result.timings.items()
+            })
+            sm.stop(items=len(ingest_result.parse_raw_ids))
             state.record_acquire(ingest_result.acquire_result)
-            logger.info("Acquire stage complete", **ingest_result.acquire_result.counts)
+            logger.info(
+                "Ingest complete",
+                **sm.to_dict(),
+                **ingest_result.acquire_result.counts,
+            )
 
             validation_result = ingest_result.validation_result
             if validation_result is not None:
                 state.record_validation(validation_result)
-                logger.info(
-                    "Validate stage complete",
-                    parseable=len(validation_result.parseable_raw_ids),
-                    invalid=validation_result.counts["invalid"],
-                    drift=validation_result.counts["drift"],
-                    skipped_no_schema=validation_result.counts["skipped_no_schema"],
-                    errors=validation_result.counts["errors"],
-                )
 
             if stage in PARSE_STAGES:
                 state.record_parse(ingest_result.parse_result)
@@ -190,6 +203,15 @@ async def run_sources(
             duration_ms=int((time.perf_counter() - start) * 1000),
         )
     finally:
+        # Restore FTS triggers that were suspended for bulk operations
+        try:
+            from polylogue.storage.fts_lifecycle import restore_fts_triggers_async
+
+            async with active_backend.connection() as conn:
+                await restore_fts_triggers_async(conn)
+                await conn.commit()
+        except Exception:
+            pass  # Don't fail on trigger restore — index rebuild handles FTS
         if owns_repository:
             await active_repository.close()
         elif owns_backend:

@@ -80,6 +80,11 @@ def _get_cached_connection(path: Path) -> sqlite3.Connection:
     conn.execute("PRAGMA foreign_keys = ON")
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute(f"PRAGMA busy_timeout = {DB_TIMEOUT * 1000}")
+    conn.execute("PRAGMA cache_size = -524288")  # 512 MB
+    conn.execute("PRAGMA synchronous = NORMAL")  # safe with WAL
+    conn.execute("PRAGMA mmap_size = 1073741824")  # 1 GB
+    conn.execute("PRAGMA temp_store = MEMORY")
+    conn.execute("PRAGMA wal_autocheckpoint = 10000")
     _load_sqlite_vec(conn)
     _ensure_schema(conn)
 

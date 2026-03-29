@@ -2,12 +2,45 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import date, datetime
 from enum import Enum
 from typing import TYPE_CHECKING
 
 from polylogue.lib.phase_extraction import extract_phases
+
+# Strip XML-like protocol artifacts from user messages before summarizing.
+# Claude Code sessions contain <command-name>, <task-notification>,
+# <local-command-caveat>, <system-reminder> etc. which are tool protocol
+# noise, not human-readable content.
+_TAG_RE = re.compile(r"<[^>]+>")
+_WHITESPACE_RE = re.compile(r"\s+")
+
+
+def _clean_summary_text(text: str) -> str:
+    """Extract human-readable content from user message text.
+
+    Strips XML tags, system-reminder blocks, and protocol artifacts
+    that appear in Claude Code session transcripts.
+    """
+    if not text:
+        return ""
+    # Remove entire system-reminder blocks
+    cleaned = re.sub(r"<system-reminder>.*?</system-reminder>", "", text, flags=re.DOTALL)
+    # Remove entire task-notification blocks
+    cleaned = re.sub(r"<task-notification>.*?</task-notification>", "", cleaned, flags=re.DOTALL)
+    # Remove entire local-command blocks
+    cleaned = re.sub(r"<local-command-caveat>.*?</local-command-caveat>", "", cleaned, flags=re.DOTALL)
+    cleaned = re.sub(r"<local-command-stdout>.*?</local-command-stdout>", "", cleaned, flags=re.DOTALL)
+    cleaned = re.sub(r"<command-name>.*?</command-name>", "", cleaned, flags=re.DOTALL)
+    cleaned = re.sub(r"<command-message>.*?</command-message>", "", cleaned, flags=re.DOTALL)
+    cleaned = re.sub(r"<command-args>.*?</command-args>", "", cleaned, flags=re.DOTALL)
+    # Strip remaining XML-like tags
+    cleaned = _TAG_RE.sub("", cleaned)
+    # Collapse whitespace
+    cleaned = _WHITESPACE_RE.sub(" ", cleaned).strip()
+    return cleaned[:100] if cleaned else ""
 from polylogue.lib.semantic_facts import (
     ConversationSemanticFacts,
     MessageSemanticFacts,
@@ -301,9 +334,9 @@ def extract_work_events(
                 file_paths.extend(action.affected_paths)
 
         user_texts = [
-            message.text[:100]
+            _clean_summary_text(message.text)
             for message in messages[chunk_start:chunk_end]
-            if message.is_user and message.text
+            if message.is_user and message.text and _clean_summary_text(message.text)
         ]
         summary = "; ".join(user_texts)[:200] if user_texts else kind.value
         timestamps = [
