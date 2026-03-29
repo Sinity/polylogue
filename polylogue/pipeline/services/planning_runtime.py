@@ -17,7 +17,7 @@ from .validation import ValidationService
 
 _VALIDATE_STAGES = frozenset({"validate", "parse", "all"})
 _PARSE_STAGES = frozenset({"parse", "all"})
-_SCAN_STATE_BATCH_SIZE = 32  # Keep small to bound memory from raw_content bytes
+_SCAN_STATE_BATCH_SIZE = 200  # Metadata-only rows (no BLOBs) — can batch larger
 
 
 async def build_ingest_plan(

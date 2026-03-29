@@ -123,10 +123,10 @@ class AcquisitionService:
         Returns:
             AcquireResult with counts and list of acquired raw_ids
         """
-        import gc as _gc
-
         result = AcquireResult()
-        flush_interval = 50
+        # Records are metadata-only (~1 KB each, no BLOBs). Larger batches
+        # reduce commit frequency and async thread-crossing overhead.
+        flush_interval = 500
         items_since_flush = 0
 
         async def _store(record: RawConversationRecord) -> None:
