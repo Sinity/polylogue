@@ -27,6 +27,9 @@ class _ValidationOutcome:
     drift_counts_delta: dict[str, int] = field(default_factory=dict)
 
 
+from polylogue.schemas.validator import SchemaValidator as _SchemaValidator
+
+
 def _validate_record_sync(
     raw_record: RawConversationRecord,
     validation_mode: ValidationMode,
@@ -35,7 +38,7 @@ def _validate_record_sync(
     import time as _time
 
     t_start = _time.perf_counter()
-    from polylogue.schemas.validator import SchemaValidator
+    SchemaValidator = _SchemaValidator
 
     counts_delta: dict[str, int] = {
         "validated": 0,

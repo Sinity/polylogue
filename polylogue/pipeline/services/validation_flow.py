@@ -164,7 +164,9 @@ async def evaluate_raw_records(
     import time as _time
 
     total = progress_total or len(raw_records)
-    worker_count = min(len(raw_records), os.cpu_count() or 4)
+    # Single worker: JSON decode is GIL-bound, threading adds overhead
+    # without speedup. Measured: 1 worker = 4.4s, 24 workers = 4.9s.
+    worker_count = 1
     t_batch = _time.perf_counter()
     loop = asyncio.get_running_loop()
     with ThreadPoolExecutor(max_workers=worker_count) as executor:
