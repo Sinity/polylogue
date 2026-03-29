@@ -224,14 +224,20 @@ def iter_drive_raw_data(
             )
             continue
 
+        from polylogue.storage.blob_store import get_blob_store
+
+        blob_hash, blob_size = get_blob_store().write_from_bytes(raw_bytes)
         provider_hint = Provider.from_string(source.name)
         yield RawConversationData(
-            raw_bytes=raw_bytes,
+            raw_bytes=b"",
             source_path=source_path,
             source_index=None,
             file_mtime=file_meta.modified_time,
             provider_hint=provider_hint,
+            blob_hash=blob_hash,
+            blob_size=blob_size,
         )
+        del raw_bytes
 
 
 __all__ = [
