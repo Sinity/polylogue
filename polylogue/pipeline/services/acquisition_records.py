@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 
 from polylogue.lib.provider_identity import canonical_acquisition_provider
 from polylogue.sources.parsers.base import RawConversationData
-from polylogue.storage.store import MAX_RAW_CONTENT_SIZE, RawConversationRecord
+from polylogue.storage.store import RawConversationRecord
 
 
 class ScanResult:
@@ -26,13 +26,6 @@ def make_raw_record(
     source_name: str,
 ) -> RawConversationRecord:
     """Prepare a raw conversation record from scanned payload bytes."""
-    size = len(raw_data.raw_bytes)
-    if size > MAX_RAW_CONTENT_SIZE:
-        raise ValueError(
-            f"Oversized source file at {raw_data.source_path} "
-            f"({size} bytes > {MAX_RAW_CONTENT_SIZE} max)"
-        )
-
     raw_id = hashlib.sha256(raw_data.raw_bytes).hexdigest()
     acquired_at = datetime.now(timezone.utc).isoformat()
     provider_name = canonical_acquisition_provider(

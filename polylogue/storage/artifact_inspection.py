@@ -70,8 +70,35 @@ def _support_status(
     return ArtifactSupportStatus.UNSUPPORTED_PARSEABLE
 
 
+_INSPECTION_PREFIX_BYTES = 64 * 1024  # 64 KB — enough to classify any format
+
+
+def _inspection_prefix(raw_content: bytes, source_path: str | None) -> bytes:
+    """Extract a small prefix of raw content sufficient for artifact classification.
+
+    For JSONL files, returns the first line (one complete JSON object).
+    For JSON files, returns up to 64 KB (enough to see top-level structure).
+    Classification only needs field names and structure, not full content.
+    """
+    if len(raw_content) <= _INSPECTION_PREFIX_BYTES:
+        return raw_content
+    normalized = (source_path or "").lower()
+    is_jsonl = normalized.endswith((".jsonl", ".jsonl.txt", ".ndjson"))
+    if is_jsonl:
+        # First non-empty line is enough for classification
+        newline_pos = raw_content.find(b"\n")
+        if newline_pos > 0:
+            return raw_content[: newline_pos + 1]
+    return raw_content[:_INSPECTION_PREFIX_BYTES]
+
+
 def inspect_raw_artifact(record: RawConversationRecord) -> ArtifactObservationRecord:
-    """Inspect one raw record into a durable artifact observation."""
+    """Inspect one raw record into a durable artifact observation.
+
+    Uses only a small prefix of raw_content for classification — never
+    decodes the full payload. This keeps memory bounded regardless of
+    file size (a 1.5 GB JSONL file is classified from its first line).
+    """
     provider_hint = record.payload_provider or record.provider_name
     bundle_scope = derive_bundle_scope(provider_hint, record.source_path)
     observation_id = artifact_observation_id(
@@ -83,8 +110,9 @@ def inspect_raw_artifact(record: RawConversationRecord) -> ArtifactObservationRe
     registry = _SCHEMA_REGISTRY
 
     try:
+        prefix = _inspection_prefix(record.raw_content, record.source_path)
         envelope = build_raw_payload_envelope(
-            record.raw_content,
+            prefix,
             source_path=record.source_path,
             fallback_provider=record.provider_name,
             payload_provider=record.payload_provider,
