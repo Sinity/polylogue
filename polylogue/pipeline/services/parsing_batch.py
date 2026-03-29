@@ -8,6 +8,7 @@ single post-batch pass.
 from __future__ import annotations
 
 import json
+import time
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
@@ -105,8 +106,11 @@ async def process_raw_batch(
     succeeded_raw_ids: set[str] = set()
     changed_conversation_ids: list[str] = []
 
+    _SLOW_THRESHOLD_S = 2.0
+
     async with backend.bulk_connection():
         for convo_item, source_name_item, raw_id in work_items:
+            t_item = time.perf_counter()
             try:
                 persisted = await prepare_records(
                     convo_item,
@@ -130,6 +134,13 @@ async def process_raw_batch(
                 result.parse_failures += 1
                 failed_raw_ids[raw_id] = str(exc)[:500]
             finally:
+                item_elapsed = time.perf_counter() - t_item
+                if item_elapsed >= _SLOW_THRESHOLD_S:
+                    logger.info(
+                        "slow_parse_item",
+                        raw_id=raw_id,
+                        elapsed_s=round(item_elapsed, 2),
+                    )
                 if progress_callback:
                     progress_callback(1)
 
