@@ -69,9 +69,23 @@ def _select_paths_for_processing(
 
     for path in paths:
         file_mtime = _get_file_mtime(path) if include_file_mtime else None
-        if known_mtimes and file_mtime and known_mtimes.get(str(path)) == file_mtime:
-            skipped_mtime += 1
-            continue
+        if known_mtimes and file_mtime:
+            path_str = str(path)
+            # Direct match (non-ZIP files stored by exact path)
+            if known_mtimes.get(path_str) == file_mtime:
+                skipped_mtime += 1
+                continue
+            # ZIP match: entries are stored as "path.zip:entry.json" — check
+            # if any entry with this ZIP prefix has matching mtime
+            if path_str.endswith(".zip"):
+                zip_prefix = path_str + ":"
+                if any(
+                    mtime == file_mtime
+                    for key, mtime in known_mtimes.items()
+                    if key.startswith(zip_prefix)
+                ):
+                    skipped_mtime += 1
+                    continue
         selected.append((path, file_mtime))
 
     return selected, skipped_mtime
