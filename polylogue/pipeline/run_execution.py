@@ -95,7 +95,7 @@ async def run_sources(
             logger.info("Acquire stage complete", **sm.to_dict(), **acquire_result.counts)
 
         elif stage in INGEST_STAGES:
-            ingest_t0 = time.perf_counter()
+            sm = metrics.start_stage("ingest")
             ingest_result = await execute_ingest_stage(
                 config=config,
                 repository=active_repository,
@@ -115,11 +115,14 @@ async def run_sources(
                     ui=ui,
                     progress_callback=progress_callback,
                 )
-            ingest_elapsed = time.perf_counter() - ingest_t0
+            sm.sub_timings.update({
+                f"{k}_s": v for k, v in ingest_result.timings.items()
+            })
+            sm.stop(items=len(ingest_result.parse_raw_ids))
             state.record_acquire(ingest_result.acquire_result)
             logger.info(
                 "Ingest complete",
-                elapsed_s=round(ingest_elapsed, 2),
+                **sm.to_dict(),
                 **ingest_result.acquire_result.counts,
             )
 
