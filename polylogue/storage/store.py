@@ -7,7 +7,6 @@ import hashlib
 from polylogue.lib.json import dumps as json_dumps
 from polylogue.storage.store_constants import (
     ACTION_EVENT_MATERIALIZER_VERSION,
-    MAX_ATTACHMENT_SIZE,
     SESSION_ENRICHMENT_FAMILY,
     SESSION_ENRICHMENT_VERSION,
     SESSION_INFERENCE_FAMILY,
@@ -61,7 +60,6 @@ __all__ = [
     "ContentBlockRecord",
     "ConversationRecord",
     "DaySessionSummaryRecord",
-    "MAX_ATTACHMENT_SIZE",
     "MessageRecord",
     "PublicationRecord",
     "RawConversationRecord",

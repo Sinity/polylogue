@@ -10,7 +10,6 @@ from polylogue.lib.branch_type import BranchType
 from polylogue.lib.hashing import hash_text
 from polylogue.lib.roles import Role
 from polylogue.lib.security import sanitize_path as _sanitize_path_helper
-from polylogue.storage.store_constants import MAX_ATTACHMENT_SIZE
 from polylogue.types import (
     AttachmentId,
     ContentBlockType,
@@ -149,8 +148,6 @@ class AttachmentRecord(BaseModel):
             return v
         if v < 0:
             raise ValueError("size_bytes cannot be negative")
-        if v > MAX_ATTACHMENT_SIZE:
-            raise ValueError(f"size_bytes exceeds maximum ({MAX_ATTACHMENT_SIZE} bytes / 1TB)")
         return v
 
 
