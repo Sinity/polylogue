@@ -126,34 +126,16 @@ class AcquisitionService:
         import gc as _gc
 
         result = AcquireResult()
-        # Flush every 50 records to prevent memory spikes from raw_content
-        # bytes accumulating in the SQLite WAL. With ~627 KB avg per record,
-        # 50 records ≈ 31 MB in WAL vs 500 records ≈ 313 MB.
         flush_interval = 50
         items_since_flush = 0
 
-        import resource as _resource
-        _last_rss = [0]
-
         async def _store(record: RawConversationRecord) -> None:
             nonlocal items_since_flush
-            rss_mb = _resource.getrusage(_resource.RUSAGE_SELF).ru_maxrss // 1024
-            record_mb = len(record.raw_content) / (1024 * 1024)
-            if rss_mb > _last_rss[0] + 200 or record_mb > 50:
-                logger.info(
-                    "rss",
-                    rss_mb=rss_mb,
-                    record_mb=round(record_mb, 1),
-                    acquired=result.acquired,
-                    path=record.source_path.split("/")[-1][:50] if record.source_path else "?",
-                )
-                _last_rss[0] = rss_mb
             await self._persist_record(record, result=result)
             items_since_flush += 1
             if items_since_flush >= flush_interval:
                 await self.backend.bulk_flush()
                 items_since_flush = 0
-                _gc.collect()
 
         async with self.backend.bulk_connection():
             visit_result = await self.visit_sources(

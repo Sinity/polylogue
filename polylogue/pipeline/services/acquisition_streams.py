@@ -114,7 +114,7 @@ async def iter_raw_record_stream(
         )
 
     async for raw_data in raw_stream:
-        if not raw_data.raw_bytes:
+        if not raw_data.raw_bytes and not raw_data.blob_hash:
             continue
         try:
             record = make_raw_record(raw_data, source.name)

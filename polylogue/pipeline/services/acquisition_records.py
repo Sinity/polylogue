@@ -25,8 +25,18 @@ def make_raw_record(
     raw_data: RawConversationData,
     source_name: str,
 ) -> RawConversationRecord:
-    """Prepare a raw conversation record from scanned payload bytes."""
-    raw_id = hashlib.sha256(raw_data.raw_bytes).hexdigest()
+    """Prepare a raw conversation record from acquisition data.
+
+    When ``blob_hash`` is set on the data (content already in blob store),
+    uses it as raw_id directly. Otherwise falls back to hashing raw_bytes.
+    """
+    if raw_data.blob_hash is not None:
+        raw_id = raw_data.blob_hash
+        blob_size = raw_data.blob_size or 0
+    else:
+        raw_id = hashlib.sha256(raw_data.raw_bytes).hexdigest()
+        blob_size = len(raw_data.raw_bytes)
+
     acquired_at = datetime.now(timezone.utc).isoformat()
     provider_name = canonical_acquisition_provider(
         str(raw_data.provider_hint) if raw_data.provider_hint is not None else None,
@@ -39,7 +49,7 @@ def make_raw_record(
         source_name=source_name,
         source_path=raw_data.source_path,
         source_index=raw_data.source_index,
-        raw_content=raw_data.raw_bytes,
+        blob_size=blob_size,
         acquired_at=acquired_at,
         file_mtime=raw_data.file_mtime,
     )

@@ -10,7 +10,7 @@ RAW_ARCHIVE_DDL = """
             source_name TEXT,
             source_path TEXT NOT NULL,
             source_index INTEGER,
-            raw_content BLOB NOT NULL,
+            blob_size INTEGER NOT NULL,
             acquired_at TEXT NOT NULL,
             file_mtime TEXT,
             parsed_at TEXT,
