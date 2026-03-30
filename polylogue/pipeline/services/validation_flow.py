@@ -171,15 +171,21 @@ async def evaluate_raw_records(
     t_batch = _time.perf_counter()
     loop = asyncio.get_running_loop()
     def _run_batch():
-        with ProcessPoolExecutor(max_workers=worker_count) as executor:
-            return list(
-                executor.map(
-                    _validate_record_sync,
-                    raw_records,
-                    [mode] * len(raw_records),
-                    chunksize=max(1, len(raw_records) // worker_count),
+        try:
+            with ProcessPoolExecutor(max_workers=worker_count) as executor:
+                return list(
+                    executor.map(
+                        _validate_record_sync,
+                        raw_records,
+                        [mode] * len(raw_records),
+                        chunksize=max(1, len(raw_records) // worker_count),
+                    )
                 )
-            )
+        except (TypeError, _pickle.PicklingError):
+            # Fallback for unpicklable records (e.g. MagicMock in tests)
+            return [_validate_record_sync(r, mode) for r in raw_records]
+
+    import pickle as _pickle
 
     outcomes: list[_ValidationOutcome] = await asyncio.to_thread(_run_batch)
     batch_elapsed = _time.perf_counter() - t_batch
