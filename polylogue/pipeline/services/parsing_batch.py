@@ -49,13 +49,13 @@ async def process_raw_batch(
     import os as _os
     from concurrent.futures import ProcessPoolExecutor
 
-    from polylogue.pipeline.services.parsing_parallel import parse_record_sync
+    from polylogue.pipeline.services.parsing_parallel import ingest_record_sync
 
     raw_records = await service.repository.get_raw_conversations_batch(batch_ids)
 
-    # Phase 1: Parse all records in parallel subprocesses.
-    # JSON decode + provider parse are CPU-bound and GIL-limited in threads.
-    # ProcessPoolExecutor bypasses the GIL for true parallelism.
+    # Phase 1: Decode + validate + parse in parallel subprocesses.
+    # Combines what were separate validation and parse stages — the blob
+    # is decoded ONCE, then validated and parsed in the same process.
     work_items: list[tuple[ParsedConversation, str, str]] = []
     failed_raw_ids: dict[str, str] = {}
     payload_providers: dict[str, str | None] = {}
@@ -63,21 +63,33 @@ async def process_raw_batch(
 
     t_parse_batch = time.perf_counter()
     worker_count = min(len(raw_records), _os.cpu_count() or 4, 8)
+    archive_root_str = str(service.archive_root)
 
-    def _run_parse_batch():
+    def _run_ingest_batch():
         with ProcessPoolExecutor(max_workers=worker_count) as executor:
             return list(executor.map(
-                parse_record_sync,
+                ingest_record_sync,
                 raw_records,
+                [archive_root_str] * len(raw_records),
                 chunksize=max(1, len(raw_records) // worker_count),
             ))
 
-    parse_results = await _asyncio.to_thread(_run_parse_batch)
+    parse_results = await _asyncio.to_thread(_run_ingest_batch)
     parse_elapsed = time.perf_counter() - t_parse_batch
 
     total_msgs = 0
     for pr in parse_results:
         payload_providers[pr.raw_id] = pr.payload_provider
+        # Update validation state in DB (inline validation)
+        if pr.validation_status:
+            await service.repository.mark_raw_validated(
+                pr.raw_id,
+                status=pr.validation_status,
+                error=pr.validation_error,
+                provider=pr.payload_provider,
+                mode="advisory",
+                payload_provider=pr.payload_provider,
+            )
         if pr.error:
             logger.error("Failed to parse raw conversation", raw_id=pr.raw_id, error=pr.error)
             result.parse_failures += 1

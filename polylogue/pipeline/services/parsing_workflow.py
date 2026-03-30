@@ -61,12 +61,17 @@ async def ingest_sources(
     ingest_state.record_acquired(acquire_result.raw_ids)
     planning_service = PlanningService(backend=backend, config=service.config)
 
+    # Validation is integrated into the parse stage: the subprocess worker
+    # decodes the blob ONCE, validates, then parses in the same pass.
+    # No separate validation stage needed when parsing runs on the same records.
     validation_result = None
     validation_ids: list[str] = []
-    if skip_validate:
+    if skip_validate or parse_records:
+        # When parsing, validation happens inline — skip the separate stage
         ingest_state.record_validation_candidates([])
         ingest_state.record_validation_result([])
     else:
+        # Validate-only mode (no parsing): run the separate validation stage
         t0 = time.perf_counter()
         validation_ids = list(acquire_result.raw_ids)
         if stage in {"validate", "parse", "all"}:
@@ -98,13 +103,15 @@ async def ingest_sources(
     parse_result = ParseResult()
     if parse_records:
         t0 = time.perf_counter()
-        parse_raw_ids = await planning_service.collect_parse_backlog(
-            source_names=source_names or None,
-            exclude_raw_ids=validation_ids,
+        # Collect ALL raw IDs that need processing (no separate validation filter)
+        parse_raw_ids = list(acquire_result.raw_ids)
+        parse_raw_ids.extend(
+            await planning_service.collect_parse_backlog(
+                source_names=source_names or None,
+                exclude_raw_ids=parse_raw_ids,
+            )
         )
-        if validation_result is not None:
-            parse_raw_ids.extend(validation_result.parseable_raw_ids)
-            parse_raw_ids = list(dict.fromkeys(parse_raw_ids))
+        parse_raw_ids = list(dict.fromkeys(parse_raw_ids))
         current_validation_ids = set(ingest_state.validation_raw_ids)
         persisted_validated_ids = [
             raw_id for raw_id in parse_raw_ids if raw_id not in current_validation_ids
