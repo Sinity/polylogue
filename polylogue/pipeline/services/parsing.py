@@ -70,7 +70,6 @@ class ParsingService:
         progress_callback: ProgressCallback | None = None,
         parse_records: bool = True,
         skip_acquire: bool = False,
-        skip_validate: bool = False,
     ) -> IngestResult:
         return await ingest_sources(
             self,
@@ -80,80 +79,9 @@ class ParsingService:
             progress_callback=progress_callback,
             parse_records=parse_records,
             skip_acquire=skip_acquire,
-            skip_validate=skip_validate,
         )
 
     RAW_BATCH_SIZE = 50
-
-    async def _parse_raw_record(
-        self,
-        raw_record,
-    ):
-        """Parse a single raw record into conversations.
-
-        Thin wrapper over the subprocess worker for test compatibility.
-        Returns list[ParsedConversation] matching the old API.
-        """
-        import re
-
-        from polylogue.lib.raw_payload import build_raw_payload_envelope
-        from polylogue.schemas.runtime_registry import SchemaRegistry
-        from polylogue.sources.dispatch import parse_payload
-        from polylogue.storage.blob_store import get_blob_store
-
-        _SOURCE_HASH_SUFFIX = re.compile(r"-(?:[0-9a-f]{16,64})$", re.IGNORECASE)
-
-        def _fallback_id(source_path, raw_id):
-            if not source_path:
-                return raw_id
-            normalized = source_path.replace("\\", "/")
-            entry_path = normalized.rsplit(":", 1)[-1]
-            stem = Path(entry_path).stem
-            if not stem:
-                return raw_id
-            cleaned = _SOURCE_HASH_SUFFIX.sub("", stem).strip("._- ")
-            return cleaned or stem
-
-        stored_payload_provider = raw_record.payload_provider
-        if not isinstance(stored_payload_provider, str) or not stored_payload_provider.strip():
-            stored_payload_provider = None
-        blob_store = get_blob_store()
-        raw_source = blob_store.blob_path(raw_record.raw_id)
-        envelope = build_raw_payload_envelope(
-            raw_source,
-            source_path=raw_record.source_path,
-            fallback_provider=raw_record.provider_name,
-            payload_provider=stored_payload_provider,
-        )
-        raw_record.payload_provider = envelope.provider
-        if not envelope.artifact.parse_as_conversation:
-            return []
-
-        registry = SchemaRegistry()
-        schema_resolution = registry.resolve_payload(
-            envelope.provider,
-            envelope.payload,
-            source_path=raw_record.source_path,
-        )
-        conversations = parse_payload(
-            envelope.provider,
-            envelope.payload,
-            _fallback_id(raw_record.source_path, raw_record.raw_id),
-            schema_resolution=schema_resolution,
-        )
-
-        # Apply timestamp defaults
-        fallback_timestamp = raw_record.file_mtime
-        enriched = []
-        for convo in conversations:
-            updates: dict[str, object] = {}
-            if convo.created_at is None and fallback_timestamp:
-                updates["created_at"] = fallback_timestamp
-            effective_created = updates.get("created_at", convo.created_at)
-            if convo.updated_at is None and isinstance(effective_created, str) and effective_created:
-                updates["updated_at"] = effective_created
-            enriched.append(convo.model_copy(update=updates) if updates else convo)
-        return enriched
 
     async def parse_from_raw(
         self,

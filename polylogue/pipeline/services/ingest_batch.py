@@ -446,28 +446,53 @@ async def process_ingest_batch(
             changed=len(changed_conversation_ids),
         )
 
-    # Phase 3: Update raw record states via async backend
+    # Phase 3: Update raw record states + persist validation status
+    # Build a map of validation results from the ingest worker output
+    validation_statuses: dict[str, IngestRecordResult] = {ir.raw_id: ir for ir in ingest_results}
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    validation_mode_str = validation_mode
+
     for rid in succeeded_raw_ids:
         if rid not in failed_raw_ids:
+            ir = validation_statuses.get(rid)
             await service.repository.update_raw_state(
                 rid,
                 state=RawConversationStateUpdate(
-                    parsed_at=datetime.now(timezone.utc).isoformat(),
+                    parsed_at=now_iso,
                     parse_error=None,
                     payload_provider=payload_providers.get(rid),
                 ),
             )
+            if ir:
+                await service.repository.mark_raw_validated(
+                    rid,
+                    status=ir.validation_status,
+                    error=ir.validation_error,
+                    payload_provider=ir.payload_provider,
+                    mode=validation_mode_str,
+                )
     for rid in skipped_raw_ids:
         if rid not in failed_raw_ids and rid not in succeeded_raw_ids:
+            ir = validation_statuses.get(rid)
             await service.repository.update_raw_state(
                 rid,
                 state=RawConversationStateUpdate(
-                    parsed_at=datetime.now(timezone.utc).isoformat(),
+                    parsed_at=now_iso,
                     parse_error=None,
                     payload_provider=payload_providers.get(rid),
                 ),
             )
+            if ir:
+                await service.repository.mark_raw_validated(
+                    rid,
+                    status=ir.validation_status,
+                    error=ir.validation_error,
+                    payload_provider=ir.payload_provider,
+                    mode=validation_mode_str,
+                )
     for rid, error in failed_raw_ids.items():
+        ir = validation_statuses.get(rid)
         await service.repository.update_raw_state(
             rid,
             state=RawConversationStateUpdate(
@@ -475,6 +500,14 @@ async def process_ingest_batch(
                 payload_provider=payload_providers.get(rid),
             ),
         )
+        if ir:
+            await service.repository.mark_raw_validated(
+                rid,
+                status=ir.validation_status,
+                error=ir.validation_error or error,
+                payload_provider=ir.payload_provider,
+                mode=validation_mode_str,
+            )
 
     # Store changed_conversation_ids for deferred session refresh
     result._changed_conversation_ids.extend(changed_conversation_ids)

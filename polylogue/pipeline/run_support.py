@@ -12,14 +12,13 @@ T = TypeVar("T")
 
 RUN_STAGE_CHOICES: tuple[str, ...] = (
     "acquire",
-    "validate",
     "parse",
     "render",
     "index",
     "generate-schemas",
     "all",
 )
-INGEST_STAGES = frozenset({"validate", "parse", "all"})
+INGEST_STAGES = frozenset({"parse", "all"})
 PARSE_STAGES = frozenset({"parse", "all"})
 RENDER_STAGES = frozenset({"render", "all"})
 

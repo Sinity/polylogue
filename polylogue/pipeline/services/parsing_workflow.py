@@ -1,7 +1,9 @@
 """Ingest orchestration: acquire → unified ingest (validate + parse + write).
 
-Replaces the old acquire → validate → parse three-stage flow. Validation
-is now inline in the subprocess worker, eliminating double blob decode.
+Validation is unconditionally part of ingest — done inline in subprocess
+workers. No separate validation stage. Records already validated are still
+re-validated (cheap — schema check is <1ms per record, and the blob is
+already decoded for parsing anyway).
 """
 
 from __future__ import annotations
@@ -29,7 +31,6 @@ async def ingest_sources(
     progress_callback: ProgressCallback | None = None,
     parse_records: bool = True,
     skip_acquire: bool = False,
-    skip_validate: bool = False,
 ) -> IngestResult:
     """Canonical ingestion orchestration.
 
@@ -65,50 +66,15 @@ async def ingest_sources(
         **acquire_result.counts,
     )
 
-    # Track state for the IngestResult interface
+    # Track state for the IngestResult interface.
+    # Validation is inline — no separate validation phase.
     ingest_state = IngestState(
         source_names=tuple(source_names),
         parse_requested=parse_records,
     )
     ingest_state.record_acquired(acquire_result.raw_ids)
-
-    planning_service = PlanningService(backend=backend, config=service.config)
-
-    # Standalone validation stage (--stage=validate): run validation without parsing.
-    # For the unified ingest flow (--stage=all/parse), validation is inline in workers.
-    validation_result = None
-    if not skip_validate and not parse_records:
-        from polylogue.pipeline.services.validation import ValidationService
-
-        t0 = time.perf_counter()
-        validation_ids = list(acquire_result.raw_ids)
-        if stage in {"validate", "all"}:
-            validation_ids.extend(
-                await planning_service.collect_validation_backlog(
-                    source_names=source_names or None,
-                    exclude_raw_ids=validation_ids,
-                )
-            )
-        ingest_state.record_validation_candidates(validation_ids)
-        if validation_ids:
-            validation_result = await ValidationService(backend=backend).validate_raw_ids(
-                raw_ids=validation_ids,
-                progress_callback=progress_callback,
-            )
-        ingest_state.record_validation_result(
-            validation_result.parseable_raw_ids if validation_result else [],
-        )
-        timings["validate"] = time.perf_counter() - t0
-        logger.info(
-            "validate",
-            elapsed_s=round(timings["validate"], 2),
-            candidates=len(validation_ids),
-            parseable=len(validation_result.parseable_raw_ids) if validation_result else 0,
-        )
-    else:
-        # Unified ingest flow: no separate validation stage
-        ingest_state.record_validation_candidates([])
-        ingest_state.record_validation_result([])
+    ingest_state.record_validation_candidates([])
+    ingest_state.record_validation_result([])
 
     # Stage 2: Unified ingest (validate + parse + transform + write)
     parse_raw_ids: list[str] = []
@@ -119,13 +85,13 @@ async def ingest_sources(
 
         # Collect all raw IDs that need ingesting: newly acquired + backlog
         parse_raw_ids = list(acquire_result.raw_ids)
-        if stage in {"parse", "all"}:
+        if stage in {"validate", "parse", "all"}:
             backlog = await planning_service.collect_parse_backlog(
                 source_names=source_names or None,
                 exclude_raw_ids=parse_raw_ids,
             )
             parse_raw_ids.extend(backlog)
-            # Also collect validation backlog (records that weren't validated yet)
+            # Also collect validation backlog (records not yet validated/parsed)
             validation_backlog = await planning_service.collect_validation_backlog(
                 source_names=source_names or None,
                 exclude_raw_ids=parse_raw_ids,
@@ -133,7 +99,7 @@ async def ingest_sources(
             parse_raw_ids.extend(validation_backlog)
         parse_raw_ids = list(dict.fromkeys(parse_raw_ids))
 
-        # Mark all as parse candidates (satisfy IngestState invariants)
+        # Satisfy IngestState invariants
         ingest_state.record_parse_candidates(
             parse_raw_ids,
             persisted_validated_raw_ids=parse_raw_ids,
@@ -164,7 +130,7 @@ async def ingest_sources(
 
     return IngestResult(
         acquire_result=acquire_result,
-        validation_result=validation_result,
+        validation_result=None,
         parse_result=parse_result,
         parse_raw_ids=parse_raw_ids,
         timings=timings,
@@ -180,7 +146,7 @@ async def parse_from_raw(
 ) -> ParseResult:
     """Parse raw_conversations from DB into conversations.
 
-    Uses the new unified ingest batch processor (decode + validate + parse +
+    Uses the unified ingest batch processor (decode + validate + parse +
     transform + write in one pass). Session product refresh is deferred to
     a single bulk pass after all batches complete.
     """
@@ -259,7 +225,7 @@ async def parse_from_raw(
         total = total_raw
 
     # Deferred session product refresh — once after ALL batches
-    changed_cids = getattr(result, '_changed_conversation_ids', [])
+    changed_cids = result._changed_conversation_ids
     if changed_cids:
         t_refresh = time.perf_counter()
         if progress_callback is not None:

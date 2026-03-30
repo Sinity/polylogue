@@ -14,7 +14,7 @@ from polylogue.config import Config, Source
 from polylogue.pipeline.services.acquisition import AcquireResult, AcquisitionService
 from polylogue.pipeline.services.parsing import ParseResult, ParsingService
 from polylogue.pipeline.services.planning import PlanningService
-from polylogue.pipeline.services.validation import ValidationService
+from polylogue.pipeline.services.validation import ValidationService  # used by TestPlanningService
 from polylogue.sources.parsers.base import RawConversationData
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.repository import ConversationRepository
