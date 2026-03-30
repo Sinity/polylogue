@@ -16,7 +16,7 @@ import orjson
 
 from polylogue.logging import get_logger
 from polylogue.pipeline.ids import conversation_id as make_conversation_id
-from polylogue.pipeline.prepare import PrepareCache, prepare_records
+from polylogue.pipeline.prepare import PrepareCache
 from polylogue.storage.state_views import RawConversationStateUpdate
 
 if TYPE_CHECKING:
@@ -131,81 +131,84 @@ async def process_raw_batch(
             )
         return
 
-    candidate_cids: set[str] = set()
-    for convo, _, _ in work_items:
-        cid = make_conversation_id(convo.provider_name, convo.provider_conversation_id)
-        candidate_cids.add(cid)
-        if convo.parent_conversation_provider_id:
-            parent_cid = make_conversation_id(
-                convo.provider_name,
-                convo.parent_conversation_provider_id,
-            )
-            candidate_cids.add(parent_cid)
+    # Phase 2: Transform + write using SYNC SQLite (no aiosqlite overhead).
+    # Each async await via aiosqlite costs ~1.2ms thread-crossing. With ~10
+    # calls per conversation × thousands of conversations, this adds up to
+    # minutes. Direct sqlite3 calls cost ~0.01ms each.
+    import sqlite3 as _sqlite3
 
-    cache = await PrepareCache.load(backend, candidate_cids)
+    from polylogue.pipeline.prepare_transform import transform_to_records
+    from polylogue.storage.fts_lifecycle import suspend_fts_triggers_sync
+    from polylogue.storage.repository_write_batch_sync import save_conversation_sync
 
-    # Phase 2: Write all conversations under bulk_connection()
-    # Sequential writes: SQLite is single-writer, concurrent workers
-    # just add lock contention and async thread-crossing overhead.
+    # Open a sync connection for direct writes
+    db_path = backend._db_path
+    sync_conn = _sqlite3.connect(db_path, timeout=30)
+    sync_conn.row_factory = _sqlite3.Row
+    sync_conn.execute("PRAGMA journal_mode=WAL")
+    sync_conn.execute("PRAGMA synchronous=NORMAL")
+    sync_conn.execute("PRAGMA cache_size=-524288")
+    sync_conn.execute("PRAGMA mmap_size=1073741824")
+    sync_conn.execute("PRAGMA temp_store=MEMORY")
+    sync_conn.execute("PRAGMA wal_autocheckpoint=10000")
+
+    # Suspend FTS triggers on the sync connection
+    suspend_fts_triggers_sync(sync_conn)
+    sync_conn.execute("BEGIN IMMEDIATE")
+
     succeeded_raw_ids: set[str] = set()
     changed_conversation_ids: list[str] = []
+    flush_count = 0
 
-    from polylogue.storage.blob_store import get_blob_store as _get_blob_store
+    for convo_item, source_name_item, raw_id in work_items:
+        t_item = time.perf_counter()
+        msg_count = len(convo_item.messages)
+        try:
+            transform = transform_to_records(
+                convo_item, source_name_item, archive_root=service.archive_root,
+            )
+            transform.bundle.conversation.raw_id = raw_id
 
-    _blob_store = _get_blob_store()
-
-    # Suspend ALL FTS triggers for the entire batch (save + refresh).
-    # Must happen AFTER any connection open that runs ensure_schema /
-    # apply_current_schema_extensions, which recreates triggers via
-    # CREATE TRIGGER IF NOT EXISTS.
-    from polylogue.storage.fts_lifecycle import suspend_fts_triggers_async
-
-    async with backend.connection() as fts_conn:
-        await suspend_fts_triggers_async(fts_conn)
-        await fts_conn.commit()
-
-    async with backend.bulk_connection():
-        for convo_item, source_name_item, raw_id in work_items:
-            t_item = time.perf_counter()
-            blob_mb = round(_blob_store.blob_path(raw_id).stat().st_size / (1024 * 1024), 1) if _blob_store.exists(raw_id) else 0
-            msg_count = len(convo_item.messages)
-            try:
-                persisted = await prepare_records(
-                    convo_item,
-                    source_name_item,
-                    archive_root=service.archive_root,
-                    backend=backend,
-                    repository=service.repository,
-                    raw_id=raw_id,
-                    cache=cache,
+            counts = save_conversation_sync(
+                sync_conn,
+                transform.bundle.conversation,
+                transform.bundle.messages,
+                transform.bundle.attachments,
+                transform.bundle.content_blocks,
+            )
+            content_changed = counts["conversations"] > 0
+            await result.merge_result(
+                str(transform.bundle.conversation.conversation_id),
+                counts,
+                content_changed,
+            )
+            succeeded_raw_ids.add(raw_id)
+            if content_changed:
+                changed_conversation_ids.append(str(transform.bundle.conversation.conversation_id))
+        except Exception as exc:
+            logger.error("Error processing conversation: %s", exc)
+            result.parse_failures += 1
+            failed_raw_ids[raw_id] = str(exc)[:500]
+        finally:
+            flush_count += 1
+            if flush_count >= 100:
+                sync_conn.commit()
+                sync_conn.execute("BEGIN IMMEDIATE")
+                flush_count = 0
+            item_elapsed = time.perf_counter() - t_item
+            if item_elapsed >= 1.0:
+                logger.info(
+                    "slow_item",
+                    raw_id=raw_id[:16],
+                    elapsed_s=round(item_elapsed, 2),
+                    msgs=msg_count,
+                    provider=str(convo_item.provider_name),
                 )
-                await result.merge_result(
-                    persisted.conversation_id,
-                    persisted.counts,
-                    persisted.content_changed,
-                )
-                succeeded_raw_ids.add(raw_id)
-                if persisted.content_changed:
-                    changed_conversation_ids.append(persisted.conversation_id)
-            except Exception as exc:
-                logger.error("Error processing conversation: %s", exc)
-                result.parse_failures += 1
-                failed_raw_ids[raw_id] = str(exc)[:500]
-            finally:
-                item_elapsed = time.perf_counter() - t_item
-                if item_elapsed >= 1.0:
-                    logger.info(
-                        "slow_item",
-                        raw_id=raw_id[:16],
-                        elapsed_s=round(item_elapsed, 2),
-                        blob_mb=blob_mb,
-                        msgs=msg_count,
-                        provider=str(convo_item.provider_name),
-                        source=source_name_item.split("/")[-1][:40] if source_name_item else "?",
-                    )
-                if progress_callback:
-                    progress_callback(1)
+            if progress_callback:
+                progress_callback(1)
 
+    sync_conn.commit()
+    sync_conn.close()
     del work_items
 
     # Phase 3: Refresh session products for changed conversations (post-batch)
