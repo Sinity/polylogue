@@ -45,49 +45,63 @@ async def process_raw_batch(
        single transaction — eliminates per-connection overhead)
     4. Refresh session products for changed conversations (batched)
     """
+    import asyncio as _asyncio
+    import os as _os
+    from concurrent.futures import ProcessPoolExecutor
+
+    from polylogue.pipeline.services.parsing_parallel import parse_record_sync
+
     raw_records = await service.repository.get_raw_conversations_batch(batch_ids)
 
-    # Phase 1: Parse all records (fast, CPU-bound)
+    # Phase 1: Parse all records in parallel subprocesses.
+    # JSON decode + provider parse are CPU-bound and GIL-limited in threads.
+    # ProcessPoolExecutor bypasses the GIL for true parallelism.
     work_items: list[tuple[ParsedConversation, str, str]] = []
     failed_raw_ids: dict[str, str] = {}
     payload_providers: dict[str, str | None] = {}
     skipped_raw_ids: set[str] = set()
 
-    for raw_record in raw_records:
-        t_parse = time.perf_counter()
-        try:
-            parsed_convos = await service._parse_raw_record(raw_record)
-            parse_elapsed = time.perf_counter() - t_parse
-            payload_providers[raw_record.raw_id] = raw_record.payload_provider
-            if not parsed_convos:
-                skipped_raw_ids.add(raw_record.raw_id)
-                continue
-            source_name = raw_record.source_name or raw_record.source_path
-            total_msgs = sum(len(c.messages) for c in parsed_convos)
-            if parse_elapsed > 1.0:
-                logger.info(
-                    "slow_decode",
-                    raw_id=raw_record.raw_id[:16],
-                    elapsed_s=round(parse_elapsed, 2),
-                    blob_mb=round(raw_record.blob_size / (1024 * 1024), 1),
-                    conversations=len(parsed_convos),
-                    messages=total_msgs,
-                    provider=raw_record.provider_name,
-                )
-            for convo in parsed_convos:
-                work_items.append((convo, source_name, raw_record.raw_id))
-        except (json.JSONDecodeError, orjson.JSONDecodeError, ValueError, TypeError) as exc:
-            logger.error(
-                "Failed to parse raw conversation",
-                raw_id=raw_record.raw_id,
-                provider=raw_record.provider_name,
-                error=str(exc),
-            )
-            result.parse_failures += 1
-            failed_raw_ids[raw_record.raw_id] = str(exc)[:500]
-            payload_providers[raw_record.raw_id] = raw_record.payload_provider
+    t_parse_batch = time.perf_counter()
+    worker_count = min(len(raw_records), _os.cpu_count() or 4, 8)
 
-    del raw_records
+    def _run_parse_batch():
+        with ProcessPoolExecutor(max_workers=worker_count) as executor:
+            return list(executor.map(
+                parse_record_sync,
+                raw_records,
+                chunksize=max(1, len(raw_records) // worker_count),
+            ))
+
+    parse_results = await _asyncio.to_thread(_run_parse_batch)
+    parse_elapsed = time.perf_counter() - t_parse_batch
+
+    total_msgs = 0
+    for pr in parse_results:
+        payload_providers[pr.raw_id] = pr.payload_provider
+        if pr.error:
+            logger.error("Failed to parse raw conversation", raw_id=pr.raw_id, error=pr.error)
+            result.parse_failures += 1
+            failed_raw_ids[pr.raw_id] = pr.error[:500]
+        elif not pr.conversations:
+            skipped_raw_ids.add(pr.raw_id)
+        else:
+            for convo in pr.conversations:
+                total_msgs += len(convo.messages)
+                work_items.append((convo, pr.source_name or "", pr.raw_id))
+
+    if parse_elapsed > 2.0:
+        total_blob_mb = sum(r.blob_size for r in raw_records) / (1024 * 1024)
+        logger.info(
+            "parse_batch",
+            elapsed_s=round(parse_elapsed, 2),
+            records=len(raw_records),
+            blob_mb=round(total_blob_mb, 1),
+            conversations=len(work_items),
+            messages=total_msgs,
+            workers=worker_count,
+        )
+
+    del raw_records, parse_results
 
     # Drive attachment download is deferred — it requires network access
     # and can block for minutes on slow/throttled connections. Attachments
