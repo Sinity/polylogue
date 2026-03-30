@@ -286,11 +286,12 @@ class TestCorruptionAtBoundaries:
 
 
 class TestParsingServiceCorruption:
-    """ParsingService._parse_raw_record handles partial corruption."""
+    """ingest_record handles partial corruption."""
 
-    async def test_malformed_jsonl_line_in_codex_raw(self, tmp_path):
+    def test_malformed_jsonl_line_in_codex_raw(self, tmp_path):
         """Codex JSONL with 1 bad line: parsing succeeds with fewer messages."""
-        svc = _make_parsing_service(tmp_path)
+        from polylogue.pipeline.services.ingest_worker import ingest_record
+
         lines = generate_large_jsonl(50, provider="codex")
         corrupted = corrupt_line_malformed_json(lines, 25)
         content = _jsonl_bytes(corrupted)
@@ -298,15 +299,15 @@ class TestParsingServiceCorruption:
         record = _make_raw_record(
             "codex-corrupt-1", "codex", content, "/exports/codex.jsonl"
         )
-        result = await svc._parse_raw_record(record)
-        assert isinstance(result, list)
-        # Should get at least 1 conversation from the valid lines
-        if result:
-            assert result[0].provider_name in ("codex", "codex-cli")
+        result = ingest_record(record, str(tmp_path / "archive"), "off")
+        assert result.error is None
+        if result.conversations:
+            assert result.conversations[0].provider_name in ("codex", "codex-cli")
 
-    async def test_truncated_jsonl_line_in_codex_raw(self, tmp_path):
+    def test_truncated_jsonl_line_in_codex_raw(self, tmp_path):
         """Codex JSONL with 1 truncated line: parsing succeeds."""
-        svc = _make_parsing_service(tmp_path)
+        from polylogue.pipeline.services.ingest_worker import ingest_record
+
         lines = generate_large_jsonl(50, provider="codex")
         corrupted = corrupt_line_truncated(lines, 10)
         content = _jsonl_bytes(corrupted)
@@ -314,12 +315,13 @@ class TestParsingServiceCorruption:
         record = _make_raw_record(
             "codex-truncated-1", "codex", content, "/exports/codex.jsonl"
         )
-        result = await svc._parse_raw_record(record)
-        assert isinstance(result, list)
+        result = ingest_record(record, str(tmp_path / "archive"), "off")
+        assert result.error is None
 
-    async def test_wrong_envelope_in_codex_raw(self, tmp_path):
+    def test_wrong_envelope_in_codex_raw(self, tmp_path):
         """Codex JSONL with 1 wrong-envelope line: parsing still works."""
-        svc = _make_parsing_service(tmp_path)
+        from polylogue.pipeline.services.ingest_worker import ingest_record
+
         lines = generate_large_jsonl(50, provider="codex")
         corrupted = corrupt_line_wrong_envelope(lines, 30)
         content = _jsonl_bytes(corrupted)
@@ -327,8 +329,8 @@ class TestParsingServiceCorruption:
         record = _make_raw_record(
             "codex-wrong-env-1", "codex", content, "/exports/codex.jsonl"
         )
-        result = await svc._parse_raw_record(record)
-        assert isinstance(result, list)
+        result = ingest_record(record, str(tmp_path / "archive"), "off")
+        assert result.error is None
 
 
 # ===========================================================================
@@ -668,9 +670,10 @@ class TestTimestampPatternsInJsonl:
 class TestRerunIdempotency:
     """Running the same batch twice produces identical records, no duplicates."""
 
-    async def test_same_batch_twice_produces_same_records(self, tmp_path):
+    def test_same_batch_twice_produces_same_records(self, tmp_path):
         """Parsing the same raw record twice yields identical results."""
-        svc = _make_parsing_service(tmp_path)
+        from polylogue.pipeline.services.ingest_worker import ingest_record
+
         lines = generate_large_jsonl(20, provider="codex")
         content = _jsonl_bytes(lines)
 
@@ -678,18 +681,18 @@ class TestRerunIdempotency:
             "idempotency-test", "codex", content, "/exports/codex.jsonl"
         )
 
-        result_1 = await svc._parse_raw_record(record)
-        result_2 = await svc._parse_raw_record(record)
+        result_1 = ingest_record(record, str(tmp_path / "archive"), "off")
+        result_2 = ingest_record(record, str(tmp_path / "archive"), "off")
 
-        assert len(result_1) == len(result_2)
-        for conv1, conv2 in zip(result_1, result_2, strict=True):
-            assert conv1.provider_conversation_id == conv2.provider_conversation_id
+        assert len(result_1.conversations) == len(result_2.conversations)
+        for conv1, conv2 in zip(result_1.conversations, result_2.conversations, strict=True):
+            assert conv1.conversation_id == conv2.conversation_id
             assert conv1.provider_name == conv2.provider_name
-            assert len(conv1.messages) == len(conv2.messages)
+            assert len(conv1.message_tuples) == len(conv2.message_tuples)
 
-    async def test_reparse_with_corruption_then_clean(self, tmp_path):
+    def test_reparse_with_corruption_then_clean(self, tmp_path):
         """First parse with corruption, second with clean data — both succeed."""
-        svc = _make_parsing_service(tmp_path)
+        from polylogue.pipeline.services.ingest_worker import ingest_record
 
         # First: corrupted
         lines_corrupt = generate_large_jsonl(20, provider="codex")
@@ -699,7 +702,7 @@ class TestRerunIdempotency:
         record_corrupt = _make_raw_record(
             "idempotency-corrupt", "codex", content_corrupt, "/exports/codex.jsonl"
         )
-        result_corrupt = await svc._parse_raw_record(record_corrupt)
+        result_corrupt = ingest_record(record_corrupt, str(tmp_path / "archive"), "off")
 
         # Second: clean (same data without corruption)
         lines_clean = generate_large_jsonl(20, provider="codex")
@@ -708,12 +711,12 @@ class TestRerunIdempotency:
         record_clean = _make_raw_record(
             "idempotency-clean", "codex", content_clean, "/exports/codex.jsonl"
         )
-        result_clean = await svc._parse_raw_record(record_clean)
+        result_clean = ingest_record(record_clean, str(tmp_path / "archive"), "off")
 
-        assert isinstance(result_corrupt, list)
-        assert isinstance(result_clean, list)
+        assert result_corrupt.error is None
+        assert result_clean.error is None
         # Clean parse should have all conversations
-        assert len(result_clean) >= len(result_corrupt)
+        assert len(result_clean.conversations) >= len(result_corrupt.conversations)
 
     def test_iter_json_stream_idempotent(self):
         """_iter_json_stream produces identical output on repeated calls."""

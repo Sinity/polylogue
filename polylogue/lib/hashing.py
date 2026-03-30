@@ -40,7 +40,12 @@ def hash_payload(payload: object) -> str:
     Callers should normalize strings before including in payload if
     normalization-invariant hashing is required.
     """
-    serialized = orjson.dumps(payload, option=orjson.OPT_SORT_KEYS)
+    try:
+        serialized = orjson.dumps(payload, option=orjson.OPT_SORT_KEYS)
+    except TypeError:
+        import json
+
+        serialized = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(serialized).hexdigest()
 
 
