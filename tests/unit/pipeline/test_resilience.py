@@ -474,9 +474,9 @@ async def test_parse_raw_record_contract_updates_payload_provider_and_dispatches
         messages=[],
     )
 
-    with patch("polylogue.pipeline.services.parsing.build_raw_payload_envelope", return_value=envelope) as mock_envelope:
-        with patch("polylogue.pipeline.services.parsing._SCHEMA_REGISTRY", schema_registry):
-            with patch("polylogue.pipeline.services.parsing.parse_payload", return_value=[parsed_conversation]) as mock_parse:
+    with patch("polylogue.lib.raw_payload.build_raw_payload_envelope", return_value=envelope) as mock_envelope:
+        with patch("polylogue.schemas.runtime_registry.SchemaRegistry", return_value=schema_registry):
+            with patch("polylogue.sources.dispatch.parse_payload", return_value=[parsed_conversation]) as mock_parse:
                 result = await service._parse_raw_record(raw_record)
 
     # Check that build_raw_payload_envelope was called with correct paths
