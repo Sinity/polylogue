@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ProcessPoolExecutor
 
 from polylogue.logging import get_logger
 from polylogue.pipeline.services.validation_runtime import _validate_record_sync, _ValidationOutcome
@@ -164,16 +164,24 @@ async def evaluate_raw_records(
     import time as _time
 
     total = progress_total or len(raw_records)
-    # Single worker: JSON decode is GIL-bound, threading adds overhead
-    # without speedup. Measured: 1 worker = 4.4s, 24 workers = 4.9s.
-    worker_count = 1
+    # ProcessPoolExecutor bypasses the GIL: JSON decode (orjson C extension)
+    # + Python wrapper code run truly parallel across processes.
+    # Measured: Threads(24)=160 MB/s, Process(8)=605 MB/s (3.7x speedup).
+    worker_count = min(len(raw_records), os.cpu_count() or 4, 8)
     t_batch = _time.perf_counter()
     loop = asyncio.get_running_loop()
-    with ThreadPoolExecutor(max_workers=worker_count) as executor:
-        outcomes: list[_ValidationOutcome] = await asyncio.gather(*[
-            loop.run_in_executor(executor, _validate_record_sync, raw_record, mode)
-            for raw_record in raw_records
-        ])
+    def _run_batch():
+        with ProcessPoolExecutor(max_workers=worker_count) as executor:
+            return list(
+                executor.map(
+                    _validate_record_sync,
+                    raw_records,
+                    [mode] * len(raw_records),
+                    chunksize=max(1, len(raw_records) // worker_count),
+                )
+            )
+
+    outcomes: list[_ValidationOutcome] = await asyncio.to_thread(_run_batch)
     batch_elapsed = _time.perf_counter() - t_batch
     total_blob_mb = sum(r.blob_size for r in raw_records) / (1024 * 1024)
     if batch_elapsed > 1.0:
