@@ -8,7 +8,7 @@ from typing import Any
 
 from polylogue.config import Source
 from polylogue.lib.artifact_taxonomy import classify_artifact
-from polylogue.lib.json import dumps as json_dumps
+from polylogue.lib.json import dumps_bytes as json_dumps_bytes
 from polylogue.logging import get_logger
 from polylogue.storage.blob_store import get_blob_store
 from polylogue.types import Provider
@@ -144,7 +144,7 @@ def iter_source_raw_data(
                                 )
                                 if not artifact.parse_as_conversation:
                                     continue
-                                payload_bytes = json_dumps(payload).encode("utf-8")
+                                payload_bytes = json_dumps_bytes(payload)
                                 if did_split:
                                     yield _make_split_entry_raw_data(
                                         blob_store=blob_store,

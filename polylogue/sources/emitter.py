@@ -7,7 +7,7 @@ from io import BytesIO
 from typing import TYPE_CHECKING, Any, BinaryIO
 
 from polylogue.lib.artifact_taxonomy import classify_artifact
-from polylogue.lib.json import dumps as json_dumps
+from polylogue.lib.json import dumps_bytes as json_dumps_bytes
 from polylogue.logging import get_logger
 from polylogue.types import Provider
 
@@ -153,7 +153,7 @@ class _ConversationEmitter:
                 if whole_file_raw is not None:
                     raw_data: RawConversationData | None = whole_file_raw
                 elif self._ctx.capture_raw:
-                    raw_bytes = json_dumps(payload).encode("utf-8")
+                    raw_bytes = json_dumps_bytes(payload)
                     raw_data = self._make_raw(raw_bytes, source_index=source_index, provider_override=provider)
                 else:
                     raw_data = None
