@@ -77,6 +77,30 @@ class _ConversationEmitter:
             return
 
         if is_jsonl:
+            stream_start = self._capture_stream_start(handle) if pre_read_bytes is None else None
+            if stream_start is not None:
+                sniff_payloads = list(_iter_json_stream(handle, stream_name))
+                sniff_provider = detect_provider(sniff_payloads) or self._ctx.provider_hint
+                if sniff_provider in GROUP_PROVIDERS:
+                    grouped_bytes = None
+                    grouped_handle = handle
+                    if self._ctx.capture_raw:
+                        self._restore_stream_start(handle, stream_start)
+                        grouped_bytes = handle.read()
+                        grouped_handle = BytesIO(grouped_bytes)
+                    yield from self._emit_grouped(
+                        grouped_handle,
+                        stream_name,
+                        grouped_bytes,
+                        precomputed_payloads=sniff_payloads,
+                    )
+                    return
+                yield from self._emit_individual_payloads(
+                    sniff_payloads,
+                    stream_name=stream_name,
+                )
+                return
+
             sniff_bytes = pre_read_bytes if pre_read_bytes is not None else handle.read()
             sniff_payloads = list(_iter_json_stream(BytesIO(sniff_bytes), stream_name))
             sniff_provider = detect_provider(sniff_payloads) or self._ctx.provider_hint
@@ -88,8 +112,11 @@ class _ConversationEmitter:
                     precomputed_payloads=sniff_payloads,
                 )
                 return
-            handle = BytesIO(sniff_bytes)
-            pre_read_bytes = sniff_bytes
+            yield from self._emit_individual_payloads(
+                sniff_payloads,
+                stream_name=stream_name,
+            )
+            return
 
         yield from self._emit_individual(handle, stream_name, pre_read_bytes=pre_read_bytes)
 
@@ -149,8 +176,21 @@ class _ConversationEmitter:
         # (for should_group + capture_raw + non-JSONL files)
         whole_file_raw = self._make_raw(pre_read_bytes) if pre_read_bytes is not None else None
 
+        yield from self._emit_individual_payloads(
+            _iter_json_stream(handle, stream_name, unpack_lists=unpack),
+            stream_name=stream_name,
+            whole_file_raw=whole_file_raw,
+        )
+
+    def _emit_individual_payloads(
+        self,
+        payloads: Iterable[Any],
+        *,
+        stream_name: str,
+        whole_file_raw: RawConversationData | None = None,
+    ) -> Iterable[tuple[RawConversationData | None, ParsedConversation]]:
         source_index = 0
-        for payload in _iter_json_stream(handle, stream_name, unpack_lists=unpack):
+        for payload in payloads:
             try:
                 provider = detect_provider(payload) or self._ctx.provider_hint
                 artifact = classify_artifact(
@@ -181,6 +221,22 @@ class _ConversationEmitter:
             except Exception:
                 logger.exception("Error processing payload from %s", stream_name)
                 raise
+
+    def _capture_stream_start(self, handle: BinaryIO) -> int | None:
+        seekable = getattr(handle, "seekable", None)
+        if callable(seekable):
+            try:
+                if not seekable():
+                    return None
+            except OSError:
+                return None
+        try:
+            return int(handle.tell())
+        except (AttributeError, OSError, ValueError):
+            return None
+
+    def _restore_stream_start(self, handle: BinaryIO, stream_start: int) -> None:
+        handle.seek(stream_start)
 
     def _resolve_schema(
         self,
