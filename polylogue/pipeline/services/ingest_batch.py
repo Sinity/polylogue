@@ -14,7 +14,9 @@ import os
 import pickle
 import sqlite3
 import time
+from collections.abc import Iterable
 from concurrent.futures import Future, ProcessPoolExecutor, as_completed
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -35,6 +37,45 @@ if TYPE_CHECKING:
     from polylogue.storage.backends.async_sqlite import SQLiteBackend
 
 logger = get_logger(__name__)
+
+
+@dataclass(slots=True)
+class _RawIngestOutcome:
+    raw_id: str
+    payload_provider: str | None
+    validation_status: str
+    validation_error: str | None
+    error: str | None
+    had_conversations: bool
+
+
+@dataclass(slots=True)
+class _IngestBatchSummary:
+    outcomes: dict[str, _RawIngestOutcome] = field(default_factory=dict)
+    failed_raw_ids: dict[str, str] = field(default_factory=dict)
+    skipped_raw_ids: set[str] = field(default_factory=set)
+    processed_ids: set[str] = field(default_factory=set)
+    changed_conversation_ids: list[str] = field(default_factory=list)
+    counts: dict[str, int] = field(default_factory=lambda: {
+        "conversations": 0,
+        "messages": 0,
+        "attachments": 0,
+        "skipped_conversations": 0,
+        "skipped_messages": 0,
+        "skipped_attachments": 0,
+    })
+    changed_counts: dict[str, int] = field(default_factory=lambda: {
+        "conversations": 0,
+        "messages": 0,
+        "attachments": 0,
+    })
+    parse_failures: int = 0
+    total_msgs: int = 0
+    total_convos: int = 0
+    raw_record_count: int = 0
+    worker_count: int = 0
+    total_blob_mb: float = 0.0
+    elapsed_s: float = 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -283,6 +324,17 @@ def _resolved_conversation_tuple(
     return tuple(updated)
 
 
+def _parent_ready(
+    conn: sqlite3.Connection,
+    cdata: ConversationData,
+    materialized_ids: set[str],
+) -> bool:
+    parent_id = _conversation_parent_id(cdata)
+    if parent_id is None or parent_id == cdata.conversation_id:
+        return True
+    return parent_id in materialized_ids or _conversation_exists(conn, parent_id)
+
+
 def _write_conversation(conn: sqlite3.Connection, cdata: ConversationData) -> tuple[bool, dict[str, int]]:
     """Write one conversation's data to DB via sync sqlite3.
 
@@ -356,6 +408,218 @@ def _write_conversation(conn: sqlite3.Connection, cdata: ConversationData) -> tu
     return True, counts
 
 
+def _record_outcome(summary: _IngestBatchSummary, ir: IngestRecordResult) -> None:
+    summary.outcomes[ir.raw_id] = _RawIngestOutcome(
+        raw_id=ir.raw_id,
+        payload_provider=ir.payload_provider,
+        validation_status=ir.validation_status,
+        validation_error=ir.validation_error,
+        error=ir.error,
+        had_conversations=bool(ir.conversations),
+    )
+
+
+def _record_write_result(
+    summary: _IngestBatchSummary,
+    cdata: ConversationData,
+    *,
+    content_changed: bool,
+    counts: dict[str, int],
+) -> None:
+    summary.total_convos += 1
+    summary.total_msgs += len(cdata.message_tuples)
+
+    ingest_changed = (
+        counts["conversations"]
+        + counts["messages"]
+        + counts["attachments"]
+    ) > 0
+
+    if ingest_changed or content_changed:
+        summary.processed_ids.add(cdata.conversation_id)
+    if content_changed:
+        summary.changed_counts["conversations"] += 1
+        summary.changed_conversation_ids.append(cdata.conversation_id)
+    if counts["messages"]:
+        summary.changed_counts["messages"] += counts["messages"]
+    if counts["attachments"]:
+        summary.changed_counts["attachments"] += counts["attachments"]
+    for key, value in counts.items():
+        if key in summary.counts:
+            summary.counts[key] += value
+
+
+def _write_conversation_entry(
+    conn: sqlite3.Connection,
+    raw_id: str,
+    cdata: ConversationData,
+    *,
+    summary: _IngestBatchSummary,
+) -> bool:
+    try:
+        t_write = time.perf_counter()
+        content_changed, counts = _write_conversation(conn, cdata)
+        write_elapsed = time.perf_counter() - t_write
+        _record_write_result(
+            summary,
+            cdata,
+            content_changed=content_changed,
+            counts=counts,
+        )
+        if write_elapsed >= 1.0:
+            logger.info(
+                "slow_write",
+                cid=cdata.conversation_id[:20],
+                elapsed_s=round(write_elapsed, 2),
+                msgs=len(cdata.message_tuples),
+            )
+        return True
+    except Exception as exc:
+        logger.error("Error writing conversation: %s", exc)
+        summary.parse_failures += 1
+        summary.failed_raw_ids[raw_id] = str(exc)[:500]
+        return False
+
+
+def _drain_ready_conversation_entries(
+    conn: sqlite3.Connection,
+    ready_entries: list[tuple[str, ConversationData]],
+    *,
+    summary: _IngestBatchSummary,
+    materialized_ids: set[str],
+    pending_by_parent: dict[str, list[tuple[str, ConversationData]]],
+) -> None:
+    stack = list(reversed(ready_entries))
+    while stack:
+        raw_id, cdata = stack.pop()
+        if not _parent_ready(conn, cdata, materialized_ids):
+            parent_id = _conversation_parent_id(cdata)
+            if parent_id is not None:
+                pending_by_parent.setdefault(parent_id, []).append((raw_id, cdata))
+            continue
+        if not _write_conversation_entry(conn, raw_id, cdata, summary=summary):
+            continue
+        materialized_ids.add(cdata.conversation_id)
+        children = pending_by_parent.pop(cdata.conversation_id, [])
+        if children:
+            stack.extend(reversed(children))
+
+
+def _flush_pending_conversation_entries(
+    conn: sqlite3.Connection,
+    pending_by_parent: dict[str, list[tuple[str, ConversationData]]],
+    *,
+    summary: _IngestBatchSummary,
+    materialized_ids: set[str],
+) -> None:
+    remaining = [
+        entry
+        for entries in pending_by_parent.values()
+        for entry in entries
+    ]
+    if not remaining:
+        return
+    pending_by_parent.clear()
+    for raw_id, cdata in _topo_sort_conversation_entries(remaining):
+        if _write_conversation_entry(conn, raw_id, cdata, summary=summary):
+            materialized_ids.add(cdata.conversation_id)
+
+
+def _iter_ingest_results_sync(
+    raw_records: list,
+    *,
+    archive_root_str: str,
+    validation_mode: str,
+    worker_count: int,
+) -> Iterable[IngestRecordResult]:
+    try:
+        with ProcessPoolExecutor(max_workers=worker_count) as executor:
+            futures: dict[Future, str] = {}
+            for raw_record in raw_records:
+                future = executor.submit(ingest_record, raw_record, archive_root_str, validation_mode)
+                futures[future] = raw_record.raw_id
+
+            for future in as_completed(futures):
+                try:
+                    yield future.result()
+                except Exception as exc:
+                    raw_id = futures[future]
+                    yield IngestRecordResult(
+                        raw_id=raw_id,
+                        error=f"worker: {exc}",
+                    )
+    except (TypeError, pickle.PicklingError):
+        for raw_record in raw_records:
+            yield ingest_record(raw_record, archive_root_str, validation_mode)
+
+
+def _process_ingest_batch_sync(
+    raw_records: list,
+    *,
+    db_path: Path,
+    archive_root_str: str,
+    validation_mode: str,
+) -> _IngestBatchSummary:
+    from polylogue.storage.fts_lifecycle import suspend_fts_triggers_sync
+
+    summary = _IngestBatchSummary()
+    summary.raw_record_count = len(raw_records)
+    summary.worker_count = min(len(raw_records), os.cpu_count() or 4, 8)
+    summary.total_blob_mb = sum(r.blob_size for r in raw_records) / (1024 * 1024)
+
+    t_start = time.perf_counter()
+    conn = _open_sync_connection(db_path)
+    suspend_fts_triggers_sync(conn)
+    conn.execute("BEGIN IMMEDIATE")
+
+    materialized_ids: set[str] = set()
+    pending_by_parent: dict[str, list[tuple[str, ConversationData]]] = {}
+
+    try:
+        for ir in _iter_ingest_results_sync(
+            raw_records,
+            archive_root_str=archive_root_str,
+            validation_mode=validation_mode,
+            worker_count=summary.worker_count,
+        ):
+            _record_outcome(summary, ir)
+
+            if ir.error:
+                logger.error("Failed to ingest raw record", raw_id=ir.raw_id, error=ir.error)
+                summary.parse_failures += 1
+                summary.failed_raw_ids[ir.raw_id] = ir.error[:500]
+                continue
+
+            if not ir.conversations:
+                summary.skipped_raw_ids.add(ir.raw_id)
+                continue
+
+            for cdata in ir.conversations:
+                _drain_ready_conversation_entries(
+                    conn,
+                    [(ir.raw_id, cdata)],
+                    summary=summary,
+                    materialized_ids=materialized_ids,
+                    pending_by_parent=pending_by_parent,
+                )
+
+        _flush_pending_conversation_entries(
+            conn,
+            pending_by_parent,
+            summary=summary,
+            materialized_ids=materialized_ids,
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+    summary.elapsed_s = time.perf_counter() - t_start
+    return summary
+
+
 # ---------------------------------------------------------------------------
 # Batch processing
 # ---------------------------------------------------------------------------
@@ -385,207 +649,109 @@ async def process_ingest_batch(
     # Get validation mode from environment
     validation_mode = os.environ.get("POLYLOGUE_SCHEMA_VALIDATION", "strict")
 
-    worker_count = min(len(raw_records), os.cpu_count() or 4, 8)
-    t_start = time.perf_counter()
+    batch_summary = await asyncio.to_thread(
+        _process_ingest_batch_sync,
+        raw_records,
+        db_path=backend.db_path,
+        archive_root_str=archive_root_str,
+        validation_mode=validation_mode,
+    )
 
-    # Phase 1: Submit all records to ProcessPool
-    def _run_pool():
-        try:
-            with ProcessPoolExecutor(max_workers=worker_count) as executor:
-                futures: dict[Future, str] = {}
-                for raw_record in raw_records:
-                    f = executor.submit(ingest_record, raw_record, archive_root_str, validation_mode)
-                    futures[f] = raw_record.raw_id
+    result.parse_failures += batch_summary.parse_failures
+    result.processed_ids.update(batch_summary.processed_ids)
+    result._changed_conversation_ids.extend(batch_summary.changed_conversation_ids)
+    for key, value in batch_summary.counts.items():
+        if key in result.counts:
+            result.counts[key] += value
+    for key, value in batch_summary.changed_counts.items():
+        if key in result.changed_counts:
+            result.changed_counts[key] += value
 
-                results_list: list[IngestRecordResult] = []
-                for future in as_completed(futures):
-                    try:
-                        results_list.append(future.result())
-                    except Exception as exc:
-                        raw_id = futures[future]
-                        results_list.append(IngestRecordResult(
-                            raw_id=raw_id,
-                            error=f"worker: {exc}",
-                        ))
-                return results_list
-        except (TypeError, pickle.PicklingError):
-            # Fallback for unpicklable records (e.g. MagicMock in tests)
-            return [ingest_record(r, archive_root_str, validation_mode) for r in raw_records]
+    progressed_raw_count = sum(
+        1
+        for outcome in batch_summary.outcomes.values()
+        if outcome.had_conversations and outcome.error is None
+    )
+    if progress_callback and progressed_raw_count:
+        progress_callback(progressed_raw_count)
 
-    ingest_results: list[IngestRecordResult] = await asyncio.to_thread(_run_pool)
-    parse_elapsed = time.perf_counter() - t_start
-
-    # Phase 2: Write results to DB via sync sqlite3
-    # Open a direct sync connection — bypasses aiosqlite async overhead.
-    db_path = backend.db_path
-    conn = _open_sync_connection(db_path)
-
-    from polylogue.storage.fts_lifecycle import suspend_fts_triggers_sync
-
-    suspend_fts_triggers_sync(conn)
-    conn.execute("BEGIN IMMEDIATE")
-
-    changed_conversation_ids: list[str] = []
-    succeeded_raw_ids: set[str] = set()
-    failed_raw_ids: dict[str, str] = {}
-    skipped_raw_ids: set[str] = set()
-    payload_providers: dict[str, str | None] = {}
-    total_msgs = 0
-    total_convos = 0
-
-    try:
-        conversation_entries: list[tuple[str, ConversationData]] = []
-        for ir in ingest_results:
-            payload_providers[ir.raw_id] = ir.payload_provider
-
-            if ir.error:
-                logger.error("Failed to ingest raw record", raw_id=ir.raw_id, error=ir.error)
-                result.parse_failures += 1
-                failed_raw_ids[ir.raw_id] = ir.error[:500]
-                continue
-
-            if not ir.conversations:
-                skipped_raw_ids.add(ir.raw_id)
-                continue
-
-            conversation_entries.extend((ir.raw_id, cdata) for cdata in ir.conversations)
-
-        for raw_id, cdata in _topo_sort_conversation_entries(conversation_entries):
-            try:
-                t_write = time.perf_counter()
-                content_changed, counts = _write_conversation(conn, cdata)
-                write_elapsed = time.perf_counter() - t_write
-
-                total_convos += 1
-                total_msgs += len(cdata.message_tuples)
-
-                ingest_changed = (
-                    counts["conversations"]
-                    + counts["messages"]
-                    + counts["attachments"]
-                ) > 0
-
-                if ingest_changed or content_changed:
-                    result.processed_ids.add(cdata.conversation_id)
-                if content_changed:
-                    result.changed_counts["conversations"] += 1
-                    changed_conversation_ids.append(cdata.conversation_id)
-                if counts["messages"]:
-                    result.changed_counts["messages"] += counts["messages"]
-                if counts["attachments"]:
-                    result.changed_counts["attachments"] += counts["attachments"]
-                for key, value in counts.items():
-                    if key in result.counts:
-                        result.counts[key] += value
-
-                if write_elapsed >= 1.0:
-                    logger.info(
-                        "slow_write",
-                        cid=cdata.conversation_id[:20],
-                        elapsed_s=round(write_elapsed, 2),
-                        msgs=len(cdata.message_tuples),
-                    )
-
-            except Exception as exc:
-                logger.error("Error writing conversation: %s", exc)
-                result.parse_failures += 1
-                failed_raw_ids[raw_id] = str(exc)[:500]
-
-        for ir in ingest_results:
-            if ir.error or not ir.conversations:
-                continue
-            if ir.raw_id not in failed_raw_ids:
-                succeeded_raw_ids.add(ir.raw_id)
-
-            if progress_callback:
-                progress_callback(1)
-
-        conn.commit()
-
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
-
-    if parse_elapsed > 2.0:
-        total_blob_mb = sum(r.blob_size for r in raw_records) / (1024 * 1024)
+    if batch_summary.elapsed_s > 2.0:
         logger.info(
             "ingest_batch",
-            elapsed_s=round(parse_elapsed, 2),
-            records=len(raw_records),
-            blob_mb=round(total_blob_mb, 1),
-            conversations=total_convos,
-            messages=total_msgs,
-            workers=worker_count,
-            changed=len(changed_conversation_ids),
+            elapsed_s=round(batch_summary.elapsed_s, 2),
+            records=batch_summary.raw_record_count,
+            blob_mb=round(batch_summary.total_blob_mb, 1),
+            conversations=batch_summary.total_convos,
+            messages=batch_summary.total_msgs,
+            workers=batch_summary.worker_count,
+            changed=len(batch_summary.changed_conversation_ids),
         )
 
-    # Phase 3: Update raw record states + persist validation status
-    # Build a map of validation results from the ingest worker output
-    validation_statuses: dict[str, IngestRecordResult] = {ir.raw_id: ir for ir in ingest_results}
+    succeeded_raw_ids = {
+        raw_id
+        for raw_id, outcome in batch_summary.outcomes.items()
+        if outcome.had_conversations and raw_id not in batch_summary.failed_raw_ids
+    }
+    skipped_raw_ids = batch_summary.skipped_raw_ids
+    failed_raw_ids = batch_summary.failed_raw_ids
 
     now_iso = datetime.now(timezone.utc).isoformat()
     validation_mode_str = validation_mode
 
     for rid in succeeded_raw_ids:
-        if rid not in failed_raw_ids:
-            ir = validation_statuses.get(rid)
-            await service.repository.update_raw_state(
+        outcome = batch_summary.outcomes.get(rid)
+        await service.repository.update_raw_state(
+            rid,
+            state=RawConversationStateUpdate(
+                parsed_at=now_iso,
+                parse_error=None,
+                payload_provider=outcome.payload_provider if outcome is not None else None,
+            ),
+        )
+        if outcome is not None:
+            await service.repository.mark_raw_validated(
                 rid,
-                state=RawConversationStateUpdate(
-                    parsed_at=now_iso,
-                    parse_error=None,
-                    payload_provider=payload_providers.get(rid),
-                ),
+                status=outcome.validation_status,
+                error=outcome.validation_error,
+                payload_provider=outcome.payload_provider,
+                mode=validation_mode_str,
             )
-            if ir:
-                await service.repository.mark_raw_validated(
-                    rid,
-                    status=ir.validation_status,
-                    error=ir.validation_error,
-                    payload_provider=ir.payload_provider,
-                    mode=validation_mode_str,
-                )
     for rid in skipped_raw_ids:
         if rid not in failed_raw_ids and rid not in succeeded_raw_ids:
-            ir = validation_statuses.get(rid)
+            outcome = batch_summary.outcomes.get(rid)
             await service.repository.update_raw_state(
                 rid,
                 state=RawConversationStateUpdate(
                     parsed_at=now_iso,
                     parse_error=None,
-                    payload_provider=payload_providers.get(rid),
+                    payload_provider=outcome.payload_provider if outcome is not None else None,
                 ),
             )
-            if ir:
+            if outcome is not None:
                 await service.repository.mark_raw_validated(
                     rid,
-                    status=ir.validation_status,
-                    error=ir.validation_error,
-                    payload_provider=ir.payload_provider,
+                    status=outcome.validation_status,
+                    error=outcome.validation_error,
+                    payload_provider=outcome.payload_provider,
                     mode=validation_mode_str,
                 )
     for rid, error in failed_raw_ids.items():
-        ir = validation_statuses.get(rid)
+        outcome = batch_summary.outcomes.get(rid)
         await service.repository.update_raw_state(
             rid,
             state=RawConversationStateUpdate(
                 parse_error=error,
-                payload_provider=payload_providers.get(rid),
+                payload_provider=outcome.payload_provider if outcome is not None else None,
             ),
         )
-        if ir:
+        if outcome is not None:
             await service.repository.mark_raw_validated(
                 rid,
-                status=ir.validation_status,
-                error=ir.validation_error or error,
-                payload_provider=ir.payload_provider,
+                status=outcome.validation_status,
+                error=outcome.validation_error or error,
+                payload_provider=outcome.payload_provider,
                 mode=validation_mode_str,
             )
-
-    # Store changed_conversation_ids for deferred session refresh
-    result._changed_conversation_ids.extend(changed_conversation_ids)
 
 
 async def refresh_session_products_bulk(

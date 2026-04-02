@@ -5,6 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 
 from polylogue.pipeline.services.ingest_batch import (
+    _drain_ready_conversation_entries,
+    _IngestBatchSummary,
     _topo_sort_conversation_entries,
     _write_conversation,
 )
@@ -91,6 +93,45 @@ def test_write_conversation_preserves_existing_parent_fk(tmp_path: Path) -> None
 
         _write_conversation(conn, parent)
         _write_conversation(conn, child)
+        conn.commit()
+
+        row = conn.execute(
+            "SELECT parent_conversation_id FROM conversations WHERE conversation_id = ?",
+            ("codex:child",),
+        ).fetchone()
+        assert row is not None
+        assert row["parent_conversation_id"] == "codex:parent"
+
+
+def test_drain_ready_conversation_entries_preserves_late_parent_fk(tmp_path: Path) -> None:
+    with open_connection(tmp_path / "ingest.db") as conn:
+        parent = _conversation_data("codex:parent", content_hash="hash-parent")
+        child = _conversation_data(
+            "codex:child",
+            content_hash="hash-child",
+            parent_conversation_id="codex:parent",
+        )
+
+        summary = _IngestBatchSummary()
+        materialized_ids: set[str] = set()
+        pending_by_parent: dict[str, list[tuple[str, ConversationData]]] = {}
+
+        _drain_ready_conversation_entries(
+            conn,
+            [("raw-child", child)],
+            summary=summary,
+            materialized_ids=materialized_ids,
+            pending_by_parent=pending_by_parent,
+        )
+        assert list(pending_by_parent) == ["codex:parent"]
+
+        _drain_ready_conversation_entries(
+            conn,
+            [("raw-parent", parent)],
+            summary=summary,
+            materialized_ids=materialized_ids,
+            pending_by_parent=pending_by_parent,
+        )
         conn.commit()
 
         row = conn.execute(
