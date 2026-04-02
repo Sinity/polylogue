@@ -134,10 +134,36 @@ class AcquisitionService:
         peak_observation: dict[str, object] | None = None
         observation_count = 0
         peak_baseline = read_peak_rss_self_mb() or 0.0
+        split_payload_summary = {
+            "count": 0,
+            "total_blob_mb": 0.0,
+            "max_blob_mb": 0.0,
+            "total_detect_provider_ms": 0.0,
+            "total_classify_ms": 0.0,
+            "total_serialize_ms": 0.0,
+            "max_detect_provider_ms": 0.0,
+            "max_classify_ms": 0.0,
+            "max_serialize_ms": 0.0,
+        }
 
         def _observe(observation: dict[str, object]) -> None:
             nonlocal peak_observation, observation_count, peak_baseline
             observation_count += 1
+            if observation.get("phase") == "zip-entry-split-payload-serialized":
+                split_payload_summary["count"] += 1
+                blob_mb = observation.get("blob_mb")
+                if isinstance(blob_mb, int | float):
+                    split_payload_summary["total_blob_mb"] += float(blob_mb)
+                    split_payload_summary["max_blob_mb"] = max(split_payload_summary["max_blob_mb"], float(blob_mb))
+                for field, total_key, max_key in (
+                    ("detect_provider_ms", "total_detect_provider_ms", "max_detect_provider_ms"),
+                    ("classify_ms", "total_classify_ms", "max_classify_ms"),
+                    ("serialize_ms", "total_serialize_ms", "max_serialize_ms"),
+                ):
+                    value = observation.get(field)
+                    if isinstance(value, int | float):
+                        split_payload_summary[total_key] += float(value)
+                        split_payload_summary[max_key] = max(split_payload_summary[max_key], float(value))
             peak_rss_self_mb = observation.get("peak_rss_self_mb")
             if not isinstance(peak_rss_self_mb, int | float):
                 return
@@ -174,5 +200,10 @@ class AcquisitionService:
         if peak_observation is not None:
             result.diagnostics["peak_observation"] = peak_observation
             result.diagnostics["observation_count"] = observation_count
+        if split_payload_summary["count"]:
+            result.diagnostics["split_payload_summary"] = {
+                key: round(value, 3) if isinstance(value, float) else value
+                for key, value in split_payload_summary.items()
+            }
 
         return result

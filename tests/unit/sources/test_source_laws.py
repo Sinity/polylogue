@@ -1607,6 +1607,10 @@ def test_iter_source_raw_data_reports_split_payload_observations(tmp_path: Path)
     assert peak["provider_hint"] == Provider.CHATGPT.value
     assert peak["source_index"] in {0, 1}
     assert int(peak["blob_size"]) > 0
+    assert peak["artifact_kind"]
+    assert float(peak["detect_provider_ms"]) >= 0.0
+    assert float(peak["classify_ms"]) >= 0.0
+    assert float(peak["serialize_ms"]) >= 0.0
     assert float(peak["peak_rss_self_mb"]) > 0.0
 
 
@@ -1616,6 +1620,7 @@ def test_iter_entry_payloads_locks_provider_after_first_detected_payload(
     payloads = [
         {"id": "chatgpt-1", "mapping": {}},
         {"id": "chatgpt-2", "mapping": {}},
+        {"id": "chatgpt-3", "mapping": {}},
     ]
     detect_calls: list[dict[str, object]] = []
     original_detect_provider = dispatch_module.detect_provider
@@ -1636,8 +1641,15 @@ def test_iter_entry_payloads_locks_provider_after_first_detected_payload(
         )
     )
 
-    assert [provider for provider, _ in items] == [Provider.CHATGPT, Provider.CHATGPT]
-    assert detect_calls == payloads
+    assert [provider for provider, _, _ in items] == [
+        Provider.CHATGPT,
+        Provider.CHATGPT,
+        Provider.CHATGPT,
+    ]
+    assert items[0][2] >= 0.0
+    assert items[1][2] >= 0.0
+    assert items[2][2] == 0.0
+    assert detect_calls == payloads[:2]
 
 
 def test_iter_source_raw_data_keeps_source_family_hints_for_mixed_zip_sources(tmp_path: Path) -> None:

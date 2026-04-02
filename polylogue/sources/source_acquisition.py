@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 import zipfile
 from collections.abc import Callable, Iterable
 from typing import Any
@@ -37,6 +38,7 @@ def _observe_acquisition(
     provider_hint: Provider,
     blob_size: int,
     source_index: int | None = None,
+    **extra: object,
 ) -> None:
     if observation_callback is None:
         return
@@ -53,6 +55,7 @@ def _observe_acquisition(
         "source_index": source_index,
         "current_rss_mb": current_rss_mb,
         "peak_rss_self_mb": peak_rss_self_mb,
+        **extra,
     })
 
 
@@ -61,7 +64,7 @@ def _iter_entry_payloads(
     *,
     stream_name: str,
     provider_hint: Provider,
-) -> Iterable[tuple[Provider, Any]]:
+) -> Iterable[tuple[Provider, Any, float]]:
     """Yield payloads from a streamed JSON/JSONL document with provider hints."""
     current_provider = provider_hint
     last_detected_provider: Provider | None = None
@@ -69,8 +72,11 @@ def _iter_entry_payloads(
     for payload in _decoders._iter_json_stream(handle, stream_name):
         if provider_locked:
             provider = current_provider
+            detect_provider_ms = 0.0
         else:
+            detect_start = time.perf_counter()
             detected_provider = detect_provider(payload)
+            detect_provider_ms = (time.perf_counter() - detect_start) * 1000.0
             provider = detected_provider or current_provider
             if detected_provider is not None and detected_provider is not Provider.UNKNOWN:
                 current_provider = detected_provider
@@ -78,7 +84,7 @@ def _iter_entry_payloads(
                     provider_locked = True
                 else:
                     last_detected_provider = detected_provider
-        yield (provider, payload)
+        yield (provider, payload, detect_provider_ms)
 
 
 def _make_split_entry_raw_data(
@@ -175,7 +181,7 @@ def iter_source_raw_data(
                         did_split = False
 
                         with zf.open(info.filename) as handle:
-                            for payload_provider, payload in _iter_entry_payloads(
+                            for payload_provider, payload, detect_provider_ms in _iter_entry_payloads(
                                 handle,
                                 stream_name=info.filename,
                                 provider_hint=entry_provider_hint,
@@ -183,15 +189,19 @@ def iter_source_raw_data(
                                 detected_provider = payload_provider
                                 if payload_provider in GROUP_PROVIDERS:
                                     break
+                                classify_start = time.perf_counter()
                                 artifact = classify_artifact(
                                     payload,
                                     provider=payload_provider,
                                     source_path=entry_path,
                                 )
+                                classify_ms = (time.perf_counter() - classify_start) * 1000.0
                                 if not artifact.parse_as_conversation:
                                     continue
                                 pending_index = split_source_index + len(pending_split_payloads)
+                                serialize_start = time.perf_counter()
                                 payload_bytes = json_dumps_bytes(payload)
+                                serialize_ms = (time.perf_counter() - serialize_start) * 1000.0
                                 _observe_acquisition(
                                     observation_callback,
                                     phase="zip-entry-split-payload-serialized",
@@ -199,6 +209,10 @@ def iter_source_raw_data(
                                     provider_hint=payload_provider,
                                     blob_size=len(payload_bytes),
                                     source_index=pending_index,
+                                    artifact_kind=str(artifact.kind),
+                                    detect_provider_ms=round(detect_provider_ms, 3),
+                                    classify_ms=round(classify_ms, 3),
+                                    serialize_ms=round(serialize_ms, 3),
                                 )
                                 if did_split:
                                     yield _make_split_entry_raw_data(
