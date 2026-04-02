@@ -19,6 +19,7 @@ class AcquireResult:
     skipped: int = 0
     errors: int = 0
     raw_ids: list[str] = field(default_factory=list)
+    diagnostics: dict[str, object] = field(default_factory=dict)
 
     @property
     def counts(self) -> dict[str, int]:

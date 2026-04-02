@@ -107,6 +107,79 @@ class TestParsingServiceParseSources:
         assert result.counts["messages"] == 5
         assert result.processed_ids == {"conv-1", "conv-2"}
 
+    async def test_ingest_sources_surfaces_session_product_refresh_diagnostics(self):
+        mock_repository = MagicMock()
+        mock_backend = MagicMock()
+        mock_repository.backend = mock_backend
+        mock_config = MagicMock(spec=Config)
+        service = ParsingService(repository=mock_repository, archive_root=Path("/tmp/archive"), config=mock_config)
+
+        acquire_result = AcquireResult()
+        acquire_result.raw_ids = ["raw-1"]
+
+        parse_result = ParseResult()
+        parse_result.refresh_observation = {
+            "conversations": 1,
+            "unique_thread_roots": 1,
+            "unique_provider_days": 1,
+            "elapsed_ms": 123.4,
+        }
+
+        with patch("polylogue.pipeline.services.acquisition.AcquisitionService.acquire_sources", new=AsyncMock(return_value=acquire_result)):
+            with patch("polylogue.pipeline.services.planning.PlanningService.collect_validation_backlog", new=AsyncMock(return_value=[])):
+                with patch("polylogue.pipeline.services.planning.PlanningService.collect_parse_backlog", new=AsyncMock(return_value=[])):
+                    with patch.object(service, "parse_from_raw", new_callable=AsyncMock, return_value=parse_result):
+                        result = await service.ingest_sources(
+                            sources=[Source(name="test-source", path=Path("/tmp/inbox"))],
+                        )
+
+        assert result.diagnostics["session_product_refresh"] == parse_result.refresh_observation
+
+    async def test_ingest_dedupes_backlog_without_rebuilding_raw_id_list(self):
+        mock_repository = MagicMock()
+        mock_backend = MagicMock()
+        mock_repository.backend = mock_backend
+        mock_config = MagicMock(spec=Config)
+        service = ParsingService(repository=mock_repository, archive_root=Path("/tmp/archive"), config=mock_config)
+
+        acquire_result = AcquireResult()
+        acquire_result.raw_ids = ["raw-1", "raw-2", "raw-1"]
+        acquire_result.counts["acquired"] = 3
+
+        parse_backlog_calls: list[list[str]] = []
+        validation_backlog_calls: list[list[str]] = []
+
+        async def _parse_backlog(*, source_names, exclude_raw_ids):
+            assert source_names == ["test-source"]
+            parse_backlog_calls.append(list(exclude_raw_ids))
+            return ["raw-2", "raw-3", "raw-3"]
+
+        async def _validation_backlog(*, source_names, exclude_raw_ids):
+            assert source_names == ["test-source"]
+            validation_backlog_calls.append(list(exclude_raw_ids))
+            return ["raw-3", "raw-4", "raw-1"]
+
+        with patch("polylogue.pipeline.services.acquisition.AcquisitionService.acquire_sources", new=AsyncMock(return_value=acquire_result)):
+            with patch(
+                "polylogue.pipeline.services.planning.PlanningService.collect_parse_backlog",
+                new=AsyncMock(side_effect=_parse_backlog),
+            ):
+                with patch(
+                    "polylogue.pipeline.services.planning.PlanningService.collect_validation_backlog",
+                    new=AsyncMock(side_effect=_validation_backlog),
+                ):
+                    parse_result = ParseResult()
+                    with patch.object(service, "parse_from_raw", new_callable=AsyncMock, return_value=parse_result) as mock_parse:
+                        source = Source(name="test-source", path=Path("/tmp/inbox"))
+                        await service.parse_sources([source])
+
+        assert parse_backlog_calls == [["raw-1", "raw-2"]]
+        assert validation_backlog_calls == [["raw-1", "raw-2", "raw-3"]]
+        mock_parse.assert_awaited_once_with(
+            raw_ids=["raw-1", "raw-2", "raw-3", "raw-4"],
+            progress_callback=None,
+        )
+
     async def test_ingest_skips_parse_when_nothing_acquired(self):
         mock_repository = MagicMock()
         mock_backend = MagicMock()
@@ -296,7 +369,7 @@ class TestPlanningService:
                 )
             )
 
-        plan = await planner.build_plan(sources=[Source(name="inbox-a", path=source_dir)], stage="validate")
+        plan = await planner.build_plan(sources=[Source(name="inbox-a", path=source_dir)], stage="parse")
 
         assert plan.summary.counts["validate"] == 1
         assert plan.summary.details["backlog_validate"] == 1

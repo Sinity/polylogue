@@ -49,11 +49,43 @@ from polylogue.storage.store import (
 )
 
 _ALL_CONVERSATION_IDS_SQL = "SELECT conversation_id FROM conversations ORDER BY COALESCE(sort_key, 0) DESC, conversation_id"
+_ALL_SESSION_PROFILE_ROWS_SQL = """
+SELECT *
+FROM session_profiles
+ORDER BY COALESCE(source_sort_key, 0) DESC, conversation_id
+"""
 
 
 def chunked(items: Sequence[str], *, size: int) -> Iterable[Sequence[str]]:
     for index in range(0, len(items), size):
         yield items[index : index + size]
+
+
+def iter_conversation_id_pages_sync(
+    conn: sqlite3.Connection,
+    *,
+    page_size: int,
+) -> Iterable[list[str]]:
+    cursor = conn.execute(_ALL_CONVERSATION_IDS_SQL)
+    while True:
+        rows = cursor.fetchmany(page_size)
+        if not rows:
+            break
+        yield [str(row["conversation_id"]) for row in rows]
+
+
+def iter_hydrated_session_profiles_sync(
+    conn: sqlite3.Connection,
+    *,
+    page_size: int,
+):
+    cursor = conn.execute(_ALL_SESSION_PROFILE_ROWS_SQL)
+    while True:
+        rows = cursor.fetchmany(page_size)
+        if not rows:
+            break
+        for row in rows:
+            yield hydrate_session_profile(_row_to_session_profile_record(row))
 
 
 def sync_attachment_batch(
@@ -223,14 +255,17 @@ def rebuild_session_products_sync(
     conversation_ids: Sequence[str] | None = None,
     page_size: int = 100,
 ) -> dict[str, int]:
+    conversation_chunks: Iterable[Sequence[str]]
     if conversation_ids is None:
         conn.execute("DELETE FROM session_work_events")
         conn.execute("DELETE FROM session_phases")
         conn.execute("DELETE FROM session_profiles")
         conn.execute("DELETE FROM session_tag_rollups")
         conn.execute("DELETE FROM day_session_summaries")
-        conversation_ids = [str(row["conversation_id"]) for row in conn.execute(_ALL_CONVERSATION_IDS_SQL).fetchall()]
-    if not conversation_ids:
+        conversation_chunks = iter_conversation_id_pages_sync(conn, page_size=page_size)
+    else:
+        conversation_chunks = chunked(conversation_ids, size=page_size)
+    if conversation_ids is not None and not conversation_ids:
         conn.execute("DELETE FROM work_threads")
         conn.execute("DELETE FROM session_phases")
         conn.execute("DELETE FROM session_tag_rollups")
@@ -241,7 +276,9 @@ def rebuild_session_products_sync(
     profile_count = 0
     work_event_count = 0
     phase_count = 0
-    for chunk in chunked(list(conversation_ids), size=page_size):
+    saw_conversation_ids = False
+    for chunk in conversation_chunks:
+        saw_conversation_ids = True
         conversations, messages, attachments, blocks = load_sync_batch(conn, chunk)
         for conversation in hydrate_conversations(conversations, messages, attachments, blocks):
             profile_record, event_records, phase_records = build_session_product_records(conversation)
@@ -251,20 +288,20 @@ def rebuild_session_products_sync(
             profile_count += 1
             work_event_count += len(event_records)
             phase_count += len(phase_records)
+    if not saw_conversation_ids:
+        conn.execute("DELETE FROM work_threads")
+        conn.execute("DELETE FROM session_phases")
+        conn.execute("DELETE FROM session_tag_rollups")
+        conn.execute("DELETE FROM day_session_summaries")
+        conn.commit()
+        return {"profiles": 0, "work_events": 0, "phases": 0, "threads": 0, "tag_rollups": 0, "day_summaries": 0}
 
     conn.execute("DELETE FROM work_threads")
     thread_records = build_all_thread_records_sync(conn)
     for record in thread_records:
         replace_work_thread_sync(conn, record.thread_id, record)
-    all_profile_records = [
-        _row_to_session_profile_record(row)
-        for row in conn.execute(
-            "SELECT * FROM session_profiles ORDER BY COALESCE(source_sort_key, 0) DESC, conversation_id"
-        ).fetchall()
-    ]
-    all_profiles = [hydrate_session_profile(record) for record in all_profile_records]
     conn.execute("DELETE FROM session_tag_rollups")
-    tag_rows = build_session_tag_rollup_records(all_profiles)
+    tag_rows = build_session_tag_rollup_records(iter_hydrated_session_profiles_sync(conn, page_size=page_size))
     for provider_name, bucket_day in sorted({(row.provider_name, row.bucket_day) for row in tag_rows}):
         replace_session_tag_rollup_rows_sync(
             conn,
@@ -277,7 +314,7 @@ def rebuild_session_products_sync(
             ],
         )
     conn.execute("DELETE FROM day_session_summaries")
-    day_rows = build_day_session_summary_records(all_profiles)
+    day_rows = build_day_session_summary_records(iter_hydrated_session_profiles_sync(conn, page_size=page_size))
     for provider_name, bucket_day in sorted({(row.provider_name, row.day) for row in day_rows}):
         replace_day_session_summaries_sync(
             conn,
@@ -391,9 +428,12 @@ async def rebuild_session_products_async(
 
 __all__ = [
     "_ALL_CONVERSATION_IDS_SQL",
+    "_ALL_SESSION_PROFILE_ROWS_SQL",
     "build_session_product_records",
     "chunked",
     "hydrate_conversations",
+    "iter_conversation_id_pages_sync",
+    "iter_hydrated_session_profiles_sync",
     "load_async_batch",
     "load_sync_batch",
     "rebuild_session_products_async",

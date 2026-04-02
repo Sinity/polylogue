@@ -9,10 +9,11 @@ the same blob again). Moves transform into subprocess for true parallelism.
 
 from __future__ import annotations
 
+import os
+import pickle
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
 
 from polylogue.lib.json import dumps as json_dumps
 from polylogue.lib.viewports import ToolCategory, classify_tool
@@ -29,8 +30,9 @@ from polylogue.schemas.code_detection import detect_language
 from polylogue.storage.store import RawConversationRecord, _json_or_none
 from polylogue.types import ValidationMode, ValidationStatus
 
-
 _SOURCE_HASH_SUFFIX = re.compile(r"-(?:[0-9a-f]{16,64})$", re.IGNORECASE)
+_SCHEMA_REGISTRY = None
+MEASURE_INGEST_RESULT_SIZE_ENV = "POLYLOGUE_MEASURE_INGEST_RESULT_SIZE"
 
 
 # ---------------------------------------------------------------------------
@@ -82,6 +84,7 @@ class IngestRecordResult:
     error: str | None = None
     conversations: list[ConversationData] = field(default_factory=list)
     source_name: str | None = None
+    serialized_size_bytes: int | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -134,6 +137,22 @@ def _make_ref_id(
     return sha256(key.encode()).hexdigest()[:32]
 
 
+def _runtime_schema_registry():
+    global _SCHEMA_REGISTRY
+    if _SCHEMA_REGISTRY is None:
+        from polylogue.schemas.runtime_registry import SchemaRegistry
+
+        _SCHEMA_REGISTRY = SchemaRegistry()
+    return _SCHEMA_REGISTRY
+
+
+def _finalize_result(result: IngestRecordResult) -> IngestRecordResult:
+    if os.environ.get(MEASURE_INGEST_RESULT_SIZE_ENV, "").lower() not in {"1", "true"}:
+        return result
+    result.serialized_size_bytes = len(pickle.dumps(result, protocol=pickle.HIGHEST_PROTOCOL))
+    return result
+
+
 # ---------------------------------------------------------------------------
 # Main worker function — runs in subprocess
 # ---------------------------------------------------------------------------
@@ -151,7 +170,6 @@ def ingest_record(
     state, no DB access).
     """
     from polylogue.lib.raw_payload import build_raw_payload_envelope
-    from polylogue.schemas.runtime_registry import SchemaRegistry
     from polylogue.schemas.validator import SchemaValidator
     from polylogue.sources.dispatch import parse_payload
     from polylogue.storage.blob_store import get_blob_store
@@ -175,22 +193,22 @@ def ingest_record(
             payload_provider=stored_payload_provider,
         )
     except Exception as exc:
-        return IngestRecordResult(
+        return _finalize_result(IngestRecordResult(
             raw_id=raw_record.raw_id,
             payload_provider=stored_payload_provider,
             validation_status=ValidationStatus.FAILED.value,
             validation_error=f"decode: {exc}",
             error=f"decode: {exc}",
-        )
+        ))
 
     payload_provider = str(envelope.provider)
 
     if not envelope.artifact.parse_as_conversation:
-        return IngestRecordResult(
+        return _finalize_result(IngestRecordResult(
             raw_id=raw_record.raw_id,
             payload_provider=payload_provider,
             validation_status=ValidationStatus.SKIPPED.value,
-        )
+        ))
 
     # ── Phase 2: Validate schema (inline, reuses decoded payload) ─────
     v_status = ValidationStatus.PASSED
@@ -199,13 +217,13 @@ def ingest_record(
     if validation_mode is not ValidationMode.OFF and envelope.artifact.schema_eligible:
         malformed_lines = envelope.malformed_jsonl_lines
         if malformed_lines and validation_mode is ValidationMode.STRICT:
-            return IngestRecordResult(
+            return _finalize_result(IngestRecordResult(
                 raw_id=raw_record.raw_id,
                 payload_provider=payload_provider,
                 validation_status=ValidationStatus.FAILED.value,
                 validation_error=f"Malformed JSONL lines: {malformed_lines}",
                 error=f"Malformed JSONL lines: {malformed_lines}",
-            )
+            ))
 
         try:
             validator = SchemaValidator.for_payload(
@@ -228,19 +246,18 @@ def ingest_record(
 
                 if collected_errors and validation_mode is ValidationMode.STRICT:
                     first_error = collected_errors[0]
-                    return IngestRecordResult(
+                    return _finalize_result(IngestRecordResult(
                         raw_id=raw_record.raw_id,
                         payload_provider=payload_provider,
                         validation_status=ValidationStatus.FAILED.value,
                         validation_error=f"Schema validation failed: {first_error}",
                         error=f"Schema validation failed: {first_error}",
-                    )
+                    ))
     elif validation_mode is ValidationMode.OFF:
         v_status = ValidationStatus.SKIPPED
 
     # ── Phase 3: Parse (provider-specific conversation extraction) ─────
-    registry = SchemaRegistry()
-    schema_resolution = registry.resolve_payload(
+    schema_resolution = _runtime_schema_registry().resolve_payload(
         envelope.provider,
         envelope.payload,
         source_path=raw_record.source_path,
@@ -254,12 +271,12 @@ def ingest_record(
             schema_resolution=schema_resolution,
         )
     except Exception as exc:
-        return IngestRecordResult(
+        return _finalize_result(IngestRecordResult(
             raw_id=raw_record.raw_id,
             payload_provider=payload_provider,
             validation_status=v_status.value,
             error=f"parse: {exc}",
-        )
+        ))
 
     # Apply raw record defaults (timestamps)
     fallback_timestamp = raw_record.file_mtime
@@ -287,21 +304,21 @@ def ingest_record(
             )
             result_convos.append(cdata)
         except Exception as exc:
-            return IngestRecordResult(
+            return _finalize_result(IngestRecordResult(
                 raw_id=raw_record.raw_id,
                 payload_provider=payload_provider,
                 validation_status=v_status.value,
                 error=f"transform: {exc}",
-            )
+            ))
 
-    return IngestRecordResult(
+    return _finalize_result(IngestRecordResult(
         raw_id=raw_record.raw_id,
         payload_provider=payload_provider,
         validation_status=v_status.value,
         validation_error=v_error,
         conversations=result_convos,
         source_name=source_name,
-    )
+    ))
 
 
 # ---------------------------------------------------------------------------
@@ -555,7 +572,7 @@ def _build_action_event_tuples(
             role=msg.role,
             text=msg.text,
             sort_key=msg_sort_key,
-            content_hash="",
+            content_hash=msg_tuple[6],
             provider_name=provider_name,
             word_count=word_count,
             has_tool_use=has_tool_use,

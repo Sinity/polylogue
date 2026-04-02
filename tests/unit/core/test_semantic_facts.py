@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 
 import pytest
 
+from polylogue.lib import session_profile_runtime, work_event_extraction
 from polylogue.lib.messages import MessageCollection
 from polylogue.lib.models import Conversation, ConversationSummary, Message
 from polylogue.lib.pricing import harmonize_session_cost
@@ -187,6 +188,33 @@ def test_build_session_profile_reuses_shared_semantic_facts() -> None:
     assert profile.canonical_session_date.isoformat() == "2026-03-23"
     assert profile.engaged_duration_ms > 0
     assert profile.wall_duration_ms == 240000
+
+
+def test_build_session_analysis_reuses_precomputed_phases(monkeypatch: pytest.MonkeyPatch) -> None:
+    conversation = _semantic_conversation()
+    original_extract_phases = session_profile_runtime.extract_phases
+    runtime_phase_calls = 0
+    work_event_phase_calls = 0
+
+    def counting_runtime_extract_phases(conv, *, facts=None):
+        nonlocal runtime_phase_calls
+        runtime_phase_calls += 1
+        return original_extract_phases(conv, facts=facts)
+
+    def unexpected_work_event_extract_phases(conv, *, facts=None):
+        nonlocal work_event_phase_calls
+        work_event_phase_calls += 1
+        raise AssertionError("work-event extraction should reuse precomputed phases")
+
+    monkeypatch.setattr(session_profile_runtime, "extract_phases", counting_runtime_extract_phases)
+    monkeypatch.setattr(work_event_extraction, "extract_phases", unexpected_work_event_extract_phases)
+
+    analysis = session_profile_runtime.build_session_analysis(conversation)
+
+    assert runtime_phase_calls == 1
+    assert work_event_phase_calls == 0
+    assert analysis.work_events
+    assert analysis.phases
 
 
 def test_build_conversation_semantic_facts_uses_canonical_db_content_blocks() -> None:

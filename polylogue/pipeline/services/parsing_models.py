@@ -4,7 +4,7 @@ import asyncio
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from polylogue.pipeline.stage_models import AcquireResult, ValidateResult
@@ -108,6 +108,8 @@ class ParseResult:
         # Tracks conversation IDs whose content changed — used for
         # deferred session product refresh after all batches complete.
         self._changed_conversation_ids: list[str] = []
+        self.batch_observations: list[dict[str, Any]] = []
+        self.refresh_observation: dict[str, Any] | None = None
 
     async def merge_result(
         self,
@@ -145,6 +147,7 @@ class IngestResult:
     parse_result: ParseResult
     parse_raw_ids: list[str]
     timings: dict[str, float] = field(default_factory=dict)
+    diagnostics: dict[str, Any] = field(default_factory=dict)
 
 
 __all__ = ["IngestPhase", "IngestResult", "IngestState", "ParseResult"]

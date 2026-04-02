@@ -69,15 +69,13 @@
   
   Options:
     --preview                       Preview work without writing
-    --stage [acquire|validate|parse|render|index|generate-schemas|all]
-                                    Pipeline stage: acquire (store raw),
-                                    validate (schema check raw payloads), parse
+    --stage [acquire|parse|render|index|generate-schemas|all]
+                                    Pipeline stage: acquire (store raw), parse
                                     (extract conversations), render (output),
                                     index (search), generate-schemas, or all
                                     [default: all]
-    --source TEXT                   Limit to source name (repeatable). 'last' =
-                                    previously synced source. List with:
-                                    polylogue sources
+    --source TEXT                   Configured source name (repeatable). Accepts
+                                    'last' for the previously synced source.
     --format [markdown|html]        Output format for rendering (markdown or
                                     html)  [default: html]
     --watch                         Watch sources for changes and run
@@ -142,19 +140,6 @@
     Modifiers (write operations):
         polylogue "urgent" --add-tag review --dry-run
         polylogue -p old --delete --dry-run
-  
-    Subcommands:
-        polylogue run       Parse<PATH> pipeline
-        polylogue check     Health check and repair
-        polylogue qa        Composable QA (audit, exercises, invariants)
-        polylogue generate  Synthetic data generation
-        polylogue embed     Generate vector embeddings
-        polylogue products  Inspect durable session<PATH> products
-        polylogue tags      List tags with counts
-        polylogue site      Build static HTML archive
-        polylogue sources   List configured sources
-        polylogue schema    Schema generation, package versioning, and evidence
-        polylogue mcp       Start MCP server
   
     Run `polylogue <command> --help` for subcommand details.
   
@@ -288,22 +273,6 @@
     Modifiers (write operations):
         polylogue "urgent" --add-tag review --dry-run
         polylogue -p old --delete --dry-run
-  
-    Subcommands:
-        polylogue run       Parse<PATH> pipeline
-        polylogue check     Health check and repair
-        polylogue qa        Composable QA (audit, exercises, i
-  nvariants)
-        polylogue generate  Synthetic data generation
-        polylogue embed     Generate vector embeddings
-        polylogue products  Inspect durable session<PATH>
-  enance products
-        polylogue tags      List tags with counts
-        polylogue site      Build static HTML archive
-        polylogue sources   List configured sources
-        polylogue schema    Schema generation, package version
-  ing, and evidence
-        polylogue mcp       Start MCP server
   
     Run `polylogue <command> --help` for subcommand details.
   
@@ -480,19 +449,6 @@
     Modifiers (write operations):
         polylogue "urgent" --add-tag review --dry-run
         polylogue -p old --delete --dry-run
-  
-    Subcommands:
-        polylogue run       Parse<PATH> pipeline
-        polylogue check     Health check and repair
-        polylogue qa        Composable QA (audit, exercises, invariants)
-        polylogue generate  Synthetic data generation
-        polylogue embed     Generate vector embeddings
-        polylogue products  Inspect durable session<PATH> products
-        polylogue tags      List tags with counts
-        polylogue site      Build static HTML archive
-        polylogue sources   List configured sources
-        polylogue schema    Schema generation, package versioning, and evidence
-        polylogue mcp       Start MCP server
   
     Run `polylogue <command> --help` for subcommand details.
   

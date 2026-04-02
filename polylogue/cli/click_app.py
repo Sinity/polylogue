@@ -138,20 +138,6 @@ def cli(
         polylogue "urgent" --add-tag review --dry-run
         polylogue -p old --delete --dry-run
 
-    \b
-    Subcommands:
-        polylogue run       Parse/render/index pipeline
-        polylogue check     Health check and repair
-        polylogue qa        Composable QA (audit, exercises, invariants)
-        polylogue generate  Synthetic data generation
-        polylogue embed     Generate vector embeddings
-        polylogue products  Inspect durable session/work/maintenance products
-        polylogue tags      List tags with counts
-        polylogue site      Build static HTML archive
-        polylogue sources   List configured sources
-        polylogue schema    Schema generation, package versioning, and evidence
-        polylogue mcp       Start MCP server
-
     Run `polylogue <command> --help` for subcommand details.
     """
     # Set up logging early so all output goes to stderr

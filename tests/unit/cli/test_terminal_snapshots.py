@@ -44,6 +44,7 @@ class TestHelpOutput:
         text = grid_to_text(result.grid)
         assert "Usage:" in text or "usage:" in text
         assert "Options:" in text or "options:" in text
+        assert "Subcommands:" not in text
 
 
 class TestCommandOutputs:
@@ -78,6 +79,7 @@ class TestCommandOutputs:
         output = grid_to_text(grid)
 
         assert output == snapshot
+        assert "--stage [acquire|parse|render|index|generate-schemas|all]" in output
 
 
 class TestErrorOutput:

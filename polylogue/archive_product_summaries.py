@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import Counter, defaultdict
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from datetime import UTC, datetime
 
 from polylogue.archive_products import (
@@ -21,7 +21,7 @@ from polylogue.storage.store import DaySessionSummaryRecord
 
 
 def build_day_session_summary_records(
-    profiles: Sequence[SessionProfile],
+    profiles: Iterable[SessionProfile],
     *,
     materialized_at: str | None = None,
 ) -> list[DaySessionSummaryRecord]:

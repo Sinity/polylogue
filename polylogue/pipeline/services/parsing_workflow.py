@@ -9,6 +9,7 @@ already decoded for parsing anyway).
 from __future__ import annotations
 
 import time
+from collections.abc import Iterable
 from typing import TYPE_CHECKING
 
 from polylogue.logging import get_logger
@@ -20,6 +21,50 @@ if TYPE_CHECKING:
     from polylogue.protocols import ProgressCallback
 
 logger = get_logger(__name__)
+
+
+def _append_unique_raw_ids(
+    target: list[str],
+    *,
+    seen: set[str],
+    raw_ids: Iterable[str],
+) -> None:
+    for raw_id in raw_ids:
+        if raw_id in seen:
+            continue
+        seen.add(raw_id)
+        target.append(raw_id)
+
+
+def _summarize_batch_observations(
+    batch_observations: list[dict[str, object]],
+) -> dict[str, object]:
+    if not batch_observations:
+        return {}
+
+    def _max_float(field: str) -> float | None:
+        values = [
+            float(value)
+            for observation in batch_observations
+            if (value := observation.get(field)) is not None
+        ]
+        return round(max(values), 1) if values else None
+
+    return {
+        "batch_count": len(batch_observations),
+        "slow_batch_count": sum(
+            1
+            for observation in batch_observations
+            if float(observation["elapsed_ms"]) >= 2000.0
+        ),
+        "max_elapsed_ms": _max_float("elapsed_ms"),
+        "max_blob_mb": _max_float("blob_mb"),
+        "max_result_mb": _max_float("max_result_mb"),
+        "max_current_rss_mb": _max_float("max_current_rss_mb"),
+        "max_rss_end_mb": _max_float("rss_end_mb"),
+        "max_rss_delta_mb": _max_float("rss_delta_mb"),
+        "batches": batch_observations,
+    }
 
 
 async def ingest_sources(
@@ -84,20 +129,32 @@ async def ingest_sources(
         planning_service = PlanningService(backend=backend, config=service.config)
 
         # Collect all raw IDs that need ingesting: newly acquired + backlog
-        parse_raw_ids = list(acquire_result.raw_ids)
-        if stage in {"validate", "parse", "all"}:
+        seen_parse_raw_ids: set[str] = set()
+        _append_unique_raw_ids(
+            parse_raw_ids,
+            seen=seen_parse_raw_ids,
+            raw_ids=acquire_result.raw_ids,
+        )
+        if stage in {"parse", "all"}:
             backlog = await planning_service.collect_parse_backlog(
                 source_names=source_names or None,
                 exclude_raw_ids=parse_raw_ids,
             )
-            parse_raw_ids.extend(backlog)
+            _append_unique_raw_ids(
+                parse_raw_ids,
+                seen=seen_parse_raw_ids,
+                raw_ids=backlog,
+            )
             # Also collect validation backlog (records not yet validated/parsed)
             validation_backlog = await planning_service.collect_validation_backlog(
                 source_names=source_names or None,
                 exclude_raw_ids=parse_raw_ids,
             )
-            parse_raw_ids.extend(validation_backlog)
-        parse_raw_ids = list(dict.fromkeys(parse_raw_ids))
+            _append_unique_raw_ids(
+                parse_raw_ids,
+                seen=seen_parse_raw_ids,
+                raw_ids=validation_backlog,
+            )
 
         # Satisfy IngestState invariants
         ingest_state.record_parse_candidates(
@@ -134,6 +191,11 @@ async def ingest_sources(
         parse_result=parse_result,
         parse_raw_ids=parse_raw_ids,
         timings=timings,
+        diagnostics={
+            "acquisition": acquire_result.diagnostics,
+            "batch_observations": _summarize_batch_observations(parse_result.batch_observations),
+            "session_product_refresh": parse_result.refresh_observation,
+        },
     )
 
 
@@ -164,10 +226,10 @@ async def parse_from_raw(
         total = len(raw_ids)
         if progress_callback is not None:
             progress_callback(0, desc=f"Ingesting ({total:,} raw)")
-        for batch_start in range(0, total, service.RAW_BATCH_SIZE):
-            batch_ids = raw_ids[batch_start : batch_start + service.RAW_BATCH_SIZE]
+        for batch_start in range(0, total, service.raw_batch_size):
+            batch_ids = raw_ids[batch_start : batch_start + service.raw_batch_size]
             t_batch = time.perf_counter()
-            await process_ingest_batch(
+            batch_observation = await process_ingest_batch(
                 service,
                 backend,
                 batch_ids,
@@ -177,6 +239,10 @@ async def parse_from_raw(
             batches_processed += 1
             batch_elapsed = time.perf_counter() - t_batch
             processed_so_far = batch_start + len(batch_ids)
+            if batch_observation is not None:
+                batch_observation["batch"] = batches_processed
+                batch_observation["processed_raw"] = processed_so_far
+                result.batch_observations.append(batch_observation)
             if progress_callback is not None:
                 progress_callback(
                     0,
@@ -198,8 +264,8 @@ async def parse_from_raw(
         async for raw_id in backend.queries.iter_raw_ids(provider_name=provider):
             batch_ids_acc.append(raw_id)
             total_raw += 1
-            if len(batch_ids_acc) >= service.RAW_BATCH_SIZE:
-                await process_ingest_batch(
+            if len(batch_ids_acc) >= service.raw_batch_size:
+                batch_observation = await process_ingest_batch(
                     service,
                     backend,
                     batch_ids_acc,
@@ -207,6 +273,10 @@ async def parse_from_raw(
                     progress_callback,
                 )
                 batches_processed += 1
+                if batch_observation is not None:
+                    batch_observation["batch"] = batches_processed
+                    batch_observation["processed_raw"] = total_raw
+                    result.batch_observations.append(batch_observation)
                 if progress_callback is not None:
                     progress_callback(
                         0,
@@ -214,7 +284,7 @@ async def parse_from_raw(
                     )
                 batch_ids_acc = []
         if batch_ids_acc:
-            await process_ingest_batch(
+            batch_observation = await process_ingest_batch(
                 service,
                 backend,
                 batch_ids_acc,
@@ -222,6 +292,10 @@ async def parse_from_raw(
                 progress_callback,
             )
             batches_processed += 1
+            if batch_observation is not None:
+                batch_observation["batch"] = batches_processed
+                batch_observation["processed_raw"] = total_raw
+                result.batch_observations.append(batch_observation)
         total = total_raw
 
     # Deferred session product refresh — once after ALL batches
@@ -230,7 +304,7 @@ async def parse_from_raw(
         t_refresh = time.perf_counter()
         if progress_callback is not None:
             progress_callback(0, desc=f"Refreshing session products ({len(changed_cids):,} conversations)")
-        await refresh_session_products_bulk(backend, changed_cids)
+        result.refresh_observation = await refresh_session_products_bulk(backend, changed_cids)
         refresh_elapsed = time.perf_counter() - t_refresh
         if refresh_elapsed > 2.0:
             logger.info(

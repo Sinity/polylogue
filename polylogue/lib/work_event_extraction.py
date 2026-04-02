@@ -3,12 +3,18 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
 from enum import Enum
 from typing import TYPE_CHECKING
 
-from polylogue.lib.phase_extraction import extract_phases
+from polylogue.lib.phase_extraction import SessionPhase, extract_phases
+from polylogue.lib.semantic_facts import (
+    ConversationSemanticFacts,
+    MessageSemanticFacts,
+    build_conversation_semantic_facts,
+)
 
 # Strip XML-like protocol artifacts from user messages before summarizing.
 # Claude Code sessions contain <command-name>, <task-notification>,
@@ -41,11 +47,6 @@ def _clean_summary_text(text: str) -> str:
     # Collapse whitespace
     cleaned = _WHITESPACE_RE.sub(" ", cleaned).strip()
     return cleaned[:100] if cleaned else ""
-from polylogue.lib.semantic_facts import (
-    ConversationSemanticFacts,
-    MessageSemanticFacts,
-    build_conversation_semantic_facts,
-)
 
 
 class WorkEventKind(str, Enum):
@@ -201,7 +202,6 @@ def _classify_message_range(
     shell_count = category_counts.get("shell", 0)
     git_count = category_counts.get("git", 0)
     agent_count = category_counts.get("agent", 0) + category_counts.get("subagent", 0)
-    total_actions = sum(category_counts.values())
 
     # Strong action evidence overrides text signals
     if edit_count >= 2:
@@ -237,16 +237,17 @@ def _compute_phase_ranges(
     conversation: Conversation,
     *,
     facts: ConversationSemanticFacts | None = None,
+    phases: Sequence[SessionPhase] | None = None,
 ) -> list[tuple[int, int]]:
     semantic_facts = facts or build_conversation_semantic_facts(conversation)
-    phases = extract_phases(conversation, facts=semantic_facts)
-    if not phases:
+    resolved_phases = list(phases) if phases is not None else extract_phases(conversation, facts=semantic_facts)
+    if not resolved_phases:
         msg_count = len(semantic_facts.message_facts)
         return [(0, msg_count)] if msg_count > 0 else []
 
     ranges: list[tuple[int, int]] = []
     messages = list(semantic_facts.message_facts)
-    for phase in phases:
+    for phase in resolved_phases:
         start, end = phase.message_range
         if start >= end:
             continue
@@ -316,6 +317,7 @@ def extract_work_events(
     conversation: Conversation,
     *,
     facts: ConversationSemanticFacts | None = None,
+    phases: Sequence[SessionPhase] | None = None,
 ) -> list[WorkEvent]:
     semantic_facts = facts or build_conversation_semantic_facts(conversation)
     messages = list(semantic_facts.message_facts)
@@ -323,7 +325,7 @@ def extract_work_events(
         return []
 
     events: list[WorkEvent] = []
-    ranges = _compute_phase_ranges(conversation, facts=semantic_facts)
+    ranges = _compute_phase_ranges(conversation, facts=semantic_facts, phases=phases)
     for chunk_start, chunk_end in ranges:
         kind, confidence, evidence = _classify_message_range(messages, chunk_start, chunk_end)
         file_paths: list[str] = []
@@ -333,11 +335,13 @@ def extract_work_events(
                 tools_used.append(action.tool_name)
                 file_paths.extend(action.affected_paths)
 
-        user_texts = [
-            _clean_summary_text(message.text)
-            for message in messages[chunk_start:chunk_end]
-            if message.is_user and message.text and _clean_summary_text(message.text)
-        ]
+        user_texts: list[str] = []
+        for message in messages[chunk_start:chunk_end]:
+            if not message.is_user or not message.text:
+                continue
+            cleaned_text = _clean_summary_text(message.text)
+            if cleaned_text:
+                user_texts.append(cleaned_text)
         summary = "; ".join(user_texts)[:200] if user_texts else kind.value
         timestamps = [
             message.timestamp

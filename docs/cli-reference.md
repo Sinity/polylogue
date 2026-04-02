@@ -182,7 +182,7 @@ polylogue run --watch --exec "echo changes"   # Execute command on conversation 
 polylogue run --watch --webhook URL       # Call webhook on conversation changes
 ```
 
-**Pipeline stages**: `acquire` → `validate` → `parse` → `render` → `index` → `generate-schemas`. Default runs all stages. `parse` consumes only rows marked `validation_status=passed|skipped`.
+**Pipeline stages**: `acquire` → `parse` → `render` → `index` → `generate-schemas`. Validation happens inline during `parse`. Default runs all stages. `parse` consumes newly acquired raw rows plus persisted backlog that still needs validation or parsing.
 
 **Source scoping**: Use `--source NAME` (repeatable) to process only specific sources. Use `polylogue sources` to list available sources.
 
@@ -212,7 +212,6 @@ polylogue products profiles --session-date-since 2026-03-16 --session-date-until
 polylogue products work-events --kind testing --limit 50 --json
 polylogue products work-events --conversation-id claude-code:abc123 --json
 polylogue products phases --provider claude-code --since 2026-03-16T00:00:00+00:00 --json
-polylogue products enrichments --provider claude-code --refined-work-kind debugging --limit 25 --json
 polylogue products threads --limit 20 --json
 polylogue products tags --provider claude-code --since 2026-01-01 --json
 polylogue products day-summaries --provider claude-code --since 2026-01-01 --json
@@ -230,7 +229,7 @@ The session-product surfaces now include:
 - `products profiles`: `first_message_at`, `canonical_session_date`, `engaged_duration_ms`, `engaged_minutes`, canonical projects, repo paths
 - `products work-events`: timestamped work-event rows with `start_time`, `end_time`, `duration_ms`, `canonical_session_date`
 - `products phases`: timestamped session-phase timeline rows with phase kind, timing, duration, and per-phase tool counts
-- `products enrichments`: durable intent/outcome/blocker/refined-work-kind summaries with confidence, support, and provenance metadata
+- `products enrichments`: durable intent/outcome/blocker summaries with confidence, support, and provenance metadata
 - `products analytics`: stable provider-level conversation/message/tool/thinking metrics
 - `products debt`: governed archive-cleanup and derived-repair debt items with maintenance targets plus preview/apply/validation lineage
 
@@ -442,7 +441,7 @@ Polylogue switches to plain mode automatically when stdout/stderr are not TTYs. 
 
 - Use `--source NAME` (repeatable) on `run` to avoid reprocessing everything.
 - Use `--source last` to reuse the previous interactive selection.
-- Example: `polylogue run --source gemini --stage validate`.
+- Example: `polylogue run --source gemini --stage parse`.
 
 ### Preview Mode
 

@@ -1,0 +1,18 @@
+Usage: python -m polylogue generate [OPTIONS]
+
+  Generate synthetic conversations for demos, testing, and inspection.
+
+  Examples:
+    polylogue generate                        # Raw wire-format files
+    polylogue generate -p chatgpt -n 5        # ChatGPT only, 5 conversations
+    polylogue generate -o /tmp/corpus         # Custom output directory
+    polylogue generate --seed                 # Full demo environment
+    polylogue generate --seed --env-only | eval  # Shell-friendly
+
+Options:
+  -p, --provider TEXT    Providers to include (default: all). Can be repeated.
+  -n, --count INTEGER    Conversations per provider  [default: 3]
+  -o, --output-dir PATH  Output directory
+  --seed                 Run pipeline to produce a usable demo environment
+  --env-only             Print shell export statements only (requires --seed)
+  -h, --help             Show this message and exit.

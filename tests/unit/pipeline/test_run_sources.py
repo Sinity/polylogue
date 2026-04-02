@@ -10,7 +10,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from polylogue.config import Config, Source
+from polylogue.pipeline.run_stages import IndexStageOutcome
 from polylogue.pipeline.runner import _select_sources, latest_run, plan_sources, run_sources
+from polylogue.pipeline.services.parsing_models import IngestResult, ParseResult
+from polylogue.pipeline.stage_models import AcquireResult
 from polylogue.sources.parsers.base import RawConversationData
 from polylogue.storage.backends import create_backend
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
@@ -135,7 +138,7 @@ class TestRunSourcesRenderFailures:
 class TestRunSourcesIntegration:
     @pytest.mark.parametrize(
         ("stage", "with_source_data"),
-        [("validate", True), ("parse", True), ("render", False), ("index", False), ("all", True)],
+        [("parse", True), ("render", False), ("index", False), ("all", True)],
     )
     def test_stage_matrix(self, workspace_env, tmp_path: Path, stage: str, with_source_data: bool, monkeypatch):
         monkeypatch.setenv("POLYLOGUE_SCHEMA_VALIDATION", "strict")
@@ -152,18 +155,17 @@ class TestRunSourcesIntegration:
             render_root=workspace_env["archive_root"] / "render",
         )
 
-        # Stages are now independent: validate/parse don't re-run predecessors.
+        # Stages are now independent: parse doesn't re-run acquire.
         # Pre-populate the pipeline backlog so each stage has work to find.
-        # "validate" is now an alias for "parse" (validation is inline in ingest).
-        if stage in ("validate", "parse") and sources:
+        if stage == "parse" and sources:
             asyncio.run(run_sources(config=config, stage="acquire"))
 
         result = asyncio.run(run_sources(config=config, stage=stage))
 
-        if stage in ("validate", "parse"):
+        if stage == "parse":
             assert result.counts["conversations"] >= 1
             assert result.counts.get("rendered", 0) == 0
-            assert result.indexed is False
+            assert result.indexed is True
         elif stage == "render":
             assert result.counts["conversations"] == 0
             assert result.counts["messages"] == 0
@@ -272,8 +274,8 @@ class TestRunSourcesIntegration:
         assert "Index rebuild failed" in result.index_error
 
     def test_parse_stage_reuses_persisted_validation_status(self, workspace_env):
-        from polylogue.storage.store import RawConversationRecord
         from polylogue.storage.blob_store import get_blob_store
+        from polylogue.storage.store import RawConversationRecord
 
         backend = create_backend(workspace_env["data_root"] / "polylogue" / "polylogue.db")
         raw_content = json.dumps(
@@ -325,6 +327,38 @@ class TestRunSourcesIntegration:
         result = asyncio.run(run_sources(config=config, stage="parse"))
         asyncio.run(backend.close())
         assert result.counts["conversations"] >= 1
+
+    def test_parse_with_explicit_source_filter_skips_replay_fallback(self, workspace_env, tmp_path: Path):
+        scoped_source = tmp_path / "scoped"
+        scoped_source.mkdir()
+        config = Config(
+            sources=[Source(name="scoped", path=scoped_source)],
+            archive_root=workspace_env["archive_root"],
+            render_root=workspace_env["archive_root"] / "render",
+        )
+        parse_result = ParseResult()
+        parse_result.processed_ids.add("conv-scoped")
+        ingest_result = IngestResult(
+            acquire_result=AcquireResult(acquired=1, raw_ids=["raw-scoped"]),
+            validation_result=None,
+            parse_result=parse_result,
+            parse_raw_ids=["raw-scoped"],
+            timings={"acquire": 0.01, "ingest": 0.02},
+        )
+
+        with (
+            patch("polylogue.pipeline.run_execution.execute_ingest_stage", new_callable=AsyncMock, return_value=ingest_result) as mock_ingest,
+            patch(
+                "polylogue.pipeline.run_execution.execute_index_stage",
+                new_callable=AsyncMock,
+                return_value=IndexStageOutcome(indexed=True, item_count=1),
+            ),
+        ):
+            result = asyncio.run(run_sources(config=config, stage="parse", source_names=["scoped"]))
+
+        assert mock_ingest.await_count == 1
+        assert mock_ingest.await_args.kwargs["skip_acquire"] is False
+        assert result.counts["acquired"] == 1
 
 
 # =====================================================================

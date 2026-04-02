@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Sequence
 
 import aiosqlite
 
@@ -32,6 +33,20 @@ _THREAD_ROOT_ID_SQL = """
     FROM ancestors
     WHERE parent_conversation_id IS NULL
     LIMIT 1
+"""
+_THREAD_ROOT_IDS_SQL_TEMPLATE = """
+    WITH RECURSIVE ancestors(target_id, conversation_id, parent_conversation_id) AS (
+        SELECT conversation_id, conversation_id, parent_conversation_id
+        FROM conversations
+        WHERE conversation_id IN ({placeholders})
+        UNION ALL
+        SELECT a.target_id, c.conversation_id, c.parent_conversation_id
+        FROM conversations c
+        JOIN ancestors a ON a.parent_conversation_id = c.conversation_id
+    )
+    SELECT target_id, conversation_id
+    FROM ancestors
+    WHERE parent_conversation_id IS NULL
 """
 _THREAD_CONVERSATION_IDS_SQL = """
     WITH RECURSIVE descendants(conversation_id) AS (
@@ -110,6 +125,25 @@ def thread_root_id_sync(conn: sqlite3.Connection, conversation_id: str) -> str |
 async def thread_root_id_async(conn: aiosqlite.Connection, conversation_id: str) -> str | None:
     row = await (await conn.execute(_THREAD_ROOT_ID_SQL, (conversation_id,))).fetchone()
     return str(row["conversation_id"]) if row else None
+
+
+async def thread_root_ids_async(
+    conn: aiosqlite.Connection,
+    conversation_ids: Sequence[str],
+) -> dict[str, str]:
+    if not conversation_ids:
+        return {}
+    placeholders = ", ".join("?" for _ in conversation_ids)
+    rows = await (
+        await conn.execute(
+            _THREAD_ROOT_IDS_SQL_TEMPLATE.format(placeholders=placeholders),
+            tuple(conversation_ids),
+        )
+    ).fetchall()
+    return {
+        str(row["target_id"]): str(row["conversation_id"])
+        for row in rows
+    }
 
 
 def thread_conversation_ids_sync(conn: sqlite3.Connection, root_id: str) -> list[str]:
@@ -191,6 +225,7 @@ __all__ = [
     "thread_conversation_ids_async",
     "thread_conversation_ids_sync",
     "thread_root_id_async",
+    "thread_root_ids_async",
     "thread_root_id_sync",
     "thread_search_text",
 ]

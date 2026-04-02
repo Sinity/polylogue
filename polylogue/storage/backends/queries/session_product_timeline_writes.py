@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 import aiosqlite
 
 from polylogue.storage.store import (
@@ -13,7 +15,9 @@ from polylogue.storage.store import (
 
 __all__ = [
     "replace_session_phases",
+    "replace_session_phases_bulk",
     "replace_session_work_events",
+    "replace_session_work_events_bulk",
 ]
 
 _ASYNC_COLUMN_CACHE: dict[tuple[int, str], bool] = {}
@@ -37,10 +41,26 @@ async def replace_session_work_events(
     records: list[SessionWorkEventRecord],
     transaction_depth: int,
 ) -> None:
-    await conn.execute(
-        "DELETE FROM session_work_events WHERE conversation_id = ?",
-        (conversation_id,),
+    await replace_session_work_events_bulk(
+        conn,
+        [conversation_id],
+        records,
+        transaction_depth,
     )
+
+
+async def replace_session_work_events_bulk(
+    conn: aiosqlite.Connection,
+    conversation_ids: Sequence[str],
+    records: Sequence[SessionWorkEventRecord],
+    transaction_depth: int,
+) -> None:
+    if conversation_ids:
+        placeholders = ", ".join("?" for _ in conversation_ids)
+        await conn.execute(
+            f"DELETE FROM session_work_events WHERE conversation_id IN ({placeholders})",
+            tuple(conversation_ids),
+        )
     if records:
         has_legacy_payload = await _table_has_column(conn, "session_work_events", "payload_json")
         columns = [
@@ -138,10 +158,26 @@ async def replace_session_phases(
     records: list[SessionPhaseRecord],
     transaction_depth: int,
 ) -> None:
-    await conn.execute(
-        "DELETE FROM session_phases WHERE conversation_id = ?",
-        (conversation_id,),
+    await replace_session_phases_bulk(
+        conn,
+        [conversation_id],
+        records,
+        transaction_depth,
     )
+
+
+async def replace_session_phases_bulk(
+    conn: aiosqlite.Connection,
+    conversation_ids: Sequence[str],
+    records: Sequence[SessionPhaseRecord],
+    transaction_depth: int,
+) -> None:
+    if conversation_ids:
+        placeholders = ", ".join("?" for _ in conversation_ids)
+        await conn.execute(
+            f"DELETE FROM session_phases WHERE conversation_id IN ({placeholders})",
+            tuple(conversation_ids),
+        )
     if records:
         has_legacy_payload = await _table_has_column(conn, "session_phases", "payload_json")
         columns = [

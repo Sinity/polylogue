@@ -13,11 +13,8 @@ from typing import Any
 
 import click
 
-from polylogue.showcase.dimensions import (
-    query_read,
-    schema_exercise,
-)
-from polylogue.showcase.exercises import Exercise, Validation
+from polylogue.showcase.dimensions import query_read, schema_exercise
+from polylogue.showcase.exercise_models import Exercise, Validation
 
 
 def discover_filter_flags(cli_group: click.Group) -> list[dict[str, Any]]:
@@ -112,6 +109,32 @@ def generate_filter_exercises(cli_group: click.Group) -> list[Exercise]:
             env="any",
         ))
 
+    return exercises
+
+
+def root_help_exercise_names() -> set[str]:
+    """Return the canonical showcase exercise names for root command help."""
+    from polylogue.cli.click_command_registration import ROOT_COMMANDS
+
+    return {f"help-{command.name}" for command in ROOT_COMMANDS}
+
+
+def generate_root_help_exercises() -> list[Exercise]:
+    """Generate tier-0 help exercises from the registered root commands."""
+    from polylogue.cli.click_command_registration import ROOT_COMMANDS
+
+    exercises: list[Exercise] = []
+    for command in ROOT_COMMANDS:
+        exercises.append(
+            Exercise(
+                name=f"help-{command.name}",
+                group="structural",
+                description=f"{command.name} subcommand help",
+                args=[command.name, "--help"],
+                validation=Validation(stdout_contains=(f"polylogue {command.name}",)),
+                tier=0,
+            )
+        )
     return exercises
 
 
@@ -223,6 +246,7 @@ def generate_all_exercises(cli_group: click.Group | None = None) -> list[Exercis
     exercises: list[Exercise] = []
     if cli_group is not None:
         exercises.extend(generate_filter_exercises(cli_group))
+    exercises.extend(generate_root_help_exercises())
     exercises.extend(generate_format_exercises())
     exercises.extend(generate_schema_exercises())
     return exercises
@@ -233,5 +257,7 @@ __all__ = [
     "generate_all_exercises",
     "generate_filter_exercises",
     "generate_format_exercises",
+    "generate_root_help_exercises",
     "generate_schema_exercises",
+    "root_help_exercise_names",
 ]
