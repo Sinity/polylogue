@@ -199,7 +199,7 @@ async def test_refresh_session_products_bulk_dedupes_related_refreshes(
             ],
         )
 
-    refresh_thread_root = AsyncMock(return_value=1)
+    refresh_thread_roots = AsyncMock(return_value=2)
     refresh_aggregates = AsyncMock()
 
     monkeypatch.setattr(
@@ -207,8 +207,8 @@ async def test_refresh_session_products_bulk_dedupes_related_refreshes(
         _fake_apply,
     )
     monkeypatch.setattr(
-        "polylogue.storage.session_product_refresh._refresh_thread_root_async",
-        refresh_thread_root,
+        "polylogue.storage.session_product_refresh._refresh_thread_roots_async",
+        refresh_thread_roots,
     )
     monkeypatch.setattr(
         "polylogue.storage.session_product_refresh.refresh_async_provider_day_aggregates",
@@ -220,9 +220,11 @@ async def test_refresh_session_products_bulk_dedupes_related_refreshes(
         ["conv-1", "conv-2", "conv-3"],
     )
 
-    assert refresh_thread_root.await_count == 2
-    refreshed_roots = sorted(call.args[1] for call in refresh_thread_root.await_args_list)
-    assert refreshed_roots == ["root-a", "root-b"]
+    refresh_thread_roots.assert_awaited_once()
+    thread_args = refresh_thread_roots.await_args
+    assert thread_args.args[0] is fake_conn
+    assert thread_args.args[1] == ["root-a", "root-b"]
+    assert thread_args.kwargs["transaction_depth"] == 1
     refresh_aggregates.assert_awaited_once()
     aggregate_args = refresh_aggregates.await_args
     assert aggregate_args.args[0] is fake_conn

@@ -944,7 +944,7 @@ async def refresh_session_products_bulk(
     try:
         from polylogue.storage.session_product_refresh import (
             _apply_session_product_conversation_updates_async,
-            _refresh_thread_root_async,
+            _refresh_thread_roots_async,
             refresh_async_provider_day_aggregates,
         )
 
@@ -958,12 +958,11 @@ async def refresh_session_products_bulk(
             update_elapsed = time.perf_counter() - t_updates
             t_threads = time.perf_counter()
             thread_root_ids = update.thread_root_ids
-            for root_id in sorted(thread_root_ids):
-                await _refresh_thread_root_async(
-                    conn,
-                    root_id,
-                    transaction_depth=1,
-                )
+            await _refresh_thread_roots_async(
+                conn,
+                sorted(thread_root_ids),
+                transaction_depth=1,
+            )
             thread_elapsed = time.perf_counter() - t_threads
             t_aggregates = time.perf_counter()
             affected_groups = update.affected_groups

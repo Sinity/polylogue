@@ -6,6 +6,7 @@ from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.backends.connection import open_connection
 from polylogue.storage.session_product_refresh import (
     _apply_session_product_conversation_updates_async,
+    _refresh_thread_roots_async,
 )
 from tests.infra.storage_records import make_conversation, make_message, store_records
 
@@ -149,3 +150,75 @@ async def test_apply_session_product_conversation_updates_async_clears_deleted_c
     assert profile_count == 0
     assert work_event_count == 0
     assert phase_count == 0
+
+
+@pytest.mark.asyncio
+async def test_refresh_thread_roots_async_batches_root_rebuilds(
+    tmp_path,
+) -> None:
+    db_path = tmp_path / "refresh-thread-roots.db"
+    with open_connection(db_path) as conn:
+        store_records(
+            conversation=make_conversation("conv-root-a", title="Root A"),
+            messages=[make_message("conv-root-a:msg-1", "conv-root-a", text="Root A message")],
+            attachments=[],
+            conn=conn,
+        )
+        store_records(
+            conversation=make_conversation(
+                "conv-child-a",
+                title="Child A",
+                parent_conversation_id="conv-root-a",
+            ),
+            messages=[make_message("conv-child-a:msg-1", "conv-child-a", text="Child A message")],
+            attachments=[],
+            conn=conn,
+        )
+        store_records(
+            conversation=make_conversation("conv-root-b", title="Root B"),
+            messages=[make_message("conv-root-b:msg-1", "conv-root-b", text="Root B message")],
+            attachments=[],
+            conn=conn,
+        )
+        store_records(
+            conversation=make_conversation(
+                "conv-child-b",
+                title="Child B",
+                parent_conversation_id="conv-root-b",
+            ),
+            messages=[make_message("conv-child-b:msg-1", "conv-child-b", text="Child B message")],
+            attachments=[],
+            conn=conn,
+        )
+        conn.commit()
+
+    backend = SQLiteBackend(db_path=db_path)
+    async with backend.connection() as conn:
+        update = await _apply_session_product_conversation_updates_async(
+            conn,
+            ["conv-root-a", "conv-child-a", "conv-root-b", "conv-child-b"],
+            transaction_depth=1,
+            page_size=10,
+        )
+        refreshed = await _refresh_thread_roots_async(
+            conn,
+            sorted(update.thread_root_ids),
+            transaction_depth=1,
+        )
+        await conn.commit()
+
+    assert refreshed == 2
+
+    with open_connection(db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT thread_id, root_id, session_count
+            FROM work_threads
+            ORDER BY thread_id
+            """
+        ).fetchall()
+
+    assert [(row["thread_id"], row["root_id"], row["session_count"]) for row in rows] == [
+        ("conv-root-a", "conv-root-a", 2),
+        ("conv-root-b", "conv-root-b", 2),
+    ]
