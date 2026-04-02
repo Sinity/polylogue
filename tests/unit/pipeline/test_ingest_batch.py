@@ -160,28 +160,30 @@ async def test_refresh_session_products_bulk_dedupes_related_refreshes(
 
     fake_backend = SimpleNamespace(connection=_connection)
 
-    async def _fake_apply(conn, conversation_id: str, *, transaction_depth: int):
+    async def _fake_apply(conn, conversation_ids: list[str], *, transaction_depth: int):
         del conn, transaction_depth
-        if conversation_id == "conv-1":
-            return SimpleNamespace(
-                affected_groups={("chatgpt", "2026-04-02")},
-                thread_root_id="root-a",
-            )
-        if conversation_id == "conv-2":
-            return SimpleNamespace(
-                affected_groups={("chatgpt", "2026-04-02")},
-                thread_root_id="root-a",
-            )
+        assert conversation_ids == ["conv-1", "conv-2", "conv-3"]
         return SimpleNamespace(
-            affected_groups={("chatgpt", "2026-04-03")},
-            thread_root_id="root-b",
+            counts={
+                "profiles": 3,
+                "work_events": 0,
+                "phases": 0,
+                "threads": 0,
+                "tag_rollups": 0,
+                "day_summaries": 0,
+            },
+            affected_groups={
+                ("chatgpt", "2026-04-02"),
+                ("chatgpt", "2026-04-03"),
+            },
+            thread_root_ids={"root-a", "root-b"},
         )
 
     refresh_thread_root = AsyncMock(return_value=1)
     refresh_aggregates = AsyncMock()
 
     monkeypatch.setattr(
-        "polylogue.storage.session_product_refresh._apply_session_product_conversation_update_async",
+        "polylogue.storage.session_product_refresh._apply_session_product_conversation_updates_async",
         _fake_apply,
     )
     monkeypatch.setattr(

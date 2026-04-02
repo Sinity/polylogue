@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 import aiosqlite
@@ -14,6 +15,7 @@ from polylogue.storage.session_product_aggregates import (
 from polylogue.storage.session_product_profiles import hydrate_session_profile
 from polylogue.storage.session_product_rebuild import (
     build_session_product_records,
+    chunked,
     hydrate_conversations,
     load_async_batch,
 )
@@ -28,6 +30,24 @@ class _SessionProductRefreshUpdate:
     counts: dict[str, int]
     thread_root_id: str | None
     affected_groups: set[tuple[str, str]]
+
+
+@dataclass(slots=True)
+class _SessionProductBulkRefreshUpdate:
+    counts: dict[str, int]
+    thread_root_ids: set[str]
+    affected_groups: set[tuple[str, str]]
+
+
+def _empty_refresh_counts() -> dict[str, int]:
+    return {
+        "profiles": 0,
+        "work_events": 0,
+        "phases": 0,
+        "threads": 0,
+        "tag_rollups": 0,
+        "day_summaries": 0,
+    }
 
 
 async def _refresh_thread_root_async(
@@ -174,14 +194,7 @@ async def _apply_session_product_conversation_update_async(
             else None
         )
         return _SessionProductRefreshUpdate(
-            counts={
-                "profiles": 0,
-                "work_events": 0,
-                "phases": 0,
-                "threads": 0,
-                "tag_rollups": 0,
-                "day_summaries": 0,
-            },
+            counts=_empty_refresh_counts(),
             thread_root_id=None,
             affected_groups={old_group} if old_group is not None else set(),
         )
@@ -211,6 +224,107 @@ async def _apply_session_product_conversation_update_async(
             "day_summaries": 0,
         },
         thread_root_id=await thread_root_id_async(conn, conversation_id),
+        affected_groups=affected_groups,
+    )
+
+
+async def _load_existing_session_profile_records_async(
+    conn: aiosqlite.Connection,
+    conversation_ids: Sequence[str],
+) -> dict[str, object]:
+    if not conversation_ids:
+        return {}
+    placeholders = ", ".join("?" for _ in conversation_ids)
+    rows = await (
+        await conn.execute(
+            f"SELECT * FROM session_profiles WHERE conversation_id IN ({placeholders})",
+            tuple(conversation_ids),
+        )
+    ).fetchall()
+    return {
+        str(row["conversation_id"]): _row_to_session_profile_record(row)
+        for row in rows
+    }
+
+
+async def _apply_session_product_conversation_updates_async(
+    conn: aiosqlite.Connection,
+    conversation_ids: Sequence[str],
+    *,
+    transaction_depth: int,
+    page_size: int = 100,
+) -> _SessionProductBulkRefreshUpdate:
+    from polylogue.storage.backends.queries.session_product_profile_writes import (
+        replace_session_profile,
+    )
+    from polylogue.storage.backends.queries.session_product_timeline_writes import (
+        replace_session_phases,
+        replace_session_work_events,
+    )
+
+    counts = _empty_refresh_counts()
+    thread_root_ids: set[str] = set()
+    affected_groups: set[tuple[str, str]] = set()
+    conversation_id_list = list(conversation_ids)
+
+    for chunk in chunked(conversation_id_list, size=page_size):
+        old_profile_records = await _load_existing_session_profile_records_async(conn, chunk)
+        conversations, messages, attachments, blocks = await load_async_batch(conn, chunk)
+        hydrated_by_id = {
+            str(conversation.id): conversation
+            for conversation in hydrate_conversations(conversations, messages, attachments, blocks)
+        }
+
+        for conversation_id in chunk:
+            old_profile_record = old_profile_records.get(conversation_id)
+            hydrated_conversation = hydrated_by_id.get(conversation_id)
+            if hydrated_conversation is None:
+                await conn.execute(
+                    "DELETE FROM session_profiles WHERE conversation_id = ?",
+                    (conversation_id,),
+                )
+                await replace_session_work_events(conn, conversation_id, [], transaction_depth)
+                await replace_session_phases(conn, conversation_id, [], transaction_depth)
+                old_group = profile_provider_day(old_profile_record)
+                if old_group is not None:
+                    affected_groups.add(old_group)
+                continue
+
+            profile_record, event_records, phase_records = build_session_product_records(
+                hydrated_conversation
+            )
+            await replace_session_profile(conn, profile_record, transaction_depth)
+            await replace_session_work_events(
+                conn,
+                conversation_id,
+                event_records,
+                transaction_depth,
+            )
+            await replace_session_phases(
+                conn,
+                conversation_id,
+                phase_records,
+                transaction_depth,
+            )
+
+            counts["profiles"] += 1
+            counts["work_events"] += len(event_records)
+            counts["phases"] += len(phase_records)
+            affected_groups.update(
+                group
+                for group in (
+                    profile_provider_day(old_profile_record),
+                    profile_provider_day(profile_record),
+                )
+                if group is not None
+            )
+            root_id = await thread_root_id_async(conn, conversation_id)
+            if root_id is not None:
+                thread_root_ids.add(root_id)
+
+    return _SessionProductBulkRefreshUpdate(
+        counts=counts,
+        thread_root_ids=thread_root_ids,
         affected_groups=affected_groups,
     )
 
