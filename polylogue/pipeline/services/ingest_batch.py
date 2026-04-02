@@ -21,7 +21,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from polylogue.lib.metrics import read_current_rss_mb, read_peak_rss_mb
+from polylogue.lib.metrics import (
+    read_current_rss_mb,
+    read_peak_rss_children_mb,
+    read_peak_rss_self_mb,
+)
 from polylogue.logging import get_logger
 from polylogue.pipeline.services.ingest_worker import (
     ConversationData,
@@ -771,7 +775,8 @@ async def process_ingest_batch(
 
     elapsed_s = time.perf_counter() - batch_started
     rss_end_mb = read_current_rss_mb()
-    peak_rss_mb = read_peak_rss_mb()
+    peak_rss_self_mb = read_peak_rss_self_mb()
+    peak_rss_children_mb = read_peak_rss_children_mb()
     observation: dict[str, object] = {
         "records": batch_summary.raw_record_count,
         "blob_mb": round(batch_summary.total_blob_mb, 1),
@@ -789,8 +794,10 @@ async def process_ingest_batch(
         observation["rss_end_mb"] = rss_end_mb
     if rss_start_mb is not None and rss_end_mb is not None:
         observation["rss_delta_mb"] = round(rss_end_mb - rss_start_mb, 1)
-    if peak_rss_mb is not None:
-        observation["peak_rss_mb"] = peak_rss_mb
+    if peak_rss_self_mb is not None:
+        observation["peak_rss_self_mb"] = peak_rss_self_mb
+    if peak_rss_children_mb is not None:
+        observation["peak_rss_children_mb"] = peak_rss_children_mb
     if batch_summary.max_current_rss_mb is not None:
         observation["max_current_rss_mb"] = batch_summary.max_current_rss_mb
     return observation

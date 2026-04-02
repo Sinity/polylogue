@@ -28,14 +28,23 @@ def read_current_rss_mb() -> float | None:
     return None
 
 
-def read_peak_rss_mb() -> float | None:
-    """Return the peak RSS for the current process in MiB."""
+def _read_rusage_peak_rss_mb(scope: int) -> float | None:
     try:
-        peak_rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        peak_rss = resource.getrusage(scope).ru_maxrss
     except OSError:
         return None
     divisor = 1024 * 1024 if sys.platform == "darwin" else 1024
     return round(float(peak_rss) / divisor, 1)
+
+
+def read_peak_rss_self_mb() -> float | None:
+    """Return the peak RSS for the current process in MiB."""
+    return _read_rusage_peak_rss_mb(resource.RUSAGE_SELF)
+
+
+def read_peak_rss_children_mb() -> float | None:
+    """Return the peak RSS reported for child processes in MiB."""
+    return _read_rusage_peak_rss_mb(resource.RUSAGE_CHILDREN)
 
 
 @dataclass
@@ -50,7 +59,8 @@ class StageMetrics:
     details: dict[str, Any] = field(default_factory=dict)
     rss_start_mb: float | None = None
     rss_end_mb: float | None = None
-    peak_rss_mb: float | None = None
+    peak_rss_self_mb: float | None = None
+    peak_rss_children_mb: float | None = None
 
     @property
     def elapsed_s(self) -> float:
@@ -72,14 +82,22 @@ class StageMetrics:
         items: int | None = None,
         *,
         rss_end_mb: float | None = None,
-        peak_rss_mb: float | None = None,
+        peak_rss_self_mb: float | None = None,
+        peak_rss_children_mb: float | None = None,
     ) -> StageMetrics:
         """Mark stage as complete."""
         self.end_time = time.perf_counter()
         if items is not None:
             self.items_processed = items
         self.rss_end_mb = read_current_rss_mb() if rss_end_mb is None else rss_end_mb
-        self.peak_rss_mb = read_peak_rss_mb() if peak_rss_mb is None else peak_rss_mb
+        self.peak_rss_self_mb = (
+            read_peak_rss_self_mb() if peak_rss_self_mb is None else peak_rss_self_mb
+        )
+        self.peak_rss_children_mb = (
+            read_peak_rss_children_mb()
+            if peak_rss_children_mb is None
+            else peak_rss_children_mb
+        )
         return self
 
     def to_dict(self) -> dict[str, Any]:
@@ -98,8 +116,10 @@ class StageMetrics:
             result["rss_end_mb"] = self.rss_end_mb
         if self.rss_start_mb is not None and self.rss_end_mb is not None:
             result["rss_delta_mb"] = round(self.rss_end_mb - self.rss_start_mb, 1)
-        if self.peak_rss_mb is not None:
-            result["peak_rss_mb"] = self.peak_rss_mb
+        if self.peak_rss_self_mb is not None:
+            result["peak_rss_self_mb"] = self.peak_rss_self_mb
+        if self.peak_rss_children_mb is not None:
+            result["peak_rss_children_mb"] = self.peak_rss_children_mb
         return result
 
 
@@ -147,7 +167,8 @@ class PipelineMetrics:
         return {
             "total_duration_ms": round(self.total_elapsed_s * 1000, 1),
             "current_rss_mb": read_current_rss_mb(),
-            "peak_rss_mb": read_peak_rss_mb(),
+            "peak_rss_self_mb": read_peak_rss_self_mb(),
+            "peak_rss_children_mb": read_peak_rss_children_mb(),
             "stages": {name: m.to_dict() for name, m in self.stages.items()},
             "slow_items": self.slow_items.to_list(),
         }
@@ -158,5 +179,6 @@ __all__ = [
     "SlowItemTracker",
     "StageMetrics",
     "read_current_rss_mb",
-    "read_peak_rss_mb",
+    "read_peak_rss_children_mb",
+    "read_peak_rss_self_mb",
 ]

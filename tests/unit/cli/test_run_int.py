@@ -157,7 +157,8 @@ async def test_run_writes_unique_report_files(workspace_env, tmp_path, monkeypat
     for report_path in run_reports:
         payload = json.loads(report_path.read_text())
         assert "metrics" in payload
-        assert payload["metrics"]["peak_rss_mb"] is not None
+        assert payload["metrics"]["peak_rss_self_mb"] is not None
+        assert payload["metrics"]["peak_rss_children_mb"] is not None
 
     from polylogue.pipeline.run_finalization import latest_run
 

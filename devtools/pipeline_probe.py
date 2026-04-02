@@ -908,7 +908,7 @@ def _build_budget_report(summary: dict[str, Any], args: argparse.Namespace) -> d
 
     metrics = summary.get("run_payload", {}).get("metrics", {})
     observed_total_ms = metrics.get("total_duration_ms", summary.get("result", {}).get("duration_ms"))
-    observed_peak_rss_mb = metrics.get("peak_rss_mb")
+    observed_peak_rss_mb = metrics.get("peak_rss_self_mb")
     violations: list[str] = []
 
     if args.max_total_ms is not None:
