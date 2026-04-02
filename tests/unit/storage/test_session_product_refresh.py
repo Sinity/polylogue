@@ -44,6 +44,11 @@ async def test_apply_session_product_conversation_updates_async_batches_hydrated
     assert update.counts["profiles"] == 1
     assert update.thread_root_ids == {"conv-refresh"}
     assert update.affected_groups
+    assert len(update.chunk_observations) == 1
+    assert float(update.chunk_observations[0]["load_ms"]) >= 0.0
+    assert float(update.chunk_observations[0]["hydrate_ms"]) >= 0.0
+    assert float(update.chunk_observations[0]["build_ms"]) >= 0.0
+    assert float(update.chunk_observations[0]["write_ms"]) >= 0.0
 
 
 @pytest.mark.asyncio
@@ -81,6 +86,7 @@ async def test_apply_session_product_conversation_updates_async_preserves_thread
 
     assert update.counts["profiles"] == 2
     assert update.thread_root_ids == {"conv-root"}
+    assert len(update.chunk_observations) == 1
 
 
 @pytest.mark.asyncio
@@ -124,6 +130,7 @@ async def test_apply_session_product_conversation_updates_async_clears_deleted_c
         await conn.commit()
 
     assert second_update.counts["profiles"] == 0
+    assert len(second_update.chunk_observations) == 1
 
     with open_connection(db_path) as conn:
         profile_count = conn.execute(

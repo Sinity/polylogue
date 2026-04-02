@@ -954,6 +954,12 @@ async def refresh_session_products_bulk(
             await conn.commit()
 
         elapsed = time.perf_counter() - t_start
+        chunk_observations = getattr(update, "chunk_observations", [])
+        chunk_total_values = [float(chunk["total_ms"]) for chunk in chunk_observations]
+        chunk_load_values = [float(chunk["load_ms"]) for chunk in chunk_observations]
+        chunk_hydrate_values = [float(chunk["hydrate_ms"]) for chunk in chunk_observations]
+        chunk_build_values = [float(chunk["build_ms"]) for chunk in chunk_observations]
+        chunk_write_values = [float(chunk["write_ms"]) for chunk in chunk_observations]
         observation: dict[str, object] = {
             "conversations": len(changed_conversation_ids),
             "unique_thread_roots": len(thread_root_ids),
@@ -962,7 +968,25 @@ async def refresh_session_products_bulk(
             "update_ms": round(update_elapsed * 1000.0, 1),
             "thread_refresh_ms": round(thread_elapsed * 1000.0, 1),
             "aggregate_refresh_ms": round(aggregate_elapsed * 1000.0, 1),
+            "update_chunk_count": len(chunk_observations),
+            "update_slow_chunk_count": sum(
+                1
+                for chunk in chunk_observations
+                if bool(chunk.get("slow"))
+            ),
         }
+        if chunk_total_values:
+            observation["update_max_chunk_ms"] = round(max(chunk_total_values), 1)
+        if chunk_load_values:
+            observation["update_max_chunk_load_ms"] = round(max(chunk_load_values), 1)
+        if chunk_hydrate_values:
+            observation["update_max_chunk_hydrate_ms"] = round(max(chunk_hydrate_values), 1)
+        if chunk_build_values:
+            observation["update_max_chunk_build_ms"] = round(max(chunk_build_values), 1)
+        if chunk_write_values:
+            observation["update_max_chunk_write_ms"] = round(max(chunk_write_values), 1)
+        if chunk_observations:
+            observation["update_chunks"] = chunk_observations
         if elapsed > 2.0:
             logger.info(
                 "session_product_refresh",

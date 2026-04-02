@@ -182,6 +182,20 @@ async def test_refresh_session_products_bulk_dedupes_related_refreshes(
                 ("chatgpt", "2026-04-03"),
             },
             thread_root_ids={"root-a", "root-b"},
+            chunk_observations=[
+                {
+                    "conversation_count": 3,
+                    "hydrated_count": 3,
+                    "profiles_written": 3,
+                    "work_events_written": 0,
+                    "phases_written": 0,
+                    "load_ms": 12.5,
+                    "hydrate_ms": 3.1,
+                    "build_ms": 9.9,
+                    "write_ms": 7.7,
+                    "total_ms": 33.2,
+                },
+            ],
         )
 
     refresh_thread_root = AsyncMock(return_value=1)
@@ -225,6 +239,13 @@ async def test_refresh_session_products_bulk_dedupes_related_refreshes(
     assert float(observation["update_ms"]) >= 0.0
     assert float(observation["thread_refresh_ms"]) >= 0.0
     assert float(observation["aggregate_refresh_ms"]) >= 0.0
+    assert observation["update_chunk_count"] == 1
+    assert observation["update_slow_chunk_count"] == 0
+    assert observation["update_max_chunk_ms"] == 33.2
+    assert observation["update_max_chunk_load_ms"] == 12.5
+    assert observation["update_max_chunk_hydrate_ms"] == 3.1
+    assert observation["update_max_chunk_build_ms"] == 9.9
+    assert observation["update_max_chunk_write_ms"] == 7.7
 
 
 def test_successful_raw_state_update_combines_parse_and_validation_fields() -> None:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from collections.abc import Sequence
 from dataclasses import dataclass
 
@@ -38,6 +39,7 @@ class _SessionProductBulkRefreshUpdate:
     counts: dict[str, int]
     thread_root_ids: set[str]
     affected_groups: set[tuple[str, str]]
+    chunk_observations: list[dict[str, object]]
 
 
 def _empty_refresh_counts() -> dict[str, int]:
@@ -266,20 +268,27 @@ async def _apply_session_product_conversation_updates_async(
     counts = _empty_refresh_counts()
     thread_root_ids: set[str] = set()
     affected_groups: set[tuple[str, str]] = set()
+    chunk_observations: list[dict[str, object]] = []
     conversation_id_list = list(conversation_ids)
 
     for chunk in chunked(conversation_id_list, size=page_size):
+        chunk_started = time.perf_counter()
+        load_started = time.perf_counter()
         old_profile_records = await _load_existing_session_profile_records_async(conn, chunk)
         conversations, messages, attachments, blocks = await load_async_batch(conn, chunk)
         root_ids_by_conversation = await thread_root_ids_async(conn, chunk)
+        load_elapsed_ms = round((time.perf_counter() - load_started) * 1000.0, 1)
         profile_records_to_write: list[object] = []
         work_event_records_to_write: list[object] = []
         phase_records_to_write: list[object] = []
+        hydrate_started = time.perf_counter()
         hydrated_by_id = {
             str(conversation.id): conversation
             for conversation in hydrate_conversations(conversations, messages, attachments, blocks)
         }
+        hydrate_elapsed_ms = round((time.perf_counter() - hydrate_started) * 1000.0, 1)
 
+        build_started = time.perf_counter()
         for conversation_id in chunk:
             old_profile_record = old_profile_records.get(conversation_id)
             hydrated_conversation = hydrated_by_id.get(conversation_id)
@@ -310,7 +319,9 @@ async def _apply_session_product_conversation_updates_async(
             root_id = root_ids_by_conversation.get(conversation_id)
             if root_id is not None:
                 thread_root_ids.add(root_id)
+        build_elapsed_ms = round((time.perf_counter() - build_started) * 1000.0, 1)
 
+        write_started = time.perf_counter()
         await replace_session_profiles_bulk(
             conn,
             chunk,
@@ -329,11 +340,28 @@ async def _apply_session_product_conversation_updates_async(
             phase_records_to_write,
             transaction_depth,
         )
+        write_elapsed_ms = round((time.perf_counter() - write_started) * 1000.0, 1)
+        chunk_observation = {
+            "conversation_count": len(chunk),
+            "hydrated_count": len(hydrated_by_id),
+            "profiles_written": len(profile_records_to_write),
+            "work_events_written": len(work_event_records_to_write),
+            "phases_written": len(phase_records_to_write),
+            "load_ms": load_elapsed_ms,
+            "hydrate_ms": hydrate_elapsed_ms,
+            "build_ms": build_elapsed_ms,
+            "write_ms": write_elapsed_ms,
+            "total_ms": round((time.perf_counter() - chunk_started) * 1000.0, 1),
+        }
+        if chunk_observation["total_ms"] >= 500.0:
+            chunk_observation["slow"] = True
+        chunk_observations.append(chunk_observation)
 
     return _SessionProductBulkRefreshUpdate(
         counts=counts,
         thread_root_ids=thread_root_ids,
         affected_groups=affected_groups,
+        chunk_observations=chunk_observations,
     )
 
 
