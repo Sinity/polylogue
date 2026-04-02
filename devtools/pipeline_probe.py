@@ -160,6 +160,11 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Override POLYLOGUE_INGEST_WORKERS for this probe.",
     )
     parser.add_argument(
+        "--measure-ingest-result-size",
+        action="store_true",
+        help="Measure serialized IngestRecordResult sizes for this probe.",
+    )
+    parser.add_argument(
         "--workdir",
         type=Path,
         help=(
@@ -197,6 +202,7 @@ def _isolated_env(workdir: Path, *, extra_env: dict[str, str] | None = None) -> 
         "POLYLOGUE_RENDER_ROOT",
         "POLYLOGUE_PARSE_RAW_BATCH_SIZE",
         "POLYLOGUE_INGEST_WORKERS",
+        "POLYLOGUE_MEASURE_INGEST_RESULT_SIZE",
     )}
     env_updates = {
         "XDG_DATA_HOME": str(workdir / "xdg-data"),
@@ -663,6 +669,8 @@ def _probe_env_overrides(args: argparse.Namespace) -> dict[str, str]:
         if ingest_workers <= 0:
             raise ValueError("--ingest-workers must be positive")
         overrides["POLYLOGUE_INGEST_WORKERS"] = str(ingest_workers)
+    if getattr(args, "measure_ingest_result_size", False):
+        overrides["POLYLOGUE_MEASURE_INGEST_RESULT_SIZE"] = "1"
     return overrides
 
 
@@ -799,6 +807,7 @@ async def run_probe(args: argparse.Namespace) -> dict[str, Any]:
                 "seed": args.seed,
                 "raw_batch_size": args.raw_batch_size,
                 "ingest_workers": args.ingest_workers,
+                "measure_ingest_result_size": args.measure_ingest_result_size,
             },
             "paths": {
                 "workdir": str(workdir),
@@ -849,6 +858,7 @@ async def run_probe(args: argparse.Namespace) -> dict[str, Any]:
                 "stage": args.stage,
                 "raw_batch_size": args.raw_batch_size,
                 "ingest_workers": args.ingest_workers,
+                "measure_ingest_result_size": args.measure_ingest_result_size,
             },
             "paths": {
                 "workdir": str(workdir),
@@ -919,6 +929,7 @@ async def run_probe(args: argparse.Namespace) -> dict[str, Any]:
                 "source_filters": source_filters,
                 "raw_batch_size": args.raw_batch_size,
                 "ingest_workers": args.ingest_workers,
+                "measure_ingest_result_size": args.measure_ingest_result_size,
             },
             "paths": {
                 "workdir": str(workdir),

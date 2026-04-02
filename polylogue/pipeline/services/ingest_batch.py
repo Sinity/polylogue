@@ -81,6 +81,9 @@ class _IngestBatchSummary:
     raw_record_count: int = 0
     worker_count: int = 0
     total_blob_mb: float = 0.0
+    total_result_bytes: int = 0
+    max_result_bytes: int = 0
+    max_result_raw_id: str | None = None
     elapsed_s: float = 0.0
     max_current_rss_mb: float | None = None
 
@@ -424,6 +427,11 @@ def _record_outcome(summary: _IngestBatchSummary, ir: IngestRecordResult) -> Non
         error=ir.error,
         had_conversations=bool(ir.conversations),
     )
+    if ir.serialized_size_bytes is not None:
+        summary.total_result_bytes += ir.serialized_size_bytes
+        if ir.serialized_size_bytes > summary.max_result_bytes:
+            summary.max_result_bytes = ir.serialized_size_bytes
+            summary.max_result_raw_id = ir.raw_id
 
 
 def _observe_current_rss(summary: _IngestBatchSummary) -> None:
@@ -794,6 +802,8 @@ async def process_ingest_batch(
     observation: dict[str, object] = {
         "records": batch_summary.raw_record_count,
         "blob_mb": round(batch_summary.total_blob_mb, 1),
+        "result_mb": round(batch_summary.total_result_bytes / (1024 * 1024), 3),
+        "max_result_mb": round(batch_summary.max_result_bytes / (1024 * 1024), 3),
         "conversations": batch_summary.total_convos,
         "messages": batch_summary.total_msgs,
         "changed_conversations": len(batch_summary.changed_conversation_ids),
@@ -815,6 +825,8 @@ async def process_ingest_batch(
         observation["peak_rss_children_mb"] = peak_rss_children_mb
     if batch_summary.max_current_rss_mb is not None:
         observation["max_current_rss_mb"] = batch_summary.max_current_rss_mb
+    if batch_summary.max_result_raw_id is not None:
+        observation["max_result_raw_id"] = batch_summary.max_result_raw_id
     return observation
 
 
