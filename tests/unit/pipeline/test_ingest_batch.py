@@ -17,6 +17,7 @@ from polylogue.pipeline.services.ingest_batch import (
     _RawIngestOutcome,
     _successful_raw_state_update,
     _topo_sort_conversation_entries,
+    _unattributed_batch_elapsed_s,
     _write_conversation,
     refresh_session_products_bulk,
 )
@@ -297,6 +298,25 @@ def test_failed_raw_state_update_combines_parse_and_validation_fields() -> None:
         validation_error="schema mismatch",
         validation_mode="strict",
     )
+
+
+def test_unattributed_batch_elapsed_subtracts_setup_and_teardown() -> None:
+    summary = _IngestBatchSummary(
+        setup_elapsed_s=0.12,
+        result_wait_s=0.8,
+        drain_elapsed_s=0.2,
+        flush_elapsed_s=0.05,
+        commit_elapsed_s=0.04,
+        teardown_elapsed_s=0.31,
+    )
+
+    residual = _unattributed_batch_elapsed_s(
+        elapsed_s=1.7,
+        batch_summary=summary,
+        raw_state_update_elapsed_s=0.08,
+    )
+
+    assert residual == pytest.approx(0.10)
 
 
 @pytest.mark.asyncio
