@@ -568,6 +568,42 @@ def test_iter_source_conversations_with_raw_streams_plain_grouped_capture_to_blo
     assert conversation.provider_name == Provider.CLAUDE_CODE
 
 
+def test_iter_source_conversations_with_raw_streams_grouped_zip_capture_to_blob_store(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from polylogue.storage.blob_store import BlobStore, get_blob_store
+
+    archive_path = tmp_path / "bundle.zip"
+    content = (
+        '{"type":"user","uuid":"u1","sessionId":"s1","message":{"content":"hello"}}\n'
+        '{"type":"assistant","uuid":"a1","sessionId":"s1","message":{"content":"hi"}}\n'
+    )
+    with zipfile.ZipFile(archive_path, "w") as zf:
+        zf.writestr("nested/session.jsonl", content)
+
+    write_calls = 0
+    original_write_from_fileobj = BlobStore.write_from_fileobj
+
+    def tracking_write_from_fileobj(self: BlobStore, source) -> tuple[str, int]:
+        nonlocal write_calls
+        write_calls += 1
+        return original_write_from_fileobj(self, source)
+
+    monkeypatch.setattr(BlobStore, "write_from_fileobj", tracking_write_from_fileobj)
+
+    items = list(iter_source_conversations_with_raw(Source(name="claude-code", path=archive_path)))
+
+    assert write_calls == 1
+    assert len(items) == 1
+    raw_data, conversation = items[0]
+    assert raw_data is not None
+    assert raw_data.blob_hash is not None
+    assert raw_data.raw_bytes == b""
+    assert get_blob_store().read_all(raw_data.blob_hash) == content.encode("utf-8")
+    assert conversation.provider_name == Provider.CLAUDE_CODE
+
+
 def test_iter_source_conversations_with_raw_assigns_source_indexes_for_multi_conversation_zip_contract(
     tmp_path: Path,
 ) -> None:
