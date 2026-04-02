@@ -37,9 +37,6 @@ RAW_ARCHIVE_DDL = """
         ON raw_conversations(source_path, file_mtime)
         WHERE file_mtime IS NOT NULL;
 
-        CREATE INDEX IF NOT EXISTS idx_raw_conv_source_mtime
-        ON raw_conversations(source_path, file_mtime);
-
         CREATE INDEX IF NOT EXISTS idx_raw_conv_parse_ready
         ON raw_conversations(raw_id)
         WHERE parsed_at IS NULL
