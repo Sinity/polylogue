@@ -109,6 +109,7 @@ class ParseResult:
         # deferred session product refresh after all batches complete.
         self._changed_conversation_ids: list[str] = []
         self.batch_observations: list[dict[str, Any]] = []
+        self.refresh_observation: dict[str, Any] | None = None
 
     async def merge_result(
         self,

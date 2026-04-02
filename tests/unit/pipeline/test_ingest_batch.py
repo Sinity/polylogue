@@ -193,7 +193,7 @@ async def test_refresh_session_products_bulk_dedupes_related_refreshes(
         refresh_aggregates,
     )
 
-    await refresh_session_products_bulk(
+    observation = await refresh_session_products_bulk(
         fake_backend,
         ["conv-1", "conv-2", "conv-3"],
     )
@@ -210,3 +210,11 @@ async def test_refresh_session_products_bulk_dedupes_related_refreshes(
     }
     assert aggregate_args.kwargs["transaction_depth"] == 1
     fake_conn.commit.assert_awaited_once()
+    assert observation is not None
+    assert observation["conversations"] == 3
+    assert observation["unique_thread_roots"] == 2
+    assert observation["unique_provider_days"] == 2
+    assert float(observation["elapsed_ms"]) >= 0.0
+    assert float(observation["update_ms"]) >= 0.0
+    assert float(observation["thread_refresh_ms"]) >= 0.0
+    assert float(observation["aggregate_refresh_ms"]) >= 0.0

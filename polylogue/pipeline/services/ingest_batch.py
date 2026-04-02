@@ -833,12 +833,15 @@ async def process_ingest_batch(
 async def refresh_session_products_bulk(
     backend: SQLiteBackend,
     changed_conversation_ids: list[str],
-) -> None:
+) -> dict[str, object] | None:
     """Bulk session product refresh — once after all batches, not per-batch."""
     if not changed_conversation_ids:
-        return
+        return None
 
     t_start = time.perf_counter()
+    update_elapsed = 0.0
+    thread_elapsed = 0.0
+    aggregate_elapsed = 0.0
     try:
         from polylogue.storage.session_product_refresh import (
             _apply_session_product_conversation_update_async,
@@ -849,6 +852,7 @@ async def refresh_session_products_bulk(
         async with backend.connection() as conn:
             affected_groups: set[tuple[str, str]] = set()
             thread_root_ids: set[str] = set()
+            t_updates = time.perf_counter()
             for cid in changed_conversation_ids:
                 update = await _apply_session_product_conversation_update_async(
                     conn,
@@ -858,30 +862,55 @@ async def refresh_session_products_bulk(
                 affected_groups.update(update.affected_groups)
                 if update.thread_root_id is not None:
                     thread_root_ids.add(update.thread_root_id)
+            update_elapsed = time.perf_counter() - t_updates
+            t_threads = time.perf_counter()
             for root_id in sorted(thread_root_ids):
                 await _refresh_thread_root_async(
                     conn,
                     root_id,
                     transaction_depth=1,
                 )
+            thread_elapsed = time.perf_counter() - t_threads
+            t_aggregates = time.perf_counter()
             if affected_groups:
                 await refresh_async_provider_day_aggregates(
                     conn,
                     affected_groups,
                     transaction_depth=1,
                 )
+            aggregate_elapsed = time.perf_counter() - t_aggregates
             await conn.commit()
 
         elapsed = time.perf_counter() - t_start
+        observation: dict[str, object] = {
+            "conversations": len(changed_conversation_ids),
+            "unique_thread_roots": len(thread_root_ids),
+            "unique_provider_days": len(affected_groups),
+            "elapsed_ms": round(elapsed * 1000.0, 1),
+            "update_ms": round(update_elapsed * 1000.0, 1),
+            "thread_refresh_ms": round(thread_elapsed * 1000.0, 1),
+            "aggregate_refresh_ms": round(aggregate_elapsed * 1000.0, 1),
+        }
         if elapsed > 2.0:
             logger.info(
                 "session_product_refresh",
-                elapsed_s=round(elapsed, 2),
                 conversations=len(changed_conversation_ids),
+                unique_thread_roots=len(thread_root_ids),
+                unique_provider_days=len(affected_groups),
+                elapsed_s=round(elapsed, 2),
+                update_s=round(update_elapsed, 2),
+                thread_refresh_s=round(thread_elapsed, 2),
+                aggregate_refresh_s=round(aggregate_elapsed, 2),
                 rate=round(len(changed_conversation_ids) / elapsed, 1) if elapsed > 0 else 0,
             )
+        return observation
     except Exception as exc:
         logger.warning("Session product refresh failed (non-fatal): %s", exc)
+        return {
+            "conversations": len(changed_conversation_ids),
+            "failed": True,
+            "error": str(exc),
+        }
 
 
 __all__ = ["process_ingest_batch", "refresh_session_products_bulk"]

@@ -193,6 +193,7 @@ async def ingest_sources(
         timings=timings,
         diagnostics={
             "batch_observations": _summarize_batch_observations(parse_result.batch_observations),
+            "session_product_refresh": parse_result.refresh_observation,
         },
     )
 
@@ -302,7 +303,7 @@ async def parse_from_raw(
         t_refresh = time.perf_counter()
         if progress_callback is not None:
             progress_callback(0, desc=f"Refreshing session products ({len(changed_cids):,} conversations)")
-        await refresh_session_products_bulk(backend, changed_cids)
+        result.refresh_observation = await refresh_session_products_bulk(backend, changed_cids)
         refresh_elapsed = time.perf_counter() - t_refresh
         if refresh_elapsed > 2.0:
             logger.info(
