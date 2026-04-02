@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
 from enum import Enum
 from typing import TYPE_CHECKING
 
-from polylogue.lib.phase_extraction import extract_phases
+from polylogue.lib.phase_extraction import SessionPhase, extract_phases
 from polylogue.lib.semantic_facts import (
     ConversationSemanticFacts,
     MessageSemanticFacts,
@@ -236,16 +237,17 @@ def _compute_phase_ranges(
     conversation: Conversation,
     *,
     facts: ConversationSemanticFacts | None = None,
+    phases: Sequence[SessionPhase] | None = None,
 ) -> list[tuple[int, int]]:
     semantic_facts = facts or build_conversation_semantic_facts(conversation)
-    phases = extract_phases(conversation, facts=semantic_facts)
-    if not phases:
+    resolved_phases = list(phases) if phases is not None else extract_phases(conversation, facts=semantic_facts)
+    if not resolved_phases:
         msg_count = len(semantic_facts.message_facts)
         return [(0, msg_count)] if msg_count > 0 else []
 
     ranges: list[tuple[int, int]] = []
     messages = list(semantic_facts.message_facts)
-    for phase in phases:
+    for phase in resolved_phases:
         start, end = phase.message_range
         if start >= end:
             continue
@@ -315,6 +317,7 @@ def extract_work_events(
     conversation: Conversation,
     *,
     facts: ConversationSemanticFacts | None = None,
+    phases: Sequence[SessionPhase] | None = None,
 ) -> list[WorkEvent]:
     semantic_facts = facts or build_conversation_semantic_facts(conversation)
     messages = list(semantic_facts.message_facts)
@@ -322,7 +325,7 @@ def extract_work_events(
         return []
 
     events: list[WorkEvent] = []
-    ranges = _compute_phase_ranges(conversation, facts=semantic_facts)
+    ranges = _compute_phase_ranges(conversation, facts=semantic_facts, phases=phases)
     for chunk_start, chunk_end in ranges:
         kind, confidence, evidence = _classify_message_range(messages, chunk_start, chunk_end)
         file_paths: list[str] = []
