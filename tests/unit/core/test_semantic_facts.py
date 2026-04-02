@@ -85,6 +85,73 @@ def _semantic_conversation() -> Conversation:
     )
 
 
+def _protocol_summary_conversation() -> Conversation:
+    return Conversation(
+        id="conv-work-event-summary",
+        provider="claude-code",
+        title="Work Event Summary",
+        created_at=datetime(2026, 3, 23, 10, 0, tzinfo=timezone.utc),
+        updated_at=datetime(2026, 3, 23, 10, 5, tzinfo=timezone.utc),
+        messages=MessageCollection(
+            messages=[
+                Message(
+                    id="u1",
+                    role="user",
+                    provider="claude-code",
+                    text=(
+                        "<system-reminder>skip this</system-reminder>\n"
+                        "Please inspect /realm/project/polylogue/README.md and summarize the findings clearly. "
+                        * 3
+                    ),
+                    timestamp=datetime(2026, 3, 23, 10, 0, tzinfo=timezone.utc),
+                ),
+                Message(
+                    id="a1",
+                    role="assistant",
+                    provider="claude-code",
+                    text="I will inspect the file.",
+                    timestamp=datetime(2026, 3, 23, 10, 1, tzinfo=timezone.utc),
+                    provider_meta={
+                        "raw": {
+                            "type": "assistant",
+                            "uuid": "a1",
+                            "message": {
+                                "role": "assistant",
+                                "content": [
+                                    {"type": "text", "text": "I will inspect the file."},
+                                    {
+                                        "type": "tool_use",
+                                        "id": "tool-1",
+                                        "name": "Read",
+                                        "input": {"file_path": "/realm/project/polylogue/README.md"},
+                                    },
+                                ],
+                            },
+                        }
+                    },
+                ),
+                Message(
+                    id="u2",
+                    role="user",
+                    provider="claude-code",
+                    text=(
+                        "Second user summary that should still fit after cleanup. "
+                        "It repeats a bit so we hit the summary truncation boundary."
+                    ),
+                    timestamp=datetime(2026, 3, 23, 10, 2, tzinfo=timezone.utc),
+                ),
+                Message(
+                    id="u3",
+                    role="user",
+                    provider="claude-code",
+                    text="This trailing note should be truncated away once the summary is already full.",
+                    timestamp=datetime(2026, 3, 23, 10, 3, tzinfo=timezone.utc),
+                ),
+            ]
+        ),
+    )
+
+
 def test_build_projection_semantic_facts_counts_renderable_and_empty_messages() -> None:
     projection = ConversationRenderProjection(
         conversation=ConversationRecord(
@@ -215,6 +282,18 @@ def test_build_session_analysis_reuses_precomputed_phases(monkeypatch: pytest.Mo
     assert work_event_phase_calls == 0
     assert analysis.work_events
     assert analysis.phases
+
+
+def test_extract_work_events_strips_protocol_noise_and_respects_summary_cap() -> None:
+    events = work_event_extraction.extract_work_events(_protocol_summary_conversation())
+
+    assert events
+    summary = events[0].summary
+    assert "<system-reminder>" not in summary
+    assert "skip this" not in summary
+    assert "Please inspect /realm/project/polylogue/README.md" in summary
+    assert "This trailing note should be truncated away" not in summary
+    assert len(summary) <= 200
 
 
 def test_build_conversation_semantic_facts_uses_canonical_db_content_blocks() -> None:
