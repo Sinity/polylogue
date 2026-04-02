@@ -214,6 +214,75 @@ def _topo_sort_message_tuples(tuples: list[tuple]) -> list[tuple]:
     return ordered
 
 
+def _conversation_parent_id(cdata: ConversationData) -> str | None:
+    return cdata.conversation_tuple[11]
+
+
+def _topo_sort_conversation_entries(
+    entries: list[tuple[str, ConversationData]],
+) -> list[tuple[str, ConversationData]]:
+    """Sort conversation entries so parents in the same batch precede children."""
+    ids_in_batch = {entry[1].conversation_id for entry in entries}
+    no_parent: list[tuple[str, ConversationData]] = []
+    has_parent: list[tuple[str, ConversationData]] = []
+
+    for entry in entries:
+        parent_id = _conversation_parent_id(entry[1])
+        if parent_id and parent_id in ids_in_batch and parent_id != entry[1].conversation_id:
+            has_parent.append(entry)
+        else:
+            no_parent.append(entry)
+
+    if not has_parent:
+        return entries
+
+    ordered = list(no_parent)
+    inserted_ids = {entry[1].conversation_id for entry in ordered}
+    remaining = list(has_parent)
+    for _ in range(len(remaining) + 1):
+        if not remaining:
+            break
+        next_remaining: list[tuple[str, ConversationData]] = []
+        for entry in remaining:
+            parent_id = _conversation_parent_id(entry[1])
+            if parent_id in inserted_ids:
+                ordered.append(entry)
+                inserted_ids.add(entry[1].conversation_id)
+            else:
+                next_remaining.append(entry)
+        remaining = next_remaining
+    ordered.extend(remaining)
+    return ordered
+
+
+def _conversation_exists(conn: sqlite3.Connection, conversation_id: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM conversations WHERE conversation_id = ?",
+        (conversation_id,),
+    ).fetchone()
+    return row is not None
+
+
+def _resolved_conversation_tuple(
+    conn: sqlite3.Connection,
+    cdata: ConversationData,
+) -> tuple:
+    """Resolve parent conversation links against the currently materialized archive.
+
+    Parent conversation links are only durable when the parent already exists.
+    This mirrors the prepare/enrichment path and avoids rejecting the whole
+    conversation when a child arrives before its parent.
+    """
+    parent_id = _conversation_parent_id(cdata)
+    if parent_id is None or parent_id == cdata.conversation_id:
+        return cdata.conversation_tuple
+    if _conversation_exists(conn, parent_id):
+        return cdata.conversation_tuple
+    updated = list(cdata.conversation_tuple)
+    updated[11] = None
+    return tuple(updated)
+
+
 def _write_conversation(conn: sqlite3.Connection, cdata: ConversationData) -> tuple[bool, dict[str, int]]:
     """Write one conversation's data to DB via sync sqlite3.
 
@@ -231,7 +300,7 @@ def _write_conversation(conn: sqlite3.Connection, cdata: ConversationData) -> tu
     content_unchanged = _check_content_unchanged(conn, cdata.conversation_id, cdata.content_hash)
 
     # Always upsert conversation record (updates metadata even if content unchanged)
-    conn.execute(_CONVERSATION_UPSERT_SQL, cdata.conversation_tuple)
+    conn.execute(_CONVERSATION_UPSERT_SQL, _resolved_conversation_tuple(conn, cdata))
 
     if content_unchanged:
         counts["skipped_conversations"] = 1
@@ -365,6 +434,7 @@ async def process_ingest_batch(
     total_convos = 0
 
     try:
+        conversation_entries: list[tuple[str, ConversationData]] = []
         for ir in ingest_results:
             payload_providers[ir.raw_id] = ir.payload_provider
 
@@ -378,47 +448,52 @@ async def process_ingest_batch(
                 skipped_raw_ids.add(ir.raw_id)
                 continue
 
-            for cdata in ir.conversations:
-                try:
-                    t_write = time.perf_counter()
-                    content_changed, counts = _write_conversation(conn, cdata)
-                    write_elapsed = time.perf_counter() - t_write
+            conversation_entries.extend((ir.raw_id, cdata) for cdata in ir.conversations)
 
-                    total_convos += 1
-                    total_msgs += len(cdata.message_tuples)
+        for raw_id, cdata in _topo_sort_conversation_entries(conversation_entries):
+            try:
+                t_write = time.perf_counter()
+                content_changed, counts = _write_conversation(conn, cdata)
+                write_elapsed = time.perf_counter() - t_write
 
-                    ingest_changed = (
-                        counts["conversations"]
-                        + counts["messages"]
-                        + counts["attachments"]
-                    ) > 0
+                total_convos += 1
+                total_msgs += len(cdata.message_tuples)
 
-                    if ingest_changed or content_changed:
-                        result.processed_ids.add(cdata.conversation_id)
-                    if content_changed:
-                        result.changed_counts["conversations"] += 1
-                        changed_conversation_ids.append(cdata.conversation_id)
-                    if counts["messages"]:
-                        result.changed_counts["messages"] += counts["messages"]
-                    if counts["attachments"]:
-                        result.changed_counts["attachments"] += counts["attachments"]
-                    for key, value in counts.items():
-                        if key in result.counts:
-                            result.counts[key] += value
+                ingest_changed = (
+                    counts["conversations"]
+                    + counts["messages"]
+                    + counts["attachments"]
+                ) > 0
 
-                    if write_elapsed >= 1.0:
-                        logger.info(
-                            "slow_write",
-                            cid=cdata.conversation_id[:20],
-                            elapsed_s=round(write_elapsed, 2),
-                            msgs=len(cdata.message_tuples),
-                        )
+                if ingest_changed or content_changed:
+                    result.processed_ids.add(cdata.conversation_id)
+                if content_changed:
+                    result.changed_counts["conversations"] += 1
+                    changed_conversation_ids.append(cdata.conversation_id)
+                if counts["messages"]:
+                    result.changed_counts["messages"] += counts["messages"]
+                if counts["attachments"]:
+                    result.changed_counts["attachments"] += counts["attachments"]
+                for key, value in counts.items():
+                    if key in result.counts:
+                        result.counts[key] += value
 
-                except Exception as exc:
-                    logger.error("Error writing conversation: %s", exc)
-                    result.parse_failures += 1
-                    failed_raw_ids[ir.raw_id] = str(exc)[:500]
+                if write_elapsed >= 1.0:
+                    logger.info(
+                        "slow_write",
+                        cid=cdata.conversation_id[:20],
+                        elapsed_s=round(write_elapsed, 2),
+                        msgs=len(cdata.message_tuples),
+                    )
 
+            except Exception as exc:
+                logger.error("Error writing conversation: %s", exc)
+                result.parse_failures += 1
+                failed_raw_ids[raw_id] = str(exc)[:500]
+
+        for ir in ingest_results:
+            if ir.error or not ir.conversations:
+                continue
             if ir.raw_id not in failed_raw_ids:
                 succeeded_raw_ids.add(ir.raw_id)
 
