@@ -31,9 +31,19 @@ from polylogue.storage.store import (
 
 
 def event_id(conversation_id: str, event_index: int, event: WorkEvent) -> str:
+    return _event_id(conversation_id, event_index, event, summary=event_summary(event))
+
+
+def _event_id(
+    conversation_id: str,
+    event_index: int,
+    event: WorkEvent,
+    *,
+    summary: str,
+) -> str:
     seed = (
         f"{conversation_id}:{event_index}:{event.kind.value}:{event.start_index}:"
-        f"{event.end_index}:{event_summary(event)}"
+        f"{event.end_index}:{summary}"
     )
     return f"wev-{hash_text(seed)[:16]}"
 
@@ -56,11 +66,27 @@ def event_evidence_payload(event: WorkEvent) -> dict[str, object]:
 
 
 def event_inference_payload(event: WorkEvent) -> dict[str, object]:
+    summary = event_summary(event)
     signals = event_support_signals(event)
     fallback = event_fallback(event)
+    return _event_inference_payload(
+        event,
+        summary=summary,
+        signals=signals,
+        fallback=fallback,
+    )
+
+
+def _event_inference_payload(
+    event: WorkEvent,
+    *,
+    summary: str,
+    signals: tuple[str, ...],
+    fallback: bool,
+) -> dict[str, object]:
     return {
         "kind": event.kind.value,
-        "summary": event_summary(event),
+        "summary": summary,
         "confidence": event.confidence,
         "evidence": list(event.evidence),
         "support_level": support_level(
@@ -74,11 +100,20 @@ def event_inference_payload(event: WorkEvent) -> dict[str, object]:
 
 
 def event_search_text(profile: SessionProfile, event: WorkEvent) -> str:
+    return _event_search_text(profile, event, summary=event_summary(event))
+
+
+def _event_search_text(
+    profile: SessionProfile,
+    event: WorkEvent,
+    *,
+    summary: str,
+) -> str:
     parts = [
         profile.provider,
         profile.title or "",
         event.kind.value,
-        event_summary(event),
+        summary,
         *profile.canonical_projects,
         *event.file_paths,
         *event.tools_used,
@@ -93,39 +128,54 @@ def build_session_work_event_records(
     materialized_at: str | None = None,
 ) -> list[SessionWorkEventRecord]:
     built_at = materialized_at or now_iso()
-    return [
-        SessionWorkEventRecord(
-            event_id=event_id(profile.conversation_id, index, event),
-            conversation_id=profile.conversation_id,
-            materializer_version=SESSION_PRODUCT_MATERIALIZER_VERSION,
-            materialized_at=built_at,
-            source_updated_at=profile.updated_at.isoformat() if profile.updated_at else None,
-            source_sort_key=profile.updated_at.timestamp() if profile.updated_at else None,
-            provider_name=profile.provider,
-            event_index=index,
-            kind=event.kind.value,
-            confidence=event.confidence,
-            start_index=event.start_index,
-            end_index=event.end_index,
-            start_time=event.start_time.isoformat() if event.start_time else None,
-            end_time=event.end_time.isoformat() if event.end_time else None,
-            duration_ms=event.duration_ms,
-            canonical_session_date=(
-                event.canonical_session_date.isoformat()
-                if event.canonical_session_date
-                else None
-            ),
-            summary=event_summary(event),
-            file_paths=event.file_paths,
-            tools_used=event.tools_used,
-            evidence_payload=event_evidence_payload(event),
-            inference_payload=event_inference_payload(event),
-            search_text=event_search_text(profile, event),
-            inference_version=SESSION_INFERENCE_VERSION,
-            inference_family=SESSION_INFERENCE_FAMILY,
+    source_updated_at = profile.updated_at.isoformat() if profile.updated_at else None
+    source_sort_key = profile.updated_at.timestamp() if profile.updated_at else None
+    records: list[SessionWorkEventRecord] = []
+    for index, event in enumerate(profile.work_events):
+        summary = event_summary(event)
+        signals = event_support_signals(event)
+        fallback = event_fallback(event)
+        start_time = event.start_time.isoformat() if event.start_time else None
+        end_time = event.end_time.isoformat() if event.end_time else None
+        canonical_session_date = (
+            event.canonical_session_date.isoformat()
+            if event.canonical_session_date
+            else None
         )
-        for index, event in enumerate(profile.work_events)
-    ]
+        records.append(
+            SessionWorkEventRecord(
+                event_id=_event_id(profile.conversation_id, index, event, summary=summary),
+                conversation_id=profile.conversation_id,
+                materializer_version=SESSION_PRODUCT_MATERIALIZER_VERSION,
+                materialized_at=built_at,
+                source_updated_at=source_updated_at,
+                source_sort_key=source_sort_key,
+                provider_name=profile.provider,
+                event_index=index,
+                kind=event.kind.value,
+                confidence=event.confidence,
+                start_index=event.start_index,
+                end_index=event.end_index,
+                start_time=start_time,
+                end_time=end_time,
+                duration_ms=event.duration_ms,
+                canonical_session_date=canonical_session_date,
+                summary=summary,
+                file_paths=event.file_paths,
+                tools_used=event.tools_used,
+                evidence_payload=event_evidence_payload(event),
+                inference_payload=_event_inference_payload(
+                    event,
+                    summary=summary,
+                    signals=signals,
+                    fallback=fallback,
+                ),
+                search_text=_event_search_text(profile, event, summary=summary),
+                inference_version=SESSION_INFERENCE_VERSION,
+                inference_family=SESSION_INFERENCE_FAMILY,
+            )
+        )
+    return records
 
 
 def hydrate_work_event(record: SessionWorkEventRecord) -> WorkEvent:
@@ -177,6 +227,19 @@ def phase_evidence_payload(phase: SessionPhase) -> dict[str, object]:
 def phase_inference_payload(phase: SessionPhase) -> dict[str, object]:
     signals = phase_support_signals(phase)
     fallback = phase_fallback(phase)
+    return _phase_inference_payload(
+        phase,
+        signals=signals,
+        fallback=fallback,
+    )
+
+
+def _phase_inference_payload(
+    phase: SessionPhase,
+    *,
+    signals: tuple[str, ...],
+    fallback: bool,
+) -> dict[str, object]:
     return {
         "confidence": phase.confidence,
         "evidence": list(phase.evidence),
@@ -196,39 +259,52 @@ def build_session_phase_records(
     materialized_at: str | None = None,
 ) -> list[SessionPhaseRecord]:
     built_at = materialized_at or now_iso()
-    return [
-        SessionPhaseRecord(
-            phase_id=phase_id(profile.conversation_id, index, phase),
-            conversation_id=profile.conversation_id,
-            materializer_version=SESSION_PRODUCT_MATERIALIZER_VERSION,
-            materialized_at=built_at,
-            source_updated_at=profile.updated_at.isoformat() if profile.updated_at else None,
-            source_sort_key=profile.updated_at.timestamp() if profile.updated_at else None,
-            provider_name=profile.provider,
-            phase_index=index,
-            kind="phase",
-            start_index=phase.message_range[0],
-            end_index=phase.message_range[1],
-            start_time=phase.start_time.isoformat() if phase.start_time else None,
-            end_time=phase.end_time.isoformat() if phase.end_time else None,
-            duration_ms=phase.duration_ms,
-            canonical_session_date=(
-                phase.canonical_session_date.isoformat()
-                if phase.canonical_session_date
-                else None
-            ),
-            confidence=phase.confidence,
-            evidence_reasons=phase.evidence,
-            tool_counts=phase.tool_counts,
-            word_count=phase.word_count,
-            evidence_payload=phase_evidence_payload(phase),
-            inference_payload=phase_inference_payload(phase),
-            search_text=phase_search_text(profile, phase),
-            inference_version=SESSION_INFERENCE_VERSION,
-            inference_family=SESSION_INFERENCE_FAMILY,
+    source_updated_at = profile.updated_at.isoformat() if profile.updated_at else None
+    source_sort_key = profile.updated_at.timestamp() if profile.updated_at else None
+    records: list[SessionPhaseRecord] = []
+    for index, phase in enumerate(profile.phases):
+        start_time = phase.start_time.isoformat() if phase.start_time else None
+        end_time = phase.end_time.isoformat() if phase.end_time else None
+        canonical_session_date = (
+            phase.canonical_session_date.isoformat()
+            if phase.canonical_session_date
+            else None
         )
-        for index, phase in enumerate(profile.phases)
-    ]
+        signals = phase_support_signals(phase)
+        fallback = phase_fallback(phase)
+        records.append(
+            SessionPhaseRecord(
+                phase_id=phase_id(profile.conversation_id, index, phase),
+                conversation_id=profile.conversation_id,
+                materializer_version=SESSION_PRODUCT_MATERIALIZER_VERSION,
+                materialized_at=built_at,
+                source_updated_at=source_updated_at,
+                source_sort_key=source_sort_key,
+                provider_name=profile.provider,
+                phase_index=index,
+                kind="phase",
+                start_index=phase.message_range[0],
+                end_index=phase.message_range[1],
+                start_time=start_time,
+                end_time=end_time,
+                duration_ms=phase.duration_ms,
+                canonical_session_date=canonical_session_date,
+                confidence=phase.confidence,
+                evidence_reasons=phase.evidence,
+                tool_counts=phase.tool_counts,
+                word_count=phase.word_count,
+                evidence_payload=phase_evidence_payload(phase),
+                inference_payload=_phase_inference_payload(
+                    phase,
+                    signals=signals,
+                    fallback=fallback,
+                ),
+                search_text=phase_search_text(profile, phase),
+                inference_version=SESSION_INFERENCE_VERSION,
+                inference_family=SESSION_INFERENCE_FAMILY,
+            )
+        )
+    return records
 
 
 def hydrate_session_phase(record: SessionPhaseRecord) -> SessionPhase:
