@@ -145,6 +145,7 @@ async def test_run_probe_emits_real_pipeline_summary(tmp_path) -> None:
 
     assert summary["probe"]["provider"] == "chatgpt"
     assert summary["result"]["run_path"] is not None
+    assert summary["run_payload"]["metrics"]["total_duration_ms"] is not None
     assert summary["run_payload"]["metrics"]["peak_rss_mb"] is not None
     assert "index" in summary["run_payload"]["metrics"]["stages"]
     assert summary["db_stats"]["raw_conversations_count"] >= 1

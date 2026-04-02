@@ -142,7 +142,7 @@ class PipelineMetrics:
     def to_summary(self) -> dict[str, Any]:
         """Export full metrics for logging/persistence."""
         return {
-            "total_elapsed_ms": round(self.total_elapsed_s * 1000, 1),
+            "total_duration_ms": round(self.total_elapsed_s * 1000, 1),
             "current_rss_mb": _read_current_rss_mb(),
             "peak_rss_mb": _read_peak_rss_mb(),
             "stages": {name: m.to_dict() for name, m in self.stages.items()},
