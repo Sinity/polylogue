@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from polylogue.lib.phase_extraction import SessionPhase
@@ -87,10 +88,11 @@ def session_enrichment_payload(
     profile: SessionProfile,
     analysis: SessionAnalysis | None,
 ) -> dict[str, object]:
-    user_turns = user_turn_texts(analysis)
-    assistant_turns = assistant_turn_texts(analysis)
-    blockers_val = blocker_texts(analysis)
-    support_signals_val = enrichment_support_signals(profile, analysis)
+    text_bands = _collect_enrichment_text_bands(analysis)
+    user_turns = text_bands.user_turns
+    assistant_turns = text_bands.assistant_turns
+    blockers_val = text_bands.blockers
+    support_signals_val = enrichment_support_signals(profile, analysis, text_bands=text_bands)
     input_band_summary = {
         "user_turns": len(user_turns),
         "assistant_turns": len(assistant_turns),
@@ -396,64 +398,73 @@ def dedupe_texts(values: list[str], *, limit: int | None = None, width: int = 18
     return tuple(items)
 
 
-def user_turn_texts(analysis: SessionAnalysis | None) -> tuple[str, ...]:
+_BLOCKER_MARKERS = (
+    "error",
+    "failed",
+    "failure",
+    "blocked",
+    "cannot",
+    "can't",
+    "exception",
+    "traceback",
+    "panic",
+)
+
+
+@dataclass(frozen=True)
+class _EnrichmentTextBands:
+    user_turns: tuple[str, ...] = ()
+    assistant_turns: tuple[str, ...] = ()
+    blockers: tuple[str, ...] = ()
+
+
+def _collect_enrichment_text_bands(analysis: SessionAnalysis | None) -> _EnrichmentTextBands:
     if analysis is None:
-        return ()
-    return dedupe_texts(
-        [
-            message.text
-            for message in analysis.facts.message_facts
-            if message.is_user and not message.is_context_dump and message.text.strip()
-        ],
-        width=220,
+        return _EnrichmentTextBands()
+
+    user_texts: list[str] = []
+    assistant_texts: list[str] = []
+    blocker_candidates: list[str] = []
+    for message in analysis.facts.message_facts:
+        text = str(message.text or "").strip()
+        if not text:
+            continue
+        if message.is_user and not message.is_context_dump:
+            user_texts.append(message.text)
+            text_lower = message.text.lower()
+            if any(marker in text_lower for marker in _BLOCKER_MARKERS):
+                blocker_candidates.append(message.text)
+        if message.is_assistant and message.is_substantive:
+            assistant_texts.append(message.text)
+
+    return _EnrichmentTextBands(
+        user_turns=dedupe_texts(user_texts, width=220),
+        assistant_turns=dedupe_texts(assistant_texts, width=220),
+        blockers=dedupe_texts(blocker_candidates, limit=4, width=140),
     )
+
+
+def user_turn_texts(analysis: SessionAnalysis | None) -> tuple[str, ...]:
+    return _collect_enrichment_text_bands(analysis).user_turns
 
 
 def assistant_turn_texts(analysis: SessionAnalysis | None) -> tuple[str, ...]:
-    if analysis is None:
-        return ()
-    return dedupe_texts(
-        [
-            message.text
-            for message in analysis.facts.message_facts
-            if message.is_assistant and message.is_substantive and message.text.strip()
-        ],
-        width=220,
-    )
+    return _collect_enrichment_text_bands(analysis).assistant_turns
 
 
 def blocker_texts(analysis: SessionAnalysis | None) -> tuple[str, ...]:
-    if analysis is None:
-        return ()
-    blocker_markers = (
-        "error",
-        "failed",
-        "failure",
-        "blocked",
-        "cannot",
-        "can't",
-        "exception",
-        "traceback",
-        "panic",
-    )
-    texts = [
-        message.text
-        for message in analysis.facts.message_facts
-        if message.is_user
-        and not message.is_context_dump
-        and message.text.strip()
-        and any(marker in message.text.lower() for marker in blocker_markers)
-    ]
-    return dedupe_texts(texts, limit=4, width=140)
+    return _collect_enrichment_text_bands(analysis).blockers
 
 
 def enrichment_support_signals(
     profile: SessionProfile,
     analysis: SessionAnalysis | None,
+    *,
+    text_bands: _EnrichmentTextBands | None = None,
 ) -> tuple[str, ...]:
     signals: list[str] = []
-    user_turns = user_turn_texts(analysis)
-    if user_turns:
+    bands = text_bands or _collect_enrichment_text_bands(analysis)
+    if bands.user_turns:
         signals.append("user_turns")
     if analysis is not None and analysis.facts.action_events:
         signals.append("action_events")
@@ -463,7 +474,7 @@ def enrichment_support_signals(
         signals.append("canonical_projects")
     if profile.work_events:
         signals.append("heuristic_work_events")
-    if assistant_turn_texts(analysis):
+    if bands.assistant_turns:
         signals.append("assistant_outcome_text")
     return tuple(signals)
 
