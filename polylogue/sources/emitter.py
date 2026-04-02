@@ -52,6 +52,7 @@ class _ConversationEmitter:
         stream_name: str,
         *,
         pre_read_bytes: bytes | None = None,
+        precomputed_raw: RawConversationData | None = None,
     ) -> Iterable[tuple[RawConversationData | None, ParsedConversation]]:
         """Parse a stream and yield ``(raw, conv)`` tuples.
 
@@ -67,7 +68,12 @@ class _ConversationEmitter:
         is_jsonl = lower.endswith((".jsonl", ".jsonl.txt", ".ndjson"))
 
         if is_jsonl and self._ctx.should_group:
-            yield from self._emit_grouped(handle, stream_name, pre_read_bytes)
+            yield from self._emit_grouped(
+                handle,
+                stream_name,
+                pre_read_bytes,
+                precomputed_raw=precomputed_raw,
+            )
             return
 
         if is_jsonl:
@@ -91,9 +97,13 @@ class _ConversationEmitter:
         handle: BinaryIO,
         stream_name: str,
         pre_read_bytes: bytes | None,
+        *,
+        precomputed_raw: RawConversationData | None = None,
     ) -> Iterable[tuple[RawConversationData | None, ParsedConversation]]:
         """Grouped JSONL: entire file = one conversation."""
-        if self._ctx.capture_raw and pre_read_bytes is None:
+        if precomputed_raw is not None:
+            raw_bytes = None
+        elif self._ctx.capture_raw and pre_read_bytes is None:
             raw_bytes = handle.read()
             handle = BytesIO(raw_bytes)  # type: ignore[assignment]
         else:
@@ -105,7 +115,7 @@ class _ConversationEmitter:
         if not payloads:
             return
 
-        raw_data = self._make_raw(raw_bytes) if raw_bytes else None
+        raw_data = precomputed_raw or (self._make_raw(raw_bytes) if raw_bytes else None)
         provider = detect_provider(payloads) or self._ctx.provider_hint
         artifact = classify_artifact(
             payloads,

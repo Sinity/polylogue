@@ -507,6 +507,8 @@ def test_iter_source_conversations_with_raw_preserves_grouped_bytes_contract(
     use_zip: bool,
     needle: bytes,
 ) -> None:
+    from polylogue.storage.blob_store import get_blob_store
+
     records = [
         {"type": "user", "uuid": "u1", "sessionId": "s1", "message": {"content": needle.decode("utf-8")}},
         {"type": "assistant", "uuid": "a1", "sessionId": "s1", "message": {"content": "Hi"}},
@@ -527,7 +529,42 @@ def test_iter_source_conversations_with_raw_preserves_grouped_bytes_contract(
     raw_data, conversation = items[0]
     assert raw_data is not None
     assert raw_data.source_index is None
-    assert needle in raw_data.raw_bytes
+    raw_bytes = raw_data.raw_bytes
+    if not raw_bytes and raw_data.blob_hash is not None:
+        raw_bytes = get_blob_store().read_all(raw_data.blob_hash)
+    assert needle in raw_bytes
+    assert conversation.provider_name == Provider.CLAUDE_CODE
+
+
+def test_iter_source_conversations_with_raw_streams_plain_grouped_capture_to_blob_store(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from polylogue.storage.blob_store import get_blob_store
+
+    source_path = tmp_path / "session.jsonl"
+    content = (
+        '{"type":"user","uuid":"u1","sessionId":"s1","message":{"content":"hello"}}\n'
+        '{"type":"assistant","uuid":"a1","sessionId":"s1","message":{"content":"hi"}}\n'
+    )
+    source_path.write_text(content, encoding="utf-8")
+    original_read_bytes = Path.read_bytes
+
+    def fail_read_bytes(path: Path) -> bytes:
+        if path == source_path:
+            raise AssertionError("Plain grouped parsing should not read whole files via Path.read_bytes")
+        return original_read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", fail_read_bytes)
+
+    items = list(iter_source_conversations_with_raw(Source(name="claude-code", path=source_path)))
+
+    assert len(items) == 1
+    raw_data, conversation = items[0]
+    assert raw_data is not None
+    assert raw_data.blob_hash is not None
+    assert raw_data.raw_bytes == b""
+    assert get_blob_store().read_all(raw_data.blob_hash) == content.encode("utf-8")
     assert conversation.provider_name == Provider.CLAUDE_CODE
 
 
