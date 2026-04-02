@@ -37,9 +37,14 @@ def _coerce_optional_int(value: object) -> int | None:
     return None
 
 
-_CONTEXT_PATTERNS = (
-    re.compile(r"^Contents of .+:", re.MULTILINE),
-    re.compile(r"^<file path=", re.MULTILINE),
+_CONTEXT_START_MARKERS = (
+    "<environment_context>",
+    "<subagent_notification>",
+    "<permissions instructions>",
+)
+_CONTEXT_LINE_PATTERNS = (
+    ("Contents of ", re.compile(r"^Contents of .+:", re.MULTILINE)),
+    ("<file path=", re.compile(r"^<file path=", re.MULTILINE)),
 )
 
 logger = get_logger(__name__)
@@ -158,18 +163,19 @@ class MessageRuntimeMixin:
 
     @cached_property
     def is_context_dump(self) -> bool:
-        if not self.text:
+        text = self.text
+        if not text:
             return False
-        stripped = self.text.lstrip()
-        if stripped.startswith(("<environment_context>", "<subagent_notification>", "<permissions instructions>")):
+        stripped = text.lstrip()
+        if stripped.startswith(_CONTEXT_START_MARKERS):
             return True
-        if self.attachments and len(self.text) < 100:
+        if self.attachments and len(text) < 100:
             return True
-        if "<system>" in self.text and "</system>" in self.text:
+        if "<system>" in text and "</system>" in text:
             return True
-        if self.text.count("```") >= 6:
+        if "```" in text and text.count("```") >= 6:
             return True
-        return any(pattern.search(self.text) for pattern in _CONTEXT_PATTERNS)
+        return any(marker in text and pattern.search(text) for marker, pattern in _CONTEXT_LINE_PATTERNS)
 
     @cached_property
     def is_noise(self) -> bool:
