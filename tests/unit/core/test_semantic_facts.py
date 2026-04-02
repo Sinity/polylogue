@@ -349,6 +349,41 @@ def test_build_conversation_semantic_facts_uses_canonical_db_content_blocks() ->
     assert profile.canonical_projects == ("polylogue",)
 
 
+def test_build_conversation_semantic_facts_preserves_tool_results_before_tool_use() -> None:
+    conversation = Conversation(
+        id="conv-db-tool-result-before-use",
+        provider="claude-code",
+        messages=MessageCollection(
+            messages=[
+                Message(
+                    id="a1",
+                    role="assistant",
+                    provider="claude-code",
+                    text="I checked the file.",
+                    content_blocks=[
+                        {
+                            "type": "tool_result",
+                            "tool_id": "tool-1",
+                            "text": "README contents",
+                        },
+                        {
+                            "type": "tool_use",
+                            "tool_name": "Read",
+                            "tool_id": "tool-1",
+                            "tool_input": {"file_path": "/realm/project/polylogue/README.md"},
+                            "semantic_type": "file_read",
+                        },
+                    ],
+                ),
+            ]
+        ),
+    )
+
+    facts = build_conversation_semantic_facts(conversation)
+
+    assert facts.message_facts[0].tool_calls[0].output == "README contents"
+
+
 def test_build_conversation_semantic_facts_upgrades_stale_other_semantic_type() -> None:
     conversation = Conversation(
         id="conv-db-upgrade-other",
