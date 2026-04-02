@@ -1220,6 +1220,41 @@ def test_conversation_emitter_resolves_schema_for_payloads(monkeypatch: pytest.M
     assert resolved_arg is fake_registry.resolve_payload.return_value
 
 
+def test_conversation_emitter_reuses_jsonl_sniff_payloads_for_grouped_detection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = _ParseContext(
+        provider_hint=Provider.UNKNOWN,
+        should_group=False,
+        source_path_str="/tmp/session.jsonl",
+        fallback_id="session",
+        file_mtime="2026-03-11T00:00:00+00:00",
+        capture_raw=True,
+        session_index={},
+    )
+    raw = (
+        b'{"role":"user","content":[{"type":"input_text","text":"hello"}]}\n'
+        b'{"role":"assistant","content":[{"type":"output_text","text":"hi"}]}\n'
+    )
+    parse_calls = 0
+    original_iter_json_stream = _iter_json_stream
+
+    def tracking_iter_json_stream(handle: object, path_name: str, unpack_lists: bool = True):
+        nonlocal parse_calls
+        parse_calls += 1
+        yield from original_iter_json_stream(handle, path_name, unpack_lists=unpack_lists)
+
+    monkeypatch.setattr("polylogue.sources.emitter._iter_json_stream", tracking_iter_json_stream)
+
+    emitted = list(_ConversationEmitter(ctx).emit(BytesIO(raw), "session.jsonl"))
+
+    assert emitted
+    assert parse_calls == 1
+    assert emitted[0][0] is not None and emitted[0][0].raw_bytes == raw
+    assert emitted[0][1].provider_name == Provider.CODEX
+    assert len(emitted[0][1].messages) == 2
+
+
 def test_conversation_emitter_only_enriches_matching_claude_code_sessions_contract() -> None:
     entry = SessionIndexEntry(
         session_id="session-1",

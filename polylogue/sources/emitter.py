@@ -85,6 +85,7 @@ class _ConversationEmitter:
                     BytesIO(sniff_bytes),
                     stream_name,
                     sniff_bytes,
+                    precomputed_payloads=sniff_payloads,
                 )
                 return
             handle = BytesIO(sniff_bytes)
@@ -99,6 +100,7 @@ class _ConversationEmitter:
         pre_read_bytes: bytes | None,
         *,
         precomputed_raw: RawConversationData | None = None,
+        precomputed_payloads: list[Any] | None = None,
     ) -> Iterable[tuple[RawConversationData | None, ParsedConversation]]:
         """Grouped JSONL: entire file = one conversation."""
         if precomputed_raw is not None:
@@ -111,7 +113,7 @@ class _ConversationEmitter:
             if raw_bytes is not None:
                 handle = BytesIO(raw_bytes)  # type: ignore[assignment]
 
-        payloads = list(_iter_json_stream(handle, stream_name))
+        payloads = precomputed_payloads if precomputed_payloads is not None else list(_iter_json_stream(handle, stream_name))
         if not payloads:
             return
 
