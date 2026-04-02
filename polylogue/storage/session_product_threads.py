@@ -297,15 +297,29 @@ async def build_thread_records_for_roots_async(
 
 def build_all_thread_records_sync(conn: sqlite3.Connection) -> list[WorkThreadRecord]:
     root_ids = [str(row["conversation_id"]) for row in conn.execute(_ROOT_THREAD_IDS_SQL).fetchall()]
-    records_by_root = build_thread_records_for_roots_sync(conn, root_ids)
-    return [records_by_root[root_id] for root_id in root_ids if root_id in records_by_root]
+    records: list[WorkThreadRecord] = []
+    for root_chunk in _chunk_root_ids(root_ids):
+        records_by_root = build_thread_records_for_roots_sync(conn, root_chunk)
+        records.extend(
+            records_by_root[root_id]
+            for root_id in root_chunk
+            if root_id in records_by_root
+        )
+    return records
 
 
 async def build_all_thread_records_async(conn: aiosqlite.Connection) -> list[WorkThreadRecord]:
     rows = await (await conn.execute(_ROOT_THREAD_IDS_SQL)).fetchall()
     root_ids = [str(row["conversation_id"]) for row in rows]
-    records_by_root = await build_thread_records_for_roots_async(conn, root_ids)
-    return [records_by_root[root_id] for root_id in root_ids if root_id in records_by_root]
+    records: list[WorkThreadRecord] = []
+    for root_chunk in _chunk_root_ids(root_ids):
+        records_by_root = await build_thread_records_for_roots_async(conn, root_chunk)
+        records.extend(
+            records_by_root[root_id]
+            for root_id in root_chunk
+            if root_id in records_by_root
+        )
+    return records
 
 
 __all__ = [
