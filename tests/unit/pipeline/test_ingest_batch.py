@@ -11,13 +11,18 @@ import pytest
 
 from polylogue.pipeline.services.ingest_batch import (
     _drain_ready_conversation_entries,
+    _failed_raw_state_update,
     _IngestBatchSummary,
+    _persist_batch_raw_state_updates,
+    _RawIngestOutcome,
+    _successful_raw_state_update,
     _topo_sort_conversation_entries,
     _write_conversation,
     refresh_session_products_bulk,
 )
 from polylogue.pipeline.services.ingest_worker import ConversationData
 from polylogue.storage.backends.connection import open_connection
+from polylogue.storage.state_views import RawConversationStateUpdate
 
 
 def _conversation_data(
@@ -220,3 +225,105 @@ async def test_refresh_session_products_bulk_dedupes_related_refreshes(
     assert float(observation["update_ms"]) >= 0.0
     assert float(observation["thread_refresh_ms"]) >= 0.0
     assert float(observation["aggregate_refresh_ms"]) >= 0.0
+
+
+def test_successful_raw_state_update_combines_parse_and_validation_fields() -> None:
+    outcome = _RawIngestOutcome(
+        raw_id="raw-1",
+        payload_provider="chatgpt",
+        validation_status="passed",
+        validation_error=None,
+        error=None,
+        had_conversations=True,
+    )
+
+    state = _successful_raw_state_update(
+        outcome=outcome,
+        parsed_at="2026-04-02T00:00:00Z",
+        validation_mode="strict",
+    )
+
+    assert state == RawConversationStateUpdate(
+        parsed_at="2026-04-02T00:00:00Z",
+        parse_error=None,
+        payload_provider="chatgpt",
+        validation_status="passed",
+        validation_error=None,
+        validation_mode="strict",
+    )
+
+
+def test_failed_raw_state_update_combines_parse_and_validation_fields() -> None:
+    outcome = _RawIngestOutcome(
+        raw_id="raw-1",
+        payload_provider="chatgpt",
+        validation_status="failed",
+        validation_error="schema mismatch",
+        error="parse failed",
+        had_conversations=False,
+    )
+
+    state = _failed_raw_state_update(
+        outcome=outcome,
+        error="parse failed",
+        validation_mode="strict",
+    )
+
+    assert state == RawConversationStateUpdate(
+        parse_error="parse failed",
+        payload_provider="chatgpt",
+        validation_status="failed",
+        validation_error="schema mismatch",
+        validation_mode="strict",
+    )
+
+
+@pytest.mark.asyncio
+async def test_persist_batch_raw_state_updates_uses_one_typed_update_per_raw() -> None:
+    update_raw_state = AsyncMock()
+    repository = SimpleNamespace(update_raw_state=update_raw_state)
+    service = SimpleNamespace(repository=repository)
+
+    @asynccontextmanager
+    async def _bulk_connection():
+        yield
+
+    backend = SimpleNamespace(bulk_connection=_bulk_connection)
+    outcomes = {
+        "raw-success": _RawIngestOutcome(
+            raw_id="raw-success",
+            payload_provider="chatgpt",
+            validation_status="passed",
+            validation_error=None,
+            error=None,
+            had_conversations=True,
+        ),
+        "raw-failed": _RawIngestOutcome(
+            raw_id="raw-failed",
+            payload_provider="codex",
+            validation_status="failed",
+            validation_error="bad schema",
+            error="parse failed",
+            had_conversations=False,
+        ),
+    }
+
+    elapsed_s = await _persist_batch_raw_state_updates(
+        service,
+        backend,
+        outcomes=outcomes,
+        succeeded_raw_ids={"raw-success"},
+        skipped_raw_ids=set(),
+        failed_raw_ids={"raw-failed": "parse failed"},
+        validation_mode="strict",
+    )
+
+    assert elapsed_s >= 0.0
+    assert update_raw_state.await_count == 2
+    success_call, failed_call = update_raw_state.await_args_list
+    assert success_call.args == ("raw-success",)
+    assert success_call.kwargs["state"].validation_status == "passed"
+    assert success_call.kwargs["state"].parsed_at is not None
+    assert failed_call.args == ("raw-failed",)
+    assert failed_call.kwargs["state"].parse_error == "parse failed"
+    assert failed_call.kwargs["state"].validation_error == "bad schema"

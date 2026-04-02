@@ -761,66 +761,15 @@ async def process_ingest_batch(
     skipped_raw_ids = batch_summary.skipped_raw_ids
     failed_raw_ids = batch_summary.failed_raw_ids
 
-    now_iso = datetime.now(timezone.utc).isoformat()
-    validation_mode_str = validation_mode
-
-    raw_state_update_started = time.perf_counter()
-    async with backend.bulk_connection():
-        for rid in succeeded_raw_ids:
-            outcome = batch_summary.outcomes.get(rid)
-            await service.repository.update_raw_state(
-                rid,
-                state=RawConversationStateUpdate(
-                    parsed_at=now_iso,
-                    parse_error=None,
-                    payload_provider=outcome.payload_provider if outcome is not None else None,
-                ),
-            )
-            if outcome is not None:
-                await service.repository.mark_raw_validated(
-                    rid,
-                    status=outcome.validation_status,
-                    error=outcome.validation_error,
-                    payload_provider=outcome.payload_provider,
-                    mode=validation_mode_str,
-                )
-        for rid in skipped_raw_ids:
-            if rid not in failed_raw_ids and rid not in succeeded_raw_ids:
-                outcome = batch_summary.outcomes.get(rid)
-                await service.repository.update_raw_state(
-                    rid,
-                    state=RawConversationStateUpdate(
-                        parsed_at=now_iso,
-                        parse_error=None,
-                        payload_provider=outcome.payload_provider if outcome is not None else None,
-                    ),
-                )
-                if outcome is not None:
-                    await service.repository.mark_raw_validated(
-                        rid,
-                        status=outcome.validation_status,
-                        error=outcome.validation_error,
-                        payload_provider=outcome.payload_provider,
-                        mode=validation_mode_str,
-                    )
-        for rid, error in failed_raw_ids.items():
-            outcome = batch_summary.outcomes.get(rid)
-            await service.repository.update_raw_state(
-                rid,
-                state=RawConversationStateUpdate(
-                    parse_error=error,
-                    payload_provider=outcome.payload_provider if outcome is not None else None,
-                ),
-            )
-            if outcome is not None:
-                await service.repository.mark_raw_validated(
-                    rid,
-                    status=outcome.validation_status,
-                    error=outcome.validation_error or error,
-                    payload_provider=outcome.payload_provider,
-                    mode=validation_mode_str,
-                )
-    raw_state_update_elapsed_s = time.perf_counter() - raw_state_update_started
+    raw_state_update_elapsed_s = await _persist_batch_raw_state_updates(
+        service,
+        backend,
+        outcomes=batch_summary.outcomes,
+        succeeded_raw_ids=succeeded_raw_ids,
+        skipped_raw_ids=skipped_raw_ids,
+        failed_raw_ids=failed_raw_ids,
+        validation_mode=validation_mode,
+    )
 
     elapsed_s = time.perf_counter() - batch_started
     rss_end_mb = read_current_rss_mb()
@@ -870,6 +819,91 @@ async def process_ingest_batch(
     if batch_summary.max_result_raw_id is not None:
         observation["max_result_raw_id"] = batch_summary.max_result_raw_id
     return observation
+
+
+def _successful_raw_state_update(
+    *,
+    outcome: _RawIngestOutcome | None,
+    parsed_at: str,
+    validation_mode: str,
+) -> RawConversationStateUpdate:
+    if outcome is None:
+        return RawConversationStateUpdate(
+            parsed_at=parsed_at,
+            parse_error=None,
+        )
+    return RawConversationStateUpdate(
+        parsed_at=parsed_at,
+        parse_error=None,
+        payload_provider=outcome.payload_provider,
+        validation_status=outcome.validation_status,
+        validation_error=outcome.validation_error,
+        validation_mode=validation_mode,
+    )
+
+
+def _failed_raw_state_update(
+    *,
+    outcome: _RawIngestOutcome | None,
+    error: str,
+    validation_mode: str,
+) -> RawConversationStateUpdate:
+    if outcome is None:
+        return RawConversationStateUpdate(
+            parse_error=error,
+        )
+    return RawConversationStateUpdate(
+        parse_error=error,
+        payload_provider=outcome.payload_provider,
+        validation_status=outcome.validation_status,
+        validation_error=outcome.validation_error or error,
+        validation_mode=validation_mode,
+    )
+
+
+async def _persist_batch_raw_state_updates(
+    service: ParsingService,
+    backend: SQLiteBackend,
+    *,
+    outcomes: dict[str, _RawIngestOutcome],
+    succeeded_raw_ids: set[str],
+    skipped_raw_ids: set[str],
+    failed_raw_ids: dict[str, str],
+    validation_mode: str,
+) -> float:
+    now_iso = datetime.now(timezone.utc).isoformat()
+    raw_state_update_started = time.perf_counter()
+    async with backend.bulk_connection():
+        for rid in succeeded_raw_ids:
+            await service.repository.update_raw_state(
+                rid,
+                state=_successful_raw_state_update(
+                    outcome=outcomes.get(rid),
+                    parsed_at=now_iso,
+                    validation_mode=validation_mode,
+                ),
+            )
+        for rid in skipped_raw_ids:
+            if rid in failed_raw_ids or rid in succeeded_raw_ids:
+                continue
+            await service.repository.update_raw_state(
+                rid,
+                state=_successful_raw_state_update(
+                    outcome=outcomes.get(rid),
+                    parsed_at=now_iso,
+                    validation_mode=validation_mode,
+                ),
+            )
+        for rid, error in failed_raw_ids.items():
+            await service.repository.update_raw_state(
+                rid,
+                state=_failed_raw_state_update(
+                    outcome=outcomes.get(rid),
+                    error=error,
+                    validation_mode=validation_mode,
+                ),
+            )
+    return time.perf_counter() - raw_state_update_started
 
 
 async def refresh_session_products_bulk(
