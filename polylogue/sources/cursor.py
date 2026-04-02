@@ -66,6 +66,13 @@ def _select_paths_for_processing(
     """Filter unchanged files and return `(path, file_mtime)` tuples."""
     selected: list[tuple[Path, str | None]] = []
     skipped_mtime = 0
+    zip_known_mtimes: dict[str, str] = {}
+
+    if known_mtimes:
+        for key, mtime in known_mtimes.items():
+            zip_path, sep, _entry = key.partition(":")
+            if sep and zip_path not in zip_known_mtimes:
+                zip_known_mtimes[zip_path] = mtime
 
     for path in paths:
         file_mtime = _get_file_mtime(path) if include_file_mtime else None
@@ -76,16 +83,10 @@ def _select_paths_for_processing(
                 skipped_mtime += 1
                 continue
             # ZIP match: entries are stored as "path.zip:entry.json" — check
-            # if any entry with this ZIP prefix has matching mtime
-            if path_str.endswith(".zip"):
-                zip_prefix = path_str + ":"
-                if any(
-                    mtime == file_mtime
-                    for key, mtime in known_mtimes.items()
-                    if key.startswith(zip_prefix)
-                ):
-                    skipped_mtime += 1
-                    continue
+            # if any entry for this ZIP has matching mtime
+            if path_str.endswith(".zip") and zip_known_mtimes.get(path_str) == file_mtime:
+                skipped_mtime += 1
+                continue
         selected.append((path, file_mtime))
 
     return selected, skipped_mtime

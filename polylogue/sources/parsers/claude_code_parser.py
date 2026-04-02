@@ -9,6 +9,11 @@ from pydantic import ValidationError
 
 from polylogue.lib.branch_type import BranchType
 from polylogue.logging import get_logger
+from polylogue.sources.providers.claude_code import ClaudeCodeRecord
+from polylogue.types import Provider
+
+from .base import ParsedContentBlock, ParsedConversation, ParsedMessage, content_blocks_from_segments
+from .claude_common import extract_message_text, normalize_timestamp
 
 _TAG_RE = re.compile(r"<[^>]+>")
 _WHITESPACE_RE = re.compile(r"\s+")
@@ -31,11 +36,6 @@ def _clean_title_text(text: str) -> str:
     # Take first line of remaining text
     first_line = cleaned.split("\n")[0].strip()
     return first_line
-from polylogue.sources.providers.claude_code import ClaudeCodeRecord
-from polylogue.types import Provider
-
-from .base import ParsedContentBlock, ParsedConversation, ParsedMessage, content_blocks_from_segments
-from .claude_common import extract_message_text, normalize_timestamp
 
 logger = get_logger(__name__)
 
