@@ -1490,6 +1490,8 @@ def test_iter_source_raw_data_splits_multi_conversation_zip_entries_for_non_grou
     id_field: str,
     expected_ids: list[str],
 ) -> None:
+    from polylogue.storage.blob_store import get_blob_store
+
     archive_path = tmp_path / "bundle.zip"
     with zipfile.ZipFile(archive_path, "w") as zf:
         zf.writestr(f"nested/{entry_name}", payload_bytes)
@@ -1500,8 +1502,42 @@ def test_iter_source_raw_data_splits_multi_conversation_zip_entries_for_non_grou
     assert [item.source_path for item in items] == [expected_path, expected_path]
     assert [item.source_index for item in items] == [0, 1]
     assert [item.provider_hint for item in items] == [expected_provider, expected_provider]
-    assert all(item.blob_hash is None for item in items)
-    assert [json.loads(item.raw_bytes)[id_field] for item in items] == expected_ids
+    assert all(item.blob_hash is not None for item in items)
+    assert all(item.raw_bytes == b"" for item in items)
+    assert [
+        json.loads(get_blob_store().read_all(item.blob_hash))[id_field]
+        for item in items
+        if item.blob_hash is not None
+    ] == expected_ids
+
+
+def test_iter_source_raw_data_avoids_whole_blob_provider_detection_for_zip_entries(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    archive_path = tmp_path / "bundle.zip"
+    with zipfile.ZipFile(archive_path, "w") as zf:
+        zf.writestr(
+            "nested/conversations.json",
+            json.dumps(
+                [
+                    {"id": "chatgpt-1", "mapping": {}},
+                    {"id": "chatgpt-2", "mapping": {}},
+                ]
+            ).encode("utf-8"),
+        )
+
+    def _fail(*args, **kwargs):
+        raise AssertionError("ZIP acquisition should not use whole-blob provider detection")
+
+    monkeypatch.setattr(
+        "polylogue.sources.source_acquisition._detect_provider_from_raw_bytes",
+        _fail,
+    )
+
+    items = list(iter_source_raw_data(Source(name="inbox", path=archive_path)))
+
+    assert len(items) == 2
 
 
 def test_iter_source_raw_data_keeps_source_family_hints_for_mixed_zip_sources(tmp_path: Path) -> None:
