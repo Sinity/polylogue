@@ -118,6 +118,7 @@ async def test_run_probe_emits_real_pipeline_summary(tmp_path) -> None:
     assert summary["run_payload"]["metrics"]["peak_rss_mb"] is not None
     assert "index" in summary["run_payload"]["metrics"]["stages"]
     assert summary["db_stats"]["raw_conversations_count"] >= 1
+    assert len(summary["raw_fanout"]) == summary["db_stats"]["raw_conversations_count"]
 
 
 def test_main_writes_json_summary(tmp_path, capsys) -> None:
@@ -213,6 +214,8 @@ async def test_run_probe_can_sample_archive_subset_and_persist_manifest(tmp_path
     assert summary["sample"]["provider_counts"] == {"chatgpt": 1, "codex": 1}
     assert summary["db_stats"]["raw_conversations_count"] == 2
     assert summary["db_stats"]["conversations_count"] == 2
+    assert len(summary["raw_fanout"]) == 2
+    assert sum(item["conversation_count"] for item in summary["raw_fanout"]) == 2
     assert summary["paths"]["manifest_path"].endswith("archive-subset-manifest.json")
     assert manifest["sample_per_provider"] == 1
     assert len(manifest["records"]) == 2

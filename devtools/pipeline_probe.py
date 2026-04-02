@@ -195,6 +195,46 @@ def _db_row_counts(db_path: Path) -> dict[str, int]:
     return stats
 
 
+def _db_raw_fanout(db_path: Path) -> list[dict[str, Any]]:
+    if not db_path.exists():
+        return []
+    with open_connection(db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT
+                r.raw_id,
+                COALESCE(r.payload_provider, r.provider_name) AS payload_provider,
+                r.source_name,
+                r.blob_size,
+                r.parse_error,
+                COUNT(DISTINCT c.conversation_id) AS conversation_count,
+                COUNT(m.message_id) AS message_count
+            FROM raw_conversations r
+            LEFT JOIN conversations c ON c.raw_id = r.raw_id
+            LEFT JOIN messages m ON m.conversation_id = c.conversation_id
+            GROUP BY
+                r.raw_id,
+                COALESCE(r.payload_provider, r.provider_name),
+                r.source_name,
+                r.blob_size,
+                r.parse_error
+            ORDER BY r.blob_size DESC, r.raw_id ASC
+            """
+        ).fetchall()
+    return [
+        {
+            "raw_id": str(row["raw_id"]),
+            "payload_provider": row["payload_provider"],
+            "source_name": row["source_name"],
+            "blob_size_bytes": int(row["blob_size"]),
+            "conversation_count": int(row["conversation_count"]),
+            "message_count": int(row["message_count"]),
+            "parse_error": row["parse_error"],
+        }
+        for row in rows
+    ]
+
+
 def _write_probe_sources(
     *,
     provider: str,
@@ -629,6 +669,7 @@ async def run_probe(args: argparse.Namespace) -> dict[str, Any]:
             "result": result.model_dump(),
             "run_payload": run_payload,
             "db_stats": _db_row_counts(db_path) if db_path is not None else {},
+            "raw_fanout": _db_raw_fanout(db_path) if db_path is not None else [],
         }
     else:
         if args.sample_per_provider <= 0:
@@ -701,6 +742,7 @@ async def run_probe(args: argparse.Namespace) -> dict[str, Any]:
             "result": result.model_dump(),
             "run_payload": run_payload,
             "db_stats": _db_row_counts(db_path) if db_path is not None else {},
+            "raw_fanout": _db_raw_fanout(db_path) if db_path is not None else [],
         }
 
     return summary
