@@ -22,6 +22,7 @@ from polylogue.storage.session_product_rebuild import (
 from polylogue.storage.session_product_threads import (
     load_thread_profile_records_async,
     thread_root_id_async,
+    thread_root_ids_async,
 )
 
 
@@ -270,6 +271,7 @@ async def _apply_session_product_conversation_updates_async(
     for chunk in chunked(conversation_id_list, size=page_size):
         old_profile_records = await _load_existing_session_profile_records_async(conn, chunk)
         conversations, messages, attachments, blocks = await load_async_batch(conn, chunk)
+        root_ids_by_conversation = await thread_root_ids_async(conn, chunk)
         hydrated_by_id = {
             str(conversation.id): conversation
             for conversation in hydrate_conversations(conversations, messages, attachments, blocks)
@@ -318,7 +320,7 @@ async def _apply_session_product_conversation_updates_async(
                 )
                 if group is not None
             )
-            root_id = await thread_root_id_async(conn, conversation_id)
+            root_id = root_ids_by_conversation.get(conversation_id)
             if root_id is not None:
                 thread_root_ids.add(root_id)
 

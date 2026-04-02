@@ -44,3 +44,40 @@ async def test_apply_session_product_conversation_updates_async_batches_hydrated
     assert update.counts["profiles"] == 1
     assert update.thread_root_ids == {"conv-refresh"}
     assert update.affected_groups
+
+
+@pytest.mark.asyncio
+async def test_apply_session_product_conversation_updates_async_preserves_thread_roots_for_children(
+    tmp_path,
+) -> None:
+    db_path = tmp_path / "refresh-thread.db"
+    with open_connection(db_path) as conn:
+        store_records(
+            conversation=make_conversation("conv-root", title="Root"),
+            messages=[make_message("conv-root:msg-1", "conv-root", text="Root message")],
+            attachments=[],
+            conn=conn,
+        )
+        store_records(
+            conversation=make_conversation(
+                "conv-child",
+                title="Child",
+                parent_conversation_id="conv-root",
+            ),
+            messages=[make_message("conv-child:msg-1", "conv-child", text="Child message")],
+            attachments=[],
+            conn=conn,
+        )
+        conn.commit()
+
+    backend = SQLiteBackend(db_path=db_path)
+    async with backend.connection() as conn:
+        update = await _apply_session_product_conversation_updates_async(
+            conn,
+            ["conv-root", "conv-child"],
+            transaction_depth=1,
+            page_size=10,
+        )
+
+    assert update.counts["profiles"] == 2
+    assert update.thread_root_ids == {"conv-root"}
