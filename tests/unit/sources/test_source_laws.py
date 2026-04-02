@@ -1566,6 +1566,29 @@ def test_iter_source_raw_data_reads_plain_and_zip_sources_contract(tmp_path: Pat
     assert zip_items[0].file_mtime is not None
 
 
+def test_iter_source_raw_data_streams_grouped_zip_entries_into_blob_store(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from polylogue.storage.blob_store import BlobStore, get_blob_store
+
+    entry_bytes = b'{"type":"user","message":{"role":"user","content":[{"type":"text","text":"hello"}]}}\n'
+    archive_path = tmp_path / "bundle.zip"
+    with zipfile.ZipFile(archive_path, "w") as zf:
+        zf.writestr("nested/session.jsonl", entry_bytes)
+
+    def _fail(*args, **kwargs):
+        raise AssertionError("Grouped ZIP acquisition should stream into the blob store")
+
+    monkeypatch.setattr(BlobStore, "write_from_bytes", _fail)
+
+    items = list(iter_source_raw_data(Source(name="claude-code", path=archive_path)))
+
+    assert len(items) == 1
+    assert items[0].blob_hash is not None
+    assert get_blob_store().read_all(items[0].blob_hash) == entry_bytes
+
+
 @pytest.mark.parametrize(
     ("entry_name", "payload_bytes", "expected_provider", "id_field", "expected_ids"),
     [
@@ -1688,6 +1711,29 @@ def test_iter_source_raw_data_reports_split_payload_observations(tmp_path: Path)
     assert float(peak["classify_ms"]) >= 0.0
     assert float(peak["serialize_ms"]) >= 0.0
     assert float(peak["peak_rss_self_mb"]) > 0.0
+
+
+def test_iter_source_raw_data_streams_preserved_zip_entries_into_blob_store(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from polylogue.storage.blob_store import BlobStore, get_blob_store
+
+    entry_bytes = json.dumps({"id": "chatgpt-1", "mapping": {}}).encode("utf-8")
+    archive_path = tmp_path / "bundle.zip"
+    with zipfile.ZipFile(archive_path, "w") as zf:
+        zf.writestr("nested/chatgpt-export.json", entry_bytes)
+
+    def _fail(*args, **kwargs):
+        raise AssertionError("Preserved ZIP entries should stream into the blob store")
+
+    monkeypatch.setattr(BlobStore, "write_from_bytes", _fail)
+
+    items = list(iter_source_raw_data(Source(name="chatgpt", path=archive_path)))
+
+    assert len(items) == 1
+    assert items[0].blob_hash is not None
+    assert get_blob_store().read_all(items[0].blob_hash) == entry_bytes
 
 
 def test_iter_entry_payloads_locks_provider_after_first_detected_payload(
