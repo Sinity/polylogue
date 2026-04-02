@@ -1,4 +1,4 @@
-"""Exercise the real pipeline on bounded synthetic or archive-subset corpora and emit JSON metrics."""
+"""Exercise the real pipeline on bounded synthetic, archive-subset, or staged source corpora."""
 
 from __future__ import annotations
 
@@ -39,18 +39,24 @@ _EXT_MAP = {
     "claude-code": ".jsonl",
     "codex": ".jsonl",
 }
-_INPUT_MODES = ("synthetic", "archive-subset")
+_INPUT_MODES = ("synthetic", "archive-subset", "source-subset")
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Run the real pipeline against a bounded synthetic or archive-subset corpus and emit a JSON summary.",
+        description=(
+            "Run the real pipeline against a bounded synthetic, archive-subset, "
+            "or staged real-source corpus and emit a JSON summary."
+        ),
     )
     parser.add_argument(
         "--input-mode",
         choices=_INPUT_MODES,
         default="synthetic",
-        help="Probe input mode: synthetic fixture generation or archive-subset replay (default: synthetic)",
+        help=(
+            "Probe input mode: synthetic fixture generation, archive-subset replay, "
+            "or staged real-source inputs (default: synthetic)"
+        ),
     )
     parser.add_argument(
         "--provider",
@@ -98,6 +104,22 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="append",
         default=None,
         help="Archive-subset source-name filter. Repeatable.",
+    )
+    parser.add_argument(
+        "--source-path",
+        dest="source_paths",
+        action="append",
+        type=Path,
+        default=None,
+        help=(
+            "Real-source input path for source-subset mode. Files or directories are copied "
+            "into the isolated probe workspace. Repeatable."
+        ),
+    )
+    parser.add_argument(
+        "--source-name",
+        default="inbox",
+        help="Source name assigned to staged source-subset inputs (default: inbox)",
     )
     parser.add_argument(
         "--source-db",
@@ -270,6 +292,18 @@ def _names(value: object | None) -> list[str]:
     if isinstance(value, (list, tuple)):
         return [str(item) for item in value]
     return [str(value)]
+
+
+def _paths(value: object | None) -> list[Path]:
+    if value is None:
+        return []
+    if isinstance(value, Path):
+        return [value]
+    if isinstance(value, str):
+        return [Path(value)]
+    if isinstance(value, (list, tuple)):
+        return [item if isinstance(item, Path) else Path(str(item)) for item in value]
+    return [Path(str(value))]
 
 
 def _effective_provider_name(record: RawConversationRecord) -> str:
@@ -601,6 +635,87 @@ def _probe_mode(args: argparse.Namespace) -> str:
     return str(getattr(args, "input_mode", "synthetic"))
 
 
+def _load_run_payload(run_path: str | None) -> dict[str, Any]:
+    if not run_path:
+        return {}
+    return json.loads(Path(run_path).read_text(encoding="utf-8"))
+
+
+def _path_size_bytes(path: Path) -> int:
+    if path.is_file():
+        return path.stat().st_size
+    if path.is_dir():
+        return sum(child.stat().st_size for child in path.rglob("*") if child.is_file())
+    return 0
+
+
+def _copy_source_subset_entry(*, source_path: Path, destination_path: Path) -> tuple[str, int, int]:
+    if source_path.is_file():
+        destination_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source_path, destination_path)
+        return "file", 1, destination_path.stat().st_size
+    if source_path.is_dir():
+        shutil.copytree(source_path, destination_path)
+        staged_file_count = sum(1 for child in destination_path.rglob("*") if child.is_file())
+        return "directory", staged_file_count, _path_size_bytes(destination_path)
+    raise FileNotFoundError(f"source-subset probe input does not exist: {source_path}")
+
+
+def _stage_source_subset(
+    *,
+    source_paths: list[Path],
+    source_root: Path,
+) -> dict[str, Any]:
+    source_root.mkdir(parents=True, exist_ok=True)
+    entries: list[dict[str, Any]] = []
+    staged_file_count = 0
+    total_bytes = 0
+
+    for index, raw_source_path in enumerate(source_paths):
+        source_path = raw_source_path.expanduser().resolve()
+        destination_name = f"{index:03d}-{source_path.name or 'source'}"
+        destination_path = source_root / destination_name
+        entry_kind, entry_file_count, entry_bytes = _copy_source_subset_entry(
+            source_path=source_path,
+            destination_path=destination_path,
+        )
+        staged_file_count += entry_file_count
+        total_bytes += entry_bytes
+        entries.append({
+            "input_path": str(source_path),
+            "staged_path": str(destination_path),
+            "kind": entry_kind,
+            "file_count": entry_file_count,
+            "bytes": entry_bytes,
+        })
+
+    return {
+        "input_count": len(source_paths),
+        "staged_entry_count": len(entries),
+        "staged_file_count": staged_file_count,
+        "total_bytes": total_bytes,
+        "entries": entries,
+    }
+
+
+async def _run_probe_pipeline(
+    *,
+    config: Config,
+    stage: str,
+    source_names: list[str] | None,
+    backend=None,
+    repository=None,
+) -> tuple[Any, dict[str, Any]]:
+    result = await run_sources(
+        config=config,
+        stage=stage,
+        source_names=source_names,
+        backend=backend,
+        repository=repository,
+    )
+    return result, _load_run_payload(result.run_path)
+
+
 async def run_probe(args: argparse.Namespace) -> dict[str, Any]:
     probe_mode = _probe_mode(args)
     if probe_mode not in _INPUT_MODES:
@@ -635,14 +750,11 @@ async def run_probe(args: argparse.Namespace) -> dict[str, Any]:
                 render_root=render_root,
             )
             db_path = config.db_path
-            result = await run_sources(
+            result, run_payload = await _run_probe_pipeline(
                 config=config,
                 stage=args.stage,
                 source_names=[provider_name],
             )
-            run_payload: dict[str, Any] = {}
-            if result.run_path:
-                run_payload = json.loads(Path(result.run_path).read_text(encoding="utf-8"))
 
         summary = {
             "probe": {
@@ -666,6 +778,51 @@ async def run_probe(args: argparse.Namespace) -> dict[str, Any]:
                 "count": len(files),
                 "total_bytes": total_bytes,
             },
+            "result": result.model_dump(),
+            "run_payload": run_payload,
+            "db_stats": _db_row_counts(db_path) if db_path is not None else {},
+            "raw_fanout": _db_raw_fanout(db_path) if db_path is not None else [],
+        }
+    elif probe_mode == "source-subset":
+        source_paths = _paths(getattr(args, "source_paths", None))
+        if not source_paths:
+            raise ValueError("--source-path is required in source-subset mode")
+
+        source_name = str(getattr(args, "source_name", "inbox")).strip() or "inbox"
+        source_root = workdir / "sources" / source_name
+
+        with _isolated_env(workdir):
+            source_inputs = _stage_source_subset(
+                source_paths=source_paths,
+                source_root=source_root,
+            )
+            config = Config(
+                sources=[Source(name=source_name, path=source_root)],
+                archive_root=archive_root,
+                render_root=render_root,
+            )
+            db_path = config.db_path
+            result, run_payload = await _run_probe_pipeline(
+                config=config,
+                stage=args.stage,
+                source_names=[source_name],
+            )
+
+        summary = {
+            "probe": {
+                "input_mode": "source-subset",
+                "source_name": source_name,
+                "stage": args.stage,
+            },
+            "paths": {
+                "workdir": str(workdir),
+                "source_root": str(source_root),
+                "archive_root": str(archive_root),
+                "render_root": str(render_root),
+                "db_path": str(db_path),
+                "run_path": result.run_path,
+            },
+            "source_inputs": source_inputs,
             "result": result.model_dump(),
             "run_payload": run_payload,
             "db_stats": _db_row_counts(db_path) if db_path is not None else {},
@@ -706,16 +863,13 @@ async def run_probe(args: argparse.Namespace) -> dict[str, Any]:
                     repository=repository,
                     target_blob_store=target_blob_store,
                 )
-                result = await run_sources(
+                result, run_payload = await _run_probe_pipeline(
                     config=config,
                     stage=args.stage,
                     source_names=None,
                     backend=backend,
                     repository=repository,
                 )
-                run_payload = {}
-                if result.run_path:
-                    run_payload = json.loads(Path(result.run_path).read_text(encoding="utf-8"))
             finally:
                 await repository.close()
 

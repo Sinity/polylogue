@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from devtools.pipeline_probe import main, run_probe
+from devtools.pipeline_probe import _write_probe_sources, main, run_probe
 from polylogue.schemas.synthetic import SyntheticCorpus
 from polylogue.storage.backends import create_backend
 from polylogue.storage.backends.connection import open_connection
@@ -70,6 +70,36 @@ class _ArchiveArgs:
         self.manifest_in = manifest_in
 
 
+class _SourceSubsetArgs:
+    input_mode = "source-subset"
+    provider = None
+    count = 1
+    messages_min = 3
+    messages_max = 4
+    seed = 13
+    sample_per_provider = 50
+    source_filters = None
+    source_db = None
+    source_blob_root = None
+    manifest_out = None
+    manifest_in = None
+    stage = "parse"
+    json_out = None
+    max_total_ms = None
+    max_peak_rss_mb = None
+
+    def __init__(
+        self,
+        *,
+        workdir: Path,
+        source_paths: list[Path],
+        source_name: str = "inbox",
+    ) -> None:
+        self.workdir = workdir
+        self.source_paths = source_paths
+        self.source_name = source_name
+
+
 async def _seed_archive_source(tmp_path: Path) -> tuple[Path, Path]:
     source_db = tmp_path / "source.db"
     source_blob_root = tmp_path / "source-blobs"
@@ -121,6 +151,45 @@ async def test_run_probe_emits_real_pipeline_summary(tmp_path) -> None:
     assert len(summary["raw_fanout"]) == summary["db_stats"]["raw_conversations_count"]
 
 
+async def test_run_probe_can_stage_real_source_subset(tmp_path) -> None:
+    source_input_root = tmp_path / "inputs"
+    files, total_bytes = _write_probe_sources(
+        provider="chatgpt",
+        count=2,
+        messages_min=3,
+        messages_max=4,
+        seed=17,
+        source_root=source_input_root,
+    )
+    args = _SourceSubsetArgs(
+        workdir=tmp_path / "source-subset-probe",
+        source_paths=files,
+        source_name="inbox",
+    )
+
+    summary = await run_probe(args)
+
+    assert summary["probe"]["input_mode"] == "source-subset"
+    assert summary["probe"]["source_name"] == "inbox"
+    assert summary["source_inputs"]["input_count"] == 2
+    assert summary["source_inputs"]["staged_file_count"] == 2
+    assert summary["source_inputs"]["total_bytes"] == total_bytes
+    assert summary["db_stats"]["raw_conversations_count"] == 2
+    assert summary["db_stats"]["conversations_count"] == 2
+    assert len(summary["raw_fanout"]) == 2
+    assert summary["result"]["run_path"] is not None
+
+
+async def test_run_probe_rejects_source_subset_without_source_paths(tmp_path) -> None:
+    args = _SourceSubsetArgs(
+        workdir=tmp_path / "missing-source-paths",
+        source_paths=[],
+    )
+
+    with pytest.raises(ValueError, match="--source-path is required"):
+        await run_probe(args)
+
+
 def test_main_writes_json_summary(tmp_path, capsys) -> None:
     workdir = tmp_path / "probe-main"
     json_out = tmp_path / "probe-summary.json"
@@ -148,6 +217,35 @@ def test_main_writes_json_summary(tmp_path, capsys) -> None:
     assert exit_code == 0
     assert printed["paths"]["workdir"] == str(workdir.resolve())
     assert written["result"]["run_path"] is not None
+
+
+def test_main_runs_source_subset_mode(tmp_path, capsys) -> None:
+    source_input_root = tmp_path / "inputs"
+    files, _ = _write_probe_sources(
+        provider="chatgpt",
+        count=1,
+        messages_min=3,
+        messages_max=4,
+        seed=23,
+        source_root=source_input_root,
+    )
+
+    exit_code = main([
+        "--input-mode",
+        "source-subset",
+        "--source-path",
+        str(files[0]),
+        "--stage",
+        "parse",
+        "--workdir",
+        str(tmp_path / "probe-main-source-subset"),
+    ])
+
+    printed = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 0
+    assert printed["probe"]["input_mode"] == "source-subset"
+    assert printed["db_stats"]["raw_conversations_count"] == 1
 
 
 def test_main_uses_ephemeral_workdir_when_omitted(capsys) -> None:
