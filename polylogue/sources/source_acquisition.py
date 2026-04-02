@@ -64,10 +64,20 @@ def _iter_entry_payloads(
 ) -> Iterable[tuple[Provider, Any]]:
     """Yield payloads from a streamed JSON/JSONL document with provider hints."""
     current_provider = provider_hint
+    last_detected_provider: Provider | None = None
+    provider_locked = False
     for payload in _decoders._iter_json_stream(handle, stream_name):
-        provider = detect_provider(payload) or current_provider
-        if provider is not Provider.UNKNOWN:
-            current_provider = provider
+        if provider_locked:
+            provider = current_provider
+        else:
+            detected_provider = detect_provider(payload)
+            provider = detected_provider or current_provider
+            if detected_provider is not None and detected_provider is not Provider.UNKNOWN:
+                current_provider = detected_provider
+                if detected_provider == last_detected_provider:
+                    provider_locked = True
+                else:
+                    last_detected_provider = detected_provider
         yield (provider, payload)
 
 

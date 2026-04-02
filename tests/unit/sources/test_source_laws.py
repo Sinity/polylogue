@@ -50,7 +50,7 @@ from polylogue.sources.parsers.claude import (
     find_sessions_index,
     parse_sessions_index,
 )
-from polylogue.sources.source_acquisition import iter_source_raw_data
+from polylogue.sources.source_acquisition import _iter_entry_payloads, iter_source_raw_data
 from polylogue.sources.source_parsing import (
     iter_source_conversations,
     iter_source_conversations_with_raw,
@@ -1608,6 +1608,36 @@ def test_iter_source_raw_data_reports_split_payload_observations(tmp_path: Path)
     assert peak["source_index"] in {0, 1}
     assert int(peak["blob_size"]) > 0
     assert float(peak["peak_rss_self_mb"]) > 0.0
+
+
+def test_iter_entry_payloads_locks_provider_after_first_detected_payload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payloads = [
+        {"id": "chatgpt-1", "mapping": {}},
+        {"id": "chatgpt-2", "mapping": {}},
+    ]
+    detect_calls: list[dict[str, object]] = []
+    original_detect_provider = dispatch_module.detect_provider
+
+    def tracking_detect_provider(payload: object, path: object | None = None):
+        del path
+        if isinstance(payload, dict):
+            detect_calls.append(payload)
+        return original_detect_provider(payload)
+
+    monkeypatch.setattr("polylogue.sources.source_acquisition.detect_provider", tracking_detect_provider)
+
+    items = list(
+        _iter_entry_payloads(
+            BytesIO(json.dumps(payloads).encode("utf-8")),
+            stream_name="conversations.json",
+            provider_hint=Provider.UNKNOWN,
+        )
+    )
+
+    assert [provider for provider, _ in items] == [Provider.CHATGPT, Provider.CHATGPT]
+    assert detect_calls == payloads
 
 
 def test_iter_source_raw_data_keeps_source_family_hints_for_mixed_zip_sources(tmp_path: Path) -> None:
