@@ -62,6 +62,7 @@ async def execute_ingest_stage(
     archive_root,
     sources,
     stage: str,
+    skip_acquire: bool = False,
     ui: object | None = None,
     progress_callback: ProgressCallback | None = None,
 ) -> IngestResult:
@@ -78,7 +79,7 @@ async def execute_ingest_stage(
         ui=ui,
         progress_callback=progress_callback,
         parse_records=stage in PARSE_STAGES,
-        skip_acquire=stage in {"validate", "parse"},
+        skip_acquire=skip_acquire,
     )
 
 
@@ -164,6 +165,16 @@ async def execute_index_stage(
 
     index_service = IndexService(config=config, backend=backend)
     try:
+        if stage == "parse":
+            if processed_ids:
+                if progress_callback is not None:
+                    progress_callback(0, desc=f"Indexing {len(processed_ids)} conversations")
+                return IndexStageOutcome(
+                    indexed=await index_service.update_index(processed_ids),
+                    item_count=len(processed_ids),
+                )
+            return IndexStageOutcome(indexed=False, item_count=0)
+
         if stage == "index":
             if progress_callback is not None:
                 progress_callback(0, desc="Indexing")
@@ -195,10 +206,10 @@ async def execute_index_stage(
                 if progress_callback is not None:
                     progress_callback(
                         0,
-                        desc=f"Index verified: {len(processed_ids)} conversations",
+                        desc=f"Indexing {len(processed_ids)} conversations",
                     )
                 return IndexStageOutcome(
-                    indexed=await index_service.ensure_index_exists(),
+                    indexed=await index_service.update_index(processed_ids),
                     item_count=len(processed_ids),
                 )
         return IndexStageOutcome(indexed=False, item_count=0)

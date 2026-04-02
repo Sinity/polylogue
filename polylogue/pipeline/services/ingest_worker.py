@@ -12,7 +12,6 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
 
 from polylogue.lib.json import dumps as json_dumps
 from polylogue.lib.viewports import ToolCategory, classify_tool
@@ -29,8 +28,8 @@ from polylogue.schemas.code_detection import detect_language
 from polylogue.storage.store import RawConversationRecord, _json_or_none
 from polylogue.types import ValidationMode, ValidationStatus
 
-
 _SOURCE_HASH_SUFFIX = re.compile(r"-(?:[0-9a-f]{16,64})$", re.IGNORECASE)
+_SCHEMA_REGISTRY = None
 
 
 # ---------------------------------------------------------------------------
@@ -134,6 +133,15 @@ def _make_ref_id(
     return sha256(key.encode()).hexdigest()[:32]
 
 
+def _runtime_schema_registry():
+    global _SCHEMA_REGISTRY
+    if _SCHEMA_REGISTRY is None:
+        from polylogue.schemas.runtime_registry import SchemaRegistry
+
+        _SCHEMA_REGISTRY = SchemaRegistry()
+    return _SCHEMA_REGISTRY
+
+
 # ---------------------------------------------------------------------------
 # Main worker function — runs in subprocess
 # ---------------------------------------------------------------------------
@@ -151,7 +159,6 @@ def ingest_record(
     state, no DB access).
     """
     from polylogue.lib.raw_payload import build_raw_payload_envelope
-    from polylogue.schemas.runtime_registry import SchemaRegistry
     from polylogue.schemas.validator import SchemaValidator
     from polylogue.sources.dispatch import parse_payload
     from polylogue.storage.blob_store import get_blob_store
@@ -239,8 +246,7 @@ def ingest_record(
         v_status = ValidationStatus.SKIPPED
 
     # ── Phase 3: Parse (provider-specific conversation extraction) ─────
-    registry = SchemaRegistry()
-    schema_resolution = registry.resolve_payload(
+    schema_resolution = _runtime_schema_registry().resolve_payload(
         envelope.provider,
         envelope.payload,
         source_path=raw_record.source_path,

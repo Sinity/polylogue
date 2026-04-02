@@ -2,10 +2,29 @@
 
 from __future__ import annotations
 
+from functools import lru_cache
+from pathlib import Path
 from typing import Any
 
+from polylogue.paths import data_home
 from polylogue.schemas.runtime_registry import SchemaRegistry, canonical_schema_provider
 from polylogue.types import Provider
+
+
+@lru_cache(maxsize=8)
+def _shared_registry(storage_root: str) -> SchemaRegistry:
+    return SchemaRegistry(storage_root=Path(storage_root))
+
+
+def _registry_for(registry_cls: type[SchemaRegistry]) -> SchemaRegistry:
+    if registry_cls is SchemaRegistry:
+        return _shared_registry(str(data_home() / "schemas"))
+    return registry_cls()
+
+
+def reset_registry_cache() -> None:
+    """Clear shared runtime-registry instances used by schema validation."""
+    _shared_registry.cache_clear()
 
 
 def canonical_provider(provider: str | Provider) -> Provider:
@@ -19,7 +38,7 @@ def resolve_provider_schema(
     registry_cls: type[SchemaRegistry] = SchemaRegistry,
 ) -> tuple[Provider, dict[str, Any], tuple[str, str, str]]:
     canonical = canonical_provider(provider)
-    registry = registry_cls()
+    registry = _registry_for(registry_cls)
     package = registry.get_package(str(canonical), version="default") if hasattr(registry, "get_package") else None
     package_version = package.version if package is not None else "latest"
     element_kind = package.default_element_kind if package is not None else "default"
@@ -45,7 +64,7 @@ def resolve_payload_schema(
     registry_cls: type[SchemaRegistry] = SchemaRegistry,
 ) -> tuple[Provider, dict[str, Any], tuple[str, str, str]]:
     canonical = canonical_provider(provider)
-    registry = registry_cls()
+    registry = _registry_for(registry_cls)
     resolution = (
         registry.resolve_payload(
             str(canonical),
@@ -75,4 +94,4 @@ def resolve_payload_schema(
 
 
 def available_providers(*, registry_cls: type[SchemaRegistry] = SchemaRegistry) -> list[str]:
-    return registry_cls().list_providers()
+    return _registry_for(registry_cls).list_providers()
