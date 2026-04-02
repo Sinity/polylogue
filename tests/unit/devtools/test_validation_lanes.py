@@ -51,6 +51,18 @@ class TestCommandConstruction:
         cmd = build_lane_command(LANES["query-routing"])
         assert "query_routing" in cmd
 
+    def test_showcase_baselines_lane_uses_verify_showcase_module(self):
+        cmd = build_lane_command(LANES["showcase-baselines"])
+        assert cmd[:3] == [sys.executable, "-m", "devtools.verify_showcase"]
+
+    def test_pipeline_probe_chatgpt_lane_uses_probe_budgets(self):
+        cmd = build_lane_command(LANES["pipeline-probe-chatgpt"])
+        assert cmd[:3] == [sys.executable, "-m", "devtools.pipeline_probe"]
+        assert "--provider" in cmd
+        assert "chatgpt" in cmd
+        assert "--max-total-ms" in cmd
+        assert "--max-peak-rss-mb" in cmd
+
     def test_semantic_stack_lane_uses_explicit_semantic_suite(self):
         cmd = build_lane_command(LANES["semantic-stack"])
         assert cmd[:3] == [sys.executable, "-m", "pytest"]
@@ -247,6 +259,7 @@ class TestCommandConstruction:
         assert exit_code == 0
         assert "machine-contract" in captured.out
         assert "query-routing" in captured.out
+        assert "showcase-baselines" in captured.out
         assert "semantic-stack" in captured.out
 
     def test_archive_intelligence_dry_run_includes_new_lanes(self, capsys):
@@ -256,6 +269,13 @@ class TestCommandConstruction:
         assert exit_code == 0
         assert "retrieval-dogfood" in captured.out
         assert "embeddings-coverage" in captured.out
+
+    def test_frontier_extended_dry_run_includes_pipeline_probe_lane(self, capsys):
+        exit_code = main(["--lane", "frontier-extended", "--dry-run"])
+        captured = capsys.readouterr()
+
+        assert exit_code == 0
+        assert "pipeline-probe-chatgpt" in captured.out
 
     def test_source_runtime_governance_dry_run_includes_new_lanes(self, capsys):
         exit_code = main(["--lane", "source-runtime-governance", "--dry-run"])
