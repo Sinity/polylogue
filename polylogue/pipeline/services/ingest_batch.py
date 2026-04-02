@@ -764,26 +764,9 @@ async def process_ingest_batch(
     now_iso = datetime.now(timezone.utc).isoformat()
     validation_mode_str = validation_mode
 
-    for rid in succeeded_raw_ids:
-        outcome = batch_summary.outcomes.get(rid)
-        await service.repository.update_raw_state(
-            rid,
-            state=RawConversationStateUpdate(
-                parsed_at=now_iso,
-                parse_error=None,
-                payload_provider=outcome.payload_provider if outcome is not None else None,
-            ),
-        )
-        if outcome is not None:
-            await service.repository.mark_raw_validated(
-                rid,
-                status=outcome.validation_status,
-                error=outcome.validation_error,
-                payload_provider=outcome.payload_provider,
-                mode=validation_mode_str,
-            )
-    for rid in skipped_raw_ids:
-        if rid not in failed_raw_ids and rid not in succeeded_raw_ids:
+    raw_state_update_started = time.perf_counter()
+    async with backend.bulk_connection():
+        for rid in succeeded_raw_ids:
             outcome = batch_summary.outcomes.get(rid)
             await service.repository.update_raw_state(
                 rid,
@@ -801,23 +784,43 @@ async def process_ingest_batch(
                     payload_provider=outcome.payload_provider,
                     mode=validation_mode_str,
                 )
-    for rid, error in failed_raw_ids.items():
-        outcome = batch_summary.outcomes.get(rid)
-        await service.repository.update_raw_state(
-            rid,
-            state=RawConversationStateUpdate(
-                parse_error=error,
-                payload_provider=outcome.payload_provider if outcome is not None else None,
-            ),
-        )
-        if outcome is not None:
-            await service.repository.mark_raw_validated(
+        for rid in skipped_raw_ids:
+            if rid not in failed_raw_ids and rid not in succeeded_raw_ids:
+                outcome = batch_summary.outcomes.get(rid)
+                await service.repository.update_raw_state(
+                    rid,
+                    state=RawConversationStateUpdate(
+                        parsed_at=now_iso,
+                        parse_error=None,
+                        payload_provider=outcome.payload_provider if outcome is not None else None,
+                    ),
+                )
+                if outcome is not None:
+                    await service.repository.mark_raw_validated(
+                        rid,
+                        status=outcome.validation_status,
+                        error=outcome.validation_error,
+                        payload_provider=outcome.payload_provider,
+                        mode=validation_mode_str,
+                    )
+        for rid, error in failed_raw_ids.items():
+            outcome = batch_summary.outcomes.get(rid)
+            await service.repository.update_raw_state(
                 rid,
-                status=outcome.validation_status,
-                error=outcome.validation_error or error,
-                payload_provider=outcome.payload_provider,
-                mode=validation_mode_str,
+                state=RawConversationStateUpdate(
+                    parse_error=error,
+                    payload_provider=outcome.payload_provider if outcome is not None else None,
+                ),
             )
+            if outcome is not None:
+                await service.repository.mark_raw_validated(
+                    rid,
+                    status=outcome.validation_status,
+                    error=outcome.validation_error or error,
+                    payload_provider=outcome.payload_provider,
+                    mode=validation_mode_str,
+                )
+    raw_state_update_elapsed_s = time.perf_counter() - raw_state_update_started
 
     elapsed_s = time.perf_counter() - batch_started
     rss_end_mb = read_current_rss_mb()
@@ -842,12 +845,14 @@ async def process_ingest_batch(
         "max_write_elapsed_ms": round(batch_summary.max_write_elapsed_s * 1000, 1),
         "flush_elapsed_ms": round(batch_summary.flush_elapsed_s * 1000, 1),
         "commit_elapsed_ms": round(batch_summary.commit_elapsed_s * 1000, 1),
+        "raw_state_update_elapsed_ms": round(raw_state_update_elapsed_s * 1000, 1),
     }
     residual_elapsed_s = elapsed_s - (
         batch_summary.result_wait_s
         + batch_summary.drain_elapsed_s
         + batch_summary.flush_elapsed_s
         + batch_summary.commit_elapsed_s
+        + raw_state_update_elapsed_s
     )
     observation["unattributed_elapsed_ms"] = round(max(residual_elapsed_s, 0.0) * 1000, 1)
     if rss_start_mb is not None:
