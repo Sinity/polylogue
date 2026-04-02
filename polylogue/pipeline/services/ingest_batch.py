@@ -42,6 +42,7 @@ if TYPE_CHECKING:
     from polylogue.storage.backends.async_sqlite import SQLiteBackend
 
 logger = get_logger(__name__)
+INGEST_WORKERS_ENV = "POLYLOGUE_INGEST_WORKERS"
 
 
 @dataclass(slots=True)
@@ -567,6 +568,19 @@ def _iter_ingest_results_sync(
             yield ingest_record(raw_record, archive_root_str, validation_mode)
 
 
+def _configured_ingest_worker_limit() -> int:
+    raw_value = os.environ.get(INGEST_WORKERS_ENV)
+    if raw_value is None:
+        return 8
+    try:
+        parsed = int(raw_value)
+    except ValueError as exc:
+        raise ValueError(f"{INGEST_WORKERS_ENV} must be a positive integer") from exc
+    if parsed <= 0:
+        raise ValueError(f"{INGEST_WORKERS_ENV} must be a positive integer")
+    return parsed
+
+
 def _process_ingest_batch_sync(
     raw_records: list,
     *,
@@ -578,7 +592,7 @@ def _process_ingest_batch_sync(
 
     summary = _IngestBatchSummary()
     summary.raw_record_count = len(raw_records)
-    summary.worker_count = min(len(raw_records), os.cpu_count() or 4, 8)
+    summary.worker_count = min(len(raw_records), os.cpu_count() or 4, _configured_ingest_worker_limit())
     summary.total_blob_mb = sum(r.blob_size for r in raw_records) / (1024 * 1024)
 
     t_start = time.perf_counter()
@@ -783,6 +797,7 @@ async def process_ingest_batch(
         "conversations": batch_summary.total_convos,
         "messages": batch_summary.total_msgs,
         "changed_conversations": len(batch_summary.changed_conversation_ids),
+        "workers": batch_summary.worker_count,
         "failed_raw_count": len(batch_summary.failed_raw_ids),
         "skipped_raw_count": len(batch_summary.skipped_raw_ids),
         "elapsed_ms": round(elapsed_s * 1000, 1),

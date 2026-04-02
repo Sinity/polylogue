@@ -30,6 +30,8 @@ class _Args:
     manifest_out = None
     manifest_in = None
     stage = "parse"
+    raw_batch_size = None
+    ingest_workers = None
     json_out = None
     max_total_ms = None
     max_peak_rss_mb = None
@@ -50,6 +52,8 @@ class _ArchiveArgs:
     manifest_out = None
     manifest_in = None
     stage = "parse"
+    raw_batch_size = None
+    ingest_workers = None
     json_out = None
     max_total_ms = None
     max_peak_rss_mb = None
@@ -84,6 +88,8 @@ class _SourceSubsetArgs:
     manifest_out = None
     manifest_in = None
     stage = "parse"
+    raw_batch_size = None
+    ingest_workers = None
     json_out = None
     max_total_ms = None
     max_peak_rss_mb = None
@@ -185,6 +191,32 @@ async def test_run_probe_can_stage_real_source_subset(tmp_path) -> None:
     assert summary["db_stats"]["conversations_count"] == 2
     assert len(summary["raw_fanout"]) == 2
     assert summary["result"]["run_path"] is not None
+
+
+async def test_run_probe_applies_ingest_tuning_overrides(tmp_path) -> None:
+    source_input_root = tmp_path / "inputs"
+    files, _ = _write_probe_sources(
+        provider="chatgpt",
+        count=2,
+        messages_min=3,
+        messages_max=4,
+        seed=29,
+        source_root=source_input_root,
+    )
+    args = _SourceSubsetArgs(
+        workdir=tmp_path / "source-subset-overrides",
+        source_paths=files,
+    )
+    args.raw_batch_size = 1
+    args.ingest_workers = 1
+
+    summary = await run_probe(args)
+    ingest_details = summary["run_payload"]["metrics"]["stages"]["ingest"]["details"]["batch_observations"]
+
+    assert summary["probe"]["raw_batch_size"] == 1
+    assert summary["probe"]["ingest_workers"] == 1
+    assert ingest_details["batch_count"] == 2
+    assert all(batch["workers"] == 1 for batch in ingest_details["batches"])
 
 
 async def test_run_probe_rejects_source_subset_without_source_paths(tmp_path) -> None:

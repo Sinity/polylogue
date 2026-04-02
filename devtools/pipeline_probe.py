@@ -148,6 +148,18 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Pipeline stage to execute (default: all)",
     )
     parser.add_argument(
+        "--raw-batch-size",
+        type=int,
+        default=None,
+        help="Override POLYLOGUE_PARSE_RAW_BATCH_SIZE for this probe.",
+    )
+    parser.add_argument(
+        "--ingest-workers",
+        type=int,
+        default=None,
+        help="Override POLYLOGUE_INGEST_WORKERS for this probe.",
+    )
+    parser.add_argument(
         "--workdir",
         type=Path,
         help=(
@@ -176,13 +188,15 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 @contextmanager
-def _isolated_env(workdir: Path) -> Iterator[None]:
+def _isolated_env(workdir: Path, *, extra_env: dict[str, str] | None = None) -> Iterator[None]:
     previous = {key: os.environ.get(key) for key in (
         "XDG_DATA_HOME",
         "XDG_STATE_HOME",
         "XDG_CONFIG_HOME",
         "POLYLOGUE_ARCHIVE_ROOT",
         "POLYLOGUE_RENDER_ROOT",
+        "POLYLOGUE_PARSE_RAW_BATCH_SIZE",
+        "POLYLOGUE_INGEST_WORKERS",
     )}
     env_updates = {
         "XDG_DATA_HOME": str(workdir / "xdg-data"),
@@ -191,6 +205,8 @@ def _isolated_env(workdir: Path) -> Iterator[None]:
         "POLYLOGUE_ARCHIVE_ROOT": str(workdir / "archive"),
         "POLYLOGUE_RENDER_ROOT": str(workdir / "render"),
     }
+    if extra_env:
+        env_updates.update(extra_env)
     for key, value in env_updates.items():
         os.environ[key] = value
     reset_blob_store()
@@ -635,6 +651,21 @@ def _probe_mode(args: argparse.Namespace) -> str:
     return str(getattr(args, "input_mode", "synthetic"))
 
 
+def _probe_env_overrides(args: argparse.Namespace) -> dict[str, str]:
+    overrides: dict[str, str] = {}
+    raw_batch_size = getattr(args, "raw_batch_size", None)
+    if raw_batch_size is not None:
+        if raw_batch_size <= 0:
+            raise ValueError("--raw-batch-size must be positive")
+        overrides["POLYLOGUE_PARSE_RAW_BATCH_SIZE"] = str(raw_batch_size)
+    ingest_workers = getattr(args, "ingest_workers", None)
+    if ingest_workers is not None:
+        if ingest_workers <= 0:
+            raise ValueError("--ingest-workers must be positive")
+        overrides["POLYLOGUE_INGEST_WORKERS"] = str(ingest_workers)
+    return overrides
+
+
 def _load_run_payload(run_path: str | None) -> dict[str, Any]:
     if not run_path:
         return {}
@@ -722,6 +753,7 @@ async def run_probe(args: argparse.Namespace) -> dict[str, Any]:
         raise ValueError(f"--input-mode must be one of {_INPUT_MODES}")
 
     workdir = args.workdir.resolve()
+    env_overrides = _probe_env_overrides(args)
     archive_root = workdir / "archive"
     render_root = workdir / "render"
     db_path: Path | None = None
@@ -735,7 +767,7 @@ async def run_probe(args: argparse.Namespace) -> dict[str, Any]:
         provider_name = _resolve_synthetic_provider(args)
         source_root = workdir / "sources" / provider_name
 
-        with _isolated_env(workdir):
+        with _isolated_env(workdir, extra_env=env_overrides):
             files, total_bytes = _write_probe_sources(
                 provider=provider_name,
                 count=args.count,
@@ -765,6 +797,8 @@ async def run_probe(args: argparse.Namespace) -> dict[str, Any]:
                 "messages_min": args.messages_min,
                 "messages_max": args.messages_max,
                 "seed": args.seed,
+                "raw_batch_size": args.raw_batch_size,
+                "ingest_workers": args.ingest_workers,
             },
             "paths": {
                 "workdir": str(workdir),
@@ -791,7 +825,7 @@ async def run_probe(args: argparse.Namespace) -> dict[str, Any]:
         source_name = str(getattr(args, "source_name", "inbox")).strip() or "inbox"
         source_root = workdir / "sources" / source_name
 
-        with _isolated_env(workdir):
+        with _isolated_env(workdir, extra_env=env_overrides):
             source_inputs = _stage_source_subset(
                 source_paths=source_paths,
                 source_root=source_root,
@@ -813,6 +847,8 @@ async def run_probe(args: argparse.Namespace) -> dict[str, Any]:
                 "input_mode": "source-subset",
                 "source_name": source_name,
                 "stage": args.stage,
+                "raw_batch_size": args.raw_batch_size,
+                "ingest_workers": args.ingest_workers,
             },
             "paths": {
                 "workdir": str(workdir),
@@ -852,7 +888,7 @@ async def run_probe(args: argparse.Namespace) -> dict[str, Any]:
             archive_root=archive_root,
             render_root=render_root,
         )
-        with _isolated_env(workdir):
+        with _isolated_env(workdir, extra_env=env_overrides):
             db_path = config.db_path
             backend = create_backend(db_path=db_path)
             repository = ConversationRepository(backend=backend)
@@ -881,6 +917,8 @@ async def run_probe(args: argparse.Namespace) -> dict[str, Any]:
                 "sample_per_provider": args.sample_per_provider,
                 "provider_filters": provider_filters,
                 "source_filters": source_filters,
+                "raw_batch_size": args.raw_batch_size,
+                "ingest_workers": args.ingest_workers,
             },
             "paths": {
                 "workdir": str(workdir),

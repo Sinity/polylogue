@@ -197,8 +197,8 @@ async def parse_from_raw(
         total = len(raw_ids)
         if progress_callback is not None:
             progress_callback(0, desc=f"Ingesting ({total:,} raw)")
-        for batch_start in range(0, total, service.RAW_BATCH_SIZE):
-            batch_ids = raw_ids[batch_start : batch_start + service.RAW_BATCH_SIZE]
+        for batch_start in range(0, total, service.raw_batch_size):
+            batch_ids = raw_ids[batch_start : batch_start + service.raw_batch_size]
             t_batch = time.perf_counter()
             batch_observation = await process_ingest_batch(
                 service,
@@ -235,7 +235,7 @@ async def parse_from_raw(
         async for raw_id in backend.queries.iter_raw_ids(provider_name=provider):
             batch_ids_acc.append(raw_id)
             total_raw += 1
-            if len(batch_ids_acc) >= service.RAW_BATCH_SIZE:
+            if len(batch_ids_acc) >= service.raw_batch_size:
                 batch_observation = await process_ingest_batch(
                     service,
                     backend,
