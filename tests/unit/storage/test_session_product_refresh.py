@@ -4,6 +4,7 @@ import pytest
 
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.backends.connection import open_connection
+from polylogue.storage.session_product_aggregates import refresh_async_provider_day_aggregates
 from polylogue.storage.session_product_refresh import (
     _apply_session_product_conversation_updates_async,
     _refresh_thread_roots_async,
@@ -221,4 +222,99 @@ async def test_refresh_thread_roots_async_batches_root_rebuilds(
     assert [(row["thread_id"], row["root_id"], row["session_count"]) for row in rows] == [
         ("conv-root-a", "conv-root-a", 2),
         ("conv-root-b", "conv-root-b", 2),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_refresh_async_provider_day_aggregates_batches_multiple_groups(
+    tmp_path,
+) -> None:
+    db_path = tmp_path / "refresh-provider-day-groups.db"
+    with open_connection(db_path) as conn:
+        store_records(
+            conversation=make_conversation(
+                "conv-chatgpt-a",
+                provider_name="chatgpt",
+                title="ChatGPT A",
+                created_at="2026-04-02T10:00:00+00:00",
+                updated_at="2026-04-02T10:05:00+00:00",
+            ),
+            messages=[
+                make_message(
+                    "conv-chatgpt-a:msg-1",
+                    "conv-chatgpt-a",
+                    text="ChatGPT A message",
+                    timestamp="2026-04-02T10:00:00+00:00",
+                )
+            ],
+            attachments=[],
+            conn=conn,
+        )
+        store_records(
+            conversation=make_conversation(
+                "conv-chatgpt-b",
+                provider_name="chatgpt",
+                title="ChatGPT B",
+                created_at="2026-04-02T11:00:00+00:00",
+                updated_at="2026-04-02T11:05:00+00:00",
+            ),
+            messages=[
+                make_message(
+                    "conv-chatgpt-b:msg-1",
+                    "conv-chatgpt-b",
+                    text="ChatGPT B message",
+                    timestamp="2026-04-02T11:00:00+00:00",
+                )
+            ],
+            attachments=[],
+            conn=conn,
+        )
+        store_records(
+            conversation=make_conversation(
+                "conv-claude-a",
+                provider_name="claude-ai",
+                title="Claude A",
+                created_at="2026-04-03T09:00:00+00:00",
+                updated_at="2026-04-03T09:05:00+00:00",
+            ),
+            messages=[
+                make_message(
+                    "conv-claude-a:msg-1",
+                    "conv-claude-a",
+                    text="Claude A message",
+                    timestamp="2026-04-03T09:00:00+00:00",
+                )
+            ],
+            attachments=[],
+            conn=conn,
+        )
+        conn.commit()
+
+    backend = SQLiteBackend(db_path=db_path)
+    async with backend.connection() as conn:
+        update = await _apply_session_product_conversation_updates_async(
+            conn,
+            ["conv-chatgpt-a", "conv-chatgpt-b", "conv-claude-a"],
+            transaction_depth=1,
+            page_size=10,
+        )
+        await refresh_async_provider_day_aggregates(
+            conn,
+            update.affected_groups,
+            transaction_depth=1,
+        )
+        await conn.commit()
+
+    with open_connection(db_path) as conn:
+        day_rows = conn.execute(
+            """
+            SELECT provider_name, day, conversation_count
+            FROM day_session_summaries
+            ORDER BY provider_name, day
+            """
+        ).fetchall()
+
+    assert [(row["provider_name"], row["day"], row["conversation_count"]) for row in day_rows] == [
+        ("chatgpt", "2026-04-02", 2),
+        ("claude-ai", "2026-04-03", 1),
     ]
