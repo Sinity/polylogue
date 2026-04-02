@@ -6,6 +6,7 @@ import re
 from functools import cached_property
 
 from polylogue.lib.roles import Role
+from polylogue.logging import get_logger
 
 
 def _coerce_optional_float(value: object) -> float | None:
@@ -36,11 +37,10 @@ def _coerce_optional_int(value: object) -> int | None:
     return None
 
 
-_CONTEXT_PATTERNS = [
-    r"^Contents of .+:",
-    r"^<file path=",
-]
-from polylogue.logging import get_logger
+_CONTEXT_PATTERNS = (
+    re.compile(r"^Contents of .+:", re.MULTILINE),
+    re.compile(r"^<file path=", re.MULTILINE),
+)
 
 logger = get_logger(__name__)
 
@@ -110,7 +110,7 @@ class MessageRuntimeMixin:
 
         return False
 
-    @property
+    @cached_property
     def is_tool_use(self) -> bool:
         if any(block.get("type") in ("tool_use", "tool_result") for block in self.content_blocks):
             return True
@@ -133,7 +133,7 @@ class MessageRuntimeMixin:
 
         return False
 
-    @property
+    @cached_property
     def is_thinking(self) -> bool:
         if any(block.get("type") == "thinking" for block in self.content_blocks):
             return True
@@ -156,7 +156,7 @@ class MessageRuntimeMixin:
 
         return bool(self._is_chatgpt_thinking())
 
-    @property
+    @cached_property
     def is_context_dump(self) -> bool:
         if not self.text:
             return False
@@ -169,19 +169,19 @@ class MessageRuntimeMixin:
             return True
         if self.text.count("```") >= 6:
             return True
-        return any(re.search(pattern, self.text, re.MULTILINE) for pattern in _CONTEXT_PATTERNS)
+        return any(pattern.search(self.text) for pattern in _CONTEXT_PATTERNS)
 
-    @property
+    @cached_property
     def is_noise(self) -> bool:
         return self.is_tool_use or self.is_context_dump or self.is_system
 
-    @property
+    @cached_property
     def is_substantive(self) -> bool:
         if not self.is_dialogue or self.is_noise or self.is_thinking:
             return False
         return bool(self.text and len(self.text.strip()) > 10)
 
-    @property
+    @cached_property
     def word_count(self) -> int:
         if not self.text:
             return 0
