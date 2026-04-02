@@ -41,6 +41,15 @@ _PROVIDER_DAY_PROFILE_RECORDS_SQL_TEMPLATE = f"""
     ORDER BY tg.provider_name, tg.bucket_day, COALESCE(sp.source_sort_key, 0) DESC, sp.conversation_id
 """
 _GROUP_BATCH_SIZE = 100
+_DISTINCT_PROVIDER_DAY_GROUPS_SQL = f"""
+    SELECT DISTINCT
+        sp.provider_name AS provider_name,
+        {_PROFILE_BUCKET_DAY_SQL} AS bucket_day
+    FROM session_profiles sp
+    WHERE sp.provider_name IS NOT NULL
+      AND {_PROFILE_BUCKET_DAY_SQL} IS NOT NULL
+    ORDER BY provider_name, bucket_day
+"""
 
 
 def replace_day_session_summaries_async(
@@ -97,6 +106,15 @@ def load_sync_provider_day_profile_records(
     ).get((provider_name, bucket_day), [])
 
 
+def list_sync_provider_day_groups(
+    conn: sqlite3.Connection,
+) -> list[tuple[str, str]]:
+    return [
+        (str(row["provider_name"]), str(row["bucket_day"]))
+        for row in conn.execute(_DISTINCT_PROVIDER_DAY_GROUPS_SQL).fetchall()
+    ]
+
+
 async def load_async_provider_day_profile_records(
     conn: aiosqlite.Connection,
     *,
@@ -109,6 +127,15 @@ async def load_async_provider_day_profile_records(
             [(provider_name, bucket_day)],
         )
     ).get((provider_name, bucket_day), [])
+
+
+async def list_async_provider_day_groups(
+    conn: aiosqlite.Connection,
+) -> list[tuple[str, str]]:
+    return [
+        (str(row["provider_name"]), str(row["bucket_day"]))
+        for row in await (await conn.execute(_DISTINCT_PROVIDER_DAY_GROUPS_SQL)).fetchall()
+    ]
 
 
 def _normalize_provider_day_groups(
@@ -337,6 +364,8 @@ __all__ = [
     "_PROFILE_BUCKET_DAY_SQL",
     "load_async_provider_day_profile_records",
     "load_async_provider_day_profile_records_by_groups",
+    "list_async_provider_day_groups",
+    "list_sync_provider_day_groups",
     "load_sync_provider_day_profile_records",
     "load_sync_provider_day_profile_records_by_groups",
     "profile_provider_day",
