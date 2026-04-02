@@ -142,12 +142,15 @@ async def _seed_archive_source(tmp_path: Path) -> tuple[Path, Path]:
 
 async def test_run_probe_emits_real_pipeline_summary(tmp_path) -> None:
     summary = await run_probe(_Args(tmp_path / "probe"))
+    ingest_details = summary["run_payload"]["metrics"]["stages"]["ingest"]["details"]["batch_observations"]
 
     assert summary["probe"]["provider"] == "chatgpt"
     assert summary["result"]["run_path"] is not None
     assert summary["run_payload"]["metrics"]["total_duration_ms"] is not None
     assert summary["run_payload"]["metrics"]["peak_rss_mb"] is not None
     assert "index" in summary["run_payload"]["metrics"]["stages"]
+    assert ingest_details["batch_count"] == 1
+    assert len(ingest_details["batches"]) == 1
     assert summary["db_stats"]["raw_conversations_count"] >= 1
     assert len(summary["raw_fanout"]) == summary["db_stats"]["raw_conversations_count"]
 

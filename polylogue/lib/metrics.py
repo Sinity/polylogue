@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 
 
-def _read_current_rss_mb() -> float | None:
+def read_current_rss_mb() -> float | None:
     """Return the current RSS in MiB when procfs is available."""
     status_path = Path("/proc/self/status")
     try:
@@ -28,7 +28,7 @@ def _read_current_rss_mb() -> float | None:
     return None
 
 
-def _read_peak_rss_mb() -> float | None:
+def read_peak_rss_mb() -> float | None:
     """Return the peak RSS for the current process in MiB."""
     try:
         peak_rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
@@ -47,6 +47,7 @@ class StageMetrics:
     start_time: float = field(default_factory=time.perf_counter)
     end_time: float | None = None
     sub_timings: dict[str, float] = field(default_factory=dict)
+    details: dict[str, Any] = field(default_factory=dict)
     rss_start_mb: float | None = None
     rss_end_mb: float | None = None
     peak_rss_mb: float | None = None
@@ -77,8 +78,8 @@ class StageMetrics:
         self.end_time = time.perf_counter()
         if items is not None:
             self.items_processed = items
-        self.rss_end_mb = _read_current_rss_mb() if rss_end_mb is None else rss_end_mb
-        self.peak_rss_mb = _read_peak_rss_mb() if peak_rss_mb is None else peak_rss_mb
+        self.rss_end_mb = read_current_rss_mb() if rss_end_mb is None else rss_end_mb
+        self.peak_rss_mb = read_peak_rss_mb() if peak_rss_mb is None else peak_rss_mb
         return self
 
     def to_dict(self) -> dict[str, Any]:
@@ -89,6 +90,8 @@ class StageMetrics:
             "throughput_per_sec": round(self.throughput, 1),
             **({"sub_timings_ms": {k: round(v * 1000, 1) for k, v in self.sub_timings.items()}} if self.sub_timings else {}),
         }
+        if self.details:
+            result["details"] = self.details
         if self.rss_start_mb is not None:
             result["rss_start_mb"] = self.rss_start_mb
         if self.rss_end_mb is not None:
@@ -131,7 +134,7 @@ class PipelineMetrics:
 
     def start_stage(self, name: str) -> StageMetrics:
         """Start timing a pipeline stage."""
-        m = StageMetrics(name=name, rss_start_mb=_read_current_rss_mb())
+        m = StageMetrics(name=name, rss_start_mb=read_current_rss_mb())
         self.stages[name] = m
         return m
 
@@ -143,11 +146,17 @@ class PipelineMetrics:
         """Export full metrics for logging/persistence."""
         return {
             "total_duration_ms": round(self.total_elapsed_s * 1000, 1),
-            "current_rss_mb": _read_current_rss_mb(),
-            "peak_rss_mb": _read_peak_rss_mb(),
+            "current_rss_mb": read_current_rss_mb(),
+            "peak_rss_mb": read_peak_rss_mb(),
             "stages": {name: m.to_dict() for name, m in self.stages.items()},
             "slow_items": self.slow_items.to_list(),
         }
 
 
-__all__ = ["PipelineMetrics", "StageMetrics", "SlowItemTracker"]
+__all__ = [
+    "PipelineMetrics",
+    "SlowItemTracker",
+    "StageMetrics",
+    "read_current_rss_mb",
+    "read_peak_rss_mb",
+]

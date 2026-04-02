@@ -122,6 +122,7 @@ async def run_sources(
             sm.sub_timings.update({
                 f"{k}_s": v for k, v in ingest_result.timings.items()
             })
+            sm.details.update(ingest_result.diagnostics)
             sm.stop(items=len(ingest_result.parse_raw_ids))
             state.record_acquire(ingest_result.acquire_result)
             logger.info(

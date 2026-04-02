@@ -21,6 +21,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from polylogue.lib.metrics import read_current_rss_mb, read_peak_rss_mb
 from polylogue.logging import get_logger
 from polylogue.pipeline.services.ingest_worker import (
     ConversationData,
@@ -631,7 +632,7 @@ async def process_ingest_batch(
     batch_ids: list[str],
     result: ParseResult,
     progress_callback: ProgressCallback | None,
-) -> None:
+) -> dict[str, object] | None:
     """Process a batch of raw records through the unified ingest pipeline.
 
     1. Submit all records to ProcessPool (decode + validate + parse + transform)
@@ -642,9 +643,11 @@ async def process_ingest_batch(
 
     raw_records = await service.repository.get_raw_conversations_batch(batch_ids)
     if not raw_records:
-        return
+        return None
 
     archive_root_str = str(service.archive_root)
+    batch_started = time.perf_counter()
+    rss_start_mb = read_current_rss_mb()
 
     # Get validation mode from environment
     validation_mode = os.environ.get("POLYLOGUE_SCHEMA_VALIDATION", "strict")
@@ -752,6 +755,30 @@ async def process_ingest_batch(
                 payload_provider=outcome.payload_provider,
                 mode=validation_mode_str,
             )
+
+    elapsed_s = time.perf_counter() - batch_started
+    rss_end_mb = read_current_rss_mb()
+    peak_rss_mb = read_peak_rss_mb()
+    observation: dict[str, object] = {
+        "records": batch_summary.raw_record_count,
+        "blob_mb": round(batch_summary.total_blob_mb, 1),
+        "conversations": batch_summary.total_convos,
+        "messages": batch_summary.total_msgs,
+        "changed_conversations": len(batch_summary.changed_conversation_ids),
+        "failed_raw_count": len(batch_summary.failed_raw_ids),
+        "skipped_raw_count": len(batch_summary.skipped_raw_ids),
+        "elapsed_ms": round(elapsed_s * 1000, 1),
+        "sync_ingest_elapsed_ms": round(batch_summary.elapsed_s * 1000, 1),
+    }
+    if rss_start_mb is not None:
+        observation["rss_start_mb"] = rss_start_mb
+    if rss_end_mb is not None:
+        observation["rss_end_mb"] = rss_end_mb
+    if rss_start_mb is not None and rss_end_mb is not None:
+        observation["rss_delta_mb"] = round(rss_end_mb - rss_start_mb, 1)
+    if peak_rss_mb is not None:
+        observation["peak_rss_mb"] = peak_rss_mb
+    return observation
 
 
 async def refresh_session_products_bulk(
