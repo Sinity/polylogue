@@ -81,3 +81,64 @@ async def test_apply_session_product_conversation_updates_async_preserves_thread
 
     assert update.counts["profiles"] == 2
     assert update.thread_root_ids == {"conv-root"}
+
+
+@pytest.mark.asyncio
+async def test_apply_session_product_conversation_updates_async_clears_deleted_conversations(
+    tmp_path,
+) -> None:
+    db_path = tmp_path / "refresh-delete.db"
+    with open_connection(db_path) as conn:
+        store_records(
+            conversation=make_conversation("conv-stale", title="Stale"),
+            messages=[make_message("conv-stale:msg-1", "conv-stale", text="Before delete")],
+            attachments=[],
+            conn=conn,
+        )
+        conn.commit()
+
+    backend = SQLiteBackend(db_path=db_path)
+    async with backend.connection() as conn:
+        first_update = await _apply_session_product_conversation_updates_async(
+            conn,
+            ["conv-stale"],
+            transaction_depth=1,
+            page_size=10,
+        )
+        await conn.commit()
+
+    assert first_update.counts["profiles"] == 1
+
+    with open_connection(db_path) as conn:
+        conn.execute("DELETE FROM messages WHERE conversation_id = ?", ("conv-stale",))
+        conn.execute("DELETE FROM conversations WHERE conversation_id = ?", ("conv-stale",))
+        conn.commit()
+
+    async with backend.connection() as conn:
+        second_update = await _apply_session_product_conversation_updates_async(
+            conn,
+            ["conv-stale"],
+            transaction_depth=1,
+            page_size=10,
+        )
+        await conn.commit()
+
+    assert second_update.counts["profiles"] == 0
+
+    with open_connection(db_path) as conn:
+        profile_count = conn.execute(
+            "SELECT COUNT(*) FROM session_profiles WHERE conversation_id = ?",
+            ("conv-stale",),
+        ).fetchone()[0]
+        work_event_count = conn.execute(
+            "SELECT COUNT(*) FROM session_work_events WHERE conversation_id = ?",
+            ("conv-stale",),
+        ).fetchone()[0]
+        phase_count = conn.execute(
+            "SELECT COUNT(*) FROM session_phases WHERE conversation_id = ?",
+            ("conv-stale",),
+        ).fetchone()[0]
+
+    assert profile_count == 0
+    assert work_event_count == 0
+    assert phase_count == 0

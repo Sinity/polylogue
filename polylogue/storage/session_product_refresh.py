@@ -256,11 +256,11 @@ async def _apply_session_product_conversation_updates_async(
     page_size: int = 100,
 ) -> _SessionProductBulkRefreshUpdate:
     from polylogue.storage.backends.queries.session_product_profile_writes import (
-        replace_session_profile,
+        replace_session_profiles_bulk,
     )
     from polylogue.storage.backends.queries.session_product_timeline_writes import (
-        replace_session_phases,
-        replace_session_work_events,
+        replace_session_phases_bulk,
+        replace_session_work_events_bulk,
     )
 
     counts = _empty_refresh_counts()
@@ -272,6 +272,9 @@ async def _apply_session_product_conversation_updates_async(
         old_profile_records = await _load_existing_session_profile_records_async(conn, chunk)
         conversations, messages, attachments, blocks = await load_async_batch(conn, chunk)
         root_ids_by_conversation = await thread_root_ids_async(conn, chunk)
+        profile_records_to_write: list[object] = []
+        work_event_records_to_write: list[object] = []
+        phase_records_to_write: list[object] = []
         hydrated_by_id = {
             str(conversation.id): conversation
             for conversation in hydrate_conversations(conversations, messages, attachments, blocks)
@@ -281,12 +284,6 @@ async def _apply_session_product_conversation_updates_async(
             old_profile_record = old_profile_records.get(conversation_id)
             hydrated_conversation = hydrated_by_id.get(conversation_id)
             if hydrated_conversation is None:
-                await conn.execute(
-                    "DELETE FROM session_profiles WHERE conversation_id = ?",
-                    (conversation_id,),
-                )
-                await replace_session_work_events(conn, conversation_id, [], transaction_depth)
-                await replace_session_phases(conn, conversation_id, [], transaction_depth)
                 old_group = profile_provider_day(old_profile_record)
                 if old_group is not None:
                     affected_groups.add(old_group)
@@ -295,19 +292,9 @@ async def _apply_session_product_conversation_updates_async(
             profile_record, event_records, phase_records = build_session_product_records(
                 hydrated_conversation
             )
-            await replace_session_profile(conn, profile_record, transaction_depth)
-            await replace_session_work_events(
-                conn,
-                conversation_id,
-                event_records,
-                transaction_depth,
-            )
-            await replace_session_phases(
-                conn,
-                conversation_id,
-                phase_records,
-                transaction_depth,
-            )
+            profile_records_to_write.append(profile_record)
+            work_event_records_to_write.extend(event_records)
+            phase_records_to_write.extend(phase_records)
 
             counts["profiles"] += 1
             counts["work_events"] += len(event_records)
@@ -323,6 +310,25 @@ async def _apply_session_product_conversation_updates_async(
             root_id = root_ids_by_conversation.get(conversation_id)
             if root_id is not None:
                 thread_root_ids.add(root_id)
+
+        await replace_session_profiles_bulk(
+            conn,
+            chunk,
+            profile_records_to_write,
+            transaction_depth,
+        )
+        await replace_session_work_events_bulk(
+            conn,
+            chunk,
+            work_event_records_to_write,
+            transaction_depth,
+        )
+        await replace_session_phases_bulk(
+            conn,
+            chunk,
+            phase_records_to_write,
+            transaction_depth,
+        )
 
     return _SessionProductBulkRefreshUpdate(
         counts=counts,
