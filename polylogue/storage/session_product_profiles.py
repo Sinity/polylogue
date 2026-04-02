@@ -206,6 +206,8 @@ def build_session_profile_record(
     evidence = profile_evidence_payload(profile)
     inference = profile_inference_payload(profile)
     enrichment = session_enrichment_payload(profile, analysis)
+    evidence_search_text = profile_evidence_search_text(profile)
+    inference_search_text = profile_inference_search_text(profile)
     return SessionProfileRecord(
         conversation_id=profile.conversation_id,
         materializer_version=SESSION_PRODUCT_MATERIALIZER_VERSION,
@@ -241,9 +243,13 @@ def build_session_profile_record(
         evidence_payload=evidence,
         inference_payload=inference,
         enrichment_payload=enrichment,
-        search_text=profile_search_text(profile),
-        evidence_search_text=profile_evidence_search_text(profile),
-        inference_search_text=profile_inference_search_text(profile),
+        search_text=" \n".join(
+            part
+            for part in (evidence_search_text, inference_search_text)
+            if part
+        ) or profile.conversation_id,
+        evidence_search_text=evidence_search_text,
+        inference_search_text=inference_search_text,
         enrichment_search_text=profile_enrichment_search_text(profile, enrichment),
         enrichment_version=SESSION_ENRICHMENT_VERSION,
         enrichment_family=SESSION_ENRICHMENT_FAMILY,
