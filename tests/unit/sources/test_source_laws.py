@@ -1332,6 +1332,45 @@ def test_conversation_emitter_reuses_jsonl_sniff_payloads_for_individual_detecti
     assert all(conversation.provider_name == Provider.CHATGPT for _, conversation in emitted)
 
 
+def test_conversation_emitter_detects_individual_jsonl_provider_from_payloads(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class NoWholeReadBytesIO(BytesIO):
+        def read(self, size: int = -1) -> bytes:
+            if size == -1:
+                raise AssertionError("unexpected whole-file read")
+            return super().read(size)
+
+    ctx = _ParseContext(
+        provider_hint=Provider.UNKNOWN,
+        should_group=False,
+        source_path_str="/tmp/session.jsonl",
+        fallback_id="session",
+        file_mtime="2026-03-11T00:00:00+00:00",
+        capture_raw=True,
+        session_index={},
+    )
+    raw = (
+        b'{"mapping":{"r1":{"message":{"author":{"role":"user"},"content":{"content_type":"text","parts":["first"]}}}}}\n'
+        b'{"mapping":{"r1":{"message":{"author":{"role":"assistant"},"content":{"content_type":"text","parts":["second"]}}}}}\n'
+    )
+    original_detect_provider = dispatch_module.detect_provider
+
+    def tracking_detect_provider(payload: object, path: object | None = None):
+        if isinstance(payload, list):
+            raise AssertionError("individual JSONL sniff should not require whole-list provider detection")
+        return original_detect_provider(payload, path)
+
+    monkeypatch.setattr("polylogue.sources.emitter.detect_provider", tracking_detect_provider)
+
+    emitted = list(_ConversationEmitter(ctx).emit(NoWholeReadBytesIO(raw), "session.jsonl"))
+
+    assert emitted
+    assert [raw_data.source_index for raw_data, _ in emitted if raw_data is not None] == [0, 1]
+    assert all(raw_data is not None for raw_data, _ in emitted)
+    assert all(conversation.provider_name == Provider.CHATGPT for _, conversation in emitted)
+
+
 def test_conversation_emitter_only_enriches_matching_claude_code_sessions_contract() -> None:
     entry = SessionIndexEntry(
         session_id="session-1",
