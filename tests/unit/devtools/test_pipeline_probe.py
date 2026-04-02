@@ -165,6 +165,9 @@ async def test_run_probe_emits_real_pipeline_summary(tmp_path) -> None:
     assert ingest_details["max_current_rss_mb"] is not None
     assert len(ingest_details["batches"]) == 1
     assert ingest_details["batches"][0]["max_current_rss_mb"] is not None
+    assert ingest_details["batches"][0]["result_wait_elapsed_ms"] >= 0
+    assert ingest_details["batches"][0]["write_elapsed_ms"] >= 0
+    assert ingest_details["batches"][0]["commit_elapsed_ms"] >= 0
     assert summary["db_stats"]["raw_conversations_count"] >= 1
     assert len(summary["raw_fanout"]) == summary["db_stats"]["raw_conversations_count"]
 

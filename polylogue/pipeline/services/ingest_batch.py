@@ -86,6 +86,12 @@ class _IngestBatchSummary:
     max_result_raw_id: str | None = None
     elapsed_s: float = 0.0
     max_current_rss_mb: float | None = None
+    result_wait_s: float = 0.0
+    drain_elapsed_s: float = 0.0
+    write_elapsed_s: float = 0.0
+    max_write_elapsed_s: float = 0.0
+    flush_elapsed_s: float = 0.0
+    commit_elapsed_s: float = 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -483,6 +489,9 @@ def _write_conversation_entry(
         t_write = time.perf_counter()
         content_changed, counts = _write_conversation(conn, cdata)
         write_elapsed = time.perf_counter() - t_write
+        summary.write_elapsed_s += write_elapsed
+        if write_elapsed > summary.max_write_elapsed_s:
+            summary.max_write_elapsed_s = write_elapsed
         _record_write_result(
             summary,
             cdata,
@@ -613,12 +622,21 @@ def _process_ingest_batch_sync(
     _observe_current_rss(summary)
 
     try:
-        for ir in _iter_ingest_results_sync(
+        result_iterator = iter(
+            _iter_ingest_results_sync(
             raw_records,
             archive_root_str=archive_root_str,
             validation_mode=validation_mode,
             worker_count=summary.worker_count,
-        ):
+            )
+        )
+        while True:
+            wait_started = time.perf_counter()
+            try:
+                ir = next(result_iterator)
+            except StopIteration:
+                break
+            summary.result_wait_s += time.perf_counter() - wait_started
             _record_outcome(summary, ir)
             _observe_current_rss(summary)
 
@@ -633,6 +651,7 @@ def _process_ingest_batch_sync(
                 continue
 
             for cdata in ir.conversations:
+                drain_started = time.perf_counter()
                 _drain_ready_conversation_entries(
                     conn,
                     [(ir.raw_id, cdata)],
@@ -640,16 +659,21 @@ def _process_ingest_batch_sync(
                     materialized_ids=materialized_ids,
                     pending_by_parent=pending_by_parent,
                 )
+                summary.drain_elapsed_s += time.perf_counter() - drain_started
                 _observe_current_rss(summary)
 
+        flush_started = time.perf_counter()
         _flush_pending_conversation_entries(
             conn,
             pending_by_parent,
             summary=summary,
             materialized_ids=materialized_ids,
         )
+        summary.flush_elapsed_s = time.perf_counter() - flush_started
         _observe_current_rss(summary)
+        commit_started = time.perf_counter()
         conn.commit()
+        summary.commit_elapsed_s = time.perf_counter() - commit_started
     except Exception:
         conn.rollback()
         raise
@@ -812,7 +836,20 @@ async def process_ingest_batch(
         "skipped_raw_count": len(batch_summary.skipped_raw_ids),
         "elapsed_ms": round(elapsed_s * 1000, 1),
         "sync_ingest_elapsed_ms": round(batch_summary.elapsed_s * 1000, 1),
+        "result_wait_elapsed_ms": round(batch_summary.result_wait_s * 1000, 1),
+        "drain_elapsed_ms": round(batch_summary.drain_elapsed_s * 1000, 1),
+        "write_elapsed_ms": round(batch_summary.write_elapsed_s * 1000, 1),
+        "max_write_elapsed_ms": round(batch_summary.max_write_elapsed_s * 1000, 1),
+        "flush_elapsed_ms": round(batch_summary.flush_elapsed_s * 1000, 1),
+        "commit_elapsed_ms": round(batch_summary.commit_elapsed_s * 1000, 1),
     }
+    residual_elapsed_s = elapsed_s - (
+        batch_summary.result_wait_s
+        + batch_summary.drain_elapsed_s
+        + batch_summary.flush_elapsed_s
+        + batch_summary.commit_elapsed_s
+    )
+    observation["unattributed_elapsed_ms"] = round(max(residual_elapsed_s, 0.0) * 1000, 1)
     if rss_start_mb is not None:
         observation["rss_start_mb"] = rss_start_mb
     if rss_end_mb is not None:
