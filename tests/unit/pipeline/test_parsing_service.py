@@ -296,7 +296,7 @@ class TestPlanningService:
                 )
             )
 
-        plan = await planner.build_plan(sources=[Source(name="inbox-a", path=source_dir)], stage="validate")
+        plan = await planner.build_plan(sources=[Source(name="inbox-a", path=source_dir)], stage="parse")
 
         assert plan.summary.counts["validate"] == 1
         assert plan.summary.details["backlog_validate"] == 1

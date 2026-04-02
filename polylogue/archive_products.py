@@ -161,7 +161,6 @@ class SessionEnrichmentProductQuery(ArchiveProductModel):
     first_message_until: str | None = None
     session_date_since: str | None = None
     session_date_until: str | None = None
-    refined_work_kind: str | None = None
     limit: int | None = 50
     offset: int = 0
     query: str | None = None

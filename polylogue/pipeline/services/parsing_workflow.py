@@ -85,7 +85,7 @@ async def ingest_sources(
 
         # Collect all raw IDs that need ingesting: newly acquired + backlog
         parse_raw_ids = list(acquire_result.raw_ids)
-        if stage in {"validate", "parse", "all"}:
+        if stage in {"parse", "all"}:
             backlog = await planning_service.collect_parse_backlog(
                 source_names=source_names or None,
                 exclude_raw_ids=parse_raw_ids,

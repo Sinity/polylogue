@@ -15,7 +15,7 @@ from .planning_backlog import collect_parse_backlog, collect_validation_backlog,
 from .planning_models import IngestPlan
 from .validation import ValidationService
 
-_VALIDATE_STAGES = frozenset({"validate", "parse", "all"})
+_VALIDATE_STAGES = frozenset({"parse", "all"})
 _PARSE_STAGES = frozenset({"parse", "all"})
 _SCAN_STATE_BATCH_SIZE = 200  # Metadata-only rows (no BLOBs) — can batch larger
 
@@ -89,7 +89,7 @@ async def build_ingest_plan(
     preview_validation = ValidateResult() if preview and stage in _VALIDATE_STAGES else None
     seen_scanned_raw_ids: set[str] = set()
 
-    _MAX_PREVIEW_VALIDATION_RECORDS = 50  # Cap preview validation to bound memory
+    max_preview_validation_records = 50  # Cap preview validation to bound memory
 
     async def flush_pending_records() -> None:
         nonlocal pending_records
@@ -120,7 +120,7 @@ async def build_ingest_plan(
                         validate_raw_ids.append(record.raw_id)
                         # Only accumulate a limited sample for preview validation
                         # to bound memory. Full validation happens during actual runs.
-                        if preview and preview_validation is not None and len(preview_records) < _MAX_PREVIEW_VALIDATION_RECORDS:
+                        if preview and preview_validation is not None and len(preview_records) < max_preview_validation_records:
                             preview_records.append(record)
                     elif stage in _PARSE_STAGES and current_status in {"passed", "skipped"}:
                         parse_ready_raw_ids.append(record.raw_id)
@@ -186,7 +186,7 @@ async def build_ingest_plan(
     counts: dict[str, int] = {}
     if scanned_count:
         counts["scan"] = scanned_count
-    if details["new_raw"] and stage in {"acquire", "validate", "parse", "all"}:
+    if details["new_raw"] and stage in {"acquire", "parse", "all"}:
         counts["store_raw"] = details["new_raw"]
     if validate_raw_ids:
         counts["validate"] = len(validate_raw_ids)

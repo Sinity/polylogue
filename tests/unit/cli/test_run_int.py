@@ -148,17 +148,17 @@ async def test_run_writes_unique_report_files(workspace_env, tmp_path, monkeypat
     config = get_config()
     config.sources = [Source(name="inbox", path=source_file)]
 
-    import polylogue.pipeline.runner as runner_mod
-
-    fixed_time = 1_700_000_000
-    monkeypatch.setattr(runner_mod.time, "time", lambda: fixed_time)
-    monkeypatch.setattr(runner_mod.time, "perf_counter", lambda: 0.0)
-
     await run_sources(config=config, stage="all")
     await run_sources(config=config, stage="all")
 
-    # Runs are stored in DB only (no JSON files).
-    # Verify by checking the DB has run records.
+    run_reports = sorted((workspace_env["archive_root"] / "runs").glob("run-*.json"))
+    assert len(run_reports) == 2
+    assert run_reports[0].name != run_reports[1].name
+    for report_path in run_reports:
+        payload = json.loads(report_path.read_text())
+        assert "metrics" in payload
+        assert payload["metrics"]["peak_rss_mb"] is not None
+
     from polylogue.pipeline.run_finalization import latest_run
 
     run = await latest_run()

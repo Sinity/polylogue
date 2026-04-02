@@ -19,12 +19,9 @@ async def persist_raw_record(
     """Persist one raw record and update acquisition counters."""
     try:
         inserted = await repository.save_raw_conversation(record)
+        observation = inspect_raw_artifact(record)
+        await repository.save_artifact_observation(observation)
         if inserted:
-            # Only inspect new records — inspection decodes the full payload
-            # which is expensive (3-10× memory of raw bytes). For existing
-            # records, the observation is already in the DB.
-            observation = inspect_raw_artifact(record)
-            await repository.save_artifact_observation(observation)
             result.acquired += 1
             result.raw_ids.append(record.raw_id)
         else:

@@ -234,7 +234,6 @@ def build_session_phase_records(
 def hydrate_session_phase(record: SessionPhaseRecord) -> SessionPhase:
     payload = {**record.evidence_payload, **record.inference_payload}
     return SessionPhase(
-        kind=str(payload.get("kind") or record.kind),
         start_time=(
             datetime.fromisoformat(str(payload["start_time"]))
             if payload.get("start_time")
