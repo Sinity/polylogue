@@ -50,7 +50,7 @@ from polylogue.sources.parsers.claude import (
     find_sessions_index,
     parse_sessions_index,
 )
-from polylogue.sources.source_acquisition import iter_source_raw_data
+from polylogue.sources.source_acquisition import _iter_entry_payloads, iter_source_raw_data
 from polylogue.sources.source_parsing import (
     iter_source_conversations,
     iter_source_conversations_with_raw,
@@ -507,6 +507,8 @@ def test_iter_source_conversations_with_raw_preserves_grouped_bytes_contract(
     use_zip: bool,
     needle: bytes,
 ) -> None:
+    from polylogue.storage.blob_store import get_blob_store
+
     records = [
         {"type": "user", "uuid": "u1", "sessionId": "s1", "message": {"content": needle.decode("utf-8")}},
         {"type": "assistant", "uuid": "a1", "sessionId": "s1", "message": {"content": "Hi"}},
@@ -527,7 +529,42 @@ def test_iter_source_conversations_with_raw_preserves_grouped_bytes_contract(
     raw_data, conversation = items[0]
     assert raw_data is not None
     assert raw_data.source_index is None
-    assert needle in raw_data.raw_bytes
+    raw_bytes = raw_data.raw_bytes
+    if not raw_bytes and raw_data.blob_hash is not None:
+        raw_bytes = get_blob_store().read_all(raw_data.blob_hash)
+    assert needle in raw_bytes
+    assert conversation.provider_name == Provider.CLAUDE_CODE
+
+
+def test_iter_source_conversations_with_raw_streams_plain_grouped_capture_to_blob_store(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from polylogue.storage.blob_store import get_blob_store
+
+    source_path = tmp_path / "session.jsonl"
+    content = (
+        '{"type":"user","uuid":"u1","sessionId":"s1","message":{"content":"hello"}}\n'
+        '{"type":"assistant","uuid":"a1","sessionId":"s1","message":{"content":"hi"}}\n'
+    )
+    source_path.write_text(content, encoding="utf-8")
+    original_read_bytes = Path.read_bytes
+
+    def fail_read_bytes(path: Path) -> bytes:
+        if path == source_path:
+            raise AssertionError("Plain grouped parsing should not read whole files via Path.read_bytes")
+        return original_read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", fail_read_bytes)
+
+    items = list(iter_source_conversations_with_raw(Source(name="claude-code", path=source_path)))
+
+    assert len(items) == 1
+    raw_data, conversation = items[0]
+    assert raw_data is not None
+    assert raw_data.blob_hash is not None
+    assert raw_data.raw_bytes == b""
+    assert get_blob_store().read_all(raw_data.blob_hash) == content.encode("utf-8")
     assert conversation.provider_name == Provider.CLAUDE_CODE
 
 
@@ -1183,6 +1220,82 @@ def test_conversation_emitter_resolves_schema_for_payloads(monkeypatch: pytest.M
     assert resolved_arg is fake_registry.resolve_payload.return_value
 
 
+def test_conversation_emitter_reuses_jsonl_sniff_payloads_for_grouped_detection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = _ParseContext(
+        provider_hint=Provider.UNKNOWN,
+        should_group=False,
+        source_path_str="/tmp/session.jsonl",
+        fallback_id="session",
+        file_mtime="2026-03-11T00:00:00+00:00",
+        capture_raw=True,
+        session_index={},
+    )
+    raw = (
+        b'{"role":"user","content":[{"type":"input_text","text":"hello"}]}\n'
+        b'{"role":"assistant","content":[{"type":"output_text","text":"hi"}]}\n'
+    )
+    parse_calls = 0
+    original_iter_json_stream = _iter_json_stream
+
+    def tracking_iter_json_stream(handle: object, path_name: str, unpack_lists: bool = True):
+        nonlocal parse_calls
+        parse_calls += 1
+        yield from original_iter_json_stream(handle, path_name, unpack_lists=unpack_lists)
+
+    monkeypatch.setattr("polylogue.sources.emitter._iter_json_stream", tracking_iter_json_stream)
+
+    emitted = list(_ConversationEmitter(ctx).emit(BytesIO(raw), "session.jsonl"))
+
+    assert emitted
+    assert parse_calls == 1
+    assert emitted[0][0] is not None and emitted[0][0].raw_bytes == raw
+    assert emitted[0][1].provider_name == Provider.CODEX
+    assert len(emitted[0][1].messages) == 2
+
+
+def test_conversation_emitter_reuses_jsonl_sniff_payloads_for_individual_detection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class NoWholeReadBytesIO(BytesIO):
+        def read(self, size: int = -1) -> bytes:
+            if size == -1:
+                raise AssertionError("unexpected whole-file read")
+            return super().read(size)
+
+    ctx = _ParseContext(
+        provider_hint=Provider.UNKNOWN,
+        should_group=False,
+        source_path_str="/tmp/session.jsonl",
+        fallback_id="session",
+        file_mtime="2026-03-11T00:00:00+00:00",
+        capture_raw=True,
+        session_index={},
+    )
+    raw = (
+        b'{"mapping":{"r1":{"message":{"author":{"role":"user"},"content":{"content_type":"text","parts":["first"]}}}}}\n'
+        b'{"mapping":{"r1":{"message":{"author":{"role":"assistant"},"content":{"content_type":"text","parts":["second"]}}}}}\n'
+    )
+    parse_calls = 0
+    original_iter_json_stream = _iter_json_stream
+
+    def tracking_iter_json_stream(handle: object, path_name: str, unpack_lists: bool = True):
+        nonlocal parse_calls
+        parse_calls += 1
+        yield from original_iter_json_stream(handle, path_name, unpack_lists=unpack_lists)
+
+    monkeypatch.setattr("polylogue.sources.emitter._iter_json_stream", tracking_iter_json_stream)
+
+    emitted = list(_ConversationEmitter(ctx).emit(NoWholeReadBytesIO(raw), "session.jsonl"))
+
+    assert emitted
+    assert parse_calls == 1
+    assert [raw_data.source_index for raw_data, _ in emitted if raw_data is not None] == [0, 1]
+    assert all(raw_data is not None for raw_data, _ in emitted)
+    assert all(conversation.provider_name == Provider.CHATGPT for _, conversation in emitted)
+
+
 def test_conversation_emitter_only_enriches_matching_claude_code_sessions_contract() -> None:
     entry = SessionIndexEntry(
         session_id="session-1",
@@ -1425,7 +1538,7 @@ def test_download_drive_files_contract() -> None:
 
 
 def test_iter_source_raw_data_reads_plain_and_zip_sources_contract(tmp_path: Path) -> None:
-    """Raw source iteration yields one blob per file or ZIP entry without parsing."""
+    """Raw source iteration keeps whole-file capture for plain files and grouped ZIP entries."""
     plain_path = tmp_path / "chatgpt-export.json"
     plain_path.write_text('{"mapping": {}, "id": "chatgpt-1"}', encoding="utf-8")
 
@@ -1451,6 +1564,168 @@ def test_iter_source_raw_data_reads_plain_and_zip_sources_contract(tmp_path: Pat
     assert zip_items[0].provider_hint == Provider.CLAUDE_CODE
     assert zip_items[0].blob_hash is not None
     assert zip_items[0].file_mtime is not None
+
+
+@pytest.mark.parametrize(
+    ("entry_name", "payload_bytes", "expected_provider", "id_field", "expected_ids"),
+    [
+        (
+            "conversations.json",
+            json.dumps(
+                [
+                    {"id": "chatgpt-1", "mapping": {}},
+                    {"id": "chatgpt-2", "mapping": {}},
+                ]
+            ).encode("utf-8"),
+            Provider.CHATGPT,
+            "id",
+            ["chatgpt-1", "chatgpt-2"],
+        ),
+        (
+            "claude-conversations.json",
+            json.dumps(
+                [
+                    {"uuid": "claude-1", "name": "one", "chat_messages": []},
+                    {"uuid": "claude-2", "name": "two", "chat_messages": []},
+                ]
+            ).encode("utf-8"),
+            Provider.CLAUDE_AI,
+            "uuid",
+            ["claude-1", "claude-2"],
+        ),
+    ],
+)
+def test_iter_source_raw_data_splits_multi_conversation_zip_entries_for_non_grouped_providers(
+    tmp_path: Path,
+    entry_name: str,
+    payload_bytes: bytes,
+    expected_provider: Provider,
+    id_field: str,
+    expected_ids: list[str],
+) -> None:
+    from polylogue.storage.blob_store import get_blob_store
+
+    archive_path = tmp_path / "bundle.zip"
+    with zipfile.ZipFile(archive_path, "w") as zf:
+        zf.writestr(f"nested/{entry_name}", payload_bytes)
+
+    items = list(iter_source_raw_data(Source(name="inbox", path=archive_path)))
+
+    expected_path = f"{archive_path}:nested/{entry_name}"
+    assert [item.source_path for item in items] == [expected_path, expected_path]
+    assert [item.source_index for item in items] == [0, 1]
+    assert [item.provider_hint for item in items] == [expected_provider, expected_provider]
+    assert all(item.blob_hash is not None for item in items)
+    assert all(item.raw_bytes == b"" for item in items)
+    assert [
+        json.loads(get_blob_store().read_all(item.blob_hash))[id_field]
+        for item in items
+        if item.blob_hash is not None
+    ] == expected_ids
+
+
+def test_iter_source_raw_data_avoids_whole_blob_provider_detection_for_zip_entries(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    archive_path = tmp_path / "bundle.zip"
+    with zipfile.ZipFile(archive_path, "w") as zf:
+        zf.writestr(
+            "nested/conversations.json",
+            json.dumps(
+                [
+                    {"id": "chatgpt-1", "mapping": {}},
+                    {"id": "chatgpt-2", "mapping": {}},
+                ]
+            ).encode("utf-8"),
+        )
+
+    def _fail(*args, **kwargs):
+        raise AssertionError("ZIP acquisition should not use whole-blob provider detection")
+
+    monkeypatch.setattr(
+        "polylogue.sources.source_acquisition._detect_provider_from_raw_bytes",
+        _fail,
+    )
+
+    items = list(iter_source_raw_data(Source(name="inbox", path=archive_path)))
+
+    assert len(items) == 2
+
+
+def test_iter_source_raw_data_reports_split_payload_observations(tmp_path: Path) -> None:
+    archive_path = tmp_path / "bundle.zip"
+    with zipfile.ZipFile(archive_path, "w") as zf:
+        zf.writestr(
+            "nested/conversations.json",
+            json.dumps(
+                [
+                    {"id": "chatgpt-1", "mapping": {}},
+                    {"id": "chatgpt-2", "mapping": {}},
+                ]
+            ).encode("utf-8"),
+        )
+
+    observations: list[dict[str, object]] = []
+
+    items = list(
+        iter_source_raw_data(
+            Source(name="inbox", path=archive_path),
+            observation_callback=observations.append,
+        )
+    )
+
+    assert len(items) == 2
+    assert observations
+    peak = max(observations, key=lambda observation: float(observation["peak_rss_self_mb"]))
+    assert peak["phase"] == "zip-entry-split-payload-serialized"
+    assert peak["source_path"] == f"{archive_path}:nested/conversations.json"
+    assert peak["provider_hint"] == Provider.CHATGPT.value
+    assert peak["source_index"] in {0, 1}
+    assert int(peak["blob_size"]) > 0
+    assert peak["artifact_kind"]
+    assert float(peak["detect_provider_ms"]) >= 0.0
+    assert float(peak["classify_ms"]) >= 0.0
+    assert float(peak["serialize_ms"]) >= 0.0
+    assert float(peak["peak_rss_self_mb"]) > 0.0
+
+
+def test_iter_entry_payloads_locks_provider_after_first_detected_payload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payloads = [
+        {"id": "chatgpt-1", "mapping": {}},
+        {"id": "chatgpt-2", "mapping": {}},
+        {"id": "chatgpt-3", "mapping": {}},
+    ]
+    detect_calls: list[dict[str, object]] = []
+    original_detect_provider = dispatch_module.detect_provider
+
+    def tracking_detect_provider(payload: object, path: object | None = None):
+        del path
+        if isinstance(payload, dict):
+            detect_calls.append(payload)
+        return original_detect_provider(payload)
+
+    monkeypatch.setattr("polylogue.sources.source_acquisition.detect_provider", tracking_detect_provider)
+
+    items = list(
+        _iter_entry_payloads(
+            BytesIO(json.dumps(payloads).encode("utf-8")),
+            stream_name="conversations.json",
+            provider_hint=Provider.UNKNOWN,
+        )
+    )
+
+    assert [provider for provider, _, _ in items] == [
+        Provider.CHATGPT,
+        Provider.CHATGPT,
+        Provider.CHATGPT,
+    ]
+    assert items[0][2] >= 0.0
+    assert items[1][2] >= 0.0
+    assert items[2][2] == 0.0
+    assert detect_calls == payloads[:2]
 
 
 def test_iter_source_raw_data_keeps_source_family_hints_for_mixed_zip_sources(tmp_path: Path) -> None:

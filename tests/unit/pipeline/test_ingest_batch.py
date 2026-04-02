@@ -1,0 +1,350 @@
+"""Focused tests for sync ingest-batch DB writes."""
+
+from __future__ import annotations
+
+from contextlib import asynccontextmanager
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
+import pytest
+
+from polylogue.pipeline.services.ingest_batch import (
+    _drain_ready_conversation_entries,
+    _failed_raw_state_update,
+    _IngestBatchSummary,
+    _persist_batch_raw_state_updates,
+    _RawIngestOutcome,
+    _successful_raw_state_update,
+    _topo_sort_conversation_entries,
+    _write_conversation,
+    refresh_session_products_bulk,
+)
+from polylogue.pipeline.services.ingest_worker import ConversationData
+from polylogue.storage.backends.connection import open_connection
+from polylogue.storage.state_views import RawConversationStateUpdate
+
+
+def _conversation_data(
+    conversation_id: str,
+    *,
+    content_hash: str,
+    parent_conversation_id: str | None = None,
+) -> ConversationData:
+    conversation_tuple = (
+        conversation_id,
+        "codex",
+        conversation_id.split(":", 1)[-1],
+        "Conversation",
+        "2026-04-02T00:00:00Z",
+        "2026-04-02T00:00:00Z",
+        0.0,
+        content_hash,
+        None,
+        "{}",
+        1,
+        parent_conversation_id,
+        None,
+        None,
+    )
+    return ConversationData(
+        conversation_id=conversation_id,
+        content_hash=content_hash,
+        provider_name="codex",
+        conversation_tuple=conversation_tuple,
+    )
+
+
+def test_topo_sort_conversation_entries_orders_parent_before_child() -> None:
+    parent = _conversation_data("codex:parent", content_hash="hash-parent")
+    child = _conversation_data(
+        "codex:child",
+        content_hash="hash-child",
+        parent_conversation_id="codex:parent",
+    )
+
+    ordered = _topo_sort_conversation_entries([
+        ("raw-child", child),
+        ("raw-parent", parent),
+    ])
+
+    assert [entry[1].conversation_id for entry in ordered] == [
+        "codex:parent",
+        "codex:child",
+    ]
+
+
+def test_write_conversation_clears_missing_parent_fk(tmp_path: Path) -> None:
+    with open_connection(tmp_path / "ingest.db") as conn:
+        child = _conversation_data(
+            "codex:child",
+            content_hash="hash-child",
+            parent_conversation_id="codex:missing-parent",
+        )
+
+        _write_conversation(conn, child)
+        conn.commit()
+
+        row = conn.execute(
+            "SELECT parent_conversation_id FROM conversations WHERE conversation_id = ?",
+            ("codex:child",),
+        ).fetchone()
+        assert row is not None
+        assert row["parent_conversation_id"] is None
+
+
+def test_write_conversation_preserves_existing_parent_fk(tmp_path: Path) -> None:
+    with open_connection(tmp_path / "ingest.db") as conn:
+        parent = _conversation_data("codex:parent", content_hash="hash-parent")
+        child = _conversation_data(
+            "codex:child",
+            content_hash="hash-child",
+            parent_conversation_id="codex:parent",
+        )
+
+        _write_conversation(conn, parent)
+        _write_conversation(conn, child)
+        conn.commit()
+
+        row = conn.execute(
+            "SELECT parent_conversation_id FROM conversations WHERE conversation_id = ?",
+            ("codex:child",),
+        ).fetchone()
+        assert row is not None
+        assert row["parent_conversation_id"] == "codex:parent"
+
+
+def test_drain_ready_conversation_entries_preserves_late_parent_fk(tmp_path: Path) -> None:
+    with open_connection(tmp_path / "ingest.db") as conn:
+        parent = _conversation_data("codex:parent", content_hash="hash-parent")
+        child = _conversation_data(
+            "codex:child",
+            content_hash="hash-child",
+            parent_conversation_id="codex:parent",
+        )
+
+        summary = _IngestBatchSummary()
+        materialized_ids: set[str] = set()
+        pending_by_parent: dict[str, list[tuple[str, ConversationData]]] = {}
+
+        _drain_ready_conversation_entries(
+            conn,
+            [("raw-child", child)],
+            summary=summary,
+            materialized_ids=materialized_ids,
+            pending_by_parent=pending_by_parent,
+        )
+        assert list(pending_by_parent) == ["codex:parent"]
+
+        _drain_ready_conversation_entries(
+            conn,
+            [("raw-parent", parent)],
+            summary=summary,
+            materialized_ids=materialized_ids,
+            pending_by_parent=pending_by_parent,
+        )
+        conn.commit()
+
+        row = conn.execute(
+            "SELECT parent_conversation_id FROM conversations WHERE conversation_id = ?",
+            ("codex:child",),
+        ).fetchone()
+        assert row is not None
+        assert row["parent_conversation_id"] == "codex:parent"
+
+
+@pytest.mark.asyncio
+async def test_refresh_session_products_bulk_dedupes_related_refreshes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_conn = SimpleNamespace(commit=AsyncMock())
+
+    @asynccontextmanager
+    async def _connection():
+        yield fake_conn
+
+    fake_backend = SimpleNamespace(connection=_connection)
+
+    async def _fake_apply(conn, conversation_ids: list[str], *, transaction_depth: int):
+        del conn, transaction_depth
+        assert conversation_ids == ["conv-1", "conv-2", "conv-3"]
+        return SimpleNamespace(
+            counts={
+                "profiles": 3,
+                "work_events": 0,
+                "phases": 0,
+                "threads": 0,
+                "tag_rollups": 0,
+                "day_summaries": 0,
+            },
+            affected_groups={
+                ("chatgpt", "2026-04-02"),
+                ("chatgpt", "2026-04-03"),
+            },
+            thread_root_ids={"root-a", "root-b"},
+            chunk_observations=[
+                {
+                    "conversation_count": 3,
+                    "hydrated_count": 3,
+                    "profiles_written": 3,
+                    "work_events_written": 0,
+                    "phases_written": 0,
+                    "load_ms": 12.5,
+                    "hydrate_ms": 3.1,
+                    "build_ms": 9.9,
+                    "write_ms": 7.7,
+                    "total_ms": 33.2,
+                },
+            ],
+        )
+
+    refresh_thread_root = AsyncMock(return_value=1)
+    refresh_aggregates = AsyncMock()
+
+    monkeypatch.setattr(
+        "polylogue.storage.session_product_refresh._apply_session_product_conversation_updates_async",
+        _fake_apply,
+    )
+    monkeypatch.setattr(
+        "polylogue.storage.session_product_refresh._refresh_thread_root_async",
+        refresh_thread_root,
+    )
+    monkeypatch.setattr(
+        "polylogue.storage.session_product_refresh.refresh_async_provider_day_aggregates",
+        refresh_aggregates,
+    )
+
+    observation = await refresh_session_products_bulk(
+        fake_backend,
+        ["conv-1", "conv-2", "conv-3"],
+    )
+
+    assert refresh_thread_root.await_count == 2
+    refreshed_roots = sorted(call.args[1] for call in refresh_thread_root.await_args_list)
+    assert refreshed_roots == ["root-a", "root-b"]
+    refresh_aggregates.assert_awaited_once()
+    aggregate_args = refresh_aggregates.await_args
+    assert aggregate_args.args[0] is fake_conn
+    assert aggregate_args.args[1] == {
+        ("chatgpt", "2026-04-02"),
+        ("chatgpt", "2026-04-03"),
+    }
+    assert aggregate_args.kwargs["transaction_depth"] == 1
+    fake_conn.commit.assert_awaited_once()
+    assert observation is not None
+    assert observation["conversations"] == 3
+    assert observation["unique_thread_roots"] == 2
+    assert observation["unique_provider_days"] == 2
+    assert float(observation["elapsed_ms"]) >= 0.0
+    assert float(observation["update_ms"]) >= 0.0
+    assert float(observation["thread_refresh_ms"]) >= 0.0
+    assert float(observation["aggregate_refresh_ms"]) >= 0.0
+    assert observation["update_chunk_count"] == 1
+    assert observation["update_slow_chunk_count"] == 0
+    assert observation["update_max_chunk_ms"] == 33.2
+    assert observation["update_max_chunk_load_ms"] == 12.5
+    assert observation["update_max_chunk_hydrate_ms"] == 3.1
+    assert observation["update_max_chunk_build_ms"] == 9.9
+    assert observation["update_max_chunk_write_ms"] == 7.7
+
+
+def test_successful_raw_state_update_combines_parse_and_validation_fields() -> None:
+    outcome = _RawIngestOutcome(
+        raw_id="raw-1",
+        payload_provider="chatgpt",
+        validation_status="passed",
+        validation_error=None,
+        error=None,
+        had_conversations=True,
+    )
+
+    state = _successful_raw_state_update(
+        outcome=outcome,
+        parsed_at="2026-04-02T00:00:00Z",
+        validation_mode="strict",
+    )
+
+    assert state == RawConversationStateUpdate(
+        parsed_at="2026-04-02T00:00:00Z",
+        parse_error=None,
+        payload_provider="chatgpt",
+        validation_status="passed",
+        validation_error=None,
+        validation_mode="strict",
+    )
+
+
+def test_failed_raw_state_update_combines_parse_and_validation_fields() -> None:
+    outcome = _RawIngestOutcome(
+        raw_id="raw-1",
+        payload_provider="chatgpt",
+        validation_status="failed",
+        validation_error="schema mismatch",
+        error="parse failed",
+        had_conversations=False,
+    )
+
+    state = _failed_raw_state_update(
+        outcome=outcome,
+        error="parse failed",
+        validation_mode="strict",
+    )
+
+    assert state == RawConversationStateUpdate(
+        parse_error="parse failed",
+        payload_provider="chatgpt",
+        validation_status="failed",
+        validation_error="schema mismatch",
+        validation_mode="strict",
+    )
+
+
+@pytest.mark.asyncio
+async def test_persist_batch_raw_state_updates_uses_one_typed_update_per_raw() -> None:
+    update_raw_state = AsyncMock()
+    repository = SimpleNamespace(update_raw_state=update_raw_state)
+    service = SimpleNamespace(repository=repository)
+
+    @asynccontextmanager
+    async def _bulk_connection():
+        yield
+
+    backend = SimpleNamespace(bulk_connection=_bulk_connection)
+    outcomes = {
+        "raw-success": _RawIngestOutcome(
+            raw_id="raw-success",
+            payload_provider="chatgpt",
+            validation_status="passed",
+            validation_error=None,
+            error=None,
+            had_conversations=True,
+        ),
+        "raw-failed": _RawIngestOutcome(
+            raw_id="raw-failed",
+            payload_provider="codex",
+            validation_status="failed",
+            validation_error="bad schema",
+            error="parse failed",
+            had_conversations=False,
+        ),
+    }
+
+    elapsed_s = await _persist_batch_raw_state_updates(
+        service,
+        backend,
+        outcomes=outcomes,
+        succeeded_raw_ids={"raw-success"},
+        skipped_raw_ids=set(),
+        failed_raw_ids={"raw-failed": "parse failed"},
+        validation_mode="strict",
+    )
+
+    assert elapsed_s >= 0.0
+    assert update_raw_state.await_count == 2
+    success_call, failed_call = update_raw_state.await_args_list
+    assert success_call.args == ("raw-success",)
+    assert success_call.kwargs["state"].validation_status == "passed"
+    assert success_call.kwargs["state"].parsed_at is not None
+    assert failed_call.args == ("raw-failed",)
+    assert failed_call.kwargs["state"].parse_error == "parse failed"
+    assert failed_call.kwargs["state"].validation_error == "bad schema"

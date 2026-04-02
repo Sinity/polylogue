@@ -1,18 +1,6 @@
-Usage: cli embed [OPTIONS]
+Usage: python -m polylogue embed [OPTIONS]
 
   Generate semantic embeddings for conversations.
-
-  Uses Voyage AI to generate vector embeddings for message content, stored in
-  sqlite-vec for semantic search.
-
-  Requires VOYAGE_API_KEY environment variable to be set.
-
-  Examples:
-      polylogue embed                    # Embed all unembedded conversations
-      polylogue embed -c <id>            # Embed specific conversation
-      polylogue embed --model voyage-4-large  # Use larger model
-      polylogue embed --rebuild          # Re-embed everything
-      polylogue embed --stats            # Show embedding statistics
 
 Options:
   -c, --conversation TEXT         Embed a specific conversation by ID
@@ -22,5 +10,7 @@ Options:
   -r, --rebuild                   Re-embed all conversations (ignore existing
                                   embeddings)
   -s, --stats                     Show embedding statistics only
+  --json                          Emit embedding statistics as JSON (requires
+                                  --stats)
   -n, --limit INTEGER             Maximum number of conversations to embed
   -h, --help                      Show this message and exit.

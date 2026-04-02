@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from polylogue.cli.click_command_registration import ROOT_COMMANDS
 from polylogue.showcase.exercises import (
     EXERCISES,
     GROUPS,
@@ -56,6 +57,15 @@ class TestExercisesByGroup:
             "check-semantic-proof-read-surfaces",
             "check-semantic-proof-read-surfaces-json",
         } <= names
+
+    def test_all_root_commands_have_generated_help_exercises(self):
+        expected = {f"help-{command.name}" for command in ROOT_COMMANDS}
+        observed = {
+            exercise.name
+            for exercise in EXERCISES
+            if exercise.group == "structural" and exercise.name.startswith("help-") and exercise.name != "help-main"
+        }
+        assert observed == expected
 
 
 class TestVhsExercises:

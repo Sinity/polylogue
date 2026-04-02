@@ -290,12 +290,10 @@ register(ProductType(
     cli_options=[
         _PROVIDER_OPTION,
         *_SESSION_TIME_OPTIONS,
-        CliOption("refined_work_kind", ("--refined-work-kind",), help="Only this refined enrichment work kind"),
         _QUERY_OPTION,
     ],
     fields=[
         ProductField("", lambda i: f"{i.conversation_id} [{i.provider_name}]", group=0),
-        ProductField("", _nested("enrichment", "refined_work_kind"), group=0),
         ProductField("", _attr("title", "(untitled)"), group=0),
         ProductField("support", _nested("enrichment", "support_level"), group=1),
         ProductField("family", lambda i: i.enrichment_provenance.enrichment_family if hasattr(i, "enrichment_provenance") else "-", group=1),

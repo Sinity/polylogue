@@ -8,6 +8,7 @@ Entry point for the unified ingest pipeline. Delegates to:
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -28,6 +29,9 @@ if TYPE_CHECKING:
 
 class ParsingService:
     """Service for parsing conversations from sources asynchronously."""
+
+    RAW_BATCH_SIZE_ENV = "POLYLOGUE_PARSE_RAW_BATCH_SIZE"
+    DEFAULT_RAW_BATCH_SIZE = 50
 
     def __init__(
         self,
@@ -81,7 +85,18 @@ class ParsingService:
             skip_acquire=skip_acquire,
         )
 
-    RAW_BATCH_SIZE = 50
+    @property
+    def raw_batch_size(self) -> int:
+        raw_value = os.environ.get(self.RAW_BATCH_SIZE_ENV)
+        if raw_value is None:
+            return self.DEFAULT_RAW_BATCH_SIZE
+        try:
+            parsed = int(raw_value)
+        except ValueError as exc:
+            raise ValueError(f"{self.RAW_BATCH_SIZE_ENV} must be a positive integer") from exc
+        if parsed <= 0:
+            raise ValueError(f"{self.RAW_BATCH_SIZE_ENV} must be a positive integer")
+        return parsed
 
     async def parse_from_raw(
         self,

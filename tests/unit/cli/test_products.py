@@ -291,6 +291,22 @@ def test_session_product_rebuild_supports_legacy_payload_columns(cli_workspace):
     assert status["phase_inference_rows_ready"] is True
 
 
+def test_session_product_rebuild_pages_full_rebuild(cli_workspace):
+    _seed_products(cli_workspace)
+
+    with open_connection(cli_workspace["db_path"]) as conn:
+        counts = rebuild_session_products_sync(conn, page_size=1)
+        status = session_product_status_sync(conn)
+
+    assert counts["profiles"] == 2
+    assert counts["work_events"] >= 1
+    assert counts["phases"] >= 1
+    assert status["profile_row_count"] == 2
+    assert status["profile_rows_ready"] is True
+    assert status["work_event_inference_rows_ready"] is True
+    assert status["phase_inference_rows_ready"] is True
+
+
 def test_products_threads_json(cli_workspace):
     _seed_products(cli_workspace)
 

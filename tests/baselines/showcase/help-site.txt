@@ -1,4 +1,4 @@
-Usage: cli site [OPTIONS]
+Usage: python -m polylogue site [OPTIONS]
 
   Generate a static HTML site from the archive.
 
@@ -16,11 +16,12 @@ Usage: cli site [OPTIONS]
       polylogue site --no-search           # Disable search index
 
 Options:
-  -o, --output PATH               Output directory for generated site (default:
-                                  ~/.local/share/polylogue/site)
+  -o, --output PATH               Output directory for generated site
+                                  (default: ~/.local/share/polylogue/site)
   --title TEXT                    Site title
   --search / --no-search          Enable client-side search (default: enabled)
   --search-provider [pagefind|lunr]
                                   Search index provider (default: pagefind)
   --dashboard / --no-dashboard    Generate dashboard page (default: enabled)
+  --json                          Output build result as JSON
   -h, --help                      Show this message and exit.

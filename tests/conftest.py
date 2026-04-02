@@ -46,8 +46,10 @@ def _clear_polylogue_env(monkeypatch, tmp_path):
     # Clear schema-validator cache so monkeypatched registry/schema tests
     # cannot leak compiled validators into later integration runs.
     from polylogue.schemas.validator import SchemaValidator
+    from polylogue.schemas.validator_resolution import reset_registry_cache
 
     SchemaValidator._cache.clear()
+    reset_registry_cache()
 
     # Reset blob store singleton to prevent cross-test pollution when
     # tests write blobs to the temp XDG_DATA_HOME. Only reset if we're

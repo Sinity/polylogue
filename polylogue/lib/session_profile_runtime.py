@@ -22,11 +22,12 @@ def build_session_analysis(
     facts: ConversationSemanticFacts | None = None,
 ) -> SessionAnalysis:
     semantic_facts = facts or build_conversation_semantic_facts(conversation)
+    phases = tuple(extract_phases(conversation, facts=semantic_facts))
     return SessionAnalysis(
         facts=semantic_facts,
         attribution=extract_attribution(conversation, facts=semantic_facts),
-        work_events=tuple(extract_work_events(conversation, facts=semantic_facts)),
-        phases=tuple(extract_phases(conversation, facts=semantic_facts)),
+        work_events=tuple(extract_work_events(conversation, facts=semantic_facts, phases=phases)),
+        phases=phases,
     )
 
 

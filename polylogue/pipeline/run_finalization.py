@@ -6,6 +6,7 @@ import time
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
+from polylogue.pipeline.run_support import write_run_json
 from polylogue.storage.backends import create_backend
 from polylogue.storage.state_views import RunResult
 from polylogue.storage.store import RunRecord
@@ -68,6 +69,7 @@ async def persist_run_result(
             duration_ms=duration_ms,
         ),
     )
+    run_path = write_run_json(config.archive_root, run_payload)
     return RunResult(
         run_id=str(run_payload["run_id"]),
         counts=state.counts,
@@ -76,6 +78,7 @@ async def persist_run_result(
         index_error=index_outcome.error,
         duration_ms=duration_ms,
         render_failures=state.render_failures,
+        run_path=str(run_path),
     )
 
 

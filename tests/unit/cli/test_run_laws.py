@@ -149,7 +149,7 @@ def test_run_sync_once_forwards_plan_snapshot_contract() -> None:
     suppress_health_check=[HealthCheck.function_scoped_fixture],
 )
 @given(
-    stage=st.sampled_from(("all", "render", "acquire", "validate", "parse", "index")),
+    stage=st.sampled_from(("all", "render", "acquire", "parse", "index")),
     source_names=st.one_of(
         st.none(),
         st.lists(

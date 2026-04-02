@@ -50,7 +50,7 @@ eval $(polylogue generate --seed --env-only)
 polylogue generate --seed -p chatgpt,claude-ai -n 10
 ```
 
-The seeded environment uses `run_sources` — the same pipeline as `polylogue run` — so the generate command exercises the full acquire → validate → parse → render → index flow.
+The seeded environment uses `run_sources` — the same pipeline as `polylogue run` — so the generate command exercises the full acquire → parse → render → index flow, with validation performed inline during parse.
 
 ## Options
 

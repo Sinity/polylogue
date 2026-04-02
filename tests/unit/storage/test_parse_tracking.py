@@ -22,6 +22,7 @@ from polylogue.storage.backends.schema import (
     SCHEMA_VERSION,
     _ensure_schema,
 )
+from polylogue.storage.backends.schema_upgrade import _ensure_raw_source_mtime_index
 from polylogue.storage.state_views import RawConversationStateUpdate
 from polylogue.storage.store import RawConversationRecord
 
@@ -533,4 +534,38 @@ class TestFreshSchema:
         assert "idx_content_blocks_conversation" in indices
         assert "idx_content_blocks_conv_type" in indices
 
+        conn.close()
+
+    @pytest.mark.parametrize(
+        "ddl",
+        [
+            """
+            CREATE INDEX IF NOT EXISTS idx_raw_conv_source_mtime
+            ON raw_conversations(source_path, file_mtime)
+            WHERE file_mtime IS NOT NULL;
+            """,
+            """
+            CREATE INDEX idx_raw_conv_source_mtime
+            ON raw_conversations(source_path, file_mtime)
+            WHERE file_mtime IS NOT NULL;
+            """,
+        ],
+    )
+    def test_raw_source_mtime_index_upgrade_accepts_equivalent_sql(self, tmp_path: Path, ddl: str) -> None:
+        """Equivalent DDL formatting should not trigger drop/recreate churn."""
+        db_path = tmp_path / "fresh.db"
+        conn = sqlite3.connect(str(db_path))
+        conn.execute(
+            "CREATE TABLE raw_conversations (raw_id TEXT PRIMARY KEY, source_path TEXT, file_mtime TEXT)"
+        )
+        conn.executescript(ddl)
+
+        _ensure_raw_source_mtime_index(conn)
+
+        row = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='index' AND name='idx_raw_conv_source_mtime'"
+        ).fetchone()
+        assert row is not None
+        assert row[0] is not None
+        assert "WHERE file_mtime IS NOT NULL" in row[0]
         conn.close()

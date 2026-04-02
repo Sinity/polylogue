@@ -1,25 +1,24 @@
-Usage: cli run [OPTIONS]
+Usage: python -m polylogue run [OPTIONS]
 
   Run pipeline stages on configured sources.
 
 Options:
   --preview                       Preview work without writing
-  --stage [acquire|validate|parse|render|index|generate-schemas|all]
-                                  Pipeline stage: acquire (store raw), validate
-                                  (schema check raw payloads), parse (extract
-                                  conversations), render (output), index
-                                  (search), generate-schemas, or all  [default:
-                                  all]
-  --source TEXT                   Limit to source name (repeatable). 'last' =
-                                  previously synced source. List with: polylogue
-                                  sources
-  --format [markdown|html]        Output format for rendering (markdown or html)
-                                  [default: html]
-  --watch                         Watch sources for changes and run continuously
+  --stage [acquire|parse|render|index|generate-schemas|all]
+                                  Pipeline stage: acquire (store raw), parse
+                                  (extract conversations), render (output),
+                                  index (search), generate-schemas, or all
+                                  [default: all]
+  --source TEXT                   Configured source name (repeatable). Accepts
+                                  'last' for the previously synced source.
+  --format [markdown|html]        Output format for rendering (markdown or
+                                  html)  [default: html]
+  --watch                         Watch sources for changes and run
+                                  continuously
   --notify                        Desktop notification on conversation changes
                                   (requires --watch)
-  --exec TEXT                     Execute command on conversation changes (requires
-                                  --watch)
+  --exec TEXT                     Execute command on conversation changes
+                                  (requires --watch)
   --webhook TEXT                  Call webhook URL on conversation changes
                                   (requires --watch)
   --reparse                       Force re-parsing of all raw conversations

@@ -52,7 +52,6 @@ async def list_session_profiles(
     session_date_since: str | None = None,
     session_date_until: str | None = None,
     tier: str = "merged",
-    refined_work_kind: str | None = None,
     limit: int | None = 50,
     offset: int = 0,
     query: str | None = None,
@@ -105,12 +104,6 @@ async def list_session_profiles(
     if session_date_until:
         where.append("sp.canonical_session_date <= date(?)")
         params.append(session_date_until)
-    if refined_work_kind:
-        where.append(
-            "NULLIF(json_extract(sp.enrichment_payload_json, '$.refined_work_kind'), '') = ?"
-        )
-        params.append(refined_work_kind)
-
     sql = "SELECT sp.* " + from_clause
     if where:
         sql += " WHERE " + " AND ".join(where)

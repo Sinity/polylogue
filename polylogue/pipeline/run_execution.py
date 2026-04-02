@@ -32,10 +32,11 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 
-def needs_parse_source_fallback(stage: str, sources, ingest_result) -> bool:
+def needs_parse_source_fallback(stage: str, skip_acquire: bool, sources, ingest_result) -> bool:
     """Return whether parse-stage replay should widen back to the full ingest flow."""
     return bool(
         stage == "parse"
+        and skip_acquire
         and sources
         and not ingest_result.acquire_result.raw_ids
         and ingest_result.validation_result is None
@@ -90,34 +91,39 @@ async def run_sources(
                 ui=ui,
                 progress_callback=progress_callback,
             )
+            sm.details.update(acquire_result.diagnostics)
             sm.stop(items=acquire_result.counts["acquired"])
             state.record_acquire(acquire_result)
             logger.info("Acquire stage complete", **sm.to_dict(), **acquire_result.counts)
 
         elif stage in INGEST_STAGES:
             sm = metrics.start_stage("ingest")
+            skip_acquire = stage == "parse" and source_names is None
             ingest_result = await execute_ingest_stage(
                 config=config,
                 repository=active_repository,
                 archive_root=config.archive_root,
                 sources=selected_sources,
                 stage=stage,
+                skip_acquire=skip_acquire,
                 ui=ui,
                 progress_callback=progress_callback,
             )
-            if needs_parse_source_fallback(stage, selected_sources, ingest_result):
+            if needs_parse_source_fallback(stage, skip_acquire, selected_sources, ingest_result):
                 ingest_result = await execute_ingest_stage(
                     config=config,
                     repository=active_repository,
                     archive_root=config.archive_root,
                     sources=selected_sources,
                     stage="all",
+                    skip_acquire=False,
                     ui=ui,
                     progress_callback=progress_callback,
                 )
             sm.sub_timings.update({
                 f"{k}_s": v for k, v in ingest_result.timings.items()
             })
+            sm.details.update(ingest_result.diagnostics)
             sm.stop(items=len(ingest_result.parse_raw_ids))
             state.record_acquire(ingest_result.acquire_result)
             logger.info(
@@ -139,15 +145,16 @@ async def run_sources(
                 )
 
         if stage == "generate-schemas":
-            stage_t0 = time.perf_counter()
+            sm = metrics.start_stage("generate-schemas")
             schema_outcome = await execute_schema_generation_stage()
             state.record_schema_generation(
                 generated=schema_outcome.generated,
                 failed=schema_outcome.failed,
             )
+            sm.stop(items=schema_outcome.generated)
             logger.info(
                 "Schema generation complete",
-                elapsed_s=round(time.perf_counter() - stage_t0, 1),
+                **sm.to_dict(),
                 generated=schema_outcome.generated,
                 failed=schema_outcome.failed,
             )
