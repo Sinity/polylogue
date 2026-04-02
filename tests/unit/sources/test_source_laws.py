@@ -1540,6 +1540,39 @@ def test_iter_source_raw_data_avoids_whole_blob_provider_detection_for_zip_entri
     assert len(items) == 2
 
 
+def test_iter_source_raw_data_reports_split_payload_observations(tmp_path: Path) -> None:
+    archive_path = tmp_path / "bundle.zip"
+    with zipfile.ZipFile(archive_path, "w") as zf:
+        zf.writestr(
+            "nested/conversations.json",
+            json.dumps(
+                [
+                    {"id": "chatgpt-1", "mapping": {}},
+                    {"id": "chatgpt-2", "mapping": {}},
+                ]
+            ).encode("utf-8"),
+        )
+
+    observations: list[dict[str, object]] = []
+
+    items = list(
+        iter_source_raw_data(
+            Source(name="inbox", path=archive_path),
+            observation_callback=observations.append,
+        )
+    )
+
+    assert len(items) == 2
+    assert observations
+    peak = max(observations, key=lambda observation: float(observation["peak_rss_self_mb"]))
+    assert peak["phase"] == "zip-entry-split-payload-serialized"
+    assert peak["source_path"] == f"{archive_path}:nested/conversations.json"
+    assert peak["provider_hint"] == Provider.CHATGPT.value
+    assert peak["source_index"] in {0, 1}
+    assert int(peak["blob_size"]) > 0
+    assert float(peak["peak_rss_self_mb"]) > 0.0
+
+
 def test_iter_source_raw_data_keeps_source_family_hints_for_mixed_zip_sources(tmp_path: Path) -> None:
     archive_path = tmp_path / "bundle.zip"
     with zipfile.ZipFile(archive_path, "w") as zf:

@@ -192,6 +192,7 @@ async def ingest_sources(
         parse_raw_ids=parse_raw_ids,
         timings=timings,
         diagnostics={
+            "acquisition": acquire_result.diagnostics,
             "batch_observations": _summarize_batch_observations(parse_result.batch_observations),
             "session_product_refresh": parse_result.refresh_observation,
         },
