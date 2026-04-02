@@ -5,15 +5,30 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from devtools.pipeline_probe import main, run_probe
+from polylogue.schemas.synthetic import SyntheticCorpus
+from polylogue.storage.backends import create_backend
+from polylogue.storage.backends.connection import open_connection
+from polylogue.storage.blob_store import BlobStore
+from polylogue.storage.repository import ConversationRepository
+from polylogue.storage.store import RawConversationRecord
 
 
 class _Args:
+    input_mode = "synthetic"
     provider = "chatgpt"
     count = 1
     messages_min = 3
     messages_max = 4
     seed = 7
+    sample_per_provider = 50
+    source_filters = None
+    source_db = None
+    source_blob_root = None
+    manifest_out = None
+    manifest_in = None
     stage = "parse"
     json_out = None
     max_total_ms = None
@@ -21,6 +36,78 @@ class _Args:
 
     def __init__(self, workdir: Path) -> None:
         self.workdir = workdir
+
+
+class _ArchiveArgs:
+    input_mode = "archive-subset"
+    provider = None
+    count = 1
+    messages_min = 3
+    messages_max = 4
+    seed = 11
+    sample_per_provider = 1
+    source_filters = None
+    manifest_out = None
+    manifest_in = None
+    stage = "parse"
+    json_out = None
+    max_total_ms = None
+    max_peak_rss_mb = None
+
+    def __init__(
+        self,
+        *,
+        workdir: Path,
+        source_db: Path,
+        source_blob_root: Path,
+        manifest_out: Path | None = None,
+        manifest_in: Path | None = None,
+    ) -> None:
+        self.workdir = workdir
+        self.source_db = source_db
+        self.source_blob_root = source_blob_root
+        self.manifest_out = manifest_out
+        self.manifest_in = manifest_in
+
+
+async def _seed_archive_source(tmp_path: Path) -> tuple[Path, Path]:
+    source_db = tmp_path / "source.db"
+    source_blob_root = tmp_path / "source-blobs"
+    blob_store = BlobStore(source_blob_root)
+    backend = create_backend(db_path=source_db)
+    repository = ConversationRepository(backend=backend)
+    corpus = SyntheticCorpus.for_provider("chatgpt")
+    codex_corpus = SyntheticCorpus.for_provider("codex")
+
+    try:
+        raw_payloads = [
+            ("chatgpt", "chatgpt-main", corpus.generate(count=1, seed=100, messages_per_conversation=range(3, 4))[0]),
+            ("chatgpt", "chatgpt-sidecar", corpus.generate(count=1, seed=101, messages_per_conversation=range(3, 4))[0]),
+            ("codex", "codex-main", codex_corpus.generate(count=1, seed=200, messages_per_conversation=range(3, 4))[0]),
+            ("codex", "codex-sidecar", codex_corpus.generate(count=1, seed=201, messages_per_conversation=range(3, 4))[0]),
+        ]
+        for index, (provider_name, source_name, raw_bytes) in enumerate(raw_payloads):
+            raw_id, blob_size = blob_store.write_from_bytes(raw_bytes)
+            await repository.save_raw_conversation(
+                RawConversationRecord(
+                    raw_id=raw_id,
+                    provider_name=provider_name,
+                    payload_provider=provider_name,
+                    source_name=source_name,
+                    source_path=f"/tmp/{source_name}-{index}",
+                    source_index=index,
+                    blob_size=blob_size,
+                    acquired_at=f"2026-04-0{index + 1}T12:00:00Z",
+                    file_mtime=f"2026-04-0{index + 1}T11:00:00Z",
+                    parsed_at="2026-04-01T00:00:00Z",
+                    validated_at="2026-04-01T00:00:00Z",
+                    validation_status="passed",
+                )
+            )
+    finally:
+        await repository.close()
+
+    return source_db, source_blob_root
 
 
 async def test_run_probe_emits_real_pipeline_summary(tmp_path) -> None:
@@ -106,3 +193,68 @@ def test_main_returns_nonzero_when_budget_is_exceeded(capsys) -> None:
     assert exit_code == 1
     assert printed["budgets"]["ok"] is False
     assert len(printed["budgets"]["violations"]) >= 1
+
+
+async def test_run_probe_can_sample_archive_subset_and_persist_manifest(tmp_path) -> None:
+    source_db, source_blob_root = await _seed_archive_source(tmp_path)
+    manifest_out = tmp_path / "subset-manifest.json"
+    args = _ArchiveArgs(
+        workdir=tmp_path / "archive-probe",
+        source_db=source_db,
+        source_blob_root=source_blob_root,
+        manifest_out=manifest_out,
+    )
+
+    summary = await run_probe(args)
+    manifest = json.loads(manifest_out.read_text(encoding="utf-8"))
+
+    assert summary["probe"]["input_mode"] == "archive-subset"
+    assert summary["sample"]["selected_count"] == 2
+    assert summary["sample"]["provider_counts"] == {"chatgpt": 1, "codex": 1}
+    assert summary["db_stats"]["raw_conversations_count"] == 2
+    assert summary["db_stats"]["conversations_count"] == 2
+    assert summary["paths"]["manifest_path"].endswith("archive-subset-manifest.json")
+    assert manifest["sample_per_provider"] == 1
+    assert len(manifest["records"]) == 2
+
+
+async def test_run_probe_can_replay_archive_subset_manifest(tmp_path) -> None:
+    source_db, source_blob_root = await _seed_archive_source(tmp_path)
+    manifest_out = tmp_path / "subset-manifest.json"
+    first_args = _ArchiveArgs(
+        workdir=tmp_path / "archive-probe-first",
+        source_db=source_db,
+        source_blob_root=source_blob_root,
+        manifest_out=manifest_out,
+    )
+    await run_probe(first_args)
+
+    replay_args = _ArchiveArgs(
+        workdir=tmp_path / "archive-probe-replay",
+        source_db=source_db,
+        source_blob_root=source_blob_root,
+        manifest_in=manifest_out,
+    )
+    replay_args.sample_per_provider = 99
+    replay_args.seed = 999
+
+    summary = await run_probe(replay_args)
+
+    assert summary["sample"]["selected_count"] == 2
+    assert summary["sample"]["sample_per_provider"] == 1
+    assert summary["sample"]["provider_counts"] == {"chatgpt": 1, "codex": 1}
+
+
+async def test_run_probe_rejects_empty_archive_subset(tmp_path) -> None:
+    empty_db = tmp_path / "empty-source.db"
+    with open_connection(empty_db):
+        pass
+    empty_blob_root = tmp_path / "empty-blobs"
+    args = _ArchiveArgs(
+        workdir=tmp_path / "archive-probe-empty",
+        source_db=empty_db,
+        source_blob_root=empty_blob_root,
+    )
+
+    with pytest.raises(ValueError, match="found no raw conversations"):
+        await run_probe(args)

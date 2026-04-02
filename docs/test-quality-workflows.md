@@ -146,15 +146,27 @@ Durable mutation ledgers live in:
 ### Fast pipeline probes
 
 Use the real pipeline probe before running long-haul campaigns or touching hot
-paths. It exercises `polylogue run` against a small synthetic corpus, writes the
-normal `archive_root/runs/run-*.json` artifact, and emits stage timing plus RSS
-metrics in one JSON summary.
+paths. It writes the normal `archive_root/runs/run-*.json` artifact and emits
+stage timing plus RSS metrics in one JSON summary.
+
+There are now two useful tiers:
+
+- Synthetic smoke probes: tiny generated corpora for fast budget checks in validation lanes.
+- Archive-subset probes: replay a persisted, isolated subset of already-acquired raw rows from a real archive into a secondary workspace, with parse and validation state reset so post-acquire stages run again.
 
 ```bash
 nix develop -c python -m devtools.pipeline_probe --provider chatgpt --count 5 --stage parse --workdir /tmp/polylogue-probe
 nix develop -c python -m devtools.pipeline_probe --provider claude-code --count 3 --stage all --workdir /tmp/polylogue-probe-cc --json-out /tmp/polylogue-probe-cc.json
 nix develop -c python -m devtools.pipeline_probe --provider chatgpt --count 5 --stage parse --max-total-ms 10000 --max-peak-rss-mb 512
+nix develop -c python -m devtools.pipeline_probe --input-mode archive-subset --source-db /home/sinity/.local/share/polylogue/polylogue.db_ --sample-per-provider 50 --stage parse --workdir /tmp/polylogue-probe-real --manifest-out /tmp/polylogue-probe-real.json
+nix develop -c python -m devtools.pipeline_probe --input-mode archive-subset --manifest-in /tmp/polylogue-probe-real.json --stage parse --workdir /tmp/polylogue-probe-replay
+nix develop -c python -m devtools.pipeline_probe --input-mode archive-subset --source-db /home/sinity/.local/share/polylogue/polylogue.db_ --provider claude-code --provider codex --sample-per-provider 25 --stage parse
 ```
+
+Archive-subset mode fails loudly when the selected source archive has no usable
+raw rows, instead of silently “benchmarking” an empty archive. If your live
+archive is not on the default `polylogue.db` path, pass `--source-db`
+explicitly.
 
 ### Showcase baseline drift
 
