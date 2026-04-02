@@ -2,13 +2,19 @@
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
+import pytest
 
 from polylogue.pipeline.services.ingest_batch import (
     _drain_ready_conversation_entries,
     _IngestBatchSummary,
     _topo_sort_conversation_entries,
     _write_conversation,
+    refresh_session_products_bulk,
 )
 from polylogue.pipeline.services.ingest_worker import ConversationData
 from polylogue.storage.backends.connection import open_connection
@@ -140,3 +146,67 @@ def test_drain_ready_conversation_entries_preserves_late_parent_fk(tmp_path: Pat
         ).fetchone()
         assert row is not None
         assert row["parent_conversation_id"] == "codex:parent"
+
+
+@pytest.mark.asyncio
+async def test_refresh_session_products_bulk_dedupes_related_refreshes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_conn = SimpleNamespace(commit=AsyncMock())
+
+    @asynccontextmanager
+    async def _connection():
+        yield fake_conn
+
+    fake_backend = SimpleNamespace(connection=_connection)
+
+    async def _fake_apply(conn, conversation_id: str, *, transaction_depth: int):
+        del conn, transaction_depth
+        if conversation_id == "conv-1":
+            return SimpleNamespace(
+                affected_groups={("chatgpt", "2026-04-02")},
+                thread_root_id="root-a",
+            )
+        if conversation_id == "conv-2":
+            return SimpleNamespace(
+                affected_groups={("chatgpt", "2026-04-02")},
+                thread_root_id="root-a",
+            )
+        return SimpleNamespace(
+            affected_groups={("chatgpt", "2026-04-03")},
+            thread_root_id="root-b",
+        )
+
+    refresh_thread_root = AsyncMock(return_value=1)
+    refresh_aggregates = AsyncMock()
+
+    monkeypatch.setattr(
+        "polylogue.storage.session_product_refresh._apply_session_product_conversation_update_async",
+        _fake_apply,
+    )
+    monkeypatch.setattr(
+        "polylogue.storage.session_product_refresh._refresh_thread_root_async",
+        refresh_thread_root,
+    )
+    monkeypatch.setattr(
+        "polylogue.storage.session_product_refresh.refresh_async_provider_day_aggregates",
+        refresh_aggregates,
+    )
+
+    await refresh_session_products_bulk(
+        fake_backend,
+        ["conv-1", "conv-2", "conv-3"],
+    )
+
+    assert refresh_thread_root.await_count == 2
+    refreshed_roots = sorted(call.args[1] for call in refresh_thread_root.await_args_list)
+    assert refreshed_roots == ["root-a", "root-b"]
+    refresh_aggregates.assert_awaited_once()
+    aggregate_args = refresh_aggregates.await_args
+    assert aggregate_args.args[0] is fake_conn
+    assert aggregate_args.args[1] == {
+        ("chatgpt", "2026-04-02"),
+        ("chatgpt", "2026-04-03"),
+    }
+    assert aggregate_args.kwargs["transaction_depth"] == 1
+    fake_conn.commit.assert_awaited_once()

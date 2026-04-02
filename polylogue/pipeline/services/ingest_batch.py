@@ -841,14 +841,33 @@ async def refresh_session_products_bulk(
     t_start = time.perf_counter()
     try:
         from polylogue.storage.session_product_refresh import (
-            refresh_session_products_for_conversation_async,
+            _apply_session_product_conversation_update_async,
+            _refresh_thread_root_async,
+            refresh_async_provider_day_aggregates,
         )
 
         async with backend.connection() as conn:
+            affected_groups: set[tuple[str, str]] = set()
+            thread_root_ids: set[str] = set()
             for cid in changed_conversation_ids:
-                await refresh_session_products_for_conversation_async(
+                update = await _apply_session_product_conversation_update_async(
                     conn,
                     cid,
+                    transaction_depth=1,
+                )
+                affected_groups.update(update.affected_groups)
+                if update.thread_root_id is not None:
+                    thread_root_ids.add(update.thread_root_id)
+            for root_id in sorted(thread_root_ids):
+                await _refresh_thread_root_async(
+                    conn,
+                    root_id,
+                    transaction_depth=1,
+                )
+            if affected_groups:
+                await refresh_async_provider_day_aggregates(
+                    conn,
+                    affected_groups,
                     transaction_depth=1,
                 )
             await conn.commit()
