@@ -561,7 +561,7 @@ def _build_action_event_tuples(
             role=msg.role,
             text=msg.text,
             sort_key=msg_sort_key,
-            content_hash="",
+            content_hash=msg_tuple[6],
             provider_name=provider_name,
             word_count=word_count,
             has_tool_use=has_tool_use,
