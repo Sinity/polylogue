@@ -150,7 +150,9 @@ async def test_run_probe_emits_real_pipeline_summary(tmp_path) -> None:
     assert summary["run_payload"]["metrics"]["peak_rss_mb"] is not None
     assert "index" in summary["run_payload"]["metrics"]["stages"]
     assert ingest_details["batch_count"] == 1
+    assert ingest_details["max_current_rss_mb"] is not None
     assert len(ingest_details["batches"]) == 1
+    assert ingest_details["batches"][0]["max_current_rss_mb"] is not None
     assert summary["db_stats"]["raw_conversations_count"] >= 1
     assert len(summary["raw_fanout"]) == summary["db_stats"]["raw_conversations_count"]
 

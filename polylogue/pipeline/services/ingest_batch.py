@@ -77,6 +77,7 @@ class _IngestBatchSummary:
     worker_count: int = 0
     total_blob_mb: float = 0.0
     elapsed_s: float = 0.0
+    max_current_rss_mb: float | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -420,6 +421,14 @@ def _record_outcome(summary: _IngestBatchSummary, ir: IngestRecordResult) -> Non
     )
 
 
+def _observe_current_rss(summary: _IngestBatchSummary) -> None:
+    current_rss_mb = read_current_rss_mb()
+    if current_rss_mb is None:
+        return
+    if summary.max_current_rss_mb is None or current_rss_mb > summary.max_current_rss_mb:
+        summary.max_current_rss_mb = current_rss_mb
+
+
 def _record_write_result(
     summary: _IngestBatchSummary,
     cdata: ConversationData,
@@ -575,6 +584,7 @@ def _process_ingest_batch_sync(
 
     materialized_ids: set[str] = set()
     pending_by_parent: dict[str, list[tuple[str, ConversationData]]] = {}
+    _observe_current_rss(summary)
 
     try:
         for ir in _iter_ingest_results_sync(
@@ -584,6 +594,7 @@ def _process_ingest_batch_sync(
             worker_count=summary.worker_count,
         ):
             _record_outcome(summary, ir)
+            _observe_current_rss(summary)
 
             if ir.error:
                 logger.error("Failed to ingest raw record", raw_id=ir.raw_id, error=ir.error)
@@ -603,6 +614,7 @@ def _process_ingest_batch_sync(
                     materialized_ids=materialized_ids,
                     pending_by_parent=pending_by_parent,
                 )
+                _observe_current_rss(summary)
 
         _flush_pending_conversation_entries(
             conn,
@@ -610,6 +622,7 @@ def _process_ingest_batch_sync(
             summary=summary,
             materialized_ids=materialized_ids,
         )
+        _observe_current_rss(summary)
         conn.commit()
     except Exception:
         conn.rollback()
@@ -778,6 +791,8 @@ async def process_ingest_batch(
         observation["rss_delta_mb"] = round(rss_end_mb - rss_start_mb, 1)
     if peak_rss_mb is not None:
         observation["peak_rss_mb"] = peak_rss_mb
+    if batch_summary.max_current_rss_mb is not None:
+        observation["max_current_rss_mb"] = batch_summary.max_current_rss_mb
     return observation
 
 
