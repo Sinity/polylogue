@@ -20,6 +20,16 @@ RUN_STAGE_CHOICES: tuple[str, ...] = (
     "reprocess",
     "all",
 )
+RUN_STAGE_SEQUENCES: dict[str, tuple[str, ...]] = {
+    "acquire": ("acquire",),
+    "parse": ("parse", "index"),
+    "materialize": ("materialize",),
+    "render": ("render",),
+    "index": ("index",),
+    "generate-schemas": ("generate-schemas",),
+    "reprocess": ("parse", "materialize", "render", "index"),
+    "all": ("acquire", "parse", "materialize", "render", "index"),
+}
 INGEST_STAGES = frozenset({"parse", "reprocess", "all"})
 PARSE_STAGES = frozenset({"parse", "reprocess", "all"})
 MATERIALIZE_STAGES = frozenset({"materialize", "reprocess", "all"})
@@ -32,6 +42,11 @@ def select_sources(config: Config, source_names: Sequence[str] | None) -> list[S
         return list(config.sources)
     name_set = set(source_names)
     return [source for source in config.sources if source.name in name_set]
+
+
+def expand_requested_stage(stage: str) -> tuple[str, ...]:
+    """Expand a requested stage/composite into the leaf execution sequence."""
+    return RUN_STAGE_SEQUENCES[stage]
 
 def write_run_json(archive_root: Path, payload: dict[str, object]) -> Path:
     """Write run result JSON to the runs directory."""
@@ -49,6 +64,8 @@ __all__ = [
     "PARSE_STAGES",
     "RENDER_STAGES",
     "RUN_STAGE_CHOICES",
+    "RUN_STAGE_SEQUENCES",
+    "expand_requested_stage",
     "run_coroutine_sync",
     "select_sources",
     "write_run_json",

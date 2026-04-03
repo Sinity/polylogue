@@ -10,6 +10,7 @@ from polylogue.lib.metrics import PipelineMetrics
 from polylogue.logging import get_logger
 from polylogue.pipeline.run_finalization import persist_run_result
 from polylogue.pipeline.run_stages import (
+    IndexStageOutcome,
     execute_acquire_stage,
     execute_index_stage,
     execute_ingest_stage,
@@ -19,10 +20,7 @@ from polylogue.pipeline.run_stages import (
 )
 from polylogue.pipeline.run_state import RunExecutionState
 from polylogue.pipeline.run_support import (
-    INGEST_STAGES,
-    MATERIALIZE_STAGES,
-    PARSE_STAGES,
-    RENDER_STAGES,
+    expand_requested_stage,
     select_sources,
 )
 from polylogue.storage.backends import create_backend
@@ -63,20 +61,22 @@ async def run_sources(
 
     try:
         selected_sources = select_sources(config, source_names)
+        stage_sequence = expand_requested_stage(stage)
+        executed_stages: set[str] = set()
 
         # Suspend FTS triggers during bulk pipeline operations.
         # Triggers fire per-row during message INSERTs, causing massive
         # overhead (~8s per 50 updates with realistic text). The index
         # stage rebuilds FTS at the end anyway, making trigger updates
         # pure waste during ingest.
-        if stage in ("all", "parse", "render", "index", "reprocess") or stage in INGEST_STAGES:
+        if any(stage_name in {"parse", "render", "index"} for stage_name in stage_sequence):
             from polylogue.storage.fts_lifecycle import suspend_fts_triggers_async
 
             async with active_backend.connection() as conn:
                 await suspend_fts_triggers_async(conn)
                 await conn.commit()
 
-        if stage == "acquire":
+        if "acquire" in stage_sequence:
             sm = metrics.start_stage("acquire")
             acquire_result = await execute_acquire_stage(
                 config=config,
@@ -89,10 +89,27 @@ async def run_sources(
             sm.stop(items=acquire_result.counts["acquired"])
             state.record_acquire(acquire_result)
             logger.info("Acquire stage complete", **sm.to_dict(), **acquire_result.counts)
+            executed_stages.add("acquire")
 
-        elif stage in INGEST_STAGES:
+        if "generate-schemas" in stage_sequence:
+            sm = metrics.start_stage("generate-schemas")
+            schema_outcome = await execute_schema_generation_stage()
+            state.record_schema_generation(
+                generated=schema_outcome.generated,
+                failed=schema_outcome.failed,
+            )
+            sm.stop(items=schema_outcome.generated)
+            logger.info(
+                "Schema generation complete",
+                **sm.to_dict(),
+                generated=schema_outcome.generated,
+                failed=schema_outcome.failed,
+            )
+            executed_stages.add("generate-schemas")
+
+        if "parse" in stage_sequence:
             sm = metrics.start_stage("ingest")
-            skip_acquire = stage in {"parse", "reprocess"}
+            skip_acquire = True
             ingest_result = await execute_ingest_stage(
                 config=config,
                 repository=active_repository,
@@ -108,7 +125,8 @@ async def run_sources(
             })
             sm.details.update(ingest_result.diagnostics)
             sm.stop(items=len(ingest_result.parse_raw_ids))
-            state.record_acquire(ingest_result.acquire_result)
+            if "acquire" not in executed_stages:
+                state.record_acquire(ingest_result.acquire_result)
             logger.info(
                 "Ingest complete",
                 **sm.to_dict(),
@@ -119,30 +137,15 @@ async def run_sources(
             if validation_result is not None:
                 state.record_validation(validation_result)
 
-            if stage in PARSE_STAGES:
-                state.record_parse(ingest_result.parse_result)
-                logger.info(
-                    "Parse stage complete",
-                    processed_ids=len(state.processed_ids),
-                    parse_failures=ingest_result.parse_result.parse_failures,
-                )
-
-        if stage == "generate-schemas":
-            sm = metrics.start_stage("generate-schemas")
-            schema_outcome = await execute_schema_generation_stage()
-            state.record_schema_generation(
-                generated=schema_outcome.generated,
-                failed=schema_outcome.failed,
-            )
-            sm.stop(items=schema_outcome.generated)
+            state.record_parse(ingest_result.parse_result)
             logger.info(
-                "Schema generation complete",
-                **sm.to_dict(),
-                generated=schema_outcome.generated,
-                failed=schema_outcome.failed,
+                "Parse stage complete",
+                processed_ids=len(state.processed_ids),
+                parse_failures=ingest_result.parse_result.parse_failures,
             )
+            executed_stages.add("parse")
 
-        if stage in MATERIALIZE_STAGES:
+        if "materialize" in stage_sequence:
             sm = metrics.start_stage("materialize")
             materialize_outcome = await execute_materialize_stage(
                 stage=stage,
@@ -160,8 +163,9 @@ async def run_sources(
                 **sm.to_dict(),
                 rebuilt=materialize_outcome.rebuilt,
             )
+            executed_stages.add("materialize")
 
-        if stage in RENDER_STAGES:
+        if "render" in stage_sequence:
             sm = metrics.start_stage("render")
             render_outcome = await execute_render_stage(
                 config=config,
@@ -183,24 +187,29 @@ async def run_sources(
                 failures=len(render_outcome.failures),
                 total=render_outcome.total,
             )
+            executed_stages.add("render")
 
-        sm = metrics.start_stage("index")
-        index_outcome = await execute_index_stage(
-            config=config,
-            stage=stage,
-            source_names=source_names,
-            processed_ids=state.processed_ids,
-            backend=active_backend,
-            progress_callback=progress_callback,
-        )
-        if index_outcome.error is not None:
-            logger.error("Indexing failed", error=index_outcome.error)
-        sm.stop(items=index_outcome.item_count)
-        logger.info(
-            "Index stage complete",
-            **sm.to_dict(),
-            indexed=index_outcome.indexed,
-        )
+        if "index" in stage_sequence:
+            sm = metrics.start_stage("index")
+            index_outcome = await execute_index_stage(
+                config=config,
+                stage=stage,
+                source_names=source_names,
+                processed_ids=state.processed_ids,
+                backend=active_backend,
+                progress_callback=progress_callback,
+            )
+            if index_outcome.error is not None:
+                logger.error("Indexing failed", error=index_outcome.error)
+            sm.stop(items=index_outcome.item_count)
+            logger.info(
+                "Index stage complete",
+                **sm.to_dict(),
+                indexed=index_outcome.indexed,
+            )
+            executed_stages.add("index")
+        else:
+            index_outcome = IndexStageOutcome(indexed=False, item_count=0)
 
         return await persist_run_result(
             config=config,

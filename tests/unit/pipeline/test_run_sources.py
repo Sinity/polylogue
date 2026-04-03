@@ -11,6 +11,7 @@ import pytest
 
 from polylogue.config import Config, Source
 from polylogue.pipeline.run_stages import IndexStageOutcome
+from polylogue.pipeline.run_support import expand_requested_stage
 from polylogue.pipeline.runner import _select_sources, latest_run, plan_sources, run_sources
 from polylogue.pipeline.services.parsing_models import IngestResult, ParseResult
 from polylogue.pipeline.stage_models import AcquireResult
@@ -60,6 +61,13 @@ def _write_chatgpt_export(path: Path, conversation_id: str, *, text: str = "Test
         ),
         encoding="utf-8",
     )
+
+
+def test_expand_requested_stage_contract() -> None:
+    assert expand_requested_stage("acquire") == ("acquire",)
+    assert expand_requested_stage("parse") == ("parse", "index")
+    assert expand_requested_stage("reprocess") == ("parse", "materialize", "render", "index")
+    assert expand_requested_stage("all") == ("acquire", "parse", "materialize", "render", "index")
 
 
 class TestRunSourcesRenderFailures:
