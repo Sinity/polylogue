@@ -80,6 +80,14 @@ RUN_CASES = [
         "render",
         "markdown",
     ),
+    (
+        "run_reprocess_source",
+        ["run", "--stage", "reprocess", "--source", "drive"],
+        False,
+        ["drive"],
+        "reprocess",
+        "html",
+    ),
 ]
 
 

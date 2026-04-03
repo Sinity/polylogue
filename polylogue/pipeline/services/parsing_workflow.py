@@ -13,6 +13,7 @@ from collections.abc import Iterable
 from typing import TYPE_CHECKING
 
 from polylogue.logging import get_logger
+from polylogue.pipeline.run_support import PARSE_STAGES
 from polylogue.pipeline.services.parsing_models import IngestResult, IngestState, ParseResult
 
 if TYPE_CHECKING:
@@ -135,7 +136,7 @@ async def ingest_sources(
             seen=seen_parse_raw_ids,
             raw_ids=acquire_result.raw_ids,
         )
-        if stage in {"parse", "all"}:
+        if stage in PARSE_STAGES:
             backlog = await planning_service.collect_parse_backlog(
                 source_names=source_names or None,
                 exclude_raw_ids=parse_raw_ids,

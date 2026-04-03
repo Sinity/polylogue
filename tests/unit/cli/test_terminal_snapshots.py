@@ -72,14 +72,15 @@ class TestCommandOutputs:
 
     def test_run_help_output_snapshot(self, snapshot):
         """Verify run command help renders correctly."""
-        result = run_in_pty(["run", "--help"], rows=80)
+        result = run_in_pty(["run", "--help"], cols=120, rows=80)
         assert result.exit_code == 0
 
         grid = sanitize_grid(result.grid, strip_timestamps=False, strip_paths=True)
         output = grid_to_text(grid)
 
         assert output == snapshot
-        assert "--stage [acquire|parse|materialize|render|index|generate-schemas|all]" in output
+        assert "--stage [acquire|parse|materialize|render|index|generate-schemas|reprocess|all" in output
+        assert "reprocess (skip" in output
 
 
 class TestErrorOutput:

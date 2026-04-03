@@ -17,12 +17,13 @@ RUN_STAGE_CHOICES: tuple[str, ...] = (
     "render",
     "index",
     "generate-schemas",
+    "reprocess",
     "all",
 )
-INGEST_STAGES = frozenset({"parse", "all"})
-PARSE_STAGES = frozenset({"parse", "all"})
-MATERIALIZE_STAGES = frozenset({"materialize", "all"})
-RENDER_STAGES = frozenset({"render", "all"})
+INGEST_STAGES = frozenset({"parse", "reprocess", "all"})
+PARSE_STAGES = frozenset({"parse", "reprocess", "all"})
+MATERIALIZE_STAGES = frozenset({"materialize", "reprocess", "all"})
+RENDER_STAGES = frozenset({"render", "reprocess", "all"})
 
 
 def select_sources(config: Config, source_names: Sequence[str] | None) -> list[Source]:

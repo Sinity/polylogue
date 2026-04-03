@@ -146,6 +146,7 @@ class PlanStage(str, Enum):
     INDEX = "index"
     RENDER = "render"
     GENERATE_SCHEMAS = "generate-schemas"
+    REPROCESS = "reprocess"
 
     @classmethod
     def from_string(cls, value: str | PlanStage) -> PlanStage:

@@ -39,19 +39,6 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 
-def needs_parse_source_fallback(stage: str, skip_acquire: bool, sources, ingest_result) -> bool:
-    """Return whether parse-stage replay should widen back to the full ingest flow."""
-    return bool(
-        stage == "parse"
-        and skip_acquire
-        and sources
-        and not ingest_result.acquire_result.raw_ids
-        and ingest_result.validation_result is None
-        and not ingest_result.parse_raw_ids
-        and not ingest_result.parse_result.processed_ids
-    )
-
-
 async def run_sources(
     *,
     config: Config,
@@ -82,7 +69,7 @@ async def run_sources(
         # overhead (~8s per 50 updates with realistic text). The index
         # stage rebuilds FTS at the end anyway, making trigger updates
         # pure waste during ingest.
-        if stage in ("all", "parse", "render", "index") or stage in INGEST_STAGES:
+        if stage in ("all", "parse", "render", "index", "reprocess") or stage in INGEST_STAGES:
             from polylogue.storage.fts_lifecycle import suspend_fts_triggers_async
 
             async with active_backend.connection() as conn:
@@ -105,7 +92,7 @@ async def run_sources(
 
         elif stage in INGEST_STAGES:
             sm = metrics.start_stage("ingest")
-            skip_acquire = stage == "parse" and source_names is None
+            skip_acquire = stage in {"parse", "reprocess"}
             ingest_result = await execute_ingest_stage(
                 config=config,
                 repository=active_repository,
@@ -116,17 +103,6 @@ async def run_sources(
                 ui=ui,
                 progress_callback=progress_callback,
             )
-            if needs_parse_source_fallback(stage, skip_acquire, selected_sources, ingest_result):
-                ingest_result = await execute_ingest_stage(
-                    config=config,
-                    repository=active_repository,
-                    archive_root=config.archive_root,
-                    sources=selected_sources,
-                    stage="all",
-                    skip_acquire=False,
-                    ui=ui,
-                    progress_callback=progress_callback,
-                )
             sm.sub_timings.update({
                 f"{k}_s": v for k, v in ingest_result.timings.items()
             })
@@ -251,4 +227,4 @@ async def run_sources(
             await active_backend.close()
 
 
-__all__ = ["needs_parse_source_fallback", "run_sources"]
+__all__ = ["run_sources"]

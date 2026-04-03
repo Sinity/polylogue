@@ -117,7 +117,7 @@ async def execute_materialize_stage(
     from polylogue.pipeline.services.ingest_batch import refresh_session_products_bulk
     from polylogue.storage.session_product_rebuild import rebuild_session_products_async
 
-    if stage == "all":
+    if stage in {"all", "reprocess"}:
         conversation_ids = sorted(processed_ids)
         if not conversation_ids:
             return MaterializeStageOutcome(item_count=0, rebuilt=False)
@@ -274,7 +274,7 @@ async def execute_index_stage(
                 item_count=total,
             )
 
-        if stage == "all":
+        if stage in {"all", "reprocess"}:
             idx = await index_service.get_index_status()
             if not idx["exists"]:
                 rebuild_kwargs = (

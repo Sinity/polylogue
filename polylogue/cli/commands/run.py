@@ -54,7 +54,8 @@ from polylogue.sync_bridge import run_coroutine_sync
     help=(
         "Pipeline stage: acquire (store raw), "
         "parse (extract conversations), materialize (derived products), "
-        "render (output), index (search), generate-schemas, or all"
+        "render (output), index (search), generate-schemas, "
+        "reprocess (skip acquire, run downstream stages), or all"
     ),
 )
 @click.option(

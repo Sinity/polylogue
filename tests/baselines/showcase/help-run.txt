@@ -4,11 +4,12 @@ Usage: python -m polylogue run [OPTIONS]
 
 Options:
   --preview                       Preview work without writing
-  --stage [acquire|parse|materialize|render|index|generate-schemas|all]
+  --stage [acquire|parse|materialize|render|index|generate-schemas|reprocess|all]
                                   Pipeline stage: acquire (store raw), parse
                                   (extract conversations), materialize
                                   (derived products), render (output), index
-                                  (search), generate-schemas, or all
+                                  (search), generate-schemas, reprocess (skip
+                                  acquire, run downstream stages), or all
                                   [default: all]
   --source TEXT                   Configured source name (repeatable). Accepts
                                   'last' for the previously synced source.

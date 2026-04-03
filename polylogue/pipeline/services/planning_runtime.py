@@ -15,9 +15,9 @@ from .planning_backlog import collect_parse_backlog, collect_validation_backlog,
 from .planning_models import IngestPlan
 from .validation import ValidationService
 
-_VALIDATE_STAGES = frozenset({"parse", "all"})
-_PARSE_STAGES = frozenset({"parse", "all"})
-_MATERIALIZE_STAGES = frozenset({"materialize", "all"})
+_VALIDATE_STAGES = frozenset({"all"})
+_PARSE_STAGES = frozenset({"all"})
+_MATERIALIZE_STAGES = frozenset({"all"})
 _SCAN_STATE_BATCH_SIZE = 200  # Metadata-only rows (no BLOBs) — can batch larger
 
 
@@ -86,6 +86,43 @@ async def build_ingest_plan(
             ),
             validate_raw_ids=[],
             parse_ready_raw_ids=[],
+        )
+
+    if stage in {"parse", "reprocess"}:
+        validate_raw_ids = await collect_validation_backlog(
+            service.backend,
+            source_names=db_scope_names,
+            exclude_raw_ids=[],
+        )
+        parse_ready_raw_ids = await collect_parse_backlog(
+            service.backend,
+            source_names=db_scope_names,
+            exclude_raw_ids=validate_raw_ids,
+        )
+        reprocess_raw_ids = dedupe_ids([*validate_raw_ids, *parse_ready_raw_ids])
+        counts: dict[str, int] = {}
+        details: dict[str, int] = {}
+        if validate_raw_ids:
+            counts["validate"] = len(validate_raw_ids)
+            details["backlog_validate"] = len(validate_raw_ids)
+        if reprocess_raw_ids:
+            counts["parse"] = len(reprocess_raw_ids)
+            details["backlog_parse"] = len(parse_ready_raw_ids)
+            if stage == "reprocess":
+                counts["materialize"] = len(reprocess_raw_ids)
+                counts["render"] = len(reprocess_raw_ids)
+                counts["index"] = len(reprocess_raw_ids)
+        return IngestPlan(
+            summary=PlanResult(
+                timestamp=int(time.time()),
+                stage=stage,
+                counts=counts,
+                details=details,
+                sources=source_names,
+                cursors={},
+            ),
+            validate_raw_ids=validate_raw_ids,
+            parse_ready_raw_ids=reprocess_raw_ids,
         )
 
     acquisition = AcquisitionService(service.backend)

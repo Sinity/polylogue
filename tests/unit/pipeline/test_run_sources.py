@@ -138,7 +138,7 @@ class TestRunSourcesRenderFailures:
 class TestRunSourcesIntegration:
     @pytest.mark.parametrize(
         ("stage", "with_source_data"),
-        [("parse", True), ("materialize", True), ("render", False), ("index", False), ("all", True)],
+        [("parse", True), ("materialize", True), ("render", False), ("index", False), ("reprocess", True), ("all", True)],
     )
     def test_stage_matrix(self, workspace_env, tmp_path: Path, stage: str, with_source_data: bool, monkeypatch):
         monkeypatch.setenv("POLYLOGUE_SCHEMA_VALIDATION", "strict")
@@ -162,6 +162,8 @@ class TestRunSourcesIntegration:
         if stage == "materialize" and sources:
             asyncio.run(run_sources(config=config, stage="acquire"))
             asyncio.run(run_sources(config=config, stage="parse"))
+        if stage == "reprocess" and sources:
+            asyncio.run(run_sources(config=config, stage="acquire"))
 
         result = asyncio.run(run_sources(config=config, stage=stage))
 
@@ -184,6 +186,14 @@ class TestRunSourcesIntegration:
             assert result.counts["conversations"] == 0
             assert result.indexed is True
             assert result.index_error is None
+        elif stage == "reprocess":
+            assert result.counts["conversations"] >= 1
+            assert result.counts.get("materialized", 0) >= 1
+            assert result.counts.get("rendered", 0) >= 1
+            if result.indexed:
+                assert result.index_error is None
+            else:
+                assert result.index_error is not None
         else:
             assert result.counts["conversations"] >= 1
             assert result.counts.get("materialized", 0) >= 1
@@ -364,7 +374,7 @@ class TestRunSourcesIntegration:
         asyncio.run(backend.close())
         assert result.counts["conversations"] >= 1
 
-    def test_parse_with_explicit_source_filter_skips_replay_fallback(self, workspace_env, tmp_path: Path):
+    def test_parse_with_explicit_source_filter_skips_acquire(self, workspace_env, tmp_path: Path):
         scoped_source = tmp_path / "scoped"
         scoped_source.mkdir()
         config = Config(
@@ -375,11 +385,11 @@ class TestRunSourcesIntegration:
         parse_result = ParseResult()
         parse_result.processed_ids.add("conv-scoped")
         ingest_result = IngestResult(
-            acquire_result=AcquireResult(acquired=1, raw_ids=["raw-scoped"]),
+            acquire_result=AcquireResult(),
             validation_result=None,
             parse_result=parse_result,
             parse_raw_ids=["raw-scoped"],
-            timings={"acquire": 0.01, "ingest": 0.02},
+            timings={"acquire": 0.0, "ingest": 0.02},
         )
 
         with (
@@ -393,8 +403,8 @@ class TestRunSourcesIntegration:
             result = asyncio.run(run_sources(config=config, stage="parse", source_names=["scoped"]))
 
         assert mock_ingest.await_count == 1
-        assert mock_ingest.await_args.kwargs["skip_acquire"] is False
-        assert result.counts["acquired"] == 1
+        assert mock_ingest.await_args.kwargs["skip_acquire"] is True
+        assert result.counts["acquired"] == 0
 
 
 # =====================================================================

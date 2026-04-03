@@ -347,6 +347,34 @@ class TestParsingServiceStreaming:
 
 
 class TestPlanningService:
+    @patch("polylogue.pipeline.services.acquisition.iter_source_raw_data")
+    async def test_parse_plan_uses_existing_raw_scope_without_scanning_sources(self, mock_iter, tmp_path: Path):
+        backend = SQLiteBackend(db_path=tmp_path / "test.db")
+        config = Config(sources=[], archive_root=tmp_path / "archive", render_root=tmp_path / "render")
+        planner = PlanningService(backend=backend, config=config)
+        source_dir = tmp_path / "inbox-a"
+        source_dir.mkdir()
+
+        await backend.save_raw_conversation(
+            RawConversationRecord(
+                raw_id="raw-scoped",
+                provider_name="chatgpt",
+                source_name="inbox-a",
+                source_path="/tmp/a.json",
+                blob_size=len(b'{\"id\":\"x\"}'),
+                acquired_at=datetime.now(tz=timezone.utc).isoformat(),
+            )
+        )
+        mock_iter.side_effect = AssertionError("parse planning must not scan sources")
+
+        plan = await planner.build_plan(sources=[Source(name="inbox-a", path=source_dir)], stage="parse")
+
+        assert plan.summary.counts["validate"] == 1
+        assert plan.summary.counts["parse"] == 1
+        assert set(plan.validate_raw_ids) == {"raw-scoped"}
+        assert set(plan.parse_ready_raw_ids) == {"raw-scoped"}
+        mock_iter.assert_not_called()
+
     async def test_planning_includes_scoped_validation_backlog(self, tmp_path: Path):
         backend = SQLiteBackend(db_path=tmp_path / "test.db")
         config = Config(sources=[], archive_root=tmp_path / "archive", render_root=tmp_path / "render")
