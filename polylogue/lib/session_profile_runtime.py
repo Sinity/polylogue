@@ -57,6 +57,11 @@ def build_session_profile(
     facts = session_analysis.facts
     attribution = session_analysis.attribution
     cost_usd, cost_is_estimated = harmonize_session_cost(conversation)
+    compaction_count = 0
+    if conversation.provider_meta:
+        compactions = conversation.provider_meta.get("context_compactions")
+        if isinstance(compactions, list):
+            compaction_count = len(compactions)
     engaged_duration_ms = sum(int(phase.duration_ms or 0) for phase in session_analysis.phases)
     if engaged_duration_ms <= 0:
         engaged_duration_ms = max(int(conversation.total_duration_ms or 0), 0)
@@ -95,6 +100,7 @@ def build_session_profile(
         engaged_duration_ms=engaged_duration_ms,
         wall_duration_ms=facts.wall_duration_ms,
         cost_is_estimated=cost_is_estimated,
+        compaction_count=compaction_count,
         tags=tuple(conversation.tags),
         is_continuation=conversation.is_continuation,
         parent_id=str(conversation.parent_id) if conversation.parent_id else None,

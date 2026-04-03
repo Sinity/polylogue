@@ -8,9 +8,21 @@ from polylogue.pipeline.semantic_metadata import _parse_git_command, _parse_suba
 
 
 def detect_context_compaction(item: dict[str, Any]) -> dict[str, Any] | None:
-    """Detect if a raw message item represents a context compaction event."""
+    """Detect if a raw message item represents a context compaction event.
+
+    Recognises two record shapes:
+    - **Legacy**: ``{"type": "summary", "message": {"content": "..."}, ...}``
+    - **Modern**: ``{"type": "system", "subtype": "compact_boundary",
+      "compact_metadata": {...}, ...}``
+
+    Returns a normalised dict with ``summary``, ``timestamp``, ``trigger``,
+    ``pre_tokens``, ``preserved_segment_id``, and ``is_modern``.
+    """
     msg_type = item.get("type")
 
+    # ------------------------------------------------------------------
+    # Legacy format: type == "summary"
+    # ------------------------------------------------------------------
     if msg_type == "summary":
         message = item.get("message", {})
         content = ""
@@ -27,6 +39,44 @@ def detect_context_compaction(item: dict[str, Any]) -> dict[str, Any] | None:
         return {
             "summary": content,
             "timestamp": item.get("timestamp"),
+            "trigger": None,
+            "pre_tokens": None,
+            "preserved_segment_id": None,
+            "is_modern": False,
+        }
+
+    # ------------------------------------------------------------------
+    # Modern format: type == "system", subtype == "compact_boundary"
+    # ------------------------------------------------------------------
+    if msg_type == "system" and item.get("subtype") == "compact_boundary":
+        meta = item.get("compact_metadata") or {}
+        # Extract summary text from message.content (same structure as legacy)
+        message = item.get("message", {})
+        content = ""
+        if isinstance(message, dict):
+            content_raw = message.get("content")
+            if isinstance(content_raw, str):
+                content = content_raw
+            elif isinstance(content_raw, list):
+                for block in content_raw:
+                    if isinstance(block, dict) and block.get("type") == "text":
+                        content = block.get("text", "")
+                        break
+
+        # pre_tokens: accept both camelCase and snake_case
+        pre_tokens = meta.get("preTokens") or meta.get("pre_tokens")
+
+        # preserved_segment → anchor_uuid
+        preserved = meta.get("preserved_segment") or {}
+        anchor_uuid = preserved.get("anchor_uuid") if isinstance(preserved, dict) else None
+
+        return {
+            "summary": content,
+            "timestamp": item.get("timestamp"),
+            "trigger": meta.get("trigger"),
+            "pre_tokens": pre_tokens,
+            "preserved_segment_id": anchor_uuid,
+            "is_modern": True,
         }
 
     return None

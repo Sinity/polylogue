@@ -9,6 +9,7 @@ from .base_models import (
     ParsedContentBlock,
     ParsedConversation,
     ParsedMessage,
+    ParsedProviderEvent,
     RawConversationData,
 )
 from .base_support import (
@@ -22,6 +23,7 @@ __all__ = [
     "ParsedMessage",
     "ParsedAttachment",
     "ParsedConversation",
+    "ParsedProviderEvent",
     "RawConversationData",
     "normalize_role",
     "content_blocks_from_segments",
