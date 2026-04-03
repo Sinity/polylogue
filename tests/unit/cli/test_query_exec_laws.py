@@ -1132,7 +1132,7 @@ def test_async_execute_query_show_projects_results_before_output_contract() -> N
                 [
                     "No conversations matched filters:",
                     "  provider: claude-ai",
-                    "Hint: try broadening your filters or use --list to browse",
+                    "Hint: try broadening your filters or use `list` to browse",
                 ],
             ),
         (
@@ -1318,13 +1318,13 @@ SEARCH_FILTER_CASES = [
     ("provider", ["Python", "-p", "chatgpt"], 0, None),
     ("since_valid", ["Python", "--since", "__DYNAMIC_DATE__"], 0, None),
     ("since_invalid", ["Python", "--since", "not-a-date"], 1, "date"),
-    ("limit_list", ["JavaScript", "--limit", "1", "--list"], 0, None),
+    ("limit_list", ["JavaScript", "--limit", "1", "list"], 0, None),
 ]
 
 SEARCH_FORMAT_CASES = [
-    ("json_list", ["Python", "-f", "json", "--list"], "json_list"),
+    ("json_list", ["Python", "list", "-f", "json"], "json_list"),
     ("json_single", ["JavaScript", "-f", "json", "--limit", "1"], "json_single"),
-    ("list_mode", ["async", "--list"], "plain_list"),
+    ("list_mode", ["async", "list"], "plain_list"),
     ("markdown", ["Rust", "-f", "markdown", "--limit", "1"], "markdown"),
 ]
 
@@ -1407,8 +1407,8 @@ class TestSearchEdgeCases:
         from polylogue.cli import cli
         runner = CliRunner()
         # Query mode with --list to ensure consistent output
-        result_lower = runner.invoke(cli, ["--plain", "python", "-f", "json", "--list"])
-        result_upper = runner.invoke(cli, ["--plain", "PYTHON", "-f", "json", "--list"])
+        result_lower = runner.invoke(cli, ["--plain", "python", "list", "-f", "json"])
+        result_upper = runner.invoke(cli, ["--plain", "PYTHON", "list", "-f", "json"])
 
         # Both should have same exit code
         assert result_lower.exit_code == result_upper.exit_code
@@ -1425,7 +1425,7 @@ class TestSearchEdgeCases:
         from polylogue.cli import cli
         runner = CliRunner()
         # Query mode: multiple positional args = multiple query terms
-        result = runner.invoke(cli, ["--plain", "Python", "exception", "-f", "json", "--list"])
+        result = runner.invoke(cli, ["--plain", "Python", "exception", "list", "-f", "json"])
         assert result.exit_code in (0, 2)
         if result.exit_code == 0:
             data = json.loads(result.output)

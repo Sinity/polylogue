@@ -42,11 +42,7 @@ class RootModeRequest:
         return any(
             self.params.get(key)
             for key in (
-                "list_mode",
                 "limit",
-                "stats_only",
-                "stats_by",
-                "count_only",
                 "stream",
                 "dialogue_only",
             )
@@ -58,7 +54,6 @@ class RootModeRequest:
             for key in (
                 "add_tag",
                 "set_meta",
-                "delete_matched",
             )
         )
 

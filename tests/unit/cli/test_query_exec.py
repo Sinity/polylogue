@@ -775,7 +775,7 @@ def test_open_result_contract(results, render_root_exists: bool, html_exists: bo
 class TestBuildQueryExecutionPlan:
     def test_delete_without_filters_raises(self) -> None:
         from polylogue.cli.query import QueryPlanError, build_query_execution_plan
-        with pytest.raises(QueryPlanError, match="--delete requires at least one filter"):
+        with pytest.raises(QueryPlanError, match="delete requires at least one filter"):
             build_query_execution_plan({"delete_matched": True, "query": ()})
 
     @pytest.mark.parametrize(
