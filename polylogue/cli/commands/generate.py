@@ -50,11 +50,11 @@ def generate_command(
 
     \b
     Examples:
-      polylogue generate                        # Raw wire-format files
-      polylogue generate -p chatgpt -n 5        # ChatGPT only, 5 conversations
-      polylogue generate -o /tmp/corpus         # Custom output directory
-      polylogue generate --seed                 # Full demo environment
-      polylogue generate --seed --env-only | eval  # Shell-friendly
+      polylogue qa generate                        # Raw wire-format files
+      polylogue qa generate -p chatgpt -n 5        # ChatGPT only, 5 conversations
+      polylogue qa generate -o /tmp/corpus         # Custom output directory
+      polylogue qa generate --seed                 # Full demo environment
+      polylogue qa generate --seed --env-only | eval  # Shell-friendly
     """
     if env_only and not seed:
         raise click.UsageError("--env-only requires --seed")

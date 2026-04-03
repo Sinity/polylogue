@@ -8,14 +8,10 @@ import tempfile
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from click.testing import CliRunner
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
-from polylogue.cli.commands.site import site_command
-from polylogue.cli.types import AppEnv
 from polylogue.paths import safe_path_component
-from polylogue.services import build_runtime_services
 from polylogue.site.builder import ArchiveIndexStats, ConversationIndex, SiteBuilder, SiteConfig
 from tests.infra.strategies import (
     ConversationSummarySpec,
@@ -53,13 +49,7 @@ def _make_backend() -> AsyncMock:
     return backend
 
 
-def _make_site_env(*, backend: AsyncMock, repository: AsyncMock) -> AppEnv:
-    ui = MagicMock()
-    ui.plain = True
-    ui.console = MagicMock()
-    ui.summary = MagicMock()
-    repository.backend = backend
-    return AppEnv(ui=ui, services=build_runtime_services(backend=backend, repository=repository))
+
 
 
 @settings(max_examples=60, deadline=None)
@@ -177,33 +167,32 @@ def test_site_builder_search_surface_contract(summaries, mode: str) -> None:
 
 @settings(max_examples=30, deadline=None)
 @given(spec=site_archive_spec_strategy())
-def test_site_command_contract(spec) -> None:
+def test_site_builder_option_passthrough_contract(spec) -> None:
+    """Builder produces correct output for all option combinations (was: test_site_command_contract)."""
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)
-        runner = CliRunner()
         summaries = [build_conversation_summary(summary) for summary in spec.summaries]
         backend = _make_backend()
         backend.queries.get_message_counts_batch.return_value = build_message_counts(spec.summaries)
         repository = AsyncMock()
         _configure_summary_pages(repository, summaries)
-        env = _make_site_env(backend=backend, repository=repository)
         output_dir = tmp_path / "site"
 
-        args = ["--output", str(output_dir)]
-        if spec.custom_title:
-            args.extend(["--title", spec.custom_title])
-        if not spec.enable_search:
-            args.append("--no-search")
-        else:
-            args.extend(["--search-provider", spec.search_provider])
-        if not spec.include_dashboard:
-            args.append("--no-dashboard")
+        builder = SiteBuilder(
+            output_dir=output_dir,
+            config=SiteConfig(
+                title=spec.custom_title or "Polylogue Archive",
+                enable_search=spec.enable_search,
+                search_provider=spec.search_provider,
+                include_dashboard=spec.include_dashboard,
+            ),
+            backend=backend,
+            repository=repository,
+        )
+        result = builder.build()
 
-        result = runner.invoke(site_command, args, obj=env)
-
-        assert result.exit_code == 0
-        assert f"Site generated: {len(spec.summaries)} conversations" in result.output
-        assert f"{expected_index_pages(spec)} index pages" in result.output
+        assert result.archive.total_conversations == len(spec.summaries)
+        assert result.outputs.total_index_pages == expected_index_pages(spec)
         index_html = (output_dir / "index.html").read_text(encoding="utf-8")
         assert (spec.custom_title or "Polylogue Archive") in index_html
         assert (output_dir / "dashboard.html").exists() == spec.include_dashboard

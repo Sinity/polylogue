@@ -124,18 +124,6 @@ class TestTagsJsonEnvelope:
         assert "tags" in parsed["result"]
 
 
-class TestSourcesJsonEnvelope:
-    """sources --json wraps output in success envelope."""
-
-    def test_sources_json_has_status_ok(self, monkeypatch):
-        """polylogue sources --json output has status: ok."""
-        parsed = _invoke_json_command(["sources", "--json"], monkeypatch)
-        assert parsed is not None
-        assert parsed["status"] == "ok"
-        assert "result" in parsed
-        assert "sources" in parsed["result"]
-
-
 # ---------------------------------------------------------------------------
 # Error envelope tests
 # ---------------------------------------------------------------------------

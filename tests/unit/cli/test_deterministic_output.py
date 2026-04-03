@@ -210,7 +210,6 @@ class TestPlainModeNoAnsi:
         ["--plain", "check"],
         ["--plain", "--help"],
         ["--plain", "check", "--help"],
-        ["--plain", "sources", "--help"],
         ["--plain", "tags", "--help"],
         ["--plain", "run", "--help"],
     ]
@@ -261,18 +260,6 @@ class TestJsonOutputValidity:
         assert parsed["status"] == "ok"
         assert "tags" in parsed["result"]
 
-    def test_sources_json_is_valid(self, cli_workspace):
-        """polylogue sources --json produces parseable JSON."""
-        runner = CliRunner()
-        result = runner.invoke(
-            cli, ["--plain", "sources", "--json"], catch_exceptions=False
-        )
-        assert result.exit_code == 0
-        parsed = _extract_json(result.output)
-        assert isinstance(parsed, dict)
-        assert parsed["status"] == "ok"
-        assert "sources" in parsed["result"]
-
 
 # ---------------------------------------------------------------------------
 # F4: parametrized --json envelope contract across commands
@@ -287,9 +274,8 @@ class TestJsonEnvelopeParametrized:
         [
             (["check", "--json"], None),          # result has checks, summary, timestamp
             (["tags", "--json"], "tags"),          # result has tags
-            (["sources", "--json"], "sources"),    # result has sources
         ],
-        ids=["check", "tags", "sources"],
+        ids=["check", "tags"],
     )
     def test_json_envelope_shape(
         self,
@@ -319,9 +305,8 @@ class TestJsonEnvelopeParametrized:
         [
             ["check", "--json"],
             ["tags", "--json"],
-            ["sources", "--json"],
         ],
-        ids=["check", "tags", "sources"],
+        ids=["check", "tags"],
     )
     def test_json_output_no_ansi(
         self,
@@ -343,9 +328,8 @@ class TestJsonEnvelopeParametrized:
         [
             ["check", "--json"],
             ["tags", "--json"],
-            ["sources", "--json"],
         ],
-        ids=["check", "tags", "sources"],
+        ids=["check", "tags"],
     )
     def test_json_output_round_trips(
         self,
@@ -403,22 +387,6 @@ class TestJsonDeterminism:
             parsed.append(self._normalize_check_result(_extract_json(result.output)))
 
         assert parsed[0] == parsed[1]
-
-    def test_sources_json_deterministic(self, cli_workspace):
-        """Two sources --json runs produce identical output."""
-        runner = CliRunner()
-        outputs: list[str] = []
-
-        for _ in range(2):
-            result = runner.invoke(
-                cli,
-                ["--plain", "sources", "--json"],
-                catch_exceptions=False,
-            )
-            assert result.exit_code == 0
-            outputs.append(result.output)
-
-        assert outputs[0] == outputs[1]
 
     def test_tags_json_deterministic(self, cli_workspace):
         """Two tags --json runs produce identical output."""

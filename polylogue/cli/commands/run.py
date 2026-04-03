@@ -1,8 +1,10 @@
-"""Sync and sources commands."""
+"""Run command and pipeline stage subcommands."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
 
 import click
 
@@ -24,7 +26,6 @@ from polylogue.cli.run_workflow import (
 from polylogue.cli.run_workflow import (
     handle_drive_error,
     render_preview_summary,
-    render_sources,
 )
 from polylogue.cli.run_workflow import (
     run_sync_once as _run_sync_once,
@@ -54,8 +55,20 @@ INTERACTIVE_RUN_STAGE_CHOICES: tuple[str, ...] = (
     "parse",
     "materialize",
     "render",
+    "site",
     "index",
 )
+
+
+@dataclass(frozen=True, slots=True)
+class EmbedOptions:
+    """Options specific to the embed stage."""
+    conversation: str | None = None
+    model: str = "voyage-4"
+    rebuild: bool = False
+    stats: bool = False
+    json_output: bool = False
+    limit: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,6 +76,8 @@ class RunStageRequest:
     name: str
     stage_sequence: tuple[str, ...]
     render_format: str | None = None
+    site_options: dict[str, Any] | None = None
+    embed_options: EmbedOptions | None = None
 
 
 def maybe_prompt_run_stage(
@@ -80,11 +95,17 @@ def maybe_prompt_run_stage(
     return choice
 
 
-def _make_stage_request(name: str, *, render_format: str | None = None) -> RunStageRequest:
+def _make_stage_request(
+    name: str,
+    *,
+    render_format: str | None = None,
+    site_options: dict[str, Any] | None = None,
+) -> RunStageRequest:
     return RunStageRequest(
         name=name,
         stage_sequence=expand_requested_stage(name),
         render_format=render_format,
+        site_options=site_options,
     )
 
 
@@ -123,6 +144,32 @@ def _resolve_render_format(stage_requests: list[RunStageRequest]) -> str:
     if len(render_formats) > 1:
         fail("run", f"Conflicting render formats requested: {', '.join(sorted(render_formats))}")
     return next(iter(render_formats))
+
+
+def _resolve_embed_options(stage_requests: list[RunStageRequest]) -> EmbedOptions | None:
+    options = [
+        request.embed_options
+        for request in stage_requests
+        if request.embed_options is not None
+    ]
+    if not options:
+        return None
+    if len(options) > 1:
+        fail("run", "Multiple embed stage requests with different options")
+    return options[0]
+
+
+def _resolve_site_options(stage_requests: list[RunStageRequest]) -> dict[str, Any] | None:
+    options = [
+        request.site_options
+        for request in stage_requests
+        if request.site_options is not None
+    ]
+    if not options:
+        return None
+    if len(options) > 1:
+        fail("run", "Multiple site stage requests with different options")
+    return options[0]
 
 
 @click.group("run", chain=True, invoke_without_command=True)
@@ -188,6 +235,19 @@ def _run_result_callback(
     except ValueError as exc:
         fail("run", str(exc))
     render_format = _resolve_render_format(stage_requests)
+    site_options = _resolve_site_options(stage_requests)
+    embed_options = _resolve_embed_options(stage_requests)
+
+    # Embed is a standalone stage — handle it directly, outside the
+    # normal pipeline flow.  When embed-only, return immediately.
+    # When chained with other stages, run embed first, then strip it
+    # from the sequence so the pipeline sees only real pipeline stages.
+    if embed_options is not None:
+        _run_embed_standalone(ctx.obj, embed_options)
+        remaining = tuple(s for s in stage_sequence if s != "embed")
+        if not remaining:
+            return
+        stage_sequence = remaining
 
     cfg = env.config
     selected_sources = resolve_sources(cfg, sources, "run")
@@ -264,6 +324,7 @@ def _run_result_callback(
                 render_format,
                 plan_snapshot=plan_snapshot,
                 observer=composite,
+                site_options=site_options,
             )
 
         env.ui.console.print("Watch mode: syncing every 60 seconds. Press Ctrl+C to stop.")
@@ -285,6 +346,7 @@ def _run_result_callback(
             selected_sources,
             render_format,
             plan_snapshot,
+            site_options=site_options,
         )
     except DriveError as exc:
         fail("run", str(exc))
@@ -355,12 +417,151 @@ def run_all_stage() -> RunStageRequest:
     return _make_stage_request("all")
 
 
-@click.command("sources")
-@click.option("--json", "json_output", is_flag=True, help="Output JSON")
-@click.pass_obj
-def sources_command(env: AppEnv, json_output: bool) -> None:
-    """List configured sources."""
-    render_sources(env, json_output=json_output)
+@run_command.command("site")
+@click.option(
+    "--output", "-o",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Output directory for generated site (default: ~/.local/share/polylogue/site)",
+)
+@click.option(
+    "--title",
+    default="Polylogue Archive",
+    help="Site title",
+)
+@click.option(
+    "--search/--no-search",
+    default=True,
+    help="Enable client-side search (default: enabled)",
+)
+@click.option(
+    "--search-provider",
+    type=click.Choice(["pagefind", "lunr"]),
+    default="pagefind",
+    help="Search index provider (default: pagefind)",
+)
+@click.option(
+    "--dashboard/--no-dashboard",
+    default=True,
+    help="Generate dashboard page (default: enabled)",
+)
+def run_site_stage(
+    output: Path | None,
+    title: str,
+    search: bool,
+    search_provider: str,
+    dashboard: bool,
+) -> RunStageRequest:
+    """Generate a static HTML site from the archive."""
+    return _make_stage_request(
+        "site",
+        site_options={
+            "output": output,
+            "title": title,
+            "search": search,
+            "search_provider": search_provider,
+            "dashboard": dashboard,
+        },
+    )
 
 
-__all__ = ["run_command", "sources_command"]
+def _run_embed_standalone(env: AppEnv, opts: EmbedOptions) -> None:
+    """Execute the embed stage directly, outside the normal pipeline flow."""
+    import os
+
+    from polylogue.cli.embed_runtime import embed_batch, embed_single
+    from polylogue.cli.embed_stats import show_embedding_stats
+
+    if opts.json_output and not opts.stats:
+        click.echo("Error: --json requires --stats", err=True)
+        raise click.Abort()
+
+    voyage_key = os.environ.get("POLYLOGUE_VOYAGE_API_KEY") or os.environ.get("VOYAGE_API_KEY")
+    if not voyage_key and not opts.stats:
+        click.echo("Error: VOYAGE_API_KEY environment variable not set", err=True)
+        click.echo("Set it with: export VOYAGE_API_KEY=your-api-key  (or POLYLOGUE_VOYAGE_API_KEY)", err=True)
+        raise click.Abort()
+
+    if opts.stats:
+        show_embedding_stats(env, json_output=opts.json_output)
+        return
+
+    from polylogue.storage.search_providers import create_vector_provider
+
+    vec_provider = create_vector_provider(voyage_api_key=voyage_key)
+    if vec_provider is None:
+        click.echo("Error: sqlite-vec not available", err=True)
+        click.echo("sqlite-vec is not available (ensure it is in your Nix flake or virtualenv)", err=True)
+        raise click.Abort()
+
+    if opts.model != "voyage-4":
+        vec_provider.model = opts.model
+
+    repo = env.repository
+
+    if opts.conversation:
+        embed_single(env, repo, vec_provider, opts.conversation)
+        return
+
+    embed_batch(env, repo, vec_provider, rebuild=opts.rebuild, limit=opts.limit)
+
+
+@run_command.command("embed")
+@click.option(
+    "--conversation", "-c",
+    type=str,
+    default=None,
+    help="Embed a specific conversation by ID",
+)
+@click.option(
+    "--model",
+    type=click.Choice(["voyage-4", "voyage-4-large", "voyage-4-lite"]),
+    default="voyage-4",
+    help="Voyage AI model: voyage-4 (default), voyage-4-large, voyage-4-lite",
+)
+@click.option(
+    "--rebuild", "-r",
+    is_flag=True,
+    help="Re-embed all conversations (ignore existing embeddings)",
+)
+@click.option(
+    "--stats", "-s",
+    is_flag=True,
+    help="Show embedding statistics only",
+)
+@click.option(
+    "--json",
+    "json_output",
+    is_flag=True,
+    help="Emit embedding statistics as JSON (requires --stats)",
+)
+@click.option(
+    "--limit", "-n",
+    type=int,
+    default=None,
+    help="Maximum number of conversations to embed",
+)
+def run_embed_stage(
+    conversation: str | None,
+    model: str,
+    rebuild: bool,
+    stats: bool,
+    json_output: bool,
+    limit: int | None,
+) -> RunStageRequest:
+    """Generate semantic embeddings for conversations."""
+    return RunStageRequest(
+        name="embed",
+        stage_sequence=expand_requested_stage("embed"),
+        embed_options=EmbedOptions(
+            conversation=conversation,
+            model=model,
+            rebuild=rebuild,
+            stats=stats,
+            json_output=json_output,
+            limit=limit,
+        ),
+    )
+
+
+__all__ = ["run_command"]

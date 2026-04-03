@@ -19,9 +19,11 @@ Options:
 Commands:
   acquire      Capture raw payloads only.
   all          Run the full pipeline.
+  embed        Generate semantic embeddings for conversations.
   index        Build retrieval and search indexes.
   materialize  Refresh derived read models.
   parse        Parse persisted raw backlog into normalized conversations.
   render       Render human-facing publication artifacts.
   reprocess    Skip acquisition and rerun downstream stages.
   schema       Infer schemas from acquired raw payloads.
+  site         Generate a static HTML site from the archive.

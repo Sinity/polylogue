@@ -55,10 +55,11 @@
       "tier": 0
     },
     {
-      "name": "help-generate",
+      "name": "help-qa-generate",
       "group": "structural",
-      "description": "Generate subcommand help",
+      "description": "QA generate subcommand help",
       "args": [
+        "qa",
         "generate",
         "--help"
       ],
@@ -100,10 +101,11 @@
       "tier": 0
     },
     {
-      "name": "help-embed",
+      "name": "help-run-embed",
       "group": "structural",
-      "description": "Embed subcommand help",
+      "description": "Run embed subcommand help",
       "args": [
+        "run",
         "embed",
         "--help"
       ],
@@ -115,10 +117,11 @@
       "tier": 0
     },
     {
-      "name": "help-site",
+      "name": "help-run-site",
       "group": "structural",
-      "description": "Site subcommand help",
+      "description": "Run site stage help",
       "args": [
+        "run",
         "site",
         "--help"
       ],
@@ -140,28 +143,6 @@
         "stdout_contains": [
           "polylogue"
         ]
-      },
-      "tier": 0
-    },
-    {
-      "name": "sources-list",
-      "group": "sources",
-      "description": "List configured sources",
-      "args": [
-        "sources"
-      ],
-      "tier": 0
-    },
-    {
-      "name": "sources-json",
-      "group": "sources",
-      "description": "List sources as JSON",
-      "args": [
-        "sources",
-        "--json"
-      ],
-      "validation": {
-        "stdout_is_valid_json": true
       },
       "tier": 0
     },
@@ -874,6 +855,7 @@
       "group": "subcommands",
       "description": "Embedding statistics",
       "args": [
+        "run",
         "embed",
         "--stats"
       ],
@@ -896,13 +878,14 @@
     {
       "name": "site-generate",
       "group": "subcommands",
-      "description": "Generate static site",
+      "description": "Generate static site via run stage",
       "args": [
+        "run",
         "site"
       ],
       "validation": {
         "stdout_contains": [
-          "Building site"
+          "site"
         ]
       },
       "needs_data": true,

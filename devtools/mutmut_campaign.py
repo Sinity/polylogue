@@ -236,7 +236,6 @@ CAMPAIGNS: dict[str, Campaign] = {
         description="Static-site builder and CLI archive contracts",
         paths_to_mutate=(
             "polylogue/site/builder.py",
-            "polylogue/cli/commands/site.py",
         ),
         tests=(
             "tests/integration/test_site.py",
