@@ -1,0 +1,16 @@
+Usage: python -m polylogue schema generate [OPTIONS]
+
+  Generate provider schema packages and optional evidence clusters.
+
+Options:
+  --provider TEXT                 Provider to generate schema for  [required]
+  --cluster                       Also cluster observed samples by structural
+                                  fingerprint
+  --max-samples INTEGER           Limit samples for generation
+  --json                          Output as JSON
+  --privacy [strict|standard|permissive]
+                                  Privacy preset level (default: standard)
+  --privacy-config PATH           Path to TOML privacy config overrides
+  --report                        Write a redaction report alongside the
+                                  schema
+  -h, --help                      Show this message and exit.
