@@ -74,6 +74,7 @@ def format_counts(counts: Mapping[str, object]) -> str:
         ("validation_errors", "validation errors"),
         ("messages", "msg"),
         ("attachments", "att"),
+        ("materialized", "materialized"),
         ("rendered", "rendered"),
         ("render_failures", "render failures"),
     ]
@@ -147,6 +148,10 @@ def format_run_details(counts: Mapping[str, object]) -> list[str]:
     if isinstance(parse_failures, int) and parse_failures:
         lines.append(f"Parse: {parse_failures} failures")
 
+    materialized = counts.get("materialized")
+    if isinstance(materialized, int) and materialized:
+        lines.append(f"Materialize: {materialized} conversations")
+
     render_parts = [
         (counts.get("rendered"), "rendered"),
         (counts.get("render_failures"), "failures"),
@@ -180,6 +185,7 @@ def format_plan_counts(counts: Mapping[str, object]) -> str:
         ("store_raw", "store"),
         ("validate", "validate"),
         ("parse", "parse"),
+        ("materialize", "materialize"),
         ("render", "render"),
         ("index", "index"),
     ]

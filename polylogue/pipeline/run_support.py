@@ -13,14 +13,28 @@ T = TypeVar("T")
 RUN_STAGE_CHOICES: tuple[str, ...] = (
     "acquire",
     "parse",
+    "materialize",
     "render",
     "index",
-    "generate-schemas",
+    "schema",
+    "reprocess",
     "all",
 )
-INGEST_STAGES = frozenset({"parse", "all"})
-PARSE_STAGES = frozenset({"parse", "all"})
-RENDER_STAGES = frozenset({"render", "all"})
+RUN_STAGE_SEQUENCES: dict[str, tuple[str, ...]] = {
+    "acquire": ("acquire",),
+    "parse": ("parse",),
+    "materialize": ("materialize",),
+    "render": ("render",),
+    "index": ("index",),
+    "schema": ("schema",),
+    "reprocess": ("parse", "materialize", "render", "index"),
+    "all": ("acquire", "parse", "materialize", "render", "index"),
+}
+RUN_LEAF_STAGES = frozenset({stage for sequence in RUN_STAGE_SEQUENCES.values() for stage in sequence})
+INGEST_STAGES = frozenset({"parse", "reprocess", "all"})
+PARSE_STAGES = frozenset({"parse", "reprocess", "all"})
+MATERIALIZE_STAGES = frozenset({"materialize", "reprocess", "all"})
+RENDER_STAGES = frozenset({"render", "reprocess", "all"})
 
 
 def select_sources(config: Config, source_names: Sequence[str] | None) -> list[Source]:
@@ -29,6 +43,34 @@ def select_sources(config: Config, source_names: Sequence[str] | None) -> list[S
         return list(config.sources)
     name_set = set(source_names)
     return [source for source in config.sources if source.name in name_set]
+
+
+def expand_requested_stage(stage: str) -> tuple[str, ...]:
+    """Expand a requested stage/composite into the leaf execution sequence."""
+    return RUN_STAGE_SEQUENCES[stage]
+
+
+def normalize_stage_sequence(
+    *,
+    stage: str,
+    stage_sequence: Sequence[str] | None = None,
+) -> tuple[str, ...]:
+    """Return the leaf stage sequence for a run request."""
+    if stage_sequence is None:
+        return expand_requested_stage(stage)
+    normalized = tuple(stage_sequence)
+    invalid = [stage_name for stage_name in normalized if stage_name not in RUN_LEAF_STAGES]
+    if invalid:
+        raise ValueError(f"Unknown leaf stage(s): {', '.join(invalid)}")
+    duplicates: list[str] = []
+    seen: set[str] = set()
+    for stage_name in normalized:
+        if stage_name in seen and stage_name not in duplicates:
+            duplicates.append(stage_name)
+        seen.add(stage_name)
+    if duplicates:
+        raise ValueError(f"Duplicate leaf stage(s): {', '.join(duplicates)}")
+    return normalized
 
 def write_run_json(archive_root: Path, payload: dict[str, object]) -> Path:
     """Write run result JSON to the runs directory."""
@@ -42,9 +84,14 @@ def write_run_json(archive_root: Path, payload: dict[str, object]) -> Path:
 
 __all__ = [
     "INGEST_STAGES",
+    "MATERIALIZE_STAGES",
     "PARSE_STAGES",
     "RENDER_STAGES",
     "RUN_STAGE_CHOICES",
+    "RUN_LEAF_STAGES",
+    "RUN_STAGE_SEQUENCES",
+    "expand_requested_stage",
+    "normalize_stage_sequence",
     "run_coroutine_sync",
     "select_sources",
     "write_run_json",

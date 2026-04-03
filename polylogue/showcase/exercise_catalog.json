@@ -34,7 +34,7 @@
       ],
       "validation": {
         "stdout_contains": [
-          "--stage"
+          "COMMAND1"
         ]
       },
       "tier": 0
@@ -229,10 +229,9 @@
       "description": "Run render stage only",
       "args": [
         "run",
-        "--stage",
-        "render",
         "--source",
-        "inbox"
+        "inbox",
+        "render"
       ],
       "writes": true,
       "depends_on": "run-all",
@@ -245,10 +244,9 @@
       "description": "Run index stage only",
       "args": [
         "run",
-        "--stage",
-        "index",
         "--source",
-        "inbox"
+        "inbox",
+        "index"
       ],
       "writes": true,
       "depends_on": "run-all",

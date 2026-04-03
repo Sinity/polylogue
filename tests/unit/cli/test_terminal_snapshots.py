@@ -72,14 +72,16 @@ class TestCommandOutputs:
 
     def test_run_help_output_snapshot(self, snapshot):
         """Verify run command help renders correctly."""
-        result = run_in_pty(["run", "--help"], rows=80)
+        result = run_in_pty(["run", "--help"], cols=120, rows=80)
         assert result.exit_code == 0
 
         grid = sanitize_grid(result.grid, strip_timestamps=False, strip_paths=True)
         output = grid_to_text(grid)
 
         assert output == snapshot
-        assert "--stage [acquire|parse|render|index|generate-schemas|all]" in output
+        assert "Usage: polylogue run [OPTIONS] COMMAND1 [ARGS]..." in output
+        assert "Commands:" in output
+        assert "reprocess" in output
 
 
 class TestErrorOutput:
