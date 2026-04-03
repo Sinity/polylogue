@@ -32,9 +32,9 @@ def parse_schema_samples(raw: str) -> int | None:
     try:
         parsed = int(value)
     except ValueError:
-        fail("check", "--schema-samples must be a positive integer or 'all'")
+        fail("doctor", "--schema-samples must be a positive integer or 'all'")
     if parsed <= 0:
-        fail("check", "--schema-samples must be a positive integer or 'all'")
+        fail("doctor", "--schema-samples must be a positive integer or 'all'")
     return parsed
 
 

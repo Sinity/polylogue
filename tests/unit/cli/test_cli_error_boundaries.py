@@ -23,9 +23,9 @@ def runner() -> CliRunner:
 # =============================================================================
 
 SUBCOMMANDS = [
-    "run", "check", "reset", "mcp", "auth",
+    "run", "doctor", "reset", "mcp", "auth",
     "completions", "dashboard",
-    "qa", "schema", "tags",
+    "audit", "schema", "tags",
 ]
 
 
@@ -204,12 +204,12 @@ def test_random_query_no_traceback(query: str) -> None:
 class TestQAErrorBoundaries:
     def test_qa_invalid_tier(self, runner: CliRunner) -> None:
         """Non-numeric --tier should not produce traceback."""
-        result = runner.invoke(cli, ["qa", "--tier", "not-a-tier"])
+        result = runner.invoke(cli, ["audit", "--tier", "not-a-tier"])
         assert TRACEBACK_SENTINEL not in result.output
 
     def test_qa_nonexistent_source(self, runner: CliRunner) -> None:
         """Non-existent --source in QA should not produce traceback."""
-        result = runner.invoke(cli, ["qa", "--source", "/does/not/exist"])
+        result = runner.invoke(cli, ["audit", "--source", "/does/not/exist"])
         assert TRACEBACK_SENTINEL not in result.output
 
 
@@ -248,12 +248,12 @@ class TestMCPErrorBoundaries:
 class TestGenerateErrorBoundaries:
     def test_generate_invalid_count(self, runner: CliRunner) -> None:
         """Non-numeric -n/--count should not produce traceback."""
-        result = runner.invoke(cli, ["qa", "generate", "-n", "not-a-number"])
+        result = runner.invoke(cli, ["audit", "generate", "-n", "not-a-number"])
         assert TRACEBACK_SENTINEL not in result.output
 
     def test_generate_invalid_seed(self, runner: CliRunner) -> None:
         """Non-numeric --seed should not produce traceback."""
-        result = runner.invoke(cli, ["qa", "generate", "--seed", "not-a-seed"])
+        result = runner.invoke(cli, ["audit", "generate", "--seed", "not-a-seed"])
         assert TRACEBACK_SENTINEL not in result.output
 
 

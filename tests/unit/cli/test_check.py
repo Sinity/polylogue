@@ -118,7 +118,7 @@ def test_check_records_scoped_maintenance_preview(cli_workspace, cli_runner):
     result = cli_runner.invoke(
         cli,
         [
-            "check",
+            "doctor",
             "--json",
             "--repair",
             "--preview",
@@ -155,7 +155,7 @@ def test_check_records_scoped_maintenance_apply(cli_workspace, cli_runner):
         cli,
         [
             "--plain",
-            "check",
+            "doctor",
             "--json",
             "--repair",
             "--target",
@@ -189,7 +189,7 @@ class TestCheckCommand:
             ],
         )
 
-        result = cli_runner.invoke(cli, ["check"])
+        result = cli_runner.invoke(cli, ["doctor"])
         assert result.exit_code == 0
         assert "ok" in result.output.lower() or "✓" in result.output
 
@@ -203,7 +203,7 @@ class TestCheckCommand:
             messages=[{"id": "m1", "role": "user", "text": "test"}],
         )
 
-        result = cli_runner.invoke(cli, ["--plain", "check", "--json"])
+        result = cli_runner.invoke(cli, ["--plain", "doctor", "--json"])
         assert result.exit_code == 0
 
         # Parse JSON output
@@ -244,7 +244,7 @@ class TestCheckCommand:
             conn.commit()  # Explicit commit to ensure orphan persists
             conn.execute("PRAGMA foreign_keys = ON")
 
-        result = cli_runner.invoke(cli, ["--plain", "check", "--json"])
+        result = cli_runner.invoke(cli, ["--plain", "doctor", "--json"])
         assert result.exit_code == 0
 
         data = _extract_json(result.output)
@@ -278,11 +278,11 @@ class TestCheckCommand:
         )
 
         # Run verify without verbose
-        result_normal = cli_runner.invoke(cli, ["check"])
+        result_normal = cli_runner.invoke(cli, ["doctor"])
         assert result_normal.exit_code == 0
 
         # Run verify with verbose
-        result_verbose = cli_runner.invoke(cli, ["check", "-v"])
+        result_verbose = cli_runner.invoke(cli, ["doctor", "-v"])
         assert result_verbose.exit_code == 0
 
         # Verbose output should contain provider names for breakdowns
@@ -315,7 +315,7 @@ class TestCheckCommand:
             )
             conn.commit()  # Explicit commit to ensure conversation persists
 
-        result = cli_runner.invoke(cli, ["--plain", "check", "--json"])
+        result = cli_runner.invoke(cli, ["--plain", "doctor", "--json"])
         assert result.exit_code == 0
 
         data = _extract_json(result.output)
@@ -345,7 +345,7 @@ class TestCheckCommand:
             messages=[{"id": "m2", "role": "user", "text": "test2"}],
         )
 
-        result = cli_runner.invoke(cli, ["--plain", "check", "--json"])
+        result = cli_runner.invoke(cli, ["--plain", "doctor", "--json"])
         assert result.exit_code == 0
 
         data = _extract_json(result.output)
@@ -375,7 +375,7 @@ class TestCheckCommand:
             conn.execute("DROP TABLE IF EXISTS messages_fts")
             conn.commit()  # Explicit commit
 
-        result = cli_runner.invoke(cli, ["--plain", "check", "--json"])
+        result = cli_runner.invoke(cli, ["--plain", "doctor", "--json"])
         assert result.exit_code == 0
 
         data = _extract_json(result.output)
@@ -399,7 +399,7 @@ class TestCheckCommand:
             messages=[{"id": "m1", "role": "user", "text": "test"}],
         )
 
-        result = cli_runner.invoke(cli, ["--plain", "check"])
+        result = cli_runner.invoke(cli, ["--plain", "doctor"])
         assert result.exit_code == 0
 
         # Plain output should use OK/WARN/ERR instead of symbols
@@ -419,7 +419,7 @@ class TestCheckCommand:
             messages=[{"id": "m1", "role": "user", "text": "test"}],
         )
 
-        result = cli_runner.invoke(cli, ["check"])
+        result = cli_runner.invoke(cli, ["doctor"])
         assert result.exit_code == 0
 
         # Check summary line format
@@ -432,7 +432,7 @@ class TestCheckCommand:
         """Check command succeeds on empty database."""
         # Don't create any data - just verify empty DB (db_path fixture ensures DB exists)
 
-        result = cli_runner.invoke(cli, ["check"])
+        result = cli_runner.invoke(cli, ["doctor"])
         assert result.exit_code == 0
 
         # Should show healthy status checks (no integrity_check without --deep)
@@ -448,7 +448,7 @@ class TestCheckCommand:
             messages=[{"id": "m1", "role": "user", "text": "test"}],
         )
 
-        result = cli_runner.invoke(cli, ["--plain", "check", "--deep", "--json"])
+        result = cli_runner.invoke(cli, ["--plain", "doctor", "--deep", "--json"])
         assert result.exit_code == 0
 
         data = _extract_json(result.output)
@@ -472,15 +472,15 @@ class TestCheckCommandSupplementary:
     # --- Flag validation: invalid combos rejected with correct error ---
 
     INVALID_FLAG_COMBOS = [
-        (["check", "--vacuum"], "--vacuum requires --repair or --cleanup"),
-        (["check", "--preview"], "--preview requires --repair or --cleanup"),
-        (["check", "--schema-provider", "chatgpt"], "--schema-provider requires --schemas"),
-        (["check", "--schema-record-limit", "100"], "--schema-record-limit requires --schemas"),
-        (["check", "--schema-record-offset", "10"], "--schema-record-offset requires --schemas"),
-        (["check", "--schema-quarantine-malformed"], "--schema-quarantine-malformed requires --schemas"),
-        (["check", "--schemas", "--schema-samples", "0"], "--schema-samples must be a positive integer or 'all'"),
-        (["check", "--schemas", "--schema-record-limit", "0"], "--schema-record-limit must be a positive integer"),
-        (["check", "--schemas", "--schema-record-offset", "-1"], "--schema-record-offset must be >= 0"),
+        (["doctor", "--vacuum"], "--vacuum requires --repair or --cleanup"),
+        (["doctor", "--preview"], "--preview requires --repair or --cleanup"),
+        (["doctor", "--schema-provider", "chatgpt"], "--schema-provider requires --schemas"),
+        (["doctor", "--schema-record-limit", "100"], "--schema-record-limit requires --schemas"),
+        (["doctor", "--schema-record-offset", "10"], "--schema-record-offset requires --schemas"),
+        (["doctor", "--schema-quarantine-malformed"], "--schema-quarantine-malformed requires --schemas"),
+        (["doctor", "--schemas", "--schema-samples", "0"], "--schema-samples must be a positive integer or 'all'"),
+        (["doctor", "--schemas", "--schema-record-limit", "0"], "--schema-record-limit must be a positive integer"),
+        (["doctor", "--schemas", "--schema-record-offset", "-1"], "--schema-record-offset must be >= 0"),
     ]
 
     @pytest.mark.parametrize("args,expected_error", INVALID_FLAG_COMBOS)
@@ -504,7 +504,7 @@ class TestCheckCommandSupplementary:
         from polylogue.cli.click_app import cli
 
         runner = CliRunner()
-        result = runner.invoke(cli, ["check", "--json", "--repair", "--preview"])
+        result = runner.invoke(cli, ["doctor", "--json", "--repair", "--preview"])
         assert result.exit_code == 0
         envelope = json.loads(result.output.split("\n", 1)[-1] if "Plain" in result.output else result.output)
         data = envelope.get("result", envelope)
@@ -517,7 +517,7 @@ class TestCheckCommandSupplementary:
         from polylogue.cli.click_app import cli
 
         runner = CliRunner()
-        result = runner.invoke(cli, ["check", "--repair"])
+        result = runner.invoke(cli, ["doctor", "--repair"])
         assert result.exit_code == 0
         assert "No selected maintenance work" in result.output or "Changed" in result.output or "maintenance" in result.output.lower()
 
@@ -528,7 +528,7 @@ class TestCheckCommandSupplementary:
         from polylogue.cli.click_app import cli
 
         runner = CliRunner()
-        result = runner.invoke(cli, ["check", "--repair", "--vacuum"])
+        result = runner.invoke(cli, ["doctor", "--repair", "--vacuum"])
         assert result.exit_code == 0
         assert "VACUUM" in result.output
 
@@ -539,7 +539,7 @@ class TestCheckCommandSupplementary:
         from polylogue.cli.click_app import cli
 
         runner = CliRunner()
-        result = runner.invoke(cli, ["--plain", "check", "--json", "--repair", "--preview", "--vacuum"])
+        result = runner.invoke(cli, ["--plain", "doctor", "--json", "--repair", "--preview", "--vacuum"])
 
         assert result.exit_code == 0
         envelope = json.loads(result.output)
@@ -571,7 +571,7 @@ class TestCheckCommandSupplementary:
             return_value=fake_report,
         ):
             runner = CliRunner()
-            result = runner.invoke(cli, ["--plain", "check", "--json", "--schemas", "--schema-samples", "all"])
+            result = runner.invoke(cli, ["--plain", "doctor", "--json", "--schemas", "--schema-samples", "all"])
 
         assert result.exit_code == 0
         data = _extract_json(result.output)
@@ -604,7 +604,7 @@ class TestCheckCommandSupplementary:
                 cli,
                 [
                     "--plain",
-                    "check",
+                    "doctor",
                     "--json",
                     "--schemas",
                     "--schema-provider",
@@ -647,7 +647,7 @@ class TestCheckCommandSupplementary:
             runner = CliRunner()
             result = runner.invoke(
                 cli,
-                ["--plain", "check", "--json", "--schemas", "--schema-quarantine-malformed"],
+                ["--plain", "doctor", "--json", "--schemas", "--schema-quarantine-malformed"],
             )
 
         assert result.exit_code == 0
@@ -688,7 +688,7 @@ class TestCheckCommandSupplementary:
             return_value=ArtifactProofResult(report=fake_report),
         ):
             runner = CliRunner()
-            result = runner.invoke(cli, ["--plain", "check", "--json", "--proof"])
+            result = runner.invoke(cli, ["--plain", "doctor", "--json", "--proof"])
 
         assert result.exit_code == 0
         data = _extract_json(result.output)
@@ -723,7 +723,7 @@ class TestCheckCommandSupplementary:
             return_value=ArtifactProofResult(report=fake_report),
         ):
             runner = CliRunner()
-            result = runner.invoke(cli, ["--plain", "check", "--proof"])
+            result = runner.invoke(cli, ["--plain", "doctor", "--proof"])
 
         assert result.exit_code == 0
         assert "Artifact proof:" in result.output
@@ -750,7 +750,7 @@ class TestCheckCommandSupplementary:
                 cli,
                 [
                     "--plain",
-                    "check",
+                    "doctor",
                     "--json",
                     "--proof",
                     "--artifact-provider",
@@ -813,7 +813,7 @@ class TestCheckCommandSupplementary:
                 cli,
                 [
                     "--plain",
-                    "check",
+                    "doctor",
                     "--json",
                     "--artifacts",
                     "--artifact-provider",
@@ -862,7 +862,7 @@ class TestCheckCommandSupplementary:
             return_value=ArtifactCohortListResult(rows=fake_rows),
         ):
             runner = CliRunner()
-            result = runner.invoke(cli, ["--plain", "check", "--cohorts"])
+            result = runner.invoke(cli, ["--plain", "doctor", "--cohorts"])
 
         assert result.exit_code == 0
         assert "Artifact cohorts: 1 cohorts" in result.output

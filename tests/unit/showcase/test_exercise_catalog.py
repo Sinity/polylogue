@@ -54,12 +54,12 @@ class TestExercisesByGroup:
     def test_proof_exercises_exist_in_subcommands_group(self):
         names = {exercise.name for exercise in EXERCISES if exercise.group == "subcommands"}
         assert {
-            "check-proof-json",
-            "check-cohorts-json",
-            "check-semantic-proof",
-            "check-semantic-proof-json",
-            "check-semantic-proof-read-surfaces",
-            "check-semantic-proof-read-surfaces-json",
+            "doctor-proof-json",
+            "doctor-cohorts-json",
+            "doctor-semantic-proof",
+            "doctor-semantic-proof-json",
+            "doctor-semantic-proof-read-surfaces",
+            "doctor-semantic-proof-read-surfaces-json",
         } <= names
 
     def test_all_command_paths_have_generated_help_exercises(self):
@@ -120,7 +120,7 @@ class TestVhsExercises:
         vhs_names = {e.name for e in vhs_exercises()}
         expected = {
             "help-main", "run-preview", "stats-default",
-            "query-list", "check-health", "query-latest-md",
+            "query-list", "doctor-health", "query-latest-md",
         }
         assert vhs_names == expected
 

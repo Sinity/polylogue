@@ -28,7 +28,7 @@ def _format_count_mapping(counts: dict[str, int]) -> str:
     return _format_count_mapping_impl(counts)
 
 
-@click.command("check")
+@click.command("doctor")
 @apply_check_command_options
 @click.pass_obj
 def check_command(
