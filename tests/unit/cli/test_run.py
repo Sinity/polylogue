@@ -5,12 +5,14 @@ from __future__ import annotations
 import asyncio
 from contextlib import ExitStack
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from click.testing import CliRunner
 
 from polylogue.cli.click_app import cli
+from polylogue.cli.commands.run import maybe_prompt_run_stage
 from polylogue.sources import DriveError
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.repository import ConversationRepository
@@ -55,6 +57,7 @@ RUN_CASES = [
         None,
         "all",
         "html",
+        True,
     ),
     (
         "preview_parse_source",
@@ -63,6 +66,7 @@ RUN_CASES = [
         ["test-inbox"],
         "parse",
         "html",
+        False,
     ),
     (
         "run_default",
@@ -71,6 +75,7 @@ RUN_CASES = [
         None,
         "all",
         "html",
+        True,
     ),
     (
         "run_render_markdown_source",
@@ -79,6 +84,7 @@ RUN_CASES = [
         ["drive"],
         "render",
         "markdown",
+        False,
     ),
     (
         "run_reprocess_source",
@@ -87,6 +93,7 @@ RUN_CASES = [
         ["drive"],
         "reprocess",
         "html",
+        False,
     ),
 ]
 
@@ -144,6 +151,7 @@ def _invoke_run_direct(
     plan_result: PlanResult,
     run_result: RunResult,
     selected_sources: list[str] | None,
+    prompted_stage: str,
     plan_side_effect: Exception | None = None,
     run_side_effect: Exception | None = None,
 ) -> tuple[object, dict[str, object]]:
@@ -154,6 +162,9 @@ def _invoke_run_direct(
         mock_plan = stack.enter_context(patch("polylogue.cli.commands.run.plan_sources"))
         mock_run = stack.enter_context(patch("polylogue.cli.run_workflow.run_sources", new_callable=AsyncMock))
         mock_resolve = stack.enter_context(patch("polylogue.cli.commands.run.resolve_sources", return_value=selected_sources))
+        mock_stage_prompt = stack.enter_context(
+            patch("polylogue.cli.commands.run.maybe_prompt_run_stage", return_value=prompted_stage)
+        )
         mock_prompt = stack.enter_context(patch("polylogue.cli.commands.run.maybe_prompt_sources", return_value=selected_sources))
         stack.enter_context(patch("polylogue.cli.run_workflow.format_plan_counts", return_value="5 conversations, 50 messages"))
         stack.enter_context(patch("polylogue.cli.run_workflow.format_plan_details", return_value="new=2, existing=3"))
@@ -176,6 +187,7 @@ def _invoke_run_direct(
         "plan": mock_plan,
         "run": mock_run,
         "resolve": mock_resolve,
+        "stage_prompt": mock_stage_prompt,
         "prompt": mock_prompt,
         "format_index": mock_format_index,
         "latest_render": mock_latest,
@@ -206,7 +218,7 @@ def _invoke_embed_batch(runner: CliRunner, args: list[str]):
 
 class TestRunCommand:
     @pytest.mark.parametrize(
-        ("case_name", "cli_args", "preview", "selected_sources", "expected_stage", "expected_format"),
+        ("case_name", "cli_args", "preview", "selected_sources", "expected_stage", "expected_format", "expect_stage_prompt"),
         RUN_CASES,
     )
     def test_run_dispatch_matrix(
@@ -221,6 +233,7 @@ class TestRunCommand:
         selected_sources,
         expected_stage,
         expected_format,
+        expect_stage_prompt,
     ):
         result, mocks = _invoke_run_direct(
             runner,
@@ -228,9 +241,14 @@ class TestRunCommand:
             plan_result=mock_plan_result,
             run_result=mock_run_result,
             selected_sources=selected_sources,
+            prompted_stage=expected_stage,
         )
 
         assert result.exit_code == 0, case_name
+        if expect_stage_prompt:
+            mocks["stage_prompt"].assert_called_once()
+        else:
+            mocks["stage_prompt"].assert_not_called()
         if preview:
             mocks["plan"].assert_called_once()
             mocks["run"].assert_not_called()
@@ -248,6 +266,7 @@ class TestRunCommand:
             plan_result=mock_plan_result,
             run_result=RunResult(run_id="unused", counts={}, drift={}, indexed=False, index_error=None, duration_ms=0),
             selected_sources=["test-inbox"],
+            prompted_stage="all",
         )
 
         assert result.exit_code == 0
@@ -285,6 +304,7 @@ class TestRunCommand:
             plan_result=mock_plan_result,
             run_result=run_result,
             selected_sources=None,
+            prompted_stage=stage,
         )
 
         assert result.exit_code == 0
@@ -300,6 +320,7 @@ class TestRunCommand:
             plan_result=mock_plan_result,
             run_result=mock_run_result,
             selected_sources=["google-drive"],
+            prompted_stage="all",
             plan_side_effect=DriveError("OAuth token expired"),
         )
         assert result.exit_code != 0
@@ -312,6 +333,7 @@ class TestRunCommand:
             plan_result=mock_plan_result,
             run_result=mock_run_result,
             selected_sources=["google-drive"],
+            prompted_stage="all",
             run_side_effect=DriveError("Drive API rate limit"),
         )
         assert result.exit_code != 0
@@ -331,6 +353,8 @@ class TestRunCommand:
         ) as mock_pipeline_run, patch(
             "polylogue.config.get_config", return_value=MagicMock(sources=[], render_root=Path("/render"))
         ), patch("polylogue.cli.commands.run.resolve_sources", return_value=None), patch(
+            "polylogue.cli.commands.run.maybe_prompt_run_stage", return_value="all"
+        ), patch(
             "polylogue.cli.commands.run.maybe_prompt_sources", return_value=None
         ), patch("polylogue.cli.run_workflow.format_counts", return_value="3 conversations, 30 messages"), patch(
             "polylogue.cli.run_workflow.format_run_details", return_value=["Indexed: yes"]
@@ -342,6 +366,41 @@ class TestRunCommand:
         assert result.exit_code == 0
         assert "Reset parse status for 7 raw records." in result.output
         assert mock_reset_run.call_count + mock_pipeline_run.call_count == 2
+
+    def test_maybe_prompt_run_stage_skips_prompt_when_not_requested(self):
+        env = SimpleNamespace(ui=MagicMock(plain=False))
+
+        result = maybe_prompt_run_stage(env, stage="parse", prompt=False)
+
+        assert result == "parse"
+        env.ui.choose.assert_not_called()
+
+    def test_maybe_prompt_run_stage_skips_prompt_in_plain_mode(self):
+        env = SimpleNamespace(ui=MagicMock(plain=True))
+
+        result = maybe_prompt_run_stage(env, stage="all", prompt=True)
+
+        assert result == "all"
+        env.ui.choose.assert_not_called()
+
+    def test_maybe_prompt_run_stage_prompts_for_workflow_choice(self):
+        env = SimpleNamespace(ui=MagicMock(plain=False))
+        env.ui.choose.return_value = "reprocess"
+
+        result = maybe_prompt_run_stage(env, stage="all", prompt=True)
+
+        assert result == "reprocess"
+        env.ui.choose.assert_called_once_with(
+            "Select workflow for run",
+            ["all", "reprocess", "acquire", "schema", "parse", "materialize", "render", "index"],
+        )
+
+    def test_maybe_prompt_run_stage_rejects_empty_choice(self):
+        env = SimpleNamespace(ui=MagicMock(plain=False))
+        env.ui.choose.return_value = None
+
+        with pytest.raises(SystemExit, match="run: No workflow selected"):
+            maybe_prompt_run_stage(env, stage="all", prompt=True)
 
 
 class TestTagsCommand:

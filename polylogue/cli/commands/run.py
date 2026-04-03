@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import click
+from click.core import ParameterSource
 
 from polylogue.cli.helpers import (
     complete_run_source_names,
@@ -43,6 +44,32 @@ from polylogue.sources import DriveError
 from polylogue.storage.state_views import RunResult
 from polylogue.sync_bridge import run_coroutine_sync
 
+INTERACTIVE_RUN_STAGE_CHOICES: tuple[str, ...] = (
+    "all",
+    "reprocess",
+    "acquire",
+    "schema",
+    "parse",
+    "materialize",
+    "render",
+    "index",
+)
+
+
+def maybe_prompt_run_stage(
+    env: AppEnv,
+    *,
+    stage: str,
+    prompt: bool,
+) -> str:
+    """Prompt for a workflow stage when the user did not choose one explicitly."""
+    if not prompt or env.ui.plain:
+        return stage
+    choice = env.ui.choose("Select workflow for run", list(INTERACTIVE_RUN_STAGE_CHOICES))
+    if not choice:
+        fail("run", "No workflow selected")
+    return choice
+
 
 @click.command("run")
 @click.option("--preview", is_flag=True, help="Preview work without writing")
@@ -78,9 +105,9 @@ from polylogue.sync_bridge import run_coroutine_sync
 @click.option("--exec", "exec_cmd", help="Execute command on conversation changes (requires --watch)")
 @click.option("--webhook", help="Call webhook URL on conversation changes (requires --watch)")
 @click.option("--reparse", is_flag=True, help="Force re-parsing of all raw conversations (clears parse tracking)")
-@click.pass_obj
+@click.pass_context
 def run_command(
-    env: AppEnv,
+    ctx: click.Context,
     preview: bool,
     stage: str,
     sources: tuple[str, ...],
@@ -92,9 +119,17 @@ def run_command(
     reparse: bool,
 ) -> None:
     """Run pipeline stages on configured sources."""
+    env: AppEnv = ctx.obj
     # Validate watch-related flags
     if (notify or exec_cmd or webhook) and not watch:
         fail("run", "--notify, --exec, and --webhook require --watch mode")
+
+    if ctx.get_parameter_source("stage") is ParameterSource.DEFAULT:
+        stage = maybe_prompt_run_stage(
+            env,
+            stage=stage,
+            prompt=True,
+        )
 
     cfg = env.config
 
