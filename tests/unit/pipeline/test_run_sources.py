@@ -803,7 +803,11 @@ class TestPlanSources:
         assert result.counts["store_raw"] == 1
         assert result.counts["validate"] == 1
         assert result.counts["parse"] == 1
+        assert result.counts["materialize"] == 1
+        assert result.counts["render"] == 1
+        assert result.counts["index"] == 1
         assert result.sources == ["test-source"]
+        assert result.stage_sequence == ["acquire", "parse", "materialize", "render", "index"]
 
     async def test_plan_inside_running_event_loop(self, tmp_path: Path):
         config = Config(sources=[], archive_root=tmp_path / "archive", render_root=tmp_path / "render")
@@ -813,6 +817,66 @@ class TestPlanSources:
         finally:
             await backend.close()
         assert result.counts == {}
+
+    async def test_plan_accepts_explicit_leaf_stage_sequence(self, tmp_path: Path):
+        from polylogue.storage.blob_store import get_blob_store
+        from polylogue.storage.store import RawConversationRecord
+
+        backend = SQLiteBackend(db_path=tmp_path / "preview.db")
+        raw_content = json.dumps(
+            [
+                {
+                    "id": "conv-custom-plan",
+                    "title": "Custom Plan",
+                    "create_time": 1704067200,
+                    "update_time": 1704067200,
+                    "mapping": {
+                        "root": {"id": "root", "message": None, "children": ["m1"]},
+                        "m1": {
+                            "id": "m1",
+                            "message": {
+                                "id": "m1",
+                                "author": {"role": "user"},
+                                "content": {"parts": ["hello"]},
+                                "create_time": 1704067200,
+                            },
+                            "parent": "root",
+                            "children": [],
+                        },
+                    },
+                }
+            ]
+        ).encode("utf-8")
+        blob_store = get_blob_store()
+        raw_id, blob_size = blob_store.write_from_bytes(raw_content)
+        try:
+            await backend.save_raw_conversation(
+                RawConversationRecord(
+                    raw_id=raw_id,
+                    provider_name="chatgpt",
+                    source_name="seeded",
+                    source_path="/tmp/custom-plan.json",
+                    blob_size=blob_size,
+                    acquired_at="2026-03-05T00:00:00Z",
+                )
+            )
+            await backend.mark_raw_validated(raw_id, status="passed", provider="chatgpt", mode="strict")
+
+            config = Config(sources=[], archive_root=tmp_path / "archive", render_root=tmp_path / "render")
+            result = plan_sources(
+                config,
+                backend=backend,
+                stage="all",
+                stage_sequence=("parse", "render", "index"),
+            )
+        finally:
+            await backend.close()
+
+        assert result.stage == "custom"
+        assert result.stage_sequence == ["parse", "render", "index"]
+        assert result.counts["parse"] == 1
+        assert result.counts["render"] == 1
+        assert result.counts["index"] == 1
         assert result.sources == []
 
 

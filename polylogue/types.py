@@ -141,6 +141,7 @@ class PlanStage(str, Enum):
 
     ALL = "all"
     ACQUIRE = "acquire"
+    CUSTOM = "custom"
     PARSE = "parse"
     MATERIALIZE = "materialize"
     INDEX = "index"
