@@ -23,7 +23,7 @@ def runner() -> CliRunner:
 # =============================================================================
 
 SUBCOMMANDS = [
-    "run", "sources", "check", "reset", "mcp", "auth",
+    "run", "check", "reset", "mcp", "auth",
     "completions", "dashboard", "generate", "embed",
     "qa", "schema", "site", "tags",
 ]

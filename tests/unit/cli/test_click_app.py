@@ -397,7 +397,6 @@ class TestCliMetadata:
 
         expected = {
             "run",
-            "sources",
             "check",
             "reset",
             "mcp",
@@ -605,22 +604,6 @@ class TestDashboardCommand:
         assert result.exit_code == 0
         kwargs = mock_app_cls.call_args.kwargs
         assert kwargs["repository"] is not None
-
-
-class TestSourcesCommand:
-    def test_sources_lists_configured(self, cli_runner, monkeypatch, cli_workspace) -> None:
-        monkeypatch.setenv("POLYLOGUE_CONFIG", str(cli_workspace["config_path"]))
-        monkeypatch.setenv("XDG_DATA_HOME", str(cli_workspace["data_root"]))
-        result = cli_runner.invoke(click_cli, ["sources"])
-        assert result.exit_code == 0
-
-    def test_sources_json_output(self, cli_runner, monkeypatch, cli_workspace) -> None:
-        monkeypatch.setenv("POLYLOGUE_CONFIG", str(cli_workspace["config_path"]))
-        monkeypatch.setenv("XDG_DATA_HOME", str(cli_workspace["data_root"]))
-        result = cli_runner.invoke(click_cli, ["sources", "--json"])
-        assert result.exit_code == 0
-        envelope = json.loads(result.output)
-        assert isinstance(envelope.get("result", {}).get("sources", envelope), list)
 
 
 class TestCompletionsCommand:

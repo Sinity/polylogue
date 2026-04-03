@@ -144,28 +144,6 @@
       "tier": 0
     },
     {
-      "name": "sources-list",
-      "group": "sources",
-      "description": "List configured sources",
-      "args": [
-        "sources"
-      ],
-      "tier": 0
-    },
-    {
-      "name": "sources-json",
-      "group": "sources",
-      "description": "List sources as JSON",
-      "args": [
-        "sources",
-        "--json"
-      ],
-      "validation": {
-        "stdout_is_valid_json": true
-      },
-      "tier": 0
-    },
-    {
       "name": "completions-bash",
       "group": "sources",
       "description": "Bash shell completions",

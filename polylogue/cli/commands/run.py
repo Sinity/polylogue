@@ -1,4 +1,4 @@
-"""Sync and sources commands."""
+"""Run command and pipeline stage subcommands."""
 
 from __future__ import annotations
 
@@ -24,7 +24,6 @@ from polylogue.cli.run_workflow import (
 from polylogue.cli.run_workflow import (
     handle_drive_error,
     render_preview_summary,
-    render_sources,
 )
 from polylogue.cli.run_workflow import (
     run_sync_once as _run_sync_once,
@@ -355,12 +354,4 @@ def run_all_stage() -> RunStageRequest:
     return _make_stage_request("all")
 
 
-@click.command("sources")
-@click.option("--json", "json_output", is_flag=True, help="Output JSON")
-@click.pass_obj
-def sources_command(env: AppEnv, json_output: bool) -> None:
-    """List configured sources."""
-    render_sources(env, json_output=json_output)
-
-
-__all__ = ["run_command", "sources_command"]
+__all__ = ["run_command"]

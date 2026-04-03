@@ -1,7 +1,0 @@
-Usage: python -m polylogue sources [OPTIONS]
-
-  List configured sources.
-
-Options:
-  --json      Output JSON
-  -h, --help  Show this message and exit.

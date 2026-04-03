@@ -91,17 +91,6 @@
     schema       Infer schemas from acquired raw payloads.
   '''
 # ---
-# name: TestCommandOutputs.test_sources_output_snapshot
-  '''
-  Usage: polylogue sources [OPTIONS]
-  
-    List configured sources.
-  
-  Options:
-    --json      Output JSON
-    -h, --help  Show this message and exit.
-  '''
-# ---
 # name: TestErrorOutput.test_invalid_command_error_output
   '''
   No conversations matched filters:
@@ -236,7 +225,6 @@
     run          Run pipeline stages on configured sources.
     schema       Schema generation, package versioning, and evidence...
     site         Generate a static HTML site from the archive.
-    sources      List configured sources.
     tags         List all tags with conversation counts.
   '''
 # ---
@@ -417,7 +405,6 @@
     schema       Schema generation, package versioning, and ev
   idence...
     site         Generate a static HTML site from the archive.
-    sources      List configured sources.
     tags         List all tags with conversation counts.
   '''
 # ---
@@ -543,7 +530,6 @@
     run          Run pipeline stages on configured sources.
     schema       Schema generation, package versioning, and evidence...
     site         Generate a static HTML site from the archive.
-    sources      List configured sources.
     tags         List all tags with conversation counts.
   '''
 # ---

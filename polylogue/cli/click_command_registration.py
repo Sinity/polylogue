@@ -14,14 +14,13 @@ from polylogue.cli.commands.mcp import mcp_command
 from polylogue.cli.commands.products import products_command
 from polylogue.cli.commands.qa import qa_command
 from polylogue.cli.commands.reset import reset_command
-from polylogue.cli.commands.run import run_command, sources_command
+from polylogue.cli.commands.run import run_command
 from polylogue.cli.commands.schema import schema_command
 from polylogue.cli.commands.site import site_command
 from polylogue.cli.commands.tags import tags_command
 
 ROOT_COMMANDS: tuple[click.Command, ...] = (
     run_command,
-    sources_command,
     check_command,
     reset_command,
     mcp_command,
