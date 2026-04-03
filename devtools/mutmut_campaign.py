@@ -286,6 +286,26 @@ CAMPAIGNS: dict[str, Campaign] = {
             "tests/unit/sources/test_parsers_drive.py",
         ),
     ),
+    "provider-parsers": Campaign(
+        name="provider-parsers",
+        description="Provider parser semantic correctness — where message extraction and compaction detection live",
+        paths_to_mutate=(
+            "polylogue/sources/parsers/chatgpt.py",
+            "polylogue/sources/parsers/claude_code_parser.py",
+            "polylogue/sources/parsers/codex.py",
+            "polylogue/sources/parsers/claude_index.py",
+            "polylogue/pipeline/semantic_capture.py",
+        ),
+        tests=(
+            "tests/unit/sources/test_parsers_chatgpt.py",
+            "tests/unit/sources/test_parsers_codex.py",
+            "tests/unit/sources/test_parsers_props.py",
+            "tests/unit/sources/test_parser_crashlessness.py",
+            "tests/unit/sources/test_compaction.py",
+            "tests/unit/sources/test_assembly.py",
+        ),
+        notes=("Focused on the parser modules where semantic correctness is most critical.",),
+    ),
     "providers-semantics": Campaign(
         name="providers-semantics",
         description="Provider semantic extraction, harmonization, and viewport contracts",
