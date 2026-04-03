@@ -15,7 +15,7 @@ from polylogue.logging import get_logger
 from polylogue.sources.providers.codex import CodexRecord
 from polylogue.types import Provider
 
-from .base import ParsedConversation, ParsedMessage, content_blocks_from_segments
+from .base import ParsedConversation, ParsedMessage, ParsedProviderEvent, content_blocks_from_segments
 
 logger = get_logger(__name__)
 
@@ -82,6 +82,8 @@ def parse(payload: list[object], fallback_id: str) -> ParsedConversation:
     - format_type: Detected format generation
     """
     messages: list[ParsedMessage] = []
+    provider_events: list[ParsedProviderEvent] = []
+    context_compactions: list[dict[str, object]] = []
     session_id = fallback_id
     session_timestamp: str | None = None
     latest_message_timestamp: str | None = None
@@ -97,6 +99,34 @@ def parse(payload: list[object], fallback_id: str) -> ParsedConversation:
             record = CodexRecord.model_validate(item)
         except ValidationError as exc:
             logger.debug("Skipping invalid record at index %d: %s", idx, exc)
+            continue
+
+        # Handle compaction events (before message check so they don't fall through)
+        if record.is_compaction:
+            event_payload: dict[str, object] = {
+                "summary": record.compacted_message,
+                "has_replacement_history": record.has_replacement_history,
+            }
+            if record.payload:
+                event_payload["raw"] = record.payload
+            provider_events.append(ParsedProviderEvent(
+                event_type="compaction",
+                timestamp=record.timestamp,
+                payload=event_payload,
+            ))
+            context_compactions.append(event_payload)
+            continue
+
+        # Handle turn-context events
+        if record.is_turn_context:
+            tc_payload: dict[str, object] = {}
+            if record.payload:
+                tc_payload["raw"] = record.payload
+            provider_events.append(ParsedProviderEvent(
+                event_type="turn_context",
+                timestamp=record.timestamp,
+                payload=tc_payload,
+            ))
             continue
 
         # Handle session metadata (envelope format)
@@ -195,12 +225,14 @@ def parse(payload: list[object], fallback_id: str) -> ParsedConversation:
 
     # Build conversation-level provider_meta with session context
     conv_meta: dict[str, object] | None = None
-    if session_git or session_instructions:
+    if session_git or session_instructions or context_compactions:
         conv_meta = {}
         if session_git:
             conv_meta["git"] = session_git
         if session_instructions:
             conv_meta["instructions"] = session_instructions
+        if context_compactions:
+            conv_meta["context_compactions"] = context_compactions
 
     return ParsedConversation(
         provider_name=Provider.CODEX,
@@ -210,6 +242,7 @@ def parse(payload: list[object], fallback_id: str) -> ParsedConversation:
         updated_at=_latest_timestamp(latest_message_timestamp, session_timestamp),
         messages=messages,
         provider_meta=conv_meta,
+        provider_events=provider_events,
         parent_conversation_provider_id=parent_id,
         branch_type=branch_type,
     )

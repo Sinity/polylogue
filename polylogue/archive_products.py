@@ -64,6 +64,8 @@ class SessionEvidencePayload(ArchiveProductModel):
     total_duration_ms: int = 0
     wall_duration_ms: int = 0
     cost_is_estimated: bool = False
+    compaction_count: int = 0
+    has_compaction: bool = False
     tool_categories: dict[str, int] = Field(default_factory=dict)
     repo_paths: tuple[str, ...] = ()
     cwd_paths: tuple[str, ...] = ()

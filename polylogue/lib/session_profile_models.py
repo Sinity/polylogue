@@ -46,6 +46,7 @@ class SessionProfile:
     cost_is_estimated: bool = False
     thread_id: str | None = None
     continuation_depth: int = 0
+    compaction_count: int = 0
     tags: tuple[str, ...] = ()
     auto_tags: tuple[str, ...] = ()
     is_continuation: bool = False
@@ -103,6 +104,7 @@ class SessionProfile:
             "engaged_minutes": round(self.engaged_duration_ms / 60_000.0, 4),
             "wall_duration_ms": self.wall_duration_ms,
             "cost_is_estimated": self.cost_is_estimated,
+            "compaction_count": self.compaction_count,
             "thread_id": self.thread_id,
             "continuation_depth": self.continuation_depth,
             "tags": list(self.tags),
@@ -184,6 +186,7 @@ class SessionProfile:
             engaged_duration_ms=int(payload.get("engaged_duration_ms", 0) or 0),
             wall_duration_ms=int(payload.get("wall_duration_ms", 0) or 0),
             cost_is_estimated=bool(payload.get("cost_is_estimated", False)),
+            compaction_count=int(payload.get("compaction_count", 0) or 0),
             thread_id=str(payload["thread_id"]) if payload.get("thread_id") is not None else None,
             continuation_depth=int(payload.get("continuation_depth", 0) or 0),
             tags=tuple(str(item) for item in payload.get("tags", []) or []),

@@ -33,6 +33,7 @@ class ClaudeCodeRecord(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     type: str
+    subtype: str | None = None
     uuid: str | None = None
     parentUuid: str | None = None
     timestamp: str | int | float | None = None
@@ -163,7 +164,9 @@ class ClaudeCodeRecord(BaseModel):
 
     @property
     def is_context_compaction(self) -> bool:
-        return self.type == "summary"
+        return self.type == "summary" or (
+            self.type == "system" and self.subtype == "compact_boundary"
+        )
 
     @property
     def is_tool_progress(self) -> bool:
