@@ -12,7 +12,7 @@ from polylogue.logging import get_logger
 from polylogue.sources.providers.claude_code import ClaudeCodeRecord
 from polylogue.types import Provider
 
-from .base import ParsedContentBlock, ParsedConversation, ParsedMessage, content_blocks_from_segments
+from .base import ParsedContentBlock, ParsedConversation, ParsedMessage, ParsedProviderEvent, content_blocks_from_segments
 from .claude_common import extract_message_text, normalize_timestamp
 
 _TAG_RE = re.compile(r"<[^>]+>")
@@ -72,6 +72,7 @@ def parse_code(payload: list[object], fallback_id: str) -> ParsedConversation:
     timestamps: list[str] = []
     session_id: str | None = None
     context_compactions: list[dict[str, Any]] = []
+    provider_events: list[ParsedProviderEvent] = []
     total_cost = 0.0
     total_duration = 0
     saw_cost_field = False
@@ -90,6 +91,11 @@ def parse_code(payload: list[object], fallback_id: str) -> ParsedConversation:
         compaction = detect_context_compaction(item)
         if compaction:
             context_compactions.append(compaction)
+            provider_events.append(ParsedProviderEvent(
+                event_type="compaction",
+                timestamp=compaction.get("timestamp"),
+                payload=compaction,
+            ))
             continue
 
         try:
@@ -187,6 +193,7 @@ def parse_code(payload: list[object], fallback_id: str) -> ParsedConversation:
         updated_at=updated_at,
         messages=messages,
         provider_meta=provider_meta if provider_meta else None,
+        provider_events=provider_events,
         parent_conversation_provider_id=parent_session_id,
         branch_type=branch_type,
     )

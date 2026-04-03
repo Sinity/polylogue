@@ -144,6 +144,8 @@ def profile_evidence_payload(profile: SessionProfile) -> dict[str, object]:
         "total_duration_ms": profile.total_duration_ms,
         "wall_duration_ms": profile.wall_duration_ms,
         "cost_is_estimated": profile.cost_is_estimated,
+        "compaction_count": profile.compaction_count,
+        "has_compaction": profile.compaction_count > 0,
         "tool_categories": dict(profile.tool_categories),
         "repo_paths": list(profile.repo_paths),
         "cwd_paths": list(profile.cwd_paths),

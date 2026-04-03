@@ -107,6 +107,38 @@ class CodexRecord(BaseModel):
         return "unknown"
 
     @property
+    def is_compaction(self) -> bool:
+        """Check if this record represents a compaction event.
+
+        Envelope format: ``{"type": "compacted", "payload": {"message": "...", ...}}``
+        """
+        return self.type == "compacted"
+
+    @property
+    def is_turn_context(self) -> bool:
+        """Check if this record represents a turn-context event.
+
+        Envelope format: ``{"type": "turn_context", "payload": {...}}``
+        """
+        return self.type == "turn_context"
+
+    @property
+    def compacted_message(self) -> str:
+        """Extract the summary/message text from a compaction record."""
+        if not self.is_compaction or not self.payload:
+            return ""
+        msg = self.payload.get("message", "")
+        return str(msg) if msg else ""
+
+    @property
+    def has_replacement_history(self) -> bool:
+        """Check if a compaction record includes replacement_history."""
+        if not self.is_compaction or not self.payload:
+            return False
+        history = self.payload.get("replacement_history")
+        return isinstance(history, list) and len(history) > 0
+
+    @property
     def is_message(self) -> bool:
         """Check if this record contains an actual message."""
         if self.format_type == "envelope":

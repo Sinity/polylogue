@@ -88,6 +88,14 @@ class ParsedAttachment(BaseModel):
         return v if v else None
 
 
+class ParsedProviderEvent(BaseModel):
+    """Non-message semantic artifact from a provider (compaction, turn context, etc.)."""
+
+    event_type: str  # "compaction", "turn_context", etc.
+    timestamp: str | None = None
+    payload: dict[str, object] = Field(default_factory=dict)
+
+
 class ParsedConversation(BaseModel):
     provider_name: Provider
     provider_conversation_id: str
@@ -97,6 +105,7 @@ class ParsedConversation(BaseModel):
     messages: list[ParsedMessage]
     attachments: list[ParsedAttachment] = Field(default_factory=list)
     provider_meta: dict[str, object] | None = None
+    provider_events: list[ParsedProviderEvent] = Field(default_factory=list)
     parent_conversation_provider_id: str | None = None
     branch_type: BranchType | None = None
 
