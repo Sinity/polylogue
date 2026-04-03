@@ -3,14 +3,15 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from polylogue.config import Source
+from polylogue.types import Provider
 
 from . import cursor as _cursor
-from .parsers.claude import SessionIndexEntry, parse_sessions_index
+from .assembly import get_assembly_spec
 
 _SUPPORTED_EXTENSIONS = frozenset({".json", ".jsonl", ".ndjson", ".zip"})
 _SUPPORTED_DOUBLE_EXTENSIONS = frozenset({".jsonl.txt"})
@@ -36,16 +37,6 @@ def _walk_source_paths(base: Path) -> list[Path]:
     return sorted(paths)
 
 
-def _build_session_indices(paths: list[Path]) -> dict[Path, dict[str, SessionIndexEntry]]:
-    indices: dict[Path, dict[str, SessionIndexEntry]] = {}
-    for path in paths:
-        parent = path.parent
-        if parent not in indices:
-            index_path = parent / "sessions-index.json"
-            indices[parent] = parse_sessions_index(index_path)
-    return indices
-
-
 def _resolve_source_paths(source: Source) -> list[Path]:
     if not source.path:
         return []
@@ -62,7 +53,7 @@ class _SourceWalkSetup:
     paths: list[Path]
     paths_to_process: list[tuple[Path, str | None]]
     skipped_mtime: int
-    session_indices: dict[Path, dict[str, SessionIndexEntry]]
+    sidecar_data: dict[str, Any] = field(default_factory=dict)
 
 
 def _setup_source_walk(
@@ -71,7 +62,7 @@ def _setup_source_walk(
     cursor_state: dict[str, Any] | None,
     include_mtime: bool,
     known_mtimes: dict[str, str] | None,
-    build_session_indices: bool,
+    discover_sidecars: bool,
 ) -> _SourceWalkSetup | None:
     paths = _resolve_source_paths(source)
     _cursor._initialize_cursor_state(cursor_state, paths)
@@ -82,12 +73,17 @@ def _setup_source_walk(
         include_file_mtime=include_mtime,
         known_mtimes=known_mtimes,
     )
-    session_indices = _build_session_indices(paths) if build_session_indices else {}
+    sidecar_data: dict[str, Any] = {}
+    if discover_sidecars:
+        provider = Provider.from_string(source.name)
+        spec = get_assembly_spec(provider)
+        if spec is not None:
+            sidecar_data = spec.discover_sidecars(paths)
     return _SourceWalkSetup(
         paths=paths,
         paths_to_process=paths_to_process,
         skipped_mtime=skipped_mtime,
-        session_indices=session_indices,
+        sidecar_data=sidecar_data,
     )
 
 
@@ -96,7 +92,6 @@ __all__ = [
     "_SUPPORTED_DOUBLE_EXTENSIONS",
     "_SUPPORTED_EXTENSIONS",
     "_SKIP_DIRS",
-    "_build_session_indices",
     "_has_supported_extension",
     "_resolve_source_paths",
     "_setup_source_walk",

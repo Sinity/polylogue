@@ -12,11 +12,11 @@ from polylogue.lib.json import dumps_bytes as json_dumps_bytes
 from polylogue.logging import get_logger
 from polylogue.types import Provider
 
+from .assembly import get_assembly_spec
 from .cursor import _ParseContext
 from .decoders import _iter_json_stream
 from .dispatch import GROUP_PROVIDERS, detect_provider, parse_payload
 from .parsers.base import ParsedConversation, RawConversationData
-from .parsers.claude import enrich_conversation_from_index
 
 if TYPE_CHECKING:
     from polylogue.schemas.packages import SchemaResolution
@@ -319,11 +319,11 @@ class _ConversationEmitter:
         conv: ParsedConversation,
         provider: Provider | None = None,
     ) -> ParsedConversation:
-        """Apply Claude Code session index enrichment if applicable."""
+        """Apply provider-specific enrichment via assembly layer."""
         p = provider or self._ctx.provider_hint
-        idx = self._ctx.session_index
-        if p is Provider.CLAUDE_CODE and conv.provider_conversation_id in idx:
-            return enrich_conversation_from_index(conv, idx[conv.provider_conversation_id])
+        spec = get_assembly_spec(p)
+        if spec is not None:
+            return spec.enrich_conversation(conv, self._ctx.sidecar_data)
         return conv
 
 

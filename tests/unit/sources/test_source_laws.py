@@ -8,6 +8,7 @@ import tempfile
 import zipfile
 from io import BytesIO
 from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
@@ -992,6 +993,7 @@ def test_find_sessions_index_and_enrichment_contract(tmp_path: Path) -> None:
         "isSidechain": True,
         "summary": "Investigate parser contracts",
         "firstPrompt": "Summarize this repo",
+        "title_source": "session-index:summary",
     }
 
 
@@ -1071,7 +1073,7 @@ def _parse_context(
     source_path: str,
     fallback_id: str,
     capture_raw: bool = True,
-    session_index: dict[str, SessionIndexEntry] | None = None,
+    sidecar_data: dict[str, Any] | None = None,
 ) -> _ParseContext:
     return _ParseContext(
         provider_hint=provider_hint,
@@ -1080,7 +1082,7 @@ def _parse_context(
         fallback_id=fallback_id,
         file_mtime="2026-03-11T00:00:00+00:00",
         capture_raw=capture_raw,
-        session_index=session_index or {},
+        sidecar_data=sidecar_data or {},
     )
 
 
@@ -1266,7 +1268,7 @@ def test_conversation_emitter_reuses_jsonl_sniff_payloads_for_grouped_detection(
         fallback_id="session",
         file_mtime="2026-03-11T00:00:00+00:00",
         capture_raw=True,
-        session_index={},
+        sidecar_data={},
     )
     raw = (
         b'{"role":"user","content":[{"type":"input_text","text":"hello"}]}\n'
@@ -1307,7 +1309,7 @@ def test_conversation_emitter_reuses_jsonl_sniff_payloads_for_individual_detecti
         fallback_id="session",
         file_mtime="2026-03-11T00:00:00+00:00",
         capture_raw=True,
-        session_index={},
+        sidecar_data={},
     )
     raw = (
         b'{"mapping":{"r1":{"message":{"author":{"role":"user"},"content":{"content_type":"text","parts":["first"]}}}}}\n'
@@ -1348,7 +1350,7 @@ def test_conversation_emitter_detects_individual_jsonl_provider_from_payloads(
         fallback_id="session",
         file_mtime="2026-03-11T00:00:00+00:00",
         capture_raw=True,
-        session_index={},
+        sidecar_data={},
     )
     raw = (
         b'{"mapping":{"r1":{"message":{"author":{"role":"user"},"content":{"content_type":"text","parts":["first"]}}}}}\n'
@@ -1391,7 +1393,7 @@ def test_conversation_emitter_only_enriches_matching_claude_code_sessions_contra
         fallback_id="session",
         file_mtime="2026-03-11T00:00:00+00:00",
         capture_raw=False,
-        session_index={"session-1": entry},
+        sidecar_data={"session_index": {"session-1": entry}},
     )
     emitter = _ConversationEmitter(ctx)
     matching = ParsedConversation(

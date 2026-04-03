@@ -10,8 +10,6 @@ from typing import Any
 from polylogue.logging import get_logger
 from polylogue.types import Provider
 
-from .parsers.claude import SessionIndexEntry
-
 logger = get_logger(__name__)
 
 
@@ -130,7 +128,7 @@ class _ParseContext:
     fallback_id: str  # path.stem, used as fallback conversation ID
     file_mtime: str | None
     capture_raw: bool
-    session_index: dict[str, SessionIndexEntry]
+    sidecar_data: dict[str, Any]
 
 
 __all__ = [

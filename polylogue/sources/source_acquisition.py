@@ -130,7 +130,7 @@ def iter_source_raw_data(
         cursor_state=cursor_state,
         include_mtime=True,
         known_mtimes=known_mtimes,
-        build_session_indices=False,
+        discover_sidecars=False,
     )
     if walk is None:
         return
