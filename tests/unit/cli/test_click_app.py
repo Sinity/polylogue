@@ -45,20 +45,11 @@ class TestHandleQueryMode:
             "sample": None,
             "output": None,
             "output_format": None,
-            "fields": None,
-            "list_mode": False,
-            "stats_only": False,
-            "count_only": False,
-            "stats_by": None,
-            "open_result": False,
             "transform": None,
             "stream": False,
             "dialogue_only": False,
             "set_meta": (),
             "add_tag": (),
-            "delete_matched": False,
-            "dry_run": False,
-            "force": False,
             "plain": False,
             "verbose": False,
             "filter_has_tool_use": False,
@@ -142,13 +133,9 @@ class TestHandleQueryMode:
 
     def test_output_mode_flags_trigger_query(self):
         for params in (
-            self._make_params(list_mode=True),
             self._make_params(limit=10),
-            self._make_params(stats_only=True),
-            self._make_params(count_only=True),
             self._make_params(stream=True),
             self._make_params(dialogue_only=True),
-            self._make_params(stats_by="provider"),
         ):
             mock_execute, _ = self._call(params)
             mock_execute.assert_called_once()
@@ -157,7 +144,6 @@ class TestHandleQueryMode:
         for params in (
             self._make_params(add_tag=("review",)),
             self._make_params(set_meta=(("status", "done"),)),
-            self._make_params(delete_matched=True),
         ):
             mock_execute, mock_stats = self._call(params)
             mock_execute.assert_called_once()
@@ -388,7 +374,7 @@ class TestCliMetadata:
 
         result = cli_runner.invoke(cli, ["--help"])
         assert result.exit_code == 0
-        for command in ("run", "doctor", "mcp", "tags"):
+        for command in ("run", "doctor", "mcp", "tags", "list", "count", "stats"):
             assert command in result.output
         assert result.output.count("Commands:") == 1
 
@@ -407,6 +393,12 @@ class TestCliMetadata:
             "audit",
             "schema",
             "tags",
+            # Query verbs
+            "list",
+            "count",
+            "stats",
+            "open",
+            "delete",
         }
         assert set(cli.commands.keys()) == expected
 

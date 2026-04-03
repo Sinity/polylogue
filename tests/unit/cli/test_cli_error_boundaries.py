@@ -26,6 +26,7 @@ SUBCOMMANDS = [
     "run", "doctor", "reset", "mcp", "auth",
     "completions", "dashboard",
     "audit", "schema", "tags",
+    "list", "count", "stats", "open", "delete",
 ]
 
 

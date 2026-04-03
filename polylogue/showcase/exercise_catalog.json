@@ -260,7 +260,7 @@
       "group": "query-read",
       "description": "List conversations",
       "args": [
-        "--list"
+        "list"
       ],
       "validation": {
         "stdout_min_lines": 1
@@ -273,7 +273,7 @@
       "group": "query-read",
       "description": "List conversations as JSON",
       "args": [
-        "--list",
+        "list",
         "-f",
         "json"
       ],
@@ -290,7 +290,7 @@
       "group": "query-read",
       "description": "List conversations as CSV",
       "args": [
-        "--list",
+        "list",
         "-f",
         "csv"
       ],
@@ -307,7 +307,7 @@
       "group": "query-read",
       "description": "List conversations as YAML",
       "args": [
-        "--list",
+        "list",
         "-f",
         "yaml"
       ],
@@ -323,7 +323,7 @@
       "group": "query-read",
       "description": "Count conversations",
       "args": [
-        "--count"
+        "count"
       ],
       "validation": {
         "custom": {
@@ -466,7 +466,7 @@
       "args": [
         "-p",
         "chatgpt",
-        "--list"
+        "list"
       ],
       "needs_data": true
     },
@@ -477,7 +477,7 @@
       "args": [
         "--since",
         "2020-01-01",
-        "--count"
+        "count"
       ],
       "validation": {
         "custom": {
@@ -493,7 +493,7 @@
       "args": [
         "--sort",
         "tokens",
-        "--list",
+        "list",
         "-n",
         "3"
       ],
@@ -506,7 +506,7 @@
       "args": [
         "--sort",
         "messages",
-        "--list",
+        "list",
         "-n",
         "3"
       ],
@@ -517,7 +517,7 @@
       "group": "query-read",
       "description": "Conversation statistics",
       "args": [
-        "--stats"
+        "stats"
       ],
       "needs_data": true
     },
@@ -526,7 +526,8 @@
       "group": "query-read",
       "description": "Statistics by provider",
       "args": [
-        "--stats-by",
+        "stats",
+        "--by",
         "provider"
       ],
       "needs_data": true
@@ -536,7 +537,8 @@
       "group": "query-read",
       "description": "Statistics by month",
       "args": [
-        "--stats-by",
+        "stats",
+        "--by",
         "month"
       ],
       "needs_data": true
@@ -587,7 +589,7 @@
       "group": "query-write",
       "description": "Baseline count before mutations",
       "args": [
-        "--count"
+        "count"
       ],
       "validation": {
         "custom": {
@@ -621,7 +623,7 @@
       "args": [
         "-t",
         "showcase-test",
-        "--count"
+        "count"
       ],
       "validation": {
         "custom": {
@@ -671,7 +673,7 @@
         "-p",
         "chatgpt",
         "--latest",
-        "--delete",
+        "delete",
         "--dry-run"
       ],
       "needs_data": true,
@@ -689,7 +691,7 @@
         "chatgpt",
         "-n",
         "1",
-        "--delete",
+        "delete",
         "--force"
       ],
       "needs_data": true,
@@ -703,7 +705,7 @@
       "group": "query-write",
       "description": "Verify count decreased after delete",
       "args": [
-        "--count"
+        "count"
       ],
       "validation": {
         "custom": {
@@ -902,7 +904,7 @@
         "chatgpt",
         "--since",
         "2020-01-01",
-        "--list",
+        "list",
         "-f",
         "json"
       ],
@@ -923,7 +925,7 @@
         "--sort",
         "date",
         "--reverse",
-        "--list",
+        "list",
         "-n",
         "3"
       ],
@@ -937,7 +939,7 @@
       "args": [
         "--exclude-provider",
         "gemini",
-        "--count"
+        "count"
       ],
       "validation": {
         "custom": {
@@ -952,7 +954,7 @@
       "group": "advanced",
       "description": "Select specific JSON fields",
       "args": [
-        "--list",
+        "list",
         "-f",
         "json",
         "--fields",
@@ -992,7 +994,7 @@
       "args": [
         "--sample",
         "2",
-        "--list"
+        "list"
       ],
       "needs_data": true,
       "tier": 2
@@ -1003,7 +1005,7 @@
       "description": "Full-text search",
       "args": [
         "implementation",
-        "--list"
+        "list"
       ],
       "validation": {
         "exit_code": null,

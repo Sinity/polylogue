@@ -26,7 +26,7 @@ def test_cli_query_count_route_returns_exact_count(tmp_path):
     )
     _run_inbox(workspace, cwd=tmp_path)
 
-    result = run_cli(["--plain", "alpha", "--count"], env=workspace["env"], cwd=tmp_path)
+    result = run_cli(["--plain", "alpha", "count"], env=workspace["env"], cwd=tmp_path)
 
     assert result.exit_code == 0, result.output
     assert result.stdout.strip() == "1"
@@ -41,7 +41,7 @@ def test_cli_query_summary_list_json_route_returns_structured_rows(tmp_path):
     )
     _run_inbox(workspace, cwd=tmp_path)
 
-    result = run_cli(["--plain", "searchable", "--list", "-f", "json"], env=workspace["env"], cwd=tmp_path)
+    result = run_cli(["--plain", "searchable", "list", "-f", "json"], env=workspace["env"], cwd=tmp_path)
 
     assert result.exit_code == 0, result.output
     rows = json.loads(result.stdout)
@@ -81,7 +81,7 @@ def test_cli_query_stats_by_provider_reports_provider_groups(tmp_path):
     )
     _run_inbox(workspace, cwd=tmp_path)
 
-    result = run_cli(["--plain", "--stats-by", "provider"], env=workspace["env"], cwd=tmp_path)
+    result = run_cli(["--plain", "stats", "--by", "provider"], env=workspace["env"], cwd=tmp_path)
 
     assert result.exit_code == 0, result.output
     output = result.output.lower()
