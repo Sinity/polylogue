@@ -61,6 +61,7 @@ def schema_command(ctx: click.Context) -> None:
     help="Path to TOML privacy config overrides",
 )
 @click.option("--report", is_flag=True, help="Write a redaction report alongside the schema")
+@click.option("--full-corpus", is_flag=True, help="Bypass all sample caps for full-corpus schema generation")
 @click.pass_obj
 def schema_generate(
     env: AppEnv,
@@ -71,6 +72,7 @@ def schema_generate(
     privacy: str | None,
     privacy_config_path: Path | None,
     report: bool,
+    full_corpus: bool,
 ) -> None:
     """Generate provider schema packages and optional evidence clusters."""
     privacy_config = build_schema_privacy_config(
@@ -85,6 +87,7 @@ def schema_generate(
             max_samples=max_samples,
             privacy_config=privacy_config,
             cluster=cluster,
+            full_corpus=full_corpus,
         )
     )
     generation = result.generation
@@ -184,6 +187,7 @@ def schema_promote(
 @click.option("--element", "element_kind", default=None, help="Element kind inside the package")
 @click.option("--json", "json_output", is_flag=True, help="Output as JSON")
 @click.option("--verbose", "-v", is_flag=True, help="Show semantic roles and coverage")
+@click.option("--proof", is_flag=True, help="Show proof surface for role assignment decisions")
 @click.pass_obj
 def schema_explain(
     env: AppEnv,
@@ -192,6 +196,7 @@ def schema_explain(
     element_kind: str | None,
     json_output: bool,
     verbose: bool,
+    proof: bool,
 ) -> None:
     """Explain a package element schema with evidence and annotations."""
     del env
@@ -201,6 +206,7 @@ def schema_explain(
                 provider=provider,
                 version=version,
                 element_kind=element_kind,
+                proof=proof,
             )
         )
     except ValueError as exc:

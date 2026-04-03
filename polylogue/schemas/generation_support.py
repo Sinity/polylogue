@@ -29,8 +29,8 @@ def _annotate_schema(schema, stats, path: str = "$", *, min_conversation_count: 
     )
 
 
-def _annotate_semantic_and_relational(schema, field_stats):
-    return annotate_semantic_and_relational(schema, field_stats)
+def _annotate_semantic_and_relational(schema, field_stats, *, artifact_kind: str | None = None):
+    return annotate_semantic_and_relational(schema, field_stats, artifact_kind=artifact_kind)
 
 
 def _remove_nested_required(schema, depth: int = 0):

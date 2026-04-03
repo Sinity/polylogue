@@ -28,6 +28,7 @@ def infer_schema(request: SchemaInferRequest) -> SchemaInferResult:
         db_path=request.db_path,
         max_samples=request.max_samples,
         privacy_config=request.privacy_config,
+        full_corpus=request.full_corpus,
     )
     if not request.cluster or not result.success:
         return SchemaInferResult(generation=result)

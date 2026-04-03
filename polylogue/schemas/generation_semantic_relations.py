@@ -12,9 +12,11 @@ from polylogue.schemas.semantic_inference import infer_semantic_roles, select_be
 def annotate_semantic_and_relational(
     schema: dict[str, Any],
     field_stats: dict[str, FieldStats],
+    *,
+    artifact_kind: str | None = None,
 ) -> dict[str, Any]:
     """Attach semantic-role and relational annotations to a schema."""
-    candidates = infer_semantic_roles(field_stats)
+    candidates = infer_semantic_roles(field_stats, artifact_kind=artifact_kind)
     best_roles = select_best_roles(candidates)
     role_by_path: dict[str, tuple[str, float, dict[str, Any]]] = {}
     for role, candidate in best_roles.items():
@@ -37,7 +39,7 @@ def _attach_semantic_roles(
     if path in role_by_path:
         role, confidence, evidence = role_by_path[path]
         schema["x-polylogue-semantic-role"] = role
-        schema["x-polylogue-confidence"] = round(confidence, 3)
+        schema["x-polylogue-score"] = round(confidence, 3)
         schema["x-polylogue-evidence"] = evidence
 
     if "properties" in schema:

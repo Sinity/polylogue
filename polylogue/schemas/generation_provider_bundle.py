@@ -57,6 +57,7 @@ def _build_provider_bundle(
     db_path: Path | None,
     max_samples: int | None,
     privacy_config: Any | None,
+    full_corpus: bool = False,
 ) -> _ProviderBundle:
     """Generate all inferred schema versions plus the default result for a provider."""
     provider_token = Provider.from_string(provider)
@@ -81,6 +82,7 @@ def _build_provider_bundle(
             db_path=db_path,
             max_samples=max_samples,
             reservoir_size=_cluster_reservoir_size(config, max_samples),
+            full_corpus=full_corpus,
         )
         if not clusters:
             return build_provider_error_bundle(

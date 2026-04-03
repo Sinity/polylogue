@@ -105,8 +105,8 @@ def extract_payload_samples(
     if max_samples <= 0:
         return []
 
-    scan_cap = max(1024, max_samples * 64)
-    per_bucket_cap = 8
+    scan_cap: int = max(1024, max_samples * 64)
+    per_bucket_cap: int = 8
     buckets: dict[str, list[dict[str, Any]]] = {}
     head_items: list[dict[str, Any]] = []
     dict_count = 0
@@ -135,7 +135,7 @@ def extract_payload_samples(
 def extract_record_samples_from_raw_content(
     raw_content: Path | bytes | str | Any,
     *,
-    max_samples: int,
+    max_samples: int | None,
     record_type_key: str | None = None,
 ) -> list[dict[str, Any]]:
     """Stream-record sample extraction for large JSONL payloads.
@@ -143,8 +143,11 @@ def extract_record_samples_from_raw_content(
     When *raw_content* is a :class:`~pathlib.Path`, lines are streamed
     directly from the file handle — enabling constant-memory sampling
     of multi-GB files.
+
+    When *max_samples* is ``None`` (full-corpus mode), all records are
+    returned without bucketing or scan caps.
     """
-    if max_samples <= 0:
+    if max_samples is not None and max_samples <= 0:
         return []
 
     if isinstance(raw_content, Path):
@@ -152,6 +155,30 @@ def extract_record_samples_from_raw_content(
     else:
         raw = raw_content if isinstance(raw_content, (bytes, str)) else str(raw_content)
         stream = BytesIO(raw) if isinstance(raw, bytes) else StringIO(raw)
+
+    # Full-corpus mode: collect everything without caps.
+    if max_samples is None:
+        all_records: list[dict[str, Any]] = []
+        first_line = True
+        try:
+            for raw_line in stream:
+                line = raw_line.decode("utf-8") if isinstance(raw_line, bytes) else raw_line
+                if first_line:
+                    line = line.lstrip("\ufeff")
+                    first_line = False
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    parsed = orjson.loads(line)
+                except (ValueError, orjson.JSONDecodeError):
+                    continue
+                if isinstance(parsed, dict) and is_record_candidate(parsed):
+                    all_records.append(parsed)
+        finally:
+            if isinstance(raw_content, Path):
+                stream.close()
+        return all_records
 
     lines: list[dict[str, Any]] = []
     buckets: dict[str, list[dict[str, Any]]] = {}
