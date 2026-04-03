@@ -75,7 +75,7 @@ async def build_ingest_plan(
             parse_ready_raw_ids=[],
         )
 
-    if stage == "generate-schemas":
+    if stage == "schema":
         return IngestPlan(
             summary=PlanResult(
                 timestamp=int(time.time()),

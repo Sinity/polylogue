@@ -182,7 +182,7 @@ polylogue run --watch --exec "echo changes"   # Execute command on conversation 
 polylogue run --watch --webhook URL       # Call webhook on conversation changes
 ```
 
-**Pipeline stages**: `acquire` → `parse` → `render` → `index` → `generate-schemas`. Validation happens inline during `parse`. Default runs all stages. `parse` consumes newly acquired raw rows plus persisted backlog that still needs validation or parsing.
+**Pipeline stages**: `acquire` → `schema` → `parse` → `materialize` → `render` → `index`. Validation happens inline during `parse`. Default `all` runs `acquire` → `parse` → `materialize` → `render` → `index`; `schema` is an explicit post-acquire stage. `reprocess` skips acquisition and reruns downstream `parse` → `materialize` → `render` → `index`.
 
 **Source scoping**: Use `--source NAME` (repeatable) to process only specific sources. Use `polylogue sources` to list available sources.
 

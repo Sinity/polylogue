@@ -79,7 +79,7 @@ class TestCommandOutputs:
         output = grid_to_text(grid)
 
         assert output == snapshot
-        assert "--stage [acquire|parse|materialize|render|index|generate-schemas|reprocess|all" in output
+        assert "--stage [acquire|parse|materialize|render|index|schema|reprocess|all" in output
         assert "reprocess (skip" in output
 
 

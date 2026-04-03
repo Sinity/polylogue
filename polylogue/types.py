@@ -145,7 +145,7 @@ class PlanStage(str, Enum):
     MATERIALIZE = "materialize"
     INDEX = "index"
     RENDER = "render"
-    GENERATE_SCHEMAS = "generate-schemas"
+    SCHEMA = "schema"
     REPROCESS = "reprocess"
 
     @classmethod

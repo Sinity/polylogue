@@ -16,7 +16,7 @@ RUN_STAGE_CHOICES: tuple[str, ...] = (
     "materialize",
     "render",
     "index",
-    "generate-schemas",
+    "schema",
     "reprocess",
     "all",
 )
@@ -26,7 +26,7 @@ RUN_STAGE_SEQUENCES: dict[str, tuple[str, ...]] = {
     "materialize": ("materialize",),
     "render": ("render",),
     "index": ("index",),
-    "generate-schemas": ("generate-schemas",),
+    "schema": ("schema",),
     "reprocess": ("parse", "materialize", "render", "index"),
     "all": ("acquire", "parse", "materialize", "render", "index"),
 }

@@ -92,8 +92,8 @@ async def run_sources(
             logger.info("Acquire stage complete", **sm.to_dict(), **acquire_result.counts)
             executed_stages.add("acquire")
 
-        if "generate-schemas" in normalized_stage_sequence:
-            sm = metrics.start_stage("generate-schemas")
+        if "schema" in normalized_stage_sequence:
+            sm = metrics.start_stage("schema")
             schema_outcome = await execute_schema_generation_stage()
             state.record_schema_generation(
                 generated=schema_outcome.generated,
@@ -106,7 +106,7 @@ async def run_sources(
                 generated=schema_outcome.generated,
                 failed=schema_outcome.failed,
             )
-            executed_stages.add("generate-schemas")
+            executed_stages.add("schema")
 
         if "parse" in normalized_stage_sequence:
             sm = metrics.start_stage("ingest")
