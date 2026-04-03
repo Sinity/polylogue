@@ -25,6 +25,19 @@ Usage: python -m polylogue [OPTIONS] COMMAND [ARGS]...
       polylogue "urgent" --add-tag review --dry-run
       polylogue -p old --delete --dry-run
 
+  Subcommands:
+      polylogue run       Parse/render/index pipeline
+      polylogue check     Health check and repair
+      polylogue qa        Composable QA (audit, exercises, invariants)
+      polylogue generate  Synthetic data generation
+      polylogue embed     Generate vector embeddings
+      polylogue products  Inspect durable session/work/maintenance products
+      polylogue tags      List tags with counts
+      polylogue site      Build static HTML archive
+      polylogue sources   List configured sources
+      polylogue schema    Schema generation, package versioning, and evidence
+      polylogue mcp       Start MCP server
+
   Run `polylogue <command> --help` for subcommand details.
 
 Options:
@@ -114,7 +127,7 @@ Commands:
   mcp          Start the MCP server for AI assistant integration.
   products     Inspect durable archive data products.
   qa           Run composable QA: schema audit, exercises, and invariant...
-  reset        Reset database, blob store, assets, rendered outputs, or...
+  reset        Reset database, assets, rendered outputs, or auth state.
   run          Run pipeline stages on configured sources.
   schema       Schema generation, package versioning, and evidence...
   site         Generate a static HTML site from the archive.

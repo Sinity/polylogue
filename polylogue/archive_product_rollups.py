@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import Counter
-from collections.abc import Iterable, Sequence
+from collections.abc import Sequence
 from datetime import UTC, datetime
 
 from polylogue.archive_products import (
@@ -18,7 +18,7 @@ from polylogue.storage.store import SessionTagRollupRecord
 
 
 def build_session_tag_rollup_records(
-    profiles: Iterable[SessionProfile],
+    profiles: Sequence[SessionProfile],
     *,
     materialized_at: str | None = None,
 ) -> list[SessionTagRollupRecord]:

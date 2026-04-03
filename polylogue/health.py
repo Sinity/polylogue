@@ -520,29 +520,13 @@ def _build_schema_health_checks() -> list[HealthCheck]:
 
 
 # ---------------------------------------------------------------------------
-# Convenience: quick_health_summary (lightweight, no full check)
+# Convenience: cached_health_summary (no-op cache, returns "not cached")
 # ---------------------------------------------------------------------------
 
 
 def cached_health_summary(archive_root: Any) -> str:
-    """Return a one-line health summary without running a full health check.
-
-    Reads basic DB stats (conversation count, schema version) for a cheap
-    summary suitable for the non-verbose CLI status line.
-    """
-    try:
-        from polylogue.storage.backends.connection import open_connection
-        from polylogue.storage.backends.schema import SCHEMA_VERSION
-
-        with open_connection(None) as conn:
-            version = conn.execute("PRAGMA user_version").fetchone()[0]
-            if version != SCHEMA_VERSION:
-                return f"schema v{version} (expected v{SCHEMA_VERSION})"
-            row = conn.execute("SELECT COUNT(*) FROM conversations").fetchone()
-            count = row[0] if row else 0
-            return f"OK ({count:,} conversations)"
-    except Exception as exc:
-        return f"unavailable ({exc})"
+    """Stub — caching layer removed. Always returns 'not cached'."""
+    return "not cached"
 
 
 __all__ = [

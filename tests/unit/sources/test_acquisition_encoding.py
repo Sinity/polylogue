@@ -125,11 +125,9 @@ class TestAcquisitionRawPreservation:
         EncodingFixtureBuilder.bom_utf8_json_zip(tmp_path)
         results = _collect_raw_data(tmp_path, provider="chatgpt")
         assert len(results) >= 1
-        # Content should be in blob store with BOM preserved
-        assert results[0].blob_hash is not None
-        from polylogue.storage.blob_store import get_blob_store
-        blob_bytes = get_blob_store().read_all(results[0].blob_hash)
-        assert blob_bytes.startswith(b"\xef\xbb\xbf"), "BOM should be preserved in raw acquisition"
+        # Raw bytes should still contain the BOM
+        raw_bytes = results[0].raw_bytes
+        assert raw_bytes.startswith(b"\xef\xbb\xbf"), "BOM should be preserved in raw acquisition"
 
     def test_parse_stage_strips_bom(self, tmp_path: Path) -> None:
         """iter_source_conversations strips BOM during parsing."""

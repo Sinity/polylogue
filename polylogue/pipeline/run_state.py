@@ -13,7 +13,6 @@ def _initial_counts() -> dict[str, int]:
         "skipped_conversations": 0,
         "skipped_messages": 0,
         "skipped_attachments": 0,
-        "materialized": 0,
         "rendered": 0,
     }
 
@@ -61,9 +60,6 @@ class RunExecutionState:
     def record_schema_generation(self, *, generated: int, failed: int) -> None:
         self.counts["schemas_generated"] = generated
         self.counts["schemas_failed"] = failed
-
-    def record_materialize(self, *, materialized: int) -> None:
-        self.counts["materialized"] = materialized
 
     def record_render(self, *, rendered: int, failures: list[dict[str, str]]) -> None:
         self.counts["rendered"] = rendered

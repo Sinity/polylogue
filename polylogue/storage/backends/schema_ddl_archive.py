@@ -10,7 +10,7 @@ RAW_ARCHIVE_DDL = """
             source_name TEXT,
             source_path TEXT NOT NULL,
             source_index INTEGER,
-            blob_size INTEGER NOT NULL,
+            raw_content BLOB NOT NULL,
             acquired_at TEXT NOT NULL,
             file_mtime TEXT,
             parsed_at TEXT,
@@ -36,6 +36,9 @@ RAW_ARCHIVE_DDL = """
         CREATE INDEX IF NOT EXISTS idx_raw_conv_source_mtime
         ON raw_conversations(source_path, file_mtime)
         WHERE file_mtime IS NOT NULL;
+
+        CREATE INDEX IF NOT EXISTS idx_raw_conv_source_mtime
+        ON raw_conversations(source_path, file_mtime);
 
         CREATE INDEX IF NOT EXISTS idx_raw_conv_parse_ready
         ON raw_conversations(raw_id)

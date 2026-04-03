@@ -14,7 +14,7 @@ from polylogue.config import Config, Source
 from polylogue.pipeline.services.acquisition import AcquireResult, AcquisitionService
 from polylogue.pipeline.services.parsing import ParseResult, ParsingService
 from polylogue.pipeline.services.planning import PlanningService
-from polylogue.pipeline.services.validation import ValidationService  # used by TestPlanningService
+from polylogue.pipeline.services.validation import ValidationService
 from polylogue.sources.parsers.base import RawConversationData
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.repository import ConversationRepository
@@ -81,17 +81,19 @@ class TestParsingServiceParseSources:
         acquire_result = AcquireResult()
         acquire_result.raw_ids = ["raw-1", "raw-2"]
         acquire_result.counts["acquired"] = 2
+        validation_result = MagicMock(parseable_raw_ids=["raw-1", "raw-2"])
 
         with patch("polylogue.pipeline.services.acquisition.AcquisitionService.acquire_sources", new=AsyncMock(return_value=acquire_result)) as mock_acquire:
             with patch("polylogue.pipeline.services.planning.PlanningService.collect_validation_backlog", new=AsyncMock(return_value=[])) as mock_collect_validate:
                 with patch("polylogue.pipeline.services.planning.PlanningService.collect_parse_backlog", new=AsyncMock(return_value=[])) as mock_collect_parse:
-                    parse_result = ParseResult()
-                    parse_result.counts["conversations"] = 2
-                    parse_result.counts["messages"] = 5
-                    parse_result.processed_ids = {"conv-1", "conv-2"}
-                    with patch.object(service, "parse_from_raw", new_callable=AsyncMock, return_value=parse_result) as mock_parse:
-                        source = Source(name="test-source", path=Path("/tmp/inbox"))
-                        result = await service.parse_sources([source])
+                    with patch("polylogue.pipeline.services.validation.ValidationService.validate_raw_ids", new=AsyncMock(return_value=validation_result)) as mock_validate:
+                        parse_result = ParseResult()
+                        parse_result.counts["conversations"] = 2
+                        parse_result.counts["messages"] = 5
+                        parse_result.processed_ids = {"conv-1", "conv-2"}
+                        with patch.object(service, "parse_from_raw", new_callable=AsyncMock, return_value=parse_result) as mock_parse:
+                            source = Source(name="test-source", path=Path("/tmp/inbox"))
+                            result = await service.parse_sources([source])
 
         mock_acquire.assert_awaited_once_with(
             [Source(name="test-source", path=Path("/tmp/inbox"))],
@@ -99,87 +101,13 @@ class TestParsingServiceParseSources:
             progress_callback=None,
             drive_config=mock_config.drive_config,
         )
-        # In the unified ingest flow, validation backlog is collected as part of parse candidates
-        mock_collect_validate.assert_awaited_once()
-        mock_collect_parse.assert_awaited_once()
+        mock_collect_validate.assert_awaited_once_with(source_names=["test-source"], exclude_raw_ids=["raw-1", "raw-2"])
+        mock_collect_parse.assert_awaited_once_with(source_names=["test-source"], exclude_raw_ids=["raw-1", "raw-2"])
+        mock_validate.assert_awaited_once_with(raw_ids=["raw-1", "raw-2"], progress_callback=None)
         mock_parse.assert_awaited_once_with(raw_ids=["raw-1", "raw-2"], progress_callback=None)
         assert result.counts["conversations"] == 2
         assert result.counts["messages"] == 5
         assert result.processed_ids == {"conv-1", "conv-2"}
-
-    async def test_ingest_sources_surfaces_batch_diagnostics_only(self):
-        mock_repository = MagicMock()
-        mock_backend = MagicMock()
-        mock_repository.backend = mock_backend
-        mock_config = MagicMock(spec=Config)
-        service = ParsingService(repository=mock_repository, archive_root=Path("/tmp/archive"), config=mock_config)
-
-        acquire_result = AcquireResult()
-        acquire_result.raw_ids = ["raw-1"]
-
-        parse_result = ParseResult()
-        parse_result.batch_observations = [{
-            "elapsed_ms": 123.4,
-            "blob_mb": 1.5,
-            "rss_end_mb": 42.0,
-        }]
-
-        with patch("polylogue.pipeline.services.acquisition.AcquisitionService.acquire_sources", new=AsyncMock(return_value=acquire_result)):
-            with patch("polylogue.pipeline.services.planning.PlanningService.collect_validation_backlog", new=AsyncMock(return_value=[])):
-                with patch("polylogue.pipeline.services.planning.PlanningService.collect_parse_backlog", new=AsyncMock(return_value=[])):
-                    with patch.object(service, "parse_from_raw", new_callable=AsyncMock, return_value=parse_result):
-                        result = await service.ingest_sources(
-                            sources=[Source(name="test-source", path=Path("/tmp/inbox"))],
-                        )
-
-        assert result.diagnostics["batch_observations"]["batch_count"] == 1
-        assert result.diagnostics["batch_observations"]["max_elapsed_ms"] == 123.4
-        assert "session_product_refresh" not in result.diagnostics
-
-    async def test_ingest_dedupes_backlog_without_rebuilding_raw_id_list(self):
-        mock_repository = MagicMock()
-        mock_backend = MagicMock()
-        mock_repository.backend = mock_backend
-        mock_config = MagicMock(spec=Config)
-        service = ParsingService(repository=mock_repository, archive_root=Path("/tmp/archive"), config=mock_config)
-
-        acquire_result = AcquireResult()
-        acquire_result.raw_ids = ["raw-1", "raw-2", "raw-1"]
-        acquire_result.counts["acquired"] = 3
-
-        parse_backlog_calls: list[list[str]] = []
-        validation_backlog_calls: list[list[str]] = []
-
-        async def _parse_backlog(*, source_names, exclude_raw_ids):
-            assert source_names == ["test-source"]
-            parse_backlog_calls.append(list(exclude_raw_ids))
-            return ["raw-2", "raw-3", "raw-3"]
-
-        async def _validation_backlog(*, source_names, exclude_raw_ids):
-            assert source_names == ["test-source"]
-            validation_backlog_calls.append(list(exclude_raw_ids))
-            return ["raw-3", "raw-4", "raw-1"]
-
-        with patch("polylogue.pipeline.services.acquisition.AcquisitionService.acquire_sources", new=AsyncMock(return_value=acquire_result)):
-            with patch(
-                "polylogue.pipeline.services.planning.PlanningService.collect_parse_backlog",
-                new=AsyncMock(side_effect=_parse_backlog),
-            ):
-                with patch(
-                    "polylogue.pipeline.services.planning.PlanningService.collect_validation_backlog",
-                    new=AsyncMock(side_effect=_validation_backlog),
-                ):
-                    parse_result = ParseResult()
-                    with patch.object(service, "parse_from_raw", new_callable=AsyncMock, return_value=parse_result) as mock_parse:
-                        source = Source(name="test-source", path=Path("/tmp/inbox"))
-                        await service.parse_sources([source])
-
-        assert parse_backlog_calls == [["raw-1", "raw-2"]]
-        assert validation_backlog_calls == [["raw-1", "raw-2", "raw-3"]]
-        mock_parse.assert_awaited_once_with(
-            raw_ids=["raw-1", "raw-2", "raw-3", "raw-4"],
-            progress_callback=None,
-        )
 
     async def test_ingest_skips_parse_when_nothing_acquired(self):
         mock_repository = MagicMock()
@@ -213,14 +141,16 @@ class TestParsingServiceParseSources:
         callback = MagicMock()
         acquire_result = AcquireResult()
         acquire_result.raw_ids = ["raw-1"]
+        validation_result = MagicMock(parseable_raw_ids=["raw-1"])
 
         with patch("polylogue.pipeline.services.acquisition.AcquisitionService.acquire_sources", new=AsyncMock(return_value=acquire_result)) as mock_acquire:
             with patch("polylogue.pipeline.services.planning.PlanningService.collect_validation_backlog", new=AsyncMock(return_value=[])):
                 with patch("polylogue.pipeline.services.planning.PlanningService.collect_parse_backlog", new=AsyncMock(return_value=[])):
-                    parse_result = ParseResult()
-                    with patch.object(service, "parse_from_raw", new_callable=AsyncMock, return_value=parse_result) as mock_parse:
-                        source = Source(name="test-source", path=Path("/tmp/inbox"))
-                        await service.parse_sources([source], progress_callback=callback)
+                    with patch("polylogue.pipeline.services.validation.ValidationService.validate_raw_ids", new=AsyncMock(return_value=validation_result)) as mock_validate:
+                        parse_result = ParseResult()
+                        with patch.object(service, "parse_from_raw", new_callable=AsyncMock, return_value=parse_result) as mock_parse:
+                            source = Source(name="test-source", path=Path("/tmp/inbox"))
+                            await service.parse_sources([source], progress_callback=callback)
 
         mock_acquire.assert_awaited_once_with(
             [Source(name="test-source", path=Path("/tmp/inbox"))],
@@ -228,7 +158,7 @@ class TestParsingServiceParseSources:
             progress_callback=callback,
             drive_config=mock_config.drive_config,
         )
-        # In unified ingest, validation is inline — callback passed to parse_from_raw
+        mock_validate.assert_awaited_once_with(raw_ids=["raw-1"], progress_callback=callback)
         mock_parse.assert_awaited_once_with(raw_ids=["raw-1"], progress_callback=callback)
 
     async def test_backend_not_initialized_raises(self):
@@ -334,7 +264,7 @@ class TestParsingServiceStreaming:
         config = Config(archive_root=tmp_path / "archive", render_root=tmp_path / "render", sources=[])
         service = ParsingService(repository=repository, archive_root=config.archive_root, config=config)
 
-        with patch("polylogue.pipeline.services.ingest_batch.process_ingest_batch", new_callable=AsyncMock) as mock_process:
+        with patch.object(service, "_process_raw_batch", new_callable=AsyncMock) as mock_process:
             await service.parse_from_raw(provider="chatgpt")
 
         backend.queries.iter_raw_ids.assert_called_once_with(provider_name="chatgpt")
@@ -347,34 +277,6 @@ class TestParsingServiceStreaming:
 
 
 class TestPlanningService:
-    @patch("polylogue.pipeline.services.acquisition.iter_source_raw_data")
-    async def test_parse_plan_uses_existing_raw_scope_without_scanning_sources(self, mock_iter, tmp_path: Path):
-        backend = SQLiteBackend(db_path=tmp_path / "test.db")
-        config = Config(sources=[], archive_root=tmp_path / "archive", render_root=tmp_path / "render")
-        planner = PlanningService(backend=backend, config=config)
-        source_dir = tmp_path / "inbox-a"
-        source_dir.mkdir()
-
-        await backend.save_raw_conversation(
-            RawConversationRecord(
-                raw_id="raw-scoped",
-                provider_name="chatgpt",
-                source_name="inbox-a",
-                source_path="/tmp/a.json",
-                blob_size=len(b'{\"id\":\"x\"}'),
-                acquired_at=datetime.now(tz=timezone.utc).isoformat(),
-            )
-        )
-        mock_iter.side_effect = AssertionError("parse planning must not scan sources")
-
-        plan = await planner.build_plan(sources=[Source(name="inbox-a", path=source_dir)], stage="parse")
-
-        assert plan.summary.counts["validate"] == 1
-        assert plan.summary.counts["parse"] == 1
-        assert set(plan.validate_raw_ids) == {"raw-scoped"}
-        assert set(plan.parse_ready_raw_ids) == {"raw-scoped"}
-        mock_iter.assert_not_called()
-
     async def test_planning_includes_scoped_validation_backlog(self, tmp_path: Path):
         backend = SQLiteBackend(db_path=tmp_path / "test.db")
         config = Config(sources=[], archive_root=tmp_path / "archive", render_root=tmp_path / "render")
@@ -393,12 +295,12 @@ class TestPlanningService:
                     provider_name=provider_name,
                     source_name=source_name,
                     source_path=source_path,
-                    blob_size=len(b'{"id":"x"}'),
+                    raw_content=b'{"id":"x"}',
                     acquired_at=datetime.now(tz=timezone.utc).isoformat(),
                 )
             )
 
-        plan = await planner.build_plan(sources=[Source(name="inbox-a", path=source_dir)], stage="parse")
+        plan = await planner.build_plan(sources=[Source(name="inbox-a", path=source_dir)], stage="validate")
 
         assert plan.summary.counts["validate"] == 1
         assert plan.summary.details["backlog_validate"] == 1
@@ -445,7 +347,7 @@ class TestPlanningService:
                     provider_name="chatgpt",
                     source_name="inbox-a",
                     source_path=f"/tmp/backlog-{index}.json",
-                    blob_size=len(b'{"id":"x"}'),
+                    raw_content=b'{"id":"x"}',
                     acquired_at=datetime.now(tz=timezone.utc).isoformat(),
                 )
             )
@@ -480,7 +382,7 @@ class TestPlanningService:
                     provider_name="chatgpt",
                     source_name="inbox-a",
                     source_path=f"/tmp/p-{index}.json",
-                    blob_size=len(b'{"id":"x"}'),
+                    raw_content=b'{"id":"x"}',
                     acquired_at=datetime.now(tz=timezone.utc).isoformat(),
                 )
             )
@@ -517,7 +419,7 @@ class TestPlanningService:
                     provider_name="chatgpt",
                     source_name="inbox-a",
                     source_path=f"/tmp/{raw_id}.json",
-                    blob_size=len(b'{"id":"x"}'),
+                    raw_content=b'{"id":"x"}',
                     acquired_at=datetime.now(tz=timezone.utc).isoformat(),
                 )
             )

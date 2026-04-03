@@ -5,7 +5,6 @@ from __future__ import annotations
 from collections import Counter
 from collections.abc import Callable, Iterable
 from io import BytesIO, StringIO
-from pathlib import Path
 from typing import Any, Literal
 
 import orjson
@@ -133,60 +132,47 @@ def extract_payload_samples(
 
 
 def extract_record_samples_from_raw_content(
-    raw_content: Path | bytes | str | Any,
+    raw_content: bytes | str | Any,
     *,
     max_samples: int,
     record_type_key: str | None = None,
 ) -> list[dict[str, Any]]:
-    """Stream-record sample extraction for large JSONL payloads.
-
-    When *raw_content* is a :class:`~pathlib.Path`, lines are streamed
-    directly from the file handle — enabling constant-memory sampling
-    of multi-GB files.
-    """
+    """Stream-record sample extraction for large JSONL payloads."""
     if max_samples <= 0:
         return []
 
-    if isinstance(raw_content, Path):
-        stream = open(raw_content, "rb")  # noqa: SIM115 — caller-managed context
-    else:
-        raw = raw_content if isinstance(raw_content, (bytes, str)) else str(raw_content)
-        stream = BytesIO(raw) if isinstance(raw, bytes) else StringIO(raw)
-
+    raw = raw_content if isinstance(raw_content, (bytes, str)) else str(raw_content)
     lines: list[dict[str, Any]] = []
     buckets: dict[str, list[dict[str, Any]]] = {}
     dict_count = 0
     scan_cap = max(1024, max_samples * 64)
     per_bucket_cap = 8
     first_line = True
+    stream = BytesIO(raw) if isinstance(raw, bytes) else StringIO(raw)
 
-    try:
-        for raw_line in stream:
-            line = raw_line.decode("utf-8") if isinstance(raw_line, bytes) else raw_line
-            if first_line:
-                line = line.lstrip("\ufeff")
-                first_line = False
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                parsed = orjson.loads(line)
-            except (ValueError, orjson.JSONDecodeError):
-                continue
-            if not isinstance(parsed, dict) or not is_record_candidate(parsed):
-                continue
+    for raw_line in stream:
+        line = raw_line.decode("utf-8") if isinstance(raw_line, bytes) else raw_line
+        if first_line:
+            line = line.lstrip("\ufeff")
+            first_line = False
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            parsed = orjson.loads(line)
+        except (ValueError, orjson.JSONDecodeError):
+            continue
+        if not isinstance(parsed, dict) or not is_record_candidate(parsed):
+            continue
 
-            dict_count += 1
-            if dict_count <= max_samples:
-                lines.append(parsed)
-            bucket = buckets.setdefault(record_bucket_key(parsed, record_type_key), [])
-            if len(bucket) < per_bucket_cap:
-                bucket.append(parsed)
-            if dict_count >= scan_cap:
-                break
-    finally:
-        if isinstance(raw_content, Path):
-            stream.close()
+        dict_count += 1
+        if dict_count <= max_samples:
+            lines.append(parsed)
+        bucket = buckets.setdefault(record_bucket_key(parsed, record_type_key), [])
+        if len(bucket) < per_bucket_cap:
+            bucket.append(parsed)
+        if dict_count >= scan_cap:
+            break
 
     if dict_count == 0:
         return []

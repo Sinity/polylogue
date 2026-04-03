@@ -492,6 +492,7 @@ class TestProductTools:
             enrichments_raw = await invoke_surface_async(
                 mcp_server._tool_manager._tools["session_enrichments"].fn,
                 provider="claude-code",
+                refined_work_kind="planning",
                 limit=5,
             )
             phases_raw = await invoke_surface_async(
@@ -545,27 +546,6 @@ class TestProductTools:
         assert day_payload["items"][0]["product_kind"] == "day_session_summary"
         assert week_payload["items"][0]["product_kind"] == "week_session_summary"
         assert analytics_payload["items"][0]["product_kind"] == "provider_analytics"
-
-    @pytest.mark.asyncio
-    async def test_session_enrichments_tool_rejects_unknown_query_fields(self, mcp_server):
-        with patch("polylogue.mcp.server._get_archive_ops") as mock_get_archive_ops:
-            mock_ops = MagicMock()
-            mock_ops.list_session_enrichment_products = AsyncMock(return_value=[])
-            mock_get_archive_ops.return_value = mock_ops
-
-            raw = await invoke_surface_async(
-                mcp_server._tool_manager._tools["session_enrichments"].fn,
-                provider="claude-code",
-                refined_work_kind="planning",
-                limit=5,
-            )
-
-        payload = json.loads(raw)
-        assert payload["tool"] == "session_enrichments"
-        assert payload["error"].startswith(
-            "Unknown query field(s) for session_enrichments: refined_work_kind."
-        )
-        mock_ops.list_session_enrichment_products.assert_not_awaited()
 
 
 class TestStatsTool:

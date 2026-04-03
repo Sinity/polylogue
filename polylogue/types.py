@@ -141,13 +141,11 @@ class PlanStage(str, Enum):
 
     ALL = "all"
     ACQUIRE = "acquire"
-    CUSTOM = "custom"
+    VALIDATE = "validate"
     PARSE = "parse"
-    MATERIALIZE = "materialize"
     INDEX = "index"
     RENDER = "render"
-    SCHEMA = "schema"
-    REPROCESS = "reprocess"
+    GENERATE_SCHEMAS = "generate-schemas"
 
     @classmethod
     def from_string(cls, value: str | PlanStage) -> PlanStage:

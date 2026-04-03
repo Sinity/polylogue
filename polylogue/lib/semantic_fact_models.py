@@ -28,8 +28,16 @@ class MessageSemanticFacts:
     is_substantive: bool
     tool_calls: tuple[ToolCall, ...]
     action_events: tuple[ActionEvent, ...]
-    tool_category_counts: dict[str, int]
     reasoning_traces: tuple[ReasoningTrace, ...]
+
+    @property
+    def tool_category_counts(self) -> dict[str, int]:
+        from collections import Counter
+
+        from polylogue.lib.semantic_fact_support import sorted_counts
+
+        counts = Counter(action.kind.value for action in self.action_events)
+        return sorted_counts(dict(counts))
 
     @property
     def affected_paths(self) -> tuple[str, ...]:

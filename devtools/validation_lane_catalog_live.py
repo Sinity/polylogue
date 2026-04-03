@@ -4,25 +4,9 @@ from __future__ import annotations
 
 import sys
 
-from devtools.validation_lane_base import memory_budget_lane, module_lane, polylogue_lane
+from devtools.validation_lane_base import memory_budget_lane, polylogue_lane
 
 LIVE_LANES = {
-    "live-archive-subset-parse-probe": module_lane(
-        "live-archive-subset-parse-probe",
-        "Live archive medium archive-subset parse probe with persisted manifest/workdir artifacts",
-        1800,
-        "devtools.pipeline_probe",
-        "--input-mode",
-        "archive-subset",
-        "--stage",
-        "parse",
-        "--sample-per-provider",
-        "50",
-        "--workdir",
-        "/tmp/polylogue-live-archive-subset-parse-probe",
-        "--json-out",
-        "/tmp/polylogue-live-archive-subset-parse-probe.json",
-    ),
     "live-exercises": polylogue_lane(
         "live-exercises",
         "Operator-run live archive showcase/QA exercise lane",

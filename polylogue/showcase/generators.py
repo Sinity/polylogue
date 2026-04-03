@@ -13,10 +13,11 @@ from typing import Any
 
 import click
 
-from polylogue.cli.click_app import cli as root_cli
-from polylogue.cli.command_inventory import CommandPath, iter_command_paths
-from polylogue.showcase.dimensions import query_read, schema_exercise
-from polylogue.showcase.exercise_models import Exercise, Validation
+from polylogue.showcase.dimensions import (
+    query_read,
+    schema_exercise,
+)
+from polylogue.showcase.exercises import Exercise, Validation
 
 
 def discover_filter_flags(cli_group: click.Group) -> list[dict[str, Any]]:
@@ -111,78 +112,6 @@ def generate_filter_exercises(cli_group: click.Group) -> list[Exercise]:
             env="any",
         ))
 
-    return exercises
-
-
-def inventory_command_paths() -> tuple[CommandPath, ...]:
-    """Return the recursive command-path inventory for the main CLI."""
-    return iter_command_paths(root_cli)
-
-
-def command_help_exercise_names() -> set[str]:
-    """Return the canonical showcase exercise names for command-path help."""
-    return {command_path.help_exercise_name for command_path in inventory_command_paths()}
-
-
-def generate_command_help_exercises() -> list[Exercise]:
-    """Generate tier-0 help exercises from the recursive Click command tree."""
-    exercises: list[Exercise] = []
-    for command_path in inventory_command_paths():
-        display_name = command_path.display_name
-        exercises.append(
-            Exercise(
-                name=command_path.help_exercise_name,
-                group="structural",
-                description=f"{display_name} help",
-                args=[*command_path.path, "--help"],
-                validation=Validation(stdout_contains=(f"polylogue {display_name}",)),
-                tier=0,
-            )
-        )
-    return exercises
-
-
-def product_json_exercise_names() -> set[str]:
-    """Return the canonical showcase exercise names for products JSON coverage."""
-    return {
-        f"products-{'-'.join(command_path.path[1:])}-json"
-        for command_path in inventory_command_paths()
-        if len(command_path.path) >= 2
-        and command_path.path[0] == "products"
-        and any(
-            isinstance(param, click.Option) and "--json" in param.opts
-            for param in command_path.command.params
-        )
-    }
-
-
-def generate_products_json_exercises() -> list[Exercise]:
-    """Generate seeded JSON exercises for registry-backed product commands."""
-    exercises: list[Exercise] = []
-    for command_path in inventory_command_paths():
-        if len(command_path.path) < 2 or command_path.path[0] != "products":
-            continue
-        if not any(
-            isinstance(param, click.Option) and "--json" in param.opts
-            for param in command_path.command.params
-        ):
-            continue
-        display_name = command_path.display_name
-        exercise_name = f"products-{'-'.join(command_path.path[1:])}-json"
-        exercises.append(
-            Exercise(
-                name=exercise_name,
-                group="subcommands",
-                description=f"{display_name} JSON output",
-                args=[*command_path.path, "--json"],
-                validation=Validation(stdout_is_valid_json=True),
-                needs_data=True,
-                tier=1,
-                env="seeded",
-                output_ext=".json",
-                artifact_class="json",
-            )
-        )
     return exercises
 
 
@@ -294,8 +223,6 @@ def generate_all_exercises(cli_group: click.Group | None = None) -> list[Exercis
     exercises: list[Exercise] = []
     if cli_group is not None:
         exercises.extend(generate_filter_exercises(cli_group))
-    exercises.extend(generate_command_help_exercises())
-    exercises.extend(generate_products_json_exercises())
     exercises.extend(generate_format_exercises())
     exercises.extend(generate_schema_exercises())
     return exercises
@@ -306,10 +233,5 @@ __all__ = [
     "generate_all_exercises",
     "generate_filter_exercises",
     "generate_format_exercises",
-    "command_help_exercise_names",
-    "generate_command_help_exercises",
-    "generate_products_json_exercises",
     "generate_schema_exercises",
-    "inventory_command_paths",
-    "product_json_exercise_names",
 ]

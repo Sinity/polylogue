@@ -5,12 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from polylogue.cli.formatting import format_sources_summary
-from polylogue.cli.helper_source_selection import (
-    complete_configured_source_names,
-    complete_run_source_names,
-    maybe_prompt_sources,
-    resolve_sources,
-)
+from polylogue.cli.helper_source_selection import maybe_prompt_sources, resolve_sources
 from polylogue.cli.helper_source_state import load_last_source, save_last_source, source_state_path
 from polylogue.cli.helper_summary import print_summary_impl
 from polylogue.cli.helper_support import fail, load_effective_config
@@ -52,8 +47,6 @@ def print_summary(env, *, verbose: bool = False) -> None:
 
 __all__ = [
     "cached_health_summary",
-    "complete_configured_source_names",
-    "complete_run_source_names",
     "fail",
     "format_sources_summary",
     "get_health",

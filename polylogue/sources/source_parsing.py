@@ -5,12 +5,12 @@ from __future__ import annotations
 import json
 import zipfile
 from collections.abc import Iterable
+from io import BytesIO
 from typing import Any
 
 from polylogue.config import Source
 from polylogue.lib.artifact_taxonomy import classify_artifact_path
 from polylogue.logging import get_logger
-from polylogue.storage.blob_store import get_blob_store
 from polylogue.types import Provider
 
 from . import cursor as _cursor
@@ -93,22 +93,12 @@ def iter_source_conversations_with_raw(
                 emitter = _ConversationEmitter(ctx)
 
                 if capture_raw and should_group:
-                    blob_hash, blob_size = get_blob_store().write_from_path(path)
-                    raw_data = RawConversationData(
-                        raw_bytes=b"",
-                        source_path=str(path),
-                        source_index=None,
-                        file_mtime=file_mtime,
-                        provider_hint=provider_hint,
-                        blob_hash=blob_hash,
-                        blob_size=blob_size,
+                    raw_bytes = path.read_bytes()
+                    yield from emitter.emit(
+                        BytesIO(raw_bytes),
+                        path.name,
+                        pre_read_bytes=raw_bytes,
                     )
-                    with path.open("rb") as handle:
-                        yield from emitter.emit(
-                            handle,
-                            path.name,
-                            precomputed_raw=raw_data,
-                        )
                 else:
                     with path.open("rb") as handle:
                         yield from emitter.emit(handle, path.name)

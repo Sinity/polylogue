@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
-
 import aiosqlite
 
 from polylogue.storage.store import SessionProfileRecord, _json_array_or_none, _json_or_none
@@ -22,10 +20,27 @@ async def _table_has_column(conn: aiosqlite.Connection, table: str, column: str)
     _ASYNC_COLUMN_CACHE[key] = found
     return found
 
-def _session_profile_insert_columns(
-    *,
-    has_legacy_payload: bool,
-) -> list[str]:
+__all__ = ["replace_session_profile"]
+
+
+async def replace_session_profile(
+    conn: aiosqlite.Connection,
+    record: SessionProfileRecord,
+    transaction_depth: int,
+) -> None:
+    await conn.execute(
+        "DELETE FROM session_profiles WHERE conversation_id = ?",
+        (record.conversation_id,),
+    )
+    payload_json = _json_or_none(
+        {
+            **record.evidence_payload,
+            **record.inference_payload,
+            "conversation_id": str(record.conversation_id),
+            "provider": record.provider_name,
+            "title": record.title,
+        }
+    )
     columns = [
         "conversation_id",
         "materializer_version",
@@ -37,6 +52,7 @@ def _session_profile_insert_columns(
         "first_message_at",
         "last_message_at",
         "canonical_session_date",
+
         "repo_paths_json",
         "canonical_projects_json",
         "tags_json",
@@ -55,40 +71,6 @@ def _session_profile_insert_columns(
         "wall_duration_ms",
         "cost_is_estimated",
     ]
-    if has_legacy_payload:
-        columns.append("payload_json")
-    columns.extend(
-        [
-            "evidence_payload_json",
-            "inference_payload_json",
-            "enrichment_payload_json",
-            "search_text",
-            "evidence_search_text",
-            "inference_search_text",
-            "enrichment_search_text",
-            "enrichment_version",
-            "enrichment_family",
-            "inference_version",
-            "inference_family",
-        ]
-    )
-    return columns
-
-
-def _session_profile_insert_values(
-    record: SessionProfileRecord,
-    *,
-    has_legacy_payload: bool,
-) -> tuple[object, ...]:
-    payload_json = _json_or_none(
-        {
-            **record.evidence_payload,
-            **record.inference_payload,
-            "conversation_id": str(record.conversation_id),
-            "provider": record.provider_name,
-            "title": record.title,
-        }
-    )
     values: list[object] = [
         record.conversation_id,
         record.materializer_version,
@@ -100,6 +82,7 @@ def _session_profile_insert_values(
         record.first_message_at,
         record.last_message_at,
         record.canonical_session_date,
+
         _json_array_or_none(record.repo_paths),
         _json_array_or_none(record.canonical_projects),
         _json_array_or_none(record.tags),
@@ -118,8 +101,24 @@ def _session_profile_insert_values(
         record.wall_duration_ms,
         int(record.cost_is_estimated),
     ]
-    if has_legacy_payload:
+    if await _table_has_column(conn, "session_profiles", "payload_json"):
+        columns.append("payload_json")
         values.append(payload_json)
+    columns.extend(
+        [
+            "evidence_payload_json",
+            "inference_payload_json",
+            "enrichment_payload_json",
+            "search_text",
+            "evidence_search_text",
+            "inference_search_text",
+            "enrichment_search_text",
+            "enrichment_version",
+            "enrichment_family",
+            "inference_version",
+            "inference_family",
+        ]
+    )
     values.extend(
         [
             _json_or_none(record.evidence_payload),
@@ -135,54 +134,14 @@ def _session_profile_insert_values(
             record.inference_family,
         ]
     )
-    return tuple(values)
-
-
-__all__ = ["replace_session_profile", "replace_session_profiles_bulk"]
-
-
-async def replace_session_profiles_bulk(
-    conn: aiosqlite.Connection,
-    conversation_ids: Sequence[str],
-    records: Sequence[SessionProfileRecord],
-    transaction_depth: int,
-) -> None:
-    if conversation_ids:
-        placeholders = ", ".join("?" for _ in conversation_ids)
-        await conn.execute(
-            f"DELETE FROM session_profiles WHERE conversation_id IN ({placeholders})",
-            tuple(conversation_ids),
-        )
-    if records:
-        has_legacy_payload = await _table_has_column(conn, "session_profiles", "payload_json")
-        columns = _session_profile_insert_columns(has_legacy_payload=has_legacy_payload)
-        placeholders = ", ".join("?" for _ in columns)
-        await conn.executemany(
-            f"""
-            INSERT INTO session_profiles (
-                {", ".join(columns)}
-            ) VALUES ({placeholders})
-            """,
-            [
-                _session_profile_insert_values(
-                    record,
-                    has_legacy_payload=has_legacy_payload,
-                )
-                for record in records
-            ],
-        )
+    placeholders = ", ".join("?" for _ in columns)
+    await conn.execute(
+        f"""
+        INSERT INTO session_profiles (
+            {", ".join(columns)}
+        ) VALUES ({placeholders})
+        """,
+        tuple(values),
+    )
     if transaction_depth == 0:
         await conn.commit()
-
-
-async def replace_session_profile(
-    conn: aiosqlite.Connection,
-    record: SessionProfileRecord,
-    transaction_depth: int,
-) -> None:
-    await replace_session_profiles_bulk(
-        conn,
-        [record.conversation_id],
-        [record],
-        transaction_depth,
-    )

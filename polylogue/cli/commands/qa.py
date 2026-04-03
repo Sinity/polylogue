@@ -7,7 +7,7 @@ from pathlib import Path
 
 import click
 
-from polylogue.cli.helpers import complete_configured_source_names, load_effective_config
+from polylogue.cli.helpers import load_effective_config
 from polylogue.cli.qa_capture import run_vhs_capture as _run_vhs_capture
 from polylogue.cli.qa_snapshot import snapshot_results
 from polylogue.cli.types import AppEnv
@@ -19,8 +19,7 @@ _STAGE_CHOICES = click.Choice(["audit", "exercises", "invariants"])
 @click.option("--synthetic/--live", default=True,
               help="Data source: synthetic (default) or live real data")
 @click.option("--source", "source_names", multiple=True,
-              shell_complete=complete_configured_source_names,
-              help="Configured real source name (repeatable, implies --fresh)")
+              help="Specific real source(s) in fresh workspace (repeatable, implies --fresh)")
 @click.option("--fresh", is_flag=True, default=None,
               help="Run in an isolated temp workspace (default for synthetic)")
 @click.option("--workspace", type=click.Path(path_type=Path),

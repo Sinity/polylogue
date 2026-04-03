@@ -20,7 +20,6 @@ def plan_sources(
     config: Config,
     *,
     stage: str = "all",
-    stage_sequence: Sequence[str] | None = None,
     ui: object | None = None,
     source_names: Sequence[str] | None = None,
     backend: SQLiteBackend | None = None,
@@ -34,7 +33,6 @@ def plan_sources(
         plan = await planner.build_plan(
             sources=select_sources(config, source_names),
             stage=stage,
-            stage_sequence=stage_sequence,
             ui=ui,
             progress_callback=progress_callback,
             preview=True,

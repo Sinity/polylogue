@@ -1,7 +1,0 @@
-Usage: python -m polylogue mcp [OPTIONS]
-
-  Start the MCP server for AI assistant integration.
-
-Options:
-  --transport [stdio]  Transport protocol
-  -h, --help           Show this message and exit.

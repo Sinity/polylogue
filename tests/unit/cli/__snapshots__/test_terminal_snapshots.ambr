@@ -30,8 +30,6 @@
                                     databases)
     --runtime                       Run environment and runtime verification
                                     checks
-    --blob                          Verify blob store integrity
-                                    (missing<PATH> blobs)
     --schemas                       Run raw-corpus schema verification (non-
                                     mutating)
     --proof                         Run durable artifact support proof
@@ -63,32 +61,34 @@
 # ---
 # name: TestCommandOutputs.test_run_help_output_snapshot
   '''
-  Usage: polylogue run [OPTIONS] COMMAND1 [ARGS]... [COMMAND2 [ARGS]...]...
+  Usage: polylogue run [OPTIONS]
   
     Run pipeline stages on configured sources.
   
   Options:
-    --preview       Preview work without writing
-    --source TEXT   Configured source name (repeatable). Accepts 'last' for the
-                    previously synced source.
-    --watch         Watch sources for changes and run continuously
-    --notify        Desktop notification on conversation changes (requires
-                    --watch)
-    --exec TEXT     Execute command on conversation changes (requires --watch)
-    --webhook TEXT  Call webhook URL on conversation changes (requires --watch)
-    --reparse       Force re-parsing of all raw conversations (clears parse
-                    tracking)
-    -h, --help      Show this message and exit.
-  
-  Commands:
-    acquire      Capture raw payloads only.
-    all          Run the full pipeline.
-    index        Build retrieval and search indexes.
-    materialize  Refresh derived read models.
-    parse        Parse persisted raw backlog into normalized conversations.
-    render       Render human-facing publication artifacts.
-    reprocess    Skip acquisition and rerun downstream stages.
-    schema       Infer schemas from acquired raw payloads.
+    --preview                       Preview work without writing
+    --stage [acquire|validate|parse|render|index|generate-schemas|all]
+                                    Pipeline stage: acquire (store raw),
+                                    validate (schema check raw payloads), parse
+                                    (extract conversations), render (output),
+                                    index (search), generate-schemas, or all
+                                    [default: all]
+    --source TEXT                   Limit to source name (repeatable). 'last' =
+                                    previously synced source. List with:
+                                    polylogue sources
+    --format [markdown|html]        Output format for rendering (markdown or
+                                    html)  [default: html]
+    --watch                         Watch sources for changes and run
+                                    continuously
+    --notify                        Desktop notification on conversation changes
+                                    (requires --watch)
+    --exec TEXT                     Execute command on conversation changes
+                                    (requires --watch)
+    --webhook TEXT                  Call webhook URL on conversation changes
+                                    (requires --watch)
+    --reparse                       Force re-parsing of all raw conversations
+                                    (clears parse tracking)
+    -h, --help                      Show this message and exit.
   '''
 # ---
 # name: TestCommandOutputs.test_sources_output_snapshot
@@ -140,6 +140,19 @@
     Modifiers (write operations):
         polylogue "urgent" --add-tag review --dry-run
         polylogue -p old --delete --dry-run
+  
+    Subcommands:
+        polylogue run       Parse<PATH> pipeline
+        polylogue check     Health check and repair
+        polylogue qa        Composable QA (audit, exercises, invariants)
+        polylogue generate  Synthetic data generation
+        polylogue embed     Generate vector embeddings
+        polylogue products  Inspect durable session<PATH> products
+        polylogue tags      List tags with counts
+        polylogue site      Build static HTML archive
+        polylogue sources   List configured sources
+        polylogue schema    Schema generation, package versioning, and evidence
+        polylogue mcp       Start MCP server
   
     Run `polylogue <command> --help` for subcommand details.
   
@@ -232,7 +245,7 @@
     mcp          Start the MCP server for AI assistant integration.
     products     Inspect durable archive data products.
     qa           Run composable QA: schema audit, exercises, and invariant...
-    reset        Reset database, blob store, assets, rendered outputs, or...
+    reset        Reset database, assets, rendered outputs, or auth state.
     run          Run pipeline stages on configured sources.
     schema       Schema generation, package versioning, and evidence...
     site         Generate a static HTML site from the archive.
@@ -273,6 +286,22 @@
     Modifiers (write operations):
         polylogue "urgent" --add-tag review --dry-run
         polylogue -p old --delete --dry-run
+  
+    Subcommands:
+        polylogue run       Parse<PATH> pipeline
+        polylogue check     Health check and repair
+        polylogue qa        Composable QA (audit, exercises, i
+  nvariants)
+        polylogue generate  Synthetic data generation
+        polylogue embed     Generate vector embeddings
+        polylogue products  Inspect durable session<PATH>
+  enance products
+        polylogue tags      List tags with counts
+        polylogue site      Build static HTML archive
+        polylogue sources   List configured sources
+        polylogue schema    Schema generation, package version
+  ing, and evidence
+        polylogue mcp       Start MCP server
   
     Run `polylogue <command> --help` for subcommand details.
   
@@ -411,8 +440,8 @@
     products     Inspect durable archive data products.
     qa           Run composable QA: schema audit, exercises, a
   nd invariant...
-    reset        Reset database, blob store, assets, rendered
-  outputs, or...
+    reset        Reset database, assets, rendered outputs, or
+  auth state.
     run          Run pipeline stages on configured sources.
     schema       Schema generation, package versioning, and ev
   idence...
@@ -449,6 +478,19 @@
     Modifiers (write operations):
         polylogue "urgent" --add-tag review --dry-run
         polylogue -p old --delete --dry-run
+  
+    Subcommands:
+        polylogue run       Parse<PATH> pipeline
+        polylogue check     Health check and repair
+        polylogue qa        Composable QA (audit, exercises, invariants)
+        polylogue generate  Synthetic data generation
+        polylogue embed     Generate vector embeddings
+        polylogue products  Inspect durable session<PATH> products
+        polylogue tags      List tags with counts
+        polylogue site      Build static HTML archive
+        polylogue sources   List configured sources
+        polylogue schema    Schema generation, package versioning, and evidence
+        polylogue mcp       Start MCP server
   
     Run `polylogue <command> --help` for subcommand details.
   
@@ -539,7 +581,7 @@
     mcp          Start the MCP server for AI assistant integration.
     products     Inspect durable archive data products.
     qa           Run composable QA: schema audit, exercises, and invariant...
-    reset        Reset database, blob store, assets, rendered outputs, or...
+    reset        Reset database, assets, rendered outputs, or auth state.
     run          Run pipeline stages on configured sources.
     schema       Schema generation, package versioning, and evidence...
     site         Generate a static HTML site from the archive.

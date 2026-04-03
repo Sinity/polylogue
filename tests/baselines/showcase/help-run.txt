@@ -1,27 +1,27 @@
-Usage: python -m polylogue run [OPTIONS] COMMAND1 [ARGS]... [COMMAND2
-                               [ARGS]...]...
+Usage: cli run [OPTIONS]
 
   Run pipeline stages on configured sources.
 
 Options:
-  --preview       Preview work without writing
-  --source TEXT   Configured source name (repeatable). Accepts 'last' for the
-                  previously synced source.
-  --watch         Watch sources for changes and run continuously
-  --notify        Desktop notification on conversation changes (requires
-                  --watch)
-  --exec TEXT     Execute command on conversation changes (requires --watch)
-  --webhook TEXT  Call webhook URL on conversation changes (requires --watch)
-  --reparse       Force re-parsing of all raw conversations (clears parse
-                  tracking)
-  -h, --help      Show this message and exit.
-
-Commands:
-  acquire      Capture raw payloads only.
-  all          Run the full pipeline.
-  index        Build retrieval and search indexes.
-  materialize  Refresh derived read models.
-  parse        Parse persisted raw backlog into normalized conversations.
-  render       Render human-facing publication artifacts.
-  reprocess    Skip acquisition and rerun downstream stages.
-  schema       Infer schemas from acquired raw payloads.
+  --preview                       Preview work without writing
+  --stage [acquire|validate|parse|render|index|generate-schemas|all]
+                                  Pipeline stage: acquire (store raw), validate
+                                  (schema check raw payloads), parse (extract
+                                  conversations), render (output), index
+                                  (search), generate-schemas, or all  [default:
+                                  all]
+  --source TEXT                   Limit to source name (repeatable). 'last' =
+                                  previously synced source. List with: polylogue
+                                  sources
+  --format [markdown|html]        Output format for rendering (markdown or html)
+                                  [default: html]
+  --watch                         Watch sources for changes and run continuously
+  --notify                        Desktop notification on conversation changes
+                                  (requires --watch)
+  --exec TEXT                     Execute command on conversation changes (requires
+                                  --watch)
+  --webhook TEXT                  Call webhook URL on conversation changes
+                                  (requires --watch)
+  --reparse                       Force re-parsing of all raw conversations
+                                  (clears parse tracking)
+  -h, --help                      Show this message and exit.

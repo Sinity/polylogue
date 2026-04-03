@@ -53,7 +53,7 @@ async def test_plan_and_run_sources(workspace_env, tmp_path, with_plan):
         result = await run_sources(config=config, stage="all")
 
     assert result.counts["conversations"] == 1
-    assert result.run_id is not None
+    assert any((config.archive_root / "runs").iterdir())
 
 
 @pytest.mark.parametrize(
@@ -83,8 +83,9 @@ async def test_run_sources_filtered_by_stage(
             Source(name="source-a", path=inbox / "a.json"),
             Source(name="source-b", path=inbox / "b.json"),
         ]
-        # Acquire first, then parse (validation is inline in ingest)
+        # Stages are independent: acquire + validate before testing parse
         await run_sources(config=config, stage="acquire", source_names=["source-a"])
+        await run_sources(config=config, stage="validate", source_names=["source-a"])
         result = await run_sources(config=config, stage=stage, source_names=["source-a"])
     else:
         inbox = tmp_path / "inbox"
@@ -92,6 +93,7 @@ async def test_run_sources_filtered_by_stage(
         config = get_config()
         config.sources = [Source(name="inbox", path=source_file)]
         await run_sources(config=config, stage="acquire", source_names=["inbox"])
+        await run_sources(config=config, stage="validate", source_names=["inbox"])
         await run_sources(config=config, stage="parse", source_names=["inbox"])
         result = await run_sources(config=config, stage=stage, source_names=["inbox"])
 
@@ -113,8 +115,9 @@ async def test_run_index_filters_selected_sources(workspace_env, tmp_path, monke
         Source(name="source-a", path=inbox / "a.json"),
         Source(name="source-b", path=inbox / "b.json"),
     ]
-    # Acquire + parse (validation is inline in ingest)
+    # Stages are independent: populate pipeline through all three predecessors
     await run_sources(config=config, stage="acquire")
+    await run_sources(config=config, stage="validate")
     await run_sources(config=config, stage="parse")
 
     id_by_source = {}
@@ -148,22 +151,17 @@ async def test_run_writes_unique_report_files(workspace_env, tmp_path, monkeypat
     config = get_config()
     config.sources = [Source(name="inbox", path=source_file)]
 
+    import polylogue.pipeline.runner as runner_mod
+
+    fixed_time = 1_700_000_000
+    monkeypatch.setattr(runner_mod.time, "time", lambda: fixed_time)
+    monkeypatch.setattr(runner_mod.time, "perf_counter", lambda: 0.0)
+
     await run_sources(config=config, stage="all")
     await run_sources(config=config, stage="all")
 
-    run_reports = sorted((workspace_env["archive_root"] / "runs").glob("run-*.json"))
-    assert len(run_reports) == 2
-    assert run_reports[0].name != run_reports[1].name
-    for report_path in run_reports:
-        payload = json.loads(report_path.read_text())
-        assert "metrics" in payload
-        assert payload["metrics"]["peak_rss_self_mb"] is not None
-        assert payload["metrics"]["peak_rss_children_mb"] is not None
-
-    from polylogue.pipeline.run_finalization import latest_run
-
-    run = await latest_run()
-    assert run is not None
+    runs = list((config.archive_root / "runs").glob(f"run-{fixed_time}-*.json"))
+    assert len(runs) == 2
 
 
 @pytest.mark.parametrize("setup_type", ["parsed_json", "null_columns"])
@@ -218,7 +216,7 @@ def test_display_result_reports_render_failures(mock_env, capsys):
     captured = capsys.readouterr()
     assert "Render failures (15)" in captured.err
     assert "and 5 more" in captured.err
-    assert "re-run with `polylogue run render`" in captured.err
+    assert "re-run with `polylogue run --stage render`" in captured.err
 
 
 def test_display_result_reports_index_error_hint(mock_env, capsys):
@@ -237,7 +235,7 @@ def test_display_result_reports_index_error_hint(mock_env, capsys):
 
     captured = capsys.readouterr()
     assert "Index error: Database locked" in captured.err
-    assert "run `polylogue run index`" in captured.err
+    assert "run `polylogue run --stage index`" in captured.err
 
 
 class TestWatchModeCallbacks:

@@ -25,29 +25,19 @@ def _default_encoder(user_default: Callable[[Any], Any] | None = None) -> Callab
     return _encoder
 
 
-def dumps_bytes(
-    obj: Any,
-    *,
-    default: Callable[[Any], Any] | None = None,
-    option: int | None = None,
-) -> bytes:
-    """Dump object to UTF-8 JSON bytes."""
+def dumps(obj: Any, *, default: Callable[[Any], Any] | None = None, option: int | None = None) -> str:
+    """Dump object to JSON string."""
     encoder = _default_encoder(default)
     kwargs: dict[str, Any] = {"default": encoder}
     if option is not None:
         kwargs["option"] = option
     try:
-        return orjson.dumps(obj, **kwargs)
+        return str(orjson.dumps(obj, **kwargs).decode("utf-8"))
     except TypeError:
         pass
     import json
 
-    return json.dumps(obj, default=encoder).encode("utf-8")
-
-
-def dumps(obj: Any, *, default: Callable[[Any], Any] | None = None, option: int | None = None) -> str:
-    """Dump object to JSON string."""
-    return dumps_bytes(obj, default=default, option=option).decode("utf-8")
+    return str(json.dumps(obj, default=encoder))
 
 
 def loads(obj: str | bytes) -> Any:

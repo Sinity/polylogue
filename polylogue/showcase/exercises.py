@@ -4,25 +4,10 @@ from __future__ import annotations
 
 from polylogue.showcase.catalog_loader import load_exercise_catalog
 from polylogue.showcase.exercise_models import Exercise, Validation
-from polylogue.showcase.generators import (
-    command_help_exercise_names,
-    generate_command_help_exercises,
-    generate_products_json_exercises,
-    product_json_exercise_names,
-)
 
 _CATALOG = load_exercise_catalog()
-_GENERATED_COMMAND_HELP_EXERCISES = tuple(generate_command_help_exercises())
-_GENERATED_COMMAND_HELP_NAMES = command_help_exercise_names()
-_GENERATED_PRODUCT_JSON_EXERCISES = tuple(generate_products_json_exercises())
-_GENERATED_PRODUCT_JSON_NAMES = product_json_exercise_names()
-_GENERATED_EXERCISE_NAMES = _GENERATED_COMMAND_HELP_NAMES | _GENERATED_PRODUCT_JSON_NAMES
-_GENERATED_EXERCISES = _GENERATED_COMMAND_HELP_EXERCISES + _GENERATED_PRODUCT_JSON_EXERCISES
 
-EXERCISES: tuple[Exercise, ...] = (
-    tuple(exercise for exercise in _CATALOG.exercises if exercise.name not in _GENERATED_EXERCISE_NAMES)
-    + _GENERATED_EXERCISES
-)
+EXERCISES: tuple[Exercise, ...] = _CATALOG.exercises
 
 EXERCISE_INDEX: dict[str, Exercise] = {e.name: e for e in EXERCISES}
 

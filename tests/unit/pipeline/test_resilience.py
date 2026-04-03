@@ -12,18 +12,14 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 from hypothesis import HealthCheck, given, settings
 
 from polylogue.config import Source
 from polylogue.pipeline.services.acquisition import AcquisitionService
-from polylogue.pipeline.services.parsing import ParseResult
+from polylogue.pipeline.services.parsing import ParseResult, ParsingService
 from polylogue.pipeline.services.validation import ValidationService
-from polylogue.sources.parsers.base import (
-    ParsedContentBlock,
-    ParsedConversation,
-    ParsedMessage,
-    RawConversationData,
-)
+from polylogue.sources.parsers.base import ParsedConversation, RawConversationData
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.store import RawConversationRecord
 from polylogue.types import ValidationStatus
@@ -44,22 +40,14 @@ def _make_raw_record(
     content: bytes,
     path: str = "/exports/test.json",
 ) -> RawConversationRecord:
-    from polylogue.storage.blob_store import get_blob_store
-
-    # Write content to blob store
-    blob_store = get_blob_store()
-    actual_raw_id, blob_size = blob_store.write_from_bytes(content)
-    now = datetime.now(timezone.utc).isoformat()
-
     return RawConversationRecord(
-        raw_id=actual_raw_id,  # Use the actual hash as raw_id
+        raw_id=raw_id,
         provider_name=provider,
         source_name="test",
         source_path=path,
         source_index=None,
-        blob_size=blob_size,
-        acquired_at=now,
-        file_mtime=now,
+        raw_content=content,
+        acquired_at=datetime.now(timezone.utc).isoformat(),
     )
 
 
@@ -87,24 +75,22 @@ def _make_parsing_service(tmp_path: Path):
 # Fault 1: Parsing service handles valid JSON with unknown chatgpt structure
 # ---------------------------------------------------------------------------
 
-def test_parse_unknown_chatgpt_structure_returns_empty(tmp_path):
+async def test_parse_unknown_chatgpt_structure_returns_empty(tmp_path):
     """Valid JSON but missing chatgpt mapping field returns empty, not an exception."""
-    from polylogue.pipeline.services.ingest_worker import ingest_record
-
+    svc = _make_parsing_service(tmp_path)
     payload = json.dumps({"unexpected": "structure", "no_mapping": True}).encode()
     record = _make_raw_record("unknown-struct", "chatgpt", payload)
-    result = ingest_record(record, str(tmp_path / "archive"), "off")
-    assert result.error is None or isinstance(result.conversations, list)
+    result = await svc._parse_raw_record(record)
+    assert isinstance(result, list)
 
 
 # ---------------------------------------------------------------------------
 # Fault 2: Parsing service handles JSON with completely missing required fields
 # ---------------------------------------------------------------------------
 
-def test_parse_chatgpt_no_messages_returns_empty(tmp_path):
+async def test_parse_chatgpt_no_messages_returns_empty(tmp_path):
     """ChatGPT payload with empty mapping returns empty list."""
-    from polylogue.pipeline.services.ingest_worker import ingest_record
-
+    svc = _make_parsing_service(tmp_path)
     payload = json.dumps({
         "title": "No Messages",
         "mapping": {},
@@ -112,38 +98,38 @@ def test_parse_chatgpt_no_messages_returns_empty(tmp_path):
         "update_time": 1700000001,
     }).encode()
     record = _make_raw_record("no-messages", "chatgpt", payload)
-    result = ingest_record(record, str(tmp_path / "archive"), "off")
-    assert result.error is None or isinstance(result.conversations, list)
+    result = await svc._parse_raw_record(record)
+    assert isinstance(result, list)
 
 
 # ---------------------------------------------------------------------------
 # Fault 3: Parsing surfaces error when all JSONL lines are invalid
 # ---------------------------------------------------------------------------
 
-def test_parse_jsonl_all_invalid_lines_surfaces_error(tmp_path):
-    """JSONL where every line is invalid surfaces an error (by design).
+async def test_parse_jsonl_all_invalid_lines_surfaces_error(tmp_path):
+    """JSONL where every line is invalid surfaces a JSONDecodeError (by design).
 
-    ingest_worker catches all exceptions and returns them in result.error.
-    Tests document this as the expected behavior so callers know to handle errors.
+    _decode_raw_payload re-raises if no valid lines are found. Tests document
+    this as the expected behavior so callers know to wrap with error handling.
     """
-    from polylogue.pipeline.services.ingest_worker import ingest_record
+    svc = _make_parsing_service(tmp_path)
+    import orjson
 
     content = b"NOT JSON\nALSO NOT JSON\nSTILL NOT JSON\n"
     record = _make_raw_record(
         "all-invalid-jsonl", "claude-code", content, "/exports/session.jsonl"
     )
-    result = ingest_record(record, str(tmp_path / "archive"), "off")
-    assert result.error is not None
+    with pytest.raises(orjson.JSONDecodeError):
+        await svc._parse_raw_record(record)
 
 
 # ---------------------------------------------------------------------------
 # Fault 4: Parsing handles JSONL with mixed valid and invalid lines
 # ---------------------------------------------------------------------------
 
-def test_parse_mixed_valid_invalid_jsonl_lines(tmp_path):
+async def test_parse_mixed_valid_invalid_jsonl_lines(tmp_path):
     """JSONL with some valid lines: valid lines parsed, invalid lines skipped."""
-    from polylogue.pipeline.services.ingest_worker import ingest_record
-
+    svc = _make_parsing_service(tmp_path)
     # Mix valid claude-code JSONL with invalid lines
     content = (
         b'{"parentUuid":null,"type":"user","message":{"role":"user","content":"Hello"},'
@@ -155,37 +141,35 @@ def test_parse_mixed_valid_invalid_jsonl_lines(tmp_path):
     record = _make_raw_record(
         "mixed-jsonl", "claude-code", content, "/exports/session.jsonl"
     )
-    result = ingest_record(record, str(tmp_path / "archive"), "off")
-    assert result.conversations is not None
-    if result.conversations:
-        assert result.conversations[0].provider_name == "claude-code"
+    result = await svc._parse_raw_record(record)
+    assert isinstance(result, list)
+    if result:
+        assert result[0].provider_name == "claude-code"
 
 
 # ---------------------------------------------------------------------------
 # Fault 5: Parsing handles valid JSON for unknown provider gracefully
 # ---------------------------------------------------------------------------
 
-def test_parse_unknown_provider_name(tmp_path):
+async def test_parse_unknown_provider_name(tmp_path):
     """Unknown provider name falls back gracefully."""
-    from polylogue.pipeline.services.ingest_worker import ingest_record
-
+    svc = _make_parsing_service(tmp_path)
     record = _make_raw_record(
         "unknown-provider",
         "not-a-real-provider",
         json.dumps({"id": "conv-1", "title": "Test"}).encode(),
     )
-    result = ingest_record(record, str(tmp_path / "archive"), "off")
-    assert result.conversations is not None or result.error is not None
+    result = await svc._parse_raw_record(record)
+    assert isinstance(result, list)
 
 
 # ---------------------------------------------------------------------------
 # Fault 6: Parsing handles claude-code JSONL with null fields
 # ---------------------------------------------------------------------------
 
-def test_parse_claude_code_jsonl_with_null_fields(tmp_path):
+async def test_parse_claude_code_jsonl_with_null_fields(tmp_path):
     """Claude-code JSONL with null fields in messages is handled gracefully."""
-    from polylogue.pipeline.services.ingest_worker import ingest_record
-
+    svc = _make_parsing_service(tmp_path)
     content = (
         b'{"parentUuid":null,"type":"user","message":{"role":"user","content":null},'
         b'"uuid":"m1","timestamp":"2025-01-01T00:00:00Z"}\n'
@@ -193,18 +177,17 @@ def test_parse_claude_code_jsonl_with_null_fields(tmp_path):
     record = _make_raw_record(
         "null-fields", "claude-code", content, "/exports/session.jsonl"
     )
-    result = ingest_record(record, str(tmp_path / "archive"), "off")
-    assert result.conversations is not None or result.error is not None
+    result = await svc._parse_raw_record(record)
+    assert isinstance(result, list)
 
 
 # ---------------------------------------------------------------------------
 # Fault 7: Parsing handles very large valid conversation
 # ---------------------------------------------------------------------------
 
-def test_parse_very_large_conversation_does_not_crash(tmp_path):
+async def test_parse_very_large_conversation_does_not_crash(tmp_path):
     """Very large valid chatgpt payload is handled without crashing."""
-    from polylogue.pipeline.services.ingest_worker import ingest_record
-
+    svc = _make_parsing_service(tmp_path)
     messages: dict = {}
     prev_id = None
     for i in range(50):
@@ -231,19 +214,18 @@ def test_parse_very_large_conversation_does_not_crash(tmp_path):
     }).encode()
 
     record = _make_raw_record("large-content", "chatgpt", payload)
-    result = ingest_record(record, str(tmp_path / "archive"), "off")
-    assert result.conversations is not None
-    assert len(result.conversations) > 0
+    result = await svc._parse_raw_record(record)
+    assert isinstance(result, list)
+    assert len(result) > 0
 
 
 # ---------------------------------------------------------------------------
 # Fault 8: Parsing handles chatgpt with deeply nested but invalid mapping
 # ---------------------------------------------------------------------------
 
-def test_parse_chatgpt_deeply_nested_malformed_nodes(tmp_path):
+async def test_parse_chatgpt_deeply_nested_malformed_nodes(tmp_path):
     """ChatGPT payload with malformed node structure returns empty, not exception."""
-    from polylogue.pipeline.services.ingest_worker import ingest_record
-
+    svc = _make_parsing_service(tmp_path)
     # Mapping nodes missing 'message' key
     payload = json.dumps({
         "title": "Malformed Nodes",
@@ -255,18 +237,17 @@ def test_parse_chatgpt_deeply_nested_malformed_nodes(tmp_path):
         "update_time": 1700000001,
     }).encode()
     record = _make_raw_record("malformed-nodes", "chatgpt", payload)
-    result = ingest_record(record, str(tmp_path / "archive"), "off")
-    assert result.conversations is not None or result.error is not None
+    result = await svc._parse_raw_record(record)
+    assert isinstance(result, list)
 
 
 # ---------------------------------------------------------------------------
 # Fault 11: Parsing handles a chatgpt bundle (list) where one item is invalid
 # ---------------------------------------------------------------------------
 
-def test_parse_chatgpt_bundle_with_one_invalid_item(tmp_path):
+async def test_parse_chatgpt_bundle_with_one_invalid_item(tmp_path):
     """ChatGPT bundle list with one invalid item: valid items parsed, invalid skipped."""
-    from polylogue.pipeline.services.ingest_worker import ingest_record
-
+    svc = _make_parsing_service(tmp_path)
     payload = json.dumps([
         {
             "id": "conv-1",
@@ -289,18 +270,17 @@ def test_parse_chatgpt_bundle_with_one_invalid_item(tmp_path):
         {"invalid": "no title or mapping"},  # Should be skipped
     ]).encode()
     record = _make_raw_record("bundle-one-invalid", "chatgpt", payload)
-    result = ingest_record(record, str(tmp_path / "archive"), "off")
-    assert result.conversations is not None or result.error is not None
+    result = await svc._parse_raw_record(record)
+    assert isinstance(result, list)
 
 
 # ---------------------------------------------------------------------------
 # Fault 12: Parsing handles gemini with missing text fields
 # ---------------------------------------------------------------------------
 
-def test_parse_gemini_missing_text_fields(tmp_path):
+async def test_parse_gemini_missing_text_fields(tmp_path):
     """Gemini payload with messages missing text fields is handled gracefully."""
-    from polylogue.pipeline.services.ingest_worker import ingest_record
-
+    svc = _make_parsing_service(tmp_path)
     payload = json.dumps({
         "conversations": [
             {
@@ -312,8 +292,8 @@ def test_parse_gemini_missing_text_fields(tmp_path):
         ]
     }).encode()
     record = _make_raw_record("gemini-no-text", "gemini", payload)
-    result = ingest_record(record, str(tmp_path / "archive"), "off")
-    assert result.conversations is not None or result.error is not None
+    result = await svc._parse_raw_record(record)
+    assert isinstance(result, list)
 
 
 # =====================================================================
@@ -357,9 +337,7 @@ async def test_acquisition_law_counts_unique_raws_and_normalizes_provider_hints(
             for raw_id in result.raw_ids:
                 stored = await backend.get_raw_conversation(raw_id)
                 assert stored is not None
-                from polylogue.storage.blob_store import load_raw_content
-                raw_bytes = load_raw_content(raw_id)
-                payload_id = json.loads(raw_bytes)["id"]
+                payload_id = json.loads(stored.raw_content)["id"]
                 assert stored.provider_name == expected_first_provider[payload_id]
                 assert stored.payload_provider is None
         finally:
@@ -371,19 +349,14 @@ async def test_acquisition_law_counts_unique_raws_and_normalizes_provider_hints(
 async def test_validation_law_matches_mode_and_payload_contract(case) -> None:
     """Validation mode, malformed JSONL, and schema verdicts must produce one stable persisted contract."""
     from polylogue.schemas import ValidationResult
-    from polylogue.storage.blob_store import get_blob_store
 
     raw_content, provider_name, source_path = build_validation_payload(case)
-    blob_store = get_blob_store()
-    raw_id, blob_size = blob_store.write_from_bytes(raw_content)
-
     raw_record = MagicMock(
-        raw_id=raw_id,
-        raw_content=raw_content,  # Keep for backwards compatibility in mocks
+        raw_id="raw-1",
+        raw_content=raw_content,
         provider_name=provider_name,
         source_path=source_path,
         payload_provider=None,
-        blob_size=blob_size,
     )
     backend = MagicMock(spec=SQLiteBackend)
     service = ValidationService(backend=backend)
@@ -416,7 +389,7 @@ async def test_validation_law_matches_mode_and_payload_contract(case) -> None:
         return_value=validator,
     ):
         with patch.dict("os.environ", {"POLYLOGUE_SCHEMA_VALIDATION": case.mode}, clear=False):
-            result = await service.validate_raw_ids(raw_ids=[raw_id])
+            result = await service.validate_raw_ids(raw_ids=["raw-1"])
 
     expected = expected_validation_contract(case)
     if expected["validation_samples_called"]:
@@ -424,19 +397,19 @@ async def test_validation_law_matches_mode_and_payload_contract(case) -> None:
     else:
         assert validator.max_samples_seen == "unset"
     assert result.counts["invalid"] == expected["invalid_count"]
-    assert result.parseable_raw_ids == ([raw_id] if expected["parseable"] else [])
-    assert result.invalid_raw_ids == ([] if expected["parseable"] else [raw_id])
+    assert result.parseable_raw_ids == (["raw-1"] if expected["parseable"] else [])
+    assert result.invalid_raw_ids == ([] if expected["parseable"] else ["raw-1"])
 
     validate_calls = service.repository.mark_raw_validated.await_args_list
     assert len(validate_calls) >= 1
-    assert validate_calls[0].args[0] == raw_id
+    assert validate_calls[0].args[0] == "raw-1"
     validation_kwargs = validate_calls[0].kwargs
     assert validation_kwargs["status"] == ValidationStatus.from_string(expected["status"])
 
     parse_calls = service.repository.mark_raw_parsed.await_args_list
     if expected["mark_raw_parsed"]:
         assert len(parse_calls) == 1
-        assert parse_calls[0].args[0] == raw_id
+        assert parse_calls[0].args[0] == "raw-1"
         assert parse_calls[0].kwargs["error"] is not None
     else:
         assert parse_calls == []
@@ -460,152 +433,54 @@ async def test_parse_result_merge_law_accumulates_counts_and_processed_ids(event
     assert result.processed_ids == expected["processed_ids"]
 
 
-def test_ingest_worker_decodes_and_dispatches_provider(tmp_path: Path) -> None:
-    """ingest_record should decode blob, detect provider, and handle gracefully."""
-    from polylogue.pipeline.services.ingest_worker import ingest_record
-
-    # Create a minimal valid ChatGPT payload that will be decoded and detected
-    payload = json.dumps({
-        "id": "conv-1",
-        "title": "Test Conversation",
-        "mapping": {},
-        "create_time": 1700000000,
-        "update_time": 1700000001,
-    }).encode()
-
-    raw_record = _make_raw_record(
-        raw_id="ignored",  # _make_raw_record uses actual content hash
-        provider="chatgpt",
-        content=payload,
-        path="/tmp/conversation.json",
-    )
-
-    # Call ingest_record directly without mocking (tests real code path)
-    result = ingest_record(raw_record, str(tmp_path / "archive"), "off")
-
-    # Verify the result structure
-    assert result.raw_id is not None  # Should be the actual hash
-    assert result.payload_provider is not None  # Provider detected
-    # ingest_record returns ConversationData list; empty mapping results in empty conversations
-    assert isinstance(result.conversations, list)
-    # Result should be clean with no errors
-    assert result.error is None
-
-
-def test_ingest_worker_reuses_schema_resolution_and_skips_drift_walk(tmp_path: Path, monkeypatch) -> None:
-    """Parse-path validation should reuse one schema resolution and avoid unused drift traversal."""
-    from polylogue.pipeline.services.ingest_worker import ingest_record
-    from polylogue.schemas import ValidationResult
-    from polylogue.schemas.packages import SchemaResolution
-
-    payload = json.dumps({
-        "id": "conv-1",
-        "title": "Test Conversation",
-        "mapping": {},
-        "create_time": 1700000000,
-        "update_time": 1700000001,
-    }).encode()
-    raw_record = _make_raw_record(
-        raw_id="ignored",
-        provider="chatgpt",
-        content=payload,
-        path="/tmp/conversation.json",
-    )
-
-    resolution = SchemaResolution(
-        provider="chatgpt",
-        package_version="v1",
-        element_kind="conversation_document",
-        exact_structure_id="shape-1",
-        bundle_scope=None,
-        reason="exact_structure",
-    )
-    observed: dict[str, object] = {}
-
-    class _CapturingRegistry:
-        def __init__(self) -> None:
-            self.calls = 0
-
-        def resolve_payload(self, provider, payload, *, source_path=None):
-            self.calls += 1
-            observed["registry_provider"] = provider
-            observed["registry_source_path"] = source_path
-            observed["registry_payload"] = payload
-            return resolution
-
-    registry = _CapturingRegistry()
-    monkeypatch.setattr("polylogue.pipeline.services.ingest_worker._SCHEMA_REGISTRY", registry)
-
-    class _CapturingValidator:
-        provider = "chatgpt"
-
-        def validation_samples(self, payload, max_samples=None):
-            return [payload]
-
-        def validate(self, _sample, *, include_drift=None):
-            observed["include_drift"] = include_drift
-            return ValidationResult(is_valid=True)
-
-    def _fake_for_payload(provider, payload, *, source_path=None, schema_resolution=None, strict=True):
-        observed["validator_provider"] = provider
-        observed["validator_source_path"] = source_path
-        observed["validator_payload"] = payload
-        observed["validator_schema_resolution"] = schema_resolution
-        observed["validator_strict"] = strict
-        return _CapturingValidator()
-
-    def _fake_parse_payload(provider, payload, fallback_id, _depth=0, *, schema_resolution=None):
-        observed["parse_provider"] = provider
-        observed["parse_schema_resolution"] = schema_resolution
-        observed["parse_fallback_id"] = fallback_id
-        return []
-
-    monkeypatch.setattr("polylogue.schemas.validator.SchemaValidator.for_payload", _fake_for_payload)
-    monkeypatch.setattr("polylogue.sources.dispatch.parse_payload", _fake_parse_payload)
-
-    result = ingest_record(raw_record, str(tmp_path / "archive"), "strict")
-
-    assert result.error is None
-    assert registry.calls == 1
-    assert observed["validator_schema_resolution"] is resolution
-    assert observed["parse_schema_resolution"] is resolution
-    assert observed["include_drift"] is False
-
-
-def test_transform_with_tool_use_message_keeps_non_empty_message_hash(tmp_path: Path) -> None:
-    from polylogue.pipeline.services.ingest_worker import _transform_to_tuples
-
-    conversation = ParsedConversation(
-        provider_name="codex",
-        provider_conversation_id="tool-conv-1",
-        title="Tool Conversation",
-        created_at="2026-04-02T00:00:00Z",
-        updated_at="2026-04-02T00:00:01Z",
-        messages=[
-            ParsedMessage(
-                provider_message_id="msg-1",
-                role="assistant",
-                text="Running a shell command.",
-                timestamp="2026-04-02T00:00:01Z",
-                content_blocks=[
-                    ParsedContentBlock(
-                        type="tool_use",
-                        tool_name="bash",
-                        tool_id="tool-1",
-                        tool_input={"command": "ls /tmp"},
-                    )
-                ],
-            )
-        ],
-        attachments=[],
-    )
-
-    cdata = _transform_to_tuples(
-        conversation,
-        source_name="test-source",
-        archive_root=tmp_path / "archive",
+async def test_parse_raw_record_contract_updates_payload_provider_and_dispatches_once(tmp_path: Path) -> None:
+    """_parse_raw_record should classify once, persist payload_provider on the record, and dispatch that provider."""
+    repository = MagicMock()
+    repository.backend = MagicMock()
+    service = ParsingService(repository=repository, archive_root=tmp_path / "archive", config=MagicMock())
+    raw_record = MagicMock(
+        raw_content=b'{"id":"conv-1"}',
+        source_path="/tmp/conversation.json",
+        provider_name="chatgpt",
+        payload_provider="",
         raw_id="raw-1",
+        file_mtime="2026-03-23T10:00:00Z",
+    )
+    envelope = MagicMock(provider="gemini", payload={"id": "parsed"})
+    schema_resolution = MagicMock(element_kind="conversation_document", package_version="v2")
+    schema_registry = MagicMock()
+    schema_registry.resolve_payload.return_value = schema_resolution
+    parsed_conversation = ParsedConversation(
+        provider_name="gemini",
+        provider_conversation_id="parsed",
+        title="parsed",
+        created_at=None,
+        updated_at=None,
+        messages=[],
     )
 
-    assert cdata.message_tuples[0][6]
-    assert len(cdata.action_event_tuples) == 1
+    with patch("polylogue.pipeline.services.parsing.build_raw_payload_envelope", return_value=envelope) as mock_envelope:
+        with patch("polylogue.pipeline.services.parsing._SCHEMA_REGISTRY", schema_registry):
+            with patch("polylogue.pipeline.services.parsing.parse_payload", return_value=[parsed_conversation]) as mock_parse:
+                result = await service._parse_raw_record(raw_record)
+
+    mock_envelope.assert_called_once_with(
+        raw_record.raw_content,
+        source_path=raw_record.source_path,
+        fallback_provider=raw_record.provider_name,
+        payload_provider=None,
+    )
+    schema_registry.resolve_payload.assert_called_once_with(
+        "gemini",
+        {"id": "parsed"},
+        source_path=raw_record.source_path,
+    )
+    mock_parse.assert_called_once_with(
+        "gemini",
+        {"id": "parsed"},
+        "conversation",
+        schema_resolution=schema_resolution,
+    )
+    assert raw_record.payload_provider == "gemini"
+    assert result[0].created_at == "2026-03-23T10:00:00Z"
+    assert result[0].updated_at == "2026-03-23T10:00:00Z"

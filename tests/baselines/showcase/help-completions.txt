@@ -1,7 +1,0 @@
-Usage: python -m polylogue completions [OPTIONS]
-
-  Generate shell completion scripts.
-
-Options:
-  --shell [bash|zsh|fish]  [required]
-  -h, --help               Show this message and exit.

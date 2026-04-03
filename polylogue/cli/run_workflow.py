@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
-
 import click
 
 from polylogue.cli.formatting import (
@@ -21,7 +19,6 @@ from polylogue.cli.run_watch_workflow import WatchDisplayObserver, WatchStatusOb
 from polylogue.config import Config
 from polylogue.lib.timestamps import format_timestamp
 from polylogue.pipeline.observers import CompositeObserver, RunObserver
-from polylogue.pipeline.run_support import expand_requested_stage
 from polylogue.pipeline.runner import run_sources
 from polylogue.protocols import ProgressCallback
 from polylogue.sources import DriveError
@@ -33,7 +30,6 @@ def execute_sync_once(
     cfg: Config,
     env,
     stage: str,
-    stage_sequence: Sequence[str] | None,
     selected_sources: list[str] | None,
     render_format: str,
     plan_snapshot: PlanResult | None = None,
@@ -43,7 +39,6 @@ def execute_sync_once(
         run_sources(
             config=cfg,
             stage=stage,
-            stage_sequence=stage_sequence,
             plan=plan_snapshot,
             ui=env.ui,
             source_names=selected_sources,
@@ -59,7 +54,6 @@ def run_with_progress(
     cfg: Config,
     env,
     stage: str,
-    stage_sequence: Sequence[str] | None,
     selected_sources: list[str] | None,
     render_format: str,
     plan_snapshot: PlanResult | None = None,
@@ -75,7 +69,6 @@ def run_with_progress(
             cfg,
             env,
             stage,
-            stage_sequence,
             selected_sources,
             render_format,
             plan_snapshot=plan_snapshot,
@@ -89,7 +82,6 @@ def run_sync_once(
     cfg: Config,
     env,
     stage: str,
-    stage_sequence: Sequence[str] | None,
     selected_sources: list[str] | None,
     render_format: str,
     plan_snapshot: PlanResult | None = None,
@@ -100,7 +92,6 @@ def run_sync_once(
             cfg,
             env,
             stage,
-            stage_sequence,
             selected_sources,
             render_format,
             plan_snapshot=plan_snapshot,
@@ -122,25 +113,20 @@ def display_result(
     result,
     stage: str,
     selected_sources: list[str] | None,
-    *,
-    display_stage: str | None = None,
-    stage_sequence: Sequence[str] | None = None,
 ) -> None:
-    normalized_stage_sequence = tuple(stage_sequence or expand_requested_stage(stage))
-    title_stage = display_stage or stage
     run_lines = [
         f"Counts: {format_counts(result.counts)}",
         *format_run_details(result.counts),
         f"Duration: {result.duration_ms}ms",
     ]
     title_parts: list[str] = []
-    if title_stage != "all":
-        title_parts.append(title_stage)
+    if stage != "all":
+        title_parts.append(stage)
     if selected_sources:
         title_parts.append(", ".join(selected_sources))
     title = f"Sync ({'; '.join(title_parts)})" if title_parts else "Sync"
 
-    if normalized_stage_sequence == ("index",):
+    if stage == "index":
         run_lines = [
             format_index_status(stage, result.indexed, result.index_error),
             f"Duration: {result.duration_ms}ms",
@@ -150,7 +136,7 @@ def display_result(
 
     env.ui.summary(title, run_lines)
 
-    if "render" in normalized_stage_sequence:
+    if stage in {"render", "all"}:
         from polylogue.cli.helpers import latest_render_path
 
         latest = latest_render_path(cfg.render_root)
@@ -168,14 +154,14 @@ def display_result(
         if n > show_limit:
             click.echo(f"  ... and {n - show_limit} more", err=True)
         click.echo(
-            "Hint: re-run with `polylogue run render` to retry rendering.",
+            "Hint: re-run with `polylogue run --stage render` to retry rendering.",
             err=True,
         )
 
     if result.index_error:
         click.echo(f"Index error: {result.index_error}", err=True)
         click.echo(
-            "Hint: run `polylogue run index` to rebuild the index.",
+            "Hint: run `polylogue run --stage index` to rebuild the index.",
             err=True,
         )
 

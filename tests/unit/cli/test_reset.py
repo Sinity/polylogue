@@ -66,7 +66,7 @@ class TestResetCommandSubprocess:
         (GenericConversationBuilder("to-delete")
          .add_user("will be deleted")
          .write_to(inbox / "test.json"))
-        run_cli(["--plain", "run", "parse"], env=env)
+        run_cli(["--plain", "run", "--stage", "parse"], env=env)
 
         # Now reset
         result = run_cli(["--plain", "reset", "--database", "--yes"], env=env)

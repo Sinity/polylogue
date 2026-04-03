@@ -60,10 +60,6 @@ async def save_via_backend(
     attachments: builtins.list[AttachmentRecord],
     content_blocks: builtins.list[ContentBlockRecord] | None = None,
 ) -> dict[str, int]:
-    import time as _time
-
-    t_start = _time.perf_counter()
-    timings: dict[str, float] = {}
     counts: dict[str, int] = {
         "conversations": 0,
         "messages": 0,
@@ -73,7 +69,6 @@ async def save_via_backend(
         "skipped_attachments": 0,
     }
 
-    t0 = _time.perf_counter()
     existing_hash: str | None = None
     async with backend.connection() as conn:
         cursor = await conn.execute(
@@ -83,14 +78,11 @@ async def save_via_backend(
         row = await cursor.fetchone()
         if row:
             existing_hash = row["content_hash"]
-    timings["hash_check"] = _time.perf_counter() - t0
 
     content_unchanged = existing_hash is not None and existing_hash == conversation.content_hash
 
     async with backend.transaction():
-        t0 = _time.perf_counter()
         await backend.save_conversation_record(conversation)
-        timings["save_conv"] = _time.perf_counter() - t0
 
         if content_unchanged:
             counts["skipped_conversations"] = 1
@@ -100,52 +92,42 @@ async def save_via_backend(
             counts["conversations"] = 1
 
             if messages:
-                t0 = _time.perf_counter()
+                pname = conversation.provider_name
+                if pname:
+                    messages = [
+                        message.model_copy(update={"provider_name": pname})
+                        if not message.provider_name
+                        else message
+                        for message in messages
+                    ]
                 await backend.save_messages(messages)
-                timings["save_msgs"] = _time.perf_counter() - t0
                 counts["messages"] = len(messages)
-
-                t0 = _time.perf_counter()
                 await backend.upsert_conversation_stats(
                     conversation.conversation_id,
-                    conversation.provider_name,
+                    pname,
                     messages,
                 )
-                timings["upsert_stats"] = _time.perf_counter() - t0
 
-            t0 = _time.perf_counter()
             all_blocks: builtins.list[ContentBlockRecord] = list(content_blocks or [])
             for message in messages:
                 all_blocks.extend(message.content_blocks)
             if all_blocks:
                 await backend.save_content_blocks(all_blocks)
-            timings["save_blocks"] = _time.perf_counter() - t0
-
-            t0 = _time.perf_counter()
             action_messages = attach_blocks_to_messages(messages, all_blocks)
             action_records = build_action_event_records(conversation, action_messages)
             await backend.replace_action_events(conversation.conversation_id, action_records)
-            timings["action_events"] = _time.perf_counter() - t0
 
-            t0 = _time.perf_counter()
             new_attachment_ids: set[str] = {str(att.attachment_id) for att in attachments}
             await backend.prune_attachments(conversation.conversation_id, new_attachment_ids)
+
             if attachments:
                 await backend.save_attachments(attachments)
                 counts["attachments"] = len(attachments)
-            timings["attachments"] = _time.perf_counter() - t0
 
-    total = _time.perf_counter() - t_start
-    if total > 2.0:
-        from polylogue.logging import get_logger
-        get_logger(__name__).info(
-            "slow_save",
-            total_s=round(total, 2),
-            msgs=len(messages),
-            blocks=counts.get("messages", 0),
-            cid=str(conversation.conversation_id)[:20],
-            **{k: round(v, 3) for k, v in timings.items()},
-        )
+            # Session product refresh is deferred to post-batch for performance.
+            # The caller (parsing_batch.py) collects changed conversation IDs
+            # and runs a single bulk refresh after all conversations are saved.
+            # This eliminates 14+ awaits per conversation during batch writes.
 
     invalidate_search_cache()
     return counts

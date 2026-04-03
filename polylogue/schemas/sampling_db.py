@@ -12,17 +12,13 @@ from polylogue.lib.provider_identity import (
     canonical_schema_provider,
 )
 from polylogue.lib.raw_payload import extract_record_samples_from_raw_content
-from polylogue.logging import get_logger
 from polylogue.paths import db_path as default_db_path
-from polylogue.storage.blob_store import get_blob_store
 from polylogue.schemas.observation import (
     ProviderConfig,
     extract_schema_units_from_payload,
     resolve_provider_config,
 )
 from polylogue.types import Provider
-
-logger = get_logger(__name__)
 
 
 def _sample_provider_where_clause(provider_name: str | Provider) -> tuple[str, tuple[Any, ...]]:
@@ -50,14 +46,13 @@ def _iter_schema_units_from_db(
 ):
     """Yield clusterable schema units from raw_conversations."""
     provider_name = Provider.from_string(provider_name)
-    blob_store = get_blob_store()
     conn = sqlite3.connect(db_path)
     try:
         query_provider = config.db_provider_name or provider_name
         where_clause, where_params = _sample_provider_where_clause(query_provider)
         cursor = conn.execute(
             f"""
-            SELECT source_path, provider_name, payload_provider, raw_id, file_mtime, acquired_at
+            SELECT raw_content, source_path, provider_name, payload_provider, raw_id, file_mtime, acquired_at
             FROM raw_conversations
             WHERE {where_clause}
             """,
@@ -69,20 +64,8 @@ def _iter_schema_units_from_db(
             if not rows:
                 break
             for row in rows:
-                # row indices: 0=source_path, 1=provider_name, 2=payload_provider,
-                #              3=raw_id, 4=file_mtime, 5=acquired_at
-                source_path = row[0]
-                provider_name_col = row[1]
-                payload_provider_col = row[2]
-                raw_id = row[3]
-                file_mtime = row[4]
-                acquired_at = row[5]
-
-                # Load raw content from blob store.
-                raw_content: Any = blob_store.blob_path(raw_id)
-
                 if config.sample_granularity == "record":
-                    runtime_provider = canonical_runtime_provider(payload_provider_col or provider_name_col)
+                    runtime_provider = canonical_runtime_provider(row[3] or row[2])
                     if canonical_schema_provider(runtime_provider) != str(provider_name):
                         continue
 
@@ -92,7 +75,7 @@ def _iter_schema_units_from_db(
 
                     try:
                         samples = extract_record_samples_from_raw_content(
-                            raw_content,
+                            row[0],
                             max_samples=sample_limit,
                             record_type_key=config.record_type_key,
                         )
@@ -103,22 +86,22 @@ def _iter_schema_units_from_db(
                         yield from extract_schema_units_from_payload(
                             samples,
                             provider_name=provider_name,
-                            source_path=source_path,
-                            raw_id=raw_id,
-                            observed_at=file_mtime or acquired_at,
+                            source_path=row[1],
+                            raw_id=row[4],
+                            observed_at=row[5] or row[6],
                             config=config,
                             max_samples=max_samples,
                         )
                         continue
-                
+
                 try:
                     from polylogue.schemas import sampling as sampling_root
 
                     envelope = sampling_root.build_raw_payload_envelope(
-                        raw_content,
-                        source_path=source_path,
-                        fallback_provider=provider_name_col,
-                        payload_provider=payload_provider_col,
+                        row[0],
+                        source_path=row[1],
+                        fallback_provider=row[2],
+                        payload_provider=row[3],
                         jsonl_dict_only=config.sample_granularity == "record",
                     )
                 except Exception:
@@ -128,9 +111,9 @@ def _iter_schema_units_from_db(
                 yield from extract_schema_units_from_payload(
                     envelope.payload,
                     provider_name=provider_name,
-                    source_path=source_path,
-                    raw_id=raw_id,
-                    observed_at=file_mtime or acquired_at,
+                    source_path=row[1],
+                    raw_id=row[4],
+                    observed_at=row[5] or row[6],
                     config=config,
                     max_samples=max_samples,
                 )

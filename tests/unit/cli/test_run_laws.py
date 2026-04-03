@@ -23,9 +23,6 @@ from polylogue.cli.run_observers import (
     PlainProgressObserver as _PlainProgressObserver,
 )
 from polylogue.cli.run_observers import (
-    RichProgressObserver as _RichProgressObserver,
-)
-from polylogue.cli.run_observers import (
     _format_elapsed,
 )
 from polylogue.config import Config, get_config
@@ -107,7 +104,7 @@ def test_run_sync_once_forwards_arguments_contract(
         patch("builtins.print") as mock_print,
     ):
         mock_run.return_value = result
-        observed = _run_sync_once(cfg, env, stage, None, source_names, render_format)
+        observed = _run_sync_once(cfg, env, stage, source_names, render_format)
 
     assert observed == result
     kwargs = mock_run.call_args.kwargs
@@ -137,7 +134,6 @@ def test_run_sync_once_forwards_plan_snapshot_contract() -> None:
             env,
             "all",
             None,
-            None,
             "html",
             plan_snapshot=MagicMock(timestamp=123, counts={"scan": 1}, sources=[], cursors={}),
         )
@@ -153,7 +149,7 @@ def test_run_sync_once_forwards_plan_snapshot_contract() -> None:
     suppress_health_check=[HealthCheck.function_scoped_fixture],
 )
 @given(
-    stage=st.sampled_from(("all", "render", "acquire", "parse", "index")),
+    stage=st.sampled_from(("all", "render", "acquire", "validate", "parse", "index")),
     source_names=st.one_of(
         st.none(),
         st.lists(
@@ -321,17 +317,3 @@ def test_plain_progress_observer_completion_contract() -> None:
         "  Counts: 3 conv (3 new)",
         "  Pipeline complete in 5s",
     ]
-
-
-def test_rich_progress_observer_parses_explicit_totals() -> None:
-    progress = MagicMock()
-    observer = _RichProgressObserver(progress, task_id="task-1")
-
-    observer.on_progress(200, "Indexing: full-text search 1,000/10,153")
-
-    progress.update.assert_called_once_with(
-        "task-1",
-        description="Indexing: full-text search 1,000/10,153",
-        total=10153,
-        completed=1000,
-    )

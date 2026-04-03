@@ -10,16 +10,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from polylogue.config import Config, Source
-from polylogue.pipeline.run_stages import IndexStageOutcome, MaterializeStageOutcome, RenderStageOutcome
-from polylogue.pipeline.run_support import expand_requested_stage, normalize_stage_sequence
 from polylogue.pipeline.runner import _select_sources, latest_run, plan_sources, run_sources
-from polylogue.pipeline.services.parsing_models import IngestResult, ParseResult
-from polylogue.pipeline.stage_models import AcquireResult
 from polylogue.sources.parsers.base import RawConversationData
 from polylogue.storage.backends import create_backend
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.backends.connection import open_connection
-from polylogue.storage.state_views import PlanResult, RunResult
+from polylogue.storage.state_views import PlanResult
 from tests.infra.storage_records import make_conversation, make_message, store_records
 
 
@@ -61,112 +57,6 @@ def _write_chatgpt_export(path: Path, conversation_id: str, *, text: str = "Test
         ),
         encoding="utf-8",
     )
-
-
-def test_expand_requested_stage_contract() -> None:
-    assert expand_requested_stage("acquire") == ("acquire",)
-    assert expand_requested_stage("parse") == ("parse",)
-    assert expand_requested_stage("reprocess") == ("parse", "materialize", "render", "index")
-    assert expand_requested_stage("all") == ("acquire", "parse", "materialize", "render", "index")
-
-
-def test_normalize_stage_sequence_rejects_duplicates() -> None:
-    with pytest.raises(ValueError, match="Duplicate leaf stage\\(s\\): parse"):
-        normalize_stage_sequence(stage="all", stage_sequence=("parse", "parse"))
-
-
-def test_run_sources_accepts_explicit_leaf_stage_sequence(workspace_env, tmp_path: Path) -> None:
-    inbox = tmp_path / "explicit-sequence"
-    inbox.mkdir(parents=True, exist_ok=True)
-    _write_chatgpt_export(inbox / "conversations.json", "conv-explicit-sequence")
-    config = Config(
-        sources=[Source(name="explicit", path=inbox)],
-        archive_root=workspace_env["archive_root"],
-        render_root=workspace_env["archive_root"] / "render",
-    )
-
-    result = asyncio.run(
-        run_sources(
-            config=config,
-            stage="all",
-            stage_sequence=("acquire", "parse"),
-        )
-    )
-
-    assert result.counts["conversations"] >= 1
-    assert result.counts.get("materialized", 0) == 0
-    assert result.counts.get("rendered", 0) == 0
-    assert result.indexed is False
-
-
-def test_explicit_leaf_stage_sequence_uses_order_sensitive_leaf_semantics(workspace_env, tmp_path: Path) -> None:
-    config = Config(
-        sources=[Source(name="explicit", path=tmp_path / "explicit")],
-        archive_root=workspace_env["archive_root"],
-        render_root=workspace_env["archive_root"] / "render",
-    )
-    config.sources[0].path.mkdir(parents=True, exist_ok=True)
-
-    parse_result = ParseResult()
-    parse_result.processed_ids.add("conv-sequenced")
-    ingest_result = IngestResult(
-        acquire_result=AcquireResult(),
-        validation_result=None,
-        parse_result=parse_result,
-        parse_raw_ids=["raw-sequenced"],
-        timings={"acquire": 0.0, "ingest": 0.02},
-    )
-    persisted_result = RunResult(
-        run_id="test-run",
-        counts={"conversations": 1, "rendered": 1},
-        drift={"new": {"conversations": 1}, "changed": {"conversations": 0}, "removed": {"conversations": 0}},
-        indexed=True,
-        index_error=None,
-        duration_ms=1,
-        render_failures=[],
-        run_path=None,
-    )
-
-    with (
-        patch(
-            "polylogue.pipeline.run_execution.execute_render_stage",
-            new_callable=AsyncMock,
-            return_value=RenderStageOutcome(rendered_count=0, failures=[], total=0),
-        ) as mock_render,
-        patch(
-            "polylogue.pipeline.run_execution.execute_ingest_stage",
-            new_callable=AsyncMock,
-            return_value=ingest_result,
-        ) as mock_ingest,
-        patch(
-            "polylogue.pipeline.run_execution.execute_materialize_stage",
-            new_callable=AsyncMock,
-            return_value=MaterializeStageOutcome(item_count=0, rebuilt=False),
-        ) as mock_materialize,
-        patch(
-            "polylogue.pipeline.run_execution.execute_index_stage",
-            new_callable=AsyncMock,
-            return_value=IndexStageOutcome(indexed=True, item_count=1),
-        ) as mock_index,
-        patch(
-            "polylogue.pipeline.run_execution.persist_run_result",
-            new_callable=AsyncMock,
-            return_value=persisted_result,
-        ),
-    ):
-        result = asyncio.run(
-            run_sources(
-                config=config,
-                stage="all",
-                stage_sequence=("render", "parse", "materialize", "index"),
-            )
-        )
-
-    assert result == persisted_result
-    assert mock_render.await_args.kwargs["stage"] == "render"
-    assert mock_ingest.await_args.kwargs["stage"] == "parse"
-    assert mock_materialize.await_args.kwargs["stage"] == "all"
-    assert mock_index.await_args.kwargs["stage"] == "all"
 
 
 class TestRunSourcesRenderFailures:
@@ -245,7 +135,7 @@ class TestRunSourcesRenderFailures:
 class TestRunSourcesIntegration:
     @pytest.mark.parametrize(
         ("stage", "with_source_data"),
-        [("parse", True), ("materialize", True), ("render", False), ("index", False), ("reprocess", True), ("all", True)],
+        [("validate", True), ("parse", True), ("render", False), ("index", False), ("all", True)],
     )
     def test_stage_matrix(self, workspace_env, tmp_path: Path, stage: str, with_source_data: bool, monkeypatch):
         monkeypatch.setenv("POLYLOGUE_SCHEMA_VALIDATION", "strict")
@@ -262,26 +152,22 @@ class TestRunSourcesIntegration:
             render_root=workspace_env["archive_root"] / "render",
         )
 
-        # Stages are now independent: parse doesn't re-run acquire.
+        # Stages are now independent: validate/parse don't re-run predecessors.
         # Pre-populate the pipeline backlog so each stage has work to find.
-        if stage == "parse" and sources:
+        if stage == "validate" and sources:
             asyncio.run(run_sources(config=config, stage="acquire"))
-        if stage == "materialize" and sources:
+        elif stage == "parse" and sources:
             asyncio.run(run_sources(config=config, stage="acquire"))
-            asyncio.run(run_sources(config=config, stage="parse"))
-        if stage == "reprocess" and sources:
-            asyncio.run(run_sources(config=config, stage="acquire"))
+            asyncio.run(run_sources(config=config, stage="validate"))
 
         result = asyncio.run(run_sources(config=config, stage=stage))
 
-        if stage == "parse":
-            assert result.counts["conversations"] >= 1
-            assert result.counts.get("materialized", 0) == 0
-            assert result.counts.get("rendered", 0) == 0
-            assert result.indexed is False
-        elif stage == "materialize":
+        if stage == "validate":
+            assert result.counts.get("validated", 0) >= 1
             assert result.counts["conversations"] == 0
-            assert result.counts.get("materialized", 0) >= 1
+            assert result.indexed is False
+        elif stage == "parse":
+            assert result.counts["conversations"] >= 1
             assert result.counts.get("rendered", 0) == 0
             assert result.indexed is False
         elif stage == "render":
@@ -293,17 +179,8 @@ class TestRunSourcesIntegration:
             assert result.counts["conversations"] == 0
             assert result.indexed is True
             assert result.index_error is None
-        elif stage == "reprocess":
-            assert result.counts["conversations"] >= 1
-            assert result.counts.get("materialized", 0) >= 1
-            assert result.counts.get("rendered", 0) >= 1
-            if result.indexed:
-                assert result.index_error is None
-            else:
-                assert result.index_error is not None
         else:
             assert result.counts["conversations"] >= 1
-            assert result.counts.get("materialized", 0) >= 1
             assert result.counts.get("rendered", 0) >= 1
             if result.indexed:
                 assert result.index_error is None
@@ -342,8 +219,9 @@ class TestRunSourcesIntegration:
             render_root=workspace_env["archive_root"] / "render",
         )
 
-        # Acquire + parse (validation is inline in ingest)
+        # Stages are independent: populate pipeline backlog before testing parse stage
         asyncio.run(run_sources(config=config, stage="acquire"))
+        asyncio.run(run_sources(config=config, stage="validate"))
         result = asyncio.run(run_sources(config=config, stage="parse", plan=None))
         assert result.drift["new"]["conversations"] == result.counts["new_conversations"]
         assert result.counts["conversations"] == (
@@ -375,42 +253,18 @@ class TestRunSourcesIntegration:
         assert second.drift["new"]["conversations"] == 0
         assert second.drift["changed"]["conversations"] == 1
 
-    def test_run_result_has_run_id(self, workspace_env):
+    def test_run_json_written(self, workspace_env):
         config = Config(
             sources=[],
             archive_root=workspace_env["archive_root"],
             render_root=workspace_env["archive_root"] / "render",
         )
         result = asyncio.run(run_sources(config=config, stage="parse"))
-        assert result.run_id is not None
-        assert isinstance(result.run_id, str)
-        assert len(result.run_id) > 0
-
-    def test_materialize_stage_rebuilds_all_when_unscoped(self, workspace_env):
-        _seed_conversations(workspace_env, "test:materialize-rebuild", with_message=True)
-        config = Config(
-            sources=[],
-            archive_root=workspace_env["archive_root"],
-            render_root=workspace_env["archive_root"] / "render",
-        )
-
-        with patch(
-            "polylogue.storage.session_product_rebuild.rebuild_session_products_async",
-            new_callable=AsyncMock,
-        ) as mock_rebuild:
-            mock_rebuild.return_value = {
-                "profiles": 1,
-                "work_events": 2,
-                "phases": 1,
-                "threads": 1,
-                "tag_rollups": 1,
-                "day_summaries": 1,
-            }
-            result = asyncio.run(run_sources(config=config, stage="materialize"))
-
-        mock_rebuild.assert_awaited_once()
-        assert result.counts["materialized"] == 1
-        assert result.indexed is False
+        runs_dir = workspace_env["archive_root"] / "runs"
+        json_files = list(runs_dir.glob("run-*.json"))
+        assert runs_dir.exists()
+        assert json_files
+        assert json.loads(json_files[0].read_text())["run_id"] == result.run_id
 
     def test_index_error_captured(self, workspace_env):
         config = Config(
@@ -427,7 +281,6 @@ class TestRunSourcesIntegration:
         assert "Index rebuild failed" in result.index_error
 
     def test_parse_stage_reuses_persisted_validation_status(self, workspace_env):
-        from polylogue.storage.blob_store import get_blob_store
         from polylogue.storage.store import RawConversationRecord
 
         backend = create_backend(workspace_env["data_root"] / "polylogue" / "polylogue.db")
@@ -455,9 +308,7 @@ class TestRunSourcesIntegration:
                 }
             ]
         ).encode("utf-8")
-        blob_store = get_blob_store()
-        raw_id, blob_size = blob_store.write_from_bytes(raw_content)
-
+        raw_id = "raw-prevalidated"
         asyncio.run(
             backend.save_raw_conversation(
                 RawConversationRecord(
@@ -465,7 +316,7 @@ class TestRunSourcesIntegration:
                     provider_name="chatgpt",
                     source_name="seeded",
                     source_path="/tmp/prevalidated.json",
-                    blob_size=blob_size,
+                    raw_content=raw_content,
                     acquired_at="2026-03-05T00:00:00Z",
                 )
             )
@@ -480,39 +331,6 @@ class TestRunSourcesIntegration:
         result = asyncio.run(run_sources(config=config, stage="parse"))
         asyncio.run(backend.close())
         assert result.counts["conversations"] >= 1
-
-    def test_parse_with_explicit_source_filter_skips_acquire(self, workspace_env, tmp_path: Path):
-        scoped_source = tmp_path / "scoped"
-        scoped_source.mkdir()
-        config = Config(
-            sources=[Source(name="scoped", path=scoped_source)],
-            archive_root=workspace_env["archive_root"],
-            render_root=workspace_env["archive_root"] / "render",
-        )
-        parse_result = ParseResult()
-        parse_result.processed_ids.add("conv-scoped")
-        ingest_result = IngestResult(
-            acquire_result=AcquireResult(),
-            validation_result=None,
-            parse_result=parse_result,
-            parse_raw_ids=["raw-scoped"],
-            timings={"acquire": 0.0, "ingest": 0.02},
-        )
-
-        with (
-            patch("polylogue.pipeline.run_execution.execute_ingest_stage", new_callable=AsyncMock, return_value=ingest_result) as mock_ingest,
-            patch(
-                "polylogue.pipeline.run_execution.execute_index_stage",
-                new_callable=AsyncMock,
-                return_value=IndexStageOutcome(indexed=True, item_count=1),
-            ) as mock_index,
-        ):
-            result = asyncio.run(run_sources(config=config, stage="parse", source_names=["scoped"]))
-
-        assert mock_ingest.await_count == 1
-        mock_index.assert_not_awaited()
-        assert mock_ingest.await_args.kwargs["skip_acquire"] is True
-        assert result.counts["acquired"] == 0
 
 
 # =====================================================================
@@ -612,9 +430,7 @@ class TestAcquisitionServiceIntegration:
         assert result.counts["errors"] == 0
         assert len(result.raw_ids) == 1
         stored = await backend.get_raw_conversation(result.raw_ids[0])
-        from polylogue.storage.blob_store import load_raw_content
-        raw_bytes = load_raw_content(result.raw_ids[0])
-        data = json.loads(raw_bytes)
+        data = json.loads(stored.raw_content)
         assert stored.provider_name == "chatgpt"
         assert isinstance(data, list)
         assert data[0]["id"] == "conv-1"
@@ -804,11 +620,7 @@ class TestPlanSources:
         assert result.counts["store_raw"] == 1
         assert result.counts["validate"] == 1
         assert result.counts["parse"] == 1
-        assert result.counts["materialize"] == 1
-        assert result.counts["render"] == 1
-        assert result.counts["index"] == 1
         assert result.sources == ["test-source"]
-        assert result.stage_sequence == ["acquire", "parse", "materialize", "render", "index"]
 
     async def test_plan_inside_running_event_loop(self, tmp_path: Path):
         config = Config(sources=[], archive_root=tmp_path / "archive", render_root=tmp_path / "render")
@@ -818,66 +630,6 @@ class TestPlanSources:
         finally:
             await backend.close()
         assert result.counts == {}
-
-    async def test_plan_accepts_explicit_leaf_stage_sequence(self, tmp_path: Path):
-        from polylogue.storage.blob_store import get_blob_store
-        from polylogue.storage.store import RawConversationRecord
-
-        backend = SQLiteBackend(db_path=tmp_path / "preview.db")
-        raw_content = json.dumps(
-            [
-                {
-                    "id": "conv-custom-plan",
-                    "title": "Custom Plan",
-                    "create_time": 1704067200,
-                    "update_time": 1704067200,
-                    "mapping": {
-                        "root": {"id": "root", "message": None, "children": ["m1"]},
-                        "m1": {
-                            "id": "m1",
-                            "message": {
-                                "id": "m1",
-                                "author": {"role": "user"},
-                                "content": {"parts": ["hello"]},
-                                "create_time": 1704067200,
-                            },
-                            "parent": "root",
-                            "children": [],
-                        },
-                    },
-                }
-            ]
-        ).encode("utf-8")
-        blob_store = get_blob_store()
-        raw_id, blob_size = blob_store.write_from_bytes(raw_content)
-        try:
-            await backend.save_raw_conversation(
-                RawConversationRecord(
-                    raw_id=raw_id,
-                    provider_name="chatgpt",
-                    source_name="seeded",
-                    source_path="/tmp/custom-plan.json",
-                    blob_size=blob_size,
-                    acquired_at="2026-03-05T00:00:00Z",
-                )
-            )
-            await backend.mark_raw_validated(raw_id, status="passed", provider="chatgpt", mode="strict")
-
-            config = Config(sources=[], archive_root=tmp_path / "archive", render_root=tmp_path / "render")
-            result = plan_sources(
-                config,
-                backend=backend,
-                stage="all",
-                stage_sequence=("parse", "render", "index"),
-            )
-        finally:
-            await backend.close()
-
-        assert result.stage == "custom"
-        assert result.stage_sequence == ["parse", "render", "index"]
-        assert result.counts["parse"] == 1
-        assert result.counts["render"] == 1
-        assert result.counts["index"] == 1
         assert result.sources == []
 
 

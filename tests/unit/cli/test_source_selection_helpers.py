@@ -8,7 +8,6 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import click
 import pytest
 
 from polylogue.cli import helpers
@@ -124,28 +123,6 @@ def test_resolve_sources_rejects_last_combined_with_other_sources(helpers_worksp
     config.sources = [Source(name="chatgpt", path=Path("/data"))]
     with pytest.raises(SystemExit):
         helpers.resolve_sources(config, ("last", "chatgpt"), "test_cmd")
-
-
-def test_complete_run_source_names_includes_last(tmp_path: Path) -> None:
-    config = _config_with_sources(tmp_path, ["chatgpt", "claude-ai"])
-    ctx = click.Context(click.Command("run"))
-    ctx.obj = SimpleNamespace(config=config)
-
-    items = helpers.complete_run_source_names(ctx, ctx.command.params[0] if ctx.command.params else None, "cl")
-
-    assert [item.value for item in items] == ["claude-ai"]
-    all_items = helpers.complete_run_source_names(ctx, ctx.command.params[0] if ctx.command.params else None, "")
-    assert [item.value for item in all_items] == ["last", "chatgpt", "claude-ai"]
-
-
-def test_complete_configured_source_names_excludes_last(tmp_path: Path) -> None:
-    config = _config_with_sources(tmp_path, ["chatgpt", "claude-ai"])
-    ctx = click.Context(click.Command("qa"))
-    ctx.obj = SimpleNamespace(config=config)
-
-    items = helpers.complete_configured_source_names(ctx, ctx.command.params[0] if ctx.command.params else None, "")
-
-    assert [item.value for item in items] == ["chatgpt", "claude-ai"]
 
 
 def _config_with_sources(tmp_path: Path, names: list[str]) -> Config:

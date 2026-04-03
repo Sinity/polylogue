@@ -21,6 +21,7 @@ from polylogue.storage.backends.connection import open_connection
 from polylogue.storage.query_models import ConversationRecordQuery
 from polylogue.storage.repository import ConversationRepository
 from polylogue.storage.store import (
+    MAX_ATTACHMENT_SIZE,
     AttachmentRecord,
     ConversationRecord,
     _json_or_none,
@@ -770,14 +771,15 @@ def test_concurrent_upsert_same_attachment_ref_count_correct(test_db) -> None:
     ("size_bytes", "valid"),
     [
         (0, True),
-        (1_000_000_000, True),
+        (MAX_ATTACHMENT_SIZE, True),
         (None, True),
         (-100, False),
+        (MAX_ATTACHMENT_SIZE + 1, False),
     ],
-    ids=["zero", "large", "unknown", "negative"],
+    ids=["zero", "max", "unknown", "negative", "over-max"],
 )
 def test_attachment_size_bytes_contract(size_bytes, valid) -> None:
-    """Attachment size validation must accept non-negative bounds."""
+    """Attachment size validation must accept supported bounds and reject invalid sizes."""
     if valid:
         record = AttachmentRecord(
             attachment_id="test",

@@ -2,13 +2,10 @@
 
 from __future__ import annotations
 
-import click
-from click.shell_completion import CompletionItem
-
 from polylogue.cli.helper_source_state import load_last_source, save_last_source
 from polylogue.cli.helper_support import fail
 from polylogue.cli.types import AppEnv
-from polylogue.config import Config, get_config
+from polylogue.config import Config
 
 
 def maybe_prompt_sources(
@@ -55,49 +52,4 @@ def resolve_sources(config: Config, sources: tuple[str, ...], command: str) -> l
     return requested
 
 
-def _complete_source_values(
-    ctx: click.Context,
-    incomplete: str,
-    *,
-    include_last: bool,
-) -> list[CompletionItem]:
-    config = getattr(getattr(ctx, "obj", None), "config", None) or get_config()
-    options = [source.name for source in config.sources]
-    if include_last:
-        options.insert(0, "last")
-    seen: set[str] = set()
-    items: list[CompletionItem] = []
-    for option in options:
-        if option in seen:
-            continue
-        seen.add(option)
-        if incomplete and not option.startswith(incomplete):
-            continue
-        items.append(CompletionItem(option))
-    return items
-
-
-def complete_run_source_names(
-    ctx: click.Context,
-    param: click.Parameter,
-    incomplete: str,
-) -> list[CompletionItem]:
-    del param
-    return _complete_source_values(ctx, incomplete, include_last=True)
-
-
-def complete_configured_source_names(
-    ctx: click.Context,
-    param: click.Parameter,
-    incomplete: str,
-) -> list[CompletionItem]:
-    del param
-    return _complete_source_values(ctx, incomplete, include_last=False)
-
-
-__all__ = [
-    "complete_configured_source_names",
-    "complete_run_source_names",
-    "maybe_prompt_sources",
-    "resolve_sources",
-]
+__all__ = ["maybe_prompt_sources", "resolve_sources"]

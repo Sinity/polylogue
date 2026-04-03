@@ -3,20 +3,12 @@
 from __future__ import annotations
 
 import re
-from functools import lru_cache
-from html import escape
 
 from markdown_it import MarkdownIt
 from pygments import highlight
 from pygments.formatters import HtmlFormatter
 from pygments.lexers import get_lexer_by_name, guess_lexer
 from pygments.util import ClassNotFound
-
-HTML_RENDER_CACHE_MAX_ENTRIES = 8192
-HTML_RENDER_CACHE_TEXT_MAX_CHARS = 4096
-_URL_RE = re.compile(r"(https?://|www\.)", re.IGNORECASE)
-_MARKDOWN_BLOCK_RE = re.compile(r"(^|\n)(?: {0,3}(?:[-+*] |\d+[.)] |>)| {4}|\t)")
-_PLAIN_TEXT_MARKDOWN_CHARS = frozenset("`*_#[]|~")
 
 
 class PygmentsHighlighter:
@@ -60,45 +52,11 @@ class HTMLMessageRenderer:
         self.highlighter = highlighter or PygmentsHighlighter()
         self.md = MarkdownIt("commonmark", {"html": False, "linkify": True})
         self.md.enable("table")
-        self._render_cached = lru_cache(maxsize=HTML_RENDER_CACHE_MAX_ENTRIES)(self._render_uncached)
 
     def render(self, text: str) -> str:
         if not text:
             return ""
-        if len(text) > HTML_RENDER_CACHE_TEXT_MAX_CHARS:
-            return self._render_uncached(text)
-        return self._render_cached(text)
-
-    def _render_uncached(self, text: str) -> str:
-        if self._can_render_plain_text_fast(text):
-            return self._render_plain_text_fast(text)
         return self._enhance_code_blocks(self.md.render(text))
-
-    @staticmethod
-    def _can_render_plain_text_fast(text: str) -> bool:
-        return bool(text) and (
-            "  \n" not in text
-            and "<" not in text
-            and not _URL_RE.search(text)
-            and not _MARKDOWN_BLOCK_RE.search(text)
-            and not any(ch in text for ch in _PLAIN_TEXT_MARKDOWN_CHARS)
-        )
-
-    @staticmethod
-    def _escape_like_markdown_it(text: str) -> str:
-        return escape(text, quote=False).replace('"', "&quot;")
-
-    @classmethod
-    def _render_plain_text_fast(cls, text: str) -> str:
-        parts = [
-            paragraph.strip()
-            for paragraph in re.split(r"\n\s*\n+", text.strip())
-            if paragraph.strip()
-        ]
-        return "".join(
-            f"<p>{cls._escape_like_markdown_it(paragraph)}</p>\n"
-            for paragraph in parts
-        )
 
     def _enhance_code_blocks(self, html: str) -> str:
         pattern = r'<pre><code class="language-(\w+)">(.*?)</code></pre>'
@@ -121,9 +79,4 @@ class HTMLMessageRenderer:
         return re.sub(pattern_plain, replace_plain_code, html, flags=re.DOTALL)
 
 
-__all__ = [
-    "HTMLMessageRenderer",
-    "HTML_RENDER_CACHE_MAX_ENTRIES",
-    "HTML_RENDER_CACHE_TEXT_MAX_CHARS",
-    "PygmentsHighlighter",
-]
+__all__ = ["HTMLMessageRenderer", "PygmentsHighlighter"]

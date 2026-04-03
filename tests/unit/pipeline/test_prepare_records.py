@@ -515,22 +515,16 @@ class TestValidationService:
 
     async def test_validation_uses_all_record_samples_by_default(self, monkeypatch):
         from polylogue.schemas import ValidationResult
-        from polylogue.storage.blob_store import get_blob_store
-
-        raw_content = (
-            b'{"type":"session_meta"}\n'
-            b'{"type":"response_item","payload":{"type":"message"}}\n'
-            b'{"record_type":"state"}'
-        )
-        blob_store = get_blob_store()
-        raw_id, blob_size = blob_store.write_from_bytes(raw_content)
 
         raw_record = MagicMock(
-            raw_id=raw_id,
-            raw_content=raw_content,  # Keep for backwards compatibility in mocks
+            raw_id="raw-1",
+            raw_content=(
+                b'{"type":"session_meta"}\n'
+                b'{"type":"response_item","payload":{"type":"message"}}\n'
+                b'{"record_type":"state"}'
+            ),
             provider_name="codex",
             source_path="/tmp/session.jsonl",
-            blob_size=blob_size,
         )
         service = ValidationService(backend=MagicMock())
         service.repository = MagicMock()
@@ -554,25 +548,19 @@ class TestValidationService:
         capturing = _CapturingValidator()
         monkeypatch.setattr("polylogue.schemas.validator.SchemaValidator.for_payload", lambda *args, **kwargs: capturing)
 
-        result = await service.validate_raw_ids(raw_ids=[raw_id])
+        result = await service.validate_raw_ids(raw_ids=["raw-1"])
 
-        assert result.parseable_raw_ids == [raw_id]
+        assert result.parseable_raw_ids == ["raw-1"]
         assert capturing.max_samples_seen is None
 
     async def test_validation_strict_detects_malformed_jsonl_beyond_large_prefix(self, monkeypatch):
         from polylogue.schemas import ValidationResult
-        from polylogue.storage.blob_store import get_blob_store
-
-        raw_content = (b'{"type":"session_meta"}\n' * 1024) + b"not json at all\n"
-        blob_store = get_blob_store()
-        raw_id, blob_size = blob_store.write_from_bytes(raw_content)
 
         raw_record = MagicMock(
-            raw_id=raw_id,
-            raw_content=raw_content,  # Keep for backwards compatibility in mocks
+            raw_id="raw-1",
+            raw_content=(b'{"type":"session_meta"}\n' * 1024) + b"not json at all\n",
             provider_name="codex",
             source_path="/tmp/session.jsonl",
-            blob_size=blob_size,
         )
         service = ValidationService(backend=MagicMock())
         service.repository = MagicMock()
@@ -592,7 +580,7 @@ class TestValidationService:
         monkeypatch.setenv("POLYLOGUE_SCHEMA_VALIDATION", "strict")
         monkeypatch.setattr("polylogue.schemas.validator.SchemaValidator.for_payload", lambda *args, **kwargs: _AlwaysValidValidator())
 
-        result = await service.validate_raw_ids(raw_ids=[raw_id])
+        result = await service.validate_raw_ids(raw_ids=["raw-1"])
 
         assert result.counts["invalid"] == 1
         assert result.parseable_raw_ids == []
@@ -602,15 +590,10 @@ class TestValidationService:
 
     async def test_validation_progress_callback_reports_counts(self, monkeypatch):
         from polylogue.schemas import ValidationResult
-        from polylogue.storage.blob_store import get_blob_store
-
-        blob_store = get_blob_store()
-        raw_id_1, blob_size_1 = blob_store.write_from_bytes(b'{"id":"1","mapping":{}}')
-        raw_id_2, blob_size_2 = blob_store.write_from_bytes(b'{"id":"2","mapping":{}}')
 
         raw_records = [
-            MagicMock(raw_id=raw_id_1, raw_content=b'{"id":"1","mapping":{}}', provider_name="chatgpt", source_path="/tmp/a.json", blob_size=blob_size_1),
-            MagicMock(raw_id=raw_id_2, raw_content=b'{"id":"2","mapping":{}}', provider_name="chatgpt", source_path="/tmp/b.json", blob_size=blob_size_2),
+            MagicMock(raw_id="raw-1", raw_content=b'{"id":"1","mapping":{}}', provider_name="chatgpt", source_path="/tmp/a.json"),
+            MagicMock(raw_id="raw-2", raw_content=b'{"id":"2","mapping":{}}', provider_name="chatgpt", source_path="/tmp/b.json"),
         ]
         service = ValidationService(backend=MagicMock())
         service.repository = MagicMock()
@@ -628,7 +611,7 @@ class TestValidationService:
                 return ValidationResult(is_valid=True)
 
         monkeypatch.setattr("polylogue.schemas.validator.SchemaValidator.for_payload", lambda *args, **kwargs: _AlwaysValidValidator())
-        await service.validate_raw_ids(raw_ids=[raw_id_1, raw_id_2], progress_callback=callback)
+        await service.validate_raw_ids(raw_ids=["raw-1", "raw-2"], progress_callback=callback)
 
         callback.assert_any_call(0, desc="Validating: 0/2 raw")
         callback.assert_any_call(1, desc="Validating: 1/2 raw")
@@ -636,19 +619,13 @@ class TestValidationService:
 
     async def test_validation_persists_payload_provider_from_decoded_payload(self, monkeypatch):
         from polylogue.schemas import ValidationResult
-        from polylogue.storage.blob_store import get_blob_store
-
-        raw_content = b'[{"id":"conv-1","mapping":{}}]'
-        blob_store = get_blob_store()
-        raw_id, blob_size = blob_store.write_from_bytes(raw_content)
 
         raw_record = MagicMock(
-            raw_id=raw_id,
-            raw_content=raw_content,  # Keep for backwards compatibility in mocks
+            raw_id="raw-1",
+            raw_content=b'[{"id":"conv-1","mapping":{}}]',
             provider_name="inbox-source",
             source_path="/tmp/conversations.json",
             payload_provider=None,
-            blob_size=blob_size,
         )
         service = ValidationService(backend=MagicMock())
         service.repository = MagicMock()
@@ -666,9 +643,9 @@ class TestValidationService:
                 return ValidationResult(is_valid=True)
 
         monkeypatch.setattr("polylogue.schemas.validator.SchemaValidator.for_payload", lambda *args, **kwargs: _AlwaysValidValidator())
-        result = await service.validate_raw_ids(raw_ids=[raw_id])
+        result = await service.validate_raw_ids(raw_ids=["raw-1"])
 
-        assert result.parseable_raw_ids == [raw_id]
+        assert result.parseable_raw_ids == ["raw-1"]
         kwargs = service.repository.mark_raw_validated.await_args.kwargs
         assert kwargs["provider"] == "chatgpt"
         assert kwargs["payload_provider"] == "chatgpt"

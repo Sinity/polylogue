@@ -1,6 +1,0 @@
-Usage: python -m polylogue run acquire [OPTIONS]
-
-  Capture raw payloads only.
-
-Options:
-  -h, --help  Show this message and exit.

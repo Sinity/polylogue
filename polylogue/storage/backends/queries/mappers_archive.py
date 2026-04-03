@@ -96,7 +96,7 @@ def _row_to_raw_conversation(row: sqlite3.Row) -> RawConversationRecord:
         source_name=row["source_name"],
         source_path=row["source_path"],
         source_index=row["source_index"],
-        blob_size=row["blob_size"],
+        raw_content=row["raw_content"],
         acquired_at=row["acquired_at"],
         file_mtime=row["file_mtime"],
         parsed_at=_row_get(row, "parsed_at"),

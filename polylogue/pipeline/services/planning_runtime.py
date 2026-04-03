@@ -3,35 +3,21 @@
 from __future__ import annotations
 
 import time
-from collections.abc import Sequence
 
 from polylogue.config import Source
-from polylogue.pipeline.run_support import expand_requested_stage, normalize_stage_sequence
 from polylogue.pipeline.stage_models import ValidateResult
 from polylogue.protocols import ProgressCallback
 from polylogue.storage.state_views import PlanResult
 from polylogue.storage.store import RawConversationRecord
-from polylogue.types import PlanStage
 
 from .acquisition import AcquisitionService
 from .planning_backlog import collect_parse_backlog, collect_validation_backlog, dedupe_ids
 from .planning_models import IngestPlan
 from .validation import ValidationService
 
-_SCAN_STATE_BATCH_SIZE = 200  # Metadata-only rows (no BLOBs) — can batch larger
-
-
-def _summarize_plan_stage(
-    *,
-    stage: str,
-    normalized_stage_sequence: tuple[str, ...],
-    stage_sequence: Sequence[str] | None,
-) -> str:
-    if stage_sequence is None:
-        return stage
-    if normalized_stage_sequence == expand_requested_stage(stage):
-        return stage
-    return PlanStage.CUSTOM.value
+_VALIDATE_STAGES = frozenset({"validate", "parse", "all"})
+_PARSE_STAGES = frozenset({"parse", "all"})
+_SCAN_STATE_BATCH_SIZE = 32  # Keep small to bound memory from raw_content bytes
 
 
 async def build_ingest_plan(
@@ -39,7 +25,6 @@ async def build_ingest_plan(
     *,
     sources: list[Source],
     stage: str = "all",
-    stage_sequence: Sequence[str] | None = None,
     ui: object | None = None,
     progress_callback: ProgressCallback | None = None,
     preview: bool = False,
@@ -47,35 +32,13 @@ async def build_ingest_plan(
     source_names = [source.name for source in sources]
     db_scope_names = source_names or None
 
-    normalized_stage_sequence = normalize_stage_sequence(stage=stage, stage_sequence=stage_sequence)
-    summary_stage = _summarize_plan_stage(
-        stage=stage,
-        normalized_stage_sequence=normalized_stage_sequence,
-        stage_sequence=stage_sequence,
-    )
-    has_acquire = "acquire" in normalized_stage_sequence
-    has_parse = "parse" in normalized_stage_sequence
-    has_materialize = "materialize" in normalized_stage_sequence
-    has_render = "render" in normalized_stage_sequence
-    has_index = "index" in normalized_stage_sequence
-
-    if not has_acquire and not has_parse:
-        conversation_count = 0
-        if has_materialize or has_render or has_index:
-            conversation_count = await service.backend.queries.count_conversation_ids(source_names=db_scope_names)
-        counts: dict[str, int] = {}
-        if has_materialize and conversation_count:
-            counts["materialize"] = conversation_count
-        if has_render and conversation_count:
-            counts["render"] = conversation_count
-        if has_index and conversation_count:
-            counts["index"] = conversation_count
+    if stage == "render":
+        render_count = await service.backend.queries.count_conversation_ids(source_names=db_scope_names)
         return IngestPlan(
             summary=PlanResult(
                 timestamp=int(time.time()),
-                stage=summary_stage,
-                stage_sequence=list(normalized_stage_sequence),
-                counts=counts,
+                stage=stage,
+                counts={"render": render_count} if render_count else {},
                 sources=source_names,
                 cursors={},
             ),
@@ -83,44 +46,31 @@ async def build_ingest_plan(
             parse_ready_raw_ids=[],
         )
 
-    if has_parse and not has_acquire:
-        validate_raw_ids = await collect_validation_backlog(
-            service.backend,
-            source_names=db_scope_names,
-            exclude_raw_ids=[],
-        )
-        parse_ready_raw_ids = await collect_parse_backlog(
-            service.backend,
-            source_names=db_scope_names,
-            exclude_raw_ids=validate_raw_ids,
-        )
-        reprocess_raw_ids = dedupe_ids([*validate_raw_ids, *parse_ready_raw_ids])
-        counts: dict[str, int] = {}
-        details: dict[str, int] = {}
-        if validate_raw_ids:
-            counts["validate"] = len(validate_raw_ids)
-            details["backlog_validate"] = len(validate_raw_ids)
-        if reprocess_raw_ids:
-            counts["parse"] = len(reprocess_raw_ids)
-            details["backlog_parse"] = len(parse_ready_raw_ids)
-            if has_materialize:
-                counts["materialize"] = len(reprocess_raw_ids)
-            if has_render:
-                counts["render"] = len(reprocess_raw_ids)
-            if has_index:
-                counts["index"] = len(reprocess_raw_ids)
+    if stage == "index":
+        index_count = await service.backend.queries.count_conversation_ids(source_names=db_scope_names)
         return IngestPlan(
             summary=PlanResult(
                 timestamp=int(time.time()),
-                stage=summary_stage,
-                stage_sequence=list(normalized_stage_sequence),
-                counts=counts,
-                details=details,
+                stage=stage,
+                counts={"index": index_count} if index_count else {},
                 sources=source_names,
                 cursors={},
             ),
-            validate_raw_ids=validate_raw_ids,
-            parse_ready_raw_ids=reprocess_raw_ids,
+            validate_raw_ids=[],
+            parse_ready_raw_ids=[],
+        )
+
+    if stage == "generate-schemas":
+        return IngestPlan(
+            summary=PlanResult(
+                timestamp=int(time.time()),
+                stage=stage,
+                counts={},
+                sources=source_names,
+                cursors={},
+            ),
+            validate_raw_ids=[],
+            parse_ready_raw_ids=[],
         )
 
     acquisition = AcquisitionService(service.backend)
@@ -136,10 +86,10 @@ async def build_ingest_plan(
         "backlog_parse": 0,
     }
     pending_records: list[RawConversationRecord] = []
-    preview_validation = ValidateResult() if preview and has_parse else None
+    preview_validation = ValidateResult() if preview and stage in _VALIDATE_STAGES else None
     seen_scanned_raw_ids: set[str] = set()
 
-    max_preview_validation_records = 50  # Cap preview validation to bound memory
+    _MAX_PREVIEW_VALIDATION_RECORDS = 50  # Cap preview validation to bound memory
 
     async def flush_pending_records() -> None:
         nonlocal pending_records
@@ -162,7 +112,7 @@ async def build_ingest_plan(
             else:
                 details["existing_raw"] += 1
 
-            if has_parse:
+            if stage in _VALIDATE_STAGES:
                 current_status = state.validation_status if state is not None else None
                 parsed_at = state.parsed_at if state is not None else None
                 if parsed_at is None:
@@ -170,9 +120,9 @@ async def build_ingest_plan(
                         validate_raw_ids.append(record.raw_id)
                         # Only accumulate a limited sample for preview validation
                         # to bound memory. Full validation happens during actual runs.
-                        if preview and preview_validation is not None and len(preview_records) < max_preview_validation_records:
+                        if preview and preview_validation is not None and len(preview_records) < _MAX_PREVIEW_VALIDATION_RECORDS:
                             preview_records.append(record)
-                    elif current_status in {"passed", "skipped"}:
+                    elif stage in _PARSE_STAGES and current_status in {"passed", "skipped"}:
                         parse_ready_raw_ids.append(record.raw_id)
 
         if preview_records and preview_validation is not None:
@@ -192,6 +142,7 @@ async def build_ingest_plan(
 
     scan_result = await acquisition.visit_sources(
         sources,
+        lightweight=preview,  # Strip bytes to prevent OOM during preview
         progress_callback=progress_callback,
         ui=ui,
         drive_config=service.config.drive_config,
@@ -199,7 +150,7 @@ async def build_ingest_plan(
     )
     await flush_pending_records()
 
-    if has_parse:
+    if stage in _VALIDATE_STAGES:
         backlog_validate_ids = await collect_validation_backlog(
             service.backend,
             source_names=db_scope_names,
@@ -221,7 +172,7 @@ async def build_ingest_plan(
             if preview_validation is not None and preview_validation.counts["skipped_no_schema"]:
                 details["preview_skipped_no_schema"] = preview_validation.counts["skipped_no_schema"]
 
-    if has_parse:
+    if stage in _PARSE_STAGES:
         backlog_parse_ids = await collect_parse_backlog(
             service.backend,
             source_names=db_scope_names,
@@ -236,31 +187,16 @@ async def build_ingest_plan(
     counts: dict[str, int] = {}
     if scanned_count:
         counts["scan"] = scanned_count
-    if details["new_raw"] and has_acquire:
+    if details["new_raw"] and stage in {"acquire", "validate", "parse", "all"}:
         counts["store_raw"] = details["new_raw"]
-    if has_parse and validate_raw_ids:
+    if validate_raw_ids:
         counts["validate"] = len(validate_raw_ids)
-    if has_parse and parse_ready_raw_ids:
+    if parse_ready_raw_ids:
         counts["parse"] = len(parse_ready_raw_ids)
-        if has_materialize:
-            counts["materialize"] = len(parse_ready_raw_ids)
-        if has_render:
-            counts["render"] = len(parse_ready_raw_ids)
-        if has_index:
-            counts["index"] = len(parse_ready_raw_ids)
-    elif not has_parse and (has_materialize or has_render or has_index):
-        conversation_count = await service.backend.queries.count_conversation_ids(source_names=db_scope_names)
-        if has_materialize and conversation_count:
-            counts["materialize"] = conversation_count
-        if has_render and conversation_count:
-            counts["render"] = conversation_count
-        if has_index and conversation_count:
-            counts["index"] = conversation_count
 
     summary = PlanResult(
         timestamp=int(time.time()),
-        stage=summary_stage,
-        stage_sequence=list(normalized_stage_sequence),
+        stage=stage,
         counts=counts,
         details={key: value for key, value in details.items() if value},
         sources=source_names,

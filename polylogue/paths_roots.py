@@ -96,11 +96,6 @@ def codex_path() -> Path:
 GEMINI_DRIVE_FOLDER = "Google AI Studio"
 
 
-def blob_store_root() -> Path:
-    """Content-addressed blob store root directory."""
-    return data_home() / "blob"
-
-
 def drive_cache_path() -> Path:
     """Local cache directory for Drive-sourced files."""
     return data_home() / "drive-cache"

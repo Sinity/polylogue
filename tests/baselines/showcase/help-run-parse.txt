@@ -1,6 +1,0 @@
-Usage: python -m polylogue run parse [OPTIONS]
-
-  Parse persisted raw backlog into normalized conversations.
-
-Options:
-  -h, --help  Show this message and exit.

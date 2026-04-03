@@ -302,6 +302,7 @@ class ArchiveProductSessionMixin:
             first_message_until=request.first_message_until,
             session_date_since=request.session_date_since,
             session_date_until=request.session_date_until,
+            refined_work_kind=request.refined_work_kind,
             limit=request.limit,
             offset=request.offset,
             query=request.query,

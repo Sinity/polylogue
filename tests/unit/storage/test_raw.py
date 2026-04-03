@@ -41,7 +41,7 @@ class TestRawConversationStorage:
             provider_name="test-provider",
             source_path="/tmp/test.json",
             source_index=0,
-            blob_size=len(b'{"test": "data"}'),
+            raw_content=b'{"test": "data"}',
             acquired_at=datetime.now(timezone.utc).isoformat(),
             file_mtime=None,
         )
@@ -61,7 +61,7 @@ class TestRawConversationStorage:
             provider_name="test-provider",
             source_path="/tmp/test.json",
             source_index=0,
-            blob_size=len(b'{"test": "data"}'),
+            raw_content=b'{"test": "data"}',
             acquired_at=datetime.now(timezone.utc).isoformat(),
         )
 
@@ -80,7 +80,7 @@ class TestRawConversationStorage:
             provider_name="chatgpt",
             source_path="/path/to/export.json",
             source_index=5,
-            blob_size=len(b'{"id": "conv-123", "messages": []}'),
+            raw_content=b'{"id": "conv-123", "messages": []}',
             acquired_at="2026-02-02T12:00:00+00:00",
             file_mtime="2026-01-15T08:30:00+00:00",
         )
@@ -93,7 +93,7 @@ class TestRawConversationStorage:
         assert retrieved.provider_name == original.provider_name
         assert retrieved.source_path == original.source_path
         assert retrieved.source_index == original.source_index
-        assert retrieved.blob_size == original.blob_size
+        assert retrieved.raw_content == original.raw_content
         assert retrieved.acquired_at == original.acquired_at
         assert retrieved.file_mtime == original.file_mtime
 
@@ -114,7 +114,7 @@ class TestRawConversationStorage:
                 raw_id=f"raw-{i}",
                 provider_name="test" if i < 2 else "other",
                 source_path=f"/path/{i}.json",
-                blob_size=len(b'{}'),
+                raw_content=b'{}',
                 acquired_at=datetime.now(timezone.utc).isoformat(),
             )
             for i in range(5)
@@ -137,7 +137,7 @@ class TestRawConversationStorage:
                 raw_id=f"raw-{i}",
                 provider_name="chatgpt" if i % 2 == 0 else "claude-ai",
                 source_path=f"/path/{i}.json",
-                blob_size=len(b'{}'),
+                raw_content=b'{}',
                 acquired_at=datetime.now(timezone.utc).isoformat(),
             )
             for i in range(6)
@@ -163,7 +163,7 @@ class TestRawConversationStorage:
                 raw_id=f"raw-id-{i}",
                 provider_name="chatgpt" if i % 2 == 0 else "claude-ai",
                 source_path=f"/path/{i}.json",
-                blob_size=len(b'{}'),
+                raw_content=b'{}',
                 acquired_at=datetime.now(timezone.utc).isoformat(),
             )
             for i in range(6)
@@ -192,7 +192,7 @@ class TestRawConversationStorage:
                 payload_provider="chatgpt",
                 source_name="inbox",
                 source_path="/path/raw.json",
-                blob_size=len(b'{}'),
+                raw_content=b'{}',
                 acquired_at=datetime.now(timezone.utc).isoformat(),
             )
         )
@@ -217,7 +217,7 @@ class TestRawConversationStorage:
                     raw_id=f"raw-{i}",
                     provider_name="test",
                     source_path=f"/path/{i}.json",
-                    blob_size=len(b'{}'),
+                    raw_content=b'{}',
                     acquired_at=datetime.now(timezone.utc).isoformat(),
                 )
             )
@@ -240,7 +240,7 @@ class TestRawConversationStorage:
             raw_id="raw-abc123",
             provider_name="test",
             source_path="/test.json",
-            blob_size=len(b'{"id": "test-conv"}'),
+            raw_content=b'{"id": "test-conv"}',
             acquired_at=datetime.now(timezone.utc).isoformat(),
         )
         await backend.save_raw_conversation(raw_record)
@@ -306,7 +306,7 @@ class TestRawConversationStorage:
                     raw_id=f"count-{i}",
                     provider_name="chatgpt" if i < 3 else "claude-ai",
                     source_path=f"/path/{i}.json",
-                    blob_size=len(b'{}'),
+                    raw_content=b'{}',
                     acquired_at=datetime.now(timezone.utc).isoformat(),
                 )
             )
@@ -332,7 +332,7 @@ class TestRawConversationStorage:
                 provider_name="test",
                 source_path=f"/tmp/test-{i}.json",
                 source_index=i,
-                blob_size=len(f'{{"idx": {i}}}'.encode()),
+                raw_content=f'{{"idx": {i}}}'.encode(),
                 acquired_at=datetime.now(timezone.utc).isoformat(),
                 file_mtime=None,
             )
@@ -358,7 +358,7 @@ class TestRawConversationRecordValidation:
             raw_id="valid-id",
             provider_name="chatgpt",
             source_path="/path/to/file.json",
-            blob_size=len(b'{"test": true}'),
+            raw_content=b'{"test": true}',
             acquired_at="2026-02-02T12:00:00Z",
         )
 
@@ -374,7 +374,7 @@ class TestRawConversationRecordValidation:
                 raw_id="",
                 provider_name="test",
                 source_path="/test.json",
-                blob_size=len(b'{}'),
+                raw_content=b'{}',
                 acquired_at="2026-02-02T12:00:00Z",
             )
 
@@ -387,23 +387,22 @@ class TestRawConversationRecordValidation:
                 raw_id="test-id",
                 provider_name="",
                 source_path="/test.json",
-                blob_size=len(b'{}'),
+                raw_content=b'{}',
                 acquired_at="2026-02-02T12:00:00Z",
             )
 
-    def test_blob_size_is_persisted(self) -> None:
-        """blob_size can be any non-negative integer."""
+    def test_empty_raw_content_fails(self) -> None:
+        """Empty raw_content fails validation."""
         from polylogue.storage.store import RawConversationRecord
 
-        # blob_size is just an int, no bounds checking
-        record = RawConversationRecord(
-            raw_id="test-id",
-            provider_name="test",
-            source_path="/test.json",
-            blob_size=1024,
-            acquired_at="2026-02-02T12:00:00Z",
-        )
-        assert record.blob_size == 1024
+        with pytest.raises(ValueError, match="cannot be empty"):
+            RawConversationRecord(
+                raw_id="test-id",
+                provider_name="test",
+                source_path="/test.json",
+                raw_content=b'',
+                acquired_at="2026-02-02T12:00:00Z",
+            )
 
 
 class TestContentHashing:
@@ -420,12 +419,14 @@ class TestContentHashing:
             assert all(c in "0123456789abcdef" for c in sample.raw_id)
 
     def test_content_matches_hash(self, raw_synthetic_samples: list) -> None:
-        """Raw IDs are valid SHA256 hashes (constructed during fixture generation)."""
-        # Note: raw_content is no longer stored on RawConversationRecord;
-        # content is in the blob store keyed by raw_id. The fixture constructs
-        # raw_id = sha256(raw_bytes), so we verify the ID format and that
-        # each sample has a valid SHA256 hash.
-        assert len(raw_synthetic_samples) > 0, "No samples generated"
+        """Content hashes match stored raw_id."""
+        import hashlib
+
+        mismatches = []
         for sample in raw_synthetic_samples:
-            assert len(sample.raw_id) == 64, f"Invalid hash length: {sample.raw_id}"
-            assert all(c in "0123456789abcdef" for c in sample.raw_id)
+            computed = hashlib.sha256(sample.raw_content).hexdigest()
+            if computed != sample.raw_id:
+                mismatches.append((sample.raw_id[:16], computed[:16]))
+
+        if mismatches:
+            pytest.fail(f"{len(mismatches)}/{len(raw_synthetic_samples)} hash mismatches: {mismatches[:5]}")

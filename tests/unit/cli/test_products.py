@@ -3,15 +3,10 @@
 from __future__ import annotations
 
 import json
-from types import SimpleNamespace
-from unittest.mock import MagicMock
 
-import pytest
 from click.testing import CliRunner
 
 from polylogue.cli.click_app import cli
-from polylogue.cli.commands.products import _make_callback
-from polylogue.products.registry import get_product_type
 from polylogue.storage.action_event_rebuild_runtime import rebuild_action_event_read_model_sync
 from polylogue.storage.backends.connection import open_connection
 from polylogue.storage.session_product_rebuild import rebuild_session_products_sync
@@ -149,14 +144,6 @@ def test_products_enrichments_json(cli_workspace):
     assert first["enrichment_provenance"]["enrichment_family"] == "scored_session_enrichment"
     assert first["enrichment"]["support_level"] in {"weak", "moderate", "strong"}
     assert "input_band_summary" in first["enrichment"]
-
-
-def test_products_callback_rejects_unknown_query_fields() -> None:
-    callback = _make_callback(get_product_type("session_enrichments"))
-    env = SimpleNamespace(operations=MagicMock())
-
-    with pytest.raises(SystemExit, match="products enrichments: Unknown query field\\(s\\) for session_enrichments: refined_work_kind"):
-        callback.__wrapped__(env, json_mode=False, refined_work_kind="planning")
 
 
 def test_products_profiles_json_supports_explicit_evidence_and_inference_tiers(cli_workspace):
@@ -298,22 +285,6 @@ def test_session_product_rebuild_supports_legacy_payload_columns(cli_workspace):
         rebuild_session_products_sync(conn)
         status = session_product_status_sync(conn)
 
-    assert status["profile_row_count"] == 2
-    assert status["profile_rows_ready"] is True
-    assert status["work_event_inference_rows_ready"] is True
-    assert status["phase_inference_rows_ready"] is True
-
-
-def test_session_product_rebuild_pages_full_rebuild(cli_workspace):
-    _seed_products(cli_workspace)
-
-    with open_connection(cli_workspace["db_path"]) as conn:
-        counts = rebuild_session_products_sync(conn, page_size=1)
-        status = session_product_status_sync(conn)
-
-    assert counts["profiles"] == 2
-    assert counts["work_events"] >= 1
-    assert counts["phases"] >= 1
     assert status["profile_row_count"] == 2
     assert status["profile_rows_ready"] is True
     assert status["work_event_inference_rows_ready"] is True

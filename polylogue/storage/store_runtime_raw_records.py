@@ -14,7 +14,7 @@ class RawConversationRecord(BaseModel):
     source_name: str | None = None
     source_path: str
     source_index: int | None = None
-    blob_size: int
+    raw_content: bytes
     acquired_at: str
     file_mtime: str | None = None
     parsed_at: str | None = None
@@ -31,6 +31,13 @@ class RawConversationRecord(BaseModel):
     def non_empty_string(cls, v: str) -> str:
         if not v or not v.strip():
             raise ValueError("Field cannot be empty")
+        return v
+
+    @field_validator("raw_content")
+    @classmethod
+    def non_empty_bytes(cls, v: bytes) -> bytes:
+        if not v:
+            raise ValueError("raw_content cannot be empty")
         return v
 
     @field_validator("validation_status", mode="before")

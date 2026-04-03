@@ -5,7 +5,6 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING
 
-from polylogue.lib.metrics import read_peak_rss_self_mb
 from polylogue.logging import get_logger
 from polylogue.pipeline.services.acquisition_persistence import persist_raw_record
 from polylogue.pipeline.services.acquisition_records import ScanResult
@@ -65,9 +64,14 @@ class AcquisitionService:
         drive_config: DriveConfig | None = None,
         progress_label: str = "Scanning",
         on_record: Callable[[RawConversationRecord], Awaitable[None]] | None = None,
-        observation_callback: Callable[[dict[str, object]], None] | None = None,
+        lightweight: bool = False,
     ) -> ScanResult:
-        """Visit source raw payloads incrementally without forcing list materialization."""
+        """Visit source raw payloads incrementally without forcing list materialization.
+
+        Args:
+            lightweight: Strip raw bytes from most records after hashing.
+                Use for preview/planning to prevent OOM on large archives.
+        """
         result = ScanResult()
         known_mtimes = await self.repository.get_known_source_mtimes()
 
@@ -86,7 +90,7 @@ class AcquisitionService:
                     ui=ui,
                     cursor_state=cursor_state,
                     drive_config=drive_config,
-                    observation_callback=observation_callback,
+                    lightweight=lightweight,
                 ):
                     await _consume(record)
                     if progress_callback:
@@ -126,56 +130,14 @@ class AcquisitionService:
         Returns:
             AcquireResult with counts and list of acquired raw_ids
         """
-        result = AcquireResult()
-        # Records are metadata-only (~1 KB each, no BLOBs). Larger batches
-        # reduce commit frequency and async thread-crossing overhead.
-        flush_interval = 500
-        items_since_flush = 0
-        peak_observation: dict[str, object] | None = None
-        observation_count = 0
-        peak_baseline = read_peak_rss_self_mb() or 0.0
-        split_payload_summary = {
-            "count": 0,
-            "total_blob_mb": 0.0,
-            "max_blob_mb": 0.0,
-            "total_detect_provider_ms": 0.0,
-            "total_classify_ms": 0.0,
-            "total_serialize_ms": 0.0,
-            "max_detect_provider_ms": 0.0,
-            "max_classify_ms": 0.0,
-            "max_serialize_ms": 0.0,
-        }
+        import gc as _gc
 
-        def _observe(observation: dict[str, object]) -> None:
-            nonlocal peak_observation, observation_count, peak_baseline
-            observation_count += 1
-            if observation.get("phase") == "zip-entry-split-payload-serialized":
-                split_payload_summary["count"] += 1
-                blob_mb = observation.get("blob_mb")
-                if isinstance(blob_mb, int | float):
-                    split_payload_summary["total_blob_mb"] += float(blob_mb)
-                    split_payload_summary["max_blob_mb"] = max(split_payload_summary["max_blob_mb"], float(blob_mb))
-                for field, total_key, max_key in (
-                    ("detect_provider_ms", "total_detect_provider_ms", "max_detect_provider_ms"),
-                    ("classify_ms", "total_classify_ms", "max_classify_ms"),
-                    ("serialize_ms", "total_serialize_ms", "max_serialize_ms"),
-                ):
-                    value = observation.get(field)
-                    if isinstance(value, int | float):
-                        split_payload_summary[total_key] += float(value)
-                        split_payload_summary[max_key] = max(split_payload_summary[max_key], float(value))
-            peak_rss_self_mb = observation.get("peak_rss_self_mb")
-            if not isinstance(peak_rss_self_mb, int | float):
-                return
-            if float(peak_rss_self_mb) <= peak_baseline:
-                return
-            peak_baseline = float(peak_rss_self_mb)
-            if peak_observation is None:
-                peak_observation = dict(observation)
-                return
-            peak_value = peak_observation.get("peak_rss_self_mb")
-            if not isinstance(peak_value, int | float) or peak_rss_self_mb > peak_value:
-                peak_observation = dict(observation)
+        result = AcquireResult()
+        # Flush every 50 records to prevent memory spikes from raw_content
+        # bytes accumulating in the SQLite WAL. With ~627 KB avg per record,
+        # 50 records ≈ 31 MB in WAL vs 500 records ≈ 313 MB.
+        flush_interval = 50
+        items_since_flush = 0
 
         async def _store(record: RawConversationRecord) -> None:
             nonlocal items_since_flush
@@ -184,6 +146,7 @@ class AcquisitionService:
             if items_since_flush >= flush_interval:
                 await self.backend.bulk_flush()
                 items_since_flush = 0
+                _gc.collect()  # Help Python release flushed record bytes
 
         async with self.backend.bulk_connection():
             visit_result = await self.visit_sources(
@@ -193,17 +156,7 @@ class AcquisitionService:
                 drive_config=drive_config,
                 progress_label="Acquiring",
                 on_record=_store,
-                observation_callback=_observe,
             )
             result.errors += visit_result.counts["errors"]
-
-        if peak_observation is not None:
-            result.diagnostics["peak_observation"] = peak_observation
-            result.diagnostics["observation_count"] = observation_count
-        if split_payload_summary["count"]:
-            result.diagnostics["split_payload_summary"] = {
-                key: round(value, 3) if isinstance(value, float) else value
-                for key, value in split_payload_summary.items()
-            }
 
         return result

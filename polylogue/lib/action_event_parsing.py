@@ -53,30 +53,20 @@ def build_tool_calls_from_content_blocks(
     content_blocks: Sequence[Mapping[str, Any]],
 ) -> tuple[ToolCall, ...]:
     """Normalize canonical ToolCall viewports from content blocks."""
+    normalized_provider = Provider.from_string(provider) if provider is not None else None
     tool_result_outputs: dict[str, str] = {}
-    tool_use_blocks: list[Mapping[str, Any]] = []
     for block in content_blocks:
-        block_type = str(block.get("type"))
-        if block_type == "tool_result":
-            tool_id = block.get("tool_id")
-            text = block.get("text")
-            if isinstance(tool_id, str) and tool_id and isinstance(text, str) and text:
-                tool_result_outputs.setdefault(tool_id, text)
+        if str(block.get("type")) != "tool_result":
             continue
-        if block_type != "tool_use":
-            continue
-        tool_use_blocks.append(block)
+        tool_id = block.get("tool_id")
+        text = block.get("text")
+        if isinstance(tool_id, str) and tool_id and isinstance(text, str) and text:
+            tool_result_outputs.setdefault(tool_id, text)
 
-    if not tool_use_blocks:
-        return ()
-
-    normalized_provider = (
-        provider
-        if isinstance(provider, Provider)
-        else Provider.from_string(provider) if provider is not None else None
-    )
     calls: list[ToolCall] = []
-    for block in tool_use_blocks:
+    for block in content_blocks:
+        if str(block.get("type")) != "tool_use":
+            continue
         name = block.get("tool_name")
         if not isinstance(name, str) or not name:
             continue

@@ -6,7 +6,6 @@ import re
 from functools import cached_property
 
 from polylogue.lib.roles import Role
-from polylogue.logging import get_logger
 
 
 def _coerce_optional_float(value: object) -> float | None:
@@ -37,15 +36,11 @@ def _coerce_optional_int(value: object) -> int | None:
     return None
 
 
-_CONTEXT_START_MARKERS = (
-    "<environment_context>",
-    "<subagent_notification>",
-    "<permissions instructions>",
-)
-_CONTEXT_LINE_PATTERNS = (
-    ("Contents of ", re.compile(r"^Contents of .+:", re.MULTILINE)),
-    ("<file path=", re.compile(r"^<file path=", re.MULTILINE)),
-)
+_CONTEXT_PATTERNS = [
+    r"^Contents of .+:",
+    r"^<file path=",
+]
+from polylogue.logging import get_logger
 
 logger = get_logger(__name__)
 
@@ -115,7 +110,7 @@ class MessageRuntimeMixin:
 
         return False
 
-    @cached_property
+    @property
     def is_tool_use(self) -> bool:
         if any(block.get("type") in ("tool_use", "tool_result") for block in self.content_blocks):
             return True
@@ -138,7 +133,7 @@ class MessageRuntimeMixin:
 
         return False
 
-    @cached_property
+    @property
     def is_thinking(self) -> bool:
         if any(block.get("type") == "thinking" for block in self.content_blocks):
             return True
@@ -161,33 +156,32 @@ class MessageRuntimeMixin:
 
         return bool(self._is_chatgpt_thinking())
 
-    @cached_property
+    @property
     def is_context_dump(self) -> bool:
-        text = self.text
-        if not text:
+        if not self.text:
             return False
-        stripped = text.lstrip()
-        if stripped.startswith(_CONTEXT_START_MARKERS):
+        stripped = self.text.lstrip()
+        if stripped.startswith(("<environment_context>", "<subagent_notification>", "<permissions instructions>")):
             return True
-        if self.attachments and len(text) < 100:
+        if self.attachments and len(self.text) < 100:
             return True
-        if "<system>" in text and "</system>" in text:
+        if "<system>" in self.text and "</system>" in self.text:
             return True
-        if "```" in text and text.count("```") >= 6:
+        if self.text.count("```") >= 6:
             return True
-        return any(marker in text and pattern.search(text) for marker, pattern in _CONTEXT_LINE_PATTERNS)
+        return any(re.search(pattern, self.text, re.MULTILINE) for pattern in _CONTEXT_PATTERNS)
 
-    @cached_property
+    @property
     def is_noise(self) -> bool:
         return self.is_tool_use or self.is_context_dump or self.is_system
 
-    @cached_property
+    @property
     def is_substantive(self) -> bool:
         if not self.is_dialogue or self.is_noise or self.is_thinking:
             return False
         return bool(self.text and len(self.text.strip()) > 10)
 
-    @cached_property
+    @property
     def word_count(self) -> int:
         if not self.text:
             return 0

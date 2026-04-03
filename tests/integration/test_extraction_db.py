@@ -1,6 +1,6 @@
 """Validate extraction logic against seeded synthetic database data.
 
-Loads content from blob store (keyed by raw_id in raw_conversations).
+Uses `raw_conversations.raw_content` as ground truth.
 Extraction should work on 100% of seeded synthetic data with zero errors.
 
 Test modes:
@@ -246,14 +246,14 @@ class TestDataIntegrity:
     """Validate raw conversation integrity in seeded database."""
 
     def test_raw_conversations_have_raw_content(self, seeded_db):
-        """Seeded raw conversations should have blob_size > 0."""
+        """Seeded raw conversations should retain non-empty raw payloads."""
         conn = sqlite3.connect(seeded_db)
         cur = conn.cursor()
         cur.execute(
             """
             SELECT provider_name,
                    COUNT(*) as total,
-                   SUM(CASE WHEN blob_size IS NULL OR blob_size = 0 THEN 1 ELSE 0 END) as missing_size
+                   SUM(CASE WHEN raw_content IS NULL OR length(raw_content) = 0 THEN 1 ELSE 0 END) as missing_raw
             FROM raw_conversations
             GROUP BY provider_name
             """
@@ -263,11 +263,11 @@ class TestDataIntegrity:
         conn.close()
 
         issues = []
-        for provider, total, missing_size in rows:
-            if missing_size > 0:
-                issues.append(f"{provider}: {missing_size} missing blob sizes (of {total})")
+        for provider, total, missing_raw in rows:
+            if missing_raw > 0:
+                issues.append(f"{provider}: {missing_raw} missing raw payloads (of {total})")
 
-        assert not issues, f"Missing blob sizes in seeded database: {issues}"
+        assert not issues, f"Missing raw payloads in seeded database: {issues}"
 
     def test_provider_coverage(self, seeded_db):
         """Report provider coverage in database."""
@@ -343,12 +343,9 @@ def iter_raw_conversations(
     Returns:
         List of (raw_id, raw_content, source_path) tuples.
     """
-    from polylogue.storage.blob_store import get_blob_store
-
-    blob_store = get_blob_store()
     cur = conn.cursor()
     query = """
-        SELECT raw_id, source_path
+        SELECT raw_id, raw_content, source_path
         FROM raw_conversations
         WHERE provider_name = ?
     """
@@ -356,11 +353,7 @@ def iter_raw_conversations(
         query += f" LIMIT {limit}"
 
     cur.execute(query, (provider,))
-    results = []
-    for raw_id, source_path in cur.fetchall():
-        raw_content = blob_store.read_all(raw_id)
-        results.append((raw_id, raw_content, source_path))
-    return results
+    return [(row[0], row[1], row[2]) for row in cur.fetchall()]
 
 
 def get_raw_conversation_count(conn: sqlite3.Connection, provider: str) -> int:

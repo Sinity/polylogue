@@ -214,17 +214,6 @@ def test_dumps_forwards_orjson_options():
     assert output == '{"a":2,"b":1}'
 
 
-def test_dumps_bytes_roundtrips_as_utf8_json():
-    """dumps_bytes returns UTF-8 bytes with the same semantic content as dumps."""
-    payload = {"b": 1, "a": Decimal("2.5")}
-
-    output = core_json.dumps_bytes(payload, option=orjson.OPT_SORT_KEYS)
-
-    assert isinstance(output, bytes)
-    assert output == b'{"a":2.5,"b":1}'
-    assert core_json.loads(output) == {"a": 2.5, "b": 1}
-
-
 def test_dumps_fallback_uses_stdlib_encoder_when_orjson_option_rejects_object():
     """The stdlib fallback still uses the combined encoder contract."""
 
@@ -244,27 +233,6 @@ def test_dumps_fallback_uses_stdlib_encoder_when_orjson_option_rejects_object():
     )
     data = core_json.loads(output)
     assert data == {"payload": {"custom": 7}}
-
-
-def test_dumps_bytes_fallback_uses_stdlib_encoder_when_orjson_option_rejects_object():
-    """dumps_bytes preserves the same semantic encoder contract as dumps."""
-
-    class CustomType:
-        def __init__(self, value: int):
-            self.value = value
-
-    def custom_handler(obj: Any) -> Any:
-        if isinstance(obj, CustomType):
-            return {"custom": obj.value}
-        raise TypeError("Not handled")
-
-    output = core_json.dumps_bytes(
-        {"payload": CustomType(7)},
-        default=custom_handler,
-        option=orjson.OPT_NON_STR_KEYS,
-    )
-    assert isinstance(output, bytes)
-    assert core_json.loads(output) == {"payload": {"custom": 7}}
 
 
 # =============================================================================

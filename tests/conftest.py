@@ -46,19 +46,8 @@ def _clear_polylogue_env(monkeypatch, tmp_path):
     # Clear schema-validator cache so monkeypatched registry/schema tests
     # cannot leak compiled validators into later integration runs.
     from polylogue.schemas.validator import SchemaValidator
-    from polylogue.schemas.validator_resolution import reset_registry_cache
 
     SchemaValidator._cache.clear()
-    reset_registry_cache()
-
-    # Reset blob store singleton to prevent cross-test pollution when
-    # tests write blobs to the temp XDG_DATA_HOME. Only reset if we're
-    # about to set new XDG paths (i.e., after we've set up the env above).
-    # Tests that create their own temp dirs will have their blobs written
-    # to the correct location automatically since blob_store uses XDG_DATA_HOME.
-    from polylogue.storage.blob_store import reset_blob_store
-
-    reset_blob_store()
 
     for key in (
         "POLYLOGUE_CONFIG",
@@ -539,7 +528,7 @@ def seeded_db(tmp_path_factory):
                         provider_name=provider,
                         source_name=provider,
                         source_path=str(file_path),
-                        blob_size=len(raw_bytes),
+                        raw_content=raw_bytes,
                         acquired_at=datetime.now(timezone.utc).isoformat(),
                     )
                     await backend.save_raw_conversation(record)
@@ -623,7 +612,7 @@ def raw_synthetic_samples():
                 provider_name=provider,
                 source_name=provider,
                 source_path=f"<synthetic:{provider}:{idx}>",
-                blob_size=len(raw_bytes),
+                raw_content=raw_bytes,
                 acquired_at=datetime.now(timezone.utc).isoformat(),
             ))
     return samples

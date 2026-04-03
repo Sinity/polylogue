@@ -22,7 +22,6 @@ from polylogue.storage.backends.schema import (
     SCHEMA_VERSION,
     _ensure_schema,
 )
-from polylogue.storage.backends.schema_upgrade import _ensure_raw_source_mtime_index
 from polylogue.storage.state_views import RawConversationStateUpdate
 from polylogue.storage.store import RawConversationRecord
 
@@ -41,7 +40,7 @@ class TestMarkRawParsed:
             raw_id=raw_id,
             provider_name="test",
             source_path="/test.json",
-            blob_size=len(b'{"test": true}'),
+            raw_content=b'{"test": true}',
             acquired_at="2026-01-01T00:00:00Z",
             file_mtime="2026-01-01T00:00:00Z",
         )
@@ -102,7 +101,7 @@ class TestUpdateRawState:
             raw_id=raw_id,
             provider_name="test",
             source_path="/test.json",
-            blob_size=len(b'{"test": true}'),
+            raw_content=b'{"test": true}',
             acquired_at="2026-01-01T00:00:00Z",
             file_mtime="2026-01-01T00:00:00Z",
         ))
@@ -178,7 +177,7 @@ class TestMarkRawValidated:
             raw_id=raw_id,
             provider_name="test",
             source_path="/test.json",
-            blob_size=len(b'{"test": true}'),
+            raw_content=b'{"test": true}',
             acquired_at="2026-01-01T00:00:00Z",
             file_mtime="2026-01-01T00:00:00Z",
         )
@@ -242,7 +241,7 @@ class TestGetKnownSourceMtimes:
                 raw_id=f"raw-{i}",
                 provider_name="test",
                 source_path=f"/path/file{i}.json",
-                blob_size=len(f'{{"i": {i}}}'.encode()),
+                raw_content=f'{{"i": {i}}}'.encode(),
                 acquired_at="2026-01-01T00:00:00Z",
                 file_mtime=f"2026-01-0{i+1}T00:00:00Z",
             ))
@@ -258,7 +257,7 @@ class TestGetKnownSourceMtimes:
             raw_id="with-mtime",
             provider_name="test",
             source_path="/path/a.json",
-            blob_size=len(b'{}'),
+            raw_content=b'{}',
             acquired_at="2026-01-01T00:00:00Z",
             file_mtime="2026-01-01T00:00:00Z",
         ))
@@ -266,7 +265,7 @@ class TestGetKnownSourceMtimes:
             raw_id="no-mtime",
             provider_name="test",
             source_path="/path/b.json",
-            blob_size=len(b'{"b": 1}'),
+            raw_content=b'{"b": 1}',
             acquired_at="2026-01-01T00:00:00Z",
             file_mtime=None,
         ))
@@ -296,7 +295,7 @@ class TestResetParseStatus:
                 raw_id=f"raw-{i}",
                 provider_name=provider,
                 source_path=f"/path/{i}.json",
-                blob_size=len(f'{{"i": {i}}}'.encode()),
+                raw_content=f'{{"i": {i}}}'.encode(),
                 acquired_at="2026-01-01T00:00:00Z",
             ))
         await backend.mark_raw_parsed("raw-0")
@@ -336,7 +335,7 @@ class TestResetParseStatus:
             raw_id="unparsed",
             provider_name="test",
             source_path="/test.json",
-            blob_size=len(b'{}'),
+            raw_content=b'{}',
             acquired_at="2026-01-01T00:00:00Z",
         ))
         count = await backend.reset_parse_status()
@@ -356,7 +355,7 @@ class TestResetValidationStatus:
                 raw_id=f"raw-{i}",
                 provider_name=provider,
                 source_path=f"/path/{i}.json",
-                blob_size=len(f'{{"i": {i}}}'.encode()),
+                raw_content=f'{{"i": {i}}}'.encode(),
                 acquired_at="2026-01-01T00:00:00Z",
             ))
         await backend.mark_raw_validated(
@@ -534,38 +533,4 @@ class TestFreshSchema:
         assert "idx_content_blocks_conversation" in indices
         assert "idx_content_blocks_conv_type" in indices
 
-        conn.close()
-
-    @pytest.mark.parametrize(
-        "ddl",
-        [
-            """
-            CREATE INDEX IF NOT EXISTS idx_raw_conv_source_mtime
-            ON raw_conversations(source_path, file_mtime)
-            WHERE file_mtime IS NOT NULL;
-            """,
-            """
-            CREATE INDEX idx_raw_conv_source_mtime
-            ON raw_conversations(source_path, file_mtime)
-            WHERE file_mtime IS NOT NULL;
-            """,
-        ],
-    )
-    def test_raw_source_mtime_index_upgrade_accepts_equivalent_sql(self, tmp_path: Path, ddl: str) -> None:
-        """Equivalent DDL formatting should not trigger drop/recreate churn."""
-        db_path = tmp_path / "fresh.db"
-        conn = sqlite3.connect(str(db_path))
-        conn.execute(
-            "CREATE TABLE raw_conversations (raw_id TEXT PRIMARY KEY, source_path TEXT, file_mtime TEXT)"
-        )
-        conn.executescript(ddl)
-
-        _ensure_raw_source_mtime_index(conn)
-
-        row = conn.execute(
-            "SELECT sql FROM sqlite_master WHERE type='index' AND name='idx_raw_conv_source_mtime'"
-        ).fetchone()
-        assert row is not None
-        assert row[0] is not None
-        assert "WHERE file_mtime IS NOT NULL" in row[0]
         conn.close()

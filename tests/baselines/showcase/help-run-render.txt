@@ -1,8 +1,0 @@
-Usage: python -m polylogue run render [OPTIONS]
-
-  Render human-facing publication artifacts.
-
-Options:
-  --format [markdown|html]  Output format for rendering (markdown or html)
-                            [default: html]
-  -h, --help                Show this message and exit.

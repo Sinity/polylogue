@@ -10,11 +10,6 @@ from polylogue.showcase.exercises import (
     topological_order,
     vhs_exercises,
 )
-from polylogue.showcase.generators import (
-    command_help_exercise_names,
-    inventory_command_paths,
-    product_json_exercise_names,
-)
 
 
 class TestExerciseUniqueness:
@@ -61,39 +56,6 @@ class TestExercisesByGroup:
             "check-semantic-proof-read-surfaces",
             "check-semantic-proof-read-surfaces-json",
         } <= names
-
-    def test_all_command_paths_have_generated_help_exercises(self):
-        expected = command_help_exercise_names()
-        observed = {
-            exercise.name
-            for exercise in EXERCISES
-            if exercise.group == "structural" and exercise.name.startswith("help-") and exercise.name != "help-main"
-        }
-        assert observed == expected
-
-    def test_inventory_includes_nested_command_paths(self):
-        observed = {command_path.display_name for command_path in inventory_command_paths()}
-        assert {
-            "products analytics",
-            "run render",
-            "schema explain",
-        } <= observed
-
-    def test_all_products_json_commands_have_generated_exercises(self):
-        expected = product_json_exercise_names()
-        observed = {
-            exercise.name: exercise
-            for exercise in EXERCISES
-            if exercise.group == "subcommands"
-            and exercise.name.startswith("products-")
-            and exercise.name.endswith("-json")
-        }
-        assert set(observed) == expected
-        for exercise in observed.values():
-            assert exercise.needs_data is True
-            assert exercise.env == "seeded"
-            assert exercise.validation.stdout_is_valid_json is True
-            assert exercise.output_ext == ".json"
 
 
 class TestVhsExercises:

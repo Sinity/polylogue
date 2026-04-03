@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 
-from polylogue.pipeline.run_execution import run_sources
+from polylogue.pipeline.run_execution import needs_parse_source_fallback, run_sources
 from polylogue.pipeline.run_finalization import latest_run
 from polylogue.pipeline.run_planning import plan_sources
 from polylogue.pipeline.run_support import RUN_STAGE_CHOICES
@@ -16,6 +16,7 @@ __all__ = [
     "_select_sources",
     "_write_run_json",
     "latest_run",
+    "needs_parse_source_fallback",
     "plan_sources",
     "run_sources",
     "time",

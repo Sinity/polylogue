@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -11,8 +10,6 @@ from polylogue.cli.formatting import format_counts
 from polylogue.cli.types import AppEnv
 from polylogue.pipeline.observers import RunObserver
 from polylogue.storage.state_views import RunResult
-
-_PROGRESS_FRACTION_RE = re.compile(r"(?P<completed>\d[\d,]*)/(?P<total>\d[\d,]*)")
 
 
 def _format_elapsed(seconds: float) -> str:
@@ -90,43 +87,10 @@ class RichProgressObserver(RunObserver):
         self._progress = progress
         self._task_id = task_id
 
-    @staticmethod
-    def _progress_bounds(desc: str | None) -> tuple[int, int] | None:
-        if not desc:
-            return None
-        matches = list(_PROGRESS_FRACTION_RE.finditer(desc))
-        if not matches:
-            return None
-        match = matches[-1]
-        completed = int(match.group("completed").replace(",", ""))
-        total = int(match.group("total").replace(",", ""))
-        if total <= 0 or completed < 0 or completed > total:
-            return None
-        return completed, total
-
     def on_progress(self, amount: int, desc: str | None = None) -> None:
-        parsed_bounds = self._progress_bounds(desc)
-        if parsed_bounds is not None:
-            completed, total = parsed_bounds
-            if desc:
-                self._progress.update(
-                    self._task_id,
-                    description=desc,
-                    total=total,
-                    completed=completed,
-                )
-            else:
-                self._progress.update(
-                    self._task_id,
-                    total=total,
-                    completed=completed,
-                )
-            return
-
         if desc:
             self._progress.update(self._task_id, description=desc)
-        if amount:
-            self._progress.update(self._task_id, advance=amount)
+        self._progress.update(self._task_id, advance=amount)
 
 
 @contextmanager

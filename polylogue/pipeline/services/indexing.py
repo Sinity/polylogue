@@ -15,11 +15,9 @@ from polylogue.storage.fts_lifecycle import (
     repair_fts_index_async,
 )
 from polylogue.storage.search_cache import invalidate_search_cache
-from polylogue.storage.search_providers import create_vector_provider
 
 if TYPE_CHECKING:
     from polylogue.config import Config
-    from polylogue.protocols import ProgressCallback
     from polylogue.storage.backends.async_sqlite import SQLiteBackend
 
 logger = get_logger(__name__)
@@ -33,51 +31,11 @@ async def ensure_index(backend: SQLiteBackend) -> None:
         await ensure_fts_index_async(conn)
 
 
-async def rebuild_index(
-    backend: SQLiteBackend,
-    *,
-    conversation_ids: list[str] | None = None,
-    phase_count: int = 2,
-    progress_callback: ProgressCallback | None = None,
-) -> None:
+async def rebuild_index(backend: SQLiteBackend) -> None:
     """Rebuild the entire FTS5 index from persisted message rows."""
-    conversation_id_list = (
-        conversation_ids
-        if conversation_ids is not None
-        else [conversation_id async for conversation_id in backend.queries.iter_conversation_ids()]
-    )
-    phase_total = len(conversation_id_list) * 2
-    if phase_count > 2:
-        phase_total = len(conversation_id_list) * phase_count
-
-    def action_progress_desc(processed: int, total: int) -> str:
-        del total
-        return f"Indexing: action events {processed:,}/{phase_total:,}"
-
-    def fts_progress_desc(processed: int, total: int) -> str:
-        del total
-        return f"Indexing: full-text search {len(conversation_id_list) + processed:,}/{phase_total:,}"
-
     async with backend.connection() as conn:
-        if progress_callback is not None and conversation_id_list:
-            progress_callback(0, desc=f"Indexing: action events 0/{phase_total:,}")
-        await rebuild_action_event_read_model_async(
-            conn,
-            conversation_ids=conversation_id_list,
-            progress_callback=progress_callback,
-            progress_desc=action_progress_desc if progress_callback is not None else None,
-        )
-        if progress_callback is not None and conversation_id_list:
-            progress_callback(
-                0,
-                desc=f"Indexing: full-text search {len(conversation_id_list):,}/{phase_total:,}",
-            )
-        await rebuild_fts_index_async(
-            conn,
-            conversation_ids=conversation_id_list,
-            progress_callback=progress_callback,
-            progress_desc=fts_progress_desc if progress_callback is not None else None,
-        )
+        await rebuild_action_event_read_model_async(conn)
+        await rebuild_fts_index_async(conn)
         await conn.commit()
     invalidate_search_cache()
 
@@ -85,45 +43,14 @@ async def rebuild_index(
 async def update_index_for_conversations(
     conversation_ids: Iterable[str] | AsyncIterable[str],
     backend: SQLiteBackend,
-    *,
-    phase_count: int = 2,
-    progress_callback: ProgressCallback | None = None,
 ) -> None:
     """Repair FTS rows for the provided conversations from persisted message rows."""
     conversation_id_list = [conversation_id async for conversation_id in _iter_ids(conversation_ids)]
     changed = bool(conversation_id_list)
-    phase_total = len(conversation_id_list) * 2
-    if phase_count > 2:
-        phase_total = len(conversation_id_list) * phase_count
-
-    def action_progress_desc(processed: int, total: int) -> str:
-        del total
-        return f"Indexing: action events {processed:,}/{phase_total:,}"
-
-    def fts_progress_desc(processed: int, total: int) -> str:
-        del total
-        return f"Indexing: full-text search {len(conversation_id_list) + processed:,}/{phase_total:,}"
 
     async with backend.connection() as conn:
-        if progress_callback is not None and conversation_id_list:
-            progress_callback(0, desc=f"Indexing: action events 0/{phase_total:,}")
-        await rebuild_action_event_read_model_async(
-            conn,
-            conversation_ids=conversation_id_list,
-            progress_callback=progress_callback,
-            progress_desc=action_progress_desc if progress_callback is not None else None,
-        )
-        if progress_callback is not None and conversation_id_list:
-            progress_callback(
-                0,
-                desc=f"Indexing: full-text search {len(conversation_id_list):,}/{phase_total:,}",
-            )
-        await repair_fts_index_async(
-            conn,
-            conversation_id_list,
-            progress_callback=progress_callback,
-            progress_desc=fts_progress_desc if progress_callback is not None else None,
-        )
+        await rebuild_action_event_read_model_async(conn, conversation_ids=conversation_id_list)
+        await repair_fts_index_async(conn, conversation_id_list)
         await conn.commit()
     if changed:
         invalidate_search_cache()
@@ -162,62 +89,9 @@ class IndexService:
         self.config = config
         self.backend = backend
 
-    def _auto_embed_enabled(self) -> bool:
-        return bool(self.config.index_config and self.config.index_config.auto_embed)
-
-    async def _embed_indexed_conversations(
-        self,
-        conversation_ids: list[str],
-        *,
-        progress_callback: ProgressCallback | None = None,
-        progress_offset: int = 0,
-        phase_total: int = 0,
-    ) -> bool:
-        if not conversation_ids:
-            return True
-        if self.backend is None:
-            logger.error("Cannot auto-embed without a backend")
-            return False
-
-        from polylogue.storage.repository import ConversationRepository
-
-        vector_provider = create_vector_provider(config=self.config, db_path=self.backend.db_path)
-        if vector_provider is None:
-            logger.error("Auto-embed enabled but no vector provider is available")
-            return False
-
-        repository = ConversationRepository(backend=self.backend)
-        if progress_callback is not None:
-            progress_callback(0, desc=f"Indexing: embeddings {progress_offset:,}/{phase_total:,}")
-
-        failed = False
-        for processed, conversation_id in enumerate(conversation_ids, start=1):
-            try:
-                await repository.embed_conversation(
-                    conversation_id,
-                    vector_provider=vector_provider,
-                )
-            except Exception as exc:
-                failed = True
-                logger.error(
-                    "Failed to embed conversation during index stage",
-                    conversation_id=conversation_id,
-                    error=str(exc),
-                    exc_info=True,
-                )
-            if progress_callback is not None:
-                progress_callback(
-                    1,
-                    desc=f"Indexing: embeddings {progress_offset + processed:,}/{phase_total:,}",
-                )
-
-        return not failed
-
     async def update_index(
         self,
         conversation_ids: Iterable[str] | AsyncIterable[str],
-        *,
-        progress_callback: ProgressCallback | None = None,
     ) -> bool:
         """Update the search index for specific conversations.
 
@@ -231,39 +105,14 @@ class IndexService:
             logger.error("Cannot update index without a backend")
             return False
 
-        conversation_id_list = [conversation_id async for conversation_id in _iter_ids(conversation_ids)]
         try:
-            phase_count = 3 if self._auto_embed_enabled() and conversation_id_list else 2
-            if progress_callback is None:
-                await update_index_for_conversations(
-                    conversation_id_list,
-                    self.backend,
-                    phase_count=phase_count,
-                )
-            else:
-                await update_index_for_conversations(
-                    conversation_id_list,
-                    self.backend,
-                    phase_count=phase_count,
-                    progress_callback=progress_callback,
-                )
-            if self._auto_embed_enabled():
-                return await self._embed_indexed_conversations(
-                    conversation_id_list,
-                    progress_callback=progress_callback,
-                    progress_offset=len(conversation_id_list) * 2,
-                    phase_total=len(conversation_id_list) * phase_count,
-                )
+            await update_index_for_conversations(conversation_ids, self.backend)
             return True
         except sqlite3.DatabaseError as exc:
             logger.error("Failed to update index", error=str(exc), exc_info=True)
             return False
 
-    async def rebuild_index(
-        self,
-        *,
-        progress_callback: ProgressCallback | None = None,
-    ) -> bool:
+    async def rebuild_index(self) -> bool:
         """Rebuild the entire search index from scratch.
 
         Returns:
@@ -274,28 +123,7 @@ class IndexService:
             return False
 
         try:
-            conversation_id_list = [conversation_id async for conversation_id in self.backend.queries.iter_conversation_ids()]
-            phase_count = 3 if self._auto_embed_enabled() and conversation_id_list else 2
-            if progress_callback is None:
-                await rebuild_index(
-                    self.backend,
-                    conversation_ids=conversation_id_list,
-                    phase_count=phase_count,
-                )
-            else:
-                await rebuild_index(
-                    self.backend,
-                    conversation_ids=conversation_id_list,
-                    phase_count=phase_count,
-                    progress_callback=progress_callback,
-                )
-            if self._auto_embed_enabled():
-                return await self._embed_indexed_conversations(
-                    conversation_id_list,
-                    progress_callback=progress_callback,
-                    progress_offset=len(conversation_id_list) * 2,
-                    phase_total=len(conversation_id_list) * phase_count,
-                )
+            await rebuild_index(self.backend)
             return True
         except sqlite3.DatabaseError as exc:
             logger.error("Failed to rebuild index", error=str(exc), exc_info=True)

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 
 import aiosqlite
 
@@ -120,25 +120,11 @@ def rebuild_fts_index_sync(conn: sqlite3.Connection) -> None:
     conn.execute(ACTION_FTS_REBUILD_SQL)
 
 
-async def rebuild_fts_index_async(
-    conn: aiosqlite.Connection,
-    *,
-    conversation_ids: Sequence[str] | None = None,
-    progress_callback: Callable[[int, str | None], None] | None = None,
-    progress_desc: Callable[[int, int], str] | None = None,
-) -> None:
+async def rebuild_fts_index_async(conn: aiosqlite.Connection) -> None:
     """Rebuild the full FTS index from persisted archive rows."""
     await ensure_fts_index_async(conn)
     await conn.execute("DELETE FROM messages_fts")
     await conn.execute("DELETE FROM action_events_fts")
-    if conversation_ids is not None:
-        await repair_fts_index_async(
-            conn,
-            conversation_ids,
-            progress_callback=progress_callback,
-            progress_desc=progress_desc,
-        )
-        return
     await conn.execute(FTS_REBUILD_SQL)
     await conn.execute(ACTION_FTS_REBUILD_SQL)
 
@@ -159,26 +145,17 @@ def repair_fts_index_sync(conn: sqlite3.Connection, conversation_ids: Sequence[s
 async def repair_fts_index_async(
     conn: aiosqlite.Connection,
     conversation_ids: Sequence[str],
-    *,
-    progress_callback: Callable[[int, str | None], None] | None = None,
-    progress_desc: Callable[[int, int], str] | None = None,
 ) -> None:
     """Repair FTS rows for the supplied conversations from persisted rows."""
     await ensure_fts_index_async(conn)
     if not conversation_ids:
         return
-    total = len(conversation_ids)
-    processed = 0
     for chunk in chunked(list(conversation_ids), size=500):
         params = tuple(chunk)
         await conn.execute(delete_conversation_rows_sql(len(chunk)), params)
         await conn.execute(insert_conversation_rows_sql(len(chunk)), params)
         await conn.execute(delete_action_rows_sql(len(chunk)), params)
         await conn.execute(insert_action_rows_sql(len(chunk)), params)
-        processed += len(chunk)
-        if progress_callback is not None:
-            desc = progress_desc(processed, total) if progress_desc is not None else None
-            progress_callback(len(chunk), desc)
 
 
 def replace_fts_rows_for_messages_sync(

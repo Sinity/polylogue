@@ -6,7 +6,6 @@ from dataclasses import dataclass, field
 
 from polylogue.lib.raw_payload import build_raw_payload_envelope
 from polylogue.logging import get_logger
-from polylogue.storage.blob_store import get_blob_store
 from polylogue.storage.store import RawConversationRecord
 from polylogue.types import Provider, ValidationMode, ValidationStatus
 
@@ -27,18 +26,12 @@ class _ValidationOutcome:
     drift_counts_delta: dict[str, int] = field(default_factory=dict)
 
 
-from polylogue.schemas.validator import SchemaValidator as _SchemaValidator
-
-
 def _validate_record_sync(
     raw_record: RawConversationRecord,
     validation_mode: ValidationMode,
 ) -> _ValidationOutcome:
     """Run CPU-bound validation for a single raw record."""
-    import time as _time
-
-    t_start = _time.perf_counter()
-    SchemaValidator = _SchemaValidator
+    from polylogue.schemas.validator import SchemaValidator
 
     counts_delta: dict[str, int] = {
         "validated": 0,
@@ -55,13 +48,9 @@ def _validate_record_sync(
     canonical_provider = Provider.from_string(stored_payload_provider or raw_record.provider_name)
     payload_provider = stored_payload_provider
 
-    blob_store = get_blob_store()
-    raw_source = blob_store.blob_path(raw_record.raw_id)
-
-    t_decode = _time.perf_counter()
     try:
         envelope = build_raw_payload_envelope(
-            raw_source,
+            raw_record.raw_content,
             source_path=raw_record.source_path,
             fallback_provider=raw_record.provider_name,
             payload_provider=stored_payload_provider,
@@ -174,18 +163,6 @@ def _validate_record_sync(
                 )
     elif parseable:
         validation_status = ValidationStatus.SKIPPED
-
-    total_elapsed = _time.perf_counter() - t_start
-    decode_elapsed = _time.perf_counter() - t_decode  # approximate — includes validation too
-    if total_elapsed > 1.0:
-        logger.info(
-            "slow_validate",
-            raw_id=raw_record.raw_id[:16],
-            elapsed_s=round(total_elapsed, 2),
-            blob_mb=round(raw_record.blob_size / (1024 * 1024), 1),
-            provider=raw_record.provider_name,
-            status=str(validation_status),
-        )
 
     return _ValidationOutcome(
         validation_status=validation_status,

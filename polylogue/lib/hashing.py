@@ -7,10 +7,9 @@ implementations scattered across the codebase.
 from __future__ import annotations
 
 import hashlib
+import json
 import unicodedata
 from pathlib import Path
-
-import orjson
 
 
 def hash_text(text: str) -> str:
@@ -40,13 +39,8 @@ def hash_payload(payload: object) -> str:
     Callers should normalize strings before including in payload if
     normalization-invariant hashing is required.
     """
-    try:
-        serialized = orjson.dumps(payload, option=orjson.OPT_SORT_KEYS)
-    except TypeError:
-        import json
-
-        serialized = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    return hashlib.sha256(serialized).hexdigest()
+    serialized = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
 
 
 def hash_file(path: Path) -> str:

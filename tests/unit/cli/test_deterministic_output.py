@@ -541,8 +541,7 @@ def test_format_counts_contract(counts: dict[str, object], expected_parts: tuple
 @pytest.mark.parametrize(
     ("stage", "indexed", "error", "expected"),
     [
-        ("parse", False, None, "Index: up-to-date"),
-        ("parse", True, None, "Index: ok"),
+        ("parse", False, None, "Index: skipped"),
         ("render", True, None, "Index: skipped"),
         ("index", False, "boom", "Index: error"),
         ("index", True, None, "Index: ok"),

@@ -35,8 +35,6 @@ remembering individual test files or campaign commands.
 python -m devtools.run_validation_lanes --list
 python -m devtools.run_validation_lanes --lane machine-contract
 python -m devtools.run_validation_lanes --lane query-routing
-python -m devtools.run_validation_lanes --lane showcase-baselines
-python -m devtools.run_validation_lanes --lane pipeline-probe-chatgpt
 python -m devtools.run_validation_lanes --lane semantic-stack
 python -m devtools.run_validation_lanes --lane source-provider-fidelity
 python -m devtools.run_validation_lanes --lane maintenance-control-plane
@@ -84,8 +82,6 @@ Lane intent:
 
 - `machine-contract`: root CLI JSON success/failure and runtime-health machine surfaces
 - `query-routing`: query-first integration plus route-planning/unit proofs
-- `showcase-baselines`: registry-derived tier-0 CLI help and source-baseline drift check
-- `pipeline-probe-chatgpt`: short synthetic ChatGPT parse probe with explicit runtime/RSS budgets
 - `semantic-stack`: harmonization, semantic facts/profile convergence, proof, and contract inventory
 - `source-provider-fidelity`: local source traversal, Drive/runtime boundaries, and provider-ingest fidelity
 - `maintenance-control-plane`: health, maintenance selection, cache/live provenance, and publication maintenance summaries
@@ -142,41 +138,6 @@ Durable mutation ledgers live in:
 
 - [mutation-testing-baseline.md](./mutation-testing-baseline.md)
 - [`docs/mutation-campaigns/`](./mutation-campaigns/README.md)
-
-### Fast pipeline probes
-
-Use the real pipeline probe before running long-haul campaigns or touching hot
-paths. It writes the normal `archive_root/runs/run-*.json` artifact and emits
-stage timing plus RSS metrics in one JSON summary.
-
-There are now two useful tiers:
-
-- Synthetic smoke probes: tiny generated corpora for fast budget checks in validation lanes.
-- Archive-subset probes: replay a persisted, isolated subset of already-acquired raw rows from a real archive into a secondary workspace, with parse and validation state reset so post-acquire stages run again.
-
-```bash
-nix develop -c python -m devtools.pipeline_probe --provider chatgpt --count 5 --stage parse --workdir /tmp/polylogue-probe
-nix develop -c python -m devtools.pipeline_probe --provider claude-code --count 3 --stage all --workdir /tmp/polylogue-probe-cc --json-out /tmp/polylogue-probe-cc.json
-nix develop -c python -m devtools.pipeline_probe --provider chatgpt --count 5 --stage parse --max-total-ms 10000 --max-peak-rss-mb 512
-nix develop -c python -m devtools.pipeline_probe --input-mode archive-subset --source-db /home/sinity/.local/share/polylogue/polylogue.db_ --sample-per-provider 50 --stage parse --workdir /tmp/polylogue-probe-real --manifest-out /tmp/polylogue-probe-real.json
-nix develop -c python -m devtools.pipeline_probe --input-mode archive-subset --manifest-in /tmp/polylogue-probe-real.json --stage parse --workdir /tmp/polylogue-probe-replay
-nix develop -c python -m devtools.pipeline_probe --input-mode archive-subset --source-db /home/sinity/.local/share/polylogue/polylogue.db_ --provider claude-code --provider codex --sample-per-provider 25 --stage parse
-```
-
-Archive-subset mode fails loudly when the selected source archive has no usable
-raw rows, instead of silently “benchmarking” an empty archive. If your live
-archive is not on the default `polylogue.db` path, pass `--source-db`
-explicitly.
-
-### Showcase baseline drift
-
-Use this to verify the tier-0 CLI help surface tracked by the registered root
-command set. Missing or newly added commands show up as explicit drift.
-
-```bash
-nix develop -c python -m devtools.verify_showcase
-nix develop -c python -m devtools.verify_showcase --update
-```
 
 ### Benchmark campaigns
 

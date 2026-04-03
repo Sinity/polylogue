@@ -81,7 +81,7 @@ def _seed_db(
                     provider_name=provider,
                     source_name=provider,
                     source_path=str(file_path),
-                    blob_size=len(raw_bytes),
+                    raw_content=raw_bytes,
                     acquired_at=datetime.now(timezone.utc).isoformat(),
                 )
                 await backend.save_raw_conversation(record)

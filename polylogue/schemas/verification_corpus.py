@@ -11,7 +11,6 @@ from typing import Any
 from polylogue.lib.provider_identity import CORE_RUNTIME_PROVIDERS
 from polylogue.lib.raw_payload import build_raw_payload_envelope
 from polylogue.schemas.validator import SchemaValidator
-from polylogue.storage.blob_store import get_blob_store
 
 from .verification_models import ProviderSchemaVerification, SchemaVerificationReport
 from .verification_requests import SchemaVerificationRequest, bounded_window
@@ -61,7 +60,7 @@ def iter_verification_rows(
             last_rowid = row[0]
 
         base_query = (
-            "SELECT rowid, raw_id, provider_name, payload_provider, source_path "
+            "SELECT rowid, raw_id, provider_name, payload_provider, source_path, raw_content "
             "FROM raw_conversations "
         )
         records_fetched = 0
@@ -166,17 +165,13 @@ def verify_raw_corpus(
             record_limit=request.record_limit,
             record_offset=request.record_offset,
         )
-        blob_store = get_blob_store()
         for row in rows:
             candidate_provider, stored_payload_provider = resolve_candidate_provider(row)
             raw_provider = str(row["provider_name"])
 
-            raw_id = str(row["raw_id"])
-            raw_source = blob_store.blob_path(raw_id)
-
             try:
                 envelope = build_raw_payload_envelope(
-                    raw_source,
+                    row["raw_content"],
                     source_path=str(row["source_path"] or ""),
                     fallback_provider=raw_provider,
                     payload_provider=stored_payload_provider,
