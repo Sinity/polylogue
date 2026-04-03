@@ -142,6 +142,50 @@ def generate_command_help_exercises() -> list[Exercise]:
     return exercises
 
 
+def product_json_exercise_names() -> set[str]:
+    """Return the canonical showcase exercise names for products JSON coverage."""
+    return {
+        f"products-{'-'.join(command_path.path[1:])}-json"
+        for command_path in inventory_command_paths()
+        if len(command_path.path) >= 2
+        and command_path.path[0] == "products"
+        and any(
+            isinstance(param, click.Option) and "--json" in param.opts
+            for param in command_path.command.params
+        )
+    }
+
+
+def generate_products_json_exercises() -> list[Exercise]:
+    """Generate seeded JSON exercises for registry-backed product commands."""
+    exercises: list[Exercise] = []
+    for command_path in inventory_command_paths():
+        if len(command_path.path) < 2 or command_path.path[0] != "products":
+            continue
+        if not any(
+            isinstance(param, click.Option) and "--json" in param.opts
+            for param in command_path.command.params
+        ):
+            continue
+        display_name = command_path.display_name
+        exercise_name = f"products-{'-'.join(command_path.path[1:])}-json"
+        exercises.append(
+            Exercise(
+                name=exercise_name,
+                group="subcommands",
+                description=f"{display_name} JSON output",
+                args=[*command_path.path, "--json"],
+                validation=Validation(stdout_is_valid_json=True),
+                needs_data=True,
+                tier=1,
+                env="seeded",
+                output_ext=".json",
+                artifact_class="json",
+            )
+        )
+    return exercises
+
+
 # ---------------------------------------------------------------------------
 # Format matrix
 # ---------------------------------------------------------------------------
@@ -251,6 +295,7 @@ def generate_all_exercises(cli_group: click.Group | None = None) -> list[Exercis
     if cli_group is not None:
         exercises.extend(generate_filter_exercises(cli_group))
     exercises.extend(generate_command_help_exercises())
+    exercises.extend(generate_products_json_exercises())
     exercises.extend(generate_format_exercises())
     exercises.extend(generate_schema_exercises())
     return exercises
@@ -263,6 +308,8 @@ __all__ = [
     "generate_format_exercises",
     "command_help_exercise_names",
     "generate_command_help_exercises",
+    "generate_products_json_exercises",
     "generate_schema_exercises",
     "inventory_command_paths",
+    "product_json_exercise_names",
 ]
