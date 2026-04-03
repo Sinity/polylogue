@@ -1,0 +1,12 @@
+Usage: python -m polylogue products week-summaries [OPTIONS]
+
+  List durable week-level session summary products.
+
+Options:
+  --provider TEXT   Limit to provider
+  --since TEXT      Only rows on/after this timestamp
+  --until TEXT      Only rows on/before this timestamp
+  --limit INTEGER   Maximum rows  [default: 52]
+  --offset INTEGER  Start offset  [default: 0]
+  --json            Output as JSON
+  -h, --help        Show this message and exit.

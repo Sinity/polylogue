@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from polylogue.cli.click_command_registration import ROOT_COMMANDS
 from polylogue.showcase.exercises import (
     EXERCISES,
     GROUPS,
@@ -11,6 +10,7 @@ from polylogue.showcase.exercises import (
     topological_order,
     vhs_exercises,
 )
+from polylogue.showcase.generators import command_help_exercise_names, inventory_command_paths
 
 
 class TestExerciseUniqueness:
@@ -58,14 +58,22 @@ class TestExercisesByGroup:
             "check-semantic-proof-read-surfaces-json",
         } <= names
 
-    def test_all_root_commands_have_generated_help_exercises(self):
-        expected = {f"help-{command.name}" for command in ROOT_COMMANDS}
+    def test_all_command_paths_have_generated_help_exercises(self):
+        expected = command_help_exercise_names()
         observed = {
             exercise.name
             for exercise in EXERCISES
             if exercise.group == "structural" and exercise.name.startswith("help-") and exercise.name != "help-main"
         }
         assert observed == expected
+
+    def test_inventory_includes_nested_command_paths(self):
+        observed = {command_path.display_name for command_path in inventory_command_paths()}
+        assert {
+            "products analytics",
+            "run render",
+            "schema explain",
+        } <= observed
 
 
 class TestVhsExercises:

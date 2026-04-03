@@ -13,6 +13,8 @@ from typing import Any
 
 import click
 
+from polylogue.cli.click_app import cli as root_cli
+from polylogue.cli.command_inventory import CommandPath, iter_command_paths
 from polylogue.showcase.dimensions import query_read, schema_exercise
 from polylogue.showcase.exercise_models import Exercise, Validation
 
@@ -112,26 +114,28 @@ def generate_filter_exercises(cli_group: click.Group) -> list[Exercise]:
     return exercises
 
 
-def root_help_exercise_names() -> set[str]:
-    """Return the canonical showcase exercise names for root command help."""
-    from polylogue.cli.click_command_registration import ROOT_COMMANDS
-
-    return {f"help-{command.name}" for command in ROOT_COMMANDS}
+def inventory_command_paths() -> tuple[CommandPath, ...]:
+    """Return the recursive command-path inventory for the main CLI."""
+    return iter_command_paths(root_cli)
 
 
-def generate_root_help_exercises() -> list[Exercise]:
-    """Generate tier-0 help exercises from the registered root commands."""
-    from polylogue.cli.click_command_registration import ROOT_COMMANDS
+def command_help_exercise_names() -> set[str]:
+    """Return the canonical showcase exercise names for command-path help."""
+    return {command_path.help_exercise_name for command_path in inventory_command_paths()}
 
+
+def generate_command_help_exercises() -> list[Exercise]:
+    """Generate tier-0 help exercises from the recursive Click command tree."""
     exercises: list[Exercise] = []
-    for command in ROOT_COMMANDS:
+    for command_path in inventory_command_paths():
+        display_name = command_path.display_name
         exercises.append(
             Exercise(
-                name=f"help-{command.name}",
+                name=command_path.help_exercise_name,
                 group="structural",
-                description=f"{command.name} subcommand help",
-                args=[command.name, "--help"],
-                validation=Validation(stdout_contains=(f"polylogue {command.name}",)),
+                description=f"{display_name} help",
+                args=[*command_path.path, "--help"],
+                validation=Validation(stdout_contains=(f"polylogue {display_name}",)),
                 tier=0,
             )
         )
@@ -246,7 +250,7 @@ def generate_all_exercises(cli_group: click.Group | None = None) -> list[Exercis
     exercises: list[Exercise] = []
     if cli_group is not None:
         exercises.extend(generate_filter_exercises(cli_group))
-    exercises.extend(generate_root_help_exercises())
+    exercises.extend(generate_command_help_exercises())
     exercises.extend(generate_format_exercises())
     exercises.extend(generate_schema_exercises())
     return exercises
@@ -257,7 +261,8 @@ __all__ = [
     "generate_all_exercises",
     "generate_filter_exercises",
     "generate_format_exercises",
-    "generate_root_help_exercises",
+    "command_help_exercise_names",
+    "generate_command_help_exercises",
     "generate_schema_exercises",
-    "root_help_exercise_names",
+    "inventory_command_paths",
 ]

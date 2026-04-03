@@ -1,0 +1,10 @@
+Usage: python -m polylogue products analytics [OPTIONS]
+
+  List canonical provider-level analytics products.
+
+Options:
+  --provider TEXT   Limit to one provider
+  --limit INTEGER   Maximum rows  [default: 50]
+  --offset INTEGER  Start offset  [default: 0]
+  --json            Output as JSON
+  -h, --help        Show this message and exit.
