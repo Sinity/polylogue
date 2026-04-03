@@ -388,7 +388,7 @@ class TestCliMetadata:
 
         result = cli_runner.invoke(cli, ["--help"])
         assert result.exit_code == 0
-        for command in ("run", "check", "embed", "site", "mcp", "tags"):
+        for command in ("run", "check", "mcp", "tags"):
             assert command in result.output
         assert result.output.count("Commands:") == 1
 
@@ -403,11 +403,9 @@ class TestCliMetadata:
             "auth",
             "completions",
             "dashboard",
-            "embed",
             "products",
             "qa",
             "schema",
-            "site",
             "tags",
         }
         assert set(cli.commands.keys()) == expected

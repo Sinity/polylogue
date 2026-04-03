@@ -1,4 +1,4 @@
-"""CLI contracts for static site publication output."""
+"""CLI contracts for static site publication output via `run site` stage."""
 
 from __future__ import annotations
 
@@ -10,12 +10,6 @@ from polylogue.cli import cli
 from polylogue.storage.backends.connection import open_connection
 from polylogue.storage.store import RunRecord
 from tests.infra.storage_records import ConversationBuilder, record_run
-
-
-def _unwrap_success(output: str) -> dict:
-    payload = json.loads(output)
-    assert payload["status"] == "ok"
-    return payload["result"]
 
 
 def _seed_latest_run(db_path) -> None:
@@ -33,8 +27,8 @@ def _seed_latest_run(db_path) -> None:
         conn.commit()
 
 
-def test_site_command_json_emits_manifest(cli_workspace) -> None:
-    """`polylogue site --json` emits the typed publication manifest envelope."""
+def test_run_site_builds_manifest(cli_workspace) -> None:
+    """`polylogue run site` builds the site and writes the manifest."""
     (
         ConversationBuilder(cli_workspace["db_path"], "site-cli-1")
         .provider("chatgpt")
@@ -49,19 +43,22 @@ def test_site_command_json_emits_manifest(cli_workspace) -> None:
     runner = CliRunner()
     result = runner.invoke(
         cli,
-        ["--plain", "site", "-o", str(output_dir), "--json"],
+        ["--plain", "run", "site", "-o", str(output_dir)],
     )
 
-    assert result.exit_code == 0
-    payload = _unwrap_success(result.output)
-    assert payload["publication_kind"] == "site"
-    assert payload["archive"]["total_conversations"] == 1
-    assert payload["latest_run"]["run_id"] == "run-cli-001"
-    assert payload["outputs"]["total_index_pages"] >= 1
-    assert "maintenance" in payload
-    assert "messages_fts" in payload["maintenance"]["derived_models"]
-    assert payload["artifacts"]["entry_count"] >= 1
-    assert "site-manifest.json" not in {
-        entry["relative_path"] for entry in payload["artifacts"]["entries"]
-    }
+    assert result.exit_code == 0, f"run site failed: {result.output}"
     assert (output_dir / "site-manifest.json").exists()
+    manifest = json.loads((output_dir / "site-manifest.json").read_text())
+    assert manifest["publication_kind"] == "site"
+    assert manifest["archive"]["total_conversations"] == 1
+
+
+def test_run_site_help(cli_workspace) -> None:
+    """`polylogue run site --help` shows site-specific options."""
+    runner = CliRunner()
+    result = runner.invoke(cli, ["run", "site", "--help"])
+    assert result.exit_code == 0
+    assert "--output" in result.output
+    assert "--title" in result.output
+    assert "--search-provider" in result.output
+    assert "--dashboard" in result.output

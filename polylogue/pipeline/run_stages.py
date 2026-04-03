@@ -43,6 +43,21 @@ class IndexStageOutcome:
     error: str | None = None
 
 
+@dataclass(slots=True)
+class SiteStageOutcome:
+    conversations: int
+    index_pages: int
+    rendered_pages: int
+    error: str | None = None
+
+
+@dataclass(slots=True)
+class EmbedStageOutcome:
+    embedded_count: int
+    error_count: int
+    stats_only: bool = False
+
+
 async def execute_acquire_stage(
     *,
     config: Config,
@@ -305,15 +320,161 @@ async def execute_index_stage(
         )
 
 
+async def execute_site_stage(
+    *,
+    backend: SQLiteBackend,
+    repository: ConversationRepository,
+    site_options: dict[str, object] | None = None,
+    progress_callback: ProgressCallback | None = None,
+) -> SiteStageOutcome:
+    """Build a static HTML site from the archive."""
+    from pathlib import Path
+
+    from polylogue.paths import data_home
+    from polylogue.site.builder import SiteBuilder, SiteConfig
+
+    opts = site_options or {}
+    output_path: Path = opts.get("output") or (data_home() / "site")  # type: ignore[assignment]
+    config = SiteConfig(
+        title=opts.get("title", "Polylogue Archive"),  # type: ignore[arg-type]
+        enable_search=opts.get("search", True),  # type: ignore[arg-type]
+        search_provider=opts.get("search_provider", "pagefind"),  # type: ignore[arg-type]
+        include_dashboard=opts.get("dashboard", True),  # type: ignore[arg-type]
+    )
+
+    builder = SiteBuilder(
+        output_dir=output_path,
+        config=config,
+        backend=backend,
+        repository=repository,
+    )
+
+    if progress_callback is not None:
+        progress_callback(0, desc="Building site...")
+
+    try:
+        import asyncio
+
+        result = await asyncio.to_thread(builder.build)
+        return SiteStageOutcome(
+            conversations=result.archive.total_conversations,
+            index_pages=result.outputs.total_index_pages,
+            rendered_pages=result.outputs.rendered_conversation_pages,
+        )
+    except Exception as exc:
+        return SiteStageOutcome(
+            conversations=0,
+            index_pages=0,
+            rendered_pages=0,
+            error=f"{type(exc).__name__}: {exc}",
+        )
+
+
+async def execute_embed_stage(
+    *,
+    config: Config,
+    backend: SQLiteBackend,
+    conversation_id: str | None = None,
+    model: str = "voyage-4",
+    rebuild: bool = False,
+    stats_only: bool = False,
+    json_output: bool = False,
+    limit: int | None = None,
+    progress_callback: ProgressCallback | None = None,
+) -> EmbedStageOutcome:
+    """Execute the embedding stage using embed_runtime/embed_stats helpers."""
+    import os
+
+    import click
+
+    if stats_only:
+        from polylogue.cli.embed_stats import show_embedding_stats
+
+        # Build a minimal env-like object for the stats helpers
+        class _StatsEnv:
+            def __init__(self, cfg: Config) -> None:
+                self.config = cfg
+
+        show_embedding_stats(_StatsEnv(config), json_output=json_output)
+        return EmbedStageOutcome(embedded_count=0, error_count=0, stats_only=True)
+
+    voyage_key = os.environ.get("POLYLOGUE_VOYAGE_API_KEY") or os.environ.get("VOYAGE_API_KEY")
+    if not voyage_key:
+        click.echo("Error: VOYAGE_API_KEY environment variable not set", err=True)
+        click.echo("Set it with: export VOYAGE_API_KEY=your-api-key  (or POLYLOGUE_VOYAGE_API_KEY)", err=True)
+        raise click.Abort()
+
+    from polylogue.storage.search_providers import create_vector_provider
+
+    vec_provider = create_vector_provider(voyage_api_key=voyage_key)
+    if vec_provider is None:
+        click.echo("Error: sqlite-vec not available", err=True)
+        raise click.Abort()
+
+    if model != "voyage-4":
+        vec_provider.model = model
+
+    from polylogue.cli.embed_runtime import embed_batch, embed_single
+    from polylogue.storage.repository import ConversationRepository as _Repo
+
+    repo = _Repo(backend=backend)
+
+    # Build a minimal env-like object for the embed helpers
+    class _EmbedEnv:
+        def __init__(self, cfg: Config, ui_obj: object) -> None:
+            self.config = cfg
+            self.ui = ui_obj
+            self.repository = repo
+
+    # Construct a plain UI stub
+    class _PlainUI:
+        plain = True
+
+        class console:
+            @staticmethod
+            def print(*args: object, **kwargs: object) -> None:
+                click.echo(" ".join(str(a) for a in args))
+
+        class _NullProgress:
+            def update(self, **kwargs: object) -> None:
+                pass
+
+            def advance(self) -> None:
+                pass
+
+            def __enter__(self) -> _PlainUI._NullProgress:
+                return self
+
+            def __exit__(self, *args: object) -> None:
+                pass
+
+        @staticmethod
+        def progress(desc: str, total: int = 0) -> _PlainUI._NullProgress:
+            return _PlainUI._NullProgress()
+
+    env = _EmbedEnv(config, _PlainUI())
+
+    if conversation_id:
+        embed_single(env, repo, vec_provider, conversation_id)
+        return EmbedStageOutcome(embedded_count=1, error_count=0)
+
+    embed_batch(env, repo, vec_provider, rebuild=rebuild, limit=limit)
+    return EmbedStageOutcome(embedded_count=0, error_count=0)
+
+
 __all__ = [
+    "EmbedStageOutcome",
     "IndexStageOutcome",
     "MaterializeStageOutcome",
     "RenderStageOutcome",
     "SchemaGenerationOutcome",
+    "SiteStageOutcome",
     "execute_acquire_stage",
+    "execute_embed_stage",
     "execute_index_stage",
     "execute_ingest_stage",
     "execute_materialize_stage",
     "execute_render_stage",
     "execute_schema_generation_stage",
+    "execute_site_stage",
 ]

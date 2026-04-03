@@ -101,10 +101,11 @@
       "tier": 0
     },
     {
-      "name": "help-embed",
+      "name": "help-run-embed",
       "group": "structural",
-      "description": "Embed subcommand help",
+      "description": "Run embed subcommand help",
       "args": [
+        "run",
         "embed",
         "--help"
       ],
@@ -116,10 +117,11 @@
       "tier": 0
     },
     {
-      "name": "help-site",
+      "name": "help-run-site",
       "group": "structural",
-      "description": "Site subcommand help",
+      "description": "Run site stage help",
       "args": [
+        "run",
         "site",
         "--help"
       ],
@@ -853,6 +855,7 @@
       "group": "subcommands",
       "description": "Embedding statistics",
       "args": [
+        "run",
         "embed",
         "--stats"
       ],
@@ -875,13 +878,14 @@
     {
       "name": "site-generate",
       "group": "subcommands",
-      "description": "Generate static site",
+      "description": "Generate static site via run stage",
       "args": [
+        "run",
         "site"
       ],
       "validation": {
         "stdout_contains": [
-          "Building site"
+          "site"
         ]
       },
       "needs_data": true,

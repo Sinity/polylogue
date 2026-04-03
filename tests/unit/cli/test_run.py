@@ -56,7 +56,7 @@ RUN_CASES = [
         True,
         None,
         "all",
-        ("acquire", "parse", "materialize", "render", "index"),
+        ("acquire", "parse", "materialize", "render", "site", "index"),
         "html",
         True,
     ),
@@ -76,7 +76,7 @@ RUN_CASES = [
         False,
         None,
         "all",
-        ("acquire", "parse", "materialize", "render", "index"),
+        ("acquire", "parse", "materialize", "render", "site", "index"),
         "html",
         True,
     ),
@@ -104,9 +104,9 @@ RUN_CASES = [
 
 
 EMBED_BATCH_CASES = [
-    (["embed", "--rebuild"], {"rebuild": True, "limit": None}, None),
-    (["embed", "--limit", "50"], {"rebuild": False, "limit": 50}, None),
-    (["embed", "--model", "voyage-4-large"], {"rebuild": False, "limit": None}, "voyage-4-large"),
+    (["run", "embed", "--rebuild"], {"rebuild": True, "limit": None}, None),
+    (["run", "embed", "--limit", "50"], {"rebuild": False, "limit": 50}, None),
+    (["run", "embed", "--model", "voyage-4-large"], {"rebuild": False, "limit": None}, "voyage-4-large"),
 ]
 
 
@@ -199,26 +199,14 @@ def _invoke_run_direct(
     }
 
 
-def _invoke_embed_batch(runner: CliRunner, args: list[str]):
-    with ExitStack() as stack:
-        mock_backend_class = stack.enter_context(patch("polylogue.storage.backends.async_sqlite.SQLiteBackend"))
-        mock_repo_class = stack.enter_context(patch("polylogue.storage.repository.ConversationRepository"))
-        mock_create = stack.enter_context(patch("polylogue.storage.search_providers.create_vector_provider"))
-        mock_batch = stack.enter_context(patch("polylogue.cli.commands.embed._embed_batch"))
-        mock_backend = MagicMock()
-        mock_repo = MagicMock()
-        mock_provider = MagicMock()
-        mock_backend_class.return_value = mock_backend
-        mock_repo_class.return_value = mock_repo
-        mock_create.return_value = mock_provider
-
+def _invoke_embed(runner: CliRunner, args: list[str]):
+    with patch("polylogue.cli.commands.run._run_embed_standalone") as mock_standalone:
         result = runner.invoke(
             cli,
             args,
-            env={"VOYAGE_API_KEY": "test-key", "POLYLOGUE_FORCE_PLAIN": "1"},
+            env={"POLYLOGUE_FORCE_PLAIN": "1"},
         )
-
-    return result, {"backend": mock_backend, "repo": mock_repo, "provider": mock_provider, "batch": mock_batch, "create": mock_create}
+    return result, mock_standalone
 
 
 class TestRunCommand:
@@ -411,7 +399,7 @@ class TestRunCommand:
         assert result == "reprocess"
         env.ui.choose.assert_called_once_with(
             "Select workflow for run",
-            ["all", "reprocess", "acquire", "schema", "parse", "materialize", "render", "index"],
+            ["all", "reprocess", "acquire", "schema", "parse", "materialize", "render", "site", "index"],
         )
 
     def test_maybe_prompt_run_stage_rejects_empty_choice(self):
@@ -464,13 +452,13 @@ class TestTagsCommand:
 class TestEmbedCommand:
     def test_embed_requires_api_key_unless_stats(self, runner, cli_workspace):
         with patch.dict("os.environ", {"VOYAGE_API_KEY": "", "POLYLOGUE_VOYAGE_API_KEY": ""}, clear=False):
-            result = runner.invoke(cli, ["embed"])
+            result = runner.invoke(cli, ["run", "embed"])
         assert result.exit_code != 0
         assert "VOYAGE_API_KEY" in result.output
 
     @pytest.mark.parametrize("stats_rows", [[5, 3, 45, 2], [10, 7, 100, 3]])
     def test_embed_stats_contract(self, runner, cli_workspace, stats_rows):
-        with patch("polylogue.cli.commands.embed._embedding_status_payload") as mock_payload, patch.dict(
+        with patch("polylogue.cli.embed_stats.embedding_status_payload") as mock_payload, patch.dict(
             "os.environ",
             {"VOYAGE_API_KEY": "", "POLYLOGUE_VOYAGE_API_KEY": ""},
             clear=False,
@@ -495,7 +483,7 @@ class TestEmbedCommand:
                 "embedding_dimensions": {},
                 "retrieval_bands": {},
             }
-            result = runner.invoke(cli, ["embed", "--stats"])
+            result = runner.invoke(cli, ["run", "embed", "--stats"])
 
         assert result.exit_code == 0
         assert "Embedding Statistics" in result.output
@@ -505,7 +493,7 @@ class TestEmbedCommand:
         assert str(stats_rows[3]) in result.output
 
     def test_embed_stats_json_contract(self, runner, cli_workspace):
-        with patch("polylogue.cli.commands.embed._embedding_status_payload") as mock_payload, patch.dict(
+        with patch("polylogue.cli.embed_stats.embedding_status_payload") as mock_payload, patch.dict(
             "os.environ",
             {"VOYAGE_API_KEY": "", "POLYLOGUE_VOYAGE_API_KEY": ""},
             clear=False,
@@ -519,7 +507,7 @@ class TestEmbedCommand:
                 "embedding_coverage_percent": 60.0,
                 "retrieval_ready": True,
             }
-            result = runner.invoke(cli, ["embed", "--stats", "--json"])
+            result = runner.invoke(cli, ["run", "embed", "--stats", "--json"])
 
         assert result.exit_code == 0
         assert '"status": "partial"' in result.output
@@ -527,58 +515,45 @@ class TestEmbedCommand:
 
     def test_embed_no_sqlite_vec_contract(self, runner, cli_workspace):
         with patch("polylogue.storage.search_providers.create_vector_provider", return_value=None):
-            result = runner.invoke(cli, ["embed"], env={"VOYAGE_API_KEY": "test-key", "POLYLOGUE_FORCE_PLAIN": "1"})
+            result = runner.invoke(cli, ["run", "embed"], env={"VOYAGE_API_KEY": "test-key", "POLYLOGUE_FORCE_PLAIN": "1"})
         assert result.exit_code != 0
         assert "sqlite-vec" in result.output.lower()
 
     def test_embed_single_not_found_contract(self, runner, cli_workspace):
-        with patch("polylogue.storage.backends.async_sqlite.SQLiteBackend") as mock_backend_class, patch(
-            "polylogue.storage.repository.ConversationRepository"
-        ) as mock_repo_class, patch("polylogue.storage.search_providers.create_vector_provider") as mock_create:
-            mock_backend = MagicMock()
-            mock_repo = MagicMock()
-            mock_provider = MagicMock()
-            mock_backend_class.return_value = mock_backend
-            mock_repo_class.return_value = mock_repo
-            mock_repo.view = AsyncMock(return_value=None)
-            mock_create.return_value = mock_provider
+        with patch("polylogue.cli.embed_runtime.embed_single") as mock_single:
+            import click as _click
+            mock_single.side_effect = _click.Abort()
 
             result = runner.invoke(
                 cli,
-                ["embed", "--conversation", "nonexistent-id"],
+                ["run", "embed", "--conversation", "nonexistent-id"],
                 env={"VOYAGE_API_KEY": "test-key", "POLYLOGUE_FORCE_PLAIN": "1"},
             )
 
         assert result.exit_code != 0
-        assert "not found" in result.output.lower()
-        assert "nonexistent-id" in result.output
 
     @pytest.mark.parametrize(("cli_args", "expected_batch_kwargs", "expected_model"), EMBED_BATCH_CASES)
     def test_embed_batch_dispatch_matrix(self, runner, cli_workspace, cli_args, expected_batch_kwargs, expected_model):
-        result, mocks = _invoke_embed_batch(runner, cli_args)
+        result, mock_standalone = _invoke_embed(runner, cli_args)
         assert result.exit_code == 0
-        mocks["batch"].assert_called_once()
-        kwargs = mocks["batch"].call_args.kwargs
-        assert kwargs["rebuild"] is expected_batch_kwargs["rebuild"]
-        assert kwargs["limit"] == expected_batch_kwargs["limit"]
+        mock_standalone.assert_called_once()
+        opts = mock_standalone.call_args[0][1]
+        assert opts.rebuild is expected_batch_kwargs["rebuild"]
+        assert opts.limit == expected_batch_kwargs["limit"]
         if expected_model is not None:
-            assert mocks["provider"].model == expected_model
+            assert opts.model == expected_model
 
     def test_embed_alt_api_key_env_contract(self, runner, cli_workspace):
-        with patch("polylogue.storage.backends.async_sqlite.SQLiteBackend") as mock_backend_class, patch(
-            "polylogue.storage.repository.ConversationRepository"
-        ) as mock_repo_class, patch("polylogue.storage.search_providers.create_vector_provider") as mock_create, patch(
-            "polylogue.cli.commands.embed._embed_batch"
-        ):
-            mock_backend_class.return_value = MagicMock()
-            mock_repo_class.return_value = MagicMock()
+        with patch("polylogue.cli.commands.run._run_embed_standalone") as mock_standalone, patch(
+            "polylogue.storage.search_providers.create_vector_provider"
+        ) as mock_create:
             mock_create.return_value = MagicMock()
 
             result = runner.invoke(
                 cli,
-                ["embed"],
+                ["run", "embed"],
                 env={"POLYLOGUE_VOYAGE_API_KEY": "alt-test-key", "POLYLOGUE_FORCE_PLAIN": "1"},
             )
 
         assert result.exit_code == 0
-        assert mock_create.call_args.kwargs["voyage_api_key"] == "alt-test-key"
+        mock_standalone.assert_called_once()

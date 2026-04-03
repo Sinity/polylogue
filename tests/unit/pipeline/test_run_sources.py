@@ -67,7 +67,7 @@ def test_expand_requested_stage_contract() -> None:
     assert expand_requested_stage("acquire") == ("acquire",)
     assert expand_requested_stage("parse") == ("parse",)
     assert expand_requested_stage("reprocess") == ("parse", "materialize", "render", "index")
-    assert expand_requested_stage("all") == ("acquire", "parse", "materialize", "render", "index")
+    assert expand_requested_stage("all") == ("acquire", "parse", "materialize", "render", "site", "index")
 
 
 def test_normalize_stage_sequence_rejects_duplicates() -> None:
@@ -808,7 +808,7 @@ class TestPlanSources:
         assert result.counts["render"] == 1
         assert result.counts["index"] == 1
         assert result.sources == ["test-source"]
-        assert result.stage_sequence == ["acquire", "parse", "materialize", "render", "index"]
+        assert result.stage_sequence == ["acquire", "parse", "materialize", "render", "site", "index"]
 
     async def test_plan_inside_running_event_loop(self, tmp_path: Path):
         config = Config(sources=[], archive_root=tmp_path / "archive", render_root=tmp_path / "render")
