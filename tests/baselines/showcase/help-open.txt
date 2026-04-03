@@ -1,0 +1,6 @@
+Usage: python -m polylogue open [OPTIONS]
+
+  Open matched conversation in browser/editor.
+
+Options:
+  -h, --help  Show this message and exit.

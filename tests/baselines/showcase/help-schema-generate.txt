@@ -13,4 +13,6 @@ Options:
   --privacy-config PATH           Path to TOML privacy config overrides
   --report                        Write a redaction report alongside the
                                   schema
+  --full-corpus                   Bypass all sample caps for full-corpus
+                                  schema generation
   -h, --help                      Show this message and exit.
