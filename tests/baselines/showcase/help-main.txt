@@ -109,7 +109,6 @@ Commands:
   check        Health check with optional maintenance and cleanup previews.
   completions  Generate shell completion scripts.
   dashboard    Launch the Mission Control TUI dashboard.
-  embed        Generate semantic embeddings for conversations.
   generate     Generate synthetic conversations for demos, testing, and...
   mcp          Start the MCP server for AI assistant integration.
   products     Inspect durable archive data products.
@@ -117,6 +116,5 @@ Commands:
   reset        Reset database, blob store, assets, rendered outputs, or...
   run          Run pipeline stages on configured sources.
   schema       Schema generation, package versioning, and evidence...
-  site         Generate a static HTML site from the archive.
   sources      List configured sources.
   tags         List all tags with conversation counts.

@@ -15,7 +15,7 @@ from polylogue.cli.types import AppEnv
 _STAGE_CHOICES = click.Choice(["audit", "exercises", "invariants"])
 
 
-@click.command("qa")
+@click.group("qa", invoke_without_command=True)
 @click.option("--synthetic/--live", default=True,
               help="Data source: synthetic (default) or live real data")
 @click.option("--source", "source_names", multiple=True,
@@ -89,7 +89,13 @@ def qa_command(
       polylogue qa --skip invariants            # Skip invariant checks
       polylogue qa --snapshot release-v3        # QA + archive results
       polylogue qa --snapshot-from ./qa_outputs # Archive existing directory
+      polylogue qa generate                     # Generate synthetic data
+      polylogue qa generate --seed              # Full demo environment
     """
+    # If a subcommand (e.g. "generate") was invoked, let it run instead.
+    ctx = click.get_current_context()
+    if ctx.invoked_subcommand is not None:
+        return
     # --- Snapshot-from: archive only, no QA ---
     if snapshot_from is not None:
         config = load_effective_config(env)
@@ -187,4 +193,8 @@ def qa_command(
 
     if not result.all_passed:
         raise SystemExit(1)
+from polylogue.cli.commands.generate import generate_command
+
+qa_command.add_command(generate_command)
+
 __all__ = ["qa_command"]

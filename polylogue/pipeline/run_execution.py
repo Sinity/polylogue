@@ -12,11 +12,13 @@ from polylogue.pipeline.run_finalization import persist_run_result
 from polylogue.pipeline.run_stages import (
     IndexStageOutcome,
     execute_acquire_stage,
+    execute_embed_stage,
     execute_index_stage,
     execute_ingest_stage,
     execute_materialize_stage,
     execute_render_stage,
     execute_schema_generation_stage,
+    execute_site_stage,
 )
 from polylogue.pipeline.run_state import RunExecutionState
 from polylogue.pipeline.run_support import (
@@ -47,6 +49,7 @@ async def run_sources(
     source_names: Sequence[str] | None = None,
     progress_callback: ProgressCallback | None = None,
     render_format: str = "html",
+    site_options: dict[str, object] | None = None,
     backend: SQLiteBackend | None = None,
     repository: ConversationRepository | None = None,
 ) -> RunResult:
@@ -199,6 +202,26 @@ async def run_sources(
             executed_stages.add("index")
             return next_index_outcome
 
+        async def _run_site_stage() -> None:
+            sm = metrics.start_stage("site")
+            site_outcome = await execute_site_stage(
+                backend=active_backend,
+                repository=active_repository,
+                site_options=site_options,
+                progress_callback=progress_callback,
+            )
+            if site_outcome.error is not None:
+                logger.error("Site build failed", error=site_outcome.error)
+            sm.stop(items=site_outcome.rendered_pages)
+            logger.info(
+                "Site stage complete",
+                **sm.to_dict(),
+                conversations=site_outcome.conversations,
+                index_pages=site_outcome.index_pages,
+                rendered_pages=site_outcome.rendered_pages,
+            )
+            executed_stages.add("site")
+
         def _explicit_leaf_stage_context(leaf_stage: str) -> str:
             if leaf_stage == "parse":
                 return "parse"
@@ -234,6 +257,9 @@ async def run_sources(
             if "render" in normalized_stage_sequence:
                 await _run_render_stage(stage)
 
+            if "site" in normalized_stage_sequence:
+                await _run_site_stage()
+
             if "index" in normalized_stage_sequence:
                 index_outcome = await _run_index_stage(stage)
         else:
@@ -252,6 +278,9 @@ async def run_sources(
                     continue
                 if leaf_stage == "render":
                     await _run_render_stage(_explicit_leaf_stage_context(leaf_stage))
+                    continue
+                if leaf_stage == "site":
+                    await _run_site_stage()
                     continue
                 if leaf_stage == "index":
                     index_outcome = await _run_index_stage(_explicit_leaf_stage_context(leaf_stage))

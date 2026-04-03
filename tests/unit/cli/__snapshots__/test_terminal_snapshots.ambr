@@ -83,23 +83,14 @@
   Commands:
     acquire      Capture raw payloads only.
     all          Run the full pipeline.
+    embed        Generate semantic embeddings for conversations.
     index        Build retrieval and search indexes.
     materialize  Refresh derived read models.
     parse        Parse persisted raw backlog into normalized conversations.
     render       Render human-facing publication artifacts.
     reprocess    Skip acquisition and rerun downstream stages.
     schema       Infer schemas from acquired raw payloads.
-  '''
-# ---
-# name: TestCommandOutputs.test_sources_output_snapshot
-  '''
-  Usage: polylogue sources [OPTIONS]
-  
-    List configured sources.
-  
-  Options:
-    --json      Output JSON
-    -h, --help  Show this message and exit.
+    site         Generate a static HTML site from the archive.
   '''
 # ---
 # name: TestErrorOutput.test_invalid_command_error_output
@@ -227,16 +218,12 @@
     check        Health check with optional maintenance and cleanup previews.
     completions  Generate shell completion scripts.
     dashboard    Launch the Mission Control TUI dashboard.
-    embed        Generate semantic embeddings for conversations.
-    generate     Generate synthetic conversations for demos, testing, and...
     mcp          Start the MCP server for AI assistant integration.
     products     Inspect durable archive data products.
     qa           Run composable QA: schema audit, exercises, and invariant...
     reset        Reset database, blob store, assets, rendered outputs, or...
     run          Run pipeline stages on configured sources.
     schema       Schema generation, package versioning, and evidence...
-    site         Generate a static HTML site from the archive.
-    sources      List configured sources.
     tags         List all tags with conversation counts.
   '''
 # ---
@@ -402,10 +389,6 @@
   eanup previews.
     completions  Generate shell completion scripts.
     dashboard    Launch the Mission Control TUI dashboard.
-    embed        Generate semantic embeddings for conversation
-  s.
-    generate     Generate synthetic conversations for demos, t
-  esting, and...
     mcp          Start the MCP server for AI assistant integra
   tion.
     products     Inspect durable archive data products.
@@ -416,8 +399,6 @@
     run          Run pipeline stages on configured sources.
     schema       Schema generation, package versioning, and ev
   idence...
-    site         Generate a static HTML site from the archive.
-    sources      List configured sources.
     tags         List all tags with conversation counts.
   '''
 # ---
@@ -534,16 +515,12 @@
     check        Health check with optional maintenance and cleanup previews.
     completions  Generate shell completion scripts.
     dashboard    Launch the Mission Control TUI dashboard.
-    embed        Generate semantic embeddings for conversations.
-    generate     Generate synthetic conversations for demos, testing, and...
     mcp          Start the MCP server for AI assistant integration.
     products     Inspect durable archive data products.
     qa           Run composable QA: schema audit, exercises, and invariant...
     reset        Reset database, blob store, assets, rendered outputs, or...
     run          Run pipeline stages on configured sources.
     schema       Schema generation, package versioning, and evidence...
-    site         Generate a static HTML site from the archive.
-    sources      List configured sources.
     tags         List all tags with conversation counts.
   '''
 # ---

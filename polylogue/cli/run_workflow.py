@@ -38,6 +38,7 @@ def execute_sync_once(
     render_format: str,
     plan_snapshot: PlanResult | None = None,
     progress_callback: ProgressCallback | None = None,
+    site_options: dict[str, object] | None = None,
 ) -> RunResult:
     return run_coroutine_sync(
         run_sources(
@@ -49,6 +50,7 @@ def execute_sync_once(
             source_names=selected_sources,
             progress_callback=progress_callback,
             render_format=render_format,
+            site_options=site_options,
             backend=env.backend,
             repository=env.repository,
         )
@@ -64,6 +66,7 @@ def run_with_progress(
     render_format: str,
     plan_snapshot: PlanResult | None = None,
     observer: RunObserver | None = None,
+    site_options: dict[str, object] | None = None,
 ) -> RunResult:
     with progress_observer(env) as progress_observer_handle:
         progress_bridge = (
@@ -80,6 +83,7 @@ def run_with_progress(
             render_format,
             plan_snapshot=plan_snapshot,
             progress_callback=progress_bridge.on_progress,
+            site_options=site_options,
         )
         progress_observer_handle.on_completed(result)
         return result
@@ -94,6 +98,7 @@ def run_sync_once(
     render_format: str,
     plan_snapshot: PlanResult | None = None,
     observer: RunObserver | None = None,
+    site_options: dict[str, object] | None = None,
 ) -> RunResult:
     try:
         result = run_with_progress(
@@ -105,6 +110,7 @@ def run_sync_once(
             render_format,
             plan_snapshot=plan_snapshot,
             observer=observer,
+            site_options=site_options,
         )
     except Exception as exc:
         if observer is not None:

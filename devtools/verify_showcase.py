@@ -20,16 +20,16 @@ from polylogue.showcase.runner import ShowcaseRunner
 
 BASELINE_DIR = Path(__file__).resolve().parent.parent / "tests" / "baselines" / "showcase"
 
-TIER_0_GROUPS = frozenset({"structural", "sources"})
+TIER_0_GROUPS = frozenset({"structural"})
 
 
 # Exercises whose output depends on runtime environment (absolute paths, git
 # SHAs, etc.) and therefore cannot be compared against committed baselines.
-_ENV_DEPENDENT: frozenset[str] = frozenset({"sources-list", "sources-json", "version"})
+_ENV_DEPENDENT: frozenset[str] = frozenset({"version"})
 
 
 def get_tier_0_exercises() -> list[Exercise]:
-    """Return all tier-0 exercises (structural + sources, no data needed).
+    """Return all tier-0 exercises (structural, no data needed).
 
     Excludes exercises whose output depends on the runtime environment
     (machine-specific paths, git SHAs) — they cannot have stable baselines.

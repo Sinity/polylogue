@@ -144,10 +144,12 @@ class PlanStage(str, Enum):
     CUSTOM = "custom"
     PARSE = "parse"
     MATERIALIZE = "materialize"
-    INDEX = "index"
     RENDER = "render"
+    SITE = "site"
+    INDEX = "index"
     SCHEMA = "schema"
     REPROCESS = "reprocess"
+    PUBLISH = "publish"
 
     @classmethod
     def from_string(cls, value: str | PlanStage) -> PlanStage:

@@ -388,7 +388,7 @@ class TestCliMetadata:
 
         result = cli_runner.invoke(cli, ["--help"])
         assert result.exit_code == 0
-        for command in ("run", "check", "embed", "site", "mcp", "tags"):
+        for command in ("run", "check", "mcp", "tags"):
             assert command in result.output
         assert result.output.count("Commands:") == 1
 
@@ -397,19 +397,15 @@ class TestCliMetadata:
 
         expected = {
             "run",
-            "sources",
             "check",
             "reset",
             "mcp",
             "auth",
             "completions",
             "dashboard",
-            "generate",
-            "embed",
             "products",
             "qa",
             "schema",
-            "site",
             "tags",
         }
         assert set(cli.commands.keys()) == expected
@@ -425,7 +421,7 @@ class TestGenerateSeed:
 
     def test_seed_creates_database(self, cli_runner, tmp_path):
         result = cli_runner.invoke(click_cli, [
-            "generate", "--seed", "-o", str(tmp_path),
+            "qa", "generate", "--seed", "-o", str(tmp_path),
             "-n", "1", "-p", "chatgpt",
         ])
         assert result.exit_code == 0
@@ -443,7 +439,7 @@ class TestGenerateSeed:
         )())):
             result = cli_runner.invoke(
                 click_cli,
-                ["generate", "--seed", "-o", str(tmp_path), "-n", "1", "-p", "chatgpt"],
+                ["qa", "generate", "--seed", "-o", str(tmp_path), "-n", "1", "-p", "chatgpt"],
             )
 
         assert result.exit_code == 0
@@ -451,7 +447,7 @@ class TestGenerateSeed:
         assert os.environ["POLYLOGUE_ARCHIVE_ROOT"] == "/tmp/original-archive"
 
     def test_env_only_requires_seed(self, cli_runner):
-        result = cli_runner.invoke(click_cli, ["generate", "--env-only"])
+        result = cli_runner.invoke(click_cli, ["qa", "generate", "--env-only"])
         assert result.exit_code != 0
         assert "requires --seed" in result.output.lower() or "error" in result.output.lower()
 
@@ -605,22 +601,6 @@ class TestDashboardCommand:
         assert result.exit_code == 0
         kwargs = mock_app_cls.call_args.kwargs
         assert kwargs["repository"] is not None
-
-
-class TestSourcesCommand:
-    def test_sources_lists_configured(self, cli_runner, monkeypatch, cli_workspace) -> None:
-        monkeypatch.setenv("POLYLOGUE_CONFIG", str(cli_workspace["config_path"]))
-        monkeypatch.setenv("XDG_DATA_HOME", str(cli_workspace["data_root"]))
-        result = cli_runner.invoke(click_cli, ["sources"])
-        assert result.exit_code == 0
-
-    def test_sources_json_output(self, cli_runner, monkeypatch, cli_workspace) -> None:
-        monkeypatch.setenv("POLYLOGUE_CONFIG", str(cli_workspace["config_path"]))
-        monkeypatch.setenv("XDG_DATA_HOME", str(cli_workspace["data_root"]))
-        result = cli_runner.invoke(click_cli, ["sources", "--json"])
-        assert result.exit_code == 0
-        envelope = json.loads(result.output)
-        assert isinstance(envelope.get("result", {}).get("sources", envelope), list)
 
 
 class TestCompletionsCommand:

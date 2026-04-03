@@ -23,9 +23,9 @@ def runner() -> CliRunner:
 # =============================================================================
 
 SUBCOMMANDS = [
-    "run", "sources", "check", "reset", "mcp", "auth",
-    "completions", "dashboard", "generate", "embed",
-    "qa", "schema", "site", "tags",
+    "run", "check", "reset", "mcp", "auth",
+    "completions", "dashboard",
+    "qa", "schema", "tags",
 ]
 
 
@@ -248,12 +248,12 @@ class TestMCPErrorBoundaries:
 class TestGenerateErrorBoundaries:
     def test_generate_invalid_count(self, runner: CliRunner) -> None:
         """Non-numeric -n/--count should not produce traceback."""
-        result = runner.invoke(cli, ["generate", "-n", "not-a-number"])
+        result = runner.invoke(cli, ["qa", "generate", "-n", "not-a-number"])
         assert TRACEBACK_SENTINEL not in result.output
 
     def test_generate_invalid_seed(self, runner: CliRunner) -> None:
         """Non-numeric --seed should not produce traceback."""
-        result = runner.invoke(cli, ["generate", "--seed", "not-a-seed"])
+        result = runner.invoke(cli, ["qa", "generate", "--seed", "not-a-seed"])
         assert TRACEBACK_SENTINEL not in result.output
 
 

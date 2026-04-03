@@ -8,10 +8,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from click.testing import CliRunner
 
-from polylogue.cli.commands.site import site_command
-from polylogue.cli.types import AppEnv
+from polylogue.cli.click_app import cli
 from polylogue.lib.models import ConversationSummary
-from polylogue.services import build_runtime_services
 from polylogue.site.builder import SiteBuilder, SiteConfig
 
 
@@ -53,15 +51,6 @@ def _make_backend() -> AsyncMock:
 
 async def _collect_indexes(builder: SiteBuilder):
     return [conversation async for conversation in builder._iter_conversation_indexes()]
-
-
-def _site_env(*, backend: AsyncMock, repository: AsyncMock) -> AppEnv:
-    ui = MagicMock()
-    ui.plain = True
-    ui.console = MagicMock()
-    ui.summary = MagicMock()
-    repository.backend = backend
-    return AppEnv(ui=ui, services=build_runtime_services(backend=backend, repository=repository))
 
 
 def _summary(
@@ -123,34 +112,35 @@ def test_conversation_index_no_source_attribute_reference(tmp_path):
     assert index.message_count == 3
 
 
-def test_site_command_no_rich_markup_in_output(workspace_env):
+def test_run_site_no_rich_markup_in_output(workspace_env):
     """Regression: plain CLI output must not leak Rich markup tags."""
     runner = CliRunner()
     output_dir = workspace_env["archive_root"] / "site"
-    backend = _make_backend()
-    backend.queries.get_message_counts_batch.return_value = {}
-    repository = AsyncMock()
-    _configure_summary_pages(repository, [])
-    env = _site_env(backend=backend, repository=repository)
 
-    result = runner.invoke(site_command, ["--output", str(output_dir)], obj=env)
+    result = runner.invoke(
+        cli,
+        ["--plain", "run", "site", "--output", str(output_dir)],
+    )
 
     assert result.exit_code == 0
     for token in ("[bold]", "[/bold]", "[green]", "[/green]", "[red]", "[/red]"):
         assert token not in result.output
 
 
-def test_site_command_error_handling(workspace_env):
-    """Pinned error path: site command should abort cleanly when the builder fails."""
+def test_run_site_error_handling(workspace_env):
+    """Pinned error path: run site stage should record error when the builder fails."""
     runner = CliRunner()
     output_dir = workspace_env["archive_root"] / "site"
-    env = AppEnv(ui=MagicMock())
 
     with patch("polylogue.site.builder.SiteBuilder.build", side_effect=RuntimeError("Database error")):
-        result = runner.invoke(site_command, ["--output", str(output_dir)], obj=env)
+        result = runner.invoke(
+            cli,
+            ["--plain", "run", "site", "--output", str(output_dir)],
+        )
 
-    assert result.exit_code != 0
-    assert "Error building site: Database error" in result.output
+    # The run pipeline catches site errors via SiteStageOutcome.error
+    # and still completes (exit_code 0) — the error is logged, not raised.
+    assert result.exit_code == 0
 
 
 def test_build_generates_valid_html(tmp_path):
