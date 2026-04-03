@@ -7,9 +7,39 @@ from typing import Any
 
 import click
 
+from polylogue.lib.provider_identity import CORE_SCHEMA_PROVIDERS
 from polylogue.lib.query_spec import QUERY_ACTION_TYPES, QUERY_RETRIEVAL_LANES
 
 ClickCallable = Callable[..., Any]
+
+# Providers the user can filter by (excludes "unknown" and "drive" which are internal).
+_CLI_PROVIDER_CHOICES: tuple[str, ...] = CORE_SCHEMA_PROVIDERS
+
+
+def _complete_providers(
+    ctx: click.Context, param: click.Parameter, incomplete: str,  # noqa: ARG001
+) -> list[click.shell_completion.CompletionItem]:
+    return [
+        click.shell_completion.CompletionItem(p)
+        for p in _CLI_PROVIDER_CHOICES
+        if p.startswith(incomplete)
+    ]
+
+
+def _validate_provider_tokens(
+    ctx: click.Context, param: click.Parameter, value: str | None,  # noqa: ARG001
+) -> str | None:
+    if not value:
+        return value
+    tokens = [t.strip() for t in value.split(",") if t.strip()]
+    bad = [t for t in tokens if t not in _CLI_PROVIDER_CHOICES]
+    if bad:
+        raise click.BadParameter(
+            f"Unknown provider(s): {', '.join(bad)}. "
+            f"Valid: {', '.join(_CLI_PROVIDER_CHOICES)}",
+            param_hint="--provider",
+        )
+    return value
 
 FILTER_OPTION_DECORATORS: tuple[Callable[[ClickCallable], ClickCallable], ...] = (
     click.option("--id", "-i", "conv_id", help="Conversation ID (exact or prefix match)"),
@@ -20,8 +50,10 @@ FILTER_OPTION_DECORATORS: tuple[Callable[[ClickCallable], ClickCallable], ...] =
         type=click.Choice(QUERY_RETRIEVAL_LANES),
         help="Query lane: dialogue FTS, action text, or hybrid",
     ),
-    click.option("--provider", "-p", help="Include providers (comma = OR)"),
-    click.option("--exclude-provider", help="Exclude providers"),
+    click.option("--provider", "-p", help="Include providers (comma = OR)",
+                 callback=_validate_provider_tokens, shell_complete=_complete_providers),
+    click.option("--exclude-provider", help="Exclude providers",
+                 callback=_validate_provider_tokens, shell_complete=_complete_providers),
     click.option("--tag", "-t", help="Include tags (comma = OR, supports key:value)"),
     click.option("--exclude-tag", help="Exclude tags"),
     click.option("--title", help="Title contains"),

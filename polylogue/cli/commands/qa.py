@@ -15,7 +15,7 @@ from polylogue.cli.types import AppEnv
 _STAGE_CHOICES = click.Choice(["audit", "exercises", "invariants"])
 
 
-@click.group("qa", invoke_without_command=True)
+@click.group("audit", invoke_without_command=True)
 @click.option("--synthetic/--live", default=True,
               help="Data source: synthetic (default) or live real data")
 @click.option("--source", "source_names", multiple=True,
@@ -81,16 +81,16 @@ def qa_command(
 
     \b
     Examples:
-      polylogue qa                              # Full synthetic QA
-      polylogue qa --live                       # Exercises against real data
-      polylogue qa --source inbox               # Fresh workspace from inbox
-      polylogue qa --only audit                 # Schema audit only
-      polylogue qa --only exercises --tier 0    # Tier-0 smoke test
-      polylogue qa --skip invariants            # Skip invariant checks
-      polylogue qa --snapshot release-v3        # QA + archive results
-      polylogue qa --snapshot-from ./qa_outputs # Archive existing directory
-      polylogue qa generate                     # Generate synthetic data
-      polylogue qa generate --seed              # Full demo environment
+      polylogue audit                              # Full synthetic QA
+      polylogue audit --live                       # Exercises against real data
+      polylogue audit --source inbox               # Fresh workspace from inbox
+      polylogue audit --only audit                 # Schema audit only
+      polylogue audit --only exercises --tier 0    # Tier-0 smoke test
+      polylogue audit --skip invariants            # Skip invariant checks
+      polylogue audit --snapshot release-v3        # QA + archive results
+      polylogue audit --snapshot-from ./qa_outputs # Archive existing directory
+      polylogue audit generate                     # Generate synthetic data
+      polylogue audit generate --seed              # Full demo environment
     """
     # If a subcommand (e.g. "generate") was invoked, let it run instead.
     ctx = click.get_current_context()

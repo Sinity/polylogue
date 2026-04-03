@@ -106,7 +106,7 @@ class TestCheckJsonEnvelope:
 
     def test_check_json_has_status_ok(self, monkeypatch):
         """polylogue check --json output has status: ok."""
-        parsed = _invoke_json_command(["check", "--json"], monkeypatch)
+        parsed = _invoke_json_command(["doctor", "--json"], monkeypatch)
         assert parsed is not None
         assert parsed["status"] == "ok"
         assert "result" in parsed

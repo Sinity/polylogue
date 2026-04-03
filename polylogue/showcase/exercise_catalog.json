@@ -40,11 +40,11 @@
       "tier": 0
     },
     {
-      "name": "help-check",
+      "name": "help-doctor",
       "group": "structural",
-      "description": "Check subcommand help",
+      "description": "Doctor subcommand help",
       "args": [
-        "check",
+        "doctor",
         "--help"
       ],
       "validation": {
@@ -55,11 +55,11 @@
       "tier": 0
     },
     {
-      "name": "help-qa-generate",
+      "name": "help-audit-generate",
       "group": "structural",
-      "description": "QA generate subcommand help",
+      "description": "Audit generate subcommand help",
       "args": [
-        "qa",
+        "audit",
         "generate",
         "--help"
       ],
@@ -71,11 +71,11 @@
       "tier": 0
     },
     {
-      "name": "help-qa",
+      "name": "help-audit",
       "group": "structural",
-      "description": "QA subcommand help",
+      "description": "Audit subcommand help",
       "args": [
-        "qa",
+        "audit",
         "--help"
       ],
       "validation": {
@@ -717,11 +717,11 @@
       "env": "seeded"
     },
     {
-      "name": "check-health",
+      "name": "doctor-health",
       "group": "subcommands",
       "description": "Health check",
       "args": [
-        "check"
+        "doctor"
       ],
       "validation": {
         "stdout_contains": [
@@ -732,11 +732,11 @@
       "vhs_capture": true
     },
     {
-      "name": "check-json",
+      "name": "doctor-json",
       "group": "subcommands",
       "description": "Health check as JSON",
       "args": [
-        "check",
+        "doctor",
         "--json"
       ],
       "validation": {
@@ -746,21 +746,21 @@
       "output_ext": ".json"
     },
     {
-      "name": "check-verbose",
+      "name": "doctor-verbose",
       "group": "subcommands",
       "description": "Verbose health check",
       "args": [
-        "check",
+        "doctor",
         "-v"
       ],
       "needs_data": true
     },
     {
-      "name": "check-proof-json",
+      "name": "doctor-proof-json",
       "group": "subcommands",
       "description": "Artifact proof as JSON",
       "args": [
-        "check",
+        "doctor",
         "--json",
         "--proof"
       ],
@@ -771,11 +771,11 @@
       "output_ext": ".json"
     },
     {
-      "name": "check-cohorts-json",
+      "name": "doctor-cohorts-json",
       "group": "subcommands",
       "description": "Artifact cohorts as JSON",
       "args": [
-        "check",
+        "doctor",
         "--json",
         "--cohorts"
       ],
@@ -786,11 +786,11 @@
       "output_ext": ".json"
     },
     {
-      "name": "check-semantic-proof",
+      "name": "doctor-semantic-proof",
       "group": "subcommands",
       "description": "Semantic preservation proof",
       "args": [
-        "check",
+        "doctor",
         "--semantic-proof"
       ],
       "validation": {
@@ -801,11 +801,11 @@
       "needs_data": true
     },
     {
-      "name": "check-semantic-proof-json",
+      "name": "doctor-semantic-proof-json",
       "group": "subcommands",
       "description": "Semantic preservation proof as JSON",
       "args": [
-        "check",
+        "doctor",
         "--json",
         "--semantic-proof"
       ],
@@ -816,11 +816,11 @@
       "output_ext": ".json"
     },
     {
-      "name": "check-semantic-proof-read-surfaces",
+      "name": "doctor-semantic-proof-read-surfaces",
       "group": "subcommands",
       "description": "Semantic proof for query, stream, and MCP read surfaces",
       "args": [
-        "check",
+        "doctor",
         "--semantic-proof",
         "--semantic-surface",
         "read_all"
@@ -834,11 +834,11 @@
       "needs_data": true
     },
     {
-      "name": "check-semantic-proof-read-surfaces-json",
+      "name": "doctor-semantic-proof-read-surfaces-json",
       "group": "subcommands",
       "description": "Semantic proof for query, stream, and MCP read surfaces as JSON",
       "args": [
-        "check",
+        "doctor",
         "--json",
         "--semantic-proof",
         "--semantic-surface",

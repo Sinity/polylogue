@@ -3,9 +3,9 @@
 Verifies:
 1. `--json` output is always valid JSON (parseable by json.loads)
 2. `POLYLOGUE_FORCE_PLAIN=1` produces no ANSI escape codes
-3. Frozen clock produces deterministic timestamps in `check --json`
+3. Frozen clock produces deterministic timestamps in `doctor --json`
 4. QA report `generate_qa_session` produces deterministic timestamps
-5. Commands parametrized across `check`, `tags`, `sources` with `--json`
+5. Commands parametrized across `doctor`, `tags`, `sources` with `--json`
 """
 
 from __future__ import annotations
@@ -55,12 +55,12 @@ def _has_ansi(text: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# F3: Frozen clock → deterministic check --json timestamp
+# F3: Frozen clock → deterministic doctor --json timestamp
 # ---------------------------------------------------------------------------
 
 
 class TestFrozenClockCheckJson:
-    """check --json timestamp is deterministic when time.time() is frozen."""
+    """doctor --json timestamp is deterministic when time.time() is frozen."""
 
     FROZEN_EPOCH = 1700000000  # 2023-11-14T22:13:20Z
 
@@ -72,7 +72,7 @@ class TestFrozenClockCheckJson:
             with patch("time.time", return_value=float(self.FROZEN_EPOCH)):
                 result = runner.invoke(
                     cli,
-                    ["--plain", "check", "--json"],
+                    ["--plain", "doctor", "--json"],
                     catch_exceptions=False,
                 )
             assert result.exit_code == 0, result.output
@@ -94,11 +94,11 @@ class TestFrozenClockCheckJson:
 
         with patch("time.time", return_value=1700000000.0):
             result_a = runner.invoke(
-                cli, ["--plain", "check", "--json"], catch_exceptions=False
+                cli, ["--plain", "doctor", "--json"], catch_exceptions=False
             )
         with patch("time.time", return_value=1800000000.0):
             result_b = runner.invoke(
-                cli, ["--plain", "check", "--json"], catch_exceptions=False
+                cli, ["--plain", "doctor", "--json"], catch_exceptions=False
             )
 
         ts_a = _extract_json(result_a.output)["result"]["timestamp"]
@@ -207,9 +207,9 @@ class TestPlainModeNoAnsi:
     """POLYLOGUE_FORCE_PLAIN=1 must produce zero ANSI escape codes."""
 
     COMMANDS: list[list[str]] = [
-        ["--plain", "check"],
+        ["--plain", "doctor"],
         ["--plain", "--help"],
-        ["--plain", "check", "--help"],
+        ["--plain", "doctor", "--help"],
         ["--plain", "tags", "--help"],
         ["--plain", "run", "--help"],
     ]
@@ -238,10 +238,10 @@ class TestJsonOutputValidity:
     """--json commands must emit valid, parseable JSON."""
 
     def test_check_json_is_valid(self, cli_workspace):
-        """polylogue check --json produces parseable JSON."""
+        """polylogue doctor --json produces parseable JSON."""
         runner = CliRunner()
         result = runner.invoke(
-            cli, ["--plain", "check", "--json"], catch_exceptions=False
+            cli, ["--plain", "doctor", "--json"], catch_exceptions=False
         )
         assert result.exit_code == 0
         parsed = _extract_json(result.output)
@@ -272,10 +272,10 @@ class TestJsonEnvelopeParametrized:
     @pytest.mark.parametrize(
         "cmd_args,result_key",
         [
-            (["check", "--json"], None),          # result has checks, summary, timestamp
+            (["doctor", "--json"], None),          # result has checks, summary, timestamp
             (["tags", "--json"], "tags"),          # result has tags
         ],
-        ids=["check", "tags"],
+        ids=["doctor", "tags"],
     )
     def test_json_envelope_shape(
         self,
@@ -303,10 +303,10 @@ class TestJsonEnvelopeParametrized:
     @pytest.mark.parametrize(
         "cmd_args",
         [
-            ["check", "--json"],
+            ["doctor", "--json"],
             ["tags", "--json"],
         ],
-        ids=["check", "tags"],
+        ids=["doctor", "tags"],
     )
     def test_json_output_no_ansi(
         self,
@@ -326,10 +326,10 @@ class TestJsonEnvelopeParametrized:
     @pytest.mark.parametrize(
         "cmd_args",
         [
-            ["check", "--json"],
+            ["doctor", "--json"],
             ["tags", "--json"],
         ],
-        ids=["check", "tags"],
+        ids=["doctor", "tags"],
     )
     def test_json_output_round_trips(
         self,
@@ -372,7 +372,7 @@ class TestJsonDeterminism:
         return {**data, "result": result}
 
     def test_check_json_deterministic_with_frozen_time(self, cli_workspace):
-        """Two check --json runs with same frozen time produce identical results."""
+        """Two doctor --json runs with same frozen time produce identical results."""
         runner = CliRunner()
         parsed: list[dict] = []
 
@@ -380,7 +380,7 @@ class TestJsonDeterminism:
             with patch("time.time", return_value=1700000000.0):
                 result = runner.invoke(
                     cli,
-                    ["--plain", "check", "--json"],
+                    ["--plain", "doctor", "--json"],
                     catch_exceptions=False,
                 )
             assert result.exit_code == 0
