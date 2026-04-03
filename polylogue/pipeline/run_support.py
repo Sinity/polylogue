@@ -30,6 +30,7 @@ RUN_STAGE_SEQUENCES: dict[str, tuple[str, ...]] = {
     "reprocess": ("parse", "materialize", "render", "index"),
     "all": ("acquire", "parse", "materialize", "render", "index"),
 }
+RUN_LEAF_STAGES = frozenset({stage for sequence in RUN_STAGE_SEQUENCES.values() for stage in sequence})
 INGEST_STAGES = frozenset({"parse", "reprocess", "all"})
 PARSE_STAGES = frozenset({"parse", "reprocess", "all"})
 MATERIALIZE_STAGES = frozenset({"materialize", "reprocess", "all"})
@@ -48,6 +49,21 @@ def expand_requested_stage(stage: str) -> tuple[str, ...]:
     """Expand a requested stage/composite into the leaf execution sequence."""
     return RUN_STAGE_SEQUENCES[stage]
 
+
+def normalize_stage_sequence(
+    *,
+    stage: str,
+    stage_sequence: Sequence[str] | None = None,
+) -> tuple[str, ...]:
+    """Return the leaf stage sequence for a run request."""
+    if stage_sequence is None:
+        return expand_requested_stage(stage)
+    normalized = tuple(stage_sequence)
+    invalid = [stage_name for stage_name in normalized if stage_name not in RUN_LEAF_STAGES]
+    if invalid:
+        raise ValueError(f"Unknown leaf stage(s): {', '.join(invalid)}")
+    return normalized
+
 def write_run_json(archive_root: Path, payload: dict[str, object]) -> Path:
     """Write run result JSON to the runs directory."""
     runs_dir = archive_root / "runs"
@@ -64,8 +80,10 @@ __all__ = [
     "PARSE_STAGES",
     "RENDER_STAGES",
     "RUN_STAGE_CHOICES",
+    "RUN_LEAF_STAGES",
     "RUN_STAGE_SEQUENCES",
     "expand_requested_stage",
+    "normalize_stage_sequence",
     "run_coroutine_sync",
     "select_sources",
     "write_run_json",

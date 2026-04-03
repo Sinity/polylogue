@@ -70,6 +70,30 @@ def test_expand_requested_stage_contract() -> None:
     assert expand_requested_stage("all") == ("acquire", "parse", "materialize", "render", "index")
 
 
+def test_run_sources_accepts_explicit_leaf_stage_sequence(workspace_env, tmp_path: Path) -> None:
+    inbox = tmp_path / "explicit-sequence"
+    inbox.mkdir(parents=True, exist_ok=True)
+    _write_chatgpt_export(inbox / "conversations.json", "conv-explicit-sequence")
+    config = Config(
+        sources=[Source(name="explicit", path=inbox)],
+        archive_root=workspace_env["archive_root"],
+        render_root=workspace_env["archive_root"] / "render",
+    )
+
+    result = asyncio.run(
+        run_sources(
+            config=config,
+            stage="all",
+            stage_sequence=("acquire", "parse"),
+        )
+    )
+
+    assert result.counts["conversations"] >= 1
+    assert result.counts.get("materialized", 0) == 0
+    assert result.counts.get("rendered", 0) == 0
+    assert result.indexed is False
+
+
 class TestRunSourcesRenderFailures:
     def test_render_failure_tracked_in_result(self, workspace_env):
         from polylogue.storage.state_views import RunResult

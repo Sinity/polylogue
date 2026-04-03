@@ -20,7 +20,7 @@ from polylogue.pipeline.run_stages import (
 )
 from polylogue.pipeline.run_state import RunExecutionState
 from polylogue.pipeline.run_support import (
-    expand_requested_stage,
+    normalize_stage_sequence,
     select_sources,
 )
 from polylogue.storage.backends import create_backend
@@ -41,6 +41,7 @@ async def run_sources(
     *,
     config: Config,
     stage: str = "all",
+    stage_sequence: Sequence[str] | None = None,
     plan: PlanResult | None = None,
     ui: object | None = None,
     source_names: Sequence[str] | None = None,
@@ -61,7 +62,7 @@ async def run_sources(
 
     try:
         selected_sources = select_sources(config, source_names)
-        stage_sequence = expand_requested_stage(stage)
+        normalized_stage_sequence = normalize_stage_sequence(stage=stage, stage_sequence=stage_sequence)
         executed_stages: set[str] = set()
 
         # Suspend FTS triggers during bulk pipeline operations.
@@ -69,14 +70,14 @@ async def run_sources(
         # overhead (~8s per 50 updates with realistic text). The index
         # stage rebuilds FTS at the end anyway, making trigger updates
         # pure waste during ingest.
-        if any(stage_name in {"parse", "render", "index"} for stage_name in stage_sequence):
+        if any(stage_name in {"parse", "render", "index"} for stage_name in normalized_stage_sequence):
             from polylogue.storage.fts_lifecycle import suspend_fts_triggers_async
 
             async with active_backend.connection() as conn:
                 await suspend_fts_triggers_async(conn)
                 await conn.commit()
 
-        if "acquire" in stage_sequence:
+        if "acquire" in normalized_stage_sequence:
             sm = metrics.start_stage("acquire")
             acquire_result = await execute_acquire_stage(
                 config=config,
@@ -91,7 +92,7 @@ async def run_sources(
             logger.info("Acquire stage complete", **sm.to_dict(), **acquire_result.counts)
             executed_stages.add("acquire")
 
-        if "generate-schemas" in stage_sequence:
+        if "generate-schemas" in normalized_stage_sequence:
             sm = metrics.start_stage("generate-schemas")
             schema_outcome = await execute_schema_generation_stage()
             state.record_schema_generation(
@@ -107,7 +108,7 @@ async def run_sources(
             )
             executed_stages.add("generate-schemas")
 
-        if "parse" in stage_sequence:
+        if "parse" in normalized_stage_sequence:
             sm = metrics.start_stage("ingest")
             skip_acquire = True
             ingest_result = await execute_ingest_stage(
@@ -145,7 +146,7 @@ async def run_sources(
             )
             executed_stages.add("parse")
 
-        if "materialize" in stage_sequence:
+        if "materialize" in normalized_stage_sequence:
             sm = metrics.start_stage("materialize")
             materialize_outcome = await execute_materialize_stage(
                 stage=stage,
@@ -165,7 +166,7 @@ async def run_sources(
             )
             executed_stages.add("materialize")
 
-        if "render" in stage_sequence:
+        if "render" in normalized_stage_sequence:
             sm = metrics.start_stage("render")
             render_outcome = await execute_render_stage(
                 config=config,
@@ -189,7 +190,7 @@ async def run_sources(
             )
             executed_stages.add("render")
 
-        if "index" in stage_sequence:
+        if "index" in normalized_stage_sequence:
             sm = metrics.start_stage("index")
             index_outcome = await execute_index_stage(
                 config=config,
