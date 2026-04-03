@@ -56,15 +56,17 @@ RUN_CASES = [
         True,
         None,
         "all",
+        ("acquire", "parse", "materialize", "render", "index"),
         "html",
         True,
     ),
     (
         "preview_parse_source",
-        ["run", "--preview", "--stage", "parse", "--source", "test-inbox"],
+        ["run", "--preview", "--source", "test-inbox", "parse"],
         True,
         ["test-inbox"],
         "parse",
+        ("parse",),
         "html",
         False,
     ),
@@ -74,24 +76,27 @@ RUN_CASES = [
         False,
         None,
         "all",
+        ("acquire", "parse", "materialize", "render", "index"),
         "html",
         True,
     ),
     (
         "run_render_markdown_source",
-        ["run", "--stage", "render", "--format", "markdown", "--source", "drive"],
+        ["run", "--source", "drive", "render", "--format", "markdown"],
         False,
         ["drive"],
         "render",
+        ("render",),
         "markdown",
         False,
     ),
     (
         "run_reprocess_source",
-        ["run", "--stage", "reprocess", "--source", "drive"],
+        ["run", "--source", "drive", "reprocess"],
         False,
         ["drive"],
         "reprocess",
+        ("parse", "materialize", "render", "index"),
         "html",
         False,
     ),
@@ -218,7 +223,16 @@ def _invoke_embed_batch(runner: CliRunner, args: list[str]):
 
 class TestRunCommand:
     @pytest.mark.parametrize(
-        ("case_name", "cli_args", "preview", "selected_sources", "expected_stage", "expected_format", "expect_stage_prompt"),
+        (
+            "case_name",
+            "cli_args",
+            "preview",
+            "selected_sources",
+            "expected_stage",
+            "expected_stage_sequence",
+            "expected_format",
+            "expect_stage_prompt",
+        ),
         RUN_CASES,
     )
     def test_run_dispatch_matrix(
@@ -232,6 +246,7 @@ class TestRunCommand:
         preview,
         selected_sources,
         expected_stage,
+        expected_stage_sequence,
         expected_format,
         expect_stage_prompt,
     ):
@@ -251,11 +266,15 @@ class TestRunCommand:
             mocks["stage_prompt"].assert_not_called()
         if preview:
             mocks["plan"].assert_called_once()
+            kwargs = mocks["plan"].call_args.kwargs
+            assert kwargs["stage"] == expected_stage
+            assert kwargs["stage_sequence"] == expected_stage_sequence
             mocks["run"].assert_not_called()
         else:
             mocks["run"].assert_called_once()
             kwargs = mocks["run"].call_args.kwargs
             assert kwargs["stage"] == expected_stage
+            assert kwargs["stage_sequence"] == expected_stage_sequence
             assert kwargs["render_format"] == expected_format
             assert kwargs["source_names"] == selected_sources
 
@@ -300,7 +319,7 @@ class TestRunCommand:
     ):
         result, mocks = _invoke_run_direct(
             runner,
-            ["run", "--stage", stage],
+            ["run", stage],
             plan_result=mock_plan_result,
             run_result=run_result,
             selected_sources=None,

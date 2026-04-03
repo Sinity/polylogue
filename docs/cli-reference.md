@@ -173,9 +173,9 @@ polylogue -p old --delete --force                  # Skip confirmation
 polylogue run                             # Run pipeline on all sources
 polylogue run --source claude-ai             # Run only for claude source
 polylogue run --preview                   # Preview counts, confirm before writing
-polylogue run --stage parse               # Run only parse stage
-polylogue run --stage all                 # Run all stages (default)
-polylogue run --format markdown           # Render as Markdown (default: html)
+polylogue run parse                       # Run only parse stage
+polylogue run all                         # Run all stages explicitly
+polylogue run render --format markdown    # Render as Markdown (default: html)
 polylogue run --watch                     # Watch sources and sync continuously
 polylogue run --watch --notify            # Desktop notification on conversation changes
 polylogue run --watch --exec "echo changes"   # Execute command on conversation changes
@@ -441,7 +441,7 @@ Polylogue switches to plain mode automatically when stdout/stderr are not TTYs. 
 
 - Use `--source NAME` (repeatable) on `run` to avoid reprocessing everything.
 - Use `--source last` to reuse the previous interactive selection.
-- Example: `polylogue run --source gemini --stage parse`.
+- Example: `polylogue run --source gemini parse`.
 
 ### Preview Mode
 

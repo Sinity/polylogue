@@ -79,8 +79,9 @@ class TestCommandOutputs:
         output = grid_to_text(grid)
 
         assert output == snapshot
-        assert "--stage [acquire|parse|materialize|render|index|schema|reprocess|all" in output
-        assert "reprocess (skip" in output
+        assert "Usage: polylogue run [OPTIONS] COMMAND1 [ARGS]..." in output
+        assert "Commands:" in output
+        assert "reprocess" in output
 
 
 class TestErrorOutput:

@@ -63,34 +63,32 @@
 # ---
 # name: TestCommandOutputs.test_run_help_output_snapshot
   '''
-  Usage: polylogue run [OPTIONS]
+  Usage: polylogue run [OPTIONS] COMMAND1 [ARGS]... [COMMAND2 [ARGS]...]...
   
     Run pipeline stages on configured sources.
   
   Options:
-    --preview                       Preview work without writing
-    --stage [acquire|parse|materialize|render|index|schema|reprocess|all]
-                                    Pipeline stage: acquire (store raw), parse
-                                    (extract conversations), materialize
-                                    (derived products), render (output), index
-                                    (search), schema, reprocess (skip acquire,
-                                    run downstream stages), or all  [default:
-                                    all]
-    --source TEXT                   Configured source name (repeatable). Accepts
-                                    'last' for the previously synced source.
-    --format [markdown|html]        Output format for rendering (markdown or
-                                    html)  [default: html]
-    --watch                         Watch sources for changes and run
-                                    continuously
-    --notify                        Desktop notification on conversation changes
-                                    (requires --watch)
-    --exec TEXT                     Execute command on conversation changes
-                                    (requires --watch)
-    --webhook TEXT                  Call webhook URL on conversation changes
-                                    (requires --watch)
-    --reparse                       Force re-parsing of all raw conversations
-                                    (clears parse tracking)
-    -h, --help                      Show this message and exit.
+    --preview       Preview work without writing
+    --source TEXT   Configured source name (repeatable). Accepts 'last' for the
+                    previously synced source.
+    --watch         Watch sources for changes and run continuously
+    --notify        Desktop notification on conversation changes (requires
+                    --watch)
+    --exec TEXT     Execute command on conversation changes (requires --watch)
+    --webhook TEXT  Call webhook URL on conversation changes (requires --watch)
+    --reparse       Force re-parsing of all raw conversations (clears parse
+                    tracking)
+    -h, --help      Show this message and exit.
+  
+  Commands:
+    acquire      Capture raw payloads only.
+    all          Run the full pipeline.
+    index        Build retrieval and search indexes.
+    materialize  Refresh derived read models.
+    parse        Parse persisted raw backlog into normalized conversations.
+    render       Render human-facing publication artifacts.
+    reprocess    Skip acquisition and rerun downstream stages.
+    schema       Infer schemas from acquired raw payloads.
   '''
 # ---
 # name: TestCommandOutputs.test_sources_output_snapshot
