@@ -231,20 +231,12 @@ def list_product_types() -> list[str]:
 # Shared option sets
 # -------------------------------------------------------------------
 
-_COMMON_TIME_OPTIONS: list[CliOption] = [
-    CliOption("since", ("--since",), help="Only rows on/after this timestamp"),
-    CliOption("until", ("--until",), help="Only rows on/before this timestamp"),
-]
-
 _SESSION_TIME_OPTIONS: list[CliOption] = [
-    *_COMMON_TIME_OPTIONS,
     CliOption("first_message_since", ("--first-message-since",), help="Only sessions whose first message is on/after this timestamp"),
     CliOption("first_message_until", ("--first-message-until",), help="Only sessions whose first message is on/before this timestamp"),
     CliOption("session_date_since", ("--session-date-since",), help="Only sessions whose canonical session date is on/after this date"),
     CliOption("session_date_until", ("--session-date-until",), help="Only sessions whose canonical session date is on/before this date"),
 ]
-
-_PROVIDER_OPTION = CliOption("provider", ("--provider",), help="Limit to provider")
 
 _QUERY_OPTION = CliOption("query", ("--query",), help="FTS query against product search text")
 
@@ -263,7 +255,6 @@ register(ProductType(
     cli_command_name="profiles",
     cli_help="List durable session-profile products.",
     cli_options=[
-        _PROVIDER_OPTION,
         *_SESSION_TIME_OPTIONS,
         CliOption("tier", ("--tier",), type=click.Choice(["merged", "evidence", "inference"]), default="merged", show_default=True, help="Return merged, evidence-only, or inference-only profile products"),
         _QUERY_OPTION,
@@ -288,7 +279,6 @@ register(ProductType(
     cli_command_name="enrichments",
     cli_help="List durable probabilistic session-enrichment products.",
     cli_options=[
-        _PROVIDER_OPTION,
         *_SESSION_TIME_OPTIONS,
         _QUERY_OPTION,
     ],
@@ -311,8 +301,6 @@ register(ProductType(
     cli_help="List durable work-event products.",
     cli_options=[
         CliOption("conversation_id", ("--conversation-id",), help="Only events from one conversation"),
-        _PROVIDER_OPTION,
-        *_COMMON_TIME_OPTIONS,
         CliOption("kind", ("--kind",), help="Only this work-event kind"),
         _QUERY_OPTION,
     ],
@@ -337,8 +325,6 @@ register(ProductType(
     cli_help="List durable session-phase products.",
     cli_options=[
         CliOption("conversation_id", ("--conversation-id",), help="Only phases from one conversation"),
-        _PROVIDER_OPTION,
-        *_COMMON_TIME_OPTIONS,
         CliOption("kind", ("--kind",), help="Only this session phase kind"),
     ],
     fields=[
@@ -360,7 +346,6 @@ register(ProductType(
     cli_command_name="threads",
     cli_help="List durable work-thread products.",
     cli_options=[
-        *_COMMON_TIME_OPTIONS,
         _QUERY_OPTION,
     ],
     fields=[
@@ -382,8 +367,6 @@ register(ProductType(
     cli_command_name="tags",
     cli_help="List durable session-tag rollup products.",
     cli_options=[
-        _PROVIDER_OPTION,
-        *_COMMON_TIME_OPTIONS,
         CliOption("query", ("--query",), help="Substring match against the tag name"),
     ],
     mcp_default_limit=100,
@@ -404,10 +387,7 @@ register(ProductType(
     operations_method="list_day_session_summary_products",
     cli_command_name="day-summaries",
     cli_help="List durable day-level session summary products.",
-    cli_options=[
-        _PROVIDER_OPTION,
-        *_COMMON_TIME_OPTIONS,
-    ],
+    cli_options=[],
     mcp_default_limit=90,
     fields=[
         ProductField("", _attr("date"), group=0),
@@ -425,10 +405,7 @@ register(ProductType(
     operations_method="list_week_session_summary_products",
     cli_command_name="week-summaries",
     cli_help="List durable week-level session summary products.",
-    cli_options=[
-        _PROVIDER_OPTION,
-        *_COMMON_TIME_OPTIONS,
-    ],
+    cli_options=[],
     mcp_default_limit=52,
     fields=[
         ProductField("", _attr("iso_week"), group=0),
@@ -446,9 +423,7 @@ register(ProductType(
     operations_method="list_provider_analytics_products",
     cli_command_name="analytics",
     cli_help="List canonical provider-level analytics products.",
-    cli_options=[
-        CliOption("provider", ("--provider",), help="Limit to one provider"),
-    ],
+    cli_options=[],
     fields=[
         ProductField("", _attr("provider_name"), group=0),
         ProductField("conversations", _attr("conversation_count", "0"), group=0),

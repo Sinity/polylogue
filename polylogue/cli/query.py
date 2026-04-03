@@ -320,8 +320,11 @@ def _split_query_mode_args(group: click.Group, args: list[str]) -> tuple[list[st
             option_args.extend(_iter_option_values(args, index, nargs))
             index += nargs + 1
             continue
-        # Non-verb subcommands (run, doctor, etc.) only recognized at start
-        if not query_terms and not query_mode_locked and arg in group.commands and arg not in VERB_NAMES:
+        # Non-verb subcommands (run, doctor, products, etc.) recognized when
+        # no bare-word query terms have been collected yet.  Filter options
+        # (--provider, --since, …) do NOT prevent subcommand detection — they
+        # are consumed by the root group during Click's normal parse phase.
+        if not query_terms and arg in group.commands and arg not in VERB_NAMES:
             return args, (), True
         # Verb commands recognized at any position (even after filters/query terms)
         if arg in VERB_NAMES:

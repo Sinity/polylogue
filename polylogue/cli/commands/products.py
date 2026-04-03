@@ -1,4 +1,9 @@
-"""Archive data product inspection commands — registry-driven."""
+"""Archive data product inspection commands — registry-driven.
+
+Product commands inherit ``--provider``, ``--since``, and ``--until`` from
+the root CLI context so that ``polylogue --provider codex products profiles``
+works without re-specifying the filter on the subcommand.
+"""
 
 from __future__ import annotations
 
@@ -12,9 +17,13 @@ from polylogue.products.registry import (
     PRODUCT_REGISTRY,
     ProductQueryError,
     ProductType,
+    _resolve_query_class,
     fetch_products,
     render_product_items,
 )
+
+# Root-level filter keys that product commands inherit from the parent context.
+_ROOT_FILTER_KEYS = ("provider", "since", "until")
 
 
 def _build_click_params(pt: ProductType) -> list[click.Parameter]:
@@ -63,11 +72,38 @@ def _build_click_params(pt: ProductType) -> list[click.Parameter]:
     return params
 
 
-def _make_callback(pt: ProductType):
-    """Create the Click callback for a product type command."""
+def _find_root_params(ctx: click.Context) -> dict[str, Any]:
+    """Walk up the context chain to find the root CLI group's params."""
+    cur = ctx
+    while cur.parent is not None:
+        cur = cur.parent
+    return cur.params
 
-    @click.pass_obj
-    def callback(env: AppEnv, json_mode: bool = False, **kwargs: Any) -> None:
+
+def _make_callback(pt: ProductType):
+    """Create the Click callback for a product type command.
+
+    Inherits ``provider``, ``since``, and ``until`` from the root CLI
+    context when the product's query class accepts them.
+    """
+    # Pre-resolve accepted fields so we only inject keys the query class understands.
+    query_cls = _resolve_query_class(pt.query_class_path)
+    accepted_root_keys = frozenset(
+        k for k in _ROOT_FILTER_KEYS if k in query_cls.model_fields
+    )
+
+    @click.pass_context
+    def callback(ctx: click.Context, json_mode: bool = False, **kwargs: Any) -> None:
+        env: AppEnv = ctx.obj
+
+        # Inject root filter values the product query class can accept.
+        root_params = _find_root_params(ctx)
+        for key in accepted_root_keys:
+            if kwargs.get(key) is None:
+                root_val = root_params.get(key)
+                if root_val is not None:
+                    kwargs[key] = root_val
+
         try:
             items = fetch_products(pt, env.operations, **kwargs)
         except ProductQueryError as exc:

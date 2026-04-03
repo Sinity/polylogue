@@ -4,9 +4,6 @@ Usage: python -m polylogue products work-events [OPTIONS]
 
 Options:
   --conversation-id TEXT  Only events from one conversation
-  --provider TEXT         Limit to provider
-  --since TEXT            Only rows on/after this timestamp
-  --until TEXT            Only rows on/before this timestamp
   --kind TEXT             Only this work-event kind
   --query TEXT            FTS query against product search text
   --limit INTEGER         Maximum rows  [default: 50]
