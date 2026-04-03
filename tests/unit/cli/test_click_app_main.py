@@ -26,7 +26,7 @@ def _run_main_with_error(monkeypatch: pytest.MonkeyPatch, argv: list[str], exc: 
 def test_main_wraps_usage_error_as_json(monkeypatch, capsys):
     exit_code, payload = _run_main_with_error(
         monkeypatch,
-        ["check", "--json", "--bad-flag"],
+        ["doctor", "--json", "--bad-flag"],
         click.NoSuchOption("--bad-flag"),
         capsys,
     )
@@ -40,7 +40,7 @@ def test_main_wraps_usage_error_as_json(monkeypatch, capsys):
 def test_main_wraps_click_exception_as_runtime_json(monkeypatch, capsys):
     exit_code, payload = _run_main_with_error(
         monkeypatch,
-        ["check", "--json"],
+        ["doctor", "--json"],
         click.ClickException("boom"),
         capsys,
     )
@@ -54,21 +54,21 @@ def test_main_wraps_click_exception_as_runtime_json(monkeypatch, capsys):
 def test_main_wraps_string_system_exit_as_invalid_arguments_json(monkeypatch, capsys):
     exit_code, payload = _run_main_with_error(
         monkeypatch,
-        ["check", "--json"],
-        SystemExit("check: --preview requires --repair"),
+        ["doctor", "--json"],
+        SystemExit("doctor: --preview requires --repair"),
         capsys,
     )
 
     assert exit_code == 1
     assert payload["status"] == "error"
     assert payload["code"] == "invalid_arguments"
-    assert payload["message"] == "check: --preview requires --repair"
+    assert payload["message"] == "doctor: --preview requires --repair"
 
 
 def test_main_wraps_unexpected_exception_as_runtime_json(monkeypatch, capsys):
     exit_code, payload = _run_main_with_error(
         monkeypatch,
-        ["check", "--json"],
+        ["doctor", "--json"],
         RuntimeError("unexpected boom"),
         capsys,
     )
@@ -81,7 +81,7 @@ def test_main_wraps_unexpected_exception_as_runtime_json(monkeypatch, capsys):
 
 
 def test_main_without_json_preserves_normal_click_failure(monkeypatch):
-    monkeypatch.setattr(sys, "argv", ["polylogue", "check", "--bad-flag"])
+    monkeypatch.setattr(sys, "argv", ["polylogue", "doctor", "--bad-flag"])
     with patch("polylogue.cli.click_app.cli", side_effect=click.NoSuchOption("--bad-flag")):
         with pytest.raises(click.NoSuchOption):
             main()

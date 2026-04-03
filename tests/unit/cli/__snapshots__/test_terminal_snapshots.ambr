@@ -1,7 +1,7 @@
 # serializer version: 1
 # name: TestCommandOutputs.test_check_output_snapshot
   '''
-  Usage: polylogue check [OPTIONS]
+  Usage: polylogue doctor [OPTIONS]
   
     Health check with optional maintenance and cleanup previews.
   
@@ -214,13 +214,13 @@
     -h, --help                      Show this message and exit.
   
   Commands:
+    audit        Run composable QA: schema audit, exercises, and invariant...
     auth         Authenticate with external services (Google Drive for...
-    check        Health check with optional maintenance and cleanup previews.
     completions  Generate shell completion scripts.
     dashboard    Launch the Mission Control TUI dashboard.
+    doctor       Health check with optional maintenance and cleanup previews.
     mcp          Start the MCP server for AI assistant integration.
     products     Inspect durable archive data products.
-    qa           Run composable QA: schema audit, exercises, and invariant...
     reset        Reset database, blob store, assets, rendered outputs, or...
     run          Run pipeline stages on configured sources.
     schema       Schema generation, package versioning, and evidence...
@@ -383,17 +383,17 @@
   .
   
   Commands:
+    audit        Run composable QA: schema audit, exercises, a
+  nd invariant...
     auth         Authenticate with external services (Google D
   rive for...
-    check        Health check with optional maintenance and cl
-  eanup previews.
     completions  Generate shell completion scripts.
     dashboard    Launch the Mission Control TUI dashboard.
+    doctor       Health check with optional maintenance and cl
+  eanup previews.
     mcp          Start the MCP server for AI assistant integra
   tion.
     products     Inspect durable archive data products.
-    qa           Run composable QA: schema audit, exercises, a
-  nd invariant...
     reset        Reset database, blob store, assets, rendered
   outputs, or...
     run          Run pipeline stages on configured sources.
@@ -511,13 +511,13 @@
     -h, --help                      Show this message and exit.
   
   Commands:
+    audit        Run composable QA: schema audit, exercises, and invariant...
     auth         Authenticate with external services (Google Drive for...
-    check        Health check with optional maintenance and cleanup previews.
     completions  Generate shell completion scripts.
     dashboard    Launch the Mission Control TUI dashboard.
+    doctor       Health check with optional maintenance and cleanup previews.
     mcp          Start the MCP server for AI assistant integration.
     products     Inspect durable archive data products.
-    qa           Run composable QA: schema audit, exercises, and invariant...
     reset        Reset database, blob store, assets, rendered outputs, or...
     run          Run pipeline stages on configured sources.
     schema       Schema generation, package versioning, and evidence...

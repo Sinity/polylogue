@@ -67,7 +67,7 @@ polylogue/
 +-- pipeline/          # Ingestion orchestration (acquisition, parsing, validation, indexing)
 +-- schemas/           # Schema inference, pinning, verification
 +-- showcase/          # QA exercise catalog and runner
-+-- cli/               # 11 commands: run, check, qa, schema, products, tags, etc.
++-- cli/               # 11 commands: run, doctor, audit, schema, products, tags, etc.
 +-- mcp/               # Model Context Protocol server
 +-- operations/        # High-level archive operations
 +-- rendering/         # Markdown/HTML output
@@ -92,7 +92,7 @@ ChatGPT (`mapping` field) -> Claude web (`chat_messages`) -> Claude Code (`paren
 4,300+ tests. Protected files (never delete): `tests/integration/`, `tests/unit/security/`, `test_parsers_props.py`, `test_null_guard_properties.py`, `test_properties.py`, `test_crud.py`.
 
 Mutation testing: `nix develop -c mutmut run` (8 modules).
-QA exercises: `POLYLOGUE_FORCE_PLAIN=1 nix develop -c polylogue qa --only exercises --tier 0`
+QA exercises: `POLYLOGUE_FORCE_PLAIN=1 nix develop -c polylogue audit --only exercises --tier 0`
 
 @.claude/includes/git-workflow.md
 @.claude/includes/architecture.md

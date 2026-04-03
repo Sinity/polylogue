@@ -190,13 +190,13 @@ class TestCommandConstruction:
     def test_live_lane_uses_module_entrypoint(self):
         cmd = build_lane_command(LANES["live-exercises"])
         assert cmd[:3] == [sys.executable, "-m", "polylogue"]
-        assert "qa" in cmd
+        assert "audit" in cmd
         assert "--live" in cmd
 
-    def test_live_maintenance_preview_lane_uses_check_preview(self):
+    def test_live_maintenance_preview_lane_uses_doctor_preview(self):
         cmd = build_lane_command(LANES["live-maintenance-preview"])
         assert cmd[:3] == [sys.executable, "-m", "polylogue"]
-        assert "check" in cmd
+        assert "doctor" in cmd
         assert "--repair" in cmd
         assert "--cleanup" in cmd
         assert "--preview" in cmd
@@ -252,10 +252,10 @@ class TestCommandConstruction:
         assert "enrichments" in cmd
         assert "--json" in cmd
 
-    def test_live_session_product_repair_lane_uses_check_repair_target(self):
+    def test_live_session_product_repair_lane_uses_doctor_repair_target(self):
         cmd = build_lane_command(LANES["live-session-product-repair"])
         assert cmd[:3] == [sys.executable, "-m", "polylogue"]
-        assert "check" in cmd
+        assert "doctor" in cmd
         assert "--repair" in cmd
         assert "--target" in cmd
         assert "session_products" in cmd

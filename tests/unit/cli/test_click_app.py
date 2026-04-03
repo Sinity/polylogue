@@ -184,7 +184,7 @@ class TestQueryFirstGroupParseArgs:
     def test_subcommand_dispatches_normally(self, cli_runner):
         from polylogue.cli.click_app import cli
 
-        result = cli_runner.invoke(cli, ["check", "--help"], catch_exceptions=False)
+        result = cli_runner.invoke(cli, ["doctor", "--help"], catch_exceptions=False)
         assert result.exit_code == 0
         assert "health" in result.output.lower() or "repair" in result.output.lower()
 
@@ -200,10 +200,10 @@ class TestQueryFirstGroupParseArgs:
         from polylogue.cli.click_app import cli
 
         with patch("polylogue.cli.query.execute_query") as mock_execute:
-            cli_runner.invoke(cli, ["-p", "claude-ai", "check", "--plain"], catch_exceptions=False)
+            cli_runner.invoke(cli, ["-p", "claude-ai", "doctor", "--plain"], catch_exceptions=False)
         _, params = mock_execute.call_args[0]
         assert params.get("provider") == "claude-ai"
-        assert params.get("query") == ("check",)
+        assert params.get("query") == ("doctor",)
 
     def test_option_args_preserved(self, cli_runner):
         from polylogue.cli.click_app import cli
@@ -251,7 +251,7 @@ class TestQueryFirstGroupInvoke:
     def test_subcommand_invokes_super(self, cli_runner):
         from polylogue.cli.click_app import cli
 
-        result = cli_runner.invoke(cli, ["check", "--help"])
+        result = cli_runner.invoke(cli, ["doctor", "--help"])
         assert result.exit_code == 0
 
     def test_no_subcommand_calls_stats_path(self, cli_runner):
@@ -388,7 +388,7 @@ class TestCliMetadata:
 
         result = cli_runner.invoke(cli, ["--help"])
         assert result.exit_code == 0
-        for command in ("run", "check", "mcp", "tags"):
+        for command in ("run", "doctor", "mcp", "tags"):
             assert command in result.output
         assert result.output.count("Commands:") == 1
 
@@ -397,14 +397,14 @@ class TestCliMetadata:
 
         expected = {
             "run",
-            "check",
+            "doctor",
             "reset",
             "mcp",
             "auth",
             "completions",
             "dashboard",
             "products",
-            "qa",
+            "audit",
             "schema",
             "tags",
         }
@@ -421,7 +421,7 @@ class TestGenerateSeed:
 
     def test_seed_creates_database(self, cli_runner, tmp_path):
         result = cli_runner.invoke(click_cli, [
-            "qa", "generate", "--seed", "-o", str(tmp_path),
+            "audit", "generate", "--seed", "-o", str(tmp_path),
             "-n", "1", "-p", "chatgpt",
         ])
         assert result.exit_code == 0
@@ -439,7 +439,7 @@ class TestGenerateSeed:
         )())):
             result = cli_runner.invoke(
                 click_cli,
-                ["qa", "generate", "--seed", "-o", str(tmp_path), "-n", "1", "-p", "chatgpt"],
+                ["audit", "generate", "--seed", "-o", str(tmp_path), "-n", "1", "-p", "chatgpt"],
             )
 
         assert result.exit_code == 0
@@ -447,7 +447,7 @@ class TestGenerateSeed:
         assert os.environ["POLYLOGUE_ARCHIVE_ROOT"] == "/tmp/original-archive"
 
     def test_env_only_requires_seed(self, cli_runner):
-        result = cli_runner.invoke(click_cli, ["qa", "generate", "--env-only"])
+        result = cli_runner.invoke(click_cli, ["audit", "generate", "--env-only"])
         assert result.exit_code != 0
         assert "requires --seed" in result.output.lower() or "error" in result.output.lower()
 
@@ -463,7 +463,7 @@ class TestQaCommand:
     def test_only_and_skip_mutually_exclusive(self, cli_runner):
         result = cli_runner.invoke(
             click_cli,
-            ["qa", "--only", "audit", "--skip", "exercises"],
+            ["audit", "--only", "audit", "--skip", "exercises"],
         )
         assert result.exit_code != 0
 
@@ -477,14 +477,14 @@ class TestQaCommand:
 
         result = cli_runner.invoke(
             click_cli,
-            ["qa", "--snapshot-from", str(source), "--report-dir", str(output_root)],
+            ["audit", "--snapshot-from", str(source), "--report-dir", str(output_root)],
         )
         assert result.exit_code == 0
         # A snapshot directory should have been created
         assert any(output_root.iterdir())
 
     def test_qa_help_shows_key_flags(self, cli_runner):
-        result = cli_runner.invoke(click_cli, ["qa", "--help"])
+        result = cli_runner.invoke(click_cli, ["audit", "--help"])
         assert result.exit_code == 0
         assert "--live" in result.output
         assert "--only" in result.output
@@ -516,7 +516,7 @@ class TestQaCommand:
         )
 
         with patch("polylogue.showcase.qa_runner.run_qa_session", return_value=qa_result):
-            result = cli_runner.invoke(click_cli, ["qa", "--json"])
+            result = cli_runner.invoke(click_cli, ["audit", "--json"])
 
         assert result.exit_code == 0
         payload = json.loads(result.output.split("\nPlain output active", 1)[0])
