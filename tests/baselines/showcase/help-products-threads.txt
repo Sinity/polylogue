@@ -1,0 +1,12 @@
+Usage: python -m polylogue products threads [OPTIONS]
+
+  List durable work-thread products.
+
+Options:
+  --since TEXT      Only rows on/after this timestamp
+  --until TEXT      Only rows on/before this timestamp
+  --query TEXT      FTS query against product search text
+  --limit INTEGER   Maximum rows  [default: 50]
+  --offset INTEGER  Start offset  [default: 0]
+  --json            Output as JSON
+  -h, --help        Show this message and exit.

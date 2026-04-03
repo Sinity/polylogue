@@ -1,0 +1,12 @@
+Usage: python -m polylogue schema compare [OPTIONS]
+
+  Compare two schema package versions for a provider.
+
+Options:
+  --provider TEXT  Provider name  [required]
+  --from TEXT      Source version (e.g., v1)  [required]
+  --to TEXT        Target version (e.g., v2)  [required]
+  --element TEXT   Element kind inside the package
+  --json           Output as JSON
+  --markdown       Output as Markdown
+  -h, --help       Show this message and exit.

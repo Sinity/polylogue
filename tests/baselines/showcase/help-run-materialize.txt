@@ -1,0 +1,6 @@
+Usage: python -m polylogue run materialize [OPTIONS]
+
+  Refresh derived read models.
+
+Options:
+  -h, --help  Show this message and exit.

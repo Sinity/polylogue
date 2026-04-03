@@ -1,0 +1,8 @@
+Usage: python -m polylogue schema list [OPTIONS]
+
+  List available schema packages, versions, and evidence manifests.
+
+Options:
+  --provider TEXT  Filter to specific provider
+  --json           Output as JSON
+  -h, --help       Show this message and exit.
