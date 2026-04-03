@@ -274,7 +274,7 @@ async def test_paged_id_iteration_contract(tmp_path: Path) -> None:
                 provider_name="chatgpt",
                 source_name="inbox-a",
                 source_path=f"/tmp/raw-{idx}.json",
-                raw_content=b'{"id":"x"}',
+                blob_size=len(b'{"id":"x"}'),
                 acquired_at=(base + timedelta(minutes=idx)).isoformat(),
             )
         )

@@ -8,14 +8,15 @@ import click
 
 from polylogue.cli.helpers import fail
 from polylogue.cli.types import AppEnv
-from polylogue.paths import cache_home, data_home, db_path, drive_token_path, render_root, state_home
+from polylogue.paths import blob_store_root, cache_home, data_home, db_path, drive_cache_path, drive_token_path, render_root, state_home
 
 
 @click.command("reset")
 @click.option("--database", is_flag=True, help="Delete the SQLite database")
+@click.option("--blob", is_flag=True, help="Delete the content-addressed blob store")
 @click.option("--assets", is_flag=True, help="Delete archived assets/attachments")
 @click.option("--render", is_flag=True, help="Delete rendered conversations (Markdown/HTML)")
-@click.option("--cache", is_flag=True, help="Delete search indexes and cache")
+@click.option("--cache", is_flag=True, help="Delete search indexes, schemas, and cache")
 @click.option("--auth", is_flag=True, help="Delete Google Drive OAuth tokens")
 @click.option("--all", "reset_all", is_flag=True, help="Reset everything")
 @click.option("--yes", "-y", is_flag=True, help="Skip confirmation prompt")
@@ -23,6 +24,7 @@ from polylogue.paths import cache_home, data_home, db_path, drive_token_path, re
 def reset_command(
     env: AppEnv,
     database: bool,
+    blob: bool,
     assets: bool,
     render: bool,
     cache: bool,
@@ -30,15 +32,15 @@ def reset_command(
     reset_all: bool,
     yes: bool,
 ) -> None:
-    """Reset database, assets, rendered outputs, or auth state.
+    """Reset database, blob store, assets, rendered outputs, or auth state.
 
     By default, requires explicit flags to specify what to reset.
     Use --all to reset everything.
     """
     if reset_all:
-        database = assets = render = cache = auth = True
+        database = blob = assets = render = cache = auth = True
 
-    if not (database or assets or render or cache or auth):
+    if not (database or blob or assets or render or cache or auth):
         fail(
             "reset",
             "Specify at least one target (e.g., --database, --assets, --render, --cache, --auth) or use --all",
@@ -56,21 +58,28 @@ def reset_command(
         health_path = data_home() / "health.json"
         if health_path.exists():
             targets.append(("health cache", health_path))
+    if blob:
+        _blob_root = blob_store_root()
+        if _blob_root.exists():
+            targets.append(("blob store", _blob_root))
     if assets:
         assets_dir = data_home() / "assets"
         if assets_dir.exists():
             targets.append(("assets", assets_dir))
     if render and render_root().exists():
         targets.append(("render results", render_root()))
-    if cache and cache_home().exists():
-        targets.append(("cache/indexes", cache_home()))
+    if cache:
+        if cache_home().exists():
+            targets.append(("cache/indexes", cache_home()))
+        schemas_dir = data_home() / "schemas"
+        if schemas_dir.exists():
+            targets.append(("inferred schemas", schemas_dir))
+        _drive_cache = drive_cache_path()
+        if _drive_cache.exists():
+            targets.append(("drive cache", _drive_cache))
     if auth and drive_token_path().exists():
         targets.append(("OAuth token", drive_token_path()))
     if reset_all:
-        # Clean up run history and last-source state
-        runs_dir = data_home() / "runs"
-        if runs_dir.exists():
-            targets.append(("run history", runs_dir))
         last_source = state_home() / "last-source.json"
         if last_source.exists():
             targets.append(("last-source state", last_source))

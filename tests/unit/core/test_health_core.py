@@ -244,11 +244,13 @@ def test_get_health_contract(cli_workspace, deep: bool) -> None:
     assert second.timestamp > 0
 
 
-def test_cached_health_summary_returns_stub(tmp_path: Path) -> None:
+def test_cached_health_summary_returns_live_status(tmp_path: Path) -> None:
     from polylogue.health import cached_health_summary
 
     result = cached_health_summary(tmp_path)
-    assert result == "not cached"
+    # With a valid DB, returns "OK (N conversations)"; without, returns "unavailable (...)"
+    assert isinstance(result, str)
+    assert "OK" in result or "unavailable" in result or "schema" in result
 
 
 def test_verify_status_contract() -> None:

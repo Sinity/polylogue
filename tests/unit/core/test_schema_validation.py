@@ -349,27 +349,38 @@ def _insert_raw_record(
     source_name: str,
     source_path: str,
     raw_content: bytes,
-) -> None:
+) -> str:
+    """Insert a raw record and return the actual raw_id (the blob hash)."""
+    from polylogue.storage.blob_store import get_blob_store
+
+    # Write content to blob store and get the actual hash
+    blob_store = get_blob_store()
+    actual_raw_id, blob_size = blob_store.write_from_bytes(raw_content)
+
+    # Use the actual hash as raw_id (required for content-addressed blob store)
+    # Ignore the passed raw_id parameter since it must match the blob hash
     with open_connection(db_path) as conn:
         conn.execute(
             """
             INSERT INTO raw_conversations (
                 raw_id, provider_name, payload_provider, source_name, source_path, source_index,
-                raw_content, acquired_at
+                blob_size, acquired_at
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                raw_id,
+                actual_raw_id,
                 provider_name,
                 payload_provider,
                 source_name,
                 source_path,
                 0,
-                raw_content,
+                blob_size,
                 datetime.now(tz=timezone.utc).isoformat(),
             ),
         )
         conn.commit()
+
+    return actual_raw_id
 
 
 def test_verify_raw_corpus_reports_valid_synthetic_chatgpt(db_path, monkeypatch):
@@ -471,10 +482,9 @@ def test_verify_raw_corpus_uses_persisted_payload_provider_for_filters(db_path, 
 
 
 def test_verify_raw_corpus_counts_malformed_jsonl_as_decode_error(db_path):
-    raw_id = "raw-codex-1"
-    _insert_raw_record(
+    raw_id = _insert_raw_record(
         db_path=db_path,
-        raw_id=raw_id,
+        raw_id="raw-codex-1",
         provider_name="codex",
         source_name="codex",
         source_path="/tmp/session.jsonl",
@@ -512,10 +522,9 @@ def test_verify_raw_corpus_counts_malformed_jsonl_as_decode_error(db_path):
 
 
 def test_verify_raw_corpus_quarantine_malformed_updates_validation_state(db_path):
-    raw_id = "raw-codex-q1"
-    _insert_raw_record(
+    raw_id = _insert_raw_record(
         db_path=db_path,
-        raw_id=raw_id,
+        raw_id="raw-codex-q1",
         provider_name="codex",
         source_name="codex",
         source_path="/tmp/session-q1.jsonl",

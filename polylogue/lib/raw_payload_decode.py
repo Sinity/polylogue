@@ -28,32 +28,44 @@ class RawPayloadEnvelope:
 
 
 def _decode_jsonl_payload(
-    raw: bytes | str,
+    raw: Path | bytes | str,
     *,
     jsonl_dict_only: bool = False,
 ) -> tuple[list[Any], int]:
-    """Decode JSONL incrementally to avoid full-file line splitting."""
+    """Decode JSONL incrementally to avoid full-file line splitting.
+
+    When *raw* is a :class:`~pathlib.Path`, lines are streamed directly
+    from the file handle — the full file is never loaded into memory.
+    """
     lines: list[Any] = []
     malformed_lines = 0
     first_line = True
-    stream = BytesIO(raw) if isinstance(raw, bytes) else StringIO(raw)
 
-    for raw_line in stream:
-        line = raw_line.decode("utf-8") if isinstance(raw_line, bytes) else raw_line
-        if first_line:
-            line = line.lstrip("\ufeff")
-            first_line = False
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            parsed = orjson.loads(line)
-        except (orjson.JSONDecodeError, ValueError):
-            malformed_lines += 1
-            continue
-        if jsonl_dict_only and not isinstance(parsed, dict):
-            continue
-        lines.append(parsed)
+    if isinstance(raw, Path):
+        fh = open(raw, "rb")  # noqa: SIM115 — caller-managed context
+    else:
+        fh = BytesIO(raw) if isinstance(raw, bytes) else StringIO(raw)
+
+    try:
+        for raw_line in fh:
+            line = raw_line.decode("utf-8") if isinstance(raw_line, bytes) else raw_line
+            if first_line:
+                line = line.lstrip("\ufeff")
+                first_line = False
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                parsed = orjson.loads(line)
+            except (orjson.JSONDecodeError, ValueError):
+                malformed_lines += 1
+                continue
+            if jsonl_dict_only and not isinstance(parsed, dict):
+                continue
+            lines.append(parsed)
+    finally:
+        if isinstance(raw, Path):
+            fh.close()
 
     if not lines:
         raise ValueError("No valid JSONL records found")
@@ -61,12 +73,40 @@ def _decode_jsonl_payload(
 
 
 def _decode_raw_payload(
-    raw_content: bytes | str | Any,
+    raw_content: Path | bytes | str | Any,
     *,
     jsonl_dict_only: bool = False,
     prefer_jsonl: bool = False,
 ) -> tuple[Any, WireFormat, int]:
-    """Decode JSON payload bytes, with JSONL fallback support."""
+    """Decode JSON payload bytes, with JSONL fallback support.
+
+    When *raw_content* is a :class:`~pathlib.Path`, JSONL files are
+    streamed line-by-line from disk (never fully loaded into memory).
+    For JSON files the path is read in one shot via ``orjson.loads``.
+    """
+    if isinstance(raw_content, Path):
+        if prefer_jsonl:
+            try:
+                payload, malformed_lines = _decode_jsonl_payload(
+                    raw_content,
+                    jsonl_dict_only=jsonl_dict_only,
+                )
+                return payload, "jsonl", malformed_lines
+            except (UnicodeDecodeError, ValueError):
+                pass
+        raw_bytes = raw_content.read_bytes()
+        try:
+            return orjson.loads(raw_bytes), "json", 0
+        except (orjson.JSONDecodeError, ValueError) as exc:
+            try:
+                payload, malformed_lines = _decode_jsonl_payload(
+                    raw_bytes,
+                    jsonl_dict_only=jsonl_dict_only,
+                )
+            except ValueError:
+                raise exc from None
+            return payload, "jsonl", malformed_lines
+
     raw = raw_content if isinstance(raw_content, (bytes, str)) else str(raw_content)
     if prefer_jsonl:
         try:
@@ -111,14 +151,19 @@ def _infer_payload_provider(
 
 
 def build_raw_payload_envelope(
-    raw_content: bytes | str | Any,
+    raw_content: Path | bytes | str | Any,
     *,
     source_path: str | Path | None,
     fallback_provider: str | Provider,
     payload_provider: str | Provider | None = None,
     jsonl_dict_only: bool = False,
 ) -> RawPayloadEnvelope:
-    """Decode raw payload and attach canonical provider/wire-format identity."""
+    """Decode raw payload and attach canonical provider/wire-format identity.
+
+    When *raw_content* is a :class:`~pathlib.Path`, JSONL payloads are
+    streamed line-by-line from disk — enabling constant-memory parsing
+    of multi-GB files.
+    """
     normalized_path = str(source_path or "").lower()
     prefer_jsonl = normalized_path.endswith((".jsonl", ".jsonl.txt", ".ndjson"))
     preferred_provider = payload_provider or fallback_provider

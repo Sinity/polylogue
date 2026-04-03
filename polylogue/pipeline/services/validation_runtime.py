@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 
 from polylogue.lib.raw_payload import build_raw_payload_envelope
 from polylogue.logging import get_logger
+from polylogue.storage.blob_store import get_blob_store
 from polylogue.storage.store import RawConversationRecord
 from polylogue.types import Provider, ValidationMode, ValidationStatus
 
@@ -48,9 +49,12 @@ def _validate_record_sync(
     canonical_provider = Provider.from_string(stored_payload_provider or raw_record.provider_name)
     payload_provider = stored_payload_provider
 
+    blob_store = get_blob_store()
+    raw_source = blob_store.blob_path(raw_record.raw_id)
+
     try:
         envelope = build_raw_payload_envelope(
-            raw_record.raw_content,
+            raw_source,
             source_path=raw_record.source_path,
             fallback_provider=raw_record.provider_name,
             payload_provider=stored_payload_provider,

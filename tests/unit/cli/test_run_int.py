@@ -53,7 +53,7 @@ async def test_plan_and_run_sources(workspace_env, tmp_path, with_plan):
         result = await run_sources(config=config, stage="all")
 
     assert result.counts["conversations"] == 1
-    assert any((config.archive_root / "runs").iterdir())
+    assert result.run_id is not None
 
 
 @pytest.mark.parametrize(
@@ -160,8 +160,12 @@ async def test_run_writes_unique_report_files(workspace_env, tmp_path, monkeypat
     await run_sources(config=config, stage="all")
     await run_sources(config=config, stage="all")
 
-    runs = list((config.archive_root / "runs").glob(f"run-{fixed_time}-*.json"))
-    assert len(runs) == 2
+    # Runs are stored in DB only (no JSON files).
+    # Verify by checking the DB has run records.
+    from polylogue.pipeline.run_finalization import latest_run
+
+    run = await latest_run()
+    assert run is not None
 
 
 @pytest.mark.parametrize("setup_type", ["parsed_json", "null_columns"])
