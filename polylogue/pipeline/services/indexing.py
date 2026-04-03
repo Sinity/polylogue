@@ -18,6 +18,7 @@ from polylogue.storage.search_cache import invalidate_search_cache
 
 if TYPE_CHECKING:
     from polylogue.config import Config
+    from polylogue.protocols import ProgressCallback
     from polylogue.storage.backends.async_sqlite import SQLiteBackend
 
 logger = get_logger(__name__)
@@ -31,11 +32,43 @@ async def ensure_index(backend: SQLiteBackend) -> None:
         await ensure_fts_index_async(conn)
 
 
-async def rebuild_index(backend: SQLiteBackend) -> None:
+async def rebuild_index(
+    backend: SQLiteBackend,
+    *,
+    progress_callback: ProgressCallback | None = None,
+) -> None:
     """Rebuild the entire FTS5 index from persisted message rows."""
+    conversation_id_list = [conversation_id async for conversation_id in backend.queries.iter_conversation_ids()]
+    phase_total = len(conversation_id_list) * 2
+
+    def action_progress_desc(processed: int, total: int) -> str:
+        del total
+        return f"Indexing: action events {processed:,}/{phase_total:,}"
+
+    def fts_progress_desc(processed: int, total: int) -> str:
+        del total
+        return f"Indexing: full-text search {len(conversation_id_list) + processed:,}/{phase_total:,}"
+
     async with backend.connection() as conn:
-        await rebuild_action_event_read_model_async(conn)
-        await rebuild_fts_index_async(conn)
+        if progress_callback is not None and conversation_id_list:
+            progress_callback(0, desc=f"Indexing: action events 0/{phase_total:,}")
+        await rebuild_action_event_read_model_async(
+            conn,
+            conversation_ids=conversation_id_list,
+            progress_callback=progress_callback,
+            progress_desc=action_progress_desc if progress_callback is not None else None,
+        )
+        if progress_callback is not None and conversation_id_list:
+            progress_callback(
+                0,
+                desc=f"Indexing: full-text search {len(conversation_id_list):,}/{phase_total:,}",
+            )
+        await rebuild_fts_index_async(
+            conn,
+            conversation_ids=conversation_id_list,
+            progress_callback=progress_callback,
+            progress_desc=fts_progress_desc if progress_callback is not None else None,
+        )
         await conn.commit()
     invalidate_search_cache()
 
@@ -43,14 +76,42 @@ async def rebuild_index(backend: SQLiteBackend) -> None:
 async def update_index_for_conversations(
     conversation_ids: Iterable[str] | AsyncIterable[str],
     backend: SQLiteBackend,
+    *,
+    progress_callback: ProgressCallback | None = None,
 ) -> None:
     """Repair FTS rows for the provided conversations from persisted message rows."""
     conversation_id_list = [conversation_id async for conversation_id in _iter_ids(conversation_ids)]
     changed = bool(conversation_id_list)
+    phase_total = len(conversation_id_list) * 2
+
+    def action_progress_desc(processed: int, total: int) -> str:
+        del total
+        return f"Indexing: action events {processed:,}/{phase_total:,}"
+
+    def fts_progress_desc(processed: int, total: int) -> str:
+        del total
+        return f"Indexing: full-text search {len(conversation_id_list) + processed:,}/{phase_total:,}"
 
     async with backend.connection() as conn:
-        await rebuild_action_event_read_model_async(conn, conversation_ids=conversation_id_list)
-        await repair_fts_index_async(conn, conversation_id_list)
+        if progress_callback is not None and conversation_id_list:
+            progress_callback(0, desc=f"Indexing: action events 0/{phase_total:,}")
+        await rebuild_action_event_read_model_async(
+            conn,
+            conversation_ids=conversation_id_list,
+            progress_callback=progress_callback,
+            progress_desc=action_progress_desc if progress_callback is not None else None,
+        )
+        if progress_callback is not None and conversation_id_list:
+            progress_callback(
+                0,
+                desc=f"Indexing: full-text search {len(conversation_id_list):,}/{phase_total:,}",
+            )
+        await repair_fts_index_async(
+            conn,
+            conversation_id_list,
+            progress_callback=progress_callback,
+            progress_desc=fts_progress_desc if progress_callback is not None else None,
+        )
         await conn.commit()
     if changed:
         invalidate_search_cache()
@@ -92,6 +153,8 @@ class IndexService:
     async def update_index(
         self,
         conversation_ids: Iterable[str] | AsyncIterable[str],
+        *,
+        progress_callback: ProgressCallback | None = None,
     ) -> bool:
         """Update the search index for specific conversations.
 
@@ -106,13 +169,24 @@ class IndexService:
             return False
 
         try:
-            await update_index_for_conversations(conversation_ids, self.backend)
+            if progress_callback is None:
+                await update_index_for_conversations(conversation_ids, self.backend)
+            else:
+                await update_index_for_conversations(
+                    conversation_ids,
+                    self.backend,
+                    progress_callback=progress_callback,
+                )
             return True
         except sqlite3.DatabaseError as exc:
             logger.error("Failed to update index", error=str(exc), exc_info=True)
             return False
 
-    async def rebuild_index(self) -> bool:
+    async def rebuild_index(
+        self,
+        *,
+        progress_callback: ProgressCallback | None = None,
+    ) -> bool:
         """Rebuild the entire search index from scratch.
 
         Returns:
@@ -123,7 +197,10 @@ class IndexService:
             return False
 
         try:
-            await rebuild_index(self.backend)
+            if progress_callback is None:
+                await rebuild_index(self.backend)
+            else:
+                await rebuild_index(self.backend, progress_callback=progress_callback)
             return True
         except sqlite3.DatabaseError as exc:
             logger.error("Failed to rebuild index", error=str(exc), exc_info=True)
