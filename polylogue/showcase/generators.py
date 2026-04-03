@@ -289,6 +289,33 @@ def generate_schema_exercises() -> list[Exercise]:
     return exercises
 
 
+_PROVIDER_FEATURES: dict[str, set[str]] = {
+    "chatgpt": {"tool-use", "thinking"},
+    "claude-ai": {"tool-use", "thinking"},
+    "claude-code": {"tool-use", "thinking"},
+    "codex": {"tool-use"},
+    "gemini": {"tool-use"},
+}
+
+
+def generate_provider_feature_exercises() -> list[Exercise]:
+    """Generate provider × content-type cross-product exercises."""
+    exercises: list[Exercise] = []
+    for provider, features in _PROVIDER_FEATURES.items():
+        for feature in sorted(features):
+            flag = f"--has-{feature}"
+            exercises.append(Exercise(
+                name=f"gen-provider-{provider}-has-{feature}",
+                group="generated-filters",
+                description=f"Generated: {provider} has {feature}",
+                args=["--provider", provider, flag, "count"],
+                tier=1,
+                env="seeded",
+                needs_data=True,
+            ))
+    return exercises
+
+
 def generate_all_exercises(cli_group: click.Group | None = None) -> list[Exercise]:
     """Generate all exercise categories."""
     exercises: list[Exercise] = []
@@ -298,6 +325,7 @@ def generate_all_exercises(cli_group: click.Group | None = None) -> list[Exercis
     exercises.extend(generate_json_contract_exercises())
     exercises.extend(generate_format_exercises())
     exercises.extend(generate_schema_exercises())
+    exercises.extend(generate_provider_feature_exercises())
     return exercises
 
 
@@ -306,6 +334,7 @@ __all__ = [
     "generate_all_exercises",
     "generate_filter_exercises",
     "generate_format_exercises",
+    "generate_provider_feature_exercises",
     "command_help_exercise_names",
     "generate_command_help_exercises",
     "generate_json_contract_exercises",
