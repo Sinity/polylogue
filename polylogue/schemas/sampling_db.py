@@ -47,6 +47,7 @@ def _iter_schema_units_from_db(
     db_path: Path,
     config: ProviderConfig,
     max_samples: int | None = None,
+    full_corpus: bool = False,
 ):
     """Yield clusterable schema units from raw_conversations."""
     provider_name = Provider.from_string(provider_name)
@@ -87,7 +88,9 @@ def _iter_schema_units_from_db(
                         continue
 
                     sample_limit = max_samples
-                    if sample_limit is None:
+                    if full_corpus:
+                        sample_limit = None
+                    elif sample_limit is None:
                         sample_limit = config.schema_sample_cap or 128
 
                     try:

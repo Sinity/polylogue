@@ -98,6 +98,7 @@ def build_provider_catalog_artifacts(
                 schema_samples,
                 conv_ids,
                 privacy_config=privacy_config,
+                artifact_kind=element_kind,
             )
             _apply_schema_metadata(
                 schema,

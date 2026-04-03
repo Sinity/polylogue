@@ -26,6 +26,7 @@ def iter_schema_units(
     *,
     db_path: Path | None = None,
     max_samples: int | None = None,
+    full_corpus: bool = False,
 ):
     """Yield schema units for a provider from DB, with session fallback."""
     provider_name = Provider.from_string(provider_name)
@@ -41,6 +42,7 @@ def iter_schema_units(
             db_path=db_path,
             config=config,
             max_samples=max_samples,
+            full_corpus=full_corpus,
         ):
             yielded_any = True
             yield unit

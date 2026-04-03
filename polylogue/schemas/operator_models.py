@@ -22,6 +22,7 @@ class SchemaInferRequest:
     privacy_config: Any | None = None
     cluster: bool = False
     cluster_sample_limit: int = 500
+    full_corpus: bool = False
 
 
 @dataclass(frozen=True)
@@ -132,7 +133,7 @@ class SchemaRoleAssignment:
         return {
             "path": self.path,
             "role": self.role,
-            "confidence": self.confidence,
+            "score": self.confidence,
             "evidence": self.evidence,
         }
 
@@ -174,10 +175,53 @@ class SchemaAnnotationSummary:
 
 
 @dataclass(frozen=True)
+class SchemaRoleProofEntry:
+    """Proof surface for a single semantic role assignment decision."""
+
+    role: str
+    chosen_path: str | None
+    chosen_score: float
+    competing: list[dict[str, Any]]
+    evidence: dict[str, Any]
+    abstained: bool
+    abstain_reason: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "role": self.role,
+            "chosen_path": self.chosen_path,
+            "chosen_score": self.chosen_score,
+            "competing": self.competing,
+            "evidence": self.evidence,
+            "abstained": self.abstained,
+            "abstain_reason": self.abstain_reason,
+        }
+
+
+@dataclass(frozen=True)
+class SchemaReviewProof:
+    """Full proof surface for all semantic role assignment decisions."""
+
+    roles: list[SchemaRoleProofEntry]
+    artifact_kind: str | None
+    eligible_roles: list[str]
+    ineligible_roles: list[str]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "roles": [entry.to_dict() for entry in self.roles],
+            "artifact_kind": self.artifact_kind,
+            "eligible_roles": self.eligible_roles,
+            "ineligible_roles": self.ineligible_roles,
+        }
+
+
+@dataclass(frozen=True)
 class SchemaExplainRequest:
     provider: str
     version: str = "latest"
     element_kind: str | None = None
+    proof: bool = False
 
 
 @dataclass(frozen=True)
@@ -188,11 +232,14 @@ class SchemaExplainResult:
     package: SchemaVersionPackage | None
     schema: dict[str, Any]
     annotations: SchemaAnnotationSummary
+    review_proof: SchemaReviewProof | None = None
 
     def to_dict(self) -> dict[str, Any]:
         payload = {"schema": self.schema, "annotations": self.annotations.to_dict()}
         if self.package is not None:
             payload["package"] = self.package.to_dict()
+        if self.review_proof is not None:
+            payload["review_proof"] = self.review_proof.to_dict()
         return payload
 
 

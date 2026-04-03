@@ -34,6 +34,7 @@ def generate_provider_schema(
     db_path: Path | None = None,
     max_samples: int | None = None,
     privacy_config: Any | None = None,
+    full_corpus: bool = False,
 ):
     """Generate the default inferred schema for a provider."""
     return _build_provider_bundle(
@@ -41,6 +42,7 @@ def generate_provider_schema(
         db_path=db_path,
         max_samples=max_samples,
         privacy_config=privacy_config,
+        full_corpus=full_corpus,
     ).result
 
 

@@ -8,7 +8,7 @@ Tests the contract between:
 
 Ensures:
   1. x-polylogue-semantic-role annotations appear at correct schema paths
-  2. x-polylogue-confidence and x-polylogue-evidence attached
+  2. x-polylogue-score and x-polylogue-evidence attached
   3. Relational annotations (FKs, time deltas, exclusions, lengths) at root
   4. End-to-end: samples → field stats → annotations → schema
   5. Packaged provider schemas expose coherent annotation metadata
@@ -76,7 +76,7 @@ class TestAnnotateSemanticAndRelational:
         assert isinstance(result_schema, dict)
 
     def test_confidence_and_evidence_included(self) -> None:
-        """x-polylogue-confidence and x-polylogue-evidence added with candidate."""
+        """x-polylogue-score and x-polylogue-evidence added with candidate."""
         schema = {
             "type": "object",
             "properties": {
@@ -99,8 +99,8 @@ class TestAnnotateSemanticAndRelational:
         if "role" in result_schema.get("properties", {}):
             role_schema = result_schema["properties"]["role"]
             if "x-polylogue-semantic-role" in role_schema:
-                assert "x-polylogue-confidence" in role_schema
-                assert isinstance(role_schema["x-polylogue-confidence"], (int, float))
+                assert "x-polylogue-score" in role_schema
+                assert isinstance(role_schema["x-polylogue-score"], (int, float))
                 assert "x-polylogue-evidence" in role_schema
                 assert isinstance(role_schema["x-polylogue-evidence"], dict)
 
