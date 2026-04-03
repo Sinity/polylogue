@@ -34,12 +34,14 @@ def _collect_cluster_accumulators(
     db_path: Path,
     max_samples: int | None,
     reservoir_size: int,
+    full_corpus: bool = False,
 ) -> tuple[dict[str, _ClusterAccumulator], list[_UnitMembership], int, dict[str, int]]:
     result = collect_cluster_analysis(
         provider,
         db_path=db_path,
         max_samples=max_samples,
         reservoir_size=reservoir_size,
+        full_corpus=full_corpus,
     )
     return result.clusters, result.memberships, result.sample_count, result.artifact_counts
 
@@ -50,10 +52,11 @@ def collect_cluster_analysis(
     db_path: Path,
     max_samples: int | None,
     reservoir_size: int,
+    full_corpus: bool = False,
 ) -> ClusterCollectionResult:
     from polylogue.schemas.sampling import iter_schema_units
 
-    units = list(iter_schema_units(provider, db_path=db_path, max_samples=max_samples))
+    units = list(iter_schema_units(provider, db_path=db_path, max_samples=max_samples, full_corpus=full_corpus))
     profile_summaries: dict[tuple[str, tuple[str, ...]], _ProfileSummary] = {}
     total_schema_samples = 0
     artifact_counts: dict[str, int] = {}

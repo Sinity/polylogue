@@ -54,7 +54,7 @@ def _walk_semantic_roles(schema: dict[str, Any], path: str = "$") -> list[tuple[
         return results
 
     role = schema.get("x-polylogue-semantic-role")
-    confidence = schema.get("x-polylogue-confidence", 0.0)
+    confidence = schema.get("x-polylogue-score", 0.0)
     if role:
         results.append((path, role, confidence))
 

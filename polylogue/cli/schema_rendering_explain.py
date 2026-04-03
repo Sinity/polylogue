@@ -13,6 +13,10 @@ def render_schema_explain_result(*, result, json_output: bool, verbose: bool) ->
         click.echo(json.dumps(result.to_dict(), indent=2))
         return
 
+    if result.review_proof is not None:
+        _render_proof_surface(result)
+        return
+
     props = result.schema.get("properties", {})
     resolved_element = result.element_kind or (
         result.package.default_element_kind
@@ -97,7 +101,7 @@ def render_explain_verbose(result) -> None:
         click.echo("  Semantic Roles:")
         for role in roles:
             evidence_str = ", ".join(f"{key}={value}" for key, value in role.evidence.items())
-            click.echo(f"    {role.role} -> {role.path} (confidence={role.confidence:.3f})")
+            click.echo(f"    {role.role} -> {role.path} (score={role.confidence:.3f})")
             if evidence_str:
                 click.echo(f"      evidence: {evidence_str}")
 
@@ -116,6 +120,32 @@ def render_explain_verbose(result) -> None:
             f"    Semantic role: {coverage.with_role}/{coverage.total_fields} "
             f"({coverage.with_role / coverage.total_fields * 100:.0f}%)"
         )
+
+
+def _render_proof_surface(result) -> None:
+    """Render the proof surface for schema role assignment decisions."""
+    proof = result.review_proof
+    click.echo(f"Schema Review Proof: {result.provider} {result.version}")
+    click.echo(f"  Artifact kind: {proof.artifact_kind or 'unknown'}")
+    click.echo(f"  Eligible roles: {', '.join(proof.eligible_roles)}")
+    if proof.ineligible_roles:
+        click.echo(f"  Ineligible roles: {', '.join(proof.ineligible_roles)}")
+    click.echo()
+
+    for entry in proof.roles:
+        if entry.abstained:
+            click.echo(f"  {entry.role}: ABSTAINED")
+            click.echo(f"    reason: {entry.abstain_reason}")
+        else:
+            click.echo(f"  {entry.role}: {entry.chosen_path} (score={entry.chosen_score:.3f})")
+            if entry.evidence:
+                evidence_str = ", ".join(f"{k}={v}" for k, v in entry.evidence.items())
+                click.echo(f"    evidence: {evidence_str}")
+            if entry.competing:
+                click.echo(f"    competing ({len(entry.competing)}):")
+                for comp in entry.competing[:5]:
+                    click.echo(f"      {comp['path']} (score={comp['score']:.3f})")
+        click.echo()
 
 
 __all__ = ["render_explain_verbose", "render_schema_explain_result"]

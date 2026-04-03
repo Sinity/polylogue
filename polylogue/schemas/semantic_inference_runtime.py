@@ -13,11 +13,37 @@ from polylogue.schemas.semantic_inference_message_scoring import (
 from polylogue.schemas.semantic_inference_models import SEMANTIC_ROLES, SemanticCandidate
 
 
-def infer_semantic_roles(stats: dict[str, FieldStats]) -> list[SemanticCandidate]:
-    """Score all field paths for all semantic roles."""
+RECORD_STREAM_KINDS = frozenset({
+    "conversation_record_stream",
+    "subagent_conversation_stream",
+})
+
+# Roles that record-stream artifacts may infer. Title is excluded because
+# individual records in a stream do not carry conversation-level metadata.
+RECORD_STREAM_ELIGIBLE_ROLES = frozenset({
+    "message_container",
+    "message_role",
+    "message_body",
+    "message_timestamp",
+})
+
+
+def infer_semantic_roles(
+    stats: dict[str, FieldStats],
+    *,
+    artifact_kind: str | None = None,
+) -> list[SemanticCandidate]:
+    """Score all field paths for all semantic roles.
+
+    When *artifact_kind* is a record-stream kind, ``conversation_title``
+    scoring is skipped because individual records do not carry titles.
+    """
+    is_record_stream = artifact_kind in RECORD_STREAM_KINDS
     candidates: list[SemanticCandidate] = []
     for path, field_stats in stats.items():
         for role in SEMANTIC_ROLES:
+            if is_record_stream and role not in RECORD_STREAM_ELIGIBLE_ROLES:
+                continue
             candidate = score_candidate(path, field_stats, role, stats)
             if candidate is not None and candidate.confidence > 0.1:
                 candidates.append(candidate)
@@ -55,4 +81,10 @@ def score_candidate(
     return None
 
 
-__all__ = ["infer_semantic_roles", "score_candidate", "select_best_roles"]
+__all__ = [
+    "RECORD_STREAM_ELIGIBLE_ROLES",
+    "RECORD_STREAM_KINDS",
+    "infer_semantic_roles",
+    "score_candidate",
+    "select_best_roles",
+]

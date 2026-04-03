@@ -29,16 +29,19 @@ def _generate_cluster_schema(
     conv_ids: list[str | None],
     *,
     privacy_config: Any | None,
+    full_corpus: bool = False,
+    artifact_kind: str | None = None,
 ) -> tuple[dict[str, Any], SchemaReport | None]:
     if not samples:
         return {"type": "object", "description": "No samples available"}, None
 
     builder = SchemaBuilder()
     fingerprint_counts: dict[Any, int] = {}
+    exemplar_cap = None if full_corpus else _STRUCTURE_EXEMPLARS_PER_FINGERPRINT
     for sample in samples:
         fingerprint = _structure_fingerprint(sample)
         seen = fingerprint_counts.get(fingerprint, 0)
-        if seen < _STRUCTURE_EXEMPLARS_PER_FINGERPRINT:
+        if exemplar_cap is None or seen < exemplar_cap:
             builder.add_object(sample)
             fingerprint_counts[fingerprint] = seen + 1
 
@@ -56,7 +59,7 @@ def _generate_cluster_schema(
         min_conversation_count=3,
         privacy_config=privacy_config,
     )
-    schema = _annotate_semantic_and_relational(schema, field_stats)
+    schema = _annotate_semantic_and_relational(schema, field_stats, artifact_kind=artifact_kind)
     schema["$schema"] = "https://json-schema.org/draft/2020-12/schema"
 
     redaction_report = _build_redaction_report(
