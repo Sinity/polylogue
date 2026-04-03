@@ -211,6 +211,13 @@ def _thread_records_from_profile_records(
     }
 
 
+def _thread_record_for_root(
+    root_id: str,
+    profile_records: Sequence[SessionProfileRecord],
+) -> WorkThreadRecord | None:
+    return _thread_records_from_profile_records(profile_records).get(str(root_id))
+
+
 def load_thread_profile_records_sync(conn: sqlite3.Connection, root_id: str):
     return load_thread_profile_records_by_root_sync(conn, [root_id]).get(root_id, [])
 
@@ -264,16 +271,15 @@ def build_thread_records_for_roots_sync(
     root_ids: Sequence[str],
 ) -> dict[str, WorkThreadRecord]:
     profile_records_by_root = load_thread_profile_records_by_root_sync(conn, root_ids)
-    profile_records = [
-        record
-        for root_id in root_ids
-        for record in profile_records_by_root.get(root_id, [])
-    ]
-    thread_records = _thread_records_from_profile_records(profile_records)
     return {
-        str(root_id): thread_records[str(root_id)]
+        str(root_id): record
         for root_id in root_ids
-        if str(root_id) in thread_records
+        if (
+            record := _thread_record_for_root(
+                str(root_id),
+                profile_records_by_root.get(str(root_id), []),
+            )
+        ) is not None
     }
 
 
@@ -282,16 +288,15 @@ async def build_thread_records_for_roots_async(
     root_ids: Sequence[str],
 ) -> dict[str, WorkThreadRecord]:
     profile_records_by_root = await load_thread_profile_records_by_root_async(conn, root_ids)
-    profile_records = [
-        record
-        for root_id in root_ids
-        for record in profile_records_by_root.get(root_id, [])
-    ]
-    thread_records = _thread_records_from_profile_records(profile_records)
     return {
-        str(root_id): thread_records[str(root_id)]
+        str(root_id): record
         for root_id in root_ids
-        if str(root_id) in thread_records
+        if (
+            record := _thread_record_for_root(
+                str(root_id),
+                profile_records_by_root.get(str(root_id), []),
+            )
+        ) is not None
     }
 
 

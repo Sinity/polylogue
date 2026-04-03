@@ -63,6 +63,18 @@ class TestCommandConstruction:
         assert "--max-total-ms" in cmd
         assert "--max-peak-rss-mb" in cmd
 
+    def test_live_archive_subset_parse_probe_lane_uses_medium_archive_subset_probe(self):
+        cmd = build_lane_command(LANES["live-archive-subset-parse-probe"])
+        assert cmd[:3] == [sys.executable, "-m", "devtools.pipeline_probe"]
+        assert "--input-mode" in cmd
+        assert "archive-subset" in cmd
+        assert "--stage" in cmd
+        assert "parse" in cmd
+        assert "--sample-per-provider" in cmd
+        assert "50" in cmd
+        assert "--workdir" in cmd
+        assert "--json-out" in cmd
+
     def test_semantic_stack_lane_uses_explicit_semantic_suite(self):
         cmd = build_lane_command(LANES["semantic-stack"])
         assert cmd[:3] == [sys.executable, "-m", "pytest"]

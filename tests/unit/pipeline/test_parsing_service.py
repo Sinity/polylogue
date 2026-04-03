@@ -107,7 +107,7 @@ class TestParsingServiceParseSources:
         assert result.counts["messages"] == 5
         assert result.processed_ids == {"conv-1", "conv-2"}
 
-    async def test_ingest_sources_surfaces_session_product_refresh_diagnostics(self):
+    async def test_ingest_sources_surfaces_batch_diagnostics_only(self):
         mock_repository = MagicMock()
         mock_backend = MagicMock()
         mock_repository.backend = mock_backend
@@ -118,12 +118,11 @@ class TestParsingServiceParseSources:
         acquire_result.raw_ids = ["raw-1"]
 
         parse_result = ParseResult()
-        parse_result.refresh_observation = {
-            "conversations": 1,
-            "unique_thread_roots": 1,
-            "unique_provider_days": 1,
+        parse_result.batch_observations = [{
             "elapsed_ms": 123.4,
-        }
+            "blob_mb": 1.5,
+            "rss_end_mb": 42.0,
+        }]
 
         with patch("polylogue.pipeline.services.acquisition.AcquisitionService.acquire_sources", new=AsyncMock(return_value=acquire_result)):
             with patch("polylogue.pipeline.services.planning.PlanningService.collect_validation_backlog", new=AsyncMock(return_value=[])):
@@ -133,7 +132,9 @@ class TestParsingServiceParseSources:
                             sources=[Source(name="test-source", path=Path("/tmp/inbox"))],
                         )
 
-        assert result.diagnostics["session_product_refresh"] == parse_result.refresh_observation
+        assert result.diagnostics["batch_observations"]["batch_count"] == 1
+        assert result.diagnostics["batch_observations"]["max_elapsed_ms"] == 123.4
+        assert "session_product_refresh" not in result.diagnostics
 
     async def test_ingest_dedupes_backlog_without_rebuilding_raw_id_list(self):
         mock_repository = MagicMock()
@@ -346,6 +347,34 @@ class TestParsingServiceStreaming:
 
 
 class TestPlanningService:
+    @patch("polylogue.pipeline.services.acquisition.iter_source_raw_data")
+    async def test_parse_plan_uses_existing_raw_scope_without_scanning_sources(self, mock_iter, tmp_path: Path):
+        backend = SQLiteBackend(db_path=tmp_path / "test.db")
+        config = Config(sources=[], archive_root=tmp_path / "archive", render_root=tmp_path / "render")
+        planner = PlanningService(backend=backend, config=config)
+        source_dir = tmp_path / "inbox-a"
+        source_dir.mkdir()
+
+        await backend.save_raw_conversation(
+            RawConversationRecord(
+                raw_id="raw-scoped",
+                provider_name="chatgpt",
+                source_name="inbox-a",
+                source_path="/tmp/a.json",
+                blob_size=len(b'{\"id\":\"x\"}'),
+                acquired_at=datetime.now(tz=timezone.utc).isoformat(),
+            )
+        )
+        mock_iter.side_effect = AssertionError("parse planning must not scan sources")
+
+        plan = await planner.build_plan(sources=[Source(name="inbox-a", path=source_dir)], stage="parse")
+
+        assert plan.summary.counts["validate"] == 1
+        assert plan.summary.counts["parse"] == 1
+        assert set(plan.validate_raw_ids) == {"raw-scoped"}
+        assert set(plan.parse_ready_raw_ids) == {"raw-scoped"}
+        mock_iter.assert_not_called()
+
     async def test_planning_includes_scoped_validation_backlog(self, tmp_path: Path):
         backend = SQLiteBackend(db_path=tmp_path / "test.db")
         config = Config(sources=[], archive_root=tmp_path / "archive", render_root=tmp_path / "render")

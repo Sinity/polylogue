@@ -173,16 +173,16 @@ polylogue -p old --delete --force                  # Skip confirmation
 polylogue run                             # Run pipeline on all sources
 polylogue run --source claude-ai             # Run only for claude source
 polylogue run --preview                   # Preview counts, confirm before writing
-polylogue run --stage parse               # Run only parse stage
-polylogue run --stage all                 # Run all stages (default)
-polylogue run --format markdown           # Render as Markdown (default: html)
+polylogue run parse                       # Run only parse stage
+polylogue run all                         # Run all stages explicitly
+polylogue run render --format markdown    # Render as Markdown (default: html)
 polylogue run --watch                     # Watch sources and sync continuously
 polylogue run --watch --notify            # Desktop notification on conversation changes
 polylogue run --watch --exec "echo changes"   # Execute command on conversation changes
 polylogue run --watch --webhook URL       # Call webhook on conversation changes
 ```
 
-**Pipeline stages**: `acquire` → `parse` → `render` → `index` → `generate-schemas`. Validation happens inline during `parse`. Default runs all stages. `parse` consumes newly acquired raw rows plus persisted backlog that still needs validation or parsing.
+**Pipeline stages**: `acquire` → `schema` → `parse` → `materialize` → `render` → `index`. Validation happens inline during `parse`. Default `all` runs `acquire` → `parse` → `materialize` → `render` → `index`; `schema` is an explicit post-acquire stage. `reprocess` skips acquisition and reruns downstream `parse` → `materialize` → `render` → `index`.
 
 **Source scoping**: Use `--source NAME` (repeatable) to process only specific sources. Use `polylogue sources` to list available sources.
 
@@ -441,7 +441,7 @@ Polylogue switches to plain mode automatically when stdout/stderr are not TTYs. 
 
 - Use `--source NAME` (repeatable) on `run` to avoid reprocessing everything.
 - Use `--source last` to reuse the previous interactive selection.
-- Example: `polylogue run --source gemini --stage parse`.
+- Example: `polylogue run --source gemini parse`.
 
 ### Preview Mode
 

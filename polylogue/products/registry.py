@@ -472,6 +472,28 @@ def _resolve_query_class(dotted_path: str) -> type:
     return getattr(mod, class_name)
 
 
+class ProductQueryError(ValueError):
+    """Raised when a registry-backed product query is invalid."""
+
+
+def _build_query(
+    product_type: ProductType,
+    **kwargs: Any,
+) -> Any:
+    """Build and validate the typed query object for a product fetch."""
+    query_cls = _resolve_query_class(product_type.query_class_path)
+    accepted = set(query_cls.model_fields)
+    unknown = sorted(set(kwargs) - accepted)
+    if unknown:
+        unknown_list = ", ".join(unknown)
+        accepted_list = ", ".join(sorted(accepted))
+        raise ProductQueryError(
+            f"Unknown query field(s) for {product_type.name}: {unknown_list}. "
+            f"Accepted fields: {accepted_list}"
+        )
+    return query_cls(**kwargs)
+
+
 def fetch_products(
     product_type: ProductType,
     operations: object,
@@ -484,11 +506,7 @@ def fetch_products(
     """
     from polylogue.sync_bridge import run_coroutine_sync
 
-    query_cls = _resolve_query_class(product_type.query_class_path)
-    # Filter kwargs to only fields the query class accepts
-    accepted = set(query_cls.model_fields)
-    filtered = {k: v for k, v in kwargs.items() if k in accepted}
-    query = query_cls(**filtered)
+    query = _build_query(product_type, **kwargs)
     method = getattr(operations, product_type.operations_method)
     return run_coroutine_sync(method(query))
 
@@ -499,10 +517,7 @@ async def fetch_products_async(
     **kwargs: Any,
 ) -> list[Any]:
     """Async variant of ``fetch_products()``."""
-    query_cls = _resolve_query_class(product_type.query_class_path)
-    accepted = set(query_cls.model_fields)
-    filtered = {k: v for k, v in kwargs.items() if k in accepted}
-    query = query_cls(**filtered)
+    query = _build_query(product_type, **kwargs)
     method = getattr(operations, product_type.operations_method)
     return await method(query)
 
@@ -511,6 +526,7 @@ __all__ = [
     "CliOption",
     "PRODUCT_REGISTRY",
     "ProductField",
+    "ProductQueryError",
     "ProductType",
     "fetch_products",
     "fetch_products_async",

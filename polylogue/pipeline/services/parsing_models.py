@@ -105,11 +105,10 @@ class ParseResult:
         self.processed_ids: set[str] = set()
         self.parse_failures: int = 0
         self._lock = asyncio.Lock()
-        # Tracks conversation IDs whose content changed — used for
-        # deferred session product refresh after all batches complete.
+        # Tracks conversation IDs whose content changed so downstream
+        # materialization can refresh derived session-product rows explicitly.
         self._changed_conversation_ids: list[str] = []
         self.batch_observations: list[dict[str, Any]] = []
-        self.refresh_observation: dict[str, Any] | None = None
 
     async def merge_result(
         self,

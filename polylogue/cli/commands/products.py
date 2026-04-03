@@ -6,9 +6,11 @@ from typing import Any
 
 import click
 
+from polylogue.cli.helper_support import fail
 from polylogue.cli.types import AppEnv
 from polylogue.products.registry import (
     PRODUCT_REGISTRY,
+    ProductQueryError,
     ProductType,
     fetch_products,
     render_product_items,
@@ -66,7 +68,10 @@ def _make_callback(pt: ProductType):
 
     @click.pass_obj
     def callback(env: AppEnv, json_mode: bool = False, **kwargs: Any) -> None:
-        items = fetch_products(pt, env.operations, **kwargs)
+        try:
+            items = fetch_products(pt, env.operations, **kwargs)
+        except ProductQueryError as exc:
+            fail(f"products {pt.resolved_cli_command_name}", str(exc))
         render_product_items(items, pt, json_mode=json_mode)
 
     return callback

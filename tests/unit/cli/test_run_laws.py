@@ -107,7 +107,7 @@ def test_run_sync_once_forwards_arguments_contract(
         patch("builtins.print") as mock_print,
     ):
         mock_run.return_value = result
-        observed = _run_sync_once(cfg, env, stage, source_names, render_format)
+        observed = _run_sync_once(cfg, env, stage, None, source_names, render_format)
 
     assert observed == result
     kwargs = mock_run.call_args.kwargs
@@ -136,6 +136,7 @@ def test_run_sync_once_forwards_plan_snapshot_contract() -> None:
             cfg,
             env,
             "all",
+            None,
             None,
             "html",
             plan_snapshot=MagicMock(timestamp=123, counts={"scan": 1}, sources=[], cursors={}),

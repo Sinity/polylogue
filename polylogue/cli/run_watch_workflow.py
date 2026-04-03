@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Sequence
 
 import click
 
@@ -16,16 +17,35 @@ from .run_display_workflow import display_result
 class WatchDisplayObserver(RunObserver):
     """Print result summary when conversation changes arrive in watch mode."""
 
-    def __init__(self, env, cfg, stage: str, selected_sources: list[str] | None) -> None:
+    def __init__(
+        self,
+        env,
+        cfg,
+        stage: str,
+        selected_sources: list[str] | None,
+        *,
+        display_stage: str | None = None,
+        stage_sequence: Sequence[str] | None = None,
+    ) -> None:
         self._env = env
         self._cfg = cfg
         self._stage = stage
         self._selected_sources = selected_sources
+        self._display_stage = display_stage
+        self._stage_sequence = stage_sequence
 
     def on_completed(self, result) -> None:
         activity_count, _, _ = conversation_activity_counts(result.counts, result.drift)
         if activity_count > 0:
-            display_result(self._env, self._cfg, result, self._stage, self._selected_sources)
+            display_result(
+                self._env,
+                self._cfg,
+                result,
+                self._stage,
+                self._selected_sources,
+                display_stage=self._display_stage,
+                stage_sequence=self._stage_sequence,
+            )
 
 
 class WatchStatusObserver(RunObserver):
