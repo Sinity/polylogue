@@ -17,6 +17,7 @@ from polylogue.pipeline.services.ingest_batch import (
     _RawIngestOutcome,
     _successful_raw_state_update,
     _topo_sort_conversation_entries,
+    _unattributed_batch_elapsed_s,
     _write_conversation,
     refresh_session_products_bulk,
 )
@@ -198,7 +199,7 @@ async def test_refresh_session_products_bulk_dedupes_related_refreshes(
             ],
         )
 
-    refresh_thread_root = AsyncMock(return_value=1)
+    refresh_thread_roots = AsyncMock(return_value=2)
     refresh_aggregates = AsyncMock()
 
     monkeypatch.setattr(
@@ -206,8 +207,8 @@ async def test_refresh_session_products_bulk_dedupes_related_refreshes(
         _fake_apply,
     )
     monkeypatch.setattr(
-        "polylogue.storage.session_product_refresh._refresh_thread_root_async",
-        refresh_thread_root,
+        "polylogue.storage.session_product_refresh._refresh_thread_roots_async",
+        refresh_thread_roots,
     )
     monkeypatch.setattr(
         "polylogue.storage.session_product_refresh.refresh_async_provider_day_aggregates",
@@ -219,9 +220,11 @@ async def test_refresh_session_products_bulk_dedupes_related_refreshes(
         ["conv-1", "conv-2", "conv-3"],
     )
 
-    assert refresh_thread_root.await_count == 2
-    refreshed_roots = sorted(call.args[1] for call in refresh_thread_root.await_args_list)
-    assert refreshed_roots == ["root-a", "root-b"]
+    refresh_thread_roots.assert_awaited_once()
+    thread_args = refresh_thread_roots.await_args
+    assert thread_args.args[0] is fake_conn
+    assert thread_args.args[1] == ["root-a", "root-b"]
+    assert thread_args.kwargs["transaction_depth"] == 1
     refresh_aggregates.assert_awaited_once()
     aggregate_args = refresh_aggregates.await_args
     assert aggregate_args.args[0] is fake_conn
@@ -297,6 +300,25 @@ def test_failed_raw_state_update_combines_parse_and_validation_fields() -> None:
         validation_error="schema mismatch",
         validation_mode="strict",
     )
+
+
+def test_unattributed_batch_elapsed_subtracts_setup_and_teardown() -> None:
+    summary = _IngestBatchSummary(
+        setup_elapsed_s=0.12,
+        result_wait_s=0.8,
+        drain_elapsed_s=0.2,
+        flush_elapsed_s=0.05,
+        commit_elapsed_s=0.04,
+        teardown_elapsed_s=0.31,
+    )
+
+    residual = _unattributed_batch_elapsed_s(
+        elapsed_s=1.7,
+        batch_summary=summary,
+        raw_state_update_elapsed_s=0.08,
+    )
+
+    assert residual == pytest.approx(0.10)
 
 
 @pytest.mark.asyncio

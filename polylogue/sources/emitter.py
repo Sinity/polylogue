@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from io import BytesIO
+from itertools import chain
 from typing import TYPE_CHECKING, Any, BinaryIO
 
 from polylogue.lib.artifact_taxonomy import classify_artifact
@@ -78,21 +79,24 @@ class _ConversationEmitter:
 
         if is_jsonl:
             stream_start = self._capture_stream_start(handle) if pre_read_bytes is None else None
-            if stream_start is not None:
-                sniff_payloads = list(_iter_json_stream(handle, stream_name))
-                sniff_provider = detect_provider(sniff_payloads) or self._ctx.provider_hint
+            if (
+                pre_read_bytes is None
+                and stream_start is None
+                and self._ctx.capture_raw
+                and precomputed_raw is None
+            ):
+                sniff_bytes = handle.read()
+                sniff_provider, sniff_payloads, grouped_payloads = self._sniff_jsonl_payloads(
+                    BytesIO(sniff_bytes),
+                    stream_name,
+                )
                 if sniff_provider in GROUP_PROVIDERS:
-                    grouped_bytes = None
-                    grouped_handle = handle
-                    if self._ctx.capture_raw:
-                        self._restore_stream_start(handle, stream_start)
-                        grouped_bytes = handle.read()
-                        grouped_handle = BytesIO(grouped_bytes)
                     yield from self._emit_grouped(
-                        grouped_handle,
+                        BytesIO(sniff_bytes),
                         stream_name,
-                        grouped_bytes,
-                        precomputed_payloads=sniff_payloads,
+                        sniff_bytes,
+                        precomputed_raw=precomputed_raw,
+                        precomputed_payloads=grouped_payloads,
                     )
                     return
                 yield from self._emit_individual_payloads(
@@ -101,15 +105,24 @@ class _ConversationEmitter:
                 )
                 return
 
-            sniff_bytes = pre_read_bytes if pre_read_bytes is not None else handle.read()
-            sniff_payloads = list(_iter_json_stream(BytesIO(sniff_bytes), stream_name))
-            sniff_provider = detect_provider(sniff_payloads) or self._ctx.provider_hint
+            sniff_handle = BytesIO(pre_read_bytes) if pre_read_bytes is not None else handle
+            sniff_provider, sniff_payloads, grouped_payloads = self._sniff_jsonl_payloads(
+                sniff_handle,
+                stream_name,
+            )
             if sniff_provider in GROUP_PROVIDERS:
+                grouped_bytes = pre_read_bytes
+                grouped_handle = sniff_handle
+                if grouped_bytes is None and self._ctx.capture_raw and precomputed_raw is None:
+                    self._restore_stream_start(handle, stream_start)
+                    grouped_bytes = handle.read()
+                    grouped_handle = BytesIO(grouped_bytes)
                 yield from self._emit_grouped(
-                    BytesIO(sniff_bytes),
+                    grouped_handle,
                     stream_name,
-                    sniff_bytes,
-                    precomputed_payloads=sniff_payloads,
+                    grouped_bytes,
+                    precomputed_raw=precomputed_raw,
+                    precomputed_payloads=grouped_payloads,
                 )
                 return
             yield from self._emit_individual_payloads(
@@ -221,6 +234,28 @@ class _ConversationEmitter:
             except Exception:
                 logger.exception("Error processing payload from %s", stream_name)
                 raise
+
+    def _sniff_jsonl_payloads(
+        self,
+        handle: BinaryIO,
+        stream_name: str,
+    ) -> tuple[Provider, Iterable[Any], list[Any] | None]:
+        payload_iter = iter(_iter_json_stream(handle, stream_name))
+        buffered_payloads: list[Any] = []
+        for payload in payload_iter:
+            buffered_payloads.append(payload)
+            detected_provider = detect_provider(payload)
+            if detected_provider is None:
+                continue
+            if detected_provider in GROUP_PROVIDERS:
+                buffered_payloads.extend(payload_iter)
+                return detected_provider, buffered_payloads, buffered_payloads
+            return detected_provider, chain(buffered_payloads, payload_iter), None
+
+        detected_provider = detect_provider(buffered_payloads) or self._ctx.provider_hint
+        if detected_provider in GROUP_PROVIDERS:
+            return detected_provider, buffered_payloads, buffered_payloads
+        return detected_provider, iter(buffered_payloads), None
 
     def _capture_stream_start(self, handle: BinaryIO) -> int | None:
         seekable = getattr(handle, "seekable", None)

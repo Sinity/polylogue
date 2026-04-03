@@ -154,15 +154,14 @@ def iter_source_raw_data(
                         entry_provider_hint = _zip_entry_provider_hint(info.filename, provider_hint)
                         if entry_provider_hint in GROUP_PROVIDERS:
                             with zf.open(info.filename) as handle:
-                                raw_bytes = handle.read()
+                                blob_hash, blob_size = blob_store.write_from_fileobj(handle)
                             _observe_acquisition(
                                 observation_callback,
-                                phase="zip-entry-buffered",
+                                phase="zip-entry-streamed",
                                 source_path=entry_path,
                                 provider_hint=entry_provider_hint,
-                                blob_size=len(raw_bytes),
+                                blob_size=blob_size,
                             )
-                            blob_hash, blob_size = blob_store.write_from_bytes(raw_bytes)
                             yield RawConversationData(
                                 raw_bytes=b"",
                                 source_path=entry_path,
@@ -172,7 +171,6 @@ def iter_source_raw_data(
                                 blob_hash=blob_hash,
                                 blob_size=blob_size,
                             )
-                            del raw_bytes
                             continue
 
                         detected_provider = entry_provider_hint
@@ -248,15 +246,14 @@ def iter_source_raw_data(
                         # grouped, non-conversation metadata, or a single
                         # conversation document.
                         with zf.open(info.filename) as handle:
-                            raw_bytes = handle.read()
+                            blob_hash, blob_size = blob_store.write_from_fileobj(handle)
                         _observe_acquisition(
                             observation_callback,
-                            phase="zip-entry-buffered",
+                            phase="zip-entry-streamed",
                             source_path=entry_path,
                             provider_hint=detected_provider,
-                            blob_size=len(raw_bytes),
+                            blob_size=blob_size,
                         )
-                        blob_hash, blob_size = blob_store.write_from_bytes(raw_bytes)
                         yield RawConversationData(
                             raw_bytes=b"",
                             source_path=entry_path,
@@ -266,7 +263,6 @@ def iter_source_raw_data(
                             blob_hash=blob_hash,
                             blob_size=blob_size,
                         )
-                        del raw_bytes
             else:
                 # Stream-hash the file to blob store — never loads full
                 # content into Python memory. A 1.5 GB file is hashed and

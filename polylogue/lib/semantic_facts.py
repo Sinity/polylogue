@@ -69,6 +69,8 @@ def build_projection_semantic_facts(projection) -> ProjectionSemanticFacts:
 
 def build_message_semantic_facts(message) -> MessageSemanticFacts:
     tool_calls = message_tool_calls(message)
+    action_events = build_action_events(message, tool_calls)
+    tool_category_counts = Counter(action.kind.value for action in action_events)
     return MessageSemanticFacts(
         message_id=str(message.id),
         role=normalized_role_label(message.role),
@@ -85,7 +87,8 @@ def build_message_semantic_facts(message) -> MessageSemanticFacts:
         is_tool_use=message.is_tool_use,
         is_substantive=message.is_substantive,
         tool_calls=tool_calls,
-        action_events=build_action_events(message, tool_calls),
+        action_events=action_events,
+        tool_category_counts=sorted_counts(dict(tool_category_counts)),
         reasoning_traces=message_reasoning_traces(message),
     )
 

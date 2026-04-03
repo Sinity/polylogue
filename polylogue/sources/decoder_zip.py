@@ -9,6 +9,7 @@ from typing import Any
 
 from polylogue.lib.artifact_taxonomy import classify_artifact_path
 from polylogue.logging import get_logger
+from polylogue.storage.blob_store import get_blob_store
 from polylogue.types import Provider
 
 from .cursor import _record_cursor_failure
@@ -129,8 +130,21 @@ def process_zip(
                 session_index={},
             )
             emitter = _ConversationEmitter(ctx)
+            precomputed_raw: RawConversationData | None = None
+            if capture_raw and entry_should_group:
+                with zf.open(name) as handle:
+                    blob_hash, blob_size = get_blob_store().write_from_fileobj(handle)
+                precomputed_raw = RawConversationData(
+                    raw_bytes=b"",
+                    source_path=f"{zip_path}:{name}",
+                    source_index=None,
+                    file_mtime=file_mtime,
+                    provider_hint=entry_provider_hint,
+                    blob_hash=blob_hash,
+                    blob_size=blob_size,
+                )
             with zf.open(name) as handle:
-                yield from emitter.emit(handle, name)
+                yield from emitter.emit(handle, name, precomputed_raw=precomputed_raw)
 
 
 __all__ = [

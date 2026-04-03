@@ -85,6 +85,7 @@ class _IngestBatchSummary:
     max_result_bytes: int = 0
     max_result_raw_id: str | None = None
     elapsed_s: float = 0.0
+    setup_elapsed_s: float = 0.0
     max_current_rss_mb: float | None = None
     result_wait_s: float = 0.0
     drain_elapsed_s: float = 0.0
@@ -92,6 +93,7 @@ class _IngestBatchSummary:
     max_write_elapsed_s: float = 0.0
     flush_elapsed_s: float = 0.0
     commit_elapsed_s: float = 0.0
+    teardown_elapsed_s: float = 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -613,9 +615,11 @@ def _process_ingest_batch_sync(
     summary.total_blob_mb = sum(r.blob_size for r in raw_records) / (1024 * 1024)
 
     t_start = time.perf_counter()
+    setup_started = time.perf_counter()
     conn = _open_sync_connection(db_path)
     suspend_fts_triggers_sync(conn)
     conn.execute("BEGIN IMMEDIATE")
+    summary.setup_elapsed_s = time.perf_counter() - setup_started
 
     materialized_ids: set[str] = set()
     pending_by_parent: dict[str, list[tuple[str, ConversationData]]] = {}
@@ -635,6 +639,7 @@ def _process_ingest_batch_sync(
             try:
                 ir = next(result_iterator)
             except StopIteration:
+                summary.teardown_elapsed_s = time.perf_counter() - wait_started
                 break
             summary.result_wait_s += time.perf_counter() - wait_started
             _record_outcome(summary, ir)
@@ -682,6 +687,24 @@ def _process_ingest_batch_sync(
 
     summary.elapsed_s = time.perf_counter() - t_start
     return summary
+
+
+def _unattributed_batch_elapsed_s(
+    *,
+    elapsed_s: float,
+    batch_summary: _IngestBatchSummary,
+    raw_state_update_elapsed_s: float,
+) -> float:
+    accounted_elapsed_s = (
+        batch_summary.setup_elapsed_s
+        + batch_summary.result_wait_s
+        + batch_summary.drain_elapsed_s
+        + batch_summary.flush_elapsed_s
+        + batch_summary.commit_elapsed_s
+        + batch_summary.teardown_elapsed_s
+        + raw_state_update_elapsed_s
+    )
+    return max(elapsed_s - accounted_elapsed_s, 0.0)
 
 
 # ---------------------------------------------------------------------------
@@ -788,20 +811,20 @@ async def process_ingest_batch(
         "skipped_raw_count": len(batch_summary.skipped_raw_ids),
         "elapsed_ms": round(elapsed_s * 1000, 1),
         "sync_ingest_elapsed_ms": round(batch_summary.elapsed_s * 1000, 1),
+        "sync_setup_elapsed_ms": round(batch_summary.setup_elapsed_s * 1000, 1),
         "result_wait_elapsed_ms": round(batch_summary.result_wait_s * 1000, 1),
         "drain_elapsed_ms": round(batch_summary.drain_elapsed_s * 1000, 1),
         "write_elapsed_ms": round(batch_summary.write_elapsed_s * 1000, 1),
         "max_write_elapsed_ms": round(batch_summary.max_write_elapsed_s * 1000, 1),
         "flush_elapsed_ms": round(batch_summary.flush_elapsed_s * 1000, 1),
         "commit_elapsed_ms": round(batch_summary.commit_elapsed_s * 1000, 1),
+        "executor_teardown_elapsed_ms": round(batch_summary.teardown_elapsed_s * 1000, 1),
         "raw_state_update_elapsed_ms": round(raw_state_update_elapsed_s * 1000, 1),
     }
-    residual_elapsed_s = elapsed_s - (
-        batch_summary.result_wait_s
-        + batch_summary.drain_elapsed_s
-        + batch_summary.flush_elapsed_s
-        + batch_summary.commit_elapsed_s
-        + raw_state_update_elapsed_s
+    residual_elapsed_s = _unattributed_batch_elapsed_s(
+        elapsed_s=elapsed_s,
+        batch_summary=batch_summary,
+        raw_state_update_elapsed_s=raw_state_update_elapsed_s,
     )
     observation["unattributed_elapsed_ms"] = round(max(residual_elapsed_s, 0.0) * 1000, 1)
     if rss_start_mb is not None:
@@ -921,7 +944,7 @@ async def refresh_session_products_bulk(
     try:
         from polylogue.storage.session_product_refresh import (
             _apply_session_product_conversation_updates_async,
-            _refresh_thread_root_async,
+            _refresh_thread_roots_async,
             refresh_async_provider_day_aggregates,
         )
 
@@ -935,12 +958,11 @@ async def refresh_session_products_bulk(
             update_elapsed = time.perf_counter() - t_updates
             t_threads = time.perf_counter()
             thread_root_ids = update.thread_root_ids
-            for root_id in sorted(thread_root_ids):
-                await _refresh_thread_root_async(
-                    conn,
-                    root_id,
-                    transaction_depth=1,
-                )
+            await _refresh_thread_roots_async(
+                conn,
+                sorted(thread_root_ids),
+                transaction_depth=1,
+            )
             thread_elapsed = time.perf_counter() - t_threads
             t_aggregates = time.perf_counter()
             affected_groups = update.affected_groups
