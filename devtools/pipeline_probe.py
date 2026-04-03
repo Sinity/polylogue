@@ -46,7 +46,7 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 _SOURCE_BACKED_PROBE_STAGE_SEQUENCES: dict[str, tuple[str, ...]] = {
     "acquire": ("acquire",),
     "schema": ("acquire", "schema"),
-    "parse": ("acquire", "parse", "index"),
+    "parse": ("acquire", "parse"),
     "materialize": ("acquire", "parse", "materialize"),
     "render": ("acquire", "parse", "render"),
     "index": ("acquire", "parse", "index"),

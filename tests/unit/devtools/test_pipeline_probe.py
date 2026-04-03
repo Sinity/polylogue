@@ -155,12 +155,12 @@ async def test_run_probe_emits_real_pipeline_summary(tmp_path) -> None:
     ingest_details = summary["run_payload"]["metrics"]["stages"]["ingest"]["details"]["batch_observations"]
 
     assert summary["probe"]["provider"] == "chatgpt"
-    assert summary["probe"]["stage_sequence"] == ["acquire", "parse", "index"]
+    assert summary["probe"]["stage_sequence"] == ["acquire", "parse"]
     assert summary["result"]["run_path"] is not None
     assert summary["run_payload"]["metrics"]["total_duration_ms"] is not None
     assert summary["run_payload"]["metrics"]["peak_rss_self_mb"] is not None
     assert summary["run_payload"]["metrics"]["peak_rss_children_mb"] is not None
-    assert "index" in summary["run_payload"]["metrics"]["stages"]
+    assert "index" not in summary["run_payload"]["metrics"]["stages"]
     assert isinstance(acquisition_details, dict)
     assert ingest_details["batch_count"] == 1
     assert ingest_details["max_current_rss_mb"] is not None
@@ -195,7 +195,7 @@ async def test_run_probe_can_stage_real_source_subset(tmp_path) -> None:
 
     assert summary["probe"]["input_mode"] == "source-subset"
     assert summary["probe"]["source_name"] == "inbox"
-    assert summary["probe"]["stage_sequence"] == ["acquire", "parse", "index"]
+    assert summary["probe"]["stage_sequence"] == ["acquire", "parse"]
     assert summary["source_inputs"]["input_count"] == 2
     assert summary["source_inputs"]["staged_file_count"] == 2
     assert summary["source_inputs"]["total_bytes"] == total_bytes

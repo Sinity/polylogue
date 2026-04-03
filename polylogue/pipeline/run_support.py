@@ -22,7 +22,7 @@ RUN_STAGE_CHOICES: tuple[str, ...] = (
 )
 RUN_STAGE_SEQUENCES: dict[str, tuple[str, ...]] = {
     "acquire": ("acquire",),
-    "parse": ("parse", "index"),
+    "parse": ("parse",),
     "materialize": ("materialize",),
     "render": ("render",),
     "index": ("index",),

@@ -65,7 +65,7 @@ def _write_chatgpt_export(path: Path, conversation_id: str, *, text: str = "Test
 
 def test_expand_requested_stage_contract() -> None:
     assert expand_requested_stage("acquire") == ("acquire",)
-    assert expand_requested_stage("parse") == ("parse", "index")
+    assert expand_requested_stage("parse") == ("parse",)
     assert expand_requested_stage("reprocess") == ("parse", "materialize", "render", "index")
     assert expand_requested_stage("all") == ("acquire", "parse", "materialize", "render", "index")
 
@@ -278,7 +278,7 @@ class TestRunSourcesIntegration:
             assert result.counts["conversations"] >= 1
             assert result.counts.get("materialized", 0) == 0
             assert result.counts.get("rendered", 0) == 0
-            assert result.indexed is True
+            assert result.indexed is False
         elif stage == "materialize":
             assert result.counts["conversations"] == 0
             assert result.counts.get("materialized", 0) >= 1
@@ -505,11 +505,12 @@ class TestRunSourcesIntegration:
                 "polylogue.pipeline.run_execution.execute_index_stage",
                 new_callable=AsyncMock,
                 return_value=IndexStageOutcome(indexed=True, item_count=1),
-            ),
+            ) as mock_index,
         ):
             result = asyncio.run(run_sources(config=config, stage="parse", source_names=["scoped"]))
 
         assert mock_ingest.await_count == 1
+        mock_index.assert_not_awaited()
         assert mock_ingest.await_args.kwargs["skip_acquire"] is True
         assert result.counts["acquired"] == 0
 
