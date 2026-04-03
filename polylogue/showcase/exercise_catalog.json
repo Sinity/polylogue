@@ -55,10 +55,11 @@
       "tier": 0
     },
     {
-      "name": "help-generate",
+      "name": "help-qa-generate",
       "group": "structural",
-      "description": "Generate subcommand help",
+      "description": "QA generate subcommand help",
       "args": [
+        "qa",
         "generate",
         "--help"
       ],

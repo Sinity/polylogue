@@ -1,4 +1,4 @@
-Usage: python -m polylogue qa [OPTIONS]
+Usage: python -m polylogue qa [OPTIONS] COMMAND [ARGS]...
 
   Run composable QA: schema audit, exercises, and invariant checks.
 
@@ -14,6 +14,8 @@ Usage: python -m polylogue qa [OPTIONS]
     polylogue qa --skip invariants            # Skip invariant checks
     polylogue qa --snapshot release-v3        # QA + archive results
     polylogue qa --snapshot-from ./qa_outputs # Archive existing directory
+    polylogue qa generate                     # Generate synthetic data
+    polylogue qa generate --seed              # Full demo environment
 
 Options:
   --synthetic / --live            Data source: synthetic (default) or live
@@ -42,3 +44,6 @@ Options:
   --snapshot-from DIRECTORY       Archive an existing output directory (skips
                                   QA execution)
   -h, --help                      Show this message and exit.
+
+Commands:
+  generate  Generate synthetic conversations for demos, testing, and...

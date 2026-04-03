@@ -217,7 +217,6 @@
     completions  Generate shell completion scripts.
     dashboard    Launch the Mission Control TUI dashboard.
     embed        Generate semantic embeddings for conversations.
-    generate     Generate synthetic conversations for demos, testing, and...
     mcp          Start the MCP server for AI assistant integration.
     products     Inspect durable archive data products.
     qa           Run composable QA: schema audit, exercises, and invariant...
@@ -392,8 +391,6 @@
     dashboard    Launch the Mission Control TUI dashboard.
     embed        Generate semantic embeddings for conversation
   s.
-    generate     Generate synthetic conversations for demos, t
-  esting, and...
     mcp          Start the MCP server for AI assistant integra
   tion.
     products     Inspect durable archive data products.
@@ -522,7 +519,6 @@
     completions  Generate shell completion scripts.
     dashboard    Launch the Mission Control TUI dashboard.
     embed        Generate semantic embeddings for conversations.
-    generate     Generate synthetic conversations for demos, testing, and...
     mcp          Start the MCP server for AI assistant integration.
     products     Inspect durable archive data products.
     qa           Run composable QA: schema audit, exercises, and invariant...

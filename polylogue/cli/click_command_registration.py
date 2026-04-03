@@ -9,7 +9,6 @@ from polylogue.cli.commands.check import check_command
 from polylogue.cli.commands.completions import completions_command
 from polylogue.cli.commands.dashboard import dashboard_command
 from polylogue.cli.commands.embed import embed_command
-from polylogue.cli.commands.generate import generate_command
 from polylogue.cli.commands.mcp import mcp_command
 from polylogue.cli.commands.products import products_command
 from polylogue.cli.commands.qa import qa_command
@@ -31,7 +30,6 @@ ROOT_COMMANDS: tuple[click.Command, ...] = (
     products_command,
     site_command,
     tags_command,
-    generate_command,
     qa_command,
     schema_command,
 )

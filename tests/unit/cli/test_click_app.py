@@ -403,7 +403,6 @@ class TestCliMetadata:
             "auth",
             "completions",
             "dashboard",
-            "generate",
             "embed",
             "products",
             "qa",
@@ -424,7 +423,7 @@ class TestGenerateSeed:
 
     def test_seed_creates_database(self, cli_runner, tmp_path):
         result = cli_runner.invoke(click_cli, [
-            "generate", "--seed", "-o", str(tmp_path),
+            "qa", "generate", "--seed", "-o", str(tmp_path),
             "-n", "1", "-p", "chatgpt",
         ])
         assert result.exit_code == 0
@@ -442,7 +441,7 @@ class TestGenerateSeed:
         )())):
             result = cli_runner.invoke(
                 click_cli,
-                ["generate", "--seed", "-o", str(tmp_path), "-n", "1", "-p", "chatgpt"],
+                ["qa", "generate", "--seed", "-o", str(tmp_path), "-n", "1", "-p", "chatgpt"],
             )
 
         assert result.exit_code == 0
@@ -450,7 +449,7 @@ class TestGenerateSeed:
         assert os.environ["POLYLOGUE_ARCHIVE_ROOT"] == "/tmp/original-archive"
 
     def test_env_only_requires_seed(self, cli_runner):
-        result = cli_runner.invoke(click_cli, ["generate", "--env-only"])
+        result = cli_runner.invoke(click_cli, ["qa", "generate", "--env-only"])
         assert result.exit_code != 0
         assert "requires --seed" in result.output.lower() or "error" in result.output.lower()
 
