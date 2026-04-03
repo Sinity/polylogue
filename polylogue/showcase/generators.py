@@ -77,7 +77,7 @@ def generate_filter_exercises(cli_group: click.Group) -> list[Exercise]:
     # Individual smoke: each flag alone
     for flag in flags:
         dims = query_read(complexity="basic")
-        args = ["--list", "-n", "3"] + _make_flag_args(flag)
+        args = _make_flag_args(flag) + ["list", "-n", "3"]
         exercises.append(Exercise(
             name=f"gen-filter-{flag['name']}",
             group="generated-filters",
@@ -99,7 +99,7 @@ def generate_filter_exercises(cli_group: click.Group) -> list[Exercise]:
             continue
 
         dims = query_read(complexity="combinatorial")
-        args = ["--list", "-n", "3"] + _make_flag_args(a) + _make_flag_args(b)
+        args = _make_flag_args(a) + _make_flag_args(b) + ["list", "-n", "3"]
         pair_name = f"gen-filter-{a['name']}+{b['name']}"
         exercises.append(Exercise(
             name=pair_name,
@@ -142,43 +142,40 @@ def generate_command_help_exercises() -> list[Exercise]:
     return exercises
 
 
-def product_json_exercise_names() -> set[str]:
-    """Return the canonical showcase exercise names for products JSON coverage."""
+def _has_json_flag(cmd: click.Command) -> bool:
+    """Check if a Click command has a --json flag."""
+    return any(
+        isinstance(param, click.Option) and "--json" in param.opts
+        for param in cmd.params
+    )
+
+
+def json_contract_exercise_names() -> set[str]:
+    """Return the canonical showcase exercise names for all commands with --json."""
     return {
-        f"products-{'-'.join(command_path.path[1:])}-json"
-        for command_path in inventory_command_paths()
-        if len(command_path.path) >= 2
-        and command_path.path[0] == "products"
-        and any(
-            isinstance(param, click.Option) and "--json" in param.opts
-            for param in command_path.command.params
-        )
+        f"json-{'-'.join(cp.path)}"
+        for cp in inventory_command_paths()
+        if _has_json_flag(cp.command)
     }
 
 
-def generate_products_json_exercises() -> list[Exercise]:
-    """Generate seeded JSON exercises for registry-backed product commands."""
+def generate_json_contract_exercises() -> list[Exercise]:
+    """Generate JSON contract exercises for all commands with --json flags."""
     exercises: list[Exercise] = []
-    for command_path in inventory_command_paths():
-        if len(command_path.path) < 2 or command_path.path[0] != "products":
+    for cp in inventory_command_paths():
+        if not _has_json_flag(cp.command):
             continue
-        if not any(
-            isinstance(param, click.Option) and "--json" in param.opts
-            for param in command_path.command.params
-        ):
-            continue
-        display_name = command_path.display_name
-        exercise_name = f"products-{'-'.join(command_path.path[1:])}-json"
+        needs_data = cp.path[0] == "products"
         exercises.append(
             Exercise(
-                name=exercise_name,
+                name=f"json-{'-'.join(cp.path)}",
                 group="subcommands",
-                description=f"{display_name} JSON output",
-                args=[*command_path.path, "--json"],
+                description=f"{cp.display_name} JSON contract",
+                args=[*cp.path, "--json"],
                 validation=Validation(stdout_is_valid_json=True),
-                needs_data=True,
-                tier=1,
-                env="seeded",
+                needs_data=needs_data,
+                tier=1 if needs_data else 0,
+                env="seeded" if needs_data else "any",
                 output_ext=".json",
                 artifact_class="json",
             )
@@ -216,8 +213,8 @@ def generate_format_exercises() -> list[Exercise]:
 
     modes = [
         ("latest", ["--latest"]),
-        ("list", ["--list", "-n", "1"]),
-        ("count", ["--count"]),
+        ("list", ["list", "-n", "1"]),
+        ("count", ["count"]),
     ]
 
     for fmt, spec in _FORMAT_SPECS.items():
@@ -227,7 +224,10 @@ def generate_format_exercises() -> list[Exercise]:
                 continue
 
             dims = query_read(output_format=fmt, complexity="basic")
-            args = mode_args + ["-f", fmt]
+            if mode_name == "list":
+                args = mode_args + ["-f", fmt]
+            else:
+                args = mode_args + ["-f", fmt]
             validation_kwargs: dict[str, Any] = {}
 
             if spec["well_formed"]:
@@ -295,7 +295,7 @@ def generate_all_exercises(cli_group: click.Group | None = None) -> list[Exercis
     if cli_group is not None:
         exercises.extend(generate_filter_exercises(cli_group))
     exercises.extend(generate_command_help_exercises())
-    exercises.extend(generate_products_json_exercises())
+    exercises.extend(generate_json_contract_exercises())
     exercises.extend(generate_format_exercises())
     exercises.extend(generate_schema_exercises())
     return exercises
@@ -308,8 +308,8 @@ __all__ = [
     "generate_format_exercises",
     "command_help_exercise_names",
     "generate_command_help_exercises",
-    "generate_products_json_exercises",
+    "generate_json_contract_exercises",
     "generate_schema_exercises",
     "inventory_command_paths",
-    "product_json_exercise_names",
+    "json_contract_exercise_names",
 ]

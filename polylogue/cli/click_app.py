@@ -90,12 +90,6 @@ def cli(
     # Output
     output: str | None,
     output_format: str | None,
-    fields: str | None,
-    list_mode: bool,
-    stats_only: bool,
-    count_only: bool,
-    stats_by: str | None,
-    open_result: bool,
     transform: str | None,
     # Streaming
     stream: bool,
@@ -103,9 +97,6 @@ def cli(
     # Modifiers
     set_meta: tuple[tuple[str, str], ...],
     add_tag: tuple[str, ...],
-    delete_matched: bool,
-    dry_run: bool,
-    force: bool,
     # Global
     plain: bool,
     verbose: bool,
@@ -119,24 +110,30 @@ def cli(
         polylogue --latest --output browser
 
     \b
+    Verbs (actions on matched conversations):
+        polylogue "error" -p claude-ai --since 2025-01 list
+        polylogue --has thinking --sort tokens list --limit 10
+        polylogue -p chatgpt count
+        polylogue --provider codex stats --by provider
+        polylogue --latest open
+        polylogue "urgent" --tag review delete --dry-run
+        polylogue list --format json
+
+    \b
     Combined filters:
-        polylogue "error" -p claude-ai --since 2025-01 --list
-        polylogue --has thinking --sort tokens --limit 10
-        polylogue -t important --stats-by provider
-        polylogue --path /realm/project/polylogue/README.md --action file_read --list
-        polylogue --action search --action file_edit --list
-        polylogue --action-sequence file_read,file_edit,shell --list
-        polylogue --action-text "pytest -q" --list
+        polylogue --path /realm/project/polylogue/README.md --action file_read list
+        polylogue --action search --action file_edit list
+        polylogue --action-sequence file_read,file_edit,shell list
+        polylogue --action-text "pytest -q" list
         polylogue "pytest -q tests/unit/core/test_semantic_facts.py" --retrieval-lane actions --limit 5
-        polylogue --action other --stats-by tool --format json
-        polylogue --stats-by project --provider claude-code --since 2026-01-01 --format json
-        polylogue --tool bash --exclude-tool read --list
+        polylogue --action other stats --by tool --format json
+        polylogue stats --by project --provider claude-code --since 2026-01-01 --format json
+        polylogue --tool bash --exclude-tool read list
         polylogue --similar "sqlite locking bug in parser" --limit 5
 
     \b
     Modifiers (write operations):
-        polylogue "urgent" --add-tag review --dry-run
-        polylogue -p old --delete --dry-run
+        polylogue "urgent" --add-tag review
 
     Run `polylogue <command> --help` for subcommand details.
     """
@@ -154,6 +151,11 @@ def cli(
 
 
 register_root_commands(cli)
+
+from polylogue.cli.query_verbs import QUERY_VERBS
+
+for _verb in QUERY_VERBS:
+    cli.add_command(_verb)
 
 
 def main() -> None:

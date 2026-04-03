@@ -134,22 +134,8 @@ OUTPUT_OPTION_DECORATORS: tuple[Callable[[ClickCallable], ClickCallable], ...] =
         type=click.Choice(
             ["markdown", "json", "html", "obsidian", "org", "yaml", "plaintext", "csv"]
         ),
-        help="Output format",
+        help="Output format (for --latest, --stream, or verb output)",
     ),
-    click.option(
-        "--fields",
-        help="Fields for list/json: id, title, provider, date, messages, words, tags, summary",
-    ),
-    click.option("--list", "list_mode", is_flag=True, help="Force list format"),
-    click.option("--stats", "stats_only", is_flag=True, help="Only statistics, no content"),
-    click.option("--count", "count_only", is_flag=True, help="Print matched count and exit"),
-    click.option(
-        "--stats-by",
-        "stats_by",
-        type=click.Choice(["provider", "month", "year", "day", "action", "tool", "project", "work-kind"]),
-        help="Aggregate statistics by dimension",
-    ),
-    click.option("--open", "open_result", is_flag=True, help="Open result in browser/editor"),
     click.option(
         "--transform",
         type=click.Choice(["strip-tools", "strip-thinking", "strip-all"]),
@@ -169,9 +155,6 @@ STREAMING_OPTION_DECORATORS: tuple[Callable[[ClickCallable], ClickCallable], ...
 MODIFIER_OPTION_DECORATORS: tuple[Callable[[ClickCallable], ClickCallable], ...] = (
     click.option("--set", "set_meta", nargs=2, multiple=True, help="Set metadata key value"),
     click.option("--add-tag", multiple=True, help="Add tags (comma-separated)"),
-    click.option("--delete", "delete_matched", is_flag=True, help="Delete matched (requires filter)"),
-    click.option("--dry-run", is_flag=True, help="Preview changes without executing"),
-    click.option("--force", is_flag=True, help="Skip confirmation for bulk operations"),
 )
 
 GLOBAL_OPTION_DECORATORS: tuple[Callable[[ClickCallable], ClickCallable], ...] = (

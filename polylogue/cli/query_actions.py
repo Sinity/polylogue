@@ -48,7 +48,7 @@ async def resolve_stream_target(
         resolved = await repo.resolve_id(query_terms[0])
         if not resolved:
             click.echo(f"No conversation found matching: {query_terms[0]}", err=True)
-            click.echo("Hint: use --list to browse conversations, or --latest for most recent", err=True)
+            click.echo("Hint: use `list` to browse conversations, or --latest for most recent", err=True)
             raise SystemExit(2)
         return str(resolved)
 

@@ -51,7 +51,7 @@ def no_results(
         click.echo("No conversations matched filters:", err=True)
         for item in filters:
             click.echo(f"  {item}", err=True)
-        click.echo("Hint: try broadening your filters or use --list to browse", err=True)
+        click.echo("Hint: try broadening your filters or use `list` to browse", err=True)
     else:
         click.echo("No conversations matched.", err=True)
     raise SystemExit(exit_code)
@@ -255,7 +255,7 @@ def build_query_execution_plan(params: Mapping[str, object]) -> QueryExecutionPl
 
     if action == QueryAction.DELETE and not selection.has_filters():
         raise QueryPlanError(
-            "--delete requires at least one filter to prevent accidental deletion of the entire archive."
+            "delete requires at least one filter to prevent accidental deletion of the entire archive."
         )
 
     return QueryExecutionPlan(
@@ -299,6 +299,8 @@ def _iter_option_values(args: list[str], start: int, nargs: int) -> Iterable[str
 
 
 def _split_query_mode_args(group: click.Group, args: list[str]) -> tuple[list[str], tuple[str, ...], bool]:
+    from polylogue.cli.query_verbs import VERB_NAMES
+
     option_arity = _option_arity(group)
     option_args: list[str] = []
     query_terms: list[str] = []
@@ -318,8 +320,13 @@ def _split_query_mode_args(group: click.Group, args: list[str]) -> tuple[list[st
             option_args.extend(_iter_option_values(args, index, nargs))
             index += nargs + 1
             continue
-        if not query_terms and not query_mode_locked and arg in group.commands:
+        # Non-verb subcommands (run, doctor, etc.) only recognized at start
+        if not query_terms and not query_mode_locked and arg in group.commands and arg not in VERB_NAMES:
             return args, (), True
+        # Verb commands recognized at any position (even after filters/query terms)
+        if arg in VERB_NAMES:
+            verb_args = option_args + [arg] + list(args[index + 1 :])
+            return verb_args, tuple(query_terms), True
         query_terms.append(arg)
         index += 1
 
