@@ -1,0 +1,6 @@
+Usage: python -m polylogue count [OPTIONS]
+
+  Print count of matched conversations.
+
+Options:
+  -h, --help  Show this message and exit.

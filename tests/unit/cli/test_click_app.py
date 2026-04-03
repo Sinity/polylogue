@@ -182,14 +182,23 @@ class TestQueryFirstGroupParseArgs:
         _, params = mock_execute.call_args[0]
         assert set(params.get("query", ())) == {"hello", "world"}
 
-    def test_query_option_before_command_name_stays_query_mode(self, cli_runner):
+    def test_query_option_before_bare_word_stays_query_mode(self, cli_runner):
+        """Filter options followed by a bare word (not a subcommand name) stay in query mode."""
         from polylogue.cli.click_app import cli
 
         with patch("polylogue.cli.query.execute_query") as mock_execute:
-            cli_runner.invoke(cli, ["-p", "claude-ai", "doctor", "--plain"], catch_exceptions=False)
+            cli_runner.invoke(cli, ["-p", "claude-ai", "my_search", "--plain"], catch_exceptions=False)
         _, params = mock_execute.call_args[0]
         assert params.get("provider") == "claude-ai"
-        assert params.get("query") == ("doctor",)
+        assert params.get("query") == ("my_search",)
+
+    def test_filter_option_before_subcommand_routes_to_subcommand(self, cli_runner):
+        """Filter options followed by a known subcommand route to that subcommand."""
+        from polylogue.cli.click_app import cli
+
+        result = cli_runner.invoke(cli, ["--plain", "-p", "claude-ai", "products", "--help"], catch_exceptions=False)
+        assert result.exit_code == 0
+        assert "products" in result.output.lower()
 
     def test_option_args_preserved(self, cli_runner):
         from polylogue.cli.click_app import cli

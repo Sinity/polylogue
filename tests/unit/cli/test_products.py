@@ -6,6 +6,7 @@ import json
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+import click
 import pytest
 from click.testing import CliRunner
 
@@ -128,10 +129,10 @@ def test_products_enrichments_json(cli_workspace):
     result = runner.invoke(
         cli,
         [
-            "products",
-            "enrichments",
             "--provider",
             "claude-code",
+            "products",
+            "enrichments",
             "--session-date-since",
             "2026-03-01",
             "--json",
@@ -154,9 +155,13 @@ def test_products_enrichments_json(cli_workspace):
 def test_products_callback_rejects_unknown_query_fields() -> None:
     callback = _make_callback(get_product_type("session_enrichments"))
     env = SimpleNamespace(operations=MagicMock())
+    # Build a minimal Click context to satisfy @click.pass_context
+    mock_ctx = click.Context(click.Command("enrichments"))
+    mock_ctx.obj = env
+    # No parent — root filter inheritance is a no-op
 
     with pytest.raises(SystemExit, match="products enrichments: Unknown query field\\(s\\) for session_enrichments: refined_work_kind"):
-        callback.__wrapped__(env, json_mode=False, refined_work_kind="planning")
+        callback.__wrapped__(mock_ctx, json_mode=False, refined_work_kind="planning")
 
 
 def test_products_profiles_json_supports_explicit_evidence_and_inference_tiers(cli_workspace):
@@ -361,7 +366,7 @@ def test_products_analytics_json(cli_workspace):
     runner = CliRunner()
     result = runner.invoke(
         cli,
-        ["products", "analytics", "--provider", "claude-code", "--json"],
+        ["--provider", "claude-code", "products", "analytics", "--json"],
         catch_exceptions=False,
     )
 

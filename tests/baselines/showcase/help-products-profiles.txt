@@ -3,9 +3,6 @@ Usage: python -m polylogue products profiles [OPTIONS]
   List durable session-profile products.
 
 Options:
-  --provider TEXT                 Limit to provider
-  --since TEXT                    Only rows on/after this timestamp
-  --until TEXT                    Only rows on/before this timestamp
   --first-message-since TEXT      Only sessions whose first message is
                                   on/after this timestamp
   --first-message-until TEXT      Only sessions whose first message is

@@ -1,0 +1,11 @@
+Usage: python -m polylogue list [OPTIONS]
+
+  List matched conversations.
+
+Options:
+  -f, --format [markdown|json|html|obsidian|org|yaml|plaintext|csv]
+                                  Output format
+  --fields TEXT                   Fields: id, title, provider, date, messages,
+                                  words, tags, summary
+  -n, --limit INTEGER             Max results
+  -h, --help                      Show this message and exit.

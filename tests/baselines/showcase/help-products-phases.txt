@@ -4,9 +4,6 @@ Usage: python -m polylogue products phases [OPTIONS]
 
 Options:
   --conversation-id TEXT  Only phases from one conversation
-  --provider TEXT         Limit to provider
-  --since TEXT            Only rows on/after this timestamp
-  --until TEXT            Only rows on/before this timestamp
   --kind TEXT             Only this session phase kind
   --limit INTEGER         Maximum rows  [default: 50]
   --offset INTEGER        Start offset  [default: 0]
