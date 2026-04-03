@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import pytest
 from hypothesis import HealthCheck, given, settings
+from hypothesis import strategies as st
 
 from polylogue.sources.parsers import chatgpt, claude, codex, drive
 from tests.infra.strategies.schema_driven import schema_conformant_payload
@@ -44,7 +45,7 @@ CRASH_EXCEPTIONS = (IndexError, RecursionError)
 
 
 @pytest.mark.parametrize("provider", sorted(PROVIDER_PARSERS.keys()))
-@given(data=schema_conformant_payload("chatgpt"))
+@given(data=st.data())
 @settings(
     max_examples=30,
     deadline=None,
@@ -55,8 +56,9 @@ def test_looks_like_never_crashes(provider: str, data) -> None:
     if provider not in PROVIDER_PARSERS:
         pytest.skip(f"Provider {provider} not configured")
 
+    payload = data.draw(schema_conformant_payload(provider))
     try:
-        result = PROVIDER_PARSERS[provider]["looks_like"](data)
+        result = PROVIDER_PARSERS[provider]["looks_like"](payload)
         assert isinstance(result, bool)
     except CRASH_EXCEPTIONS as exc:
         raise AssertionError(
@@ -68,7 +70,7 @@ def test_looks_like_never_crashes(provider: str, data) -> None:
 
 
 @pytest.mark.parametrize("provider", sorted(PROVIDER_PARSERS.keys()))
-@given(data=schema_conformant_payload("chatgpt"))
+@given(data=st.data())
 @settings(
     max_examples=30,
     deadline=None,
@@ -84,8 +86,9 @@ def test_parse_never_crashes(provider: str, data) -> None:
     if provider not in PROVIDER_PARSERS:
         pytest.skip(f"Provider {provider} not configured")
 
+    payload = data.draw(schema_conformant_payload(provider))
     try:
-        PROVIDER_PARSERS[provider]["parse"](data)
+        PROVIDER_PARSERS[provider]["parse"](payload)
     except CRASH_EXCEPTIONS as exc:
         raise AssertionError(
             f"{provider}.parse() crashed on schema-conformant input: {type(exc).__name__}: {exc}"
