@@ -68,17 +68,46 @@ def find_sessions_index(session_path: Path) -> Path | None:
     return index_path if index_path.exists() else None
 
 
+_GIT_BRANCH_PREFIXES = frozenset({
+    "feature/", "fix/", "bugfix/", "hotfix/", "release/",
+    "chore/", "refactor/", "test/", "docs/", "ci/", "perf/",
+})
+
+_GIT_BRANCH_EXACT = frozenset({
+    "main", "master", "develop", "dev", "staging", "production",
+    "HEAD", "head",
+})
+
+
+def _looks_like_git_branch(value: str) -> bool:
+    """Return True if value looks like a git branch name rather than a title."""
+    stripped = value.strip()
+    if stripped in _GIT_BRANCH_EXACT:
+        return True
+    for prefix in _GIT_BRANCH_PREFIXES:
+        if stripped.startswith(prefix):
+            return True
+    return False
+
+
 def enrich_conversation_from_index(
     conv: ParsedConversation,
     index_entry: SessionIndexEntry,
 ) -> ParsedConversation:
     title = conv.title
-    if index_entry.summary and index_entry.summary != "User Exits CLI Session":
+    title_source = "original"
+    if (
+        index_entry.summary
+        and index_entry.summary != "User Exits CLI Session"
+        and not _looks_like_git_branch(index_entry.summary)
+    ):
         title = index_entry.summary
+        title_source = "session-index:summary"
     elif index_entry.first_prompt and index_entry.first_prompt != "No prompt":
         title = index_entry.first_prompt[:80]
         if len(index_entry.first_prompt) > 80:
             title += "..."
+        title_source = "session-index:first-prompt"
 
     provider_meta = dict(conv.provider_meta) if conv.provider_meta else {}
     provider_meta.update({
@@ -87,6 +116,7 @@ def enrich_conversation_from_index(
         "isSidechain": index_entry.is_sidechain,
         "summary": index_entry.summary,
         "firstPrompt": index_entry.first_prompt,
+        "title_source": title_source,
     })
 
     return ParsedConversation(
@@ -103,6 +133,7 @@ def enrich_conversation_from_index(
 
 __all__ = [
     "SessionIndexEntry",
+    "_looks_like_git_branch",
     "enrich_conversation_from_index",
     "find_sessions_index",
     "parse_sessions_index",

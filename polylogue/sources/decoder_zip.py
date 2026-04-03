@@ -127,7 +127,7 @@ def process_zip(
                 fallback_id=zip_path.stem,
                 file_mtime=file_mtime,
                 capture_raw=capture_raw,
-                session_index={},
+                sidecar_data={},
             )
             emitter = _ConversationEmitter(ctx)
             precomputed_raw: RawConversationData | None = None

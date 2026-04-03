@@ -57,7 +57,7 @@ def iter_source_conversations_with_raw(
         cursor_state=cursor_state,
         include_mtime=capture_raw,
         known_mtimes=known_mtimes,
-        build_session_indices=True,
+        discover_sidecars=True,
     )
     if walk is None:
         return
@@ -88,7 +88,7 @@ def iter_source_conversations_with_raw(
                     fallback_id=path.stem,
                     file_mtime=file_mtime,
                     capture_raw=capture_raw,
-                    session_index=walk.session_indices.get(path.parent, {}),
+                    sidecar_data=walk.sidecar_data,
                 )
                 emitter = _ConversationEmitter(ctx)
 
