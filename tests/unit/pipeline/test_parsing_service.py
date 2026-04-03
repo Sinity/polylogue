@@ -107,7 +107,7 @@ class TestParsingServiceParseSources:
         assert result.counts["messages"] == 5
         assert result.processed_ids == {"conv-1", "conv-2"}
 
-    async def test_ingest_sources_surfaces_session_product_refresh_diagnostics(self):
+    async def test_ingest_sources_surfaces_batch_diagnostics_only(self):
         mock_repository = MagicMock()
         mock_backend = MagicMock()
         mock_repository.backend = mock_backend
@@ -118,12 +118,11 @@ class TestParsingServiceParseSources:
         acquire_result.raw_ids = ["raw-1"]
 
         parse_result = ParseResult()
-        parse_result.refresh_observation = {
-            "conversations": 1,
-            "unique_thread_roots": 1,
-            "unique_provider_days": 1,
+        parse_result.batch_observations = [{
             "elapsed_ms": 123.4,
-        }
+            "blob_mb": 1.5,
+            "rss_end_mb": 42.0,
+        }]
 
         with patch("polylogue.pipeline.services.acquisition.AcquisitionService.acquire_sources", new=AsyncMock(return_value=acquire_result)):
             with patch("polylogue.pipeline.services.planning.PlanningService.collect_validation_backlog", new=AsyncMock(return_value=[])):
@@ -133,7 +132,9 @@ class TestParsingServiceParseSources:
                             sources=[Source(name="test-source", path=Path("/tmp/inbox"))],
                         )
 
-        assert result.diagnostics["session_product_refresh"] == parse_result.refresh_observation
+        assert result.diagnostics["batch_observations"]["batch_count"] == 1
+        assert result.diagnostics["batch_observations"]["max_elapsed_ms"] == 123.4
+        assert "session_product_refresh" not in result.diagnostics
 
     async def test_ingest_dedupes_backlog_without_rebuilding_raw_id_list(self):
         mock_repository = MagicMock()

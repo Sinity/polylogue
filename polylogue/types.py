@@ -142,6 +142,7 @@ class PlanStage(str, Enum):
     ALL = "all"
     ACQUIRE = "acquire"
     PARSE = "parse"
+    MATERIALIZE = "materialize"
     INDEX = "index"
     RENDER = "render"
     GENERATE_SCHEMAS = "generate-schemas"

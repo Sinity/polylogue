@@ -138,7 +138,7 @@ class TestRunSourcesRenderFailures:
 class TestRunSourcesIntegration:
     @pytest.mark.parametrize(
         ("stage", "with_source_data"),
-        [("parse", True), ("render", False), ("index", False), ("all", True)],
+        [("parse", True), ("materialize", True), ("render", False), ("index", False), ("all", True)],
     )
     def test_stage_matrix(self, workspace_env, tmp_path: Path, stage: str, with_source_data: bool, monkeypatch):
         monkeypatch.setenv("POLYLOGUE_SCHEMA_VALIDATION", "strict")
@@ -159,13 +159,22 @@ class TestRunSourcesIntegration:
         # Pre-populate the pipeline backlog so each stage has work to find.
         if stage == "parse" and sources:
             asyncio.run(run_sources(config=config, stage="acquire"))
+        if stage == "materialize" and sources:
+            asyncio.run(run_sources(config=config, stage="acquire"))
+            asyncio.run(run_sources(config=config, stage="parse"))
 
         result = asyncio.run(run_sources(config=config, stage=stage))
 
         if stage == "parse":
             assert result.counts["conversations"] >= 1
+            assert result.counts.get("materialized", 0) == 0
             assert result.counts.get("rendered", 0) == 0
             assert result.indexed is True
+        elif stage == "materialize":
+            assert result.counts["conversations"] == 0
+            assert result.counts.get("materialized", 0) >= 1
+            assert result.counts.get("rendered", 0) == 0
+            assert result.indexed is False
         elif stage == "render":
             assert result.counts["conversations"] == 0
             assert result.counts["messages"] == 0
@@ -177,6 +186,7 @@ class TestRunSourcesIntegration:
             assert result.index_error is None
         else:
             assert result.counts["conversations"] >= 1
+            assert result.counts.get("materialized", 0) >= 1
             assert result.counts.get("rendered", 0) >= 1
             if result.indexed:
                 assert result.index_error is None
@@ -258,6 +268,32 @@ class TestRunSourcesIntegration:
         assert result.run_id is not None
         assert isinstance(result.run_id, str)
         assert len(result.run_id) > 0
+
+    def test_materialize_stage_rebuilds_all_when_unscoped(self, workspace_env):
+        _seed_conversations(workspace_env, "test:materialize-rebuild", with_message=True)
+        config = Config(
+            sources=[],
+            archive_root=workspace_env["archive_root"],
+            render_root=workspace_env["archive_root"] / "render",
+        )
+
+        with patch(
+            "polylogue.storage.session_product_rebuild.rebuild_session_products_async",
+            new_callable=AsyncMock,
+        ) as mock_rebuild:
+            mock_rebuild.return_value = {
+                "profiles": 1,
+                "work_events": 2,
+                "phases": 1,
+                "threads": 1,
+                "tag_rollups": 1,
+                "day_summaries": 1,
+            }
+            result = asyncio.run(run_sources(config=config, stage="materialize"))
+
+        mock_rebuild.assert_awaited_once()
+        assert result.counts["materialized"] == 1
+        assert result.indexed is False
 
     def test_index_error_captured(self, workspace_env):
         config = Config(

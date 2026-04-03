@@ -13,6 +13,7 @@ T = TypeVar("T")
 RUN_STAGE_CHOICES: tuple[str, ...] = (
     "acquire",
     "parse",
+    "materialize",
     "render",
     "index",
     "generate-schemas",
@@ -20,6 +21,7 @@ RUN_STAGE_CHOICES: tuple[str, ...] = (
 )
 INGEST_STAGES = frozenset({"parse", "all"})
 PARSE_STAGES = frozenset({"parse", "all"})
+MATERIALIZE_STAGES = frozenset({"materialize", "all"})
 RENDER_STAGES = frozenset({"render", "all"})
 
 
@@ -42,6 +44,7 @@ def write_run_json(archive_root: Path, payload: dict[str, object]) -> Path:
 
 __all__ = [
     "INGEST_STAGES",
+    "MATERIALIZE_STAGES",
     "PARSE_STAGES",
     "RENDER_STAGES",
     "RUN_STAGE_CHOICES",

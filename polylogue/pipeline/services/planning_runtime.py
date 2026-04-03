@@ -17,6 +17,7 @@ from .validation import ValidationService
 
 _VALIDATE_STAGES = frozenset({"parse", "all"})
 _PARSE_STAGES = frozenset({"parse", "all"})
+_MATERIALIZE_STAGES = frozenset({"materialize", "all"})
 _SCAN_STATE_BATCH_SIZE = 200  # Metadata-only rows (no BLOBs) — can batch larger
 
 
@@ -53,6 +54,20 @@ async def build_ingest_plan(
                 timestamp=int(time.time()),
                 stage=stage,
                 counts={"index": index_count} if index_count else {},
+                sources=source_names,
+                cursors={},
+            ),
+            validate_raw_ids=[],
+            parse_ready_raw_ids=[],
+        )
+
+    if stage == "materialize":
+        materialize_count = await service.backend.queries.count_conversation_ids(source_names=db_scope_names)
+        return IngestPlan(
+            summary=PlanResult(
+                timestamp=int(time.time()),
+                stage=stage,
+                counts={"materialize": materialize_count} if materialize_count else {},
                 sources=source_names,
                 cursors={},
             ),
@@ -192,6 +207,8 @@ async def build_ingest_plan(
         counts["validate"] = len(validate_raw_ids)
     if parse_ready_raw_ids:
         counts["parse"] = len(parse_ready_raw_ids)
+        if stage in _MATERIALIZE_STAGES:
+            counts["materialize"] = len(parse_ready_raw_ids)
 
     summary = PlanResult(
         timestamp=int(time.time()),

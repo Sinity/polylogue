@@ -194,7 +194,6 @@ async def ingest_sources(
         diagnostics={
             "acquisition": acquire_result.diagnostics,
             "batch_observations": _summarize_batch_observations(parse_result.batch_observations),
-            "session_product_refresh": parse_result.refresh_observation,
         },
     )
 
@@ -209,13 +208,10 @@ async def parse_from_raw(
     """Parse raw_conversations from DB into conversations.
 
     Uses the unified ingest batch processor (decode + validate + parse +
-    transform + write in one pass). Session product refresh is deferred to
-    a single bulk pass after all batches complete.
+    transform + write in one pass). Derived session-product materialization
+    happens in an explicit downstream pipeline stage.
     """
-    from polylogue.pipeline.services.ingest_batch import (
-        process_ingest_batch,
-        refresh_session_products_bulk,
-    )
+    from polylogue.pipeline.services.ingest_batch import process_ingest_batch
 
     result = ParseResult()
     backend = service._require_backend()
@@ -297,21 +293,6 @@ async def parse_from_raw(
                 batch_observation["processed_raw"] = total_raw
                 result.batch_observations.append(batch_observation)
         total = total_raw
-
-    # Deferred session product refresh — once after ALL batches
-    changed_cids = result._changed_conversation_ids
-    if changed_cids:
-        t_refresh = time.perf_counter()
-        if progress_callback is not None:
-            progress_callback(0, desc=f"Refreshing session products ({len(changed_cids):,} conversations)")
-        result.refresh_observation = await refresh_session_products_bulk(backend, changed_cids)
-        refresh_elapsed = time.perf_counter() - t_refresh
-        if refresh_elapsed > 2.0:
-            logger.info(
-                "deferred_session_refresh",
-                elapsed_s=round(refresh_elapsed, 2),
-                conversations=len(changed_cids),
-            )
 
     elapsed = time.perf_counter() - t_start
     logger.info(

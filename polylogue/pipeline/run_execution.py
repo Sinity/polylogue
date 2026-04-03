@@ -13,11 +13,18 @@ from polylogue.pipeline.run_stages import (
     execute_acquire_stage,
     execute_index_stage,
     execute_ingest_stage,
+    execute_materialize_stage,
     execute_render_stage,
     execute_schema_generation_stage,
 )
 from polylogue.pipeline.run_state import RunExecutionState
-from polylogue.pipeline.run_support import INGEST_STAGES, PARSE_STAGES, RENDER_STAGES, select_sources
+from polylogue.pipeline.run_support import (
+    INGEST_STAGES,
+    MATERIALIZE_STAGES,
+    PARSE_STAGES,
+    RENDER_STAGES,
+    select_sources,
+)
 from polylogue.storage.backends import create_backend
 from polylogue.storage.repository import ConversationRepository
 from polylogue.storage.state_views import RunResult
@@ -157,6 +164,25 @@ async def run_sources(
                 **sm.to_dict(),
                 generated=schema_outcome.generated,
                 failed=schema_outcome.failed,
+            )
+
+        if stage in MATERIALIZE_STAGES:
+            sm = metrics.start_stage("materialize")
+            materialize_outcome = await execute_materialize_stage(
+                stage=stage,
+                source_names=source_names,
+                processed_ids=state.processed_ids,
+                backend=active_backend,
+                progress_callback=progress_callback,
+            )
+            if materialize_outcome.observation:
+                sm.details.update(materialize_outcome.observation)
+            state.record_materialize(materialized=materialize_outcome.item_count)
+            sm.stop(items=materialize_outcome.item_count)
+            logger.info(
+                "Materialize stage complete",
+                **sm.to_dict(),
+                rebuilt=materialize_outcome.rebuilt,
             )
 
         if stage in RENDER_STAGES:
