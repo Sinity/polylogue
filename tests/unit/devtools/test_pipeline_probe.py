@@ -155,6 +155,7 @@ async def test_run_probe_emits_real_pipeline_summary(tmp_path) -> None:
     ingest_details = summary["run_payload"]["metrics"]["stages"]["ingest"]["details"]["batch_observations"]
 
     assert summary["probe"]["provider"] == "chatgpt"
+    assert summary["probe"]["stage_sequence"] == ["acquire", "parse", "index"]
     assert summary["result"]["run_path"] is not None
     assert summary["run_payload"]["metrics"]["total_duration_ms"] is not None
     assert summary["run_payload"]["metrics"]["peak_rss_self_mb"] is not None
@@ -194,9 +195,15 @@ async def test_run_probe_can_stage_real_source_subset(tmp_path) -> None:
 
     assert summary["probe"]["input_mode"] == "source-subset"
     assert summary["probe"]["source_name"] == "inbox"
+    assert summary["probe"]["stage_sequence"] == ["acquire", "parse", "index"]
     assert summary["source_inputs"]["input_count"] == 2
     assert summary["source_inputs"]["staged_file_count"] == 2
     assert summary["source_inputs"]["total_bytes"] == total_bytes
+    assert summary["provenance"]["git_commit"] is not None
+    assert isinstance(summary["provenance"]["worktree_dirty"], bool)
+    assert len(summary["provenance"]["source_inputs_sha256"]) == 64
+    assert len(summary["provenance"]["source_input_fingerprints"]) == 2
+    assert all(len(entry["sha256"]) == 64 for entry in summary["provenance"]["source_input_fingerprints"])
     assert isinstance(acquisition_details, dict)
     assert summary["db_stats"]["raw_conversations_count"] == 2
     assert summary["db_stats"]["conversations_count"] == 2
@@ -390,6 +397,7 @@ async def test_run_probe_can_sample_archive_subset_and_persist_manifest(tmp_path
     assert len(summary["raw_fanout"]) == 2
     assert sum(item["conversation_count"] for item in summary["raw_fanout"]) == 2
     assert summary["paths"]["manifest_path"].endswith("archive-subset-manifest.json")
+    assert len(summary["provenance"]["manifest_sha256"]) == 64
     assert manifest["sample_per_provider"] == 1
     assert len(manifest["records"]) == 2
 

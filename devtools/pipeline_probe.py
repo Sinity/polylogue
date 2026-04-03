@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import json
 import os
 import random
 import shutil
+import subprocess
 import sys
 import tempfile
 from collections.abc import Iterator
@@ -40,6 +42,17 @@ _EXT_MAP = {
     "codex": ".jsonl",
 }
 _INPUT_MODES = ("synthetic", "archive-subset", "source-subset")
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+_SOURCE_BACKED_PROBE_STAGE_SEQUENCES: dict[str, tuple[str, ...]] = {
+    "acquire": ("acquire",),
+    "schema": ("acquire", "schema"),
+    "parse": ("acquire", "parse", "index"),
+    "materialize": ("acquire", "parse", "materialize"),
+    "render": ("acquire", "parse", "render"),
+    "index": ("acquire", "parse", "index"),
+    "reprocess": ("acquire", "parse", "materialize", "render", "index"),
+    "all": ("acquire", "parse", "materialize", "render", "index"),
+}
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -277,6 +290,107 @@ def _db_raw_fanout(db_path: Path) -> list[dict[str, Any]]:
         }
         for row in rows
     ]
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        while True:
+            chunk = handle.read(1024 * 1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _fingerprint_path(path: Path) -> dict[str, Any]:
+    if path.is_file():
+        return {
+            "path": str(path),
+            "kind": "file",
+            "sha256": _sha256_file(path),
+            "file_count": 1,
+            "total_bytes": path.stat().st_size,
+        }
+
+    if path.is_dir():
+        digest = hashlib.sha256()
+        file_count = 0
+        total_bytes = 0
+        for file_path in sorted(p for p in path.rglob("*") if p.is_file()):
+            rel = file_path.relative_to(path).as_posix()
+            digest.update(rel.encode("utf-8"))
+            digest.update(b"\0")
+            with file_path.open("rb") as handle:
+                while True:
+                    chunk = handle.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    digest.update(chunk)
+                    total_bytes += len(chunk)
+            digest.update(b"\0")
+            file_count += 1
+        return {
+            "path": str(path),
+            "kind": "dir",
+            "sha256": digest.hexdigest(),
+            "file_count": file_count,
+            "total_bytes": total_bytes,
+        }
+
+    raise FileNotFoundError(f"Cannot fingerprint missing path: {path}")
+
+
+def _safe_git_commit() -> str | None:
+    try:
+        return subprocess.check_output(
+            ["git", "rev-parse", "HEAD"],
+            cwd=_REPO_ROOT,
+            text=True,
+        ).strip()
+    except Exception:
+        return None
+
+
+def _safe_git_worktree_dirty() -> bool | None:
+    try:
+        status = subprocess.check_output(
+            ["git", "status", "--short"],
+            cwd=_REPO_ROOT,
+            text=True,
+        )
+    except Exception:
+        return None
+    return any(line[3:].strip() for line in status.splitlines())
+
+
+def _build_probe_provenance(
+    *,
+    manifest_path: Path | None = None,
+    source_inputs: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    provenance: dict[str, Any] = {
+        "git_commit": _safe_git_commit(),
+        "worktree_dirty": _safe_git_worktree_dirty(),
+    }
+    if manifest_path is not None and manifest_path.exists():
+        provenance["manifest_sha256"] = _sha256_file(manifest_path)
+    if source_inputs is not None:
+        fingerprints = [
+            _fingerprint_path(Path(str(entry["staged_path"])))
+            for entry in source_inputs.get("entries", [])
+        ]
+        provenance["source_input_fingerprints"] = fingerprints
+        digest = hashlib.sha256()
+        for entry in fingerprints:
+            digest.update(entry["kind"].encode("utf-8"))
+            digest.update(b"\0")
+            digest.update(str(entry["path"]).encode("utf-8"))
+            digest.update(b"\0")
+            digest.update(str(entry["sha256"]).encode("utf-8"))
+            digest.update(b"\0")
+        provenance["source_inputs_sha256"] = digest.hexdigest()
+    return provenance
 
 
 def _write_probe_sources(
@@ -741,6 +855,7 @@ async def _run_probe_pipeline(
     *,
     config: Config,
     stage: str,
+    stage_sequence: list[str] | None,
     source_names: list[str] | None,
     backend=None,
     repository=None,
@@ -748,11 +863,18 @@ async def _run_probe_pipeline(
     result = await run_sources(
         config=config,
         stage=stage,
+        stage_sequence=stage_sequence,
         source_names=source_names,
         backend=backend,
         repository=repository,
     )
     return result, _load_run_payload(result.run_path)
+
+
+def _probe_stage_sequence(probe_mode: str, stage: str) -> list[str] | None:
+    if probe_mode not in {"synthetic", "source-subset"}:
+        return None
+    return list(_SOURCE_BACKED_PROBE_STAGE_SEQUENCES[stage])
 
 
 async def run_probe(args: argparse.Namespace) -> dict[str, Any]:
@@ -775,6 +897,7 @@ async def run_probe(args: argparse.Namespace) -> dict[str, Any]:
         provider_name = _resolve_synthetic_provider(args)
         source_root = workdir / "sources" / provider_name
 
+        stage_sequence = _probe_stage_sequence(probe_mode, args.stage)
         with _isolated_env(workdir, extra_env=env_overrides):
             files, total_bytes = _write_probe_sources(
                 provider=provider_name,
@@ -793,6 +916,7 @@ async def run_probe(args: argparse.Namespace) -> dict[str, Any]:
             result, run_payload = await _run_probe_pipeline(
                 config=config,
                 stage=args.stage,
+                stage_sequence=stage_sequence,
                 source_names=[provider_name],
             )
 
@@ -801,6 +925,7 @@ async def run_probe(args: argparse.Namespace) -> dict[str, Any]:
                 "input_mode": "synthetic",
                 "provider": provider_name,
                 "stage": args.stage,
+                "stage_sequence": stage_sequence,
                 "count": args.count,
                 "messages_min": args.messages_min,
                 "messages_max": args.messages_max,
@@ -821,6 +946,7 @@ async def run_probe(args: argparse.Namespace) -> dict[str, Any]:
                 "count": len(files),
                 "total_bytes": total_bytes,
             },
+            "provenance": _build_probe_provenance(),
             "result": result.model_dump(),
             "run_payload": run_payload,
             "db_stats": _db_row_counts(db_path) if db_path is not None else {},
@@ -833,6 +959,7 @@ async def run_probe(args: argparse.Namespace) -> dict[str, Any]:
 
         source_name = str(getattr(args, "source_name", "inbox")).strip() or "inbox"
         source_root = workdir / "sources" / source_name
+        stage_sequence = _probe_stage_sequence(probe_mode, args.stage)
 
         with _isolated_env(workdir, extra_env=env_overrides):
             source_inputs = _stage_source_subset(
@@ -848,6 +975,7 @@ async def run_probe(args: argparse.Namespace) -> dict[str, Any]:
             result, run_payload = await _run_probe_pipeline(
                 config=config,
                 stage=args.stage,
+                stage_sequence=stage_sequence,
                 source_names=[source_name],
             )
 
@@ -856,6 +984,7 @@ async def run_probe(args: argparse.Namespace) -> dict[str, Any]:
                 "input_mode": "source-subset",
                 "source_name": source_name,
                 "stage": args.stage,
+                "stage_sequence": stage_sequence,
                 "raw_batch_size": args.raw_batch_size,
                 "ingest_workers": args.ingest_workers,
                 "measure_ingest_result_size": args.measure_ingest_result_size,
@@ -869,6 +998,7 @@ async def run_probe(args: argparse.Namespace) -> dict[str, Any]:
                 "run_path": result.run_path,
             },
             "source_inputs": source_inputs,
+            "provenance": _build_probe_provenance(source_inputs=source_inputs),
             "result": result.model_dump(),
             "run_payload": run_payload,
             "db_stats": _db_row_counts(db_path) if db_path is not None else {},
@@ -912,6 +1042,7 @@ async def run_probe(args: argparse.Namespace) -> dict[str, Any]:
                 result, run_payload = await _run_probe_pipeline(
                     config=config,
                     stage=args.stage,
+                    stage_sequence=None,
                     source_names=None,
                     backend=backend,
                     repository=repository,
@@ -942,6 +1073,7 @@ async def run_probe(args: argparse.Namespace) -> dict[str, Any]:
                 "source_blob_root": str(manifest["source_blob_root"]),
             },
             "sample": sample_summary,
+            "provenance": _build_probe_provenance(manifest_path=manifest_path),
             "result": result.model_dump(),
             "run_payload": run_payload,
             "db_stats": _db_row_counts(db_path) if db_path is not None else {},
