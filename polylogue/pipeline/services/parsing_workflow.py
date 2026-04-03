@@ -9,6 +9,7 @@ already decoded for parsing anyway).
 from __future__ import annotations
 
 import time
+from collections.abc import Iterable
 from typing import TYPE_CHECKING
 
 from polylogue.logging import get_logger
@@ -20,6 +21,19 @@ if TYPE_CHECKING:
     from polylogue.protocols import ProgressCallback
 
 logger = get_logger(__name__)
+
+
+def _append_unique_raw_ids(
+    target: list[str],
+    *,
+    seen: set[str],
+    raw_ids: Iterable[str],
+) -> None:
+    for raw_id in raw_ids:
+        if raw_id in seen:
+            continue
+        seen.add(raw_id)
+        target.append(raw_id)
 
 
 def _summarize_batch_observations(
@@ -115,20 +129,32 @@ async def ingest_sources(
         planning_service = PlanningService(backend=backend, config=service.config)
 
         # Collect all raw IDs that need ingesting: newly acquired + backlog
-        parse_raw_ids = list(acquire_result.raw_ids)
+        seen_parse_raw_ids: set[str] = set()
+        _append_unique_raw_ids(
+            parse_raw_ids,
+            seen=seen_parse_raw_ids,
+            raw_ids=acquire_result.raw_ids,
+        )
         if stage in {"parse", "all"}:
             backlog = await planning_service.collect_parse_backlog(
                 source_names=source_names or None,
                 exclude_raw_ids=parse_raw_ids,
             )
-            parse_raw_ids.extend(backlog)
+            _append_unique_raw_ids(
+                parse_raw_ids,
+                seen=seen_parse_raw_ids,
+                raw_ids=backlog,
+            )
             # Also collect validation backlog (records not yet validated/parsed)
             validation_backlog = await planning_service.collect_validation_backlog(
                 source_names=source_names or None,
                 exclude_raw_ids=parse_raw_ids,
             )
-            parse_raw_ids.extend(validation_backlog)
-        parse_raw_ids = list(dict.fromkeys(parse_raw_ids))
+            _append_unique_raw_ids(
+                parse_raw_ids,
+                seen=seen_parse_raw_ids,
+                raw_ids=validation_backlog,
+            )
 
         # Satisfy IngestState invariants
         ingest_state.record_parse_candidates(
@@ -166,7 +192,9 @@ async def ingest_sources(
         parse_raw_ids=parse_raw_ids,
         timings=timings,
         diagnostics={
+            "acquisition": acquire_result.diagnostics,
             "batch_observations": _summarize_batch_observations(parse_result.batch_observations),
+            "session_product_refresh": parse_result.refresh_observation,
         },
     )
 
@@ -276,7 +304,7 @@ async def parse_from_raw(
         t_refresh = time.perf_counter()
         if progress_callback is not None:
             progress_callback(0, desc=f"Refreshing session products ({len(changed_cids):,} conversations)")
-        await refresh_session_products_bulk(backend, changed_cids)
+        result.refresh_observation = await refresh_session_products_bulk(backend, changed_cids)
         refresh_elapsed = time.perf_counter() - t_refresh
         if refresh_elapsed > 2.0:
             logger.info(

@@ -202,6 +202,21 @@ class TestMessageSemanticProjection:
         )
         assert msg.is_context_dump is True
 
+    def test_multiline_context_markers_are_context_dumps(self):
+        contents_dump = Message(
+            id="m2",
+            role="user",
+            text="Please inspect this.\nContents of /realm/project/polylogue/README.md:\nhello",
+        )
+        file_path_dump = Message(
+            id="m3",
+            role="user",
+            text="Captured payload:\n<file path=/realm/project/polylogue/README.md>\nhello",
+        )
+
+        assert contents_dump.is_context_dump is True
+        assert file_path_dump.is_context_dump is True
+
 
 class TestConversationMetadataAndAggregation:
     def test_title_summary_tags_and_display_contract(self, conversation_with_metadata):

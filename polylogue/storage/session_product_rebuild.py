@@ -8,8 +8,6 @@ from collections.abc import Iterable, Sequence
 
 import aiosqlite
 
-from polylogue.archive_product_rollups import build_session_tag_rollup_records
-from polylogue.archive_product_summaries import build_day_session_summary_records
 from polylogue.lib.session_profile import build_session_analysis, build_session_profile
 from polylogue.storage.action_event_rows import attach_blocks_to_messages
 from polylogue.storage.backends.queries.attachments import get_attachments_batch
@@ -20,16 +18,20 @@ from polylogue.storage.backends.queries.mappers import (
     _row_to_session_profile_record,
 )
 from polylogue.storage.hydrators import conversation_from_records
+from polylogue.storage.session_product_aggregates import (
+    list_async_provider_day_groups,
+    list_sync_provider_day_groups,
+    refresh_async_provider_day_aggregates,
+    refresh_sync_provider_day_aggregates,
+)
 from polylogue.storage.session_product_profiles import (
     build_session_profile_record,
     hydrate_session_profile,
     now_iso,
 )
 from polylogue.storage.session_product_storage import (
-    replace_day_session_summaries_sync,
     replace_session_phases_sync,
     replace_session_profile_sync,
-    replace_session_tag_rollup_rows_sync,
     replace_session_work_events_sync,
     replace_work_thread_sync,
 )
@@ -49,11 +51,43 @@ from polylogue.storage.store import (
 )
 
 _ALL_CONVERSATION_IDS_SQL = "SELECT conversation_id FROM conversations ORDER BY COALESCE(sort_key, 0) DESC, conversation_id"
+_ALL_SESSION_PROFILE_ROWS_SQL = """
+SELECT *
+FROM session_profiles
+ORDER BY COALESCE(source_sort_key, 0) DESC, conversation_id
+"""
 
 
 def chunked(items: Sequence[str], *, size: int) -> Iterable[Sequence[str]]:
     for index in range(0, len(items), size):
         yield items[index : index + size]
+
+
+def iter_conversation_id_pages_sync(
+    conn: sqlite3.Connection,
+    *,
+    page_size: int,
+) -> Iterable[list[str]]:
+    cursor = conn.execute(_ALL_CONVERSATION_IDS_SQL)
+    while True:
+        rows = cursor.fetchmany(page_size)
+        if not rows:
+            break
+        yield [str(row["conversation_id"]) for row in rows]
+
+
+def iter_hydrated_session_profiles_sync(
+    conn: sqlite3.Connection,
+    *,
+    page_size: int,
+):
+    cursor = conn.execute(_ALL_SESSION_PROFILE_ROWS_SQL)
+    while True:
+        rows = cursor.fetchmany(page_size)
+        if not rows:
+            break
+        for row in rows:
+            yield hydrate_session_profile(_row_to_session_profile_record(row))
 
 
 def sync_attachment_batch(
@@ -223,14 +257,17 @@ def rebuild_session_products_sync(
     conversation_ids: Sequence[str] | None = None,
     page_size: int = 100,
 ) -> dict[str, int]:
+    conversation_chunks: Iterable[Sequence[str]]
     if conversation_ids is None:
         conn.execute("DELETE FROM session_work_events")
         conn.execute("DELETE FROM session_phases")
         conn.execute("DELETE FROM session_profiles")
         conn.execute("DELETE FROM session_tag_rollups")
         conn.execute("DELETE FROM day_session_summaries")
-        conversation_ids = [str(row["conversation_id"]) for row in conn.execute(_ALL_CONVERSATION_IDS_SQL).fetchall()]
-    if not conversation_ids:
+        conversation_chunks = iter_conversation_id_pages_sync(conn, page_size=page_size)
+    else:
+        conversation_chunks = chunked(conversation_ids, size=page_size)
+    if conversation_ids is not None and not conversation_ids:
         conn.execute("DELETE FROM work_threads")
         conn.execute("DELETE FROM session_phases")
         conn.execute("DELETE FROM session_tag_rollups")
@@ -241,7 +278,9 @@ def rebuild_session_products_sync(
     profile_count = 0
     work_event_count = 0
     phase_count = 0
-    for chunk in chunked(list(conversation_ids), size=page_size):
+    saw_conversation_ids = False
+    for chunk in conversation_chunks:
+        saw_conversation_ids = True
         conversations, messages, attachments, blocks = load_sync_batch(conn, chunk)
         for conversation in hydrate_conversations(conversations, messages, attachments, blocks):
             profile_record, event_records, phase_records = build_session_product_records(conversation)
@@ -251,48 +290,32 @@ def rebuild_session_products_sync(
             profile_count += 1
             work_event_count += len(event_records)
             phase_count += len(phase_records)
+    if not saw_conversation_ids:
+        conn.execute("DELETE FROM work_threads")
+        conn.execute("DELETE FROM session_phases")
+        conn.execute("DELETE FROM session_tag_rollups")
+        conn.execute("DELETE FROM day_session_summaries")
+        conn.commit()
+        return {"profiles": 0, "work_events": 0, "phases": 0, "threads": 0, "tag_rollups": 0, "day_summaries": 0}
 
     conn.execute("DELETE FROM work_threads")
     thread_records = build_all_thread_records_sync(conn)
     for record in thread_records:
         replace_work_thread_sync(conn, record.thread_id, record)
-    all_profile_records = [
-        _row_to_session_profile_record(row)
-        for row in conn.execute(
-            "SELECT * FROM session_profiles ORDER BY COALESCE(source_sort_key, 0) DESC, conversation_id"
-        ).fetchall()
-    ]
-    all_profiles = [hydrate_session_profile(record) for record in all_profile_records]
-    conn.execute("DELETE FROM session_tag_rollups")
-    tag_rows = build_session_tag_rollup_records(all_profiles)
-    for provider_name, bucket_day in sorted({(row.provider_name, row.bucket_day) for row in tag_rows}):
-        replace_session_tag_rollup_rows_sync(
-            conn,
-            provider_name=provider_name,
-            bucket_day=bucket_day,
-            records=[
-                row
-                for row in tag_rows
-                if row.provider_name == provider_name and row.bucket_day == bucket_day
-            ],
-        )
     conn.execute("DELETE FROM day_session_summaries")
-    day_rows = build_day_session_summary_records(all_profiles)
-    for provider_name, bucket_day in sorted({(row.provider_name, row.day) for row in day_rows}):
-        replace_day_session_summaries_sync(
-            conn,
-            provider_name=provider_name,
-            day=bucket_day,
-            records=[row for row in day_rows if row.provider_name == provider_name and row.day == bucket_day],
-        )
+    conn.execute("DELETE FROM session_tag_rollups")
+    provider_day_groups = set(list_sync_provider_day_groups(conn))
+    refresh_sync_provider_day_aggregates(conn, provider_day_groups)
+    tag_rollup_count = conn.execute("SELECT COUNT(*) FROM session_tag_rollups").fetchone()[0]
+    day_summary_count = conn.execute("SELECT COUNT(*) FROM day_session_summaries").fetchone()[0]
     conn.commit()
     return {
         "profiles": profile_count,
         "work_events": work_event_count,
         "phases": phase_count,
         "threads": len(thread_records),
-        "tag_rollups": len(tag_rows),
-        "day_summaries": len(day_rows),
+        "tag_rollups": int(tag_rollup_count),
+        "day_summaries": int(day_summary_count),
     }
 
 
@@ -305,10 +328,6 @@ async def rebuild_session_products_async(
 ) -> dict[str, int]:
     from polylogue.storage.backends.queries.session_product_profile_writes import (
         replace_session_profile,
-    )
-    from polylogue.storage.backends.queries.session_product_summary_queries import (
-        replace_day_session_summaries,
-        replace_session_tag_rollup_rows,
     )
     from polylogue.storage.backends.queries.session_product_thread_queries import replace_work_thread
     from polylogue.storage.backends.queries.session_product_timeline_writes import (
@@ -349,51 +368,38 @@ async def rebuild_session_products_async(
     thread_records = await build_all_thread_records_async(conn)
     for record in thread_records:
         await replace_work_thread(conn, record.thread_id, record, transaction_depth)
-    rows = await (
-        await conn.execute(
-            "SELECT * FROM session_profiles ORDER BY COALESCE(source_sort_key, 0) DESC, conversation_id"
-        )
-    ).fetchall()
-    all_profiles = [hydrate_session_profile(_row_to_session_profile_record(row)) for row in rows]
-    await conn.execute("DELETE FROM session_tag_rollups")
-    tag_rows = build_session_tag_rollup_records(all_profiles)
-    for provider_name, bucket_day in sorted({(row.provider_name, row.bucket_day) for row in tag_rows}):
-        await replace_session_tag_rollup_rows(
-            conn,
-            provider_name=provider_name,
-            bucket_day=bucket_day,
-            records=[
-                row
-                for row in tag_rows
-                if row.provider_name == provider_name and row.bucket_day == bucket_day
-            ],
-            transaction_depth=transaction_depth,
-        )
     await conn.execute("DELETE FROM day_session_summaries")
-    day_rows = build_day_session_summary_records(all_profiles)
-    for provider_name, bucket_day in sorted({(row.provider_name, row.day) for row in day_rows}):
-        await replace_day_session_summaries(
-            conn,
-            provider_name=provider_name,
-            day=bucket_day,
-            records=[row for row in day_rows if row.provider_name == provider_name and row.day == bucket_day],
-            transaction_depth=transaction_depth,
-        )
+    await conn.execute("DELETE FROM session_tag_rollups")
+    provider_day_groups = set(await list_async_provider_day_groups(conn))
+    await refresh_async_provider_day_aggregates(
+        conn,
+        provider_day_groups,
+        transaction_depth=transaction_depth,
+    )
+    tag_rollup_count = (
+        await (await conn.execute("SELECT COUNT(*) FROM session_tag_rollups")).fetchone()
+    )[0]
+    day_summary_count = (
+        await (await conn.execute("SELECT COUNT(*) FROM day_session_summaries")).fetchone()
+    )[0]
     return {
         "profiles": profile_count,
         "work_events": work_event_count,
         "phases": phase_count,
         "threads": len(thread_records),
-        "tag_rollups": len(tag_rows),
-        "day_summaries": len(day_rows),
+        "tag_rollups": int(tag_rollup_count),
+        "day_summaries": int(day_summary_count),
     }
 
 
 __all__ = [
     "_ALL_CONVERSATION_IDS_SQL",
+    "_ALL_SESSION_PROFILE_ROWS_SQL",
     "build_session_product_records",
     "chunked",
     "hydrate_conversations",
+    "iter_conversation_id_pages_sync",
+    "iter_hydrated_session_profiles_sync",
     "load_async_batch",
     "load_sync_batch",
     "rebuild_session_products_async",

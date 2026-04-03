@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
 from enum import Enum
 from typing import TYPE_CHECKING
 
-from polylogue.lib.phase_extraction import extract_phases
+from polylogue.lib.phase_extraction import SessionPhase, extract_phases
 from polylogue.lib.semantic_facts import (
     ConversationSemanticFacts,
     MessageSemanticFacts,
@@ -21,6 +22,26 @@ from polylogue.lib.semantic_facts import (
 # noise, not human-readable content.
 _TAG_RE = re.compile(r"<[^>]+>")
 _WHITESPACE_RE = re.compile(r"\s+")
+_SUMMARY_PROTOCOL_BLOCKS = (
+    ("<system-reminder>", re.compile(r"<system-reminder>.*?</system-reminder>", re.DOTALL)),
+    ("<task-notification>", re.compile(r"<task-notification>.*?</task-notification>", re.DOTALL)),
+    ("<local-command-caveat>", re.compile(r"<local-command-caveat>.*?</local-command-caveat>", re.DOTALL)),
+    ("<local-command-stdout>", re.compile(r"<local-command-stdout>.*?</local-command-stdout>", re.DOTALL)),
+    ("<command-name>", re.compile(r"<command-name>.*?</command-name>", re.DOTALL)),
+    ("<command-message>", re.compile(r"<command-message>.*?</command-message>", re.DOTALL)),
+    ("<command-args>", re.compile(r"<command-args>.*?</command-args>", re.DOTALL)),
+)
+_SUMMARY_MAX_TEXT_LEN = 100
+_SUMMARY_MAX_JOINED_LEN = 200
+
+
+def _normalize_summary_whitespace(text: str) -> str:
+    stripped = text.strip()
+    if not stripped:
+        return ""
+    if "\n" not in stripped and "\r" not in stripped and "\t" not in stripped and "  " not in stripped:
+        return stripped
+    return _WHITESPACE_RE.sub(" ", stripped).strip()
 
 
 def _clean_summary_text(text: str) -> str:
@@ -31,21 +52,18 @@ def _clean_summary_text(text: str) -> str:
     """
     if not text:
         return ""
-    # Remove entire system-reminder blocks
-    cleaned = re.sub(r"<system-reminder>.*?</system-reminder>", "", text, flags=re.DOTALL)
-    # Remove entire task-notification blocks
-    cleaned = re.sub(r"<task-notification>.*?</task-notification>", "", cleaned, flags=re.DOTALL)
-    # Remove entire local-command blocks
-    cleaned = re.sub(r"<local-command-caveat>.*?</local-command-caveat>", "", cleaned, flags=re.DOTALL)
-    cleaned = re.sub(r"<local-command-stdout>.*?</local-command-stdout>", "", cleaned, flags=re.DOTALL)
-    cleaned = re.sub(r"<command-name>.*?</command-name>", "", cleaned, flags=re.DOTALL)
-    cleaned = re.sub(r"<command-message>.*?</command-message>", "", cleaned, flags=re.DOTALL)
-    cleaned = re.sub(r"<command-args>.*?</command-args>", "", cleaned, flags=re.DOTALL)
-    # Strip remaining XML-like tags
-    cleaned = _TAG_RE.sub("", cleaned)
-    # Collapse whitespace
-    cleaned = _WHITESPACE_RE.sub(" ", cleaned).strip()
-    return cleaned[:100] if cleaned else ""
+    if "<" not in text:
+        cleaned = _normalize_summary_whitespace(text)
+        return cleaned[:_SUMMARY_MAX_TEXT_LEN] if cleaned else ""
+
+    cleaned = text
+    for marker, pattern in _SUMMARY_PROTOCOL_BLOCKS:
+        if marker in cleaned:
+            cleaned = pattern.sub("", cleaned)
+    if "<" in cleaned and ">" in cleaned:
+        cleaned = _TAG_RE.sub("", cleaned)
+    cleaned = _normalize_summary_whitespace(cleaned)
+    return cleaned[:_SUMMARY_MAX_TEXT_LEN] if cleaned else ""
 
 
 class WorkEventKind(str, Enum):
@@ -236,16 +254,17 @@ def _compute_phase_ranges(
     conversation: Conversation,
     *,
     facts: ConversationSemanticFacts | None = None,
+    phases: Sequence[SessionPhase] | None = None,
 ) -> list[tuple[int, int]]:
     semantic_facts = facts or build_conversation_semantic_facts(conversation)
-    phases = extract_phases(conversation, facts=semantic_facts)
-    if not phases:
+    resolved_phases = list(phases) if phases is not None else extract_phases(conversation, facts=semantic_facts)
+    if not resolved_phases:
         msg_count = len(semantic_facts.message_facts)
         return [(0, msg_count)] if msg_count > 0 else []
 
     ranges: list[tuple[int, int]] = []
     messages = list(semantic_facts.message_facts)
-    for phase in phases:
+    for phase in resolved_phases:
         start, end = phase.message_range
         if start >= end:
             continue
@@ -315,6 +334,7 @@ def extract_work_events(
     conversation: Conversation,
     *,
     facts: ConversationSemanticFacts | None = None,
+    phases: Sequence[SessionPhase] | None = None,
 ) -> list[WorkEvent]:
     semantic_facts = facts or build_conversation_semantic_facts(conversation)
     messages = list(semantic_facts.message_facts)
@@ -322,7 +342,7 @@ def extract_work_events(
         return []
 
     events: list[WorkEvent] = []
-    ranges = _compute_phase_ranges(conversation, facts=semantic_facts)
+    ranges = _compute_phase_ranges(conversation, facts=semantic_facts, phases=phases)
     for chunk_start, chunk_end in ranges:
         kind, confidence, evidence = _classify_message_range(messages, chunk_start, chunk_end)
         file_paths: list[str] = []
@@ -332,14 +352,19 @@ def extract_work_events(
                 tools_used.append(action.tool_name)
                 file_paths.extend(action.affected_paths)
 
-        user_texts: list[str] = []
+        summary_parts: list[str] = []
+        summary_length = 0
         for message in messages[chunk_start:chunk_end]:
             if not message.is_user or not message.text:
                 continue
             cleaned_text = _clean_summary_text(message.text)
             if cleaned_text:
-                user_texts.append(cleaned_text)
-        summary = "; ".join(user_texts)[:200] if user_texts else kind.value
+                separator_length = 2 if summary_parts else 0
+                summary_parts.append(cleaned_text)
+                summary_length += separator_length + len(cleaned_text)
+                if summary_length >= _SUMMARY_MAX_JOINED_LEN:
+                    break
+        summary = "; ".join(summary_parts)[:_SUMMARY_MAX_JOINED_LEN] if summary_parts else kind.value
         timestamps = [
             message.timestamp
             for message in messages[chunk_start:chunk_end]

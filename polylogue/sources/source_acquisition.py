@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+import time
 import zipfile
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from typing import Any
 
 from polylogue.config import Source
 from polylogue.lib.artifact_taxonomy import classify_artifact
-from polylogue.lib.json import dumps as json_dumps
+from polylogue.lib.json import dumps_bytes as json_dumps_bytes
+from polylogue.lib.metrics import read_current_rss_mb, read_peak_rss_self_mb
 from polylogue.logging import get_logger
 from polylogue.storage.blob_store import get_blob_store
 from polylogue.types import Provider
@@ -28,19 +30,61 @@ _decoders.logger = logger
 _DETECTION_PREFIX_SIZE = 8192  # 8 KB — enough for provider detection
 
 
+def _observe_acquisition(
+    observation_callback: Callable[[dict[str, object]], None] | None,
+    *,
+    phase: str,
+    source_path: str,
+    provider_hint: Provider,
+    blob_size: int,
+    source_index: int | None = None,
+    **extra: object,
+) -> None:
+    if observation_callback is None:
+        return
+    current_rss_mb = read_current_rss_mb()
+    peak_rss_self_mb = read_peak_rss_self_mb()
+    if current_rss_mb is None and peak_rss_self_mb is None:
+        return
+    observation_callback({
+        "phase": phase,
+        "source_path": source_path,
+        "provider_hint": str(provider_hint),
+        "blob_size": blob_size,
+        "blob_mb": round(blob_size / (1024 * 1024), 3),
+        "source_index": source_index,
+        "current_rss_mb": current_rss_mb,
+        "peak_rss_self_mb": peak_rss_self_mb,
+        **extra,
+    })
+
+
 def _iter_entry_payloads(
     handle,
     *,
     stream_name: str,
     provider_hint: Provider,
-) -> Iterable[tuple[Provider, Any]]:
+) -> Iterable[tuple[Provider, Any, float]]:
     """Yield payloads from a streamed JSON/JSONL document with provider hints."""
     current_provider = provider_hint
+    last_detected_provider: Provider | None = None
+    provider_locked = False
     for payload in _decoders._iter_json_stream(handle, stream_name):
-        provider = detect_provider(payload) or current_provider
-        if provider is not Provider.UNKNOWN:
-            current_provider = provider
-        yield (provider, payload)
+        if provider_locked:
+            provider = current_provider
+            detect_provider_ms = 0.0
+        else:
+            detect_start = time.perf_counter()
+            detected_provider = detect_provider(payload)
+            detect_provider_ms = (time.perf_counter() - detect_start) * 1000.0
+            provider = detected_provider or current_provider
+            if detected_provider is not None and detected_provider is not Provider.UNKNOWN:
+                current_provider = detected_provider
+                if detected_provider == last_detected_provider:
+                    provider_locked = True
+                else:
+                    last_detected_provider = detected_provider
+        yield (provider, payload, detect_provider_ms)
 
 
 def _make_split_entry_raw_data(
@@ -70,6 +114,7 @@ def iter_source_raw_data(
     *,
     cursor_state: dict[str, Any] | None = None,
     known_mtimes: dict[str, str] | None = None,
+    observation_callback: Callable[[dict[str, object]], None] | None = None,
 ) -> Iterable[RawConversationData]:
     """Iterate raw source payloads without parsing provider payload semantics.
 
@@ -109,8 +154,14 @@ def iter_source_raw_data(
                         entry_provider_hint = _zip_entry_provider_hint(info.filename, provider_hint)
                         if entry_provider_hint in GROUP_PROVIDERS:
                             with zf.open(info.filename) as handle:
-                                raw_bytes = handle.read()
-                            blob_hash, blob_size = blob_store.write_from_bytes(raw_bytes)
+                                blob_hash, blob_size = blob_store.write_from_fileobj(handle)
+                            _observe_acquisition(
+                                observation_callback,
+                                phase="zip-entry-streamed",
+                                source_path=entry_path,
+                                provider_hint=entry_provider_hint,
+                                blob_size=blob_size,
+                            )
                             yield RawConversationData(
                                 raw_bytes=b"",
                                 source_path=entry_path,
@@ -120,7 +171,6 @@ def iter_source_raw_data(
                                 blob_hash=blob_hash,
                                 blob_size=blob_size,
                             )
-                            del raw_bytes
                             continue
 
                         detected_provider = entry_provider_hint
@@ -129,7 +179,7 @@ def iter_source_raw_data(
                         did_split = False
 
                         with zf.open(info.filename) as handle:
-                            for payload_provider, payload in _iter_entry_payloads(
+                            for payload_provider, payload, detect_provider_ms in _iter_entry_payloads(
                                 handle,
                                 stream_name=info.filename,
                                 provider_hint=entry_provider_hint,
@@ -137,14 +187,31 @@ def iter_source_raw_data(
                                 detected_provider = payload_provider
                                 if payload_provider in GROUP_PROVIDERS:
                                     break
+                                classify_start = time.perf_counter()
                                 artifact = classify_artifact(
                                     payload,
                                     provider=payload_provider,
                                     source_path=entry_path,
                                 )
+                                classify_ms = (time.perf_counter() - classify_start) * 1000.0
                                 if not artifact.parse_as_conversation:
                                     continue
-                                payload_bytes = json_dumps(payload).encode("utf-8")
+                                pending_index = split_source_index + len(pending_split_payloads)
+                                serialize_start = time.perf_counter()
+                                payload_bytes = json_dumps_bytes(payload)
+                                serialize_ms = (time.perf_counter() - serialize_start) * 1000.0
+                                _observe_acquisition(
+                                    observation_callback,
+                                    phase="zip-entry-split-payload-serialized",
+                                    source_path=entry_path,
+                                    provider_hint=payload_provider,
+                                    blob_size=len(payload_bytes),
+                                    source_index=pending_index,
+                                    artifact_kind=str(artifact.kind),
+                                    detect_provider_ms=round(detect_provider_ms, 3),
+                                    classify_ms=round(classify_ms, 3),
+                                    serialize_ms=round(serialize_ms, 3),
+                                )
                                 if did_split:
                                     yield _make_split_entry_raw_data(
                                         blob_store=blob_store,
@@ -179,8 +246,14 @@ def iter_source_raw_data(
                         # grouped, non-conversation metadata, or a single
                         # conversation document.
                         with zf.open(info.filename) as handle:
-                            raw_bytes = handle.read()
-                        blob_hash, blob_size = blob_store.write_from_bytes(raw_bytes)
+                            blob_hash, blob_size = blob_store.write_from_fileobj(handle)
+                        _observe_acquisition(
+                            observation_callback,
+                            phase="zip-entry-streamed",
+                            source_path=entry_path,
+                            provider_hint=detected_provider,
+                            blob_size=blob_size,
+                        )
                         yield RawConversationData(
                             raw_bytes=b"",
                             source_path=entry_path,
@@ -190,7 +263,6 @@ def iter_source_raw_data(
                             blob_hash=blob_hash,
                             blob_size=blob_size,
                         )
-                        del raw_bytes
             else:
                 # Stream-hash the file to blob store — never loads full
                 # content into Python memory. A 1.5 GB file is hashed and
@@ -202,6 +274,13 @@ def iter_source_raw_data(
                     prefix,
                     path.name,
                     provider_hint,
+                )
+                _observe_acquisition(
+                    observation_callback,
+                    phase="source-file-streamed",
+                    source_path=str(path),
+                    provider_hint=detected_provider,
+                    blob_size=blob_size,
                 )
                 yield RawConversationData(
                     raw_bytes=b"",

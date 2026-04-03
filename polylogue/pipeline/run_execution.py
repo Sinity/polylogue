@@ -91,6 +91,7 @@ async def run_sources(
                 ui=ui,
                 progress_callback=progress_callback,
             )
+            sm.details.update(acquire_result.diagnostics)
             sm.stop(items=acquire_result.counts["acquired"])
             state.record_acquire(acquire_result)
             logger.info("Acquire stage complete", **sm.to_dict(), **acquire_result.counts)

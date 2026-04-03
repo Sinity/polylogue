@@ -14,18 +14,26 @@ from pathlib import Path
 from typing import Any
 
 
-def read_current_rss_mb() -> float | None:
-    """Return the current RSS in MiB when procfs is available."""
+def _read_proc_status_kb(field_name: str) -> int | None:
+    """Read a numeric memory field from ``/proc/self/status`` in KiB."""
     status_path = Path("/proc/self/status")
     try:
         for line in status_path.read_text(encoding="utf-8").splitlines():
-            if line.startswith("VmRSS:"):
+            if line.startswith(field_name):
                 parts = line.split()
                 if len(parts) >= 2:
-                    return round(int(parts[1]) / 1024, 1)
+                    return int(parts[1])
     except OSError:
         return None
     return None
+
+
+def read_current_rss_mb() -> float | None:
+    """Return the current RSS in MiB when procfs is available."""
+    rss_kb = _read_proc_status_kb("VmRSS:")
+    if rss_kb is None:
+        return None
+    return round(rss_kb / 1024, 1)
 
 
 def _read_rusage_peak_rss_mb(scope: int) -> float | None:
@@ -39,6 +47,9 @@ def _read_rusage_peak_rss_mb(scope: int) -> float | None:
 
 def read_peak_rss_self_mb() -> float | None:
     """Return the peak RSS for the current process in MiB."""
+    peak_rss_kb = _read_proc_status_kb("VmHWM:")
+    if peak_rss_kb is not None:
+        return round(peak_rss_kb / 1024, 1)
     return _read_rusage_peak_rss_mb(resource.RUSAGE_SELF)
 
 

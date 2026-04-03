@@ -4,11 +4,14 @@ from __future__ import annotations
 
 from functools import lru_cache
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from polylogue.paths import data_home
 from polylogue.schemas.runtime_registry import SchemaRegistry, canonical_schema_provider
 from polylogue.types import Provider
+
+if TYPE_CHECKING:
+    from polylogue.schemas.packages import SchemaResolution
 
 
 @lru_cache(maxsize=8)
@@ -61,19 +64,22 @@ def resolve_payload_schema(
     payload: Any,
     *,
     source_path: str | None = None,
+    schema_resolution: SchemaResolution | None = None,
     registry_cls: type[SchemaRegistry] = SchemaRegistry,
 ) -> tuple[Provider, dict[str, Any], tuple[str, str, str]]:
     canonical = canonical_provider(provider)
     registry = _registry_for(registry_cls)
-    resolution = (
-        registry.resolve_payload(
-            str(canonical),
-            payload,
-            source_path=source_path,
+    resolution = schema_resolution
+    if resolution is None:
+        resolution = (
+            registry.resolve_payload(
+                str(canonical),
+                payload,
+                source_path=source_path,
+            )
+            if hasattr(registry, "resolve_payload")
+            else None
         )
-        if hasattr(registry, "resolve_payload")
-        else None
-    )
     package_version = resolution.package_version if resolution is not None else "latest"
     element_kind = resolution.element_kind if resolution is not None else "default"
 

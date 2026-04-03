@@ -213,6 +213,7 @@ def ingest_record(
     # ── Phase 2: Validate schema (inline, reuses decoded payload) ─────
     v_status = ValidationStatus.PASSED
     v_error: str | None = None
+    schema_resolution = None
 
     if validation_mode is not ValidationMode.OFF and envelope.artifact.schema_eligible:
         malformed_lines = envelope.malformed_jsonl_lines
@@ -225,11 +226,18 @@ def ingest_record(
                 error=f"Malformed JSONL lines: {malformed_lines}",
             ))
 
+        schema_resolution = _runtime_schema_registry().resolve_payload(
+            envelope.provider,
+            envelope.payload,
+            source_path=raw_record.source_path,
+        )
+
         try:
             validator = SchemaValidator.for_payload(
                 envelope.provider,
                 envelope.payload,
                 source_path=raw_record.source_path,
+                schema_resolution=schema_resolution,
             )
         except (FileNotFoundError, ImportError):
             validator = None
@@ -240,7 +248,7 @@ def ingest_record(
             if samples:
                 collected_errors: list[str] = []
                 for sample in samples:
-                    sample_result = validator.validate(sample)
+                    sample_result = validator.validate(sample, include_drift=False)
                     if not sample_result.is_valid:
                         collected_errors.extend(sample_result.errors[:2])
 
@@ -257,11 +265,12 @@ def ingest_record(
         v_status = ValidationStatus.SKIPPED
 
     # ── Phase 3: Parse (provider-specific conversation extraction) ─────
-    schema_resolution = _runtime_schema_registry().resolve_payload(
-        envelope.provider,
-        envelope.payload,
-        source_path=raw_record.source_path,
-    )
+    if schema_resolution is None and envelope.artifact.schema_eligible:
+        schema_resolution = _runtime_schema_registry().resolve_payload(
+            envelope.provider,
+            envelope.payload,
+            source_path=raw_record.source_path,
+        )
 
     try:
         parsed_conversations = parse_payload(

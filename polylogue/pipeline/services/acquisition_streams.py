@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING
 
@@ -16,17 +16,23 @@ if TYPE_CHECKING:
     from polylogue.config import DriveConfig, Source
 
 logger = get_logger(__name__)
+ObservationCallback = Callable[[dict[str, object]], None]
 
 
 async def iter_source_raw_stream(
     source: Source,
     *,
     known_mtimes: dict[str, str] | None = None,
+    observation_callback: ObservationCallback | None = None,
 ) -> AsyncIterator[RawConversationData]:
     """Stream raw source payloads without materializing the full iterator."""
     from polylogue.pipeline.services import acquisition as acquisition_root
 
-    iterator = acquisition_root.iter_source_raw_data(source, known_mtimes=known_mtimes)
+    iterator = acquisition_root.iter_source_raw_data(
+        source,
+        known_mtimes=known_mtimes,
+        observation_callback=observation_callback,
+    )
     sentinel = object()
     batch_size = 128
 
@@ -96,6 +102,7 @@ async def iter_raw_record_stream(
     ui: object | None = None,
     cursor_state: dict[str, object] | None = None,
     drive_config: DriveConfig | None = None,
+    observation_callback: ObservationCallback | None = None,
 ) -> AsyncIterator[RawConversationRecord]:
     """Yield prepared RawConversationRecord values for a source."""
     raw_stream: AsyncIterator[RawConversationData]
@@ -111,6 +118,7 @@ async def iter_raw_record_stream(
         raw_stream = iter_source_raw_stream(
             source,
             known_mtimes=known_mtimes,
+            observation_callback=observation_callback,
         )
 
     async for raw_data in raw_stream:

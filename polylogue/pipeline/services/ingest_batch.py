@@ -85,7 +85,15 @@ class _IngestBatchSummary:
     max_result_bytes: int = 0
     max_result_raw_id: str | None = None
     elapsed_s: float = 0.0
+    setup_elapsed_s: float = 0.0
     max_current_rss_mb: float | None = None
+    result_wait_s: float = 0.0
+    drain_elapsed_s: float = 0.0
+    write_elapsed_s: float = 0.0
+    max_write_elapsed_s: float = 0.0
+    flush_elapsed_s: float = 0.0
+    commit_elapsed_s: float = 0.0
+    teardown_elapsed_s: float = 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -483,6 +491,9 @@ def _write_conversation_entry(
         t_write = time.perf_counter()
         content_changed, counts = _write_conversation(conn, cdata)
         write_elapsed = time.perf_counter() - t_write
+        summary.write_elapsed_s += write_elapsed
+        if write_elapsed > summary.max_write_elapsed_s:
+            summary.max_write_elapsed_s = write_elapsed
         _record_write_result(
             summary,
             cdata,
@@ -604,21 +615,33 @@ def _process_ingest_batch_sync(
     summary.total_blob_mb = sum(r.blob_size for r in raw_records) / (1024 * 1024)
 
     t_start = time.perf_counter()
+    setup_started = time.perf_counter()
     conn = _open_sync_connection(db_path)
     suspend_fts_triggers_sync(conn)
     conn.execute("BEGIN IMMEDIATE")
+    summary.setup_elapsed_s = time.perf_counter() - setup_started
 
     materialized_ids: set[str] = set()
     pending_by_parent: dict[str, list[tuple[str, ConversationData]]] = {}
     _observe_current_rss(summary)
 
     try:
-        for ir in _iter_ingest_results_sync(
+        result_iterator = iter(
+            _iter_ingest_results_sync(
             raw_records,
             archive_root_str=archive_root_str,
             validation_mode=validation_mode,
             worker_count=summary.worker_count,
-        ):
+            )
+        )
+        while True:
+            wait_started = time.perf_counter()
+            try:
+                ir = next(result_iterator)
+            except StopIteration:
+                summary.teardown_elapsed_s = time.perf_counter() - wait_started
+                break
+            summary.result_wait_s += time.perf_counter() - wait_started
             _record_outcome(summary, ir)
             _observe_current_rss(summary)
 
@@ -633,6 +656,7 @@ def _process_ingest_batch_sync(
                 continue
 
             for cdata in ir.conversations:
+                drain_started = time.perf_counter()
                 _drain_ready_conversation_entries(
                     conn,
                     [(ir.raw_id, cdata)],
@@ -640,16 +664,21 @@ def _process_ingest_batch_sync(
                     materialized_ids=materialized_ids,
                     pending_by_parent=pending_by_parent,
                 )
+                summary.drain_elapsed_s += time.perf_counter() - drain_started
                 _observe_current_rss(summary)
 
+        flush_started = time.perf_counter()
         _flush_pending_conversation_entries(
             conn,
             pending_by_parent,
             summary=summary,
             materialized_ids=materialized_ids,
         )
+        summary.flush_elapsed_s = time.perf_counter() - flush_started
         _observe_current_rss(summary)
+        commit_started = time.perf_counter()
         conn.commit()
+        summary.commit_elapsed_s = time.perf_counter() - commit_started
     except Exception:
         conn.rollback()
         raise
@@ -658,6 +687,24 @@ def _process_ingest_batch_sync(
 
     summary.elapsed_s = time.perf_counter() - t_start
     return summary
+
+
+def _unattributed_batch_elapsed_s(
+    *,
+    elapsed_s: float,
+    batch_summary: _IngestBatchSummary,
+    raw_state_update_elapsed_s: float,
+) -> float:
+    accounted_elapsed_s = (
+        batch_summary.setup_elapsed_s
+        + batch_summary.result_wait_s
+        + batch_summary.drain_elapsed_s
+        + batch_summary.flush_elapsed_s
+        + batch_summary.commit_elapsed_s
+        + batch_summary.teardown_elapsed_s
+        + raw_state_update_elapsed_s
+    )
+    return max(elapsed_s - accounted_elapsed_s, 0.0)
 
 
 # ---------------------------------------------------------------------------
@@ -737,63 +784,15 @@ async def process_ingest_batch(
     skipped_raw_ids = batch_summary.skipped_raw_ids
     failed_raw_ids = batch_summary.failed_raw_ids
 
-    now_iso = datetime.now(timezone.utc).isoformat()
-    validation_mode_str = validation_mode
-
-    for rid in succeeded_raw_ids:
-        outcome = batch_summary.outcomes.get(rid)
-        await service.repository.update_raw_state(
-            rid,
-            state=RawConversationStateUpdate(
-                parsed_at=now_iso,
-                parse_error=None,
-                payload_provider=outcome.payload_provider if outcome is not None else None,
-            ),
-        )
-        if outcome is not None:
-            await service.repository.mark_raw_validated(
-                rid,
-                status=outcome.validation_status,
-                error=outcome.validation_error,
-                payload_provider=outcome.payload_provider,
-                mode=validation_mode_str,
-            )
-    for rid in skipped_raw_ids:
-        if rid not in failed_raw_ids and rid not in succeeded_raw_ids:
-            outcome = batch_summary.outcomes.get(rid)
-            await service.repository.update_raw_state(
-                rid,
-                state=RawConversationStateUpdate(
-                    parsed_at=now_iso,
-                    parse_error=None,
-                    payload_provider=outcome.payload_provider if outcome is not None else None,
-                ),
-            )
-            if outcome is not None:
-                await service.repository.mark_raw_validated(
-                    rid,
-                    status=outcome.validation_status,
-                    error=outcome.validation_error,
-                    payload_provider=outcome.payload_provider,
-                    mode=validation_mode_str,
-                )
-    for rid, error in failed_raw_ids.items():
-        outcome = batch_summary.outcomes.get(rid)
-        await service.repository.update_raw_state(
-            rid,
-            state=RawConversationStateUpdate(
-                parse_error=error,
-                payload_provider=outcome.payload_provider if outcome is not None else None,
-            ),
-        )
-        if outcome is not None:
-            await service.repository.mark_raw_validated(
-                rid,
-                status=outcome.validation_status,
-                error=outcome.validation_error or error,
-                payload_provider=outcome.payload_provider,
-                mode=validation_mode_str,
-            )
+    raw_state_update_elapsed_s = await _persist_batch_raw_state_updates(
+        service,
+        backend,
+        outcomes=batch_summary.outcomes,
+        succeeded_raw_ids=succeeded_raw_ids,
+        skipped_raw_ids=skipped_raw_ids,
+        failed_raw_ids=failed_raw_ids,
+        validation_mode=validation_mode,
+    )
 
     elapsed_s = time.perf_counter() - batch_started
     rss_end_mb = read_current_rss_mb()
@@ -812,7 +811,22 @@ async def process_ingest_batch(
         "skipped_raw_count": len(batch_summary.skipped_raw_ids),
         "elapsed_ms": round(elapsed_s * 1000, 1),
         "sync_ingest_elapsed_ms": round(batch_summary.elapsed_s * 1000, 1),
+        "sync_setup_elapsed_ms": round(batch_summary.setup_elapsed_s * 1000, 1),
+        "result_wait_elapsed_ms": round(batch_summary.result_wait_s * 1000, 1),
+        "drain_elapsed_ms": round(batch_summary.drain_elapsed_s * 1000, 1),
+        "write_elapsed_ms": round(batch_summary.write_elapsed_s * 1000, 1),
+        "max_write_elapsed_ms": round(batch_summary.max_write_elapsed_s * 1000, 1),
+        "flush_elapsed_ms": round(batch_summary.flush_elapsed_s * 1000, 1),
+        "commit_elapsed_ms": round(batch_summary.commit_elapsed_s * 1000, 1),
+        "executor_teardown_elapsed_ms": round(batch_summary.teardown_elapsed_s * 1000, 1),
+        "raw_state_update_elapsed_ms": round(raw_state_update_elapsed_s * 1000, 1),
     }
+    residual_elapsed_s = _unattributed_batch_elapsed_s(
+        elapsed_s=elapsed_s,
+        batch_summary=batch_summary,
+        raw_state_update_elapsed_s=raw_state_update_elapsed_s,
+    )
+    observation["unattributed_elapsed_ms"] = round(max(residual_elapsed_s, 0.0) * 1000, 1)
     if rss_start_mb is not None:
         observation["rss_start_mb"] = rss_start_mb
     if rss_end_mb is not None:
@@ -830,39 +844,191 @@ async def process_ingest_batch(
     return observation
 
 
+def _successful_raw_state_update(
+    *,
+    outcome: _RawIngestOutcome | None,
+    parsed_at: str,
+    validation_mode: str,
+) -> RawConversationStateUpdate:
+    if outcome is None:
+        return RawConversationStateUpdate(
+            parsed_at=parsed_at,
+            parse_error=None,
+        )
+    return RawConversationStateUpdate(
+        parsed_at=parsed_at,
+        parse_error=None,
+        payload_provider=outcome.payload_provider,
+        validation_status=outcome.validation_status,
+        validation_error=outcome.validation_error,
+        validation_mode=validation_mode,
+    )
+
+
+def _failed_raw_state_update(
+    *,
+    outcome: _RawIngestOutcome | None,
+    error: str,
+    validation_mode: str,
+) -> RawConversationStateUpdate:
+    if outcome is None:
+        return RawConversationStateUpdate(
+            parse_error=error,
+        )
+    return RawConversationStateUpdate(
+        parse_error=error,
+        payload_provider=outcome.payload_provider,
+        validation_status=outcome.validation_status,
+        validation_error=outcome.validation_error or error,
+        validation_mode=validation_mode,
+    )
+
+
+async def _persist_batch_raw_state_updates(
+    service: ParsingService,
+    backend: SQLiteBackend,
+    *,
+    outcomes: dict[str, _RawIngestOutcome],
+    succeeded_raw_ids: set[str],
+    skipped_raw_ids: set[str],
+    failed_raw_ids: dict[str, str],
+    validation_mode: str,
+) -> float:
+    now_iso = datetime.now(timezone.utc).isoformat()
+    raw_state_update_started = time.perf_counter()
+    async with backend.bulk_connection():
+        for rid in succeeded_raw_ids:
+            await service.repository.update_raw_state(
+                rid,
+                state=_successful_raw_state_update(
+                    outcome=outcomes.get(rid),
+                    parsed_at=now_iso,
+                    validation_mode=validation_mode,
+                ),
+            )
+        for rid in skipped_raw_ids:
+            if rid in failed_raw_ids or rid in succeeded_raw_ids:
+                continue
+            await service.repository.update_raw_state(
+                rid,
+                state=_successful_raw_state_update(
+                    outcome=outcomes.get(rid),
+                    parsed_at=now_iso,
+                    validation_mode=validation_mode,
+                ),
+            )
+        for rid, error in failed_raw_ids.items():
+            await service.repository.update_raw_state(
+                rid,
+                state=_failed_raw_state_update(
+                    outcome=outcomes.get(rid),
+                    error=error,
+                    validation_mode=validation_mode,
+                ),
+            )
+    return time.perf_counter() - raw_state_update_started
+
+
 async def refresh_session_products_bulk(
     backend: SQLiteBackend,
     changed_conversation_ids: list[str],
-) -> None:
+) -> dict[str, object] | None:
     """Bulk session product refresh — once after all batches, not per-batch."""
     if not changed_conversation_ids:
-        return
+        return None
 
     t_start = time.perf_counter()
+    update_elapsed = 0.0
+    thread_elapsed = 0.0
+    aggregate_elapsed = 0.0
     try:
         from polylogue.storage.session_product_refresh import (
-            refresh_session_products_for_conversation_async,
+            _apply_session_product_conversation_updates_async,
+            _refresh_thread_roots_async,
+            refresh_async_provider_day_aggregates,
         )
 
         async with backend.connection() as conn:
-            for cid in changed_conversation_ids:
-                await refresh_session_products_for_conversation_async(
+            t_updates = time.perf_counter()
+            update = await _apply_session_product_conversation_updates_async(
+                conn,
+                changed_conversation_ids,
+                transaction_depth=1,
+            )
+            update_elapsed = time.perf_counter() - t_updates
+            t_threads = time.perf_counter()
+            thread_root_ids = update.thread_root_ids
+            await _refresh_thread_roots_async(
+                conn,
+                sorted(thread_root_ids),
+                transaction_depth=1,
+            )
+            thread_elapsed = time.perf_counter() - t_threads
+            t_aggregates = time.perf_counter()
+            affected_groups = update.affected_groups
+            if affected_groups:
+                await refresh_async_provider_day_aggregates(
                     conn,
-                    cid,
+                    affected_groups,
                     transaction_depth=1,
                 )
+            aggregate_elapsed = time.perf_counter() - t_aggregates
             await conn.commit()
 
         elapsed = time.perf_counter() - t_start
+        chunk_observations = getattr(update, "chunk_observations", [])
+        chunk_total_values = [float(chunk["total_ms"]) for chunk in chunk_observations]
+        chunk_load_values = [float(chunk["load_ms"]) for chunk in chunk_observations]
+        chunk_hydrate_values = [float(chunk["hydrate_ms"]) for chunk in chunk_observations]
+        chunk_build_values = [float(chunk["build_ms"]) for chunk in chunk_observations]
+        chunk_write_values = [float(chunk["write_ms"]) for chunk in chunk_observations]
+        observation: dict[str, object] = {
+            "conversations": len(changed_conversation_ids),
+            "unique_thread_roots": len(thread_root_ids),
+            "unique_provider_days": len(affected_groups),
+            "elapsed_ms": round(elapsed * 1000.0, 1),
+            "update_ms": round(update_elapsed * 1000.0, 1),
+            "thread_refresh_ms": round(thread_elapsed * 1000.0, 1),
+            "aggregate_refresh_ms": round(aggregate_elapsed * 1000.0, 1),
+            "update_chunk_count": len(chunk_observations),
+            "update_slow_chunk_count": sum(
+                1
+                for chunk in chunk_observations
+                if bool(chunk.get("slow"))
+            ),
+        }
+        if chunk_total_values:
+            observation["update_max_chunk_ms"] = round(max(chunk_total_values), 1)
+        if chunk_load_values:
+            observation["update_max_chunk_load_ms"] = round(max(chunk_load_values), 1)
+        if chunk_hydrate_values:
+            observation["update_max_chunk_hydrate_ms"] = round(max(chunk_hydrate_values), 1)
+        if chunk_build_values:
+            observation["update_max_chunk_build_ms"] = round(max(chunk_build_values), 1)
+        if chunk_write_values:
+            observation["update_max_chunk_write_ms"] = round(max(chunk_write_values), 1)
+        if chunk_observations:
+            observation["update_chunks"] = chunk_observations
         if elapsed > 2.0:
             logger.info(
                 "session_product_refresh",
-                elapsed_s=round(elapsed, 2),
                 conversations=len(changed_conversation_ids),
+                unique_thread_roots=len(thread_root_ids),
+                unique_provider_days=len(affected_groups),
+                elapsed_s=round(elapsed, 2),
+                update_s=round(update_elapsed, 2),
+                thread_refresh_s=round(thread_elapsed, 2),
+                aggregate_refresh_s=round(aggregate_elapsed, 2),
                 rate=round(len(changed_conversation_ids) / elapsed, 1) if elapsed > 0 else 0,
             )
+        return observation
     except Exception as exc:
         logger.warning("Session product refresh failed (non-fatal): %s", exc)
+        return {
+            "conversations": len(changed_conversation_ids),
+            "failed": True,
+            "error": str(exc),
+        }
 
 
 __all__ = ["process_ingest_batch", "refresh_session_products_bulk"]
