@@ -30,6 +30,13 @@ class SchemaGenerationOutcome:
 
 
 @dataclass(slots=True)
+class MaterializeStageOutcome:
+    item_count: int
+    rebuilt: bool
+    observation: dict[str, object] | None = None
+
+
+@dataclass(slots=True)
 class IndexStageOutcome:
     indexed: bool
     item_count: int
@@ -96,6 +103,67 @@ async def execute_schema_generation_stage() -> SchemaGenerationOutcome:
     return SchemaGenerationOutcome(
         generated=sum(1 for r in results if r.success),
         failed=sum(1 for r in results if not r.success),
+    )
+
+
+async def execute_materialize_stage(
+    *,
+    stage: str,
+    source_names: Sequence[str] | None,
+    processed_ids: set[str],
+    backend: SQLiteBackend,
+    progress_callback: ProgressCallback | None = None,
+) -> MaterializeStageOutcome:
+    from polylogue.pipeline.services.ingest_batch import refresh_session_products_bulk
+    from polylogue.storage.session_product_rebuild import rebuild_session_products_async
+
+    if stage in {"all", "reprocess"}:
+        conversation_ids = sorted(processed_ids)
+        if not conversation_ids:
+            return MaterializeStageOutcome(item_count=0, rebuilt=False)
+        if progress_callback is not None:
+            progress_callback(0, desc=f"Materializing: 0/{len(conversation_ids)}")
+        observation = await refresh_session_products_bulk(backend, conversation_ids)
+        return MaterializeStageOutcome(
+            item_count=len(conversation_ids),
+            rebuilt=False,
+            observation=observation,
+        )
+
+    if stage != "materialize":
+        return MaterializeStageOutcome(item_count=0, rebuilt=False)
+
+    if source_names:
+        materialize_total = await backend.queries.count_conversation_ids(
+            source_names=list(source_names)
+        )
+        if not materialize_total:
+            return MaterializeStageOutcome(item_count=0, rebuilt=False)
+        conversation_ids = [
+            conversation_id
+            async for conversation_id in backend.queries.iter_conversation_ids(
+                source_names=list(source_names)
+            )
+        ]
+        if progress_callback is not None:
+            progress_callback(0, desc=f"Materializing: 0/{materialize_total}")
+        observation = await refresh_session_products_bulk(backend, conversation_ids)
+        return MaterializeStageOutcome(
+            item_count=materialize_total,
+            rebuilt=False,
+            observation=observation,
+        )
+
+    if progress_callback is not None:
+        progress_callback(0, desc="Materializing: rebuilding all session products")
+    async with backend.connection() as conn:
+        counts = await rebuild_session_products_async(conn)
+        await conn.commit()
+    observation = {"mode": "rebuild", **counts}
+    return MaterializeStageOutcome(
+        item_count=int(counts.get("profiles", 0)),
+        rebuilt=True,
+        observation=observation,
     )
 
 
@@ -167,49 +235,65 @@ async def execute_index_stage(
     try:
         if stage == "parse":
             if processed_ids:
-                if progress_callback is not None:
-                    progress_callback(0, desc=f"Indexing {len(processed_ids)} conversations")
+                index_kwargs = (
+                    {"progress_callback": progress_callback}
+                    if progress_callback is not None
+                    else {}
+                )
                 return IndexStageOutcome(
-                    indexed=await index_service.update_index(processed_ids),
+                    indexed=await index_service.update_index(processed_ids, **index_kwargs),
                     item_count=len(processed_ids),
                 )
             return IndexStageOutcome(indexed=False, item_count=0)
 
         if stage == "index":
-            if progress_callback is not None:
-                progress_callback(0, desc="Indexing")
             if source_names:
                 total = await backend.queries.count_conversation_ids(
                     source_names=list(source_names)
+                )
+                index_kwargs = (
+                    {"progress_callback": progress_callback}
+                    if progress_callback is not None
+                    else {}
                 )
                 success = await index_service.update_index(
                     backend.queries.iter_conversation_ids(
                         source_names=list(source_names)
                     ),
+                    **index_kwargs,
                 )
                 return IndexStageOutcome(indexed=success, item_count=total)
+            total = await backend.queries.count_conversation_ids()
+            rebuild_kwargs = (
+                {"progress_callback": progress_callback}
+                if progress_callback is not None
+                else {}
+            )
             return IndexStageOutcome(
-                indexed=await index_service.rebuild_index(),
-                item_count=0,
+                indexed=await index_service.rebuild_index(**rebuild_kwargs),
+                item_count=total,
             )
 
-        if stage == "all":
+        if stage in {"all", "reprocess"}:
             idx = await index_service.get_index_status()
             if not idx["exists"]:
-                if progress_callback is not None:
-                    progress_callback(0, desc="Indexing (rebuild)")
+                rebuild_kwargs = (
+                    {"progress_callback": progress_callback}
+                    if progress_callback is not None
+                    else {}
+                )
                 return IndexStageOutcome(
-                    indexed=await index_service.rebuild_index(),
+                    indexed=await index_service.rebuild_index(**rebuild_kwargs),
                     item_count=len(processed_ids),
                 )
             if processed_ids:
-                if progress_callback is not None:
-                    progress_callback(
-                        0,
-                        desc=f"Indexing {len(processed_ids)} conversations",
-                    )
+                index_kwargs = (
+                    {"progress_callback": progress_callback}
+                    if progress_callback is not None
+                    else {}
+                )
                 return IndexStageOutcome(
-                    indexed=await index_service.update_index(processed_ids),
+                    indexed=await index_service.update_index(processed_ids, **index_kwargs),
                     item_count=len(processed_ids),
                 )
         return IndexStageOutcome(indexed=False, item_count=0)
@@ -223,11 +307,13 @@ async def execute_index_stage(
 
 __all__ = [
     "IndexStageOutcome",
+    "MaterializeStageOutcome",
     "RenderStageOutcome",
     "SchemaGenerationOutcome",
     "execute_acquire_stage",
     "execute_index_stage",
     "execute_ingest_stage",
+    "execute_materialize_stage",
     "execute_render_stage",
     "execute_schema_generation_stage",
 ]

@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import sqlite3
+from unittest.mock import AsyncMock, patch
 
-from polylogue.config import Config
+from polylogue.config import Config, IndexConfig
 from polylogue.pipeline.services.indexing import IndexService
 
 
@@ -109,6 +110,162 @@ class TestIndexService:
 
         result = await service.rebuild_index()
         assert result is True
+
+    async def test_rebuild_index_reports_chunk_progress(self, sqlite_backend):
+        """Full rebuild reports subphase progress with explicit totals."""
+        from polylogue.storage.store import ConversationRecord, MessageRecord
+
+        for index in range(3):
+            conversation_id = f"conv-progress-{index}"
+            await sqlite_backend.save_conversation_record(
+                ConversationRecord(
+                    conversation_id=conversation_id,
+                    provider_name="chatgpt",
+                    provider_conversation_id=f"prov-{index}",
+                    title=f"Conversation {index}",
+                    content_hash=f"hash-{index}",
+                )
+            )
+            await sqlite_backend.save_messages(
+                [
+                    MessageRecord(
+                        message_id=f"msg-progress-{index}",
+                        conversation_id=conversation_id,
+                        role="user",
+                        text=f"Hello from conversation {index}",
+                        content_hash=f"message-hash-{index}",
+                    )
+                ]
+            )
+
+        config = Config(
+            archive_root="/tmp",
+            render_root="/tmp/render",
+            sources=[],
+        )
+        service = IndexService(config, backend=sqlite_backend)
+        progress_events: list[tuple[int, str | None]] = []
+
+        def capture(amount: int, desc: str | None = None) -> None:
+            progress_events.append((amount, desc))
+
+        result = await service.rebuild_index(progress_callback=capture)
+
+        assert result is True
+        assert progress_events
+        descriptions = [desc for _, desc in progress_events if desc is not None]
+        assert descriptions[0] == "Indexing: action events 0/6"
+        assert "Indexing: full-text search 3/6" in descriptions
+        assert descriptions[-1] == "Indexing: full-text search 6/6"
+
+    async def test_update_index_auto_embeds_when_configured(self, sqlite_backend):
+        """Configured auto-embed extends index updates with an embedding phase."""
+        from polylogue.storage.store import ConversationRecord, MessageRecord
+
+        for index in range(2):
+            conversation_id = f"conv-auto-embed-{index}"
+            await sqlite_backend.save_conversation_record(
+                ConversationRecord(
+                    conversation_id=conversation_id,
+                    provider_name="chatgpt",
+                    provider_conversation_id=f"prov-auto-{index}",
+                    title=f"Auto Embed {index}",
+                    content_hash=f"hash-auto-{index}",
+                )
+            )
+            await sqlite_backend.save_messages(
+                [
+                    MessageRecord(
+                        message_id=f"msg-auto-embed-{index}",
+                        conversation_id=conversation_id,
+                        role="user",
+                        text=f"hello auto embed {index}",
+                        content_hash=f"message-hash-auto-{index}",
+                    )
+                ]
+            )
+
+        config = Config(
+            archive_root="/tmp",
+            render_root="/tmp/render",
+            sources=[],
+            index_config=IndexConfig(voyage_api_key="test-key", auto_embed=True),
+        )
+        service = IndexService(config, backend=sqlite_backend)
+        vector_provider = object()
+        progress_events: list[tuple[int, str | None]] = []
+
+        def capture(amount: int, desc: str | None = None) -> None:
+            progress_events.append((amount, desc))
+
+        with patch(
+            "polylogue.pipeline.services.indexing.create_vector_provider",
+            return_value=vector_provider,
+        ), patch(
+            "polylogue.storage.repository.ConversationRepository.embed_conversation",
+            new_callable=AsyncMock,
+            return_value=1,
+        ) as mock_embed:
+            result = await service.update_index(
+                ["conv-auto-embed-0", "conv-auto-embed-1"],
+                progress_callback=capture,
+            )
+
+        assert result is True
+        assert [call.args[0] for call in mock_embed.await_args_list] == [
+            "conv-auto-embed-0",
+            "conv-auto-embed-1",
+        ]
+        assert all(
+            call.kwargs["vector_provider"] is vector_provider
+            for call in mock_embed.await_args_list
+        )
+        descriptions = [desc for _, desc in progress_events if desc is not None]
+        assert descriptions[0] == "Indexing: action events 0/6"
+        assert "Indexing: full-text search 2/6" in descriptions
+        assert "Indexing: embeddings 4/6" in descriptions
+        assert descriptions[-1] == "Indexing: embeddings 6/6"
+
+    async def test_rebuild_index_returns_false_when_auto_embed_provider_is_unavailable(self, sqlite_backend):
+        """Auto-embed requests fail loudly when no vector provider can be created."""
+        from polylogue.storage.store import ConversationRecord, MessageRecord
+
+        await sqlite_backend.save_conversation_record(
+            ConversationRecord(
+                conversation_id="conv-auto-embed-missing-provider",
+                provider_name="chatgpt",
+                provider_conversation_id="prov-auto-missing-provider",
+                title="Missing Provider",
+                content_hash="hash-auto-missing-provider",
+            )
+        )
+        await sqlite_backend.save_messages(
+            [
+                MessageRecord(
+                    message_id="msg-auto-embed-missing-provider",
+                    conversation_id="conv-auto-embed-missing-provider",
+                    role="user",
+                    text="hello missing provider",
+                    content_hash="message-hash-auto-missing-provider",
+                )
+            ]
+        )
+
+        config = Config(
+            archive_root="/tmp",
+            render_root="/tmp/render",
+            sources=[],
+            index_config=IndexConfig(voyage_api_key="test-key", auto_embed=True),
+        )
+        service = IndexService(config, backend=sqlite_backend)
+
+        with patch(
+            "polylogue.pipeline.services.indexing.create_vector_provider",
+            return_value=None,
+        ):
+            result = await service.rebuild_index()
+
+        assert result is False
 
     async def test_ensure_index_exists_success(self, sqlite_backend):
         """Ensure FTS5 index exists."""
@@ -292,4 +449,4 @@ class TestIndexServiceErrors:
         with patch("polylogue.pipeline.services.indexing.update_index_for_conversations", new_callable=AsyncMock) as mock_update:
             result = await service.update_index([])
             assert result is True
-            mock_update.assert_called_once_with([], mock_backend)
+            mock_update.assert_called_once_with([], mock_backend, phase_count=2)

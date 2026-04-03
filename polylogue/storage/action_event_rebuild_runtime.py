@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 
 import aiosqlite
 
@@ -57,6 +57,8 @@ async def rebuild_action_event_read_model_async(
     *,
     conversation_ids: Sequence[str] | None = None,
     page_size: int = 200,
+    progress_callback: Callable[[int, str | None], None] | None = None,
+    progress_desc: Callable[[int, int], str] | None = None,
 ) -> int:
     if conversation_ids is None:
         await conn.execute("DELETE FROM action_events")
@@ -67,6 +69,8 @@ async def rebuild_action_event_read_model_async(
         return 0
 
     replaced = 0
+    total = len(conversation_ids)
+    processed = 0
     for chunk in chunked(list(conversation_ids), size=page_size):
         conversations, messages, blocks = await load_async_batch(conn, chunk)
         materialized = materialize_batch(conversations, messages, blocks)
@@ -74,6 +78,10 @@ async def rebuild_action_event_read_model_async(
             records = materialized.get(conversation_id, [])
             await replace_action_events_async(conn, conversation_id, records)
             replaced += len(records)
+        processed += len(chunk)
+        if progress_callback is not None:
+            desc = progress_desc(processed, total) if progress_desc is not None else None
+            progress_callback(len(chunk), desc)
     return replaced
 
 

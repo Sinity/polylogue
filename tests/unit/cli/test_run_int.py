@@ -218,7 +218,7 @@ def test_display_result_reports_render_failures(mock_env, capsys):
     captured = capsys.readouterr()
     assert "Render failures (15)" in captured.err
     assert "and 5 more" in captured.err
-    assert "re-run with `polylogue run --stage render`" in captured.err
+    assert "re-run with `polylogue run render`" in captured.err
 
 
 def test_display_result_reports_index_error_hint(mock_env, capsys):
@@ -237,7 +237,7 @@ def test_display_result_reports_index_error_hint(mock_env, capsys):
 
     captured = capsys.readouterr()
     assert "Index error: Database locked" in captured.err
-    assert "run `polylogue run --stage index`" in captured.err
+    assert "run `polylogue run index`" in captured.err
 
 
 class TestWatchModeCallbacks:

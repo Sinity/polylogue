@@ -60,6 +60,7 @@ class ArtifactCohortSummary(BaseModel):
 class PlanResult(BaseModel):
     timestamp: int
     stage: PlanStage = PlanStage.ALL
+    stage_sequence: list[PlanStage] = Field(default_factory=list)
     counts: dict[str, int]
     details: dict[str, int] = Field(default_factory=dict)
     sources: list[str]
@@ -69,6 +70,14 @@ class PlanResult(BaseModel):
     @classmethod
     def coerce_stage(cls, v: object) -> PlanStage:
         return PlanStage.from_string(str(v))
+
+    @field_validator("stage_sequence", mode="before")
+    @classmethod
+    def coerce_stage_sequence(cls, v: object) -> list[PlanStage]:
+        if v is None:
+            return []
+        values = v if isinstance(v, list) else list(v) if isinstance(v, tuple) else [v]
+        return [PlanStage.from_string(str(item)) for item in values]
 
 
 class RawConversationState(BaseModel):

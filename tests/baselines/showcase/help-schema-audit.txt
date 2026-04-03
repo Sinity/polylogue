@@ -1,0 +1,8 @@
+Usage: python -m polylogue schema audit [OPTIONS]
+
+  Run automated quality checks on committed schema packages.
+
+Options:
+  --provider TEXT  Audit a specific provider (default: all)
+  --json           Output as JSON
+  -h, --help       Show this message and exit.

@@ -1,0 +1,6 @@
+Usage: python -m polylogue run schema [OPTIONS]
+
+  Infer schemas from acquired raw payloads.
+
+Options:
+  -h, --help  Show this message and exit.

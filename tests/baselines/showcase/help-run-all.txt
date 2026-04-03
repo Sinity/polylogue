@@ -1,0 +1,6 @@
+Usage: python -m polylogue run all [OPTIONS]
+
+  Run the full pipeline.
+
+Options:
+  -h, --help  Show this message and exit.
