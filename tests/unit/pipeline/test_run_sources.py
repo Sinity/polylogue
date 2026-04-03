@@ -154,19 +154,13 @@ class TestRunSourcesIntegration:
 
         # Stages are now independent: validate/parse don't re-run predecessors.
         # Pre-populate the pipeline backlog so each stage has work to find.
-        if stage == "validate" and sources:
+        # "validate" is now an alias for "parse" (validation is inline in ingest).
+        if stage in ("validate", "parse") and sources:
             asyncio.run(run_sources(config=config, stage="acquire"))
-        elif stage == "parse" and sources:
-            asyncio.run(run_sources(config=config, stage="acquire"))
-            asyncio.run(run_sources(config=config, stage="validate"))
 
         result = asyncio.run(run_sources(config=config, stage=stage))
 
-        if stage == "validate":
-            assert result.counts.get("validated", 0) >= 1
-            assert result.counts["conversations"] == 0
-            assert result.indexed is False
-        elif stage == "parse":
+        if stage in ("validate", "parse"):
             assert result.counts["conversations"] >= 1
             assert result.counts.get("rendered", 0) == 0
             assert result.indexed is False
@@ -219,9 +213,8 @@ class TestRunSourcesIntegration:
             render_root=workspace_env["archive_root"] / "render",
         )
 
-        # Stages are independent: populate pipeline backlog before testing parse stage
+        # Acquire + parse (validation is inline in ingest)
         asyncio.run(run_sources(config=config, stage="acquire"))
-        asyncio.run(run_sources(config=config, stage="validate"))
         result = asyncio.run(run_sources(config=config, stage="parse", plan=None))
         assert result.drift["new"]["conversations"] == result.counts["new_conversations"]
         assert result.counts["conversations"] == (

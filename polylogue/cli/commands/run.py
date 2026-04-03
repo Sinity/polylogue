@@ -5,6 +5,7 @@ from __future__ import annotations
 import click
 
 from polylogue.cli.helpers import (
+    complete_run_source_names,
     fail,
     maybe_prompt_sources,
     resolve_sources,
@@ -51,7 +52,7 @@ from polylogue.sync_bridge import run_coroutine_sync
     default="all",
     show_default=True,
     help=(
-        "Pipeline stage: acquire (store raw), validate (schema check raw payloads), "
+        "Pipeline stage: acquire (store raw), "
         "parse (extract conversations), render (output), index (search), "
         "generate-schemas, or all"
     ),
@@ -60,7 +61,8 @@ from polylogue.sync_bridge import run_coroutine_sync
     "--source",
     "sources",
     multiple=True,
-    help="Limit to source name (repeatable). 'last' = previously synced source. List with: polylogue sources",
+    shell_complete=complete_run_source_names,
+    help="Configured source name (repeatable). Accepts 'last' for the previously synced source.",
 )
 @click.option(
     "--format",

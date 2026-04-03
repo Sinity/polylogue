@@ -244,6 +244,7 @@ class TestQueryFirstGroupParseArgs:
         assert "products" in result.output
         assert "--provider" in result.output
         assert "--latest" in result.output
+        assert "Subcommands:" not in result.output
 
 
 class TestQueryFirstGroupInvoke:
@@ -389,6 +390,7 @@ class TestCliMetadata:
         assert result.exit_code == 0
         for command in ("run", "check", "embed", "site", "mcp", "tags"):
             assert command in result.output
+        assert result.output.count("Commands:") == 1
 
     def test_all_subcommands_registered(self):
         from polylogue.cli.click_app import cli

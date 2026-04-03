@@ -79,7 +79,6 @@ async def execute_ingest_stage(
         progress_callback=progress_callback,
         parse_records=stage in PARSE_STAGES,
         skip_acquire=stage in {"validate", "parse"},
-        skip_validate=stage == "parse",
     )
 
 

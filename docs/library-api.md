@@ -70,7 +70,6 @@ async with Polylogue() as archive:
     enrichments = await archive.list_session_enrichment_products(
         SessionEnrichmentProductQuery(
             provider="claude-code",
-            refined_work_kind="debugging",
             limit=25,
         )
     )
@@ -106,7 +105,6 @@ conversations.
 - `intent_summary`
 - `outcome_summary`
 - `blockers`
-- `refined_work_kind`
 - `confidence`
 - `support_level`
 - `support_signals`

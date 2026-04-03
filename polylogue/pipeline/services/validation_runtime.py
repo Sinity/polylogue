@@ -27,12 +27,18 @@ class _ValidationOutcome:
     drift_counts_delta: dict[str, int] = field(default_factory=dict)
 
 
+from polylogue.schemas.validator import SchemaValidator as _SchemaValidator
+
+
 def _validate_record_sync(
     raw_record: RawConversationRecord,
     validation_mode: ValidationMode,
 ) -> _ValidationOutcome:
     """Run CPU-bound validation for a single raw record."""
-    from polylogue.schemas.validator import SchemaValidator
+    import time as _time
+
+    t_start = _time.perf_counter()
+    SchemaValidator = _SchemaValidator
 
     counts_delta: dict[str, int] = {
         "validated": 0,
@@ -52,6 +58,7 @@ def _validate_record_sync(
     blob_store = get_blob_store()
     raw_source = blob_store.blob_path(raw_record.raw_id)
 
+    t_decode = _time.perf_counter()
     try:
         envelope = build_raw_payload_envelope(
             raw_source,
@@ -167,6 +174,18 @@ def _validate_record_sync(
                 )
     elif parseable:
         validation_status = ValidationStatus.SKIPPED
+
+    total_elapsed = _time.perf_counter() - t_start
+    decode_elapsed = _time.perf_counter() - t_decode  # approximate — includes validation too
+    if total_elapsed > 1.0:
+        logger.info(
+            "slow_validate",
+            raw_id=raw_record.raw_id[:16],
+            elapsed_s=round(total_elapsed, 2),
+            blob_mb=round(raw_record.blob_size / (1024 * 1024), 1),
+            provider=raw_record.provider_name,
+            status=str(validation_status),
+        )
 
     return _ValidationOutcome(
         validation_status=validation_status,

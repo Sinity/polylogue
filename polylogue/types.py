@@ -141,7 +141,6 @@ class PlanStage(str, Enum):
 
     ALL = "all"
     ACQUIRE = "acquire"
-    VALIDATE = "validate"
     PARSE = "parse"
     INDEX = "index"
     RENDER = "render"

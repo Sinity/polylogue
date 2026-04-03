@@ -211,7 +211,7 @@ def format_plan_details(details: Mapping[str, object]) -> str | None:
 
 
 def format_index_status(stage: str, indexed: bool, index_error: str | None) -> str:
-    if stage in {"parse", "render"}:
+    if stage == "render":
         return "Index: skipped"
     if index_error:
         return "Index: error"
