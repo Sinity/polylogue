@@ -13,7 +13,6 @@ from polylogue.storage.session_product_aggregates import (
     profile_provider_day,
     refresh_async_provider_day_aggregates,
 )
-from polylogue.storage.session_product_profiles import hydrate_session_profile
 from polylogue.storage.session_product_rebuild import (
     build_session_product_records,
     chunked,
@@ -21,7 +20,7 @@ from polylogue.storage.session_product_rebuild import (
     load_async_batch,
 )
 from polylogue.storage.session_product_threads import (
-    load_thread_profile_records_async,
+    build_thread_records_for_roots_async,
     thread_root_id_async,
     thread_root_ids_async,
 )
@@ -59,24 +58,35 @@ async def _refresh_thread_root_async(
     *,
     transaction_depth: int,
 ) -> int:
-    from polylogue.lib.threads import build_session_threads
+    return await _refresh_thread_roots_async(
+        conn,
+        [root_id] if root_id is not None else [],
+        transaction_depth=transaction_depth,
+    )
+
+
+async def _refresh_thread_roots_async(
+    conn: aiosqlite.Connection,
+    root_ids: Sequence[str],
+    *,
+    transaction_depth: int,
+) -> int:
     from polylogue.storage.backends.queries.session_product_thread_queries import (
         replace_work_thread,
     )
-    from polylogue.storage.session_product_threads import build_work_thread_record
 
-    if root_id is None:
+    normalized_root_ids = tuple(dict.fromkeys(str(root_id) for root_id in root_ids if str(root_id)))
+    if not normalized_root_ids:
         return 0
 
-    profile_records = await load_thread_profile_records_async(conn, root_id)
-    profiles = [hydrate_session_profile(record) for record in profile_records]
-    threads = build_session_threads(profiles)
-    record = next(
-        (build_work_thread_record(thread) for thread in threads if thread.thread_id == root_id),
-        None,
-    )
-    await replace_work_thread(conn, root_id, record, transaction_depth)
-    return 1 if record is not None else 0
+    thread_records = await build_thread_records_for_roots_async(conn, normalized_root_ids)
+    refreshed = 0
+    for root_id in normalized_root_ids:
+        record = thread_records.get(root_id)
+        await replace_work_thread(conn, root_id, record, transaction_depth)
+        if record is not None:
+            refreshed += 1
+    return refreshed
 
 
 async def refresh_thread_after_conversation_delete_async(

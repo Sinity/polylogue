@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 try:
     import jsonschema
@@ -27,6 +27,9 @@ from .validator_resolution import (
     resolve_payload_schema,
     resolve_provider_schema,
 )
+
+if TYPE_CHECKING:
+    from polylogue.schemas.packages import SchemaResolution
 
 # ---------------------------------------------------------------------------
 # Validation result model
@@ -168,12 +171,14 @@ class SchemaValidator:
         payload: Any,
         *,
         source_path: str | None = None,
+        schema_resolution: SchemaResolution | None = None,
         strict: bool = True,
     ) -> SchemaValidator:
         canonical, schema, base_key = resolve_payload_schema(
             provider,
             payload,
             source_path=source_path,
+            schema_resolution=schema_resolution,
             registry_cls=SchemaRegistry,
         )
         key = (*base_key, strict)
@@ -188,10 +193,11 @@ class SchemaValidator:
     def available_providers(cls) -> list[str]:
         return _available_providers(registry_cls=SchemaRegistry)
 
-    def validate(self, data: Any) -> ValidationResult:
+    def validate(self, data: Any, *, include_drift: bool | None = None) -> ValidationResult:
         errors = [format_validation_error(error) for error in self._validator.iter_errors(data)]
         drift_warnings: list[str] = []
-        if self.strict and isinstance(data, dict):
+        should_detect_drift = self.strict if include_drift is None else include_drift
+        if should_detect_drift and isinstance(data, dict):
             drift_warnings.extend(detect_drift(data, self.schema, ""))
         return ValidationResult(
             is_valid=len(errors) == 0,

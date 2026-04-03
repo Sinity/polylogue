@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import hashlib
 import os
-import shutil
 import tempfile
 from collections.abc import Iterator
 from pathlib import Path
@@ -81,6 +80,49 @@ class BlobStore:
                     if not chunk:
                         break
                     os.write(fd, chunk)
+            os.close(fd)
+            fd = None
+            os.replace(tmp_path, dest)
+            tmp_path = None
+        finally:
+            if fd is not None:
+                os.close(fd)
+            if tmp_path is not None and os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+
+        return hash_hex, size
+
+    def write_from_fileobj(self, source: BinaryIO) -> tuple[str, int]:
+        """Stream-hash an open binary file-like object into the store.
+
+        Reads from ``source`` in 128 KB chunks, hashing and writing to a
+        temporary file in one pass. Returns ``(sha256_hex, byte_count)``.
+        """
+        hasher = hashlib.sha256()
+        size = 0
+        self.root.mkdir(parents=True, exist_ok=True)
+        fd = None
+        tmp_path: str | None = None
+        try:
+            fd, tmp_path = tempfile.mkstemp(dir=self.root, prefix=".blob.")
+            while True:
+                chunk = source.read(_CHUNK_SIZE)
+                if not chunk:
+                    break
+                hasher.update(chunk)
+                size += len(chunk)
+                os.write(fd, chunk)
+
+            hash_hex = hasher.hexdigest()
+            dest = self.blob_path(hash_hex)
+            if dest.exists():
+                os.close(fd)
+                fd = None
+                os.unlink(tmp_path)
+                tmp_path = None
+                return hash_hex, size
+
+            dest.parent.mkdir(parents=True, exist_ok=True)
             os.close(fd)
             fd = None
             os.replace(tmp_path, dest)

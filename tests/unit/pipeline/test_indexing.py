@@ -110,6 +110,53 @@ class TestIndexService:
         result = await service.rebuild_index()
         assert result is True
 
+    async def test_rebuild_index_reports_chunk_progress(self, sqlite_backend):
+        """Full rebuild reports subphase progress with explicit totals."""
+        from polylogue.storage.store import ConversationRecord, MessageRecord
+
+        for index in range(3):
+            conversation_id = f"conv-progress-{index}"
+            await sqlite_backend.save_conversation_record(
+                ConversationRecord(
+                    conversation_id=conversation_id,
+                    provider_name="chatgpt",
+                    provider_conversation_id=f"prov-{index}",
+                    title=f"Conversation {index}",
+                    content_hash=f"hash-{index}",
+                )
+            )
+            await sqlite_backend.save_messages(
+                [
+                    MessageRecord(
+                        message_id=f"msg-progress-{index}",
+                        conversation_id=conversation_id,
+                        role="user",
+                        text=f"Hello from conversation {index}",
+                        content_hash=f"message-hash-{index}",
+                    )
+                ]
+            )
+
+        config = Config(
+            archive_root="/tmp",
+            render_root="/tmp/render",
+            sources=[],
+        )
+        service = IndexService(config, backend=sqlite_backend)
+        progress_events: list[tuple[int, str | None]] = []
+
+        def capture(amount: int, desc: str | None = None) -> None:
+            progress_events.append((amount, desc))
+
+        result = await service.rebuild_index(progress_callback=capture)
+
+        assert result is True
+        assert progress_events
+        descriptions = [desc for _, desc in progress_events if desc is not None]
+        assert descriptions[0] == "Indexing: action events 0/6"
+        assert "Indexing: full-text search 3/6" in descriptions
+        assert descriptions[-1] == "Indexing: full-text search 6/6"
+
     async def test_ensure_index_exists_success(self, sqlite_backend):
         """Ensure FTS5 index exists."""
         config = Config(

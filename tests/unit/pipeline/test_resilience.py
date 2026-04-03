@@ -492,6 +492,86 @@ def test_ingest_worker_decodes_and_dispatches_provider(tmp_path: Path) -> None:
     assert result.error is None
 
 
+def test_ingest_worker_reuses_schema_resolution_and_skips_drift_walk(tmp_path: Path, monkeypatch) -> None:
+    """Parse-path validation should reuse one schema resolution and avoid unused drift traversal."""
+    from polylogue.pipeline.services.ingest_worker import ingest_record
+    from polylogue.schemas import ValidationResult
+    from polylogue.schemas.packages import SchemaResolution
+
+    payload = json.dumps({
+        "id": "conv-1",
+        "title": "Test Conversation",
+        "mapping": {},
+        "create_time": 1700000000,
+        "update_time": 1700000001,
+    }).encode()
+    raw_record = _make_raw_record(
+        raw_id="ignored",
+        provider="chatgpt",
+        content=payload,
+        path="/tmp/conversation.json",
+    )
+
+    resolution = SchemaResolution(
+        provider="chatgpt",
+        package_version="v1",
+        element_kind="conversation_document",
+        exact_structure_id="shape-1",
+        bundle_scope=None,
+        reason="exact_structure",
+    )
+    observed: dict[str, object] = {}
+
+    class _CapturingRegistry:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def resolve_payload(self, provider, payload, *, source_path=None):
+            self.calls += 1
+            observed["registry_provider"] = provider
+            observed["registry_source_path"] = source_path
+            observed["registry_payload"] = payload
+            return resolution
+
+    registry = _CapturingRegistry()
+    monkeypatch.setattr("polylogue.pipeline.services.ingest_worker._SCHEMA_REGISTRY", registry)
+
+    class _CapturingValidator:
+        provider = "chatgpt"
+
+        def validation_samples(self, payload, max_samples=None):
+            return [payload]
+
+        def validate(self, _sample, *, include_drift=None):
+            observed["include_drift"] = include_drift
+            return ValidationResult(is_valid=True)
+
+    def _fake_for_payload(provider, payload, *, source_path=None, schema_resolution=None, strict=True):
+        observed["validator_provider"] = provider
+        observed["validator_source_path"] = source_path
+        observed["validator_payload"] = payload
+        observed["validator_schema_resolution"] = schema_resolution
+        observed["validator_strict"] = strict
+        return _CapturingValidator()
+
+    def _fake_parse_payload(provider, payload, fallback_id, _depth=0, *, schema_resolution=None):
+        observed["parse_provider"] = provider
+        observed["parse_schema_resolution"] = schema_resolution
+        observed["parse_fallback_id"] = fallback_id
+        return []
+
+    monkeypatch.setattr("polylogue.schemas.validator.SchemaValidator.for_payload", _fake_for_payload)
+    monkeypatch.setattr("polylogue.sources.dispatch.parse_payload", _fake_parse_payload)
+
+    result = ingest_record(raw_record, str(tmp_path / "archive"), "strict")
+
+    assert result.error is None
+    assert registry.calls == 1
+    assert observed["validator_schema_resolution"] is resolution
+    assert observed["parse_schema_resolution"] is resolution
+    assert observed["include_drift"] is False
+
+
 def test_transform_with_tool_use_message_keeps_non_empty_message_hash(tmp_path: Path) -> None:
     from polylogue.pipeline.services.ingest_worker import _transform_to_tuples
 

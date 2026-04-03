@@ -568,6 +568,42 @@ def test_iter_source_conversations_with_raw_streams_plain_grouped_capture_to_blo
     assert conversation.provider_name == Provider.CLAUDE_CODE
 
 
+def test_iter_source_conversations_with_raw_streams_grouped_zip_capture_to_blob_store(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from polylogue.storage.blob_store import BlobStore, get_blob_store
+
+    archive_path = tmp_path / "bundle.zip"
+    content = (
+        '{"type":"user","uuid":"u1","sessionId":"s1","message":{"content":"hello"}}\n'
+        '{"type":"assistant","uuid":"a1","sessionId":"s1","message":{"content":"hi"}}\n'
+    )
+    with zipfile.ZipFile(archive_path, "w") as zf:
+        zf.writestr("nested/session.jsonl", content)
+
+    write_calls = 0
+    original_write_from_fileobj = BlobStore.write_from_fileobj
+
+    def tracking_write_from_fileobj(self: BlobStore, source) -> tuple[str, int]:
+        nonlocal write_calls
+        write_calls += 1
+        return original_write_from_fileobj(self, source)
+
+    monkeypatch.setattr(BlobStore, "write_from_fileobj", tracking_write_from_fileobj)
+
+    items = list(iter_source_conversations_with_raw(Source(name="claude-code", path=archive_path)))
+
+    assert write_calls == 1
+    assert len(items) == 1
+    raw_data, conversation = items[0]
+    assert raw_data is not None
+    assert raw_data.blob_hash is not None
+    assert raw_data.raw_bytes == b""
+    assert get_blob_store().read_all(raw_data.blob_hash) == content.encode("utf-8")
+    assert conversation.provider_name == Provider.CLAUDE_CODE
+
+
 def test_iter_source_conversations_with_raw_assigns_source_indexes_for_multi_conversation_zip_contract(
     tmp_path: Path,
 ) -> None:
@@ -1296,6 +1332,45 @@ def test_conversation_emitter_reuses_jsonl_sniff_payloads_for_individual_detecti
     assert all(conversation.provider_name == Provider.CHATGPT for _, conversation in emitted)
 
 
+def test_conversation_emitter_detects_individual_jsonl_provider_from_payloads(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class NoWholeReadBytesIO(BytesIO):
+        def read(self, size: int = -1) -> bytes:
+            if size == -1:
+                raise AssertionError("unexpected whole-file read")
+            return super().read(size)
+
+    ctx = _ParseContext(
+        provider_hint=Provider.UNKNOWN,
+        should_group=False,
+        source_path_str="/tmp/session.jsonl",
+        fallback_id="session",
+        file_mtime="2026-03-11T00:00:00+00:00",
+        capture_raw=True,
+        session_index={},
+    )
+    raw = (
+        b'{"mapping":{"r1":{"message":{"author":{"role":"user"},"content":{"content_type":"text","parts":["first"]}}}}}\n'
+        b'{"mapping":{"r1":{"message":{"author":{"role":"assistant"},"content":{"content_type":"text","parts":["second"]}}}}}\n'
+    )
+    original_detect_provider = dispatch_module.detect_provider
+
+    def tracking_detect_provider(payload: object, path: object | None = None):
+        if isinstance(payload, list):
+            raise AssertionError("individual JSONL sniff should not require whole-list provider detection")
+        return original_detect_provider(payload, path)
+
+    monkeypatch.setattr("polylogue.sources.emitter.detect_provider", tracking_detect_provider)
+
+    emitted = list(_ConversationEmitter(ctx).emit(NoWholeReadBytesIO(raw), "session.jsonl"))
+
+    assert emitted
+    assert [raw_data.source_index for raw_data, _ in emitted if raw_data is not None] == [0, 1]
+    assert all(raw_data is not None for raw_data, _ in emitted)
+    assert all(conversation.provider_name == Provider.CHATGPT for _, conversation in emitted)
+
+
 def test_conversation_emitter_only_enriches_matching_claude_code_sessions_contract() -> None:
     entry = SessionIndexEntry(
         session_id="session-1",
@@ -1566,6 +1641,29 @@ def test_iter_source_raw_data_reads_plain_and_zip_sources_contract(tmp_path: Pat
     assert zip_items[0].file_mtime is not None
 
 
+def test_iter_source_raw_data_streams_grouped_zip_entries_into_blob_store(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from polylogue.storage.blob_store import BlobStore, get_blob_store
+
+    entry_bytes = b'{"type":"user","message":{"role":"user","content":[{"type":"text","text":"hello"}]}}\n'
+    archive_path = tmp_path / "bundle.zip"
+    with zipfile.ZipFile(archive_path, "w") as zf:
+        zf.writestr("nested/session.jsonl", entry_bytes)
+
+    def _fail(*args, **kwargs):
+        raise AssertionError("Grouped ZIP acquisition should stream into the blob store")
+
+    monkeypatch.setattr(BlobStore, "write_from_bytes", _fail)
+
+    items = list(iter_source_raw_data(Source(name="claude-code", path=archive_path)))
+
+    assert len(items) == 1
+    assert items[0].blob_hash is not None
+    assert get_blob_store().read_all(items[0].blob_hash) == entry_bytes
+
+
 @pytest.mark.parametrize(
     ("entry_name", "payload_bytes", "expected_provider", "id_field", "expected_ids"),
     [
@@ -1688,6 +1786,29 @@ def test_iter_source_raw_data_reports_split_payload_observations(tmp_path: Path)
     assert float(peak["classify_ms"]) >= 0.0
     assert float(peak["serialize_ms"]) >= 0.0
     assert float(peak["peak_rss_self_mb"]) > 0.0
+
+
+def test_iter_source_raw_data_streams_preserved_zip_entries_into_blob_store(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from polylogue.storage.blob_store import BlobStore, get_blob_store
+
+    entry_bytes = json.dumps({"id": "chatgpt-1", "mapping": {}}).encode("utf-8")
+    archive_path = tmp_path / "bundle.zip"
+    with zipfile.ZipFile(archive_path, "w") as zf:
+        zf.writestr("nested/chatgpt-export.json", entry_bytes)
+
+    def _fail(*args, **kwargs):
+        raise AssertionError("Preserved ZIP entries should stream into the blob store")
+
+    monkeypatch.setattr(BlobStore, "write_from_bytes", _fail)
+
+    items = list(iter_source_raw_data(Source(name="chatgpt", path=archive_path)))
+
+    assert len(items) == 1
+    assert items[0].blob_hash is not None
+    assert get_blob_store().read_all(items[0].blob_hash) == entry_bytes
 
 
 def test_iter_entry_payloads_locks_provider_after_first_detected_payload(
