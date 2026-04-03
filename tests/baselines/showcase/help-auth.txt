@@ -1,0 +1,14 @@
+Usage: python -m polylogue auth [OPTIONS]
+
+  Authenticate with external services (Google Drive for Gemini).
+
+  Examples:
+      polylogue auth           # Interactive OAuth for Google Drive
+      polylogue auth --refresh # Force token refresh
+      polylogue auth --revoke  # Revoke stored credentials
+
+Options:
+  --service TEXT  Auth service (default: drive)
+  --refresh       Force token refresh
+  --revoke        Revoke existing credentials
+  -h, --help      Show this message and exit.

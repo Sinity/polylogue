@@ -1,0 +1,44 @@
+Usage: python -m polylogue qa [OPTIONS]
+
+  Run composable QA: schema audit, exercises, and invariant checks.
+
+  By default, creates a fresh workspace with synthetic data and runs
+  all stages: audit → exercises → invariants.
+
+  Examples:
+    polylogue qa                              # Full synthetic QA
+    polylogue qa --live                       # Exercises against real data
+    polylogue qa --source inbox               # Fresh workspace from inbox
+    polylogue qa --only audit                 # Schema audit only
+    polylogue qa --only exercises --tier 0    # Tier-0 smoke test
+    polylogue qa --skip invariants            # Skip invariant checks
+    polylogue qa --snapshot release-v3        # QA + archive results
+    polylogue qa --snapshot-from ./qa_outputs # Archive existing directory
+
+Options:
+  --synthetic / --live            Data source: synthetic (default) or live
+                                  real data
+  --source TEXT                   Configured real source name (repeatable,
+                                  implies --fresh)
+  --fresh                         Run in an isolated temp workspace (default
+                                  for synthetic)
+  --workspace PATH                Reuse a specific workspace directory
+  --ingest                        Run ingestion pipeline (auto for synthetic
+                                  and fresh-with-sources)
+  --schemas                       Regenerate schemas during pipeline
+  --only [audit|exercises|invariants]
+                                  Run only this stage
+  --skip [audit|exercises|invariants]
+                                  Skip this stage (repeatable)
+  --tier INTEGER                  Only run exercises at this tier (0/1/2)
+  --fail-fast                     Stop on first exercise failure
+  --capture [none|vhs]            Capture mode for exercises  [default: none]
+  --report-dir PATH               Directory for QA artifacts (auto-generated
+                                  if omitted)
+  --json                          Machine-readable output
+  --verbose                       Print exercise outputs
+  --snapshot TEXT                 Archive results after QA completes (optional
+                                  label)
+  --snapshot-from DIRECTORY       Archive an existing output directory (skips
+                                  QA execution)
+  -h, --help                      Show this message and exit.

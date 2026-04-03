@@ -12,14 +12,18 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
 from hypothesis import HealthCheck, given, settings
 
 from polylogue.config import Source
 from polylogue.pipeline.services.acquisition import AcquisitionService
-from polylogue.pipeline.services.parsing import ParseResult, ParsingService
+from polylogue.pipeline.services.parsing import ParseResult
 from polylogue.pipeline.services.validation import ValidationService
-from polylogue.sources.parsers.base import ParsedConversation, RawConversationData
+from polylogue.sources.parsers.base import (
+    ParsedContentBlock,
+    ParsedConversation,
+    ParsedMessage,
+    RawConversationData,
+)
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.store import RawConversationRecord
 from polylogue.types import ValidationStatus
@@ -486,3 +490,42 @@ def test_ingest_worker_decodes_and_dispatches_provider(tmp_path: Path) -> None:
     assert isinstance(result.conversations, list)
     # Result should be clean with no errors
     assert result.error is None
+
+
+def test_transform_with_tool_use_message_keeps_non_empty_message_hash(tmp_path: Path) -> None:
+    from polylogue.pipeline.services.ingest_worker import _transform_to_tuples
+
+    conversation = ParsedConversation(
+        provider_name="codex",
+        provider_conversation_id="tool-conv-1",
+        title="Tool Conversation",
+        created_at="2026-04-02T00:00:00Z",
+        updated_at="2026-04-02T00:00:01Z",
+        messages=[
+            ParsedMessage(
+                provider_message_id="msg-1",
+                role="assistant",
+                text="Running a shell command.",
+                timestamp="2026-04-02T00:00:01Z",
+                content_blocks=[
+                    ParsedContentBlock(
+                        type="tool_use",
+                        tool_name="bash",
+                        tool_id="tool-1",
+                        tool_input={"command": "ls /tmp"},
+                    )
+                ],
+            )
+        ],
+        attachments=[],
+    )
+
+    cdata = _transform_to_tuples(
+        conversation,
+        source_name="test-source",
+        archive_root=tmp_path / "archive",
+        raw_id="raw-1",
+    )
+
+    assert cdata.message_tuples[0][6]
+    assert len(cdata.action_event_tuples) == 1

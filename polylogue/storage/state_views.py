@@ -149,6 +149,7 @@ class RunResult(BaseModel):
     index_error: str | None
     duration_ms: int
     render_failures: list[dict[str, str]] = Field(default_factory=list)
+    run_path: str | None = None
 
 
 class ExistingConversation(BaseModel):

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import sqlite3
 from contextlib import suppress
 
@@ -40,13 +41,41 @@ def _table_columns(conn: sqlite3.Connection, table_name: str) -> set[str]:
     return {row[1] for row in conn.execute(f"PRAGMA table_info({table_name})").fetchall()}
 
 
+def _index_sql(conn: sqlite3.Connection, index_name: str) -> str | None:
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='index' AND name=?",
+        (index_name,),
+    ).fetchone()
+    if row is None:
+        return None
+    sql = row[0]
+    return sql if isinstance(sql, str) else None
+
+
+def _normalize_sql(sql: str) -> str:
+    normalized = " ".join(sql.replace(";", " ").split())
+    normalized = re.sub(r"\bIF\s+NOT\s+EXISTS\b", "", normalized, flags=re.IGNORECASE)
+    return " ".join(normalized.split())
+
+
+def _ensure_raw_source_mtime_index(conn: sqlite3.Connection) -> None:
+    desired_sql = (
+        "CREATE INDEX IF NOT EXISTS idx_raw_conv_source_mtime "
+        "ON raw_conversations(source_path, file_mtime) "
+        "WHERE file_mtime IS NOT NULL"
+    )
+    existing_sql = _index_sql(conn, "idx_raw_conv_source_mtime")
+    if existing_sql is not None and _normalize_sql(existing_sql) == _normalize_sql(desired_sql):
+        return
+    if existing_sql is not None:
+        logger.info("Replacing idx_raw_conv_source_mtime with partial covering definition")
+        conn.execute("DROP INDEX IF EXISTS idx_raw_conv_source_mtime")
+    conn.execute(desired_sql)
+
+
 def apply_current_schema_extensions(conn: sqlite3.Connection) -> None:
-    # Covering index for mtime-skip queries (avoids full table scan of 22 GB raw_content)
-    conn.execute("""
-        CREATE INDEX IF NOT EXISTS idx_raw_conv_source_mtime
-        ON raw_conversations(source_path, file_mtime)
-        WHERE file_mtime IS NOT NULL
-    """)
+    # Covering index for mtime-skip queries (avoids full table scan of raw payload storage)
+    _ensure_raw_source_mtime_index(conn)
     conn.executescript(_ARTIFACT_OBSERVATION_DDL)
     conn.executescript(_PUBLICATION_DDL)
     conn.executescript(_ACTION_EVENT_DDL)

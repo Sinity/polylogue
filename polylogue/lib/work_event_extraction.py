@@ -9,6 +9,11 @@ from enum import Enum
 from typing import TYPE_CHECKING
 
 from polylogue.lib.phase_extraction import extract_phases
+from polylogue.lib.semantic_facts import (
+    ConversationSemanticFacts,
+    MessageSemanticFacts,
+    build_conversation_semantic_facts,
+)
 
 # Strip XML-like protocol artifacts from user messages before summarizing.
 # Claude Code sessions contain <command-name>, <task-notification>,
@@ -41,11 +46,6 @@ def _clean_summary_text(text: str) -> str:
     # Collapse whitespace
     cleaned = _WHITESPACE_RE.sub(" ", cleaned).strip()
     return cleaned[:100] if cleaned else ""
-from polylogue.lib.semantic_facts import (
-    ConversationSemanticFacts,
-    MessageSemanticFacts,
-    build_conversation_semantic_facts,
-)
 
 
 class WorkEventKind(str, Enum):
@@ -201,7 +201,6 @@ def _classify_message_range(
     shell_count = category_counts.get("shell", 0)
     git_count = category_counts.get("git", 0)
     agent_count = category_counts.get("agent", 0) + category_counts.get("subagent", 0)
-    total_actions = sum(category_counts.values())
 
     # Strong action evidence overrides text signals
     if edit_count >= 2:
@@ -333,11 +332,13 @@ def extract_work_events(
                 tools_used.append(action.tool_name)
                 file_paths.extend(action.affected_paths)
 
-        user_texts = [
-            _clean_summary_text(message.text)
-            for message in messages[chunk_start:chunk_end]
-            if message.is_user and message.text and _clean_summary_text(message.text)
-        ]
+        user_texts: list[str] = []
+        for message in messages[chunk_start:chunk_end]:
+            if not message.is_user or not message.text:
+                continue
+            cleaned_text = _clean_summary_text(message.text)
+            if cleaned_text:
+                user_texts.append(cleaned_text)
         summary = "; ".join(user_texts)[:200] if user_texts else kind.value
         timestamps = [
             message.timestamp

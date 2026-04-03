@@ -116,6 +116,7 @@ async def iter_raw_record_stream(
     async for raw_data in raw_stream:
         if not raw_data.raw_bytes and not raw_data.blob_hash:
             continue
+        raw_source_path = raw_data.source_path
         try:
             record = make_raw_record(raw_data, source.name)
             # Explicitly break reference to raw bytes so GC can collect them
@@ -126,7 +127,7 @@ async def iter_raw_record_stream(
             logger.warning(
                 "Skipping raw payload",
                 source=source.name,
-                path=raw_data.source_path,
+                path=raw_source_path,
                 error=str(exc),
             )
 

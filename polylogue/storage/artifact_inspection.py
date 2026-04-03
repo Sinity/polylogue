@@ -11,10 +11,10 @@ from polylogue.lib.raw_payload import build_raw_payload_envelope
 from polylogue.schemas.observation import derive_bundle_scope, schema_cluster_id
 from polylogue.schemas.runtime_registry import SchemaRegistry
 from polylogue.storage.blob_store import get_blob_store
-
-_SCHEMA_REGISTRY = SchemaRegistry()
 from polylogue.storage.store import ArtifactObservationRecord, RawConversationRecord
 from polylogue.types import ArtifactSupportStatus, Provider
+
+_SCHEMA_REGISTRY = SchemaRegistry()
 
 
 def artifact_observation_id(

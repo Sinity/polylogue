@@ -7,6 +7,8 @@ from collections.abc import Iterable
 from typing import Any
 
 from polylogue.config import Source
+from polylogue.lib.artifact_taxonomy import classify_artifact
+from polylogue.lib.json import dumps as json_dumps
 from polylogue.logging import get_logger
 from polylogue.storage.blob_store import get_blob_store
 from polylogue.types import Provider
@@ -15,7 +17,7 @@ from . import cursor as _cursor
 from . import decoders as _decoders
 from .cursor import _log_source_iteration_summary, _record_cursor_failure
 from .decoders import _zip_entry_provider_hint, _ZipEntryValidator
-from .dispatch import _detect_provider_from_raw_bytes
+from .dispatch import GROUP_PROVIDERS, _detect_provider_from_raw_bytes, detect_provider
 from .parsers.base import RawConversationData
 from .source_walk import _setup_source_walk
 
@@ -24,6 +26,43 @@ _cursor.logger = logger
 _decoders.logger = logger
 
 _DETECTION_PREFIX_SIZE = 8192  # 8 KB — enough for provider detection
+
+
+def _iter_entry_payloads(
+    handle,
+    *,
+    stream_name: str,
+    provider_hint: Provider,
+) -> Iterable[tuple[Provider, Any]]:
+    """Yield payloads from a streamed JSON/JSONL document with provider hints."""
+    current_provider = provider_hint
+    for payload in _decoders._iter_json_stream(handle, stream_name):
+        provider = detect_provider(payload) or current_provider
+        if provider is not Provider.UNKNOWN:
+            current_provider = provider
+        yield (provider, payload)
+
+
+def _make_split_entry_raw_data(
+    *,
+    blob_store,
+    payload_bytes: bytes,
+    source_path: str,
+    source_index: int,
+    file_mtime: str | None,
+    provider_hint: Provider,
+) -> RawConversationData:
+    """Persist a split payload to the blob store and return raw metadata."""
+    blob_hash, blob_size = blob_store.write_from_bytes(payload_bytes)
+    return RawConversationData(
+        raw_bytes=b"",
+        source_path=source_path,
+        source_index=source_index,
+        file_mtime=file_mtime,
+        provider_hint=provider_hint,
+        blob_hash=blob_hash,
+        blob_size=blob_size,
+    )
 
 
 def iter_source_raw_data(
@@ -68,21 +107,86 @@ def iter_source_raw_data(
                     for info in validator.filter_entries(zf.infolist()):
                         entry_path = f"{path}:{info.filename}"
                         entry_provider_hint = _zip_entry_provider_hint(info.filename, provider_hint)
+                        if entry_provider_hint in GROUP_PROVIDERS:
+                            with zf.open(info.filename) as handle:
+                                raw_bytes = handle.read()
+                            blob_hash, blob_size = blob_store.write_from_bytes(raw_bytes)
+                            yield RawConversationData(
+                                raw_bytes=b"",
+                                source_path=entry_path,
+                                source_index=None,
+                                file_mtime=file_mtime,
+                                provider_hint=entry_provider_hint,
+                                blob_hash=blob_hash,
+                                blob_size=blob_size,
+                            )
+                            del raw_bytes
+                            continue
+
+                        detected_provider = entry_provider_hint
+                        pending_split_payloads: list[tuple[Provider, bytes]] = []
+                        split_source_index = 0
+                        did_split = False
+
+                        with zf.open(info.filename) as handle:
+                            for payload_provider, payload in _iter_entry_payloads(
+                                handle,
+                                stream_name=info.filename,
+                                provider_hint=entry_provider_hint,
+                            ):
+                                detected_provider = payload_provider
+                                if payload_provider in GROUP_PROVIDERS:
+                                    break
+                                artifact = classify_artifact(
+                                    payload,
+                                    provider=payload_provider,
+                                    source_path=entry_path,
+                                )
+                                if not artifact.parse_as_conversation:
+                                    continue
+                                payload_bytes = json_dumps(payload).encode("utf-8")
+                                if did_split:
+                                    yield _make_split_entry_raw_data(
+                                        blob_store=blob_store,
+                                        payload_bytes=payload_bytes,
+                                        source_path=entry_path,
+                                        source_index=split_source_index,
+                                        file_mtime=file_mtime,
+                                        provider_hint=payload_provider,
+                                    )
+                                    split_source_index += 1
+                                    continue
+                                pending_split_payloads.append((payload_provider, payload_bytes))
+                                if len(pending_split_payloads) < 2:
+                                    continue
+                                did_split = True
+                                for buffered_provider, buffered_payload_bytes in pending_split_payloads:
+                                    yield _make_split_entry_raw_data(
+                                        blob_store=blob_store,
+                                        payload_bytes=buffered_payload_bytes,
+                                        source_path=entry_path,
+                                        source_index=split_source_index,
+                                        file_mtime=file_mtime,
+                                        provider_hint=buffered_provider,
+                                    )
+                                    split_source_index += 1
+                                pending_split_payloads.clear()
+
+                        if did_split:
+                            continue
+
+                        # Preserve original ZIP entry bytes when the entry is
+                        # grouped, non-conversation metadata, or a single
+                        # conversation document.
                         with zf.open(info.filename) as handle:
                             raw_bytes = handle.read()
-                        # ZIP entries are typically small — write from bytes
                         blob_hash, blob_size = blob_store.write_from_bytes(raw_bytes)
-                        entry_provider_hint = _detect_provider_from_raw_bytes(
-                            raw_bytes,
-                            info.filename,
-                            entry_provider_hint,
-                        )
                         yield RawConversationData(
                             raw_bytes=b"",
                             source_path=entry_path,
                             source_index=None,
                             file_mtime=file_mtime,
-                            provider_hint=entry_provider_hint,
+                            provider_hint=detected_provider,
                             blob_hash=blob_hash,
                             blob_size=blob_size,
                         )

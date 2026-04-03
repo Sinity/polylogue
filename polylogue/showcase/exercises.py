@@ -4,10 +4,16 @@ from __future__ import annotations
 
 from polylogue.showcase.catalog_loader import load_exercise_catalog
 from polylogue.showcase.exercise_models import Exercise, Validation
+from polylogue.showcase.generators import generate_root_help_exercises, root_help_exercise_names
 
 _CATALOG = load_exercise_catalog()
+_GENERATED_ROOT_HELP_EXERCISES = tuple(generate_root_help_exercises())
+_GENERATED_ROOT_HELP_NAMES = root_help_exercise_names()
 
-EXERCISES: tuple[Exercise, ...] = _CATALOG.exercises
+EXERCISES: tuple[Exercise, ...] = (
+    tuple(exercise for exercise in _CATALOG.exercises if exercise.name not in _GENERATED_ROOT_HELP_NAMES)
+    + _GENERATED_ROOT_HELP_EXERCISES
+)
 
 EXERCISE_INDEX: dict[str, Exercise] = {e.name: e for e in EXERCISES}
 
