@@ -67,7 +67,7 @@ polylogue/
 +-- pipeline/          # Ingestion orchestration (acquisition, parsing, validation, indexing)
 +-- schemas/           # Schema inference, pinning, verification
 +-- showcase/          # QA exercise catalog and runner
-+-- cli/               # 14 commands: run, check, qa, generate, embed, schema, etc.
++-- cli/               # 11 commands: run, check, qa, schema, products, tags, etc.
 +-- mcp/               # Model Context Protocol server
 +-- operations/        # High-level archive operations
 +-- rendering/         # Markdown/HTML output
