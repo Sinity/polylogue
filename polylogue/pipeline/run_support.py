@@ -62,6 +62,14 @@ def normalize_stage_sequence(
     invalid = [stage_name for stage_name in normalized if stage_name not in RUN_LEAF_STAGES]
     if invalid:
         raise ValueError(f"Unknown leaf stage(s): {', '.join(invalid)}")
+    duplicates: list[str] = []
+    seen: set[str] = set()
+    for stage_name in normalized:
+        if stage_name in seen and stage_name not in duplicates:
+            duplicates.append(stage_name)
+        seen.add(stage_name)
+    if duplicates:
+        raise ValueError(f"Duplicate leaf stage(s): {', '.join(duplicates)}")
     return normalized
 
 def write_run_json(archive_root: Path, payload: dict[str, object]) -> Path:

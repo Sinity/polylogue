@@ -64,20 +64,9 @@ async def run_sources(
         selected_sources = select_sources(config, source_names)
         normalized_stage_sequence = normalize_stage_sequence(stage=stage, stage_sequence=stage_sequence)
         executed_stages: set[str] = set()
+        index_outcome = IndexStageOutcome(indexed=False, item_count=0)
 
-        # Suspend FTS triggers during bulk pipeline operations.
-        # Triggers fire per-row during message INSERTs, causing massive
-        # overhead (~8s per 50 updates with realistic text). The index
-        # stage rebuilds FTS at the end anyway, making trigger updates
-        # pure waste during ingest.
-        if any(stage_name in {"parse", "render", "index"} for stage_name in normalized_stage_sequence):
-            from polylogue.storage.fts_lifecycle import suspend_fts_triggers_async
-
-            async with active_backend.connection() as conn:
-                await suspend_fts_triggers_async(conn)
-                await conn.commit()
-
-        if "acquire" in normalized_stage_sequence:
+        async def _run_acquire_stage() -> None:
             sm = metrics.start_stage("acquire")
             acquire_result = await execute_acquire_stage(
                 config=config,
@@ -92,7 +81,7 @@ async def run_sources(
             logger.info("Acquire stage complete", **sm.to_dict(), **acquire_result.counts)
             executed_stages.add("acquire")
 
-        if "schema" in normalized_stage_sequence:
+        async def _run_schema_stage() -> None:
             sm = metrics.start_stage("schema")
             schema_outcome = await execute_schema_generation_stage()
             state.record_schema_generation(
@@ -108,16 +97,15 @@ async def run_sources(
             )
             executed_stages.add("schema")
 
-        if "parse" in normalized_stage_sequence:
+        async def _run_parse_stage(ingest_stage: str) -> None:
             sm = metrics.start_stage("ingest")
-            skip_acquire = True
             ingest_result = await execute_ingest_stage(
                 config=config,
                 repository=active_repository,
                 archive_root=config.archive_root,
                 sources=selected_sources,
-                stage=stage,
-                skip_acquire=skip_acquire,
+                stage=ingest_stage,
+                skip_acquire=True,
                 ui=ui,
                 progress_callback=progress_callback,
             )
@@ -146,10 +134,10 @@ async def run_sources(
             )
             executed_stages.add("parse")
 
-        if "materialize" in normalized_stage_sequence:
+        async def _run_materialize_stage(materialize_stage: str) -> None:
             sm = metrics.start_stage("materialize")
             materialize_outcome = await execute_materialize_stage(
-                stage=stage,
+                stage=materialize_stage,
                 source_names=source_names,
                 processed_ids=state.processed_ids,
                 backend=active_backend,
@@ -166,12 +154,12 @@ async def run_sources(
             )
             executed_stages.add("materialize")
 
-        if "render" in normalized_stage_sequence:
+        async def _run_render_stage(render_stage: str) -> None:
             sm = metrics.start_stage("render")
             render_outcome = await execute_render_stage(
                 config=config,
                 backend=active_backend,
-                stage=stage,
+                stage=render_stage,
                 source_names=source_names,
                 processed_ids=state.processed_ids,
                 progress_callback=progress_callback,
@@ -190,27 +178,83 @@ async def run_sources(
             )
             executed_stages.add("render")
 
-        if "index" in normalized_stage_sequence:
+        async def _run_index_stage(index_stage: str) -> IndexStageOutcome:
             sm = metrics.start_stage("index")
-            index_outcome = await execute_index_stage(
+            next_index_outcome = await execute_index_stage(
                 config=config,
-                stage=stage,
+                stage=index_stage,
                 source_names=source_names,
                 processed_ids=state.processed_ids,
                 backend=active_backend,
                 progress_callback=progress_callback,
             )
-            if index_outcome.error is not None:
-                logger.error("Indexing failed", error=index_outcome.error)
-            sm.stop(items=index_outcome.item_count)
+            if next_index_outcome.error is not None:
+                logger.error("Indexing failed", error=next_index_outcome.error)
+            sm.stop(items=next_index_outcome.item_count)
             logger.info(
                 "Index stage complete",
                 **sm.to_dict(),
-                indexed=index_outcome.indexed,
+                indexed=next_index_outcome.indexed,
             )
             executed_stages.add("index")
+            return next_index_outcome
+
+        def _explicit_leaf_stage_context(leaf_stage: str) -> str:
+            if leaf_stage == "parse":
+                return "parse"
+            if leaf_stage in {"materialize", "render", "index"} and "parse" in executed_stages:
+                return "all"
+            return leaf_stage
+
+        # Suspend FTS triggers during bulk pipeline operations.
+        # Triggers fire per-row during message INSERTs, causing massive
+        # overhead (~8s per 50 updates with realistic text). The index
+        # stage rebuilds FTS at the end anyway, making trigger updates
+        # pure waste during ingest.
+        if any(stage_name in {"parse", "render", "index"} for stage_name in normalized_stage_sequence):
+            from polylogue.storage.fts_lifecycle import suspend_fts_triggers_async
+
+            async with active_backend.connection() as conn:
+                await suspend_fts_triggers_async(conn)
+                await conn.commit()
+
+        if stage_sequence is None:
+            if "acquire" in normalized_stage_sequence:
+                await _run_acquire_stage()
+
+            if "schema" in normalized_stage_sequence:
+                await _run_schema_stage()
+
+            if "parse" in normalized_stage_sequence:
+                await _run_parse_stage(stage)
+
+            if "materialize" in normalized_stage_sequence:
+                await _run_materialize_stage(stage)
+
+            if "render" in normalized_stage_sequence:
+                await _run_render_stage(stage)
+
+            if "index" in normalized_stage_sequence:
+                index_outcome = await _run_index_stage(stage)
         else:
-            index_outcome = IndexStageOutcome(indexed=False, item_count=0)
+            for leaf_stage in normalized_stage_sequence:
+                if leaf_stage == "acquire":
+                    await _run_acquire_stage()
+                    continue
+                if leaf_stage == "schema":
+                    await _run_schema_stage()
+                    continue
+                if leaf_stage == "parse":
+                    await _run_parse_stage(_explicit_leaf_stage_context(leaf_stage))
+                    continue
+                if leaf_stage == "materialize":
+                    await _run_materialize_stage(_explicit_leaf_stage_context(leaf_stage))
+                    continue
+                if leaf_stage == "render":
+                    await _run_render_stage(_explicit_leaf_stage_context(leaf_stage))
+                    continue
+                if leaf_stage == "index":
+                    index_outcome = await _run_index_stage(_explicit_leaf_stage_context(leaf_stage))
 
         return await persist_run_result(
             config=config,
