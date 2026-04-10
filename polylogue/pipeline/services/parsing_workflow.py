@@ -44,20 +44,12 @@ def _summarize_batch_observations(
         return {}
 
     def _max_float(field: str) -> float | None:
-        values = [
-            float(value)
-            for observation in batch_observations
-            if (value := observation.get(field)) is not None
-        ]
+        values = [float(value) for observation in batch_observations if (value := observation.get(field)) is not None]
         return round(max(values), 1) if values else None
 
     return {
         "batch_count": len(batch_observations),
-        "slow_batch_count": sum(
-            1
-            for observation in batch_observations
-            if float(observation["elapsed_ms"]) >= 2000.0
-        ),
+        "slow_batch_count": sum(1 for observation in batch_observations if float(observation["elapsed_ms"]) >= 2000.0),
         "max_elapsed_ms": _max_float("elapsed_ms"),
         "max_blob_mb": _max_float("blob_mb"),
         "max_result_mb": _max_float("max_result_mb"),

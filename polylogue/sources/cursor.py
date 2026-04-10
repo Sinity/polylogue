@@ -109,8 +109,7 @@ def _log_source_iteration_summary(
 
     if failed_count > 0:
         logger.warning(
-            "Skipped %d of %d files from source %r due to %s errors. "
-            "Run with --verbose for details.",
+            "Skipped %d of %d files from source %r due to %s errors. Run with --verbose for details.",
             failed_count,
             total_paths,
             source_name,

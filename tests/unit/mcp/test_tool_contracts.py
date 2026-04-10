@@ -74,7 +74,14 @@ QUERY_TOOL_CASES = [
     ),
     (
         "search",
-        {"query": "hello", "action": "search", "exclude_action": "git", "tool": "grep", "exclude_tool": "bash", "limit": 5},
+        {
+            "query": "hello",
+            "action": "search",
+            "exclude_action": "git",
+            "tool": "grep",
+            "exclude_tool": "bash",
+            "limit": 5,
+        },
         {
             "contains": ("hello",),
             "action": ("search",),
@@ -291,7 +298,9 @@ class TestGetConversationTool:
             mock_repo.view.return_value = None
             mock_get_repo.return_value = mock_repo
 
-            result = await invoke_surface_async(mcp_server._tool_manager._tools["get_conversation"].fn, id="nonexistent-id-xyz")
+            result = await invoke_surface_async(
+                mcp_server._tool_manager._tools["get_conversation"].fn, id="nonexistent-id-xyz"
+            )
 
         assert isinstance(json.loads(result), dict)
 
@@ -562,9 +571,7 @@ class TestProductTools:
 
         payload = json.loads(raw)
         assert payload["tool"] == "session_enrichments"
-        assert payload["error"].startswith(
-            "Unknown query field(s) for session_enrichments: refined_work_kind."
-        )
+        assert payload["error"].startswith("Unknown query field(s) for session_enrichments: refined_work_kind.")
         mock_ops.list_session_enrichment_products.assert_not_awaited()
 
 
@@ -626,7 +633,9 @@ class TestMutationTools:
             mock_repo.add_tag.return_value = None
             mock_get_repo.return_value = mock_repo
 
-            result = invoke_surface(mcp_server._tool_manager._tools["add_tag"].fn, conversation_id="test:conv-123", tag="important")
+            result = invoke_surface(
+                mcp_server._tool_manager._tools["add_tag"].fn, conversation_id="test:conv-123", tag="important"
+            )
 
         parsed = json.loads(result)
         assert parsed == {"status": "ok", "conversation_id": "test:conv-123", "tag": "important"}
@@ -638,7 +647,9 @@ class TestMutationTools:
             mock_repo.add_tag.side_effect = ValueError("Invalid tag")
             mock_get_repo.return_value = mock_repo
 
-            result = invoke_surface(mcp_server._tool_manager._tools["add_tag"].fn, conversation_id="test:conv-123", tag="invalid")
+            result = invoke_surface(
+                mcp_server._tool_manager._tools["add_tag"].fn, conversation_id="test:conv-123", tag="invalid"
+            )
 
         parsed = json.loads(result)
         assert "Invalid tag" in parsed["error"]
@@ -649,7 +660,9 @@ class TestMutationTools:
             mock_repo.remove_tag.return_value = None
             mock_get_repo.return_value = mock_repo
 
-            result = invoke_surface(mcp_server._tool_manager._tools["remove_tag"].fn, conversation_id="test:conv-123", tag="important")
+            result = invoke_surface(
+                mcp_server._tool_manager._tools["remove_tag"].fn, conversation_id="test:conv-123", tag="important"
+            )
 
         parsed = json.loads(result)
         assert parsed == {"status": "ok", "conversation_id": "test:conv-123", "tag": "important"}
@@ -661,7 +674,9 @@ class TestMutationTools:
             mock_repo.remove_tag.side_effect = RuntimeError("Backend error")
             mock_get_repo.return_value = mock_repo
 
-            result = invoke_surface(mcp_server._tool_manager._tools["remove_tag"].fn, conversation_id="test:conv-123", tag="important")
+            result = invoke_surface(
+                mcp_server._tool_manager._tools["remove_tag"].fn, conversation_id="test:conv-123", tag="important"
+            )
 
         assert "error" in json.loads(result)
 
@@ -830,7 +845,9 @@ class TestMutationTools:
             mock_repo.get_session_tree.return_value = [simple_conversation]
             mock_get_repo.return_value = mock_repo
 
-            result = invoke_surface(mcp_server._tool_manager._tools["get_session_tree"].fn, conversation_id="test:conv-123")
+            result = invoke_surface(
+                mcp_server._tool_manager._tools["get_session_tree"].fn, conversation_id="test:conv-123"
+            )
 
         parsed = json.loads(result)
         assert isinstance(parsed, list)
@@ -865,9 +882,10 @@ class TestMutationTools:
         mock_report.summary = "Healthy"
         mock_report.provenance = MagicMock(source="live")
 
-        with patch("polylogue.mcp.server._get_config") as mock_get_config, patch(
-            "polylogue.health.get_health"
-        ) as mock_get_health:
+        with (
+            patch("polylogue.mcp.server._get_config") as mock_get_config,
+            patch("polylogue.health.get_health") as mock_get_health,
+        ):
             mock_get_config.return_value = MagicMock()
             mock_get_health.return_value = mock_report
 
@@ -878,9 +896,11 @@ class TestMutationTools:
         assert parsed["checks"][0]["name"] == "database"
 
     def test_rebuild_index_success(self, mcp_server):
-        with patch("polylogue.mcp.server._get_config") as mock_get_config, patch(
-            "polylogue.mcp.server._get_repo"
-        ) as mock_get_repo, patch("polylogue.pipeline.services.indexing.IndexService") as mock_service_cls:
+        with (
+            patch("polylogue.mcp.server._get_config") as mock_get_config,
+            patch("polylogue.mcp.server._get_repo") as mock_get_repo,
+            patch("polylogue.pipeline.services.indexing.IndexService") as mock_service_cls,
+        ):
             mock_get_config.return_value = MagicMock()
             mock_get_repo.return_value = make_repo_mock()
             mock_service = MagicMock()
@@ -896,9 +916,11 @@ class TestMutationTools:
         assert parsed["indexed_messages"] == 500
 
     def test_update_index_success(self, mcp_server):
-        with patch("polylogue.mcp.server._get_config") as mock_get_config, patch(
-            "polylogue.mcp.server._get_repo"
-        ) as mock_get_repo, patch("polylogue.pipeline.services.indexing.IndexService") as mock_service_cls:
+        with (
+            patch("polylogue.mcp.server._get_config") as mock_get_config,
+            patch("polylogue.mcp.server._get_repo") as mock_get_repo,
+            patch("polylogue.pipeline.services.indexing.IndexService") as mock_service_cls,
+        ):
             mock_get_config.return_value = MagicMock()
             mock_get_repo.return_value = make_repo_mock()
             mock_service = MagicMock()

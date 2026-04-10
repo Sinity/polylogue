@@ -60,12 +60,10 @@ class WorkThread:
             total_cost_usd=float(payload.get("total_cost_usd", 0.0) or 0.0),
             dominant_project=str(payload["dominant_project"]) if payload.get("dominant_project") is not None else None,
             provider_breakdown={
-                str(key): int(value or 0)
-                for key, value in (payload.get("provider_breakdown", {}) or {}).items()
+                str(key): int(value or 0) for key, value in (payload.get("provider_breakdown", {}) or {}).items()
             },
             work_event_breakdown={
-                str(key): int(value or 0)
-                for key, value in (payload.get("work_event_breakdown", {}) or {}).items()
+                str(key): int(value or 0) for key, value in (payload.get("work_event_breakdown", {}) or {}).items()
             },
         )
 
@@ -130,8 +128,7 @@ def build_session_threads(profiles: Iterable[SessionProfile]) -> list[WorkThread
             )
             provider_counter.update((profile.provider,))
             work_event_counter.update(
-                event.kind.value if hasattr(event.kind, "value") else str(event.kind)
-                for event in profile.work_events
+                event.kind.value if hasattr(event.kind, "value") else str(event.kind) for event in profile.work_events
             )
 
         threads.append(

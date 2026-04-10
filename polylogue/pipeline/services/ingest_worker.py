@@ -193,22 +193,26 @@ def ingest_record(
             payload_provider=stored_payload_provider,
         )
     except Exception as exc:
-        return _finalize_result(IngestRecordResult(
-            raw_id=raw_record.raw_id,
-            payload_provider=stored_payload_provider,
-            validation_status=ValidationStatus.FAILED.value,
-            validation_error=f"decode: {exc}",
-            error=f"decode: {exc}",
-        ))
+        return _finalize_result(
+            IngestRecordResult(
+                raw_id=raw_record.raw_id,
+                payload_provider=stored_payload_provider,
+                validation_status=ValidationStatus.FAILED.value,
+                validation_error=f"decode: {exc}",
+                error=f"decode: {exc}",
+            )
+        )
 
     payload_provider = str(envelope.provider)
 
     if not envelope.artifact.parse_as_conversation:
-        return _finalize_result(IngestRecordResult(
-            raw_id=raw_record.raw_id,
-            payload_provider=payload_provider,
-            validation_status=ValidationStatus.SKIPPED.value,
-        ))
+        return _finalize_result(
+            IngestRecordResult(
+                raw_id=raw_record.raw_id,
+                payload_provider=payload_provider,
+                validation_status=ValidationStatus.SKIPPED.value,
+            )
+        )
 
     # ── Phase 2: Validate schema (inline, reuses decoded payload) ─────
     v_status = ValidationStatus.PASSED
@@ -218,13 +222,15 @@ def ingest_record(
     if validation_mode is not ValidationMode.OFF and envelope.artifact.schema_eligible:
         malformed_lines = envelope.malformed_jsonl_lines
         if malformed_lines and validation_mode is ValidationMode.STRICT:
-            return _finalize_result(IngestRecordResult(
-                raw_id=raw_record.raw_id,
-                payload_provider=payload_provider,
-                validation_status=ValidationStatus.FAILED.value,
-                validation_error=f"Malformed JSONL lines: {malformed_lines}",
-                error=f"Malformed JSONL lines: {malformed_lines}",
-            ))
+            return _finalize_result(
+                IngestRecordResult(
+                    raw_id=raw_record.raw_id,
+                    payload_provider=payload_provider,
+                    validation_status=ValidationStatus.FAILED.value,
+                    validation_error=f"Malformed JSONL lines: {malformed_lines}",
+                    error=f"Malformed JSONL lines: {malformed_lines}",
+                )
+            )
 
         schema_resolution = _runtime_schema_registry().resolve_payload(
             envelope.provider,
@@ -254,13 +260,15 @@ def ingest_record(
 
                 if collected_errors and validation_mode is ValidationMode.STRICT:
                     first_error = collected_errors[0]
-                    return _finalize_result(IngestRecordResult(
-                        raw_id=raw_record.raw_id,
-                        payload_provider=payload_provider,
-                        validation_status=ValidationStatus.FAILED.value,
-                        validation_error=f"Schema validation failed: {first_error}",
-                        error=f"Schema validation failed: {first_error}",
-                    ))
+                    return _finalize_result(
+                        IngestRecordResult(
+                            raw_id=raw_record.raw_id,
+                            payload_provider=payload_provider,
+                            validation_status=ValidationStatus.FAILED.value,
+                            validation_error=f"Schema validation failed: {first_error}",
+                            error=f"Schema validation failed: {first_error}",
+                        )
+                    )
     elif validation_mode is ValidationMode.OFF:
         v_status = ValidationStatus.SKIPPED
 
@@ -280,12 +288,14 @@ def ingest_record(
             schema_resolution=schema_resolution,
         )
     except Exception as exc:
-        return _finalize_result(IngestRecordResult(
-            raw_id=raw_record.raw_id,
-            payload_provider=payload_provider,
-            validation_status=v_status.value,
-            error=f"parse: {exc}",
-        ))
+        return _finalize_result(
+            IngestRecordResult(
+                raw_id=raw_record.raw_id,
+                payload_provider=payload_provider,
+                validation_status=v_status.value,
+                error=f"parse: {exc}",
+            )
+        )
 
     # Apply raw record defaults (timestamps)
     fallback_timestamp = raw_record.file_mtime
@@ -313,21 +323,25 @@ def ingest_record(
             )
             result_convos.append(cdata)
         except Exception as exc:
-            return _finalize_result(IngestRecordResult(
-                raw_id=raw_record.raw_id,
-                payload_provider=payload_provider,
-                validation_status=v_status.value,
-                error=f"transform: {exc}",
-            ))
+            return _finalize_result(
+                IngestRecordResult(
+                    raw_id=raw_record.raw_id,
+                    payload_provider=payload_provider,
+                    validation_status=v_status.value,
+                    error=f"transform: {exc}",
+                )
+            )
 
-    return _finalize_result(IngestRecordResult(
-        raw_id=raw_record.raw_id,
-        payload_provider=payload_provider,
-        validation_status=v_status.value,
-        validation_error=v_error,
-        conversations=result_convos,
-        source_name=source_name,
-    ))
+    return _finalize_result(
+        IngestRecordResult(
+            raw_id=raw_record.raw_id,
+            payload_provider=payload_provider,
+            validation_status=v_status.value,
+            validation_error=v_error,
+            conversations=result_convos,
+            source_name=source_name,
+        )
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -369,20 +383,20 @@ def _transform_to_tuples(
 
     # Conversation tuple: matches INSERT INTO conversations column order
     conv_tuple = (
-        cid,                                         # conversation_id
-        convo.provider_name,                         # provider_name
-        convo.provider_conversation_id,              # provider_conversation_id
-        convo.title,                                 # title
-        convo.created_at,                            # created_at
-        convo.updated_at,                            # updated_at
-        sort_key,                                    # sort_key
-        content_hash,                                # content_hash
-        _json_or_none(merged_provider_meta),         # provider_meta
-        "{}",                                        # metadata
-        1,                                           # version
-        parent_conversation_id,                      # parent_conversation_id
-        convo.branch_type,                           # branch_type
-        raw_id,                                      # raw_id
+        cid,  # conversation_id
+        convo.provider_name,  # provider_name
+        convo.provider_conversation_id,  # provider_conversation_id
+        convo.title,  # title
+        convo.created_at,  # created_at
+        convo.updated_at,  # updated_at
+        sort_key,  # sort_key
+        content_hash,  # content_hash
+        _json_or_none(merged_provider_meta),  # provider_meta
+        "{}",  # metadata
+        1,  # version
+        parent_conversation_id,  # parent_conversation_id
+        convo.branch_type,  # branch_type
+        raw_id,  # raw_id
     )
 
     # Build message ID map
@@ -416,22 +430,24 @@ def _transform_to_tuples(
         total_tool_use += has_tool_use
         total_thinking += has_thinking
 
-        msg_tuples.append((
-            mid,                      # message_id
-            cid,                      # conversation_id
-            provider_message_id,      # provider_message_id
-            msg.role,                 # role
-            msg.text,                 # text
-            _timestamp_sort_key(msg.timestamp),  # sort_key
-            message_hash,             # content_hash
-            1,                        # version
-            parent_message_id,        # parent_message_id
-            msg.branch_index,         # branch_index
-            convo.provider_name,      # provider_name
-            word_count,               # word_count
-            has_tool_use,             # has_tool_use
-            has_thinking,             # has_thinking
-        ))
+        msg_tuples.append(
+            (
+                mid,  # message_id
+                cid,  # conversation_id
+                provider_message_id,  # provider_message_id
+                msg.role,  # role
+                msg.text,  # text
+                _timestamp_sort_key(msg.timestamp),  # sort_key
+                message_hash,  # content_hash
+                1,  # version
+                parent_message_id,  # parent_message_id
+                msg.branch_index,  # branch_index
+                convo.provider_name,  # provider_name
+                word_count,  # word_count
+                has_tool_use,  # has_tool_use
+                has_thinking,  # has_thinking
+            )
+        )
 
         # Content blocks for this message
         for block_idx, block in enumerate(msg.content_blocks):
@@ -459,20 +475,22 @@ def _transform_to_tuples(
             from polylogue.storage.store import ContentBlockRecord
 
             block_id = ContentBlockRecord.make_id(mid, block_idx)
-            block_tuples.append((
-                block_id,               # block_id
-                mid,                    # message_id
-                cid,                    # conversation_id
-                block_idx,              # block_index
-                block.type,             # type
-                block.text,             # text
-                block.tool_name,        # tool_name
-                block.tool_id,          # tool_id
-                tool_input_json,        # tool_input
-                block.media_type,       # media_type
-                metadata_json,          # metadata
-                semantic_type,          # semantic_type
-            ))
+            block_tuples.append(
+                (
+                    block_id,  # block_id
+                    mid,  # message_id
+                    cid,  # conversation_id
+                    block_idx,  # block_index
+                    block.type,  # type
+                    block.text,  # text
+                    block.tool_name,  # tool_name
+                    block.tool_id,  # tool_id
+                    tool_input_json,  # tool_input
+                    block.media_type,  # media_type
+                    metadata_json,  # metadata
+                    semantic_type,  # semantic_type
+                )
+            )
 
     # Conversation stats tuple
     stats_tuple = (
@@ -486,7 +504,11 @@ def _transform_to_tuples(
 
     # Action events — build from content blocks
     action_event_tuples = _build_action_event_tuples(
-        cid, convo.provider_name, convo.messages, message_id_map, msg_tuples,
+        cid,
+        convo.provider_name,
+        convo.messages,
+        message_id_map,
+        msg_tuples,
     )
 
     # Attachments
@@ -494,7 +516,9 @@ def _transform_to_tuples(
     attachment_ref_tuples: list[tuple] = []
     for att in convo.attachments:
         aid, updated_meta, updated_path = attachment_content_id(
-            convo.provider_name, att, archive_root=archive_root,
+            convo.provider_name,
+            att,
+            archive_root=archive_root,
         )
         meta: dict[str, object] = dict(updated_meta or {})
         if att.provider_attachment_id:
@@ -502,22 +526,26 @@ def _transform_to_tuples(
         message_id_val = message_id_map.get(att.message_provider_id or "") if att.message_provider_id else None
         meta_json = _json_or_none(meta)
 
-        attachment_tuples.append((
-            aid,                    # attachment_id
-            att.mime_type,          # mime_type
-            att.size_bytes,         # size_bytes
-            updated_path,           # path
-            0,                      # ref_count (updated after ref insert)
-            meta_json,              # provider_meta
-        ))
+        attachment_tuples.append(
+            (
+                aid,  # attachment_id
+                att.mime_type,  # mime_type
+                att.size_bytes,  # size_bytes
+                updated_path,  # path
+                0,  # ref_count (updated after ref insert)
+                meta_json,  # provider_meta
+            )
+        )
         ref_id = _make_ref_id(aid, cid, message_id_val)
-        attachment_ref_tuples.append((
-            ref_id,                 # ref_id
-            aid,                    # attachment_id
-            cid,                    # conversation_id
-            message_id_val,         # message_id
-            meta_json,              # provider_meta
-        ))
+        attachment_ref_tuples.append(
+            (
+                ref_id,  # ref_id
+                aid,  # attachment_id
+                cid,  # conversation_id
+                message_id_val,  # message_id
+                meta_json,  # provider_meta
+            )
+        )
 
     return ConversationData(
         conversation_id=cid,
@@ -623,29 +651,31 @@ def _build_action_event_tuples(
             affected_paths_json = json_dumps(list(event.affected_paths)) if event.affected_paths else None
             branch_names_json = json_dumps(list(event.branch_names)) if event.branch_names else None
 
-            action_tuples.append((
-                event.event_id,                     # event_id
-                conversation_id,                    # conversation_id
-                mid,                                # message_id
-                ACTION_EVENT_MATERIALIZER_VERSION,  # materializer_version
-                event.raw.get("block_id") if isinstance(event.raw, dict) else None,  # source_block_id
-                timestamp_iso,                      # timestamp
-                msg_sort_key,                       # sort_key
-                event.sequence_index,               # sequence_index
-                provider_name,                      # provider_name
-                event.kind.value,                   # action_kind
-                event.tool_name,                    # tool_name
-                event.normalized_tool_name,         # normalized_tool_name
-                event.tool_id,                      # tool_id
-                affected_paths_json,                # affected_paths_json
-                event.cwd_path,                     # cwd_path
-                branch_names_json,                  # branch_names_json
-                event.command,                      # command
-                event.query,                        # query_text
-                event.url,                          # url
-                event.output_text,                  # output_text
-                event.search_text,                  # search_text
-            ))
+            action_tuples.append(
+                (
+                    event.event_id,  # event_id
+                    conversation_id,  # conversation_id
+                    mid,  # message_id
+                    ACTION_EVENT_MATERIALIZER_VERSION,  # materializer_version
+                    event.raw.get("block_id") if isinstance(event.raw, dict) else None,  # source_block_id
+                    timestamp_iso,  # timestamp
+                    msg_sort_key,  # sort_key
+                    event.sequence_index,  # sequence_index
+                    provider_name,  # provider_name
+                    event.kind.value,  # action_kind
+                    event.tool_name,  # tool_name
+                    event.normalized_tool_name,  # normalized_tool_name
+                    event.tool_id,  # tool_id
+                    affected_paths_json,  # affected_paths_json
+                    event.cwd_path,  # cwd_path
+                    branch_names_json,  # branch_names_json
+                    event.command,  # command
+                    event.query,  # query_text
+                    event.url,  # url
+                    event.output_text,  # output_text
+                    event.search_text,  # search_text
+                )
+            )
 
     return action_tuples
 

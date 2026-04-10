@@ -40,8 +40,8 @@ class TestHybridSearchProvider:
                 provider_conversation_id=f"p{i}",
                 content_hash=make_hash(f"conv-{i}"),
                 title=f"Conv {i}",
-                created_at=f"2024-01-0{i+1}T00:00:00Z",
-                updated_at=f"2024-01-0{i+1}T00:00:00Z",
+                created_at=f"2024-01-0{i + 1}T00:00:00Z",
+                updated_at=f"2024-01-0{i + 1}T00:00:00Z",
                 parent_conversation_id=None,
                 branch_type=None,
                 raw_id=None,
@@ -53,7 +53,7 @@ class TestHybridSearchProvider:
                 role="user",
                 provider_message_id=f"pm{i}",
                 text=f"Message {i}",
-                timestamp=f"2024-01-0{i+1}T00:00:00Z",
+                timestamp=f"2024-01-0{i + 1}T00:00:00Z",
             )
             await backend.save_conversation_record(conv)
             await backend.save_messages([msg])
@@ -111,8 +111,8 @@ class TestHybridSearchProvider:
                     provider_conversation_id=f"p{i}",
                     content_hash=make_hash(f"{provider_name}-{i}"),
                     title=f"{provider_name} Conv {i}",
-                    created_at=f"2024-01-0{i+1}T00:00:00Z",
-                    updated_at=f"2024-01-0{i+1}T00:00:00Z",
+                    created_at=f"2024-01-0{i + 1}T00:00:00Z",
+                    updated_at=f"2024-01-0{i + 1}T00:00:00Z",
                 )
                 msg = MessageRecord(
                     message_id=f"{provider_name}-msg-{i}",
@@ -120,7 +120,7 @@ class TestHybridSearchProvider:
                     content_hash=make_hash(f"{provider_name}-msg-{i}"),
                     role="user",
                     text="test message",
-                    timestamp=f"2024-01-0{i+1}T00:00:00Z",
+                    timestamp=f"2024-01-0{i + 1}T00:00:00Z",
                 )
                 await backend.save_conversation_record(conv)
                 await backend.save_messages([msg])
@@ -386,13 +386,11 @@ class TestProviderFilteringIntegration:
     def test_provider_filter_applied_before_limit(self, hybrid_provider):
         """Provider filter should be applied before limit, not after."""
         # Mock search returns messages from various providers
-        hybrid_provider.fts_provider.search.return_value = [
-            f"msg-claude-{i}" for i in range(15)
-        ] + [f"msg-chatgpt-{i}" for i in range(5)]
-
-        hybrid_provider.vector_provider.query.return_value = [
-            (f"msg-claude-{i}", 0.9 - i * 0.01) for i in range(10)
+        hybrid_provider.fts_provider.search.return_value = [f"msg-claude-{i}" for i in range(15)] + [
+            f"msg-chatgpt-{i}" for i in range(5)
         ]
+
+        hybrid_provider.vector_provider.query.return_value = [(f"msg-claude-{i}", 0.9 - i * 0.01) for i in range(10)]
 
         # Mock database to return conversation IDs with provider info
         with patch("polylogue.storage.search_providers.hybrid.open_connection") as mock_conn:
@@ -403,11 +401,7 @@ class TestProviderFilteringIntegration:
             ]
 
             # Search with provider filter
-            results = hybrid_provider.search_conversations(
-                "test query",
-                limit=10,
-                providers=["chatgpt"]
-            )
+            results = hybrid_provider.search_conversations("test query", limit=10, providers=["chatgpt"])
 
             # Should return chatgpt conversations, not empty
             assert len(results) > 0
@@ -415,9 +409,7 @@ class TestProviderFilteringIntegration:
 
     def test_provider_filter_none_returns_all(self, hybrid_provider):
         """When providers=None, should return conversations from all providers."""
-        hybrid_provider.fts_provider.search.return_value = [
-            "msg-claude-1", "msg-chatgpt-1", "msg-gemini-1"
-        ]
+        hybrid_provider.fts_provider.search.return_value = ["msg-claude-1", "msg-chatgpt-1", "msg-gemini-1"]
         hybrid_provider.vector_provider.query.return_value = []
 
         with patch("polylogue.storage.search_providers.hybrid.open_connection") as mock_conn:
@@ -433,7 +425,7 @@ class TestProviderFilteringIntegration:
             results = hybrid_provider.search_conversations(
                 "test query",
                 limit=10,
-                providers=None  # No filter
+                providers=None,  # No filter
             )
 
             # Should return all 3 conversations
@@ -441,9 +433,7 @@ class TestProviderFilteringIntegration:
 
     def test_provider_filter_multiple_providers(self, hybrid_provider):
         """Can filter by multiple providers at once."""
-        hybrid_provider.fts_provider.search.return_value = [
-            "msg-claude-1", "msg-chatgpt-1", "msg-gemini-1"
-        ]
+        hybrid_provider.fts_provider.search.return_value = ["msg-claude-1", "msg-chatgpt-1", "msg-gemini-1"]
         hybrid_provider.vector_provider.query.return_value = []
 
         with patch("polylogue.storage.search_providers.hybrid.open_connection") as mock_conn:
@@ -454,11 +444,7 @@ class TestProviderFilteringIntegration:
                 {"conversation_id": "conv-2"},
             ]
 
-            results = hybrid_provider.search_conversations(
-                "test query",
-                limit=10,
-                providers=["claude-ai", "chatgpt"]
-            )
+            results = hybrid_provider.search_conversations("test query", limit=10, providers=["claude-ai", "chatgpt"])
 
             # Should return claude and chatgpt, but not gemini
             assert len(results) == 2
@@ -536,11 +522,7 @@ class TestSearchProviderSourceFiltering:
                 {"conversation_id": "conv-1"},
             ]
 
-            provider.search_conversations(
-                "test",
-                limit=10,
-                providers=["specific-source"]
-            )
+            provider.search_conversations("test", limit=10, providers=["specific-source"])
 
             # Provider filtering should stay scoped to provider_name only.
             execute_call = mock_context.execute.call_args
@@ -563,17 +545,30 @@ class TestListConversationsByParent:
     async def test_single_child(self, tmp_path):
         """Single child linked to parent."""
         backend = SQLiteBackend(db_path=tmp_path / "test.db")
-        await backend.save_conversation_record(ConversationRecord(
-            conversation_id="parent-conv", provider_name="test",
-            provider_conversation_id="p1", content_hash=make_hash("parent-conv"),
-            title="Parent", created_at="2024-01-01T00:00:00Z", updated_at="2024-01-01T00:00:00Z",
-        ))
-        await backend.save_conversation_record(ConversationRecord(
-            conversation_id="child-conv", provider_name="test",
-            provider_conversation_id="p2", content_hash=make_hash("child-conv"),
-            title="Child", created_at="2024-01-02T00:00:00Z", updated_at="2024-01-02T00:00:00Z",
-            parent_conversation_id="parent-conv", branch_type="continuation",
-        ))
+        await backend.save_conversation_record(
+            ConversationRecord(
+                conversation_id="parent-conv",
+                provider_name="test",
+                provider_conversation_id="p1",
+                content_hash=make_hash("parent-conv"),
+                title="Parent",
+                created_at="2024-01-01T00:00:00Z",
+                updated_at="2024-01-01T00:00:00Z",
+            )
+        )
+        await backend.save_conversation_record(
+            ConversationRecord(
+                conversation_id="child-conv",
+                provider_name="test",
+                provider_conversation_id="p2",
+                content_hash=make_hash("child-conv"),
+                title="Child",
+                created_at="2024-01-02T00:00:00Z",
+                updated_at="2024-01-02T00:00:00Z",
+                parent_conversation_id="parent-conv",
+                branch_type="continuation",
+            )
+        )
         children = await backend.list_conversations_by_parent("parent-conv")
         assert len(children) == 1
         assert children[0].conversation_id == "child-conv"
@@ -583,18 +578,31 @@ class TestListConversationsByParent:
     async def test_multiple_children(self, tmp_path):
         """Multiple children sorted by created_at."""
         backend = SQLiteBackend(db_path=tmp_path / "test.db")
-        await backend.save_conversation_record(ConversationRecord(
-            conversation_id="parent", provider_name="test",
-            provider_conversation_id="p", content_hash=make_hash("parent"),
-            title="Parent", created_at="2024-01-01T00:00:00Z", updated_at="2024-01-01T00:00:00Z",
-        ))
+        await backend.save_conversation_record(
+            ConversationRecord(
+                conversation_id="parent",
+                provider_name="test",
+                provider_conversation_id="p",
+                content_hash=make_hash("parent"),
+                title="Parent",
+                created_at="2024-01-01T00:00:00Z",
+                updated_at="2024-01-01T00:00:00Z",
+            )
+        )
         for i, ts in enumerate(["2024-01-03T00:00:00Z", "2024-01-02T00:00:00Z", "2024-01-04T00:00:00Z"]):
-            await backend.save_conversation_record(ConversationRecord(
-                conversation_id=f"child-{i}", provider_name="test",
-                provider_conversation_id=f"p{i}", content_hash=make_hash(f"child-{i}"),
-                title=f"Child {i}", created_at=ts, updated_at=ts,
-                parent_conversation_id="parent", branch_type="fork",
-            ))
+            await backend.save_conversation_record(
+                ConversationRecord(
+                    conversation_id=f"child-{i}",
+                    provider_name="test",
+                    provider_conversation_id=f"p{i}",
+                    content_hash=make_hash(f"child-{i}"),
+                    title=f"Child {i}",
+                    created_at=ts,
+                    updated_at=ts,
+                    parent_conversation_id="parent",
+                    branch_type="fork",
+                )
+            )
         children = await backend.list_conversations_by_parent("parent")
         assert len(children) == 3
         assert children[0].conversation_id == "child-1"

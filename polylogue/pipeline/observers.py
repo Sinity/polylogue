@@ -18,7 +18,7 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 # Pattern for detecting shell metacharacters that could enable command injection.
-_UNSAFE_PATTERN = re.compile(r'[;&|`(){}[\]<>!\\]|\$\(')
+_UNSAFE_PATTERN = re.compile(r"[;&|`(){}[\]<>!\\]|\$\(")
 
 
 def _conversation_activity(result: RunResult) -> tuple[int, int, int]:

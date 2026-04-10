@@ -156,9 +156,7 @@ def _chunk_provider_day_groups(
     size: int = _GROUP_BATCH_SIZE,
 ) -> list[tuple[tuple[str, str], ...]]:
     return [
-        tuple(groups[index:index + size])
-        for index in range(0, len(groups), size)
-        if groups[index:index + size]
+        tuple(groups[index : index + size]) for index in range(0, len(groups), size) if groups[index : index + size]
     ]
 
 
@@ -199,9 +197,7 @@ def load_sync_provider_day_profile_records_by_groups(
     normalized_groups = _normalize_provider_day_groups(groups)
     if not normalized_groups:
         return {}
-    grouped: dict[tuple[str, str], list[SessionProfileRecord]] = _empty_provider_day_profile_groups(
-        normalized_groups
-    )
+    grouped: dict[tuple[str, str], list[SessionProfileRecord]] = _empty_provider_day_profile_groups(normalized_groups)
     for group_chunk in _chunk_provider_day_groups(normalized_groups):
         values = ", ".join("(?, ?)" for _ in group_chunk)
         params = tuple(value for group in group_chunk for value in group)
@@ -221,9 +217,7 @@ async def load_async_provider_day_profile_records_by_groups(
     normalized_groups = _normalize_provider_day_groups(groups)
     if not normalized_groups:
         return {}
-    grouped: dict[tuple[str, str], list[SessionProfileRecord]] = _empty_provider_day_profile_groups(
-        normalized_groups
-    )
+    grouped: dict[tuple[str, str], list[SessionProfileRecord]] = _empty_provider_day_profile_groups(normalized_groups)
     for group_chunk in _chunk_provider_day_groups(normalized_groups):
         values = ", ".join("(?, ?)" for _ in group_chunk)
         params = tuple(value for group in group_chunk for value in group)

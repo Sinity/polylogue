@@ -115,7 +115,10 @@ def test_looks_like_id_contract(value: str, expected: bool) -> None:
     ("folder_ref", "expected"),
     [
         ("Inbox", "name = 'Inbox' and mimeType = 'application/vnd.google-apps.folder' and trashed = false"),
-        ("O'Hare Folder", "name = 'O\\'Hare Folder' and mimeType = 'application/vnd.google-apps.folder' and trashed = false"),
+        (
+            "O'Hare Folder",
+            "name = 'O\\'Hare Folder' and mimeType = 'application/vnd.google-apps.folder' and trashed = false",
+        ),
     ],
 )
 def test_build_folder_lookup_query_contract(folder_ref: str, expected: str) -> None:
@@ -215,8 +218,7 @@ def test_iter_json_files_filters_supported_entries(
             file_id=file_id, name=name, mime_type=mime_type, parents=parents
         )
         if in_folder and (
-            name.lower().endswith((".json", ".jsonl", ".jsonl.txt", ".ndjson"))
-            or mime_type == GEMINI_PROMPT_MIME_TYPE
+            name.lower().endswith((".json", ".jsonl", ".jsonl.txt", ".ndjson")) or mime_type == GEMINI_PROMPT_MIME_TYPE
         ):
             expected_ids.append(file_id)
 
@@ -328,9 +330,7 @@ def test_resolve_folder_helper_contracts() -> None:
 
 
 def test_download_bytes_and_json_payload_contract() -> None:
-    client = _source_client(
-        file_content={"file-1": b'{"hello":"world"}', "file-2": b'{"a":1}\n{"b":2}\n'}
-    )
+    client = _source_client(file_content={"file-1": b'{"hello":"world"}', "file-2": b'{"a":1}\n{"b":2}\n'})
 
     assert client.download_bytes("file-1") == b'{"hello":"world"}'
     assert client.download_json_payload("file-1", name="payload.json") == {"hello": "world"}
@@ -346,7 +346,7 @@ def test_download_bytes_and_json_payload_contract() -> None:
     ("existing_bytes", "existing_mtime", "expect_write"),
     [
         (b"12345", 1735689600.0, False),  # unchanged — skip
-        (None, None, True),               # new file — write
+        (None, None, True),  # new file — write
     ],
     ids=["skip-unchanged", "write-new"],
 )
@@ -412,19 +412,47 @@ def test_get_metadata_and_iteration_cache_contract() -> None:
     service._files_resource.get = MagicMock(wraps=service._files_resource.get)
     service._files_resource.list = MagicMock(
         side_effect=[
-            SimpleNamespace(execute=lambda: {
-                "nextPageToken": "page-2",
-                "files": [
-                    {"id": "f1", "name": "one.json", "mimeType": "application/json", "modifiedTime": None, "size": "1"},
-                    {"id": "skip", "name": "readme.txt", "mimeType": "text/plain", "modifiedTime": None, "size": "1"},
-                ],
-            }),
-            SimpleNamespace(execute=lambda: {
-                "files": [
-                    {"id": "f2", "name": "two.ndjson", "mimeType": "application/octet-stream", "modifiedTime": None, "size": "2"},
-                    {"id": "f3", "name": "prompt.bin", "mimeType": GEMINI_PROMPT_MIME_TYPE, "modifiedTime": None, "size": "3"},
-                ],
-            }),
+            SimpleNamespace(
+                execute=lambda: {
+                    "nextPageToken": "page-2",
+                    "files": [
+                        {
+                            "id": "f1",
+                            "name": "one.json",
+                            "mimeType": "application/json",
+                            "modifiedTime": None,
+                            "size": "1",
+                        },
+                        {
+                            "id": "skip",
+                            "name": "readme.txt",
+                            "mimeType": "text/plain",
+                            "modifiedTime": None,
+                            "size": "1",
+                        },
+                    ],
+                }
+            ),
+            SimpleNamespace(
+                execute=lambda: {
+                    "files": [
+                        {
+                            "id": "f2",
+                            "name": "two.ndjson",
+                            "mimeType": "application/octet-stream",
+                            "modifiedTime": None,
+                            "size": "2",
+                        },
+                        {
+                            "id": "f3",
+                            "name": "prompt.bin",
+                            "mimeType": GEMINI_PROMPT_MIME_TYPE,
+                            "modifiedTime": None,
+                            "size": "3",
+                        },
+                    ],
+                }
+            ),
         ]
     )
     service._http = None

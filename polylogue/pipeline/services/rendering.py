@@ -116,7 +116,8 @@ class RenderService:
                 result.record_success()
             except asyncio.TimeoutError:
                 logger.warning(
-                    "Render timed out after %ds", RENDER_TIMEOUT_S,
+                    "Render timed out after %ds",
+                    RENDER_TIMEOUT_S,
                     conversation_id=convo_id,
                 )
                 result.record_failure(convo_id, f"render timed out after {RENDER_TIMEOUT_S}s")
@@ -127,7 +128,8 @@ class RenderService:
             elapsed = time.perf_counter() - t0
             if elapsed > SLOW_RENDER_THRESHOLD_S:
                 logger.info(
-                    "Slow render: %.1fs", elapsed,
+                    "Slow render: %.1fs",
+                    elapsed,
                     conversation_id=convo_id,
                 )
 

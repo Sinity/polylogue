@@ -88,7 +88,9 @@ async def test_run_sources_filtered_by_stage(
         result = await run_sources(config=config, stage=stage, source_names=["source-a"])
     else:
         inbox = tmp_path / "inbox"
-        source_file = ChatGPTExportBuilder("conv-chatgpt").add_node("user", "hello").write_to(inbox / "conversation.json")
+        source_file = (
+            ChatGPTExportBuilder("conv-chatgpt").add_node("user", "hello").write_to(inbox / "conversation.json")
+        )
         config = get_config()
         config.sources = [Source(name="inbox", path=source_file)]
         await run_sources(config=config, stage="acquire", source_names=["inbox"])
@@ -294,9 +296,10 @@ class TestWatchModeCallbacks:
 
     def test_webhook_callback_executes_with_count(self):
         fake_addrinfo = [(2, 1, 6, "", ("93.184.216.34", 80))]
-        with patch("polylogue.pipeline.observers.socket.getaddrinfo", return_value=fake_addrinfo), patch(
-            "urllib.request.urlopen"
-        ) as mock_urlopen:
+        with (
+            patch("polylogue.pipeline.observers.socket.getaddrinfo", return_value=fake_addrinfo),
+            patch("urllib.request.urlopen") as mock_urlopen,
+        ):
             WebhookObserver("http://example.com/webhook").on_completed(
                 MagicMock(
                     counts={"conversations": 2, "new_conversations": 2, "changed_conversations": 0},
@@ -310,9 +313,11 @@ class TestWatchModeCallbacks:
 
     def test_webhook_payload_format(self):
         fake_addrinfo = [(2, 1, 6, "", ("93.184.216.34", 80))]
-        with patch("polylogue.pipeline.observers.socket.getaddrinfo", return_value=fake_addrinfo), patch(
-            "urllib.request.urlopen"
-        ), patch("urllib.request.Request") as mock_request:
+        with (
+            patch("polylogue.pipeline.observers.socket.getaddrinfo", return_value=fake_addrinfo),
+            patch("urllib.request.urlopen"),
+            patch("urllib.request.Request") as mock_request,
+        ):
             WebhookObserver("http://example.com/webhook").on_completed(
                 MagicMock(
                     counts={"conversations": 7, "new_conversations": 7, "changed_conversations": 0},
@@ -329,8 +334,9 @@ class TestWatchModeCallbacks:
 
     def test_webhook_errors_do_not_raise(self):
         fake_addrinfo = [(2, 1, 6, "", ("93.184.216.34", 80))]
-        with patch("polylogue.pipeline.observers.socket.getaddrinfo", return_value=fake_addrinfo), patch(
-            "urllib.request.urlopen", side_effect=ConnectionError("Connection failed")
+        with (
+            patch("polylogue.pipeline.observers.socket.getaddrinfo", return_value=fake_addrinfo),
+            patch("urllib.request.urlopen", side_effect=ConnectionError("Connection failed")),
         ):
             WebhookObserver("http://example.com/webhook").on_completed(
                 MagicMock(

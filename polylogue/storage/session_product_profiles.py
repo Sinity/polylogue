@@ -51,14 +51,17 @@ def profile_inference_search_text(profile: SessionProfile) -> str:
 
 
 def profile_search_text(profile: SessionProfile) -> str:
-    return " \n".join(
-        part
-        for part in (
-            profile_evidence_search_text(profile),
-            profile_inference_search_text(profile),
+    return (
+        " \n".join(
+            part
+            for part in (
+                profile_evidence_search_text(profile),
+                profile_inference_search_text(profile),
+            )
+            if part
         )
-        if part
-    ) or profile.conversation_id
+        or profile.conversation_id
+    )
 
 
 def profile_enrichment_search_text(profile: SessionProfile, enrichment_payload: dict[str, object]) -> str:
@@ -130,9 +133,7 @@ def profile_evidence_payload(profile: SessionProfile) -> dict[str, object]:
         "first_message_at": profile.first_message_at.isoformat() if profile.first_message_at else None,
         "last_message_at": profile.last_message_at.isoformat() if profile.last_message_at else None,
         "canonical_session_date": (
-            profile.canonical_session_date.isoformat()
-            if profile.canonical_session_date
-            else None
+            profile.canonical_session_date.isoformat() if profile.canonical_session_date else None
         ),
         "message_count": profile.message_count,
         "substantive_count": profile.substantive_count,
@@ -177,9 +178,7 @@ def profile_inference_payload(profile: SessionProfile) -> dict[str, object]:
                 "start_time": phase.start_time.isoformat() if phase.start_time else None,
                 "end_time": phase.end_time.isoformat() if phase.end_time else None,
                 "canonical_session_date": (
-                    phase.canonical_session_date.isoformat()
-                    if phase.canonical_session_date
-                    else None
+                    phase.canonical_session_date.isoformat() if phase.canonical_session_date else None
                 ),
                 "message_range": list(phase.message_range),
                 "duration_ms": phase.duration_ms,
@@ -237,19 +236,12 @@ def build_session_profile_record(
         engaged_duration_ms=profile.engaged_duration_ms,
         wall_duration_ms=profile.wall_duration_ms,
         cost_is_estimated=profile.cost_is_estimated,
-        canonical_session_date=(
-            profile.canonical_session_date.isoformat()
-            if profile.canonical_session_date
-            else None
-        ),
+        canonical_session_date=(profile.canonical_session_date.isoformat() if profile.canonical_session_date else None),
         evidence_payload=evidence,
         inference_payload=inference,
         enrichment_payload=enrichment,
-        search_text=" \n".join(
-            part
-            for part in (evidence_search_text, inference_search_text)
-            if part
-        ) or profile.conversation_id,
+        search_text=" \n".join(part for part in (evidence_search_text, inference_search_text) if part)
+        or profile.conversation_id,
         evidence_search_text=evidence_search_text,
         inference_search_text=inference_search_text,
         enrichment_search_text=profile_enrichment_search_text(profile, enrichment),

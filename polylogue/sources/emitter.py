@@ -79,12 +79,7 @@ class _ConversationEmitter:
 
         if is_jsonl:
             stream_start = self._capture_stream_start(handle) if pre_read_bytes is None else None
-            if (
-                pre_read_bytes is None
-                and stream_start is None
-                and self._ctx.capture_raw
-                and precomputed_raw is None
-            ):
+            if pre_read_bytes is None and stream_start is None and self._ctx.capture_raw and precomputed_raw is None:
                 sniff_bytes = handle.read()
                 sniff_provider, sniff_payloads, grouped_payloads = self._sniff_jsonl_payloads(
                     BytesIO(sniff_bytes),
@@ -153,7 +148,9 @@ class _ConversationEmitter:
             if raw_bytes is not None:
                 handle = BytesIO(raw_bytes)  # type: ignore[assignment]
 
-        payloads = precomputed_payloads if precomputed_payloads is not None else list(_iter_json_stream(handle, stream_name))
+        payloads = (
+            precomputed_payloads if precomputed_payloads is not None else list(_iter_json_stream(handle, stream_name))
+        )
         if not payloads:
             return
 

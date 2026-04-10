@@ -70,8 +70,7 @@ class IndexConfig:
 
         return cls(
             fts_enabled=True,
-            voyage_api_key=os.environ.get("POLYLOGUE_VOYAGE_API_KEY")
-            or os.environ.get("VOYAGE_API_KEY"),
+            voyage_api_key=os.environ.get("POLYLOGUE_VOYAGE_API_KEY") or os.environ.get("VOYAGE_API_KEY"),
             voyage_model=os.environ.get("POLYLOGUE_VOYAGE_MODEL", "voyage-4"),
             voyage_dimension=dimension,
             auto_embed=os.environ.get("POLYLOGUE_AUTO_EMBED", "").lower() in ("1", "true"),

@@ -164,9 +164,7 @@ class ClaudeCodeRecord(BaseModel):
 
     @property
     def is_context_compaction(self) -> bool:
-        return self.type == "summary" or (
-            self.type == "system" and self.subtype == "compact_boundary"
-        )
+        return self.type == "summary" or (self.type == "system" and self.subtype == "compact_boundary")
 
     @property
     def is_tool_progress(self) -> bool:

@@ -69,15 +69,9 @@ class SchemaReport:
 
         if self.total_included or self.total_rejected:
             reason_parts = " ".join(
-                f"{reason}:{count}"
-                for reason, count in sorted(
-                    self.rejection_reasons.items(), key=lambda kv: -kv[1]
-                )
+                f"{reason}:{count}" for reason, count in sorted(self.rejection_reasons.items(), key=lambda kv: -kv[1])
             )
-            lines.append(
-                f"  enums: {self.total_included} included, "
-                f"{self.total_rejected} rejected ({reason_parts})"
-            )
+            lines.append(f"  enums: {self.total_included} included, {self.total_rejected} rejected ({reason_parts})")
 
         if self.borderline_decisions:
             lines.append(
@@ -112,26 +106,19 @@ class SchemaReport:
             lines.append("")
             lines.append("| Reason | Count |")
             lines.append("| --- | ---: |")
-            for reason, count in sorted(
-                self.rejection_reasons.items(), key=lambda kv: -kv[1]
-            ):
+            for reason, count in sorted(self.rejection_reasons.items(), key=lambda kv: -kv[1]):
                 lines.append(f"| {reason} | {count} |")
             lines.append("")
 
         if self.borderline_decisions:
             lines.append("## Borderline Decisions")
             lines.append("")
-            lines.append(
-                "Values that were rejected but have high occurrence counts "
-                "(potential false positives):"
-            )
+            lines.append("Values that were rejected but have high occurrence counts (potential false positives):")
             lines.append("")
             lines.append("| Path | Value | Count | Reason |")
             lines.append("| --- | --- | ---: | --- |")
             for d in sorted(self.borderline_decisions, key=lambda d: -d.count):
-                lines.append(
-                    f"| `{d.path}` | `{d.value}` | {d.count} | {d.reason or '?'} |"
-                )
+                lines.append(f"| `{d.path}` | `{d.value}` | {d.count} | {d.reason or '?'} |")
             lines.append("")
 
             # Suggest overrides
@@ -140,10 +127,7 @@ class SchemaReport:
             lines.append("```toml")
             lines.append("[schema.privacy.field_overrides]")
             for d in self.borderline_decisions[:10]:
-                lines.append(
-                    f'"{d.path}" = "allow"'
-                    f"        # {d.value!r} (n={d.count}, rejected: {d.reason})"
-                )
+                lines.append(f'"{d.path}" = "allow"        # {d.value!r} (n={d.count}, rejected: {d.reason})')
             lines.append("```")
             lines.append("")
 
@@ -164,9 +148,7 @@ class SchemaReport:
                     lines.append(f"**Included**: {vals}")
                 if fr.rejected:
                     for rd in fr.rejected[:10]:
-                        lines.append(
-                            f"- Rejected `{rd.value}` (n={rd.count}, {rd.reason})"
-                        )
+                        lines.append(f"- Rejected `{rd.value}` (n={rd.count}, {rd.reason})")
                 lines.append("")
 
         return "\n".join(lines)

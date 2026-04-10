@@ -40,6 +40,7 @@ def populate_proof(result: QAResult, *, workspace_env: dict[str, str] | None) ->
     except Exception as exc:
         result.proof_error = str(exc)
 
+
 __all__ = [
     "generate_extra_exercises",
     "populate_proof",

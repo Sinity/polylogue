@@ -193,9 +193,7 @@ def test_dynamic_identifier_keys_are_suppressed_in_additional_properties_maps():
         strict=True,
     )
 
-    result = validator.validate(
-        {"mapping": {"msg-550e8400-e29b-41d4-a716-446655440000": {"role": "assistant"}}}
-    )
+    result = validator.validate({"mapping": {"msg-550e8400-e29b-41d4-a716-446655440000": {"role": "assistant"}}})
     assert result.is_valid
     assert not result.has_drift
 
@@ -489,9 +487,7 @@ def test_verify_raw_corpus_counts_malformed_jsonl_as_decode_error(db_path):
         source_name="codex",
         source_path="/tmp/session.jsonl",
         raw_content=(
-            b'{"type":"session_meta"}\n'
-            b'not json at all\n'
-            b'{"type":"response_item","payload":{"type":"message"}}'
+            b'{"type":"session_meta"}\nnot json at all\n{"type":"response_item","payload":{"type":"message"}}'
         ),
     )
 
@@ -529,9 +525,7 @@ def test_verify_raw_corpus_quarantine_malformed_updates_validation_state(db_path
         source_name="codex",
         source_path="/tmp/session-q1.jsonl",
         raw_content=(
-            b'{"type":"session_meta"}\n'
-            b'not json at all\n'
-            b'{"type":"response_item","payload":{"type":"message"}}'
+            b'{"type":"session_meta"}\nnot json at all\n{"type":"response_item","payload":{"type":"message"}}'
         ),
     )
 

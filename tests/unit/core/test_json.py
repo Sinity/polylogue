@@ -38,7 +38,9 @@ _json_value = st.recursive(
     _scalar,
     lambda children: st.one_of(
         st.lists(children, max_size=6),
-        st.dictionaries(st.text(alphabet=st.characters(blacklist_categories=("Cs",)), max_size=20), children, max_size=6),
+        st.dictionaries(
+            st.text(alphabet=st.characters(blacklist_categories=("Cs",)), max_size=20), children, max_size=6
+        ),
     ),
     max_leaves=20,
 )
@@ -47,6 +49,7 @@ _json_value = st.recursive(
 # ---------------------------------------------------------------------------
 # Law 1: JSON roundtrip for basic serializable types
 # ---------------------------------------------------------------------------
+
 
 @given(_json_value)
 def test_json_roundtrip_basic_types(value: object) -> None:
@@ -60,12 +63,15 @@ def test_json_roundtrip_basic_types(value: object) -> None:
 # Law 2: Decimal encodes to float exactly
 # ---------------------------------------------------------------------------
 
-@given(st.decimals(
-    allow_nan=False,
-    allow_infinity=False,
-    min_value=Decimal("-1e15"),
-    max_value=Decimal("1e15"),
-))
+
+@given(
+    st.decimals(
+        allow_nan=False,
+        allow_infinity=False,
+        min_value=Decimal("-1e15"),
+        max_value=Decimal("1e15"),
+    )
+)
 def test_decimal_encodes_to_float(d: Decimal) -> None:
     """Decimal always encodes to float — never to string, never raises.
     The encoded value equals float(d)."""
@@ -87,7 +93,7 @@ _INVALID_JSON_FRAGMENTS = [
     "{1: 2}",
     "undefined",
     "{'single': 'quotes'}",
-    "{\"key\": undefined}",
+    '{"key": undefined}',
     "NaN",
     "Infinity",
     "01",  # leading zero
@@ -102,10 +108,7 @@ def test_loads_known_invalid_json_raises(fragment: str) -> None:
         core_json.loads(fragment)
 
 
-@given(
-    st.text(min_size=1, alphabet="{[}\"]:")
-    .filter(lambda s: s.strip() not in ("[]", "{}", '""', "{}"))
-)
+@given(st.text(min_size=1, alphabet='{[}"]:').filter(lambda s: s.strip() not in ("[]", "{}", '""', "{}")))
 def test_loads_malformed_json_never_silent(text: str) -> None:
     """loads either raises or returns a non-None value; it never silently returns None
     for a non-null JSON input."""
@@ -123,6 +126,7 @@ def test_loads_malformed_json_never_silent(text: str) -> None:
 # Law 4: Provider.from_string always returns a non-empty value
 # ---------------------------------------------------------------------------
 
+
 @given(st.text())
 def test_provider_from_string_value_never_empty(text: str) -> None:
     """Provider.from_string(x).value is always a non-empty string."""
@@ -134,6 +138,7 @@ def test_provider_from_string_value_never_empty(text: str) -> None:
 # ---------------------------------------------------------------------------
 # Law 5: Provider.from_string is idempotent on known values
 # ---------------------------------------------------------------------------
+
 
 @given(st.sampled_from([p.value for p in Provider]))
 def test_provider_from_string_idempotent(value: str) -> None:
@@ -433,10 +438,7 @@ def test_all_id_types_as_dict_keys(data) -> None:
     conv_str = data.draw(st.text(min_size=1, max_size=50), label="conv_str")
     msg_str = data.draw(st.text(min_size=1, max_size=50), label="msg_str")
     att_str = data.draw(st.text(min_size=1, max_size=50), label="att_str")
-    hash_str = data.draw(
-        st.text(min_size=1, max_size=50).filter(lambda s: s != conv_str),
-        label="hash_str"
-    )
+    hash_str = data.draw(st.text(min_size=1, max_size=50).filter(lambda s: s != conv_str), label="hash_str")
 
     cid = ConversationId(conv_str)
     mid = MessageId(msg_str)

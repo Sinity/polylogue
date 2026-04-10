@@ -41,10 +41,7 @@ def _event_id(
     *,
     summary: str,
 ) -> str:
-    seed = (
-        f"{conversation_id}:{event_index}:{event.kind.value}:{event.start_index}:"
-        f"{event.end_index}:{summary}"
-    )
+    seed = f"{conversation_id}:{event_index}:{event.kind.value}:{event.start_index}:{event.end_index}:{summary}"
     return f"wev-{hash_text(seed)[:16]}"
 
 
@@ -54,11 +51,7 @@ def event_evidence_payload(event: WorkEvent) -> dict[str, object]:
         "end_index": event.end_index,
         "start_time": event.start_time.isoformat() if event.start_time else None,
         "end_time": event.end_time.isoformat() if event.end_time else None,
-        "canonical_session_date": (
-            event.canonical_session_date.isoformat()
-            if event.canonical_session_date
-            else None
-        ),
+        "canonical_session_date": (event.canonical_session_date.isoformat() if event.canonical_session_date else None),
         "duration_ms": event.duration_ms,
         "file_paths": list(event.file_paths),
         "tools_used": list(event.tools_used),
@@ -137,11 +130,7 @@ def build_session_work_event_records(
         fallback = event_fallback(event)
         start_time = event.start_time.isoformat() if event.start_time else None
         end_time = event.end_time.isoformat() if event.end_time else None
-        canonical_session_date = (
-            event.canonical_session_date.isoformat()
-            if event.canonical_session_date
-            else None
-        )
+        canonical_session_date = event.canonical_session_date.isoformat() if event.canonical_session_date else None
         records.append(
             SessionWorkEventRecord(
                 event_id=_event_id(profile.conversation_id, index, event, summary=summary),
@@ -212,11 +201,7 @@ def phase_evidence_payload(phase: SessionPhase) -> dict[str, object]:
     return {
         "start_time": phase.start_time.isoformat() if phase.start_time else None,
         "end_time": phase.end_time.isoformat() if phase.end_time else None,
-        "canonical_session_date": (
-            phase.canonical_session_date.isoformat()
-            if phase.canonical_session_date
-            else None
-        ),
+        "canonical_session_date": (phase.canonical_session_date.isoformat() if phase.canonical_session_date else None),
         "message_range": list(phase.message_range),
         "duration_ms": phase.duration_ms,
         "tool_counts": dict(phase.tool_counts),
@@ -265,11 +250,7 @@ def build_session_phase_records(
     for index, phase in enumerate(profile.phases):
         start_time = phase.start_time.isoformat() if phase.start_time else None
         end_time = phase.end_time.isoformat() if phase.end_time else None
-        canonical_session_date = (
-            phase.canonical_session_date.isoformat()
-            if phase.canonical_session_date
-            else None
-        )
+        canonical_session_date = phase.canonical_session_date.isoformat() if phase.canonical_session_date else None
         signals = phase_support_signals(phase)
         fallback = phase_fallback(phase)
         records.append(
@@ -310,34 +291,24 @@ def build_session_phase_records(
 def hydrate_session_phase(record: SessionPhaseRecord) -> SessionPhase:
     payload = {**record.evidence_payload, **record.inference_payload}
     return SessionPhase(
-        start_time=(
-            datetime.fromisoformat(str(payload["start_time"]))
-            if payload.get("start_time")
-            else None
-        ),
-        end_time=(
-            datetime.fromisoformat(str(payload["end_time"]))
-            if payload.get("end_time")
-            else None
-        ),
+        start_time=(datetime.fromisoformat(str(payload["start_time"])) if payload.get("start_time") else None),
+        end_time=(datetime.fromisoformat(str(payload["end_time"])) if payload.get("end_time") else None),
         canonical_session_date=(
             datetime.fromisoformat(str(payload["canonical_session_date"])).date()
             if payload.get("canonical_session_date")
             else None
         ),
-        message_range=tuple(int(value) for value in payload.get("message_range", [record.start_index, record.end_index])),
+        message_range=tuple(
+            int(value) for value in payload.get("message_range", [record.start_index, record.end_index])
+        ),
         duration_ms=int(payload.get("duration_ms", record.duration_ms) or 0),
         tool_counts={
-            str(key): int(value or 0)
-            for key, value in (payload.get("tool_counts", record.tool_counts) or {}).items()
+            str(key): int(value or 0) for key, value in (payload.get("tool_counts", record.tool_counts) or {}).items()
         },
         word_count=int(payload.get("word_count", record.word_count) or 0),
         confidence=float(payload.get("confidence", record.confidence) or 0.0),
         evidence=tuple(
-            str(value)
-            for value in (
-                payload.get("evidence", record.evidence_reasons) or record.evidence_reasons
-            )
+            str(value) for value in (payload.get("evidence", record.evidence_reasons) or record.evidence_reasons)
         ),
     )
 

@@ -43,10 +43,20 @@ _text_or_none = st.one_of(
 # Roles that survive Message.from_record() processing: non-whitespace strings.
 # In production, from_record normalizes empty/whitespace → "unknown".
 # Role.normalize() intentionally raises on empty/whitespace as a bug detector.
-_valid_roles = st.sampled_from([
-    "user", "assistant", "system", "tool", "unknown",
-    "model", "human", "ai", "function", "developer",
-])
+_valid_roles = st.sampled_from(
+    [
+        "user",
+        "assistant",
+        "system",
+        "tool",
+        "unknown",
+        "model",
+        "human",
+        "ai",
+        "function",
+        "developer",
+    ]
+)
 _role_or_none = _valid_roles
 
 _timestamp_or_none = st.one_of(
@@ -61,21 +71,28 @@ _timestamp_or_none = st.one_of(
 _provider_meta_or_none = st.one_of(
     st.none(),
     st.just({}),
-    st.fixed_dictionaries({
-        "content_blocks": st.one_of(
-            st.none(),
-            st.just([]),
-            st.lists(st.one_of(
+    st.fixed_dictionaries(
+        {
+            "content_blocks": st.one_of(
                 st.none(),
-                st.fixed_dictionaries({
-                    "type": st.sampled_from(["text", "thinking", "tool_use", "tool_result"]),
-                    "text": _text_or_none,
-                }),
-                st.just({"type": "text"}),  # missing "text" key
-                st.just({}),  # empty dict
-            ), max_size=5),
-        ),
-    }),
+                st.just([]),
+                st.lists(
+                    st.one_of(
+                        st.none(),
+                        st.fixed_dictionaries(
+                            {
+                                "type": st.sampled_from(["text", "thinking", "tool_use", "tool_result"]),
+                                "text": _text_or_none,
+                            }
+                        ),
+                        st.just({"type": "text"}),  # missing "text" key
+                        st.just({}),  # empty dict
+                    ),
+                    max_size=5,
+                ),
+            ),
+        }
+    ),
 )
 
 _SPARSE_CONVERSATION_HEALTH_CHECKS = [
@@ -119,15 +136,23 @@ def sparse_conversation(draw: st.DrawFn) -> Conversation:
         created_at=draw(_timestamp_or_none),
         updated_at=draw(_timestamp_or_none),
         provider_meta=draw(st.one_of(st.none(), st.just({}))),
-        metadata=draw(st.one_of(st.just({}), st.fixed_dictionaries({
-            "tags": st.one_of(st.none(), st.just([]), st.lists(st.text(max_size=20), max_size=3)),
-        }))),
+        metadata=draw(
+            st.one_of(
+                st.just({}),
+                st.fixed_dictionaries(
+                    {
+                        "tags": st.one_of(st.none(), st.just([]), st.lists(st.text(max_size=20), max_size=3)),
+                    }
+                ),
+            )
+        ),
     )
 
 
 # =============================================================================
 # Property: Message properties never crash on sparse data
 # =============================================================================
+
 
 class TestMessageNoneGuardProperties:
     """Every Message property must handle None text, None provider_meta, etc."""
@@ -197,6 +222,7 @@ class TestMessageNoneGuardProperties:
 # Property: Conversation operations never crash with mixed None timestamps
 # =============================================================================
 
+
 class TestConversationNoneGuardProperties:
     """Conversation operations must handle mixed None timestamps and fields."""
 
@@ -234,6 +260,7 @@ class TestConversationNoneGuardProperties:
 # =============================================================================
 # Property: Sorting conversations with mixed None timestamps (1525107)
 # =============================================================================
+
 
 class TestSortMixedTimestamps:
     """Sorting conversations with mixed None/datetime updated_at must not crash.
@@ -277,20 +304,23 @@ class TestSortMixedTimestamps:
 # Property: ChatGPT parts with None/non-string text (1bc929e, a2ce326)
 # =============================================================================
 
+
 class TestChatGPTNonePartsProperty:
     """ChatGPT text extraction must handle None and non-string parts."""
 
-    @given(parts=st.lists(
-        st.one_of(
-            st.text(max_size=100),  # normal string part
-            st.none(),  # None part
-            st.integers(),  # non-string part
-            st.fixed_dictionaries({"text": _text_or_none}),  # dict with optional text
-            st.fixed_dictionaries({"image_url": st.text(max_size=50)}),  # image part
-            st.just({}),  # empty dict
-        ),
-        max_size=10,
-    ))
+    @given(
+        parts=st.lists(
+            st.one_of(
+                st.text(max_size=100),  # normal string part
+                st.none(),  # None part
+                st.integers(),  # non-string part
+                st.fixed_dictionaries({"text": _text_or_none}),  # dict with optional text
+                st.fixed_dictionaries({"image_url": st.text(max_size=50)}),  # image part
+                st.just({}),  # empty dict
+            ),
+            max_size=10,
+        )
+    )
     @settings(max_examples=200)
     def test_chatgpt_parts_extraction_never_crashes(self, parts):
         """ChatGPT text extraction from parts must never crash."""
@@ -309,6 +339,7 @@ class TestChatGPTNonePartsProperty:
 # =============================================================================
 # Property: Gemini parts with None/non-string text (a2ce326)
 # =============================================================================
+
 
 class TestGeminiNonePartsProperty:
     """Gemini text extraction must handle None text and non-string values."""
@@ -343,29 +374,38 @@ class TestGeminiNonePartsProperty:
 # Property: Claude Code records with sparse/None message fields
 # =============================================================================
 
+
 class TestClaudeCodeNoneGuardProperty:
     """Claude Code extraction must handle None message, None content, etc."""
 
     @given(
-        record_type=st.sampled_from(["user", "assistant", "summary", "progress", "result",
-                                      "init", "file-history-snapshot", "queue-operation"]),
+        record_type=st.sampled_from(
+            ["user", "assistant", "summary", "progress", "result", "init", "file-history-snapshot", "queue-operation"]
+        ),
         message=st.one_of(
             st.none(),
-            st.fixed_dictionaries({
-                "role": st.sampled_from(["user", "assistant"]),
-                "content": st.one_of(
-                    st.text(max_size=100),
-                    st.just([]),
-                    st.lists(st.one_of(
-                        st.fixed_dictionaries({
-                            "type": st.sampled_from(["text", "thinking", "tool_use"]),
-                            "text": _text_or_none,
-                        }),
-                        st.just({}),
-                    ), max_size=5),
-                    st.none(),
-                ),
-            }),
+            st.fixed_dictionaries(
+                {
+                    "role": st.sampled_from(["user", "assistant"]),
+                    "content": st.one_of(
+                        st.text(max_size=100),
+                        st.just([]),
+                        st.lists(
+                            st.one_of(
+                                st.fixed_dictionaries(
+                                    {
+                                        "type": st.sampled_from(["text", "thinking", "tool_use"]),
+                                        "text": _text_or_none,
+                                    }
+                                ),
+                                st.just({}),
+                            ),
+                            max_size=5,
+                        ),
+                        st.none(),
+                    ),
+                }
+            ),
         ),
     )
     @settings(max_examples=200)
@@ -381,10 +421,12 @@ class TestClaudeCodeNoneGuardProperty:
         record_type=st.sampled_from(["user", "assistant", "progress", "result"]),
         message=st.one_of(
             st.none(),
-            st.fixed_dictionaries({
-                "role": st.sampled_from(["user", "assistant"]),
-                "content": st.one_of(st.just([]), st.none(), st.text(max_size=50)),
-            }),
+            st.fixed_dictionaries(
+                {
+                    "role": st.sampled_from(["user", "assistant"]),
+                    "content": st.one_of(st.just([]), st.none(), st.text(max_size=50)),
+                }
+            ),
         ),
     )
     @settings(max_examples=100)
@@ -413,6 +455,7 @@ class TestClaudeCodeNoneGuardProperty:
 # Property: ConversationSummary with all-None fields (f9c88e2)
 # =============================================================================
 
+
 class TestConversationSummaryNoneGuards:
     """ConversationSummary display methods must handle None fields."""
 
@@ -423,7 +466,9 @@ class TestConversationSummaryNoneGuards:
         metadata=st.one_of(
             st.just({}),
             st.fixed_dictionaries({"title": st.one_of(st.none(), st.text(max_size=50))}),
-            st.fixed_dictionaries({"tags": st.one_of(st.none(), st.just([]), st.lists(st.text(max_size=10), max_size=3))}),
+            st.fixed_dictionaries(
+                {"tags": st.one_of(st.none(), st.just([]), st.lists(st.text(max_size=10), max_size=3))}
+            ),
         ),
     )
     @settings(max_examples=100)
@@ -460,29 +505,34 @@ class TestConversationSummaryNoneGuards:
 # Property: parse_timestamp with adversarial inputs
 # =============================================================================
 
+
 class TestParseTimestampProperty:
     """parse_timestamp must never crash, regardless of input."""
 
-    @given(value=st.one_of(
-        st.none(),
-        st.integers(min_value=-2**31, max_value=2**31),
-        st.floats(allow_nan=True, allow_infinity=True),
-        st.text(max_size=100),
-        st.just(""),
-        st.just("NaN"),
-        st.just("Infinity"),
-        st.just("null"),
-    ))
+    @given(
+        value=st.one_of(
+            st.none(),
+            st.integers(min_value=-(2**31), max_value=2**31),
+            st.floats(allow_nan=True, allow_infinity=True),
+            st.text(max_size=100),
+            st.just(""),
+            st.just("NaN"),
+            st.just("Infinity"),
+            st.just("null"),
+        )
+    )
     @settings(max_examples=300)
     def test_parse_timestamp_never_crashes(self, value):
         """parse_timestamp must return datetime or None, never raise."""
         result = parse_timestamp(value)
         assert result is None or isinstance(result, datetime)
 
-    @given(value=st.one_of(
-        st.integers(min_value=-2**31, max_value=2**31),
-        st.floats(min_value=-1e15, max_value=1e15, allow_nan=False, allow_infinity=False),
-    ))
+    @given(
+        value=st.one_of(
+            st.integers(min_value=-(2**31), max_value=2**31),
+            st.floats(min_value=-1e15, max_value=1e15, allow_nan=False, allow_infinity=False),
+        )
+    )
     @settings(max_examples=200)
     def test_parse_timestamp_numeric_always_utc_or_none(self, value):
         """When a numeric value produces a datetime, it must be UTC-aware."""

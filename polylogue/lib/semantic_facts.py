@@ -228,11 +228,7 @@ def build_stream_semantic_facts(
     dialogue_only: bool = False,
     message_limit: int | None = None,
 ) -> StreamSemanticFacts:
-    filtered_messages = [
-        message
-        for message in conversation.messages
-        if not dialogue_only or message.is_dialogue
-    ]
+    filtered_messages = [message for message in conversation.messages if not dialogue_only or message.is_dialogue]
     if message_limit is not None:
         filtered_messages = filtered_messages[:message_limit]
 

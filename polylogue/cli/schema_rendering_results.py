@@ -84,8 +84,7 @@ def render_schema_list_result(
             )
             if selected.catalog.orphan_adjunct_counts:
                 counts = ", ".join(
-                    f"{kind}={count}"
-                    for kind, count in sorted(selected.catalog.orphan_adjunct_counts.items())
+                    f"{kind}={count}" for kind, count in sorted(selected.catalog.orphan_adjunct_counts.items())
                 )
                 click.echo(f"Orphan adjunct evidence: {counts}")
             click.echo()
@@ -113,8 +112,7 @@ def render_schema_list_result(
                     else ""
                 )
                 click.echo(
-                    f"  {cluster.cluster_id}: {cluster.sample_count:,} samples, "
-                    f"confidence={cluster.confidence}{status}"
+                    f"  {cluster.cluster_id}: {cluster.sample_count:,} samples, confidence={cluster.confidence}{status}"
                 )
         return
 
@@ -133,10 +131,7 @@ def render_schema_list_result(
         ) or "none"
         age_str = f" ({snapshot.latest_age_days}d old)" if snapshot.latest_age_days is not None else ""
         package_str = f", packages={len(snapshot.catalog.packages)}" if snapshot.catalog else ""
-        click.echo(
-            f"  {snapshot.provider}: {len(snapshot.versions)} version(s){package_str}, "
-            f"latest={latest}{age_str}"
-        )
+        click.echo(f"  {snapshot.provider}: {len(snapshot.versions)} version(s){package_str}, latest={latest}{age_str}")
 
 
 def render_schema_compare_result(*, result, json_output: bool, md_output: bool) -> None:

@@ -55,10 +55,7 @@ def collect_limited_samples(
                 break
         return selected
 
-    bucket_counts = Counter(
-        record_bucket_key(sample, record_type_key)
-        for sample in sample_factory()
-    )
+    bucket_counts = Counter(record_bucket_key(sample, record_type_key) for sample in sample_factory())
     if not bucket_counts:
         return []
 

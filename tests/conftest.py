@@ -123,7 +123,6 @@ def db_without_fts(tmp_path):
     return db_path
 
 
-
 @pytest.fixture
 def storage_repository(workspace_env):
     """Storage repository with its own write lock.
@@ -497,12 +496,14 @@ def seeded_db(tmp_path_factory):
     from polylogue.sources import iter_source_conversations
     from polylogue.storage.backends.async_sqlite import SQLiteBackend
     from polylogue.storage.backends.connection import open_connection
+    from polylogue.storage.blob_store import BlobStore
     from polylogue.storage.repository import ConversationRepository
     from polylogue.storage.store import RawConversationRecord
 
     # Create session-scoped temp directory
     tmp_dir = tmp_path_factory.mktemp("seeded_db")
     db_path = tmp_dir / "polylogue.db"
+    blob_store = BlobStore(tmp_dir / "blob")
 
     # Initialize schema
     with open_connection(db_path):
@@ -512,8 +513,7 @@ def seeded_db(tmp_path_factory):
     repository = ConversationRepository(backend=backend)
 
     # File extension per provider encoding
-    ext_map = {"chatgpt": ".json", "claude-ai": ".json", "gemini": ".json",
-               "claude-code": ".jsonl", "codex": ".jsonl"}
+    ext_map = {"chatgpt": ".json", "claude-ai": ".json", "gemini": ".json", "claude-code": ".jsonl", "codex": ".jsonl"}
 
     # Generate synthetic data and write to temp files
     corpus_dir = tmp_dir / "corpus"
@@ -533,18 +533,19 @@ def seeded_db(tmp_path_factory):
 
                 # Step 1: Store as raw conversation (acquire stage)
                 try:
-                    raw_id = hashlib.sha256(raw_bytes).hexdigest()
+                    raw_id, blob_size = blob_store.write_from_bytes(raw_bytes)
                     record = RawConversationRecord(
                         raw_id=raw_id,
                         provider_name=provider,
                         source_name=provider,
                         source_path=str(file_path),
-                        blob_size=len(raw_bytes),
+                        blob_size=blob_size,
                         acquired_at=datetime.now(timezone.utc).isoformat(),
                     )
                     await backend.save_raw_conversation(record)
                 except Exception as e:
                     import warnings
+
                     warnings.warn(f"Failed to store raw {provider}/{idx}: {e}", stacklevel=2)
 
         # Step 2: Parse and ingest (parse stage)
@@ -568,6 +569,7 @@ def seeded_db(tmp_path_factory):
                         )
                 except Exception as e:
                     import warnings
+
                     warnings.warn(f"Failed to ingest {file_path.name}: {e}", stacklevel=2)
 
         await backend.close()
@@ -588,7 +590,6 @@ def seeded_repository(seeded_db):
 
     backend = SQLiteBackend(db_path=seeded_db)
     return ConversationRepository(backend=backend)
-
 
 
 # =============================================================================
@@ -618,14 +619,16 @@ def raw_synthetic_samples():
         corpus = SyntheticCorpus.for_provider(provider)
         for idx, raw_bytes in enumerate(corpus.generate(count=5, seed=42)):
             raw_id = hashlib.sha256(raw_bytes).hexdigest()
-            samples.append(RawConversationRecord(
-                raw_id=raw_id,
-                provider_name=provider,
-                source_name=provider,
-                source_path=f"<synthetic:{provider}:{idx}>",
-                blob_size=len(raw_bytes),
-                acquired_at=datetime.now(timezone.utc).isoformat(),
-            ))
+            samples.append(
+                RawConversationRecord(
+                    raw_id=raw_id,
+                    provider_name=provider,
+                    source_name=provider,
+                    source_path=f"<synthetic:{provider}:{idx}>",
+                    blob_size=len(raw_bytes),
+                    acquired_at=datetime.now(timezone.utc).isoformat(),
+                )
+            )
     return samples
 
 

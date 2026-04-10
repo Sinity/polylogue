@@ -76,7 +76,11 @@ def collect_cluster_analysis(
         summary.schema_sample_count += len(unit.schema_samples)
         artifact_counts[unit.artifact_kind] = artifact_counts.get(unit.artifact_kind, 0) + 1
 
-        if unit.source_path and unit.source_path not in summary.representative_paths and len(summary.representative_paths) < 5:
+        if (
+            unit.source_path
+            and unit.source_path not in summary.representative_paths
+            and len(summary.representative_paths) < 5
+        ):
             summary.representative_paths.append(unit.source_path)
 
         total_schema_samples += len(unit.schema_samples)

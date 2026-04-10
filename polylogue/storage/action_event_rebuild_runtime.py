@@ -34,8 +34,7 @@ def rebuild_action_event_read_model_sync(
     if conversation_ids is None:
         conn.execute("DELETE FROM action_events")
         conversation_ids = [
-            row["conversation_id"]
-            for row in conn.execute(ACTION_EVENT_CONVERSATION_IDS_SQL).fetchall()
+            row["conversation_id"] for row in conn.execute(ACTION_EVENT_CONVERSATION_IDS_SQL).fetchall()
         ]
     if not conversation_ids:
         conn.execute("DELETE FROM action_events")

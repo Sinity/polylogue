@@ -269,9 +269,7 @@ def test_json_yaml_agree_on_message_count(conv_data: dict) -> None:
     json_msgs = json_data.get("messages", [])
     yaml_msgs = yaml_data.get("messages", [])
 
-    assert len(json_msgs) == len(yaml_msgs), (
-        f"JSON has {len(json_msgs)} messages, YAML has {len(yaml_msgs)}"
-    )
+    assert len(json_msgs) == len(yaml_msgs), f"JSON has {len(json_msgs)} messages, YAML has {len(yaml_msgs)}"
 
 
 @given(conv_data=conversation_strategy(min_messages=1, max_messages=5))

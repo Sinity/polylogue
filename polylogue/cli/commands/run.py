@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -63,6 +63,7 @@ INTERACTIVE_RUN_STAGE_CHOICES: tuple[str, ...] = (
 @dataclass(frozen=True, slots=True)
 class EmbedOptions:
     """Options specific to the embed stage."""
+
     conversation: str | None = None
     model: str = "voyage-4"
     rebuild: bool = False
@@ -134,11 +135,7 @@ def _display_stage_label(stage_requests: list[RunStageRequest], canonical_stage:
 
 
 def _resolve_render_format(stage_requests: list[RunStageRequest]) -> str:
-    render_formats = {
-        request.render_format
-        for request in stage_requests
-        if request.render_format is not None
-    }
+    render_formats = {request.render_format for request in stage_requests if request.render_format is not None}
     if not render_formats:
         return "html"
     if len(render_formats) > 1:
@@ -147,11 +144,7 @@ def _resolve_render_format(stage_requests: list[RunStageRequest]) -> str:
 
 
 def _resolve_embed_options(stage_requests: list[RunStageRequest]) -> EmbedOptions | None:
-    options = [
-        request.embed_options
-        for request in stage_requests
-        if request.embed_options is not None
-    ]
+    options = [request.embed_options for request in stage_requests if request.embed_options is not None]
     if not options:
         return None
     if len(options) > 1:
@@ -160,11 +153,7 @@ def _resolve_embed_options(stage_requests: list[RunStageRequest]) -> EmbedOption
 
 
 def _resolve_site_options(stage_requests: list[RunStageRequest]) -> dict[str, Any] | None:
-    options = [
-        request.site_options
-        for request in stage_requests
-        if request.site_options is not None
-    ]
+    options = [request.site_options for request in stage_requests if request.site_options is not None]
     if not options:
         return None
     if len(options) > 1:
@@ -419,7 +408,8 @@ def run_all_stage() -> RunStageRequest:
 
 @run_command.command("site")
 @click.option(
-    "--output", "-o",
+    "--output",
+    "-o",
     type=click.Path(path_type=Path),
     default=None,
     help="Output directory for generated site (default: ~/.local/share/polylogue/site)",
@@ -508,7 +498,8 @@ def _run_embed_standalone(env: AppEnv, opts: EmbedOptions) -> None:
 
 @run_command.command("embed")
 @click.option(
-    "--conversation", "-c",
+    "--conversation",
+    "-c",
     type=str,
     default=None,
     help="Embed a specific conversation by ID",
@@ -520,12 +511,14 @@ def _run_embed_standalone(env: AppEnv, opts: EmbedOptions) -> None:
     help="Voyage AI model: voyage-4 (default), voyage-4-large, voyage-4-lite",
 )
 @click.option(
-    "--rebuild", "-r",
+    "--rebuild",
+    "-r",
     is_flag=True,
     help="Re-embed all conversations (ignore existing embeddings)",
 )
 @click.option(
-    "--stats", "-s",
+    "--stats",
+    "-s",
     is_flag=True,
     help="Show embedding statistics only",
 )
@@ -536,7 +529,8 @@ def _run_embed_standalone(env: AppEnv, opts: EmbedOptions) -> None:
     help="Emit embedding statistics as JSON (requires --stats)",
 )
 @click.option(
-    "--limit", "-n",
+    "--limit",
+    "-n",
     type=int,
     default=None,
     help="Maximum number of conversations to embed",

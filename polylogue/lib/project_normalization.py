@@ -9,7 +9,7 @@ from pathlib import Path
 
 _WORKSPACE_ROOT = Path("/realm/project")
 _WORKSPACE_MARKER = "/realm/project/"
-_PREFIX_DELIMITERS = {"#", "`", "\"", "\\", "/", ":", "(", ")", "\n", "\r", "\t", " "}
+_PREFIX_DELIMITERS = {"#", "`", '"', "\\", "/", ":", "(", ")", "\n", "\r", "\t", " "}
 
 
 @lru_cache(maxsize=1)
@@ -17,11 +17,7 @@ def workspace_project_names() -> tuple[str, ...]:
     if not _WORKSPACE_ROOT.exists():
         return ()
     return tuple(
-        sorted(
-            entry.name
-            for entry in _WORKSPACE_ROOT.iterdir()
-            if entry.is_dir() and not entry.name.startswith(".")
-        )
+        sorted(entry.name for entry in _WORKSPACE_ROOT.iterdir() if entry.is_dir() and not entry.name.startswith("."))
     )
 
 
@@ -63,9 +59,8 @@ def normalize_project_name(value: object) -> str | None:
         return raw
 
     for project in workspace_project_names():
-        if raw.startswith(project) and len(raw) > len(project):
-            if raw[len(project)] in _PREFIX_DELIMITERS:
-                return project
+        if raw.startswith(project) and len(raw) > len(project) and raw[len(project)] in _PREFIX_DELIMITERS:
+            return project
     return None
 
 

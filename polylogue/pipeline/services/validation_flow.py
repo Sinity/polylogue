@@ -169,7 +169,7 @@ async def evaluate_raw_records(
     # Measured: Threads(24)=160 MB/s, Process(8)=605 MB/s (3.7x speedup).
     worker_count = min(len(raw_records), os.cpu_count() or 4, 8)
     t_batch = _time.perf_counter()
-    loop = asyncio.get_running_loop()
+
     def _run_batch():
         try:
             with ProcessPoolExecutor(max_workers=worker_count) as executor:

@@ -23,19 +23,23 @@ from tests.infra.storage_records import ConversationBuilder
 @pytest.fixture
 def populated_db(db_path: Path) -> Path:
     """Provide a database populated with test data."""
-    (ConversationBuilder(db_path, "conv-1")
-     .provider("chatgpt")
-     .title("First Conversation")
-     .add_message("msg-1-1", role="user", text="Hello")
-     .add_message("msg-1-2", role="assistant", text="Hi there")
-     .save())
+    (
+        ConversationBuilder(db_path, "conv-1")
+        .provider("chatgpt")
+        .title("First Conversation")
+        .add_message("msg-1-1", role="user", text="Hello")
+        .add_message("msg-1-2", role="assistant", text="Hi there")
+        .save()
+    )
 
-    (ConversationBuilder(db_path, "conv-2")
-     .provider("claude-ai")
-     .title("With Attachments")
-     .add_message("msg-2-1", role="user", text="Here is an image")
-     .add_attachment("att-1", message_id="msg-2-1", mime_type="image/png", size_bytes=1024)
-     .save())
+    (
+        ConversationBuilder(db_path, "conv-2")
+        .provider("claude-ai")
+        .title("With Attachments")
+        .add_message("msg-2-1", role="user", text="Here is an image")
+        .add_attachment("att-1", message_id="msg-2-1", mime_type="image/png", size_bytes=1024)
+        .save()
+    )
 
     return db_path
 

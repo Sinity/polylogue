@@ -38,7 +38,9 @@ def _make_conv(
         id=id,
         provider=provider,
         title=title,
-        messages=MessageCollection(messages=messages or [_make_msg("m1", "user", "Hello"), _make_msg("m2", "assistant", "Hi")]),
+        messages=MessageCollection(
+            messages=messages or [_make_msg("m1", "user", "Hello"), _make_msg("m2", "assistant", "Hi")]
+        ),
     )
 
 
@@ -128,7 +130,9 @@ def _make_params(**overrides) -> dict:
     ],
     ids=["latest", "conv-id", "warning", "missing-target"],
 )
-def test_execute_query_stream_target_resolution_contract(param_overrides, resolved_id, expect_exit, expect_warning) -> None:
+def test_execute_query_stream_target_resolution_contract(
+    param_overrides, resolved_id, expect_exit, expect_warning
+) -> None:
     from polylogue.cli.query import execute_query
 
     mock_repo = MagicMock()
@@ -183,9 +187,7 @@ async def test_async_execute_query_errors_for_similar_without_embeddings() -> No
     from polylogue.cli.query import async_execute_query
 
     repo = MagicMock()
-    repo.get_archive_stats = AsyncMock(
-        return_value=SimpleNamespace(embedded_messages=0, embedded_conversations=0)
-    )
+    repo.get_archive_stats = AsyncMock(return_value=SimpleNamespace(embedded_messages=0, embedded_conversations=0))
     env = _make_env(repo=repo, config=MagicMock())
 
     with (
@@ -251,7 +253,12 @@ async def test_query_plan_filters_ordered_action_sequence() -> None:
                     role="assistant",
                     provider="claude-code",
                     content_blocks=[
-                        {"type": "tool_use", "tool_name": "Read", "tool_input": {"file_path": "/tmp/a.py"}, "semantic_type": "file_read"},
+                        {
+                            "type": "tool_use",
+                            "tool_name": "Read",
+                            "tool_input": {"file_path": "/tmp/a.py"},
+                            "semantic_type": "file_read",
+                        },
                     ],
                 ),
                 Message(
@@ -259,7 +266,12 @@ async def test_query_plan_filters_ordered_action_sequence() -> None:
                     role="assistant",
                     provider="claude-code",
                     content_blocks=[
-                        {"type": "tool_use", "tool_name": "Edit", "tool_input": {"file_path": "/tmp/a.py"}, "semantic_type": "file_edit"},
+                        {
+                            "type": "tool_use",
+                            "tool_name": "Edit",
+                            "tool_input": {"file_path": "/tmp/a.py"},
+                            "semantic_type": "file_edit",
+                        },
                     ],
                 ),
                 Message(
@@ -267,7 +279,12 @@ async def test_query_plan_filters_ordered_action_sequence() -> None:
                     role="assistant",
                     provider="claude-code",
                     content_blocks=[
-                        {"type": "tool_use", "tool_name": "Bash", "tool_input": {"command": "pytest -q"}, "semantic_type": "shell"},
+                        {
+                            "type": "tool_use",
+                            "tool_name": "Bash",
+                            "tool_input": {"command": "pytest -q"},
+                            "semantic_type": "shell",
+                        },
                     ],
                 ),
             ]
@@ -284,7 +301,12 @@ async def test_query_plan_filters_ordered_action_sequence() -> None:
                     role="assistant",
                     provider="claude-code",
                     content_blocks=[
-                        {"type": "tool_use", "tool_name": "Bash", "tool_input": {"command": "pytest -q"}, "semantic_type": "shell"},
+                        {
+                            "type": "tool_use",
+                            "tool_name": "Bash",
+                            "tool_input": {"command": "pytest -q"},
+                            "semantic_type": "shell",
+                        },
                     ],
                 ),
                 Message(
@@ -292,7 +314,12 @@ async def test_query_plan_filters_ordered_action_sequence() -> None:
                     role="assistant",
                     provider="claude-code",
                     content_blocks=[
-                        {"type": "tool_use", "tool_name": "Edit", "tool_input": {"file_path": "/tmp/a.py"}, "semantic_type": "file_edit"},
+                        {
+                            "type": "tool_use",
+                            "tool_name": "Edit",
+                            "tool_input": {"file_path": "/tmp/a.py"},
+                            "semantic_type": "file_edit",
+                        },
                     ],
                 ),
             ]
@@ -323,7 +350,12 @@ async def test_query_plan_filters_action_text_terms() -> None:
                     role="assistant",
                     provider="claude-code",
                     content_blocks=[
-                        {"type": "tool_use", "tool_name": "Bash", "tool_input": {"command": "pytest -q tests/unit/core/test_semantic_facts.py"}, "semantic_type": "shell"},
+                        {
+                            "type": "tool_use",
+                            "tool_name": "Bash",
+                            "tool_input": {"command": "pytest -q tests/unit/core/test_semantic_facts.py"},
+                            "semantic_type": "shell",
+                        },
                     ],
                 ),
             ]
@@ -340,7 +372,12 @@ async def test_query_plan_filters_action_text_terms() -> None:
                     role="assistant",
                     provider="claude-code",
                     content_blocks=[
-                        {"type": "tool_use", "tool_name": "Bash", "tool_input": {"command": "ruff check polylogue/lib/action_events.py"}, "semantic_type": "shell"},
+                        {
+                            "type": "tool_use",
+                            "tool_name": "Bash",
+                            "tool_input": {"command": "ruff check polylogue/lib/action_events.py"},
+                            "semantic_type": "shell",
+                        },
                     ],
                 ),
             ]
@@ -371,8 +408,18 @@ async def test_query_plan_batches_post_filter_candidate_fetches() -> None:
                     role="assistant",
                     provider="claude-code",
                     content_blocks=[
-                        {"type": "tool_use", "tool_name": "Read", "tool_input": {"file_path": "/tmp/a.py"}, "semantic_type": "file_read"},
-                        {"type": "tool_use", "tool_name": "Edit", "tool_input": {"file_path": "/tmp/a.py"}, "semantic_type": "file_edit"},
+                        {
+                            "type": "tool_use",
+                            "tool_name": "Read",
+                            "tool_input": {"file_path": "/tmp/a.py"},
+                            "semantic_type": "file_read",
+                        },
+                        {
+                            "type": "tool_use",
+                            "tool_name": "Edit",
+                            "tool_input": {"file_path": "/tmp/a.py"},
+                            "semantic_type": "file_edit",
+                        },
                     ],
                 ),
             ]
@@ -406,7 +453,12 @@ async def test_query_plan_action_retrieval_lane_matches_tool_command_text() -> N
                     role="assistant",
                     provider="claude-code",
                     content_blocks=[
-                        {"type": "tool_use", "tool_name": "Bash", "tool_input": {"command": "pytest -q tests/unit/core/test_semantic_facts.py"}, "semantic_type": "shell"},
+                        {
+                            "type": "tool_use",
+                            "tool_name": "Bash",
+                            "tool_input": {"command": "pytest -q tests/unit/core/test_semantic_facts.py"},
+                            "semantic_type": "shell",
+                        },
                     ],
                 ),
             ]
@@ -415,7 +467,9 @@ async def test_query_plan_action_retrieval_lane_matches_tool_command_text() -> N
     repo = MagicMock()
     repo.search = AsyncMock(return_value=[])
     repo.search_actions = AsyncMock(return_value=[matching])
-    plan = ConversationQuerySpec(query_terms=("pytest", "semantic_facts.py"), retrieval_lane="actions", limit=10).to_plan()
+    plan = ConversationQuerySpec(
+        query_terms=("pytest", "semantic_facts.py"), retrieval_lane="actions", limit=10
+    ).to_plan()
 
     results = await plan.list(repo)
 
@@ -438,7 +492,12 @@ async def test_query_plan_action_retrieval_lane_falls_back_when_action_read_mode
                     role="assistant",
                     provider="claude-code",
                     content_blocks=[
-                        {"type": "tool_use", "tool_name": "Bash", "tool_input": {"command": "pytest -q tests/unit/core/test_semantic_facts.py"}, "semantic_type": "shell"},
+                        {
+                            "type": "tool_use",
+                            "tool_name": "Bash",
+                            "tool_input": {"command": "pytest -q tests/unit/core/test_semantic_facts.py"},
+                            "semantic_type": "shell",
+                        },
                     ],
                 ),
             ]
@@ -449,7 +508,9 @@ async def test_query_plan_action_retrieval_lane_falls_back_when_action_read_mode
     repo.search = AsyncMock(return_value=[])
     repo.search_actions = AsyncMock(return_value=[])
     repo.list_by_query = AsyncMock(return_value=[matching])
-    plan = ConversationQuerySpec(query_terms=("pytest", "semantic_facts.py"), retrieval_lane="actions", limit=10).to_plan()
+    plan = ConversationQuerySpec(
+        query_terms=("pytest", "semantic_facts.py"), retrieval_lane="actions", limit=10
+    ).to_plan()
 
     results = await plan.list(repo)
 
@@ -465,7 +526,11 @@ async def test_query_plan_hybrid_retrieval_lane_combines_text_and_action_hits() 
         id="conv-text-hit",
         provider="claude-code",
         title="Text hit",
-        messages=MessageCollection(messages=[Message(id="t1", role="assistant", provider="claude-code", text="pytest failure in semantic facts test")]),
+        messages=MessageCollection(
+            messages=[
+                Message(id="t1", role="assistant", provider="claude-code", text="pytest failure in semantic facts test")
+            ]
+        ),
     )
     action_hit = Conversation(
         id="conv-action-hit",
@@ -478,7 +543,12 @@ async def test_query_plan_hybrid_retrieval_lane_combines_text_and_action_hits() 
                     role="assistant",
                     provider="claude-code",
                     content_blocks=[
-                        {"type": "tool_use", "tool_name": "Bash", "tool_input": {"command": "pytest -q tests/unit/core/test_semantic_facts.py"}, "semantic_type": "shell"},
+                        {
+                            "type": "tool_use",
+                            "tool_name": "Bash",
+                            "tool_input": {"command": "pytest -q tests/unit/core/test_semantic_facts.py"},
+                            "semantic_type": "shell",
+                        },
                     ],
                 ),
             ]
@@ -489,7 +559,9 @@ async def test_query_plan_hybrid_retrieval_lane_combines_text_and_action_hits() 
     repo.search = AsyncMock(return_value=[text_hit])
     repo.search_actions = AsyncMock(return_value=[action_hit])
     repo.search_similar = AsyncMock(return_value=[])
-    plan = ConversationQuerySpec(query_terms=("pytest", "semantic_facts.py"), retrieval_lane="hybrid", limit=10).to_plan()
+    plan = ConversationQuerySpec(
+        query_terms=("pytest", "semantic_facts.py"), retrieval_lane="hybrid", limit=10
+    ).to_plan()
 
     results = await plan.list(repo)
 
@@ -512,7 +584,12 @@ async def test_query_plan_path_filters_fall_back_to_full_list_when_action_read_m
                     role="assistant",
                     provider="claude-code",
                     content_blocks=[
-                        {"type": "tool_use", "tool_name": "Read", "tool_input": {"file_path": "/tmp/a.py"}, "semantic_type": "file_read"},
+                        {
+                            "type": "tool_use",
+                            "tool_name": "Read",
+                            "tool_input": {"file_path": "/tmp/a.py"},
+                            "semantic_type": "file_read",
+                        },
                     ],
                 ),
             ]
@@ -529,7 +606,12 @@ async def test_query_plan_path_filters_fall_back_to_full_list_when_action_read_m
                     role="assistant",
                     provider="claude-code",
                     content_blocks=[
-                        {"type": "tool_use", "tool_name": "Read", "tool_input": {"file_path": "/tmp/b.py"}, "semantic_type": "file_read"},
+                        {
+                            "type": "tool_use",
+                            "tool_name": "Read",
+                            "tool_input": {"file_path": "/tmp/b.py"},
+                            "semantic_type": "file_read",
+                        },
                     ],
                 ),
             ]
@@ -589,7 +671,10 @@ async def test_async_execute_query_uses_session_product_stats_lane_for_project_s
         patch("polylogue.storage.search_providers.create_vector_provider", return_value=None),
         patch("polylogue.cli.query_output.output_stats_by_profile_summaries", new_callable=AsyncMock) as mock_output,
         patch("polylogue.cli.query_output._output_stats_by") as mock_fallback,
-        patch("polylogue.lib.filters.ConversationFilter.list_summaries", new=AsyncMock(return_value=[_make_summary("conv-semantic-1")])),
+        patch(
+            "polylogue.lib.filters.ConversationFilter.list_summaries",
+            new=AsyncMock(return_value=[_make_summary("conv-semantic-1")]),
+        ),
         patch("polylogue.lib.filters.ConversationFilter.can_use_summaries", return_value=True),
     ):
         await async_execute_query(
@@ -611,12 +696,25 @@ async def test_async_execute_query_uses_session_product_stats_lane_for_project_s
     ("output_format", "dialogue_only", "limit", "expected_fragments"),
     [
         ("plaintext", False, None, ["[USER]", "Hello", "[ASSISTANT]", "Hi"]),
-        ("markdown", True, 1, ["# Test Title", "_Showing 1 dialogue messages (limit: 1) of 2 total_", "## User", "---", "_Streamed 1 messages_"]),
+        (
+            "markdown",
+            True,
+            1,
+            [
+                "# Test Title",
+                "_Showing 1 dialogue messages (limit: 1) of 2 total_",
+                "## User",
+                "---",
+                "_Streamed 1 messages_",
+            ],
+        ),
         ("json-lines", False, None, ['"type": "header"', '"type": "message"', '"type": "footer"']),
     ],
     ids=["plaintext", "markdown", "json-lines"],
 )
-async def test_stream_conversation_output_contract(output_format: str, dialogue_only: bool, limit: int | None, expected_fragments: list[str]) -> None:
+async def test_stream_conversation_output_contract(
+    output_format: str, dialogue_only: bool, limit: int | None, expected_fragments: list[str]
+) -> None:
     from polylogue.cli.query_output import stream_conversation
 
     repo = MagicMock()
@@ -635,7 +733,9 @@ async def test_stream_conversation_output_contract(output_format: str, dialogue_
     stdout = StringIO()
 
     with patch("sys.stdout", stdout):
-        count = await stream_conversation(env, repo, "conv-1", output_format=output_format, dialogue_only=dialogue_only, message_limit=limit)
+        count = await stream_conversation(
+            env, repo, "conv-1", output_format=output_format, dialogue_only=dialogue_only, message_limit=limit
+        )
 
     output = stdout.getvalue()
     assert count == (1 if limit == 1 else 2)
@@ -667,7 +767,9 @@ async def test_stream_conversation_errors_for_missing_conversation() -> None:
     ],
     ids=["html-pass-through", "wrapped-non-html", "conversation-html"],
 )
-def test_open_in_browser_contract(content: str, output_format: str, conv: Conversation | None, expected_in_file: str, tmp_path: Path) -> None:
+def test_open_in_browser_contract(
+    content: str, output_format: str, conv: Conversation | None, expected_in_file: str, tmp_path: Path
+) -> None:
     from polylogue.cli.query_output import _open_in_browser
 
     env = _make_env(config=MagicMock())
@@ -675,9 +777,11 @@ def test_open_in_browser_contract(content: str, output_format: str, conv: Conver
 
     class _TempFile:
         name = str(created_file)
+
         def __enter__(self):
             self.handle = created_file.open("w", encoding="utf-8")
             return self.handle
+
         def __exit__(self, exc_type, exc, tb):
             self.handle.close()
             return False
@@ -723,7 +827,15 @@ def test_copy_to_clipboard_contract(side_effects, expect_console: bool, expect_e
     ],
     ids=["no-results", "no-render-root", "specific-render", "latest-fallback"],
 )
-def test_open_result_contract(results, render_root_exists: bool, html_exists: bool, latest_exists: bool, expected_exit: int | None, expected_open_name: str | None, tmp_path: Path) -> None:
+def test_open_result_contract(
+    results,
+    render_root_exists: bool,
+    html_exists: bool,
+    latest_exists: bool,
+    expected_exit: int | None,
+    expected_open_name: str | None,
+    tmp_path: Path,
+) -> None:
     from polylogue.cli.query_output import _open_result
 
     render_root = tmp_path / "rendered"
@@ -775,6 +887,7 @@ def test_open_result_contract(results, render_root_exists: bool, html_exists: bo
 class TestBuildQueryExecutionPlan:
     def test_delete_without_filters_raises(self) -> None:
         from polylogue.cli.query import QueryPlanError, build_query_execution_plan
+
         with pytest.raises(QueryPlanError, match="delete requires at least one filter"):
             build_query_execution_plan({"delete_matched": True, "query": ()})
 
@@ -797,16 +910,19 @@ class TestBuildQueryExecutionPlan:
     )
     def test_action_selection(self, params: dict[str, object], expected_action: QueryAction) -> None:
         from polylogue.cli.query import build_query_execution_plan
+
         plan = build_query_execution_plan(params)
         assert plan.action == expected_action
 
     def test_stream_format_converts_json_to_json_lines(self) -> None:
         from polylogue.cli.query import build_query_execution_plan
+
         plan = build_query_execution_plan({"stream": True, "output_format": "json", "query": ("abc",)})
         assert plan.output.stream_format() == "json-lines"
 
     def test_summary_list_preference_requires_plain_listing_shape(self) -> None:
         from polylogue.cli.query import build_query_execution_plan
+
         plan = build_query_execution_plan({"list_mode": True, "query": ("abc",)})
         assert plan.prefers_summary_list() is True
 
@@ -815,6 +931,7 @@ class TestBuildQueryExecutionPlan:
 
     def test_mutation_fields_are_normalized(self) -> None:
         from polylogue.cli.query import build_query_execution_plan
+
         plan = build_query_execution_plan(
             {
                 "set_meta": [("priority", 3)],
@@ -869,7 +986,10 @@ class TestBuildQueryExecutionPlan:
             ({"open_result": True, "query": ("abc",)}, False, QueryRoute.OPEN),
         ],
     )
-    def test_route_resolution(self, params: dict[str, object], can_use_summaries: bool, expected_route: QueryRoute) -> None:
+    def test_route_resolution(
+        self, params: dict[str, object], can_use_summaries: bool, expected_route: QueryRoute
+    ) -> None:
         from polylogue.cli.query import build_query_execution_plan, resolve_query_route
+
         plan = build_query_execution_plan(params)
         assert resolve_query_route(plan, can_use_summaries=can_use_summaries) == expected_route

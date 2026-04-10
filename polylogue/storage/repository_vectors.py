@@ -21,6 +21,7 @@ def resolve_optional_vector_provider(
 
     return create_vector_provider()
 
+
 logger = get_logger(__name__)
 
 
@@ -58,9 +59,7 @@ class RepositoryVectorMixin:
 
         return await self.get_many(ranked_ids)
 
-    async def _get_message_conversation_mapping(
-        self, message_ids: builtins.list[str]
-    ) -> dict[str, str]:
+    async def _get_message_conversation_mapping(self, message_ids: builtins.list[str]) -> dict[str, str]:
         if not message_ids:
             return {}
 
@@ -116,11 +115,7 @@ class RepositoryVectorMixin:
         message_ids = [msg_id for msg_id, _ in results]
         msg_to_conv = await self._get_message_conversation_mapping(message_ids)
 
-        return [
-            (msg_to_conv[msg_id], msg_id, distance)
-            for msg_id, distance in results
-            if msg_id in msg_to_conv
-        ]
+        return [(msg_to_conv[msg_id], msg_id, distance) for msg_id, distance in results if msg_id in msg_to_conv]
 
     async def get_archive_stats(self):
         from polylogue.lib.stats import ArchiveStats

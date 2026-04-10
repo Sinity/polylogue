@@ -10,6 +10,7 @@ Usage:
     nix develop -c python -m devtools.benchmark_campaign list
     nix develop -c python -m devtools.benchmark_campaign run search-filters
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -18,7 +19,6 @@ import json
 import random
 from collections import defaultdict
 from pathlib import Path
-from typing import Any
 
 import pytest
 
@@ -49,8 +49,8 @@ _CONVERSATION_PROFILES = [
     (range(2, 11), 0.49),
     (range(11, 51), 0.32),
     (range(51, 201), 0.08),
-    (range(201, 501), 0.05),    # cap at 500 for benchmarks (real goes to 1000)
-    (range(501, 2001), 0.04),   # cap at 2000 (real goes to 5000)
+    (range(201, 501), 0.05),  # cap at 500 for benchmarks (real goes to 1000)
+    (range(501, 2001), 0.04),  # cap at 2000 (real goes to 5000)
     (range(2001, 5001), 0.02),  # small fraction of large conversations
 ]
 
@@ -65,7 +65,20 @@ _FILE_PATHS = [
 ]
 
 # Semantic types matching real distribution (~67% of messages have blocks)
-SEMANTIC_CYCLE = ['file_read', 'file_write', 'file_edit', 'git', 'shell', 'search', 'subagent', None, None, None, None, None]
+SEMANTIC_CYCLE = [
+    "file_read",
+    "file_write",
+    "file_edit",
+    "git",
+    "shell",
+    "search",
+    "subagent",
+    None,
+    None,
+    None,
+    None,
+    None,
+]
 
 
 def _make_content_hash(s: str) -> str:
@@ -93,17 +106,69 @@ def _generate_realistic_text(rng: random.Random, role: str, msg_index: int) -> s
     if role == "user":
         # User messages: typically shorter, 10-200 words
         length = rng.randint(10, 200)
-        words = ["please", "can", "you", "help", "with", "this", "code", "error",
-                 "function", "fix", "implement", "the", "following", "test", "check",
-                 "file", "update", "add", "remove", "refactor", "debug", "analyze"]
+        words = [
+            "please",
+            "can",
+            "you",
+            "help",
+            "with",
+            "this",
+            "code",
+            "error",
+            "function",
+            "fix",
+            "implement",
+            "the",
+            "following",
+            "test",
+            "check",
+            "file",
+            "update",
+            "add",
+            "remove",
+            "refactor",
+            "debug",
+            "analyze",
+        ]
     else:
         # Assistant messages: typically longer, 50-2000 words
         length = rng.randint(50, 500)
-        words = ["I'll", "analyze", "the", "code", "and", "implement", "this",
-                 "function", "returns", "value", "error", "handling", "pattern",
-                 "let", "me", "check", "file", "module", "class", "method",
-                 "import", "from", "def", "async", "await", "return", "if",
-                 "for", "in", "not", "None", "True", "False", "self"]
+        words = [
+            "I'll",
+            "analyze",
+            "the",
+            "code",
+            "and",
+            "implement",
+            "this",
+            "function",
+            "returns",
+            "value",
+            "error",
+            "handling",
+            "pattern",
+            "let",
+            "me",
+            "check",
+            "file",
+            "module",
+            "class",
+            "method",
+            "import",
+            "from",
+            "def",
+            "async",
+            "await",
+            "return",
+            "if",
+            "for",
+            "in",
+            "not",
+            "None",
+            "True",
+            "False",
+            "self",
+        ]
     return " ".join(rng.choices(words, k=length))
 
 
@@ -119,7 +184,7 @@ def _make_content_block(rng: random.Random, msg_id: str, conv_id: str, block_ind
                 message_id=msg_id,
                 conversation_id=conv_id,
                 block_index=block_index,
-                type='thinking',
+                type="thinking",
                 text=_generate_realistic_text(rng, "assistant", block_index)[:200],
             )
         return None
@@ -130,10 +195,12 @@ def _make_content_block(rng: random.Random, msg_id: str, conv_id: str, block_ind
         message_id=msg_id,
         conversation_id=conv_id,
         block_index=block_index,
-        type='tool_use',
+        type="tool_use",
         tool_name=tool_name,
         semantic_type=sem,
-        tool_input=json.dumps({"file_path": rng.choice(_FILE_PATHS)}) if sem in ('file_read', 'file_write', 'file_edit') else None,
+        tool_input=json.dumps({"file_path": rng.choice(_FILE_PATHS)})
+        if sem in ("file_read", "file_write", "file_edit")
+        else None,
     )
 
 
@@ -159,15 +226,17 @@ async def _seed_realistic_db(db_path: Path, target_messages: int, seed: int = 42
             msg_count = min(msg_count, max(1, target_messages - total_msgs))
 
         conv_id = f"bench-conv-{conv_index:05d}"
-        conv_records.append(ConversationRecord(
-            conversation_id=conv_id,
-            provider_name=provider,
-            provider_conversation_id=f"prov-{conv_index:05d}",
-            title=f"Session {conv_index}: {_generate_realistic_text(rng, 'user', 0)[:60]}",
-            created_at=f"2025-{rng.randint(1,12):02d}-{rng.randint(1,28):02d}T{rng.randint(0,23):02d}:00:00Z",
-            updated_at=f"2025-{rng.randint(1,12):02d}-{rng.randint(1,28):02d}T{rng.randint(0,23):02d}:00:00Z",
-            content_hash=_make_content_hash(f"conv-{conv_index}"),
-        ))
+        conv_records.append(
+            ConversationRecord(
+                conversation_id=conv_id,
+                provider_name=provider,
+                provider_conversation_id=f"prov-{conv_index:05d}",
+                title=f"Session {conv_index}: {_generate_realistic_text(rng, 'user', 0)[:60]}",
+                created_at=f"2025-{rng.randint(1, 12):02d}-{rng.randint(1, 28):02d}T{rng.randint(0, 23):02d}:00:00Z",
+                updated_at=f"2025-{rng.randint(1, 12):02d}-{rng.randint(1, 28):02d}T{rng.randint(0, 23):02d}:00:00Z",
+                content_hash=_make_content_hash(f"conv-{conv_index}"),
+            )
+        )
 
         for j in range(msg_count):
             role = "user" if j % 2 == 0 else "assistant"
@@ -183,23 +252,25 @@ async def _seed_realistic_db(db_path: Path, target_messages: int, seed: int = 42
                     block = _make_content_block(rng, msg_id, conv_id, bi)
                     if block is not None:
                         all_blocks.append(block)
-                        if block.type == 'tool_use':
+                        if block.type == "tool_use":
                             has_tool = 1
-                        elif block.type == 'thinking':
+                        elif block.type == "thinking":
                             has_think = 1
 
-            all_msgs.append(MessageRecord(
-                message_id=msg_id,
-                conversation_id=conv_id,
-                role=role,
-                text=text,
-                timestamp=f"2025-01-01T{(j * 3) % 24:02d}:{(j * 7) % 60:02d}:00Z",
-                content_hash=_make_content_hash(f"msg-{conv_index}-{j}"),
-                provider_name=provider,
-                word_count=len(text.split()),
-                has_tool_use=has_tool,
-                has_thinking=has_think,
-            ))
+            all_msgs.append(
+                MessageRecord(
+                    message_id=msg_id,
+                    conversation_id=conv_id,
+                    role=role,
+                    text=text,
+                    timestamp=f"2025-01-01T{(j * 3) % 24:02d}:{(j * 7) % 60:02d}:00Z",
+                    content_hash=_make_content_hash(f"msg-{conv_index}-{j}"),
+                    provider_name=provider,
+                    word_count=len(text.split()),
+                    has_tool_use=has_tool,
+                    has_thinking=has_think,
+                )
+            )
             total_msgs += 1
 
         conv_index += 1
@@ -238,6 +309,7 @@ async def _seed_realistic_db(db_path: Path, target_messages: int, seed: int = 42
 # ---------------------------------------------------------------------------
 # Session-scoped fixtures (generated once, reused across all benchmarks)
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture(scope="session")
 def bench_db_1k(tmp_path_factory: pytest.TempPathFactory) -> Path:

@@ -6,6 +6,7 @@ incremental FTS update.
 Run with:
     pytest tests/benchmarks/test_pipeline.py --benchmark-enable -p no:xdist -v
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -103,6 +104,7 @@ def test_bench_hash_text(benchmark, size: int) -> None:
 @pytest.mark.parametrize("depth", [1, 10, 50])
 def test_bench_hash_payload(benchmark, depth: int) -> None:
     """hash_payload() — JSON serialization + SHA-256 for varying object complexity."""
+
     def _make_nested_payload(d: int) -> dict:
         node: dict = {"value": "leaf", "index": d}
         for level in range(d):

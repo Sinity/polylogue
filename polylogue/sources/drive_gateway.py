@@ -111,9 +111,7 @@ class DriveServiceGateway:
 
     def get_file(self, file_id: str, fields: str) -> dict[str, Any]:
         service = self._service_handle()
-        return self.call_with_retry(
-            lambda: service.files().get(fileId=file_id, fields=fields).execute()
-        )
+        return self.call_with_retry(lambda: service.files().get(fileId=file_id, fields=fields).execute())
 
     def list_files(
         self,
@@ -125,9 +123,7 @@ class DriveServiceGateway:
     ) -> dict[str, Any]:
         service = self._service_handle()
         return self.call_with_retry(
-            lambda t=page_token: service.files().list(
-                q=q, fields=fields, pageToken=t, pageSize=page_size
-            ).execute()
+            lambda t=page_token: service.files().list(q=q, fields=fields, pageToken=t, pageSize=page_size).execute()
         )
 
     def _download_request(

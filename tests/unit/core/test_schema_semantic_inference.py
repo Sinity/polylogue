@@ -145,12 +145,8 @@ class TestSelectBestRoles:
 
     def test_returns_dict_role_to_candidate(self) -> None:
         candidates = [
-            SemanticCandidate(
-                path="$.messages", role="message_container", confidence=0.8
-            ),
-            SemanticCandidate(
-                path="$.data", role="message_container", confidence=0.5
-            ),
+            SemanticCandidate(path="$.messages", role="message_container", confidence=0.8),
+            SemanticCandidate(path="$.data", role="message_container", confidence=0.5),
         ]
         best = select_best_roles(candidates)
         assert isinstance(best, dict)
@@ -159,15 +155,9 @@ class TestSelectBestRoles:
 
     def test_selects_highest_confidence_per_role(self) -> None:
         candidates = [
-            SemanticCandidate(
-                path="$.role1", role="message_role", confidence=0.3
-            ),
-            SemanticCandidate(
-                path="$.role2", role="message_role", confidence=0.7
-            ),
-            SemanticCandidate(
-                path="$.role3", role="message_role", confidence=0.5
-            ),
+            SemanticCandidate(path="$.role1", role="message_role", confidence=0.3),
+            SemanticCandidate(path="$.role2", role="message_role", confidence=0.7),
+            SemanticCandidate(path="$.role3", role="message_role", confidence=0.5),
         ]
         best = select_best_roles(candidates)
         assert best["message_role"].path == "$.role2"
@@ -179,9 +169,7 @@ class TestSelectBestRoles:
 
     def test_single_candidate_returned(self) -> None:
         candidates = [
-            SemanticCandidate(
-                path="$.messages", role="message_container", confidence=0.6
-            ),
+            SemanticCandidate(path="$.messages", role="message_container", confidence=0.6),
         ]
         best = select_best_roles(candidates)
         assert len(best) == 1
@@ -205,9 +193,7 @@ class TestScoreMessageContainer:
             "$.messages[*].created_at": FieldStats(path="$.messages[*].created_at"),
         }
         candidates = infer_semantic_roles(stats)
-        container = next(
-            (c for c in candidates if c.role == "message_container"), None
-        )
+        container = next((c for c in candidates if c.role == "message_container"), None)
         assert container is not None
         assert container.path == "$.messages"
         assert container.confidence > 0.15
@@ -227,9 +213,7 @@ class TestScoreMessageContainer:
             ),
         }
         candidates = infer_semantic_roles(stats)
-        container = next(
-            (c for c in candidates if c.role == "message_container"), None
-        )
+        container = next((c for c in candidates if c.role == "message_container"), None)
         assert container is not None
         assert "avg_object_fanout" in container.evidence
 
@@ -244,9 +228,7 @@ class TestScoreMessageContainer:
             "$.messages[*].id": FieldStats(path="$.messages[*].id"),
         }
         candidates_low = infer_semantic_roles(stats_low)
-        container_low = next(
-            (c for c in candidates_low if c.role == "message_container"), None
-        )
+        container_low = next((c for c in candidates_low if c.role == "message_container"), None)
         # Same setup but with high frequency
         stats_high = {
             "$.messages": FieldStats(
@@ -258,9 +240,7 @@ class TestScoreMessageContainer:
             "$.messages[*].id": FieldStats(path="$.messages[*].id"),
         }
         candidates_high = infer_semantic_roles(stats_high)
-        container_high = next(
-            (c for c in candidates_high if c.role == "message_container"), None
-        )
+        container_high = next((c for c in candidates_high if c.role == "message_container"), None)
         assert container_high is not None
         # High frequency should score better than low frequency
         if container_low is not None:
@@ -278,9 +258,7 @@ class TestScoreMessageContainer:
             "$.messages[*].id": FieldStats(path="$.messages[*].id"),
         }
         candidates = infer_semantic_roles(stats)
-        container = next(
-            (c for c in candidates if c.role == "message_container"), None
-        )
+        container = next((c for c in candidates if c.role == "message_container"), None)
         assert container is not None
         assert container.evidence.get("depth", 999) <= 3
 
@@ -355,9 +333,7 @@ class TestScoreMessageRole:
             ),
         }
         candidates_no_nl = infer_semantic_roles(stats_no_nl)
-        role_no_nl = next(
-            (c for c in candidates_no_nl if c.role == "message_role"), None
-        )
+        role_no_nl = next((c for c in candidates_no_nl if c.role == "message_role"), None)
 
         stats_nl = {
             "$.type": FieldStats(
@@ -419,9 +395,7 @@ class TestScoreMessageBody:
                 total_samples=3,
                 present_count=3,
                 value_count=3,
-                observed_values=Counter(
-                    {"text" * 30: 1, "more" * 40: 1, "content" * 25: 1}
-                ),
+                observed_values=Counter({"text" * 30: 1, "more" * 40: 1, "content" * 25: 1}),
             ),
         }
         candidates = infer_semantic_roles(stats)
@@ -581,9 +555,7 @@ class TestScoreConversationTitle:
         stats = {
             "$.title": FieldStats(
                 path="$.title",
-                observed_values=Counter(
-                    {f"Chat {i}": 1 for i in range(10)}
-                ),
+                observed_values=Counter({f"Chat {i}": 1 for i in range(10)}),
                 string_lengths=[8, 9, 7, 10, 8, 9],
                 is_multiline=0,
                 newline_counts=[0] * 6,

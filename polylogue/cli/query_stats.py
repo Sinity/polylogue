@@ -31,30 +31,34 @@ def emit_structured_stats(
     multi_membership: bool = False,
 ) -> bool:
     if output_format == "json":
-        click.echo(json.dumps(
-            {
-                "dimension": dimension,
-                "multi_membership": multi_membership,
-                "rows": rows,
-                "summary": summary,
-            },
-            indent=2,
-        ))
+        click.echo(
+            json.dumps(
+                {
+                    "dimension": dimension,
+                    "multi_membership": multi_membership,
+                    "rows": rows,
+                    "summary": summary,
+                },
+                indent=2,
+            )
+        )
         return True
 
     if output_format == "yaml":
         import yaml
 
-        click.echo(yaml.dump(
-            {
-                "dimension": dimension,
-                "multi_membership": multi_membership,
-                "rows": rows,
-                "summary": summary,
-            },
-            default_flow_style=False,
-            allow_unicode=True,
-        ))
+        click.echo(
+            yaml.dump(
+                {
+                    "dimension": dimension,
+                    "multi_membership": multi_membership,
+                    "rows": rows,
+                    "summary": summary,
+                },
+                default_flow_style=False,
+                allow_unicode=True,
+            )
+        )
         return True
 
     if output_format == "csv":
@@ -118,10 +122,7 @@ async def output_stats_sql(
     out = env.ui.console.print
     out(f"\nConversations: {conv_count:,}\n")
     if stats["user"] or stats["assistant"]:
-        out(
-            f"Messages: {stats['total']:,} total "
-            f"({stats['user']:,} user, {stats['assistant']:,} assistant)"
-        )
+        out(f"Messages: {stats['total']:,} total ({stats['user']:,} user, {stats['assistant']:,} assistant)")
     else:
         out(f"Messages: {stats['total']:,}")
 
@@ -190,16 +191,20 @@ def output_stats_by_summaries(
             key = "all"
         groups[key].append(summary)
 
-    sorted_keys = sorted(groups.keys(), reverse=True) if dimension in {"month", "year", "day"} else sorted(groups.keys())
+    sorted_keys = (
+        sorted(groups.keys(), reverse=True) if dimension in {"month", "year", "day"} else sorted(groups.keys())
+    )
     rows: list[dict[str, object]] = []
 
     for key in sorted_keys:
         group_summaries = groups[key]
-        rows.append({
-            "group": key,
-            "conversations": len(group_summaries),
-            "messages": sum(msg_counts.get(str(summary.id), 0) for summary in group_summaries),
-        })
+        rows.append(
+            {
+                "group": key,
+                "conversations": len(group_summaries),
+                "messages": sum(msg_counts.get(str(summary.id), 0) for summary in group_summaries),
+            }
+        )
 
     summary_row = {
         "group": "TOTAL",
@@ -222,11 +227,15 @@ def output_stats_by_summaries(
     table.add_column("Messages", justify="right")
 
     for row in rows:
-        label = f"[{provider_color(row['group']).hex}]{row['group']}[/]" if dimension == "provider" else str(row["group"])
+        label = (
+            f"[{provider_color(row['group']).hex}]{row['group']}[/]" if dimension == "provider" else str(row["group"])
+        )
         table.add_row(label, f"{row['conversations']:,}", f"{row['messages']:,}")
 
     table.add_section()
-    table.add_row("[bold]TOTAL[/]", f"[bold]{summary_row['conversations']:,}[/]", f"[bold]{summary_row['messages']:,}[/]")
+    table.add_row(
+        "[bold]TOTAL[/]", f"[bold]{summary_row['conversations']:,}[/]", f"[bold]{summary_row['messages']:,}[/]"
+    )
 
     env.ui.console.print(table)
 
@@ -264,17 +273,21 @@ def output_stats_by_grouped_conversations(
         else:
             groups["all"].append(conv)
 
-    sorted_keys = sorted(groups.keys(), reverse=True) if dimension in {"month", "year", "day"} else sorted(groups.keys())
+    sorted_keys = (
+        sorted(groups.keys(), reverse=True) if dimension in {"month", "year", "day"} else sorted(groups.keys())
+    )
 
     rows: list[dict[str, object]] = []
     for key in sorted_keys:
         convs = groups[key]
-        rows.append({
-            "group": key,
-            "conversations": len(convs),
-            "messages": sum(len(conv.messages) for conv in convs),
-            "words": sum(sum(message.word_count for message in conv.messages) for conv in convs),
-        })
+        rows.append(
+            {
+                "group": key,
+                "conversations": len(convs),
+                "messages": sum(len(conv.messages) for conv in convs),
+                "words": sum(sum(message.word_count for message in conv.messages) for conv in convs),
+            }
+        )
 
     summary = {
         "group": "TOTAL",
@@ -299,7 +312,9 @@ def output_stats_by_grouped_conversations(
     table.add_column("Words", justify="right")
 
     for row in rows:
-        label = f"[{provider_color(row['group']).hex}]{row['group']}[/]" if dimension == "provider" else str(row["group"])
+        label = (
+            f"[{provider_color(row['group']).hex}]{row['group']}[/]" if dimension == "provider" else str(row["group"])
+        )
         table.add_row(label, f"{row['conversations']:,}", f"{row['messages']:,}", f"{row['words']:,}")
 
     table.add_section()
@@ -575,9 +590,7 @@ async def output_stats_by_profile_ids(
 
     from polylogue.lib.session_profile import build_session_profile
 
-    groups: dict[str, dict[str, int]] = defaultdict(
-        lambda: {"conversations": 0, "work_events": 0, "messages": 0}
-    )
+    groups: dict[str, dict[str, int]] = defaultdict(lambda: {"conversations": 0, "work_events": 0, "messages": 0})
     matched_conversations = 0
     matched_work_events = 0
     matched_messages = 0

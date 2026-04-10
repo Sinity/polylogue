@@ -22,7 +22,7 @@ def detect_time_deltas(stats: dict[str, FieldStats]) -> list[TimeDeltaRelation]:
             timestamp_fields.append((path, field_stats))
 
     for index, (path_a, stats_a) in enumerate(timestamp_fields):
-        for path_b, stats_b in timestamp_fields[index + 1:]:
+        for path_b, stats_b in timestamp_fields[index + 1 :]:
             parent_a = path_a.rsplit(".", 1)[0] if "." in path_a else "$"
             parent_b = path_b.rsplit(".", 1)[0] if "." in path_b else "$"
             if parent_a != parent_b:

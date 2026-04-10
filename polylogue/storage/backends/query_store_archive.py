@@ -48,9 +48,7 @@ class SQLiteQueryStoreArchiveMixin:
         async with self._connection_factory() as conn:
             return await conversations_q.resolve_id(conn, id_prefix)
 
-    async def search_conversations(
-        self, query: str, limit: int = 100, providers: list[str] | None = None
-    ) -> list[str]:
+    async def search_conversations(self, query: str, limit: int = 100, providers: list[str] | None = None) -> list[str]:
         async with self._connection_factory() as conn:
             return await conversations_q.search_conversations(conn, query, limit, providers)
 
@@ -67,9 +65,7 @@ class SQLiteQueryStoreArchiveMixin:
             return []
         blocks_by_message = await self.get_content_blocks([message.message_id for message in messages])
         return [
-            message.model_copy(
-                update={"content_blocks": blocks_by_message.get(message.message_id, [])}
-            )
+            message.model_copy(update={"content_blocks": blocks_by_message.get(message.message_id, [])})
             for message in messages
         ]
 
@@ -83,17 +79,13 @@ class SQLiteQueryStoreArchiveMixin:
         blocks_by_message = await self.get_content_blocks([message.message_id for message in all_messages])
         return {
             conversation_id: [
-                message.model_copy(
-                    update={"content_blocks": blocks_by_message.get(message.message_id, [])}
-                )
+                message.model_copy(update={"content_blocks": blocks_by_message.get(message.message_id, [])})
                 for message in records
             ]
             for conversation_id, records in result.items()
         }
 
-    async def get_content_blocks(
-        self, message_ids: list[str]
-    ) -> dict[str, list[ContentBlockRecord]]:
+    async def get_content_blocks(self, message_ids: list[str]) -> dict[str, list[ContentBlockRecord]]:
         async with self._connection_factory() as conn:
             return await attachments_q.get_content_blocks(conn, message_ids)
 
@@ -132,9 +124,7 @@ class SQLiteQueryStoreArchiveMixin:
         async with self._connection_factory() as conn:
             return await messages_q.get_message_counts_batch(conn, conversation_ids)
 
-    async def aggregate_message_stats(
-        self, conversation_ids: list[str] | None = None
-    ) -> dict[str, int]:
+    async def aggregate_message_stats(self, conversation_ids: list[str] | None = None) -> dict[str, int]:
         async with self._connection_factory() as conn:
             return await stats_q.aggregate_message_stats(conn, conversation_ids)
 

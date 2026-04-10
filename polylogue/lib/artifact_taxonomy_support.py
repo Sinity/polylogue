@@ -11,16 +11,18 @@ _PATH_ONLY_SIDECARS = {
 }
 _SUBAGENT_SUFFIXES = (".jsonl", ".jsonl.txt", ".ndjson")
 _SCALAR_TYPES = (str, int, float, bool, type(None))
-_RECORDISH_KEYS = frozenset({
-    "type",
-    "record_type",
-    "sessionId",
-    "parentUuid",
-    "message",
-    "payload",
-    "tool_name",
-    "tool_input",
-})
+_RECORDISH_KEYS = frozenset(
+    {
+        "type",
+        "record_type",
+        "sessionId",
+        "parentUuid",
+        "message",
+        "payload",
+        "tool_name",
+        "tool_input",
+    }
+)
 _MESSAGE_KEYS = frozenset({"role", "content", "text", "parts", "author"})
 
 
@@ -80,8 +82,7 @@ def looks_metadataish_list(payload: list[Any]) -> bool:
     if len(payload) > 512:
         return False
     return all(
-        isinstance(item, _SCALAR_TYPES)
-        or (isinstance(item, dict) and looks_metadataish_dict(item))
+        isinstance(item, _SCALAR_TYPES) or (isinstance(item, dict) and looks_metadataish_dict(item))
         for item in payload[:64]
     )
 
@@ -95,8 +96,7 @@ def is_scalarish(value: Any, *, depth: int = 0) -> bool:
         return len(value) <= 32 and all(is_scalarish(item, depth=depth + 1) for item in value)
     if isinstance(value, dict):
         return len(value) <= 8 and all(
-            isinstance(key, str) and is_scalarish(item, depth=depth + 1)
-            for key, item in value.items()
+            isinstance(key, str) and is_scalarish(item, depth=depth + 1) for key, item in value.items()
         )
     return False
 
@@ -108,9 +108,7 @@ def is_subagent_path(source_path: str | Path | None) -> bool:
     inner = normalized.rsplit(":", 1)[-1]
     inner_lower = inner.lower()
     name = Path(inner).name.lower()
-    return "/subagents/" in inner_lower or (
-        name.startswith("agent-") and name.endswith(_SUBAGENT_SUFFIXES)
-    )
+    return "/subagents/" in inner_lower or (name.startswith("agent-") and name.endswith(_SUBAGENT_SUFFIXES))
 
 
 def normalize_source_path(source_path: str | Path | None) -> str:

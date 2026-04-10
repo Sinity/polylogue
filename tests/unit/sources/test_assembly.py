@@ -17,7 +17,6 @@ from polylogue.sources.parsers.claude_index import (
 )
 from polylogue.types import Provider
 
-
 # ---------------------------------------------------------------------------
 # Registry
 # ---------------------------------------------------------------------------
@@ -305,8 +304,7 @@ class TestParseCodexSessionIndex:
         sessions_dir = codex_dir / "sessions"
         sessions_dir.mkdir(parents=True)
         (codex_dir / "session_index.jsonl").write_text(
-            '{"id": "t1", "thread_name": "Alpha"}\n'
-            '{"id": "t2", "thread_name": "Beta"}\n',
+            '{"id": "t1", "thread_name": "Alpha"}\n{"id": "t2", "thread_name": "Beta"}\n',
             encoding="utf-8",
         )
 
@@ -319,8 +317,7 @@ class TestParseCodexSessionIndex:
         sessions_dir = codex_dir / "sessions"
         sessions_dir.mkdir(parents=True)
         (codex_dir / "session_index.jsonl").write_text(
-            '{"id": "t1", "thread_name": "Old Name"}\n'
-            '{"id": "t1", "thread_name": "New Name"}\n',
+            '{"id": "t1", "thread_name": "Old Name"}\n{"id": "t1", "thread_name": "New Name"}\n',
             encoding="utf-8",
         )
 

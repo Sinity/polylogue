@@ -4,6 +4,7 @@ Generates structurally valid but adversarial data from real provider
 JSON schemas, stripping x-polylogue-* custom extensions that hypothesis-jsonschema
 cannot handle.
 """
+
 from __future__ import annotations
 
 import copy
@@ -18,11 +19,7 @@ from polylogue.schemas.registry import SchemaRegistry
 def strip_schema_extensions(schema: Any) -> Any:
     """Recursively remove x-polylogue-* keys from a JSON schema."""
     if isinstance(schema, dict):
-        return {
-            k: strip_schema_extensions(v)
-            for k, v in schema.items()
-            if not k.startswith("x-polylogue-")
-        }
+        return {k: strip_schema_extensions(v) for k, v in schema.items() if not k.startswith("x-polylogue-")}
     if isinstance(schema, list):
         return [strip_schema_extensions(item) for item in schema]
     return schema

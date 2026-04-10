@@ -12,7 +12,13 @@ from polylogue.logging import get_logger
 from polylogue.sources.providers.claude_code import ClaudeCodeRecord
 from polylogue.types import Provider
 
-from .base import ParsedContentBlock, ParsedConversation, ParsedMessage, ParsedProviderEvent, content_blocks_from_segments
+from .base import (
+    ParsedContentBlock,
+    ParsedConversation,
+    ParsedMessage,
+    ParsedProviderEvent,
+    content_blocks_from_segments,
+)
 from .claude_common import extract_message_text, normalize_timestamp
 
 _TAG_RE = re.compile(r"<[^>]+>")
@@ -37,6 +43,7 @@ def _clean_title_text(text: str) -> str:
     first_line = cleaned.split("\n")[0].strip()
     return first_line
 
+
 logger = get_logger(__name__)
 
 
@@ -56,9 +63,7 @@ def _safe_int(value: object) -> int:
 
 def _content_blocks_from_record(record: ClaudeCodeRecord, text: str | None) -> list[ParsedContentBlock]:
     raw_msg_content = (
-        record.message.get("content")
-        if isinstance(record.message, dict)
-        else getattr(record.message, "content", None)
+        record.message.get("content") if isinstance(record.message, dict) else getattr(record.message, "content", None)
     )
     content_blocks = content_blocks_from_segments(raw_msg_content) if raw_msg_content else []
     if not content_blocks and text:
@@ -90,12 +95,15 @@ def parse_code(payload: list[object], fallback_id: str) -> ParsedConversation:
 
         compaction = detect_context_compaction(item)
         if compaction:
+            compaction_timestamp = normalize_timestamp(compaction.get("timestamp"))
             context_compactions.append(compaction)
-            provider_events.append(ParsedProviderEvent(
-                event_type="compaction",
-                timestamp=compaction.get("timestamp"),
-                payload=compaction,
-            ))
+            provider_events.append(
+                ParsedProviderEvent(
+                    event_type="compaction",
+                    timestamp=compaction_timestamp,
+                    payload=compaction,
+                )
+            )
             continue
 
         try:

@@ -111,7 +111,7 @@ class EncodingFixtureBuilder:
         parts = []
         parts.append(json.dumps(header).encode("utf-8"))
         endings = [b"\r\n", b"\n", b"\r", b"\n"]  # mixed
-        for record, ending in zip(records, endings):
+        for record, ending in zip(records, endings, strict=True):
             parts.append(json.dumps(record).encode("utf-8") + ending)
 
         content = parts[0] + b"\n"

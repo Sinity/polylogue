@@ -1,4 +1,5 @@
 """Direct tests for schema verification and artifact-proof workflows."""
+
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -413,10 +414,7 @@ class TestProveRawArtifactCoverage:
             payload_provider="claude-code",
             source_name="claude-code",
             source_path="/tmp/subagents/agent-a123.jsonl",
-            raw_content=(
-                b'{"type":"session_meta"}\n'
-                b'{"type":"response_item","payload":{"type":"message"}}\n'
-            ),
+            raw_content=(b'{"type":"session_meta"}\n{"type":"response_item","payload":{"type":"message"}}\n'),
         )
         _insert_raw_record(
             db_path=db_path,
@@ -433,9 +431,7 @@ class TestProveRawArtifactCoverage:
             source_name="codex",
             source_path="/tmp/session.jsonl",
             raw_content=(
-                b'{"type":"session_meta"}\n'
-                b'not json at all\n'
-                b'{"type":"response_item","payload":{"type":"message"}}\n'
+                b'{"type":"session_meta"}\nnot json at all\n{"type":"response_item","payload":{"type":"message"}}\n'
             ),
         )
 
@@ -503,9 +499,7 @@ class TestProveRawArtifactCoverage:
         assert chatgpt_stats.resolution_reasons == {"exact_structure": 1}
 
         with open_connection(db_path) as conn:
-            observation_count = conn.execute(
-                "SELECT COUNT(*) FROM artifact_observations"
-            ).fetchone()[0]
+            observation_count = conn.execute("SELECT COUNT(*) FROM artifact_observations").fetchone()[0]
         assert observation_count == 5
 
     def test_refreshes_stale_existing_observation_resolution(
@@ -686,10 +680,7 @@ class TestProveRawArtifactCoverage:
             provider_name="claude-code",
             source_name="claude-code",
             source_path="/tmp/subagents/agent-a123.jsonl",
-            raw_content=(
-                b'{"type":"session_meta"}\n'
-                b'{"type":"response_item","payload":{"type":"message"}}\n'
-            ),
+            raw_content=(b'{"type":"session_meta"}\n{"type":"response_item","payload":{"type":"message"}}\n'),
         )
 
         package = SchemaVersionPackage(

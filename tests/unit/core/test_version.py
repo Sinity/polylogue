@@ -124,7 +124,9 @@ class TestVersionInfo:
         assert info.short == "1.0.0"
         assert "1.0.0" in repr(info)
 
-    @pytest.mark.parametrize("commit,dirty,has_dirty_suffix", [("abc123def456", False, False), ("abc123def456", True, True)])
+    @pytest.mark.parametrize(
+        "commit,dirty,has_dirty_suffix", [("abc123def456", False, False), ("abc123def456", True, True)]
+    )
     def test_version_with_commit(self, commit: str, dirty: bool, has_dirty_suffix: bool) -> None:
         info = VersionInfo(version="1.0.0", commit=commit, dirty=dirty)
         rendered = str(info)

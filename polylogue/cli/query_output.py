@@ -306,15 +306,17 @@ def format_summary_list(
         for summary in summaries:
             date = summary.display_date.strftime("%Y-%m-%d") if summary.display_date else ""
             tags_str = ",".join(summary.tags) if summary.tags else ""
-            writer.writerow([
-                str(summary.id),
-                date,
-                summary.provider,
-                summary.display_title or "",
-                message_counts.get(str(summary.id), 0),
-                tags_str,
-                summary.summary or "",
-            ])
+            writer.writerow(
+                [
+                    str(summary.id),
+                    date,
+                    summary.provider,
+                    summary.display_title or "",
+                    message_counts.get(str(summary.id), 0),
+                    tags_str,
+                    summary.summary or "",
+                ]
+            )
         return buf.getvalue().rstrip("\r\n")
 
     lines = []
@@ -388,16 +390,18 @@ def conversations_to_csv(results: list[Conversation]) -> str:
     for conv in results:
         date = conv.display_date.strftime("%Y-%m-%d") if conv.display_date else ""
         tags_str = ",".join(conv.tags) if conv.tags else ""
-        writer.writerow([
-            str(conv.id),
-            date,
-            conv.provider,
-            conv.display_title or "",
-            len(conv.messages),
-            sum(message.word_count for message in conv.messages),
-            tags_str,
-            conv.summary or "",
-        ])
+        writer.writerow(
+            [
+                str(conv.id),
+                date,
+                conv.provider,
+                conv.display_title or "",
+                len(conv.messages),
+                sum(message.word_count for message in conv.messages),
+                tags_str,
+                conv.summary or "",
+            ]
+        )
 
     return output.getvalue()
 

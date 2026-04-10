@@ -73,9 +73,7 @@ class FrozenClock:
 
 
 @contextmanager
-def frozen_clock(
-    start: float = 1700000000.0, step: float = 1.0
-) -> Iterator[FrozenClock]:
+def frozen_clock(start: float = 1700000000.0, step: float = 1.0) -> Iterator[FrozenClock]:
     """Context manager that freezes time for deterministic testing.
 
     Patches time.time() and time.monotonic() to use a controlled clock
@@ -106,9 +104,7 @@ def frozen_clock(
     def mock_monotonic() -> float:
         return clock.monotonic()
 
-    with patch("time.time", side_effect=mock_time), patch(
-        "time.monotonic", side_effect=mock_monotonic
-    ):
+    with patch("time.time", side_effect=mock_time), patch("time.monotonic", side_effect=mock_monotonic):
         yield clock
 
 

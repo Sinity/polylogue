@@ -56,16 +56,12 @@ class SQLiteRawMixin:
     async def save_raw_conversation(self, record: RawConversationRecord) -> bool:
         """Save a raw conversation record. Returns True if inserted."""
         async with self._get_connection() as conn:
-            return await raw_queries.save_raw_conversation(
-                conn, record, self._transaction_depth
-            )
+            return await raw_queries.save_raw_conversation(conn, record, self._transaction_depth)
 
     async def save_artifact_observation(self, record: ArtifactObservationRecord) -> bool:
         """Persist or refresh one durable artifact observation."""
         async with self._get_connection() as conn:
-            return await artifacts_q.save_artifact_observation(
-                conn, record, self._transaction_depth
-            )
+            return await artifacts_q.save_artifact_observation(conn, record, self._transaction_depth)
 
     async def get_raw_conversation(self, raw_id: str) -> RawConversationRecord | None:
         """Retrieve a raw conversation by ID."""
@@ -148,7 +144,8 @@ class SQLiteRawMixin:
             )
 
     async def get_raw_conversations_batch(
-        self, raw_ids: list[str],
+        self,
+        raw_ids: list[str],
     ) -> list[RawConversationRecord]:
         """Fetch multiple raw conversations in a single query."""
         async with self._get_connection() as conn:

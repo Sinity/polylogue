@@ -13,16 +13,10 @@ class RepositoryProductTimelineReadMixin:
         return await self.queries.get_session_phases(conversation_id)
 
     async def get_session_work_events(self, conversation_id: str):
-        return [
-            hydrate_work_event(record)
-            for record in await self.get_session_work_event_records(conversation_id)
-        ]
+        return [hydrate_work_event(record) for record in await self.get_session_work_event_records(conversation_id)]
 
     async def get_session_phases(self, conversation_id: str):
-        return [
-            hydrate_session_phase(record)
-            for record in await self.get_session_phase_records(conversation_id)
-        ]
+        return [hydrate_session_phase(record) for record in await self.get_session_phase_records(conversation_id)]
 
     async def list_session_work_events(
         self,

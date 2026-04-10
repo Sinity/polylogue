@@ -22,6 +22,7 @@ async def _table_has_column(conn: aiosqlite.Connection, table: str, column: str)
     _ASYNC_COLUMN_CACHE[key] = found
     return found
 
+
 def _session_profile_insert_columns(
     *,
     has_legacy_payload: bool,

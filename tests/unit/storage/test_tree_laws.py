@@ -33,7 +33,7 @@ async def test_get_root_returns_node_without_parent(tmp_path, specs):
 
     repo = ConversationRepository(backend=backend)
     # Pick a random non-root node if possible
-    for i, spec in enumerate(specs):
+    for _i, spec in enumerate(specs):
         root = await repo.get_root(spec.conversation_id)
         parent = await repo.get_parent(root.id)
         assert parent is None, f"Root {root.id} unexpectedly has parent"
@@ -81,9 +81,7 @@ async def test_tree_ids_match_expected(tmp_path, specs):
                 tree_ids.add(child.id)
                 queue.append(child.id)
 
-        assert tree_ids == expected, (
-            f"Tree from {spec.conversation_id}: expected {expected}, got {tree_ids}"
-        )
+        assert tree_ids == expected, f"Tree from {spec.conversation_id}: expected {expected}, got {tree_ids}"
     await backend.close()
 
 

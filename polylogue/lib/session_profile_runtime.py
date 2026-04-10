@@ -66,10 +66,7 @@ def build_session_profile(
     if engaged_duration_ms <= 0:
         engaged_duration_ms = max(int(conversation.total_duration_ms or 0), 0)
     canonical_session_at = (
-        facts.first_message_at
-        or conversation.created_at
-        or conversation.updated_at
-        or facts.last_message_at
+        facts.first_message_at or conversation.created_at or conversation.updated_at or facts.last_message_at
     )
     partial = SessionProfile(
         conversation_id=str(conversation.id),

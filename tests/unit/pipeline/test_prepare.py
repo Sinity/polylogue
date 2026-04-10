@@ -94,7 +94,16 @@ async def test_render_includes_orphan_attachments(workspace_env, storage_reposit
     bundle = RecordBundle(
         conversation=_conversation_record(),
         messages=[make_message("msg:hash", "conv:hash", text="hello")],
-        attachments=[make_attachment("att-orphan", "conv:hash", None, mime_type="text/plain", size_bytes=12, provider_meta={"name": "notes.txt"})],
+        attachments=[
+            make_attachment(
+                "att-orphan",
+                "conv:hash",
+                None,
+                mime_type="text/plain",
+                size_bytes=12,
+                provider_meta={"name": "notes.txt"},
+            )
+        ],
     )
     await save_bundle(bundle, repository=storage_repository)
 
@@ -109,14 +118,27 @@ async def test_render_includes_orphan_attachments(workspace_env, storage_reposit
 
 async def test_ingest_updates_metadata(workspace_env, storage_repository):
     bundle = RecordBundle(
-        conversation=make_conversation("conv-update", provider_name="codex", title="Old", content_hash="hash-old", provider_meta={"source": "inbox"}),
+        conversation=make_conversation(
+            "conv-update",
+            provider_name="codex",
+            title="Old",
+            content_hash="hash-old",
+            provider_meta={"source": "inbox"},
+        ),
         messages=[make_message("msg-update", "conv-update", text="hello", content_hash="msg-old")],
         attachments=[],
     )
     await save_bundle(bundle, repository=storage_repository)
 
     updated = RecordBundle(
-        conversation=make_conversation("conv-update", provider_name="codex", title="New", updated_at="2", content_hash="hash-new", provider_meta={"source": "inbox", "updated": True}),
+        conversation=make_conversation(
+            "conv-update",
+            provider_name="codex",
+            title="New",
+            updated_at="2",
+            content_hash="hash-new",
+            provider_meta={"source": "inbox", "updated": True},
+        ),
         messages=[make_message("msg-update", "conv-update", role="assistant", text="hello", content_hash="msg-new")],
         attachments=[],
     )
@@ -147,7 +169,14 @@ async def test_ingest_updates_fields_without_hash_changes(workspace_env, storage
     This test now uses different content_hashes for the conversation to reflect
     realistic behavior — content_hash includes message content.
     """
-    base_conversation = make_conversation("conv-hash-stable", provider_name="codex", title="Original", updated_at="1", content_hash="hash-v1", provider_meta={"source": "inbox"})
+    base_conversation = make_conversation(
+        "conv-hash-stable",
+        provider_name="codex",
+        title="Original",
+        updated_at="1",
+        content_hash="hash-v1",
+        provider_meta={"source": "inbox"},
+    )
     base_message = make_message("msg-stable", "conv-hash-stable", text="hello", content_hash="msg-v1")
     await save_bundle(
         RecordBundle(conversation=base_conversation, messages=[base_message], attachments=[]),
@@ -155,7 +184,14 @@ async def test_ingest_updates_fields_without_hash_changes(workspace_env, storage
     )
 
     updated = RecordBundle(
-        conversation=make_conversation("conv-hash-stable", provider_name="codex", title="Updated title", updated_at="2", content_hash="hash-v2", provider_meta={"source": "inbox", "updated": True}),
+        conversation=make_conversation(
+            "conv-hash-stable",
+            provider_name="codex",
+            title="Updated title",
+            updated_at="2",
+            content_hash="hash-v2",
+            provider_meta={"source": "inbox", "updated": True},
+        ),
         messages=[
             make_message("msg-stable", "conv-hash-stable", role="assistant", text="hello", content_hash="msg-v2")
         ],

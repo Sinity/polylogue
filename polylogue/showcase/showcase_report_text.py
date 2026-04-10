@@ -20,14 +20,10 @@ def generate_summary(result: ShowcaseResult) -> str:
     group_counts = result.group_counts()
     for group in GROUPS:
         counts = group_counts.get(group, {"pass": 0, "fail": 0, "skip": 0})
-        lines.append(
-            f"  {group:<20s}  {counts['pass']:>4d}  {counts['fail']:>4d}  {counts['skip']:>4d}"
-        )
+        lines.append(f"  {group:<20s}  {counts['pass']:>4d}  {counts['fail']:>4d}  {counts['skip']:>4d}")
 
     lines.append(f"  {'─' * 20}  {'─' * 4}  {'─' * 4}  {'─' * 4}")
-    lines.append(
-        f"  {'TOTAL':<20s}  {result.passed:>4d}  {result.failed:>4d}  {result.skipped:>4d}"
-    )
+    lines.append(f"  {'TOTAL':<20s}  {result.passed:>4d}  {result.failed:>4d}  {result.skipped:>4d}")
     lines.append("")
 
     if result.output_dir:
@@ -74,11 +70,7 @@ def generate_cookbook(result: ShowcaseResult) -> str:
             lines.append(f"## {title}")
             lines.append("")
 
-        args_str = (
-            " ".join(result_entry.exercise.args)
-            if result_entry.exercise.args
-            else "(default stats)"
-        )
+        args_str = " ".join(result_entry.exercise.args) if result_entry.exercise.args else "(default stats)"
         lines.append(f"### {result_entry.exercise.description}")
         lines.append("")
         lines.append("```console")
@@ -144,9 +136,7 @@ def generate_showcase_markdown(
     group_counts = result.group_counts()
     for group in GROUPS:
         counts = group_counts.get(group, {"pass": 0, "fail": 0, "skip": 0})
-        lines.append(
-            f"| {group} | {counts['pass']} | {counts['fail']} | {counts['skip']} |"
-        )
+        lines.append(f"| {group} | {counts['pass']} | {counts['fail']} | {counts['skip']} |")
     lines.append("")
 
     lines.append("## Exercises")

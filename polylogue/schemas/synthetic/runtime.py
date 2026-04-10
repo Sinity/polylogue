@@ -34,9 +34,7 @@ def _generate_from_schema(
         if keyword in schema:
             variants = schema[keyword]
             non_null = [
-                variant
-                for variant in variants
-                if variant.get("type") != "null" and variant.get("type") is not None
+                variant for variant in variants if variant.get("type") != "null" and variant.get("type") is not None
             ]
             chosen = rng.choice(non_null) if non_null else rng.choice(variants)
             return self._generate_from_schema(

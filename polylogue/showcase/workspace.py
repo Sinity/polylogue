@@ -198,13 +198,15 @@ def _run_pipeline_with_sources(
     )
 
     with override_workspace_env(workspace.env_vars):
-        run_coroutine_sync(run_sources(
-            config=config,
-            stage="all",
-            plan=None,
-            ui=None,
-            source_names=None,
-        ))
+        run_coroutine_sync(
+            run_sources(
+                config=config,
+                stage="all",
+                plan=None,
+                ui=None,
+                source_names=None,
+            )
+        )
 
 
 __all__ = [

@@ -173,13 +173,16 @@ def test_apply_drive_attachments_skips_inline_and_external_media(tmp_path: Path)
 
 
 def test_iter_drive_conversations_returns_empty_without_folder(tmp_path: Path) -> None:
-    assert list(
-        iter_drive_conversations(
-            source=Source(name="gemini", path=tmp_path),
-            archive_root=tmp_path,
-            download_assets=False,
+    assert (
+        list(
+            iter_drive_conversations(
+                source=Source(name="gemini", path=tmp_path),
+                archive_root=tmp_path,
+                download_assets=False,
+            )
         )
-    ) == []
+        == []
+    )
 
 
 def test_iter_drive_conversations_tracks_cursor_and_attachment_downloads(tmp_path: Path) -> None:

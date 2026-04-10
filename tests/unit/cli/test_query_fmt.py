@@ -241,7 +241,15 @@ STATS_CASES = (
                 [{"text": "plain"}],
             ),
         ],
-        ("Matched: 3 conversations (by action)", "file_read", "search", "none", "MATCHED", "Facts", "Note: conversations may appear in multiple action groups."),
+        (
+            "Matched: 3 conversations (by action)",
+            "file_read",
+            "search",
+            "none",
+            "MATCHED",
+            "Facts",
+            "Note: conversations may appear in multiple action groups.",
+        ),
     ),
     (
         "tool",
@@ -265,7 +273,15 @@ STATS_CASES = (
                 [{"text": "plain"}],
             ),
         ],
-        ("Matched: 3 conversations (by tool)", "read", "grep", "none", "MATCHED", "Facts", "Note: conversations may appear in multiple tool groups."),
+        (
+            "Matched: 3 conversations (by tool)",
+            "read",
+            "grep",
+            "none",
+            "MATCHED",
+            "Facts",
+            "Note: conversations may appear in multiple tool groups.",
+        ),
     ),
 )
 
@@ -475,12 +491,30 @@ class TestStreamingOutput:
     @pytest.mark.parametrize(
         ("output_format", "expected_tokens"),
         [
-            ("markdown", ("# Example Conversation", "**Provider**: claude-ai", "**Date**: 2025-06-15 12:30", "_Streamed 2 messages_")),
-            ("json-lines", ('"type": "header"', '"provider": "claude-ai"', '"date": "2025-06-15T12:30:00+00:00"', '"type": "footer"')),
+            (
+                "markdown",
+                (
+                    "# Example Conversation",
+                    "**Provider**: claude-ai",
+                    "**Date**: 2025-06-15 12:30",
+                    "_Streamed 2 messages_",
+                ),
+            ),
+            (
+                "json-lines",
+                (
+                    '"type": "header"',
+                    '"provider": "claude-ai"',
+                    '"date": "2025-06-15T12:30:00+00:00"',
+                    '"type": "footer"',
+                ),
+            ),
             ("plaintext", ("[USER]", "[ASSISTANT]")),
         ],
     )
-    def test_render_stream_transcript_contract(self, sample_conversation: Conversation, output_format: str, expected_tokens: tuple[str, ...]) -> None:
+    def test_render_stream_transcript_contract(
+        self, sample_conversation: Conversation, output_format: str, expected_tokens: tuple[str, ...]
+    ) -> None:
         rendered, emitted = render_stream_transcript(
             conversation_id=str(sample_conversation.id),
             title=sample_conversation.display_title,
@@ -488,7 +522,10 @@ class TestStreamingOutput:
             display_date=sample_conversation.display_date,
             messages=list(sample_conversation.messages),
             output_format=output_format,
-            stats={"total_messages": len(sample_conversation.messages), "dialogue_messages": len(list(sample_conversation.iter_dialogue()))},
+            stats={
+                "total_messages": len(sample_conversation.messages),
+                "dialogue_messages": len(list(sample_conversation.iter_dialogue())),
+            },
         )
 
         assert emitted == 2
@@ -558,12 +595,14 @@ class TestGroupedStatsOutput:
                         "assistant",
                         "read one",
                         id="conv-1-0",
-                        content_blocks=[{
-                            "type": "tool_use",
-                            "tool_name": "Read",
-                            "tool_input": {"path": "/tmp/a"},
-                            "semantic_type": "file_read",
-                        }],
+                        content_blocks=[
+                            {
+                                "type": "tool_use",
+                                "tool_name": "Read",
+                                "tool_input": {"path": "/tmp/a"},
+                                "semantic_type": "file_read",
+                            }
+                        ],
                     ),
                 ],
             ),
@@ -606,12 +645,14 @@ class TestGroupedStatsOutput:
                         "assistant",
                         "grep one",
                         id="conv-1-0",
-                        content_blocks=[{
-                            "type": "tool_use",
-                            "tool_name": "Grep",
-                            "tool_input": {"pattern": "needle"},
-                            "semantic_type": "search",
-                        }],
+                        content_blocks=[
+                            {
+                                "type": "tool_use",
+                                "tool_name": "Grep",
+                                "tool_input": {"pattern": "needle"},
+                                "semantic_type": "search",
+                            }
+                        ],
                     ),
                 ],
             ),

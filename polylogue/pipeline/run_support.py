@@ -79,6 +79,7 @@ def normalize_stage_sequence(
         raise ValueError(f"Duplicate leaf stage(s): {', '.join(duplicates)}")
     return normalized
 
+
 def write_run_json(archive_root: Path, payload: dict[str, object]) -> Path:
     """Write run result JSON to the runs directory."""
     runs_dir = archive_root / "runs"

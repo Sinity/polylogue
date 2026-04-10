@@ -34,18 +34,40 @@ logger = logging.getLogger(__name__)
 # Path resolution helpers
 # -------------------------------------------------------------------
 
-_WELL_KNOWN_ROLE_NAMES = frozenset({
-    "role", "type", "sender", "author",
-})
-_WELL_KNOWN_BODY_NAMES = frozenset({
-    "content", "text", "body", "message", "parts",
-})
-_WELL_KNOWN_TIMESTAMP_NAMES = frozenset({
-    "timestamp", "created_at", "create_time", "time", "date",
-})
-_WELL_KNOWN_ID_NAMES = frozenset({
-    "id", "uuid", "messageId", "message_id",
-})
+_WELL_KNOWN_ROLE_NAMES = frozenset(
+    {
+        "role",
+        "type",
+        "sender",
+        "author",
+    }
+)
+_WELL_KNOWN_BODY_NAMES = frozenset(
+    {
+        "content",
+        "text",
+        "body",
+        "message",
+        "parts",
+    }
+)
+_WELL_KNOWN_TIMESTAMP_NAMES = frozenset(
+    {
+        "timestamp",
+        "created_at",
+        "create_time",
+        "time",
+        "date",
+    }
+)
+_WELL_KNOWN_ID_NAMES = frozenset(
+    {
+        "id",
+        "uuid",
+        "messageId",
+        "message_id",
+    }
+)
 
 
 def _resolve_json_path(raw: dict[str, Any], path: str) -> Any:
@@ -131,7 +153,7 @@ def _find_by_well_known_names(
         if key.lower() in names:
             return raw[key]
     # One level deep
-    for key, value in raw.items():
+    for _key, value in raw.items():
         if isinstance(value, dict):
             for subkey in value:
                 if subkey.lower() in names:
@@ -142,6 +164,7 @@ def _find_by_well_known_names(
 # -------------------------------------------------------------------
 # Content extraction from resolved body
 # -------------------------------------------------------------------
+
 
 def _extract_text_from_body(body: Any) -> str:
     """Extract displayable text from whatever the body field contains."""
@@ -190,6 +213,7 @@ def _extract_content_block_list(body: Any) -> list[dict[str, Any]]:
 # -------------------------------------------------------------------
 # Main extraction entry point
 # -------------------------------------------------------------------
+
 
 def extract_message_from_schema(
     raw: dict[str, Any],

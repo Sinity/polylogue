@@ -160,7 +160,9 @@ def test_products_callback_rejects_unknown_query_fields() -> None:
     mock_ctx.obj = env
     # No parent — root filter inheritance is a no-op
 
-    with pytest.raises(SystemExit, match="products enrichments: Unknown query field\\(s\\) for session_enrichments: refined_work_kind"):
+    with pytest.raises(
+        SystemExit, match="products enrichments: Unknown query field\\(s\\) for session_enrichments: refined_work_kind"
+    ):
         callback.__wrapped__(mock_ctx, json_mode=False, refined_work_kind="planning")
 
 

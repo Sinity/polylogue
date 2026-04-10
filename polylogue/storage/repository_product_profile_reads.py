@@ -26,10 +26,7 @@ class RepositoryProductProfileReadMixin:
         conversation_ids: builtins.list[str],
     ):
         records = await self.get_session_profile_records_batch(conversation_ids)
-        return {
-            conversation_id: hydrate_session_profile(record)
-            for conversation_id, record in records.items()
-        }
+        return {conversation_id: hydrate_session_profile(record) for conversation_id, record in records.items()}
 
     async def list_session_profiles(
         self,

@@ -215,9 +215,18 @@ def upsert_message(conn: sqlite3.Connection, record: MessageRecord) -> bool:
                 semantic_type = excluded.semantic_type
             """,
             (
-                blk.block_id, blk.message_id, blk.conversation_id, blk.block_index,
-                blk.type, blk.text, blk.tool_name, blk.tool_id, blk.tool_input,
-                blk.media_type, blk.metadata, blk.semantic_type,
+                blk.block_id,
+                blk.message_id,
+                blk.conversation_id,
+                blk.block_index,
+                blk.type,
+                blk.text,
+                blk.tool_name,
+                blk.tool_id,
+                blk.tool_input,
+                blk.media_type,
+                blk.metadata,
+                blk.semantic_type,
             ),
         )
 
@@ -431,10 +440,12 @@ class ConversationBuilder:
     def updated_at(self, updated_at: str) -> ConversationBuilder:
         from polylogue.pipeline.prepare import _timestamp_sort_key
 
-        self.conv = self.conv.model_copy(update={
-            "updated_at": updated_at,
-            "sort_key": _timestamp_sort_key(updated_at),
-        })
+        self.conv = self.conv.model_copy(
+            update={
+                "updated_at": updated_at,
+                "sort_key": _timestamp_sort_key(updated_at),
+            }
+        )
         return self
 
     def metadata(self, metadata: dict[str, Any] | None) -> ConversationBuilder:
@@ -480,22 +491,26 @@ class ConversationBuilder:
         raw_blocks = (provider_meta or {}).get("content_blocks") or []
         extra_blocks: list[ContentBlockRecord] = []
         for idx, blk in enumerate(raw_blocks):
-            extra_blocks.append(ContentBlockRecord(
-                block_id=f"blk-{msg_id}-{idx}",
-                message_id=msg_id,
-                conversation_id=self.conv.conversation_id,
-                block_index=idx,
-                type=blk.get("type", "text"),
-                text=blk.get("text"),
-                tool_name=blk.get("tool_name"),
-                tool_id=blk.get("tool_id"),
-                tool_input=(
-                    blk["input"] if isinstance(blk.get("input"), str)
-                    else __import__("json").dumps(blk["input"]) if blk.get("input") is not None
-                    else None
-                ),
-                semantic_type=blk.get("semantic_type"),
-            ))
+            extra_blocks.append(
+                ContentBlockRecord(
+                    block_id=f"blk-{msg_id}-{idx}",
+                    message_id=msg_id,
+                    conversation_id=self.conv.conversation_id,
+                    block_index=idx,
+                    type=blk.get("type", "text"),
+                    text=blk.get("text"),
+                    tool_name=blk.get("tool_name"),
+                    tool_id=blk.get("tool_id"),
+                    tool_input=(
+                        blk["input"]
+                        if isinstance(blk.get("input"), str)
+                        else __import__("json").dumps(blk["input"])
+                        if blk.get("input") is not None
+                        else None
+                    ),
+                    semantic_type=blk.get("semantic_type"),
+                )
+            )
 
         # Merge with any content_blocks already in kwargs
         existing_blocks = kwargs.pop("content_blocks", [])
@@ -640,21 +655,25 @@ def make_message(
         if not isinstance(blk, dict):
             continue
         tool_input = blk.get("input")
-        extra_blocks.append(ContentBlockRecord(
-            block_id=f"blk-{message_id}-{idx}",
-            message_id=message_id,
-            conversation_id=conversation_id,
-            block_index=idx,
-            type=blk.get("type", "text"),
-            text=blk.get("text"),
-            tool_name=blk.get("tool_name") or blk.get("name"),
-            tool_id=blk.get("tool_id") or blk.get("id"),
-            tool_input=(
-                tool_input if isinstance(tool_input, str)
-                else _json.dumps(tool_input) if tool_input is not None
-                else None
-            ),
-        ))
+        extra_blocks.append(
+            ContentBlockRecord(
+                block_id=f"blk-{message_id}-{idx}",
+                message_id=message_id,
+                conversation_id=conversation_id,
+                block_index=idx,
+                type=blk.get("type", "text"),
+                text=blk.get("text"),
+                tool_name=blk.get("tool_name") or blk.get("name"),
+                tool_id=blk.get("tool_id") or blk.get("id"),
+                tool_input=(
+                    tool_input
+                    if isinstance(tool_input, str)
+                    else _json.dumps(tool_input)
+                    if tool_input is not None
+                    else None
+                ),
+            )
+        )
 
     existing_blocks = kwargs.pop("content_blocks", [])
     all_blocks = extra_blocks + list(existing_blocks)

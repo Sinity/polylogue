@@ -60,9 +60,7 @@ async def apply_raw_state_update(
     if state.validation_error is not UNSET:
         set_clauses.append("validation_error = ?")
         params.append(
-            state.validation_error[:2000]
-            if isinstance(state.validation_error, str)
-            else state.validation_error
+            state.validation_error[:2000] if isinstance(state.validation_error, str) else state.validation_error
         )
     if state.validation_drift_count is not UNSET:
         set_clauses.append("validation_drift_count = ?")

@@ -62,19 +62,23 @@ class _IngestBatchSummary:
     skipped_raw_ids: set[str] = field(default_factory=set)
     processed_ids: set[str] = field(default_factory=set)
     changed_conversation_ids: list[str] = field(default_factory=list)
-    counts: dict[str, int] = field(default_factory=lambda: {
-        "conversations": 0,
-        "messages": 0,
-        "attachments": 0,
-        "skipped_conversations": 0,
-        "skipped_messages": 0,
-        "skipped_attachments": 0,
-    })
-    changed_counts: dict[str, int] = field(default_factory=lambda: {
-        "conversations": 0,
-        "messages": 0,
-        "attachments": 0,
-    })
+    counts: dict[str, int] = field(
+        default_factory=lambda: {
+            "conversations": 0,
+            "messages": 0,
+            "attachments": 0,
+            "skipped_conversations": 0,
+            "skipped_messages": 0,
+            "skipped_attachments": 0,
+        }
+    )
+    changed_counts: dict[str, int] = field(
+        default_factory=lambda: {
+            "conversations": 0,
+            "messages": 0,
+            "attachments": 0,
+        }
+    )
     parse_failures: int = 0
     total_msgs: int = 0
     total_convos: int = 0
@@ -460,11 +464,7 @@ def _record_write_result(
     summary.total_convos += 1
     summary.total_msgs += len(cdata.message_tuples)
 
-    ingest_changed = (
-        counts["conversations"]
-        + counts["messages"]
-        + counts["attachments"]
-    ) > 0
+    ingest_changed = (counts["conversations"] + counts["messages"] + counts["attachments"]) > 0
 
     if ingest_changed or content_changed:
         summary.processed_ids.add(cdata.conversation_id)
@@ -546,11 +546,7 @@ def _flush_pending_conversation_entries(
     summary: _IngestBatchSummary,
     materialized_ids: set[str],
 ) -> None:
-    remaining = [
-        entry
-        for entries in pending_by_parent.values()
-        for entry in entries
-    ]
+    remaining = [entry for entries in pending_by_parent.values() for entry in entries]
     if not remaining:
         return
     pending_by_parent.clear()
@@ -628,10 +624,10 @@ def _process_ingest_batch_sync(
     try:
         result_iterator = iter(
             _iter_ingest_results_sync(
-            raw_records,
-            archive_root_str=archive_root_str,
-            validation_mode=validation_mode,
-            worker_count=summary.worker_count,
+                raw_records,
+                archive_root_str=archive_root_str,
+                validation_mode=validation_mode,
+                worker_count=summary.worker_count,
             )
         )
         while True:
@@ -757,9 +753,7 @@ async def process_ingest_batch(
             result.changed_counts[key] += value
 
     progressed_raw_count = sum(
-        1
-        for outcome in batch_summary.outcomes.values()
-        if outcome.had_conversations and outcome.error is None
+        1 for outcome in batch_summary.outcomes.values() if outcome.had_conversations and outcome.error is None
     )
     if progress_callback and progressed_raw_count:
         progress_callback(progressed_raw_count)
@@ -991,11 +985,7 @@ async def refresh_session_products_bulk(
             "thread_refresh_ms": round(thread_elapsed * 1000.0, 1),
             "aggregate_refresh_ms": round(aggregate_elapsed * 1000.0, 1),
             "update_chunk_count": len(chunk_observations),
-            "update_slow_chunk_count": sum(
-                1
-                for chunk in chunk_observations
-                if bool(chunk.get("slow"))
-            ),
+            "update_slow_chunk_count": sum(1 for chunk in chunk_observations if bool(chunk.get("slow"))),
         }
         if chunk_total_values:
             observation["update_max_chunk_ms"] = round(max(chunk_total_values), 1)

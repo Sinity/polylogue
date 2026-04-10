@@ -267,11 +267,7 @@ class SessionProfileProduct(ArchiveProductModel):
                 source_updated_at=record.source_updated_at,
                 source_sort_key=record.source_sort_key,
             ),
-            evidence=(
-                SessionEvidencePayload.model_validate(record.evidence_payload)
-                if include_evidence
-                else None
-            ),
+            evidence=(SessionEvidencePayload.model_validate(record.evidence_payload) if include_evidence else None),
             inference_provenance=(
                 ArchiveInferenceProvenance(
                     materializer_version=record.materializer_version,
@@ -284,11 +280,7 @@ class SessionProfileProduct(ArchiveProductModel):
                 if include_inference
                 else None
             ),
-            inference=(
-                SessionInferencePayload.model_validate(record.inference_payload)
-                if include_inference
-                else None
-            ),
+            inference=(SessionInferencePayload.model_validate(record.inference_payload) if include_inference else None),
         )
 
 
@@ -536,19 +528,11 @@ def records_provenance(
 ) -> ArchiveProductProvenance:
     row_list = list(rows)
     materialized_at = max(
-        (
-            str(getattr(row, materialized_at_attr))
-            for row in row_list
-            if getattr(row, materialized_at_attr, None)
-        ),
+        (str(getattr(row, materialized_at_attr)) for row in row_list if getattr(row, materialized_at_attr, None)),
         default="1970-01-01T00:00:00+00:00",
     )
     source_updated_at = max(
-        (
-            str(getattr(row, source_updated_at_attr))
-            for row in row_list
-            if getattr(row, source_updated_at_attr, None)
-        ),
+        (str(getattr(row, source_updated_at_attr)) for row in row_list if getattr(row, source_updated_at_attr, None)),
         default=None,
     )
     source_sort_key = max(
@@ -573,6 +557,7 @@ def day_after(iso_day: str) -> str:
 
 def date_from_iso(value: str) -> date:
     return date.fromisoformat(value)
+
 
 __all__ = [
     "ARCHIVE_PRODUCT_CONTRACT_VERSION",

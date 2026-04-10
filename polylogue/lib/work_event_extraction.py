@@ -107,9 +107,7 @@ class WorkEvent:
             "start_time": self.start_time.isoformat() if self.start_time else None,
             "end_time": self.end_time.isoformat() if self.end_time else None,
             "canonical_session_date": (
-                self.canonical_session_date.isoformat()
-                if self.canonical_session_date
-                else None
+                self.canonical_session_date.isoformat() if self.canonical_session_date else None
             ),
             "duration_ms": self.duration_ms,
             "confidence": self.confidence,
@@ -125,16 +123,8 @@ class WorkEvent:
             kind=WorkEventKind(str(payload["kind"])),
             start_index=int(payload.get("start_index", 0) or 0),
             end_index=int(payload.get("end_index", 0) or 0),
-            start_time=(
-                datetime.fromisoformat(str(payload["start_time"]))
-                if payload.get("start_time")
-                else None
-            ),
-            end_time=(
-                datetime.fromisoformat(str(payload["end_time"]))
-                if payload.get("end_time")
-                else None
-            ),
+            start_time=(datetime.fromisoformat(str(payload["start_time"])) if payload.get("start_time") else None),
+            end_time=(datetime.fromisoformat(str(payload["end_time"])) if payload.get("end_time") else None),
             canonical_session_date=(
                 date.fromisoformat(str(payload["canonical_session_date"]))
                 if payload.get("canonical_session_date")
@@ -148,12 +138,33 @@ class WorkEvent:
             summary=str(payload.get("summary", "") or ""),
         )
 
+
 if TYPE_CHECKING:
     from polylogue.lib.models import Conversation
 
 
-_DEBUGGING_PATTERNS = ("error", "traceback", "failed", "bug", "fix", "broken", "crash", "exception", "stack trace", "panic")
-_PLANNING_PATTERNS = ("plan", "design", "approach", "architecture", "strategy", "should we", "how should", "let's think")
+_DEBUGGING_PATTERNS = (
+    "error",
+    "traceback",
+    "failed",
+    "bug",
+    "fix",
+    "broken",
+    "crash",
+    "exception",
+    "stack trace",
+    "panic",
+)
+_PLANNING_PATTERNS = (
+    "plan",
+    "design",
+    "approach",
+    "architecture",
+    "strategy",
+    "should we",
+    "how should",
+    "let's think",
+)
 _TESTING_PATTERNS = ("test", "pytest", "cargo test", "npm test", "assert", "spec")
 _REVIEW_PATTERNS = ("review", "looks good", "lgtm", "nit", "suggestion", "feedback")
 _REFACTORING_PATTERNS = ("refactor", "rename", "extract", "move", "restructure", "clean up")
@@ -276,12 +287,7 @@ def _compute_phase_ranges(
         for i in range(start, end):
             actions = messages[i].action_events
             dominant = actions[0].kind.value if actions else None
-            if (
-                prev_dominant is not None
-                and dominant is not None
-                and dominant != prev_dominant
-                and i - sub_start >= 3
-            ):
+            if prev_dominant is not None and dominant is not None and dominant != prev_dominant and i - sub_start >= 3:
                 ranges.append((sub_start, i))
                 sub_start = i
             prev_dominant = dominant
@@ -310,10 +316,7 @@ def _merge_adjacent(events: list[WorkEvent]) -> list[WorkEvent]:
             duration_ms=(
                 max(
                     int(
-                        (
-                            (event.end_time or prev.end_time)
-                            - (prev.start_time or event.start_time)
-                        ).total_seconds()
+                        ((event.end_time or prev.end_time) - (prev.start_time or event.start_time)).total_seconds()
                         * 1000
                     ),
                     0,
@@ -365,11 +368,7 @@ def extract_work_events(
                 if summary_length >= _SUMMARY_MAX_JOINED_LEN:
                     break
         summary = "; ".join(summary_parts)[:_SUMMARY_MAX_JOINED_LEN] if summary_parts else kind.value
-        timestamps = [
-            message.timestamp
-            for message in messages[chunk_start:chunk_end]
-            if message.timestamp is not None
-        ]
+        timestamps = [message.timestamp for message in messages[chunk_start:chunk_end] if message.timestamp is not None]
         start_time = timestamps[0] if timestamps else None
         end_time = timestamps[-1] if timestamps else None
         duration_ms = 0

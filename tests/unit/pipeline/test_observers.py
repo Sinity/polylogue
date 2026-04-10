@@ -188,9 +188,7 @@ class TestRenderProgressCallback:
     async def test_callback_fires_on_failure_too(self):
         """progress_callback fires even when rendering fails."""
         mock_renderer = AsyncMock()
-        mock_renderer.render = AsyncMock(
-            side_effect=[None, RuntimeError("render failed"), None]
-        )
+        mock_renderer.render = AsyncMock(side_effect=[None, RuntimeError("render failed"), None])
 
         service = RenderService(renderer=mock_renderer, render_root=Path("/tmp/render"))
 

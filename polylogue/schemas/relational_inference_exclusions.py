@@ -29,7 +29,7 @@ def detect_mutual_exclusions(stats: dict[str, FieldStats]) -> list[MutualExclusi
             stats_a = stats.get(path_a)
             if not stats_a or stats_a.present_count == 0:
                 continue
-            for name_b in children[index + 1:]:
+            for name_b in children[index + 1 :]:
                 path_b = f"{parent}.{name_b}"
                 stats_b = stats.get(path_b)
                 if not stats_b or stats_b.present_count == 0:

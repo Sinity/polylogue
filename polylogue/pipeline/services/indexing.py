@@ -274,7 +274,9 @@ class IndexService:
             return False
 
         try:
-            conversation_id_list = [conversation_id async for conversation_id in self.backend.queries.iter_conversation_ids()]
+            conversation_id_list = [
+                conversation_id async for conversation_id in self.backend.queries.iter_conversation_ids()
+            ]
             phase_count = 3 if self._auto_embed_enabled() and conversation_id_list else 2
             if progress_callback is None:
                 await rebuild_index(

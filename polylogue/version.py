@@ -89,6 +89,7 @@ def _resolve_version() -> VersionInfo:
         # Nix build or installed package — try build-time info
         try:
             from polylogue._build_info import BUILD_COMMIT, BUILD_DIRTY
+
             commit = BUILD_COMMIT if BUILD_COMMIT != "unknown" else None
             dirty = BUILD_DIRTY
         except ImportError:

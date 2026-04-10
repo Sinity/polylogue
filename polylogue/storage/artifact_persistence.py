@@ -129,9 +129,7 @@ def ensure_artifact_observations(
         params: list[Any] = [last_rowid]
         if providers:
             placeholders = ",".join("?" for _ in providers)
-            where_clauses.append(
-                f"COALESCE(r.payload_provider, r.provider_name) IN ({placeholders})"
-            )
+            where_clauses.append(f"COALESCE(r.payload_provider, r.provider_name) IN ({placeholders})")
             params.extend(providers)
         rows = conn.execute(
             f"""
@@ -141,7 +139,7 @@ def ensure_artifact_observations(
               ON COALESCE(o.source_name, '') = COALESCE(r.source_name, '')
              AND o.source_path = r.source_path
              AND COALESCE(o.source_index, -1) = COALESCE(r.source_index, -1)
-            WHERE {' AND '.join(where_clauses)}
+            WHERE {" AND ".join(where_clauses)}
             ORDER BY r.acquired_at DESC, r.raw_id ASC
             LIMIT 250
             """,

@@ -97,110 +97,130 @@ class GeminiMessage(BaseModel):
                 else:
                     sigs.append(signature)
 
-            traces.append(ReasoningTrace(
-                text=self.text,
-                token_count=self.thinkingBudget,
-                provider="gemini",
-                raw={
-                    "isThought": True,
-                    "thinkingBudget": self.thinkingBudget,
-                    "thoughtSignatures": sigs,
-                },
-            ))
+            traces.append(
+                ReasoningTrace(
+                    text=self.text,
+                    token_count=self.thinkingBudget,
+                    provider="gemini",
+                    raw={
+                        "isThought": True,
+                        "thinkingBudget": self.thinkingBudget,
+                        "thoughtSignatures": sigs,
+                    },
+                )
+            )
         return traces
 
     def extract_content_blocks(self) -> list[ContentBlock]:
         blocks = []
 
         if self.isThought:
-            blocks.append(ContentBlock(
-                type=ContentType.THINKING,
-                text=self.text,
-                raw={"isThought": True},
-            ))
+            blocks.append(
+                ContentBlock(
+                    type=ContentType.THINKING,
+                    text=self.text,
+                    raw={"isThought": True},
+                )
+            )
         elif self.text:
-            blocks.append(ContentBlock(
-                type=ContentType.TEXT,
-                text=self.text,
-                raw={"role": self.role},
-            ))
+            blocks.append(
+                ContentBlock(
+                    type=ContentType.TEXT,
+                    text=self.text,
+                    raw={"role": self.role},
+                )
+            )
 
         for part in self.parts:
             if isinstance(part, GeminiPart):
                 if part.text:
-                    blocks.append(ContentBlock(
-                        type=ContentType.TEXT,
-                        text=part.text,
-                        raw=part.model_dump(),
-                    ))
+                    blocks.append(
+                        ContentBlock(
+                            type=ContentType.TEXT,
+                            text=part.text,
+                            raw=part.model_dump(),
+                        )
+                    )
                 elif getattr(part, "inlineData", None) is not None or getattr(part, "fileData", None) is not None:
-                    blocks.append(ContentBlock(
-                        type=ContentType.FILE,
-                        raw=part.model_dump(),
-                    ))
+                    blocks.append(
+                        ContentBlock(
+                            type=ContentType.FILE,
+                            raw=part.model_dump(),
+                        )
+                    )
             elif isinstance(part, dict):
                 if part.get("text"):
-                    blocks.append(ContentBlock(
-                        type=ContentType.TEXT,
-                        text=part["text"],
-                        raw=part,
-                    ))
+                    blocks.append(
+                        ContentBlock(
+                            type=ContentType.TEXT,
+                            text=part["text"],
+                            raw=part,
+                        )
+                    )
                 elif "inlineData" in part or "fileData" in part:
-                    blocks.append(ContentBlock(
-                        type=ContentType.FILE,
-                        raw=part,
-                    ))
+                    blocks.append(
+                        ContentBlock(
+                            type=ContentType.FILE,
+                            raw=part,
+                        )
+                    )
 
         if self.executableCode:
             language = self.executableCode.get("language", "")
             code = self.executableCode.get("code", "")
             if code:
-                blocks.append(ContentBlock(
-                    type=ContentType.CODE,
-                    text=code,
-                    language=language if isinstance(language, str) else None,
-                    raw=self.executableCode,
-                ))
+                blocks.append(
+                    ContentBlock(
+                        type=ContentType.CODE,
+                        text=code,
+                        language=language if isinstance(language, str) else None,
+                        raw=self.executableCode,
+                    )
+                )
 
         if self.codeExecutionResult:
             outcome = self.codeExecutionResult.get("outcome", "")
             output = self.codeExecutionResult.get("output", "")
             if output or outcome:
-                blocks.append(ContentBlock(
-                    type=ContentType.TOOL_RESULT,
-                    text=str(output) if output else f"[{outcome}]",
-                    raw=self.codeExecutionResult,
-                ))
+                blocks.append(
+                    ContentBlock(
+                        type=ContentType.TOOL_RESULT,
+                        text=str(output) if output else f"[{outcome}]",
+                        raw=self.codeExecutionResult,
+                    )
+                )
 
         if self.driveDocument:
             raw_doc = self.driveDocument if isinstance(self.driveDocument, dict) else {"id": self.driveDocument}
-            blocks.append(ContentBlock(
-                type=ContentType.FILE,
-                raw={"driveDocument": raw_doc},
-            ))
+            blocks.append(
+                ContentBlock(
+                    type=ContentType.FILE,
+                    raw={"driveDocument": raw_doc},
+                )
+            )
 
         if self.inlineFile:
             mime_type = self.inlineFile.get("mimeType")
             inline_raw = dict(self.inlineFile)
             inline_raw.pop("data", None)
-            blocks.append(ContentBlock(
-                type=ContentType.FILE,
-                mime_type=mime_type if isinstance(mime_type, str) else None,
-                raw={"inlineFile": inline_raw},
-            ))
+            blocks.append(
+                ContentBlock(
+                    type=ContentType.FILE,
+                    mime_type=mime_type if isinstance(mime_type, str) else None,
+                    raw={"inlineFile": inline_raw},
+                )
+            )
 
         if self.youtubeVideo:
             video_id = self.youtubeVideo.get("id")
-            url = (
-                f"https://www.youtube.com/watch?v={video_id}"
-                if isinstance(video_id, str) and video_id
-                else None
+            url = f"https://www.youtube.com/watch?v={video_id}" if isinstance(video_id, str) and video_id else None
+            blocks.append(
+                ContentBlock(
+                    type=ContentType.VIDEO,
+                    url=url,
+                    raw={"youtubeVideo": self.youtubeVideo},
+                )
             )
-            blocks.append(ContentBlock(
-                type=ContentType.VIDEO,
-                url=url,
-                raw={"youtubeVideo": self.youtubeVideo},
-            ))
 
         return blocks
 

@@ -87,49 +87,53 @@ async def test_backend_path_terms_filter_contract(tmp_path: Path) -> None:
     target_path = "/realm/project/polylogue/README.md"
     other_path = "/realm/project/polylogue/docs/cli-reference.md"
 
-    (ConversationBuilder(db_path, "conv-readme")
-     .provider("claude-code")
-     .title("README work")
-     .add_message(
-         "m1",
-         role="assistant",
-         text="Inspecting the repository README",
-         content_blocks=[
-             ContentBlockRecord(
-                 block_id="blk-readme-0",
-                 message_id="m1",
-                 conversation_id="conv-readme",
-                 block_index=0,
-                 type="tool_use",
-                 tool_name="Read",
-                 metadata=f'{{"path":"{target_path}"}}',
-                 semantic_type="file_read",
-             )
-         ],
-     )
-     .save())
+    (
+        ConversationBuilder(db_path, "conv-readme")
+        .provider("claude-code")
+        .title("README work")
+        .add_message(
+            "m1",
+            role="assistant",
+            text="Inspecting the repository README",
+            content_blocks=[
+                ContentBlockRecord(
+                    block_id="blk-readme-0",
+                    message_id="m1",
+                    conversation_id="conv-readme",
+                    block_index=0,
+                    type="tool_use",
+                    tool_name="Read",
+                    metadata=f'{{"path":"{target_path}"}}',
+                    semantic_type="file_read",
+                )
+            ],
+        )
+        .save()
+    )
 
-    (ConversationBuilder(db_path, "conv-other")
-     .provider("claude-code")
-     .title("CLI docs work")
-     .add_message(
-         "m2",
-         role="assistant",
-         text="Inspecting docs",
-         content_blocks=[
-             ContentBlockRecord(
-                 block_id="blk-other-0",
-                 message_id="m2",
-                 conversation_id="conv-other",
-                 block_index=0,
-                 type="tool_use",
-                 tool_name="Read",
-                 metadata=f'{{"path":"{other_path}"}}',
-                 semantic_type="file_read",
-             )
-         ],
-     )
-     .save())
+    (
+        ConversationBuilder(db_path, "conv-other")
+        .provider("claude-code")
+        .title("CLI docs work")
+        .add_message(
+            "m2",
+            role="assistant",
+            text="Inspecting docs",
+            content_blocks=[
+                ContentBlockRecord(
+                    block_id="blk-other-0",
+                    message_id="m2",
+                    conversation_id="conv-other",
+                    block_index=0,
+                    type="tool_use",
+                    tool_name="Read",
+                    metadata=f'{{"path":"{other_path}"}}',
+                    semantic_type="file_read",
+                )
+            ],
+        )
+        .save()
+    )
 
     with open_connection(db_path) as conn:
         rebuild_action_event_read_model_sync(conn)
@@ -137,9 +141,7 @@ async def test_backend_path_terms_filter_contract(tmp_path: Path) -> None:
 
     backend = SQLiteBackend(db_path=db_path)
     try:
-        matches = await backend.queries.list_conversations(
-            _record_query(path_terms=(target_path,), limit=10)
-        )
+        matches = await backend.queries.list_conversations(_record_query(path_terms=(target_path,), limit=10))
         assert [record.conversation_id for record in matches] == ["conv-readme"]
         assert await backend.queries.count_conversations(_record_query(path_terms=(target_path,))) == 1
     finally:
@@ -156,59 +158,58 @@ async def test_filter_path_terms_apply_after_fts_search(tmp_path: Path) -> None:
     db_path = tmp_path / "path-fts.db"
     target_path = "/realm/project/polylogue/README.md"
 
-    (ConversationBuilder(db_path, "conv-match")
-     .provider("claude-code")
-     .title("Path match")
-     .add_message(
-         "m1",
-         role="assistant",
-         text="Investigating the same parser regression",
-         content_blocks=[
-             ContentBlockRecord(
-                 block_id="blk-match-0",
-                 message_id="m1",
-                 conversation_id="conv-match",
-                 block_index=0,
-                 type="tool_use",
-                 tool_name="Read",
-                 metadata=f'{{"path":"{target_path}"}}',
-                 semantic_type="file_read",
-             )
-         ],
-     )
-     .save())
+    (
+        ConversationBuilder(db_path, "conv-match")
+        .provider("claude-code")
+        .title("Path match")
+        .add_message(
+            "m1",
+            role="assistant",
+            text="Investigating the same parser regression",
+            content_blocks=[
+                ContentBlockRecord(
+                    block_id="blk-match-0",
+                    message_id="m1",
+                    conversation_id="conv-match",
+                    block_index=0,
+                    type="tool_use",
+                    tool_name="Read",
+                    metadata=f'{{"path":"{target_path}"}}',
+                    semantic_type="file_read",
+                )
+            ],
+        )
+        .save()
+    )
 
-    (ConversationBuilder(db_path, "conv-no-path")
-     .provider("claude-code")
-     .title("No path match")
-     .add_message(
-         "m2",
-         role="assistant",
-         text="Investigating the same parser regression",
-         content_blocks=[
-             ContentBlockRecord(
-                 block_id="blk-nopath-0",
-                 message_id="m2",
-                 conversation_id="conv-no-path",
-                 block_index=0,
-                 type="tool_use",
-                 tool_name="Read",
-                 metadata='{"path":"/realm/project/polylogue/docs/cli-reference.md"}',
-                 semantic_type="file_read",
-             )
-         ],
-     )
-     .save())
+    (
+        ConversationBuilder(db_path, "conv-no-path")
+        .provider("claude-code")
+        .title("No path match")
+        .add_message(
+            "m2",
+            role="assistant",
+            text="Investigating the same parser regression",
+            content_blocks=[
+                ContentBlockRecord(
+                    block_id="blk-nopath-0",
+                    message_id="m2",
+                    conversation_id="conv-no-path",
+                    block_index=0,
+                    type="tool_use",
+                    tool_name="Read",
+                    metadata='{"path":"/realm/project/polylogue/docs/cli-reference.md"}',
+                    semantic_type="file_read",
+                )
+            ],
+        )
+        .save()
+    )
 
     backend = SQLiteBackend(db_path=db_path)
     repo = ConversationRepository(backend=backend)
     try:
-        results = await (
-            ConversationFilter(repo)
-            .contains("parser regression")
-            .path(target_path)
-            .list()
-        )
+        results = await ConversationFilter(repo).contains("parser regression").path(target_path).list()
         assert [str(conversation.id) for conversation in results] == ["conv-match"]
     finally:
         await backend.close()
@@ -223,79 +224,87 @@ async def test_backend_action_terms_filter_contract(tmp_path: Path) -> None:
 
     db_path = tmp_path / "action-filter.db"
 
-    (ConversationBuilder(db_path, "conv-search")
-     .provider("claude-code")
-     .title("Search work")
-     .add_message(
-         "m1",
-         role="assistant",
-         text="Searching for parser code",
-         content_blocks=[
-             ContentBlockRecord(
-                 block_id="blk-search-0",
-                 message_id="m1",
-                 conversation_id="conv-search",
-                 block_index=0,
-                 type="tool_use",
-                 tool_name="Grep",
-                 semantic_type="search",
-             )
-         ],
-     )
-     .save())
+    (
+        ConversationBuilder(db_path, "conv-search")
+        .provider("claude-code")
+        .title("Search work")
+        .add_message(
+            "m1",
+            role="assistant",
+            text="Searching for parser code",
+            content_blocks=[
+                ContentBlockRecord(
+                    block_id="blk-search-0",
+                    message_id="m1",
+                    conversation_id="conv-search",
+                    block_index=0,
+                    type="tool_use",
+                    tool_name="Grep",
+                    semantic_type="search",
+                )
+            ],
+        )
+        .save()
+    )
 
-    (ConversationBuilder(db_path, "conv-git")
-     .provider("claude-code")
-     .title("Git work")
-     .add_message(
-         "m2",
-         role="assistant",
-         text="Checking git status",
-         content_blocks=[
-             ContentBlockRecord(
-                 block_id="blk-git-0",
-                 message_id="m2",
-                 conversation_id="conv-git",
-                 block_index=0,
-                 type="tool_use",
-                 tool_name="Bash",
-                 tool_input='{"command":"git status"}',
-                 semantic_type="git",
-             )
-         ],
-     )
-     .save())
+    (
+        ConversationBuilder(db_path, "conv-git")
+        .provider("claude-code")
+        .title("Git work")
+        .add_message(
+            "m2",
+            role="assistant",
+            text="Checking git status",
+            content_blocks=[
+                ContentBlockRecord(
+                    block_id="blk-git-0",
+                    message_id="m2",
+                    conversation_id="conv-git",
+                    block_index=0,
+                    type="tool_use",
+                    tool_name="Bash",
+                    tool_input='{"command":"git status"}',
+                    semantic_type="git",
+                )
+            ],
+        )
+        .save()
+    )
 
-    (ConversationBuilder(db_path, "conv-other")
-     .provider("claude-code")
-     .title("Other tool work")
-     .add_message(
-         "m3",
-         role="assistant",
-         text="Using an unknown tool",
-         content_blocks=[
-             ContentBlockRecord(
-                 block_id="blk-other-0",
-                 message_id="m3",
-                 conversation_id="conv-other",
-                 block_index=0,
-                 type="tool_use",
-                 tool_name="Mystery",
-                 semantic_type="other",
-             )
-         ],
-     )
-     .save())
+    (
+        ConversationBuilder(db_path, "conv-other")
+        .provider("claude-code")
+        .title("Other tool work")
+        .add_message(
+            "m3",
+            role="assistant",
+            text="Using an unknown tool",
+            content_blocks=[
+                ContentBlockRecord(
+                    block_id="blk-other-0",
+                    message_id="m3",
+                    conversation_id="conv-other",
+                    block_index=0,
+                    type="tool_use",
+                    tool_name="Mystery",
+                    semantic_type="other",
+                )
+            ],
+        )
+        .save()
+    )
 
-    (ConversationBuilder(db_path, "conv-none")
-     .provider("claude-code")
-     .title("Plain dialogue")
-     .add_message(
-         "m4",
-         role="assistant",
-         text="No tool use here",
-     )
-     .save())
+    (
+        ConversationBuilder(db_path, "conv-none")
+        .provider("claude-code")
+        .title("Plain dialogue")
+        .add_message(
+            "m4",
+            role="assistant",
+            text="No tool use here",
+        )
+        .save()
+    )
 
     with open_connection(db_path) as conn:
         rebuild_action_event_read_model_sync(conn)
@@ -303,31 +312,21 @@ async def test_backend_action_terms_filter_contract(tmp_path: Path) -> None:
 
     backend = SQLiteBackend(db_path=db_path)
     try:
-        matches = await backend.queries.list_conversations(
-            _record_query(action_terms=("search",), limit=10)
-        )
+        matches = await backend.queries.list_conversations(_record_query(action_terms=("search",), limit=10))
         assert [record.conversation_id for record in matches] == ["conv-search"]
         assert await backend.queries.count_conversations(_record_query(action_terms=("search",))) == 1
 
-        other_matches = await backend.queries.list_conversations(
-            _record_query(action_terms=("other",), limit=10)
-        )
+        other_matches = await backend.queries.list_conversations(_record_query(action_terms=("other",), limit=10))
         assert [record.conversation_id for record in other_matches] == ["conv-other"]
 
-        none_matches = await backend.queries.list_conversations(
-            _record_query(action_terms=("none",), limit=10)
-        )
+        none_matches = await backend.queries.list_conversations(_record_query(action_terms=("none",), limit=10))
         assert [record.conversation_id for record in none_matches] == ["conv-none"]
         assert await backend.queries.count_conversations(_record_query(action_terms=("none",))) == 1
 
-        grep_tool_matches = await backend.queries.list_conversations(
-            _record_query(tool_terms=("grep",), limit=10)
-        )
+        grep_tool_matches = await backend.queries.list_conversations(_record_query(tool_terms=("grep",), limit=10))
         assert [record.conversation_id for record in grep_tool_matches] == ["conv-search"]
 
-        none_tool_matches = await backend.queries.list_conversations(
-            _record_query(tool_terms=("none",), limit=10)
-        )
+        none_tool_matches = await backend.queries.list_conversations(_record_query(tool_terms=("none",), limit=10))
         assert [record.conversation_id for record in none_tool_matches] == ["conv-none"]
 
         filtered = await backend.queries.list_conversations(
@@ -367,58 +366,58 @@ async def test_filter_action_terms_apply_after_fts_search(tmp_path: Path) -> Non
 
     db_path = tmp_path / "action-fts.db"
 
-    (ConversationBuilder(db_path, "conv-search")
-     .provider("claude-code")
-     .title("Search match")
-     .add_message(
-         "m1",
-         role="assistant",
-         text="Investigating the same parser regression",
-         content_blocks=[
-             ContentBlockRecord(
-                 block_id="blk-search-0",
-                 message_id="m1",
-                 conversation_id="conv-search",
-                 block_index=0,
-                 type="tool_use",
-                 tool_name="Grep",
-                 semantic_type="search",
-             )
-         ],
-     )
-     .save())
+    (
+        ConversationBuilder(db_path, "conv-search")
+        .provider("claude-code")
+        .title("Search match")
+        .add_message(
+            "m1",
+            role="assistant",
+            text="Investigating the same parser regression",
+            content_blocks=[
+                ContentBlockRecord(
+                    block_id="blk-search-0",
+                    message_id="m1",
+                    conversation_id="conv-search",
+                    block_index=0,
+                    type="tool_use",
+                    tool_name="Grep",
+                    semantic_type="search",
+                )
+            ],
+        )
+        .save()
+    )
 
-    (ConversationBuilder(db_path, "conv-shell")
-     .provider("claude-code")
-     .title("Shell only")
-     .add_message(
-         "m2",
-         role="assistant",
-         text="Investigating the same parser regression",
-         content_blocks=[
-             ContentBlockRecord(
-                 block_id="blk-shell-0",
-                 message_id="m2",
-                 conversation_id="conv-shell",
-                 block_index=0,
-                 type="tool_use",
-                 tool_name="Bash",
-                 tool_input='{"command":"python -m pytest"}',
-                 semantic_type="shell",
-             )
-         ],
-     )
-     .save())
+    (
+        ConversationBuilder(db_path, "conv-shell")
+        .provider("claude-code")
+        .title("Shell only")
+        .add_message(
+            "m2",
+            role="assistant",
+            text="Investigating the same parser regression",
+            content_blocks=[
+                ContentBlockRecord(
+                    block_id="blk-shell-0",
+                    message_id="m2",
+                    conversation_id="conv-shell",
+                    block_index=0,
+                    type="tool_use",
+                    tool_name="Bash",
+                    tool_input='{"command":"python -m pytest"}',
+                    semantic_type="shell",
+                )
+            ],
+        )
+        .save()
+    )
 
     backend = SQLiteBackend(db_path=db_path)
     repo = ConversationRepository(backend=backend)
     try:
         results = await (
-            ConversationFilter(repo)
-            .contains("parser regression")
-            .action("search")
-            .exclude_action("git")
-            .list()
+            ConversationFilter(repo).contains("parser regression").action("search").exclude_action("git").list()
         )
         assert [str(conversation.id) for conversation in results] == ["conv-search"]
     finally:
@@ -434,26 +433,28 @@ async def test_filter_action_terms_reconcile_runtime_semantics_after_sql_candida
 
     db_path = tmp_path / "action-runtime-reconcile.db"
 
-    (ConversationBuilder(db_path, "conv-stale-other")
-     .provider("claude-code")
-     .title("Stale semantic label")
-     .add_message(
-         "m1",
-         role="assistant",
-         text="Create a task for the next review pass",
-         content_blocks=[
-             ContentBlockRecord(
-                 block_id="blk-stale-0",
-                 message_id="m1",
-                 conversation_id="conv-stale-other",
-                 block_index=0,
-                 type="tool_use",
-                 tool_name="TaskCreate",
-                 semantic_type="other",
-             )
-         ],
-     )
-     .save())
+    (
+        ConversationBuilder(db_path, "conv-stale-other")
+        .provider("claude-code")
+        .title("Stale semantic label")
+        .add_message(
+            "m1",
+            role="assistant",
+            text="Create a task for the next review pass",
+            content_blocks=[
+                ContentBlockRecord(
+                    block_id="blk-stale-0",
+                    message_id="m1",
+                    conversation_id="conv-stale-other",
+                    block_index=0,
+                    type="tool_use",
+                    tool_name="TaskCreate",
+                    semantic_type="other",
+                )
+            ],
+        )
+        .save()
+    )
 
     backend = SQLiteBackend(db_path=db_path)
     repo = ConversationRepository(backend=backend)
@@ -510,7 +511,9 @@ def test_store_records_roundtrip_contract(test_conn) -> None:
     multi = store_records(
         conversation=make_conversation("conv-multi", title="Multi Message"),
         messages=[
-            make_message(f"msg-multi-{idx}", "conv-multi", role="user" if idx % 2 == 0 else "assistant", text=f"Message {idx}")
+            make_message(
+                f"msg-multi-{idx}", "conv-multi", role="user" if idx % 2 == 0 else "assistant", text=f"Message {idx}"
+            )
             for idx in range(5)
         ],
         attachments=[],
@@ -898,29 +901,41 @@ class TestCrudLaws:
 @st.composite
 def simple_tag_spec(draw: st.DrawFn) -> dict:
     """Generate a tag assignment spec: conversation ID + list of tags."""
-    conv_suffix = draw(st.text(
-        min_size=3, max_size=12,
-        alphabet=st.characters(whitelist_categories=("L", "N"), whitelist_characters="-"),
-    ).filter(lambda s: s[0].isalpha()))
-    tags = draw(st.lists(
-        st.text(min_size=1, max_size=15, alphabet=st.characters(
-            whitelist_categories=("L", "N"), whitelist_characters="-",
-        )),
-        min_size=1,
-        max_size=4,
-        unique=True,
-    ))
+    conv_suffix = draw(
+        st.text(
+            min_size=3,
+            max_size=12,
+            alphabet=st.characters(whitelist_categories=("L", "N"), whitelist_characters="-"),
+        ).filter(lambda s: s[0].isalpha())
+    )
+    tags = draw(
+        st.lists(
+            st.text(
+                min_size=1,
+                max_size=15,
+                alphabet=st.characters(
+                    whitelist_categories=("L", "N"),
+                    whitelist_characters="-",
+                ),
+            ),
+            min_size=1,
+            max_size=4,
+            unique=True,
+        )
+    )
     return {"conversation_id": f"tag-{conv_suffix}", "tags": tags}
 
 
 @st.composite
 def simple_title_search_spec(draw: st.DrawFn) -> dict:
     """Generate a title search spec: title and search substring."""
-    words = draw(st.lists(
-        st.text(min_size=3, max_size=12, alphabet=st.characters(whitelist_categories=("L",))),
-        min_size=2,
-        max_size=5,
-    ))
+    words = draw(
+        st.lists(
+            st.text(min_size=3, max_size=12, alphabet=st.characters(whitelist_categories=("L",))),
+            min_size=2,
+            max_size=5,
+        )
+    )
     title = " ".join(words)
     search_word = draw(st.sampled_from(words))
     return {"title": title, "search_term": search_word}
@@ -940,11 +955,13 @@ class TestTagAssignmentLaws:
             db_path = Path(tmp_dir) / "tags.db"
             conv_id = spec["conversation_id"]
 
-            (ConversationBuilder(db_path, conv_id)
-             .provider("test")
-             .title("Tag Test")
-             .add_message("m1", text="Hello")
-             .save())
+            (
+                ConversationBuilder(db_path, conv_id)
+                .provider("test")
+                .title("Tag Test")
+                .add_message("m1", text="Hello")
+                .save()
+            )
 
             backend = SQLiteBackend(db_path=db_path)
             repo = ConversationRepository(backend=backend)
@@ -969,11 +986,13 @@ class TestTagAssignmentLaws:
             db_path = Path(tmp_dir) / "rmtags.db"
             conv_id = spec["conversation_id"]
 
-            (ConversationBuilder(db_path, conv_id)
-             .provider("test")
-             .title("Remove Tag Test")
-             .add_message("m1", text="Hello")
-             .save())
+            (
+                ConversationBuilder(db_path, conv_id)
+                .provider("test")
+                .title("Remove Tag Test")
+                .add_message("m1", text="Hello")
+                .save()
+            )
 
             backend = SQLiteBackend(db_path=db_path)
             repo = ConversationRepository(backend=backend)
@@ -1003,11 +1022,13 @@ class TestTitleSearchLaws:
             db_path = Path(tmp_dir) / "search.db"
             conv_id = "search-conv-1"
 
-            (ConversationBuilder(db_path, conv_id)
-             .provider("test")
-             .title(spec["title"])
-             .add_message("m1", text="Search test content")
-             .save())
+            (
+                ConversationBuilder(db_path, conv_id)
+                .provider("test")
+                .title(spec["title"])
+                .add_message("m1", text="Search test content")
+                .save()
+            )
 
             with open_connection(db_path) as conn:
                 rebuild_index(conn)
@@ -1018,8 +1039,7 @@ class TestTitleSearchLaws:
             results = await repo.list(title_contains=spec["search_term"])
             found_ids = [str(c.id) for c in results]
             assert conv_id in found_ids, (
-                f"Expected to find '{conv_id}' when searching "
-                f"title='{spec['title']}' for term='{spec['search_term']}'"
+                f"Expected to find '{conv_id}' when searching title='{spec['title']}' for term='{spec['search_term']}'"
             )
 
             await backend.close()
@@ -1034,17 +1054,21 @@ class TestTitleSearchLaws:
 
             db_path = Path(tmp_dir) / "nomatch.db"
 
-            (ConversationBuilder(db_path, "match-conv")
-             .provider("test")
-             .title(spec["title"])
-             .add_message("m1", text="Content")
-             .save())
+            (
+                ConversationBuilder(db_path, "match-conv")
+                .provider("test")
+                .title(spec["title"])
+                .add_message("m1", text="Content")
+                .save()
+            )
 
-            (ConversationBuilder(db_path, "nomatch-conv")
-             .provider("test")
-             .title("Zzqxjk Wvpnrl Tmygbs")
-             .add_message("m2", text="Other content")
-             .save())
+            (
+                ConversationBuilder(db_path, "nomatch-conv")
+                .provider("test")
+                .title("Zzqxjk Wvpnrl Tmygbs")
+                .add_message("m2", text="Other content")
+                .save()
+            )
 
             backend = SQLiteBackend(db_path=db_path)
             repo = ConversationRepository(backend=backend)
@@ -1135,9 +1159,7 @@ class TestSearchCacheKey:
         """None render_root_path stored as None."""
         from polylogue.storage.search_cache import SearchCacheKey
 
-        key = SearchCacheKey.create(
-            query="test", archive_root=tmp_path, render_root_path=None
-        )
+        key = SearchCacheKey.create(query="test", archive_root=tmp_path, render_root_path=None)
         assert key.render_root_path is None
 
     def test_key_is_hashable(self, tmp_path):
@@ -1501,9 +1523,7 @@ class TestInfraTagAssignment:
                 assert stored is not None
                 stored_tags = set(stored.tags)
                 for tag in set(tags):
-                    assert tag in stored_tags, (
-                        f"Tag '{tag}' missing from conv '{conv.conversation_id}'"
-                    )
+                    assert tag in stored_tags, f"Tag '{tag}' missing from conv '{conv.conversation_id}'"
 
             await backend.close()
 
@@ -1550,17 +1570,21 @@ class TestInfraTitleSearch:
 
             db_path = Path(tmp_dir) / "title-search.db"
 
-            (ConversationBuilder(db_path, "match-conv")
-             .provider("test")
-             .title(spec.matching_title)
-             .add_message("m1", text="Content")
-             .save())
+            (
+                ConversationBuilder(db_path, "match-conv")
+                .provider("test")
+                .title(spec.matching_title)
+                .add_message("m1", text="Content")
+                .save()
+            )
 
-            (ConversationBuilder(db_path, "decoy-conv")
-             .provider("test")
-             .title(spec.decoy_title)
-             .add_message("m2", text="Other")
-             .save())
+            (
+                ConversationBuilder(db_path, "decoy-conv")
+                .provider("test")
+                .title(spec.decoy_title)
+                .add_message("m2", text="Other")
+                .save()
+            )
 
             backend = SQLiteBackend(db_path=db_path)
             repo = ConversationRepository(backend=backend)
@@ -1568,8 +1592,7 @@ class TestInfraTitleSearch:
             results = await repo.list(title_contains=spec.needle)
             found_ids = {str(c.id) for c in results}
             assert "match-conv" in found_ids, (
-                f"Expected 'match-conv' for needle='{spec.needle}' "
-                f"in title='{spec.matching_title}'"
+                f"Expected 'match-conv' for needle='{spec.needle}' in title='{spec.matching_title}'"
             )
 
             await backend.close()
@@ -1584,18 +1607,17 @@ class TestInfraTitleSearch:
 
             db_path = Path(tmp_dir) / "decoy-search.db"
 
-            (ConversationBuilder(db_path, "decoy-only")
-             .provider("test")
-             .title(spec.decoy_title)
-             .add_message("m1", text="Content")
-             .save())
+            (
+                ConversationBuilder(db_path, "decoy-only")
+                .provider("test")
+                .title(spec.decoy_title)
+                .add_message("m1", text="Content")
+                .save()
+            )
 
             backend = SQLiteBackend(db_path=db_path)
             repo = ConversationRepository(backend=backend)
 
             results = await repo.list(title_contains=spec.needle)
             found_ids = {str(c.id) for c in results}
-            assert "decoy-only" not in found_ids, (
-                f"Decoy '{spec.decoy_title}' should not match "
-                f"needle='{spec.needle}'"
-            )
+            assert "decoy-only" not in found_ids, f"Decoy '{spec.decoy_title}' should not match needle='{spec.needle}'"

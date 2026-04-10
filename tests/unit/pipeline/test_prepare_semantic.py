@@ -19,6 +19,7 @@ from polylogue.pipeline.semantic_metadata import extract_tool_metadata
 # Tests for classify_tool
 # =============================================================================
 
+
 class TestClassifyTool:
     def test_read_is_file_read(self):
         assert classify_tool("Read", {}) == ToolCategory.FILE_READ
@@ -76,6 +77,7 @@ class TestClassifyTool:
 # Tests for extract_tool_metadata
 # =============================================================================
 
+
 class TestExtractToolMetadata:
     def test_git_status_returns_metadata(self):
         meta = extract_tool_metadata("Bash", {"command": "git status"})
@@ -112,22 +114,28 @@ class TestExtractToolMetadata:
         assert "new_content_snippet" in meta
 
     def test_edit_returns_path_and_snippets(self):
-        meta = extract_tool_metadata("Edit", {
-            "file_path": "/path/to/file.py",
-            "old_string": "old code",
-            "new_string": "new code",
-        })
+        meta = extract_tool_metadata(
+            "Edit",
+            {
+                "file_path": "/path/to/file.py",
+                "old_string": "old code",
+                "new_string": "new code",
+            },
+        )
         assert meta is not None
         assert meta["path"] == "/path/to/file.py"
         assert "old_snippet" in meta
         assert "new_snippet" in meta
 
     def test_task_returns_agent_type(self):
-        meta = extract_tool_metadata("Task", {
-            "subagent_type": "general-purpose",
-            "description": "Do something",
-            "prompt": "Please do X",
-        })
+        meta = extract_tool_metadata(
+            "Task",
+            {
+                "subagent_type": "general-purpose",
+                "description": "Do something",
+                "prompt": "Please do X",
+            },
+        )
         assert meta is not None
         assert meta["agent_type"] == "general-purpose"
         assert "prompt_snippet" in meta
@@ -157,6 +165,7 @@ class TestExtractToolMetadata:
 # Tests for semantic_type values in ContentBlockRecord
 # =============================================================================
 
+
 class TestSemanticTypeValues:
     """Verify that semantic_type values match ToolCategory enum values."""
 
@@ -173,6 +182,7 @@ class TestSemanticTypeValues:
         # "thinking" is set directly (not from ToolCategory)
         # Verify it's consistent with what prepare.py sets
         from polylogue.lib.viewports import ToolCategory
+
         assert "thinking" not in [c.value for c in ToolCategory]
 
     def test_thinking_semantic_type_literal(self):
@@ -183,6 +193,7 @@ class TestSemanticTypeValues:
 # =============================================================================
 # Tests for parse_git_operation (old-format API, now in semantic.py)
 # =============================================================================
+
 
 class TestParseGitOperation:
     def test_git_status(self):
@@ -207,6 +218,7 @@ class TestParseGitOperation:
 # =============================================================================
 # Tests for extract_subagent_spawns (old-format API, now in semantic.py)
 # =============================================================================
+
 
 class TestExtractSubagentSpawns:
     def test_task_tool_extracted(self):

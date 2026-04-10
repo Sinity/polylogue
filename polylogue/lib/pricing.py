@@ -19,6 +19,7 @@ if TYPE_CHECKING:
 @dataclass(frozen=True)
 class ModelPricing:
     """Per-million-token pricing for a specific model."""
+
     input_usd_per_1m: float
     output_usd_per_1m: float
     cache_read_usd_per_1m: float = 0.0

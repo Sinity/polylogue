@@ -15,6 +15,7 @@ def search_messages(*args, **kwargs):
     _search_runtime.open_connection = open_connection
     return _search_runtime.search_messages(*args, **kwargs)
 
+
 __all__ = [
     "SearchHit",
     "SearchResult",

@@ -82,13 +82,15 @@ def run_qa_session(
 
         config = get_config()
         names = source_names if source_names else None
-        run_coroutine_sync(run_sources(
-            config=config,
-            stage="all",
-            plan=None,
-            ui=None,
-            source_names=names,
-        ))
+        run_coroutine_sync(
+            run_sources(
+                config=config,
+                stage="all",
+                plan=None,
+                ui=None,
+                source_names=names,
+            )
+        )
 
     if skip_audit:
         result.audit_skipped = True

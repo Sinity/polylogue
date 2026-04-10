@@ -44,7 +44,7 @@ class ClaudeAIChatMessage(BaseModel):
 
     @property
     def text_content(self) -> str:
-        """Extract plain text content (viewport interface)."""""
+        """Extract plain text content (viewport interface).""" ""
         return self.text
 
     @property
@@ -71,11 +71,13 @@ class ClaudeAIChatMessage(BaseModel):
 
     def to_content_blocks(self) -> list[ContentBlock]:
         """Extract harmonized content blocks."""
-        return [ContentBlock(
-            type=ContentType.TEXT,
-            text=self.text,
-            raw={"text": self.text, "sender": self.sender},
-        )]
+        return [
+            ContentBlock(
+                type=ContentType.TEXT,
+                text=self.text,
+                raw={"text": self.text, "sender": self.sender},
+            )
+        ]
 
     def extract_content_blocks(self) -> list[ContentBlock]:
         """Extract harmonized content blocks (viewport interface alias for to_content_blocks)."""

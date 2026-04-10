@@ -93,7 +93,14 @@ class TestPlainConsole:
 class TestConsoleFacadePromptStubs:
     @pytest.mark.parametrize(
         ("entries", "expected_count"),
-        [([], 0), ([{"type": "confirm", "value": True}], 1), ([{"type": "confirm", "value": True}, {"type": "choose", "value": "a"}, {"type": "input", "value": "x"}], 3)],
+        [
+            ([], 0),
+            ([{"type": "confirm", "value": True}], 1),
+            (
+                [{"type": "confirm", "value": True}, {"type": "choose", "value": "a"}, {"type": "input", "value": "x"}],
+                3,
+            ),
+        ],
     )
     def test_stub_loading_contract(self, tmp_path, monkeypatch, entries, expected_count):
         if entries:
@@ -138,7 +145,15 @@ class TestConsoleFacadePrompts:
             ("input", "typed", None, "typed"),
             ("input", "", "fallback", "fallback"),
         ],
-        ids=["confirm_yes", "confirm_no", "confirm_default", "choose_second", "choose_empty", "input_typed", "input_default"],
+        ids=[
+            "confirm_yes",
+            "confirm_no",
+            "confirm_default",
+            "choose_second",
+            "choose_empty",
+            "input_typed",
+            "input_default",
+        ],
     )
     def test_plain_prompt_matrix(self, monkeypatch, kind, plain_value, default, expected):
         monkeypatch.setattr("sys.stdin.isatty", lambda: True)
@@ -320,7 +335,9 @@ class TestUIWrapper:
     )
     def test_ui_prompt_delegation_contract(self, mock_facade, method, args, kwargs):
         ui = UI(plain=False)
-        getattr(mock_facade, method).return_value = True if method == "confirm" else "A" if method == "choose" else "val"
+        getattr(mock_facade, method).return_value = (
+            True if method == "confirm" else "A" if method == "choose" else "val"
+        )
         result = getattr(ui, method)(*args, **kwargs)
         assert result is not None
         getattr(mock_facade, method).assert_called_once_with(*args, **kwargs)
@@ -336,7 +353,9 @@ class TestUIWrapper:
     def test_ui_plain_prompt_abort_contract(self, mock_facade, method, call):
         mock_facade.plain = True
         mock_facade.console = MagicMock()
-        getattr(mock_facade, method).side_effect = UIError(f"Plain mode cannot prompt for {PROMPT_TOPICS[method]}", prompt_topic=PROMPT_TOPICS[method])
+        getattr(mock_facade, method).side_effect = UIError(
+            f"Plain mode cannot prompt for {PROMPT_TOPICS[method]}", prompt_topic=PROMPT_TOPICS[method]
+        )
         ui = UI(plain=True)
         with pytest.raises(SystemExit):
             call(ui)

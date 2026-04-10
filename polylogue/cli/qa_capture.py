@@ -36,9 +36,7 @@ def run_vhs_capture(env, showcase_result, json_output: bool) -> None:
                 status = "ok" if ok else "FAILED"
                 env.ui.console.print(f"  VHS {name}: {status}")
     elif not json_output:
-        env.ui.console.print(
-            f"VHS binary not found — {len(tapes)} tape(s) generated in {tapes_dir} but not recorded"
-        )
+        env.ui.console.print(f"VHS binary not found — {len(tapes)} tape(s) generated in {tapes_dir} but not recorded")
 
 
 __all__ = ["run_vhs_capture"]

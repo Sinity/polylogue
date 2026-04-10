@@ -15,4 +15,3 @@ async def _nested_private_run() -> int:
 
 def test_private_run_executes_coroutine_while_event_loop_is_running() -> None:
     assert asyncio.run(_nested_private_run()) == 7
-

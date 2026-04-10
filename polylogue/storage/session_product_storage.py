@@ -26,9 +26,7 @@ def table_has_column(conn: sqlite3.Connection, table: str, column: str) -> bool:
     cached = _SYNC_COLUMN_CACHE.get(key)
     if cached is not None:
         return cached
-    found = any(
-        str(row[1]) == column for row in conn.execute(f"PRAGMA table_info({table})").fetchall()
-    )
+    found = any(str(row[1]) == column for row in conn.execute(f"PRAGMA table_info({table})").fetchall())
     _SYNC_COLUMN_CACHE[key] = found
     return found
 
@@ -60,7 +58,6 @@ def replace_session_profile_sync(conn: sqlite3.Connection, record: SessionProfil
         "first_message_at",
         "last_message_at",
         "canonical_session_date",
-
         "repo_paths_json",
         "canonical_projects_json",
         "tags_json",
@@ -90,7 +87,6 @@ def replace_session_profile_sync(conn: sqlite3.Connection, record: SessionProfil
         record.first_message_at,
         record.last_message_at,
         record.canonical_session_date,
-
         _json_array_or_none(record.repo_paths),
         _json_array_or_none(record.canonical_projects),
         _json_array_or_none(record.tags),

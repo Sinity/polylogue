@@ -170,7 +170,11 @@ async def build_ingest_plan(
                         validate_raw_ids.append(record.raw_id)
                         # Only accumulate a limited sample for preview validation
                         # to bound memory. Full validation happens during actual runs.
-                        if preview and preview_validation is not None and len(preview_records) < max_preview_validation_records:
+                        if (
+                            preview
+                            and preview_validation is not None
+                            and len(preview_records) < max_preview_validation_records
+                        ):
                             preview_records.append(record)
                     elif current_status in {"passed", "skipped"}:
                         parse_ready_raw_ids.append(record.raw_id)

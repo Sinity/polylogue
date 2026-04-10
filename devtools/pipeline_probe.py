@@ -207,16 +207,19 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 @contextmanager
 def _isolated_env(workdir: Path, *, extra_env: dict[str, str] | None = None) -> Iterator[None]:
-    previous = {key: os.environ.get(key) for key in (
-        "XDG_DATA_HOME",
-        "XDG_STATE_HOME",
-        "XDG_CONFIG_HOME",
-        "POLYLOGUE_ARCHIVE_ROOT",
-        "POLYLOGUE_RENDER_ROOT",
-        "POLYLOGUE_PARSE_RAW_BATCH_SIZE",
-        "POLYLOGUE_INGEST_WORKERS",
-        "POLYLOGUE_MEASURE_INGEST_RESULT_SIZE",
-    )}
+    previous = {
+        key: os.environ.get(key)
+        for key in (
+            "XDG_DATA_HOME",
+            "XDG_STATE_HOME",
+            "XDG_CONFIG_HOME",
+            "POLYLOGUE_ARCHIVE_ROOT",
+            "POLYLOGUE_RENDER_ROOT",
+            "POLYLOGUE_PARSE_RAW_BATCH_SIZE",
+            "POLYLOGUE_INGEST_WORKERS",
+            "POLYLOGUE_MEASURE_INGEST_RESULT_SIZE",
+        )
+    }
     env_updates = {
         "XDG_DATA_HOME": str(workdir / "xdg-data"),
         "XDG_STATE_HOME": str(workdir / "xdg-state"),
@@ -377,8 +380,7 @@ def _build_probe_provenance(
         provenance["manifest_sha256"] = _sha256_file(manifest_path)
     if source_inputs is not None:
         fingerprints = [
-            _fingerprint_path(Path(str(entry["staged_path"])))
-            for entry in source_inputs.get("entries", [])
+            _fingerprint_path(Path(str(entry["staged_path"]))) for entry in source_inputs.get("entries", [])
         ]
         provenance["source_input_fingerprints"] = fingerprints
         digest = hashlib.sha256()
@@ -503,10 +505,7 @@ def _fetch_archive_candidates(
 
     with open_connection(db_path) as conn:
         cursor = conn.execute(sql, tuple(params))
-        return [
-            RawConversationRecord.model_validate(dict(row))
-            for row in cursor.fetchall()
-        ]
+        return [RawConversationRecord.model_validate(dict(row)) for row in cursor.fetchall()]
 
 
 def _raw_conversation_count(db_path: Path) -> int:
@@ -622,9 +621,7 @@ def _build_archive_manifest(
         provider_filters=provider_filters,
         source_filters=source_filters,
     )
-    candidates_with_blobs = [
-        record for record in candidate_records if source_blob_store.exists(record.raw_id)
-    ]
+    candidates_with_blobs = [record for record in candidate_records if source_blob_store.exists(record.raw_id)]
     missing_blob_count = len(candidate_records) - len(candidates_with_blobs)
 
     by_provider: dict[str, list[RawConversationRecord]] = {}
@@ -658,12 +655,14 @@ def _build_archive_manifest(
             )
         )
 
-    sampled_records.sort(key=lambda record: (
-        _effective_provider_name(record),
-        _source_bucket_name(record),
-        record.acquired_at,
-        record.raw_id,
-    ))
+    sampled_records.sort(
+        key=lambda record: (
+            _effective_provider_name(record),
+            _source_bucket_name(record),
+            record.acquired_at,
+            record.raw_id,
+        )
+    )
 
     return {
         "input_mode": "archive-subset",
@@ -717,10 +716,7 @@ async def _seed_archive_subset(
     repository: ConversationRepository,
     target_blob_store: BlobStore,
 ) -> dict[str, Any]:
-    records = [
-        RawConversationRecord.model_validate(record_payload)
-        for record_payload in manifest.get("records", [])
-    ]
+    records = [RawConversationRecord.model_validate(record_payload) for record_payload in manifest.get("records", [])]
     source_blob_root = Path(str(manifest["source_blob_root"])).resolve()
     source_blob_store = BlobStore(source_blob_root)
     copied_records = 0
@@ -729,9 +725,7 @@ async def _seed_archive_subset(
     for record in records:
         source_blob_path = source_blob_store.blob_path(record.raw_id)
         if not source_blob_path.exists():
-            raise FileNotFoundError(
-                f"archive-subset probe is missing blob {record.raw_id} under {source_blob_root}"
-            )
+            raise FileNotFoundError(f"archive-subset probe is missing blob {record.raw_id} under {source_blob_root}")
         destination_blob_path = target_blob_store.blob_path(record.raw_id)
         if not destination_blob_path.exists():
             destination_blob_path.parent.mkdir(parents=True, exist_ok=True)
@@ -759,9 +753,7 @@ def _resolve_synthetic_provider(args: argparse.Namespace) -> str:
     provider_name = provider_names[0] if provider_names else "chatgpt"
     available = set(SyntheticCorpus.available_providers())
     if provider_name not in available:
-        raise ValueError(
-            f"--provider must be one of {sorted(available)} in synthetic mode"
-        )
+        raise ValueError(f"--provider must be one of {sorted(available)} in synthetic mode")
     if len(provider_names) > 1:
         raise ValueError("synthetic mode accepts exactly one --provider")
     return provider_name
@@ -834,13 +826,15 @@ def _stage_source_subset(
         )
         staged_file_count += entry_file_count
         total_bytes += entry_bytes
-        entries.append({
-            "input_path": str(source_path),
-            "staged_path": str(destination_path),
-            "kind": entry_kind,
-            "file_count": entry_file_count,
-            "bytes": entry_bytes,
-        })
+        entries.append(
+            {
+                "input_path": str(source_path),
+                "staged_path": str(destination_path),
+                "kind": entry_kind,
+                "file_count": entry_file_count,
+                "bytes": entry_bytes,
+            }
+        )
 
     return {
         "input_count": len(source_paths),

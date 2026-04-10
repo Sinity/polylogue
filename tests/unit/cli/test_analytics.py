@@ -107,7 +107,9 @@ class TestListProviderAnalyticsProducts:
         conv = make_conversation("conv-1", provider_name="claude-ai", provider_meta={"source": "inbox"})
         msgs = [
             make_message("msg-1", "conv-1", text="Hello world test"),
-            make_message("msg-2", "conv-1", role="assistant", text="Response with more words for testing average calculation"),
+            make_message(
+                "msg-2", "conv-1", role="assistant", text="Response with more words for testing average calculation"
+            ),
         ]
         await storage_repository.save_conversation(conversation=conv, messages=msgs, attachments=[])
 
@@ -126,13 +128,17 @@ class TestListProviderAnalyticsProducts:
 
         # Create 2 claude conversations
         for i in range(2):
-            conv = make_conversation(f"claude-{i}", provider_name="claude-ai", title=f"Claude {i}", provider_meta={"source": "inbox"})
+            conv = make_conversation(
+                f"claude-{i}", provider_name="claude-ai", title=f"Claude {i}", provider_meta={"source": "inbox"}
+            )
             msgs = [make_message(f"cmsg-{i}", f"claude-{i}", text="Hello")]
             await storage_repository.save_conversation(conversation=conv, messages=msgs, attachments=[])
 
         # Create 3 chatgpt conversations
         for i in range(3):
-            conv = make_conversation(f"chatgpt-{i}", provider_name="chatgpt", title=f"ChatGPT {i}", provider_meta={"source": "inbox"})
+            conv = make_conversation(
+                f"chatgpt-{i}", provider_name="chatgpt", title=f"ChatGPT {i}", provider_meta={"source": "inbox"}
+            )
             msgs = [make_message(f"gmsg-{i}", f"chatgpt-{i}", text="Hi")]
             await storage_repository.save_conversation(conversation=conv, messages=msgs, attachments=[])
 
@@ -197,10 +203,17 @@ class TestListProviderAnalyticsProducts:
         """Tool use is detected from content_blocks."""
         db_path = workspace_env["data_root"] / "polylogue" / "polylogue.db"
 
-        conv = make_conversation("tool-conv", provider_name="claude-ai", title="Tool Use Test", provider_meta={"source": "inbox"})
+        conv = make_conversation(
+            "tool-conv", provider_name="claude-ai", title="Tool Use Test", provider_meta={"source": "inbox"}
+        )
         msgs = [
-            make_message("tool-msg-1", "tool-conv", role="assistant", text="Let me search for that",
-                        provider_meta={"content_blocks": [{"type": "tool_use", "name": "search", "id": "toolu_123"}]}),
+            make_message(
+                "tool-msg-1",
+                "tool-conv",
+                role="assistant",
+                text="Let me search for that",
+                provider_meta={"content_blocks": [{"type": "tool_use", "name": "search", "id": "toolu_123"}]},
+            ),
         ]
         await storage_repository.save_conversation(conversation=conv, messages=msgs, attachments=[])
 
@@ -215,10 +228,17 @@ class TestListProviderAnalyticsProducts:
         """Thinking is detected from content_blocks."""
         db_path = workspace_env["data_root"] / "polylogue" / "polylogue.db"
 
-        conv = make_conversation("think-conv", provider_name="claude-ai", title="Thinking Test", provider_meta={"source": "inbox"})
+        conv = make_conversation(
+            "think-conv", provider_name="claude-ai", title="Thinking Test", provider_meta={"source": "inbox"}
+        )
         msgs = [
-            make_message("think-msg-1", "think-conv", role="assistant", text="Let me think about this",
-                        provider_meta={"content_blocks": [{"type": "thinking", "thinking": "Reasoning..."}]}),
+            make_message(
+                "think-msg-1",
+                "think-conv",
+                role="assistant",
+                text="Let me think about this",
+                provider_meta={"content_blocks": [{"type": "thinking", "thinking": "Reasoning..."}]},
+            ),
         ]
         await storage_repository.save_conversation(conversation=conv, messages=msgs, attachments=[])
 
@@ -233,12 +253,24 @@ class TestListProviderAnalyticsProducts:
         """Multiple tool uses in same conversation counted once."""
         db_path = workspace_env["data_root"] / "polylogue" / "polylogue.db"
 
-        conv = make_conversation("multi-tool", provider_name="claude-ai", title="Multi Tool", provider_meta={"source": "inbox"})
+        conv = make_conversation(
+            "multi-tool", provider_name="claude-ai", title="Multi Tool", provider_meta={"source": "inbox"}
+        )
         msgs = [
-            make_message("mt-msg-1", "multi-tool", role="assistant", text="Tool 1",
-                        provider_meta={"content_blocks": [{"type": "tool_use", "name": "a"}]}),
-            make_message("mt-msg-2", "multi-tool", role="assistant", text="Tool 2",
-                        provider_meta={"content_blocks": [{"type": "tool_use", "name": "b"}]}),
+            make_message(
+                "mt-msg-1",
+                "multi-tool",
+                role="assistant",
+                text="Tool 1",
+                provider_meta={"content_blocks": [{"type": "tool_use", "name": "a"}]},
+            ),
+            make_message(
+                "mt-msg-2",
+                "multi-tool",
+                role="assistant",
+                text="Tool 2",
+                provider_meta={"content_blocks": [{"type": "tool_use", "name": "b"}]},
+            ),
         ]
         await storage_repository.save_conversation(conversation=conv, messages=msgs, attachments=[])
 
@@ -305,7 +337,7 @@ async def _seed_db(tmp_path, rows):
             f"conv-{provider}",
             provider_name=provider,
             title=f"{provider} Test Conversation",
-            provider_meta={"source": "test"}
+            provider_meta={"source": "test"},
         )
         msgs = []
         for role, text, provider_meta in messages:
@@ -335,10 +367,13 @@ class TestWordCountEdgeCases:
 
     async def test_spaces_only_text_counts_zero_words(self, tmp_path):
         """Space-only messages should count as 0 words."""
-        db = await _seed_db(tmp_path, [
-            ("test", "user", "   ", None),
-            ("test", "user", "     ", None),
-        ])
+        db = await _seed_db(
+            tmp_path,
+            [
+                ("test", "user", "   ", None),
+                ("test", "user", "     ", None),
+            ],
+        )
         results = await list_provider_analytics_products(db_path=db)
         assert len(results) == 1
         assert results[0].avg_user_words == 0.0
@@ -350,17 +385,23 @@ class TestWordCountEdgeCases:
         Python's split() treats tabs/newlines as whitespace, so whitespace-only
         text yields 0 words.
         """
-        db = await _seed_db(tmp_path, [
-            ("test", "user", "\t\t", None),
-        ])
+        db = await _seed_db(
+            tmp_path,
+            [
+                ("test", "user", "\t\t", None),
+            ],
+        )
         results = await list_provider_analytics_products(db_path=db)
         assert results[0].avg_user_words == 0.0
 
     async def test_single_word_counts_one(self, tmp_path):
         """A single word with no spaces counts as 1."""
-        db = await _seed_db(tmp_path, [
-            ("test", "user", "Hello", None),
-        ])
+        db = await _seed_db(
+            tmp_path,
+            [
+                ("test", "user", "Hello", None),
+            ],
+        )
         results = await list_provider_analytics_products(db_path=db)
         assert results[0].avg_user_words == 1.0
 
@@ -370,25 +411,34 @@ class TestWordCountEdgeCases:
         word_count is precomputed via len(text.split()), which splits on any
         whitespace run, so 'hello  world' → 2 words (not 3).
         """
-        db = await _seed_db(tmp_path, [
-            ("test", "user", "hello  world", None),  # 2 spaces
-        ])
+        db = await _seed_db(
+            tmp_path,
+            [
+                ("test", "user", "hello  world", None),  # 2 spaces
+            ],
+        )
         results = await list_provider_analytics_products(db_path=db)
         assert results[0].avg_user_words == 2.0
 
     async def test_empty_text_counts_zero(self, tmp_path):
         """Empty string text counts as 0 words."""
-        db = await _seed_db(tmp_path, [
-            ("test", "user", "", None),
-        ])
+        db = await _seed_db(
+            tmp_path,
+            [
+                ("test", "user", "", None),
+            ],
+        )
         results = await list_provider_analytics_products(db_path=db)
         assert results[0].avg_user_words == 0.0
 
     async def test_none_text_counts_zero(self, tmp_path):
         """NULL text counts as 0 words."""
-        db = await _seed_db(tmp_path, [
-            ("test", "user", None, None),
-        ])
+        db = await _seed_db(
+            tmp_path,
+            [
+                ("test", "user", None, None),
+            ],
+        )
         results = await list_provider_analytics_products(db_path=db)
         assert results[0].avg_user_words == 0.0
 
@@ -403,36 +453,48 @@ class TestLikePatternResistance:
 
     async def test_tool_use_in_message_text_not_detected(self, tmp_path):
         """Text containing 'tool_use' string should NOT count as tool use."""
-        db = await _seed_db(tmp_path, [
-            ("test", "assistant", 'The tool_use feature is great', None),
-            ("test", "assistant", 'I used "type":"tool_use" in my message', None),
-        ])
+        db = await _seed_db(
+            tmp_path,
+            [
+                ("test", "assistant", "The tool_use feature is great", None),
+                ("test", "assistant", 'I used "type":"tool_use" in my message', None),
+            ],
+        )
         results = await list_provider_analytics_products(db_path=db)
         # tool_use_count should be 0 — the LIKE is on provider_meta, not text
         assert results[0].tool_use_count == 0
 
     async def test_thinking_in_message_text_not_detected(self, tmp_path):
         """Text containing 'thinking' should NOT count as thinking."""
-        db = await _seed_db(tmp_path, [
-            ("test", "assistant", 'I was thinking about "type":"thinking" blocks', None),
-        ])
+        db = await _seed_db(
+            tmp_path,
+            [
+                ("test", "assistant", 'I was thinking about "type":"thinking" blocks', None),
+            ],
+        )
         results = await list_provider_analytics_products(db_path=db)
         assert results[0].thinking_count == 0
 
     async def test_tool_role_fallback_detected(self, tmp_path):
         """Messages with role='tool' should be counted as tool use."""
-        db = await _seed_db(tmp_path, [
-            ("test", "tool", "Tool result here", None),
-        ])
+        db = await _seed_db(
+            tmp_path,
+            [
+                ("test", "tool", "Tool result here", None),
+            ],
+        )
         results = await list_provider_analytics_products(db_path=db)
         assert results[0].tool_use_count == 1
 
     async def test_tool_use_in_provider_meta_detected(self, tmp_path):
         """Tool use in provider_meta content_blocks is detected."""
         meta = {"content_blocks": [{"type": "tool_use", "name": "search", "id": "t1"}]}
-        db = await _seed_db(tmp_path, [
-            ("test", "assistant", "Using a tool", meta),
-        ])
+        db = await _seed_db(
+            tmp_path,
+            [
+                ("test", "assistant", "Using a tool", meta),
+            ],
+        )
         results = await list_provider_analytics_products(db_path=db)
         assert results[0].tool_use_count == 1
         assert results[0].total_conversations_with_tools == 1
@@ -440,23 +502,31 @@ class TestLikePatternResistance:
     async def test_thinking_in_provider_meta_detected(self, tmp_path):
         """Thinking blocks in provider_meta are detected."""
         meta = {"content_blocks": [{"type": "thinking", "thinking": "Let me consider..."}]}
-        db = await _seed_db(tmp_path, [
-            ("test", "assistant", "Here's my answer", meta),
-        ])
+        db = await _seed_db(
+            tmp_path,
+            [
+                ("test", "assistant", "Here's my answer", meta),
+            ],
+        )
         results = await list_provider_analytics_products(db_path=db)
         assert results[0].thinking_count == 1
         assert results[0].total_conversations_with_thinking == 1
 
     async def test_mixed_content_blocks_counted_correctly(self, tmp_path):
         """Message with both tool_use and thinking blocks counts both."""
-        meta = {"content_blocks": [
-            {"type": "thinking", "thinking": "Planning..."},
-            {"type": "tool_use", "name": "search", "id": "t1"},
-            {"type": "text", "text": "Result"},
-        ]}
-        db = await _seed_db(tmp_path, [
-            ("test", "assistant", "Result from tool", meta),
-        ])
+        meta = {
+            "content_blocks": [
+                {"type": "thinking", "thinking": "Planning..."},
+                {"type": "tool_use", "name": "search", "id": "t1"},
+                {"type": "text", "text": "Result"},
+            ]
+        }
+        db = await _seed_db(
+            tmp_path,
+            [
+                ("test", "assistant", "Result from tool", meta),
+            ],
+        )
         results = await list_provider_analytics_products(db_path=db)
         assert results[0].tool_use_count == 1
         assert results[0].thinking_count == 1
@@ -475,12 +545,15 @@ class TestCrossProviderConsistency:
         chatgpt_meta = {"content_blocks": [{"type": "tool_use", "name": "browser"}]}
         claude_meta = {"content_blocks": [{"type": "tool_use", "name": "computer", "id": "toolu_1"}]}
 
-        db = await _seed_db(tmp_path, [
-            ("chatgpt", "assistant", "ChatGPT used a tool", chatgpt_meta),
-            ("chatgpt", "user", "Thanks", None),
-            ("claude-ai", "assistant", "Claude used a tool", claude_meta),
-            ("claude-ai", "user", "Thanks", None),
-        ])
+        db = await _seed_db(
+            tmp_path,
+            [
+                ("chatgpt", "assistant", "ChatGPT used a tool", chatgpt_meta),
+                ("chatgpt", "user", "Thanks", None),
+                ("claude-ai", "assistant", "Claude used a tool", claude_meta),
+                ("claude-ai", "user", "Thanks", None),
+            ],
+        )
         results = await list_provider_analytics_products(db_path=db)
 
         by_provider = {r.provider_name: r for r in results}

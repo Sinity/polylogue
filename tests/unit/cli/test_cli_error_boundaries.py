@@ -3,6 +3,7 @@
 Proves the CLI never exposes raw Python tracebacks to end users,
 handles invalid flags gracefully, and all subcommands provide --help.
 """
+
 from __future__ import annotations
 
 import pytest
@@ -23,10 +24,21 @@ def runner() -> CliRunner:
 # =============================================================================
 
 SUBCOMMANDS = [
-    "run", "doctor", "reset", "mcp", "auth",
-    "completions", "dashboard",
-    "audit", "schema", "tags",
-    "list", "count", "stats", "open", "delete",
+    "run",
+    "doctor",
+    "reset",
+    "mcp",
+    "auth",
+    "completions",
+    "dashboard",
+    "audit",
+    "schema",
+    "tags",
+    "list",
+    "count",
+    "stats",
+    "open",
+    "delete",
 ]
 
 
@@ -53,6 +65,7 @@ def test_version(runner: CliRunner) -> None:
 # =============================================================================
 # Invalid flag values
 # =============================================================================
+
 
 class TestInvalidFlags:
     def test_invalid_limit(self, runner: CliRunner) -> None:
@@ -85,6 +98,7 @@ class TestInvalidFlags:
 # Invalid date values
 # =============================================================================
 
+
 class TestInvalidDates:
     """Date boundary tests use workspace_env + --plain --limit 0 to stay fast.
 
@@ -114,6 +128,7 @@ class TestInvalidDates:
 # Nonexistent paths
 # =============================================================================
 
+
 class TestNonexistentPaths:
     def test_nonexistent_source_path(self, runner: CliRunner) -> None:
         """Non-existent --source should not produce traceback."""
@@ -129,6 +144,7 @@ class TestNonexistentPaths:
 # =============================================================================
 # Unknown commands and flags
 # =============================================================================
+
 
 class TestUnknownInputs:
     def test_unknown_subcommand(self, runner: CliRunner) -> None:
@@ -151,6 +167,7 @@ class TestUnknownInputs:
 # Multiple/conflicting filters
 # =============================================================================
 
+
 class TestFilterCombinations:
     """Filter combination tests use workspace_env + --plain --limit 0 to stay fast.
 
@@ -161,7 +178,9 @@ class TestFilterCombinations:
 
     def test_exclude_and_include_same_provider(self, runner: CliRunner, workspace_env) -> None:
         """Conflicting provider filters should not traceback."""
-        result = runner.invoke(cli, ["--plain", "--provider", "claude-ai", "--exclude-provider", "claude-ai", "--limit", "0"])
+        result = runner.invoke(
+            cli, ["--plain", "--provider", "claude-ai", "--exclude-provider", "claude-ai", "--limit", "0"]
+        )
         assert TRACEBACK_SENTINEL not in result.output
 
     def test_multiple_contain_terms(self, runner: CliRunner, workspace_env) -> None:
@@ -179,18 +198,22 @@ class TestFilterCombinations:
 # Hypothesis fuzz: random query terms never produce tracebacks
 # =============================================================================
 
-@pytest.mark.parametrize("query", [
-    "",
-    "hello",
-    "SELECT * FROM users",
-    "foo bar baz",
-    "!@#$%^&*()",
-    "a" * 200,
-    "日本語",
-    "--help",
-    "query with spaces and 123 numbers",
-    "\t\ttabs",
-])
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "",
+        "hello",
+        "SELECT * FROM users",
+        "foo bar baz",
+        "!@#$%^&*()",
+        "a" * 200,
+        "日本語",
+        "--help",
+        "query with spaces and 123 numbers",
+        "\t\ttabs",
+    ],
+)
 def test_random_query_no_traceback(query: str) -> None:
     """Various query strings never produce a traceback."""
     runner = CliRunner()
@@ -201,6 +224,7 @@ def test_random_query_no_traceback(query: str) -> None:
 # =============================================================================
 # QA subcommand variants
 # =============================================================================
+
 
 class TestQAErrorBoundaries:
     def test_qa_invalid_tier(self, runner: CliRunner) -> None:
@@ -217,6 +241,7 @@ class TestQAErrorBoundaries:
 # =============================================================================
 # Completions subcommand
 # =============================================================================
+
 
 class TestCompletionsErrorBoundaries:
     def test_completions_invalid_shell(self, runner: CliRunner) -> None:
@@ -235,6 +260,7 @@ class TestCompletionsErrorBoundaries:
 # MCP subcommand
 # =============================================================================
 
+
 class TestMCPErrorBoundaries:
     def test_mcp_invalid_transport(self, runner: CliRunner) -> None:
         """Unknown --transport should not produce traceback."""
@@ -245,6 +271,7 @@ class TestMCPErrorBoundaries:
 # =============================================================================
 # Generate subcommand
 # =============================================================================
+
 
 class TestGenerateErrorBoundaries:
     def test_generate_invalid_count(self, runner: CliRunner) -> None:
@@ -261,6 +288,7 @@ class TestGenerateErrorBoundaries:
 # =============================================================================
 # Schema subcommand
 # =============================================================================
+
 
 class TestSchemaErrorBoundaries:
     def test_schema_help_exists(self, runner: CliRunner) -> None:

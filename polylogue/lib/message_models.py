@@ -41,6 +41,7 @@ class Message(MessageRuntimeMixin, BaseModel):
             return v
         return Provider.from_string(str(v))
 
+
 class DialoguePair(BaseModel):
     """A user message followed by assistant response."""
 

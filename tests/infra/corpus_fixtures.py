@@ -10,6 +10,7 @@ Usage::
         db_path = corpus_seeded_db(providers=("chatgpt",), count=2, seed=42)
         # db_path now contains parsed data from the real pipeline
 """
+
 from __future__ import annotations
 
 import asyncio

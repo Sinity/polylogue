@@ -88,9 +88,7 @@ class TestBaselineSchemaAnnotations:
 
         found_roles = sorted(set(_collect_semantic_roles(schema)))
         expected = sorted(EXPECTED_ANNOTATIONS[provider])
-        assert found_roles == expected, (
-            f"{provider} schema has roles {found_roles}, expected {expected}"
-        )
+        assert found_roles == expected, f"{provider} schema has roles {found_roles}, expected {expected}"
 
     @pytest.mark.parametrize("provider", list(EXPECTED_ANNOTATIONS.keys()))
     def test_annotation_injection_is_idempotent(self, provider: str) -> None:
@@ -119,9 +117,7 @@ class TestSemanticGeneratorActivation:
         corpus = SyntheticCorpus.for_provider(provider)
         corpus.generate(count=1, seed=42, messages_per_conversation=range(3, 5))
 
-        assert hasattr(corpus, "_semantic_gen"), (
-            f"_semantic_gen not set after generation for {provider}"
-        )
+        assert hasattr(corpus, "_semantic_gen"), f"_semantic_gen not set after generation for {provider}"
         assert isinstance(corpus._semantic_gen, SemanticValueGenerator)
 
     @pytest.mark.parametrize("provider", SyntheticCorpus.available_providers())

@@ -3,6 +3,7 @@
 Covers ProviderConfig, PROVIDERS dict, load_samples_from_db with missing DB,
 and load_samples_from_sessions with JSONL fixtures.
 """
+
 from __future__ import annotations
 
 import json
@@ -99,6 +100,7 @@ class TestLoadSamplesFromDb:
     def test_empty_db_returns_empty(self, tmp_path: Path) -> None:
         # Create a DB with schema but no data
         from polylogue.storage.backends.connection import open_connection
+
         db = tmp_path / "empty.db"
         with open_connection(db):
             pass
@@ -118,19 +120,22 @@ class TestLoadSamplesFromDb:
         from polylogue.storage.backends.connection import open_connection
 
         db = tmp_path / "claude.db"
-        raw_content = json.dumps([
-            {
-                "uuid": "conv-1",
-                "name": "Conversation",
-                "summary": "Summary",
-                "created_at": "2026-01-01T00:00:00Z",
-                "updated_at": "2026-01-01T00:05:00Z",
-                "account": {"uuid": "acct-1"},
-                "chat_messages": [],
-            }
-        ]).encode("utf-8")
+        raw_content = json.dumps(
+            [
+                {
+                    "uuid": "conv-1",
+                    "name": "Conversation",
+                    "summary": "Summary",
+                    "created_at": "2026-01-01T00:00:00Z",
+                    "updated_at": "2026-01-01T00:05:00Z",
+                    "account": {"uuid": "acct-1"},
+                    "chat_messages": [],
+                }
+            ]
+        ).encode("utf-8")
 
         from polylogue.storage.blob_store import get_blob_store
+
         blob_store = get_blob_store()
         raw_id, blob_size = blob_store.write_from_bytes(raw_content)
 
@@ -173,6 +178,7 @@ class TestLoadSamplesFromDb:
         ).encode("utf-8")
 
         from polylogue.storage.blob_store import get_blob_store
+
         blob_store = get_blob_store()
         actual_raw_id, blob_size = blob_store.write_from_bytes(raw_content)
 
@@ -267,9 +273,9 @@ class TestLoadSamplesFromSessions:
         jsonl_file = session_dir / "session-001.jsonl"
         lines = [
             '{"a": 1}',
-            '',  # empty
+            "",  # empty
             '{"b": 2}',
-            '   ',  # whitespace
+            "   ",  # whitespace
             '{"c": 3}',
         ]
         jsonl_file.write_text("\n".join(lines))
@@ -283,7 +289,7 @@ class TestLoadSamplesFromSessions:
         jsonl_file = session_dir / "session-001.jsonl"
         lines = [
             '{"valid": true}',
-            '[1, 2, 3]',  # array, not dict
+            "[1, 2, 3]",  # array, not dict
             '"string"',  # string
             '{"also_valid": true}',
         ]

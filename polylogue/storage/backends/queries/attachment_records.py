@@ -40,10 +40,7 @@ async def get_attachments(
         (conversation_id,),
     )
     rows = await cursor.fetchall()
-    return [
-        _build_attachment_record(row, conversation_id=conversation_id)
-        for row in rows
-    ]
+    return [_build_attachment_record(row, conversation_id=conversation_id) for row in rows]
 
 
 async def get_attachments_batch(

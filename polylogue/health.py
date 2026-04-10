@@ -47,10 +47,7 @@ class HealthReport(OutcomeReport):
                 }
                 for check in self.checks
             ],
-            "derived_models": {
-                name: status.to_dict()
-                for name, status in sorted(self.derived_models.items())
-            },
+            "derived_models": {name: status.to_dict() for name, status in sorted(self.derived_models.items())},
             "archive_debt": {
                 name: (status.to_dict() if hasattr(status, "to_dict") else status)
                 for name, status in sorted(self.archive_debt.items())
@@ -238,10 +235,7 @@ def run_archive_health(config: Any, *, deep: bool = False) -> HealthReport:
             freshness_status = (
                 VerifyStatus.OK
                 if transcript_embeddings.materialized_rows == 0
-                or (
-                    transcript_embeddings.stale_rows == 0
-                    and transcript_embeddings.missing_provenance_rows == 0
-                )
+                or (transcript_embeddings.stale_rows == 0 and transcript_embeddings.missing_provenance_rows == 0)
                 else VerifyStatus.WARNING
             )
             checks.append(
@@ -329,9 +323,7 @@ def run_runtime_health(config: Any) -> HealthReport:
 
     try:
         with connection_context(None) as conn:
-            fts = conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name='messages_fts'"
-            ).fetchone()
+            fts = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='messages_fts'").fetchone()
             if fts:
                 conn.execute("SELECT * FROM messages_fts LIMIT 0")
                 checks.append(HealthCheck("fts_tables", VerifyStatus.OK, summary="FTS5 table present and queryable"))
@@ -346,7 +338,9 @@ def run_runtime_health(config: Any) -> HealthReport:
         checks.append(HealthCheck("sqlite_vec", VerifyStatus.OK, summary="sqlite-vec extension available"))
     except ImportError:
         checks.append(
-            HealthCheck("sqlite_vec", VerifyStatus.WARNING, summary="sqlite-vec not installed (vector search unavailable)")
+            HealthCheck(
+                "sqlite_vec", VerifyStatus.WARNING, summary="sqlite-vec not installed (vector search unavailable)"
+            )
         )
 
     for label, path in [("archive_root", config.archive_root), ("render_root", config.render_root)]:
@@ -385,9 +379,7 @@ def run_runtime_health(config: Any) -> HealthReport:
         if token.exists():
             checks.append(HealthCheck("drive_token", VerifyStatus.OK, summary=str(token)))
         else:
-            checks.append(
-                HealthCheck("drive_token", VerifyStatus.WARNING, summary=f"Missing (auth required): {token}")
-            )
+            checks.append(HealthCheck("drive_token", VerifyStatus.WARNING, summary=f"Missing (auth required): {token}"))
 
     import shutil
     import sys

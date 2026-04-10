@@ -12,7 +12,8 @@ the underlying parser issues are addressed.
 from __future__ import annotations
 
 import pytest
-from hypothesis import HealthCheck, given, settings, strategies as st
+from hypothesis import HealthCheck, given, settings
+from hypothesis import strategies as st
 
 from polylogue.lib.roles import Role
 from polylogue.sources.dispatch import detect_provider, parse_payload
@@ -63,9 +64,7 @@ def test_parse_produces_valid_content_block_types(provider: str, data) -> None:
     valid_types = set(ContentBlockType)
     for msg in conv.messages:
         for block in msg.content_blocks:
-            assert block.type in valid_types, (
-                f"Invalid content block type {block.type!r} from {provider}"
-            )
+            assert block.type in valid_types, f"Invalid content block type {block.type!r} from {provider}"
 
 
 @pytest.mark.xfail(reason="Discovers pre-existing parser edge cases on schema-conformant data", strict=False)
@@ -79,9 +78,7 @@ def test_parse_title_is_stable(provider: str, data) -> None:
     conv2 = _try_parse(provider, payload)
     if conv1 is None or conv2 is None:
         return
-    assert conv1.title == conv2.title, (
-        f"Title instability for {provider}: {conv1.title!r} vs {conv2.title!r}"
-    )
+    assert conv1.title == conv2.title, f"Title instability for {provider}: {conv1.title!r} vs {conv2.title!r}"
 
 
 class TestProviderEventRoundtrip:

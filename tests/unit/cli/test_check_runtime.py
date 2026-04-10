@@ -336,9 +336,7 @@ class TestRuntimeHealthCheckResults:
 class TestRuntimeHealthReadOnlyPaths:
     """Tests for runtime health with read-only or inaccessible paths."""
 
-    @pytest.mark.skipif(
-        os.name == "nt", reason="Unix-specific permission testing"
-    )
+    @pytest.mark.skipif(os.name == "nt", reason="Unix-specific permission testing")
     def test_runtime_health_with_readonly_archive_root(self, tmp_path):
         """Runtime health detects read-only archive_root."""
         archive_root = tmp_path / "archive"

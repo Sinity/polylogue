@@ -149,16 +149,12 @@ async def execute_materialize_stage(
         return MaterializeStageOutcome(item_count=0, rebuilt=False)
 
     if source_names:
-        materialize_total = await backend.queries.count_conversation_ids(
-            source_names=list(source_names)
-        )
+        materialize_total = await backend.queries.count_conversation_ids(source_names=list(source_names))
         if not materialize_total:
             return MaterializeStageOutcome(item_count=0, rebuilt=False)
         conversation_ids = [
             conversation_id
-            async for conversation_id in backend.queries.iter_conversation_ids(
-                source_names=list(source_names)
-            )
+            async for conversation_id in backend.queries.iter_conversation_ids(source_names=list(source_names))
         ]
         if progress_callback is not None:
             progress_callback(0, desc=f"Materializing: 0/{materialize_total}")
@@ -250,11 +246,7 @@ async def execute_index_stage(
     try:
         if stage == "parse":
             if processed_ids:
-                index_kwargs = (
-                    {"progress_callback": progress_callback}
-                    if progress_callback is not None
-                    else {}
-                )
+                index_kwargs = {"progress_callback": progress_callback} if progress_callback is not None else {}
                 return IndexStageOutcome(
                     indexed=await index_service.update_index(processed_ids, **index_kwargs),
                     item_count=len(processed_ids),
@@ -263,27 +255,15 @@ async def execute_index_stage(
 
         if stage == "index":
             if source_names:
-                total = await backend.queries.count_conversation_ids(
-                    source_names=list(source_names)
-                )
-                index_kwargs = (
-                    {"progress_callback": progress_callback}
-                    if progress_callback is not None
-                    else {}
-                )
+                total = await backend.queries.count_conversation_ids(source_names=list(source_names))
+                index_kwargs = {"progress_callback": progress_callback} if progress_callback is not None else {}
                 success = await index_service.update_index(
-                    backend.queries.iter_conversation_ids(
-                        source_names=list(source_names)
-                    ),
+                    backend.queries.iter_conversation_ids(source_names=list(source_names)),
                     **index_kwargs,
                 )
                 return IndexStageOutcome(indexed=success, item_count=total)
             total = await backend.queries.count_conversation_ids()
-            rebuild_kwargs = (
-                {"progress_callback": progress_callback}
-                if progress_callback is not None
-                else {}
-            )
+            rebuild_kwargs = {"progress_callback": progress_callback} if progress_callback is not None else {}
             return IndexStageOutcome(
                 indexed=await index_service.rebuild_index(**rebuild_kwargs),
                 item_count=total,
@@ -292,21 +272,13 @@ async def execute_index_stage(
         if stage in {"all", "reprocess"}:
             idx = await index_service.get_index_status()
             if not idx["exists"]:
-                rebuild_kwargs = (
-                    {"progress_callback": progress_callback}
-                    if progress_callback is not None
-                    else {}
-                )
+                rebuild_kwargs = {"progress_callback": progress_callback} if progress_callback is not None else {}
                 return IndexStageOutcome(
                     indexed=await index_service.rebuild_index(**rebuild_kwargs),
                     item_count=len(processed_ids),
                 )
             if processed_ids:
-                index_kwargs = (
-                    {"progress_callback": progress_callback}
-                    if progress_callback is not None
-                    else {}
-                )
+                index_kwargs = {"progress_callback": progress_callback} if progress_callback is not None else {}
                 return IndexStageOutcome(
                     indexed=await index_service.update_index(processed_ids, **index_kwargs),
                     item_count=len(processed_ids),
@@ -430,10 +402,12 @@ async def execute_embed_stage(
     class _PlainUI:
         plain = True
 
-        class console:
+        class _Console:
             @staticmethod
             def print(*args: object, **kwargs: object) -> None:
                 click.echo(" ".join(str(a) for a in args))
+
+        console = _Console()
 
         class _NullProgress:
             def update(self, **kwargs: object) -> None:

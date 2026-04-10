@@ -7,6 +7,7 @@ from pathlib import Path
 
 import click
 
+from polylogue.cli.commands.generate import generate_command
 from polylogue.cli.helpers import complete_configured_source_names, load_effective_config
 from polylogue.cli.qa_capture import run_vhs_capture as _run_vhs_capture
 from polylogue.cli.qa_snapshot import snapshot_results
@@ -16,25 +17,23 @@ _STAGE_CHOICES = click.Choice(["audit", "exercises", "invariants"])
 
 
 @click.group("audit", invoke_without_command=True)
-@click.option("--synthetic/--live", default=True,
-              help="Data source: synthetic (default) or live real data")
-@click.option("--source", "source_names", multiple=True,
-              shell_complete=complete_configured_source_names,
-              help="Configured real source name (repeatable, implies --fresh)")
-@click.option("--fresh", is_flag=True, default=None,
-              help="Run in an isolated temp workspace (default for synthetic)")
-@click.option("--workspace", type=click.Path(path_type=Path),
-              help="Reuse a specific workspace directory")
-@click.option("--ingest", is_flag=True, default=None,
-              help="Run ingestion pipeline (auto for synthetic and fresh-with-sources)")
-@click.option("--schemas", "regenerate_schemas", is_flag=True,
-              help="Regenerate schemas during pipeline")
-@click.option("--only", "only_stage", type=_STAGE_CHOICES, default=None,
-              help="Run only this stage")
-@click.option("--skip", "skip_stages", multiple=True, type=_STAGE_CHOICES,
-              help="Skip this stage (repeatable)")
-@click.option("--tier", "tier_filter", type=int, default=None,
-              help="Only run exercises at this tier (0/1/2)")
+@click.option("--synthetic/--live", default=True, help="Data source: synthetic (default) or live real data")
+@click.option(
+    "--source",
+    "source_names",
+    multiple=True,
+    shell_complete=complete_configured_source_names,
+    help="Configured real source name (repeatable, implies --fresh)",
+)
+@click.option("--fresh", is_flag=True, default=None, help="Run in an isolated temp workspace (default for synthetic)")
+@click.option("--workspace", type=click.Path(path_type=Path), help="Reuse a specific workspace directory")
+@click.option(
+    "--ingest", is_flag=True, default=None, help="Run ingestion pipeline (auto for synthetic and fresh-with-sources)"
+)
+@click.option("--schemas", "regenerate_schemas", is_flag=True, help="Regenerate schemas during pipeline")
+@click.option("--only", "only_stage", type=_STAGE_CHOICES, default=None, help="Run only this stage")
+@click.option("--skip", "skip_stages", multiple=True, type=_STAGE_CHOICES, help="Skip this stage (repeatable)")
+@click.option("--tier", "tier_filter", type=int, default=None, help="Only run exercises at this tier (0/1/2)")
 @click.option("--fail-fast", is_flag=True, help="Stop on first exercise failure")
 @click.option(
     "--capture",
@@ -43,16 +42,28 @@ _STAGE_CHOICES = click.Choice(["audit", "exercises", "invariants"])
     show_default=True,
     help="Capture mode for exercises",
 )
-@click.option("--report-dir", type=click.Path(path_type=Path), default=None,
-              help="Directory for QA artifacts (auto-generated if omitted)")
+@click.option(
+    "--report-dir",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Directory for QA artifacts (auto-generated if omitted)",
+)
 @click.option("--json", "json_output", is_flag=True, help="Machine-readable output")
 @click.option("--verbose", is_flag=True, help="Print exercise outputs")
-@click.option("--snapshot", "snapshot_label", default=None, is_flag=False,
-              flag_value="snapshot",
-              help="Archive results after QA completes (optional label)")
-@click.option("--snapshot-from", type=click.Path(path_type=Path, exists=True, file_okay=False),
-              default=None,
-              help="Archive an existing output directory (skips QA execution)")
+@click.option(
+    "--snapshot",
+    "snapshot_label",
+    default=None,
+    is_flag=False,
+    flag_value="snapshot",
+    help="Archive results after QA completes (optional label)",
+)
+@click.option(
+    "--snapshot-from",
+    type=click.Path(path_type=Path, exists=True, file_okay=False),
+    default=None,
+    help="Archive an existing output directory (skips QA execution)",
+)
 @click.pass_obj
 def qa_command(
     env: AppEnv,
@@ -193,7 +204,7 @@ def qa_command(
 
     if not result.all_passed:
         raise SystemExit(1)
-from polylogue.cli.commands.generate import generate_command
+
 
 qa_command.add_command(generate_command)
 

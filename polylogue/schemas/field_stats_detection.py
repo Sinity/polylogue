@@ -11,10 +11,8 @@ UUID_PATTERN = re.compile(
 )
 
 FORMAT_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
-    ("uuid4", re.compile(
-        r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$", re.I)),
-    ("uuid", re.compile(
-        r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I)),
+    ("uuid4", re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$", re.I)),
+    ("uuid", re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I)),
     ("hex-id", re.compile(r"^[0-9a-f]{24,}$", re.I)),
     ("iso8601", re.compile(r"^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}")),
     ("unix-epoch-str", re.compile(r"^\d{10}(\.\d+)?$")),

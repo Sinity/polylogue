@@ -27,9 +27,7 @@ async def iter_conversation_indexes(
         page_size=page_size,
         provider=provider,
     ):
-        message_counts = await backend.queries.get_message_counts_batch(
-            [str(summary.id) for summary in summaries]
-        )
+        message_counts = await backend.queries.get_message_counts_batch([str(summary.id) for summary in summaries])
         for summary in summaries:
             yield ConversationIndex.from_summary(
                 summary,
@@ -85,4 +83,3 @@ async def scan_archive(
             search_handle.close()
 
     return stats, page_stats
-

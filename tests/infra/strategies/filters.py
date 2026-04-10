@@ -19,25 +19,29 @@ from hypothesis import strategies as st
 @st.composite
 def filter_type_strategy(draw: st.DrawFn) -> str:
     """Generate a filter type name."""
-    return draw(st.sampled_from([
-        "provider",
-        "contains",
-        "since",
-        "until",
-        "limit",
-        "offset",
-        "sort",
-        "role",
-        "has_attachments",
-        "min_words",
-        "max_words",
-        "has_tool_use",
-        "has_thinking",
-        "min_messages",
-        "max_messages",
-        "tag",
-        "exclude_tag",
-    ]))
+    return draw(
+        st.sampled_from(
+            [
+                "provider",
+                "contains",
+                "since",
+                "until",
+                "limit",
+                "offset",
+                "sort",
+                "role",
+                "has_attachments",
+                "min_words",
+                "max_words",
+                "has_tool_use",
+                "has_thinking",
+                "min_messages",
+                "max_messages",
+                "tag",
+                "exclude_tag",
+            ]
+        )
+    )
 
 
 @st.composite
@@ -54,10 +58,16 @@ def contains_filter_arg_strategy(draw: st.DrawFn) -> dict[str, Any]:
     """Generate arguments for contains (text search) filter."""
     return {
         "type": "contains",
-        "value": draw(st.text(min_size=1, max_size=50, alphabet=st.characters(
-            whitelist_categories=("L", "N", "P"),
-            blacklist_characters='"\'\\',
-        ))),
+        "value": draw(
+            st.text(
+                min_size=1,
+                max_size=50,
+                alphabet=st.characters(
+                    whitelist_categories=("L", "N", "P"),
+                    blacklist_characters="\"'\\",
+                ),
+            )
+        ),
     }
 
 
@@ -160,11 +170,13 @@ def tag_filter_arg_strategy(draw: st.DrawFn) -> dict[str, Any]:
     """Generate arguments for tag filter."""
     return {
         "type": "tag",
-        "value": draw(st.text(
-            min_size=1,
-            max_size=20,
-            alphabet=st.characters(whitelist_categories=("L", "N"), whitelist_characters="-_"),
-        )),
+        "value": draw(
+            st.text(
+                min_size=1,
+                max_size=20,
+                alphabet=st.characters(whitelist_categories=("L", "N"), whitelist_characters="-_"),
+            )
+        ),
     }
 
 
@@ -173,11 +185,13 @@ def exclude_tag_filter_arg_strategy(draw: st.DrawFn) -> dict[str, Any]:
     """Generate arguments for exclude_tag filter."""
     return {
         "type": "exclude_tag",
-        "value": draw(st.text(
-            min_size=1,
-            max_size=20,
-            alphabet=st.characters(whitelist_categories=("L", "N"), whitelist_characters="-_"),
-        )),
+        "value": draw(
+            st.text(
+                min_size=1,
+                max_size=20,
+                alphabet=st.characters(whitelist_categories=("L", "N"), whitelist_characters="-_"),
+            )
+        ),
     }
 
 
@@ -189,22 +203,24 @@ def exclude_tag_filter_arg_strategy(draw: st.DrawFn) -> dict[str, Any]:
 @st.composite
 def filter_arg_strategy(draw: st.DrawFn) -> dict[str, Any]:
     """Generate any valid filter argument."""
-    return draw(st.one_of(
-        provider_filter_arg_strategy(),
-        contains_filter_arg_strategy(),
-        date_filter_arg_strategy(),
-        limit_filter_arg_strategy(),
-        offset_filter_arg_strategy(),
-        sort_filter_arg_strategy(),
-        role_filter_arg_strategy(),
-        word_count_filter_arg_strategy(),
-        has_tool_use_filter_arg_strategy(),
-        has_thinking_filter_arg_strategy(),
-        min_messages_filter_arg_strategy(),
-        max_messages_filter_arg_strategy(),
-        tag_filter_arg_strategy(),
-        exclude_tag_filter_arg_strategy(),
-    ))
+    return draw(
+        st.one_of(
+            provider_filter_arg_strategy(),
+            contains_filter_arg_strategy(),
+            date_filter_arg_strategy(),
+            limit_filter_arg_strategy(),
+            offset_filter_arg_strategy(),
+            sort_filter_arg_strategy(),
+            role_filter_arg_strategy(),
+            word_count_filter_arg_strategy(),
+            has_tool_use_filter_arg_strategy(),
+            has_thinking_filter_arg_strategy(),
+            min_messages_filter_arg_strategy(),
+            max_messages_filter_arg_strategy(),
+            tag_filter_arg_strategy(),
+            exclude_tag_filter_arg_strategy(),
+        )
+    )
 
 
 @st.composite
@@ -220,11 +236,13 @@ def filter_chain_strategy(
     - Commutativity: filter order doesn't affect final count (for idempotent filters)
     - Idempotence: applying same filter twice has no additional effect
     """
-    return draw(st.lists(
-        filter_arg_strategy(),
-        min_size=min_filters,
-        max_size=max_filters,
-    ))
+    return draw(
+        st.lists(
+            filter_arg_strategy(),
+            min_size=min_filters,
+            max_size=max_filters,
+        )
+    )
 
 
 @st.composite

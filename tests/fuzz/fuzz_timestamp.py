@@ -19,6 +19,7 @@ import time
 # Check if atheris is available
 try:
     import atheris
+
     HAS_ATHERIS = True
 except ImportError:
     HAS_ATHERIS = False
@@ -117,9 +118,7 @@ def fuzz_format_timestamp(data: bytes) -> None:
 
         elapsed = time.monotonic() - start_time
         if elapsed > MAX_PARSE_TIME:
-            raise AssertionError(
-                f"format_timestamp took {elapsed:.2f}s for input: {num}"
-            )
+            raise AssertionError(f"format_timestamp took {elapsed:.2f}s for input: {num}")
 
         # Result should be string
         assert isinstance(result, str), f"format_timestamp returned non-string: {type(result)}"

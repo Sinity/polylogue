@@ -216,9 +216,11 @@ def test_run_command_watch_flag_contract(notify: bool, exec_cmd: bool, webhook: 
     if webhook:
         args.extend(["--webhook", "https://example.com"])
 
-    with patch("polylogue.cli.commands.run.resolve_sources", return_value=None), patch(
-        "polylogue.cli.commands.run.maybe_prompt_sources", return_value=None
-    ), patch("polylogue.cli.commands.run._run_sync_once", return_value=_run_result()):
+    with (
+        patch("polylogue.cli.commands.run.resolve_sources", return_value=None),
+        patch("polylogue.cli.commands.run.maybe_prompt_sources", return_value=None),
+        patch("polylogue.cli.commands.run._run_sync_once", return_value=_run_result()),
+    ):
         result = runner.invoke(run_command, args, obj=env)
 
     if notify or exec_cmd or webhook:
@@ -287,9 +289,12 @@ def test_format_elapsed_contract(seconds: float, expected: str) -> None:
 
 
 def test_plain_progress_observer_stage_switch_contract() -> None:
-    with patch("builtins.print") as mock_print, patch(
-        "polylogue.cli.run_observers.time.time",
-        side_effect=[100.0, 101.2, 101.2, 102.8, 102.8],
+    with (
+        patch("builtins.print") as mock_print,
+        patch(
+            "polylogue.cli.run_observers.time.time",
+            side_effect=[100.0, 101.2, 101.2, 102.8, 102.8],
+        ),
     ):
         observer = _PlainProgressObserver(banner="Running...")
         observer.on_progress(2, "Scanning: 2")
@@ -308,9 +313,12 @@ def test_plain_progress_observer_stage_switch_contract() -> None:
 def test_plain_progress_observer_completion_contract() -> None:
     result = _run_result(conversations=3)
 
-    with patch("builtins.print") as mock_print, patch(
-        "polylogue.cli.run_observers.time.time",
-        side_effect=[200.0, 205.0],
+    with (
+        patch("builtins.print") as mock_print,
+        patch(
+            "polylogue.cli.run_observers.time.time",
+            side_effect=[200.0, 205.0],
+        ),
     ):
         observer = _PlainProgressObserver(banner="Syncing...")
         observer.on_completed(result)

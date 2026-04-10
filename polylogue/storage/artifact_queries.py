@@ -106,9 +106,7 @@ def list_artifact_cohorts(
             observation.artifact_kind == ArtifactKind.SUBAGENT_CONVERSATION_STREAM.value
             and observation.link_group_key is not None
         ):
-            stream_keys_by_provider.setdefault(_effective_provider(observation), set()).add(
-                observation.link_group_key
-            )
+            stream_keys_by_provider.setdefault(_effective_provider(observation), set()).add(observation.link_group_key)
 
     grouped: dict[
         tuple[str, str, ArtifactSupportStatus, str | None, str | None, str | None, str | None],

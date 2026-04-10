@@ -3,6 +3,7 @@
 Covers check_privacy_guards, check_semantic_roles, check_annotation_coverage,
 and AuditReport aggregation properties.
 """
+
 from __future__ import annotations
 
 from polylogue.lib.outcomes import OutcomeCheck as CheckResult
@@ -56,56 +57,70 @@ class TestCheckResult:
 
 class TestAuditReport:
     def test_count_pass(self) -> None:
-        report = AuditReport(checks=[
-            CheckResult(name="a", status=PASS, summary="ok"),
-            CheckResult(name="b", status=PASS, summary="ok"),
-        ])
+        report = AuditReport(
+            checks=[
+                CheckResult(name="a", status=PASS, summary="ok"),
+                CheckResult(name="b", status=PASS, summary="ok"),
+            ]
+        )
         assert report.passed == 2
         assert report.warned == 0
         assert report.failed == 0
 
     def test_count_warn(self) -> None:
-        report = AuditReport(checks=[
-            CheckResult(name="a", status=WARN, summary="warning"),
-        ])
+        report = AuditReport(
+            checks=[
+                CheckResult(name="a", status=WARN, summary="warning"),
+            ]
+        )
         assert report.warned == 1
 
     def test_count_fail(self) -> None:
-        report = AuditReport(checks=[
-            CheckResult(name="a", status=FAIL, summary="bad"),
-            CheckResult(name="b", status=FAIL, summary="bad"),
-        ])
+        report = AuditReport(
+            checks=[
+                CheckResult(name="a", status=FAIL, summary="bad"),
+                CheckResult(name="b", status=FAIL, summary="bad"),
+            ]
+        )
         assert report.failed == 2
 
     def test_counts_mixed(self) -> None:
-        report = AuditReport(checks=[
-            CheckResult(name="a", status=PASS, summary="ok"),
-            CheckResult(name="b", status=WARN, summary="warning"),
-            CheckResult(name="c", status=FAIL, summary="bad"),
-            CheckResult(name="d", status=PASS, summary="ok"),
-        ])
+        report = AuditReport(
+            checks=[
+                CheckResult(name="a", status=PASS, summary="ok"),
+                CheckResult(name="b", status=WARN, summary="warning"),
+                CheckResult(name="c", status=FAIL, summary="bad"),
+                CheckResult(name="d", status=PASS, summary="ok"),
+            ]
+        )
         assert report.passed == 2
         assert report.warned == 1
         assert report.failed == 1
 
     def test_all_passed_true(self) -> None:
-        report = AuditReport(checks=[
-            CheckResult(name="a", status=PASS, summary="ok"),
-            CheckResult(name="b", status=PASS, summary="ok"),
-        ])
+        report = AuditReport(
+            checks=[
+                CheckResult(name="a", status=PASS, summary="ok"),
+                CheckResult(name="b", status=PASS, summary="ok"),
+            ]
+        )
         assert report.all_passed
 
     def test_all_passed_false_with_warn(self) -> None:
-        report = AuditReport(checks=[
-            CheckResult(name="a", status=PASS, summary="ok"),
-            CheckResult(name="b", status=WARN, summary="warning"),
-        ])
+        report = AuditReport(
+            checks=[
+                CheckResult(name="a", status=PASS, summary="ok"),
+                CheckResult(name="b", status=WARN, summary="warning"),
+            ]
+        )
         assert not report.all_passed
 
     def test_all_passed_false_with_fail(self) -> None:
-        report = AuditReport(checks=[
-            CheckResult(name="a", status=FAIL, summary="bad"),
-        ])
+        report = AuditReport(
+            checks=[
+                CheckResult(name="a", status=FAIL, summary="bad"),
+            ]
+        )
         assert not report.all_passed
 
     def test_empty_report_all_passed(self) -> None:
@@ -113,26 +128,33 @@ class TestAuditReport:
         assert report.all_passed  # vacuously true
 
     def test_format_text(self) -> None:
-        report = AuditReport(provider="chatgpt", checks=[
-            CheckResult(name="test", status=PASS, summary="ok"),
-        ])
+        report = AuditReport(
+            provider="chatgpt",
+            checks=[
+                CheckResult(name="test", status=PASS, summary="ok"),
+            ],
+        )
         text = report.format_text()
         assert "chatgpt" in text
         assert "1 pass" in text
 
     def test_format_text_no_provider(self) -> None:
-        report = AuditReport(checks=[
-            CheckResult(name="test", status=PASS, summary="ok"),
-        ])
+        report = AuditReport(
+            checks=[
+                CheckResult(name="test", status=PASS, summary="ok"),
+            ]
+        )
         text = report.format_text()
         # Should not have provider in parens
         assert "Schema Audit:" in text
 
     def test_format_text_includes_checks(self) -> None:
-        report = AuditReport(checks=[
-            CheckResult(name="check1", status=PASS, summary="ok"),
-            CheckResult(name="check2", status=FAIL, summary="bad"),
-        ])
+        report = AuditReport(
+            checks=[
+                CheckResult(name="check1", status=PASS, summary="ok"),
+                CheckResult(name="check2", status=FAIL, summary="bad"),
+            ]
+        )
         text = report.format_text()
         assert "check1" in text
         assert "check2" in text
@@ -140,9 +162,11 @@ class TestAuditReport:
     def test_format_text_limits_details(self) -> None:
         # Format text shows first 5 detail lines per check
         details = [f"detail_{i}" for i in range(10)]
-        report = AuditReport(checks=[
-            CheckResult(name="test", status=FAIL, summary="bad", details=details),
-        ])
+        report = AuditReport(
+            checks=[
+                CheckResult(name="test", status=FAIL, summary="bad", details=details),
+            ]
+        )
         text = report.format_text()
         # Should include first 5
         assert "detail_0" in text
@@ -151,9 +175,12 @@ class TestAuditReport:
         # (we can't guarantee the others aren't shown, but checking limit)
 
     def test_to_json(self) -> None:
-        report = AuditReport(provider="test", checks=[
-            CheckResult(name="a", status=PASS, summary="ok", details=["detail1"]),
-        ])
+        report = AuditReport(
+            provider="test",
+            checks=[
+                CheckResult(name="a", status=PASS, summary="ok", details=["detail1"]),
+            ],
+        )
         data = report.to_json()
         assert data["provider"] == "test"
         assert data["summary"]["passed"] == 1

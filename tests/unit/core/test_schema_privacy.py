@@ -26,107 +26,135 @@ from polylogue.schemas.schema_inference import (
 # _is_safe_enum_value — existing heuristics (regression guard)
 # =============================================================================
 
+
 class TestSafeEnumValueExistingGuards:
     """All existing _is_safe_enum_value filters must still hold."""
 
     # --- Values that MUST pass (structural enum candidates) ---
 
-    @pytest.mark.parametrize("value", [
-        "user",
-        "assistant",
-        "system",
-        "chatgpt",
-        "application/json",
-        "text/plain",
-        "gpt-4",
-        "claude-3-opus",
-        "active",
-        "pending",
-        "disabled",
-    ])
+    @pytest.mark.parametrize(
+        "value",
+        [
+            "user",
+            "assistant",
+            "system",
+            "chatgpt",
+            "application/json",
+            "text/plain",
+            "gpt-4",
+            "claude-3-opus",
+            "active",
+            "pending",
+            "disabled",
+        ],
+    )
     def test_safe_structural_values_pass(self, value: str) -> None:
         assert _is_safe_enum_value(value), f"Expected {value!r} to be safe"
 
     # --- URL rejection ---
 
-    @pytest.mark.parametrize("value", [
-        "https://example.com/path",
-        "http://api.openai.com/v1/chat",
-        "ftp://files.corp.internal/export.zip",
-    ])
+    @pytest.mark.parametrize(
+        "value",
+        [
+            "https://example.com/path",
+            "http://api.openai.com/v1/chat",
+            "ftp://files.corp.internal/export.zip",
+        ],
+    )
     def test_urls_rejected(self, value: str) -> None:
         assert not _is_safe_enum_value(value), f"Expected URL {value!r} to be rejected"
 
     # --- Email rejection ---
 
-    @pytest.mark.parametrize("value", [
-        "user@example.com",
-        "alice@corp.internal",
-    ])
+    @pytest.mark.parametrize(
+        "value",
+        [
+            "user@example.com",
+            "alice@corp.internal",
+        ],
+    )
     def test_emails_rejected(self, value: str) -> None:
         assert not _is_safe_enum_value(value), f"Expected email {value!r} to be rejected"
 
     # --- Natural language / whitespace rejection ---
 
-    @pytest.mark.parametrize("value", [
-        "Hello world",
-        "This is a message",
-        "multi\nline\ncontent",
-    ])
+    @pytest.mark.parametrize(
+        "value",
+        [
+            "Hello world",
+            "This is a message",
+            "multi\nline\ncontent",
+        ],
+    )
     def test_sentences_rejected(self, value: str) -> None:
         assert not _is_safe_enum_value(value), f"Expected sentence {value!r} to be rejected"
 
     # --- Capitalized words now PASS (CamelCase check removed) ---
 
-    @pytest.mark.parametrize("value", [
-        "Reasoning",
-        "Thinking",
-        "GitHub",
-        "None",
-        "Alice",  # single word — no longer blocked (whitespace check handles multi-word names)
-    ])
+    @pytest.mark.parametrize(
+        "value",
+        [
+            "Reasoning",
+            "Thinking",
+            "GitHub",
+            "None",
+            "Alice",  # single word — no longer blocked (whitespace check handles multi-word names)
+        ],
+    )
     def test_capitalized_words_pass(self, value: str) -> None:
         assert _is_safe_enum_value(value), f"Expected {value!r} to pass (CamelCase check removed)"
 
     # --- Public domain / TLD rejection ---
 
-    @pytest.mark.parametrize("value", [
-        "openai.com",
-        "api.anthropic.com",
-        "storage.googleapis.com",
-        "cdn.example.net",
-    ])
+    @pytest.mark.parametrize(
+        "value",
+        [
+            "openai.com",
+            "api.anthropic.com",
+            "storage.googleapis.com",
+            "cdn.example.net",
+        ],
+    )
     def test_public_domains_rejected(self, value: str) -> None:
         assert not _is_safe_enum_value(value), f"Expected domain {value!r} to be rejected"
 
     # --- File extension rejection ---
 
-    @pytest.mark.parametrize("value", [
-        "document.pdf",
-        "archive.zip",
-        "data.json",
-        "script.py",
-        "export.csv",
-    ])
+    @pytest.mark.parametrize(
+        "value",
+        [
+            "document.pdf",
+            "archive.zip",
+            "data.json",
+            "script.py",
+            "export.csv",
+        ],
+    )
     def test_file_extensions_rejected(self, value: str) -> None:
         assert not _is_safe_enum_value(value), f"Expected filename {value!r} to be rejected"
 
     # --- Timestamp rejection ---
 
-    @pytest.mark.parametrize("value", [
-        "2024-01-15T10:30:00Z",
-        "2024-01-15",
-    ])
+    @pytest.mark.parametrize(
+        "value",
+        [
+            "2024-01-15T10:30:00Z",
+            "2024-01-15",
+        ],
+    )
     def test_timestamps_rejected(self, value: str) -> None:
         assert not _is_safe_enum_value(value), f"Expected timestamp {value!r} to be rejected"
 
     # --- High-entropy token rejection ---
 
-    @pytest.mark.parametrize("value", [
-        "sk-abc123XYZ789def456",
-        "Bearer eyJhbGciOiJSUzI1NiJ9",
-        "dQw4w9WgXcQ",  # YouTube video ID (11 chars, now caught with lowered threshold)
-    ])
+    @pytest.mark.parametrize(
+        "value",
+        [
+            "sk-abc123XYZ789def456",
+            "Bearer eyJhbGciOiJSUzI1NiJ9",
+            "dQw4w9WgXcQ",  # YouTube video ID (11 chars, now caught with lowered threshold)
+        ],
+    )
     def test_high_entropy_tokens_rejected(self, value: str) -> None:
         # These are opaque tokens — reject even without explicit URL indicators
         assert not _is_safe_enum_value(value), f"Expected token {value!r} to be rejected"
@@ -140,12 +168,15 @@ class TestSafeEnumValueExistingGuards:
 
     # --- Model slug exemption (dash-separated structural tokens) ---
 
-    @pytest.mark.parametrize("value", [
-        "gpt-4-code-interpreter",
-        "claude-haiku-4-5-20251001",
-        "gemini-2-5-pro",
-        "gpt-4o-mini",
-    ])
+    @pytest.mark.parametrize(
+        "value",
+        [
+            "gpt-4-code-interpreter",
+            "claude-haiku-4-5-20251001",
+            "gemini-2-5-pro",
+            "gpt-4o-mini",
+        ],
+    )
     def test_model_slugs_pass(self, value: str) -> None:
         """Model slugs with 2+ dashes and short segments should pass high-entropy check."""
         assert _is_safe_enum_value(value), f"Expected model slug {value!r} to pass"
@@ -168,6 +199,7 @@ class TestSafeEnumValueExistingGuards:
 # =============================================================================
 # Guard 1: Cross-conversation threshold
 # =============================================================================
+
 
 class TestCrossConversationThreshold:
     """Values seen in fewer than N conversations are suppressed from schema enums."""
@@ -241,21 +273,37 @@ class TestCrossConversationThreshold:
 # Guard 2: Key denylist (expanded)
 # =============================================================================
 
+
 class TestKeyDenylist:
     """Fields in _CONTENT_FIELD_NAMES never yield enum annotations."""
 
-    @pytest.mark.parametrize("field_name", [
-        # Original denylist
-        "text", "prompt", "summary", "query",
-        # Newly added
-        "body", "message", "input", "output",
-    ])
+    @pytest.mark.parametrize(
+        "field_name",
+        [
+            # Original denylist
+            "text",
+            "prompt",
+            "summary",
+            "query",
+            # Newly added
+            "body",
+            "message",
+            "input",
+            "output",
+        ],
+    )
     def test_content_field_is_detected(self, field_name: str) -> None:
         assert _is_content_field(f"$.{field_name}"), f"$.{field_name} should be a content field"
 
-    @pytest.mark.parametrize("field_name", [
-        "body", "message", "input", "output",
-    ])
+    @pytest.mark.parametrize(
+        "field_name",
+        [
+            "body",
+            "message",
+            "input",
+            "output",
+        ],
+    )
     def test_new_denylist_fields_suppress_enums(self, field_name: str) -> None:
         """New denylist fields produce no x-polylogue-values even with repeated values."""
         samples = [{field_name: "active"} for _ in range(20)]
@@ -263,9 +311,7 @@ class TestKeyDenylist:
         schema = {"type": "object", "properties": {field_name: {"type": "string"}}}
         annotated = _annotate_schema(schema, stats)
         field_schema = annotated["properties"][field_name]
-        assert "x-polylogue-values" not in field_schema, (
-            f"Field '{field_name}' should suppress enum extraction"
-        )
+        assert "x-polylogue-values" not in field_schema, f"Field '{field_name}' should suppress enum extraction"
 
     def test_non_denylist_field_gets_enums(self) -> None:
         """A field not in the denylist does produce x-polylogue-values when repeated."""
@@ -280,28 +326,33 @@ class TestKeyDenylist:
 # Guard 3: Private TLD denylist
 # =============================================================================
 
+
 class TestPrivateTLDDenylist:
     """Internal network hostnames are rejected by _is_safe_enum_value."""
 
-    @pytest.mark.parametrize("hostname", [
-        "myhost.local",
-        "printer.lan",
-        "intranet.corp",
-        "api.internal",
-        "router.home",
-        "nas.local",
-        "dev-server.corp",
-    ])
+    @pytest.mark.parametrize(
+        "hostname",
+        [
+            "myhost.local",
+            "printer.lan",
+            "intranet.corp",
+            "api.internal",
+            "router.home",
+            "nas.local",
+            "dev-server.corp",
+        ],
+    )
     def test_private_tld_hostnames_rejected(self, hostname: str) -> None:
-        assert not _is_safe_enum_value(hostname), (
-            f"Internal hostname {hostname!r} should be rejected"
-        )
+        assert not _is_safe_enum_value(hostname), f"Internal hostname {hostname!r} should be rejected"
 
-    @pytest.mark.parametrize("hostname", [
-        # Should still be rejected by the existing public TLD filter
-        "example.com",
-        "api.openai.com",
-    ])
+    @pytest.mark.parametrize(
+        "hostname",
+        [
+            # Should still be rejected by the existing public TLD filter
+            "example.com",
+            "api.openai.com",
+        ],
+    )
     def test_public_tld_hostnames_still_rejected(self, hostname: str) -> None:
         assert not _is_safe_enum_value(hostname)
 
@@ -315,25 +366,32 @@ class TestPrivateTLDDenylist:
 # Guard 4: Structural constants in identifier fields
 # =============================================================================
 
+
 class TestStructuralConstantsInIdentifierFields:
     """Identifier-named fields allow structural constants (lowercase tokens)."""
 
-    @pytest.mark.parametrize("value", [
-        "chatgpt_agent",
-        "deep_research",
-        "text_completion",
-        "auto",
-    ])
+    @pytest.mark.parametrize(
+        "value",
+        [
+            "chatgpt_agent",
+            "deep_research",
+            "text_completion",
+            "auto",
+        ],
+    )
     def test_structural_constants_pass_identifier_fields(self, value: str) -> None:
         """Lowercase underscore-separated tokens pass even in identifier fields."""
         assert _is_safe_enum_value(value, path="$.notification_channel_id"), (
             f"Structural constant {value!r} should pass in identifier field"
         )
 
-    @pytest.mark.parametrize("value", [
-        "abc123DEF456ghi789",
-        "A1b2C3d4E5f6G7h8I9j0",
-    ])
+    @pytest.mark.parametrize(
+        "value",
+        [
+            "abc123DEF456ghi789",
+            "A1b2C3d4E5f6G7h8I9j0",
+        ],
+    )
     def test_random_ids_still_blocked_in_identifier_fields(self, value: str) -> None:
         """Random-looking values are still blocked in identifier fields."""
         assert not _is_safe_enum_value(value, path="$.user_id"), (
@@ -346,7 +404,6 @@ class TestStructuralConstantsInIdentifierFields:
             "550e8400-e29b-41d4-a716-446655440000",
             path="$.message_id",
         )
-
 
     def test_partial_tld_match_not_rejected(self) -> None:
         """Words containing TLD substrings without a preceding dot are not rejected."""
@@ -362,6 +419,7 @@ class TestStructuralConstantsInIdentifierFields:
 # Guard 5: Property test — safe values never resemble PII (Phase 9)
 # =============================================================================
 
+
 class TestSafeValueNeverResemblesPII:
     """Property: if _is_safe_enum_value(v) returns True, v must not look like PII."""
 
@@ -375,19 +433,37 @@ class TestSafeValueNeverResemblesPII:
     def test_urls_always_rejected(self, url: str) -> None:
         assert not _is_safe_enum_value(url), f"URL {url!r} should be rejected"
 
-    @pytest.mark.parametrize("word", [
-        "function", "class", "import", "model",
-        "user", "assistant", "system", "tool",
-        "active", "pending", "disabled", "completed",
-        "text", "json", "html", "markdown",
-    ])
+    @pytest.mark.parametrize(
+        "word",
+        [
+            "function",
+            "class",
+            "import",
+            "model",
+            "user",
+            "assistant",
+            "system",
+            "tool",
+            "active",
+            "pending",
+            "disabled",
+            "completed",
+            "text",
+            "json",
+            "html",
+            "markdown",
+        ],
+    )
     def test_technical_vocabulary_always_passes(self, word: str) -> None:
         assert _is_safe_enum_value(word), f"Technical word {word!r} should pass"
 
-    @given(st.text(
-        alphabet=st.characters(whitelist_categories=("L", "N", "P")),
-        min_size=1, max_size=50,
-    ).filter(lambda s: s.isascii() and " " not in s and "\n" not in s))
+    @given(
+        st.text(
+            alphabet=st.characters(whitelist_categories=("L", "N", "P")),
+            min_size=1,
+            max_size=50,
+        ).filter(lambda s: s.isascii() and " " not in s and "\n" not in s)
+    )
     @settings(max_examples=100)
     def test_accepted_values_have_no_pii_markers(self, value: str) -> None:
         """If a value passes _is_safe_enum_value, it should not contain PII markers."""

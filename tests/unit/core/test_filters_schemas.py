@@ -47,7 +47,12 @@ CONTENT_BLOCKS_CASES = [
     (["string", 123, None], 0, [], "non_dict_items"),
     ([{"type": "text", "text": "Hello"}], 1, ["text"], "text_block"),
     ([{"type": "thinking", "thinking": "Thought"}], 1, ["thinking"], "thinking_block"),
-    ([{"type": "tool_use", "name": "bash", "id": "tool1", "input": {"command": "ls"}}], 1, ["tool_use"], "tool_use_block"),
+    (
+        [{"type": "tool_use", "name": "bash", "id": "tool1", "input": {"command": "ls"}}],
+        1,
+        ["tool_use"],
+        "tool_use_block",
+    ),
     ([{"type": "tool_result", "content": "result data"}], 1, ["tool_result"], "tool_result_block"),
     ([{"type": "tool_result"}], 1, ["tool_result"], "tool_result_no_content"),
     ([{"type": "code", "text": "print('hello')", "language": "python"}], 1, ["code"], "code_block_text"),
@@ -89,6 +94,7 @@ TOKEN_USAGE_CASES = [
 class TestUnifiedMissingRole:
     def test_missing_role_raises_error(self):
         from polylogue.schemas.unified import _missing_role
+
         with pytest.raises(ValueError, match="Message has no role"):
             _missing_role()
 
@@ -137,8 +143,11 @@ class TestUnifiedExtractHarmonizedMessage:
     @pytest.mark.parametrize("provider,msg_key,description", HARMONIZED_MESSAGE_PROVIDER_CASES)
     def test_extract_harmonized_message_by_provider(self, provider, msg_key, description):
         if provider == "claude-code":
-            raw = {"uuid": "msg1", "timestamp": "2024-01-01T00:00:00Z",
-                   "message": {"role": "user", "content": [{"type": "text", "text": "Hello"}], "model": "claude-ai"}}
+            raw = {
+                "uuid": "msg1",
+                "timestamp": "2024-01-01T00:00:00Z",
+                "message": {"role": "user", "content": [{"type": "text", "text": "Hello"}], "model": "claude-ai"},
+            }
         elif provider == "claude-ai":
             raw = {"uuid": "msg1", "sender": "user", "text": "Hello", "created_at": "2024-01-01T00:00:00Z"}
         elif provider == "chatgpt":
@@ -168,6 +177,7 @@ class TestUnifiedBulkHarmonize:
     def test_bulk_harmonize_no_provider_meta(self):
         class MockParsedMessage:
             pass
+
         result = bulk_harmonize("claude-ai", [MockParsedMessage()])
         assert result == []
 
@@ -175,9 +185,18 @@ class TestUnifiedBulkHarmonize:
         class MockParsedMessage:
             def __init__(self, meta=None):
                 self.provider_meta = meta
+
         messages = [
             MockParsedMessage({"raw": {"type": "metadata"}}),
-            MockParsedMessage({"raw": {"type": "user", "uuid": "1", "message": {"role": "user", "content": [{"type": "text", "text": "Hi"}]}}}),
+            MockParsedMessage(
+                {
+                    "raw": {
+                        "type": "user",
+                        "uuid": "1",
+                        "message": {"role": "user", "content": [{"type": "text", "text": "Hi"}]},
+                    }
+                }
+            ),
         ]
         result = bulk_harmonize("claude-code", messages)
         assert len(result) == 1
@@ -223,19 +242,31 @@ class TestValidatorDetectDrift:
         assert not result.has_drift
 
     def test_validate_additional_properties_schema(self):
-        schema = {"type": "object", "properties": {"name": {"type": "string"}}, "additionalProperties": {"type": "string"}}
+        schema = {
+            "type": "object",
+            "properties": {"name": {"type": "string"}},
+            "additionalProperties": {"type": "string"},
+        }
         validator = SchemaValidator(schema, strict=True)
         validator.validate({"name": "test", "extra": "value"})
 
     def test_validate_nested_object_drift(self):
-        schema = {"type": "object", "properties": {"user": {"type": "object", "properties": {"name": {"type": "string"}}}}}
+        schema = {
+            "type": "object",
+            "properties": {"user": {"type": "object", "properties": {"name": {"type": "string"}}}},
+        }
         validator = SchemaValidator(schema, strict=True)
         data = {"user": {"name": "test", "extra": "field"}}
         result = validator.validate(data)
         assert isinstance(result, ValidationResult)
 
     def test_validate_list_items_drift(self):
-        schema = {"type": "object", "properties": {"items": {"type": "array", "items": {"type": "object", "properties": {"id": {"type": "integer"}}}}}}
+        schema = {
+            "type": "object",
+            "properties": {
+                "items": {"type": "array", "items": {"type": "object", "properties": {"id": {"type": "integer"}}}}
+            },
+        }
         validator = SchemaValidator(schema, strict=True)
         data = {"items": [{"id": 1, "extra": "field"}]}
         result = validator.validate(data)
@@ -244,7 +275,11 @@ class TestValidatorDetectDrift:
 
 class TestValidatorFormatError:
     def test_validate_multiple_errors(self):
-        schema = {"type": "object", "required": ["name"], "properties": {"name": {"type": "string"}, "age": {"type": "integer"}}}
+        schema = {
+            "type": "object",
+            "required": ["name"],
+            "properties": {"name": {"type": "string"}, "age": {"type": "integer"}},
+        }
         validator = SchemaValidator(schema, strict=False)
         result = validator.validate({"age": "not an integer"})
         assert len(result.errors) >= 1

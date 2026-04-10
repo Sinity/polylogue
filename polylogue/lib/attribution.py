@@ -20,12 +20,31 @@ if TYPE_CHECKING:
     from polylogue.lib.models import Conversation
 
 _LANGUAGE_EXTENSIONS = {
-    ".py": "python", ".rs": "rust", ".ts": "typescript", ".tsx": "typescript",
-    ".js": "javascript", ".jsx": "javascript", ".go": "go", ".nix": "nix",
-    ".java": "java", ".rb": "ruby", ".sh": "bash", ".zsh": "zsh",
-    ".c": "c", ".cpp": "cpp", ".h": "c", ".hpp": "cpp",
-    ".sql": "sql", ".r": "r", ".R": "r", ".toml": "toml", ".yaml": "yaml",
-    ".json": "json", ".md": "markdown", ".html": "html", ".css": "css",
+    ".py": "python",
+    ".rs": "rust",
+    ".ts": "typescript",
+    ".tsx": "typescript",
+    ".js": "javascript",
+    ".jsx": "javascript",
+    ".go": "go",
+    ".nix": "nix",
+    ".java": "java",
+    ".rb": "ruby",
+    ".sh": "bash",
+    ".zsh": "zsh",
+    ".c": "c",
+    ".cpp": "cpp",
+    ".h": "c",
+    ".hpp": "cpp",
+    ".sql": "sql",
+    ".r": "r",
+    ".R": "r",
+    ".toml": "toml",
+    ".yaml": "yaml",
+    ".json": "json",
+    ".md": "markdown",
+    ".html": "html",
+    ".css": "css",
 }
 
 
@@ -153,7 +172,7 @@ def extract_attribution(
     languages = set(base.languages_detected)
 
     # Scan dialogue text for file paths and language mentions (catches pure-conversation sessions)
-    realm_path_pattern = re.compile(r'/realm/project/[^\s,;:)\]]+')
+    realm_path_pattern = re.compile(r"/realm/project/[^\s,;:)\]]+")
     language_names = {"python", "rust", "typescript", "javascript", "nix", "go", "java", "ruby", "sql", "r"}
     for message in semantic_facts.message_facts:
         if not message.is_dialogue or not message.text:

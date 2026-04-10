@@ -52,8 +52,7 @@ class PlainProgressObserver(RunObserver):
             if self.last_stage:
                 prev_elapsed = now - self.stage_start
                 print(
-                    f"  {self.last_stage}: done ({self.stage_processed - amount:,}"
-                    f" in {_format_elapsed(prev_elapsed)})",
+                    f"  {self.last_stage}: done ({self.stage_processed - amount:,} in {_format_elapsed(prev_elapsed)})",
                     flush=True,
                 )
             self.last_stage = current_stage

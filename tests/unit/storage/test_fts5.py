@@ -44,7 +44,9 @@ async def test_search_respects_limit(workspace_env, storage_repository):
     for i in range(10):
         conv = make_conversation(f"conv{i}", title=f"Conv {i}")
         msg = make_message(f"msg{i}", f"conv{i}", text="search limit")
-        await save_bundle(RecordBundle(conversation=conv, messages=[msg], attachments=[]), repository=storage_repository)
+        await save_bundle(
+            RecordBundle(conversation=conv, messages=[msg], attachments=[]), repository=storage_repository
+        )
 
     rebuild_index()
 
@@ -150,7 +152,6 @@ async def test_search_with_special_text(workspace_env, storage_repository, text,
 # ============================================================================
 # Tests for edge cases and error handling
 # ============================================================================
-
 
 
 def test_rebuild_index_with_empty_database(test_conn):
@@ -464,8 +465,12 @@ async def test_batch_index_search_returns_correct_provider(workspace_env, storag
     messages1 = [make_message(f"msg1-{i}", "conv1", text=f"claude text {i}") for i in range(5)]
     messages2 = [make_message(f"msg2-{i}", "conv2", text=f"chatgpt text {i}") for i in range(5)]
 
-    await save_bundle(RecordBundle(conversation=conv1, messages=messages1, attachments=[]), repository=storage_repository)
-    await save_bundle(RecordBundle(conversation=conv2, messages=messages2, attachments=[]), repository=storage_repository)
+    await save_bundle(
+        RecordBundle(conversation=conv1, messages=messages1, attachments=[]), repository=storage_repository
+    )
+    await save_bundle(
+        RecordBundle(conversation=conv2, messages=messages2, attachments=[]), repository=storage_repository
+    )
 
     rebuild_index()
 
@@ -479,19 +484,21 @@ async def test_batch_index_search_returns_correct_provider(workspace_env, storag
     assert len(results2.hits) == 1
 
 
-
 # ============================================================================
 # SEARCH INTEGRATION - PARAMETRIZED
 # ============================================================================
 
 
-@pytest.mark.parametrize("query,should_find", [
-    ("test", True),  # Basic search
-    ("nonexistent", False),  # No match
-    ("*", False),  # Bare asterisk escaped
-    ("AND", False),  # Operator as literal
-    ("quoted", True),  # Part of text with quotes
-])
+@pytest.mark.parametrize(
+    "query,should_find",
+    [
+        ("test", True),  # Basic search
+        ("nonexistent", False),  # No match
+        ("*", False),  # Bare asterisk escaped
+        ("AND", False),  # Operator as literal
+        ("quoted", True),  # Part of text with quotes
+    ],
+)
 def test_search_messages_known_cases(query, should_find, tmp_path):
     """Integration test for known search cases with specific assertions."""
     # Setup database with test data
@@ -499,10 +506,12 @@ def test_search_messages_known_cases(query, should_find, tmp_path):
     DbFactory(db_path)
 
     # Insert test conversation using builder
-    (ConversationBuilder(db_path, "test1")
-     .title("Test Conversation")
-     .add_message("msg1", role="user", text='This is a test message with "quoted text" inside.')
-     .save())
+    (
+        ConversationBuilder(db_path, "test1")
+        .title("Test Conversation")
+        .add_message("msg1", role="user", text='This is a test message with "quoted text" inside.')
+        .save()
+    )
 
     # Build search index
     with open_connection(str(db_path)) as conn:
@@ -538,10 +547,12 @@ def test_search_messages_escaping_never_crashes(query, tmp_path):
     DbFactory(db_path)
 
     # Insert test conversation using builder
-    (ConversationBuilder(db_path, "test1")
-     .title("Test Conversation")
-     .add_message("msg1", role="user", text='This is a test message with "quoted text" inside.')
-     .save())
+    (
+        ConversationBuilder(db_path, "test1")
+        .title("Test Conversation")
+        .add_message("msg1", role="user", text='This is a test message with "quoted text" inside.')
+        .save()
+    )
 
     # Build search index
     with open_connection(str(db_path)) as conn:
@@ -566,13 +577,16 @@ def test_search_messages_escaping_never_crashes(query, tmp_path):
 # ============================================================================
 
 
-@pytest.mark.parametrize("special_query,should_quote", [
-    ("test OR anything", False),  # "OR" in middle - passes through unquoted
-    ("NOT this", True),  # "NOT" at start - should be quoted
-    ("NEAR that", True),  # "NEAR" at start - should be quoted
-    ("' OR '1'='1", True),  # Single quotes and = are FTS5-problematic, should be quoted
-    ("test; DROP TABLE messages--", True),  # Contains special chars (semicolon, etc.), should be quoted
-])
+@pytest.mark.parametrize(
+    "special_query,should_quote",
+    [
+        ("test OR anything", False),  # "OR" in middle - passes through unquoted
+        ("NOT this", True),  # "NOT" at start - should be quoted
+        ("NEAR that", True),  # "NEAR" at start - should be quoted
+        ("' OR '1'='1", True),  # Single quotes and = are FTS5-problematic, should be quoted
+        ("test; DROP TABLE messages--", True),  # Contains special chars (semicolon, etc.), should be quoted
+    ],
+)
 def test_escape_fts5_injection_prevention(special_query, should_quote):
     """Prevent dangerous operator positions and special characters.
 
@@ -595,12 +609,15 @@ def test_escape_fts5_injection_prevention(special_query, should_quote):
 # ============================================================================
 
 
-@pytest.mark.parametrize("unicode_query", [
-    "文字",  # Chinese
-    "тест",  # Cyrillic
-    "🔍",   # Emoji
-    "café",  # Accented
-])
+@pytest.mark.parametrize(
+    "unicode_query",
+    [
+        "文字",  # Chinese
+        "тест",  # Cyrillic
+        "🔍",  # Emoji
+        "café",  # Accented
+    ],
+)
 def test_escape_fts5_unicode(unicode_query):
     """Unicode queries are handled correctly.
 
@@ -624,10 +641,12 @@ def test_search_messages_returns_valid_structure(tmp_path):
     DbFactory(db_path)
 
     # Insert test conversation using builder
-    (ConversationBuilder(db_path, "test1")
-     .title("Test")
-     .add_message("msg1", role="user", text="Searchable content")
-     .save())
+    (
+        ConversationBuilder(db_path, "test1")
+        .title("Test")
+        .add_message("msg1", role="user", text="Searchable content")
+        .save()
+    )
 
     # Build search index
     with open_connection(str(db_path)) as conn:
@@ -644,8 +663,8 @@ def test_search_messages_returns_valid_structure(tmp_path):
     assert len(results.hits) > 0
     for hit in results.hits:
         # Verify result structure
-        assert hasattr(hit, 'snippet')
-        assert hasattr(hit, 'conversation_id')
+        assert hasattr(hit, "snippet")
+        assert hasattr(hit, "conversation_id")
         assert hit.snippet is not None
         assert len(hit.snippet) > 0
 
@@ -672,7 +691,9 @@ class TestCreateVectorProvider:
             with patch("polylogue.storage.search_providers.logger"):
                 # Force ImportError
                 import builtins
+
                 original_import = builtins.__import__
+
                 def mock_import(name, *args, **kwargs):
                     if name == "sqlite_vec":
                         raise ImportError("No module named 'sqlite_vec'")
@@ -742,10 +763,23 @@ class TestFTS5Provider:
     @pytest.fixture
     async def populated_fts(self, workspace_env, storage_repository, fts_provider):
         """FTS provider with indexed test data."""
-        conv = make_conversation("fts-conv-1", provider_name="claude-ai", title="FTS Test", created_at="1000", updated_at="1000", provider_meta={"source": "inbox"})
+        conv = make_conversation(
+            "fts-conv-1",
+            provider_name="claude-ai",
+            title="FTS Test",
+            created_at="1000",
+            updated_at="1000",
+            provider_meta={"source": "inbox"},
+        )
         msgs = [
             make_message("fts-msg-1", "fts-conv-1", text="How do I implement quicksort in Python?", timestamp="1000"),
-            make_message("fts-msg-2", "fts-conv-1", role="assistant", text="Quicksort is a divide-and-conquer algorithm for sorting", timestamp="1001"),
+            make_message(
+                "fts-msg-2",
+                "fts-conv-1",
+                role="assistant",
+                text="Quicksort is a divide-and-conquer algorithm for sorting",
+                timestamp="1001",
+            ),
         ]
         await storage_repository.save_conversation(conversation=conv, messages=msgs, attachments=[])
 
@@ -768,7 +802,9 @@ class TestFTS5Provider:
             pass
 
         # Index with actual message to ensure table creation
-        conv = make_conversation("ensure-conv", title="Ensure Test", created_at="1000", updated_at="1000", provider_meta={"source": "inbox"})
+        conv = make_conversation(
+            "ensure-conv", title="Ensure Test", created_at="1000", updated_at="1000", provider_meta={"source": "inbox"}
+        )
         # First save the conversation so provider_name lookup works
         backend = SQLiteBackend(db_path=db_path)
         await backend.begin()
@@ -786,7 +822,13 @@ class TestFTS5Provider:
 
     async def test_ensure_index_idempotent(self, workspace_env, fts_provider, storage_repository):
         """Calling index multiple times is safe (idempotent)."""
-        conv = make_conversation("idem-conv", title="Idempotent Test", created_at="1000", updated_at="1000", provider_meta={"source": "inbox"})
+        conv = make_conversation(
+            "idem-conv",
+            title="Idempotent Test",
+            created_at="1000",
+            updated_at="1000",
+            provider_meta={"source": "inbox"},
+        )
         msgs = [make_message("idem-msg", "idem-conv", text="Idempotent message", timestamp="1000")]
         await storage_repository.save_conversation(conversation=conv, messages=msgs, attachments=[])
 
@@ -801,7 +843,13 @@ class TestFTS5Provider:
 
     async def test_index_deletes_old_entries(self, workspace_env, fts_provider, storage_repository):
         """Incremental indexing removes old entries before inserting."""
-        conv = make_conversation("incr-conv", title="Incremental Test", created_at="1000", updated_at="1000", provider_meta={"source": "inbox"})
+        conv = make_conversation(
+            "incr-conv",
+            title="Incremental Test",
+            created_at="1000",
+            updated_at="1000",
+            provider_meta={"source": "inbox"},
+        )
         msgs_v1 = [make_message("incr-msg-1", "incr-conv", text="Original content about apples", timestamp="1000")]
         await storage_repository.save_conversation(conversation=conv, messages=msgs_v1, attachments=[])
         fts_provider.index(msgs_v1)
@@ -824,7 +872,9 @@ class TestFTS5Provider:
 
     async def test_index_skips_empty_text(self, workspace_env, fts_provider, storage_repository):
         """Messages with empty text are not indexed."""
-        conv = make_conversation("skip-conv", title="Skip Test", created_at="1000", updated_at="1000", provider_meta={"source": "inbox"})
+        conv = make_conversation(
+            "skip-conv", title="Skip Test", created_at="1000", updated_at="1000", provider_meta={"source": "inbox"}
+        )
         msgs = [
             make_message("skip-msg-1", "skip-conv", text="", timestamp="1000"),  # Empty text
             make_message("skip-msg-2", "skip-conv", role="assistant", text="This has content", timestamp="1001"),
@@ -1008,8 +1058,12 @@ SEARCH_SINCE_VALID_CASES = [
 ]
 
 
-@pytest.mark.parametrize("conv_id,old_ts,new_ts,search_term,since_date,expected_msg_id,description", SEARCH_SINCE_VALID_CASES)
-async def test_search_since_filters(workspace_env, storage_repository, conv_id, old_ts, new_ts, search_term, since_date, expected_msg_id, description):
+@pytest.mark.parametrize(
+    "conv_id,old_ts,new_ts,search_term,since_date,expected_msg_id,description", SEARCH_SINCE_VALID_CASES
+)
+async def test_search_since_filters(
+    workspace_env, storage_repository, conv_id, old_ts, new_ts, search_term, since_date, expected_msg_id, description
+):
     """--since filters messages by timestamp (ISO and numeric formats)."""
     archive_root = workspace_env["archive_root"]
     bundle = RecordBundle(
@@ -1169,13 +1223,15 @@ def test_escape_fts5_match_text_safe(text: str) -> None:
 class TestSearchWithSinceLaws:
     """Property: search with --since returns subset of search without --since."""
 
-    @given(pair=st.one_of(
-        # Import inline to avoid circular issues at module level
-        st.tuples(
-            st.text(min_size=2, max_size=20, alphabet=st.characters(whitelist_categories=("L",))),
-            st.one_of(st.none(), st.dates().map(lambda d: d.isoformat())),
-        ),
-    ))
+    @given(
+        pair=st.one_of(
+            # Import inline to avoid circular issues at module level
+            st.tuples(
+                st.text(min_size=2, max_size=20, alphabet=st.characters(whitelist_categories=("L",))),
+                st.one_of(st.none(), st.dates().map(lambda d: d.isoformat())),
+            ),
+        )
+    )
     @settings(max_examples=20, deadline=None, suppress_health_check=[HealthCheck.function_scoped_fixture])
     def test_since_filter_is_monotonic(self, pair, tmp_path):
         """Results with --since must be subset of results without --since.
@@ -1190,18 +1246,27 @@ class TestSearchWithSinceLaws:
 
         # Seed conversations with spread timestamps
         for i in range(3):
-            (ConversationBuilder(db_path, f"since-conv-{i}")
-             .title(f"Since Test {i}")
-             .add_message(f"msg-{i}", role="user", text=f"{query_text} message {i}",
-                          timestamp=f"2024-{(i % 12) + 1:02d}-15T12:00:00Z")
-             .save())
+            (
+                ConversationBuilder(db_path, f"since-conv-{i}")
+                .title(f"Since Test {i}")
+                .add_message(
+                    f"msg-{i}",
+                    role="user",
+                    text=f"{query_text} message {i}",
+                    timestamp=f"2024-{(i % 12) + 1:02d}-15T12:00:00Z",
+                )
+                .save()
+            )
 
         with open_connection(str(db_path)) as conn:
             rebuild_index(conn)
 
         try:
             results_all = search_messages(
-                query_text, archive_root=tmp_path, db_path=Path(str(db_path)), limit=100,
+                query_text,
+                archive_root=tmp_path,
+                db_path=Path(str(db_path)),
+                limit=100,
             )
         except (DatabaseError, ValueError):
             return  # Invalid query, skip
@@ -1211,8 +1276,11 @@ class TestSearchWithSinceLaws:
 
         try:
             results_since = search_messages(
-                query_text, archive_root=tmp_path, db_path=Path(str(db_path)),
-                since=since, limit=100,
+                query_text,
+                archive_root=tmp_path,
+                db_path=Path(str(db_path)),
+                since=since,
+                limit=100,
             )
         except (DatabaseError, ValueError):
             return  # Invalid since date, skip
@@ -1220,6 +1288,4 @@ class TestSearchWithSinceLaws:
         # Monotonicity: since-filtered results must be subset of unfiltered
         all_ids = {h.message_id for h in results_all.hits}
         since_ids = {h.message_id for h in results_since.hits}
-        assert since_ids <= all_ids, (
-            f"since-filtered IDs {since_ids - all_ids} not in unfiltered results"
-        )
+        assert since_ids <= all_ids, f"since-filtered IDs {since_ids - all_ids} not in unfiltered results"

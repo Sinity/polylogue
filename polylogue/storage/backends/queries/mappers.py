@@ -22,9 +22,7 @@ def _parse_json(raw: str | None, *, field: str = "", record_id: str = "") -> Any
     try:
         return json.loads(raw)
     except json.JSONDecodeError as exc:
-        raise DatabaseError(
-            f"Corrupt JSON in {field} for {record_id}: {exc} (value starts: {raw[:80]!r})"
-        ) from exc
+        raise DatabaseError(f"Corrupt JSON in {field} for {record_id}: {exc} (value starts: {raw[:80]!r})") from exc
 
 
 def _row_get(row: sqlite3.Row, key: str, default: Any = None) -> Any:

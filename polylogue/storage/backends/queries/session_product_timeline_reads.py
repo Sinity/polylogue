@@ -73,10 +73,7 @@ async def list_work_events(
         """
         where = ["session_work_events_fts MATCH ?"]
         params.append(query)
-        order_by = (
-            "ORDER BY bm25(session_work_events_fts), "
-            "COALESCE(swe.source_sort_key, 0) DESC, swe.event_index"
-        )
+        order_by = "ORDER BY bm25(session_work_events_fts), COALESCE(swe.source_sort_key, 0) DESC, swe.event_index"
     else:
         from_clause = "FROM session_work_events swe"
         where = []
@@ -92,14 +89,10 @@ async def list_work_events(
         where.append("swe.kind = ?")
         params.append(kind)
     if since:
-        where.append(
-            "COALESCE(swe.end_time, swe.start_time, swe.source_updated_at, swe.materialized_at) >= ?"
-        )
+        where.append("COALESCE(swe.end_time, swe.start_time, swe.source_updated_at, swe.materialized_at) >= ?")
         params.append(since)
     if until:
-        where.append(
-            "COALESCE(swe.start_time, swe.end_time, swe.source_updated_at, swe.materialized_at) <= ?"
-        )
+        where.append("COALESCE(swe.start_time, swe.end_time, swe.source_updated_at, swe.materialized_at) <= ?")
         params.append(until)
 
     sql = "SELECT swe.* " + from_clause

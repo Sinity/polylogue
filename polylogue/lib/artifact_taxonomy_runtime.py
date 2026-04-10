@@ -32,11 +32,7 @@ def classify_artifact_path(
 
     inner_name = Path(normalized.rsplit(":", 1)[-1]).name.lower()
     if inner_name in path_only_sidecars():
-        kind = (
-            ArtifactKind.BRIDGE_POINTER
-            if inner_name == "bridge-pointer.json"
-            else ArtifactKind.SESSION_INDEX
-        )
+        kind = ArtifactKind.BRIDGE_POINTER if inner_name == "bridge-pointer.json" else ArtifactKind.SESSION_INDEX
         return ArtifactClassification(
             provider=provider_token,
             kind=kind,
@@ -104,11 +100,7 @@ def _classify_list(
 
     if dict_items and looks_like_record_stream(dict_items):
         subagent = is_subagent_path(source_path)
-        kind = (
-            ArtifactKind.SUBAGENT_CONVERSATION_STREAM
-            if subagent
-            else ArtifactKind.CONVERSATION_RECORD_STREAM
-        )
+        kind = ArtifactKind.SUBAGENT_CONVERSATION_STREAM if subagent else ArtifactKind.CONVERSATION_RECORD_STREAM
         return ArtifactClassification(
             provider=provider,
             kind=kind,

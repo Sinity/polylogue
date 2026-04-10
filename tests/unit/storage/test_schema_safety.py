@@ -23,6 +23,7 @@ from polylogue.storage.backends.schema import SCHEMA_DDL, SCHEMA_VERSION
 # Schema DDL parity: sync and async must use the same DDL (f33ef29)
 # =============================================================================
 
+
 class TestSchemaDDLParity:
     """Sync and async backends must share SCHEMA_DDL, not duplicate it.
 
@@ -54,9 +55,7 @@ class TestSchemaDDLParity:
         ]
         ddl_lower = SCHEMA_DDL.lower()
         for table in required_tables:
-            assert f"create table if not exists {table}" in ddl_lower, (
-                f"SCHEMA_DDL missing table: {table}"
-            )
+            assert f"create table if not exists {table}" in ddl_lower, f"SCHEMA_DDL missing table: {table}"
 
     def test_schema_ddl_has_all_required_indexes(self):
         """SCHEMA_DDL must create required indexes."""
@@ -79,9 +78,7 @@ class TestSchemaDDLParity:
         try:
             conn.executescript(SCHEMA_DDL)
             # Verify tables exist
-            cursor = conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
-            )
+            cursor = conn.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
             tables = {row[0] for row in cursor.fetchall()}
             assert "conversations" in tables
             assert "messages" in tables
@@ -107,6 +104,7 @@ class TestSchemaDDLParity:
 # =============================================================================
 # Migration rollback safety (447d765)
 # =============================================================================
+
 
 class TestMigrationRollbackSafety:
     """Migrations must be transactional — failure must leave DB unchanged.
@@ -149,9 +147,7 @@ class TestMigrationRollbackSafety:
             cursor = conn.execute("SELECT COUNT(*) FROM test")
             count = cursor.fetchone()[0]
             # The partial transaction was implicitly committed
-            assert count == 2, (
-                "executescript() should have committed the pending transaction"
-            )
+            assert count == 2, "executescript() should have committed the pending transaction"
         finally:
             conn.close()
 
@@ -189,9 +185,7 @@ class TestMigrationRollbackSafety:
         migrated_path = tmp_path / "migrated.db"
         with open_connection(migrated_path) as conn:
             cursor = conn.execute(
-                "SELECT name, sql FROM sqlite_master "
-                "WHERE type='table' AND name NOT LIKE 'sqlite_%' "
-                "ORDER BY name"
+                "SELECT name, sql FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
             )
             migrated_tables = {row[0]: row[1] for row in cursor.fetchall()}
 
@@ -201,9 +195,7 @@ class TestMigrationRollbackSafety:
         try:
             fresh_conn.executescript(SCHEMA_DDL)
             cursor = fresh_conn.execute(
-                "SELECT name, sql FROM sqlite_master "
-                "WHERE type='table' AND name NOT LIKE 'sqlite_%' "
-                "ORDER BY name"
+                "SELECT name, sql FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
             )
             fresh_tables = {row[0]: row[1] for row in cursor.fetchall()}
         finally:
@@ -215,14 +207,14 @@ class TestMigrationRollbackSafety:
         # message_embeddings_info, _chunks, _rowids, _vector_chunks00, _auxiliary.
         skip_prefixes = ("messages_fts", "message_embeddings")
         migrated_names = {
-            t for t in migrated_tables
-            if not any(t.startswith(p) for p in skip_prefixes)
-            and t not in {"embeddings_meta", "embedding_status"}
+            t
+            for t in migrated_tables
+            if not any(t.startswith(p) for p in skip_prefixes) and t not in {"embeddings_meta", "embedding_status"}
         }
         fresh_names = {
-            t for t in fresh_tables
-            if not any(t.startswith(p) for p in skip_prefixes)
-            and t not in {"embeddings_meta", "embedding_status"}
+            t
+            for t in fresh_tables
+            if not any(t.startswith(p) for p in skip_prefixes) and t not in {"embeddings_meta", "embedding_status"}
         }
 
         assert migrated_names == fresh_names, (
@@ -234,6 +226,7 @@ class TestMigrationRollbackSafety:
 # =============================================================================
 # SQL edge cases: OFFSET without LIMIT (7ebfd71)
 # =============================================================================
+
 
 class TestSQLEdgeCases:
     """SQL edge cases that caused production bugs."""
@@ -327,6 +320,7 @@ class TestSQLEdgeCases:
 # SQL: FTS5 COUNT(*) performance guard (4a77379)
 # =============================================================================
 
+
 class TestFTS5CountGuard:
     """COUNT(*) on FTS5 virtual tables is O(N), not O(1).
 
@@ -360,9 +354,7 @@ class TestFTS5CountGuard:
 
             # Verify FTS table exists and is queryable
             try:
-                cursor = conn.execute(
-                    "SELECT COUNT(*) FROM messages_fts WHERE messages_fts MATCH 'hello'"
-                )
+                cursor = conn.execute("SELECT COUNT(*) FROM messages_fts WHERE messages_fts MATCH 'hello'")
                 fts_count = cursor.fetchone()[0]
                 assert fts_count == 1
             except sqlite3.OperationalError:
@@ -372,6 +364,7 @@ class TestFTS5CountGuard:
 # =============================================================================
 # SQL: Conversation filters with edge case inputs
 # =============================================================================
+
 
 class TestConversationFilterSQL:
     """Test SQL filter generation with adversarial inputs."""
@@ -423,6 +416,7 @@ class TestConversationFilterSQL:
 # =============================================================================
 # SQL: fetch_limit pagination correctness (f6896a9)
 # =============================================================================
+
 
 class TestFetchLimitPagination:
     """fetch_limit must not silently truncate results.
@@ -514,6 +508,7 @@ class TestFetchLimitPagination:
 # SQL: Analytics queries use indexes (avoids full table scans)
 # =============================================================================
 
+
 class TestAnalyticsQueryPlan:
     """Analytics queries must use indexes, not full table scans.
 
@@ -530,9 +525,7 @@ class TestAnalyticsQueryPlan:
             conn.executescript(SCHEMA_DDL)
             # EXPLAIN QUERY PLAN shows the access method
             cursor = conn.execute(
-                "EXPLAIN QUERY PLAN "
-                "SELECT provider_name, COUNT(*) FROM conversations "
-                "GROUP BY provider_name"
+                "EXPLAIN QUERY PLAN SELECT provider_name, COUNT(*) FROM conversations GROUP BY provider_name"
             )
             plan = " ".join(row[3] if len(row) > 3 else str(row) for row in cursor.fetchall())
             # Should scan the covering index, not the table
@@ -549,8 +542,7 @@ class TestAnalyticsQueryPlan:
         try:
             conn.executescript(SCHEMA_DDL)
             cursor = conn.execute(
-                "EXPLAIN QUERY PLAN "
-                "SELECT COUNT(*) FROM messages WHERE conversation_id = ?",
+                "EXPLAIN QUERY PLAN SELECT COUNT(*) FROM messages WHERE conversation_id = ?",
                 ("test-id",),
             )
             plan = " ".join(row[3] if len(row) > 3 else str(row) for row in cursor.fetchall())
@@ -566,13 +558,9 @@ class TestAnalyticsQueryPlan:
         conn = sqlite3.connect(str(db_path))
         try:
             conn.executescript(SCHEMA_DDL)
-            cursor = conn.execute(
-                "EXPLAIN QUERY PLAN SELECT COUNT(*) FROM conversations"
-            )
+            cursor = conn.execute("EXPLAIN QUERY PLAN SELECT COUNT(*) FROM conversations")
             plan = " ".join(row[3] if len(row) > 3 else str(row) for row in cursor.fetchall())
             # Must scan the conversations table, NOT messages_fts
-            assert "messages_fts" not in plan.lower(), (
-                f"COUNT(*) on conversations should not touch FTS: {plan}"
-            )
+            assert "messages_fts" not in plan.lower(), f"COUNT(*) on conversations should not touch FTS: {plan}"
         finally:
             conn.close()

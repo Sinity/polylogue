@@ -15,7 +15,9 @@ from rich.syntax import Syntax
 from rich.text import Text
 
 
-def render_banner(console: Console | object, *, plain: bool, banner_box: object, title: str, subtitle: str | None) -> None:
+def render_banner(
+    console: Console | object, *, plain: bool, banner_box: object, title: str, subtitle: str | None
+) -> None:
     if plain:
         console.print(f"== {title} ==")
         if subtitle:

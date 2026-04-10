@@ -22,10 +22,7 @@ class TestExerciseUniqueness:
 
     def test_all_exercises_have_unique_names(self):
         names = [e.name for e in EXERCISES]
-        assert len(names) == len(set(names)), (
-            f"Duplicate exercise names: "
-            f"{[n for n in names if names.count(n) > 1]}"
-        )
+        assert len(names) == len(set(names)), f"Duplicate exercise names: {[n for n in names if names.count(n) > 1]}"
 
     def test_exercise_names_are_non_empty(self):
         for e in EXERCISES:
@@ -42,9 +39,7 @@ class TestExercisesByGroup:
 
     def test_all_exercises_assigned_to_known_groups(self):
         for e in EXERCISES:
-            assert e.group in GROUPS, (
-                f"Exercise {e.name!r} has unknown group {e.group!r}"
-            )
+            assert e.group in GROUPS, f"Exercise {e.name!r} has unknown group {e.group!r}"
 
     def test_total_count_matches(self):
         by_group = exercises_by_group()
@@ -84,8 +79,7 @@ class TestExercisesByGroup:
         observed = {
             exercise.name: exercise
             for exercise in EXERCISES
-            if exercise.group == "subcommands"
-            and exercise.name.startswith("json-")
+            if exercise.group == "subcommands" and exercise.name.startswith("json-")
         }
         assert set(observed) == expected
         for exercise in observed.values():
@@ -99,9 +93,7 @@ class TestVhsExercises:
     def test_returns_only_capturable(self):
         vhs = vhs_exercises()
         for e in vhs:
-            assert e.vhs_capture is True, (
-                f"Exercise {e.name!r} in vhs_exercises() but vhs_capture=False"
-            )
+            assert e.vhs_capture is True, f"Exercise {e.name!r} in vhs_exercises() but vhs_capture=False"
 
     def test_excludes_non_capturable(self):
         vhs_names = {e.name for e in vhs_exercises()}
@@ -116,8 +108,12 @@ class TestVhsExercises:
     def test_expected_names(self):
         vhs_names = {e.name for e in vhs_exercises()}
         expected = {
-            "help-main", "run-preview", "stats-default",
-            "query-list", "doctor-health", "query-latest-md",
+            "help-main",
+            "run-preview",
+            "stats-default",
+            "query-list",
+            "doctor-health",
+            "query-latest-md",
         }
         assert vhs_names == expected
 
@@ -179,6 +175,4 @@ class TestTierFiltering:
 
     def test_all_tiers_are_valid(self):
         for e in EXERCISES:
-            assert e.tier in (0, 1, 2), (
-                f"Exercise {e.name!r} has invalid tier {e.tier}"
-            )
+            assert e.tier in (0, 1, 2), f"Exercise {e.name!r} has invalid tier {e.tier}"

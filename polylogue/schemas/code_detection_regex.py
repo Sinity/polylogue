@@ -121,7 +121,7 @@ LANGUAGE_PATTERNS = {
         r"\w+-\w+:",
     ],
     "json": [
-        r'^\s*[{\[]',
+        r"^\s*[{\[]",
         r'"\w+":\s*',
     ],
     "yaml": [

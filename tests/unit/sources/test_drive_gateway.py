@@ -22,9 +22,7 @@ def _gateway(*, retries: int = 0, retry_base: float = 0.0) -> DriveServiceGatewa
     """Build a gateway with a mock auth manager."""
     auth_manager = MagicMock()
     auth_manager.load_credentials.return_value = object()
-    return DriveServiceGateway(
-        auth_manager=auth_manager, retries=retries, retry_base=retry_base
-    )
+    return DriveServiceGateway(auth_manager=auth_manager, retries=retries, retry_base=retry_base)
 
 
 # ---------------------------------------------------------------------------
@@ -216,9 +214,11 @@ def test_download_file_writes_content(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(
         "polylogue.sources.drive_gateway._import_module",
-        lambda name: MagicMock(MediaIoBaseDownload=MockMediaIoBaseDownload)
-        if name == "googleapiclient.http"
-        else (_ for _ in ()).throw(AssertionError(name)),
+        lambda name: (
+            MagicMock(MediaIoBaseDownload=MockMediaIoBaseDownload)
+            if name == "googleapiclient.http"
+            else (_ for _ in ()).throw(AssertionError(name))
+        ),
     )
 
     buf = io.BytesIO()

@@ -50,7 +50,9 @@ from polylogue.storage.store import (
     MessageRecord,
 )
 
-_ALL_CONVERSATION_IDS_SQL = "SELECT conversation_id FROM conversations ORDER BY COALESCE(sort_key, 0) DESC, conversation_id"
+_ALL_CONVERSATION_IDS_SQL = (
+    "SELECT conversation_id FROM conversations ORDER BY COALESCE(sort_key, 0) DESC, conversation_id"
+)
 _ALL_SESSION_PROFILE_ROWS_SQL = """
 SELECT *
 FROM session_profiles
@@ -376,12 +378,8 @@ async def rebuild_session_products_async(
         provider_day_groups,
         transaction_depth=transaction_depth,
     )
-    tag_rollup_count = (
-        await (await conn.execute("SELECT COUNT(*) FROM session_tag_rollups")).fetchone()
-    )[0]
-    day_summary_count = (
-        await (await conn.execute("SELECT COUNT(*) FROM day_session_summaries")).fetchone()
-    )[0]
+    tag_rollup_count = (await (await conn.execute("SELECT COUNT(*) FROM session_tag_rollups")).fetchone())[0]
+    day_summary_count = (await (await conn.execute("SELECT COUNT(*) FROM day_session_summaries")).fetchone())[0]
     return {
         "profiles": profile_count,
         "work_events": work_event_count,

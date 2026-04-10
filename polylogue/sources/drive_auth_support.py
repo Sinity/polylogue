@@ -16,11 +16,9 @@ logger = get_logger(__name__)
 class DriveAuthPrompter(Protocol):
     """Interface for interactive OAuth prompts."""
 
-    def announce_auth_url(self, url: str) -> None:
-        ...
+    def announce_auth_url(self, url: str) -> None: ...
 
-    def request_authorization_code(self) -> str | None:
-        ...
+    def request_authorization_code(self) -> str | None: ...
 
 
 class UIAuthPrompter:
@@ -108,8 +106,7 @@ def refresh_credentials_if_needed(*, creds: Any, token_path: Path, token_store) 
             creds.refresh(transport)
         except Exception as exc:
             raise DriveAuthError(
-                f"Failed to refresh OAuth token: {exc}. "
-                "Try re-authenticating with 'polylogue auth'."
+                f"Failed to refresh OAuth token: {exc}. Try re-authenticating with 'polylogue auth'."
             ) from exc
 
     if creds and creds.valid:

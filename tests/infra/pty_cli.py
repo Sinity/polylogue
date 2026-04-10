@@ -75,10 +75,7 @@ def run_in_pty(
         TimeoutError: if command exceeds timeout
     """
     if not HAS_PYTE:
-        raise ImportError(
-            "pyte is required for PTY testing. "
-            "Install with: pip install pyte"
-        )
+        raise ImportError("pyte is required for PTY testing. Install with: pip install pyte")
 
     # Build environment (same clean setup as cli_subprocess.py)
     clean_env = {
@@ -151,9 +148,7 @@ def run_in_pty(
             elapsed = time.time() - start_time
             if elapsed > timeout:
                 process.kill()
-                raise TimeoutError(
-                    f"Command timed out after {timeout}s: {' '.join(command)}"
-                )
+                raise TimeoutError(f"Command timed out after {timeout}s: {' '.join(command)}")
 
             try:
                 chunk = os.read(master_fd, 4096)

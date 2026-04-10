@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from polylogue.schemas.synthetic import SyntheticCorpus
+    pass
 
 
 class ScaleLevel(Enum):

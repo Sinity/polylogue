@@ -19,17 +19,21 @@ def build_template_environments(highlighter: PygmentsHighlighter) -> tuple[Envir
         highlighter.get_css(),
     )
     index_env = Environment(
-        loader=DictLoader({
-            "index.html": INDEX_TEMPLATE,
-            "dashboard.html": DASHBOARD_TEMPLATE,
-        }),
+        loader=DictLoader(
+            {
+                "index.html": INDEX_TEMPLATE,
+                "dashboard.html": DASHBOARD_TEMPLATE,
+            }
+        ),
         autoescape=select_autoescape(["html", "xml"]),
         enable_async=True,
     )
     page_env = Environment(
-        loader=DictLoader({
-            "conversation.html": conversation_template,
-        }),
+        loader=DictLoader(
+            {
+                "conversation.html": conversation_template,
+            }
+        ),
         autoescape=select_autoescape(["html", "xml"]),
         enable_async=True,
     )

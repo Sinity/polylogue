@@ -120,9 +120,7 @@ class HybridSearchProvider:
         fts_message_ids = self.fts_provider.search(query, limit=fts_limit)
 
         # Convert to (id, rank_score) format - higher rank = higher score
-        fts_results = [
-            (msg_id, 1.0 / (i + 1)) for i, msg_id in enumerate(fts_message_ids)
-        ]
+        fts_results = [(msg_id, 1.0 / (i + 1)) for i, msg_id in enumerate(fts_message_ids)]
 
         # Get vector search results
         vec_results = self.vector_provider.query(query, limit=fts_limit)
@@ -165,6 +163,7 @@ class HybridSearchProvider:
                 limit=limit,
                 scope_names=providers,
             )
+
 
 __all__ = [
     "HybridSearchProvider",

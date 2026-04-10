@@ -80,9 +80,7 @@ def append_runtime_lines(lines: list[str], result: CheckCommandResult, *, plain:
         return
     lines.extend(["", "Runtime Environment:"])
     for check in result.runtime_report.checks:
-        lines.append(
-            f"  {status_icon(check.status, plain=plain)} {check.name}: {check.detail}"
-        )
+        lines.append(f"  {status_icon(check.status, plain=plain)} {check.name}: {check.detail}")
     rt_summary = result.runtime_report.summary
     lines.append(
         f"  Runtime: {rt_summary.get('ok', 0)} ok, {rt_summary.get('warning', 0)} warnings, "
@@ -164,10 +162,7 @@ def append_artifact_observation_lines(lines: list[str], result: CheckCommandResu
         for row in result.artifact_rows:
             resolved = ""
             if row.resolved_package_version and row.resolved_element_kind:
-                resolved = (
-                    f" -> {row.resolved_package_version}/{row.resolved_element_kind}"
-                    f" [{row.resolution_reason}]"
-                )
+                resolved = f" -> {row.resolved_package_version}/{row.resolved_element_kind} [{row.resolution_reason}]"
             lines.append(
                 f"  {row.support_status} {row.payload_provider or row.provider_name} "
                 f"{row.artifact_kind} {row.source_path}{resolved}"

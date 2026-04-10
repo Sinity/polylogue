@@ -63,9 +63,7 @@ def test_session_enrichment_payload_reuses_text_band_outputs() -> None:
     assert user_turn_texts(analysis) == (
         "The tests failed with traceback in /realm/project/polylogue/app.py. Please fix it.",
     )
-    assert assistant_turn_texts(analysis) == (
-        "Patched it and reran pytest successfully.",
-    )
+    assert assistant_turn_texts(analysis) == ("Patched it and reran pytest successfully.",)
     assert blocker_texts(analysis) == (
         "The tests failed with traceback in /realm/project/polylogue/app.py. Please fix it.",
     )

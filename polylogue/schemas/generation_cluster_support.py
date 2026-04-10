@@ -55,7 +55,11 @@ def _update_observed_window(acc: _ClusterAccumulator, observed_at: str | None) -
     if parsed is None:
         return
     iso = parsed.astimezone(timezone.utc).isoformat()
-    if acc.first_seen is None or _parse_observed_at(acc.first_seen) is None or parsed < _parse_observed_at(acc.first_seen):
+    if (
+        acc.first_seen is None
+        or _parse_observed_at(acc.first_seen) is None
+        or parsed < _parse_observed_at(acc.first_seen)
+    ):
         acc.first_seen = iso
     if acc.last_seen is None or _parse_observed_at(acc.last_seen) is None or parsed > _parse_observed_at(acc.last_seen):
         acc.last_seen = iso

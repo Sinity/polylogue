@@ -100,8 +100,7 @@ def _protocol_summary_conversation() -> Conversation:
                     provider="claude-code",
                     text=(
                         "<system-reminder>skip this</system-reminder>\n"
-                        "Please inspect /realm/project/polylogue/README.md and summarize the findings clearly. "
-                        * 3
+                        "Please inspect /realm/project/polylogue/README.md and summarize the findings clearly. " * 3
                     ),
                     timestamp=datetime(2026, 3, 23, 10, 0, tzinfo=timezone.utc),
                 ),

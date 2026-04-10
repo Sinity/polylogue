@@ -130,12 +130,8 @@ def literal_title_search_strategy(draw: st.DrawFn) -> TitleSearchSpec:
     suffix = draw(st.text(alphabet=_LITERAL_NEEDLE_ALPHABET, min_size=1, max_size=6))
     special = draw(st.sampled_from(_SPECIAL_QUERY_CHARS))
     needle = f"{prefix}{special}{suffix}"
-    left = draw(
-        st.text(alphabet=f"{_LITERAL_NEEDLE_ALPHABET} -_/", min_size=0, max_size=8)
-    )
-    right = draw(
-        st.text(alphabet=f"{_LITERAL_NEEDLE_ALPHABET} -_/", min_size=0, max_size=8)
-    )
+    left = draw(st.text(alphabet=f"{_LITERAL_NEEDLE_ALPHABET} -_/", min_size=0, max_size=8))
+    right = draw(st.text(alphabet=f"{_LITERAL_NEEDLE_ALPHABET} -_/", min_size=0, max_size=8))
     matching_title = left + needle + right
     replacement = draw(st.sampled_from(tuple(char for char in "xyz" if char != special)))
     decoy_title = left + f"{prefix}{replacement}{suffix}" + right
@@ -197,11 +193,7 @@ def root_index(specs: tuple[ConversationSpec, ...], index: int) -> int:
 def expected_tree_ids(specs: tuple[ConversationSpec, ...], index: int) -> set[str]:
     """Return the full tree rooted at the conversation containing index."""
     expected_root = root_index(specs, index)
-    return {
-        spec.conversation_id
-        for position, spec in enumerate(specs)
-        if root_index(specs, position) == expected_root
-    }
+    return {spec.conversation_id for position, spec in enumerate(specs) if root_index(specs, position) == expected_root}
 
 
 def shortest_unique_prefix(ids: tuple[str, ...], target_id: str) -> str:

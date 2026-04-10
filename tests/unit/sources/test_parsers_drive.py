@@ -88,9 +88,7 @@ def test_collect_drive_docs_contract(payload: object, expected: list[object]) ->
     ],
     ids=["string-doc", "size-bytes-string", "file-id-int-size", "invalid-type", "missing-id"],
 )
-def test_attachment_from_doc_contract(
-    doc: object, expected_id: str | None, expected_size: int | None
-) -> None:
+def test_attachment_from_doc_contract(doc: object, expected_id: str | None, expected_size: int | None) -> None:
     attachment = _attachment_from_doc(doc, "msg-1")
     if expected_id is None:
         assert attachment is None

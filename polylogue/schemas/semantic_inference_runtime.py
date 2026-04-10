@@ -12,20 +12,23 @@ from polylogue.schemas.semantic_inference_message_scoring import (
 )
 from polylogue.schemas.semantic_inference_models import SEMANTIC_ROLES, SemanticCandidate
 
-
-RECORD_STREAM_KINDS = frozenset({
-    "conversation_record_stream",
-    "subagent_conversation_stream",
-})
+RECORD_STREAM_KINDS = frozenset(
+    {
+        "conversation_record_stream",
+        "subagent_conversation_stream",
+    }
+)
 
 # Roles that record-stream artifacts may infer. Title is excluded because
 # individual records in a stream do not carry conversation-level metadata.
-RECORD_STREAM_ELIGIBLE_ROLES = frozenset({
-    "message_container",
-    "message_role",
-    "message_body",
-    "message_timestamp",
-})
+RECORD_STREAM_ELIGIBLE_ROLES = frozenset(
+    {
+        "message_container",
+        "message_role",
+        "message_body",
+        "message_timestamp",
+    }
+)
 
 
 def infer_semantic_roles(

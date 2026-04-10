@@ -41,7 +41,8 @@ LANES: dict[str, LaneConfig] = {
         name="slow",
         description="Storage-heavy tests marked @pytest.mark.slow",
         pytest_args=[
-            "-m", "slow",
+            "-m",
+            "slow",
             "tests/unit/storage/",
             "--timeout=120",
         ],
@@ -52,7 +53,8 @@ LANES: dict[str, LaneConfig] = {
         description="All scale and slow tests combined",
         pytest_args=[
             "tests/unit/storage/test_scale.py",
-            "-m", "slow or not slow",
+            "-m",
+            "slow or not slow",
             "tests/unit/storage/",
             "--timeout=120",
         ],
@@ -85,9 +87,7 @@ def parse_lane(lane_name: str) -> LaneConfig:
         ValueError: If lane_name is not valid.
     """
     if lane_name not in LANES:
-        raise ValueError(
-            f"Invalid lane: {lane_name!r}. Valid lanes: {', '.join(sorted(VALID_LANES))}"
-        )
+        raise ValueError(f"Invalid lane: {lane_name!r}. Valid lanes: {', '.join(sorted(VALID_LANES))}")
     return LANES[lane_name]
 
 

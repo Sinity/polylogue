@@ -15,9 +15,7 @@ __all__ = [
 
 async def get_latest_run(conn: aiosqlite.Connection) -> RunRecord | None:
     """Fetch the most recent pipeline run record."""
-    cursor = await conn.execute(
-        "SELECT * FROM runs ORDER BY timestamp DESC LIMIT 1"
-    )
+    cursor = await conn.execute("SELECT * FROM runs ORDER BY timestamp DESC LIMIT 1")
     row = await cursor.fetchone()
     if not row:
         return None

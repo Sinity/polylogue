@@ -32,10 +32,20 @@ def discover_filter_flags(cli_group: click.Group) -> list[dict[str, Any]]:
             continue
         name = param.name or ""
         # Filter-like flags
-        if any(token in name for token in (
-            "has_", "min_", "max_", "provider", "since", "until",
-            "sort", "reverse", "exclude",
-        )):
+        if any(
+            token in name
+            for token in (
+                "has_",
+                "min_",
+                "max_",
+                "provider",
+                "since",
+                "until",
+                "sort",
+                "reverse",
+                "exclude",
+            )
+        ):
             flag_info: dict[str, Any] = {
                 "name": name,
                 "cli_name": param.opts[0] if param.opts else f"--{name}",
@@ -78,15 +88,17 @@ def generate_filter_exercises(cli_group: click.Group) -> list[Exercise]:
     for flag in flags:
         dims = query_read(complexity="basic")
         args = _make_flag_args(flag) + ["list", "-n", "3"]
-        exercises.append(Exercise(
-            name=f"gen-filter-{flag['name']}",
-            group="generated-filters",
-            description=f"Generated: filter with {flag['cli_name']}",
-            args=args,
-            needs_data=True,
-            tier=dims.derived_tier,
-            env="any",
-        ))
+        exercises.append(
+            Exercise(
+                name=f"gen-filter-{flag['name']}",
+                group="generated-filters",
+                description=f"Generated: filter with {flag['cli_name']}",
+                args=args,
+                needs_data=True,
+                tier=dims.derived_tier,
+                env="any",
+            )
+        )
 
     # Pairwise combinations (compatible flags only)
     for a, b in itertools.combinations(flags, 2):
@@ -101,15 +113,17 @@ def generate_filter_exercises(cli_group: click.Group) -> list[Exercise]:
         dims = query_read(complexity="combinatorial")
         args = _make_flag_args(a) + _make_flag_args(b) + ["list", "-n", "3"]
         pair_name = f"gen-filter-{a['name']}+{b['name']}"
-        exercises.append(Exercise(
-            name=pair_name,
-            group="generated-filters",
-            description=f"Generated: {a['cli_name']} + {b['cli_name']}",
-            args=args,
-            needs_data=True,
-            tier=dims.derived_tier,
-            env="any",
-        ))
+        exercises.append(
+            Exercise(
+                name=pair_name,
+                group="generated-filters",
+                description=f"Generated: {a['cli_name']} + {b['cli_name']}",
+                args=args,
+                needs_data=True,
+                tier=dims.derived_tier,
+                env="any",
+            )
+        )
 
     return exercises
 
@@ -144,19 +158,12 @@ def generate_command_help_exercises() -> list[Exercise]:
 
 def _has_json_flag(cmd: click.Command) -> bool:
     """Check if a Click command has a --json flag."""
-    return any(
-        isinstance(param, click.Option) and "--json" in param.opts
-        for param in cmd.params
-    )
+    return any(isinstance(param, click.Option) and "--json" in param.opts for param in cmd.params)
 
 
 def json_contract_exercise_names() -> set[str]:
     """Return the canonical showcase exercise names for all commands with --json."""
-    return {
-        f"json-{'-'.join(cp.path)}"
-        for cp in inventory_command_paths()
-        if _has_json_flag(cp.command)
-    }
+    return {f"json-{'-'.join(cp.path)}" for cp in inventory_command_paths() if _has_json_flag(cp.command)}
 
 
 def generate_json_contract_exercises() -> list[Exercise]:
@@ -224,10 +231,7 @@ def generate_format_exercises() -> list[Exercise]:
                 continue
 
             dims = query_read(output_format=fmt, complexity="basic")
-            if mode_name == "list":
-                args = mode_args + ["-f", fmt]
-            else:
-                args = mode_args + ["-f", fmt]
+            args = mode_args + ["-f", fmt]
             validation_kwargs: dict[str, Any] = {}
 
             if spec["well_formed"]:
@@ -237,16 +241,18 @@ def generate_format_exercises() -> list[Exercise]:
             if spec["contains"] and mode_name == "latest":
                 validation_kwargs["stdout_contains"] = tuple(spec["contains"])
 
-            exercises.append(Exercise(
-                name=f"gen-fmt-{fmt}-{mode_name}",
-                group="generated-formats",
-                description=f"Generated: {fmt} format in {mode_name} mode",
-                args=args,
-                validation=Validation(**validation_kwargs),
-                needs_data=True,
-                tier=dims.derived_tier,
-                env="any",
-            ))
+            exercises.append(
+                Exercise(
+                    name=f"gen-fmt-{fmt}-{mode_name}",
+                    group="generated-formats",
+                    description=f"Generated: {fmt} format in {mode_name} mode",
+                    args=args,
+                    validation=Validation(**validation_kwargs),
+                    needs_data=True,
+                    tier=dims.derived_tier,
+                    env="any",
+                )
+            )
 
     return exercises
 
@@ -254,6 +260,7 @@ def generate_format_exercises() -> list[Exercise]:
 # ---------------------------------------------------------------------------
 # Schema exercises
 # ---------------------------------------------------------------------------
+
 
 def generate_schema_exercises() -> list[Exercise]:
     """Generate schema verification exercises."""
@@ -263,28 +270,32 @@ def generate_schema_exercises() -> list[Exercise]:
 
     # Tier 0: schema list returns valid JSON
     dims_smoke = schema_exercise(complexity="smoke", io_mode="read")
-    exercises.append(Exercise(
-        name="gen-schema-list",
-        group="generated-schema",
-        description="Generated: schema list --json returns valid JSON",
-        args=["schema", "list", "--json"],
-        validation=Validation(stdout_is_valid_json=True),
-        tier=dims_smoke.derived_tier,
-        env="any",
-        output_ext=".json",
-    ))
+    exercises.append(
+        Exercise(
+            name="gen-schema-list",
+            group="generated-schema",
+            description="Generated: schema list --json returns valid JSON",
+            args=["schema", "list", "--json"],
+            validation=Validation(stdout_is_valid_json=True),
+            tier=dims_smoke.derived_tier,
+            env="any",
+            output_ext=".json",
+        )
+    )
 
     # Tier 1: schema explain for each provider
     dims_explain = schema_exercise(complexity="basic", io_mode="read")
     for provider in PROVIDERS:
-        exercises.append(Exercise(
-            name=f"gen-schema-explain-{provider}",
-            group="generated-schema",
-            description=f"Generated: schema explain --provider {provider}",
-            args=["schema", "explain", "--provider", provider],
-            tier=dims_explain.derived_tier,
-            env="any",
-        ))
+        exercises.append(
+            Exercise(
+                name=f"gen-schema-explain-{provider}",
+                group="generated-schema",
+                description=f"Generated: schema explain --provider {provider}",
+                args=["schema", "explain", "--provider", provider],
+                tier=dims_explain.derived_tier,
+                env="any",
+            )
+        )
 
     return exercises
 
@@ -304,15 +315,17 @@ def generate_provider_feature_exercises() -> list[Exercise]:
     for provider, features in _PROVIDER_FEATURES.items():
         for feature in sorted(features):
             flag = f"--has-{feature}"
-            exercises.append(Exercise(
-                name=f"gen-provider-{provider}-has-{feature}",
-                group="generated-filters",
-                description=f"Generated: {provider} has {feature}",
-                args=["--provider", provider, flag, "count"],
-                tier=1,
-                env="seeded",
-                needs_data=True,
-            ))
+            exercises.append(
+                Exercise(
+                    name=f"gen-provider-{provider}-has-{feature}",
+                    group="generated-filters",
+                    description=f"Generated: {provider} has {feature}",
+                    args=["--provider", provider, flag, "count"],
+                    tier=1,
+                    env="seeded",
+                    needs_data=True,
+                )
+            )
     return exercises
 
 

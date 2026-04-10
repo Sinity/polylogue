@@ -314,8 +314,7 @@ class TestGenerateSchemaFromSamples:
         samples = [
             {
                 "messages": [
-                    {"role": "user", "text": "Query " + str(i), "timestamp": 1000000000 + i}
-                    for i in range(5)
+                    {"role": "user", "text": "Query " + str(i), "timestamp": 1000000000 + i} for i in range(5)
                 ],
                 "title": f"Conversation {j}",
             }
@@ -430,11 +429,13 @@ class TestSemanticInferenceMisclassificationRegression:
         field_stats = {
             "$.parentUuid": FieldStats(
                 path="$.parentUuid",
-                observed_values=Counter({
-                    "550e8400-e29b-41d4-a716-446655440000": 1,
-                    "6ba7b810-9dad-11d1-80b4-00c04fd430c8": 1,
-                    "f47ac10b-58cc-4372-a567-0e02b2c3d479": 1,
-                }),
+                observed_values=Counter(
+                    {
+                        "550e8400-e29b-41d4-a716-446655440000": 1,
+                        "6ba7b810-9dad-11d1-80b4-00c04fd430c8": 1,
+                        "f47ac10b-58cc-4372-a567-0e02b2c3d479": 1,
+                    }
+                ),
                 detected_formats=Counter({"uuid4": 2, "uuid": 1}),
                 string_lengths=[36, 36, 36],
                 is_multiline=0,
@@ -453,11 +454,13 @@ class TestSemanticInferenceMisclassificationRegression:
         field_stats = {
             "$.runSettings.model": FieldStats(
                 path="$.runSettings.model",
-                observed_values=Counter({
-                    "gpt-4-code-interpreter": 100,
-                    "gpt-4": 50,
-                    "models/gemini-2.5-pro": 30,
-                }),
+                observed_values=Counter(
+                    {
+                        "gpt-4-code-interpreter": 100,
+                        "gpt-4": 50,
+                        "models/gemini-2.5-pro": 30,
+                    }
+                ),
                 string_lengths=[23, 5, 22],
                 is_multiline=0,
                 newline_counts=[0, 0, 0],
@@ -467,15 +470,10 @@ class TestSemanticInferenceMisclassificationRegression:
             ),
         }
         candidates = infer_semantic_roles(field_stats)
-        title_candidates = [
-            c for c in candidates
-            if c.role == "conversation_title" and c.path == "$.runSettings.model"
-        ]
+        title_candidates = [c for c in candidates if c.role == "conversation_title" and c.path == "$.runSettings.model"]
         # Should either not appear, or have very low confidence
         for c in title_candidates:
-            assert c.confidence < 0.3, (
-                f"Model field scored {c.confidence} as title, expected <0.3"
-            )
+            assert c.confidence < 0.3, f"Model field scored {c.confidence} as title, expected <0.3"
 
     def test_id_suffix_field_penalized(self) -> None:
         """Fields ending in 'Id' or '_id' are penalized for title role."""
@@ -492,26 +490,23 @@ class TestSemanticInferenceMisclassificationRegression:
             ),
         }
         candidates = infer_semantic_roles(field_stats)
-        title_candidates = [
-            c for c in candidates
-            if c.role == "conversation_title" and c.path == "$.parentId"
-        ]
+        title_candidates = [c for c in candidates if c.role == "conversation_title" and c.path == "$.parentId"]
         for c in title_candidates:
-            assert c.confidence < 0.15, (
-                f"ID-suffix field scored {c.confidence} as title, expected <0.15"
-            )
+            assert c.confidence < 0.15, f"ID-suffix field scored {c.confidence} as title, expected <0.15"
 
     def test_path_like_values_penalized(self) -> None:
         """Fields where >30% of values contain '/' are penalized."""
         field_stats = {
             "$.model_name": FieldStats(
                 path="$.model_name",
-                observed_values=Counter({
-                    "models/gemini-2.5-pro": 10,
-                    "models/gemini-1.5-flash": 8,
-                    "models/gemini-1.0-pro": 5,
-                    "gpt-4": 2,
-                }),
+                observed_values=Counter(
+                    {
+                        "models/gemini-2.5-pro": 10,
+                        "models/gemini-1.5-flash": 8,
+                        "models/gemini-1.0-pro": 5,
+                        "gpt-4": 2,
+                    }
+                ),
                 string_lengths=[22, 24, 22, 5],
                 is_multiline=0,
                 newline_counts=[0, 0, 0, 0],
@@ -521,14 +516,9 @@ class TestSemanticInferenceMisclassificationRegression:
             ),
         }
         candidates = infer_semantic_roles(field_stats)
-        title_candidates = [
-            c for c in candidates
-            if c.role == "conversation_title" and c.path == "$.model_name"
-        ]
+        title_candidates = [c for c in candidates if c.role == "conversation_title" and c.path == "$.model_name"]
         for c in title_candidates:
-            assert c.confidence < 0.3, (
-                f"Path-heavy field scored {c.confidence} as title, expected <0.3"
-            )
+            assert c.confidence < 0.3, f"Path-heavy field scored {c.confidence} as title, expected <0.3"
 
 
 class TestFieldStatsCollection:

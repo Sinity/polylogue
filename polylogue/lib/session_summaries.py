@@ -88,8 +88,7 @@ def summarize_day(
         total_words += profile.word_count
         providers[profile.provider] += 1
         work_events.update(
-            event.kind.value if hasattr(event.kind, "value") else str(event.kind)
-            for event in profile.work_events
+            event.kind.value if hasattr(event.kind, "value") else str(event.kind) for event in profile.work_events
         )
         projects.update(
             normalize_project_names(
@@ -142,10 +141,7 @@ def summarize_days(
         if profile_day is None:
             continue
         by_day.setdefault(profile_day, []).append(profile)
-    return tuple(
-        summarize_day(by_day[target_day], target_day)
-        for target_day in sorted(by_day.keys(), reverse=True)
-    )
+    return tuple(summarize_day(by_day[target_day], target_day) for target_day in sorted(by_day.keys(), reverse=True))
 
 
 def summarize_weeks(

@@ -116,8 +116,6 @@ def test_detect_provider_prefers_payload_shape_over_conflicting_path_hint() -> N
     assert detect_provider(payload, Path("misleading/claude-code/session.jsonl")) == Provider.CHATGPT
 
 
-
-
 @given(provider_payload_case_strategy(_CANONICAL_PROVIDERS))
 @settings(max_examples=35)
 def test_parse_payload_generated_exports_produce_provider_named_conversations(case: tuple[str, object]) -> None:
@@ -197,7 +195,9 @@ def test_iter_json_stream_root_list_round_trips_documents(case: tuple[list[dict[
 
 @given(conversations_wrapper_bytes_strategy())
 @settings(max_examples=30)
-def test_iter_json_stream_conversations_wrapper_round_trips_documents(case: tuple[list[dict[str, object]], bytes]) -> None:
+def test_iter_json_stream_conversations_wrapper_round_trips_documents(
+    case: tuple[list[dict[str, object]], bytes],
+) -> None:
     """Streaming a `{\"conversations\": [...]}` object yields the wrapped items."""
     documents, raw = case
     assert list(_iter_json_stream(BytesIO(raw), "test.json")) == documents
@@ -213,7 +213,9 @@ def test_iter_json_stream_unpack_lists_false_preserves_single_list(case: tuple[l
 
 @given(jsonl_bytes_strategy())
 @settings(max_examples=35)
-def test_iter_json_stream_jsonl_preserves_valid_records_with_blank_lines(case: tuple[list[dict[str, object]], bytes]) -> None:
+def test_iter_json_stream_jsonl_preserves_valid_records_with_blank_lines(
+    case: tuple[list[dict[str, object]], bytes],
+) -> None:
     """JSONL parsing ignores blank lines but preserves valid record order exactly."""
     documents, raw = case
     assert list(_iter_json_stream(BytesIO(raw), "test.jsonl")) == documents
@@ -420,7 +422,9 @@ def test_source_iteration_continues_after_invalid_json_contract(tmp_path: Path, 
         conversation_ids = [conversation.provider_conversation_id for conversation in results]
         raw_items = []
     else:
-        raw_items = list(iter_source_conversations_with_raw(Source(name="test", path=tmp_path), cursor_state=cursor_state))
+        raw_items = list(
+            iter_source_conversations_with_raw(Source(name="test", path=tmp_path), cursor_state=cursor_state)
+        )
         results = [conversation for _, conversation in raw_items]
         conversation_ids = [conversation.provider_conversation_id for conversation in results]
 
@@ -432,7 +436,9 @@ def test_source_iteration_continues_after_invalid_json_contract(tmp_path: Path, 
         assert all(raw_data is not None for raw_data, _ in raw_items)
 
 
-def test_iter_source_conversations_tracks_file_disappearance_contract(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_iter_source_conversations_tracks_file_disappearance_contract(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     first = _write_generic_conversation(tmp_path / "first.json", "first")
     second = _write_generic_conversation(tmp_path / "second.json", "second")
     cursor_state: dict[str, object] = {}
@@ -821,8 +827,8 @@ def test_parse_drive_payload_recurses_lists_and_detected_payloads(monkeypatch: p
 @pytest.mark.parametrize(
     ("raw", "expected"),
     [
-        (b"\xef\xbb\xbf{\"id\":\"bom\"}", {"id": "bom"}),
-        (b"{\x00\"id\":\"nulls\"}", {"id": "nulls"}),
+        (b'\xef\xbb\xbf{"id":"bom"}', {"id": "bom"}),
+        (b'{\x00"id":"nulls"}', {"id": "nulls"}),
         (b"", None),
     ],
 )
@@ -833,8 +839,6 @@ def test_decode_json_bytes_cleaning_contract(raw: bytes, expected: dict[str, obj
     else:
         assert decoded is not None
         assert json.loads(decoded) == expected
-
-
 
 
 @pytest.mark.parametrize(
@@ -1087,7 +1091,18 @@ def _parse_context(
 
 
 @pytest.mark.parametrize(
-    ("label", "ctx", "filename", "raw", "pre_read_bytes", "expected_ids", "expected_provider_hint", "expected_provider_name", "expected_indexes", "expected_message_count"),
+    (
+        "label",
+        "ctx",
+        "filename",
+        "raw",
+        "pre_read_bytes",
+        "expected_ids",
+        "expected_provider_hint",
+        "expected_provider_name",
+        "expected_indexes",
+        "expected_message_count",
+    ),
     [
         (
             "individual-raw-capture",
@@ -1451,7 +1466,12 @@ def _zip_entry(name: str, *, size: int = 100, compressed: int = 50) -> zipfile.Z
         ),
         (
             "chatgpt",
-            [_zip_entry("nested/conversations.json"), _zip_entry("nested/conversations.jsonl"), _zip_entry("nested/conversations.ndjson"), _zip_entry("nested/conversations.jsonl.txt")],
+            [
+                _zip_entry("nested/conversations.json"),
+                _zip_entry("nested/conversations.jsonl"),
+                _zip_entry("nested/conversations.ndjson"),
+                _zip_entry("nested/conversations.jsonl.txt"),
+            ],
             [
                 "nested/conversations.json",
                 "nested/conversations.jsonl",
@@ -1515,7 +1535,9 @@ def test_zip_entry_provider_hint_keeps_fallback_contract() -> None:
 
 
 class _StubDriveRawClient:
-    def __init__(self, files: list[DriveFile], *, raw_bytes: dict[str, bytes], failures: dict[str, Exception] | None = None) -> None:
+    def __init__(
+        self, files: list[DriveFile], *, raw_bytes: dict[str, bytes], failures: dict[str, Exception] | None = None
+    ) -> None:
         self.files = files
         self.raw_bytes = raw_bytes
         self.failures = failures or {}
@@ -1718,9 +1740,7 @@ def test_iter_source_raw_data_splits_multi_conversation_zip_entries_for_non_grou
     assert all(item.blob_hash is not None for item in items)
     assert all(item.raw_bytes == b"" for item in items)
     assert [
-        json.loads(get_blob_store().read_all(item.blob_hash))[id_field]
-        for item in items
-        if item.blob_hash is not None
+        json.loads(get_blob_store().read_all(item.blob_hash))[id_field] for item in items if item.blob_hash is not None
     ] == expected_ids
 
 
@@ -1882,7 +1902,9 @@ def test_iter_source_raw_data_skips_known_mtimes_without_reading_file(tmp_path: 
     assert [item.source_path for item in items] == [str(fresh)]
 
 
-def test_iter_source_raw_data_tracks_read_failures_without_stopping(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_iter_source_raw_data_tracks_read_failures_without_stopping(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     good = tmp_path / "good.json"
     bad = tmp_path / "bad.json"
     good.write_text('{"mapping": {}, "id": "good"}', encoding="utf-8")
@@ -1913,8 +1935,6 @@ def test_iter_source_raw_data_tracks_read_failures_without_stopping(tmp_path: Pa
 # =============================================================================
 
 
-
-
 def test_jsonl_crlf_line_separator() -> None:
     """CRLF between JSONL lines (\r\n) decodes without stripping content."""
     line1 = json.dumps({"idx": 1})
@@ -1938,8 +1958,6 @@ def test_latin1_file_does_not_crash() -> None:
     assert result is not None
     # The returned string must be non-empty
     assert len(result.strip()) > 0
-
-
 
 
 def test_null_bytes_stripped() -> None:
@@ -1981,6 +1999,7 @@ from polylogue.sources.providers.claude_code import (
 # Law 1: normalize_role never raises for any non-empty string
 # ---------------------------------------------------------------------------
 
+
 @given(st.text(min_size=1))
 def test_normalize_role_never_raises_for_nonempty(text: str) -> None:
     """normalize_role handles any non-empty string without raising."""
@@ -2012,6 +2031,7 @@ def test_normalize_role_result_is_canonical(text: str) -> None:
 # Law 3: normalize_role is idempotent on its own output
 # ---------------------------------------------------------------------------
 
+
 @given(st.sampled_from(sorted(CANONICAL_ROLES - {"unknown"})))
 def test_normalize_role_idempotent_on_canonical(role: str) -> None:
     """Applying normalize_role to a canonical role returns the same value."""
@@ -2022,6 +2042,7 @@ def test_normalize_role_idempotent_on_canonical(role: str) -> None:
 # ---------------------------------------------------------------------------
 # Law 4: normalize_role is case-insensitive
 # ---------------------------------------------------------------------------
+
 
 @given(st.text(min_size=1, max_size=30, alphabet=st.characters(whitelist_categories=("L",))))
 def test_normalize_role_case_insensitive(text: str) -> None:
@@ -2038,6 +2059,7 @@ def test_normalize_role_case_insensitive(text: str) -> None:
 # Law 5: normalize_role strips whitespace before normalizing
 # ---------------------------------------------------------------------------
 
+
 @given(
     st.sampled_from(["user", "assistant", "system", "tool"]),
     st.integers(min_value=0, max_value=5),
@@ -2051,6 +2073,7 @@ def test_normalize_role_strips_whitespace(role: str, padding: int) -> None:
 # ---------------------------------------------------------------------------
 # Law 6: normalize_role raises ValueError for empty/whitespace-only input
 # ---------------------------------------------------------------------------
+
 
 @given(st.from_regex(r"^[\s]*$", fullmatch=True))
 def test_normalize_role_raises_on_empty(empty: str) -> None:
@@ -2099,10 +2122,7 @@ def test_chatgpt_iter_user_assistant_pairs_contract(
         current_node=f"node-{len(roles) - 1}" if roles else "root",
     )
 
-    assert [
-        (user.id, assistant.id)
-        for user, assistant in conversation.iter_user_assistant_pairs()
-    ] == expected_pairs
+    assert [(user.id, assistant.id) for user, assistant in conversation.iter_user_assistant_pairs()] == expected_pairs
 
 
 def test_claude_code_helper_conversion_contracts() -> None:

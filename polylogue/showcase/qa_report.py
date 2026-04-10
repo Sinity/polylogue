@@ -11,16 +11,13 @@ def generate_qa_session(result):
     """Generate a structured full QA session record."""
     from polylogue.showcase.showcase_report_payloads import generate_showcase_session
 
-    showcase_session = (
-        generate_showcase_session(result.showcase_result)
-        if result.showcase_result is not None
-        else None
-    )
+    showcase_session = generate_showcase_session(result.showcase_result) if result.showcase_result is not None else None
     return build_qa_session_payload(
         result,
         timestamp=datetime.now(timezone.utc).isoformat(),
         showcase_session=showcase_session,
     )
+
 
 __all__ = [
     "build_qa_session_payload",

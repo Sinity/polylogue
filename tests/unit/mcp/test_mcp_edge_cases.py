@@ -3,6 +3,7 @@
 Tests Unicode handling, boundary parameters, error recovery,
 and concurrent access patterns.
 """
+
 from __future__ import annotations
 
 import json
@@ -16,15 +17,19 @@ from polylogue.mcp.server import _clamp_limit, _safe_call
 # _clamp_limit boundary tests
 # =============================================================================
 
+
 class TestClampLimit:
-    @pytest.mark.parametrize(("input_val", "expected"), [
-        (10, 10),
-        (1, 1),
-        (0, 1),  # clamped to 1
-        (-1, 1),  # clamped to 1
-        (-100, 1),
-        (1000, 1000),
-    ])
+    @pytest.mark.parametrize(
+        ("input_val", "expected"),
+        [
+            (10, 10),
+            (1, 1),
+            (0, 1),  # clamped to 1
+            (-1, 1),  # clamped to 1
+            (-100, 1),
+            (1000, 1000),
+        ],
+    )
     def test_integer_inputs(self, input_val: int, expected: int) -> None:
         assert _clamp_limit(input_val) == expected
 
@@ -44,6 +49,7 @@ class TestClampLimit:
 # =============================================================================
 # _safe_call error wrapping
 # =============================================================================
+
 
 class TestSafeCall:
     def test_success_passes_through(self) -> None:
@@ -73,6 +79,7 @@ class TestSafeCall:
 # Unicode handling via MCP tool internals
 # =============================================================================
 
+
 def _invoke_tool(mcp_server, tool_name: str, **kwargs):
     """Invoke a registered MCP tool by name, matching the existing test pattern."""
     tool = mcp_server._tool_manager._tools[tool_name]
@@ -93,8 +100,10 @@ class TestUnicodeHandling:
             # This should not crash even with emoji/CJK/RTL
             for tag in ["bug-fix", "重要", "مهم", "critical"]:
                 result = await _invoke_tool(
-                    mcp_server, "add_tag",
-                    conversation_id="test-conv", tag=tag,
+                    mcp_server,
+                    "add_tag",
+                    conversation_id="test-conv",
+                    tag=tag,
                 )
                 assert isinstance(result, str)
 
@@ -103,16 +112,20 @@ class TestUnicodeHandling:
         """Empty query string doesn't crash search."""
         from tests.infra.mcp import make_mock_filter, make_repo_mock
 
-        with patch("polylogue.mcp.server._get_repo") as mock_get_repo, \
-             patch("polylogue.lib.filters.ConversationFilter") as mock_filter_cls:
+        with (
+            patch("polylogue.mcp.server._get_repo") as mock_get_repo,
+            patch("polylogue.lib.filters.ConversationFilter") as mock_filter_cls,
+        ):
             mock_repo = make_repo_mock()
             mock_repo.search = AsyncMock(return_value=[])
             mock_get_repo.return_value = mock_repo
             mock_filter_cls.return_value = make_mock_filter(results=[])
 
             result = await _invoke_tool(
-                mcp_server, "search",
-                query="", limit=10,
+                mcp_server,
+                "search",
+                query="",
+                limit=10,
             )
             assert isinstance(result, str)
 
@@ -121,21 +134,25 @@ class TestUnicodeHandling:
 # Boundary parameters
 # =============================================================================
 
+
 class TestBoundaryParameters:
     @pytest.mark.asyncio
     async def test_limit_zero(self, mcp_server) -> None:
         """limit=0 is clamped to 1 (returns minimal results)."""
         from tests.infra.mcp import make_mock_filter, make_repo_mock
 
-        with patch("polylogue.mcp.server._get_repo") as mock_get_repo, \
-             patch("polylogue.lib.filters.ConversationFilter") as mock_filter_cls:
+        with (
+            patch("polylogue.mcp.server._get_repo") as mock_get_repo,
+            patch("polylogue.lib.filters.ConversationFilter") as mock_filter_cls,
+        ):
             mock_repo = make_repo_mock()
             mock_repo.list = AsyncMock(return_value=[])
             mock_get_repo.return_value = mock_repo
             mock_filter_cls.return_value = make_mock_filter(results=[])
 
             result = await _invoke_tool(
-                mcp_server, "list_conversations",
+                mcp_server,
+                "list_conversations",
                 limit=0,
             )
             assert isinstance(result, str)
@@ -145,15 +162,18 @@ class TestBoundaryParameters:
         """Negative limit is clamped to 1."""
         from tests.infra.mcp import make_mock_filter, make_repo_mock
 
-        with patch("polylogue.mcp.server._get_repo") as mock_get_repo, \
-             patch("polylogue.lib.filters.ConversationFilter") as mock_filter_cls:
+        with (
+            patch("polylogue.mcp.server._get_repo") as mock_get_repo,
+            patch("polylogue.lib.filters.ConversationFilter") as mock_filter_cls,
+        ):
             mock_repo = make_repo_mock()
             mock_repo.list = AsyncMock(return_value=[])
             mock_get_repo.return_value = mock_repo
             mock_filter_cls.return_value = make_mock_filter(results=[])
 
             result = await _invoke_tool(
-                mcp_server, "list_conversations",
+                mcp_server,
+                "list_conversations",
                 limit=-1,
             )
             assert isinstance(result, str)

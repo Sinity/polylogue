@@ -33,7 +33,9 @@ def _ensure_wire_format(
             self._ensure_wire_gemini(data, role, rng, index=index, theme=theme)
 
 
-def _ensure_wire_chatgpt(self, data: dict, role: str, rng: random.Random, ts: float, *, index: int, theme: ConversationTheme | None) -> None:
+def _ensure_wire_chatgpt(
+    self, data: dict, role: str, rng: random.Random, ts: float, *, index: int, theme: ConversationTheme | None
+) -> None:
     msg = data.get("message")
     if not isinstance(msg, dict):
         msg = {"id": str(uuid.UUID(int=rng.getrandbits(128), version=4))}
@@ -52,7 +54,9 @@ def _ensure_wire_chatgpt(self, data: dict, role: str, rng: random.Random, ts: fl
     msg.setdefault("id", str(uuid.UUID(int=rng.getrandbits(128), version=4)))
 
 
-def _ensure_wire_claude_ai(self, data: dict, role: str, rng: random.Random, ts: float, *, index: int, theme: ConversationTheme | None) -> None:
+def _ensure_wire_claude_ai(
+    self, data: dict, role: str, rng: random.Random, ts: float, *, index: int, theme: ConversationTheme | None
+) -> None:
     data.setdefault("uuid", str(uuid.UUID(int=rng.getrandbits(128), version=4)))
     data.setdefault("sender", role)
     if not data.get("text"):
@@ -61,7 +65,9 @@ def _ensure_wire_claude_ai(self, data: dict, role: str, rng: random.Random, ts: 
         data["created_at"] = datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
 
 
-def _ensure_wire_claude_code(self, data: dict, role: str, rng: random.Random, ts: float, *, index: int, theme: ConversationTheme | None) -> None:
+def _ensure_wire_claude_code(
+    self, data: dict, role: str, rng: random.Random, ts: float, *, index: int, theme: ConversationTheme | None
+) -> None:
     data.setdefault("type", role)
     if not isinstance(data.get("message"), dict):
         data["message"] = {}
@@ -73,7 +79,9 @@ def _ensure_wire_claude_code(self, data: dict, role: str, rng: random.Random, ts
         data["timestamp"] = datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
 
 
-def _ensure_wire_codex(self, data: dict, role: str, rng: random.Random, ts: float, *, index: int, theme: ConversationTheme | None) -> None:
+def _ensure_wire_codex(
+    self, data: dict, role: str, rng: random.Random, ts: float, *, index: int, theme: ConversationTheme | None
+) -> None:
     data["type"] = "message"
     data.setdefault("role", role)
     if "content" not in data:
@@ -85,7 +93,9 @@ def _ensure_wire_codex(self, data: dict, role: str, rng: random.Random, ts: floa
     data.pop("payload", None)
 
 
-def _ensure_wire_gemini(self, data: dict, role: str, rng: random.Random, *, index: int, theme: ConversationTheme | None) -> None:
+def _ensure_wire_gemini(
+    self, data: dict, role: str, rng: random.Random, *, index: int, theme: ConversationTheme | None
+) -> None:
     data.setdefault("role", role)
     if not data.get("text"):
         data["text"] = _text_for_role(rng, role, turn_index=index, theme=theme)

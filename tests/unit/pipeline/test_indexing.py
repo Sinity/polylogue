@@ -198,14 +198,17 @@ class TestIndexService:
         def capture(amount: int, desc: str | None = None) -> None:
             progress_events.append((amount, desc))
 
-        with patch(
-            "polylogue.pipeline.services.indexing.create_vector_provider",
-            return_value=vector_provider,
-        ), patch(
-            "polylogue.storage.repository.ConversationRepository.embed_conversation",
-            new_callable=AsyncMock,
-            return_value=1,
-        ) as mock_embed:
+        with (
+            patch(
+                "polylogue.pipeline.services.indexing.create_vector_provider",
+                return_value=vector_provider,
+            ),
+            patch(
+                "polylogue.storage.repository.ConversationRepository.embed_conversation",
+                new_callable=AsyncMock,
+                return_value=1,
+            ) as mock_embed,
+        ):
             result = await service.update_index(
                 ["conv-auto-embed-0", "conv-auto-embed-1"],
                 progress_callback=capture,
@@ -216,10 +219,7 @@ class TestIndexService:
             "conv-auto-embed-0",
             "conv-auto-embed-1",
         ]
-        assert all(
-            call.kwargs["vector_provider"] is vector_provider
-            for call in mock_embed.await_args_list
-        )
+        assert all(call.kwargs["vector_provider"] is vector_provider for call in mock_embed.await_args_list)
         descriptions = [desc for _, desc in progress_events if desc is not None]
         assert descriptions[0] == "Indexing: action events 0/6"
         assert "Indexing: full-text search 2/6" in descriptions
@@ -446,7 +446,9 @@ class TestIndexServiceErrors:
         mock_backend = MagicMock()
         service = IndexService(config=config, backend=mock_backend)
 
-        with patch("polylogue.pipeline.services.indexing.update_index_for_conversations", new_callable=AsyncMock) as mock_update:
+        with patch(
+            "polylogue.pipeline.services.indexing.update_index_for_conversations", new_callable=AsyncMock
+        ) as mock_update:
             result = await service.update_index([])
             assert result is True
             mock_update.assert_called_once_with([], mock_backend, phase_count=2)

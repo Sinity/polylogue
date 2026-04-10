@@ -91,9 +91,7 @@ def cli_main(args: list[str] | None = None) -> int:
     """
     import argparse
 
-    parser = argparse.ArgumentParser(
-        description="Generate JSON schemas from polylogue data"
-    )
+    parser = argparse.ArgumentParser(description="Generate JSON schemas from polylogue data")
     parser.add_argument(
         "--provider",
         choices=list(PROVIDERS.keys()) + ["all"],
@@ -149,6 +147,7 @@ def cli_main(args: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     import sys
+
     sys.exit(cli_main())
 
 

@@ -27,10 +27,7 @@ logger = get_logger(__name__)
 _sqlite_vec_missing_warned = False
 
 
-def create_search_provider(
-    config: Config | None = None,
-    db_path: Path | None = None
-) -> SearchProvider:
+def create_search_provider(config: Config | None = None, db_path: Path | None = None) -> SearchProvider:
     """Create a search provider instance.
 
     Currently returns FTS5Provider as the default implementation.

@@ -75,9 +75,7 @@ def build_session_tag_rollup_records(
         assert isinstance(projects, Counter)
         assert isinstance(source_updates, list)
         assert isinstance(source_sorts, list)
-        search_text = " \n".join(
-            part for part in (tag, provider_name, *sorted(projects.keys())) if part
-        )
+        search_text = " \n".join(part for part in (tag, provider_name, *sorted(projects.keys())) if part)
         rows.append(
             SessionTagRollupRecord(
                 tag=tag,

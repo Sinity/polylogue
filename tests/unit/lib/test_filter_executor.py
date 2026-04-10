@@ -191,13 +191,7 @@ class TestHasPostFilters:
 
     def test_candidate_query_keeps_stable_tool_filter_but_clears_unstable_action_filters(self):
         """Candidate fetch may keep raw tool-name narrowing while clearing stale action/path semantics."""
-        plan = (
-            _make_filter()
-            .path("/realm/project/polylogue/README.md")
-            .action("agent")
-            .tool("bash")
-            .build_query_plan()
-        )
+        plan = _make_filter().path("/realm/project/polylogue/README.md").action("agent").tool("bash").build_query_plan()
 
         candidate = plan.fetch_record_query()
         assert candidate.path_terms == ()
