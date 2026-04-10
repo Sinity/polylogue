@@ -8,7 +8,7 @@ from pathlib import Path
 import click
 
 from polylogue.cli.commands.generate import generate_command
-from polylogue.cli.helpers import complete_configured_source_names, load_effective_config
+from polylogue.cli.helpers import complete_configured_source_names, load_effective_config, resolve_sources
 from polylogue.cli.qa_capture import run_vhs_capture as _run_vhs_capture
 from polylogue.cli.qa_snapshot import snapshot_results
 from polylogue.cli.types import AppEnv
@@ -125,9 +125,11 @@ def qa_command(
         raise click.UsageError("--only and --skip are mutually exclusive")
 
     live = not synthetic
+    config = load_effective_config(env)
+    selected_source_names = resolve_sources(config, source_names, "audit") if source_names else None
 
     # --source implies fresh + live
-    if source_names:
+    if selected_source_names:
         live = True
         if fresh is None:
             fresh = True
@@ -168,7 +170,7 @@ def qa_command(
         live=live,
         fresh=fresh,
         ingest=ingest,
-        source_names=list(source_names) if source_names else None,
+        source_names=selected_source_names,
         regenerate_schemas=regenerate_schemas,
         skip_audit=not run_audit,
         skip_exercises=not run_exercises,
@@ -192,7 +194,6 @@ def qa_command(
 
     # --- Snapshot ---
     if snapshot_label is not None and result.report_dir:
-        config = load_effective_config(env)
         root = config.archive_root / "qa" / "snapshots"
         snapshot_results(
             result.report_dir,

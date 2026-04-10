@@ -233,9 +233,11 @@ class TestQAErrorBoundaries:
         assert TRACEBACK_SENTINEL not in result.output
 
     def test_qa_nonexistent_source(self, runner: CliRunner) -> None:
-        """Non-existent --source in QA should not produce traceback."""
+        """Unknown configured source name should fail fast without a traceback."""
         result = runner.invoke(cli, ["audit", "--source", "/does/not/exist"])
+        assert result.exit_code != 0
         assert TRACEBACK_SENTINEL not in result.output
+        assert "audit: Unknown source(s): /does/not/exist." in result.output
 
 
 # =============================================================================
