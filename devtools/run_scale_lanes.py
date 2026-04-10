@@ -1,6 +1,6 @@
 """Route scale test lanes to appropriate pytest invocations.
 
-Usage: python -m devtools.run_scale_lanes --lane fast|slow|stretch
+Usage: python -m devtools run-scale-lanes --lane fast|slow|stretch
 
 Lanes:
   fast    - Unit-level scale tests (200 conversations, <10s)

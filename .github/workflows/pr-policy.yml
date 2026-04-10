@@ -29,6 +29,7 @@ jobs:
         env:
           HEAD_REF: ${{ github.head_ref }}
           PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body || '' }}
         run: |
           python - <<'PY'
           import os
@@ -37,6 +38,7 @@ jobs:
 
           branch = os.environ["HEAD_REF"]
           title = os.environ["PR_TITLE"]
+          body = os.environ["PR_BODY"]
 
           errors: list[str] = []
 
@@ -57,6 +59,17 @@ jobs:
                   "PR title must use conventional form like "
                   "`feat: add X` or `fix(cli): correct Y`."
               )
+
+          required_sections = ("## Summary", "## Problem", "## Solution", "## Verification")
+          missing_sections = [section for section in required_sections if section not in body]
+          if missing_sections:
+              errors.append(
+                  "PR body must include the required sections: "
+                  + ", ".join(f"`{section}`" for section in missing_sections)
+              )
+
+          if "<!--" in body:
+              errors.append("PR body still contains template comments; remove or replace them before merge.")
 
           if errors:
               print("Pull request policy check failed:\n")

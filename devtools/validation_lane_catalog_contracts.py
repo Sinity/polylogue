@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from devtools.validation_lane_base import module_lane, pytest_lane
+from devtools.validation_lane_base import devtools_lane, pytest_lane
 
 CONTRACT_LANES = {
     "machine-contract": pytest_lane(
@@ -25,17 +25,17 @@ CONTRACT_LANES = {
         "-m",
         "query_routing",
     ),
-    "showcase-baselines": module_lane(
+    "showcase-baselines": devtools_lane(
         "showcase-baselines",
         "Registry-derived tier-0 CLI help/source showcase baselines",
         180,
-        "devtools.verify_showcase",
+        "verify-showcase",
     ),
-    "pipeline-probe-chatgpt": module_lane(
+    "pipeline-probe-chatgpt": devtools_lane(
         "pipeline-probe-chatgpt",
         "Synthetic ChatGPT parse-stage pipeline probe under explicit runtime and RSS budgets",
         180,
-        "devtools.pipeline_probe",
+        "pipeline-probe",
         "--provider",
         "chatgpt",
         "--count",
@@ -269,27 +269,27 @@ CONTRACT_LANES = {
         "-m",
         "chaos",
     ),
-    "scale-fast": module_lane(
+    "scale-fast": devtools_lane(
         "scale-fast",
         "Fast storage scale budgets",
         120,
-        "devtools.run_scale_lanes",
+        "run-scale-lanes",
         "--lane",
         "fast",
     ),
-    "scale-slow": module_lane(
+    "scale-slow": devtools_lane(
         "scale-slow",
         "Slow local storage scale budgets",
         360,
-        "devtools.run_scale_lanes",
+        "run-scale-lanes",
         "--lane",
         "slow",
     ),
-    "long-haul-small": module_lane(
+    "long-haul-small": devtools_lane(
         "long-haul-small",
         "Small reproducible benchmark/long-haul campaign",
         1800,
-        "devtools.run_campaign",
+        "run-benchmark-campaigns",
         "--scale",
         "small",
     ),

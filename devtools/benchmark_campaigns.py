@@ -1,7 +1,7 @@
 """Long-haul benchmark campaign runner.
 
 Executes reproducible benchmark campaigns against synthetic archives
-and produces durable JSON + Markdown reports under artifacts/benchmark-campaigns/.
+and produces durable JSON + Markdown reports under .local/benchmark-campaigns/.
 """
 
 from __future__ import annotations

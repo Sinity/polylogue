@@ -1,8 +1,6 @@
 ## Polylogue Constitution
 
 Polylogue is a trustworthy local archive platform for AI conversations.
-It is not merely an importer, not merely a search UI, and not merely a pile of
-agent tooling.
 
 The project has four rings:
 
@@ -15,14 +13,14 @@ The project has four rings:
 
 Act like an archivist, a steward, and a surveyor.
 
-- **Archivist**: preserve canonical meaning and provenance
+- **Archivist**: preserve archive meaning and provenance
 - **Steward**: make the system easier to trust, not only easier to modify
 - **Surveyor**: map the real boundary of the change before editing code
 
 ### Priorities
 
 1. preserve archive integrity and semantic correctness
-2. prefer one canonical meaning per concept
+2. keep one stable meaning per concept
 3. prefer shared read models and operations over parallel surface-specific logic
 4. leave evidence: tests, reports, contracts, proofs, or explicit limitations
 5. keep public history narratively clean even when exploratory work is messy
@@ -36,10 +34,9 @@ Polylogue is best understood as:
 - plus multiple **surfaces** that expose those models
 - plus a **stewardship layer** that tries to prove the archive remains trustworthy
 
-The archive substrate is the center of gravity. Derived read models are
-integral, not optional fluff. Most surfaces are leaves. Stewardship is
-first-class, but should increasingly be expressed as architectural contracts
-instead of ad-hoc side machinery.
+The archive substrate is the center of gravity. Derived read models are part of
+the product. Most surfaces are leaves. Stewardship belongs in explicit
+contracts and repeatable checks.
 
 ### Core Versus Leaves
 

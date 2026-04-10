@@ -491,7 +491,7 @@ register(
         query_class_path="polylogue.archive_products.ProviderAnalyticsProductQuery",
         operations_method="list_provider_analytics_products",
         cli_command_name="analytics",
-        cli_help="List canonical provider-level analytics products.",
+        cli_help="List provider-level analytics products.",
         cli_options=[],
         fields=[
             ProductField("", _attr("provider_name"), group=0),

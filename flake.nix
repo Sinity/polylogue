@@ -120,11 +120,7 @@
 
           shellHook = ''
             export LD_LIBRARY_PATH=${pkgs.stdenv.cc.cc.lib}/lib:$LD_LIBRARY_PATH
-            export PATH="$PWD/scripts:$PATH"
-
-            if [ -f CLAUDE.md ]; then
-              render-agents --input CLAUDE.md --output AGENTS.md >/dev/null
-            fi
+            export HYPOTHESIS_STORAGE_DIRECTORY="$PWD/.cache/hypothesis"
 
             # Create venv if it doesn't exist
             if [ ! -d .venv ]; then
@@ -151,8 +147,11 @@
               printf '%s' "$sync_fingerprint" > "$sync_fingerprint_file"
             fi
 
-            echo "Polylogue development environment ready" >&2
-            echo "Run: polylogue --help" >&2
+            if [ -f CLAUDE.md ]; then
+              python -m devtools render-agents >/dev/null
+            fi
+
+            python -m devtools status || true
           '';
         };
 

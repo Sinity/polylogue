@@ -39,6 +39,15 @@ def module_lane(name: str, description: str, timeout_s: int, module: str, *args:
     )
 
 
+def devtools_lane(name: str, description: str, timeout_s: int, subcommand: str, *args: str) -> LaneConfig:
+    return LaneConfig(
+        name=name,
+        description=description,
+        timeout_s=timeout_s,
+        command=[sys.executable, "-m", "devtools", subcommand, *args],
+    )
+
+
 def polylogue_lane(name: str, description: str, timeout_s: int, *args: str) -> LaneConfig:
     return module_lane(name, description, timeout_s, "polylogue", "--plain", *args)
 
@@ -51,11 +60,11 @@ def memory_budget_lane(
     max_rss_mb: int,
     command: list[str],
 ) -> LaneConfig:
-    return module_lane(
+    return devtools_lane(
         name,
         description,
         timeout_s,
-        "devtools.query_memory_budget",
+        "query-memory-budget",
         "--max-rss-mb",
         str(max_rss_mb),
         "--",
@@ -75,6 +84,7 @@ def composite_lane(name: str, description: str, timeout_s: int, *sub_lanes: str)
 __all__ = [
     "LaneConfig",
     "composite_lane",
+    "devtools_lane",
     "memory_budget_lane",
     "module_lane",
     "polylogue_lane",

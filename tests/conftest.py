@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 
 import pytest
 from hypothesis import HealthCheck, settings
+from hypothesis.configuration import set_hypothesis_home_dir
+from hypothesis.database import DirectoryBasedExampleDatabase
 
 from polylogue.lib.messages import MessageCollection
 
@@ -21,10 +24,24 @@ def pytest_configure(config):
 # ---------------------------------------------------------------------------
 # Hypothesis profiles: `--hypothesis-profile ci` uses fewer examples for speed
 # ---------------------------------------------------------------------------
-settings.register_profile("ci", max_examples=30, suppress_health_check=[HealthCheck.too_slow])
+_HYPOTHESIS_HOME = Path(".cache/hypothesis")
+set_hypothesis_home_dir(_HYPOTHESIS_HOME)
+_HYPOTHESIS_DB = DirectoryBasedExampleDatabase(_HYPOTHESIS_HOME / "examples")
+
+settings.register_profile(
+    "ci",
+    max_examples=30,
+    suppress_health_check=[HealthCheck.too_slow],
+    database=_HYPOTHESIS_DB,
+)
 # differing_executors fires when mutmut runs tests in threads — suppress globally since
 # it never indicates a real bug (only fires in threaded test runners, not normal pytest).
-settings.register_profile("default", max_examples=100, suppress_health_check=[HealthCheck.differing_executors])
+settings.register_profile(
+    "default",
+    max_examples=100,
+    suppress_health_check=[HealthCheck.differing_executors],
+    database=_HYPOTHESIS_DB,
+)
 settings.load_profile(os.environ.get("HYPOTHESIS_PROFILE", "default"))
 
 

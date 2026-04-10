@@ -29,9 +29,8 @@ jobs:
         with:
           python-version: "3.13"
       - run: uv sync --extra dev --frozen
-      - run: uv run python -m devtools.render_agents --input CLAUDE.md --output "${RUNNER_TEMP}/AGENTS.md"
-      - run: uv run python -m devtools.render_cli_reference --check
-      - run: uv run python -m devtools.render_quality_reference --check
+      - run: uv run python -m devtools render-agents --input CLAUDE.md --output "${RUNNER_TEMP}/AGENTS.md"
+      - run: uv run python -m devtools render-all --check --skip agents
       - run: uv run ruff check polylogue/ tests/ devtools/
       - run: uv run ruff format --check polylogue/ tests/ devtools/
 
@@ -78,6 +77,6 @@ jobs:
         with:
           python-version: "3.13"
       - run: uv sync --extra dev --frozen
-      - run: uv run python -m devtools.verify_showcase
+      - run: uv run python -m devtools verify-showcase
         env:
           POLYLOGUE_FORCE_PLAIN: "1"

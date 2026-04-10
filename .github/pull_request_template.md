@@ -1,10 +1,12 @@
+> PR title becomes the final squash-merge commit subject on `master`. Write it as the history you want to preserve.
+
 ## Summary
 
-<!-- 1-2 sentences: what this change accomplishes -->
+<!-- 1-3 sentences: what changed and why it matters. -->
 
 ## Related Issue
 
-<!-- Optional. Use `Ref #NNN` or `Closes #NNN` when there is an issue worth linking. -->
+<!-- Optional. Use `Ref #NNN` or `Closes #NNN` only when an issue exists and should stay linked. -->
 
 ## Problem
 
@@ -12,21 +14,18 @@
 
 ## Solution
 
-<!-- What was done. Key modules, contracts, and code paths changed. -->
+<!-- What was done. Mention key modules, contracts, and boundaries touched. -->
 
 ## Verification
 
-<!-- Exact commands run and any manual validation performed -->
+<!-- Exact commands run and any manual validation performed. -->
 
 ## Risks and Follow-ups
 
-<!-- Remaining risks, migrations, rollout concerns, or intentionally deferred work -->
+<!-- Optional. Remaining risks, migrations, rollout concerns, or deferred work. -->
 
-## Checklist
+## Generated Surfaces
 
-- [ ] Branch name matches `feature/<category>/<description>`
-- [ ] PR title uses conventional form (`feat:`, `fix:`, `refactor:`, `test:`, `docs:`, `chore:`, `perf:`)
-- [ ] Tests, lint, or other verification recorded
-- [ ] Docs/config/governance updated if behavior changed
-
----
+- [ ] `python -m devtools render-all` run if generated surfaces or docs sources changed
+- [ ] `AGENTS.md` refreshed locally if `CLAUDE.md` or its includes changed
+- [ ] `docs/devtools.md` catalog refreshed if the `devtools` command registry changed

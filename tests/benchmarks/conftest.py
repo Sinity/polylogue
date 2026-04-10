@@ -7,8 +7,8 @@ Generated DBs are cached in a temp directory per session to avoid
 regeneration overhead dominating benchmark measurements.
 
 Usage:
-    nix develop -c python -m devtools.benchmark_campaign list
-    nix develop -c python -m devtools.benchmark_campaign run search-filters
+    python -m devtools benchmark-campaign list
+    python -m devtools benchmark-campaign run search-filters
 """
 
 from __future__ import annotations

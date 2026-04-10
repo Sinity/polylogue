@@ -4,7 +4,8 @@
 
 Polylogue provides an MCP (Model Context Protocol) server for integration with Claude Desktop, Claude Code, and other MCP clients.
 
-**Primary use case**: Claude Code's `/history` command can use polylogue to search past sessions semantically, rather than just grepping JSONL files.
+**Primary use case**: Claude Code's `/history` command can use Polylogue to
+search past sessions semantically and retrieve archived conversations directly.
 
 ## Starting the Server
 

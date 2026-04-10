@@ -1,9 +1,14 @@
 name: Cleanup or Refactor
-description: Simplify structure, remove duplication, or narrow an overgrown contract.
+description: Use when cleanup or refactor work needs explicit target shape, constraints, or follow-up tracking.
 title: "[cleanup] "
 labels:
   - type:refactor
 body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this when the cleanup needs explicit planning.
+        If the change is small and self-contained, the pull request can often stand alone.
   - type: textarea
     id: awkwardness
     attributes:

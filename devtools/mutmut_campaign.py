@@ -25,21 +25,17 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-CAMPAIGN_ARTIFACT_DIR = Path("artifacts/mutation-campaigns")
+CAMPAIGN_ARTIFACT_DIR = Path(".local/mutation-campaigns")
 STATUS_IGNORE_PREFIXES = (f"{CAMPAIGN_ARTIFACT_DIR.as_posix()}/",)
 DEFAULT_IGNORE_PATTERNS = shutil.ignore_patterns(
     ".git",
     ".direnv",
     ".venv",
-    ".mypy_cache",
-    ".pytest_cache",
-    ".ruff_cache",
-    ".hypothesis",
-    ".benchmarks",
+    ".cache",
+    ".local",
     "mutants",
     "__pycache__",
     ".claude",
-    "artifacts",
     "qa_archive",
     "qa_outputs",
     "qa_2026-03-10",
@@ -679,7 +675,7 @@ def format_index(results: list[CampaignResult]) -> str:
             "",
             "- Artifacts live in this directory as per-campaign JSON and Markdown files.",
             "- `Dirty` reflects non-artifact worktree changes in the source repository at campaign start.",
-            "- Use `nix develop -c python -m devtools.mutmut_campaign list` to inspect available campaign scopes.",
+            "- Use `python -m devtools mutmut-campaign list` to inspect available campaign scopes.",
         ]
     )
     lines.append("")

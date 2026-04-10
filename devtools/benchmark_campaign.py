@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parent.parent
-ARTIFACT_DIR = Path("artifacts/benchmark-campaigns")
+ARTIFACT_DIR = Path(".local/benchmark-campaigns")
 STATUS_IGNORE_PREFIXES = (f"{ARTIFACT_DIR.as_posix()}/",)
 DEFAULT_WARN_PCT = 10.0
 DEFAULT_FAIL_PCT = 20.0
@@ -317,9 +317,9 @@ def render_index() -> str:
     lines = [
         "# Benchmark Campaign Artifacts",
         "",
-        "Use `nix develop -c python -m devtools.benchmark_campaign list` to see campaign definitions.",
-        "Use `nix develop -c python -m devtools.benchmark_campaign run <campaign>` to record a fresh artifact.",
-        "Use `nix develop -c python -m devtools.benchmark_campaign compare <baseline.json> <candidate.json>` to compare two artifacts.",
+        "Use `python -m devtools benchmark-campaign list` to see campaign definitions.",
+        "Use `python -m devtools benchmark-campaign run <campaign>` to record a fresh artifact.",
+        "Use `python -m devtools benchmark-campaign compare <baseline.json> <candidate.json>` to compare two artifacts.",
         "",
         "| Date | Campaign | Commit | Benchmarks | Runtime | Worst Regression | Markdown |",
         "| --- | --- | --- | ---: | ---: | ---: | --- |",
@@ -354,7 +354,7 @@ def compare_artifacts(baseline: Path, candidate: Path, fail_pct: float) -> int:
     return 0
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -374,11 +374,11 @@ def parse_args() -> argparse.Namespace:
     compare_parser.add_argument("candidate", type=Path)
     compare_parser.add_argument("--fail-pct", type=float, default=DEFAULT_FAIL_PCT)
 
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
-def main() -> int:
-    args = parse_args()
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
     if args.command == "list":
         for campaign in CAMPAIGNS.values():
             print(f"{campaign.name}: {campaign.description}")

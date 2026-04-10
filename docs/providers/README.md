@@ -4,7 +4,8 @@
 
 Polylogue auto-detects provider format from file content — no configuration needed. Each provider has its own parser that converts raw exports into the unified conversation model.
 
-Detection happens in `sources/dispatch.py:detect_provider()` via `looks_like()` probe functions that inspect file structure rather than filenames.
+Detection happens in `sources/dispatch.py:detect_provider()` via `looks_like()`
+probe functions that inspect file structure.
 
 ## Supported Providers
 

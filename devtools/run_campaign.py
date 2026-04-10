@@ -1,9 +1,9 @@
 """CLI entry point for running benchmark campaigns.
 
 Usage:
-    python -m devtools.run_campaign --scale medium --output artifacts/benchmark-campaigns/
-    python -m devtools.run_campaign --scale large --campaign fts-rebuild
-    python -m devtools.run_campaign --list
+    python -m devtools run-benchmark-campaigns --scale medium --output .local/benchmark-campaigns/
+    python -m devtools run-benchmark-campaigns --scale large --campaign fts-rebuild
+    python -m devtools run-benchmark-campaigns --list
 """
 
 from __future__ import annotations
@@ -34,8 +34,8 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--output",
         type=Path,
-        default=ROOT / "artifacts" / "benchmark-campaigns",
-        help="Output directory for reports (default: artifacts/benchmark-campaigns/)",
+        default=ROOT / ".local" / "benchmark-campaigns",
+        help="Output directory for reports (default: .local/benchmark-campaigns/)",
     )
     parser.add_argument(
         "--list",

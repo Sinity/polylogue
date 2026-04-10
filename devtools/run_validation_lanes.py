@@ -1,10 +1,10 @@
 """Run named validation lanes for the remaining operator frontier.
 
 Usage:
-    python -m devtools.run_validation_lanes --list
-    python -m devtools.run_validation_lanes --lane machine-contract
-    python -m devtools.run_validation_lanes --lane frontier-local --dry-run
-    python -m devtools.run_validation_lanes --lane archive-intelligence --dry-run
+    python -m devtools run-validation-lanes --list
+    python -m devtools run-validation-lanes --lane machine-contract
+    python -m devtools run-validation-lanes --lane frontier-local --dry-run
+    python -m devtools run-validation-lanes --lane archive-intelligence --dry-run
 """
 
 from __future__ import annotations

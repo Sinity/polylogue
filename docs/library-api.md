@@ -4,7 +4,7 @@
 
 Polylogue is designed library-first. The CLI wraps the Python API.
 
-The public Python surface is intentionally split:
+The public Python surface is split into:
 
 - `polylogue`: archive-core access (`Polylogue`, `SyncPolylogue`, `ArchiveStats`,
   `Conversation`, `Message`, `SearchResult`)
@@ -96,9 +96,8 @@ async with Polylogue() as archive:
 - `canonical_projects`
 - `repo_paths`
 
-`SessionWorkEventProduct` and `SessionPhaseProduct` expose timestamped timeline rows
-that can be queried directly instead of rebuilding semantic spans from full
-conversations.
+`SessionWorkEventProduct` and `SessionPhaseProduct` expose timestamped timeline
+rows that can be queried directly.
 
 `SessionEnrichmentProduct` exposes the separate enrichment tier directly:
 
