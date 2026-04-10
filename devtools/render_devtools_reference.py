@@ -30,7 +30,7 @@ def build_command_catalog() -> str:
         "<!-- BEGIN GENERATED: devtools-command-catalog -->",
         "## Command Catalog",
         "",
-        "Use these discovery commands before calling control-plane subcommands programmatically:",
+        "Use these discovery commands before scripting or dispatching subcommands:",
         "",
         "```bash",
         "python -m devtools --help",

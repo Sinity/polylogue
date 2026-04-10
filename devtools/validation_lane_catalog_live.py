@@ -25,7 +25,7 @@ LIVE_LANES = {
     ),
     "live-exercises": polylogue_lane(
         "live-exercises",
-        "Operator-run live archive showcase/QA exercise lane",
+        "Manual live archive showcase/QA exercise lane",
         1800,
         "audit",
         "--live",
@@ -37,14 +37,14 @@ LIVE_LANES = {
     ),
     "live-embed-stats": polylogue_lane(
         "live-embed-stats",
-        "Live archive embedding readiness/readiness JSON surface",
+        "Live archive embedding status JSON view",
         120,
         "embed",
         "--stats",
         "--json",
     ),
-    "live-retrieval-dogfood": polylogue_lane(
-        "live-retrieval-dogfood",
+    "live-retrieval-checks": polylogue_lane(
+        "live-retrieval-checks",
         "Live archive action-aware grouped retrieval stats on a bounded semantic slice",
         180,
         "--provider",
@@ -60,7 +60,7 @@ LIVE_LANES = {
     ),
     "live-products-status": polylogue_lane(
         "live-products-status",
-        "Live archive durable product readiness surface",
+        "Live archive product status view",
         180,
         "products",
         "status",
@@ -68,7 +68,7 @@ LIVE_LANES = {
     ),
     "live-products-tags": polylogue_lane(
         "live-products-tags",
-        "Live archive durable tag-rollup product surface",
+        "Live archive tag-rollup product view",
         180,
         "products",
         "tags",
@@ -156,7 +156,7 @@ LIVE_LANES = {
     ),
     "live-products-debt": polylogue_lane(
         "live-products-debt",
-        "Live archive debt/governance product surface",
+        "Live archive debt and cleanup product view",
         180,
         "products",
         "debt",
@@ -176,7 +176,7 @@ LIVE_LANES = {
     ),
     "live-project-stats": polylogue_lane(
         "live-project-stats",
-        "Live archive project-grouped stats over durable session products",
+        "Live archive project-grouped stats over session products",
         180,
         "--provider",
         "claude-code",
@@ -191,7 +191,7 @@ LIVE_LANES = {
     ),
     "live-health-json": polylogue_lane(
         "live-health-json",
-        "Live archive machine-readable health/proof surface",
+        "Live archive machine-readable health report",
         180,
         "doctor",
         "--json",

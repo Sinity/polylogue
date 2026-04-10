@@ -26,7 +26,7 @@ pytest -q -n 0
 
 ### Fast local run
 
-Use this when iterating locally and skipping slow proofs and benchmarks.
+Use this when iterating locally and skipping slow checks and benchmarks.
 
 ```bash
 pytest -q -n 0 -m "not slow and not benchmark"
@@ -82,51 +82,51 @@ Use the named lanes through the runner.
 
 | Lane | Timeout (s) | Description |
 | --- | ---: | --- |
-| `archive-data-products` | 600 | Durable archive products, external consumer contracts, product-aware grouped stats, and health/governance surfaces |
+| `archive-data-products` | 600 | Archive products, consumer contracts, grouped stats, and health/debt surfaces |
 | `chaos` | 900 | Hostility, interruption, and chronology integration coverage |
+| `cleanup-contracts` | 900 | Cleanup lineage, health/debt views, and maintenance workflow coverage |
 | `embeddings-coverage` | 300 | Embedding coverage/readiness stats, health exposure, and embed command contracts |
-| `evidence-tier-contracts` | 420 | Explicit evidence-tier product contracts, chronology fields, and durable evidence payload/query surfaces |
-| `governed-cleanup-contracts` | 900 | Cleanup lineage, health/debt governance, and maintenance control-plane contract coverage |
-| `heuristic-inference-contracts` | 600 | Heuristic session/work/phase contract hardening with explicit support metadata and consumer parity |
+| `evidence-tier-contracts` | 420 | Explicit evidence-tier product contracts, chronology fields, and evidence payload/query surfaces |
+| `heuristic-inference-contracts` | 600 | Heuristic session/work/phase contract hardening with explicit supporting metadata and consumer parity |
 | `inference-tier-contracts` | 420 | Inference-tier work-event/phase/profile contracts with confidence/provenance-bearing semantic payloads |
 | `long-haul-small` | 1800 | Small reproducible benchmark/long-haul campaign |
 | `machine-contract` | 180 | Root CLI JSON success/failure envelopes and runtime-health machine surfaces |
-| `maintenance-control-plane` | 480 | Health, maintenance selection, cache/live provenance, publication maintenance summaries, and machine output |
+| `maintenance-workflows` | 480 | Health, maintenance selection, cache/live provenance, publication summaries, and machine output |
 | `mixed-consumer-contracts` | 480 | CLI, facade, MCP, and health surfaces consuming the same evidence/inference product model |
 | `pipeline-probe-chatgpt` | 180 | Synthetic ChatGPT parse-stage pipeline probe under explicit runtime and RSS budgets |
-| `probabilistic-enrichment-contracts` | 720 | Durable session-enrichment product contracts across CLI, facade, MCP, storage, and retrieval-band status |
-| `query-routing` | 240 | Query-first CLI route planning, integration, and streamed read-surface proofs |
+| `probabilistic-enrichment-contracts` | 720 | Session-enrichment contracts across CLI, facade, MCP, storage, and retrieval-band status |
+| `query-routing` | 240 | Query-first CLI route planning, integration, and streamed read checks |
 | `retrieval-band-readiness` | 420 | Transcript/evidence/inference retrieval-band readiness, embedding stats, and health exposure |
-| `retrieval-dogfood` | 480 | Action-aware query truth, grouped retrieval stats, archive health, and MCP retrieval payload coverage |
+| `retrieval-checks` | 480 | Action-aware query truth, grouped retrieval stats, archive health, and MCP retrieval payload coverage |
 | `scale-fast` | 120 | Fast storage scale budgets |
 | `scale-slow` | 360 | Slow local storage scale budgets |
 | `semantic-product-normalization` | 900 | Semantic/session product normalization, operator/toolchain narrowing, schema contracts, and provider parser cleanup |
-| `semantic-stack` | 360 | Unified harmonization, semantic facts/profile convergence, proof, and contract inventory coverage |
+| `semantic-stack` | 360 | Unified harmonization, semantic facts/profile convergence, and contract inventory coverage |
 | `showcase-baselines` | 180 | Registry-derived tier-0 CLI help/source showcase baselines |
 | `source-provider-fidelity` | 420 | Source traversal, Drive/runtime source boundaries, parser decoding, and provider-ingest fidelity |
-| `tui` | 240 | Textual Mission Control screens and interaction-state coverage |
+| `tui` | 240 | Textual dashboard screens and interaction-state coverage |
 
 ### Live Lanes
 
 | Lane | Timeout (s) | Description |
 | --- | ---: | --- |
 | `live-archive-subset-parse-probe` | 1800 | Live archive medium archive-subset parse probe with persisted manifest/workdir artifacts |
-| `live-embed-stats` | 120 | Live archive embedding readiness/readiness JSON surface |
-| `live-exercises` | 1800 | Operator-run live archive showcase/QA exercise lane |
-| `live-health-json` | 180 | Live archive machine-readable health/proof surface |
+| `live-embed-stats` | 120 | Live archive embedding status JSON view |
+| `live-exercises` | 1800 | Manual live archive showcase/QA exercise lane |
+| `live-health-json` | 180 | Live archive machine-readable health report |
 | `live-maintenance-preview` | 240 | Live archive machine-readable maintenance preview for safe repairs and destructive cleanup |
 | `live-products-analytics` | 180 | Live archive provider-analytics product surface |
 | `live-products-day-summaries` | 180 | Live archive day-summary product surface over the recent semantic slice |
-| `live-products-debt` | 180 | Live archive debt/governance product surface |
+| `live-products-debt` | 180 | Live archive debt and cleanup product view |
 | `live-products-enrichments` | 180 | Live archive probabilistic session-enrichment product surface |
 | `live-products-phases` | 180 | Live archive inferred phase product surface |
 | `live-products-profiles-evidence` | 180 | Live archive evidence-tier session-profile product surface |
 | `live-products-profiles-inference` | 180 | Live archive inference-tier session-profile product surface |
-| `live-products-status` | 180 | Live archive durable product readiness surface |
-| `live-products-tags` | 180 | Live archive durable tag-rollup product surface |
+| `live-products-status` | 180 | Live archive product status view |
+| `live-products-tags` | 180 | Live archive tag-rollup product view |
 | `live-products-work-events` | 180 | Live archive inferred work-event product surface |
-| `live-project-stats` | 180 | Live archive project-grouped stats over durable session products |
-| `live-retrieval-dogfood` | 180 | Live archive action-aware grouped retrieval stats on a bounded semantic slice |
+| `live-project-stats` | 180 | Live archive project-grouped stats over session products |
+| `live-retrieval-checks` | 180 | Live archive action-aware grouped retrieval stats on a bounded semantic slice |
 | `live-session-product-repair` | 600 | Live archive evidence/inference session-product rebuild and migration surface |
 | `maintenance-memory-budget` | 240 | Live archive maintenance preview under an explicit RSS budget |
 | `memory-budget` | 240 | Live archive grouped retrieval command under an explicit RSS budget |
@@ -135,29 +135,29 @@ Use the named lanes through the runner.
 
 | Lane | Timeout (s) | Includes | Description |
 | --- | ---: | --- | --- |
-| `archive-data-products-live` | 1800 | `archive-data-products`<br>`live-products-small` | Local durable-product contract lane plus bounded live archive product dogfooding |
-| `archive-intelligence` | 1800 | `retrieval-dogfood`<br>`embeddings-coverage` | Local archive-intelligence closure lane for retrieval and embedding readiness |
-| `domain-read-model-contracts` | 2400 | `archive-data-products`<br>`maintenance-control-plane` | Local domain-read-model closure lane for analytics/products, consumer contracts, and archive-debt governance surfaces |
-| `domain-read-model-live` | 1800 | `live-products-small`<br>`live-products-analytics`<br>`live-products-debt`<br>`live-governance-small` | Bounded live archive lane for durable products, analytics/debt products, and maintenance governance |
-| `domain-read-model-stewardship` | 3600 | `domain-read-model-contracts`<br>`domain-read-model-live` | Full domain-read-model and live-archive stewardship closure lane |
-| `evidence-stewardship-contracts` | 2400 | `evidence-tier-contracts`<br>`inference-tier-contracts`<br>`mixed-consumer-contracts`<br>`retrieval-band-readiness` | Evidence/inference contract closure lane across explicit evidence, inferred semantics, consumer parity, and retrieval readiness |
-| `evidence-stewardship-hardening` | 4800 | `evidence-stewardship-contracts`<br>`evidence-stewardship-live` | Full evidence/stewardship closure lane covering tiered contracts plus bounded live archive migration and retrieval readiness |
-| `evidence-stewardship-live` | 2400 | `live-session-product-repair`<br>`live-products-status`<br>`live-products-profiles-evidence`<br>`live-products-profiles-inference`<br>`live-products-work-events`<br>`live-products-phases`<br>`live-embed-stats`<br>`live-health-json`<br>`maintenance-memory-budget` | Bounded live archive lane for tiered product views, live migration, health, and retrieval-band budgets |
+| `archive-data-products-live` | 1800 | `archive-data-products`<br>`live-products-small` | Local product-contract lane plus bounded live archive product checks |
+| `archive-intelligence` | 1800 | `retrieval-checks`<br>`embeddings-coverage` | Local archive-intelligence closure lane for retrieval and embedding readiness |
+| `cleanup-live` | 2400 | `live-products-debt`<br>`live-maintenance-preview`<br>`maintenance-memory-budget` | Bounded live archive lane for cleanup/debt preview and maintenance budgets |
+| `domain-read-model-contracts` | 2400 | `archive-data-products`<br>`maintenance-workflows` | Local domain read-model lane for analytics/products, consumer contracts, and debt views |
+| `domain-read-model-hardening` | 3600 | `domain-read-model-contracts`<br>`domain-read-model-live` | Full domain read-model lane with local contracts and bounded live checks |
+| `domain-read-model-live` | 1800 | `live-products-small`<br>`live-products-analytics`<br>`live-products-debt`<br>`live-maintenance-small` | Bounded live archive lane for products, analytics/debt views, and maintenance checks |
+| `evidence-contracts` | 2400 | `evidence-tier-contracts`<br>`inference-tier-contracts`<br>`mixed-consumer-contracts`<br>`retrieval-band-readiness` | Evidence/inference contract lane across explicit evidence, inferred semantics, consumer parity, and retrieval readiness |
+| `evidence-hardening` | 4800 | `evidence-contracts`<br>`evidence-live` | Full evidence lane with contracts and bounded live checks |
+| `evidence-live` | 2400 | `live-session-product-repair`<br>`live-products-status`<br>`live-products-profiles-evidence`<br>`live-products-profiles-inference`<br>`live-products-work-events`<br>`live-products-phases`<br>`live-embed-stats`<br>`live-health-json`<br>`maintenance-memory-budget` | Bounded live archive lane for tiered product views, live migration, health, and retrieval-band budgets |
 | `frontier-extended` | 3600 | `frontier-local`<br>`pipeline-probe-chatgpt`<br>`scale-fast`<br>`long-haul-small` | Local closure lane plus fast scale and small long-haul campaign |
 | `frontier-local` | 1500 | `machine-contract`<br>`query-routing`<br>`showcase-baselines`<br>`semantic-stack`<br>`tui`<br>`chaos` | Non-live local closure lane for machine/query/semantic/TUI/chaos validation |
-| `governed-cleanup-live` | 2400 | `live-products-debt`<br>`live-maintenance-preview`<br>`maintenance-memory-budget` | Bounded live archive lane for cleanup debt preview/validation governance and maintenance budgets |
 | `live-archive-slow` | 2400 | `live-archive-small`<br>`live-exercises` | Broader live archive dogfood lane including retrieval/readiness and live QA exercises |
-| `live-archive-small` | 480 | `live-embed-stats`<br>`live-retrieval-dogfood`<br>`live-products-status`<br>`live-health-json` | Bounded live archive retrieval/readiness/health dogfood lane |
-| `live-governance-small` | 720 | `live-health-json`<br>`live-maintenance-preview`<br>`maintenance-memory-budget` | Bounded live archive governance lane for health, maintenance preview, and maintenance memory budget |
-| `live-products-small` | 480 | `live-products-status`<br>`live-products-tags`<br>`live-project-stats` | Bounded live archive durable-product and grouped-stats dogfood lane |
-| `probabilistic-enrichment-hardening` | 5400 | `heuristic-inference-contracts`<br>`probabilistic-enrichment-contracts`<br>`governed-cleanup-contracts`<br>`probabilistic-enrichment-live`<br>`governed-cleanup-live` | Full probabilistic-enrichment and governed-cleanup closure lane |
+| `live-archive-small` | 480 | `live-embed-stats`<br>`live-retrieval-checks`<br>`live-products-status`<br>`live-health-json` | Bounded live archive retrieval/readiness/health dogfood lane |
+| `live-maintenance-small` | 720 | `live-health-json`<br>`live-maintenance-preview`<br>`maintenance-memory-budget` | Bounded live archive lane for health, maintenance preview, and maintenance memory budget |
+| `live-products-small` | 480 | `live-products-status`<br>`live-products-tags`<br>`live-project-stats` | Bounded live archive product and grouped-stats lane |
+| `probabilistic-enrichment-hardening` | 5400 | `heuristic-inference-contracts`<br>`probabilistic-enrichment-contracts`<br>`cleanup-contracts`<br>`probabilistic-enrichment-live`<br>`cleanup-live` | Full probabilistic-enrichment and cleanup lane |
 | `probabilistic-enrichment-live` | 2400 | `live-session-product-repair`<br>`live-products-status`<br>`live-products-profiles-inference`<br>`live-products-enrichments`<br>`live-embed-stats`<br>`live-health-json`<br>`memory-budget` | Bounded live archive lane for enrichment products, retrieval bands, and health surfaces |
-| `runtime-substrate-contracts` | 2400 | `query-routing`<br>`semantic-stack`<br>`maintenance-control-plane`<br>`archive-data-products` | Local runtime-substrate closure lane across query, semantic proof, durable products, and maintenance control-plane contracts |
+| `runtime-substrate-contracts` | 2400 | `query-routing`<br>`semantic-stack`<br>`maintenance-workflows`<br>`archive-data-products` | Local runtime-substrate lane across query, semantic checks, archive products, and maintenance workflows |
 | `runtime-substrate-hardening` | 3600 | `runtime-substrate-contracts`<br>`runtime-substrate-live` | Full runtime-substrate validation lane covering local contracts plus bounded live archive checks |
-| `runtime-substrate-live` | 1800 | `live-archive-small`<br>`live-governance-small`<br>`memory-budget` | Bounded live archive lane for runtime-substrate dogfooding, governance, and memory budgets |
+| `runtime-substrate-live` | 1800 | `live-archive-small`<br>`live-maintenance-small`<br>`memory-budget` | Bounded live archive lane for runtime-substrate checks, maintenance checks, and memory budgets |
 | `semantic-product-hardening` | 3600 | `semantic-product-normalization`<br>`semantic-product-live` | Full semantic-product normalization and toolchain convergence lane |
-| `semantic-product-live` | 1800 | `live-products-status`<br>`live-products-tags`<br>`live-products-day-summaries`<br>`live-products-debt`<br>`live-governance-small` | Bounded live archive lane for normalized product surfaces, governance preview, and maintenance budgets |
-| `source-runtime-governance` | 1800 | `source-provider-fidelity`<br>`maintenance-control-plane` | Local source/provider fidelity plus runtime maintenance/control-plane convergence |
+| `semantic-product-live` | 1800 | `live-products-status`<br>`live-products-tags`<br>`live-products-day-summaries`<br>`live-products-debt`<br>`live-maintenance-small` | Bounded live archive lane for normalized products, maintenance preview, and memory budgets |
+| `source-runtime-alignment` | 1800 | `source-provider-fidelity`<br>`maintenance-workflows` | Local source/provider fidelity plus runtime maintenance alignment |
 
 ## Mutation Campaign Catalog
 
@@ -187,7 +187,7 @@ Durable mutation ledgers live in [mutation-testing-baseline.md](./mutation-testi
 
 ## Benchmark Campaign Catalog
 
-Benchmark comparisons are operator-run.
+Benchmark comparisons are manual.
 
 | Campaign | Tests | Warn | Fail | Description |
 | --- | --- | ---: | ---: | --- |
@@ -199,15 +199,15 @@ Benchmark comparisons are operator-run.
 
 - mutation campaigns: `.local/mutation-campaigns/`
 - benchmark campaigns: `.local/benchmark-campaigns/`
-- pipeline probe manifests and replay bundles: operator-selected paths outside the repo by default
+- pipeline probe manifests and replay bundles: user-selected paths outside the repo by default
 
 ## Slow-Test Policy
 
 - keep the default correctness lane representative of real archive/storage invariants
-- mark a test `slow` only when it is optional heavy proof, not a core correctness contract
+- mark a test `slow` only when it is an optional heavy check, not a core correctness contract
 - review `pytest --durations` output when a new heavy test appears
 
-## Operator Guidance
+## Workflow Guidance
 
 When changing code in a narrow domain:
 

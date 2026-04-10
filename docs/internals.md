@@ -1,6 +1,6 @@
 # Internals Reference
 
-This is the operator-facing map of the live codebase: invariants, hot files,
+This is the working map of the live codebase: invariants, hot files,
 and maintenance landmarks. For the conceptual system shape, see
 [architecture.md](architecture.md). For the generated validation and campaign
 catalog, see [test-quality-workflows.md](test-quality-workflows.md).
@@ -61,22 +61,22 @@ polylogue audit --only exercises --tier 0
 | `polylogue/pipeline/runner.py` | stage orchestration |
 | `polylogue/pipeline/services/*.py` | acquire, parse, materialize, render, index services |
 
-### Products and Stewardship
+### Products and Maintenance
 
 | File | Purpose |
 | --- | --- |
-| `polylogue/products/*.py` | durable product models |
+| `polylogue/products/*.py` | derived-product models |
 | `polylogue/storage/session_product_*.py` | product persistence and rebuild logic |
 | `polylogue/schemas/*.py` | schema inference, verification, provider bundles |
 | `polylogue/showcase/*.py` | deterministic exercises and acceptance harness |
-| `devtools/*.py` | repository control plane |
+| `devtools/*.py` | repo maintenance tools |
 
 ## Local State
 
 Use the hidden roots instead of creating new top-level scratch directories:
 
 - [`.cache/README.md`](../.cache/README.md) for disposable caches
-- [`.local/README.md`](../.local/README.md) for meaningful untracked outputs
+- [`.local/README.md`](../.local/README.md) for untracked outputs
 
 Important examples:
 
@@ -85,7 +85,7 @@ Important examples:
 - `.cache/mypy/` and `.cache/ruff/`
 - `.local/mutation-campaigns/`
 - `.local/benchmark-campaigns/`
-- `.local/showcase/` or other demo/proof outputs
+- `.local/showcase/` or other demo or verification outputs
 
 ## Debugging Landmarks
 

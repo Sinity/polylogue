@@ -1,19 +1,17 @@
-# Developer Control Plane
+# Developer Tools
 
-`python -m devtools` is the unified control plane for repository-maintenance
-work. Treat it as Polylogue's `xtask`-style entrypoint.
+`python -m devtools` is the repo-maintenance entrypoint.
 
 Use `python -m devtools` for routine repo-maintenance work. Call individual
-`devtools/*.py` modules directly only when you are editing the control plane
-itself.
+`devtools/*.py` modules directly only when you are editing these tools.
 
-The control plane exposes both human and JSON discovery/status forms. Use the
-JSON forms for scripts and agents.
+It exposes both human and JSON discovery/status forms. Use the JSON forms for
+scripts and agents.
 
 <!-- BEGIN GENERATED: devtools-command-catalog -->
 ## Command Catalog
 
-Use these discovery commands before calling control-plane subcommands programmatically:
+Use these discovery commands before scripting or dispatching subcommands:
 
 ```bash
 python -m devtools --help
@@ -28,17 +26,17 @@ python -m devtools status --json
 | Command | Description |
 | --- | --- |
 | `python -m devtools motd` | Alias for `status`. |
-| `python -m devtools status` | Render the development-shell MOTD/status surface. |
+| `python -m devtools status` | Render the devshell status view. |
 
 ### Generated Surfaces
 
 | Command | Description |
 | --- | --- |
-| `python -m devtools render-agents` | Render AGENTS.md from the root CLAUDE transclusion surface. |
-| `python -m devtools render-all` | Refresh or verify generated repository surfaces. |
+| `python -m devtools render-agents` | Render AGENTS.md from CLAUDE.md and its included files. |
+| `python -m devtools render-all` | Refresh or verify generated docs and agent files. |
 | `python -m devtools render-cli-reference` | Render docs/cli-reference.md from live CLI help. |
-| `python -m devtools render-devtools-reference` | Render the generated command catalog inside docs/devtools.md. |
-| `python -m devtools render-docs-surface` | Render docs/README.md and the README docs table from the shared docs registry. |
+| `python -m devtools render-devtools-reference` | Render the command catalog inside docs/devtools.md. |
+| `python -m devtools render-docs-surface` | Render docs/README.md and the README documentation table. |
 | `python -m devtools render-quality-reference` | Render docs/test-quality-workflows.md from live validation, mutation, and benchmark registries. |
 
 ### Verification
@@ -67,7 +65,7 @@ python -m devtools status --json
 
 <!-- END GENERATED: devtools-command-catalog -->
 
-Use the control plane for:
+Use these tools for:
 
 - generated-document refresh
 - generated-document drift checks
@@ -122,7 +120,7 @@ tracked docs trees.
 ## Local State Layout
 
 - [`.cache/README.md`](../.cache/README.md): disposable cache state
-- [`.local/README.md`](../.local/README.md): meaningful but untracked local outputs
+- [`.local/README.md`](../.local/README.md): untracked local outputs
 - `.venv/`, `.direnv/`, and `result*`: tool-owned roots that stay at the repo root
 
 Keep new repo-local outputs in one of those hidden roots.

@@ -2,7 +2,7 @@
 
 AI chat export archiver — ingests Claude, ChatGPT, Codex, Gemini exports into a SQLite archive with full-text search, session analytics, and derived products.
 
-@.claude/includes/project-constitution.md
+@.claude/includes/agent-memory.md
 @.claude/includes/agent-workflow.md
 @CONTRIBUTING.md
 @docs/architecture.md

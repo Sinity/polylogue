@@ -9,17 +9,17 @@ This directory holds the current repository-facing documentation.
 | Document | Description |
 |----------|-------------|
 | [CLI Reference](docs/cli-reference.md) | Generated command reference from live help output. |
-| [Developer Control Plane](docs/devtools.md) | `python -m devtools` guide for generation, validation, and repo hygiene. |
+| [Developer Tools](docs/devtools.md) | `python -m devtools` guide for generated surfaces, validation, and repo hygiene. |
 | [Library API](docs/library-api.md) | Async archive API, filters, and query patterns. |
 | [Data Model](docs/data-model.md) | Archive entities, storage shape, and metadata rules. |
 | [Configuration](docs/configuration.md) | XDG paths, environment variables, and runtime configuration. |
 | [Architecture](docs/architecture.md) | System rings, ownership boundaries, and data flow. |
-| [Internals](docs/internals.md) | Operator-facing implementation reference and debugging landmarks. |
+| [Internals](docs/internals.md) | Working implementation reference and debugging landmarks. |
 | [MCP Integration](docs/mcp-integration.md) | Model Context Protocol server setup and usage. |
 | [Generate](docs/generate.md) | Synthetic archive generation, seed mode, and demo workflows. |
 | [Providers](docs/providers/README.md) | Provider-specific parsing and export-format notes. |
 | [Test Quality Workflows](docs/test-quality-workflows.md) | Generated validation lanes, mutation campaigns, and benchmark campaigns. |
-| [Mutation Testing Baseline](docs/mutation-testing-baseline.md) | Mutation policy, baseline expectations, and operator workflow. |
+| [Mutation Testing Baseline](docs/mutation-testing-baseline.md) | Mutation policy, baseline expectations, and workflow. |
 
 ## Repository Guides
 
@@ -27,6 +27,6 @@ This directory holds the current repository-facing documentation.
 |----------|-------------|
 | [Contributing](CONTRIBUTING.md) | Branching, issues, PRs, squash-merge history, and repo policy. |
 | [Testing](TESTING.md) | Baseline test matrix, protected surfaces, and QA entrypoints. |
-| [Agent Guide](CLAUDE.md) | Root transclusion surface for repository-specific agent guidance. |
+| [Agent Guide](CLAUDE.md) | Repository-specific agent memory, workflow rules, and included references. |
 | [Local Cache Layout](.cache/README.md) | Disposable cache roots chosen by the repo itself. |
-| [Local Working Outputs](.local/README.md) | Meaningful but untracked local outputs such as campaigns, showcases, and proof bundles. |
+| [Local Working Outputs](.local/README.md) | Untracked local outputs such as campaigns, showcases, and reports. |

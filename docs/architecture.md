@@ -5,13 +5,13 @@ Polylogue is a local archive platform for AI conversations. The system has four 
 1. archive substrate
 2. derived read models
 3. user and machine surfaces
-4. stewardship
+4. verification and maintenance
 
 ## Rings
 
 ### 1. Archive Substrate
 
-The substrate owns the durable truth of the archive:
+The substrate owns the archive's stored meaning:
 
 - source acquisition and provider detection
 - provider parsing and normalization
@@ -28,7 +28,7 @@ Primary modules:
 
 ### 2. Derived Read Models
 
-These are durable products over the archive, not ad-hoc reports:
+These are stored products over the archive:
 
 - session profiles
 - work events
@@ -55,11 +55,11 @@ These expose the archive and its products:
 - renderers: `polylogue/rendering/`
 
 Most of these are leaf adapters. They should reuse archive operations and
-durable products.
+derived products.
 
-### 4. Stewardship
+### 4. Verification and Maintenance
 
-Stewardship exists to keep the archive trustworthy:
+This ring keeps the archive inspectable and maintainable:
 
 - schema generation and verification
 - synthetic corpus generation
@@ -96,13 +96,13 @@ should either feed that center or read from it.
 | `polylogue/storage/` | SQLite backend, repositories, search providers, product persistence |
 | `polylogue/sources/` | Provider detection, acquisition, parser dispatch, raw payload handling |
 | `polylogue/pipeline/` | Stage orchestration: acquire, schema, parse, materialize, render, index |
-| `polylogue/products/` | Typed product models and aggregation contracts |
+| `polylogue/products/` | Typed derived-product models and aggregation contracts |
 | `polylogue/cli/` | Query-first CLI plus command families (`run`, `doctor`, `products`, `audit`, ...) |
 | `polylogue/rendering/` | Markdown/HTML rendering and output-path logic |
 | `polylogue/site/` | Static-site generation and publication manifests |
 | `polylogue/mcp/` | Model Context Protocol server |
 | `polylogue/showcase/` | Acceptance harness, seeded exercises, deterministic surface checks |
-| `devtools/` | Repository control plane for generated docs, validation, benchmarking, and hygiene |
+| `devtools/` | Repository tools for generated docs, validation, benchmarking, and hygiene |
 
 ## Placement Rules
 

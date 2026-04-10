@@ -88,8 +88,8 @@ class TestCommandConstruction:
         assert "tests/unit/sources/test_drive_ops.py" in cmd
         assert "tests/integration/test_security.py" in cmd
 
-    def test_maintenance_control_plane_lane_uses_health_and_check_suite(self):
-        cmd = build_lane_command(LANES["maintenance-control-plane"])
+    def test_maintenance_workflows_lane_uses_health_and_check_suite(self):
+        cmd = build_lane_command(LANES["maintenance-workflows"])
         assert cmd[:3] == [sys.executable, "-m", "pytest"]
         assert "tests/unit/core/test_health_core.py" in cmd
         assert "tests/unit/cli/test_check.py" in cmd
@@ -111,8 +111,8 @@ class TestCommandConstruction:
         assert "tests/integration/test_schema_operator_workflow.py" in cmd
         assert "tests/unit/sources/test_parsers_drive.py" in cmd
 
-    def test_retrieval_dogfood_lane_uses_retrieval_suite(self):
-        cmd = build_lane_command(LANES["retrieval-dogfood"])
+    def test_retrieval_checks_lane_uses_retrieval_suite(self):
+        cmd = build_lane_command(LANES["retrieval-checks"])
         assert cmd[:3] == [sys.executable, "-m", "pytest"]
         assert "tests/unit/cli/test_query_exec.py" in cmd
         assert "tests/unit/core/test_health_core.py" in cmd
@@ -162,8 +162,8 @@ class TestCommandConstruction:
         assert "tests/unit/storage/test_embedding_stats.py" in cmd
         assert "tests/unit/mcp/test_tool_contracts.py" in cmd
 
-    def test_governed_cleanup_contracts_lane_uses_health_and_check_suite(self):
-        cmd = build_lane_command(LANES["governed-cleanup-contracts"])
+    def test_cleanup_contracts_lane_uses_health_and_check_suite(self):
+        cmd = build_lane_command(LANES["cleanup-contracts"])
         assert cmd[:3] == [sys.executable, "-m", "pytest"]
         assert "tests/unit/cli/test_check.py" in cmd
         assert "tests/integration/test_health.py" in cmd
@@ -279,7 +279,7 @@ class TestCommandConstruction:
         captured = capsys.readouterr()
 
         assert exit_code == 0
-        assert "retrieval-dogfood" in captured.out
+        assert "retrieval-checks" in captured.out
         assert "embeddings-coverage" in captured.out
 
     def test_frontier_extended_dry_run_includes_pipeline_probe_lane(self, capsys):
@@ -289,16 +289,16 @@ class TestCommandConstruction:
         assert exit_code == 0
         assert "pipeline-probe-chatgpt" in captured.out
 
-    def test_source_runtime_governance_dry_run_includes_new_lanes(self, capsys):
-        exit_code = main(["--lane", "source-runtime-governance", "--dry-run"])
+    def test_source_runtime_alignment_dry_run_includes_new_lanes(self, capsys):
+        exit_code = main(["--lane", "source-runtime-alignment", "--dry-run"])
         captured = capsys.readouterr()
 
         assert exit_code == 0
         assert "source-provider-fidelity" in captured.out
-        assert "maintenance-control-plane" in captured.out
+        assert "maintenance-workflows" in captured.out
 
-    def test_live_governance_small_dry_run_includes_preview_and_budget(self, capsys):
-        exit_code = main(["--lane", "live-governance-small", "--dry-run"])
+    def test_live_maintenance_small_dry_run_includes_preview_and_budget(self, capsys):
+        exit_code = main(["--lane", "live-maintenance-small", "--dry-run"])
         captured = capsys.readouterr()
 
         assert exit_code == 0
@@ -313,7 +313,7 @@ class TestCommandConstruction:
         assert "archive-data-products" in captured.out
         assert "live-products-small" in captured.out
 
-    def test_domain_read_model_live_dry_run_includes_new_product_and_governance_lanes(self, capsys):
+    def test_domain_read_model_live_dry_run_includes_new_product_and_maintenance_lanes(self, capsys):
         exit_code = main(["--lane", "domain-read-model-live", "--dry-run"])
         captured = capsys.readouterr()
 
@@ -321,10 +321,10 @@ class TestCommandConstruction:
         assert "live-products-small" in captured.out
         assert "live-products-analytics" in captured.out
         assert "live-products-debt" in captured.out
-        assert "live-governance-small" in captured.out
+        assert "live-maintenance-small" in captured.out
 
-    def test_domain_read_model_stewardship_dry_run_expands_both_subtrees(self, capsys):
-        exit_code = main(["--lane", "domain-read-model-stewardship", "--dry-run"])
+    def test_domain_read_model_hardening_dry_run_expands_both_subtrees(self, capsys):
+        exit_code = main(["--lane", "domain-read-model-hardening", "--dry-run"])
         captured = capsys.readouterr()
 
         assert exit_code == 0
@@ -338,7 +338,7 @@ class TestCommandConstruction:
         assert exit_code == 0
         assert "query-routing" in captured.out
         assert "semantic-stack" in captured.out
-        assert "maintenance-control-plane" in captured.out
+        assert "maintenance-workflows" in captured.out
         assert "archive-data-products" in captured.out
 
     def test_runtime_substrate_live_dry_run_includes_live_and_budget_lanes(self, capsys):
@@ -347,7 +347,7 @@ class TestCommandConstruction:
 
         assert exit_code == 0
         assert "live-archive-small" in captured.out
-        assert "live-governance-small" in captured.out
+        assert "live-maintenance-small" in captured.out
         assert "memory-budget" in captured.out
 
     def test_runtime_substrate_hardening_dry_run_expands_both_subtrees(self, capsys):
@@ -358,7 +358,7 @@ class TestCommandConstruction:
         assert "runtime-substrate-contracts" in captured.out
         assert "runtime-substrate-live" in captured.out
 
-    def test_semantic_product_live_dry_run_includes_normalized_product_and_governance_lanes(self, capsys):
+    def test_semantic_product_live_dry_run_includes_normalized_product_and_maintenance_lanes(self, capsys):
         exit_code = main(["--lane", "semantic-product-live", "--dry-run"])
         captured = capsys.readouterr()
 
@@ -366,7 +366,7 @@ class TestCommandConstruction:
         assert "live-products-tags" in captured.out
         assert "live-products-day-summaries" in captured.out
         assert "live-products-debt" in captured.out
-        assert "live-governance-small" in captured.out
+        assert "live-maintenance-small" in captured.out
 
     def test_semantic_product_hardening_dry_run_expands_both_subtrees(self, capsys):
         exit_code = main(["--lane", "semantic-product-hardening", "--dry-run"])
@@ -376,8 +376,8 @@ class TestCommandConstruction:
         assert "semantic-product-normalization" in captured.out
         assert "semantic-product-live" in captured.out
 
-    def test_evidence_stewardship_contracts_dry_run_includes_tier_and_retrieval_lanes(self, capsys):
-        exit_code = main(["--lane", "evidence-stewardship-contracts", "--dry-run"])
+    def test_evidence_contracts_dry_run_includes_tier_and_retrieval_lanes(self, capsys):
+        exit_code = main(["--lane", "evidence-contracts", "--dry-run"])
         captured = capsys.readouterr()
 
         assert exit_code == 0
@@ -386,8 +386,8 @@ class TestCommandConstruction:
         assert "mixed-consumer-contracts" in captured.out
         assert "retrieval-band-readiness" in captured.out
 
-    def test_evidence_stewardship_live_dry_run_includes_tiered_and_repair_lanes(self, capsys):
-        exit_code = main(["--lane", "evidence-stewardship-live", "--dry-run"])
+    def test_evidence_live_dry_run_includes_tiered_and_repair_lanes(self, capsys):
+        exit_code = main(["--lane", "evidence-live", "--dry-run"])
         captured = capsys.readouterr()
 
         assert exit_code == 0
@@ -398,10 +398,10 @@ class TestCommandConstruction:
         assert "live-session-product-repair" in captured.out
         assert "maintenance-memory-budget" in captured.out
 
-    def test_evidence_stewardship_hardening_dry_run_expands_both_subtrees(self, capsys):
-        exit_code = main(["--lane", "evidence-stewardship-hardening", "--dry-run"])
+    def test_evidence_hardening_dry_run_expands_both_subtrees(self, capsys):
+        exit_code = main(["--lane", "evidence-hardening", "--dry-run"])
         captured = capsys.readouterr()
 
         assert exit_code == 0
-        assert "evidence-stewardship-contracts" in captured.out
-        assert "evidence-stewardship-live" in captured.out
+        assert "evidence-contracts" in captured.out
+        assert "evidence-live" in captured.out

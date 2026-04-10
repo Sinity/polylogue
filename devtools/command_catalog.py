@@ -1,4 +1,4 @@
-"""Shared command catalog for the developer control plane."""
+"""Shared command catalog for repository developer tools."""
 
 from __future__ import annotations
 
@@ -41,18 +41,18 @@ class CommandSpec:
 
 
 COMMAND_SPECS: tuple[CommandSpec, ...] = (
-    CommandSpec("status", "core", "Render the development-shell MOTD/status surface.", "devtools.project_motd"),
+    CommandSpec("status", "core", "Render the devshell status view.", "devtools.project_motd"),
     CommandSpec("motd", "core", "Alias for `status`.", "devtools.project_motd"),
     CommandSpec(
         "render-all",
         "generated surfaces",
-        "Refresh or verify generated repository surfaces.",
+        "Refresh or verify generated docs and agent files.",
         "devtools.render_all",
     ),
     CommandSpec(
         "render-agents",
         "generated surfaces",
-        "Render AGENTS.md from the root CLAUDE transclusion surface.",
+        "Render AGENTS.md from CLAUDE.md and its included files.",
         "devtools.render_agents",
     ),
     CommandSpec(
@@ -64,13 +64,13 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
     CommandSpec(
         "render-devtools-reference",
         "generated surfaces",
-        "Render the generated command catalog inside docs/devtools.md.",
+        "Render the command catalog inside docs/devtools.md.",
         "devtools.render_devtools_reference",
     ),
     CommandSpec(
         "render-docs-surface",
         "generated surfaces",
-        "Render docs/README.md and the README docs table from the shared docs registry.",
+        "Render docs/README.md and the README documentation table.",
         "devtools.render_docs_surface",
     ),
     CommandSpec(

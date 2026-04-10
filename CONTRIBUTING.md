@@ -20,7 +20,7 @@ All commands below assume you are already inside that environment. If not, use
 
 The devshell regenerates `AGENTS.md` from [CLAUDE.md](CLAUDE.md)
 automatically. `AGENTS.md` is gitignored and treated as a generated local
-artifact.
+file.
 
 For repo-maintenance tasks, prefer the unified `devtools` entrypoint:
 
@@ -33,8 +33,8 @@ python -m devtools status --json
 python -m devtools render-all
 ```
 
-The JSON discovery/status forms are the cleanest surface for agents and other
-automation that need to inspect the control plane without scraping prose.
+The JSON discovery/status forms are the best fit for agents and other
+automation that need to inspect the devtools surface without scraping prose.
 
 ## Workflow
 
@@ -88,7 +88,7 @@ messages that leave reviewers guessing.
 Squash-merge behavior matters here:
 
 - the pull-request title becomes the final commit subject on `master`
-- write that title as the durable public history line you want to keep
+- write that title as the history line you want to keep
 - keep branch-local commits useful for review, but optimize the PR title and PR
   body for the final preserved narrative
 
@@ -98,8 +98,7 @@ The package version in `pyproject.toml` is distribution metadata, not a
 per-merge ritual.
 
 - do not bump it for every routine PR
-- bump it when cutting a real tagged release or publishing a meaningfully new
-  distributable surface
+- bump it when cutting a real tagged release or publishing a real distributable change
 - until a formal release program exists, prefer accurate docs and clean `master`
   history over synthetic version churn
 
@@ -108,7 +107,7 @@ per-merge ritual.
 Issues are optional. Use them when they improve planning or future traceability:
 
 - larger features or refactors
-- bug reports that need a durable repro or acceptance record
+- bug reports that need a repro or acceptance record
 - architectural or research questions
 - follow-up chains that will span more than one PR
 
@@ -118,7 +117,7 @@ When you do open an issue:
 
 - use the provided issue templates
 - write in terms of outcome, constraints, and acceptance criteria
-- prefer upfront planning issues over retroactive bookkeeping
+- prefer planning issues over retroactive bookkeeping
 - keep the language concise and operational
 
 ## Pull Requests
@@ -139,7 +138,7 @@ The default shape for a good PR here is:
 
 - one coherent implementation slice
 - a title that can stand alone in `master` history
-- a body that reads like a proof receipt
+- a body that records summary, problem, solution, and verification
 - no requirement for a linked issue unless that issue added planning value
 
 ## Repository Settings
@@ -171,7 +170,7 @@ nix flake check
 ```
 
 See [TESTING.md](TESTING.md) for the baseline test matrix and protected test
-surfaces, and [docs/test-quality-workflows.md](docs/test-quality-workflows.md)
+areas, and [docs/test-quality-workflows.md](docs/test-quality-workflows.md)
 for the generated validation-lane, mutation-campaign, and benchmark catalog.
 
 The following files are generated from live sources and should be refreshed when
@@ -189,6 +188,6 @@ python -m devtools render-all
 python -m devtools render-all --check
 ```
 
-See [docs/devtools.md](docs/devtools.md) for the control-plane commands and the
+See [docs/devtools.md](docs/devtools.md) for the `devtools` commands and the
 local-state layout under [`.cache/README.md`](.cache/README.md) and
 [`.local/README.md`](.local/README.md).
