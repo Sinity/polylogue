@@ -1,7 +1,7 @@
 """CLI entry point for running benchmark campaigns.
 
 Usage:
-    python -m devtools.run_campaign --scale medium --output docs/benchmark-campaigns/
+    python -m devtools.run_campaign --scale medium --output artifacts/benchmark-campaigns/
     python -m devtools.run_campaign --scale large --campaign fts-rebuild
     python -m devtools.run_campaign --list
 """
@@ -34,8 +34,8 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--output",
         type=Path,
-        default=ROOT / "docs" / "benchmark-campaigns",
-        help="Output directory for reports (default: docs/benchmark-campaigns/)",
+        default=ROOT / "artifacts" / "benchmark-campaigns",
+        help="Output directory for reports (default: artifacts/benchmark-campaigns/)",
     )
     parser.add_argument(
         "--list",
@@ -72,7 +72,7 @@ async def _run(args: argparse.Namespace) -> int:
         print("Available campaigns:")
         for name, desc in CAMPAIGN_REGISTRY.items():
             print(f"  {name}: {desc}")
-        print(f"\nScale levels: small, medium, large, stretch")
+        print("\nScale levels: small, medium, large, stretch")
         return 0
 
     if args.campaign == "all":
@@ -90,6 +90,7 @@ async def _run(args: argparse.Namespace) -> int:
         # Override seed if provided
         if args.seed != 42:
             from dataclasses import replace
+
             spec = replace(spec, seed=args.seed)
 
         archive_dir = args.output / f"archive-{args.scale}"
@@ -116,7 +117,7 @@ async def _run(args: argparse.Namespace) -> int:
 
     # Save reports
     saved = save_campaign_reports(results, args.output)
-    print(f"\nReports saved:")
+    print("\nReports saved:")
     for path in saved:
         print(f"  {path}")
 

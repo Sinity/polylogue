@@ -27,11 +27,11 @@ Polylogue archives AI conversations from **ChatGPT, Claude, Claude Code, Gemini,
 No data needed. Generate a synthetic archive and explore:
 
 ```bash
-eval $(polylogue generate --seed --env-only)
+eval "$(polylogue audit generate --seed --env-only)"
 
 polylogue                              # Archive stats
 polylogue "error handling"             # Full-text search
-polylogue -p claude --latest           # Latest Claude conversation
+polylogue -p claude-ai --latest        # Latest Claude conversation
 polylogue dashboard                    # Interactive TUI
 ```
 
@@ -48,7 +48,7 @@ pip install polylogue
 
 # From source (Nix)
 git clone https://github.com/sinity/polylogue && cd polylogue
-nix develop   # or: uv sync
+direnv allow   # or: nix develop
 ```
 
 ### 2. Export Your Conversations
@@ -91,8 +91,6 @@ polylogue run
 
 Auto-detects provider format from file content. Handles JSON, JSONL, ZIP archives (with bomb protection), and Google Drive sync.
 
-Local screencast output lives under `artifacts/demos/` when generated.
-
 </td>
 <td width="50%">
 
@@ -104,8 +102,6 @@ polylogue --has thinking --since "last week"
 ```
 
 Filter by provider, date, content type, tags — combine any filters freely.
-
-Durable documentation visuals live under `docs/assets/`.
 
 </td>
 </tr>
@@ -128,7 +124,7 @@ The dashboard surface is exercised through the showcase and demo workflow rather
 ### Generate Static Sites
 
 ```bash
-polylogue site -o ./public
+polylogue run site -o ./public
 ```
 
 Browsable HTML archive with per-provider views, statistics dashboard, and client-side search.
@@ -164,7 +160,7 @@ Search your archive from Claude Desktop or Claude Code via the Model Context Pro
 async with Polylogue() as archive:
     stats = await archive.stats()
     convs = await (archive.filter()
-        .provider("claude")
+    .provider("claude-ai")
         .contains("error")
         .limit(10)
         .list())
@@ -190,7 +186,7 @@ polylogue "auth" "token"               # AND: both terms must appear
 polylogue --similar "how to debug memory leaks"
 
 # Filters (all composable)
-polylogue "error" -p claude,chatgpt    # By provider (comma = OR)
+polylogue "error" -p claude-ai,chatgpt # By provider (comma = OR)
 polylogue --since "last week"          # Natural language dates
 polylogue --until 2025-01-01           # ISO dates
 polylogue --has thinking               # Has reasoning traces
@@ -230,7 +226,7 @@ polylogue "old stuff" --delete --dry-run        # Preview bulk delete
 | Provider | Format | Auto-detected By | ID |
 |----------|--------|------------------|----|
 | ChatGPT | `conversations.json` | `mapping` field with UUID graph | `chatgpt` |
-| Claude (web) | `.jsonl` | `chat_messages` array | `claude` |
+| Claude (web) | `.jsonl` | `chat_messages` array | `claude-ai` |
 | Claude Code | `.json` array | `parentUuid`/`sessionId` markers | `claude-code` |
 | Codex | `.jsonl` | Session envelope structure | `codex` |
 | Gemini | Google Drive API | `chunkedPrompt.chunks` structure | `gemini` |
@@ -256,9 +252,9 @@ Output can be sent to stdout (default), `--output browser`, or `--output clipboa
 
 ```bash
 polylogue run                          # Full pipeline: acquire → parse → render → index
-polylogue run --source claude          # Single source
+polylogue run --source inbox           # Single configured source
 polylogue run --preview                # Preview counts, confirm before writing
-polylogue run --stage parse            # Single stage only
+polylogue run parse                    # Single stage only
 
 # Watch mode — continuous sync
 polylogue run --watch                  # Watch sources for changes
@@ -266,29 +262,39 @@ polylogue run --watch --notify         # Desktop notifications on new conversati
 polylogue run --watch --webhook URL    # Webhook on new conversations
 ```
 
-**Stages**: `acquire` → `parse` → `render` → `index`
+**Stages**: `acquire` → `schema` → `parse` → `materialize` → `render` → `index`
 
 The pipeline is idempotent — re-running imports is always safe. Content hashing (SHA-256 + NFC normalization) ensures unchanged conversations are skipped.
 
-## Subcommands
+## Commands
 
 ```bash
-polylogue check                        # Health check: DB integrity, index status, stats
-polylogue check --repair               # Auto-fix issues (orphaned refs, stale FTS entries)
-polylogue check --deep                 # Full SQLite integrity check
+polylogue list                         # List matched conversations
+polylogue count                        # Count matched conversations
+polylogue stats                        # Aggregate matched conversations
+polylogue open                         # Open the matched conversation/render
+polylogue delete --dry-run             # Preview deletion for matched conversations
 
-polylogue embed                        # Generate vector embeddings for semantic search
-polylogue embed --stats                # Show embedding coverage
-polylogue embed --model voyage-4-large # Use larger model
+polylogue doctor                       # Health check: DB integrity, index status, stats
+polylogue doctor --repair              # Auto-fix issues (orphaned refs, stale FTS entries)
+polylogue doctor --deep                # Full SQLite integrity check
+
+polylogue run embed                    # Generate vector embeddings for semantic search
+polylogue run embed --stats            # Show embedding coverage
+polylogue run embed --model voyage-4-large  # Use larger model
 
 polylogue tags                         # List all tags with counts
-polylogue tags -p claude --json        # Tags for a provider, as JSON
+polylogue tags -p claude-ai --json     # Tags for a provider, as JSON
 
-polylogue site -o ./public             # Build static HTML archive
-polylogue site --title "My Archive"    # Custom title
-polylogue site --search-provider lunr  # Client-side search engine
+polylogue run site -o ./public         # Build static HTML archive
+polylogue run site --title "My Archive"  # Custom title
+polylogue run site --search-provider lunr # Client-side search engine
 
 polylogue dashboard                    # Interactive Textual TUI
+
+polylogue audit                        # Synthetic/live audit workflow
+polylogue audit --only exercises --tier 0
+polylogue audit generate --seed        # Build a demo environment
 
 polylogue auth                         # Google OAuth flow (for Gemini/Drive)
 polylogue auth --revoke                # Revoke stored credentials
@@ -324,7 +330,7 @@ Polylogue provides a [Model Context Protocol](https://modelcontextprotocol.io/) 
 | **Resources** | `polylogue://stats`, `polylogue://conversations`, `polylogue://conversation/{id}` |
 | **Prompts** | `analyze-errors`, `summarize-week`, `extract-code` |
 
-Resources support query parameters for filtering: `polylogue://conversations?provider=claude&since=2024-01-01&limit=50`
+Resources support query parameters for filtering: `polylogue://conversations?provider=claude-ai&since=2024-01-01&limit=50`
 
 [Full MCP documentation →](docs/mcp-integration.md)
 
@@ -341,7 +347,7 @@ async with Polylogue() as archive:
 
     # Search with composable filters
     convs = await (archive.filter()
-        .provider("claude")
+        .provider("claude-ai")
         .contains("error handling")
         .since("2024-06-01")
         .limit(10)
@@ -390,13 +396,13 @@ Create a full demo environment — synthetic database with realistic conversatio
 
 ```bash
 # Interactive — prints env vars and instructions
-polylogue generate --seed
+polylogue audit generate --seed
 
 # Shell integration — eval sets env vars in current shell
-eval $(polylogue generate --seed --env-only)
+eval "$(polylogue audit generate --seed --env-only)"
 
 # Customize
-polylogue generate --seed -p chatgpt,claude-ai -n 10
+polylogue audit generate --seed -p chatgpt,claude-ai -n 10
 ```
 
 The seeded environment runs through the real pipeline (`acquire → parse → render → index`), so the demo exercises the exact same code paths as production.
@@ -406,24 +412,24 @@ The seeded environment runs through the real pipeline (`acquire → parse → re
 Write raw provider-format files (JSON, JSONL) to disk for inspection:
 
 ```bash
-polylogue generate                           # All providers, 3 each
-polylogue generate -p chatgpt -n 5            # ChatGPT only, 5 files
-polylogue generate -o /tmp/corpus             # Custom output directory
+polylogue audit generate                     # All providers, 3 each
+polylogue audit generate -p chatgpt -n 5     # ChatGPT only, 5 files
+polylogue audit generate -o /tmp/corpus      # Custom output directory
 ```
 
 Useful for inspecting wire formats, testing parser changes, or generating fixture data.
 
-### QA Mode
+### Audit Mode
 
 Run synthetic QA checks, including deterministic command exercises:
 
 ```bash
-polylogue qa                                # Full synthetic QA
-polylogue qa --only exercises --tier 0       # Quick exercise smoke
-polylogue qa --only exercises --json         # Machine-readable exercise output
+polylogue audit                              # Full synthetic audit
+polylogue audit --only exercises --tier 0    # Quick exercise smoke
+polylogue audit --only exercises --json      # Machine-readable exercise output
 ```
 
-The QA command seeds a disposable synthetic workspace, runs exercise catalogs, and writes structured reports.
+The audit command seeds a disposable synthetic workspace, runs exercise catalogs, and writes structured reports.
 
 [Synthetic generation docs →](docs/generate.md)
 
@@ -469,21 +475,24 @@ The QA command seeds a disposable synthetic workspace, runs exercise catalogs, a
 ```bash
 git clone https://github.com/sinity/polylogue && cd polylogue
 
-# Enter dev environment
-nix develop              # Nix (recommended)
-# or
-uv sync                  # uv
+# Enter the devshell
+direnv allow             # one-time setup; afterward the devshell loads automatically on cd
+# or: nix develop
 
-# Run tests
-pytest -q                # Quick run (4200+ tests)
-pytest --cov=polylogue   # With coverage (90% minimum enforced)
+# Baseline verification
+pytest -q --ignore=tests/integration
+ruff check polylogue tests
 
-# Lint & type check
-ruff check polylogue/ tests/
-mypy polylogue/
+# Broader validation
+nix build .#polylogue
+nix flake check
 ```
 
-See [CLAUDE.md](CLAUDE.md) for development guidelines, [docs/internals.md](docs/internals.md) for implementation details, and [demos/](demos/) for screencast generation.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for branch and PR conventions,
+[TESTING.md](TESTING.md) for the test matrix, [CLAUDE.md](CLAUDE.md) for
+agent-facing development guidance, [docs/internals.md](docs/internals.md) for
+implementation details, and [artifacts/README.md](artifacts/README.md) for the
+local generated-artifact convention.
 
 ## License
 

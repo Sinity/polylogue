@@ -30,6 +30,7 @@ venv/
 
 # Coverage
 .coverage
+.coverage.*
 coverage.json
 htmlcov/
 

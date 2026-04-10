@@ -15,6 +15,12 @@ changelog:
     - title: Testing
       labels:
         - type:test
+    - title: Documentation
+      labels:
+        - type:docs
+    - title: Maintenance
+      labels:
+        - type:chore
     - title: Other
       labels:
         - "*"

@@ -2,7 +2,7 @@ name: Bug or Regression
 description: Report behavior that is wrong, misleading, broken, or has regressed.
 title: "[bug] "
 labels:
-  - bug
+  - type:fix
 body:
   - type: textarea
     id: actual

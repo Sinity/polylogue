@@ -1,8 +1,6 @@
 name: Research or Decision
 description: Investigate a question, compare approaches, or drive an architectural decision.
 title: "[research] "
-labels:
-  - question
 body:
   - type: textarea
     id: question

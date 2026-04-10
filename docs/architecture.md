@@ -528,7 +528,7 @@ tests/
 | `raw_synthetic_samples` | session | Raw conversation data for unit tests |
 | `repository` | function | Fresh `ConversationRepository` with in-memory backend |
 
-All fixtures use the same `SyntheticCorpus` infrastructure as `polylogue generate --seed`.
+All fixtures use the same `SyntheticCorpus` infrastructure as `polylogue audit generate --seed`.
 
 ### Test Markers
 
@@ -539,7 +539,7 @@ All fixtures use the same `SyntheticCorpus` infrastructure as `polylogue generat
 
 ### Coverage
 
-The test suite enforces ≥90% coverage. As of this writing, 4200+ tests with 1 skip (SQLiteBackend partial-ID limitation).
+Coverage runs enforce a ≥90% threshold when executed with coverage enabled.
 
 ---
 

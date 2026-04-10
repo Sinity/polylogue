@@ -25,10 +25,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-CAMPAIGN_ARTIFACT_DIR = Path("docs/mutation-campaigns")
-STATUS_IGNORE_PREFIXES = (
-    f"{CAMPAIGN_ARTIFACT_DIR.as_posix()}/",
-)
+CAMPAIGN_ARTIFACT_DIR = Path("artifacts/mutation-campaigns")
+STATUS_IGNORE_PREFIXES = (f"{CAMPAIGN_ARTIFACT_DIR.as_posix()}/",)
 DEFAULT_IGNORE_PATTERNS = shutil.ignore_patterns(
     ".git",
     ".direnv",
@@ -234,9 +232,7 @@ CAMPAIGNS: dict[str, Campaign] = {
     "site-builder": Campaign(
         name="site-builder",
         description="Static-site builder and CLI archive contracts",
-        paths_to_mutate=(
-            "polylogue/site/builder.py",
-        ),
+        paths_to_mutate=("polylogue/site/builder.py",),
         tests=(
             "tests/integration/test_site.py",
             "tests/integration/test_site_laws.py",
@@ -263,9 +259,7 @@ CAMPAIGNS: dict[str, Campaign] = {
         name="repository",
         description="Repository query, projection, and CRUD contracts",
         paths_to_mutate=("polylogue/storage/repository.py",),
-        tests=(
-            "tests/unit/storage/test_repository_laws.py",
-        ),
+        tests=("tests/unit/storage/test_repository_laws.py",),
         notes=("Large surface; use to gauge storage law readiness before repository-law work.",),
     ),
     "source-detection": Campaign(
@@ -450,9 +444,7 @@ def git_status_summary(cwd: Path) -> list[str]:
         text=True,
     )
     return [
-        line.rstrip()
-        for line in output.splitlines()
-        if line.strip() and not _status_line_is_ignored(line.rstrip())
+        line.rstrip() for line in output.splitlines() if line.strip() and not _status_line_is_ignored(line.rstrip())
     ]
 
 
@@ -724,10 +716,7 @@ def run_campaign(
     commit = git_commit_sha(repo_root)
     status_summary = git_status_summary(repo_root)
     created_at = datetime.now(UTC).isoformat()
-    prefixes = tuple(
-        f"{path.replace('/', '.').removesuffix('.py')}*"
-        for path in campaign.paths_to_mutate
-    )
+    prefixes = tuple(f"{path.replace('/', '.').removesuffix('.py')}*" for path in campaign.paths_to_mutate)
 
     tmp_prefix = f"mutmut-{campaign.name}-"
     temp_dir_obj: tempfile.TemporaryDirectory[str] | None = None
@@ -843,7 +832,9 @@ def cmd_list(_args: argparse.Namespace) -> int:
 
 def cmd_run(args: argparse.Namespace) -> int:
     campaign = CAMPAIGNS[args.campaign]
-    json_out = None if args.json_out is None else (args.json_out if args.json_out.is_absolute() else ROOT / args.json_out)
+    json_out = (
+        None if args.json_out is None else (args.json_out if args.json_out.is_absolute() else ROOT / args.json_out)
+    )
     markdown_out = (
         None
         if args.markdown_out is None

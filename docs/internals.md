@@ -13,19 +13,19 @@
 
 ```bash
 # Dev
-uv run pytest -q
-uv run mypy polylogue/
-uv run ruff check polylogue/ tests/
+pytest -q --ignore=tests/integration
+ruff check polylogue tests
+nix flake check
 
 # Run
-uv run polylogue                              # Stats
-uv run polylogue "search terms"               # Query
-uv run polylogue -p claude-ai --since "last week"
-uv run polylogue --similar "error handling"   # Semantic search
-uv run polylogue run --preview                # Dry-run sync
-uv run polylogue check --repair --preview     # Safe maintenance preview
-uv run polylogue check --cleanup --preview    # Destructive cleanup preview
-uv run polylogue mcp                          # MCP server (stdio)
+polylogue                              # Stats
+polylogue "search terms"               # Query
+polylogue -p claude-ai --since "last week"
+polylogue --similar "error handling"   # Semantic search
+polylogue run --preview                # Dry-run sync
+polylogue doctor --repair --preview    # Safe maintenance preview
+polylogue doctor --cleanup --preview   # Destructive cleanup preview
+polylogue mcp                          # MCP server (stdio)
 ```
 
 **Env vars**: `XDG_DATA_HOME`, `XDG_STATE_HOME`, `POLYLOGUE_ARCHIVE_ROOT`, `POLYLOGUE_RENDER_ROOT`, `POLYLOGUE_CREDENTIAL_PATH`, `POLYLOGUE_TOKEN_PATH`
@@ -280,14 +280,14 @@ polylogue://conversations?provider=claude-ai&tag=important&limit=50
 ## Demo & Synthetic Data
 
 ```bash
-polylogue generate --seed                    # Full synthetic seed environment
-polylogue generate --seed --env-only         # Shell-friendly (eval $(...))
-polylogue generate -p chatgpt -n 5           # Raw fixture files
+polylogue audit generate --seed              # Full synthetic seed environment
+polylogue audit generate --seed --env-only   # Shell-friendly (eval $(...))
+polylogue audit generate -p chatgpt -n 5     # Raw fixture files
 ```
 
 Uses `SyntheticCorpus` from `polylogue.schemas.synthetic`. Shared with test fixtures (`seeded_db`, `synthetic_source`, `raw_synthetic_samples`). See [Generate](generate.md).
 
-For deterministic command-surface checks, use `polylogue qa --only exercises` (and optional `--tier`/`--live` options).
+For deterministic command-surface checks, use `polylogue audit --only exercises` (and optional `--tier`/`--live` options).
 
 ---
 

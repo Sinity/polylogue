@@ -91,6 +91,7 @@
         polylogueApiPython = python.withPackages (_: [ polylogue ]);
       in
       {
+        packages.polylogue = polylogue;
         packages.default = polylogue;
         packages.api-python = polylogueApiPython;
 
@@ -119,6 +120,11 @@
 
           shellHook = ''
             export LD_LIBRARY_PATH=${pkgs.stdenv.cc.cc.lib}/lib:$LD_LIBRARY_PATH
+            export PATH="$PWD/scripts:$PATH"
+
+            if [ -f CLAUDE.md ]; then
+              render-agents --input CLAUDE.md --output AGENTS.md >/dev/null
+            fi
 
             # Create venv if it doesn't exist
             if [ ! -d .venv ]; then
@@ -129,11 +135,20 @@
             # Activate venv
             source .venv/bin/activate
 
-            # Install dependencies if needed
-            if [ ! -f .venv/.synced ]; then
-              echo "Installing dependencies..." >&2
-              uv pip install -e ".[dev]"
-              touch .venv/.synced
+            sync_fingerprint_file=".venv/.uv-sync-fingerprint"
+            sync_fingerprint="$(
+              cat pyproject.toml uv.lock 2>/dev/null | sha256sum | cut -d' ' -f1
+            )"
+            current_fingerprint=""
+            if [ -f "$sync_fingerprint_file" ]; then
+              current_fingerprint="$(cat "$sync_fingerprint_file")"
+            fi
+
+            # Sync dependencies whenever pyproject or uv.lock changes.
+            if [ "$sync_fingerprint" != "$current_fingerprint" ]; then
+              echo "Syncing development environment..." >&2
+              uv sync --extra dev --frozen
+              printf '%s' "$sync_fingerprint" > "$sync_fingerprint_file"
             fi
 
             echo "Polylogue development environment ready" >&2
@@ -141,23 +156,18 @@
           '';
         };
 
-        # Simple check: run tests
+        # Smoke check the packaged CLI inside a Nix sandbox. Full test coverage
+        # lives in GitHub Actions and local dev workflows.
         checks.default =
-          pkgs.runCommand "polylogue-tests"
+          pkgs.runCommand "polylogue-smoke"
             {
-              buildInputs = [
-                python
-                pkgs.uv
+              nativeBuildInputs = [
+                polylogue
               ];
             }
             ''
-              cp -r ${./.} source
-              cd source
               export HOME=$TMPDIR
-              ${pkgs.uv}/bin/uv venv
-              source .venv/bin/activate
-              ${pkgs.uv}/bin/uv pip install -e ".[dev]"
-              pytest -q
+              polylogue --help >/dev/null
               touch $out
             '';
       }

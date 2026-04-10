@@ -1,0 +1,68 @@
+name: Pull Request Policy
+
+on:
+  pull_request:
+    branches: [master]
+    types:
+      - opened
+      - edited
+      - reopened
+      - synchronize
+      - ready_for_review
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: Validate PR metadata
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Enforce branch naming and title
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          python - <<'PY'
+          import os
+          import re
+          import sys
+
+          branch = os.environ["HEAD_REF"]
+          title = os.environ["PR_TITLE"]
+
+          errors: list[str] = []
+
+          branch_pattern = re.compile(
+              r"^feature/(feat|fix|refactor|perf|test|docs|chore)/[a-z0-9][a-z0-9-]*$"
+          )
+          title_pattern = re.compile(r"^(feat|fix|refactor|test|docs|chore|perf)(\([^)]+\))?: .+")
+
+          if not branch_pattern.match(branch):
+              errors.append(
+                  "Branch name must match "
+                  "`feature/<category>/<description>` with category in "
+                  "`feat|fix|refactor|perf|test|docs|chore`."
+              )
+
+          if not title_pattern.match(title):
+              errors.append(
+                  "PR title must use conventional form like "
+                  "`feat: add X` or `fix(cli): correct Y`."
+              )
+
+          if errors:
+              print("Pull request policy check failed:\n")
+              for error in errors:
+                  print(f"- {error}")
+              sys.exit(1)
+
+          print("Pull request policy check passed.")
+          PY

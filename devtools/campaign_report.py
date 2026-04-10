@@ -78,10 +78,12 @@ def _render_campaign_section(result: CampaignResult) -> list[str]:
     ]
 
     if result.metrics:
-        lines.extend([
-            "| Metric | Value |",
-            "| --- | ---: |",
-        ])
+        lines.extend(
+            [
+                "| Metric | Value |",
+                "| --- | ---: |",
+            ]
+        )
         for key, value in sorted(result.metrics.items()):
             if isinstance(value, float):
                 lines.append(f"| {key} | {value:.4f} |")
@@ -135,9 +137,7 @@ def generate_campaign_json(results: list[CampaignResult]) -> str:
     return json.dumps(payload, indent=2, sort_keys=True) + "\n"
 
 
-def save_campaign_reports(
-    results: list[CampaignResult], output_dir: Path
-) -> list[Path]:
+def save_campaign_reports(results: list[CampaignResult], output_dir: Path) -> list[Path]:
     """Save both Markdown and JSON reports to the output directory.
 
     Returns:

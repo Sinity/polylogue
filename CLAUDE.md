@@ -5,46 +5,15 @@ AI chat export archiver — ingests Claude, ChatGPT, Codex, Gemini exports into 
 ## Development
 
 ```bash
-nix develop                    # Enter devshell (or direnv allow)
-nix develop -c pytest -q --ignore=tests/integration   # Run tests (~4300 tests, ~3 min)
-nix develop -c polylogue --help                        # CLI
-POLYLOGUE_FORCE_PLAIN=1 nix develop -c polylogue run   # Full pipeline run
+direnv allow                  # One-time setup; afterward entering the repo loads the devshell
+# or: nix develop
+
+pytest -q --ignore=tests/integration
+polylogue --help
+POLYLOGUE_FORCE_PLAIN=1 polylogue run
 ```
 
 Flake-based: `pyproject.toml` is authoritative for deps. No imperative installs.
-
-## Git Workflow
-
-### Branch Model
-
-All work goes through **feature branches** that are **squash-merged** onto `master` via GitHub PRs.
-
-```
-master                   <- linear history of squash commits
-  |-- feature/X/Y       <- working branch (individual commits preserved)
-        | squash-merge via PR
-master                   <- gains one clean narrative commit
-```
-
-### Rules
-
-- **Always work on a feature branch** — `feature/<category>/<description>`
-- **Branch from `origin/master`**
-- **Never commit directly to `master`** — enforced by pre-commit hook
-- **Squash-merge via PR** targeting `master` — one narrative commit per branch
-- **Link PRs to era issues** — `Ref #NNN` in PR body
-- **No force pushes** — enforced by pre-push hook
-- Conventional commits: `feat:`, `fix:`, `refactor:`, `test:`, `docs:`, `chore:`, `perf:`
-
-### Branch Naming
-
-`feature/<category>/<description>` where category is one of:
-`feat`, `refactor`, `perf`, `bugfix`, `testing`, `schema`, `docs`
-
-### Era Issues
-
-Each major body of work gets a GitHub issue: `Era NN: Description`.
-Chain: Era Issue -> PR -> Feature Branch -> Squash commit on `master`.
 
 ## Code Rules
 
@@ -89,11 +58,11 @@ ChatGPT (`mapping` field) -> Claude web (`chat_messages`) -> Claude Code (`paren
 
 ## Testing
 
-4,300+ tests. Protected files (never delete): `tests/integration/`, `tests/unit/security/`, `test_parsers_props.py`, `test_null_guard_properties.py`, `test_properties.py`, `test_crud.py`.
+Large test suite. Protected files (never delete): `tests/integration/`, `tests/unit/security/`, `test_parsers_props.py`, `test_null_guard_properties.py`, `test_properties.py`, `test_crud.py`.
 
-Mutation testing: `nix develop -c mutmut run` (8 modules).
-QA exercises: `POLYLOGUE_FORCE_PLAIN=1 nix develop -c polylogue audit --only exercises --tier 0`
+Mutation testing: `mutmut run` (8 modules).
+QA exercises: `POLYLOGUE_FORCE_PLAIN=1 polylogue audit --only exercises --tier 0`
 
-@.claude/includes/git-workflow.md
+@CONTRIBUTING.md
 @.claude/includes/architecture.md
-@.claude/includes/testing.md
+@TESTING.md

@@ -12,11 +12,6 @@ portion of the suite.
 nix develop -c pytest -q -n 0
 ```
 
-Current baseline on this branch after Phase 7:
-
-- `3487 passed, 1 warning in 269.56s (0:04:29)`
-- measured with `nix develop -c pytest -q -n 0 --durations=30`
-
 ### Fast local run
 
 Use this when iterating locally and you do not need the explicit slow proofs or
@@ -32,53 +27,14 @@ Use the validation-lane runner when you want named operator surfaces instead of
 remembering individual test files or campaign commands.
 
 ```bash
-python -m devtools.run_validation_lanes --list
-python -m devtools.run_validation_lanes --lane machine-contract
-python -m devtools.run_validation_lanes --lane query-routing
-python -m devtools.run_validation_lanes --lane showcase-baselines
-python -m devtools.run_validation_lanes --lane pipeline-probe-chatgpt
-python -m devtools.run_validation_lanes --lane semantic-stack
-python -m devtools.run_validation_lanes --lane source-provider-fidelity
-python -m devtools.run_validation_lanes --lane maintenance-control-plane
-python -m devtools.run_validation_lanes --lane archive-data-products
-python -m devtools.run_validation_lanes --lane semantic-product-normalization
-python -m devtools.run_validation_lanes --lane evidence-tier-contracts
-python -m devtools.run_validation_lanes --lane inference-tier-contracts
-python -m devtools.run_validation_lanes --lane mixed-consumer-contracts
-python -m devtools.run_validation_lanes --lane retrieval-band-readiness
-python -m devtools.run_validation_lanes --lane evidence-stewardship-contracts
-python -m devtools.run_validation_lanes --lane heuristic-inference-contracts
-python -m devtools.run_validation_lanes --lane probabilistic-enrichment-contracts
-python -m devtools.run_validation_lanes --lane governed-cleanup-contracts
-python -m devtools.run_validation_lanes --lane evidence-stewardship-live --dry-run
-python -m devtools.run_validation_lanes --lane evidence-stewardship-hardening --dry-run
-python -m devtools.run_validation_lanes --lane live-products-enrichments --dry-run
-python -m devtools.run_validation_lanes --lane probabilistic-enrichment-live --dry-run
-python -m devtools.run_validation_lanes --lane governed-cleanup-live --dry-run
-python -m devtools.run_validation_lanes --lane probabilistic-enrichment-hardening --dry-run
-python -m devtools.run_validation_lanes --lane semantic-product-live --dry-run
-python -m devtools.run_validation_lanes --lane semantic-product-hardening --dry-run
-python -m devtools.run_validation_lanes --lane runtime-substrate-contracts
-python -m devtools.run_validation_lanes --lane runtime-substrate-live --dry-run
-python -m devtools.run_validation_lanes --lane runtime-substrate-hardening --dry-run
-python -m devtools.run_validation_lanes --lane source-runtime-governance
-python -m devtools.run_validation_lanes --lane retrieval-dogfood
-python -m devtools.run_validation_lanes --lane embeddings-coverage
-python -m devtools.run_validation_lanes --lane archive-intelligence
-python -m devtools.run_validation_lanes --lane archive-data-products-live --dry-run
-python -m devtools.run_validation_lanes --lane domain-read-model-contracts
-python -m devtools.run_validation_lanes --lane domain-read-model-live --dry-run
-python -m devtools.run_validation_lanes --lane domain-read-model-stewardship --dry-run
-python -m devtools.run_validation_lanes --lane frontier-local
-python -m devtools.run_validation_lanes --lane frontier-extended
-python -m devtools.run_validation_lanes --lane live-archive-small --dry-run
-python -m devtools.run_validation_lanes --lane live-products-small --dry-run
-python -m devtools.run_validation_lanes --lane live-governance-small --dry-run
-python -m devtools.run_validation_lanes --lane memory-budget --dry-run
-python -m devtools.run_validation_lanes --lane maintenance-memory-budget --dry-run
-python -m devtools.run_validation_lanes --lane live-maintenance-preview --dry-run
-python -m devtools.run_validation_lanes --lane live-exercises --dry-run
+nix develop -c python -m devtools.run_validation_lanes --list
+nix develop -c python -m devtools.run_validation_lanes --lane machine-contract
+nix develop -c python -m devtools.run_validation_lanes --lane frontier-local
+nix develop -c python -m devtools.run_validation_lanes --lane live-exercises --dry-run
 ```
+
+Treat `--list` as the source of truth for the active lane catalog rather than
+copying the full lane set into static documentation.
 
 Lane intent:
 
@@ -141,7 +97,7 @@ nix develop -c python -m devtools.mutmut_campaign index
 Durable mutation ledgers live in:
 
 - [mutation-testing-baseline.md](./mutation-testing-baseline.md)
-- [`docs/mutation-campaigns/`](./mutation-campaigns/README.md)
+- local artifact output under `artifacts/mutation-campaigns/`
 
 ### Fast pipeline probes
 
@@ -186,14 +142,14 @@ nix develop -c python -m devtools.benchmark_campaign run search-filters
 nix develop -c python -m devtools.benchmark_campaign run storage
 nix develop -c python -m devtools.benchmark_campaign run pipeline
 nix develop -c python -m devtools.benchmark_campaign compare \
-  docs/benchmark-campaigns/<baseline>.json \
-  docs/benchmark-campaigns/<candidate>.json
+  artifacts/benchmark-campaigns/<baseline>.json \
+  artifacts/benchmark-campaigns/<candidate>.json
 nix develop -c python -m devtools.benchmark_campaign index
 ```
 
 Durable benchmark artifacts live in:
 
-- [`docs/benchmark-campaigns/`](./benchmark-campaigns/README.md)
+- local artifact output under `artifacts/benchmark-campaigns/`
 
 ## Benchmark Policy
 
@@ -219,15 +175,15 @@ The slowest non-benchmark tests currently fall into four buckets.
 These are intentionally marked `slow` because they are valuable but expensive,
 and they are not needed in the fast local lane.
 
-- [`test_workflows.py`](/realm/project/polylogue/tests/integration/test_workflows.py)
+- [`test_workflows.py`](../tests/integration/test_workflows.py)
   Comprehensive end-to-end provider workflows.
-- [`test_schema_generation.py`](/realm/project/polylogue/tests/unit/core/test_schema_generation.py)
+- [`test_schema_generation.py`](../tests/unit/core/test_schema_generation.py)
   Database-backed provider schema generation proof.
-- [`test_schema_validation.py`](/realm/project/polylogue/tests/unit/core/test_schema_validation.py)
+- [`test_schema_validation.py`](../tests/unit/core/test_schema_validation.py)
   Raw-corpus verification path using persisted payload-provider filtering.
-- [`test_scale.py`](/realm/project/polylogue/tests/unit/storage/test_scale.py)
+- [`test_scale.py`](../tests/unit/storage/test_scale.py)
   Fixed performance-budget checks.
-- [`test_vec.py`](/realm/project/polylogue/tests/unit/storage/test_vec.py)
+- [`test_vec.py`](../tests/unit/storage/test_vec.py)
   Vector-provider retry and degradation proofs.
 
 ### Kept in the default correctness lane
@@ -235,11 +191,11 @@ and they are not needed in the fast local lane.
 These are expensive, but they are core generated-graph/storage correctness
 proofs rather than optional long proofs. They stay in the default lane.
 
-- [`test_store_ops.py`](/realm/project/polylogue/tests/unit/storage/test_store_ops.py)
+- [`test_store_ops.py`](../tests/unit/storage/test_store_ops.py)
   Generated repository graph/view/session/projection contracts.
-- [`test_store_ops.py`](/realm/project/polylogue/tests/unit/storage/test_store_ops.py)
+- [`test_store_ops.py`](../tests/unit/storage/test_store_ops.py)
   Backend ordering, filtering, deletion, and tag-distribution laws.
-- [`test_resilience.py`](/realm/project/polylogue/tests/unit/pipeline/test_resilience.py)
+- [`test_resilience.py`](../tests/unit/pipeline/test_resilience.py)
   Acquisition/planning invariants that still catch meaningful regressions.
 
 ## Slowest Observed Non-Benchmark Tests

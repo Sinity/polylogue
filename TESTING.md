@@ -1,25 +1,38 @@
-## Testing
+# Testing
 
-### Running Tests
+Use the project devshell before running commands:
+
+```bash
+cd /realm/project/polylogue
+direnv allow   # one-time setup; afterward the devshell loads automatically on cd
+```
+
+If you are not using `direnv`, enter the same environment manually:
+
+```bash
+nix develop
+```
+
+## Running Tests
 
 ```bash
 # Fast unit run (primary workflow)
-nix develop -c pytest -q --ignore=tests/integration
+pytest -q --ignore=tests/integration
 
 # Stop on first failure
-nix develop -c pytest -x --ignore=tests/integration
+pytest -x --ignore=tests/integration
 
 # Specific file or test
-nix develop -c pytest tests/unit/storage/test_hybrid_laws.py
-nix develop -c pytest -k "test_name"
+pytest tests/unit/storage/test_hybrid_laws.py
+pytest -k "test_name"
 
 # Full CI parity
 nix flake check
 ```
 
-### Test Suite: 4,300+ tests, ~3 min
+## Test Suite Layout
 
-```
+```text
 tests/
 ├── conftest.py              # Root fixtures
 ├── infra/                   # Shared infrastructure
@@ -43,27 +56,27 @@ tests/
 └── fuzz/                    # Atheris fuzz targets
 ```
 
-### QA Exercises
+## QA Exercises
 
 ```bash
 # Seeded (fast, no real data)
-POLYLOGUE_FORCE_PLAIN=1 nix develop -c polylogue qa --only exercises --tier 0
+POLYLOGUE_FORCE_PLAIN=1 polylogue audit --only exercises --tier 0
 
 # Schema audit (instant)
-POLYLOGUE_FORCE_PLAIN=1 nix develop -c polylogue qa --only audit
+POLYLOGUE_FORCE_PLAIN=1 polylogue audit --only audit
 
 # Live (against real DB)
-POLYLOGUE_FORCE_PLAIN=1 nix develop -c polylogue qa --live --only exercises --tier 0
+POLYLOGUE_FORCE_PLAIN=1 polylogue audit --live --only exercises --tier 0
 ```
 
-### Mutation Testing
+## Mutation Testing
 
 ```bash
-nix develop -c mutmut run        # 8 modules: models, filters, roles, timestamps, hashing, json, fts5, hybrid
-nix develop -c mutmut results    # View results
+mutmut run        # 8 modules: models, filters, roles, timestamps, hashing, json, fts5, hybrid
+mutmut results    # View results
 ```
 
-### Protected Files (never delete)
+## Protected Files
 
 - `tests/unit/sources/test_parsers_props.py`, `test_null_guard_properties.py`
 - `tests/unit/core/test_properties.py`

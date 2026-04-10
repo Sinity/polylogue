@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parent.parent
-ARTIFACT_DIR = Path("docs/benchmark-campaigns")
+ARTIFACT_DIR = Path("artifacts/benchmark-campaigns")
 STATUS_IGNORE_PREFIXES = (f"{ARTIFACT_DIR.as_posix()}/",)
 DEFAULT_WARN_PCT = 10.0
 DEFAULT_FAIL_PCT = 20.0
@@ -90,17 +90,13 @@ CAMPAIGNS: dict[str, Campaign] = {
         name="storage",
         description="Repository/backend list/get-many/save benchmark domain",
         tests=("tests/benchmarks/test_storage.py",),
-        notes=(
-            "Canonical storage CRUD and batch-write latency domain.",
-        ),
+        notes=("Canonical storage CRUD and batch-write latency domain.",),
     ),
     "pipeline": Campaign(
         name="pipeline",
         description="Index rebuild/update plus hashing/semantic helper benchmark domain",
         tests=("tests/benchmarks/test_pipeline.py",),
-        notes=(
-            "Covers indexing plus hot helper throughput.",
-        ),
+        notes=("Covers indexing plus hot helper throughput.",),
     ),
 }
 
@@ -199,13 +195,15 @@ def _render_markdown(result: CampaignResult) -> str:
             f"| `{bench['fullname']}` | {bench['mean']:.6f} | {bench['median']:.6f} | {ops} | {bench['rounds']} |"
         )
     if result.regressions:
-        lines.extend([
-            "",
-            "## Largest Regressions vs Baseline",
-            "",
-            "| Benchmark | Delta % | Baseline Mean (s) | Current Mean (s) |",
-            "| --- | ---: | ---: | ---: |",
-        ])
+        lines.extend(
+            [
+                "",
+                "## Largest Regressions vs Baseline",
+                "",
+                "| Benchmark | Delta % | Baseline Mean (s) | Current Mean (s) |",
+                "| --- | ---: | ---: | ---: |",
+            ]
+        )
         for regression in result.regressions[:10]:
             lines.append(
                 f"| `{regression['fullname']}` | {regression['delta_pct']:.2f}% | {regression['baseline_mean']:.6f} | {regression['current_mean']:.6f} |"

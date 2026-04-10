@@ -2,7 +2,7 @@ name: Cleanup or Refactor
 description: Simplify structure, remove duplication, or narrow an overgrown contract.
 title: "[cleanup] "
 labels:
-  - enhancement
+  - type:refactor
 body:
   - type: textarea
     id: awkwardness
