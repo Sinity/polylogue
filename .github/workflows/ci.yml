@@ -31,6 +31,7 @@ jobs:
       - run: uv sync --extra dev --frozen
       - run: uv run python -m devtools.render_agents --input CLAUDE.md --output "${RUNNER_TEMP}/AGENTS.md"
       - run: uv run python -m devtools.render_cli_reference --check
+      - run: uv run python -m devtools.render_quality_reference --check
       - run: uv run ruff check polylogue/ tests/ devtools/
       - run: uv run ruff format --check polylogue/ tests/ devtools/
 

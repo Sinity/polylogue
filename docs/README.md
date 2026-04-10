@@ -14,7 +14,7 @@ focused on material that is still actionable in the live codebase.
 - [library-api.md](./library-api.md) - Python API surface
 - [mcp-integration.md](./mcp-integration.md) - MCP integration notes
 - [providers/README.md](./providers/README.md) - provider-specific docs
-- [test-quality-workflows.md](./test-quality-workflows.md) - extended quality lanes and campaigns
+- [test-quality-workflows.md](./test-quality-workflows.md) - generated validation lanes, mutation campaigns, and benchmark campaigns
 - [mutation-testing-baseline.md](./mutation-testing-baseline.md) - mutation workflow and baseline policy
 
 ## Local Artifact Convention

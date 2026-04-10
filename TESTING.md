@@ -30,6 +30,9 @@ pytest -k "test_name"
 nix flake check
 ```
 
+For the generated validation-lane, mutation-campaign, and benchmark inventory,
+see [docs/test-quality-workflows.md](docs/test-quality-workflows.md).
+
 ## Test Suite Layout
 
 ```text
@@ -72,9 +75,14 @@ POLYLOGUE_FORCE_PLAIN=1 polylogue audit --live --only exercises --tier 0
 ## Mutation Testing
 
 ```bash
-mutmut run        # 8 modules: models, filters, roles, timestamps, hashing, json, fts5, hybrid
-mutmut results    # View results
+nix develop -c python -m devtools.mutmut_campaign list
+nix develop -c python -m devtools.mutmut_campaign run <campaign>
+nix develop -c python -m devtools.mutmut_campaign index
 ```
+
+Use the generated quality reference for the named campaign catalog and the
+operator-run benchmark surfaces rather than copying long inventories into this
+entrypoint document.
 
 ## Protected Files
 

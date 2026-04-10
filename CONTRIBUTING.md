@@ -83,14 +83,15 @@ pytest -q --ignore=tests/integration
 Add narrower or broader checks as needed for the touched area:
 
 ```bash
-ruff check polylogue tests
+ruff check polylogue tests devtools
 nix build .#polylogue
 nix flake check
 ```
 
-See [TESTING.md](TESTING.md) for the fuller test matrix, QA exercise commands, and protected test surfaces.
+See [TESTING.md](TESTING.md) for the baseline test matrix and protected test surfaces, and [docs/test-quality-workflows.md](docs/test-quality-workflows.md) for the generated validation-lane, mutation-campaign, and benchmark catalog.
 
 The following files are generated from live sources and should be refreshed when their source surface changes:
 
 - `AGENTS.md` from `CLAUDE.md` via `render-agents`
 - `docs/cli-reference.md` from the live CLI help via `render-cli-reference`
+- `docs/test-quality-workflows.md` from the live quality registries via `render-quality-reference`

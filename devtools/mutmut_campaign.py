@@ -85,8 +85,7 @@ CAMPAIGNS: dict[str, Campaign] = {
         description="ConversationFilter semantics and summary/picker contracts",
         paths_to_mutate=("polylogue/lib/filters.py",),
         tests=(
-            "tests/unit/core/test_filters.py",
-            "tests/unit/core/test_filters_adv.py",
+            "tests/unit/core/test_filters_schemas.py",
             "tests/unit/core/test_filters_props.py",
         ),
         notes=(
@@ -108,10 +107,7 @@ CAMPAIGNS: dict[str, Campaign] = {
         name="json",
         description="JSON serialization and parser laws",
         paths_to_mutate=("polylogue/lib/json.py",),
-        tests=(
-            "tests/unit/core/test_json.py",
-            "tests/unit/core/test_json_laws.py",
-        ),
+        tests=("tests/unit/core/test_json.py",),
     ),
     "hybrid": Campaign(
         name="hybrid",
@@ -126,10 +122,7 @@ CAMPAIGNS: dict[str, Campaign] = {
         name="fts5",
         description="FTS5 query escaping and conversation search semantics",
         paths_to_mutate=("polylogue/storage/search_providers/fts5.py",),
-        tests=(
-            "tests/unit/storage/test_fts5.py",
-            "tests/unit/storage/test_fts5_laws.py",
-        ),
+        tests=("tests/unit/storage/test_fts5.py",),
     ),
     "schema-core": Campaign(
         name="schema-core",
@@ -137,15 +130,15 @@ CAMPAIGNS: dict[str, Campaign] = {
         paths_to_mutate=(
             "polylogue/schemas/schema_inference.py",
             "polylogue/schemas/validator.py",
-            "polylogue/schemas/verification.py",
+            "polylogue/schemas/operator_verification.py",
         ),
         tests=(
             "tests/unit/core/test_schema_validation.py",
             "tests/unit/core/test_schema_generation.py",
-            "tests/unit/core/test_schema_annotations.py",
+            "tests/unit/core/test_schema_annotation_contracts.py",
             "tests/unit/core/test_schema_laws.py",
             "tests/unit/core/test_schema_privacy.py",
-            "tests/unit/core/test_schema_verification.py",
+            "tests/unit/core/test_verification.py",
             "tests/unit/storage/test_schema_safety.py",
         ),
         notes=("Larger campaign; use when law and privacy work are stable.",),
@@ -165,12 +158,12 @@ CAMPAIGNS: dict[str, Campaign] = {
         description="Schema validator and verification contracts",
         paths_to_mutate=(
             "polylogue/schemas/validator.py",
-            "polylogue/schemas/verification.py",
+            "polylogue/schemas/operator_verification.py",
         ),
         tests=(
             "tests/unit/core/test_schema_validation.py",
             "tests/unit/core/test_schema_laws.py",
-            "tests/unit/core/test_schema_verification.py",
+            "tests/unit/core/test_verification.py",
             "tests/unit/storage/test_schema_safety.py",
         ),
     ),
@@ -179,14 +172,13 @@ CAMPAIGNS: dict[str, Campaign] = {
         description="Acquire/validate/parse planning and stage contracts",
         paths_to_mutate=("polylogue/pipeline/services",),
         tests=(
-            "tests/unit/pipeline/test_acquisition_service.py",
-            "tests/unit/pipeline/test_validation_service.py",
-            "tests/unit/pipeline/test_planning_service.py",
+            "tests/unit/pipeline/test_acquisition_streams.py",
             "tests/unit/pipeline/test_parsing_service.py",
             "tests/unit/pipeline/test_render_service.py",
             "tests/unit/pipeline/test_indexing.py",
-            "tests/unit/pipeline/test_ingest_state.py",
-            "tests/unit/pipeline/test_service_laws.py",
+            "tests/unit/pipeline/test_ingest_batch.py",
+            "tests/unit/pipeline/test_stage_independence.py",
+            "tests/unit/pipeline/test_resilience.py",
         ),
         notes=("Likely to need more helper-level laws to reduce timeout noise.",),
     ),
@@ -195,16 +187,14 @@ CAMPAIGNS: dict[str, Campaign] = {
         description="Query command planning, action routing, and summary output contracts",
         paths_to_mutate=(
             "polylogue/cli/query.py",
-            "polylogue/cli/query_plan.py",
+            "polylogue/lib/query_plan.py",
             "polylogue/cli/query_actions.py",
             "polylogue/cli/query_output.py",
         ),
         tests=(
-            "tests/unit/cli/test_query.py",
             "tests/unit/cli/test_query_exec.py",
             "tests/unit/cli/test_query_exec_laws.py",
             "tests/unit/cli/test_query_fmt.py",
-            "tests/unit/cli/test_query_plan.py",
         ),
     ),
     "cli-run": Campaign(
@@ -226,7 +216,8 @@ CAMPAIGNS: dict[str, Campaign] = {
         ),
         tests=(
             "tests/unit/ui/test_ui.py",
-            "tests/unit/ui/test_rendering.py",
+            "tests/unit/ui/test_ui_visual.py",
+            "tests/unit/ui/test_tui.py",
         ),
     ),
     "site-builder": Campaign(
@@ -259,7 +250,10 @@ CAMPAIGNS: dict[str, Campaign] = {
         name="repository",
         description="Repository query, projection, and CRUD contracts",
         paths_to_mutate=("polylogue/storage/repository.py",),
-        tests=("tests/unit/storage/test_repository_laws.py",),
+        tests=(
+            "tests/unit/storage/test_store_ops.py",
+            "tests/unit/storage/test_tree_laws.py",
+        ),
         notes=("Large surface; use to gauge storage law readiness before repository-law work.",),
     ),
     "source-detection": Campaign(
@@ -308,12 +302,11 @@ CAMPAIGNS: dict[str, Campaign] = {
             "polylogue/schemas/unified.py",
         ),
         tests=(
-            "tests/unit/sources/test_parse_laws.py",
-            "tests/unit/sources/test_content_extraction.py",
-            "tests/unit/sources/test_extraction.py",
             "tests/unit/sources/test_unified_semantic_laws.py",
             "tests/unit/sources/test_null_guard_properties.py",
             "tests/unit/sources/test_models.py",
+            "tests/unit/sources/test_parsers_props.py",
+            "tests/unit/sources/test_assembly.py",
         ),
         notes=("Directly relevant to the next provider-law wave.",),
     ),
@@ -325,11 +318,8 @@ CAMPAIGNS: dict[str, Campaign] = {
             "polylogue/schemas/unified.py",
         ),
         tests=(
-            "tests/unit/sources/test_parse_laws.py",
             "tests/unit/sources/test_parsers_props.py",
-            "tests/unit/sources/test_content_extraction.py",
             "tests/unit/sources/test_source_laws.py",
-            "tests/unit/sources/test_extraction.py",
             "tests/unit/sources/test_unified_semantic_laws.py",
             "tests/unit/sources/test_parsers_base.py",
             "tests/unit/sources/test_parsers_chatgpt.py",

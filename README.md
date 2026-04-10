@@ -469,6 +469,7 @@ The audit command seeds a disposable synthetic workspace, runs exercise catalogs
 | [Generate](docs/generate.md) | Synthetic data generation, fixture output, and seed mode |
 | [Providers](docs/providers/) | Provider formats, detection, session integration |
 | [Internals](docs/internals.md) | Developer reference — invariants, schemas, debugging |
+| [Test Quality Workflows](docs/test-quality-workflows.md) | Generated validation lanes, mutation campaigns, and benchmark campaigns |
 
 ## Development
 
@@ -481,7 +482,7 @@ direnv allow             # one-time setup; afterward the devshell loads automati
 
 # Baseline verification
 pytest -q --ignore=tests/integration
-ruff check polylogue tests
+ruff check polylogue tests devtools
 
 # Broader validation
 nix build .#polylogue
