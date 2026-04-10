@@ -31,7 +31,7 @@ polylogue/
 │   └── services/      # Acquisition, parsing (batch), validation, indexing
 ├── schemas/           # Schema inference, pinning, verification
 ├── showcase/          # QA exercise catalog and runner
-├── cli/               # CLI commands (14 total: run, check, qa, generate, etc.)
+├── cli/               # Public command surface plus command-family workflows
 ├── mcp/               # Model Context Protocol server and tools
 ├── operations/        # High-level archive operations
 ├── site/              # Static site generation
@@ -62,11 +62,10 @@ Provider Exports → detect_provider() → Parse → Hash (NFC) → Store → Se
 ### Database
 
 - **Schema v4** (fresh-only, no migration chain)
-- **32.5 GB** SQLite with WAL mode
+- SQLite archive with WAL mode and deferred checkpointing
 - Performance pragmas: 512MB cache, NORMAL sync, 1GB mmap, deferred WAL checkpoint
 - FTS5 with unicode61 tokenizer (porter stemmer NOT compiled)
-- Covering indices for analytics queries
-- **6,650 conversations**, **2.1M messages** across 5 providers
+- Covering indices for analytics and retrieval queries
 
 ### Provider Detection
 
