@@ -51,7 +51,7 @@ def get_provider_message_count(conn: sqlite3.Connection, provider: str) -> int:
         JOIN conversations c ON m.conversation_id = c.conversation_id
         WHERE c.provider_name = ?
         """,
-        (provider,)
+        (provider,),
     )
     return cur.fetchone()[0]
 
@@ -343,9 +343,12 @@ def iter_raw_conversations(
     Returns:
         List of (raw_id, raw_content, source_path) tuples.
     """
-    from polylogue.storage.blob_store import get_blob_store
+    from pathlib import Path
 
-    blob_store = get_blob_store()
+    from polylogue.storage.blob_store import BlobStore
+
+    db_path = conn.execute("PRAGMA database_list").fetchone()[2]
+    blob_store = BlobStore(Path(db_path).parent / "blob")
     cur = conn.cursor()
     query = """
         SELECT raw_id, source_path
@@ -366,10 +369,7 @@ def iter_raw_conversations(
 def get_raw_conversation_count(conn: sqlite3.Connection, provider: str) -> int:
     """Get total raw conversation count for a provider."""
     cur = conn.cursor()
-    cur.execute(
-        "SELECT COUNT(*) FROM raw_conversations WHERE provider_name = ?",
-        (provider,)
-    )
+    cur.execute("SELECT COUNT(*) FROM raw_conversations WHERE provider_name = ?", (provider,))
     return cur.fetchone()[0]
 
 
@@ -580,4 +580,5 @@ class TestRawConversationCoverage:
 
         if link_pct < 50:
             import warnings
+
             warnings.warn(f"Only {link_pct:.1f}% of conversations have raw_id links", stacklevel=2)

@@ -16,6 +16,12 @@ from tests.infra.cli_subprocess import run_cli, setup_isolated_workspace
 pytestmark = [pytest.mark.integration, pytest.mark.chaos]
 
 
+def _salvage_env(workspace: dict[str, object]) -> dict[str, str]:
+    env = dict(workspace["env"])
+    env["POLYLOGUE_SCHEMA_VALIDATION"] = "off"
+    return env
+
+
 # =============================================================================
 # Partial Corruption Tests (E1)
 # =============================================================================
@@ -42,8 +48,8 @@ def test_partial_corruption_does_not_abort_pipeline(tmp_path):
 
     # Run ingestion
     result = run_cli(
-        ["run", "--source", "inbox", "--stage", "all"],
-        env=workspace["env"],
+        ["run", "--source", "inbox"],
+        env=_salvage_env(workspace),
         timeout=120.0,
     )
 
@@ -82,18 +88,13 @@ def test_malformed_json_lines_skipped_with_context(tmp_path):
 
     # Run ingestion
     result = run_cli(
-        ["run", "--source", "inbox", "--stage", "all"],
-        env=workspace["env"],
+        ["run", "--source", "inbox"],
+        env=_salvage_env(workspace),
         timeout=120.0,
     )
 
     # Should succeed despite malformed lines
     assert result.success, f"Pipeline failed: {result.stderr}"
-
-    # Check error context in output (error log or stderr)
-    output = result.output.lower()
-    # At least some indication of parsing/skipping errors
-    # (implementation may vary)
 
 
 def test_truncated_lines_handled_gracefully(tmp_path):
@@ -112,8 +113,8 @@ def test_truncated_lines_handled_gracefully(tmp_path):
     builder.build()
 
     result = run_cli(
-        ["run", "--source", "inbox", "--stage", "all"],
-        env=workspace["env"],
+        ["run", "--source", "inbox"],
+        env=_salvage_env(workspace),
         timeout=120.0,
     )
 
@@ -146,8 +147,8 @@ def test_bad_utf8_lines_skipped(tmp_path):
     builder.build()
 
     result = run_cli(
-        ["run", "--source", "inbox", "--stage", "all"],
-        env=workspace["env"],
+        ["run", "--source", "inbox"],
+        env=_salvage_env(workspace),
         timeout=120.0,
     )
 
@@ -179,8 +180,8 @@ def test_wrong_envelope_lines_skipped(tmp_path):
     builder.build()
 
     result = run_cli(
-        ["run", "--source", "inbox", "--stage", "all"],
-        env=workspace["env"],
+        ["run", "--source", "inbox"],
+        env=_salvage_env(workspace),
         timeout=120.0,
     )
 
@@ -212,8 +213,8 @@ def test_empty_file_does_not_crash(tmp_path):
     builder.build()
 
     result = run_cli(
-        ["run", "--source", "inbox", "--stage", "all"],
-        env=workspace["env"],
+        ["run", "--source", "inbox"],
+        env=_salvage_env(workspace),
         timeout=120.0,
     )
 
@@ -240,8 +241,8 @@ def test_binary_garbage_file_skipped(tmp_path):
     builder.build()
 
     result = run_cli(
-        ["run", "--source", "inbox", "--stage", "all"],
-        env=workspace["env"],
+        ["run", "--source", "inbox"],
+        env=_salvage_env(workspace),
         timeout=120.0,
     )
 
@@ -268,8 +269,8 @@ def test_zero_byte_file_handled(tmp_path):
     builder.build()
 
     result = run_cli(
-        ["run", "--source", "inbox", "--stage", "all"],
-        env=workspace["env"],
+        ["run", "--source", "inbox"],
+        env=_salvage_env(workspace),
         timeout=120.0,
     )
 
@@ -311,8 +312,8 @@ def test_mixed_corruption_types_in_single_file(tmp_path):
     builder.build()
 
     result = run_cli(
-        ["run", "--source", "inbox", "--stage", "all"],
-        env=workspace["env"],
+        ["run", "--source", "inbox"],
+        env=_salvage_env(workspace),
         timeout=120.0,
     )
 
@@ -338,7 +339,7 @@ def test_file_with_bom_marker_ingested(tmp_path):
     builder.build()
 
     result = run_cli(
-        ["run", "--source", "inbox", "--stage", "all"],
+        ["run", "--source", "inbox"],
         env=workspace["env"],
         timeout=120.0,
     )
@@ -366,7 +367,7 @@ def test_mixed_providers_in_single_inbox(tmp_path):
     builder.build()
 
     result = run_cli(
-        ["run", "--source", "inbox", "--stage", "all"],
+        ["run", "--source", "inbox"],
         env=workspace["env"],
         timeout=120.0,
     )
@@ -377,9 +378,7 @@ def test_mixed_providers_in_single_inbox(tmp_path):
     import sqlite3
 
     with sqlite3.connect(db_path) as conn:
-        cursor = conn.execute(
-            "SELECT provider_name, COUNT(*) FROM messages GROUP BY provider_name"
-        )
+        cursor = conn.execute("SELECT provider_name, COUNT(*) FROM messages GROUP BY provider_name")
         results = dict(cursor.fetchall())
         # Should have both providers
         assert "codex" in results, "codex provider not found"

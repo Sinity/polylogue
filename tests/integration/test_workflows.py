@@ -657,6 +657,11 @@ async def test_pipeline_runner_stage_matrix(workspace_env, chatgpt_sample_source
     config = get_config()
     config.sources = [chatgpt_sample_source]
 
+    if stage == "parse":
+        # Parse-only runs consume the persisted raw-record backlog; they do not
+        # re-scan source paths implicitly.
+        await run_sources(config=config, stage="acquire", source_names=[chatgpt_sample_source.name])
+
     result = await run_sources(config=config, stage=stage, source_names=[chatgpt_sample_source.name])
 
     assert result is not None

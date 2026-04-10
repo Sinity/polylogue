@@ -3,6 +3,7 @@
 Covers format detection, envelope/direct parsing, session metadata,
 branch tracking, git context, and edge cases.
 """
+
 from __future__ import annotations
 
 from polylogue.lib.branch_type import BranchType
@@ -11,6 +12,7 @@ from polylogue.sources.parsers.codex import looks_like, parse
 # =============================================================================
 # Format Detection (looks_like)
 # =============================================================================
+
 
 class TestLooksLike:
     def test_envelope_format_detected(self) -> None:
@@ -54,14 +56,19 @@ class TestLooksLike:
 # Session Metadata
 # =============================================================================
 
+
 class TestSessionMetadata:
     def test_first_session_meta_sets_conversation_id(self) -> None:
         payload = [
             {"type": "session_meta", "payload": {"id": "conv-abc", "timestamp": "2024-01-01"}},
-            {"type": "response_item", "payload": {
-                "type": "message", "role": "user",
-                "content": [{"type": "input_text", "text": "hello"}],
-            }},
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "hello"}],
+                },
+            },
         ]
         result = parse(payload, "fallback")
         assert result.provider_conversation_id == "conv-abc"
@@ -70,10 +77,14 @@ class TestSessionMetadata:
         payload = [
             {"type": "session_meta", "payload": {"id": "conv-abc", "timestamp": "2024-01-01"}},
             {"type": "session_meta", "payload": {"id": "parent-xyz", "timestamp": "2024-01-01"}},
-            {"type": "response_item", "payload": {
-                "type": "message", "role": "user",
-                "content": [{"type": "input_text", "text": "hello"}],
-            }},
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "hello"}],
+                },
+            },
         ]
         result = parse(payload, "fallback")
         assert result.provider_conversation_id == "conv-abc"
@@ -82,10 +93,14 @@ class TestSessionMetadata:
 
     def test_no_session_meta_uses_fallback(self) -> None:
         payload = [
-            {"type": "response_item", "payload": {
-                "type": "message", "role": "user",
-                "content": [{"type": "input_text", "text": "hello"}],
-            }},
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "hello"}],
+                },
+            },
         ]
         result = parse(payload, "my-fallback")
         assert result.provider_conversation_id == "my-fallback"
@@ -116,14 +131,19 @@ class TestSessionMetadata:
 # Message Parsing
 # =============================================================================
 
+
 class TestMessageParsing:
     def test_envelope_message_parsed(self) -> None:
         payload = [
             {"type": "session_meta", "payload": {"id": "s1", "timestamp": "2024-01-01"}},
-            {"type": "response_item", "payload": {
-                "type": "message", "role": "user",
-                "content": [{"type": "input_text", "text": "What is 2+2?"}],
-            }},
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "What is 2+2?"}],
+                },
+            },
         ]
         result = parse(payload, "fallback")
         assert len(result.messages) == 1
@@ -132,8 +152,7 @@ class TestMessageParsing:
 
     def test_direct_message_parsed(self) -> None:
         payload = [
-            {"type": "message", "role": "assistant",
-             "content": [{"type": "output_text", "text": "The answer is 4."}]},
+            {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "The answer is 4."}]},
         ]
         result = parse(payload, "fallback")
         assert len(result.messages) == 1
@@ -142,8 +161,7 @@ class TestMessageParsing:
     def test_state_records_skipped(self) -> None:
         payload = [
             {"record_type": "state"},
-            {"type": "message", "role": "user",
-             "content": [{"type": "input_text", "text": "hi"}]},
+            {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]},
             {"record_type": "state"},
         ]
         result = parse(payload, "fallback")
@@ -151,10 +169,14 @@ class TestMessageParsing:
 
     def test_multiple_content_blocks(self) -> None:
         payload = [
-            {"type": "message", "role": "user", "content": [
-                {"type": "input_text", "text": "Part 1"},
-                {"type": "input_text", "text": "Part 2"},
-            ]},
+            {
+                "type": "message",
+                "role": "user",
+                "content": [
+                    {"type": "input_text", "text": "Part 1"},
+                    {"type": "input_text", "text": "Part 2"},
+                ],
+            },
         ]
         result = parse(payload, "fallback")
         assert len(result.messages) == 1
@@ -173,9 +195,13 @@ class TestMessageParsing:
     def test_message_without_text_skipped(self) -> None:
         """Message with only non-text blocks is skipped."""
         payload = [
-            {"type": "message", "role": "user", "content": [
-                {"type": "tool_use", "name": "search"},
-            ]},
+            {
+                "type": "message",
+                "role": "user",
+                "content": [
+                    {"type": "tool_use", "name": "search"},
+                ],
+            },
         ]
         result = parse(payload, "fallback")
         # Message has no text content → skipped
@@ -195,11 +221,14 @@ class TestMessageParsing:
     def test_envelope_payload_unwrapped(self) -> None:
         """response_item payloads are unwrapped and parsed as messages."""
         payload = [
-            {"type": "response_item", "payload": {
-                "type": "message",
-                "role": "user",
-                "content": [{"type": "input_text", "text": "query"}],
-            }},
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "query"}],
+                },
+            },
         ]
         result = parse(payload, "fallback")
         assert len(result.messages) == 1
@@ -210,17 +239,26 @@ class TestMessageParsing:
 # Git Context and Instructions
 # =============================================================================
 
+
 class TestGitContextAndInstructions:
     def test_git_context_from_session_meta(self) -> None:
         payload = [
-            {"type": "session_meta", "payload": {
-                "id": "s1", "timestamp": "2024-01-01",
-                "git": {"branch": "main", "commit": "abc123"},
-            }},
-            {"type": "response_item", "payload": {
-                "type": "message", "role": "user",
-                "content": [{"type": "input_text", "text": "hi"}],
-            }},
+            {
+                "type": "session_meta",
+                "payload": {
+                    "id": "s1",
+                    "timestamp": "2024-01-01",
+                    "git": {"branch": "main", "commit": "abc123"},
+                },
+            },
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "hi"}],
+                },
+            },
         ]
         result = parse(payload, "fallback")
         assert result.provider_meta is not None
@@ -230,14 +268,22 @@ class TestGitContextAndInstructions:
 
     def test_instructions_from_session_meta(self) -> None:
         payload = [
-            {"type": "session_meta", "payload": {
-                "id": "s1", "timestamp": "2024-01-01",
-                "instructions": "You are a helpful assistant.",
-            }},
-            {"type": "response_item", "payload": {
-                "type": "message", "role": "user",
-                "content": [{"type": "input_text", "text": "hi"}],
-            }},
+            {
+                "type": "session_meta",
+                "payload": {
+                    "id": "s1",
+                    "timestamp": "2024-01-01",
+                    "instructions": "You are a helpful assistant.",
+                },
+            },
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "hi"}],
+                },
+            },
         ]
         result = parse(payload, "fallback")
         assert result.provider_meta is not None
@@ -259,11 +305,15 @@ class TestGitContextAndInstructions:
 
     def test_git_and_instructions_combined(self) -> None:
         payload = [
-            {"type": "session_meta", "payload": {
-                "id": "s1", "timestamp": "2024-01-01",
-                "git": {"branch": "feature"},
-                "instructions": "Be concise.",
-            }},
+            {
+                "type": "session_meta",
+                "payload": {
+                    "id": "s1",
+                    "timestamp": "2024-01-01",
+                    "git": {"branch": "feature"},
+                    "instructions": "Be concise.",
+                },
+            },
         ]
         result = parse(payload, "fallback")
         assert result.provider_meta is not None
@@ -274,6 +324,7 @@ class TestGitContextAndInstructions:
 # =============================================================================
 # Edge Cases
 # =============================================================================
+
 
 class TestEdgeCases:
     def test_empty_payload(self) -> None:
@@ -291,10 +342,14 @@ class TestEdgeCases:
         payload = [
             42,  # non-dict
             "string",  # non-dict
-            {"type": "response_item", "payload": {
-                "type": "message", "role": "user",
-                "content": [{"type": "input_text", "text": "hello"}],
-            }},
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "hello"}],
+                },
+            },
         ]
         result = parse(payload, "fallback")
         assert len(result.messages) == 1
@@ -306,12 +361,32 @@ class TestEdgeCases:
     def test_timestamp_preserved_on_messages(self) -> None:
         """Message timestamps are preserved from record."""
         payload = [
-            {"type": "message", "role": "user", "timestamp": "2024-03-15T10:30:00Z",
-             "content": [{"type": "input_text", "text": "hello"}]},
+            {
+                "type": "message",
+                "role": "user",
+                "timestamp": "2024-03-15T10:30:00Z",
+                "content": [{"type": "input_text", "text": "hello"}],
+            },
         ]
         result = parse(payload, "fallback")
         assert len(result.messages) == 1
         assert result.messages[0].timestamp == "2024-03-15T10:30:00Z"
+
+    def test_numeric_epoch_timestamp_is_normalized(self) -> None:
+        """Numeric epoch timestamps survive typed validation and normalize to ISO text."""
+        payload = [
+            {
+                "type": "message",
+                "role": "user",
+                "timestamp": 1705312200.0,
+                "content": [{"type": "input_text", "text": "hello"}],
+            },
+        ]
+
+        result = parse(payload, "fallback")
+
+        assert len(result.messages) == 1
+        assert result.messages[0].timestamp == "2024-01-15T09:50:00+00:00"
 
     def test_conversation_updated_at_uses_latest_message_timestamp(self) -> None:
         payload = [
@@ -346,10 +421,13 @@ class TestEdgeCases:
     def test_message_id_fallback(self) -> None:
         """Message ID falls back to f'msg-{idx}' if not provided."""
         payload = [
-            {"type": "message", "role": "user",
-             "content": [{"type": "input_text", "text": "first"}]},
-            {"type": "message", "role": "user", "id": "explicit-id",
-             "content": [{"type": "input_text", "text": "second"}]},
+            {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "first"}]},
+            {
+                "type": "message",
+                "role": "user",
+                "id": "explicit-id",
+                "content": [{"type": "input_text", "text": "second"}],
+            },
         ]
         result = parse(payload, "fallback")
         assert len(result.messages) == 2
@@ -361,25 +439,40 @@ class TestEdgeCases:
     def test_complex_real_world_payload(self) -> None:
         """Real-world example: envelope format with git, instructions, multiple messages."""
         payload = [
-            {"type": "session_meta", "payload": {
-                "id": "prod-session-001",
-                "timestamp": "2024-03-15T14:30:00Z",
-                "git": {"branch": "main", "commit": "f1e2d3c"},
-                "instructions": "You are an expert Python developer.",
-            }},
-            {"type": "response_item", "payload": {
-                "type": "message", "role": "user",
-                "content": [{"type": "input_text", "text": "How do I async/await?"}],
-            }},
-            {"type": "response_item", "payload": {
-                "type": "message", "role": "assistant",
-                "content": [{"type": "output_text", "text": "Use asyncio module."}],
-            }},
+            {
+                "type": "session_meta",
+                "payload": {
+                    "id": "prod-session-001",
+                    "timestamp": "2024-03-15T14:30:00Z",
+                    "git": {"branch": "main", "commit": "f1e2d3c"},
+                    "instructions": "You are an expert Python developer.",
+                },
+            },
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "How do I async/await?"}],
+                },
+            },
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "Use asyncio module."}],
+                },
+            },
             {"record_type": "state"},  # Ignored
-            {"type": "response_item", "payload": {
-                "type": "message", "role": "user",
-                "content": [{"type": "input_text", "text": "Show me an example."}],
-            }},
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "Show me an example."}],
+                },
+            },
         ]
         result = parse(payload, "fallback")
         assert result.provider_conversation_id == "prod-session-001"

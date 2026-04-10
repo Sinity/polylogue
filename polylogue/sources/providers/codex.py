@@ -82,8 +82,8 @@ class CodexRecord(BaseModel):
     id: str | None = None
     """Session or message ID."""
 
-    timestamp: str | None = None
-    """ISO timestamp."""
+    timestamp: str | int | float | None = None
+    """Message or session timestamp as ISO text or numeric epoch."""
 
     git: CodexGitInfo | None = None
     """Git context."""
@@ -173,10 +173,7 @@ class CodexRecord(BaseModel):
                 return content
             return []
         if self.content:
-            return [
-                c.model_dump() if isinstance(c, CodexContentBlock) else c
-                for c in self.content
-            ]
+            return [c.model_dump() if isinstance(c, CodexContentBlock) else c for c in self.content]
         return []
 
     @property
@@ -218,24 +215,30 @@ class CodexRecord(BaseModel):
             block_type = raw.get("type", "")
 
             if block_type in ("input_text", "output_text", "text"):
-                blocks.append(ContentBlock(
-                    type=ContentType.TEXT,
-                    text=raw.get("text") or raw.get("input_text") or raw.get("output_text"),
-                    raw=raw,
-                ))
+                blocks.append(
+                    ContentBlock(
+                        type=ContentType.TEXT,
+                        text=raw.get("text") or raw.get("input_text") or raw.get("output_text"),
+                        raw=raw,
+                    )
+                )
             elif "code" in block_type:
-                blocks.append(ContentBlock(
-                    type=ContentType.CODE,
-                    text=raw.get("text") or raw.get("code"),
-                    language=raw.get("language"),
-                    raw=raw,
-                ))
+                blocks.append(
+                    ContentBlock(
+                        type=ContentType.CODE,
+                        text=raw.get("text") or raw.get("code"),
+                        language=raw.get("language"),
+                        raw=raw,
+                    )
+                )
             else:
-                blocks.append(ContentBlock(
-                    type=ContentType.UNKNOWN,
-                    text=raw.get("text"),
-                    raw=raw,
-                ))
+                blocks.append(
+                    ContentBlock(
+                        type=ContentType.UNKNOWN,
+                        text=raw.get("text"),
+                        raw=raw,
+                    )
+                )
 
         return blocks
 
