@@ -1403,7 +1403,6 @@ class TestSearchEdgeCases:
         """Stats mode when no query terms or filters provided."""
         from polylogue.cli import cli
 
-        monkeypatch.setenv("POLYLOGUE_CONFIG", str(cli_workspace["config_path"]))
         monkeypatch.setenv("XDG_STATE_HOME", str(cli_workspace["state_dir"]))
         monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
         runner = CliRunner()
@@ -1452,7 +1451,6 @@ class TestSearchIndexRebuild:
         from polylogue.cli import cli
         from tests.infra.storage_records import DbFactory
 
-        monkeypatch.setenv("POLYLOGUE_CONFIG", str(cli_workspace["config_path"]))
         monkeypatch.setenv("XDG_STATE_HOME", str(cli_workspace["state_dir"]))
         monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
 

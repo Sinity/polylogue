@@ -362,9 +362,9 @@ def run_runtime_health(config: Any) -> HealthReport:
 
     cfg_home = config_home()
     if cfg_home.exists():
-        checks.append(HealthCheck("config_path", VerifyStatus.OK, summary=str(cfg_home)))
+        checks.append(HealthCheck("config_home", VerifyStatus.OK, summary=str(cfg_home)))
     else:
-        checks.append(HealthCheck("config_path", VerifyStatus.OK, summary=f"Not yet created: {cfg_home}"))
+        checks.append(HealthCheck("config_home", VerifyStatus.OK, summary=f"Not yet created: {cfg_home}"))
 
     drive_sources = [source for source in config.sources if source.is_drive]
     if drive_sources and config.drive_config:

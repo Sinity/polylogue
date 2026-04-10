@@ -78,11 +78,8 @@ def _clear_polylogue_env(monkeypatch, tmp_path):
     reset_blob_store()
 
     for key in (
-        "POLYLOGUE_CONFIG",
         "POLYLOGUE_ARCHIVE_ROOT",
         "POLYLOGUE_RENDER_ROOT",
-        "POLYLOGUE_TEMPLATE_PATH",
-        "POLYLOGUE_DECLARATIVE",
         # Prevent tests from hitting external Voyage API
         "VOYAGE_API_KEY",
         "POLYLOGUE_VOYAGE_API_KEY",
@@ -102,12 +99,10 @@ def _clear_polylogue_env(monkeypatch, tmp_path):
 
 @pytest.fixture
 def workspace_env(tmp_path, monkeypatch):
-    config_dir = tmp_path / "config"
     data_dir = tmp_path / "data"
     state_dir = tmp_path / "state"
     archive_root = tmp_path / "archive"
 
-    monkeypatch.setenv("POLYLOGUE_CONFIG", str(config_dir / "config.json"))
     monkeypatch.setenv("XDG_DATA_HOME", str(data_dir))
     monkeypatch.setenv("XDG_STATE_HOME", str(state_dir))
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(archive_root))
@@ -117,7 +112,6 @@ def workspace_env(tmp_path, monkeypatch):
     monkeypatch.setenv("POLYLOGUE_SCHEMA_VALIDATION", "off")
 
     return {
-        "config_path": config_dir / "config.json",
         "archive_root": archive_root,
         "data_root": data_dir,
         "state_dir": state_dir,
@@ -161,46 +155,32 @@ def storage_repository(workspace_env):
 @pytest.fixture
 def cli_workspace(tmp_path, monkeypatch):
     """
-    Isolated CLI workspace with config, archive, and database.
+    Isolated CLI workspace with archive roots and database.
 
     Creates a complete test environment for CLI command testing:
-    - Config directory with config.json
     - Archive root directory
     - Data directory for database (XDG_DATA_HOME)
     - Inbox directory for test data
     - Pre-configured environment variables
 
     Returns:
-        dict with paths: config_path, archive_root, data_root, inbox_dir, db_path
+        dict with paths: archive_root, data_root, inbox_dir, db_path
     """
-    import json
-
     # Create directory structure
-    config_dir = tmp_path / "config"
     data_dir = tmp_path / "data"
     state_dir = tmp_path / "state"
     archive_root = tmp_path / "archive"
     inbox_dir = tmp_path / "inbox"
     render_root = archive_root / "render"
 
-    for path in [config_dir, data_dir, state_dir, archive_root, inbox_dir, render_root]:
+    for path in [data_dir, state_dir, archive_root, inbox_dir, render_root]:
         path.mkdir(parents=True, exist_ok=True)
-
-    # Create minimal config.json
-    config_path = config_dir / "config.json"
-    config = {
-        "version": 2,
-        "archive_root": str(archive_root),
-        "sources": [{"name": "test-inbox", "path": str(inbox_dir)}],
-    }
-    config_path.write_text(json.dumps(config, indent=2))
 
     # Set environment variables
     # default_db_path() returns: DATA_HOME / "polylogue" / "polylogue.db"
     db_path = data_dir / "polylogue" / "polylogue.db"
     db_path.parent.mkdir(parents=True, exist_ok=True)
 
-    monkeypatch.setenv("POLYLOGUE_CONFIG", str(config_path))
     monkeypatch.setenv("XDG_DATA_HOME", str(data_dir))
     monkeypatch.setenv("XDG_STATE_HOME", str(state_dir))
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(archive_root))
@@ -215,7 +195,6 @@ def cli_workspace(tmp_path, monkeypatch):
         _ensure_schema(conn)
 
     return {
-        "config_path": config_path,
         "archive_root": archive_root,
         "data_root": data_dir,
         "state_dir": state_dir,

@@ -66,7 +66,6 @@ def _workspace_paths() -> tuple[Config, Path]:
         root = Path(tmp)
         archive_root = root / "archive"
         env = {
-            "POLYLOGUE_CONFIG": str(root / "config" / "config.json"),
             "XDG_DATA_HOME": str(root / "data"),
             "XDG_STATE_HOME": str(root / "state"),
             "POLYLOGUE_ARCHIVE_ROOT": str(archive_root),

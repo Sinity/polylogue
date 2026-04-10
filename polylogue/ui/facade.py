@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import questionary
 from rich import box
@@ -57,6 +58,7 @@ class ConsoleFacade:
     """Pure Python facade for terminal UI."""
 
     plain: bool
+    prompt_stub_path: Path | None = None
     console: Console | PlainConsole = field(init=False)
     theme: Theme = field(init=False, repr=False)
     _prompt_responses: object = field(init=False, repr=False)
@@ -69,10 +71,10 @@ class ConsoleFacade:
             self.console = Console(no_color=False, force_terminal=True, theme=self.theme)
         self._panel_box = box.ROUNDED
         self._banner_box = box.DOUBLE
-        self._prompt_responses = load_prompt_responses(UIError)
+        self._prompt_responses = load_prompt_responses(UIError, prompt_stub_path=self.prompt_stub_path)
 
     def _load_prompt_responses(self):
-        return load_prompt_responses(UIError)
+        return load_prompt_responses(UIError, prompt_stub_path=self.prompt_stub_path)
 
     def _pop_prompt_response(self, kind: str):
         return pop_prompt_response(self._prompt_responses, kind, UIError)
