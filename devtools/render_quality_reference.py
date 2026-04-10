@@ -135,7 +135,7 @@ def build_document(registry: QualityRegistry) -> str:
         "",
         "```bash",
         "python -m devtools pipeline-probe --provider chatgpt --count 5 --stage parse --workdir /tmp/polylogue-probe",
-        "python -m devtools pipeline-probe --input-mode archive-subset --source-db /home/sinity/.local/share/polylogue/polylogue.db_ --sample-per-provider 50 --stage parse --workdir /tmp/polylogue-probe-real --manifest-out /tmp/polylogue-probe-real.json",
+        "python -m devtools pipeline-probe --input-mode archive-subset --source-db \"$XDG_DATA_HOME/polylogue/polylogue.db\" --sample-per-provider 50 --stage parse --workdir /tmp/polylogue-probe-real --manifest-out /tmp/polylogue-probe-real.json",
         "python -m devtools pipeline-probe --input-mode archive-subset --manifest-in /tmp/polylogue-probe-real.json --stage parse --workdir /tmp/polylogue-probe-replay",
         "```",
         "",

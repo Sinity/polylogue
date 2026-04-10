@@ -5,7 +5,7 @@
 Work inside the project devshell.
 
 ```bash
-cd /realm/project/polylogue
+cd path/to/polylogue
 direnv allow   # one-time setup; afterward the devshell loads automatically on cd
 ```
 
