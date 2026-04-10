@@ -105,6 +105,9 @@ polylogue = "polylogue.cli:main"
 [tool.hatch.build.targets.wheel]
 packages = ["polylogue"]
 
+[tool.hatch.build.hooks.custom]
+path = "hatch_build.py"
+
 [tool.pytest.ini_options]
 addopts = "-ra -n auto --benchmark-disable --benchmark-storage=file://./.cache/pytest-benchmark"
 testpaths = ["tests"]
@@ -117,7 +120,7 @@ markers = [
     "scale(level): parametric scale marker (small/medium/large/stretch)",
     "machine_contract: marks root CLI JSON success/failure contract tests",
     "query_routing: marks query-first CLI routing and read-surface tests",
-    "tui: marks Textual Mission Control interaction tests",
+    "tui: marks Textual dashboard interaction tests",
     "chaos: marks ingestion hostility, interruption, and chronology tests",
     "live: marks operator-run live archive validation lanes",
 ]

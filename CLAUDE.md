@@ -8,5 +8,4 @@ AI chat export archiver — ingests Claude, ChatGPT, Codex, Gemini exports into 
 @docs/architecture.md
 @docs/internals.md
 @docs/devtools.md
-@.claude/includes/docs-surface.md
 @TESTING.md

@@ -106,7 +106,7 @@ class TestCommandConstruction:
     def test_semantic_product_normalization_lane_uses_normalization_toolchain_suite(self):
         cmd = build_lane_command(LANES["semantic-product-normalization"])
         assert cmd[:3] == [sys.executable, "-m", "pytest"]
-        assert "tests/unit/core/test_project_normalization.py" in cmd
+        assert "tests/unit/core/test_repo_identity.py" in cmd
         assert "tests/unit/cli/test_products.py" in cmd
         assert "tests/integration/test_schema_operator_workflow.py" in cmd
         assert "tests/unit/sources/test_parsers_drive.py" in cmd

@@ -58,6 +58,7 @@ class TestPolylogueInitialization:
         custom_root = tmp_path / "custom_archive"
         archive = Polylogue(archive_root=custom_root)
         assert archive.archive_root == custom_root
+        assert archive.config.render_root == custom_root / "render"
 
     def test_init_with_expanduser(self):
         archive = Polylogue(archive_root="~/test_polylogue")
@@ -306,7 +307,7 @@ class TestPolylogueArchiveProducts:
                             "type": "tool_use",
                             "tool_name": "Edit",
                             "semantic_type": "file_edit",
-                            "input": {"path": "/realm/project/polylogue/polylogue/facade.py"},
+                            "input": {"path": "/workspace/polylogue/polylogue/facade.py"},
                         }
                     ]
                 },

@@ -6,7 +6,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from devtools.command_catalog import CommandSpec, grouped_command_specs
+from devtools.command_catalog import CommandSpec, control_plane_command, grouped_command_specs
 
 MARKER = "devtools-command-catalog"
 
@@ -33,11 +33,11 @@ def build_command_catalog() -> str:
         "Use these discovery commands before scripting or dispatching subcommands:",
         "",
         "```bash",
-        "python -m devtools --help",
-        "python -m devtools --list-commands",
-        "python -m devtools --list-commands --json",
-        "python -m devtools status",
-        "python -m devtools status --json",
+        control_plane_command("--help"),
+        control_plane_command("--list-commands"),
+        control_plane_command("--list-commands", "--json"),
+        control_plane_command("status"),
+        control_plane_command("status", "--json"),
         "```",
         "",
     ]
@@ -92,7 +92,10 @@ def main(argv: list[str] | None = None) -> int:
         current = output_path.read_text(encoding="utf-8")
         if current != rendered:
             print(f"render-devtools-reference: out of sync: {output_path}", file=sys.stderr)
-            print("render-devtools-reference: run: python -m devtools render-devtools-reference", file=sys.stderr)
+            print(
+                f"render-devtools-reference: run: {control_plane_command('render-devtools-reference')}",
+                file=sys.stderr,
+            )
             return 1
         print(f"render-devtools-reference: sync OK: {output_path}")
         return 0

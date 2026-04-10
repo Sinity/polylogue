@@ -10,8 +10,8 @@ catalog, see [test-quality-workflows.md](test-quality-workflows.md).
 ```bash
 pytest -q --ignore=tests/integration
 ruff check polylogue tests devtools
-python -m devtools status
-python -m devtools render-all --check
+devtools status
+devtools render-all --check
 polylogue doctor --repair --preview
 polylogue audit --only exercises --tier 0
 ```
@@ -23,7 +23,7 @@ polylogue audit --only exercises --tier 0
 | Archive writes are idempotent | unchanged conversations are skipped by content hash |
 | Content hash excludes editable metadata | titles, summaries, and tags can change without re-import churn |
 | Search and products read from the archive, not from provider-specific files | surface code should not bypass the substrate |
-| SQLite schema is fresh-only on mismatch | current storage schema version is `v1` |
+| SQLite schema is fresh-only on mismatch | current storage schema version is `v2` |
 | FTS assumptions use `unicode61` | porter stemming is not assumed in this build |
 | Repo-maintenance automation goes through `devtools` | avoid new shell-wrapper entrypoints |
 
@@ -102,6 +102,6 @@ The fastest way to spot drift is to compare the archive-facing implementation
 and the public docs together:
 
 ```bash
-python -m devtools render-all --check
-python -m devtools verify-showcase
+devtools render-all --check
+devtools verify-showcase
 ```

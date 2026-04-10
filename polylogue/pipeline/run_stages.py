@@ -87,6 +87,9 @@ async def execute_ingest_stage(
     skip_acquire: bool = False,
     ui: object | None = None,
     progress_callback: ProgressCallback | None = None,
+    raw_batch_size: int = 50,
+    ingest_workers: int | None = None,
+    measure_ingest_result_size: bool = False,
 ) -> IngestResult:
     from polylogue.pipeline.services.parsing import ParsingService
 
@@ -94,6 +97,9 @@ async def execute_ingest_stage(
         repository=repository,
         archive_root=archive_root,
         config=config,
+        raw_batch_size=raw_batch_size,
+        ingest_workers=ingest_workers,
+        measure_ingest_result_size=measure_ingest_result_size,
     )
     return await parsing_service.ingest_sources(
         sources=sources,
@@ -370,10 +376,10 @@ async def execute_embed_stage(
         show_embedding_stats(_StatsEnv(config), json_output=json_output)
         return EmbedStageOutcome(embedded_count=0, error_count=0, stats_only=True)
 
-    voyage_key = os.environ.get("POLYLOGUE_VOYAGE_API_KEY") or os.environ.get("VOYAGE_API_KEY")
+    voyage_key = os.environ.get("VOYAGE_API_KEY")
     if not voyage_key:
         click.echo("Error: VOYAGE_API_KEY environment variable not set", err=True)
-        click.echo("Set it with: export VOYAGE_API_KEY=your-api-key  (or POLYLOGUE_VOYAGE_API_KEY)", err=True)
+        click.echo("Set it with: export VOYAGE_API_KEY=your-api-key", err=True)
         raise click.Abort()
 
     from polylogue.storage.search_providers import create_vector_provider

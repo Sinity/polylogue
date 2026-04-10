@@ -69,8 +69,8 @@ def archive_root() -> Path:
 
 
 def render_root() -> Path:
-    """Render output root (overridable via POLYLOGUE_RENDER_ROOT)."""
-    return _xdg_path("POLYLOGUE_RENDER_ROOT", data_home() / "render")
+    """Render output root under the archive root."""
+    return archive_root() / "render"
 
 
 def drive_credentials_path() -> Path:

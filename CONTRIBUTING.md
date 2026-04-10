@@ -25,12 +25,12 @@ file.
 For repo-maintenance tasks, prefer the unified `devtools` entrypoint:
 
 ```bash
-python -m devtools --help
-python -m devtools --list-commands
-python -m devtools --list-commands --json
-python -m devtools status
-python -m devtools status --json
-python -m devtools render-all
+devtools --help
+devtools --list-commands
+devtools --list-commands --json
+devtools status
+devtools status --json
+devtools render-all
 ```
 
 The JSON discovery/status forms are the best fit for agents and other
@@ -94,13 +94,33 @@ Squash-merge behavior matters here:
 
 ## Versioning and Releases
 
-The package version in `pyproject.toml` is distribution metadata, not a
-per-merge ritual.
+The package version and the git commit serve different purposes:
 
-- do not bump it for every routine PR
-- bump it when cutting a real tagged release or publishing a real distributable change
-- until a formal release program exists, prefer accurate docs and clean `master`
-  history over synthetic version churn
+- `pyproject.toml` carries the last release version
+- git commit metadata identifies the exact development build
+- `polylogue --version` must include the current commit hash and dirty marker
+
+Routine PRs do not bump the package version. Change `version = "X.Y.Z"` only
+when you are cutting a real tagged release.
+
+The release procedure is:
+
+1. Update `pyproject.toml` to `X.Y.Z`.
+2. Run:
+
+```bash
+devtools render-all
+devtools render-all --check
+ruff check polylogue tests devtools
+pytest -q --ignore=tests/integration
+nix flake check
+```
+
+3. Commit the version bump as its own small change, normally `chore: release X.Y.Z`.
+4. Tag that exact commit as `vX.Y.Z`.
+
+If you are not creating the tag in this slice of work, do not touch the
+package version.
 
 ## Issues
 
@@ -110,6 +130,7 @@ Issues are optional. Use them when they improve planning or future traceability:
 - bug reports that need a repro or acceptance record
 - architectural or research questions
 - follow-up chains that will span more than one PR
+- durable unresolved debt discovered during implementation or verification
 
 Skip the issue when the change is self-contained and the PR itself is enough.
 
@@ -119,6 +140,12 @@ When you do open an issue:
 - write in terms of outcome, constraints, and acceptance criteria
 - prefer planning issues over retroactive bookkeeping
 - keep the language concise and operational
+- convert anonymous debt into tracked debt:
+  - expected-failure tests that represent real bugs
+  - TODO comments that would otherwise persist beyond the current PR
+  - warnings or degraded behavior accepted temporarily for scope reasons
+  - follow-up work called out in PR text or scratch notes
+- if a test or comment carries durable debt, reference the issue from that location when practical
 
 ## Pull Requests
 
@@ -184,8 +211,8 @@ their source surface changes:
 Refresh them together with:
 
 ```bash
-python -m devtools render-all
-python -m devtools render-all --check
+devtools render-all
+devtools render-all --check
 ```
 
 See [docs/devtools.md](docs/devtools.md) for the `devtools` commands and the

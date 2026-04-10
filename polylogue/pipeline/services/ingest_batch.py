@@ -42,7 +42,6 @@ if TYPE_CHECKING:
     from polylogue.storage.backends.async_sqlite import SQLiteBackend
 
 logger = get_logger(__name__)
-INGEST_WORKERS_ENV = "POLYLOGUE_INGEST_WORKERS"
 
 
 @dataclass(slots=True)
@@ -561,12 +560,19 @@ def _iter_ingest_results_sync(
     archive_root_str: str,
     validation_mode: str,
     worker_count: int,
+    measure_ingest_result_size: bool,
 ) -> Iterable[IngestRecordResult]:
     try:
         with ProcessPoolExecutor(max_workers=worker_count) as executor:
             futures: dict[Future, str] = {}
             for raw_record in raw_records:
-                future = executor.submit(ingest_record, raw_record, archive_root_str, validation_mode)
+                future = executor.submit(
+                    ingest_record,
+                    raw_record,
+                    archive_root_str,
+                    validation_mode,
+                    measure_ingest_result_size,
+                )
                 futures[future] = raw_record.raw_id
 
             for future in as_completed(futures):
@@ -580,20 +586,16 @@ def _iter_ingest_results_sync(
                     )
     except (TypeError, pickle.PicklingError):
         for raw_record in raw_records:
-            yield ingest_record(raw_record, archive_root_str, validation_mode)
+            yield ingest_record(
+                raw_record,
+                archive_root_str,
+                validation_mode,
+                measure_ingest_result_size,
+            )
 
 
-def _configured_ingest_worker_limit() -> int:
-    raw_value = os.environ.get(INGEST_WORKERS_ENV)
-    if raw_value is None:
-        return 8
-    try:
-        parsed = int(raw_value)
-    except ValueError as exc:
-        raise ValueError(f"{INGEST_WORKERS_ENV} must be a positive integer") from exc
-    if parsed <= 0:
-        raise ValueError(f"{INGEST_WORKERS_ENV} must be a positive integer")
-    return parsed
+def _resolved_ingest_worker_limit(value: int | None) -> int:
+    return value if value is not None else 8
 
 
 def _process_ingest_batch_sync(
@@ -602,12 +604,14 @@ def _process_ingest_batch_sync(
     db_path: Path,
     archive_root_str: str,
     validation_mode: str,
+    ingest_workers: int | None,
+    measure_ingest_result_size: bool,
 ) -> _IngestBatchSummary:
     from polylogue.storage.fts_lifecycle import suspend_fts_triggers_sync
 
     summary = _IngestBatchSummary()
     summary.raw_record_count = len(raw_records)
-    summary.worker_count = min(len(raw_records), os.cpu_count() or 4, _configured_ingest_worker_limit())
+    summary.worker_count = min(len(raw_records), os.cpu_count() or 4, _resolved_ingest_worker_limit(ingest_workers))
     summary.total_blob_mb = sum(r.blob_size for r in raw_records) / (1024 * 1024)
 
     t_start = time.perf_counter()
@@ -628,6 +632,7 @@ def _process_ingest_batch_sync(
                 archive_root_str=archive_root_str,
                 validation_mode=validation_mode,
                 worker_count=summary.worker_count,
+                measure_ingest_result_size=measure_ingest_result_size,
             )
         )
         while True:
@@ -740,6 +745,8 @@ async def process_ingest_batch(
         db_path=backend.db_path,
         archive_root_str=archive_root_str,
         validation_mode=validation_mode,
+        ingest_workers=service.ingest_workers,
+        measure_ingest_result_size=service.measure_ingest_result_size,
     )
 
     result.parse_failures += batch_summary.parse_failures

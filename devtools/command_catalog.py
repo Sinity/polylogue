@@ -8,6 +8,7 @@ from collections.abc import Callable, Iterable
 from dataclasses import asdict, dataclass
 
 CommandMain = Callable[[list[str] | None], int]
+CONTROL_PLANE = "devtools"
 
 CATEGORY_ORDER: tuple[str, ...] = (
     "core",
@@ -28,7 +29,7 @@ class CommandSpec:
 
     @property
     def invocation(self) -> str:
-        return f"python -m devtools {self.name}"
+        return control_plane_command(self.name)
 
     def resolve_main(self) -> CommandMain:
         module = importlib.import_module(self.module)
@@ -125,6 +126,11 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
 COMMANDS: dict[str, CommandSpec] = {spec.name: spec for spec in COMMAND_SPECS}
 
 
+def control_plane_command(*args: str) -> str:
+    parts = [CONTROL_PLANE, *args]
+    return " ".join(part for part in parts if part)
+
+
 def grouped_command_specs(commands: Iterable[CommandSpec] = COMMAND_SPECS) -> OrderedDict[str, list[CommandSpec]]:
     grouped: OrderedDict[str, list[CommandSpec]] = OrderedDict((category, []) for category in CATEGORY_ORDER)
     for spec in commands:
@@ -139,7 +145,9 @@ __all__ = [
     "CATEGORY_ORDER",
     "COMMANDS",
     "COMMAND_SPECS",
+    "CONTROL_PLANE",
     "CommandMain",
     "CommandSpec",
+    "control_plane_command",
     "grouped_command_specs",
 ]

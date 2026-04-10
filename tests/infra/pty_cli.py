@@ -100,11 +100,19 @@ def run_in_pty(
 
     # Build command
     project_root = Path(__file__).parent.parent.parent
-    command = ["uv", "run", "--project", str(project_root), "polylogue"] + args
+    project_root_literal = repr(str(project_root))
+    command = [
+        sys.executable,
+        "-c",
+        (
+            "import runpy, sys; "
+            "sys.argv = ['polylogue', *sys.argv[1:]]; "
+            "runpy.run_module('polylogue', run_name='__main__')"
+        ),
+    ] + args
 
     # Handle mutmut case
     if "MUTANT_UNDER_TEST" in clean_env:
-        project_root_literal = repr(str(project_root))
         command = [
             sys.executable,
             "-c",
@@ -284,6 +292,9 @@ def grid_to_text(grid: list[str], *, strip_trailing: bool = True) -> str:
     if strip_trailing:
         # Strip trailing whitespace from each line
         lines = [line.rstrip() for line in grid]
+        # PTY rendering often injects blank separator rows that are not part of
+        # the semantic CLI contract and produce whitespace-only snapshot drift.
+        lines = [line for line in lines if line]
         # Remove trailing empty lines
         while lines and not lines[-1]:
             lines.pop()

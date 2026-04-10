@@ -1,4 +1,4 @@
-"""Schema upgrade helpers for the fixed v1 archive schema."""
+"""Schema upgrade helpers for the fixed archive schema."""
 
 from __future__ import annotations
 

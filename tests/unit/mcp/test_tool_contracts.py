@@ -56,10 +56,10 @@ QUERY_TOOL_CASES = [
     ),
     (
         "search",
-        {"query": "hello", "path": "/realm/project/polylogue/README.md", "limit": 5},
+        {"query": "hello", "path": "/workspace/polylogue/README.md", "limit": 5},
         {
             "contains": ("hello",),
-            "path": ("/realm/project/polylogue/README.md",),
+            "path": ("/workspace/polylogue/README.md",),
             "limit": (5,),
         },
     ),
@@ -137,9 +137,9 @@ QUERY_TOOL_CASES = [
     ),
     (
         "list_conversations",
-        {"path": "/realm/project/polylogue/README.md", "limit": 2},
+        {"path": "/workspace/polylogue/README.md", "limit": 2},
         {
-            "path": ("/realm/project/polylogue/README.md",),
+            "path": ("/workspace/polylogue/README.md",),
             "limit": (2,),
         },
     ),
@@ -396,7 +396,7 @@ class TestProductTools:
                 "inference_version": 1,
                 "inference_family": "heuristic_session_semantics",
             },
-            evidence={"start_index": 0, "end_index": 1, "file_paths": ["/realm/project/polylogue/README.md"]},
+            evidence={"start_index": 0, "end_index": 1, "file_paths": ["/workspace/polylogue/README.md"]},
             inference={"kind": "implementation", "summary": "editing files", "confidence": 0.8},
         )
         phase = SessionPhaseProduct(
@@ -420,7 +420,7 @@ class TestProductTools:
         thread = WorkThreadProduct(
             thread_id="conv-1",
             root_id="conv-1",
-            dominant_project="polylogue",
+            dominant_repo="polylogue",
             provenance={
                 "materializer_version": 1,
                 "materialized_at": "2026-03-24T10:00:00+00:00",
@@ -433,7 +433,7 @@ class TestProductTools:
             explicit_count=0,
             auto_count=1,
             provider_breakdown={"claude-code": 1},
-            project_breakdown={"polylogue": 1},
+            repo_breakdown={"polylogue": 1},
             provenance={
                 "materializer_version": 1,
                 "materialized_at": "2026-03-24T10:00:00+00:00",

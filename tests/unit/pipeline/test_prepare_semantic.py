@@ -67,7 +67,7 @@ class TestClassifyTool:
         assert classify_tool("mcp__claude-in-chrome__tabs_context_mcp", {}) == ToolCategory.WEB
 
     def test_ls_is_search(self):
-        assert classify_tool("LS", {"path": "/realm/project/polylogue"}) == ToolCategory.SEARCH
+        assert classify_tool("LS", {"path": "/workspace/polylogue"}) == ToolCategory.SEARCH
 
     def test_unknown_tool_is_other(self):
         assert classify_tool("FancyCustomTool", {}) == ToolCategory.OTHER
@@ -145,9 +145,9 @@ class TestExtractToolMetadata:
         assert meta is None
 
     def test_search_returns_path_and_pattern(self):
-        meta = extract_tool_metadata("Grep", {"path": "/realm/project/polylogue", "pattern": "build_session_profile"})
+        meta = extract_tool_metadata("Grep", {"path": "/workspace/polylogue", "pattern": "build_session_profile"})
         assert meta is not None
-        assert meta["path"] == "/realm/project/polylogue"
+        assert meta["path"] == "/workspace/polylogue"
         assert meta["pattern"] == "build_session_profile"
 
     def test_agent_todo_metadata_summarizes_todos(self):

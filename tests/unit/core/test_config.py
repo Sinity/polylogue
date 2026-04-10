@@ -158,44 +158,17 @@ class TestIndexConfig:
     """Tests for IndexConfig from environment."""
 
     def test_from_env_defaults(self, monkeypatch):
-        """Default IndexConfig has FTS enabled, no external services."""
-        monkeypatch.delenv("POLYLOGUE_VOYAGE_API_KEY", raising=False)
+        """Default IndexConfig has FTS enabled and no vector provider configured."""
         monkeypatch.delenv("VOYAGE_API_KEY", raising=False)
-        monkeypatch.delenv("POLYLOGUE_VOYAGE_MODEL", raising=False)
-        monkeypatch.delenv("POLYLOGUE_VOYAGE_DIMENSION", raising=False)
-        monkeypatch.delenv("POLYLOGUE_AUTO_EMBED", raising=False)
         config = IndexConfig.from_env()
         assert config.fts_enabled is True
         assert config.voyage_api_key is None
-        assert config.voyage_model == "voyage-4"
-        assert config.voyage_dimension is None
-        assert config.auto_embed is False
 
-    def test_from_env_polylogue_prefixed(self, monkeypatch):
-        """POLYLOGUE_* env vars are picked up."""
-        monkeypatch.setenv("POLYLOGUE_VOYAGE_API_KEY", "voyage-key")
-        monkeypatch.setenv("POLYLOGUE_VOYAGE_MODEL", "voyage-4-large")
-        monkeypatch.setenv("POLYLOGUE_VOYAGE_DIMENSION", "512")
-        monkeypatch.setenv("POLYLOGUE_AUTO_EMBED", "true")
+    def test_from_env_voyage_key(self, monkeypatch):
+        """VOYAGE_API_KEY is used for embeddings."""
+        monkeypatch.setenv("VOYAGE_API_KEY", "voyage-key")
         config = IndexConfig.from_env()
         assert config.voyage_api_key == "voyage-key"
-        assert config.voyage_model == "voyage-4-large"
-        assert config.voyage_dimension == 512
-        assert config.auto_embed is True
-
-    def test_from_env_unprefixed_fallback(self, monkeypatch):
-        """Unprefixed env vars used when POLYLOGUE_* not set."""
-        monkeypatch.delenv("POLYLOGUE_VOYAGE_API_KEY", raising=False)
-        monkeypatch.setenv("VOYAGE_API_KEY", "fallback-key")
-        config = IndexConfig.from_env()
-        assert config.voyage_api_key == "fallback-key"
-
-    def test_from_env_prefixed_takes_precedence(self, monkeypatch):
-        """POLYLOGUE_* vars take precedence over unprefixed."""
-        monkeypatch.setenv("POLYLOGUE_VOYAGE_API_KEY", "preferred-key")
-        monkeypatch.setenv("VOYAGE_API_KEY", "fallback-key")
-        config = IndexConfig.from_env()
-        assert config.voyage_api_key == "preferred-key"
 
 
 class TestXDGPaths:

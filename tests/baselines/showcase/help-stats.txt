@@ -3,7 +3,7 @@ Usage: python -m polylogue stats [OPTIONS]
   Show statistics for matched conversations.
 
 Options:
-  --by [provider|month|year|day|action|tool|project|work-kind]
+  --by [provider|month|year|day|action|tool|repo|work-kind]
                                   Aggregate by dimension
   -f, --format [markdown|json|html|obsidian|org|yaml|plaintext|csv]
                                   Output format

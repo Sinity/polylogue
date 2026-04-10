@@ -10,7 +10,7 @@ from polylogue.cli.types import AppEnv
 @click.command("dashboard")
 @click.pass_obj
 def dashboard_command(env: AppEnv) -> None:
-    """Launch the Mission Control TUI dashboard."""
+    """Launch the dashboard TUI."""
     from polylogue.ui.tui.app import PolylogueApp
 
     app = PolylogueApp(repository=env.repository)

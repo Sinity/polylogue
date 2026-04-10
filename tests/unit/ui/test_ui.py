@@ -214,7 +214,9 @@ class TestConsoleFacadePrompts:
     )
     def test_input_stub_contract(self, mock_prompt_file, entry, default, expected):
         _write_stubs(mock_prompt_file, entry)
-        assert ConsoleFacade(plain=False, prompt_stub_path=mock_prompt_file).input("Prompt:", default=default) == expected
+        assert (
+            ConsoleFacade(plain=False, prompt_stub_path=mock_prompt_file).input("Prompt:", default=default) == expected
+        )
 
     def test_rich_choose_fallback_paths(self, monkeypatch):
         question = _questionary_stub(monkeypatch, "select", None)
@@ -263,7 +265,7 @@ class TestConsoleFacadeRendering:
             assert text in output
 
     def test_rich_rendering_surface_contract(self, rich_facade, capsys):
-        rich_facade.banner("Welcome", "Mission Control")
+        rich_facade.banner("Welcome", "Dashboard")
         rich_facade.summary("Checklist", ["Item 1", "[red]Item 2[/red]"])
         rich_facade.render_markdown("# Title\n\nBody")
         rich_facade.render_code("print('hi')", "python")
@@ -274,7 +276,7 @@ class TestConsoleFacadeRendering:
         rich_facade.info("FYI")
         output = capsys.readouterr().out
         assert "Welcome" in output
-        assert "Mission Control" in output
+        assert "Dashboard" in output
         assert "Checklist" in output
         assert "Item 2" in output
         assert "test.txt" in output

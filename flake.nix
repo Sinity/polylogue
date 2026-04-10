@@ -19,6 +19,9 @@
           inherit system;
         };
         python = pkgs.python313;
+        devtoolsCli = pkgs.writeShellScriptBin "devtools" ''
+          exec python -m devtools "$@"
+        '';
 
         # Build polylogue package as an importable library that also exposes the
         # project console script from pyproject entry points.
@@ -100,6 +103,7 @@
             # Python + uv for dependency management
             python
             uv
+            devtoolsCli
 
             # Development tools
             git
@@ -142,16 +146,20 @@
 
             # Sync dependencies whenever pyproject or uv.lock changes.
             if [ "$sync_fingerprint" != "$current_fingerprint" ]; then
-              echo "Syncing development environment..." >&2
-              uv sync --extra dev --frozen
+              if [[ $- == *i* ]]; then
+                echo "devshell: syncing Python dependencies" >&2
+              fi
+              uv sync --extra dev --frozen --quiet
               printf '%s' "$sync_fingerprint" > "$sync_fingerprint_file"
             fi
 
             if [ -f CLAUDE.md ]; then
-              python -m devtools render-agents >/dev/null
+              devtools render-agents >/dev/null
             fi
 
-            python -m devtools status || true
+            if [[ $- == *i* ]]; then
+              devtools status || true
+            fi
           '';
         };
 

@@ -69,7 +69,6 @@ def _workspace_paths() -> tuple[Config, Path]:
             "XDG_DATA_HOME": str(root / "data"),
             "XDG_STATE_HOME": str(root / "state"),
             "POLYLOGUE_ARCHIVE_ROOT": str(archive_root),
-            "POLYLOGUE_RENDER_ROOT": str(archive_root / "render"),
             "POLYLOGUE_SCHEMA_VALIDATION": "off",
         }
         with patch.dict(os.environ, env, clear=False):

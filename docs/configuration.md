@@ -42,23 +42,19 @@ Polylogue follows XDG Base Directory specification:
 
 ## Configuration
 
-**No configuration file.** Polylogue is truly zero-config. Paths follow XDG Base Directory specification.
+Polylogue has no general-purpose config file. It follows XDG defaults, auto-discovers supported sources, and exposes only a few operational overrides for archive location, terminal mode, embeddings, and Drive credentials.
 
 ## Environment Overrides
 
-Optional environment variables for vector search and API keys:
+These are the supported runtime overrides:
 
-| Variable | Alternative | Description |
-|----------|-------------|-------------|
-| `POLYLOGUE_VOYAGE_API_KEY` | `VOYAGE_API_KEY` | Voyage AI API key for embeddings |
-| `POLYLOGUE_FORCE_PLAIN` | | Force non-interactive plain output |
-| `POLYLOGUE_LOG` | | Log level: `error`, `warn`, `info`, `debug` |
-| `POLYLOGUE_CREDENTIAL_PATH` | | Path to OAuth client JSON |
-| `POLYLOGUE_TOKEN_PATH` | | Path to OAuth token |
-
-## Run Ledger
-
-Every `polylogue run` writes a JSON record to `archive_root/runs/run-<timestamp>-<run_id>.json` and to the `runs` table in the database. This enables automation to consume run results without scraping terminal output.
+| Variable | Description |
+|----------|-------------|
+| `POLYLOGUE_ARCHIVE_ROOT` | Override the archive root instead of using `$XDG_DATA_HOME/polylogue` |
+| `POLYLOGUE_FORCE_PLAIN` | Force non-interactive plain output |
+| `VOYAGE_API_KEY` | Voyage AI API key for embeddings |
+| `POLYLOGUE_CREDENTIAL_PATH` | Path to OAuth client JSON |
+| `POLYLOGUE_TOKEN_PATH` | Path to OAuth token |
 
 ## Backup and Export
 
@@ -87,7 +83,7 @@ For Gemini conversations via Google Drive:
 2. Download to `~/.config/polylogue/polylogue-credentials.json`
 3. Run `polylogue auth` to complete OAuth flow
 
-The "Google AI Studio" folder is automatically synced (hardcoded).
+Polylogue syncs the fixed `Google AI Studio` folder name used by Gemini exports.
 
 ## Observability
 
@@ -110,7 +106,6 @@ Polylogue writes run metadata to disk and keeps a SQLite history so automation c
 ### Path Inspection
 
 - `polylogue run --preview` prints resolved sources and output paths.
-- Use `POLYLOGUE_RENDER_ROOT` to override render output without editing config.
 
 ---
 

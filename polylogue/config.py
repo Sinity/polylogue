@@ -1,9 +1,4 @@
-"""Minimal configuration for polylogue (zero-config).
-
-This module provides configuration objects with hardcoded XDG paths.
-There is no config file, no load_config(), no write_config().
-All paths come from polylogue.paths.
-"""
+"""Minimal runtime configuration derived from filesystem defaults and env overrides."""
 
 from __future__ import annotations
 
@@ -30,10 +25,7 @@ class ConfigError(PolylogueError):
 
 @dataclass
 class Config:
-    """Application configuration with hardcoded paths.
-
-    All values are derived from polylogue.paths - there is no config file.
-    """
+    """Application configuration derived from paths and source discovery."""
 
     archive_root: Path
     render_root: Path
@@ -48,11 +40,7 @@ class Config:
 
 
 def get_config() -> Config:
-    """Return the hardcoded configuration.
-
-    This replaces load_config(). There is no config file to load.
-    All values come from XDG paths in polylogue.paths.
-    """
+    """Return the effective runtime configuration."""
     return Config(
         archive_root=archive_root(),
         render_root=render_root(),

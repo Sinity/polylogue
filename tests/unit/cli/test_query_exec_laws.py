@@ -208,7 +208,7 @@ def _sample_semantic_conversation() -> Conversation:
                         "type": "tool_use",
                         "tool_name": "Mystery",
                         "tool_id": "tool-other",
-                        "tool_input": {"path": "/realm/project/polylogue/README.md"},
+                        "tool_input": {"path": "/workspace/polylogue/README.md"},
                     }
                 ],
             ),
@@ -221,7 +221,7 @@ def _sample_semantic_conversation() -> Conversation:
                         "type": "tool_use",
                         "tool_name": "Edit",
                         "tool_id": "tool-edit",
-                        "tool_input": {"file_path": "/realm/project/polylogue/polylogue/lib/models.py"},
+                        "tool_input": {"file_path": "/workspace/polylogue/polylogue/lib/models.py"},
                     }
                 ],
             ),
@@ -724,7 +724,7 @@ def test_output_stats_by_conversations_action_slice_respects_selected_tool() -> 
 def test_output_stats_by_conversations_action_slice_respects_selected_path() -> None:
     env = _make_env()
     conversation = _sample_semantic_conversation()
-    selection = ConversationQuerySpec(path_terms=("/realm/project/polylogue/README.md",))
+    selection = ConversationQuerySpec(path_terms=("/workspace/polylogue/README.md",))
 
     with patch("click.echo") as mock_echo:
         output_stats_by_conversations(

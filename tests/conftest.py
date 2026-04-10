@@ -79,10 +79,8 @@ def _clear_polylogue_env(monkeypatch, tmp_path):
 
     for key in (
         "POLYLOGUE_ARCHIVE_ROOT",
-        "POLYLOGUE_RENDER_ROOT",
         # Prevent tests from hitting external Voyage API
         "VOYAGE_API_KEY",
-        "POLYLOGUE_VOYAGE_API_KEY",
         # Clear Drive credentials to ensure test isolation
         "POLYLOGUE_CREDENTIAL_PATH",
         "POLYLOGUE_TOKEN_PATH",
@@ -106,7 +104,6 @@ def workspace_env(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_DATA_HOME", str(data_dir))
     monkeypatch.setenv("XDG_STATE_HOME", str(state_dir))
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(archive_root))
-    monkeypatch.setenv("POLYLOGUE_RENDER_ROOT", str(archive_root / "render"))
     # Most tests using this fixture assert pipeline/query behavior, not schema
     # contract strictness. Keep validation deterministic and opt-in per test.
     monkeypatch.setenv("POLYLOGUE_SCHEMA_VALIDATION", "off")
@@ -184,7 +181,6 @@ def cli_workspace(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_DATA_HOME", str(data_dir))
     monkeypatch.setenv("XDG_STATE_HOME", str(state_dir))
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(archive_root))
-    monkeypatch.setenv("POLYLOGUE_RENDER_ROOT", str(render_root))
     monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")  # Plain output for tests
     monkeypatch.setenv("POLYLOGUE_SCHEMA_VALIDATION", "off")
 

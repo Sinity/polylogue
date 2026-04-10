@@ -52,13 +52,13 @@ def _seed_products(cli_workspace) -> None:
                         "type": "tool_use",
                         "tool_name": "Read",
                         "semantic_type": "file_read",
-                        "input": {"path": "/realm/project/polylogue/README.md"},
+                        "input": {"path": "/workspace/polylogue/README.md"},
                     },
                     {
                         "type": "tool_use",
                         "tool_name": "Edit",
                         "semantic_type": "file_edit",
-                        "input": {"path": "/realm/project/polylogue/README.md"},
+                        "input": {"path": "/workspace/polylogue/README.md"},
                     },
                 ]
             },
@@ -401,7 +401,7 @@ def test_session_product_status_accepts_epoch_backed_conversation_timestamps(cli
                         "type": "tool_use",
                         "tool_name": "Read",
                         "semantic_type": "file_read",
-                        "input": {"path": "/realm/project/polylogue/README.md"},
+                        "input": {"path": "/workspace/polylogue/README.md"},
                     }
                 ]
             },

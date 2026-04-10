@@ -58,22 +58,11 @@ def _get_git_info(repo_root: Path) -> tuple[str | None, bool]:
         return None, False
 
 
-def _resolve_version() -> VersionInfo:
-    """Resolve the Polylogue version from package metadata or pyproject.toml.
-
-    Includes git commit info when running from a source checkout.
-    """
+def _resolve_base_version(repo_root: Path) -> str:
     version = "unknown"
-    commit: str | None = None
-    dirty = False
 
-    with contextlib.suppress(PackageNotFoundError):
-        version = metadata_version("polylogue")
-
-    repo_root = Path(__file__).resolve().parent.parent
     pyproject_path = repo_root / "pyproject.toml"
-
-    if version == "unknown" and pyproject_path.exists():
+    if pyproject_path.exists():
         try:
             text = pyproject_path.read_text(encoding="utf-8")
             match = re.search(r'^version\s*=\s*"([^"]+)"', text, re.MULTILINE)
@@ -82,18 +71,39 @@ def _resolve_version() -> VersionInfo:
         except (OSError, UnicodeDecodeError):
             pass
 
-    # Check for git info in source checkout
+    if version == "unknown":
+        with contextlib.suppress(PackageNotFoundError):
+            version = metadata_version("polylogue")
+
+    if version == "unknown":
+        raise RuntimeError("unable to resolve package version from metadata or pyproject.toml")
+
+    return version
+
+
+def _get_embedded_build_info() -> tuple[str, bool]:
+    try:
+        from polylogue._build_info import BUILD_COMMIT, BUILD_DIRTY
+    except ImportError as exc:
+        raise RuntimeError("built package is missing embedded git metadata") from exc
+
+    if not BUILD_COMMIT or BUILD_COMMIT == "unknown":
+        raise RuntimeError("embedded build metadata is incomplete")
+
+    return BUILD_COMMIT, BUILD_DIRTY
+
+
+def _resolve_version(repo_root: Path | None = None) -> VersionInfo:
+    """Resolve the Polylogue version and exact build identity."""
+    repo_root = repo_root or Path(__file__).resolve().parent.parent
+    version = _resolve_base_version(repo_root)
+
     if (repo_root / ".git").exists():
         commit, dirty = _get_git_info(repo_root)
+        if commit is None:
+            raise RuntimeError("source checkout is missing git commit metadata")
     else:
-        # Nix build or installed package — try build-time info
-        try:
-            from polylogue._build_info import BUILD_COMMIT, BUILD_DIRTY
-
-            commit = BUILD_COMMIT if BUILD_COMMIT != "unknown" else None
-            dirty = BUILD_DIRTY
-        except ImportError:
-            pass
+        commit, dirty = _get_embedded_build_info()
 
     return VersionInfo(version=version, commit=commit, dirty=dirty)
 

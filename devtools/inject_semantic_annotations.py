@@ -3,7 +3,7 @@
 One-shot script. Run once to annotate, commit the updated schemas, then
 this script can remain as a re-annotation utility.
 
-Usage: python -m devtools inject-semantic-annotations [--dry-run]
+Usage: devtools inject-semantic-annotations [--dry-run]
 """
 
 from __future__ import annotations

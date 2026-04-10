@@ -103,9 +103,9 @@ class TestToolCallProperties:
         assert "/tmp/file" in tool.affected_paths
 
     def test_affected_paths_filters_globs_and_noise(self):
-        tool = _make_tool("Bash", {"command": "ls /realm/project/* /tmp/file ... /dev/null"})
+        tool = _make_tool("Bash", {"command": "ls /workspace/* /tmp/file ... /dev/null"})
         assert "/tmp/file" in tool.affected_paths
-        assert all(path not in tool.affected_paths for path in ("/realm/project/*", "...", "/dev/null"))
+        assert all(path not in tool.affected_paths for path in ("/workspace/*", "...", "/dev/null"))
 
     def test_affected_paths_filters_shell_suffix_fragments(self):
         tool = _make_tool("Bash", {"command": "tar -xf archive.tar.gz .tar.gz ./fixtures/sample.txt"})
@@ -118,9 +118,9 @@ class TestToolCallProperties:
             id="t1",
             input={"command": "git add pyproject.toml README.md"},
             category=classify_tool("Bash", {"command": "git add pyproject.toml README.md"}),
-            raw={"metadata": {"files": ["pyproject.toml", "/realm/project/polylogue/README.md"]}},
+            raw={"metadata": {"files": ["pyproject.toml", "/workspace/polylogue/README.md"]}},
         )
-        assert tool.affected_paths == ["pyproject.toml", "/realm/project/polylogue/README.md"]
+        assert tool.affected_paths == ["pyproject.toml", "/workspace/polylogue/README.md"]
 
 
 class TestMessageCollectionContracts:
@@ -264,8 +264,8 @@ class TestMessageFromRecord:
                     text=None,
                     tool_name="Read",
                     tool_id="tool-1",
-                    tool_input='{"file_path": "/realm/project/polylogue/README.md"}',
-                    metadata='{"path": "/realm/project/polylogue/README.md"}',
+                    tool_input='{"file_path": "/workspace/polylogue/README.md"}',
+                    metadata='{"path": "/workspace/polylogue/README.md"}',
                     semantic_type="file_read",
                 )
             ],
@@ -279,9 +279,9 @@ class TestMessageFromRecord:
                 "text": None,
                 "tool_name": "Read",
                 "tool_id": "tool-1",
-                "tool_input": {"file_path": "/realm/project/polylogue/README.md"},
+                "tool_input": {"file_path": "/workspace/polylogue/README.md"},
                 "media_type": None,
-                "metadata": {"path": "/realm/project/polylogue/README.md"},
+                "metadata": {"path": "/workspace/polylogue/README.md"},
                 "semantic_type": "file_read",
             }
         ]

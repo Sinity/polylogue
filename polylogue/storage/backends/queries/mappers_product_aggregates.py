@@ -23,9 +23,9 @@ def _row_to_session_tag_rollup_record(row: sqlite3.Row) -> SessionTagRollupRecor
         conversation_count=int(_row_get(row, "conversation_count", 0) or 0),
         explicit_count=int(_row_get(row, "explicit_count", 0) or 0),
         auto_count=int(_row_get(row, "auto_count", 0) or 0),
-        project_breakdown=_parse_json(
-            row["project_breakdown_json"],
-            field="project_breakdown_json",
+        repo_breakdown=_parse_json(
+            row["repo_breakdown_json"],
+            field="repo_breakdown_json",
             record_id=f"{row['provider_name']}:{row['bucket_day']}:{row['tag']}",
         )
         or {},
@@ -53,7 +53,7 @@ def _row_to_day_session_summary_record(row: sqlite3.Row) -> DaySessionSummaryRec
             record_id=f"{row['provider_name']}:{row['day']}",
         )
         or {},
-        projects_active=tuple(_parse_json(_row_get(row, "projects_active_json")) or []),
+        repos_active=tuple(_parse_json(_row_get(row, "repos_active_json")) or []),
         payload=_parse_json(
             row["payload_json"],
             field="payload_json",

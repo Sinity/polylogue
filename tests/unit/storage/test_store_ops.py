@@ -84,8 +84,8 @@ async def test_backend_path_terms_filter_contract(tmp_path: Path) -> None:
     from tests.infra.storage_records import ConversationBuilder
 
     db_path = tmp_path / "path-filter.db"
-    target_path = "/realm/project/polylogue/README.md"
-    other_path = "/realm/project/polylogue/docs/cli-reference.md"
+    target_path = "/workspace/polylogue/README.md"
+    other_path = "/workspace/polylogue/docs/cli-reference.md"
 
     (
         ConversationBuilder(db_path, "conv-readme")
@@ -156,7 +156,7 @@ async def test_filter_path_terms_apply_after_fts_search(tmp_path: Path) -> None:
     from tests.infra.storage_records import ConversationBuilder
 
     db_path = tmp_path / "path-fts.db"
-    target_path = "/realm/project/polylogue/README.md"
+    target_path = "/workspace/polylogue/README.md"
 
     (
         ConversationBuilder(db_path, "conv-match")
@@ -198,7 +198,7 @@ async def test_filter_path_terms_apply_after_fts_search(tmp_path: Path) -> None:
                     block_index=0,
                     type="tool_use",
                     tool_name="Read",
-                    metadata='{"path":"/realm/project/polylogue/docs/cli-reference.md"}',
+                    metadata='{"path":"/workspace/polylogue/docs/cli-reference.md"}',
                     semantic_type="file_read",
                 )
             ],

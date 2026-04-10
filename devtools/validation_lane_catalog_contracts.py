@@ -118,7 +118,7 @@ CONTRACT_LANES = {
         "-q",
         "-n",
         "0",
-        "tests/unit/core/test_project_normalization.py",
+        "tests/unit/core/test_repo_identity.py",
         "tests/unit/cli/test_products.py",
         "tests/unit/core/test_facade_api.py",
         "tests/unit/mcp/test_tool_contracts.py",

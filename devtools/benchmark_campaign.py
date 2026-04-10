@@ -317,9 +317,9 @@ def render_index() -> str:
     lines = [
         "# Benchmark Campaign Artifacts",
         "",
-        "Use `python -m devtools benchmark-campaign list` to see campaign definitions.",
-        "Use `python -m devtools benchmark-campaign run <campaign>` to record a fresh artifact.",
-        "Use `python -m devtools benchmark-campaign compare <baseline.json> <candidate.json>` to compare two artifacts.",
+        "Use `devtools benchmark-campaign list` to see campaign definitions.",
+        "Use `devtools benchmark-campaign run <campaign>` to record a fresh artifact.",
+        "Use `devtools benchmark-campaign compare <baseline.json> <candidate.json>` to compare two artifacts.",
         "",
         "| Date | Campaign | Commit | Benchmarks | Runtime | Worst Regression | Markdown |",
         "| --- | --- | --- | ---: | ---: | ---: | --- |",

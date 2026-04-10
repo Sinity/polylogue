@@ -107,7 +107,7 @@ def _event_search_text(
         profile.title or "",
         event.kind.value,
         summary,
-        *profile.canonical_projects,
+        *profile.repo_names,
         *event.file_paths,
         *event.tools_used,
     ]
@@ -189,7 +189,7 @@ def phase_search_text(profile: SessionProfile, phase: SessionPhase) -> str:
     parts = [
         profile.provider,
         profile.title or "",
-        *profile.canonical_projects,
+        *profile.repo_names,
         *profile.repo_paths,
         *phase.tool_counts.keys(),
     ]

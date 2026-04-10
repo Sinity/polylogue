@@ -15,7 +15,7 @@ SESSION_PRODUCT_PROFILE_DDL = """
             last_message_at TEXT,
             canonical_session_date TEXT,
             repo_paths_json TEXT,
-            canonical_projects_json TEXT,
+            repo_names_json TEXT,
             tags_json TEXT,
             auto_tags_json TEXT,
             message_count INTEGER NOT NULL DEFAULT 0,

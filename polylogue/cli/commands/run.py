@@ -466,10 +466,10 @@ def _run_embed_standalone(env: AppEnv, opts: EmbedOptions) -> None:
         click.echo("Error: --json requires --stats", err=True)
         raise click.Abort()
 
-    voyage_key = os.environ.get("POLYLOGUE_VOYAGE_API_KEY") or os.environ.get("VOYAGE_API_KEY")
+    voyage_key = os.environ.get("VOYAGE_API_KEY")
     if not voyage_key and not opts.stats:
         click.echo("Error: VOYAGE_API_KEY environment variable not set", err=True)
-        click.echo("Set it with: export VOYAGE_API_KEY=your-api-key  (or POLYLOGUE_VOYAGE_API_KEY)", err=True)
+        click.echo("Set it with: export VOYAGE_API_KEY=your-api-key", err=True)
         raise click.Abort()
 
     if opts.stats:

@@ -209,7 +209,7 @@ class TestMessageSemanticProjection:
         msg = Message(
             id="m1",
             role="user",
-            text="<environment_context>\n<cwd>/realm/project/polylogue</cwd>\n</environment_context>",
+            text="<environment_context>\n<cwd>/workspace/polylogue</cwd>\n</environment_context>",
         )
         assert msg.is_context_dump is True
 
@@ -217,12 +217,12 @@ class TestMessageSemanticProjection:
         contents_dump = Message(
             id="m2",
             role="user",
-            text="Please inspect this.\nContents of /realm/project/polylogue/README.md:\nhello",
+            text="Please inspect this.\nContents of /workspace/polylogue/README.md:\nhello",
         )
         file_path_dump = Message(
             id="m3",
             role="user",
-            text="Captured payload:\n<file path=/realm/project/polylogue/README.md>\nhello",
+            text="Captured payload:\n<file path=/workspace/polylogue/README.md>\nhello",
         )
 
         assert contents_dump.is_context_dump is True

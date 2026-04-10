@@ -41,7 +41,7 @@ def profile_inference_search_text(profile: SessionProfile) -> str:
     parts = [
         profile.provider,
         profile.title or "",
-        *profile.canonical_projects,
+        *profile.repo_names,
         *profile.auto_tags,
         *(event.summary for event in profile.work_events),
         *(event.kind.value for event in profile.work_events),
@@ -73,7 +73,7 @@ def profile_enrichment_search_text(profile: SessionProfile, enrichment_payload: 
         str(enrichment_payload.get("refined_work_kind") or ""),
         str(enrichment_payload.get("intent_summary") or ""),
         str(enrichment_payload.get("outcome_summary") or ""),
-        *profile.canonical_projects,
+        *profile.repo_names,
         *profile.repo_paths,
         *blockers,
         *support_signals_list,
@@ -101,7 +101,7 @@ def session_enrichment_payload(
         "assistant_turns": len(assistant_turns),
         "action_events": len(analysis.facts.action_events) if analysis is not None else 0,
         "touched_paths": len(profile.file_paths_touched),
-        "canonical_projects": len(profile.canonical_projects),
+        "repo_names": len(profile.repo_names),
     }
     confidence = min(
         0.95,
@@ -109,7 +109,7 @@ def session_enrichment_payload(
         + (0.2 if user_turns else 0.0)
         + (0.15 if analysis is not None and analysis.facts.action_events else 0.0)
         + (0.15 if profile.file_paths_touched else 0.0)
-        + (0.15 if profile.canonical_projects else 0.0)
+        + (0.15 if profile.repo_names else 0.0)
         + (0.1 if profile.work_events else 0.0)
         + (0.05 if blockers_val else 0.0),
     )
@@ -162,7 +162,7 @@ def profile_evidence_payload(profile: SessionProfile) -> dict[str, object]:
 def profile_inference_payload(profile: SessionProfile) -> dict[str, object]:
     signals = profile_support_signals(profile)
     return {
-        "canonical_projects": list(profile.canonical_projects),
+        "repo_names": list(profile.repo_names),
         "work_event_count": len(profile.work_events),
         "phase_count": len(profile.phases),
         "engaged_duration_ms": profile.engaged_duration_ms,
@@ -170,7 +170,7 @@ def profile_inference_payload(profile: SessionProfile) -> dict[str, object]:
         "support_level": profile_support_level(profile),
         "support_signals": list(signals),
         "engaged_duration_source": engaged_duration_source(profile),
-        "project_inference_strength": project_inference_strength(profile),
+        "repo_inference_strength": repo_inference_strength(profile),
         "auto_tags": list(profile.auto_tags),
         "work_events": [event.to_dict() for event in profile.work_events],
         "phases": [
@@ -220,7 +220,7 @@ def build_session_profile_record(
         first_message_at=profile.first_message_at.isoformat() if profile.first_message_at else None,
         last_message_at=profile.last_message_at.isoformat() if profile.last_message_at else None,
         repo_paths=profile.repo_paths,
-        canonical_projects=profile.canonical_projects,
+        repo_names=profile.repo_names,
         tags=profile.tags,
         auto_tags=profile.auto_tags,
         message_count=profile.message_count,
@@ -263,7 +263,7 @@ def hydrate_session_profile(record: SessionProfileRecord) -> SessionProfile:
         "last_message_at": record.last_message_at,
         "canonical_session_date": record.canonical_session_date,
         "repo_paths": list(record.repo_paths),
-        "canonical_projects": list(record.canonical_projects),
+        "repo_names": list(record.repo_names),
         "tags": list(record.tags),
         "auto_tags": list(record.auto_tags),
         "message_count": record.message_count,
@@ -340,12 +340,12 @@ def engaged_duration_source(profile: SessionProfile) -> str:
     return "phase_sum" if any(int(phase.duration_ms or 0) > 0 for phase in profile.phases) else "session_total_fallback"
 
 
-def project_inference_strength(profile: SessionProfile) -> str:
-    if profile.repo_paths and profile.canonical_projects:
+def repo_inference_strength(profile: SessionProfile) -> str:
+    if profile.repo_paths and profile.repo_names:
         return "strong"
-    if profile.canonical_projects and (profile.file_paths_touched or profile.cwd_paths):
+    if profile.repo_names and (profile.file_paths_touched or profile.cwd_paths):
         return "moderate"
-    if profile.canonical_projects:
+    if profile.repo_names:
         return "weak"
     return "none"
 
@@ -356,8 +356,8 @@ def profile_support_signals(profile: SessionProfile) -> tuple[str, ...]:
         signals.append("repo_paths")
     if profile.file_paths_touched:
         signals.append("touched_paths")
-    if profile.canonical_projects:
-        signals.append("canonical_projects")
+    if profile.repo_names:
+        signals.append("repo_names")
     if profile.work_events:
         signals.append("work_events")
     if profile.phases:
@@ -470,8 +470,8 @@ def enrichment_support_signals(
         signals.append("action_events")
     if profile.file_paths_touched:
         signals.append("touched_paths")
-    if profile.canonical_projects:
-        signals.append("canonical_projects")
+    if profile.repo_names:
+        signals.append("repo_names")
     if profile.work_events:
         signals.append("heuristic_work_events")
     if bands.assistant_turns:
@@ -501,7 +501,7 @@ __all__ = [
     "profile_search_text",
     "profile_support_level",
     "profile_support_signals",
-    "project_inference_strength",
+    "repo_inference_strength",
     "session_enrichment_payload",
     "support_level",
     "user_turn_texts",

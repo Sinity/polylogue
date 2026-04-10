@@ -1,13 +1,5 @@
 ## Agent Workflow
 
-- Keep repository-specific agent memory and workflow guidance in this root `CLAUDE.md` include set.
 - Do not create path-scoped `CLAUDE.md` files for subsystems.
-- Pull concise workflow guidance from the public repo docs when it can be transcluded directly.
-- Use GitHub issues for planning, design decisions, and follow-up work when they add real value.
-- Do not create retrospective bookkeeping issues for self-contained work that is already underway or already finished.
-- Confirm with the user before opening an issue unless they explicitly asked for one.
-- When an issue is warranted, use the issue templates instead of ad-hoc markdown plans.
-- Use `python -m devtools ...` for repo maintenance, generated-surface refresh, validation-lane execution, and repo hygiene.
-- Use `python -m devtools --list-commands --json` and `python -m devtools status --json` when an agent needs command discovery or repo-maintenance state.
-- PR titles must be written as the final squash-merge commit subject that should land on `master`.
-- PR bodies should stay concise: summary, problem, solution, verification, and any remaining risk or follow-up.
+- Confirm with the user before opening a GitHub issue unless they explicitly asked for one.
+- When scope forces durable debt to remain, prefer a tracked GitHub issue over an anonymous `xfail`, TODO, scratch note, or PR aside.

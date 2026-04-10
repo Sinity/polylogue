@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import importlib
-import os
 from collections.abc import Callable
 from typing import Any, BinaryIO, TypeVar
 
@@ -22,8 +21,6 @@ T = TypeVar("T")
 
 DEFAULT_DRIVE_RETRIES = 3
 DEFAULT_DRIVE_RETRY_BASE = 0.5
-ENV_DRIVE_RETRIES = "POLYLOGUE_DRIVE_RETRIES"
-ENV_DRIVE_RETRY_BASE = "POLYLOGUE_DRIVE_RETRY_BASE"
 
 
 def _import_module(name: str) -> Any:
@@ -38,19 +35,12 @@ def _import_module(name: str) -> Any:
 
 
 def _resolve_retries(value: int | None, config: object | None = None) -> int:
-    """Resolve retry count from explicit value, config, environment, or default."""
+    """Resolve retry count from explicit value, config, or default."""
     if value is not None:
         return max(0, int(value))
 
     if config is not None and hasattr(config, "retry_count"):
         return max(0, int(config.retry_count))
-
-    env_value = os.environ.get(ENV_DRIVE_RETRIES)
-    if env_value:
-        try:
-            return max(0, int(env_value))
-        except ValueError:
-            pass
 
     return DEFAULT_DRIVE_RETRIES
 
@@ -58,12 +48,6 @@ def _resolve_retries(value: int | None, config: object | None = None) -> int:
 def _resolve_retry_base(value: float | None) -> float:
     if value is not None:
         return max(0.0, float(value))
-    env_value = os.environ.get(ENV_DRIVE_RETRY_BASE)
-    if env_value:
-        try:
-            return max(0.0, float(env_value))
-        except ValueError:
-            pass
     return DEFAULT_DRIVE_RETRY_BASE
 
 

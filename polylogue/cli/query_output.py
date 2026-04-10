@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 import subprocess
 import sys
 import tempfile
@@ -223,13 +222,13 @@ def open_result(
         logger.warning("Config load failed, falling back to defaults: %s", exc)
         config = None
 
+    from polylogue.paths import render_root as default_render_root
+
     render_root = None
     if config and hasattr(config, "render_root") and config.render_root:
         render_root = Path(config.render_root)
     else:
-        render_root_env = os.environ.get("POLYLOGUE_RENDER_ROOT")
-        if render_root_env:
-            render_root = Path(render_root_env)
+        render_root = default_render_root()
 
     if not render_root or not render_root.exists():
         click.echo("No rendered outputs found.", err=True)

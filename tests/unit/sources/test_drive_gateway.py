@@ -45,57 +45,40 @@ def test_import_module_wraps_missing_drive_dependency(monkeypatch: pytest.Monkey
 
 
 @pytest.mark.parametrize(
-    ("explicit", "config_value", "env_value", "expected"),
+    ("explicit", "config_value", "expected"),
     [
-        (5, None, None, 5),
-        (0, None, None, 0),
-        (-5, None, None, 0),
-        (None, 7, None, 7),
-        (None, -2, None, 0),
-        (None, None, "9", 9),
-        (None, None, "-3", 0),
-        (None, None, "not_a_number", DEFAULT_DRIVE_RETRIES),
-        (None, None, None, DEFAULT_DRIVE_RETRIES),
-        (10, 5, "20", 10),
-        (None, 5, "20", 5),
+        (5, None, 5),
+        (0, None, 0),
+        (-5, None, 0),
+        (None, 7, 7),
+        (None, -2, 0),
+        (None, None, DEFAULT_DRIVE_RETRIES),
+        (10, 5, 10),
+        (None, 5, 5),
     ],
 )
 def test_resolve_retries_precedence_contract(
-    monkeypatch: pytest.MonkeyPatch,
     explicit: int | None,
     config_value: int | None,
-    env_value: str | None,
     expected: int,
 ) -> None:
-    if env_value is None:
-        monkeypatch.delenv("POLYLOGUE_DRIVE_RETRIES", raising=False)
-    else:
-        monkeypatch.setenv("POLYLOGUE_DRIVE_RETRIES", env_value)
     config = None if config_value is None else MagicMock(retry_count=config_value)
     assert _resolve_retries(value=explicit, config=config) == expected
 
 
 @pytest.mark.parametrize(
-    ("explicit", "env_value", "expected"),
+    ("explicit", "expected"),
     [
-        (1.5, None, 1.5),
-        (0.1, None, 0.1),
-        (-0.5, None, 0.0),
-        (None, "2.5", 2.5),
-        (None, "not_a_float", DEFAULT_DRIVE_RETRY_BASE),
-        (None, None, DEFAULT_DRIVE_RETRY_BASE),
+        (1.5, 1.5),
+        (0.1, 0.1),
+        (-0.5, 0.0),
+        (None, DEFAULT_DRIVE_RETRY_BASE),
     ],
 )
 def test_resolve_retry_base_contract(
-    monkeypatch: pytest.MonkeyPatch,
     explicit: float | None,
-    env_value: str | None,
     expected: float,
 ) -> None:
-    if env_value is None:
-        monkeypatch.delenv("POLYLOGUE_DRIVE_RETRY_BASE", raising=False)
-    else:
-        monkeypatch.setenv("POLYLOGUE_DRIVE_RETRY_BASE", env_value)
     assert _resolve_retry_base(explicit) == expected
 
 

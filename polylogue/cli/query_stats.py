@@ -582,7 +582,7 @@ async def output_stats_by_profile_ids(
 
     from rich.table import Table
 
-    if dimension not in {"project", "work-kind"}:
+    if dimension not in {"repo", "work-kind"}:
         raise ValueError(f"Unsupported profile stats dimension: {dimension}")
     if not conversation_ids:
         env.ui.console.print("No conversations matched.")
@@ -609,8 +609,8 @@ async def output_stats_by_profile_ids(
                 groups["none"]["conversations"] += 1
                 continue
 
-            if dimension == "project":
-                keys = profile.canonical_projects or ("none",)
+            if dimension == "repo":
+                keys = profile.repo_names or ("none",)
             else:
                 primary_kind = next(
                     (tag.split(":", 1)[1] for tag in profile.auto_tags if tag.startswith("kind:")),
@@ -642,7 +642,7 @@ async def output_stats_by_profile_ids(
         "work_events": matched_work_events,
         "messages": matched_messages,
     }
-    multi_membership = dimension == "project"
+    multi_membership = dimension == "repo"
     if emit_structured_stats(
         output_format=output_format,
         dimension=dimension,
@@ -674,7 +674,7 @@ async def output_stats_by_profile_ids(
     )
     env.ui.console.print(table)
     if multi_membership:
-        env.ui.console.print("Note: conversations may appear in multiple project groups.")
+        env.ui.console.print("Note: conversations may appear in multiple repo groups.")
 
 
 __all__ = [

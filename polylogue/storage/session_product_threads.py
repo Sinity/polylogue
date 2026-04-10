@@ -93,7 +93,7 @@ def thread_search_text(thread: WorkThread) -> str:
     parts = [
         thread.thread_id,
         thread.root_id,
-        thread.dominant_project or "",
+        thread.dominant_repo or "",
         *thread.session_ids,
         *thread.work_event_breakdown.keys(),
     ]
@@ -114,7 +114,7 @@ def build_work_thread_record(
         materialized_at=built_at,
         start_time=thread.start_time.isoformat() if thread.start_time else None,
         end_time=thread.end_time.isoformat() if thread.end_time else None,
-        dominant_project=thread.dominant_project,
+        dominant_repo=thread.dominant_repo,
         session_ids=thread.session_ids,
         session_count=len(thread.session_ids),
         depth=thread.depth,

@@ -14,7 +14,6 @@ from polylogue.archive_products import (
     profile_timestamp_values,
     records_provenance,
 )
-from polylogue.lib.project_normalization import normalize_project_names
 from polylogue.lib.session_profile import SessionProfile
 from polylogue.lib.session_summaries import DaySessionSummary, summarize_day, summarize_week
 from polylogue.storage.store import DaySessionSummaryRecord
@@ -51,7 +50,7 @@ def build_day_session_summary_records(
             for part in (
                 provider_name,
                 bucket_day.isoformat(),
-                *summary.projects_active,
+                *summary.repos_active,
                 *summary.work_event_breakdown.keys(),
             )
             if part
@@ -70,7 +69,7 @@ def build_day_session_summary_records(
                 total_messages=summary.total_messages,
                 total_words=summary.total_words,
                 work_event_breakdown=summary.work_event_breakdown,
-                projects_active=summary.projects_active,
+                repos_active=summary.repos_active,
                 payload=summary.to_dict(),
                 search_text=search_text or bucket_day.isoformat(),
             )
@@ -93,7 +92,7 @@ def aggregate_day_session_summary_products(
                 "total_messages": 0,
                 "total_words": 0,
                 "work_event_breakdown": Counter(),
-                "projects_active": set(),
+                "repos_active": set(),
                 "providers": Counter(),
                 "rows": [],
             },
@@ -105,26 +104,26 @@ def aggregate_day_session_summary_products(
         bucket["total_messages"] = int(bucket["total_messages"]) + row.total_messages
         bucket["total_words"] = int(bucket["total_words"]) + row.total_words
         work_event_breakdown = bucket["work_event_breakdown"]
-        projects_active = bucket["projects_active"]
+        repos_active = bucket["repos_active"]
         providers = bucket["providers"]
         record_rows = bucket["rows"]
         assert isinstance(work_event_breakdown, Counter)
-        assert isinstance(projects_active, set)
+        assert isinstance(repos_active, set)
         assert isinstance(providers, Counter)
         assert isinstance(record_rows, list)
         work_event_breakdown.update(row.work_event_breakdown)
-        projects_active.update(normalize_project_names(row.projects_active))
+        repos_active.update(str(name) for name in row.repos_active if str(name).strip())
         providers[row.provider_name] += row.conversation_count
         record_rows.append(row)
 
     products: list[DaySessionSummaryProduct] = []
     for day, bucket in sorted(grouped.items(), reverse=True):
         work_event_breakdown = bucket["work_event_breakdown"]
-        projects_active = bucket["projects_active"]
+        repos_active = bucket["repos_active"]
         providers = bucket["providers"]
         record_rows = bucket["rows"]
         assert isinstance(work_event_breakdown, Counter)
-        assert isinstance(projects_active, set)
+        assert isinstance(repos_active, set)
         assert isinstance(providers, Counter)
         assert isinstance(record_rows, list)
         summary = DaySessionSummary(
@@ -136,7 +135,7 @@ def aggregate_day_session_summary_products(
             total_messages=int(bucket["total_messages"]),
             total_words=int(bucket["total_words"]),
             work_event_breakdown=dict(work_event_breakdown),
-            projects_active=tuple(sorted(str(path) for path in projects_active)),
+            repos_active=tuple(sorted(str(path) for path in repos_active)),
             providers=dict(providers),
         )
         products.append(
@@ -163,7 +162,7 @@ def aggregate_week_session_summary_products(
             total_messages=int(product.summary["total_messages"]),
             total_words=int(product.summary["total_words"]),
             work_event_breakdown=dict(product.summary["work_event_breakdown"]),
-            projects_active=tuple(product.summary["projects_active"]),
+            repos_active=tuple(product.summary["repos_active"]),
             providers=dict(product.summary["providers"]),
         )
         for product in day_products

@@ -19,7 +19,7 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
     DocsEntry(
         "Developer Tools",
         "docs/devtools.md",
-        "`python -m devtools` guide for generated surfaces, validation, and repo hygiene.",
+        "`devtools` guide for generated surfaces, validation, and repo hygiene.",
     ),
     DocsEntry("Library API", "docs/library-api.md", "Async archive API, filters, and query patterns."),
     DocsEntry("Data Model", "docs/data-model.md", "Archive entities, storage shape, and metadata rules."),
@@ -33,11 +33,6 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
         "Test Quality Workflows",
         "docs/test-quality-workflows.md",
         "Generated validation lanes, mutation campaigns, and benchmark campaigns.",
-    ),
-    DocsEntry(
-        "Mutation Testing Baseline",
-        "docs/mutation-testing-baseline.md",
-        "Mutation policy, baseline expectations, and workflow.",
     ),
 )
 

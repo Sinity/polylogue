@@ -45,33 +45,15 @@ class DriveConfig:
 
 @dataclass
 class IndexConfig:
-    """Search and vector indexing configuration (from env vars)."""
+    """Search indexing configuration."""
 
     fts_enabled: bool = True
     voyage_api_key: str | None = None
-    voyage_model: str = "voyage-4"
-    voyage_dimension: int | None = None
-    auto_embed: bool = False
 
     @classmethod
     def from_env(cls) -> IndexConfig:
         """Load IndexConfig from environment variables."""
-        dimension_str = os.environ.get("POLYLOGUE_VOYAGE_DIMENSION")
-        dimension: int | None = None
-        if dimension_str:
-            try:
-                dimension = int(dimension_str)
-            except ValueError:
-                from polylogue.logging import get_logger
-
-                get_logger(__name__).warning(
-                    "Invalid POLYLOGUE_VOYAGE_DIMENSION=%r, using model default", dimension_str
-                )
-
         return cls(
             fts_enabled=True,
-            voyage_api_key=os.environ.get("POLYLOGUE_VOYAGE_API_KEY") or os.environ.get("VOYAGE_API_KEY"),
-            voyage_model=os.environ.get("POLYLOGUE_VOYAGE_MODEL", "voyage-4"),
-            voyage_dimension=dimension,
-            auto_embed=os.environ.get("POLYLOGUE_AUTO_EMBED", "").lower() in ("1", "true"),
+            voyage_api_key=os.environ.get("VOYAGE_API_KEY"),
         )

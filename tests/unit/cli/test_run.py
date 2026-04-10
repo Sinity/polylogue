@@ -511,7 +511,7 @@ class TestTagsCommand:
 
 class TestEmbedCommand:
     def test_embed_requires_api_key_unless_stats(self, runner, cli_workspace):
-        with patch.dict("os.environ", {"VOYAGE_API_KEY": "", "POLYLOGUE_VOYAGE_API_KEY": ""}, clear=False):
+        with patch.dict("os.environ", {"VOYAGE_API_KEY": ""}, clear=False):
             result = runner.invoke(cli, ["run", "embed"])
         assert result.exit_code != 0
         assert "VOYAGE_API_KEY" in result.output
@@ -522,7 +522,7 @@ class TestEmbedCommand:
             patch("polylogue.cli.embed_stats.embedding_status_payload") as mock_payload,
             patch.dict(
                 "os.environ",
-                {"VOYAGE_API_KEY": "", "POLYLOGUE_VOYAGE_API_KEY": ""},
+                {"VOYAGE_API_KEY": ""},
                 clear=False,
             ),
         ):
@@ -560,7 +560,7 @@ class TestEmbedCommand:
             patch("polylogue.cli.embed_stats.embedding_status_payload") as mock_payload,
             patch.dict(
                 "os.environ",
-                {"VOYAGE_API_KEY": "", "POLYLOGUE_VOYAGE_API_KEY": ""},
+                {"VOYAGE_API_KEY": ""},
                 clear=False,
             ),
         ):
@@ -612,7 +612,7 @@ class TestEmbedCommand:
         if expected_model is not None:
             assert opts.model == expected_model
 
-    def test_embed_alt_api_key_env_contract(self, runner, cli_workspace):
+    def test_embed_api_key_env_contract(self, runner, cli_workspace):
         with (
             patch("polylogue.cli.commands.run._run_embed_standalone") as mock_standalone,
             patch("polylogue.storage.search_providers.create_vector_provider") as mock_create,
@@ -622,7 +622,7 @@ class TestEmbedCommand:
             result = runner.invoke(
                 cli,
                 ["run", "embed"],
-                env={"POLYLOGUE_VOYAGE_API_KEY": "alt-test-key", "POLYLOGUE_FORCE_PLAIN": "1"},
+                env={"VOYAGE_API_KEY": "test-key", "POLYLOGUE_FORCE_PLAIN": "1"},
             )
 
         assert result.exit_code == 0

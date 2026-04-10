@@ -8,9 +8,9 @@ from devtools import render_devtools_reference
 def test_build_command_catalog_includes_discovery_and_commands() -> None:
     rendered = render_devtools_reference.build_command_catalog()
 
-    assert "python -m devtools --list-commands --json" in rendered
-    assert "python -m devtools status --json" in rendered
-    assert "| `python -m devtools render-all` |" in rendered
+    assert "devtools --list-commands --json" in rendered
+    assert "devtools status --json" in rendered
+    assert "| `devtools render-all` |" in rendered
 
 
 def test_replace_marked_section_updates_catalog_block() -> None:

@@ -13,7 +13,7 @@ def fail(command: str, message: str) -> NoReturn:
 
 
 def load_effective_config(env: AppEnv) -> Config:
-    """Return the hardcoded configuration (zero-config)."""
+    """Return the effective runtime configuration."""
     return env.config
 
 

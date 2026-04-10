@@ -75,10 +75,17 @@ POLYLOGUE_FORCE_PLAIN=1 polylogue audit --live --only exercises --tier 0
 ## Mutation Testing
 
 ```bash
-python -m devtools mutmut-campaign list
-python -m devtools mutmut-campaign run <campaign>
-python -m devtools mutmut-campaign index
+devtools mutmut-campaign list
+devtools mutmut-campaign run <campaign>
+devtools mutmut-campaign index
 ```
+
+Policy:
+
+- keep the committed mutmut configuration broad; narrow work happens through
+  focused campaigns
+- write durable local artifacts under `.local/mutation-campaigns/`
+- rebuild the local mutation index after a meaningful campaign wave
 
 Use the generated quality reference for the named campaign catalog and
 benchmark surfaces.

@@ -453,7 +453,7 @@ class TestProfileCompactionCounting:
             branch_names=(),
             file_paths_touched=(),
             languages_detected=(),
-            canonical_projects=(),
+            repo_names=(),
             work_events=(),
             phases=(),
             compaction_count=3,
@@ -486,7 +486,7 @@ class TestProfileCompactionCounting:
             branch_names=(),
             file_paths_touched=(),
             languages_detected=(),
-            canonical_projects=(),
+            repo_names=(),
             work_events=(),
             phases=(),
         )

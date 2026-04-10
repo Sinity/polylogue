@@ -675,7 +675,7 @@ def format_index(results: list[CampaignResult]) -> str:
             "",
             "- Artifacts live in this directory as per-campaign JSON and Markdown files.",
             "- `Dirty` reflects non-artifact worktree changes in the source repository at campaign start.",
-            "- Use `python -m devtools mutmut-campaign list` to inspect available campaign scopes.",
+            "- Use `devtools mutmut-campaign list` to inspect available campaign scopes.",
         ]
     )
     lines.append("")

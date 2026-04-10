@@ -114,7 +114,7 @@ class TestHandleQueryMode:
             self._make_params(until="2025-12-31"),
             self._make_params(latest=True),
             self._make_params(title="test"),
-            self._make_params(path_terms=("/realm/project/polylogue/README.md",)),
+            self._make_params(path_terms=("/workspace/polylogue/README.md",)),
             self._make_params(action=("search",)),
             self._make_params(exclude_action=("git",)),
             self._make_params(action_sequence="file_read,file_edit,shell"),

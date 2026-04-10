@@ -7,7 +7,7 @@ from datetime import date, datetime
 
 from polylogue.lib.attribution import ConversationAttribution
 from polylogue.lib.phase_extraction import SessionPhase
-from polylogue.lib.project_normalization import normalize_project_names, normalize_repo_paths
+from polylogue.lib.repo_identity import normalize_repo_names, normalize_repo_paths
 from polylogue.lib.semantic_facts import ConversationSemanticFacts
 from polylogue.lib.work_event_extraction import WorkEvent
 
@@ -35,7 +35,7 @@ class SessionProfile:
     branch_names: tuple[str, ...]
     file_paths_touched: tuple[str, ...]
     languages_detected: tuple[str, ...]
-    canonical_projects: tuple[str, ...]
+    repo_names: tuple[str, ...]
     work_events: tuple[WorkEvent, ...]
     phases: tuple[SessionPhase, ...]
     first_message_at: datetime | None = None
@@ -73,7 +73,7 @@ class SessionProfile:
             "branch_names": list(self.branch_names),
             "file_paths_touched": list(self.file_paths_touched),
             "languages_detected": list(self.languages_detected),
-            "canonical_projects": list(self.canonical_projects),
+            "repo_names": list(self.repo_names),
             "work_events": [event.to_dict() for event in self.work_events],
             "phases": [
                 {
@@ -112,10 +112,9 @@ class SessionProfile:
     @classmethod
     def from_dict(cls, payload: dict[str, object]) -> SessionProfile:
         repo_paths = normalize_repo_paths(payload.get("repo_paths", []) or [])
-        canonical_projects = normalize_project_names(
-            payload.get("canonical_projects", []) or [],
-            repo_paths=repo_paths,
-        )
+        repo_names = tuple(
+            sorted({str(item).strip() for item in (payload.get("repo_names", []) or []) if str(item).strip()})
+        ) or normalize_repo_names(repo_paths=repo_paths)
         return cls(
             conversation_id=str(payload["conversation_id"]),
             provider=str(payload["provider"]),
@@ -138,7 +137,7 @@ class SessionProfile:
             branch_names=tuple(str(item) for item in payload.get("branch_names", []) or []),
             file_paths_touched=tuple(str(item) for item in payload.get("file_paths_touched", []) or []),
             languages_detected=tuple(str(item) for item in payload.get("languages_detected", []) or []),
-            canonical_projects=canonical_projects,
+            repo_names=repo_names,
             work_events=tuple(
                 WorkEvent.from_dict(item) for item in payload.get("work_events", []) or [] if isinstance(item, dict)
             ),

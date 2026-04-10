@@ -1,6 +1,6 @@
 """Verify showcase tier 0 output matches committed baselines.
 
-Usage: python -m devtools verify-showcase
+Usage: devtools verify-showcase
 Exit code: 0 if baselines match, 1 if drift detected.
 
 Tier 0 exercises are structural tests (help screens, version output)

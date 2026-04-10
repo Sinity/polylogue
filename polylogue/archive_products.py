@@ -78,7 +78,7 @@ class SessionEvidencePayload(ArchiveProductModel):
 
 
 class SessionInferencePayload(ArchiveProductModel):
-    canonical_projects: tuple[str, ...] = ()
+    repo_names: tuple[str, ...] = ()
     work_event_count: int = 0
     phase_count: int = 0
     engaged_duration_ms: int = 0
@@ -86,7 +86,7 @@ class SessionInferencePayload(ArchiveProductModel):
     support_level: str = "weak"
     support_signals: tuple[str, ...] = ()
     engaged_duration_source: str = "session_total_fallback"
-    project_inference_strength: str = "weak"
+    repo_inference_strength: str = "weak"
     auto_tags: tuple[str, ...] = ()
     work_events: tuple[dict[str, Any], ...] = ()
     phases: tuple[dict[str, Any], ...] = ()
@@ -402,7 +402,7 @@ class WorkThreadProduct(ArchiveProductModel):
     product_kind: str = "work_thread"
     thread_id: str
     root_id: str
-    dominant_project: str | None = None
+    dominant_repo: str | None = None
     provenance: ArchiveProductProvenance
     thread: dict[str, Any]
 
@@ -411,7 +411,7 @@ class WorkThreadProduct(ArchiveProductModel):
         return cls(
             thread_id=record.thread_id,
             root_id=record.root_id,
-            dominant_project=record.dominant_project,
+            dominant_repo=record.dominant_repo,
             provenance=ArchiveProductProvenance(
                 materializer_version=record.materializer_version,
                 materialized_at=record.materialized_at,
@@ -430,7 +430,7 @@ class SessionTagRollupProduct(ArchiveProductModel):
     explicit_count: int
     auto_count: int
     provider_breakdown: dict[str, int]
-    project_breakdown: dict[str, int]
+    repo_breakdown: dict[str, int]
     provenance: ArchiveProductProvenance
 
 

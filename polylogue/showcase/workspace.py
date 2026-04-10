@@ -55,7 +55,6 @@ def create_verification_workspace(
         "XDG_DATA_HOME": str(data_home),
         "XDG_STATE_HOME": str(state_home),
         "POLYLOGUE_ARCHIVE_ROOT": str(archive_root),
-        "POLYLOGUE_RENDER_ROOT": str(render_root),
         "POLYLOGUE_FORCE_PLAIN": "1",
     }
 

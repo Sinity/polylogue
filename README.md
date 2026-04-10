@@ -140,14 +140,14 @@ The Python API is async-first and shares the same archive semantics as the CLI.
 
 ## Developer Tools
 
-Repository maintenance work is centralized under `python -m devtools`:
+Repository maintenance work is centralized under `devtools`:
 
 ```bash
-python -m devtools --help
-python -m devtools --list-commands --json
-python -m devtools status
-python -m devtools render-all
-python -m devtools run-validation-lanes --lane frontier-local
+devtools --help
+devtools --list-commands --json
+devtools status
+devtools render-all
+devtools run-validation-lanes --lane frontier-local
 ```
 
 Use it for generated surfaces, validation lanes, mutation campaigns, benchmark
@@ -161,7 +161,7 @@ other tooling.
 | Document | Description |
 |----------|-------------|
 | [CLI Reference](docs/cli-reference.md) | Generated command reference from live help output. |
-| [Developer Tools](docs/devtools.md) | `python -m devtools` guide for generated surfaces, validation, and repo hygiene. |
+| [Developer Tools](docs/devtools.md) | `devtools` guide for generated surfaces, validation, and repo hygiene. |
 | [Library API](docs/library-api.md) | Async archive API, filters, and query patterns. |
 | [Data Model](docs/data-model.md) | Archive entities, storage shape, and metadata rules. |
 | [Configuration](docs/configuration.md) | XDG paths, environment variables, and runtime configuration. |
@@ -171,7 +171,6 @@ other tooling.
 | [Generate](docs/generate.md) | Synthetic archive generation, seed mode, and demo workflows. |
 | [Providers](docs/providers/README.md) | Provider-specific parsing and export-format notes. |
 | [Test Quality Workflows](docs/test-quality-workflows.md) | Generated validation lanes, mutation campaigns, and benchmark campaigns. |
-| [Mutation Testing Baseline](docs/mutation-testing-baseline.md) | Mutation policy, baseline expectations, and workflow. |
 
 ## Contributor Guides
 
@@ -190,7 +189,7 @@ other tooling.
 ```bash
 pytest -q --ignore=tests/integration
 ruff check polylogue tests devtools
-python -m devtools render-all --check
+devtools render-all --check
 nix build .#polylogue
 nix flake check
 ```
@@ -199,12 +198,16 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for workflow and PR rules,
 [TESTING.md](TESTING.md) for the testing guide, and
 [docs/internals.md](docs/internals.md) for debugging landmarks and invariants.
 
-## Project Status
+## Versioning
 
-Polylogue is under active development on `master`. The package version is
-distribution metadata, not a cadence-driven release promise. Version bumps
-happen when a real tagged or published build is worth cutting, not on every
-routine merge.
+Polylogue uses two version surfaces:
+
+- the package version in `pyproject.toml` marks the last tagged release
+- the git commit identifies the exact development build
+
+Routine merges do not bump the package version. `polylogue --version` includes
+the current commit hash, so day-to-day builds stay identifiable without fake
+release churn.
 
 ## License
 

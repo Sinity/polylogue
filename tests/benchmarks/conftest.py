@@ -7,8 +7,8 @@ Generated DBs are cached in a temp directory per session to avoid
 regeneration overhead dominating benchmark measurements.
 
 Usage:
-    python -m devtools benchmark-campaign list
-    python -m devtools benchmark-campaign run search-filters
+    devtools benchmark-campaign list
+    devtools benchmark-campaign run search-filters
 """
 
 from __future__ import annotations
@@ -57,11 +57,11 @@ _CONVERSATION_PROFILES = [
 # Realistic tool names and content
 _TOOL_NAMES = ["Read", "Write", "Edit", "Bash", "Glob", "Grep", "Agent", "WebFetch", "WebSearch"]
 _FILE_PATHS = [
-    "/realm/project/polylogue/polylogue/storage/repository.py",
-    "/realm/project/polylogue/polylogue/lib/models.py",
-    "/realm/project/polylogue/tests/unit/core/test_models.py",
-    "/realm/project/polylogue/polylogue/cli/commands/check.py",
-    "/realm/project/polylogue/polylogue/schemas/runtime_registry.py",
+    "/workspace/polylogue/polylogue/storage/repository.py",
+    "/workspace/polylogue/polylogue/lib/models.py",
+    "/workspace/polylogue/tests/unit/core/test_models.py",
+    "/workspace/polylogue/polylogue/cli/commands/check.py",
+    "/workspace/polylogue/polylogue/schemas/runtime_registry.py",
 ]
 
 # Semantic types matching real distribution (~67% of messages have blocks)

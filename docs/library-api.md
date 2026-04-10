@@ -93,7 +93,7 @@ async with Polylogue() as archive:
 - `canonical_session_date`
 - `engaged_duration_ms`
 - `engaged_minutes`
-- `canonical_projects`
+- `repo_names`
 - `repo_paths`
 
 `SessionWorkEventProduct` and `SessionPhaseProduct` expose timestamped timeline

@@ -9,7 +9,6 @@ the same blob again). Moves transform into subprocess for true parallelism.
 
 from __future__ import annotations
 
-import os
 import pickle
 import re
 from dataclasses import dataclass, field
@@ -32,7 +31,6 @@ from polylogue.types import ValidationMode, ValidationStatus
 
 _SOURCE_HASH_SUFFIX = re.compile(r"-(?:[0-9a-f]{16,64})$", re.IGNORECASE)
 _SCHEMA_REGISTRY = None
-MEASURE_INGEST_RESULT_SIZE_ENV = "POLYLOGUE_MEASURE_INGEST_RESULT_SIZE"
 
 
 # ---------------------------------------------------------------------------
@@ -146,8 +144,8 @@ def _runtime_schema_registry():
     return _SCHEMA_REGISTRY
 
 
-def _finalize_result(result: IngestRecordResult) -> IngestRecordResult:
-    if os.environ.get(MEASURE_INGEST_RESULT_SIZE_ENV, "").lower() not in {"1", "true"}:
+def _finalize_result(result: IngestRecordResult, *, measure_serialized_size: bool) -> IngestRecordResult:
+    if not measure_serialized_size:
         return result
     result.serialized_size_bytes = len(pickle.dumps(result, protocol=pickle.HIGHEST_PROTOCOL))
     return result
@@ -162,6 +160,7 @@ def ingest_record(
     raw_record: RawConversationRecord,
     archive_root_str: str,
     validation_mode_value: str = "strict",
+    measure_serialized_size: bool = False,
 ) -> IngestRecordResult:
     """Decode + validate + parse + transform one raw record in a single pass.
 
@@ -200,7 +199,8 @@ def ingest_record(
                 validation_status=ValidationStatus.FAILED.value,
                 validation_error=f"decode: {exc}",
                 error=f"decode: {exc}",
-            )
+            ),
+            measure_serialized_size=measure_serialized_size,
         )
 
     payload_provider = str(envelope.provider)
@@ -211,7 +211,8 @@ def ingest_record(
                 raw_id=raw_record.raw_id,
                 payload_provider=payload_provider,
                 validation_status=ValidationStatus.SKIPPED.value,
-            )
+            ),
+            measure_serialized_size=measure_serialized_size,
         )
 
     # ── Phase 2: Validate schema (inline, reuses decoded payload) ─────
@@ -229,7 +230,8 @@ def ingest_record(
                     validation_status=ValidationStatus.FAILED.value,
                     validation_error=f"Malformed JSONL lines: {malformed_lines}",
                     error=f"Malformed JSONL lines: {malformed_lines}",
-                )
+                ),
+                measure_serialized_size=measure_serialized_size,
             )
 
         schema_resolution = _runtime_schema_registry().resolve_payload(
@@ -267,7 +269,8 @@ def ingest_record(
                             validation_status=ValidationStatus.FAILED.value,
                             validation_error=f"Schema validation failed: {first_error}",
                             error=f"Schema validation failed: {first_error}",
-                        )
+                        ),
+                        measure_serialized_size=measure_serialized_size,
                     )
     elif validation_mode is ValidationMode.OFF:
         v_status = ValidationStatus.SKIPPED
@@ -294,7 +297,8 @@ def ingest_record(
                 payload_provider=payload_provider,
                 validation_status=v_status.value,
                 error=f"parse: {exc}",
-            )
+            ),
+            measure_serialized_size=measure_serialized_size,
         )
 
     # Apply raw record defaults (timestamps)
@@ -329,7 +333,8 @@ def ingest_record(
                     payload_provider=payload_provider,
                     validation_status=v_status.value,
                     error=f"transform: {exc}",
-                )
+                ),
+                measure_serialized_size=measure_serialized_size,
             )
 
     return _finalize_result(
@@ -340,7 +345,8 @@ def ingest_record(
             validation_error=v_error,
             conversations=result_convos,
             source_name=source_name,
-        )
+        ),
+        measure_serialized_size=measure_serialized_size,
     )
 
 

@@ -59,7 +59,7 @@ def test_bench_extract_tool_metadata(benchmark) -> None:
     """extract_tool_metadata() for git, file, subagent variants."""
     inputs: list[tuple[str, dict[str, Any]]] = [
         ("Bash", {"command": "git commit -m 'fix: update schema'"}),
-        ("Read", {"file_path": "/realm/project/polylogue/polylogue/lib/models.py"}),
+        ("Read", {"file_path": "/workspace/polylogue/polylogue/lib/models.py"}),
         ("Write", {"file_path": "/tmp/output.py", "content": "result = 42"}),
         ("Edit", {"file_path": "/tmp/file.py", "old_string": "old_val", "new_string": "new_val"}),
         ("Task", {"subagent_type": "explore", "prompt": "explore the codebase", "description": "explore"}),

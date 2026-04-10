@@ -172,7 +172,7 @@ def _row_to_work_thread_record(row: sqlite3.Row) -> WorkThreadRecord:
         materialized_at=row["materialized_at"],
         start_time=_row_get(row, "start_time"),
         end_time=_row_get(row, "end_time"),
-        dominant_project=_row_get(row, "dominant_project"),
+        dominant_repo=_row_get(row, "dominant_repo"),
         session_ids=tuple(_parse_json(_row_get(row, "session_ids_json")) or []),
         session_count=int(_row_get(row, "session_count", 0) or 0),
         depth=int(_row_get(row, "depth", 0) or 0),

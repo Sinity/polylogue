@@ -399,7 +399,7 @@ register(
         ],
         fields=[
             ProductField("", _attr("thread_id"), group=0),
-            ProductField("project", _attr("dominant_project", "-"), group=0),
+            ProductField("repo", _attr("dominant_repo", "-"), group=0),
             ProductField(
                 "sessions", lambda i: str(i.thread.get("session_count", 0)) if hasattr(i, "thread") else "0", group=0
             ),
