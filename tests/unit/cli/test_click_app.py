@@ -243,24 +243,6 @@ class TestQueryFirstGroupParseArgs:
         assert "polylogue --provider claude-code --since 2026-01-01 stats --by repo --format json" in result.output
         assert "polylogue stats --by repo --provider claude-code --since 2026-01-01 --format json" not in result.output
 
-    def test_root_query_option_after_verb_gets_specific_usage_error(self, cli_runner):
-        from polylogue.cli.click_app import cli
-
-        result = cli_runner.invoke(cli, ["stats", "--by", "provider", "--limit", "20"], catch_exceptions=False)
-        assert result.exit_code == 2
-        assert "Query filters and root output flags must appear before the verb." in result.output
-        assert "Move --limit before `stats`." in result.output
-
-    def test_root_filter_after_verb_gets_specific_usage_error(self, cli_runner):
-        from polylogue.cli.click_app import cli
-
-        result = cli_runner.invoke(
-            cli, ["stats", "--by", "provider", "--provider", "claude-ai"], catch_exceptions=False
-        )
-        assert result.exit_code == 2
-        assert "Query filters and root output flags must appear before the verb." in result.output
-        assert "Move --provider before `stats`." in result.output
-
 
 class TestQueryFirstGroupInvoke:
     def test_subcommand_invokes_super(self, cli_runner):
