@@ -76,6 +76,14 @@ def _build_click_params(pt: ProductType) -> list[click.Parameter]:
             help="Output as JSON",
         )
     )
+    params.append(
+        click.Option(
+            ("--format", "output_format"),
+            type=click.Choice(["json"]),
+            default=None,
+            help="Output format",
+        )
+    )
 
     return params
 
@@ -99,7 +107,12 @@ def _make_callback(pt: ProductType):
     accepted_root_keys = frozenset(k for k in _ROOT_FILTER_KEYS if k in query_cls.model_fields)
 
     @click.pass_context
-    def callback(ctx: click.Context, json_mode: bool = False, **kwargs: Any) -> None:
+    def callback(
+        ctx: click.Context,
+        json_mode: bool = False,
+        output_format: str | None = None,
+        **kwargs: Any,
+    ) -> None:
         env: AppEnv = ctx.obj
 
         # Inject root filter values the product query class can accept.
@@ -114,7 +127,7 @@ def _make_callback(pt: ProductType):
             items = fetch_products(pt, env.operations, **kwargs)
         except ProductQueryError as exc:
             fail(f"products {pt.resolved_cli_command_name}", str(exc))
-        render_product_items(items, pt, json_mode=json_mode)
+        render_product_items(items, pt, json_mode=(json_mode or output_format == "json"))
 
     return callback
 
