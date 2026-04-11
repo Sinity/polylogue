@@ -121,7 +121,7 @@ def status_snapshot(cwd: Path, *, verify_generated: bool = False) -> dict[str, o
         "local_state": {
             "cache": ".cache/",
             "outputs": ".local/",
-            "tool_owned": [".venv/", ".direnv/"],
+            "kept_at_repo_root": [".venv/", ".direnv/"],
             "build_out_link": ".local/result",
         },
     }

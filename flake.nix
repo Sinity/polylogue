@@ -78,7 +78,10 @@
 
           # Skip tests in build (run in checks instead)
           doCheck = false;
-          pythonImportsCheck = [ "polylogue" ];
+          pythonImportsCheck = [
+            "polylogue"
+            "devtools"
+          ];
           dontCheckRuntimeDeps = true;
 
           postFixup = ''
