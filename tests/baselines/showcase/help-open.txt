@@ -1,4 +1,4 @@
-Usage: python -m polylogue open [OPTIONS]
+Usage: polylogue open [OPTIONS]
 
   Open matched conversation in browser/editor.
 

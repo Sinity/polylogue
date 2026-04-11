@@ -1,4 +1,4 @@
-Usage: python -m polylogue products week-summaries [OPTIONS]
+Usage: polylogue products week-summaries [OPTIONS]
 
   List durable week-level session summary products.
 

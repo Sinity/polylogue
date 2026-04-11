@@ -1,4 +1,4 @@
-Usage: python -m polylogue count [OPTIONS]
+Usage: polylogue count [OPTIONS]
 
   Print count of matched conversations.
 

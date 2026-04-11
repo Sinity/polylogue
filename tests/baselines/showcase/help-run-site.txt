@@ -1,4 +1,4 @@
-Usage: python -m polylogue run site [OPTIONS]
+Usage: polylogue run site [OPTIONS]
 
   Generate a static HTML site from the archive.
 

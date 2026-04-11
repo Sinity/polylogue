@@ -1,4 +1,4 @@
-Usage: python -m polylogue schema explain [OPTIONS]
+Usage: polylogue schema explain [OPTIONS]
 
   Explain a package element schema with evidence and annotations.
 

@@ -1,4 +1,4 @@
-Usage: python -m polylogue products threads [OPTIONS]
+Usage: polylogue products threads [OPTIONS]
 
   List durable work-thread products.
 

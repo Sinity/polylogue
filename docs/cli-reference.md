@@ -34,7 +34,7 @@ Usage: polylogue [OPTIONS] COMMAND [ARGS]...
       polylogue --action-text "pytest -q" list
       polylogue "pytest -q tests/unit/core/test_semantic_facts.py" --retrieval-lane actions --limit 5
       polylogue --action other stats --by tool --format json
-      polylogue stats --by repo --provider claude-code --since 2026-01-01 --format json
+      polylogue --provider claude-code --since 2026-01-01 stats --by repo --format json
       polylogue --tool bash --exclude-tool read list
       polylogue --similar "sqlite locking bug in parser" --limit 5
 

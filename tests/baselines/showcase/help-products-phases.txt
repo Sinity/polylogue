@@ -1,4 +1,4 @@
-Usage: python -m polylogue products phases [OPTIONS]
+Usage: polylogue products phases [OPTIONS]
 
   List durable session-phase products.
 

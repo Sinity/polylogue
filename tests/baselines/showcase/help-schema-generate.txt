@@ -1,4 +1,4 @@
-Usage: python -m polylogue schema generate [OPTIONS]
+Usage: polylogue schema generate [OPTIONS]
 
   Generate provider schema packages and optional evidence clusters.
 

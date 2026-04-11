@@ -1,4 +1,4 @@
-Usage: python -m polylogue products analytics [OPTIONS]
+Usage: polylogue products analytics [OPTIONS]
 
   List provider-level analytics products.
 

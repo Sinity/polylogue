@@ -26,9 +26,14 @@ def run_machine_entry(
         extract_command,
         wants_json,
     )
+    from polylogue.errors import PolylogueError
 
     if not wants_json(argv):
-        cli()
+        try:
+            cli()
+        except PolylogueError as exc:
+            click.ClickException(str(exc)).show()
+            raise SystemExit(1) from exc
         return
 
     command = extract_command(argv)
@@ -52,6 +57,12 @@ def run_machine_entry(
             exc.format_message(),
             command=command,
         ).emit(exit_code=exc.exit_code)
+    except PolylogueError as exc:
+        error_runtime(
+            str(exc),
+            command=command,
+            exception_type=type(exc).__qualname__,
+        ).emit(exit_code=1)
     except SystemExit as exc:
         code = exc.code
         if isinstance(code, str):

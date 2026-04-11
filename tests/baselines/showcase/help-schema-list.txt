@@ -1,4 +1,4 @@
-Usage: python -m polylogue schema list [OPTIONS]
+Usage: polylogue schema list [OPTIONS]
 
   List available schema packages, versions, and evidence manifests.
 

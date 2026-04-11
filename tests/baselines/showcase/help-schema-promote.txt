@@ -1,4 +1,4 @@
-Usage: python -m polylogue schema promote [OPTIONS]
+Usage: polylogue schema promote [OPTIONS]
 
   Promote an evidence cluster to a new registered package version.
 

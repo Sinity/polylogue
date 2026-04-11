@@ -1,4 +1,4 @@
-Usage: python -m polylogue products work-events [OPTIONS]
+Usage: polylogue products work-events [OPTIONS]
 
   List durable work-event products.
 

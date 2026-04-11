@@ -1,4 +1,4 @@
-Usage: python -m polylogue completions [OPTIONS]
+Usage: polylogue completions [OPTIONS]
 
   Generate shell completion scripts.
 

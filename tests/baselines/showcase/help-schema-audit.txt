@@ -1,4 +1,4 @@
-Usage: python -m polylogue schema audit [OPTIONS]
+Usage: polylogue schema audit [OPTIONS]
 
   Run automated quality checks on committed schema packages.
 

@@ -240,6 +240,8 @@ class TestQueryFirstGroupParseArgs:
         assert "--provider" in result.output
         assert "--latest" in result.output
         assert "Subcommands:" not in result.output
+        assert "polylogue --provider claude-code --since 2026-01-01 stats --by repo --format json" in result.output
+        assert "polylogue stats --by repo --provider claude-code --since 2026-01-01 --format json" not in result.output
 
 
 class TestQueryFirstGroupInvoke:

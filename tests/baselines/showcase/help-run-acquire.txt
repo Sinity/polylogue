@@ -1,4 +1,4 @@
-Usage: python -m polylogue run acquire [OPTIONS]
+Usage: polylogue run acquire [OPTIONS]
 
   Capture raw payloads only.
 
