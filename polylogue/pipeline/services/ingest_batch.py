@@ -15,7 +15,7 @@ import pickle
 import sqlite3
 import time
 from collections.abc import Iterable
-from concurrent.futures import Future, ProcessPoolExecutor, as_completed
+from concurrent.futures import Future, as_completed
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -27,6 +27,8 @@ from polylogue.lib.metrics import (
     read_peak_rss_self_mb,
 )
 from polylogue.logging import get_logger
+from polylogue.paths import blob_store_root
+from polylogue.pipeline.services.process_pool import process_pool_executor
 from polylogue.pipeline.services.ingest_worker import (
     ConversationData,
     IngestRecordResult,
@@ -558,12 +560,13 @@ def _iter_ingest_results_sync(
     raw_records: list,
     *,
     archive_root_str: str,
+    blob_root_str: str,
     validation_mode: str,
     worker_count: int,
     measure_ingest_result_size: bool,
 ) -> Iterable[IngestRecordResult]:
     try:
-        with ProcessPoolExecutor(max_workers=worker_count) as executor:
+        with process_pool_executor(max_workers=worker_count) as executor:
             futures: dict[Future, str] = {}
             for raw_record in raw_records:
                 future = executor.submit(
@@ -572,6 +575,7 @@ def _iter_ingest_results_sync(
                     archive_root_str,
                     validation_mode,
                     measure_ingest_result_size,
+                    blob_root_str=blob_root_str,
                 )
                 futures[future] = raw_record.raw_id
 
@@ -591,6 +595,7 @@ def _iter_ingest_results_sync(
                 archive_root_str,
                 validation_mode,
                 measure_ingest_result_size,
+                blob_root_str=blob_root_str,
             )
 
 
@@ -603,6 +608,7 @@ def _process_ingest_batch_sync(
     *,
     db_path: Path,
     archive_root_str: str,
+    blob_root_str: str,
     validation_mode: str,
     ingest_workers: int | None,
     measure_ingest_result_size: bool,
@@ -630,6 +636,7 @@ def _process_ingest_batch_sync(
             _iter_ingest_results_sync(
                 raw_records,
                 archive_root_str=archive_root_str,
+                blob_root_str=blob_root_str,
                 validation_mode=validation_mode,
                 worker_count=summary.worker_count,
                 measure_ingest_result_size=measure_ingest_result_size,
@@ -733,6 +740,7 @@ async def process_ingest_batch(
         return None
 
     archive_root_str = str(service.archive_root)
+    blob_root_str = str(blob_store_root())
     batch_started = time.perf_counter()
     rss_start_mb = read_current_rss_mb()
 
@@ -744,6 +752,7 @@ async def process_ingest_batch(
         raw_records,
         db_path=backend.db_path,
         archive_root_str=archive_root_str,
+        blob_root_str=blob_root_str,
         validation_mode=validation_mode,
         ingest_workers=service.ingest_workers,
         measure_ingest_result_size=service.measure_ingest_result_size,

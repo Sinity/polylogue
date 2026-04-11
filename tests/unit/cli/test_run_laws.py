@@ -6,10 +6,12 @@ import os
 import tempfile
 import time
 from contextlib import contextmanager
+from io import StringIO
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from rich.console import Console
 from click.testing import CliRunner
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
@@ -36,7 +38,13 @@ def _make_env(*, plain: bool) -> MagicMock:
     env = MagicMock()
     env.ui = MagicMock()
     env.ui.plain = plain
-    env.ui.console = MagicMock()
+    env.ui.console_buffer = StringIO()
+    env.ui.console = Console(
+        file=env.ui.console_buffer,
+        force_terminal=False,
+        color_system=None,
+        legacy_windows=False,
+    )
     env.ui.summary = MagicMock()
     env.config = Config(
         archive_root=Path("/tmp/archive"),
@@ -192,7 +200,7 @@ def test_display_result_title_and_render_lookup_contract(
         if stage in {"render", "all"}:
             mock_latest.assert_called_once_with(cfg.render_root)
             if latest_exists:
-                env.ui.console.print.assert_any_call(f"Latest render: {latest_path}")
+                assert f"Latest render: {latest_path}" in env.ui.console_buffer.getvalue()
         else:
             mock_latest.assert_not_called()
 
@@ -254,7 +262,7 @@ async def test_run_rerenders_when_title_or_content_changes_contract(
         config.sources = [Source(name="inbox", path=source_file)]
 
         await run_sources(config=config, stage="all")
-        conversation_path = next(config.render_root.rglob("conversation.md"))
+        conversation_path = next(config.render_root.rglob("*.md"))
         first_mtime = conversation_path.stat().st_mtime_ns
 
         updated_title = "Updated title" if title_changed else initial_title

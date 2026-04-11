@@ -1,8 +1,8 @@
 """Schema-driven Hypothesis strategies for crashlessness testing.
 
 Generates structurally valid but adversarial data from real provider
-JSON schemas, stripping x-polylogue-* custom extensions that hypothesis-jsonschema
-cannot handle.
+JSON schemas, stripping test-irrelevant extensions and nested legacy
+metaschema declarations that upset ``hypothesis-jsonschema``.
 """
 
 from __future__ import annotations
@@ -16,12 +16,21 @@ from hypothesis_jsonschema import from_schema
 from polylogue.schemas.registry import SchemaRegistry
 
 
-def strip_schema_extensions(schema: Any) -> Any:
-    """Recursively remove x-polylogue-* keys from a JSON schema."""
+def strip_schema_extensions(schema: Any, *, is_root: bool = True) -> Any:
+    """Recursively remove generator-hostile keys from a JSON schema."""
     if isinstance(schema, dict):
-        return {k: strip_schema_extensions(v) for k, v in schema.items() if not k.startswith("x-polylogue-")}
+        cleaned: dict[str, Any] = {}
+        for key, value in schema.items():
+            if key.startswith("x-polylogue-"):
+                continue
+            if key == "$schema":
+                if is_root:
+                    cleaned[key] = "https://json-schema.org/draft/2020-12/schema"
+                continue
+            cleaned[key] = strip_schema_extensions(value, is_root=False)
+        return cleaned
     if isinstance(schema, list):
-        return [strip_schema_extensions(item) for item in schema]
+        return [strip_schema_extensions(item, is_root=False) for item in schema]
     return schema
 
 

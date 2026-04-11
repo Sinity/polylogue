@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import os
-from concurrent.futures import ProcessPoolExecutor
 
 from polylogue.logging import get_logger
+from polylogue.paths import blob_store_root
+from polylogue.pipeline.services.process_pool import process_pool_executor
 from polylogue.pipeline.services.validation_runtime import _validate_record_sync, _ValidationOutcome
 from polylogue.pipeline.stage_models import ValidatedRawRecord, ValidateResult
 from polylogue.protocols import ProgressCallback
@@ -168,22 +169,24 @@ async def evaluate_raw_records(
     # + Python wrapper code run truly parallel across processes.
     # Measured: Threads(24)=160 MB/s, Process(8)=605 MB/s (3.7x speedup).
     worker_count = min(len(raw_records), os.cpu_count() or 4, 8)
+    blob_root_str = str(blob_store_root())
     t_batch = _time.perf_counter()
 
     def _run_batch():
         try:
-            with ProcessPoolExecutor(max_workers=worker_count) as executor:
+            with process_pool_executor(max_workers=worker_count) as executor:
                 return list(
                     executor.map(
                         _validate_record_sync,
                         raw_records,
                         [mode] * len(raw_records),
+                        [blob_root_str] * len(raw_records),
                         chunksize=max(1, len(raw_records) // worker_count),
                     )
                 )
         except (TypeError, _pickle.PicklingError):
             # Fallback for unpicklable records (e.g. MagicMock in tests)
-            return [_validate_record_sync(r, mode) for r in raw_records]
+            return [_validate_record_sync(r, mode, blob_root_str) for r in raw_records]
 
     import pickle as _pickle
 

@@ -26,6 +26,7 @@ from polylogue.pipeline.ids import message_id as make_message_id
 from polylogue.pipeline.prepare_transform_content import canonicalize_conversation_content
 from polylogue.pipeline.semantic_metadata import extract_tool_metadata
 from polylogue.schemas.code_detection import detect_language
+from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.store import RawConversationRecord, _json_or_none
 from polylogue.types import ValidationMode, ValidationStatus
 
@@ -161,6 +162,8 @@ def ingest_record(
     archive_root_str: str,
     validation_mode_value: str = "strict",
     measure_serialized_size: bool = False,
+    *,
+    blob_root_str: str | None = None,
 ) -> IngestRecordResult:
     """Decode + validate + parse + transform one raw record in a single pass.
 
@@ -169,10 +172,9 @@ def ingest_record(
     state, no DB access).
     """
     from polylogue.lib.raw_payload import build_raw_payload_envelope
+    from polylogue.paths import blob_store_root
     from polylogue.schemas.validator import SchemaValidator
     from polylogue.sources.dispatch import parse_payload
-    from polylogue.storage.blob_store import get_blob_store
-
     archive_root = Path(archive_root_str)
     validation_mode = ValidationMode.from_string(validation_mode_value)
 
@@ -180,7 +182,8 @@ def ingest_record(
     if not isinstance(stored_payload_provider, str) or not stored_payload_provider.strip():
         stored_payload_provider = None
 
-    blob_store = get_blob_store()
+    resolved_blob_root = Path(blob_root_str) if blob_root_str is not None else blob_store_root()
+    blob_store = BlobStore(resolved_blob_root)
     raw_source = blob_store.blob_path(raw_record.raw_id)
 
     # ── Phase 1: Decode blob (ONE decode, not two) ────────────────────
