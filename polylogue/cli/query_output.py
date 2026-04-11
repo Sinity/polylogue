@@ -209,8 +209,7 @@ def open_result(
     params: dict[str, object],
 ) -> None:
     if not results:
-        env.ui.console.print("No conversations matched.")
-        raise SystemExit(2)
+        no_results(env, dict(params))
 
     conv = results[0]
 

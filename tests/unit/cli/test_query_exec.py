@@ -7,6 +7,7 @@ clearest specification.
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 from io import StringIO
 from pathlib import Path
@@ -856,7 +857,14 @@ def test_copy_to_clipboard_contract(side_effects, expect_console: bool, expect_e
             '"path":',
         ),
     ],
-    ids=["no-results", "no-render-root", "specific-render", "latest-fallback", "print-path", "print-path-json"],
+    ids=[
+        "no-results",
+        "no-render-root",
+        "specific-render",
+        "latest-fallback",
+        "print-path",
+        "print-path-json",
+    ],
 )
 def test_open_result_contract(
     results,
@@ -906,6 +914,29 @@ def test_open_result_contract(
                 assert expected_open_name in opened
                 env.ui.console.print.assert_called_once()
                 mock_echo.assert_not_called()
+
+
+def test_open_result_no_results_json_contract(capsys, tmp_path: Path) -> None:
+    from polylogue.cli.query_output import _open_result
+
+    render_root = tmp_path / "rendered"
+    render_root.mkdir()
+    env = _make_env(config=MagicMock(render_root=render_root))
+
+    with (
+        patch("polylogue.cli.helpers.load_effective_config", return_value=MagicMock(render_root=render_root)),
+        patch("polylogue.cli.helpers.latest_render_path", return_value=None),
+        patch("webbrowser.open") as mock_open,
+    ):
+        with pytest.raises(SystemExit) as exc_info:
+            _open_result(env, [], {"output_format": "json"})
+
+    assert exc_info.value.code == 2
+    mock_open.assert_not_called()
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "error"
+    assert payload["code"] == "no_results"
+    assert payload["message"] == "No conversations matched."
 
 
 # ---------------------------------------------------------------------------
