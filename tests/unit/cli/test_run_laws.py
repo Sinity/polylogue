@@ -11,10 +11,10 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from rich.console import Console
 from click.testing import CliRunner
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
+from rich.console import Console
 
 from polylogue.cli.commands.run import (
     _display_result,

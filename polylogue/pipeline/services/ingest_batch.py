@@ -28,12 +28,12 @@ from polylogue.lib.metrics import (
 )
 from polylogue.logging import get_logger
 from polylogue.paths import blob_store_root
-from polylogue.pipeline.services.process_pool import process_pool_executor
 from polylogue.pipeline.services.ingest_worker import (
     ConversationData,
     IngestRecordResult,
     ingest_record,
 )
+from polylogue.pipeline.services.process_pool import process_pool_executor
 from polylogue.storage.backends.connection import DB_TIMEOUT
 from polylogue.storage.state_views import RawConversationStateUpdate
 
