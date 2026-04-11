@@ -121,8 +121,8 @@ def status_snapshot(cwd: Path, *, verify_generated: bool = False) -> dict[str, o
         "local_state": {
             "cache": ".cache/",
             "outputs": ".local/",
-            "kept_at_repo_root": [".venv/", ".direnv/"],
-            "build_out_link": ".local/result",
+            "root_residents": [".venv/", ".direnv/"],
+            "preferred_build_out_link": ".local/result",
         },
     }
 
@@ -192,15 +192,14 @@ def render_motd(cwd: Path, *, verify_generated: bool = False) -> str:
     if dirty:
         display_version += "-dirty"
 
-    label_width = len("recent")
+    label_width = len("generated")
     rows = [
-        ("tree", style_worktree(summarize_worktree(changes))),
-        ("docs", style_generated(summarize_generated_surfaces(generated_surfaces))),
-        ("recent", str(snapshot["last_commit"])),
-        ("next", str(commands["render_all_check"])),
-        ("", str(commands["test_baseline"])),
+        ("worktree", style_worktree(summarize_worktree(changes))),
+        ("generated", style_generated(summarize_generated_surfaces(generated_surfaces))),
+        ("head", str(snapshot["last_commit"])),
+        ("run", str(commands["render_all_check"])),
+        ("test", str(commands["test_baseline"])),
     ]
-    indent = " " * (label_width + 2)
 
     header = "  ".join(
         [
@@ -211,10 +210,7 @@ def render_motd(cwd: Path, *, verify_generated: bool = False) -> str:
     )
     lines = [header]
     for label, value in rows:
-        if label:
-            lines.append(f"{style(label.ljust(label_width), ANSI_CYAN)}  {value}")
-        else:
-            lines.append(f"{indent}{value}")
+        lines.append(f"{style(label.ljust(label_width), ANSI_CYAN)}  {value}")
     return "\n".join(lines)
 
 

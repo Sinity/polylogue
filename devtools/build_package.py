@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import os
 import subprocess
 from pathlib import Path
 
@@ -20,7 +19,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--out-link",
-        default=os.environ.get("POLYLOGUE_NIX_OUT_LINK", DEFAULT_OUT_LINK),
+        default=DEFAULT_OUT_LINK,
         help=f"Output symlink path (default: {DEFAULT_OUT_LINK})",
     )
     args = parser.parse_args(argv)

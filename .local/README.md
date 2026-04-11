@@ -7,7 +7,7 @@ Examples:
 
 - mutation campaign ledgers
 - benchmark campaign reports
-- canonical Nix build out-link at `.local/result`
+- preferred local Nix build out-link at `.local/result`
 - showcase captures and screenshots
 - demo workspaces and screencasts
 - temporary reports or captures worth inspecting before cleanup

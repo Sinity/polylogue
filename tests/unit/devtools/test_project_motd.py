@@ -24,10 +24,12 @@ def test_render_motd_contains_expected_sections(monkeypatch, tmp_path: Path) -> 
     rendered = project_motd.render_motd(tmp_path)
 
     assert "Polylogue  feature/docs/test  v0.1.0+deadbeef-dirty" in rendered
-    assert "feature/docs/test" in rendered
+    assert "worktree   dirty · 1 staged · 2 modified · 3 untracked" in rendered
+    assert "generated  5 generated surfaces" in rendered
+    assert "head       docs: tighten repo guides" in rendered
+    assert "run        devtools render-all --check" in rendered
+    assert "test       pytest -q --ignore=tests/integration" in rendered
     assert "dirty · 1 staged · 2 modified · 3 untracked" in rendered
-    assert "render-all --check" in rendered
-    assert "docs: tighten repo guides" in rendered
 
 
 def test_status_snapshot_includes_machine_readable_commands(monkeypatch, tmp_path: Path) -> None:
@@ -49,6 +51,8 @@ def test_status_snapshot_includes_machine_readable_commands(monkeypatch, tmp_pat
     assert set(snapshot["generated_surfaces"].values()) == {"unchecked"}
     assert snapshot["stale_surfaces"] == []
     assert set(snapshot["unchecked_surfaces"]) == set(snapshot["generated_surfaces"].keys())
+    assert snapshot["local_state"]["root_residents"] == [".venv/", ".direnv/"]
+    assert snapshot["local_state"]["preferred_build_out_link"] == ".local/result"
 
 
 def test_render_motd_can_verify_generated_surfaces(monkeypatch, tmp_path: Path) -> None:
