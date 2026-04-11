@@ -121,6 +121,17 @@ class TestSemanticValueGeneratorBasics:
         assert gen.turn_index == 2
 
 
+class TestSyntheticConversationEnvelope:
+    def test_chatgpt_tree_generation_produces_clean_conversation_id(self) -> None:
+        corpus = SyntheticCorpus.for_provider("chatgpt")
+        payload = json.loads(corpus.generate(count=1, seed=42, messages_per_conversation=range(3, 4))[0])
+
+        conversation_id = payload.get("id")
+        assert isinstance(conversation_id, str)
+        assert conversation_id
+        assert " " not in conversation_id
+
+
 # ---------------------------------------------------------------------------
 # SemanticValueGenerator.try_generate — message_role
 # ---------------------------------------------------------------------------
