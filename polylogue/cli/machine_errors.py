@@ -22,6 +22,7 @@ INVALID_PATH = "invalid_path"
 RUNTIME_ERROR = "runtime_error"
 DEPENDENCY_MISSING = "dependency_missing"
 UNSUPPORTED_ENVIRONMENT = "unsupported_environment"
+NO_RESULTS = "no_results"
 
 
 # ---------------------------------------------------------------------------
@@ -150,6 +151,23 @@ def error_unsupported_environment(
         code=UNSUPPORTED_ENVIRONMENT,
         message=message,
         command=command or [],
+    )
+
+
+def error_no_results(
+    message: str,
+    *,
+    command: list[str] | None = None,
+    filters: list[str] | None = None,
+) -> MachineError:
+    details: dict[str, Any] = {}
+    if filters:
+        details["filters"] = filters
+    return MachineError(
+        code=NO_RESULTS,
+        message=message,
+        command=command or [],
+        details=details,
     )
 
 
@@ -303,6 +321,7 @@ __all__ = [
     "error_dependency_missing",
     "error_invalid_arguments",
     "error_invalid_path",
+    "error_no_results",
     "error_runtime",
     "error_unsupported_environment",
     "extract_command",
@@ -313,5 +332,6 @@ __all__ = [
     "INVALID_PATH",
     "RUNTIME_ERROR",
     "DEPENDENCY_MISSING",
+    "NO_RESULTS",
     "UNSUPPORTED_ENVIRONMENT",
 ]
