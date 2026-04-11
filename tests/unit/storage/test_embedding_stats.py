@@ -131,6 +131,9 @@ def test_read_embedding_stats_sync_exposes_retrieval_bands_when_archive_tables_e
         "inference_retrieval",
         "enrichment_retrieval",
     }
+    assert stats.pending_conversations == 2
+    assert stats.retrieval_bands["transcript_embeddings"]["pending_documents"] == 2
+    assert "pending 2" in str(stats.retrieval_bands["transcript_embeddings"]["detail"])
     assert stats.retrieval_bands["evidence_retrieval"]["ready"] is True
     assert stats.retrieval_bands["inference_retrieval"]["ready"] is True
     assert stats.retrieval_bands["enrichment_retrieval"]["ready"] is True
@@ -166,3 +169,56 @@ async def test_read_embedding_stats_async_missing_tables_returns_zeroes() -> Non
     assert stats.embedded_conversations == 0
     assert stats.embedded_messages == 0
     assert stats.pending_conversations == 0
+
+
+@pytest.mark.asyncio
+async def test_read_embedding_stats_async_derives_pending_from_total_conversations(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_action_status(_conn):
+        return {
+            "count": 0,
+            "action_fts_count": 0,
+            "action_fts_ready": True,
+            "stale_count": 0,
+        }
+
+    async def fake_session_status(_conn):
+        return {
+            "profile_row_count": 0,
+            "profile_evidence_fts_count": 0,
+            "profile_evidence_fts_ready": True,
+            "profile_evidence_fts_duplicate_count": 0,
+            "work_event_inference_count": 0,
+            "work_event_inference_fts_count": 0,
+            "work_event_inference_fts_ready": True,
+            "work_event_inference_fts_duplicate_count": 0,
+            "phase_inference_count": 0,
+            "phase_inference_rows_ready": True,
+            "expected_phase_inference_count": 0,
+            "stale_work_event_inference_count": 0,
+            "stale_phase_inference_count": 0,
+            "profile_inference_fts_count": 0,
+            "profile_inference_fts_ready": True,
+            "profile_inference_fts_duplicate_count": 0,
+            "profile_enrichment_fts_count": 0,
+            "profile_enrichment_fts_ready": True,
+            "profile_enrichment_fts_duplicate_count": 0,
+        }
+
+    async with aiosqlite.connect(":memory:") as conn:
+        await conn.execute("CREATE TABLE conversations (conversation_id TEXT)")
+        await conn.executemany(
+            "INSERT INTO conversations (conversation_id) VALUES (?)",
+            [("conv-1",), ("conv-2",), ("conv-3",)],
+        )
+        await conn.commit()
+
+        monkeypatch.setattr(embedding_stats_mod, "action_event_read_model_status_async", fake_action_status)
+        monkeypatch.setattr(embedding_stats_mod, "session_product_status_async", fake_session_status)
+
+        stats = await read_embedding_stats_async(conn)
+
+    assert stats.pending_conversations == 3
+    assert stats.retrieval_bands["transcript_embeddings"]["pending_documents"] == 3
+    assert "pending 3" in str(stats.retrieval_bands["transcript_embeddings"]["detail"])

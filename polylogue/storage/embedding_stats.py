@@ -54,6 +54,7 @@ def read_embedding_stats_sync(conn: sqlite3.Connection) -> EmbeddingStatsSnapsho
     if conversations_exist:
         total_conversations_row = conn.execute("SELECT COUNT(*) FROM conversations").fetchone()
         total_conversations = int(total_conversations_row[0]) if total_conversations_row is not None else 0
+        pending_conversations = max(pending_conversations, total_conversations - embedded_conversations)
         action_status = action_event_read_model_status_sync(conn)
         session_status = session_product_status_sync(conn)
         retrieval_bands = build_retrieval_bands_from_status(
@@ -100,6 +101,7 @@ async def read_embedding_stats_async(conn: aiosqlite.Connection) -> EmbeddingSta
     if conversations_exist:
         total_conversations_row = await (await conn.execute("SELECT COUNT(*) FROM conversations")).fetchone()
         total_conversations = int(total_conversations_row[0]) if total_conversations_row is not None else 0
+        pending_conversations = max(pending_conversations, total_conversations - embedded_conversations)
         action_status = await action_event_read_model_status_async(conn)
         session_status = await session_product_status_async(conn)
         retrieval_bands = build_retrieval_bands_from_status(
