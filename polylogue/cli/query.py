@@ -507,7 +507,7 @@ async def async_execute_query(env: AppEnv, params: dict[str, Any]) -> None:
         return
 
     if route == QueryRoute.STATS_SQL:
-        await _query_output.output_stats_sql(env, filter_chain, repo)
+        await _query_output.output_stats_sql(env, filter_chain, repo, output_format=plan.output.output_format)
         return
 
     if route == QueryRoute.SUMMARY_STATS:
