@@ -147,7 +147,7 @@ def summarize_generated_surfaces(generated_surfaces: dict[str, object]) -> str:
     total = len(generated_surfaces)
     unchecked = [label for label, status in generated_surfaces.items() if status == "unchecked"]
     if len(unchecked) == total:
-        return f"{total} generated surfaces"
+        return f"{total}/{total} generated unchecked"
     stale = [label for label, status in generated_surfaces.items() if status != "ok"]
     if not stale:
         return f"{total}/{total} generated clean"
@@ -174,6 +174,8 @@ def style_worktree(summary: str) -> str:
 def style_generated(summary: str) -> str:
     if "stale:" in summary:
         return style(summary, ANSI_RED, ANSI_BOLD)
+    if "unchecked" in summary:
+        return style(summary, ANSI_YELLOW)
     return style(summary, ANSI_GREEN)
 
 
@@ -196,9 +198,9 @@ def render_motd(cwd: Path, *, verify_generated: bool = False) -> str:
     rows = [
         ("worktree", style_worktree(summarize_worktree(changes))),
         ("generated", style_generated(summarize_generated_surfaces(generated_surfaces))),
-        ("head", str(snapshot["last_commit"])),
-        ("run", str(commands["render_all_check"])),
-        ("test", str(commands["test_baseline"])),
+        ("head", style(str(snapshot["last_commit"]), ANSI_DIM)),
+        ("run", style(str(commands["render_all_check"]), ANSI_GREEN)),
+        ("test", style(str(commands["test_baseline"]), ANSI_GREEN)),
     ]
 
     header = "  ".join(

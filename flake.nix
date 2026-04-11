@@ -140,9 +140,7 @@
             if [ -L result ]; then
               rm result
             fi
-            if [ -d __pycache__ ]; then
-              rm -r __pycache__
-            fi
+            find polylogue tests devtools -type d -name __pycache__ -prune -exec rm -r {} + 2>/dev/null || true
 
             # Create venv if it doesn't exist
             if [ ! -d .venv ]; then
