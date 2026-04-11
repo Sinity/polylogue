@@ -44,7 +44,10 @@ def build_qa_session_payload(
     invariant_checks = [serialize_invariant_result(invariant_result) for invariant_result in result.invariant_results]
     invariant_summary = summarize_invariants(result.invariant_results)
 
-    proof_payload: dict[str, Any] = {"status": result.proof_status.value}
+    proof_payload: dict[str, Any] = {
+        "status": result.proof_status.value,
+        "skipped": result.proof_skipped,
+    }
     if result.proof_report is not None:
         proof_payload["report"] = result.proof_report.to_dict()
     if result.proof_error is not None:

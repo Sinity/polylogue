@@ -161,28 +161,135 @@ def _has_json_flag(cmd: click.Command) -> bool:
     return any(isinstance(param, click.Option) and "--json" in param.opts for param in cmd.params)
 
 
+_JSON_CONTRACT_SPECS: tuple[dict[str, Any], ...] = (
+    {
+        "path": ("doctor",),
+        "args": ["doctor", "--json"],
+        "needs_data": False,
+        "tier": 0,
+        "env": "any",
+    },
+    {
+        "path": ("tags",),
+        "args": ["tags", "--json"],
+        "needs_data": False,
+        "tier": 0,
+        "env": "any",
+    },
+    {
+        "path": ("audit",),
+        "args": ["audit", "--only", "audit", "--json"],
+        "needs_data": False,
+        "tier": 0,
+        "env": "any",
+    },
+    {
+        "path": ("schema", "list"),
+        "args": ["schema", "list", "--json"],
+        "needs_data": False,
+        "tier": 0,
+        "env": "any",
+    },
+    {
+        "path": ("schema", "audit"),
+        "args": ["schema", "audit", "--json"],
+        "needs_data": False,
+        "tier": 0,
+        "env": "any",
+    },
+    {
+        "path": ("products", "profiles"),
+        "args": ["products", "profiles", "--json"],
+        "needs_data": True,
+        "tier": 1,
+        "env": "seeded",
+    },
+    {
+        "path": ("products", "work-events"),
+        "args": ["products", "work-events", "--json"],
+        "needs_data": True,
+        "tier": 1,
+        "env": "seeded",
+    },
+    {
+        "path": ("products", "phases"),
+        "args": ["products", "phases", "--json"],
+        "needs_data": True,
+        "tier": 1,
+        "env": "seeded",
+    },
+    {
+        "path": ("products", "threads"),
+        "args": ["products", "threads", "--json"],
+        "needs_data": True,
+        "tier": 1,
+        "env": "seeded",
+    },
+    {
+        "path": ("products", "tags"),
+        "args": ["products", "tags", "--json"],
+        "needs_data": True,
+        "tier": 1,
+        "env": "seeded",
+    },
+    {
+        "path": ("products", "day-summaries"),
+        "args": ["products", "day-summaries", "--json"],
+        "needs_data": True,
+        "tier": 1,
+        "env": "seeded",
+    },
+    {
+        "path": ("products", "week-summaries"),
+        "args": ["products", "week-summaries", "--json"],
+        "needs_data": True,
+        "tier": 1,
+        "env": "seeded",
+    },
+    {
+        "path": ("products", "analytics"),
+        "args": ["products", "analytics", "--json"],
+        "needs_data": True,
+        "tier": 1,
+        "env": "seeded",
+    },
+    {
+        "path": ("run", "embed"),
+        "args": ["run", "embed", "--stats", "--json"],
+        "needs_data": True,
+        "tier": 1,
+        "env": "seeded",
+    },
+)
+
+
+def _json_contract_spec_by_path() -> dict[tuple[str, ...], dict[str, Any]]:
+    return {tuple(spec["path"]): spec for spec in _JSON_CONTRACT_SPECS}
+
+
 def json_contract_exercise_names() -> set[str]:
-    """Return the canonical showcase exercise names for all commands with --json."""
-    return {f"json-{'-'.join(cp.path)}" for cp in inventory_command_paths() if _has_json_flag(cp.command)}
+    """Return the canonical showcase exercise names for curated JSON-contract commands."""
+    return {f"json-{'-'.join(spec['path'])}" for spec in _JSON_CONTRACT_SPECS}
 
 
 def generate_json_contract_exercises() -> list[Exercise]:
-    """Generate JSON contract exercises for all commands with --json flags."""
+    """Generate JSON contract exercises for curated runnable commands."""
     exercises: list[Exercise] = []
+    by_path = _json_contract_spec_by_path()
     for cp in inventory_command_paths():
-        if not _has_json_flag(cp.command):
+        spec = by_path.get(tuple(cp.path))
+        if spec is None or not _has_json_flag(cp.command):
             continue
-        needs_data = cp.path[0] == "products"
         exercises.append(
             Exercise(
                 name=f"json-{'-'.join(cp.path)}",
                 group="subcommands",
                 description=f"{cp.display_name} JSON contract",
-                args=[*cp.path, "--json"],
+                args=list(spec["args"]),
                 validation=Validation(stdout_is_valid_json=True),
-                needs_data=needs_data,
-                tier=1 if needs_data else 0,
-                env="seeded" if needs_data else "any",
+                needs_data=bool(spec["needs_data"]),
+                tier=int(spec["tier"]),
+                env=str(spec["env"]),
                 output_ext=".json",
                 artifact_class="json",
             )
