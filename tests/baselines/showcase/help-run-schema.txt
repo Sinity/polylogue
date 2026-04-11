@@ -1,4 +1,4 @@
-Usage: python -m polylogue run schema [OPTIONS]
+Usage: polylogue run schema [OPTIONS]
 
   Infer schemas from acquired raw payloads.
 

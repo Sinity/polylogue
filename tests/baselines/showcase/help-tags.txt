@@ -1,4 +1,4 @@
-Usage: python -m polylogue tags [OPTIONS]
+Usage: polylogue tags [OPTIONS]
 
   List all tags with conversation counts.
 

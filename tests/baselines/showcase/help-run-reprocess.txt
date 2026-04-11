@@ -1,4 +1,4 @@
-Usage: python -m polylogue run reprocess [OPTIONS]
+Usage: polylogue run reprocess [OPTIONS]
 
   Skip acquisition and rerun downstream stages.
 
