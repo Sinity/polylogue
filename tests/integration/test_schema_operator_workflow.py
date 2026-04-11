@@ -37,6 +37,14 @@ def _extract_json(output: str) -> dict | list:
     raise ValueError(f"No JSON found in output: {output!r}")
 
 
+def _extract_result_json(output: str) -> dict | list:
+    """Extract JSON and unwrap the standard success envelope when present."""
+    data = _extract_json(output)
+    if isinstance(data, dict) and data.get("status") == "ok" and "result" in data:
+        return data["result"]
+    return data
+
+
 @pytest.fixture
 def runner() -> CliRunner:
     return CliRunner()
@@ -108,9 +116,11 @@ class TestSchemaListCommand:
             result = runner.invoke(cli, ["schema", "list", "--json"])
 
         assert result.exit_code == 0, f"CLI failed: {result.output}"
-        data = _extract_json(result.output)
-        assert isinstance(data, list)
-        providers = [entry["provider"] for entry in data]
+        outer = _extract_json(result.output)
+        assert outer["status"] == "ok"
+        data = _extract_result_json(result.output)
+        assert isinstance(data, dict)
+        providers = [entry["provider"] for entry in data["providers"]]
         assert "test-provider" in providers
 
     def test_list_specific_provider_json(self, runner: CliRunner, seeded_registry: SchemaRegistry) -> None:
@@ -118,7 +128,9 @@ class TestSchemaListCommand:
             result = runner.invoke(cli, ["schema", "list", "--provider", "test-provider", "--json"])
 
         assert result.exit_code == 0, f"CLI failed: {result.output}"
-        data = _extract_json(result.output)
+        outer = _extract_json(result.output)
+        assert outer["status"] == "ok"
+        data = _extract_result_json(result.output)
         assert data["provider"] == "test-provider"
         assert "v1" in data["versions"]
         assert "v2" in data["versions"]
@@ -145,7 +157,9 @@ class TestSchemaAuditCommand:
         result = runner.invoke(cli, ["schema", "audit", "--json"])
 
         assert result.exit_code == 0, f"CLI failed: {result.output}"
-        data = _extract_json(result.output)
+        outer = _extract_json(result.output)
+        assert outer["status"] == "ok"
+        data = _extract_result_json(result.output)
         checks = data["checks"]
         assert checks
         assert any(check["provider"] for check in checks[:-1])
@@ -165,7 +179,9 @@ class TestSchemaCompareCommand:
             )
 
         assert result.exit_code == 0, f"CLI failed: {result.output}"
-        data = _extract_json(result.output)
+        outer = _extract_json(result.output)
+        assert outer["status"] == "ok"
+        data = _extract_result_json(result.output)
         assert data["provider"] == "test-provider"
         assert data["version_a"] == "v1"
         assert data["version_b"] == "v2"
@@ -180,7 +196,7 @@ class TestSchemaCompareCommand:
                 ["schema", "compare", "--provider", "test-provider", "--from", "v1", "--to", "v2", "--json"],
             )
 
-        data = _extract_json(result.output)
+        data = _extract_result_json(result.output)
         classified = data["classified_changes"]
         added = [c for c in classified if c["kind"] == "added"]
         assert len(added) == 2
@@ -195,7 +211,7 @@ class TestSchemaCompareCommand:
                 ["schema", "compare", "--provider", "test-provider", "--from", "v1", "--to", "v2", "--json"],
             )
 
-        data = _extract_json(result.output)
+        data = _extract_result_json(result.output)
         classified = data["classified_changes"]
         req = [c for c in classified if c["kind"] == "requiredness"]
         assert len(req) >= 1
@@ -252,7 +268,9 @@ class TestSchemaCompareCommand:
             )
 
         assert result.exit_code == 0, f"CLI failed: {result.output}"
-        data = _extract_json(result.output)
+        outer = _extract_json(result.output)
+        assert outer["status"] == "ok"
+        data = _extract_result_json(result.output)
         type_mutations = [c for c in data["classified_changes"] if c["kind"] == "type_mutation"]
         assert len(type_mutations) == 1
         assert type_mutations[0]["path"] == "count"
@@ -285,7 +303,9 @@ class TestSchemaCompareCommand:
             )
 
         assert result.exit_code == 0, f"CLI failed: {result.output}"
-        data = _extract_json(result.output)
+        outer = _extract_json(result.output)
+        assert outer["status"] == "ok"
+        data = _extract_result_json(result.output)
         assert sorted(data["removed_properties"]) == ["b", "c"]
         removed = [c for c in data["classified_changes"] if c["kind"] == "removed"]
         assert len(removed) == 2
@@ -311,7 +331,9 @@ class TestSchemaExplainCommand:
             result = runner.invoke(cli, ["schema", "explain", "--provider", "test-provider", "--json"])
 
         assert result.exit_code == 0, f"CLI failed: {result.output}"
-        data = _extract_json(result.output)
+        outer = _extract_json(result.output)
+        assert outer["status"] == "ok"
+        data = _extract_result_json(result.output)
         assert "schema" in data
         assert "package" in data
         assert "id" in data["schema"]["properties"]
@@ -376,7 +398,9 @@ class TestSchemaExplainCommand:
             result = runner.invoke(cli, ["schema", "explain", "--provider", "ann-prov", "--json"])
 
         assert result.exit_code == 0, f"CLI failed: {result.output}"
-        data = _extract_json(result.output)
+        outer = _extract_json(result.output)
+        assert outer["status"] == "ok"
+        data = _extract_result_json(result.output)
         assert data["schema"]["properties"]["msg"]["x-polylogue-semantic-role"] == "message_body"
         assert "x-polylogue-foreign-keys" in data["schema"]
 
@@ -422,7 +446,9 @@ class TestSchemaPromoteCommand:
             )
 
         assert result.exit_code == 0, f"CLI failed: {result.output}"
-        data = _extract_json(result.output)
+        outer = _extract_json(result.output)
+        assert outer["status"] == "ok"
+        data = _extract_result_json(result.output)
         assert data["provider"] == "promo-json"
         assert data["cluster_id"] == cluster_id
         assert data["package_version"] == "v1"
@@ -502,7 +528,9 @@ class TestFullOperatorWorkflow:
                 ["schema", "list", "--provider", "workflow-prov", "--json"],
             )
         assert result.exit_code == 0
-        data = _extract_json(result.output)
+        outer = _extract_json(result.output)
+        assert outer["status"] == "ok"
+        data = _extract_result_json(result.output)
         assert "v1" in data["versions"]
 
         # Step 3: Register v2 with structural changes
@@ -536,7 +564,9 @@ class TestFullOperatorWorkflow:
                 ],
             )
         assert result.exit_code == 0
-        diff = _extract_json(result.output)
+        outer = _extract_json(result.output)
+        assert outer["status"] == "ok"
+        diff = _extract_result_json(result.output)
         assert diff["has_changes"] is True
         assert "model" in diff["added_properties"]
         assert "tokens" in diff["added_properties"]
@@ -560,7 +590,9 @@ class TestFullOperatorWorkflow:
                 ["schema", "promote", "--provider", "workflow-prov", "--cluster", cluster_id, "--json"],
             )
         assert result.exit_code == 0
-        promo = _extract_json(result.output)
+        outer = _extract_json(result.output)
+        assert outer["status"] == "ok"
+        promo = _extract_result_json(result.output)
         assert promo["package_version"] == "v3"
 
         # Step 6: Explain the promoted version
@@ -570,7 +602,9 @@ class TestFullOperatorWorkflow:
                 ["schema", "explain", "--provider", "workflow-prov", "--version", "v3", "--json"],
             )
         assert result.exit_code == 0
-        schema_v3 = _extract_json(result.output)
+        outer = _extract_json(result.output)
+        assert outer["status"] == "ok"
+        schema_v3 = _extract_result_json(result.output)
         assert schema_v3["schema"]["x-polylogue-anchor-profile-family-id"] == cluster_id
         assert schema_v3["schema"]["x-polylogue-observed-artifact-count"] == 2
         assert "x-polylogue-promoted-at" in schema_v3["schema"]
@@ -583,5 +617,7 @@ class TestFullOperatorWorkflow:
                 ["schema", "list", "--provider", "workflow-prov", "--json"],
             )
         assert result.exit_code == 0
-        final = _extract_json(result.output)
+        outer = _extract_json(result.output)
+        assert outer["status"] == "ok"
+        final = _extract_result_json(result.output)
         assert final["versions"] == ["v1", "v2", "v3"]

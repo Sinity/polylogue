@@ -1,12 +1,12 @@
 """Non-explain rendering helpers for schema CLI commands."""
 
 from __future__ import annotations
-
-import json
 from pathlib import Path
 from typing import Any
 
 import click
+
+from polylogue.cli.machine_errors import emit_success
 
 
 def render_schema_generate_result(
@@ -42,7 +42,7 @@ def render_schema_generate_result(
         if result.manifest is not None:
             payload["manifest"] = result.manifest.to_dict()
             payload["manifest_path"] = str(result.manifest_path) if result.manifest_path else None
-        click.echo(json.dumps(payload, indent=2))
+        emit_success(payload)
         return
 
     click.echo(
@@ -69,7 +69,7 @@ def render_schema_list_result(
     if provider:
         selected = result.selected
         if json_output:
-            click.echo(json.dumps(result.to_dict(), indent=2))
+            emit_success(result.to_dict())
             return
         if selected is None or (not selected.versions and selected.catalog is None):
             click.echo(f"No schemas found for provider: {provider}")
@@ -117,7 +117,7 @@ def render_schema_list_result(
         return
 
     if json_output:
-        click.echo(json.dumps(result.to_dict(), indent=2))
+        emit_success({"providers": result.to_dict()})
         return
     if not result.providers:
         click.echo("No schemas found.")
@@ -137,7 +137,7 @@ def render_schema_list_result(
 def render_schema_compare_result(*, result, json_output: bool, md_output: bool) -> None:
     """Render schema comparison output."""
     if json_output:
-        click.echo(json.dumps(result.to_dict(), indent=2))
+        emit_success(result.to_dict())
     elif md_output:
         click.echo(result.diff.to_markdown())
     else:
@@ -147,7 +147,7 @@ def render_schema_compare_result(*, result, json_output: bool, md_output: bool) 
 def render_schema_promote_result(*, result, json_output: bool) -> None:
     """Render schema cluster promotion output."""
     if json_output:
-        click.echo(json.dumps(result.to_dict(), indent=2))
+        emit_success(result.to_dict())
         return
     click.echo(f"Promoted cluster {result.cluster_id} -> package {result.package_version}")
     click.echo(f"Schema package registered for {result.provider} as {result.package_version}")
@@ -157,7 +157,7 @@ def render_schema_promote_result(*, result, json_output: bool) -> None:
 def render_schema_audit_result(*, report, json_output: bool) -> None:
     """Render schema audit output."""
     if json_output:
-        click.echo(json.dumps(report.to_json(), indent=2))
+        emit_success(report.to_json())
     else:
         click.echo(report.format_text())
 
