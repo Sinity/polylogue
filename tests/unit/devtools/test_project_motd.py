@@ -47,6 +47,8 @@ def test_status_snapshot_includes_machine_readable_commands(monkeypatch, tmp_pat
     assert snapshot["generated_surfaces"]
     assert snapshot["generated_checked"] is False
     assert set(snapshot["generated_surfaces"].values()) == {"unchecked"}
+    assert snapshot["stale_surfaces"] == []
+    assert set(snapshot["unchecked_surfaces"]) == set(snapshot["generated_surfaces"].keys())
 
 
 def test_render_motd_can_verify_generated_surfaces(monkeypatch, tmp_path: Path) -> None:

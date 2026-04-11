@@ -95,7 +95,8 @@ def status_snapshot(cwd: Path, *, verify_generated: bool = False) -> dict[str, o
         generated_surfaces = {surface.label: run_check(cwd, surface) for surface in GENERATED_SURFACES}
     else:
         generated_surfaces = {surface.label: "unchecked" for surface in GENERATED_SURFACES}
-    stale_surfaces = [label for label, status in generated_surfaces.items() if status != "ok"]
+    stale_surfaces = [label for label, status in generated_surfaces.items() if status == "stale"]
+    unchecked_surfaces = [label for label, status in generated_surfaces.items() if status == "unchecked"]
     return {
         "project": "polylogue",
         "version": version,
@@ -108,6 +109,7 @@ def status_snapshot(cwd: Path, *, verify_generated: bool = False) -> dict[str, o
         },
         "generated_surfaces": generated_surfaces,
         "stale_surfaces": stale_surfaces,
+        "unchecked_surfaces": unchecked_surfaces,
         "generated_checked": verify_generated,
         "last_commit": last_commit_subject(cwd),
         "commands": {

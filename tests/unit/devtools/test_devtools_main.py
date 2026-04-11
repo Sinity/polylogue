@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 import devtools.__main__ as devtools_main
 
 
@@ -36,3 +38,11 @@ def test_global_json_flag_is_forwarded_to_command(monkeypatch) -> None:
 
     assert devtools_main.main(["--json", "status"]) == 0
     assert captured == [["--json"]]
+
+
+def test_help_uses_devtools_prog_name(capsys) -> None:
+    with pytest.raises(SystemExit) as exc:
+        devtools_main.main(["--help"])
+    assert exc.value.code == 0
+    captured = capsys.readouterr()
+    assert captured.out.startswith("usage: devtools ")

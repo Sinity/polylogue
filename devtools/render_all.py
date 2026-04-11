@@ -35,6 +35,8 @@ def main(argv: list[str] | None = None) -> int:
 
     exit_code = 0
     for surface in selected:
+        mode = "check" if args.check else "render"
+        print(f"render-all: {mode} {surface.name}", file=sys.stderr)
         result = surface.main(["--check"] if args.check else [])
         if result != 0:
             exit_code = result if exit_code == 0 else exit_code

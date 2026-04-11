@@ -33,7 +33,7 @@ def _print_command_inventory(*, as_json: bool) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Polylogue developer tools.")
+    parser = argparse.ArgumentParser(prog="devtools", description="Polylogue developer tools.")
     parser.add_argument(
         "--list-commands",
         action="store_true",

@@ -39,3 +39,19 @@ def test_render_all_check_passes_flag(monkeypatch):
 
     assert render_all.main(["--check"]) == 0
     assert calls == [("--check",)]
+
+
+def test_render_all_reports_surface_progress(monkeypatch, capsys):
+    class FakeSurface:
+        name = "agents"
+
+        @staticmethod
+        def main(argv):
+            del argv
+            return 0
+
+    monkeypatch.setattr(render_all, "GENERATED_SURFACES", (FakeSurface(),))
+
+    assert render_all.main([]) == 0
+    captured = capsys.readouterr()
+    assert "render-all: render agents" in captured.err
