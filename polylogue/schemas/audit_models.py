@@ -5,7 +5,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from polylogue.lib.outcomes import OutcomeReport, OutcomeStatus
+from polylogue.lib.outcomes import OutcomeCheck, OutcomeReport, OutcomeStatus
+
+
+@dataclass
+class AuditCheck(OutcomeCheck):
+    """Schema-audit check annotated with its provider scope."""
+
+    provider: str | None = None
 
 
 @dataclass
@@ -49,7 +56,9 @@ class AuditReport(OutcomeReport):
         lines.append(f"Schema Audit{scope}: {self.passed} pass, {self.warned} warn, {self.failed} fail")
         lines.append("")
         for c in self.checks:
-            lines.append(f"  {c.format_line(labels=self._LABELS, icons=self._ICONS)}")
+            check_provider = getattr(c, "provider", None)
+            prefix = f"[{check_provider}] " if check_provider and not self.provider else ""
+            lines.append(f"  {prefix}{c.format_line(labels=self._LABELS, icons=self._ICONS)}")
             for d in c.details[:5]:
                 lines.append(f"      {d}")
         return "\n".join(lines)
@@ -65,6 +74,7 @@ class AuditReport(OutcomeReport):
             "checks": [
                 {
                     "name": c.name,
+                    "provider": getattr(c, "provider", None),
                     "status": self._LABELS[c.status],
                     "message": c.summary,
                     "details": c.details,
@@ -74,4 +84,4 @@ class AuditReport(OutcomeReport):
         }
 
 
-__all__ = ["AuditReport"]
+__all__ = ["AuditCheck", "AuditReport"]

@@ -10,8 +10,20 @@ from polylogue.schemas.audit_checks import (
     check_privacy_guards,
     check_semantic_roles,
 )
-from polylogue.schemas.audit_models import AuditReport
+from polylogue.schemas.audit_models import AuditCheck, AuditReport
 from polylogue.schemas.audit_walkers import _load_committed_schema
+
+
+def _scoped(provider: str, check: CheckResult) -> AuditCheck:
+    return AuditCheck(
+        name=check.name,
+        status=check.status,
+        summary=check.summary,
+        count=check.count,
+        details=list(check.details),
+        breakdown=dict(check.breakdown),
+        provider=provider,
+    )
 
 
 def audit_provider(provider: str) -> AuditReport:
@@ -21,24 +33,26 @@ def audit_provider(provider: str) -> AuditReport:
     schema = _load_committed_schema(provider)
     if schema is None:
         report.checks.append(
-            CheckResult(
+            AuditCheck(
                 name="schema_exists",
                 status=OutcomeStatus.ERROR,
                 summary=f"No committed schema found for {provider}",
+                provider=provider,
             )
         )
         return report
 
     report.checks.append(
-        CheckResult(
+        AuditCheck(
             name="schema_exists",
             status=OutcomeStatus.OK,
             summary="Committed schema loaded",
+            provider=provider,
         )
     )
-    report.checks.append(check_privacy_guards(schema))
-    report.checks.append(check_semantic_roles(schema))
-    report.checks.append(check_annotation_coverage(schema))
+    report.checks.append(_scoped(provider, check_privacy_guards(schema)))
+    report.checks.append(_scoped(provider, check_semantic_roles(schema)))
+    report.checks.append(_scoped(provider, check_annotation_coverage(schema)))
 
     return report
 
