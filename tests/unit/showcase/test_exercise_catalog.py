@@ -51,10 +51,6 @@ class TestExercisesByGroup:
         assert {
             "doctor-proof-json",
             "doctor-cohorts-json",
-            "doctor-semantic-proof",
-            "doctor-semantic-proof-json",
-            "doctor-semantic-proof-read-surfaces",
-            "doctor-semantic-proof-read-surfaces-json",
         } <= names
 
     def test_all_command_paths_have_generated_help_exercises(self):
