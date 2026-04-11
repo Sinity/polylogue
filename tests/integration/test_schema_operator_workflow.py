@@ -157,9 +157,7 @@ class TestSchemaAuditCommand:
         result = runner.invoke(cli, ["schema", "audit", "--json"])
 
         assert result.exit_code == 0, f"CLI failed: {result.output}"
-        outer = _extract_json(result.output)
-        assert outer["status"] == "ok"
-        data = _extract_result_json(result.output)
+        data = _extract_json(result.output)
         checks = data["checks"]
         assert checks
         assert any(check["provider"] for check in checks[:-1])
