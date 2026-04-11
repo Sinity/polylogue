@@ -7,9 +7,9 @@ from polylogue.paths_roots import (
     GEMINI_DRIVE_FOLDER,
     claude_code_path,
     codex_path,
+    drive_cache_path,
     drive_credentials_path,
     drive_token_path,
-    drive_cache_path,
     inbox_root,
 )
 
