@@ -252,8 +252,6 @@ def extract_command(argv: list[str]) -> list[str]:
         "--since",
         "--until",
         "--limit",
-        "--by",
-        "--fields",
         "--sort",
         "--sample",
         "--output",
@@ -283,7 +281,6 @@ def extract_command(argv: list[str]) -> list[str]:
         "--tier",
         "--only",
         "--skip",
-        "--print-path",
     }
     value_short = {
         "-i",
