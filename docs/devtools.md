@@ -137,6 +137,6 @@ without spraying a `result` symlink into the repo root.
 - [`.cache/README.md`](../.cache/README.md): disposable cache state
 - [`.local/README.md`](../.local/README.md): untracked local outputs
 - `.venv/` and `.direnv/`: kept at the repo root because their tooling expects those locations
-- `.local/result`: canonical local Nix build out-link
+- `.local/result`: canonical local Nix build out-link; remove stray top-level `result` symlinks if older commands created them
 
 Keep new repo-local outputs in one of those hidden roots.

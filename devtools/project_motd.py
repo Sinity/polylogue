@@ -194,13 +194,12 @@ def render_motd(cwd: Path, *, verify_generated: bool = False) -> str:
 
     label_width = len("recent")
     rows = [
-        ("repo", style_worktree(summarize_worktree(changes))),
+        ("tree", style_worktree(summarize_worktree(changes))),
+        ("docs", style_generated(summarize_generated_surfaces(generated_surfaces))),
         ("recent", str(snapshot["last_commit"])),
         ("next", str(commands["render_all_check"])),
         ("", str(commands["test_baseline"])),
     ]
-    if bool(snapshot["generated_checked"]):
-        rows.insert(1, ("docs", style_generated(summarize_generated_surfaces(generated_surfaces))))
     indent = " " * (label_width + 2)
 
     header = "  ".join(
