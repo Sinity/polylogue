@@ -57,7 +57,7 @@ def generate_command(
       polylogue audit generate -p chatgpt -n 5        # ChatGPT only, 5 conversations
       polylogue audit generate -o /tmp/corpus         # Custom output directory
       polylogue audit generate --seed                 # Full demo environment
-      polylogue audit generate --seed --env-only | eval  # Shell-friendly
+      eval "$(polylogue audit generate --seed --env-only)"  # Shell-friendly
     """
     if env_only and not seed:
         raise click.UsageError("--env-only requires --seed")
