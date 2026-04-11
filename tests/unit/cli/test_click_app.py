@@ -258,6 +258,17 @@ class TestQueryFirstGroupInvoke:
             cli_runner.invoke(cli, ["--plain"], catch_exceptions=False)
         mock_stats.assert_called_once()
 
+    def test_stats_by_subcommand_preserves_grouped_stats_mode(self, cli_runner):
+        from polylogue.cli.click_app import cli
+
+        with patch("polylogue.cli.query.execute_query") as mock_execute:
+            result = cli_runner.invoke(cli, ["--plain", "stats", "--by", "provider"], catch_exceptions=False)
+
+        assert result.exit_code == 0
+        _, params = mock_execute.call_args[0]
+        assert params["stats_by"] == "provider"
+        assert params["stats_only"] is False
+
     def test_query_mode_with_positional_args(self, cli_runner):
         from polylogue.cli.click_app import cli
 

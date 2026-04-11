@@ -66,7 +66,7 @@ def count_verb(ctx: click.Context) -> None:
 def stats_verb(ctx: click.Context, stats_by: str | None, output_format: str | None) -> None:
     """Show statistics for matched conversations."""
     params = _parent_params(ctx)
-    params["stats_only"] = True
+    params["stats_only"] = stats_by is None
     if stats_by:
         params["stats_by"] = stats_by
     if output_format:
