@@ -132,14 +132,21 @@ def _do_seed(
 
     data_home = out / "data"
     state_home = out / "state"
+    config_home = out / "config"
+    cache_home = out / "cache"
     archive_root = out / "archive"
     render_root = archive_root / "render"
+    fake_home = out / "home"
     fixture_dir = out / "fixtures"
+    inbox_dir = data_home / "polylogue" / "inbox"
 
-    for d in [data_home, state_home, archive_root, render_root]:
+    for d in [data_home, state_home, config_home, cache_home, archive_root, render_root, fake_home, inbox_dir]:
         d.mkdir(parents=True, exist_ok=True)
 
     env_vars = {
+        "HOME": str(fake_home),
+        "XDG_CONFIG_HOME": str(config_home),
+        "XDG_CACHE_HOME": str(cache_home),
         "XDG_DATA_HOME": str(data_home),
         "XDG_STATE_HOME": str(state_home),
         "POLYLOGUE_ARCHIVE_ROOT": str(archive_root),
@@ -162,6 +169,11 @@ def _do_seed(
             (provider_dir / f"demo-{idx:02d}{ext}").write_bytes(artifact.raw_bytes)
 
         sources.append(Source(name=provider, path=provider_dir))
+        inbox_provider_dir = inbox_dir / provider
+        inbox_provider_dir.mkdir(parents=True, exist_ok=True)
+        for fixture in provider_dir.iterdir():
+            if fixture.is_file():
+                (inbox_provider_dir / fixture.name).write_bytes(fixture.read_bytes())
 
     with _temporary_env(env_vars):
         config = Config(

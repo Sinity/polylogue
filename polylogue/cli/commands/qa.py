@@ -158,6 +158,7 @@ def qa_command(
             run_exercises = False
         if "invariants" in skip_stages:
             run_invariants = False
+    run_proof = only_stage is None and run_audit
 
     # --- Execute QA session ---
     from polylogue.showcase.qa_report import generate_qa_session
@@ -173,6 +174,7 @@ def qa_command(
         source_names=selected_source_names,
         regenerate_schemas=regenerate_schemas,
         skip_audit=not run_audit,
+        skip_proof=not run_proof,
         skip_exercises=not run_exercises,
         skip_invariants=not run_invariants,
         workspace_dir=workspace,

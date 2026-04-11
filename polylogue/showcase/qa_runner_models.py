@@ -24,6 +24,7 @@ class QAResult:
     audit_skipped: bool = False
     proof_report: ArtifactProofReport | None = None
     proof_error: str | None = None
+    proof_skipped: bool = False
     showcase_result: ShowcaseResult | None = None
     exercises_skipped: bool = False
     invariant_results: list[InvariantResult] = field(default_factory=list)
@@ -44,6 +45,8 @@ class QAResult:
 
     @property
     def proof_status(self) -> OutcomeStatus:
+        if self.proof_skipped:
+            return OutcomeStatus.SKIP
         if self.proof_error is not None or self.proof_report is None:
             return OutcomeStatus.ERROR
         return OutcomeStatus.OK if self.proof_report.is_clean else OutcomeStatus.ERROR
