@@ -85,3 +85,27 @@ def test_save_qa_reports_writes_composed_session_artifacts(tmp_path):
     assert (report_dir / "schema-audit.json").exists()
     assert (report_dir / "showcase-report.json").exists()
     assert (report_dir / "qa-session.md").exists()
+
+
+def test_qa_result_marks_skipped_proof_as_non_failing(tmp_path):
+    report_dir = tmp_path / "qa"
+    qa_result = QAResult(
+        audit_report=AuditReport(
+            checks=[
+                OutcomeCheck(name="privacy", status=OutcomeStatus.OK, summary="ok"),
+            ]
+        ),
+        proof_skipped=True,
+        showcase_result=_make_showcase_result(report_dir),
+        invariant_results=[
+            InvariantResult("json_valid", "test-help", OutcomeStatus.OK),
+        ],
+        report_dir=report_dir,
+    )
+
+    _save_qa_reports(qa_result, report_dir)
+
+    qa_session = json.loads((report_dir / "qa-session.json").read_text())
+    assert qa_result.all_passed is True
+    assert qa_session["proof"]["status"] == "skip"
+    assert qa_session["proof"]["skipped"] is True

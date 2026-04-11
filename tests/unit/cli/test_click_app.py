@@ -455,9 +455,12 @@ class TestGenerateSeed:
         assert result.exit_code == 0
         db_path = tmp_path / "data" / "polylogue" / "polylogue.db"
         assert db_path.exists()
+        assert (tmp_path / "home").exists()
+        assert (tmp_path / "data" / "polylogue" / "inbox" / "chatgpt").exists()
 
     def test_seed_restores_environment(self, cli_runner, monkeypatch, tmp_path):
         monkeypatch.setenv("XDG_DATA_HOME", "/tmp/original-data")
+        monkeypatch.setenv("HOME", "/tmp/original-home")
         monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", "/tmp/original-archive")
 
         with patch(
@@ -476,6 +479,7 @@ class TestGenerateSeed:
             )
 
         assert result.exit_code == 0
+        assert os.environ["HOME"] == "/tmp/original-home"
         assert os.environ["XDG_DATA_HOME"] == "/tmp/original-data"
         assert os.environ["POLYLOGUE_ARCHIVE_ROOT"] == "/tmp/original-archive"
 
@@ -483,6 +487,17 @@ class TestGenerateSeed:
         result = cli_runner.invoke(click_cli, ["audit", "generate", "--env-only"])
         assert result.exit_code != 0
         assert "requires --seed" in result.output.lower() or "error" in result.output.lower()
+
+    def test_seed_env_only_exports_isolated_workspace(self, cli_runner, tmp_path):
+        result = cli_runner.invoke(
+            click_cli,
+            ["audit", "generate", "--seed", "--env-only", "-o", str(tmp_path), "-n", "1", "-p", "chatgpt"],
+        )
+
+        assert result.exit_code == 0
+        assert f'export HOME="{tmp_path / "home"}"' in result.output
+        assert f'export XDG_CONFIG_HOME="{tmp_path / "config"}"' in result.output
+        assert f'export XDG_CACHE_HOME="{tmp_path / "cache"}"' in result.output
 
 
 # ---------------------------------------------------------------------------
@@ -558,6 +573,64 @@ class TestQaCommand:
         assert payload["audit"]["status"] == "ok"
         assert payload["showcase"]["status"] == "skip"
         assert payload["overall_status"] == "ok"
+
+    def test_audit_only_skips_artifact_proof(self, cli_runner):
+        from polylogue.lib.outcomes import OutcomeCheck, OutcomeStatus
+        from polylogue.schemas.audit_models import AuditReport
+        from polylogue.showcase.qa_runner import QAResult
+
+        qa_result = QAResult(
+            audit_report=AuditReport(
+                checks=[
+                    OutcomeCheck(name="privacy", status=OutcomeStatus.OK, summary="ok"),
+                ]
+            ),
+            proof_skipped=True,
+            exercises_skipped=True,
+            invariants_skipped=True,
+        )
+
+        with patch("polylogue.showcase.qa_runner.run_qa_session", return_value=qa_result) as mock_run:
+            result = cli_runner.invoke(click_cli, ["audit", "--only", "audit", "--json"])
+
+        assert result.exit_code == 0
+        assert mock_run.call_args.kwargs["skip_proof"] is True
+        payload = json.loads(result.output.split("\nPlain output active", 1)[0])
+        assert payload["proof"]["status"] == "skip"
+        assert payload["proof"]["skipped"] is True
+        assert payload["overall_status"] == "ok"
+
+    def test_exercises_only_skips_artifact_proof(self, cli_runner):
+        from polylogue.showcase.exercises import Exercise, Validation
+        from polylogue.showcase.qa_runner import QAResult
+        from polylogue.showcase.runner import ExerciseResult, ShowcaseResult
+
+        qa_result = QAResult(
+            proof_skipped=True,
+            audit_skipped=True,
+            showcase_result=ShowcaseResult(
+                results=[
+                    ExerciseResult(
+                        exercise=Exercise("smoke", "structural", "smoke", ["--help"], Validation()),
+                        passed=True,
+                        exit_code=0,
+                        output="ok",
+                        duration_ms=1.0,
+                    )
+                ],
+                total_duration_ms=1.0,
+            ),
+            invariants_skipped=True,
+        )
+
+        with patch("polylogue.showcase.qa_runner.run_qa_session", return_value=qa_result) as mock_run:
+            result = cli_runner.invoke(click_cli, ["audit", "--only", "exercises", "--json"])
+
+        assert result.exit_code == 0
+        assert mock_run.call_args.kwargs["skip_proof"] is True
+        payload = json.loads(result.output.split("\nPlain output active", 1)[0])
+        assert payload["proof"]["status"] == "skip"
+        assert payload["proof"]["skipped"] is True
 
 
 # ---------------------------------------------------------------------------

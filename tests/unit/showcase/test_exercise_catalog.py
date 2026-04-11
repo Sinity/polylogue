@@ -86,6 +86,18 @@ class TestExercisesByGroup:
             assert exercise.validation.stdout_is_valid_json is True
             assert exercise.output_ext == ".json"
 
+    def test_json_contract_exercises_use_curated_runnable_args(self):
+        observed = {
+            exercise.name: exercise
+            for exercise in EXERCISES
+            if exercise.group == "subcommands" and exercise.name.startswith("json-")
+        }
+        assert observed["json-audit"].args == ["audit", "--only", "audit", "--json"]
+        assert observed["json-run-embed"].args == ["run", "embed", "--stats", "--json"]
+        assert "json-schema-compare" not in observed
+        assert "json-schema-generate" not in observed
+        assert "json-schema-promote" not in observed
+
 
 class TestVhsExercises:
     """vhs_exercises returns only capturable exercises."""

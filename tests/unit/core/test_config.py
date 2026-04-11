@@ -192,6 +192,37 @@ class TestXDGPaths:
         assert polylogue.paths.db_path().name == "polylogue.db"
 
 
+class TestConfiguredSources:
+    def test_get_sources_skips_drive_source_without_cache_or_credentials(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HOME", str(tmp_path / "home"))
+        monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+        monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+
+        from polylogue.paths_config import get_sources
+
+        sources = get_sources()
+        assert [source.name for source in sources] == ["inbox"]
+
+    def test_get_sources_includes_drive_source_when_credentials_exist(self, monkeypatch, tmp_path):
+        home = tmp_path / "home"
+        data = tmp_path / "data"
+        state = tmp_path / "state"
+        config = tmp_path / "config"
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.setenv("XDG_DATA_HOME", str(data))
+        monkeypatch.setenv("XDG_STATE_HOME", str(state))
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(config))
+        credentials = config / "polylogue" / "polylogue-credentials.json"
+        credentials.parent.mkdir(parents=True, exist_ok=True)
+        credentials.write_text("{}", encoding="utf-8")
+
+        from polylogue.paths_config import get_sources
+
+        sources = get_sources()
+        assert [source.name for source in sources] == ["inbox", "gemini"]
+
+
 # =============================================================================
 # Merged from test_logging.py (2024-03-15)
 # =============================================================================
