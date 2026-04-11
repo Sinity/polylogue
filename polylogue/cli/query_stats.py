@@ -167,30 +167,26 @@ async def output_stats_sql(
         "messages_user": stats["user"],
         "messages_assistant": stats["assistant"],
         "words_approx": stats["words_approx"],
-        "attachment_refs": stats["attachment_refs"],
-        "distinct_attachments": stats["distinct_attachments"],
+        "attachments": stats["attachments"],
         "providers": stats.get("providers") or {},
         "date_range": None,
         "filtered": has_filters,
     }
     if not has_filters:
-        assert archive_stats is not None
+        archive_stats = await repo.get_archive_stats()
         pending_embedding_conversations = getattr(archive_stats, "pending_embedding_conversations", 0)
         stale_embedding_messages = getattr(archive_stats, "stale_embedding_messages", 0)
-        embeddings_payload = {
-            "embedded_conversations": getattr(archive_stats, "embedded_conversations", 0),
-            "embedded_messages": getattr(archive_stats, "embedded_messages", 0),
-            "pending_embedding_conversations": pending_embedding_conversations,
-            "stale_embedding_messages": stale_embedding_messages,
-            "messages_missing_embedding_provenance": getattr(
-                archive_stats,
-                "messages_missing_embedding_provenance",
-                0,
-            ),
-            "embedding_coverage_percent": round(getattr(archive_stats, "embedding_coverage", 0.0), 1),
-            "embedding_health_status": getattr(archive_stats, "embedding_health_status", None),
-            "retrieval_ready": getattr(archive_stats, "retrieval_ready", None),
-        }
+        if hasattr(archive_stats, "to_dict"):
+            embeddings_payload = archive_stats.to_dict()
+        else:
+            embeddings_payload = {
+                "total_conversations": getattr(archive_stats, "total_conversations", 0),
+                "embedded_conversations": getattr(archive_stats, "embedded_conversations", 0),
+                "embedded_messages": getattr(archive_stats, "embedded_messages", 0),
+                "pending_embedding_conversations": pending_embedding_conversations,
+                "stale_embedding_messages": stale_embedding_messages,
+                "embedding_coverage_percent": round(getattr(archive_stats, "embedding_coverage", 0.0), 1),
+            }
         structured_summary["embeddings"] = embeddings_payload
     if date_range:
         structured_summary["date_range"] = date_range
