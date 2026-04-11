@@ -6,11 +6,13 @@ import json
 
 import click
 
+from polylogue.cli.machine_errors import emit_success
+
 
 def render_schema_explain_result(*, result, json_output: bool, verbose: bool) -> None:
     """Render schema explain output in JSON or human-readable form."""
     if json_output:
-        click.echo(json.dumps(result.to_dict(), indent=2))
+        emit_success(result.to_dict())
         return
 
     if result.review_proof is not None:
