@@ -602,7 +602,7 @@ class TestQaCommand:
 
         assert result.exit_code == 0
         assert mock_run.call_args.kwargs["skip_proof"] is True
-        payload = json.loads(result.output)
+        payload = json.loads(result.output.split("\nPlain output active", 1)[0])
         assert payload["proof"]["status"] == "skip"
         assert payload["proof"]["skipped"] is True
         assert payload["overall_status"] == "ok"
@@ -635,7 +635,7 @@ class TestQaCommand:
 
         assert result.exit_code == 0
         assert mock_run.call_args.kwargs["skip_proof"] is True
-        payload = json.loads(result.output)
+        payload = json.loads(result.output.split("\nPlain output active", 1)[0])
         assert payload["proof"]["status"] == "skip"
         assert payload["proof"]["skipped"] is True
 
