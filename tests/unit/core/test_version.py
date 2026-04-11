@@ -180,6 +180,22 @@ class TestGetGitInfo:
         assert len(result) == 2
         assert isinstance(result[1], bool)
 
+    def test_reads_head_commit_without_git_executable(self, tmp_path, monkeypatch) -> None:
+        git_dir = tmp_path / ".git"
+        refs_dir = git_dir / "refs" / "heads"
+        refs_dir.mkdir(parents=True)
+        commit = "a" * 40
+        (git_dir / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
+        (refs_dir / "main").write_text(f"{commit}\n", encoding="utf-8")
+
+        def missing_git(*args, **kwargs):
+            raise FileNotFoundError("git")
+
+        monkeypatch.setattr(version_module.subprocess, "run", missing_git)
+        resolved_commit, dirty = _get_git_info(tmp_path)
+        assert resolved_commit == commit
+        assert dirty is False
+
 
 class TestResolveVersion:
     def test_returns_version_info_and_attributes(self) -> None:

@@ -31,31 +31,97 @@ class VersionInfo:
         return self.version
 
 
-def _get_git_info(repo_root: Path) -> tuple[str | None, bool]:
-    """Get git commit hash and dirty state from repository."""
+def _resolve_git_dir(repo_root: Path) -> Path | None:
+    git_entry = repo_root / ".git"
+    if git_entry.is_dir():
+        return git_entry
+    if not git_entry.is_file():
+        return None
+    try:
+        text = git_entry.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    prefix = "gitdir:"
+    if not text.startswith(prefix):
+        return None
+    target = text[len(prefix) :].strip()
+    git_dir = Path(target)
+    if not git_dir.is_absolute():
+        git_dir = (repo_root / git_dir).resolve()
+    return git_dir
+
+
+def _read_packed_ref(git_dir: Path, ref_name: str) -> str | None:
+    packed_refs = git_dir / "packed-refs"
+    if not packed_refs.exists():
+        return None
+    try:
+        lines = packed_refs.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return None
+    for line in lines:
+        if not line or line.startswith(("#", "^")):
+            continue
+        try:
+            commit, name = line.split(" ", 1)
+        except ValueError:
+            continue
+        if name == ref_name:
+            return commit
+    return None
+
+
+def _read_head_commit(repo_root: Path) -> str | None:
+    git_dir = _resolve_git_dir(repo_root)
+    if git_dir is None:
+        return None
+    head_path = git_dir / "HEAD"
+    try:
+        head_text = head_path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    if not head_text:
+        return None
+    if re.fullmatch(r"[0-9a-f]{40}", head_text):
+        return head_text
+    prefix = "ref:"
+    if not head_text.startswith(prefix):
+        return None
+    ref_name = head_text[len(prefix) :].strip()
+    if not ref_name:
+        return None
+    ref_path = git_dir / ref_name
+    if ref_path.exists():
+        try:
+            commit = ref_path.read_text(encoding="utf-8").strip()
+        except OSError:
+            return None
+        return commit if re.fullmatch(r"[0-9a-f]{40}", commit) else None
+    return _read_packed_ref(git_dir, ref_name)
+
+
+def _detect_git_dirty(repo_root: Path) -> bool:
     try:
         result = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            cwd=repo_root,
-            capture_output=True,
-            text=True,
-            timeout=2,
-        )
-        if result.returncode != 0:
-            return None, False
-        commit = result.stdout.strip()
-
-        dirty_result = subprocess.run(
             ["git", "status", "--porcelain"],
             cwd=repo_root,
             capture_output=True,
             text=True,
             timeout=2,
         )
-        dirty = bool(dirty_result.stdout.strip())
-        return commit, dirty
+        if result.returncode != 0:
+            return False
+        return bool(result.stdout.strip())
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return False
+
+
+def _get_git_info(repo_root: Path) -> tuple[str | None, bool]:
+    """Get git commit hash and dirty state from repository."""
+    commit = _read_head_commit(repo_root)
+    if commit is None:
         return None, False
+    return commit, _detect_git_dirty(repo_root)
 
 
 def _resolve_base_version(repo_root: Path) -> str:
