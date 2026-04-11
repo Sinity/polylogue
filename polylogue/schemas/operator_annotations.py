@@ -13,32 +13,32 @@ from polylogue.schemas.operator_models import (
 
 def collect_annotation_summary(schema: dict) -> SchemaAnnotationSummary:
     """Collect format/value/semantic coverage from a schema document."""
-    semantic_count = 0
     format_count = 0
     values_count = 0
     total_enum_values = 0
-    roles: list[SchemaRoleAssignment] = []
+    role_by_key: dict[tuple[str, str], SchemaRoleAssignment] = {}
     total_fields = 0
     with_format = 0
     with_values = 0
     with_role = 0
 
     def visit(node: dict, *, path: str) -> None:
-        nonlocal semantic_count, format_count, values_count, total_enum_values
+        nonlocal format_count, values_count, total_enum_values
         nonlocal total_fields, with_format, with_values, with_role
         if not isinstance(node, dict):
             return
         role = node.get("x-polylogue-semantic-role")
         if role:
-            semantic_count += 1
-            roles.append(
-                SchemaRoleAssignment(
-                    path=path,
-                    role=str(role),
-                    confidence=float(node.get("x-polylogue-score", 0.0) or 0.0),
-                    evidence=dict(node.get("x-polylogue-evidence", {})),
-                )
+            assignment = SchemaRoleAssignment(
+                path=path,
+                role=str(role),
+                confidence=float(node.get("x-polylogue-score", 0.0) or 0.0),
+                evidence=dict(node.get("x-polylogue-evidence", {})),
             )
+            key = (assignment.path, assignment.role)
+            current = role_by_key.get(key)
+            if current is None or assignment.confidence >= current.confidence:
+                role_by_key[key] = assignment
         if "x-polylogue-format" in node:
             format_count += 1
         if "x-polylogue-values" in node:
@@ -65,12 +65,13 @@ def collect_annotation_summary(schema: dict) -> SchemaAnnotationSummary:
                     visit(child, path=path)
 
     visit(schema, path="$")
+    roles = sorted(role_by_key.values(), key=lambda item: (-item.confidence, item.path, item.role))
     return SchemaAnnotationSummary(
-        semantic_count=semantic_count,
+        semantic_count=len(roles),
         format_count=format_count,
         values_count=values_count,
         total_enum_values=total_enum_values,
-        roles=sorted(roles, key=lambda item: (-item.confidence, item.path, item.role)),
+        roles=roles,
         coverage=SchemaCoverageSummary(
             total_fields=total_fields,
             with_format=with_format,
