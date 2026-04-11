@@ -78,7 +78,7 @@ def run_archive_health(config: Any, *, deep: bool = False) -> HealthReport:
     from polylogue.storage.repair import collect_archive_debt_statuses_sync
 
     checks: list[HealthCheck] = []
-    checks.append(HealthCheck("config", VerifyStatus.OK, summary="Zero-config (XDG paths)"))
+    checks.append(HealthCheck("config", VerifyStatus.OK, summary="XDG defaults active"))
 
     for path_name in ("archive_root", "render_root"):
         path = getattr(config, path_name)
