@@ -180,6 +180,7 @@ async def test_async_execute_query_errors_for_similar_without_vector_support() -
     assert exc_info.value.code == 1
     mock_echo.assert_called_once()
     assert "requires vector search support" in mock_echo.call_args.args[0]
+    assert "polylogue run embed" in mock_echo.call_args.args[0]
 
 
 @pytest.mark.asyncio
@@ -201,6 +202,7 @@ async def test_async_execute_query_errors_for_similar_without_embeddings() -> No
     assert exc_info.value.code == 1
     mock_echo.assert_called_once()
     assert "requires existing embeddings" in mock_echo.call_args.args[0]
+    assert "polylogue run embed" in mock_echo.call_args.args[0]
 
 
 @pytest.mark.asyncio

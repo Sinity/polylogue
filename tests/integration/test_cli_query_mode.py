@@ -85,7 +85,8 @@ def test_cli_query_stats_by_provider_reports_provider_groups(tmp_path):
 
     assert result.exit_code == 0, result.output
     output = result.output.lower()
-    assert "conversations: 2" in output
+    assert "matched: 2 conversations (by provider)" in output
+    assert "total" in output
     assert "chatgpt" in output
     assert "unknown" in output
 

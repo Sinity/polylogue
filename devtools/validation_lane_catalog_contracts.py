@@ -58,7 +58,7 @@ CONTRACT_LANES = {
         "tests/unit/core/test_filters_schemas.py",
         "tests/unit/sources/test_unified_semantic_laws.py",
         "tests/integration/test_extraction_db.py",
-        "tests/unit/core/test_semantic_proof.py",
+        "tests/unit/core/test_schema_semantic_inference.py",
         "tests/unit/cli/test_check.py",
         "tests/unit/showcase/test_qa_runner.py",
         "tests/unit/showcase/test_report.py",

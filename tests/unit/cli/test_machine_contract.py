@@ -175,13 +175,29 @@ class TestSuccessBuilder:
 
 
 class TestWantsJsonDetection:
-    """Property: wants_json returns True iff argv contains --json or --json=..."""
+    """Property: wants_json detects explicit JSON machine-output intent."""
 
     @given(argv=st.lists(st.text(max_size=30), max_size=10))
     @example(argv=[])
+    @example(argv=["list", "--format", "json"])
+    @example(argv=["--format=json", "list"])
+    @example(argv=["-f", "json", "list"])
     def test_wants_json_only_matches_exact_flag(self, argv):
         result = wants_json(argv)
-        has_json_flag = any(a == "--json" or a.startswith("--json=") for a in argv)
+        has_json_flag = False
+        for index, arg in enumerate(argv):
+            if arg == "--json" or arg.startswith("--json="):
+                has_json_flag = True
+                break
+            if arg == "--format" and index + 1 < len(argv) and argv[index + 1] == "json":
+                has_json_flag = True
+                break
+            if arg.startswith("--format=") and arg.split("=", 1)[1] == "json":
+                has_json_flag = True
+                break
+            if arg == "-f" and index + 1 < len(argv) and argv[index + 1] == "json":
+                has_json_flag = True
+                break
         assert result == has_json_flag
 
 
@@ -212,3 +228,7 @@ class TestExtractCommand:
                         break
                 except StopIteration:
                     raise AssertionError(f"Order violation: {item!r} not in expected position") from None
+
+    def test_extract_command_skips_option_values(self):
+        argv = ["--format", "json", "--limit", "1", "list"]
+        assert extract_command(argv) == ["list"]
