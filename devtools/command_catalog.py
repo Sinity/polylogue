@@ -134,7 +134,7 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         "maintenance",
         "Build the default Nix package with the out-link under .local/result.",
         "devtools.build_package",
-        use_when="Produce the Nix package artifact under the repo-local output root without leaving a top-level result symlink.",
+        use_when="Produce the Nix package artifact with its out-link kept under the repo-local output root.",
         examples=("devtools build-package",),
     ),
     CommandSpec(
