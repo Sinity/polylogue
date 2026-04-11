@@ -1454,9 +1454,6 @@ async def test_output_stats_sql_empty_paths_json_contract(
     env = _make_env()
     repo = MagicMock()
     repo.queries.aggregate_message_stats = AsyncMock()
-    conn = _SnapshotConn()
-    repo.backend.read_connection.return_value = _async_connection(conn)
-    repo.get_archive_stats = AsyncMock(return_value=SimpleNamespace(total_conversations=0))
 
     filter_chain = MagicMock()
     filter_chain.describe.return_value = described
