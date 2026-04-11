@@ -72,6 +72,7 @@ def _support_status(
 
 
 _INSPECTION_PREFIX_BYTES = 64 * 1024  # 64 KB — enough to classify any format
+_FULL_JSON_INSPECTION_MAX_BYTES = 8 * 1024 * 1024  # 8 MB — bounded fallback for large JSON documents
 
 
 def _inspection_prefix_from_bytes(raw_content: bytes, source_path: str | None) -> bytes:
@@ -104,6 +105,21 @@ def _inspection_prefix(record: RawConversationRecord) -> bytes:
     return prefix
 
 
+def _prefers_json_stream(source_path: str | None) -> bool:
+    normalized = (source_path or "").lower()
+    return normalized.endswith((".jsonl", ".jsonl.txt", ".ndjson"))
+
+
+def _full_json_inspection_allowed(record: RawConversationRecord) -> bool:
+    if _prefers_json_stream(record.source_path):
+        return False
+    return record.blob_size <= _FULL_JSON_INSPECTION_MAX_BYTES
+
+
+def _should_retry_full_json_inspection(record: RawConversationRecord, *, wire_format: str | None) -> bool:
+    return _full_json_inspection_allowed(record) and wire_format == "jsonl"
+
+
 def inspect_raw_artifact(record: RawConversationRecord) -> ArtifactObservationRecord:
     """Inspect one raw record into a durable artifact observation.
 
@@ -122,14 +138,35 @@ def inspect_raw_artifact(record: RawConversationRecord) -> ArtifactObservationRe
     registry = _SCHEMA_REGISTRY
 
     try:
-        prefix = _inspection_prefix(record)
-        envelope = build_raw_payload_envelope(
-            prefix,
-            source_path=record.source_path,
-            fallback_provider=record.provider_name,
-            payload_provider=record.payload_provider,
-            jsonl_dict_only=False,
-        )
+        blob_store = get_blob_store()
+        try:
+            prefix = _inspection_prefix(record)
+            envelope = build_raw_payload_envelope(
+                prefix,
+                source_path=record.source_path,
+                fallback_provider=record.provider_name,
+                payload_provider=record.payload_provider,
+                jsonl_dict_only=False,
+            )
+        except Exception:
+            if not _full_json_inspection_allowed(record):
+                raise
+            envelope = build_raw_payload_envelope(
+                blob_store.read_all(record.raw_id),
+                source_path=record.source_path,
+                fallback_provider=record.provider_name,
+                payload_provider=record.payload_provider,
+                jsonl_dict_only=False,
+            )
+        else:
+            if _should_retry_full_json_inspection(record, wire_format=envelope.wire_format):
+                envelope = build_raw_payload_envelope(
+                    blob_store.read_all(record.raw_id),
+                    source_path=record.source_path,
+                    fallback_provider=record.provider_name,
+                    payload_provider=record.payload_provider,
+                    jsonl_dict_only=False,
+                )
         payload_provider = envelope.provider
         resolved_package_version: str | None = None
         resolved_element_kind: str | None = None
