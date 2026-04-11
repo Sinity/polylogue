@@ -75,11 +75,13 @@ def stats_verb(ctx: click.Context, stats_by: str | None, output_format: str | No
 
 
 @click.command("open")
+@click.option("--print-path", is_flag=True, help="Print the matched render path instead of opening it")
 @click.pass_context
-def open_verb(ctx: click.Context) -> None:
+def open_verb(ctx: click.Context, print_path: bool) -> None:
     """Open matched conversation in browser/editor."""
     params = _parent_params(ctx)
     params["open_result"] = True
+    params["print_path"] = print_path
     _execute_query_verb(ctx, params)
 
 
