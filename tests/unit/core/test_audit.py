@@ -13,7 +13,7 @@ from polylogue.schemas.audit_checks import (
     check_privacy_guards,
     check_semantic_roles,
 )
-from polylogue.schemas.audit_models import AuditReport
+from polylogue.schemas.audit_models import AuditCheck, AuditReport
 
 PASS = OutcomeStatus.OK
 WARN = OutcomeStatus.WARNING
@@ -188,12 +188,36 @@ class TestAuditReport:
         assert data["summary"]["failed"] == 0
         assert len(data["checks"]) == 1
         assert data["checks"][0]["name"] == "a"
+        assert data["checks"][0]["provider"] is None
         assert data["checks"][0]["details"] == ["detail1"]
 
     def test_to_json_no_provider(self) -> None:
         report = AuditReport(checks=[])
         data = report.to_json()
         assert data["provider"] is None
+
+    def test_format_text_prefixes_provider_for_aggregate_report(self) -> None:
+        report = AuditReport(
+            checks=[
+                AuditCheck(name="schema_exists", status=PASS, summary="Committed schema loaded", provider="chatgpt"),
+            ]
+        )
+
+        text = report.format_text()
+
+        assert "[chatgpt]" in text
+
+    def test_to_json_includes_provider_on_aggregate_checks(self) -> None:
+        report = AuditReport(
+            checks=[
+                AuditCheck(name="schema_exists", status=PASS, summary="Committed schema loaded", provider="chatgpt"),
+            ]
+        )
+
+        data = report.to_json()
+
+        assert data["provider"] is None
+        assert data["checks"][0]["provider"] == "chatgpt"
 
 
 class TestCheckPrivacyGuards:

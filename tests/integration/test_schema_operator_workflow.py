@@ -140,6 +140,17 @@ class TestSchemaListCommand:
         assert "No schemas found" in result.output or "nonexistent" in result.output
 
 
+class TestSchemaAuditCommand:
+    def test_schema_audit_json_scopes_checks_by_provider(self, runner: CliRunner) -> None:
+        result = runner.invoke(cli, ["schema", "audit", "--json"])
+
+        assert result.exit_code == 0, f"CLI failed: {result.output}"
+        data = _extract_json(result.output)
+        checks = data["checks"]
+        assert checks
+        assert any(check["provider"] for check in checks[:-1])
+
+
 # =============================================================================
 # schema compare
 # =============================================================================
