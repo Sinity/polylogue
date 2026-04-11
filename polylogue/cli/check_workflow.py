@@ -46,7 +46,6 @@ from .check_support import make_schema_progress_callback, parse_schema_samples, 
 class CheckCommandOptions:
     json_output: bool
     verbose: bool
-    use_cached_health: bool
     repair: bool
     cleanup: bool
     preview: bool
@@ -93,7 +92,7 @@ def validate_check_options(options: CheckCommandOptions) -> None:
 
 def run_check_workflow(env: AppEnv, options: CheckCommandOptions) -> CheckCommandResult:
     config = load_effective_config(env)
-    report = get_health(config, deep=options.deep, use_cached=options.use_cached_health)
+    report = get_health(config, deep=options.deep)
     result = CheckCommandResult(report=report)
 
     if options.runtime:

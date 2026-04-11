@@ -319,7 +319,7 @@ def _make_env(config: Config, *, plain: bool) -> tuple[AppEnv, StringIO]:
     return env, buffer
 
 
-def _health_report(*, source="live", cache_age_seconds=None, cache_ttl_seconds=None, checks=None):
+def _health_report(*, source="live", checks=None):
     return SimpleNamespace(
         provenance=SimpleNamespace(source=source),
         checks=checks or [],
@@ -362,7 +362,7 @@ def _run_summary(
     verbose: bool,
     plain: bool,
     last_run=None,
-    cached_health: str = "OK",
+    quick_health: str = "OK",
     health=None,
     counts=None,
     metrics=None,
@@ -396,7 +396,7 @@ def _run_summary(
 
     with (
         patch("polylogue.cli.helpers.latest_run", new_callable=AsyncMock, return_value=last_run),
-        patch("polylogue.cli.helpers.cached_health_summary", return_value=cached_health) as mock_cached,
+        patch("polylogue.cli.helpers.quick_health_summary", return_value=quick_health) as mock_quick,
         patch("polylogue.cli.helpers.get_health", return_value=health) as mock_get_health,
         patch("polylogue.cli.helpers.format_sources_summary", return_value="inbox"),
         patch(
@@ -414,7 +414,7 @@ def _run_summary(
         "title": title,
         "lines": lines,
         "console": buffer.getvalue(),
-        "mock_cached": mock_cached,
+        "mock_quick": mock_quick,
         "mock_get_health": mock_get_health,
     }
 
@@ -441,7 +441,7 @@ def test_print_summary_basic_contract(config: Config) -> None:
     assert "Archive:" in result["console"]
     assert "10 conversations" in result["console"]
     assert "claude-ai:" in result["console"]
-    result["mock_cached"].assert_called_once()
+    result["mock_quick"].assert_called_once()
     result["mock_get_health"].assert_not_called()
 
 
@@ -458,9 +458,7 @@ def test_print_summary_basic_contract(config: Config) -> None:
     ids=["rich-ok", "rich-warning", "rich-error", "plain-ok", "plain-warning", "plain-error"],
 )
 def test_print_summary_verbose_health_matrix(config: Config, plain: bool, status: str, expected_indicator: str) -> None:
-    report = _health_report(
-        source="cache", cache_age_seconds=30, cache_ttl_seconds=600, checks=[_check("database", status, "detail")]
-    )
+    report = _health_report(source="live", checks=[_check("database", status, "detail")])
     result = _run_summary(config, verbose=True, plain=plain, health=report, counts=[])
 
     assert result["lines"][:4] == [
@@ -470,10 +468,10 @@ def test_print_summary_verbose_health_matrix(config: Config, plain: bool, status
         "Last run: none",
     ]
     assert result["lines"][4] == "Embeddings: 0/0 convs, 0 msgs (0.0%)"
-    assert result["lines"][5] == "Health (source=cache)"
+    assert result["lines"][5] == "Health (source=live)"
     assert result["lines"][6] == f"  {expected_indicator} database: detail"
     result["mock_get_health"].assert_called_once()
-    result["mock_cached"].assert_not_called()
+    result["mock_quick"].assert_not_called()
 
 
 def test_print_summary_verbose_analytics_deep_dive_contract(config: Config) -> None:

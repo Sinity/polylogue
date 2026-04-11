@@ -5,8 +5,6 @@ Usage: polylogue doctor [OPTIONS]
 Options:
   --json                          Output as JSON
   -v, --verbose                   Show breakdown by provider
-  --cached                        Use the recent cached archive-health report
-                                  when available
   --repair                        Run safe derived-data and database
                                   maintenance repairs
   --cleanup                       Run destructive archive cleanup for orphaned

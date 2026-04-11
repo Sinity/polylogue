@@ -245,17 +245,14 @@ def test_get_health_contract(cli_workspace, deep: bool) -> None:
     from polylogue.health import get_health
 
     config = get_config()
-    first = get_health(config, deep=deep)
-    assert first.timestamp > 0
-    # use_cached is accepted but ignored (no cache layer)
-    second = get_health(config, use_cached=True)
-    assert second.timestamp > 0
+    report = get_health(config, deep=deep)
+    assert report.timestamp > 0
 
 
-def test_cached_health_summary_returns_live_status(tmp_path: Path) -> None:
-    from polylogue.health import cached_health_summary
+def test_quick_health_summary_returns_live_status(tmp_path: Path) -> None:
+    from polylogue.health import quick_health_summary
 
-    result = cached_health_summary(tmp_path)
+    result = quick_health_summary(tmp_path)
     # With a valid DB, returns "OK (N conversations)"; without, returns "unavailable (...)"
     assert isinstance(result, str)
     assert "OK" in result or "unavailable" in result or "schema" in result
