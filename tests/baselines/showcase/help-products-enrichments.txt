@@ -1,4 +1,4 @@
-Usage: python -m polylogue products enrichments [OPTIONS]
+Usage: polylogue products enrichments [OPTIONS]
 
   List durable probabilistic session-enrichment products.
 

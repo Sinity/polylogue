@@ -1,4 +1,4 @@
-Usage: python -m polylogue run index [OPTIONS]
+Usage: polylogue run index [OPTIONS]
 
   Build retrieval and search indexes.
 

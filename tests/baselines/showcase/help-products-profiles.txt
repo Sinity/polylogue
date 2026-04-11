@@ -1,4 +1,4 @@
-Usage: python -m polylogue products profiles [OPTIONS]
+Usage: polylogue products profiles [OPTIONS]
 
   List durable session-profile products.
 

@@ -1,4 +1,4 @@
-Usage: python -m polylogue stats [OPTIONS]
+Usage: polylogue stats [OPTIONS]
 
   Show statistics for matched conversations.
 

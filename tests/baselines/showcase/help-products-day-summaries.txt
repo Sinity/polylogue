@@ -1,4 +1,4 @@
-Usage: python -m polylogue products day-summaries [OPTIONS]
+Usage: polylogue products day-summaries [OPTIONS]
 
   List durable day-level session summary products.
 

@@ -1,4 +1,4 @@
-Usage: python -m polylogue delete [OPTIONS]
+Usage: polylogue delete [OPTIONS]
 
   Delete matched conversations.
 
