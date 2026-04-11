@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import json
 import subprocess
-import sys
 import tempfile
 import time
 from dataclasses import asdict, dataclass
@@ -231,8 +230,6 @@ def run_campaign(
     with tempfile.TemporaryDirectory(prefix=f"benchmark-{campaign.name}-") as tmpdir:
         raw_json = Path(tmpdir) / "pytest-benchmark.json"
         command = [
-            sys.executable,
-            "-m",
             "pytest",
             "-q",
             "--override-ini=addopts=-ra",

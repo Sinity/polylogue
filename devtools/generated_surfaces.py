@@ -12,6 +12,7 @@ from devtools import (
     render_docs_surface,
     render_quality_reference,
 )
+from devtools.command_catalog import control_plane_argv
 
 SurfaceMain = Callable[[list[str] | None], int]
 
@@ -30,35 +31,35 @@ GENERATED_SURFACES: tuple[GeneratedSurface, ...] = (
         name="agents",
         label="AGENTS",
         description="Render AGENTS.md from the root CLAUDE transclusion surface.",
-        command=("python", "-m", "devtools", "render-agents"),
+        command=control_plane_argv("render-agents"),
         main=render_agents.main,
     ),
     GeneratedSurface(
         name="cli-reference",
         label="CLI docs",
         description="Render docs/cli-reference.md from live CLI help.",
-        command=("python", "-m", "devtools", "render-cli-reference"),
+        command=control_plane_argv("render-cli-reference"),
         main=render_cli_reference.main,
     ),
     GeneratedSurface(
         name="devtools-reference",
         label="Devtools docs",
         description="Render the generated command catalog inside docs/devtools.md.",
-        command=("python", "-m", "devtools", "render-devtools-reference"),
+        command=control_plane_argv("render-devtools-reference"),
         main=render_devtools_reference.main,
     ),
     GeneratedSurface(
         name="quality-reference",
         label="Quality docs",
         description="Render docs/test-quality-workflows.md from quality registries.",
-        command=("python", "-m", "devtools", "render-quality-reference"),
+        command=control_plane_argv("render-quality-reference"),
         main=render_quality_reference.main,
     ),
     GeneratedSurface(
         name="docs-surface",
         label="Docs surface",
         description="Render docs/README.md and the generated docs table in README.md.",
-        command=("python", "-m", "devtools", "render-docs-surface"),
+        command=control_plane_argv("render-docs-surface"),
         main=render_docs_surface.main,
     ),
 )

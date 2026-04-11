@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import sys
-
 from devtools.validation_lane_base import devtools_lane, memory_budget_lane, polylogue_lane
 
 LIVE_LANES = {
@@ -212,8 +210,6 @@ LIVE_LANES = {
         240,
         max_rss_mb=1536,
         command=[
-            sys.executable,
-            "-m",
             "polylogue",
             "--plain",
             "--provider",
@@ -234,8 +230,6 @@ LIVE_LANES = {
         240,
         max_rss_mb=1024,
         command=[
-            sys.executable,
-            "-m",
             "polylogue",
             "--plain",
             "doctor",

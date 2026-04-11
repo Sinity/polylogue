@@ -21,6 +21,19 @@ devtools status
 devtools status --json
 ```
 
+## Core Loop
+
+These are the repo-maintenance commands worth remembering during normal work:
+
+- `devtools status`: Check repo state, generated-surface drift, and the next default verification steps.
+  Common forms: `devtools status`, `devtools status --json`, `devtools status --verify-generated`.
+- `devtools render-all`: Refresh or verify every generated repo surface together after changing docs, CLI help, or agent memory.
+  Common forms: `devtools render-all`, `devtools render-all --check`.
+- `devtools mutmut-campaign`: Run or inspect focused mutation-testing work without shrinking the committed mutmut scope.
+  Common forms: `devtools mutmut-campaign list`, `devtools mutmut-campaign run filters`.
+- `devtools benchmark-campaign`: Record durable benchmark artifacts or compare a candidate run against a baseline artifact.
+  Common forms: `devtools benchmark-campaign list`, `devtools benchmark-campaign run search-filters`, `devtools benchmark-campaign compare baseline.json candidate.json`.
+
 ### Core
 
 | Command | Description |
@@ -99,7 +112,7 @@ That refreshes:
 devtools run-validation-lanes --list
 devtools run-validation-lanes --lane frontier-local
 devtools verify-showcase
-devtools query-memory-budget --max-rss-mb 1536 -- python -m polylogue --plain stats
+devtools query-memory-budget --max-rss-mb 1536 -- polylogue --plain stats
 ```
 
 Use these when changing semantics, validation contracts, or user-facing

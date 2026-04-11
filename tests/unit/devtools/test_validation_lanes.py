@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import sys
-
 import pytest
 
 from devtools.run_validation_lanes import (
@@ -44,7 +42,7 @@ class TestLaneParsing:
 class TestCommandConstruction:
     def test_machine_contract_lane_uses_pytest_marker(self):
         cmd = build_lane_command(LANES["machine-contract"])
-        assert cmd[:3] == [sys.executable, "-m", "pytest"]
+        assert cmd[0] == "pytest"
         assert "machine_contract" in cmd
 
     def test_query_routing_lane_uses_pytest_marker(self):
@@ -53,11 +51,11 @@ class TestCommandConstruction:
 
     def test_showcase_baselines_lane_uses_verify_showcase_module(self):
         cmd = build_lane_command(LANES["showcase-baselines"])
-        assert cmd[:4] == [sys.executable, "-m", "devtools", "verify-showcase"]
+        assert cmd[:2] == ["devtools", "verify-showcase"]
 
     def test_pipeline_probe_chatgpt_lane_uses_probe_budgets(self):
         cmd = build_lane_command(LANES["pipeline-probe-chatgpt"])
-        assert cmd[:4] == [sys.executable, "-m", "devtools", "pipeline-probe"]
+        assert cmd[:2] == ["devtools", "pipeline-probe"]
         assert "--provider" in cmd
         assert "chatgpt" in cmd
         assert "--max-total-ms" in cmd
@@ -65,7 +63,7 @@ class TestCommandConstruction:
 
     def test_live_archive_subset_parse_probe_lane_uses_medium_archive_subset_probe(self):
         cmd = build_lane_command(LANES["live-archive-subset-parse-probe"])
-        assert cmd[:4] == [sys.executable, "-m", "devtools", "pipeline-probe"]
+        assert cmd[:2] == ["devtools", "pipeline-probe"]
         assert "--input-mode" in cmd
         assert "archive-subset" in cmd
         assert "--stage" in cmd
@@ -77,27 +75,27 @@ class TestCommandConstruction:
 
     def test_semantic_stack_lane_uses_explicit_semantic_suite(self):
         cmd = build_lane_command(LANES["semantic-stack"])
-        assert cmd[:3] == [sys.executable, "-m", "pytest"]
+        assert cmd[0] == "pytest"
         assert "tests/unit/core/test_semantic_facts.py" in cmd
         assert "tests/unit/sources/test_unified_semantic_laws.py" in cmd
 
     def test_source_provider_fidelity_lane_uses_source_governance_suite(self):
         cmd = build_lane_command(LANES["source-provider-fidelity"])
-        assert cmd[:3] == [sys.executable, "-m", "pytest"]
+        assert cmd[0] == "pytest"
         assert "tests/unit/sources/test_source_laws.py" in cmd
         assert "tests/unit/sources/test_drive_ops.py" in cmd
         assert "tests/integration/test_security.py" in cmd
 
     def test_maintenance_workflows_lane_uses_health_and_check_suite(self):
         cmd = build_lane_command(LANES["maintenance-workflows"])
-        assert cmd[:3] == [sys.executable, "-m", "pytest"]
+        assert cmd[0] == "pytest"
         assert "tests/unit/core/test_health_core.py" in cmd
         assert "tests/unit/cli/test_check.py" in cmd
         assert "tests/integration/test_health.py" in cmd
 
     def test_archive_data_products_lane_uses_product_and_consumer_suite(self):
         cmd = build_lane_command(LANES["archive-data-products"])
-        assert cmd[:3] == [sys.executable, "-m", "pytest"]
+        assert cmd[0] == "pytest"
         assert "tests/unit/cli/test_products.py" in cmd
         assert "tests/unit/core/test_facade_api.py" in cmd
         assert "tests/unit/mcp/test_tool_contracts.py" in cmd
@@ -105,7 +103,7 @@ class TestCommandConstruction:
 
     def test_semantic_product_normalization_lane_uses_normalization_toolchain_suite(self):
         cmd = build_lane_command(LANES["semantic-product-normalization"])
-        assert cmd[:3] == [sys.executable, "-m", "pytest"]
+        assert cmd[0] == "pytest"
         assert "tests/unit/core/test_repo_identity.py" in cmd
         assert "tests/unit/cli/test_products.py" in cmd
         assert "tests/integration/test_schema_operator_workflow.py" in cmd
@@ -113,89 +111,89 @@ class TestCommandConstruction:
 
     def test_retrieval_checks_lane_uses_retrieval_suite(self):
         cmd = build_lane_command(LANES["retrieval-checks"])
-        assert cmd[:3] == [sys.executable, "-m", "pytest"]
+        assert cmd[0] == "pytest"
         assert "tests/unit/cli/test_query_exec.py" in cmd
         assert "tests/unit/core/test_health_core.py" in cmd
 
     def test_embeddings_coverage_lane_uses_embed_suite(self):
         cmd = build_lane_command(LANES["embeddings-coverage"])
-        assert cmd[:3] == [sys.executable, "-m", "pytest"]
+        assert cmd[0] == "pytest"
         assert "tests/unit/cli/test_embed.py" in cmd
         assert "tests/unit/storage/test_embedding_stats.py" in cmd
 
     def test_evidence_tier_contracts_lane_uses_evidence_suite(self):
         cmd = build_lane_command(LANES["evidence-tier-contracts"])
-        assert cmd[:3] == [sys.executable, "-m", "pytest"]
+        assert cmd[0] == "pytest"
         assert "tests/unit/cli/test_products.py" in cmd
         assert "tests/unit/storage/test_backend.py" in cmd
         assert "tests/unit/pipeline/test_prepare_semantic.py" in cmd
 
     def test_inference_tier_contracts_lane_uses_inference_suite(self):
         cmd = build_lane_command(LANES["inference-tier-contracts"])
-        assert cmd[:3] == [sys.executable, "-m", "pytest"]
+        assert cmd[0] == "pytest"
         assert "tests/unit/mcp/test_tool_contracts.py" in cmd
         assert "tests/unit/pipeline/test_prepare_semantic.py" in cmd
 
     def test_mixed_consumer_contracts_lane_uses_consumer_suite(self):
         cmd = build_lane_command(LANES["mixed-consumer-contracts"])
-        assert cmd[:3] == [sys.executable, "-m", "pytest"]
+        assert cmd[0] == "pytest"
         assert "tests/unit/cli/test_products.py" in cmd
         assert "tests/unit/core/test_facade_api.py" in cmd
         assert "tests/integration/test_health.py" in cmd
 
     def test_retrieval_band_readiness_lane_uses_embed_health_suite(self):
         cmd = build_lane_command(LANES["retrieval-band-readiness"])
-        assert cmd[:3] == [sys.executable, "-m", "pytest"]
+        assert cmd[0] == "pytest"
         assert "tests/unit/cli/test_embed.py" in cmd
         assert "tests/unit/storage/test_embedding_stats.py" in cmd
         assert "tests/unit/core/test_health_core.py" in cmd
 
     def test_heuristic_inference_contracts_lane_uses_semantic_product_suite(self):
         cmd = build_lane_command(LANES["heuristic-inference-contracts"])
-        assert cmd[:3] == [sys.executable, "-m", "pytest"]
+        assert cmd[0] == "pytest"
         assert "tests/unit/cli/test_products.py" in cmd
         assert "tests/unit/pipeline/test_prepare_semantic.py" in cmd
 
     def test_probabilistic_enrichment_contracts_lane_uses_enrichment_suite(self):
         cmd = build_lane_command(LANES["probabilistic-enrichment-contracts"])
-        assert cmd[:3] == [sys.executable, "-m", "pytest"]
+        assert cmd[0] == "pytest"
         assert "tests/unit/storage/test_embedding_stats.py" in cmd
         assert "tests/unit/mcp/test_tool_contracts.py" in cmd
 
     def test_cleanup_contracts_lane_uses_health_and_check_suite(self):
         cmd = build_lane_command(LANES["cleanup-contracts"])
-        assert cmd[:3] == [sys.executable, "-m", "pytest"]
+        assert cmd[0] == "pytest"
         assert "tests/unit/cli/test_check.py" in cmd
         assert "tests/integration/test_health.py" in cmd
 
     def test_memory_budget_lane_uses_budget_runner(self):
         cmd = build_lane_command(LANES["memory-budget"])
-        assert cmd[:4] == [sys.executable, "-m", "devtools", "query-memory-budget"]
+        assert cmd[:2] == ["devtools", "query-memory-budget"]
         assert "--max-rss-mb" in cmd
         assert "polylogue" in cmd
 
     def test_maintenance_memory_budget_lane_uses_check_preview(self):
         cmd = build_lane_command(LANES["maintenance-memory-budget"])
-        assert cmd[:4] == [sys.executable, "-m", "devtools", "query-memory-budget"]
+        assert cmd[:2] == ["devtools", "query-memory-budget"]
         assert "--repair" in cmd
         assert "--cleanup" in cmd
         assert "--preview" in cmd
 
     def test_long_haul_lane_uses_campaign_runner(self):
         cmd = build_lane_command(LANES["long-haul-small"])
-        assert cmd[:4] == [sys.executable, "-m", "devtools", "run-benchmark-campaigns"]
+        assert cmd[:2] == ["devtools", "run-benchmark-campaigns"]
         assert "--scale" in cmd
         assert "small" in cmd
 
     def test_live_lane_uses_module_entrypoint(self):
         cmd = build_lane_command(LANES["live-exercises"])
-        assert cmd[:3] == [sys.executable, "-m", "polylogue"]
+        assert cmd[:1] == ["polylogue"]
         assert "audit" in cmd
         assert "--live" in cmd
 
     def test_live_maintenance_preview_lane_uses_doctor_preview(self):
         cmd = build_lane_command(LANES["live-maintenance-preview"])
-        assert cmd[:3] == [sys.executable, "-m", "polylogue"]
+        assert cmd[:1] == ["polylogue"]
         assert "doctor" in cmd
         assert "--repair" in cmd
         assert "--cleanup" in cmd
@@ -203,35 +201,35 @@ class TestCommandConstruction:
 
     def test_live_products_tags_lane_uses_products_entrypoint(self):
         cmd = build_lane_command(LANES["live-products-tags"])
-        assert cmd[:3] == [sys.executable, "-m", "polylogue"]
+        assert cmd[:1] == ["polylogue"]
         assert "products" in cmd
         assert "tags" in cmd
         assert "--json" in cmd
 
     def test_live_products_day_summaries_lane_uses_products_entrypoint(self):
         cmd = build_lane_command(LANES["live-products-day-summaries"])
-        assert cmd[:3] == [sys.executable, "-m", "polylogue"]
+        assert cmd[:1] == ["polylogue"]
         assert "products" in cmd
         assert "day-summaries" in cmd
         assert "--json" in cmd
 
     def test_live_products_analytics_lane_uses_products_entrypoint(self):
         cmd = build_lane_command(LANES["live-products-analytics"])
-        assert cmd[:3] == [sys.executable, "-m", "polylogue"]
+        assert cmd[:1] == ["polylogue"]
         assert "products" in cmd
         assert "analytics" in cmd
         assert "--json" in cmd
 
     def test_live_products_debt_lane_uses_products_entrypoint(self):
         cmd = build_lane_command(LANES["live-products-debt"])
-        assert cmd[:3] == [sys.executable, "-m", "polylogue"]
+        assert cmd[:1] == ["polylogue"]
         assert "products" in cmd
         assert "debt" in cmd
         assert "--json" in cmd
 
     def test_live_products_profiles_evidence_lane_uses_tiered_products_entrypoint(self):
         cmd = build_lane_command(LANES["live-products-profiles-evidence"])
-        assert cmd[:3] == [sys.executable, "-m", "polylogue"]
+        assert cmd[:1] == ["polylogue"]
         assert "products" in cmd
         assert "profiles" in cmd
         assert "evidence" in cmd
@@ -239,7 +237,7 @@ class TestCommandConstruction:
 
     def test_live_products_profiles_inference_lane_uses_tiered_products_entrypoint(self):
         cmd = build_lane_command(LANES["live-products-profiles-inference"])
-        assert cmd[:3] == [sys.executable, "-m", "polylogue"]
+        assert cmd[:1] == ["polylogue"]
         assert "products" in cmd
         assert "profiles" in cmd
         assert "inference" in cmd
@@ -247,14 +245,14 @@ class TestCommandConstruction:
 
     def test_live_products_enrichments_lane_uses_enrichment_entrypoint(self):
         cmd = build_lane_command(LANES["live-products-enrichments"])
-        assert cmd[:3] == [sys.executable, "-m", "polylogue"]
+        assert cmd[:1] == ["polylogue"]
         assert "products" in cmd
         assert "enrichments" in cmd
         assert "--json" in cmd
 
     def test_live_session_product_repair_lane_uses_doctor_repair_target(self):
         cmd = build_lane_command(LANES["live-session-product-repair"])
-        assert cmd[:3] == [sys.executable, "-m", "polylogue"]
+        assert cmd[:1] == ["polylogue"]
         assert "doctor" in cmd
         assert "--repair" in cmd
         assert "--target" in cmd

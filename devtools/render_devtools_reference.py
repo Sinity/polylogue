@@ -6,7 +6,12 @@ import argparse
 import sys
 from pathlib import Path
 
-from devtools.command_catalog import CommandSpec, control_plane_command, grouped_command_specs
+from devtools.command_catalog import (
+    CommandSpec,
+    control_plane_command,
+    featured_command_specs,
+    grouped_command_specs,
+)
 
 MARKER = "devtools-command-catalog"
 
@@ -24,8 +29,24 @@ def _render_table(category: str, commands: list[CommandSpec]) -> list[str]:
     return lines
 
 
+def _render_featured_commands(commands: tuple[CommandSpec, ...]) -> list[str]:
+    lines = [
+        "## Core Loop",
+        "",
+        "These are the repo-maintenance commands worth remembering during normal work:",
+        "",
+    ]
+    for spec in commands:
+        lines.append(f"- `{spec.invocation}`: {spec.use_when or spec.description}")
+        if spec.examples:
+            lines.append(f"  Common forms: {', '.join(f'`{example}`' for example in spec.examples)}.")
+    lines.append("")
+    return lines
+
+
 def build_command_catalog() -> str:
     groups = grouped_command_specs()
+    featured = featured_command_specs()
     lines = [
         "<!-- BEGIN GENERATED: devtools-command-catalog -->",
         "## Command Catalog",
@@ -41,6 +62,8 @@ def build_command_catalog() -> str:
         "```",
         "",
     ]
+    if featured:
+        lines.extend(_render_featured_commands(featured))
     for category, commands in groups.items():
         lines.extend(_render_table(category, commands))
     lines.append("<!-- END GENERATED: devtools-command-catalog -->")

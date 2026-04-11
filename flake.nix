@@ -20,7 +20,11 @@
         };
         python = pkgs.python313;
         devtoolsCli = pkgs.writeShellScriptBin "devtools" ''
-          exec python -m devtools "$@"
+          if [ -z "''${POLYLOGUE_REPO_ROOT:-}" ]; then
+            echo "devtools: POLYLOGUE_REPO_ROOT is not set; enter the project devshell first" >&2
+            exit 1
+          fi
+          exec python "$POLYLOGUE_REPO_ROOT/devtools/__main__.py" "$@"
         '';
 
         # Build polylogue package as an importable library that also exposes the
@@ -126,6 +130,7 @@
             export LD_LIBRARY_PATH=${pkgs.stdenv.cc.cc.lib}/lib:$LD_LIBRARY_PATH
             export HYPOTHESIS_STORAGE_DIRECTORY="$PWD/.cache/hypothesis"
             export PYTHONPYCACHEPREFIX="$PWD/.cache/pycache"
+            export POLYLOGUE_REPO_ROOT="$PWD"
             export POLYLOGUE_NIX_OUT_LINK="$PWD/.local/result"
 
             mkdir -p .cache .local "$PYTHONPYCACHEPREFIX"

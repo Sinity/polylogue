@@ -71,7 +71,7 @@ def build_pytest_command(lane: LaneConfig) -> list[str]:
     Returns:
         List of command parts suitable for subprocess.run().
     """
-    return [sys.executable, "-m", "pytest", "-v"] + lane.pytest_args
+    return ["pytest", "-v", *lane.pytest_args]
 
 
 def parse_lane(lane_name: str) -> LaneConfig:
