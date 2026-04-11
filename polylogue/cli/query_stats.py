@@ -9,6 +9,8 @@ from typing import TYPE_CHECKING
 
 import click
 
+from polylogue.cli.machine_errors import error_no_results
+
 if TYPE_CHECKING:
     from polylogue.cli.types import AppEnv
     from polylogue.lib.filters import ConversationFilter
@@ -90,12 +92,15 @@ async def output_stats_sql(
     output_format: str = "markdown",
 ) -> None:
     """Output statistics using SQL aggregation without full message loading."""
-    has_filters = bool(filter_chain.describe())
+    described_filters = filter_chain.describe()
+    has_filters = bool(described_filters)
 
     if has_filters:
         summaries = await filter_chain.list_summaries() if filter_chain.can_use_summaries() else None
         if summaries is not None:
             if not summaries:
+                if output_format == "json":
+                    error_no_results("No conversations matched.", filters=described_filters).emit(exit_code=2)
                 env.ui.console.print("No conversations matched.")
                 return
             conv_ids = [str(summary.id) for summary in summaries]
@@ -103,6 +108,8 @@ async def output_stats_sql(
         else:
             conv_count = await filter_chain.count()
             if conv_count == 0:
+                if output_format == "json":
+                    error_no_results("No conversations matched.", filters=described_filters).emit(exit_code=2)
                 env.ui.console.print("No conversations matched.")
                 return
             conv_ids = None
@@ -110,6 +117,8 @@ async def output_stats_sql(
         conv_ids = None
         conv_count = await filter_chain.count()
         if conv_count == 0:
+            if output_format == "json":
+                error_no_results("No conversations in archive.").emit(exit_code=2)
             env.ui.console.print("No conversations in archive.")
             return
 

@@ -1077,7 +1077,7 @@ def test_async_execute_query_summary_list_no_results_contract() -> None:
         asyncio.run(async_execute_query(env, {}))
 
     assert exc_info.value.code == 2
-    mock_no_results.assert_called_once_with(env, plan.selection)
+    mock_no_results.assert_called_once_with(env, {})
 
 
 def test_async_execute_query_query_spec_error_contract() -> None:
@@ -1156,6 +1156,20 @@ def test_no_results_contract(params, expected_lines) -> None:
     observed_lines = [call.args[0] for call in mock_echo.call_args_list if call.args]
     assert observed_lines == expected_lines
     assert all(call.kwargs.get("err") is True for call in mock_echo.call_args_list)
+
+
+def test_no_results_contract_json_emits_machine_envelope(capsys) -> None:
+    env = _make_env()
+
+    with pytest.raises(SystemExit) as exc_info:
+        no_results(env, {"output_format": "json", "provider": "claude-ai"})
+
+    assert exc_info.value.code == 2
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "error"
+    assert payload["code"] == "no_results"
+    assert payload["message"] == "No conversations matched filters."
+    assert payload["details"]["filters"] == ["provider: claude-ai"]
 
 
 @pytest.mark.parametrize(
@@ -1264,6 +1278,45 @@ async def test_output_stats_sql_empty_paths_contract(
     await output_stats_sql(env, filter_chain, repo)
 
     env.ui.console.print.assert_called_once_with(expected_message)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("described", "can_use_summaries", "expected_message", "expected_filters"),
+    [
+        (["provider=claude-ai"], True, "No conversations matched.", ["provider=claude-ai"]),
+        ([], False, "No conversations in archive.", None),
+    ],
+)
+async def test_output_stats_sql_empty_paths_json_contract(
+    described: list[str],
+    can_use_summaries: bool,
+    expected_message: str,
+    expected_filters: list[str] | None,
+    capsys,
+) -> None:
+    env = _make_env()
+    repo = MagicMock()
+    repo.queries.aggregate_message_stats = AsyncMock()
+
+    filter_chain = MagicMock()
+    filter_chain.describe.return_value = described
+    filter_chain.can_use_summaries.return_value = can_use_summaries
+    filter_chain.list_summaries = AsyncMock(return_value=[])
+    filter_chain.count = AsyncMock(return_value=0)
+
+    with pytest.raises(SystemExit) as exc_info:
+        await output_stats_sql(env, filter_chain, repo, output_format="json")
+
+    assert exc_info.value.code == 2
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "error"
+    assert payload["code"] == "no_results"
+    assert payload["message"] == expected_message
+    if expected_filters is None:
+        assert "details" not in payload
+    else:
+        assert payload["details"]["filters"] == expected_filters
 
 
 @pytest.mark.asyncio

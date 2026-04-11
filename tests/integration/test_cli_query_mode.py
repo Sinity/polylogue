@@ -50,6 +50,30 @@ def test_cli_query_summary_list_json_route_returns_structured_rows(tmp_path):
     assert rows[0]["title"] == "List Route"
 
 
+def test_cli_query_summary_list_json_no_results_still_returns_json(tmp_path):
+    workspace = setup_isolated_workspace(tmp_path)
+
+    result = run_cli(["--plain", "searchable", "list", "-f", "json"], env=workspace["env"], cwd=tmp_path)
+
+    assert result.exit_code == 2, result.output
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "error"
+    assert payload["code"] == "no_results"
+    assert payload["message"] == "No conversations matched."
+
+
+def test_cli_query_stats_json_empty_archive_still_returns_json(tmp_path):
+    workspace = setup_isolated_workspace(tmp_path)
+
+    result = run_cli(["--plain", "stats", "-f", "json"], env=workspace["env"], cwd=tmp_path)
+
+    assert result.exit_code == 2, result.output
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "error"
+    assert payload["code"] == "no_results"
+    assert payload["message"] == "No conversations in archive."
+
+
 def test_cli_query_stream_route_emits_json_lines_header_messages_footer(tmp_path):
     workspace = setup_isolated_workspace(tmp_path)
     inbox = workspace["paths"]["inbox"]
