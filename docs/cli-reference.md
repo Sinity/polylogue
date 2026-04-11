@@ -179,7 +179,8 @@ Usage: polylogue open [OPTIONS]
   Open matched conversation in browser/editor.
 
 Options:
-  -h, --help  Show this message and exit.
+  --print-path  Print the matched render path instead of opening it
+  -h, --help    Show this message and exit.
 ```
 
 ## Delete Verb

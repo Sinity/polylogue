@@ -820,22 +820,53 @@ def test_copy_to_clipboard_contract(side_effects, expect_console: bool, expect_e
 
 
 @pytest.mark.parametrize(
-    ("results", "render_root_exists", "html_exists", "latest_exists", "expected_exit", "expected_open_name"),
+    (
+        "results",
+        "params",
+        "render_root_exists",
+        "html_exists",
+        "latest_exists",
+        "expected_exit",
+        "expected_open_name",
+        "expected_stdout",
+    ),
     [
-        ([], True, False, False, 2, None),
-        ([_make_conv(id="conv-output-1234")], False, False, False, 1, None),
-        ([_make_conv(id="conv-output-1234")], True, True, False, None, "conversation.html"),
-        ([_make_conv(id="conv-output-1234")], True, False, True, None, "fallback.html"),
+        ([], {}, True, False, False, 2, None, None),
+        ([_make_conv(id="conv-output-1234")], {}, False, False, False, 1, None, None),
+        ([_make_conv(id="conv-output-1234")], {}, True, True, False, None, "conversation.html", None),
+        ([_make_conv(id="conv-output-1234")], {}, True, False, True, None, "fallback.html", None),
+        (
+            [_make_conv(id="conv-output-1234")],
+            {"print_path": True},
+            True,
+            True,
+            False,
+            None,
+            None,
+            "conversation.html",
+        ),
+        (
+            [_make_conv(id="conv-output-1234")],
+            {"print_path": True, "output_format": "json"},
+            True,
+            True,
+            False,
+            None,
+            None,
+            '"path":',
+        ),
     ],
-    ids=["no-results", "no-render-root", "specific-render", "latest-fallback"],
+    ids=["no-results", "no-render-root", "specific-render", "latest-fallback", "print-path", "print-path-json"],
 )
 def test_open_result_contract(
     results,
+    params: dict[str, object],
     render_root_exists: bool,
     html_exists: bool,
     latest_exists: bool,
     expected_exit: int | None,
     expected_open_name: str | None,
+    expected_stdout: str | None,
     tmp_path: Path,
 ) -> None:
     from polylogue.cli.query_output import _open_result
@@ -860,15 +891,21 @@ def test_open_result_contract(
     ):
         if expected_exit is not None:
             with pytest.raises(SystemExit) as exc_info:
-                _open_result(env, results, {})
+                _open_result(env, results, params)
             assert exc_info.value.code == expected_exit
             mock_open.assert_not_called()
         else:
-            _open_result(env, results, {})
-            opened = mock_open.call_args.args[0]
-            assert expected_open_name in opened
-            env.ui.console.print.assert_called_once()
-            mock_echo.assert_not_called()
+            _open_result(env, results, params)
+            if expected_stdout is not None:
+                mock_open.assert_not_called()
+                env.ui.console.print.assert_not_called()
+                echoed = "\n".join(call.args[0] for call in mock_echo.call_args_list if call.args)
+                assert expected_stdout in echoed
+            else:
+                opened = mock_open.call_args.args[0]
+                assert expected_open_name in opened
+                env.ui.console.print.assert_called_once()
+                mock_echo.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

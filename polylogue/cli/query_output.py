@@ -248,6 +248,14 @@ def open_result(
         click.echo("Run 'polylogue run' to render conversations.", err=True)
         raise SystemExit(1)
 
+    if bool(params.get("print_path")):
+        output_format = str(params.get("output_format") or "markdown")
+        if output_format == "json":
+            click.echo(json.dumps({"path": str(render_file)}, indent=2))
+        else:
+            click.echo(str(render_file))
+        return
+
     webbrowser.open(f"file://{render_file}")
     env.ui.console.print(f"Opened: {render_file}")
 
