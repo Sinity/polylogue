@@ -130,13 +130,13 @@ Campaign outputs live under [`.local/README.md`](../.local/README.md), not in
 tracked docs trees.
 
 Use `devtools build-package` when you want the standard local Nix build output
-without spraying a `result` symlink into the repo root.
+with its out-link kept under `.local/result`.
 
 ## Local State Layout
 
 - [`.cache/README.md`](../.cache/README.md): disposable cache state
 - [`.local/README.md`](../.local/README.md): untracked local outputs
 - `.venv/` and `.direnv/`: kept at the repo root because their tooling expects those locations
-- `.local/result`: preferred local Nix build out-link; a top-level `result` symlink is just Nix's default out-link, not part of the intended repo layout
+- `.local/result`: preferred repo-local out-link for `devtools build-package`; a top-level `result` symlink is just Nix's default ad-hoc out-link
 
 Keep new repo-local outputs in one of those hidden roots.
