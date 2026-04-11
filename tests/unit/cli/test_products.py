@@ -122,6 +122,17 @@ def test_products_profiles_json(cli_workspace):
     assert "provenance" in first
 
 
+def test_products_profiles_format_json_alias(cli_workspace):
+    _seed_products(cli_workspace)
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["products", "profiles", "--format", "json"], catch_exceptions=False)
+
+    assert result.exit_code == 0
+    payload = _extract_json(result.output)
+    assert payload["count"] == 2
+
+
 def test_products_enrichments_json(cli_workspace):
     _seed_products(cli_workspace)
 
