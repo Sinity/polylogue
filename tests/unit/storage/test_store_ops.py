@@ -88,7 +88,7 @@ async def test_aggregate_message_stats_reports_role_counts_and_words(tmp_path: P
         .provider("chatgpt")
         .add_message("m-user-a", role="user", text="hello world")
         .add_message("m-assistant-a", role="assistant", text="answer words here")
-        .add_attachment(message_id="m-assistant-a", file_name="spec.pdf")
+        .add_attachment(message_id="m-assistant-a", path="spec.pdf")
         .save()
     )
     (
