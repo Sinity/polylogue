@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any, NoReturn
 
 import click
 
+from polylogue.cli.machine_errors import error_no_results
 from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.types import AppEnv
 from polylogue.lib.query_spec import ConversationQuerySpec, QuerySpecError
@@ -47,6 +48,10 @@ def no_results(
 ) -> NoReturn:
     """Print a helpful no-results message and exit."""
     filters = describe_query_filters(params)
+    output_format = params.get("output_format") if isinstance(params, Mapping) else None
+    if output_format == "json":
+        message = "No conversations matched filters." if filters else "No conversations matched."
+        error_no_results(message, filters=filters).emit(exit_code=exit_code)
     if filters:
         click.echo("No conversations matched filters:", err=True)
         for item in filters:
@@ -479,7 +484,7 @@ async def async_execute_query(env: AppEnv, params: dict[str, Any]) -> None:
     if route == QueryRoute.SUMMARY_LIST:
         summary_results = await filter_chain.list_summaries()
         if not summary_results:
-            no_results(env, plan.selection)
+            no_results(env, params)
         await _query_output._output_summary_list(env, summary_results, params, repo)
         return
 
