@@ -17,7 +17,7 @@ from polylogue.cli.click_command_registration import (
     register_root_commands,
 )
 from polylogue.cli.click_option_groups import apply_query_mode_options
-from polylogue.cli.formatting import announce_plain_mode, plain_forced_by_env, should_use_plain
+from polylogue.cli.formatting import should_use_plain
 from polylogue.cli.machine_main import extract_option as _extract_option
 from polylogue.cli.machine_main import run_machine_entry
 from polylogue.cli.query import QueryFirstGroupBase, handle_query_mode
@@ -146,10 +146,6 @@ def cli(
     use_plain = should_use_plain(plain=plain)
     env = AppEnv(ui=create_ui(use_plain))
     ctx.obj = env
-
-    # Announce plain mode if auto-detected (not explicitly requested)
-    if use_plain and not plain and not plain_forced_by_env():
-        announce_plain_mode()
 
 
 register_root_commands(cli)
