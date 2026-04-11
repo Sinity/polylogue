@@ -197,12 +197,13 @@ def render_motd(cwd: Path, *, verify_generated: bool = False, stream: TextIO = s
 
     label_width = len("generated")
     rows = [
-        ("worktree", style_worktree(summarize_worktree(changes), stream=stream)),
-        ("generated", style_generated(summarize_generated_surfaces(generated_surfaces), stream=stream)),
-        ("head", style(str(snapshot["last_commit"]), ANSI_DIM, stream=stream)),
-        ("run", style(str(commands["render_all_check"]), ANSI_GREEN, stream=stream)),
-        ("test", style(str(commands["test_baseline"]), ANSI_GREEN, stream=stream)),
+        ("tree", style_worktree(summarize_worktree(changes))),
+        ("docs", style_generated(summarize_generated_surfaces(generated_surfaces))),
+        ("recent", str(snapshot["last_commit"])),
+        ("next", str(commands["render_all_check"])),
+        ("", str(commands["test_baseline"])),
     ]
+    indent = " " * (label_width + 2)
 
     header = "  ".join(
         [
