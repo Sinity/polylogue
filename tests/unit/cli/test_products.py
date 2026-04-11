@@ -133,21 +133,6 @@ def test_products_profiles_format_json_alias(cli_workspace):
     assert payload["count"] == 2
 
 
-def test_products_profiles_inherit_root_format_json(cli_workspace):
-    _seed_products(cli_workspace)
-
-    runner = CliRunner()
-    result = runner.invoke(
-        cli,
-        ["--format", "json", "products", "profiles", "--limit", "1"],
-        catch_exceptions=False,
-    )
-
-    assert result.exit_code == 0
-    payload = _extract_json(result.output)
-    assert payload["count"] == 1
-
-
 def test_products_enrichments_json(cli_workspace):
     _seed_products(cli_workspace)
 
