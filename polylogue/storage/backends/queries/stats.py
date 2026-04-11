@@ -20,7 +20,6 @@ async def aggregate_message_stats(
     conversation_ids: list[str] | None = None,
 ) -> dict[str, int]:
     """Compute aggregate message statistics via SQL."""
-
     async def _message_aggregate(where_clause: str = "", params: tuple[object, ...] = ()) -> dict[str, int]:
         row = await (
             await conn.execute(
@@ -83,8 +82,7 @@ async def aggregate_message_stats(
 
         result = {
             **message_stats,
-            "attachment_refs": att_row["attachment_ref_count"] or 0,
-            "distinct_attachments": att_row["distinct_attachment_count"] or 0,
+            "attachments": att_row["cnt"] or 0,
             "min_sort_key": date_row["min_sk"],
             "max_sort_key": date_row["max_sk"],
             "providers": providers,
@@ -117,8 +115,7 @@ async def aggregate_message_stats(
 
     return {
         **message_stats,
-        "attachment_refs": att_row["attachment_ref_count"] or 0,
-        "distinct_attachments": att_row["distinct_attachment_count"] or 0,
+        "attachments": att_cnt,
         "min_sort_key": date_row["min_sk"],
         "max_sort_key": date_row["max_sk"],
         "providers": providers,

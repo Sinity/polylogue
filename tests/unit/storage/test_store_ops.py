@@ -88,7 +88,7 @@ async def test_aggregate_message_stats_reports_role_counts_and_words(tmp_path: P
         .provider("chatgpt")
         .add_message("m-user-a", role="user", text="hello world")
         .add_message("m-assistant-a", role="assistant", text="answer words here")
-        .add_attachment(message_id="m-assistant-a", path="spec.pdf")
+        .add_attachment(message_id="m-assistant-a", file_name="spec.pdf")
         .save()
     )
     (
@@ -111,8 +111,7 @@ async def test_aggregate_message_stats_reports_role_counts_and_words(tmp_path: P
     assert unfiltered["assistant"] == 1
     assert unfiltered["system"] == 1
     assert unfiltered["words_approx"] > 0
-    assert unfiltered["attachment_refs"] == 1
-    assert unfiltered["distinct_attachments"] == 1
+    assert unfiltered["attachments"] == 1
     assert unfiltered["providers"] == {"chatgpt": 1, "codex": 1}
 
     assert filtered["total"] == 2
@@ -120,8 +119,7 @@ async def test_aggregate_message_stats_reports_role_counts_and_words(tmp_path: P
     assert filtered["assistant"] == 1
     assert filtered["system"] == 0
     assert filtered["words_approx"] > 0
-    assert filtered["attachment_refs"] == 1
-    assert filtered["distinct_attachments"] == 1
+    assert filtered["attachments"] == 1
     assert filtered["providers"] == {"chatgpt": 1}
 
 
