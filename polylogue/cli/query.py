@@ -303,6 +303,35 @@ def _iter_option_values(args: list[str], start: int, nargs: int) -> Iterable[str
             yield args[start + offset]
 
 
+def _command_option_names(command: click.Command) -> frozenset[str]:
+    options: set[str] = set()
+    for param in command.params:
+        if isinstance(param, click.Option):
+            options.update(param.opts)
+            options.update(param.secondary_opts)
+    return frozenset(options)
+
+
+def _find_root_option_after_verb(
+    group: click.Group,
+    verb: str,
+    trailing_args: list[str],
+) -> str | None:
+    root_option_names = frozenset(_option_arity(group)) | _ROOT_GLOBAL_OPTIONS
+    command = group.commands.get(verb)
+    command_option_names = _command_option_names(command) if command is not None else frozenset()
+    for token in trailing_args:
+        if not token.startswith("-"):
+            continue
+        for option in root_option_names:
+            if not _matches_option(option, token):
+                continue
+            if option in command_option_names:
+                break
+            return option
+    return None
+
+
 def _split_query_mode_args(group: click.Group, args: list[str]) -> tuple[list[str], tuple[str, ...], bool]:
     from polylogue.cli.query_verbs import VERB_NAMES
 
@@ -330,6 +359,11 @@ def _split_query_mode_args(group: click.Group, args: list[str]) -> tuple[list[st
             return args, (), True
         # Verb commands recognized at any position (even after filters/query terms)
         if arg in VERB_NAMES:
+            misplaced_option = _find_root_option_after_verb(group, arg, list(args[index + 1 :]))
+            if misplaced_option is not None:
+                raise click.UsageError(
+                    f"Query filters and root output flags must appear before the verb. Move {misplaced_option} before `{arg}`."
+                )
             verb_args = option_args + [arg] + list(args[index + 1 :])
             return verb_args, tuple(query_terms), True
         query_terms.append(arg)
