@@ -339,15 +339,14 @@ class TestJsonDeterminism:
 
     @staticmethod
     def _normalize_check_result(data: dict) -> dict:
-        """Remove cache-state fields that legitimately vary between runs.
+        """Remove provenance fields that legitimately vary between runs.
 
-        The health system may serve live or cached reports. These provenance fields
-        are runtime artifacts, not output determinism issues.
+        The health system reports live provenance. That provenance is still a
+        runtime artifact, not a determinism issue.
         """
         result = dict(data.get("result", data))
         provenance = dict(result.get("provenance") or {})
         provenance.pop("source", None)
-        provenance.pop("cache_age_seconds", None)
         result["provenance"] = provenance
         return {**data, "result": result}
 
