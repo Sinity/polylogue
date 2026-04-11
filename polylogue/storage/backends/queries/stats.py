@@ -20,6 +20,30 @@ async def aggregate_message_stats(
     conversation_ids: list[str] | None = None,
 ) -> dict[str, int]:
     """Compute aggregate message statistics via SQL."""
+    async def _message_aggregate(where_clause: str = "", params: tuple[object, ...] = ()) -> dict[str, int]:
+        row = await (
+            await conn.execute(
+                f"""
+                SELECT
+                    COUNT(*) AS total,
+                    SUM(CASE WHEN role = 'user' THEN 1 ELSE 0 END) AS user_count,
+                    SUM(CASE WHEN role = 'assistant' THEN 1 ELSE 0 END) AS assistant_count,
+                    SUM(CASE WHEN role = 'system' THEN 1 ELSE 0 END) AS system_count,
+                    SUM(word_count) AS words_approx
+                FROM messages
+                {where_clause}
+                """,
+                params,
+            )
+        ).fetchone()
+        return {
+            "total": row["total"] or 0,
+            "user": row["user_count"] or 0,
+            "assistant": row["assistant_count"] or 0,
+            "system": row["system_count"] or 0,
+            "words_approx": row["words_approx"] or 0,
+        }
+
     if conversation_ids is not None:
         await conn.execute("CREATE TEMP TABLE IF NOT EXISTS _stat_ids (cid TEXT PRIMARY KEY)")
         await conn.execute("DELETE FROM _stat_ids")
@@ -28,16 +52,7 @@ async def aggregate_message_stats(
             [(cid,) for cid in conversation_ids],
         )
 
-        msg_row = await (
-            await conn.execute("""
-            SELECT SUM(cnt) FROM (
-                SELECT COUNT(*) as cnt FROM messages
-                WHERE conversation_id IN (SELECT cid FROM _stat_ids)
-                GROUP BY conversation_id
-            )
-        """)
-        ).fetchone()
-        msg_total = msg_row[0] or 0
+        message_stats = await _message_aggregate("WHERE conversation_id IN (SELECT cid FROM _stat_ids)")
 
         date_row = await (
             await conn.execute("""
@@ -62,35 +77,18 @@ async def aggregate_message_stats(
         """)
         ).fetchone()
 
-        await conn.execute("DROP TABLE IF EXISTS _stat_ids")
-
-        return {
-            "total": msg_total,
-            "user": 0,
-            "assistant": 0,
-            "system": 0,
-            "words_approx": (
-                (
-                    await (
-                        await conn.execute(
-                            """
-                            SELECT SUM(word_count) as words_approx
-                            FROM conversation_stats
-                            WHERE conversation_id IN (SELECT cid FROM _stat_ids)
-                            """
-                        )
-                    ).fetchone()
-                )["words_approx"]
-                or 0
-            ),
+        result = {
+            **message_stats,
             "attachments": att_row["cnt"] or 0,
             "min_sort_key": date_row["min_sk"],
             "max_sort_key": date_row["max_sk"],
             "providers": providers,
         }
+        await conn.execute("DROP TABLE IF EXISTS _stat_ids")
+        return result
 
     # Unfiltered path
-    msg_total = (await (await conn.execute("SELECT COUNT(*) FROM messages")).fetchone())[0] or 0
+    message_stats = await _message_aggregate()
 
     date_row = await (
         await conn.execute("SELECT MIN(sort_key) as min_sk, MAX(sort_key) as max_sk FROM conversations")
@@ -106,16 +104,7 @@ async def aggregate_message_stats(
     att_cnt = (await (await conn.execute("SELECT COUNT(*) FROM attachment_refs")).fetchone())[0] or 0
 
     return {
-        "total": msg_total,
-        "user": 0,
-        "assistant": 0,
-        "system": 0,
-        "words_approx": (
-            (await (await conn.execute("SELECT SUM(word_count) as words_approx FROM conversation_stats")).fetchone())[
-                "words_approx"
-            ]
-            or 0
-        ),
+        **message_stats,
         "attachments": att_cnt,
         "min_sort_key": date_row["min_sk"],
         "max_sort_key": date_row["max_sk"],
