@@ -265,8 +265,8 @@ def run_archive_health(config: Any, *, deep: bool = False) -> HealthReport:
     return HealthReport(checks=checks, derived_models=derived_statuses, archive_debt=archive_debt)
 
 
-def get_health(config: Any, *, deep: bool = False, use_cached: bool = False) -> HealthReport:
-    """Get an archive health report. ``use_cached`` is accepted but ignored (caching layer removed)."""
+def get_health(config: Any, *, deep: bool = False) -> HealthReport:
+    """Get a live archive health report."""
     return run_archive_health(config, deep=deep)
 
 
@@ -516,7 +516,7 @@ def _build_schema_health_checks() -> list[HealthCheck]:
 # ---------------------------------------------------------------------------
 
 
-def cached_health_summary(archive_root: Any) -> str:
+def quick_health_summary(archive_root: Any) -> str:
     """Return a one-line health summary without running a full health check.
 
     Reads basic DB stats (conversation count, schema version) for a cheap
@@ -542,7 +542,7 @@ __all__ = [
     "HealthCheck",
     "HealthReport",
     "VerifyStatus",
-    "cached_health_summary",
+    "quick_health_summary",
     "get_health",
     "run_archive_health",
     "run_runtime_health",
