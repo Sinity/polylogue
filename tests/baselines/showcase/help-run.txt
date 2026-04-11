@@ -1,5 +1,4 @@
-Usage: python -m polylogue run [OPTIONS] COMMAND1 [ARGS]... [COMMAND2
-                               [ARGS]...]...
+Usage: polylogue run [OPTIONS] COMMAND1 [ARGS]... [COMMAND2 [ARGS]...]...
 
   Run pipeline stages on configured sources.
 

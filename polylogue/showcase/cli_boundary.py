@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
-import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -29,8 +29,11 @@ def invoke_showcase_cli(
     cwd: Path | None = None,
     timeout: float = 60.0,
 ) -> ShowcaseCliResult:
-    """Run the real module entrypoint for showcase verification."""
-    command = [sys.executable, "-m", "polylogue", *args]
+    """Run the real public CLI entrypoint for showcase verification."""
+    cli_path = shutil.which("polylogue")
+    if cli_path is None:
+        raise RuntimeError("showcase verification requires `polylogue` on PATH")
+    command = [cli_path, *args]
     command_env = dict(os.environ)
     if env:
         command_env.update(env)

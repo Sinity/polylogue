@@ -1,4 +1,4 @@
-Usage: python -m polylogue list [OPTIONS]
+Usage: polylogue list [OPTIONS]
 
   List matched conversations.
 
