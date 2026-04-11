@@ -11,6 +11,7 @@ import re
 import subprocess
 import sys
 from pathlib import Path
+from typing import TextIO
 
 from devtools.command_catalog import control_plane_command
 from devtools.generated_surfaces import GENERATED_SURFACES
@@ -155,31 +156,31 @@ def summarize_generated_surfaces(generated_surfaces: dict[str, object]) -> str:
     return f"{fresh}/{total} generated clean · stale: {', '.join(stale)}"
 
 
-def use_color() -> bool:
-    return sys.stdout.isatty() and os.environ.get("NO_COLOR") is None and os.environ.get("TERM") not in {None, "dumb"}
+def use_color(stream: TextIO = sys.stdout) -> bool:
+    return stream.isatty() and os.environ.get("NO_COLOR") is None and os.environ.get("TERM") not in {None, "dumb"}
 
 
-def style(text: str, *codes: str) -> str:
-    if not use_color() or not codes:
+def style(text: str, *codes: str, stream: TextIO = sys.stdout) -> str:
+    if not use_color(stream) or not codes:
         return text
     return "".join(codes) + text + ANSI_RESET
 
 
-def style_worktree(summary: str) -> str:
+def style_worktree(summary: str, *, stream: TextIO) -> str:
     if summary == "clean":
-        return style(summary, ANSI_GREEN)
-    return style(summary, ANSI_YELLOW, ANSI_BOLD)
+        return style(summary, ANSI_GREEN, stream=stream)
+    return style(summary, ANSI_YELLOW, ANSI_BOLD, stream=stream)
 
 
-def style_generated(summary: str) -> str:
+def style_generated(summary: str, *, stream: TextIO) -> str:
     if "stale:" in summary:
-        return style(summary, ANSI_RED, ANSI_BOLD)
+        return style(summary, ANSI_RED, ANSI_BOLD, stream=stream)
     if "unchecked" in summary:
-        return style(summary, ANSI_YELLOW)
-    return style(summary, ANSI_GREEN)
+        return style(summary, ANSI_YELLOW, stream=stream)
+    return style(summary, ANSI_GREEN, stream=stream)
 
 
-def render_motd(cwd: Path, *, verify_generated: bool = False) -> str:
+def render_motd(cwd: Path, *, verify_generated: bool = False, stream: TextIO = sys.stdout) -> str:
     snapshot = status_snapshot(cwd, verify_generated=verify_generated)
     changes = snapshot["changes"]
     assert isinstance(changes, dict)
@@ -196,23 +197,23 @@ def render_motd(cwd: Path, *, verify_generated: bool = False) -> str:
 
     label_width = len("generated")
     rows = [
-        ("worktree", style_worktree(summarize_worktree(changes))),
-        ("generated", style_generated(summarize_generated_surfaces(generated_surfaces))),
-        ("head", style(str(snapshot["last_commit"]), ANSI_DIM)),
-        ("run", style(str(commands["render_all_check"]), ANSI_GREEN)),
-        ("test", style(str(commands["test_baseline"]), ANSI_GREEN)),
+        ("worktree", style_worktree(summarize_worktree(changes), stream=stream)),
+        ("generated", style_generated(summarize_generated_surfaces(generated_surfaces), stream=stream)),
+        ("head", style(str(snapshot["last_commit"]), ANSI_DIM, stream=stream)),
+        ("run", style(str(commands["render_all_check"]), ANSI_GREEN, stream=stream)),
+        ("test", style(str(commands["test_baseline"]), ANSI_GREEN, stream=stream)),
     ]
 
     header = "  ".join(
         [
-            style("Polylogue", ANSI_BOLD, ANSI_CYAN),
-            style(str(snapshot["branch"]), ANSI_BOLD),
-            style(display_version, ANSI_DIM if not dirty else ANSI_YELLOW),
+            style("Polylogue", ANSI_BOLD, ANSI_CYAN, stream=stream),
+            style(str(snapshot["branch"]), ANSI_BOLD, stream=stream),
+            style(display_version, ANSI_DIM if not dirty else ANSI_YELLOW, stream=stream),
         ]
     )
     lines = [header]
     for label, value in rows:
-        lines.append(f"{style(label.ljust(label_width), ANSI_CYAN)}  {value}")
+        lines.append(f"{style(label.ljust(label_width), ANSI_CYAN, stream=stream)}  {value}")
     return "\n".join(lines)
 
 
@@ -220,6 +221,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Render the Polylogue devshell MOTD.")
     parser.add_argument("--cwd", default=".", help="Repository root (default: current directory)")
     parser.add_argument("--json", action="store_true", help="Emit machine-readable status instead of the MOTD.")
+    parser.add_argument("--stderr", action="store_true", help="Write the MOTD to stderr instead of stdout.")
     parser.add_argument(
         "--verify-generated",
         action="store_true",
@@ -233,14 +235,15 @@ def main(argv: list[str] | None = None) -> int:
             json.dump(status_snapshot(cwd, verify_generated=args.verify_generated), sys.stdout, indent=2)
             sys.stdout.write("\n")
             return 0
-        rendered = render_motd(cwd, verify_generated=args.verify_generated)
+        output_stream = sys.stderr if args.stderr else sys.stdout
+        rendered = render_motd(cwd, verify_generated=args.verify_generated, stream=output_stream)
     except FileNotFoundError as exc:
         print(f"devtools status: missing file: {exc.filename}", file=sys.stderr)
         return 1
 
-    sys.stdout.write(rendered)
+    output_stream.write(rendered)
     if os.environ.get("TERM"):
-        sys.stdout.write("\n")
+        output_stream.write("\n")
     return 0
 
 

@@ -174,7 +174,7 @@
             fi
 
             if [[ $- == *i* ]]; then
-              devtools status || true
+              devtools status --stderr || true
               export POLYLOGUE_MOTD_RENDERED=1
             fi
           '';
