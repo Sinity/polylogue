@@ -107,9 +107,6 @@ def _runtime_only_requested(options: CheckCommandOptions) -> bool:
 
 def run_check_workflow(env: AppEnv, options: CheckCommandOptions) -> CheckCommandResult:
     config = load_effective_config(env)
-    if _runtime_only_requested(options):
-        return CheckCommandResult(report=run_runtime_health(config))
-
     report = get_health(config, deep=options.deep)
     result = CheckCommandResult(report=report)
 
