@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -21,13 +22,22 @@ GENERATED_NOTE = (
 )
 
 
-def _render_table(entries: tuple[DocsEntry, ...]) -> str:
+def _rebase_path(path: str, *, from_dir: str) -> str:
+    target = Path(path)
+    if not from_dir:
+        return target.as_posix()
+    if target.is_relative_to(from_dir):
+        return target.relative_to(from_dir).as_posix()
+    return Path(os.path.relpath(target.as_posix(), from_dir)).as_posix()
+
+
+def _render_table(entries: tuple[DocsEntry, ...], *, from_dir: str = "") -> str:
     lines = [
         "| Document | Description |",
         "|----------|-------------|",
     ]
     for entry in entries:
-        lines.append(f"| [{entry.title}]({entry.path}) | {entry.description} |")
+        lines.append(f"| [{entry.title}]({_rebase_path(entry.path, from_dir=from_dir)}) | {entry.description} |")
     return "\n".join(lines)
 
 
@@ -50,11 +60,11 @@ def build_docs_readme(
             "",
             "## Core References",
             "",
-            _render_table(docs_entries),
+            _render_table(docs_entries, from_dir="docs"),
             "",
             "## Repository Guides",
             "",
-            _render_table(repo_entries),
+            _render_table(repo_entries, from_dir="docs"),
             "",
         ]
     )
