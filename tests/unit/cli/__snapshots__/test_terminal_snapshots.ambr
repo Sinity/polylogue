@@ -2,9 +2,7 @@
 # name: TestCommandOutputs.test_check_output_snapshot
   '''
   Usage: polylogue doctor [OPTIONS]
-
     Health check with optional maintenance and cleanup previews.
-
   Options:
     --json                          Output as JSON
     -v, --verbose                   Show breakdown by provider
@@ -64,9 +62,7 @@
 # name: TestCommandOutputs.test_run_help_output_snapshot
   '''
   Usage: polylogue run [OPTIONS] COMMAND1 [ARGS]... [COMMAND2 [ARGS]...]...
-
     Run pipeline stages on configured sources.
-
   Options:
     --preview       Preview work without writing
     --source TEXT   Configured source name (repeatable). Accepts 'last' for the
@@ -79,7 +75,6 @@
     --reparse       Force re-parsing of all raw conversations (clears parse
                     tracking)
     -h, --help      Show this message and exit.
-
   Commands:
     acquire      Capture raw payloads only.
     all          Run the full pipeline.
@@ -95,140 +90,18 @@
 # ---
 # name: TestErrorOutput.test_invalid_command_error_output
   '''
-  Traceback (most recent call last):
-    File "<PATH>", line 14, in run_coro
-  utine_sync
-      asyncio.get_running_loop()
-      <HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME>^^
-  RuntimeError: no running event loop
-
-  During handling of the above exception, another exception occurred:
-
-  Traceback (most recent call last):
-    File "<string>", line 1, in <module>
-      import runpy, sys; sys.argv = ['polylogue', *sys.argv[1:]]; runpy.run_module
-  ('polylogue', run_name='__main__')
-                                                                  <HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME>
-  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-    File "<frozen runpy>", line 229, in run_module
-    File "<frozen runpy>", line 88, in _run_code
-    File "<PATH>", line 12, in <module>
-      main()
-      <HOME><HOME><HOME><HOME>^^
-    File "<PATH>", line 8, in main
-      cli_main()
-      <HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME>^^
-    File "<PATH>", line 170, in main
-      run_machine_entry(cli, sys.argv[1:])
-      <HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME>^^^^^^^^^^^^^^^^^^^
-    File "<PATH>", line 31, in run
-  _machine_entry
-      cli()
-      <HOME><HOME><HOME>^^
-    File "<PATH>
-  y", line 1485, in __call__
-      return self.main(*args, **kwargs)
-             <HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME>^^^^^^^^^^^^^^^^^
-    File "<PATH>
-  y", line 1406, in main
-      rv = self.invoke(ctx)
-    File "<PATH>", line 372, in invoke
-      self.handle_default_mode(ctx)
-      <HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME>^^^^^
-    File "<PATH>", line 35, in handle
-  _default_mode
-      _handle_query_mode(ctx)
-      <HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME>^^^^^
-    File "<PATH>", line 40, in _handl
-  e_query_mode
-      handle_query_mode(ctx, show_stats=_show_stats)
-      <HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME>^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-    File "<PATH>", line 349, in handle_qu
-  ery_mode
-      execute_query(env, request.query_params())
-      <HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME>^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-    File "<PATH>", line 398, in execute_q
-  uery
-      run_coroutine_sync(async_execute_query(env, params))
-      <HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME>^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-    File "<PATH>", line 16, in run_coro
-  utine_sync
-      return asyncio.run(coro)
-             <HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME>^^^^^^
-    File "<PATH>
-  13<PATH>", line 195, in run
-      return runner.run(main)
-             <HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME>^^^^^^
-    File "<PATH>
-  13<PATH>", line 118, in run
-      return self._loop.run_until_complete(task)
-             <HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME>^^^^^^
-    File "<PATH>
-  13<PATH>", line 725, in run_until_complete
-      return future.result()
-             <HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME>^^
-    File "<PATH>", line 577, in async_exe
-  cute_query
-      results = await filter_chain.list()
-                ^^^^^^^^^^^^^^^^^^^^^^^^^
-    File "<PATH>", line 83, in list
-      return await list_for_plan(self._plan, self._repo)
-             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-    File "<PATH>", line 30
-  , in list_for_plan
-      candidates, sql_pushed = await fetch_candidates(plan, repository, summaries=
-  False)
-                               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  ^^^^^^
-    File "<PATH>", l
-  ine 184, in fetch_candidates
-      return await repository.list_by_query(request), sql_pushed
-             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-    File "<PATH>
-  ons.py", line 106, in list_by_query
-      conv_records = await self.queries.list_conversations(query)
-                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-    File "<PATH>
-  py", line 33, in list_conversations
-      async with self._connection_factory() as conn:
-                 <HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME><HOME>^^
-    File "<PATH>
-  13<PATH>", line 214, in __aenter__
-      return await anext(self.gen)
-             ^^^^^^^^^^^^^^^^^^^^^
-    File "<PATH>", li
-  ne 292, in _get_connection
-      await backend._ensure_schema_once()
-    File "<PATH>", li
-  ne 346, in _ensure_schema_once
-      await ensure_schema_once(self)
-    File "<PATH>", li
-  ne 117, in ensure_schema_once
-      await backend._ensure_schema(init_conn)
-    File "<PATH>", li
-  ne 366, in _ensure_schema
-      await ensure_current_schema(conn)
-    File "<PATH>
-  py", line 40, in ensure_schema
-      raise DatabaseError(
-      ...<2 lines>...
-      )
-  polylogue.errors.DatabaseError: Database schema version 1 is incompatible with e
-  xpected version 2. Delete the database file and re-run polylogue to create a fre
-  sh v2 schema.
+  Error: Database schema version 1 is incompatible with expected version 2. Delete
+   the database file and re-run polylogue to create a fresh v2 schema.
   '''
 # ---
 # name: TestHelpOutput.test_help_output_snapshot
   '''
   Usage: polylogue [OPTIONS] COMMAND [ARGS]...
-
     Polylogue - AI conversation archive.
-
     Query mode (default):
         polylogue "search terms"
         polylogue -p claude-ai --since "last week"
         polylogue --latest --output browser
-
     Verbs (actions on matched conversations):
         polylogue "error" -p claude-ai --since 2025-01 list
         polylogue --has thinking --sort tokens list --limit 10
@@ -237,7 +110,6 @@
         polylogue --latest open
         polylogue "urgent" --tag review delete --dry-run
         polylogue list --format json
-
     Combined filters:
         polylogue --path README.md --action file_read list
         polylogue --action search --action file_edit list
@@ -246,16 +118,13 @@
         polylogue "pytest -q tests<PATH>" --retrieval-l
   ane actions --limit 5
         polylogue --action other stats --by tool --format json
-        polylogue stats --by repo --provider claude-code --since 2026-01-01 --form
+        polylogue --provider claude-code --since 2026-01-01 stats --by repo --form
   at json
         polylogue --tool bash --exclude-tool read list
         polylogue --similar "sqlite locking bug in parser" --limit 5
-
     Modifiers (write operations):
         polylogue "urgent" --add-tag review
-
     Run `polylogue <command> --help` for subcommand details.
-
   Options:
     -i, --id TEXT                   Conversation ID (exact or prefix match)
     -c, --contains TEXT             FTS term (repeatable = AND)
@@ -324,7 +193,6 @@
     -v, --verbose                   Verbose output
     --version                       Show the version and exit.
     -h, --help                      Show this message and exit.
-
   Commands:
     audit        Run composable QA: schema audit, exercises, and invariant...
     auth         Authenticate with external services (Google Drive for...
@@ -347,14 +215,11 @@
 # name: TestTerminalDimensions.test_help_at_narrow_width
   '''
   Usage: polylogue [OPTIONS] COMMAND [ARGS]...
-
     Polylogue - AI conversation archive.
-
     Query mode (default):
         polylogue "search terms"
         polylogue -p claude-ai --since "last week"
         polylogue --latest --output browser
-
     Verbs (actions on matched conversations):
         polylogue "error" -p claude-ai --since 2025-01 list
         polylogue --has thinking --sort tokens list --limit 10
@@ -363,7 +228,6 @@
         polylogue --latest open
         polylogue "urgent" --tag review delete --dry-run
         polylogue list --format json
-
     Combined filters:
         polylogue --path README.md --action file_read list
         polylogue --action search --action file_edit list
@@ -373,17 +237,14 @@
         polylogue "pytest -q tests<PATH>
   ts.py" --retrieval-lane actions --limit 5
         polylogue --action other stats --by tool --format json
-        polylogue stats --by repo --provider claude-code --sin
-  ce 2026-01-01 --format json
+        polylogue --provider claude-code --since 2026-01-01 st
+  ats --by repo --format json
         polylogue --tool bash --exclude-tool read list
         polylogue --similar "sqlite locking bug in parser" --l
   imit 5
-
     Modifiers (write operations):
         polylogue "urgent" --add-tag review
-
     Run `polylogue <command> --help` for subcommand details.
-
   Options:
     -i, --id TEXT                   Conversation ID (exact or
   prefix match)
@@ -483,7 +344,6 @@
     --version                       Show the version and exit.
     -h, --help                      Show this message and exit
   .
-
   Commands:
     audit        Run composable QA: schema audit, exercises, a
   nd invariant...
@@ -512,14 +372,11 @@
 # name: TestTerminalDimensions.test_help_at_wide_width
   '''
   Usage: polylogue [OPTIONS] COMMAND [ARGS]...
-
     Polylogue - AI conversation archive.
-
     Query mode (default):
         polylogue "search terms"
         polylogue -p claude-ai --since "last week"
         polylogue --latest --output browser
-
     Verbs (actions on matched conversations):
         polylogue "error" -p claude-ai --since 2025-01 list
         polylogue --has thinking --sort tokens list --limit 10
@@ -528,7 +385,6 @@
         polylogue --latest open
         polylogue "urgent" --tag review delete --dry-run
         polylogue list --format json
-
     Combined filters:
         polylogue --path README.md --action file_read list
         polylogue --action search --action file_edit list
@@ -536,15 +392,12 @@
         polylogue --action-text "pytest -q" list
         polylogue "pytest -q tests<PATH>" --retrieval-lane actions --limit 5
         polylogue --action other stats --by tool --format json
-        polylogue stats --by repo --provider claude-code --since 2026-01-01 --format json
+        polylogue --provider claude-code --since 2026-01-01 stats --by repo --format json
         polylogue --tool bash --exclude-tool read list
         polylogue --similar "sqlite locking bug in parser" --limit 5
-
     Modifiers (write operations):
         polylogue "urgent" --add-tag review
-
     Run `polylogue <command> --help` for subcommand details.
-
   Options:
     -i, --id TEXT                   Conversation ID (exact or prefix match)
     -c, --contains TEXT             FTS term (repeatable = AND)
@@ -611,7 +464,6 @@
     -v, --verbose                   Verbose output
     --version                       Show the version and exit.
     -h, --help                      Show this message and exit.
-
   Commands:
     audit        Run composable QA: schema audit, exercises, and invariant...
     auth         Authenticate with external services (Google Drive for...
