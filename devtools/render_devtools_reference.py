@@ -33,7 +33,7 @@ def _render_featured_commands(commands: tuple[CommandSpec, ...]) -> list[str]:
     lines = [
         "## Core Loop",
         "",
-        "These are the repo-maintenance commands worth remembering during normal work:",
+        "These are the commands worth remembering during normal repo work:",
         "",
     ]
     for spec in commands:

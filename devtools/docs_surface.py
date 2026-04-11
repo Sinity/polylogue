@@ -48,5 +48,26 @@ REPO_GUIDE_ENTRIES: tuple[DocsEntry, ...] = (
     ),
 )
 
+README_DOC_TITLES: tuple[str, ...] = (
+    "CLI Reference",
+    "Configuration",
+    "Library API",
+    "Developer Tools",
+    "Architecture",
+    "Providers",
+)
 
-__all__ = ["DOCS_REFERENCE_ENTRIES", "REPO_GUIDE_ENTRIES", "DocsEntry"]
+README_GUIDE_TITLES: tuple[str, ...] = (
+    "Contributing",
+    "Testing",
+    "Agent Guide",
+)
+
+
+__all__ = [
+    "DOCS_REFERENCE_ENTRIES",
+    "README_DOC_TITLES",
+    "README_GUIDE_TITLES",
+    "REPO_GUIDE_ENTRIES",
+    "DocsEntry",
+]

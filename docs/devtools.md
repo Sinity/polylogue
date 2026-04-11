@@ -1,8 +1,6 @@
 # Developer Tools
 
-Use `devtools` for repo maintenance.
-
-Use `devtools` for routine repo-maintenance work. Call individual
+Use `devtools` for routine repository maintenance. Call individual
 `devtools/*.py` modules directly only when you are editing these tools.
 
 It exposes both human and JSON discovery/status forms. Use the JSON forms for
@@ -23,7 +21,7 @@ devtools status --json
 
 ## Core Loop
 
-These are the repo-maintenance commands worth remembering during normal work:
+These are the commands worth remembering during normal repo work:
 
 - `devtools status`: Check repo state, generated-surface drift, and the next default verification steps.
   Common forms: `devtools status`, `devtools status --json`, `devtools status --verify-generated`.
@@ -138,7 +136,7 @@ without spraying a `result` symlink into the repo root.
 
 - [`.cache/README.md`](../.cache/README.md): disposable cache state
 - [`.local/README.md`](../.local/README.md): untracked local outputs
-- `.venv/` and `.direnv/`: tool-owned roots that stay at the repo root
+- `.venv/` and `.direnv/`: kept at the repo root because their tooling expects those locations
 - `.local/result`: canonical local Nix build out-link
 
 Keep new repo-local outputs in one of those hidden roots.

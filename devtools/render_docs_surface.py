@@ -7,7 +7,13 @@ import sys
 from pathlib import Path
 
 from devtools.command_catalog import control_plane_command
-from devtools.docs_surface import DOCS_REFERENCE_ENTRIES, REPO_GUIDE_ENTRIES, DocsEntry
+from devtools.docs_surface import (
+    DOCS_REFERENCE_ENTRIES,
+    README_DOC_TITLES,
+    README_GUIDE_TITLES,
+    REPO_GUIDE_ENTRIES,
+    DocsEntry,
+)
 
 README_MARKER = "docs-surface"
 GENERATED_NOTE = (
@@ -23,6 +29,11 @@ def _render_table(entries: tuple[DocsEntry, ...]) -> str:
     for entry in entries:
         lines.append(f"| [{entry.title}]({entry.path}) | {entry.description} |")
     return "\n".join(lines)
+
+
+def _select_entries(entries: tuple[DocsEntry, ...], titles: tuple[str, ...]) -> tuple[DocsEntry, ...]:
+    by_title = {entry.title: entry for entry in entries}
+    return tuple(by_title[title] for title in titles)
 
 
 def build_docs_readme(
@@ -53,16 +64,20 @@ def build_readme_section(
     docs_entries: tuple[DocsEntry, ...] = DOCS_REFERENCE_ENTRIES,
     repo_entries: tuple[DocsEntry, ...] = REPO_GUIDE_ENTRIES,
 ) -> str:
+    featured_docs = _select_entries(docs_entries, README_DOC_TITLES)
+    featured_guides = _select_entries(repo_entries, README_GUIDE_TITLES)
     return "\n".join(
         [
             "<!-- BEGIN GENERATED: docs-surface -->",
             "## Documentation",
             "",
-            _render_table(docs_entries),
+            "For the full docs map, see [docs/README.md](docs/README.md).",
+            "",
+            _render_table(featured_docs),
             "",
             "## Contributor Guides",
             "",
-            _render_table(repo_entries),
+            _render_table(featured_guides),
             "",
             "<!-- END GENERATED: docs-surface -->",
         ]

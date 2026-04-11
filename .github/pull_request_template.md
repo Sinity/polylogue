@@ -26,6 +26,6 @@
 
 ## Generated Surfaces
 
-- [ ] `python -m devtools render-all` run if generated surfaces or docs sources changed
+- [ ] `devtools render-all` run if generated surfaces or docs sources changed
 - [ ] `AGENTS.md` refreshed locally if `CLAUDE.md` or its includes changed
 - [ ] `docs/devtools.md` catalog refreshed if the `devtools` command registry changed

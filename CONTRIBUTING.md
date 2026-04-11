@@ -19,10 +19,9 @@ All commands below assume you are already inside that environment. If not, use
 `nix develop -c <command>`.
 
 The devshell regenerates `AGENTS.md` from [CLAUDE.md](CLAUDE.md)
-automatically. `AGENTS.md` is gitignored and treated as a generated local
-file.
+automatically. `AGENTS.md` is generated locally and ignored.
 
-For repo-maintenance tasks, prefer the unified `devtools` entrypoint:
+For repository maintenance, use `devtools`:
 
 ```bash
 devtools --help
@@ -94,14 +93,12 @@ Squash-merge behavior matters here:
 
 ## Versioning and Releases
 
-The package version and the git commit serve different purposes:
+`pyproject.toml` records the last tagged release. Development builds are
+identified by git metadata, and `polylogue --version` must include the commit
+hash plus the dirty marker when applicable.
 
-- `pyproject.toml` carries the last release version
-- git commit metadata identifies the exact development build
-- `polylogue --version` must include the current commit hash and dirty marker
-
-Routine PRs do not bump the package version. Change `version = "X.Y.Z"` only
-when you are cutting a real tagged release.
+Routine PRs do not touch `version = "X.Y.Z"`. Change it only when this exact
+slice is cutting the matching `vX.Y.Z` tag.
 
 The release procedure is:
 
@@ -119,8 +116,8 @@ nix flake check
 3. Commit the version bump as its own small change, normally `chore: release X.Y.Z`.
 4. Tag that exact commit as `vX.Y.Z`.
 
-If you are not creating the tag in this slice of work, do not touch the
-package version.
+If this slice is not producing the matching tag, leave `pyproject.toml`
+unchanged.
 
 ## Issues
 

@@ -158,19 +158,16 @@ other tooling.
 <!-- BEGIN GENERATED: docs-surface -->
 ## Documentation
 
+For the full docs map, see [docs/README.md](docs/README.md).
+
 | Document | Description |
 |----------|-------------|
 | [CLI Reference](docs/cli-reference.md) | Generated command reference from live help output. |
-| [Developer Tools](docs/devtools.md) | `devtools` guide for generated surfaces, validation, and repo hygiene. |
-| [Library API](docs/library-api.md) | Async archive API, filters, and query patterns. |
-| [Data Model](docs/data-model.md) | Archive entities, storage shape, and metadata rules. |
 | [Configuration](docs/configuration.md) | XDG paths, environment variables, and runtime configuration. |
+| [Library API](docs/library-api.md) | Async archive API, filters, and query patterns. |
+| [Developer Tools](docs/devtools.md) | `devtools` guide for generated surfaces, validation, and repo hygiene. |
 | [Architecture](docs/architecture.md) | System rings, ownership boundaries, and data flow. |
-| [Internals](docs/internals.md) | Working implementation reference and debugging landmarks. |
-| [MCP Integration](docs/mcp-integration.md) | Model Context Protocol server setup and usage. |
-| [Generate](docs/generate.md) | Synthetic archive generation, seed mode, and demo workflows. |
 | [Providers](docs/providers/README.md) | Provider-specific parsing and export-format notes. |
-| [Test Quality Workflows](docs/test-quality-workflows.md) | Generated validation lanes, mutation campaigns, and benchmark campaigns. |
 
 ## Contributor Guides
 
@@ -179,8 +176,6 @@ other tooling.
 | [Contributing](CONTRIBUTING.md) | Branching, issues, PRs, squash-merge history, and repo policy. |
 | [Testing](TESTING.md) | Baseline test matrix, protected surfaces, and QA entrypoints. |
 | [Agent Guide](CLAUDE.md) | Repository-specific agent memory, workflow rules, and included references. |
-| [Local Cache Layout](.cache/README.md) | Disposable cache roots chosen by the repo itself. |
-| [Local Working Outputs](.local/README.md) | Untracked local outputs such as campaigns, showcases, and reports. |
 
 <!-- END GENERATED: docs-surface -->
 
@@ -200,14 +195,12 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for workflow and PR rules,
 
 ## Versioning
 
-Polylogue uses two version surfaces:
+`pyproject.toml` records the last tagged release. Development builds are
+identified by git metadata, and `polylogue --version` includes the current
+commit hash so day-to-day builds stay identifiable without fake release churn.
 
-- the package version in `pyproject.toml` marks the last tagged release
-- the git commit identifies the exact development build
-
-Routine merges do not bump the package version. `polylogue --version` includes
-the current commit hash, so day-to-day builds stay identifiable without fake
-release churn.
+Routine merges do not bump the package version. Only release-tagging slices
+change `version = "X.Y.Z"`.
 
 ## License
 

@@ -15,5 +15,5 @@ Examples:
 Treat `.cache/` as recreatable. If it becomes suspicious, delete it and rerun
 the relevant command.
 
-Tool-owned roots such as `.venv/` and `.direnv/` stay where their tools expect
-them. Repo-chosen cache state belongs under `.cache/`.
+Roots such as `.venv/` and `.direnv/` stay at the repo top because their tools
+expect those locations. Repo-chosen cache state belongs under `.cache/`.
