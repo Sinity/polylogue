@@ -197,13 +197,12 @@ def render_motd(cwd: Path, *, verify_generated: bool = False, stream: TextIO = s
 
     label_width = len("generated")
     rows = [
-        ("tree", style_worktree(summarize_worktree(changes))),
-        ("docs", style_generated(summarize_generated_surfaces(generated_surfaces))),
-        ("recent", str(snapshot["last_commit"])),
-        ("next", str(commands["render_all_check"])),
-        ("", str(commands["test_baseline"])),
+        ("worktree", style_worktree(summarize_worktree(changes))),
+        ("generated", style_generated(summarize_generated_surfaces(generated_surfaces))),
+        ("head", str(snapshot["last_commit"])),
+        ("run", str(commands["render_all_check"])),
+        ("test", str(commands["test_baseline"])),
     ]
-    indent = " " * (label_width + 2)
 
     header = "  ".join(
         [
@@ -214,7 +213,7 @@ def render_motd(cwd: Path, *, verify_generated: bool = False, stream: TextIO = s
     )
     lines = [header]
     for label, value in rows:
-        lines.append(f"{style(label.ljust(label_width), ANSI_CYAN, stream=stream)}  {value}")
+        lines.append(f"{style(label.ljust(label_width), ANSI_CYAN)}  {value}")
     return "\n".join(lines)
 
 

@@ -25,7 +25,7 @@ def test_render_motd_contains_expected_sections(monkeypatch, tmp_path: Path) -> 
 
     assert "Polylogue  feature/docs/test  v0.1.0+deadbeef-dirty" in rendered
     assert "worktree   dirty · 1 staged · 2 modified · 3 untracked" in rendered
-    assert "generated  5/5 generated unchecked" in rendered
+    assert "generated  5 generated surfaces" in rendered
     assert "head       docs: tighten repo guides" in rendered
     assert "run        devtools render-all --check" in rendered
     assert "test       pytest -q --ignore=tests/integration" in rendered

@@ -137,6 +137,6 @@ with its out-link kept under `.local/result`.
 - [`.cache/README.md`](../.cache/README.md): disposable cache state
 - [`.local/README.md`](../.local/README.md): untracked local outputs
 - `.venv/` and `.direnv/`: kept at the repo root because their tooling expects those locations
-- `.local/result`: canonical local Nix build out-link; remove stray top-level `result` symlinks if older commands created them
+- `.local/result`: preferred local Nix build out-link; a top-level `result` symlink is just Nix's default out-link, not part of the intended repo layout
 
 Keep new repo-local outputs in one of those hidden roots.
