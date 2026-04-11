@@ -174,10 +174,10 @@ def style_worktree(summary: str, *, stream: TextIO) -> str:
 
 def style_generated(summary: str, *, stream: TextIO) -> str:
     if "stale:" in summary:
-        return style(summary, ANSI_RED, ANSI_BOLD, stream=stream)
+        return style(summary, ANSI_RED, ANSI_BOLD)
     if "unchecked" in summary:
-        return style(summary, ANSI_YELLOW, stream=stream)
-    return style(summary, ANSI_GREEN, stream=stream)
+        return style(summary, ANSI_YELLOW)
+    return style(summary, ANSI_GREEN)
 
 
 def render_motd(cwd: Path, *, verify_generated: bool = False, stream: TextIO = sys.stdout) -> str:
@@ -199,9 +199,9 @@ def render_motd(cwd: Path, *, verify_generated: bool = False, stream: TextIO = s
     rows = [
         ("worktree", style_worktree(summarize_worktree(changes))),
         ("generated", style_generated(summarize_generated_surfaces(generated_surfaces))),
-        ("head", str(snapshot["last_commit"])),
-        ("run", str(commands["render_all_check"])),
-        ("test", str(commands["test_baseline"])),
+        ("head", style(str(snapshot["last_commit"]), ANSI_DIM)),
+        ("run", style(str(commands["render_all_check"]), ANSI_GREEN)),
+        ("test", style(str(commands["test_baseline"]), ANSI_GREEN)),
     ]
 
     header = "  ".join(
