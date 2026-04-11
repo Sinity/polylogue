@@ -59,19 +59,18 @@ def read_embedding_stats_sync(
         total_conversations_row = conn.execute("SELECT COUNT(*) FROM conversations").fetchone()
         total_conversations = int(total_conversations_row[0]) if total_conversations_row is not None else 0
         pending_conversations = max(pending_conversations, total_conversations - embedded_conversations)
-        if include_retrieval_bands:
-            action_status = action_event_read_model_status_sync(conn)
-            session_status = session_product_status_sync(conn)
-            retrieval_bands = build_retrieval_bands_from_status(
-                total_conversations=total_conversations,
-                embedded_conversations=embedded_conversations,
-                embedded_messages=embedded_messages,
-                pending_conversations=pending_conversations,
-                stale_messages=stale_messages,
-                missing_provenance=missing_provenance,
-                action_status=action_status,
-                session_status=session_status,
-            )
+        action_status = action_event_read_model_status_sync(conn)
+        session_status = session_product_status_sync(conn)
+        retrieval_bands = build_retrieval_bands_from_status(
+            total_conversations=total_conversations,
+            embedded_conversations=embedded_conversations,
+            embedded_messages=embedded_messages,
+            pending_conversations=pending_conversations,
+            stale_messages=stale_messages,
+            missing_provenance=missing_provenance,
+            action_status=action_status,
+            session_status=session_status,
+        )
 
     return EmbeddingStatsSnapshot(
         embedded_conversations=embedded_conversations,
@@ -111,19 +110,18 @@ async def read_embedding_stats_async(
         total_conversations_row = await (await conn.execute("SELECT COUNT(*) FROM conversations")).fetchone()
         total_conversations = int(total_conversations_row[0]) if total_conversations_row is not None else 0
         pending_conversations = max(pending_conversations, total_conversations - embedded_conversations)
-        if include_retrieval_bands:
-            action_status = await action_event_read_model_status_async(conn)
-            session_status = await session_product_status_async(conn)
-            retrieval_bands = build_retrieval_bands_from_status(
-                total_conversations=total_conversations,
-                embedded_conversations=embedded_conversations,
-                embedded_messages=embedded_messages,
-                pending_conversations=pending_conversations,
-                stale_messages=stale_messages,
-                missing_provenance=missing_provenance,
-                action_status=action_status,
-                session_status=session_status,
-            )
+        action_status = await action_event_read_model_status_async(conn)
+        session_status = await session_product_status_async(conn)
+        retrieval_bands = build_retrieval_bands_from_status(
+            total_conversations=total_conversations,
+            embedded_conversations=embedded_conversations,
+            embedded_messages=embedded_messages,
+            pending_conversations=pending_conversations,
+            stale_messages=stale_messages,
+            missing_provenance=missing_provenance,
+            action_status=action_status,
+            session_status=session_status,
+        )
 
     return EmbeddingStatsSnapshot(
         embedded_conversations=embedded_conversations,
