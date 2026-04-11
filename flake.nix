@@ -135,8 +135,6 @@
             export PYTHONDONTWRITEBYTECODE=1
             export PYTHONPYCACHEPREFIX="$PWD/.cache/pycache"
             export POLYLOGUE_REPO_ROOT="$PWD"
-            export POLYLOGUE_NIX_OUT_LINK="$PWD/.local/result"
-
             mkdir -p .cache .local "$PYTHONPYCACHEPREFIX"
 
             if [ -L result ]; then
@@ -179,6 +177,7 @@
 
             if [[ $- == *i* ]]; then
               devtools status || true
+              export POLYLOGUE_MOTD_RENDERED=1
             fi
           '';
         };
