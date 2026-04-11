@@ -56,6 +56,7 @@ def test_cli_query_summary_list_json_no_results_still_returns_json(tmp_path):
     result = run_cli(["--plain", "searchable", "list", "-f", "json"], env=workspace["env"], cwd=tmp_path)
 
     assert result.exit_code == 2, result.output
+    assert result.stderr == ""
     payload = json.loads(result.stdout)
     assert payload["status"] == "error"
     assert payload["code"] == "no_results"
@@ -68,6 +69,7 @@ def test_cli_query_stats_json_empty_archive_still_returns_json(tmp_path):
     result = run_cli(["--plain", "stats", "-f", "json"], env=workspace["env"], cwd=tmp_path)
 
     assert result.exit_code == 2, result.output
+    assert result.stderr == ""
     payload = json.loads(result.stdout)
     assert payload["status"] == "error"
     assert payload["code"] == "no_results"

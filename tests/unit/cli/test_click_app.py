@@ -306,54 +306,61 @@ class TestCliSetup:
             cli_runner.invoke(cli, ["--plain"], catch_exceptions=False)
         mock_ui.assert_called_once_with(True)
 
-    def test_plain_mode_announcement_when_auto_detected(self, cli_runner):
+    def test_plain_mode_auto_detection_does_not_announce(self, cli_runner):
         from polylogue.cli.click_app import cli
 
         with (
             patch("polylogue.cli.click_app.should_use_plain", return_value=True),
-            patch("polylogue.cli.click_app.announce_plain_mode") as mock_announce,
             patch("polylogue.cli.click_app.create_ui", return_value=MagicMock()),
             patch("polylogue.cli.click_app._show_stats"),
         ):
-            cli_runner.invoke(cli, [], catch_exceptions=False, env={"POLYLOGUE_FORCE_PLAIN": ""})
-        mock_announce.assert_called_once()
+            result = cli_runner.invoke(cli, [], catch_exceptions=False, env={"POLYLOGUE_FORCE_PLAIN": ""})
+        assert "Plain output active" not in result.output
 
     def test_no_announcement_when_plain_flag_explicit(self, cli_runner):
         from polylogue.cli.click_app import cli
 
         with (
             patch("polylogue.cli.click_app.should_use_plain", return_value=True),
-            patch("polylogue.cli.click_app.announce_plain_mode") as mock_announce,
             patch("polylogue.cli.click_app.create_ui", return_value=MagicMock()),
             patch("polylogue.cli.click_app._show_stats"),
         ):
-            cli_runner.invoke(cli, ["--plain"], catch_exceptions=False)
-        mock_announce.assert_not_called()
+            result = cli_runner.invoke(cli, ["--plain"], catch_exceptions=False)
+        assert "Plain output active" not in result.output
 
     def test_no_announcement_when_env_force_plain(self, cli_runner):
         from polylogue.cli.click_app import cli
 
         with (
             patch("polylogue.cli.click_app.should_use_plain", return_value=True),
-            patch("polylogue.cli.click_app.announce_plain_mode") as mock_announce,
             patch("polylogue.cli.click_app.create_ui", return_value=MagicMock()),
             patch("polylogue.cli.click_app._show_stats"),
         ):
-            cli_runner.invoke(cli, [], catch_exceptions=False, env={"POLYLOGUE_FORCE_PLAIN": "1"})
-        mock_announce.assert_not_called()
+            result = cli_runner.invoke(cli, [], catch_exceptions=False, env={"POLYLOGUE_FORCE_PLAIN": "1"})
+        assert "Plain output active" not in result.output
 
-    def test_env_force_plain_false_values_dont_block_announcement(self, cli_runner):
+    def test_no_announcement_when_json_requested(self, cli_runner):
+        from polylogue.cli.click_app import cli
+
+        with (
+            patch("polylogue.cli.click_app.should_use_plain", return_value=True),
+            patch("polylogue.cli.click_app.create_ui", return_value=MagicMock()),
+            patch("polylogue.cli.click_app._show_stats"),
+        ):
+            result = cli_runner.invoke(cli, ["list", "--format", "json"], catch_exceptions=False)
+        assert "Plain output active" not in result.output
+
+    def test_env_force_plain_false_values_still_do_not_announce(self, cli_runner):
         from polylogue.cli.click_app import cli
 
         for value in ("0", "false", "no"):
             with (
                 patch("polylogue.cli.click_app.should_use_plain", return_value=True),
-                patch("polylogue.cli.click_app.announce_plain_mode") as mock_announce,
                 patch("polylogue.cli.click_app.create_ui", return_value=MagicMock()),
                 patch("polylogue.cli.click_app._show_stats"),
             ):
-                cli_runner.invoke(cli, [], catch_exceptions=False, env={"POLYLOGUE_FORCE_PLAIN": value})
-            mock_announce.assert_called_once()
+                result = cli_runner.invoke(cli, [], catch_exceptions=False, env={"POLYLOGUE_FORCE_PLAIN": value})
+            assert "Plain output active" not in result.output
 
     def test_ctx_obj_set_to_appenv(self, cli_runner):
         from polylogue.cli.click_app import cli
@@ -569,7 +576,7 @@ class TestQaCommand:
             result = cli_runner.invoke(click_cli, ["audit", "--json"])
 
         assert result.exit_code == 0
-        payload = json.loads(result.output.split("\nPlain output active", 1)[0])
+        payload = json.loads(result.output)
         assert payload["audit"]["status"] == "ok"
         assert payload["showcase"]["status"] == "skip"
         assert payload["overall_status"] == "ok"
@@ -595,7 +602,7 @@ class TestQaCommand:
 
         assert result.exit_code == 0
         assert mock_run.call_args.kwargs["skip_proof"] is True
-        payload = json.loads(result.output.split("\nPlain output active", 1)[0])
+        payload = json.loads(result.output)
         assert payload["proof"]["status"] == "skip"
         assert payload["proof"]["skipped"] is True
         assert payload["overall_status"] == "ok"
@@ -628,7 +635,7 @@ class TestQaCommand:
 
         assert result.exit_code == 0
         assert mock_run.call_args.kwargs["skip_proof"] is True
-        payload = json.loads(result.output.split("\nPlain output active", 1)[0])
+        payload = json.loads(result.output)
         assert payload["proof"]["status"] == "skip"
         assert payload["proof"]["skipped"] is True
 
