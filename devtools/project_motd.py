@@ -174,10 +174,10 @@ def style_worktree(summary: str, *, stream: TextIO) -> str:
 
 def style_generated(summary: str, *, stream: TextIO) -> str:
     if "stale:" in summary:
-        return style(summary, ANSI_RED, ANSI_BOLD)
+        return style(summary, ANSI_RED, ANSI_BOLD, stream=stream)
     if "unchecked" in summary:
-        return style(summary, ANSI_YELLOW)
-    return style(summary, ANSI_GREEN)
+        return style(summary, ANSI_YELLOW, stream=stream)
+    return style(summary, ANSI_GREEN, stream=stream)
 
 
 def render_motd(cwd: Path, *, verify_generated: bool = False, stream: TextIO = sys.stdout) -> str:
@@ -197,11 +197,11 @@ def render_motd(cwd: Path, *, verify_generated: bool = False, stream: TextIO = s
 
     label_width = len("generated")
     rows = [
-        ("worktree", style_worktree(summarize_worktree(changes))),
-        ("generated", style_generated(summarize_generated_surfaces(generated_surfaces))),
-        ("head", style(str(snapshot["last_commit"]), ANSI_DIM)),
-        ("run", style(str(commands["render_all_check"]), ANSI_GREEN)),
-        ("test", style(str(commands["test_baseline"]), ANSI_GREEN)),
+        ("worktree", style_worktree(summarize_worktree(changes), stream=stream)),
+        ("generated", style_generated(summarize_generated_surfaces(generated_surfaces), stream=stream)),
+        ("head", style(str(snapshot["last_commit"]), ANSI_DIM, stream=stream)),
+        ("run", style(str(commands["render_all_check"]), ANSI_GREEN, stream=stream)),
+        ("test", style(str(commands["test_baseline"]), ANSI_GREEN, stream=stream)),
     ]
 
     header = "  ".join(
@@ -213,7 +213,7 @@ def render_motd(cwd: Path, *, verify_generated: bool = False, stream: TextIO = s
     )
     lines = [header]
     for label, value in rows:
-        lines.append(f"{style(label.ljust(label_width), ANSI_CYAN)}  {value}")
+        lines.append(f"{style(label.ljust(label_width), ANSI_CYAN, stream=stream)}  {value}")
     return "\n".join(lines)
 
 
