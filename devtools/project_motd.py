@@ -87,11 +87,14 @@ def run_check(cwd: Path, surface) -> str:
     return "ok" if result == 0 else "stale"
 
 
-def status_snapshot(cwd: Path) -> dict[str, object]:
+def status_snapshot(cwd: Path, *, verify_generated: bool = False) -> dict[str, object]:
     version = read_version(cwd / "pyproject.toml")
     branch, staged, changed, untracked = git_status_summary(cwd)
     revision = git_short_revision(cwd)
-    generated_surfaces = {surface.label: run_check(cwd, surface) for surface in GENERATED_SURFACES}
+    if verify_generated:
+        generated_surfaces = {surface.label: run_check(cwd, surface) for surface in GENERATED_SURFACES}
+    else:
+        generated_surfaces = {surface.label: "unchecked" for surface in GENERATED_SURFACES}
     stale_surfaces = [label for label, status in generated_surfaces.items() if status != "ok"]
     return {
         "project": "polylogue",
@@ -105,6 +108,7 @@ def status_snapshot(cwd: Path) -> dict[str, object]:
         },
         "generated_surfaces": generated_surfaces,
         "stale_surfaces": stale_surfaces,
+        "generated_checked": verify_generated,
         "last_commit": last_commit_subject(cwd),
         "commands": {
             "discover": control_plane_command("--list-commands", "--json"),
@@ -115,7 +119,8 @@ def status_snapshot(cwd: Path) -> dict[str, object]:
         "local_state": {
             "cache": ".cache/",
             "outputs": ".local/",
-            "tool_owned": [".venv/", ".direnv/", "result*"],
+            "tool_owned": [".venv/", ".direnv/"],
+            "build_out_link": ".local/result",
         },
     }
 
@@ -138,6 +143,9 @@ def summarize_worktree(changes: dict[str, object]) -> str:
 
 def summarize_generated_surfaces(generated_surfaces: dict[str, object]) -> str:
     total = len(generated_surfaces)
+    unchecked = [label for label, status in generated_surfaces.items() if status == "unchecked"]
+    if len(unchecked) == total:
+        return f"{total} generated surfaces"
     stale = [label for label, status in generated_surfaces.items() if status != "ok"]
     if not stale:
         return f"{total}/{total} generated clean"
@@ -167,8 +175,8 @@ def style_generated(summary: str) -> str:
     return style(summary, ANSI_GREEN)
 
 
-def render_motd(cwd: Path) -> str:
-    snapshot = status_snapshot(cwd)
+def render_motd(cwd: Path, *, verify_generated: bool = False) -> str:
+    snapshot = status_snapshot(cwd, verify_generated=verify_generated)
     changes = snapshot["changes"]
     assert isinstance(changes, dict)
     generated_surfaces = snapshot["generated_surfaces"]
@@ -185,11 +193,12 @@ def render_motd(cwd: Path) -> str:
     label_width = len("recent")
     rows = [
         ("repo", style_worktree(summarize_worktree(changes))),
-        ("docs", style_generated(summarize_generated_surfaces(generated_surfaces))),
         ("recent", str(snapshot["last_commit"])),
         ("next", str(commands["render_all_check"])),
         ("", str(commands["test_baseline"])),
     ]
+    if bool(snapshot["generated_checked"]):
+        rows.insert(1, ("docs", style_generated(summarize_generated_surfaces(generated_surfaces))))
     indent = " " * (label_width + 2)
 
     header = "  ".join(
@@ -212,15 +221,20 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Render the Polylogue devshell MOTD.")
     parser.add_argument("--cwd", default=".", help="Repository root (default: current directory)")
     parser.add_argument("--json", action="store_true", help="Emit machine-readable status instead of the MOTD.")
+    parser.add_argument(
+        "--verify-generated",
+        action="store_true",
+        help="Run generated-surface drift checks before rendering status.",
+    )
     args = parser.parse_args(argv)
 
     cwd = Path(args.cwd).resolve()
     try:
         if args.json:
-            json.dump(status_snapshot(cwd), sys.stdout, indent=2)
+            json.dump(status_snapshot(cwd, verify_generated=args.verify_generated), sys.stdout, indent=2)
             sys.stdout.write("\n")
             return 0
-        rendered = render_motd(cwd)
+        rendered = render_motd(cwd, verify_generated=args.verify_generated)
     except FileNotFoundError as exc:
         print(f"devtools status: missing file: {exc.filename}", file=sys.stderr)
         return 1

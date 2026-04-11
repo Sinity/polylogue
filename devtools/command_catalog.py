@@ -104,6 +104,12 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         "devtools.inject_semantic_annotations",
     ),
     CommandSpec(
+        "build-package",
+        "maintenance",
+        "Build the default Nix package with the out-link under .local/result.",
+        "devtools.build_package",
+    ),
+    CommandSpec(
         "mutmut-campaign",
         "campaigns",
         "Run focused mutation campaigns and maintain their local index.",

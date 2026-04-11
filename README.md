@@ -190,7 +190,7 @@ other tooling.
 pytest -q --ignore=tests/integration
 ruff check polylogue tests devtools
 devtools render-all --check
-nix build .#polylogue
+devtools build-package
 nix flake check
 ```
 

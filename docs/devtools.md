@@ -61,6 +61,7 @@ devtools status --json
 
 | Command | Description |
 | --- | --- |
+| `devtools build-package` | Build the default Nix package with the out-link under .local/result. |
 | `devtools inject-semantic-annotations` | Annotate baseline provider schemas with semantic-role metadata. |
 
 <!-- END GENERATED: devtools-command-catalog -->
@@ -117,10 +118,14 @@ devtools benchmark-campaign compare baseline.json candidate.json
 Campaign outputs live under [`.local/README.md`](../.local/README.md), not in
 tracked docs trees.
 
+Use `devtools build-package` when you want the standard local Nix build output
+without spraying a `result` symlink into the repo root.
+
 ## Local State Layout
 
 - [`.cache/README.md`](../.cache/README.md): disposable cache state
 - [`.local/README.md`](../.local/README.md): untracked local outputs
-- `.venv/`, `.direnv/`, and `result*`: tool-owned roots that stay at the repo root
+- `.venv/` and `.direnv/`: tool-owned roots that stay at the repo root
+- `.local/result`: canonical local Nix build out-link
 
 Keep new repo-local outputs in one of those hidden roots.

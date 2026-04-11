@@ -192,7 +192,7 @@ Add narrower or broader checks as needed for the touched area:
 
 ```bash
 ruff check polylogue tests devtools
-nix build .#polylogue
+devtools build-package
 nix flake check
 ```
 

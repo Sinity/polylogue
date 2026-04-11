@@ -125,6 +125,10 @@
           shellHook = ''
             export LD_LIBRARY_PATH=${pkgs.stdenv.cc.cc.lib}/lib:$LD_LIBRARY_PATH
             export HYPOTHESIS_STORAGE_DIRECTORY="$PWD/.cache/hypothesis"
+            export PYTHONPYCACHEPREFIX="$PWD/.cache/pycache"
+            export POLYLOGUE_NIX_OUT_LINK="$PWD/.local/result"
+
+            mkdir -p .cache .local "$PYTHONPYCACHEPREFIX"
 
             # Create venv if it doesn't exist
             if [ ! -d .venv ]; then
