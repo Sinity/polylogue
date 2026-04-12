@@ -377,18 +377,17 @@ class TestParsingServiceIntegration:
 
 
 class TestParsingServiceStreaming:
-    async def test_parse_from_raw_uses_raw_ids_without_prefetching_full_records(self, tmp_path):
+    async def test_parse_from_raw_uses_raw_headers_without_prefetching_full_records(self, tmp_path):
         backend = MagicMock()
         backend.iter_raw_conversations.side_effect = AssertionError("iter_raw_conversations should not be used")
-        backend.queries = MagicMock()
 
-        async def raw_ids():
-            for raw_id in ("raw-1", "raw-2"):
-                yield raw_id
+        async def raw_headers():
+            for raw_header in (("raw-1", 1), ("raw-2", 1)):
+                yield raw_header
 
-        backend.queries.iter_raw_ids = MagicMock(return_value=raw_ids())
         repository = MagicMock()
         repository.backend = backend
+        repository.iter_raw_headers = MagicMock(return_value=raw_headers())
         config = Config(archive_root=tmp_path / "archive", render_root=tmp_path / "render", sources=[])
         service = ParsingService(repository=repository, archive_root=config.archive_root, config=config)
 
@@ -397,8 +396,59 @@ class TestParsingServiceStreaming:
         ) as mock_process:
             await service.parse_from_raw(provider="chatgpt")
 
-        backend.queries.iter_raw_ids.assert_called_once_with(provider_name="chatgpt")
+        repository.iter_raw_headers.assert_called_once_with(provider_name="chatgpt")
         assert mock_process.await_count == 1
+
+    async def test_parse_from_raw_splits_explicit_raw_ids_by_blob_budget(self, tmp_path):
+        backend = MagicMock()
+        repository = MagicMock()
+        repository.backend = backend
+        repository.get_raw_blob_sizes = AsyncMock(
+            return_value=[
+                ("raw-1", 96 * 1024 * 1024),
+                ("raw-2", 96 * 1024 * 1024),
+                ("raw-3", 8 * 1024 * 1024),
+            ]
+        )
+        config = Config(archive_root=tmp_path / "archive", render_root=tmp_path / "render", sources=[])
+        service = ParsingService(repository=repository, archive_root=config.archive_root, config=config)
+
+        with patch(
+            "polylogue.pipeline.services.ingest_batch.process_ingest_batch",
+            new=AsyncMock(side_effect=[None, None]),
+        ) as mock_process:
+            await service.parse_from_raw(raw_ids=["raw-1", "raw-2", "raw-3"])
+
+        repository.get_raw_blob_sizes.assert_awaited_once_with(["raw-1", "raw-2", "raw-3"])
+        assert mock_process.await_args_list[0].args[2] == ["raw-1"]
+        assert mock_process.await_args_list[1].args[2] == ["raw-2", "raw-3"]
+
+    async def test_parse_from_raw_splits_streamed_backlog_by_blob_budget(self, tmp_path):
+        backend = MagicMock()
+
+        async def raw_headers():
+            for raw_header in (
+                ("raw-1", 96 * 1024 * 1024),
+                ("raw-2", 96 * 1024 * 1024),
+                ("raw-3", 8 * 1024 * 1024),
+            ):
+                yield raw_header
+
+        repository = MagicMock()
+        repository.backend = backend
+        repository.iter_raw_headers = MagicMock(return_value=raw_headers())
+        config = Config(archive_root=tmp_path / "archive", render_root=tmp_path / "render", sources=[])
+        service = ParsingService(repository=repository, archive_root=config.archive_root, config=config)
+
+        with patch(
+            "polylogue.pipeline.services.ingest_batch.process_ingest_batch",
+            new=AsyncMock(side_effect=[None, None]),
+        ) as mock_process:
+            await service.parse_from_raw(provider="chatgpt")
+
+        repository.iter_raw_headers.assert_called_once_with(provider_name="chatgpt")
+        assert mock_process.await_args_list[0].args[2] == ["raw-1"]
+        assert mock_process.await_args_list[1].args[2] == ["raw-2", "raw-3"]
 
 
 # =====================================================================

@@ -24,6 +24,7 @@ class ParsingService:
     """Service for parsing conversations from sources asynchronously."""
 
     DEFAULT_RAW_BATCH_SIZE = 50
+    DEFAULT_RAW_BATCH_BLOB_LIMIT_BYTES = 128 * 1024 * 1024
 
     def __init__(
         self,
@@ -91,6 +92,10 @@ class ParsingService:
     @property
     def raw_batch_size(self) -> int:
         return self._raw_batch_size
+
+    @property
+    def raw_batch_blob_limit_bytes(self) -> int:
+        return self.DEFAULT_RAW_BATCH_BLOB_LIMIT_BYTES
 
     @property
     def ingest_workers(self) -> int | None:
