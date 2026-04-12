@@ -12,12 +12,14 @@ from polylogue.sync_bridge import run_coroutine_sync
 @click.command("tags")
 @click.option("--provider", "-p", default=None, help="Filter tags by provider")
 @click.option("--json", "json_mode", is_flag=True, help="Output as JSON")
+@click.option("--format", "-f", "output_format", type=click.Choice(["json"]), default=None, help="Output format")
 @click.option("--count", "-n", type=int, default=None, help="Show top N tags")
 @click.pass_obj
 def tags_command(
     env: AppEnv,
     provider: str | None,
     json_mode: bool,
+    output_format: str | None,
     count: int | None,
 ) -> None:
     """List all tags with conversation counts.
@@ -35,7 +37,7 @@ def tags_command(
         # Truncate to top N (already sorted by count desc from SQL)
         tags = dict(list(tags.items())[:count])
 
-    if json_mode:
+    if json_mode or output_format == "json":
         emit_success({"tags": tags})
         return
 
