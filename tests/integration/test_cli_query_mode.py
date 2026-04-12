@@ -129,6 +129,32 @@ def test_cli_query_open_print_path_returns_render_target_without_launching(tmp_p
     assert render_path.endswith("conversation.html") or render_path.endswith("conversation.md")
 
 
+def test_cli_query_open_print_path_accepts_query_after_verb(tmp_path):
+    workspace = setup_isolated_workspace(tmp_path)
+    inbox = workspace["paths"]["inbox"]
+
+    GenericConversationBuilder("conv-open-by-id").title("Open By Id").add_user("open alpha").add_assistant(
+        "open beta"
+    ).write_to(inbox / "conversation.json")
+    _run_inbox(workspace, cwd=tmp_path)
+    render_result = run_cli(["--plain", "run", "render"], env=workspace["env"], cwd=tmp_path)
+    assert render_result.exit_code == 0, render_result.output
+    list_result = run_cli(["--plain", "--latest", "list", "-f", "json"], env=workspace["env"], cwd=tmp_path)
+    assert list_result.exit_code == 0, list_result.output
+    conv_id = json.loads(list_result.stdout)[0]["id"]
+
+    result = run_cli(
+        ["--plain", "open", "--print-path", conv_id],
+        env=workspace["env"],
+        cwd=tmp_path,
+    )
+
+    assert result.exit_code == 0, result.output
+    assert result.stderr == ""
+    render_path = result.stdout.strip()
+    assert render_path.endswith("conversation.html") or render_path.endswith("conversation.md")
+
+
 def test_cli_query_stats_by_provider_reports_provider_groups(tmp_path):
     workspace = setup_isolated_workspace(tmp_path)
     inbox = workspace["paths"]["inbox"]
