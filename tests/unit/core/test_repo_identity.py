@@ -5,6 +5,8 @@ from __future__ import annotations
 from datetime import date, datetime, timezone
 from pathlib import Path
 
+import pytest
+
 from polylogue.archive_product_summaries import aggregate_day_session_summary_products
 from polylogue.lib.messages import MessageCollection
 from polylogue.lib.models import Conversation, Message
@@ -54,6 +56,22 @@ def test_repo_identity_normalization_filters_noise(tmp_path: Path) -> None:
             str(tmp_path / "README.md"),
         ]
     ) == (str(polylogue_repo), str(sinnix_repo))
+
+
+def test_repo_identity_normalization_ignores_unreadable_git_admin_paths(monkeypatch: pytest.MonkeyPatch) -> None:
+    unreadable_git_dir = Path("/boot/.git")
+    original_exists = Path.exists
+
+    def fake_exists(self: Path) -> bool:
+        if self in {unreadable_git_dir, unreadable_git_dir / ".git"}:
+            raise PermissionError("denied")
+        return original_exists(self)
+
+    monkeypatch.setattr(Path, "exists", fake_exists)
+
+    assert normalize_repo_path(str(unreadable_git_dir)) is None
+    assert normalize_repo_name(str(unreadable_git_dir)) is None
+    assert normalize_repo_paths([str(unreadable_git_dir)]) == ()
 
 
 def test_session_profile_from_dict_preserves_explicit_repo_names_and_normalizes_repo_paths(tmp_path: Path) -> None:
