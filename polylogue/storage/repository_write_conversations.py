@@ -6,6 +6,15 @@ import builtins
 
 from polylogue.lib.conversation_models import Conversation
 from polylogue.storage.action_event_rows import attach_blocks_to_messages, build_action_event_records
+from polylogue.storage.backends.queries import action_events as action_events_q
+from polylogue.storage.backends.queries import attachments as attachments_q
+from polylogue.storage.backends.queries import conversations as conversations_q
+from polylogue.storage.backends.queries import messages as messages_q
+from polylogue.storage.backends.queries import stats as stats_q
+from polylogue.storage.conversation_replacement import (
+    recount_and_prune_attachments_async,
+    replace_conversation_runtime_state_async,
+)
 from polylogue.storage.search_cache import invalidate_search_cache
 from polylogue.storage.session_product_refresh import (
     delete_session_products_for_conversation_async,
@@ -72,9 +81,9 @@ async def save_via_backend(
         "skipped_attachments": 0,
     }
 
-    t0 = _time.perf_counter()
-    existing_hash: str | None = None
-    async with backend.connection() as conn:
+    async with backend.transaction(), backend.connection() as conn:
+        t0 = _time.perf_counter()
+        existing_hash: str | None = None
         cursor = await conn.execute(
             "SELECT content_hash FROM conversations WHERE conversation_id = ?",
             (conversation.conversation_id,),
@@ -82,13 +91,12 @@ async def save_via_backend(
         row = await cursor.fetchone()
         if row:
             existing_hash = row["content_hash"]
-    timings["hash_check"] = _time.perf_counter() - t0
+        timings["hash_check"] = _time.perf_counter() - t0
 
-    content_unchanged = existing_hash is not None and existing_hash == conversation.content_hash
+        content_unchanged = existing_hash is not None and existing_hash == conversation.content_hash
 
-    async with backend.transaction():
         t0 = _time.perf_counter()
-        await backend.save_conversation_record(conversation)
+        await conversations_q.save_conversation_record(conn, conversation, backend.transaction_depth)
         timings["save_conv"] = _time.perf_counter() - t0
 
         if content_unchanged:
@@ -97,18 +105,23 @@ async def save_via_backend(
             counts["skipped_attachments"] = len(attachments)
         else:
             counts["conversations"] = 1
+            t0 = _time.perf_counter()
+            affected_attachment_ids = await replace_conversation_runtime_state_async(conn, conversation.conversation_id)
+            timings["replace_runtime"] = _time.perf_counter() - t0
 
             if messages:
                 t0 = _time.perf_counter()
-                await backend.save_messages(messages)
+                await messages_q.save_messages(conn, messages, backend.transaction_depth)
                 timings["save_msgs"] = _time.perf_counter() - t0
                 counts["messages"] = len(messages)
 
                 t0 = _time.perf_counter()
-                await backend.upsert_conversation_stats(
+                await stats_q.upsert_conversation_stats(
+                    conn,
                     conversation.conversation_id,
                     conversation.provider_name,
                     messages,
+                    backend.transaction_depth,
                 )
                 timings["upsert_stats"] = _time.perf_counter() - t0
 
@@ -117,21 +130,27 @@ async def save_via_backend(
             for message in messages:
                 all_blocks.extend(message.content_blocks)
             if all_blocks:
-                await backend.save_content_blocks(all_blocks)
+                await attachments_q.save_content_blocks(conn, all_blocks, backend.transaction_depth)
             timings["save_blocks"] = _time.perf_counter() - t0
 
             t0 = _time.perf_counter()
             action_messages = attach_blocks_to_messages(messages, all_blocks)
             action_records = build_action_event_records(conversation, action_messages)
-            await backend.replace_action_events(conversation.conversation_id, action_records)
+            await action_events_q.replace_action_events(
+                conn,
+                conversation.conversation_id,
+                action_records,
+                backend.transaction_depth,
+            )
             timings["action_events"] = _time.perf_counter() - t0
 
             t0 = _time.perf_counter()
             new_attachment_ids: set[str] = {str(att.attachment_id) for att in attachments}
-            await backend.prune_attachments(conversation.conversation_id, new_attachment_ids)
+            affected_attachment_ids |= new_attachment_ids
             if attachments:
-                await backend.save_attachments(attachments)
+                await attachments_q.save_attachments(conn, attachments, backend.transaction_depth)
                 counts["attachments"] = len(attachments)
+            await recount_and_prune_attachments_async(conn, affected_attachment_ids)
             timings["attachments"] = _time.perf_counter() - t0
 
     total = _time.perf_counter() - t_start

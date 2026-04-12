@@ -24,6 +24,7 @@ from polylogue.pipeline.services.ingest_batch import (
 from polylogue.pipeline.services.ingest_worker import ConversationData
 from polylogue.storage.backends.connection import open_connection
 from polylogue.storage.state_views import RawConversationStateUpdate
+from polylogue.storage.store import _make_ref_id
 
 
 def _conversation_data(
@@ -31,6 +32,11 @@ def _conversation_data(
     *,
     content_hash: str,
     parent_conversation_id: str | None = None,
+    message_tuples: list[tuple] | None = None,
+    block_tuples: list[tuple] | None = None,
+    stats_tuple: tuple | None = None,
+    attachment_tuples: list[tuple] | None = None,
+    attachment_ref_tuples: list[tuple] | None = None,
 ) -> ConversationData:
     conversation_tuple = (
         conversation_id,
@@ -53,6 +59,87 @@ def _conversation_data(
         content_hash=content_hash,
         provider_name="codex",
         conversation_tuple=conversation_tuple,
+        message_tuples=list(message_tuples or []),
+        block_tuples=list(block_tuples or []),
+        stats_tuple=stats_tuple or (),
+        attachment_tuples=list(attachment_tuples or []),
+        attachment_ref_tuples=list(attachment_ref_tuples or []),
+    )
+
+
+def _message_tuple(
+    message_id: str,
+    conversation_id: str,
+    *,
+    role: str,
+    text: str,
+    content_hash: str,
+    sort_key: float,
+) -> tuple:
+    return (
+        message_id,
+        conversation_id,
+        message_id,
+        role,
+        text,
+        sort_key,
+        content_hash,
+        1,
+        None,
+        0,
+        "codex",
+        len(text.split()),
+        0,
+        0,
+    )
+
+
+def _block_tuple(
+    *,
+    block_id: str,
+    message_id: str,
+    conversation_id: str,
+    block_index: int,
+    text: str,
+) -> tuple:
+    return (
+        block_id,
+        message_id,
+        conversation_id,
+        block_index,
+        "text",
+        text,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+
+
+def _attachment_tuple(attachment_id: str, *, mime_type: str = "image/png") -> tuple:
+    return (
+        attachment_id,
+        mime_type,
+        1024,
+        None,
+        0,
+        None,
+    )
+
+
+def _attachment_ref_tuple(
+    attachment_id: str,
+    conversation_id: str,
+    message_id: str,
+) -> tuple:
+    return (
+        _make_ref_id(attachment_id, conversation_id, message_id),
+        attachment_id,
+        conversation_id,
+        message_id,
+        None,
     )
 
 
@@ -115,6 +202,118 @@ def test_write_conversation_preserves_existing_parent_fk(tmp_path: Path) -> None
         ).fetchone()
         assert row is not None
         assert row["parent_conversation_id"] == "codex:parent"
+
+
+def test_write_conversation_replaces_runtime_rows_on_content_change(tmp_path: Path) -> None:
+    with open_connection(tmp_path / "ingest.db") as conn:
+        v1 = _conversation_data(
+            "codex:replace",
+            content_hash="hash-v1",
+            message_tuples=[
+                _message_tuple(
+                    "msg-1",
+                    "codex:replace",
+                    role="user",
+                    text="first",
+                    content_hash="msg-v1-1",
+                    sort_key=1.0,
+                ),
+                _message_tuple(
+                    "msg-2",
+                    "codex:replace",
+                    role="assistant",
+                    text="second",
+                    content_hash="msg-v1-2",
+                    sort_key=2.0,
+                ),
+            ],
+            block_tuples=[
+                _block_tuple(
+                    block_id="blk-msg-1-0",
+                    message_id="msg-1",
+                    conversation_id="codex:replace",
+                    block_index=0,
+                    text="alpha",
+                ),
+                _block_tuple(
+                    block_id="blk-msg-1-1",
+                    message_id="msg-1",
+                    conversation_id="codex:replace",
+                    block_index=1,
+                    text="beta",
+                ),
+            ],
+            stats_tuple=("codex:replace", "codex", 2, 2, 0, 0),
+            attachment_tuples=[
+                _attachment_tuple("att-1"),
+                _attachment_tuple("att-2", mime_type="image/jpeg"),
+            ],
+            attachment_ref_tuples=[
+                _attachment_ref_tuple("att-1", "codex:replace", "msg-1"),
+                _attachment_ref_tuple("att-2", "codex:replace", "msg-2"),
+            ],
+        )
+        changed, counts = _write_conversation(conn, v1)
+        assert changed is True
+        assert counts["messages"] == 2
+
+        v2 = _conversation_data(
+            "codex:replace",
+            content_hash="hash-v2",
+            message_tuples=[
+                _message_tuple(
+                    "msg-1",
+                    "codex:replace",
+                    role="user",
+                    text="first updated",
+                    content_hash="msg-v2-1",
+                    sort_key=1.0,
+                )
+            ],
+            block_tuples=[
+                _block_tuple(
+                    block_id="blk-msg-1-0-v2",
+                    message_id="msg-1",
+                    conversation_id="codex:replace",
+                    block_index=0,
+                    text="alpha updated",
+                )
+            ],
+            stats_tuple=("codex:replace", "codex", 1, 2, 0, 0),
+            attachment_tuples=[_attachment_tuple("att-1")],
+            attachment_ref_tuples=[_attachment_ref_tuple("att-1", "codex:replace", "msg-1")],
+        )
+        changed, counts = _write_conversation(conn, v2)
+        assert changed is True
+        assert counts["messages"] == 1
+        conn.commit()
+
+        assert conn.execute(
+            "SELECT COUNT(*) FROM messages WHERE conversation_id = ?",
+            ("codex:replace",),
+        ).fetchone()[0] == 1
+        assert conn.execute(
+            "SELECT COUNT(*) FROM content_blocks WHERE conversation_id = ?",
+            ("codex:replace",),
+        ).fetchone()[0] == 1
+        assert conn.execute(
+            "SELECT COUNT(*) FROM attachment_refs WHERE conversation_id = ?",
+            ("codex:replace",),
+        ).fetchone()[0] == 1
+        assert conn.execute(
+            "SELECT message_id FROM attachment_refs WHERE conversation_id = ? AND attachment_id = ?",
+            ("codex:replace", "att-1"),
+        ).fetchone()[0] == "msg-1"
+        assert conn.execute(
+            "SELECT COUNT(*) FROM attachments WHERE attachment_id = ?",
+            ("att-2",),
+        ).fetchone()[0] == 0
+        stats_row = conn.execute(
+            "SELECT message_count FROM conversation_stats WHERE conversation_id = ?",
+            ("codex:replace",),
+        ).fetchone()
+        assert stats_row is not None
+        assert stats_row[0] == 1
 
 
 def test_drain_ready_conversation_entries_preserves_late_parent_fk(tmp_path: Path) -> None:

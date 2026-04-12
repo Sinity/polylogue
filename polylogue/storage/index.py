@@ -4,7 +4,7 @@ import sqlite3
 from collections.abc import Sequence
 
 from .action_event_rebuild_runtime import rebuild_action_event_read_model_sync
-from .backends.connection import connection_context, open_connection
+from .backends.connection import connection_context, open_read_connection
 from .fts_lifecycle import (
     _chunked as _chunked,
 )
@@ -53,7 +53,7 @@ def update_index_for_conversations(conversation_ids: Sequence[str], conn: sqlite
 def index_status(conn: sqlite3.Connection | None = None) -> dict[str, object]:
     if conn is not None:
         return fts_index_status_sync(conn)
-    with open_connection(None) as fallback_conn:
+    with open_read_connection(None) as fallback_conn:
         return fts_index_status_sync(fallback_conn)
 
 

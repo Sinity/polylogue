@@ -51,12 +51,12 @@ def embed_batch(
     limit: int | None = None,
 ) -> None:
     """Embed multiple conversations."""
-    from polylogue.storage.backends.connection import open_connection
+    from polylogue.storage.backends.connection import open_read_connection
     from polylogue.sync_bridge import run_coroutine_sync
 
     backend = repo.backend
     conv_ids: list[tuple[str, str | None]] = []
-    with open_connection(backend.db_path) as conn:
+    with open_read_connection(backend.db_path) as conn:
         if rebuild:
             cursor = conn.execute("SELECT conversation_id, title FROM conversations ORDER BY updated_at DESC")
         else:

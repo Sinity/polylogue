@@ -34,7 +34,11 @@ from polylogue.pipeline.services.ingest_worker import (
     ingest_record,
 )
 from polylogue.pipeline.services.process_pool import process_pool_executor
-from polylogue.storage.backends.connection import DB_TIMEOUT
+from polylogue.storage.backends.connection import DB_TIMEOUT, _load_sqlite_vec
+from polylogue.storage.conversation_replacement import (
+    recount_and_prune_attachments_sync,
+    replace_conversation_runtime_state_sync,
+)
 from polylogue.storage.state_views import RawConversationStateUpdate
 
 if TYPE_CHECKING:
@@ -233,6 +237,7 @@ def _open_sync_connection(db_path: Path) -> sqlite3.Connection:
     conn.execute("PRAGMA mmap_size = 1073741824")
     conn.execute("PRAGMA temp_store = MEMORY")
     conn.execute("PRAGMA wal_autocheckpoint = 10000")
+    _load_sqlite_vec(conn)
     return conn
 
 
@@ -384,6 +389,7 @@ def _write_conversation(conn: sqlite3.Connection, cdata: ConversationData) -> tu
         return False, counts
 
     counts["conversations"] = 1
+    affected_attachment_ids = replace_conversation_runtime_state_sync(conn, cdata.conversation_id)
 
     # Messages (topo-sorted for parent FK)
     if cdata.message_tuples:
@@ -405,28 +411,13 @@ def _write_conversation(conn: sqlite3.Connection, cdata: ConversationData) -> tu
         conn.executemany(_ACTION_EVENT_INSERT_SQL, cdata.action_event_tuples)
 
     # Attachments
+    new_attachment_ids = {t[0] for t in cdata.attachment_tuples}
+    affected_attachment_ids |= new_attachment_ids
     if cdata.attachment_tuples:
-        # Prune old refs first
-        new_aids = {t[0] for t in cdata.attachment_tuples}
-        if new_aids:
-            placeholders = ",".join("?" * len(new_aids))
-            conn.execute(
-                f"DELETE FROM attachment_refs WHERE conversation_id = ? AND attachment_id NOT IN ({placeholders})",
-                (cdata.conversation_id, *new_aids),
-            )
         conn.executemany(_ATTACHMENT_UPSERT_SQL, cdata.attachment_tuples)
         conn.executemany(_ATTACHMENT_REF_INSERT_SQL, cdata.attachment_ref_tuples)
-        # Update ref counts
-        aid_list = list(new_aids)
-        placeholders = ", ".join("?" for _ in aid_list)
-        conn.execute(
-            f"""UPDATE attachments SET ref_count = (
-                SELECT COUNT(*) FROM attachment_refs
-                WHERE attachment_refs.attachment_id = attachments.attachment_id
-            ) WHERE attachment_id IN ({placeholders})""",
-            tuple(aid_list),
-        )
         counts["attachments"] = len(cdata.attachment_tuples)
+    recount_and_prune_attachments_sync(conn, affected_attachment_ids)
 
     return True, counts
 

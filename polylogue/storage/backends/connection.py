@@ -19,10 +19,11 @@ from polylogue.storage.backends.schema import _ensure_schema
 
 logger = get_logger(__name__)
 
-# Default SQLite connection timeout in seconds.  Used for both sync and async
-# connections across the storage layer to prevent indefinite blocking when the
-# database is locked by another writer.
+# Default SQLite connection timeout in seconds for writer-style connections.
+# Read/query paths should use a shorter read-only timeout and avoid write-ish
+# setup pragmas so they can observe the archive while a bulk ingest is active.
 DB_TIMEOUT = 30
+READ_DB_TIMEOUT = 1
 
 
 def _load_sqlite_vec(conn: sqlite3.Connection) -> bool:
@@ -50,6 +51,15 @@ def _load_sqlite_vec(conn: sqlite3.Connection) -> bool:
     except Exception as exc:
         logger.warning("sqlite-vec extension load failed: %s", exc)
         return False
+
+
+def _configure_read_connection(conn: sqlite3.Connection) -> None:
+    """Apply read-safe settings without taking write-oriented locks."""
+    conn.row_factory = sqlite3.Row
+    conn.execute(f"PRAGMA busy_timeout = {READ_DB_TIMEOUT * 1000}")
+    conn.execute("PRAGMA cache_size = -524288")  # 512 MB
+    conn.execute("PRAGMA mmap_size = 1073741824")  # 1 GB
+    conn.execute("PRAGMA temp_store = MEMORY")
 
 
 # ---------------------------------------------------------------------------
@@ -137,6 +147,29 @@ def connection_context(db_path: Path | str | sqlite3.Connection | None = None) -
 open_connection = connection_context
 
 
+@contextmanager
+def open_read_connection(db_path: Path | str | None = None) -> Iterator[sqlite3.Connection]:
+    """Open a short-lived read-only connection when the DB already exists.
+
+    This avoids writer-style setup (`journal_mode`, schema ensure) for read
+    paths that should remain responsive while another process is bulk-ingesting.
+    If the database does not exist yet, fall back to the normal connection path
+    so first-run callers still get a usable empty archive.
+    """
+    path = Path(db_path) if db_path else default_db_path()
+    if not path.exists():
+        with open_connection(path) as conn:
+            yield conn
+        return
+
+    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=READ_DB_TIMEOUT)
+    _configure_read_connection(conn)
+    try:
+        yield conn
+    finally:
+        conn.close()
+
+
 def default_db_path() -> Path:
     """Return the default database path.
 
@@ -197,6 +230,7 @@ def _build_provider_scope_filter(
 
 __all__ = [
     "DB_TIMEOUT",
+    "READ_DB_TIMEOUT",
     "_build_provider_scope_filter",
     "_build_scope_filter",
     "_build_source_scope_filter",
@@ -204,4 +238,5 @@ __all__ = [
     "create_default_backend",
     "default_db_path",
     "open_connection",
+    "open_read_connection",
 ]

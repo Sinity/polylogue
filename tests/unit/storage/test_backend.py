@@ -12,11 +12,11 @@ from pathlib import Path
 import pytest
 
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
-from polylogue.storage.backends.connection import connection_context, open_connection
+from polylogue.storage.backends.connection import connection_context, open_connection, open_read_connection
 from polylogue.storage.backends.schema import SCHEMA_VERSION, _ensure_schema
 from polylogue.storage.query_models import ConversationRecordQuery
 from polylogue.storage.repository import ConversationRepository
-from polylogue.storage.store import ConversationRecord, RawConversationRecord
+from polylogue.storage.store import ContentBlockRecord, ConversationRecord, RawConversationRecord
 from tests.infra.storage_records import make_attachment, make_conversation, make_message
 
 
@@ -95,6 +95,23 @@ def test_open_connection_contract(tmp_path: Path) -> None:
 
     assert db_path.exists()
     assert db_path.parent.exists()
+
+
+def test_open_read_connection_contract(tmp_path: Path) -> None:
+    """open_read_connection() must avoid writer-style setup when the DB exists."""
+    db_path = tmp_path / "readonly.db"
+    with open_connection(db_path) as conn:
+        conn.execute("CREATE TABLE IF NOT EXISTS sentinel(value INTEGER)")
+        conn.execute("INSERT INTO sentinel(value) VALUES (1)")
+        conn.commit()
+
+    with open_read_connection(db_path) as conn:
+        assert conn.execute("PRAGMA query_only").fetchone()[0] == 0
+        assert conn.execute("PRAGMA busy_timeout").fetchone()[0] == 1000
+        assert conn.execute("SELECT value FROM sentinel").fetchone()[0] == 1
+        with pytest.raises(sqlite3.OperationalError):
+            conn.execute("INSERT INTO sentinel(value) VALUES (2)")
+            conn.commit()
 
 
 @pytest.mark.slow
@@ -263,7 +280,24 @@ async def test_async_backend_schema_and_lock_contracts(tmp_path: Path) -> None:
     await asyncio.gather(write_task, asyncio.create_task(quick_read()))
     assert read_completed is True
 
+    second_backend = SQLiteBackend(db_path=backend.db_path)
+    second_repo = ConversationRepository(backend=second_backend)
+
+    cross_backend_read_completed = False
+
+    async def cross_backend_read() -> None:
+        nonlocal cross_backend_read_completed
+        await asyncio.wait_for(second_backend.queries.list_conversations(ConversationRecordQuery()), timeout=2)
+        await asyncio.wait_for(second_repo.get_archive_stats(), timeout=2)
+        cross_backend_read_completed = True
+
+    write_task = asyncio.create_task(slow_write())
+    await asyncio.sleep(0.01)
+    await asyncio.gather(write_task, asyncio.create_task(cross_backend_read()))
+    assert cross_backend_read_completed is True
+
     await backend.close()
+    await second_backend.close()
     await backend.close()
     await slow_backend.close()
 
@@ -339,6 +373,123 @@ async def test_backend_transaction_contracts(tmp_path: Path) -> None:
             await backend.save_conversation_record(make_conversation("conv-error", title="Error"))
             raise ValueError("Test error")
     assert await backend.get_conversation("conv-error") is None
+    await backend.close()
+
+
+async def test_save_conversation_replaces_runtime_rows_on_content_change(tmp_path: Path) -> None:
+    """Content changes must replace stale runtime rows instead of accumulating them."""
+    backend = SQLiteBackend(db_path=tmp_path / "replace.db")
+    repo = ConversationRepository(backend=backend)
+
+    conv_v1 = make_conversation(
+        "conv-replace",
+        provider_name="codex",
+        title="Replace",
+        content_hash="hash-v1",
+    )
+    msg1_v1 = make_message(
+        "msg-1",
+        "conv-replace",
+        text="first",
+        content_hash="msg-hash-v1-1",
+        content_blocks=[
+            ContentBlockRecord(
+                block_id="blk-msg-1-0",
+                message_id="msg-1",
+                conversation_id="conv-replace",
+                block_index=0,
+                type="text",
+                text="alpha",
+            ),
+            ContentBlockRecord(
+                block_id="blk-msg-1-1",
+                message_id="msg-1",
+                conversation_id="conv-replace",
+                block_index=1,
+                type="text",
+                text="beta",
+            ),
+        ],
+    )
+    msg2_v1 = make_message(
+        "msg-2",
+        "conv-replace",
+        role="assistant",
+        text="second",
+        content_hash="msg-hash-v1-2",
+    )
+    att1 = make_attachment("att-1", "conv-replace", "msg-1", mime_type="image/png")
+    att2 = make_attachment("att-2", "conv-replace", "msg-2", mime_type="image/jpeg")
+
+    await repo.save_conversation(conv_v1, [msg1_v1, msg2_v1], [att1, att2])
+
+    conv_v2 = make_conversation(
+        "conv-replace",
+        provider_name="codex",
+        title="Replace",
+        content_hash="hash-v2",
+    )
+    msg1_v2 = make_message(
+        "msg-1",
+        "conv-replace",
+        text="first updated",
+        content_hash="msg-hash-v2-1",
+        content_blocks=[
+            ContentBlockRecord(
+                block_id="blk-msg-1-0-v2",
+                message_id="msg-1",
+                conversation_id="conv-replace",
+                block_index=0,
+                type="text",
+                text="alpha updated",
+            )
+        ],
+    )
+    att1_v2 = make_attachment("att-1", "conv-replace", "msg-1", mime_type="image/png")
+
+    await repo.save_conversation(conv_v2, [msg1_v2], [att1_v2])
+
+    messages = await backend.get_messages("conv-replace")
+    assert [message.message_id for message in messages] == ["msg-1"]
+    assert messages[0].text == "first updated"
+    assert [(block.block_index, block.text) for block in messages[0].content_blocks] == [
+        (0, "alpha updated")
+    ]
+
+    attachments = sorted(await backend.get_attachments("conv-replace"), key=lambda record: record.attachment_id)
+    assert [(attachment.attachment_id, attachment.message_id) for attachment in attachments] == [
+        ("att-1", "msg-1")
+    ]
+
+    with open_connection(backend.db_path) as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM messages WHERE conversation_id = ?",
+            ("conv-replace",),
+        ).fetchone()[0] == 1
+        assert conn.execute(
+            "SELECT COUNT(*) FROM content_blocks WHERE conversation_id = ?",
+            ("conv-replace",),
+        ).fetchone()[0] == 1
+        assert conn.execute(
+            "SELECT COUNT(*) FROM attachment_refs WHERE conversation_id = ?",
+            ("conv-replace",),
+        ).fetchone()[0] == 1
+        assert conn.execute(
+            "SELECT message_id FROM attachment_refs WHERE conversation_id = ? AND attachment_id = ?",
+            ("conv-replace", "att-1"),
+        ).fetchone()[0] == "msg-1"
+        assert conn.execute(
+            "SELECT COUNT(*) FROM attachments WHERE attachment_id = ?",
+            ("att-2",),
+        ).fetchone()[0] == 0
+        stats_row = conn.execute(
+            "SELECT message_count, word_count FROM conversation_stats WHERE conversation_id = ?",
+            ("conv-replace",),
+        ).fetchone()
+        assert stats_row is not None
+        assert stats_row["message_count"] == 1
+        assert stats_row["word_count"] == 2
+
     await backend.close()
 
 

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from polylogue.storage.backends.connection import open_connection
+from polylogue.storage.backends.connection import open_read_connection
 from polylogue.storage.search_providers.hybrid_conversations import _resolve_ranked_conversation_ids
 from polylogue.storage.search_providers.hybrid_factory import create_hybrid_provider
 
@@ -156,7 +156,7 @@ class HybridSearchProvider:
         if not message_results:
             return []
 
-        with open_connection(self.fts_provider.db_path) as conn:
+        with open_read_connection(self.fts_provider.db_path) as conn:
             return _resolve_ranked_conversation_ids(
                 conn,
                 message_results=message_results,

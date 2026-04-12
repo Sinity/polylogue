@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from polylogue.storage.backends.connection import connection_context, open_connection
+from polylogue.storage.backends.connection import connection_context, open_read_connection
 from polylogue.storage.fts_lifecycle import replace_fts_rows_for_messages_sync
 from polylogue.storage.index import ensure_index
 from polylogue.storage.search_cache import invalidate_search_cache
@@ -75,7 +75,7 @@ class FTS5Provider:
         if fts_query is None:
             return []
 
-        with open_connection(self.db_path) as conn:
+        with open_read_connection(self.db_path) as conn:
             # Check if index exists
             row = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='messages_fts'").fetchone()
 
