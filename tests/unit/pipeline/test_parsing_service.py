@@ -145,6 +145,7 @@ class TestParsingServiceParseSources:
                 "elapsed_ms": 123.4,
                 "blob_mb": 1.5,
                 "rss_end_mb": 42.0,
+                "peak_rss_growth_mb": 12.5,
             }
         ]
 
@@ -167,6 +168,7 @@ class TestParsingServiceParseSources:
 
         assert result.diagnostics["batch_observations"]["batch_count"] == 1
         assert result.diagnostics["batch_observations"]["max_elapsed_ms"] == 123.4
+        assert result.diagnostics["batch_observations"]["max_peak_rss_growth_mb"] == 12.5
         assert "session_product_refresh" not in result.diagnostics
 
     async def test_ingest_dedupes_backlog_without_rebuilding_raw_id_list(self):
