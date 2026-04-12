@@ -90,6 +90,20 @@ polylogue mcp
 See [docs/cli-reference.md](docs/cli-reference.md) for the generated command
 reference from live help output.
 
+### Shell Completion
+
+For zsh:
+
+```bash
+mkdir -p ~/.zfunc
+polylogue completions --shell zsh > ~/.zfunc/_polylogue
+fpath=(~/.zfunc $fpath)
+autoload -Uz compinit && compinit
+```
+
+The completion surface includes command descriptions plus live archive-backed
+values for recent conversation IDs, tags, tools, and configured sources.
+
 ## Core Surfaces
 
 ### Archive and Query
