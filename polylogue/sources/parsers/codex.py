@@ -203,15 +203,6 @@ def parse(payload: list[object], fallback_id: str) -> ParsedConversation:
             # Get message ID from the record
             msg_id = record.id or f"msg-{idx}"
 
-            # Build provider_meta with raw data and structured metadata
-            msg_meta: dict[str, object] = {"raw": item}
-            if record.git:
-                git_info = record.git.model_dump(exclude_none=True)
-                if git_info:
-                    msg_meta["git"] = git_info
-            if record.instructions:
-                msg_meta["instructions"] = record.instructions
-
             # Build content blocks from the raw content field
             raw_content = None
             if record.content:
@@ -231,7 +222,6 @@ def parse(payload: list[object], fallback_id: str) -> ParsedConversation:
                     text=text,
                     timestamp=timestamp,
                     content_blocks=content_blocks,
-                    provider_meta=msg_meta,
                 )
             )
             latest_message_timestamp = _latest_timestamp(latest_message_timestamp, timestamp)
