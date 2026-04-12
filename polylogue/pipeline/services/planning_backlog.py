@@ -21,12 +21,13 @@ async def collect_validation_backlog(
     *,
     source_names: list[str] | None,
     exclude_raw_ids: list[str] | None = None,
+    force_reparse: bool = False,
 ) -> list[str]:
     exclude = set(exclude_raw_ids or [])
     backlog_validate_ids: list[str] = []
     async for raw_id in backend.queries.iter_raw_ids(
         source_names=source_names,
-        require_unparsed=True,
+        require_unparsed=not force_reparse,
         require_unvalidated=True,
     ):
         if raw_id not in exclude:
@@ -39,12 +40,13 @@ async def collect_parse_backlog(
     *,
     source_names: list[str] | None,
     exclude_raw_ids: list[str] | None = None,
+    force_reparse: bool = False,
 ) -> list[str]:
     exclude = set(exclude_raw_ids or [])
     backlog_parse_ids: list[str] = []
     async for raw_id in backend.queries.iter_raw_ids(
         source_names=source_names,
-        require_unparsed=True,
+        require_unparsed=not force_reparse,
         validation_statuses=["passed", "skipped"],
     ):
         if raw_id not in exclude:

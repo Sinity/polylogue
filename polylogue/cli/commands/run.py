@@ -243,8 +243,7 @@ def _run_result_callback(
     selected_sources = maybe_prompt_sources(env, cfg, selected_sources, "run")
 
     if reparse:
-        reset_count = run_coroutine_sync(env.repository.reset_parse_status())
-        click.echo(f"Reset parse status for {reset_count:,} raw records.", err=False)
+        click.echo("Reparse requested.", err=False)
 
     plan_snapshot = None
     if preview:
@@ -264,6 +263,7 @@ def _run_result_callback(
                     source_names=selected_sources,
                     backend=env.backend,
                     progress_callback=progress_observer_handle.on_progress,
+                    force_reparse=reparse,
                 )
         except DriveError as exc:
             handle_drive_error(exc)
@@ -278,6 +278,10 @@ def _run_result_callback(
     if not watch and not plan_snapshot and not env.ui.plain and not env.ui.confirm("Proceed?", default=True):
         env.ui.console.print("Cancelled.")
         return
+
+    if reparse:
+        reset_count = run_coroutine_sync(env.repository.reset_parse_status())
+        click.echo(f"Reset parse status for {reset_count:,} raw records.", err=False)
 
     if watch:
         from polylogue.pipeline.watch import WatchRunner
