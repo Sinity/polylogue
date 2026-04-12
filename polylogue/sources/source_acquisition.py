@@ -142,6 +142,11 @@ def iter_source_raw_data(
     for path, file_mtime in walk.paths_to_process:
         try:
             provider_hint = Provider.from_string(source.name)
+            if path.stat().st_size == 0:
+                failed_count += 1
+                logger.warning("Skipping empty source file: %s", path)
+                _record_cursor_failure(cursor_state, str(path), "empty file")
+                continue
 
             if path.suffix.lower() == ".zip":
                 validator = _ZipEntryValidator(
@@ -153,6 +158,11 @@ def iter_source_raw_data(
                 with zipfile.ZipFile(path) as zf:
                     for info in validator.filter_entries(zf.infolist()):
                         entry_path = f"{path}:{info.filename}"
+                        if info.file_size == 0:
+                            failed_count += 1
+                            logger.warning("Skipping empty source entry: %s", entry_path)
+                            _record_cursor_failure(cursor_state, entry_path, "empty file")
+                            continue
                         entry_provider_hint = _zip_entry_provider_hint(info.filename, provider_hint)
                         if entry_provider_hint in GROUP_PROVIDERS:
                             with zf.open(info.filename) as handle:
