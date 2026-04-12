@@ -340,7 +340,7 @@ async def _get_read_connection(backend: SQLiteBackend) -> AsyncIterator[aiosqlit
             backend._read_pool.put_nowait(conn)
         return
 
-    if not backend._schema_ensured or not backend._db_path.exists():
+    if not backend._db_path.exists():
         async with _get_connection(backend) as conn:
             yield conn
         return

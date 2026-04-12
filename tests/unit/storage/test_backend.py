@@ -6,6 +6,7 @@ import asyncio
 import importlib
 import sqlite3
 import threading
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -229,7 +230,7 @@ async def test_async_backend_schema_and_lock_contracts(tmp_path: Path) -> None:
     backend._schema_ensured = False
     backend._ensure_schema = counting_ensure_schema
     await asyncio.gather(*[backend.queries.list_conversations(ConversationRecordQuery()) for _ in range(20)])
-    assert init_count == 1
+    assert init_count == 0
 
     slow_backend = SQLiteBackend(db_path=tmp_path / "slow.db")
     events: list[str] = []
@@ -307,6 +308,43 @@ async def test_async_backend_connection_error_surfaces() -> None:
     with pytest.raises((OSError, PermissionError, Exception)):
         backend = SQLiteBackend(db_path=Path("/nonexistent/deeply/nested/path/db.db"))
         await backend.get_conversation("test")
+
+
+async def test_async_read_connection_stays_responsive_during_sync_writer_lock(tmp_path: Path) -> None:
+    """Fresh read backends must not take the writer-style path when a DB already exists."""
+    db_path = tmp_path / "locked.db"
+    with open_connection(db_path) as conn:
+        conn.execute("CREATE TABLE IF NOT EXISTS sentinel(value INTEGER)")
+        conn.execute("INSERT INTO sentinel(value) VALUES (1)")
+        conn.commit()
+
+    writer_started = threading.Event()
+    writer_release = threading.Event()
+
+    def hold_writer_lock() -> None:
+        with sqlite3.connect(db_path, timeout=30) as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            writer_started.set()
+            writer_release.wait(timeout=5)
+            conn.rollback()
+
+    writer = threading.Thread(target=hold_writer_lock)
+    writer.start()
+    writer_started.wait(timeout=2)
+
+    backend = SQLiteBackend(db_path=db_path)
+    backend._schema_ensured = False
+    started = time.perf_counter()
+    try:
+        records = await asyncio.wait_for(backend.queries.list_conversations(ConversationRecordQuery()), timeout=2)
+    finally:
+        writer_release.set()
+        writer.join(timeout=2)
+        await backend.close()
+
+    elapsed = time.perf_counter() - started
+    assert records == []
+    assert elapsed < 1.5
 
 
 async def test_paged_id_iteration_contract(tmp_path: Path) -> None:
