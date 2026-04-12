@@ -15,6 +15,13 @@ from polylogue.types import Provider, ValidationMode, ValidationStatus
 logger = get_logger(__name__)
 
 
+def _format_malformed_jsonl_error(*, malformed_lines: int, malformed_detail: str | None) -> str:
+    message = f"Malformed JSONL lines: {malformed_lines}"
+    if malformed_detail:
+        return f"{message} (first bad {malformed_detail})"
+    return message
+
+
 @dataclass
 class _ValidationOutcome:
     """Thread-safe result of per-record CPU-bound validation work."""
@@ -65,6 +72,7 @@ def _validate_record_sync(
         )
         payload = envelope.payload
         malformed_lines = envelope.malformed_jsonl_lines
+        malformed_detail = envelope.malformed_jsonl_detail
         payload_provider = envelope.provider
     except Exception as exc:
         counts_delta["errors"] += 1
@@ -95,7 +103,10 @@ def _validate_record_sync(
         )
 
     if malformed_lines:
-        malformed_error = f"Malformed JSONL lines: {malformed_lines}"
+        malformed_error = _format_malformed_jsonl_error(
+            malformed_lines=malformed_lines,
+            malformed_detail=malformed_detail,
+        )
         if validation_mode is ValidationMode.STRICT:
             counts_delta["invalid"] += 1
             return _ValidationOutcome(
