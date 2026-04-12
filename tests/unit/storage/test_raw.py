@@ -179,6 +179,51 @@ class TestRawConversationStorage:
         assert len(claude_ids) == 3
         assert all(raw_id.startswith("raw-id-") for raw_id in chatgpt_ids + claude_ids)
 
+    async def test_iter_raw_headers_by_provider_name(self, backend: SQLiteBackend) -> None:
+        """Header iteration exposes blob sizes without hydrating full raw records."""
+        from datetime import datetime, timezone
+
+        from polylogue.storage.store import RawConversationRecord
+
+        records = [
+            RawConversationRecord(
+                raw_id=f"raw-header-{i}",
+                provider_name="chatgpt" if i % 2 == 0 else "claude-ai",
+                source_path=f"/path/{i}.json",
+                blob_size=(i + 1) * 10,
+                acquired_at=datetime.now(timezone.utc).isoformat(),
+            )
+            for i in range(4)
+        ]
+
+        for record in records:
+            await backend.save_raw_conversation(record)
+
+        chatgpt_headers = [header async for header in backend.iter_raw_headers(provider_name="chatgpt")]
+
+        assert chatgpt_headers == [("raw-header-2", 30), ("raw-header-0", 10)]
+
+    async def test_get_raw_blob_sizes_preserves_requested_order(self, backend: SQLiteBackend) -> None:
+        """Blob-size lookups should preserve caller order for batch shaping."""
+        from datetime import datetime, timezone
+
+        from polylogue.storage.store import RawConversationRecord
+
+        for raw_id, blob_size in (("raw-a", 10), ("raw-b", 20), ("raw-c", 30)):
+            await backend.save_raw_conversation(
+                RawConversationRecord(
+                    raw_id=raw_id,
+                    provider_name="chatgpt",
+                    source_path=f"/path/{raw_id}.json",
+                    blob_size=blob_size,
+                    acquired_at=datetime.now(timezone.utc).isoformat(),
+                )
+            )
+
+        blob_sizes = await backend.get_raw_blob_sizes(["raw-c", "raw-a", "missing", "raw-b"])
+
+        assert blob_sizes == [("raw-c", 30), ("raw-a", 10), ("raw-b", 20)]
+
     async def test_raw_provider_filters_prefer_payload_provider_when_present(self, backend: SQLiteBackend) -> None:
         """Raw provider filtering should use payload_provider when validation/parsing has classified the payload."""
         from datetime import datetime, timezone

@@ -9,7 +9,7 @@ already decoded for parsing anyway).
 from __future__ import annotations
 
 import time
-from collections.abc import Iterable
+from collections.abc import AsyncIterator, Iterable, Iterator
 from typing import TYPE_CHECKING
 
 from polylogue.logging import get_logger
@@ -22,6 +22,66 @@ if TYPE_CHECKING:
     from polylogue.protocols import ProgressCallback
 
 logger = get_logger(__name__)
+
+
+def _iter_raw_id_batches(
+    headers: Iterable[tuple[str, int]],
+    *,
+    max_records: int,
+    max_blob_bytes: int,
+) -> Iterator[list[str]]:
+    batch_ids: list[str] = []
+    batch_blob_bytes = 0
+
+    for raw_id, blob_size in headers:
+        record_blob_bytes = max(int(blob_size), 0)
+        if batch_ids and (
+            len(batch_ids) >= max_records or batch_blob_bytes + record_blob_bytes > max_blob_bytes
+        ):
+            yield batch_ids
+            batch_ids = []
+            batch_blob_bytes = 0
+
+        batch_ids.append(raw_id)
+        batch_blob_bytes += record_blob_bytes
+
+        if len(batch_ids) >= max_records or batch_blob_bytes >= max_blob_bytes:
+            yield batch_ids
+            batch_ids = []
+            batch_blob_bytes = 0
+
+    if batch_ids:
+        yield batch_ids
+
+
+async def _iter_raw_id_batches_async(
+    headers: AsyncIterator[tuple[str, int]],
+    *,
+    max_records: int,
+    max_blob_bytes: int,
+) -> AsyncIterator[list[str]]:
+    batch_ids: list[str] = []
+    batch_blob_bytes = 0
+
+    async for raw_id, blob_size in headers:
+        record_blob_bytes = max(int(blob_size), 0)
+        if batch_ids and (
+            len(batch_ids) >= max_records or batch_blob_bytes + record_blob_bytes > max_blob_bytes
+        ):
+            yield batch_ids
+            batch_ids = []
+            batch_blob_bytes = 0
+
+        batch_ids.append(raw_id)
+        batch_blob_bytes += record_blob_bytes
+
+        if len(batch_ids) >= max_records or batch_blob_bytes >= max_blob_bytes:
+            yield batch_ids
+            batch_ids = []
+            batch_blob_bytes = 0
+
+    if batch_ids:
+        yield batch_ids
 
 
 def _append_unique_raw_ids(
@@ -212,11 +272,16 @@ async def parse_from_raw(
     batches_processed = 0
 
     if raw_ids is not None:
-        total = len(raw_ids)
+        raw_headers = await service.repository.get_raw_blob_sizes(raw_ids)
+        total = len(raw_headers)
         if progress_callback is not None:
             progress_callback(0, desc=f"Ingesting ({total:,} raw)")
-        for batch_start in range(0, total, service.raw_batch_size):
-            batch_ids = raw_ids[batch_start : batch_start + service.raw_batch_size]
+        processed_so_far = 0
+        for batch_ids in _iter_raw_id_batches(
+            raw_headers,
+            max_records=service.raw_batch_size,
+            max_blob_bytes=service.raw_batch_blob_limit_bytes,
+        ):
             t_batch = time.perf_counter()
             batch_observation = await process_ingest_batch(
                 service,
@@ -227,7 +292,7 @@ async def parse_from_raw(
             )
             batches_processed += 1
             batch_elapsed = time.perf_counter() - t_batch
-            processed_so_far = batch_start + len(batch_ids)
+            processed_so_far += len(batch_ids)
             if batch_observation is not None:
                 batch_observation["batch"] = batches_processed
                 batch_observation["processed_raw"] = processed_so_far
@@ -248,43 +313,30 @@ async def parse_from_raw(
     else:
         if progress_callback is not None:
             progress_callback(0, desc="Ingesting")
-        batch_ids_acc: list[str] = []
         total_raw = 0
-        async for raw_id in backend.queries.iter_raw_ids(provider_name=provider):
-            batch_ids_acc.append(raw_id)
-            total_raw += 1
-            if len(batch_ids_acc) >= service.raw_batch_size:
-                batch_observation = await process_ingest_batch(
-                    service,
-                    backend,
-                    batch_ids_acc,
-                    result,
-                    progress_callback,
-                )
-                batches_processed += 1
-                if batch_observation is not None:
-                    batch_observation["batch"] = batches_processed
-                    batch_observation["processed_raw"] = total_raw
-                    result.batch_observations.append(batch_observation)
-                if progress_callback is not None:
-                    progress_callback(
-                        0,
-                        desc=f"Ingesting ({total_raw:,} raw, batch {batches_processed})",
-                    )
-                batch_ids_acc = []
-        if batch_ids_acc:
+        async for batch_ids in _iter_raw_id_batches_async(
+            service.repository.iter_raw_headers(provider_name=provider),
+            max_records=service.raw_batch_size,
+            max_blob_bytes=service.raw_batch_blob_limit_bytes,
+        ):
             batch_observation = await process_ingest_batch(
                 service,
                 backend,
-                batch_ids_acc,
+                batch_ids,
                 result,
                 progress_callback,
             )
             batches_processed += 1
+            total_raw += len(batch_ids)
             if batch_observation is not None:
                 batch_observation["batch"] = batches_processed
                 batch_observation["processed_raw"] = total_raw
                 result.batch_observations.append(batch_observation)
+            if progress_callback is not None:
+                progress_callback(
+                    0,
+                    desc=f"Ingesting ({total_raw:,} raw, batch {batches_processed})",
+                )
         total = total_raw
 
     elapsed = time.perf_counter() - t_start
