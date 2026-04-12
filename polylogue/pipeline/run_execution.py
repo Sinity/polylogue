@@ -175,6 +175,8 @@ async def run_sources(
                 rendered=render_outcome.rendered_count,
                 failures=render_outcome.failures,
             )
+            if render_outcome.observation:
+                sm.details.update(render_outcome.observation)
             sm.stop(items=state.counts.get("rendered", 0))
             logger.info(
                 "Render stage complete",

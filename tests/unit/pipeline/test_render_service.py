@@ -8,7 +8,11 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from polylogue.pipeline.services.rendering import RenderResult, RenderService
+from polylogue.pipeline.services.rendering import (
+    RenderResult,
+    RenderService,
+    _resolve_default_render_workers,
+)
 
 
 class TestRenderResult:
@@ -19,6 +23,8 @@ class TestRenderResult:
         result = RenderResult()
         assert result.rendered_count == 0
         assert result.failures == []
+        assert result.worker_count == 0
+        assert result.max_current_rss_mb is None
 
     def test_record_success(self):
         """record_success increments count."""
@@ -204,3 +210,20 @@ class TestRenderService:
             progress_callback=capture,
         )
         assert all(amount == 1 for amount in amounts)
+
+
+def test_default_render_workers_back_off_when_rss_is_high(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("polylogue.pipeline.services.rendering.os.cpu_count", lambda: 16)
+    monkeypatch.setattr("polylogue.pipeline.services.rendering.read_current_rss_mb", lambda: 1536.0)
+
+    worker_count = _resolve_default_render_workers(None)
+
+    assert worker_count == 2
+
+
+def test_default_render_workers_respect_explicit_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("polylogue.pipeline.services.rendering.read_current_rss_mb", lambda: 4096.0)
+
+    worker_count = _resolve_default_render_workers(3)
+
+    assert worker_count == 3

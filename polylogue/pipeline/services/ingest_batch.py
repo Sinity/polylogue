@@ -14,7 +14,7 @@ import os
 import pickle
 import sqlite3
 import time
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from concurrent.futures import Future, as_completed
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -52,6 +52,11 @@ if TYPE_CHECKING:
     from polylogue.storage.backends.async_sqlite import SQLiteBackend
 
 logger = get_logger(__name__)
+
+_DEFAULT_INGEST_WORKER_LIMIT = 8
+_INGEST_SOFT_BLOB_LIMIT_BYTES = 48 * 1024 * 1024
+_INGEST_HIGH_BLOB_LIMIT_BYTES = 96 * 1024 * 1024
+_INGEST_EXTREME_BLOB_LIMIT_BYTES = 256 * 1024 * 1024
 
 
 @dataclass(slots=True)
@@ -606,7 +611,29 @@ def _iter_ingest_results_sync(
 
 
 def _resolved_ingest_worker_limit(value: int | None) -> int:
-    return value if value is not None else 8
+    return value if value is not None else _DEFAULT_INGEST_WORKER_LIMIT
+
+
+def _select_ingest_worker_count(raw_records: Sequence[object], ingest_workers: int | None) -> int:
+    base_worker_count = min(
+        len(raw_records),
+        os.cpu_count() or 4,
+        _resolved_ingest_worker_limit(ingest_workers),
+    )
+    if base_worker_count <= 1:
+        return base_worker_count
+
+    blob_sizes = [max(int(getattr(record, "blob_size", 0) or 0), 0) for record in raw_records]
+    total_blob_bytes = sum(blob_sizes)
+    max_blob_bytes = max(blob_sizes, default=0)
+
+    if max_blob_bytes >= _INGEST_EXTREME_BLOB_LIMIT_BYTES or total_blob_bytes >= _INGEST_EXTREME_BLOB_LIMIT_BYTES:
+        return 1
+    if max_blob_bytes >= _INGEST_HIGH_BLOB_LIMIT_BYTES or total_blob_bytes >= _INGEST_HIGH_BLOB_LIMIT_BYTES:
+        return min(base_worker_count, 2)
+    if total_blob_bytes >= _INGEST_SOFT_BLOB_LIMIT_BYTES:
+        return min(base_worker_count, 4)
+    return base_worker_count
 
 
 def _process_ingest_batch_sync(
@@ -623,7 +650,7 @@ def _process_ingest_batch_sync(
 
     summary = _IngestBatchSummary()
     summary.raw_record_count = len(raw_records)
-    summary.worker_count = min(len(raw_records), os.cpu_count() or 4, _resolved_ingest_worker_limit(ingest_workers))
+    summary.worker_count = _select_ingest_worker_count(raw_records, ingest_workers)
     summary.total_blob_mb = sum(r.blob_size for r in raw_records) / (1024 * 1024)
 
     t_start = time.perf_counter()
