@@ -12,6 +12,7 @@ import pytest
 
 from polylogue.config import Config, Source
 from polylogue.pipeline.services.acquisition import AcquireResult, AcquisitionService
+from polylogue.pipeline.services.acquisition_records import ScanResult
 from polylogue.pipeline.services.parsing import ParseResult, ParsingService
 from polylogue.pipeline.services.planning import PlanningService
 from polylogue.pipeline.services.validation import ValidationService  # used by TestPlanningService
@@ -644,6 +645,111 @@ class TestPlanningService:
         assert plan.summary.counts["parse"] == 2
         assert plan.summary.details["backlog_parse"] == 2
         assert set(plan.parse_ready_raw_ids) == {"raw-passed", "raw-skipped"}
+
+    async def test_build_plan_force_reparse_simulates_reset_for_parse_backlog(self, tmp_path: Path):
+        backend = SQLiteBackend(db_path=tmp_path / "test.db")
+        config = Config(sources=[], archive_root=tmp_path / "archive", render_root=tmp_path / "render")
+        planner = PlanningService(backend=backend, config=config)
+        source_dir = tmp_path / "inbox-a"
+        source_dir.mkdir()
+
+        await backend.save_raw_conversation(
+            RawConversationRecord(
+                raw_id="raw-validated",
+                provider_name="chatgpt",
+                source_name="inbox-a",
+                source_path="/tmp/validated.json",
+                blob_size=len(b'{"id":"x"}'),
+                acquired_at=datetime.now(tz=timezone.utc).isoformat(),
+            )
+        )
+        await backend.mark_raw_validated("raw-validated", status="passed", provider="chatgpt", mode="strict")
+        await backend.mark_raw_parsed("raw-validated", payload_provider="chatgpt")
+
+        await backend.save_raw_conversation(
+            RawConversationRecord(
+                raw_id="raw-unvalidated",
+                provider_name="chatgpt",
+                source_name="inbox-a",
+                source_path="/tmp/unvalidated.json",
+                blob_size=len(b'{"id":"x"}'),
+                acquired_at=datetime.now(tz=timezone.utc).isoformat(),
+            )
+        )
+        await backend.mark_raw_parsed("raw-unvalidated", payload_provider="chatgpt")
+
+        ordinary = await planner.build_plan(sources=[Source(name="inbox-a", path=source_dir)], stage="parse")
+        forced = await planner.build_plan(
+            sources=[Source(name="inbox-a", path=source_dir)],
+            stage="parse",
+            force_reparse=True,
+        )
+
+        assert ordinary.summary.counts == {}
+        assert ordinary.validate_raw_ids == []
+        assert ordinary.parse_ready_raw_ids == []
+
+        assert forced.summary.counts["validate"] == 1
+        assert forced.summary.counts["parse"] == 2
+        assert forced.summary.details["backlog_parse"] == 1
+        assert set(forced.validate_raw_ids) == {"raw-unvalidated"}
+        assert set(forced.parse_ready_raw_ids) == {"raw-unvalidated", "raw-validated"}
+
+    @patch("polylogue.pipeline.services.acquisition.AcquisitionService.visit_sources")
+    async def test_build_plan_force_reparse_counts_scanned_existing_records(
+        self,
+        mock_visit_sources,
+        tmp_path: Path,
+    ):
+        backend = SQLiteBackend(db_path=tmp_path / "test.db")
+        config = Config(sources=[], archive_root=tmp_path / "archive", render_root=tmp_path / "render")
+        planner = PlanningService(backend=backend, config=config)
+        source_dir = tmp_path / "inbox-a"
+        source_dir.mkdir()
+
+        record = RawConversationRecord(
+            raw_id="raw-existing",
+            provider_name="chatgpt",
+            source_name="inbox-a",
+            source_path="/tmp/existing.json",
+            blob_size=len(b'{"id":"x"}'),
+            acquired_at=datetime.now(tz=timezone.utc).isoformat(),
+        )
+        await backend.save_raw_conversation(record)
+        await backend.mark_raw_validated("raw-existing", status="passed", provider="chatgpt", mode="strict")
+        await backend.mark_raw_parsed("raw-existing", payload_provider="chatgpt")
+
+        async def _visit_sources(
+            _sources,
+            *,
+            on_record=None,
+            **_kwargs,
+        ):
+            assert on_record is not None
+            await on_record(record)
+            result = ScanResult()
+            result.counts["scanned"] = 1
+            return result
+
+        mock_visit_sources.side_effect = _visit_sources
+
+        ordinary = await planner.build_plan(
+            sources=[Source(name="inbox-a", path=source_dir)],
+            stage="all",
+            preview=True,
+        )
+        forced = await planner.build_plan(
+            sources=[Source(name="inbox-a", path=source_dir)],
+            stage="all",
+            preview=True,
+            force_reparse=True,
+        )
+
+        assert ordinary.summary.counts["scan"] == 1
+        assert "parse" not in ordinary.summary.counts
+        assert forced.summary.counts["scan"] == 1
+        assert forced.summary.counts["parse"] == 1
+        assert forced.summary.details["existing_raw"] == 1
 
     @pytest.mark.parametrize(("stage", "count_key"), [("render", "render"), ("index", "index")])
     async def test_build_plan_uses_count_query_for_render_and_index(self, tmp_path: Path, stage: str, count_key: str):
