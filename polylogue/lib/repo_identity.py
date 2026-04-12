@@ -10,6 +10,7 @@ from urllib.parse import urlparse
 
 _PATH_DELIMITERS = {"#", "`", '"', "\\", ":", "(", ")", "\n", "\r", "\t", " ", "<", ">", ",", ";", "'"}
 _REPO_SLUG_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:\.git)?$")
+_PLAIN_REPO_NAME_RE = re.compile(r"^[a-z0-9_.-]+$")
 
 
 def _extract_local_path_candidate(value: str) -> str | None:
@@ -45,9 +46,13 @@ def _path_exists(path: Path) -> bool:
 
 def _is_non_work_repo_root(path: Path) -> bool:
     parts = path.parts
-    if ".claude" in parts and path.name == "projects":
+    if path.name == "projects" and (
+        ".claude" in parts or (".config" in parts and "claude" in parts)
+    ):
         return True
-    if ".codex" in parts and path.name in {"projects", "sessions"}:
+    if path.name in {"projects", "sessions"} and (
+        ".codex" in parts or (".config" in parts and "codex" in parts)
+    ):
         return True
     return path.name == "blob-repository" and ".local" in parts and "state" in parts
 
@@ -118,6 +123,10 @@ def normalize_repo_names(
 ) -> tuple[str, ...]:
     normalized: set[str] = set()
     for value in values:
+        raw = str(value or "").strip()
+        if raw and _PLAIN_REPO_NAME_RE.fullmatch(raw):
+            normalized.add(raw)
+            continue
         repo_name = normalize_repo_name(value)
         if repo_name is not None:
             normalized.add(repo_name)
