@@ -560,6 +560,17 @@ def _iter_ingest_results_sync(
     worker_count: int,
     measure_ingest_result_size: bool,
 ) -> Iterable[IngestRecordResult]:
+    if worker_count <= 1:
+        for raw_record in raw_records:
+            yield ingest_record(
+                raw_record,
+                archive_root_str,
+                validation_mode,
+                measure_ingest_result_size,
+                blob_root_str=blob_root_str,
+            )
+        return
+
     try:
         with process_pool_executor(max_workers=worker_count) as executor:
             futures: dict[Future, str] = {}
