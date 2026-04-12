@@ -58,6 +58,16 @@ def test_repo_identity_normalization_filters_noise(tmp_path: Path) -> None:
     ) == (str(polylogue_repo), str(sinnix_repo))
 
 
+def test_repo_identity_normalization_canonicalizes_absolute_parent_traversal(tmp_path: Path) -> None:
+    sinnix_repo = _make_repo(tmp_path, "sinnix")
+    noisy_repo_path = f"/../../{sinnix_repo.relative_to(Path('/'))}"
+    noisy_file_path = f"{noisy_repo_path}/README.md"
+
+    assert normalize_repo_path(noisy_repo_path) == str(sinnix_repo)
+    assert normalize_repo_path(noisy_file_path) == str(sinnix_repo)
+    assert normalize_repo_name(noisy_file_path) == "sinnix"
+
+
 def test_repo_identity_normalization_ignores_unreadable_git_admin_paths(monkeypatch: pytest.MonkeyPatch) -> None:
     unreadable_git_dir = Path("/boot/.git")
     original_exists = Path.exists

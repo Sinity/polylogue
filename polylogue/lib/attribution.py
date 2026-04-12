@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 
 from polylogue.lib.action_events import ActionEvent
@@ -46,6 +46,26 @@ _LANGUAGE_EXTENSIONS = {
     ".html": "html",
     ".css": "css",
 }
+_DIALOGUE_PATH_ROOTS = frozenset(
+    {
+        "boot",
+        "dev",
+        "etc",
+        "home",
+        "mnt",
+        "nix",
+        "opt",
+        "proc",
+        "realm",
+        "root",
+        "run",
+        "srv",
+        "sys",
+        "tmp",
+        "usr",
+        "var",
+    }
+)
 
 
 def _repo_root_from_path(path: str) -> str | None:
@@ -59,7 +79,7 @@ def _language_from_path(path: str) -> str | None:
     return _LANGUAGE_EXTENSIONS.get(suffix)
 
 
-def _clean_dialogue_path(path: str) -> str | None:
+def _clean_attributed_path(path: str) -> str | None:
     candidate = path.rstrip(".,;:)'\">`*_")
     if not candidate:
         return None
@@ -69,7 +89,22 @@ def _clean_dialogue_path(path: str) -> str | None:
         return None
     if set(candidate) <= {".", "/"}:
         return None
-    return candidate
+    if not candidate.startswith(("/", "~/")):
+        return candidate
+    canonical = str(Path(candidate).expanduser().resolve(strict=False))
+    if _repo_root_from_path(canonical) is not None:
+        return canonical
+
+    parts = [part for part in PurePosixPath(canonical).parts if part != "/"]
+    if len(parts) < 2:
+        return None
+    if PurePosixPath(canonical).suffix:
+        return canonical
+    if any(part.startswith(".") for part in parts):
+        return canonical
+    if parts[0] in _DIALOGUE_PATH_ROOTS:
+        return canonical
+    return None
 
 
 @dataclass(frozen=True)
@@ -138,14 +173,17 @@ def extract_attribution_from_action_events(
         for branch in action.branch_names:
             branch_names.add(branch)
         for path in action.affected_paths:
-            file_paths.add(path)
-            lang = _language_from_path(path)
+            clean_path = _clean_attributed_path(path)
+            if clean_path is None:
+                continue
+            file_paths.add(clean_path)
+            lang = _language_from_path(clean_path)
             if lang:
                 languages.add(lang)
-            repo = _repo_root_from_path(path)
+            repo = _repo_root_from_path(clean_path)
             if repo:
                 repo_paths.add(repo)
-            repo_name = normalize_repo_name(path)
+            repo_name = normalize_repo_name(clean_path)
             if repo_name:
                 repo_names.add(repo_name)
 
@@ -186,7 +224,7 @@ def extract_attribution(
         if not message.is_dialogue or not message.text:
             continue
         for match in absolute_path_pattern.finditer(message.text):
-            path = _clean_dialogue_path(match.group())
+            path = _clean_attributed_path(match.group())
             if path is None:
                 continue
             file_paths.add(path)

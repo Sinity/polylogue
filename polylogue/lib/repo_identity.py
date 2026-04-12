@@ -84,7 +84,7 @@ def normalize_repo_path(value: object) -> str | None:
     path_candidate = _extract_local_path_candidate(raw)
     if path_candidate is None:
         return None
-    git_root = _find_git_root(Path(path_candidate))
+    git_root = _find_git_root(Path(path_candidate).expanduser().resolve(strict=False))
     return str(git_root) if git_root is not None else None
 
 
