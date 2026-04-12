@@ -111,7 +111,8 @@ async def test_aggregate_message_stats_reports_role_counts_and_words(tmp_path: P
     assert unfiltered["assistant"] == 1
     assert unfiltered["system"] == 1
     assert unfiltered["words_approx"] > 0
-    assert unfiltered["attachments"] == 1
+    assert unfiltered["attachment_refs"] == 1
+    assert unfiltered["distinct_attachments"] == 1
     assert unfiltered["providers"] == {"chatgpt": 1, "codex": 1}
 
     assert filtered["total"] == 2
@@ -119,7 +120,8 @@ async def test_aggregate_message_stats_reports_role_counts_and_words(tmp_path: P
     assert filtered["assistant"] == 1
     assert filtered["system"] == 0
     assert filtered["words_approx"] > 0
-    assert filtered["attachments"] == 1
+    assert filtered["attachment_refs"] == 1
+    assert filtered["distinct_attachments"] == 1
     assert filtered["providers"] == {"chatgpt": 1}
 
 
