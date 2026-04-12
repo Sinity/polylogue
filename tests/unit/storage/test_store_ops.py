@@ -195,6 +195,38 @@ async def test_backend_path_terms_filter_contract(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_list_summaries_by_query_omits_large_provider_meta_payloads(tmp_path: Path) -> None:
+    db_path = tmp_path / "summary-provider-meta.db"
+    large_meta = {"raw": "x" * 100_000, "source": "codex"}
+
+    with open_connection(db_path) as conn:
+        upsert_conversation(
+            conn,
+            make_conversation(
+                "conv-large-meta",
+                provider_name="codex",
+                title="Large Meta Conversation",
+                provider_meta=large_meta,
+                metadata={"tag": "kept"},
+            ),
+        )
+        conn.commit()
+
+    backend = SQLiteBackend(db_path=db_path)
+    repo = ConversationRepository(backend=backend)
+    try:
+        summaries = await repo.list_summaries_by_query(_record_query(provider="codex", limit=1))
+        assert len(summaries) == 1
+        summary = summaries[0]
+        assert str(summary.id) == "conv-large-meta"
+        assert summary.title == "Large Meta Conversation"
+        assert summary.metadata == {"tag": "kept"}
+        assert summary.provider_meta is None
+    finally:
+        await repo.close()
+
+
+@pytest.mark.asyncio
 async def test_filter_path_terms_apply_after_fts_search(tmp_path: Path) -> None:
     """Combined FTS + path queries must keep the path constraint after search ranking."""
     from polylogue.lib.filters import ConversationFilter
