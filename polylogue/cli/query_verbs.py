@@ -10,6 +10,7 @@ from typing import Any
 
 import click
 
+from polylogue.cli.shell_completion_values import complete_open_targets
 from polylogue.cli.types import AppEnv
 
 VERB_NAMES = frozenset({"list", "count", "stats", "open", "delete"})
@@ -79,7 +80,7 @@ def stats_verb(ctx: click.Context, stats_by: str | None, output_format: str | No
 
 @click.command("open")
 @click.option("--print-path", is_flag=True, help="Print the matched render path instead of opening it")
-@click.argument("target_terms", nargs=-1)
+@click.argument("target_terms", nargs=-1, shell_complete=complete_open_targets)
 @click.pass_context
 def open_verb(ctx: click.Context, print_path: bool, target_terms: tuple[str, ...]) -> None:
     """Open matched conversation in browser/editor."""
