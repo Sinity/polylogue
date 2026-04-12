@@ -409,6 +409,55 @@ def test_update_index_refreshes_action_entries_for_updated_tool_blocks(test_conn
     assert ruff_hits == 1
 
 
+def test_update_index_removes_action_entries_when_tool_blocks_disappear(test_conn):
+    """update_index_for_conversations() drops stale action rows when tool blocks are removed."""
+    conv = make_conversation("conv-action-remove", title="Action removal")
+    msg = make_message(
+        "msg-action-remove",
+        "conv-action-remove",
+        role="assistant",
+        text="Ran commands",
+        content_blocks=[
+            ContentBlockRecord(
+                block_id="blk-remove-0",
+                message_id="msg-action-remove",
+                conversation_id="conv-action-remove",
+                block_index=0,
+                type="tool_use",
+                tool_name="Bash",
+                tool_id="tool-remove",
+                tool_input=json.dumps({"command": "pytest -q"}),
+                semantic_type="shell",
+            )
+        ],
+    )
+    store_records(conversation=conv, messages=[msg], attachments=[], conn=test_conn)
+    rebuild_index(test_conn)
+
+    assert (
+        test_conn.execute(
+            "SELECT COUNT(*) FROM action_events WHERE conversation_id = ?",
+            ("conv-action-remove",),
+        ).fetchone()[0]
+        == 1
+    )
+
+    test_conn.execute("DELETE FROM content_blocks WHERE message_id = ?", ("msg-action-remove",))
+
+    update_index_for_conversations(["conv-action-remove"], test_conn)
+
+    action_rows = test_conn.execute(
+        "SELECT COUNT(*) FROM action_events WHERE conversation_id = ?",
+        ("conv-action-remove",),
+    ).fetchone()[0]
+    fts_rows = test_conn.execute(
+        "SELECT COUNT(*) FROM action_events_fts WHERE conversation_id = ?",
+        ("conv-action-remove",),
+    ).fetchone()[0]
+    assert action_rows == 0
+    assert fts_rows == 0
+
+
 def test_batch_index_10k_messages(test_conn):
     """Benchmark: update_index_for_conversations handles 10k messages efficiently."""
     import time
