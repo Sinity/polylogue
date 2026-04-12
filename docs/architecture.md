@@ -119,7 +119,7 @@ Use these heuristics when adding or moving code:
 
 ## Stability Notes
 
-- SQLite schema version is currently `v2` and remains fresh-only on mismatch.
+- SQLite schema version is currently `v1` and remains fresh-only on mismatch.
 - FTS uses `unicode61`; porter stemming is not assumed.
 - The query surface is query-first at the root command and verb-oriented for
   archive actions.
