@@ -36,9 +36,18 @@ def _iter_repo_root_candidates(path: Path) -> tuple[Path, ...]:
     return (current, *current.parents)
 
 
+def _path_exists(path: Path) -> bool:
+    try:
+        return path.exists()
+    except OSError:
+        return False
+
+
 def _find_git_root(path: Path) -> Path | None:
     for candidate in _iter_repo_root_candidates(path):
-        if (candidate / ".git").exists():
+        if candidate.name == ".git" and _path_exists(candidate):
+            return candidate.parent
+        if _path_exists(candidate / ".git"):
             return candidate
     return None
 
