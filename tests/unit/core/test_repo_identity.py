@@ -8,7 +8,8 @@ from pathlib import Path
 import pytest
 
 from polylogue.archive_product_summaries import aggregate_day_session_summary_products
-from polylogue.lib.attribution import extract_attribution
+from polylogue.lib.action_events import ActionEvent
+from polylogue.lib.attribution import extract_attribution, extract_attribution_from_action_events
 from polylogue.lib.messages import MessageCollection
 from polylogue.lib.models import Conversation, Message
 from polylogue.lib.repo_identity import (
@@ -19,6 +20,7 @@ from polylogue.lib.repo_identity import (
 )
 from polylogue.lib.session_profile import SessionProfile, build_session_profile
 from polylogue.lib.session_summaries import summarize_day
+from polylogue.lib.viewports import ToolCategory
 from polylogue.storage.store import DaySessionSummaryRecord
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -244,6 +246,51 @@ def test_extract_attribution_ignores_configured_claude_transcript_repo(tmp_path:
 
     attribution = extract_attribution(conversation)
 
+    assert attribution.repo_paths == (str(work_repo),)
+    assert attribution.repo_names == ("sinnix",)
+
+
+def test_extract_attribution_filters_transcript_temp_and_snapshot_paths(tmp_path: Path) -> None:
+    work_repo = _make_repo(tmp_path, "sinnix")
+    system_file = Path("/etc/systemd/system/sinex-gateway.service")
+    action = ActionEvent(
+        event_id="evt-noise-filter",
+        message_id="msg-noise-filter",
+        timestamp=datetime(2026, 4, 12, 15, 0, tzinfo=timezone.utc),
+        sequence_index=0,
+        kind=ToolCategory.FILE_READ,
+        tool_name="Read",
+        tool_id=None,
+        provider="claude-code",
+        affected_paths=(
+            str(work_repo / "README.md"),
+            str(work_repo / ".claude" / "settings.json"),
+            ".snapshot/",
+            ".snapshots/root",
+            ".btrfs/snapshot",
+            str(Path.home() / ".claude" / "settings.local.json"),
+            str(Path.home() / ".config" / "claude" / "projects" / "foo" / "tool-results" / "out.txt"),
+            "/tmp/claude-1000/foo/tasks/bar.output",
+            "/realm/.snapshot/realm.latest",
+            "/nix/store/abcd1234-unit-script-sinex-gateway/bin/sinex-gateway",
+            str(system_file),
+        ),
+        cwd_path=None,
+        branch_names=(),
+        command=None,
+        query=None,
+        url=None,
+        output_text=None,
+        search_text="noise filter",
+        raw={},
+    )
+
+    attribution = extract_attribution_from_action_events([action])
+
+    assert attribution.file_paths_touched == (
+        str(system_file),
+        str(work_repo / "README.md"),
+    )
     assert attribution.repo_paths == (str(work_repo),)
     assert attribution.repo_names == ("sinnix",)
 
