@@ -139,6 +139,35 @@ def test_read_embedding_stats_sync_exposes_retrieval_bands_when_archive_tables_e
     assert stats.retrieval_bands["enrichment_retrieval"]["ready"] is True
 
 
+def test_read_embedding_stats_sync_can_skip_retrieval_band_status(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_action_status(_conn):
+        raise AssertionError("action-event status should not be read")
+
+    def fail_session_status(_conn):
+        raise AssertionError("session-product status should not be read")
+
+    conn = sqlite3.connect(":memory:")
+    try:
+        conn.execute("CREATE TABLE conversations (conversation_id TEXT)")
+        conn.executemany(
+            "INSERT INTO conversations (conversation_id) VALUES (?)",
+            [("conv-1",), ("conv-2",)],
+        )
+        conn.commit()
+
+        monkeypatch.setattr(embedding_stats_mod, "action_event_read_model_status_sync", fail_action_status)
+        monkeypatch.setattr(embedding_stats_mod, "session_product_status_sync", fail_session_status)
+
+        stats = read_embedding_stats_sync(conn, include_retrieval_bands=False)
+    finally:
+        conn.close()
+
+    assert stats.pending_conversations == 2
+    assert stats.retrieval_bands == {}
+
+
 @pytest.mark.asyncio
 async def test_read_embedding_stats_async_counts_available_tables() -> None:
     async with aiosqlite.connect(":memory:") as conn:

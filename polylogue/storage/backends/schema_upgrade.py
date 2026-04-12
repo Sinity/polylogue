@@ -73,6 +73,16 @@ def _ensure_raw_source_mtime_index(conn: sqlite3.Connection) -> None:
     conn.execute(desired_sql)
 
 
+def _ensure_tool_use_conversation_index(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_content_blocks_tool_use_conversation
+        ON content_blocks(conversation_id)
+        WHERE type = 'tool_use'
+        """
+    )
+
+
 def assert_supported_archive_layout(conn: sqlite3.Connection) -> None:
     """Reject legacy archive layouts that the current runtime cannot write safely."""
     if not _table_exists(conn, "raw_conversations"):
@@ -95,6 +105,8 @@ def apply_current_schema_extensions(conn: sqlite3.Connection) -> None:
 
     # Covering index for mtime-skip queries (avoids full table scan of raw payload storage)
     _ensure_raw_source_mtime_index(conn)
+    if _table_exists(conn, "content_blocks"):
+        _ensure_tool_use_conversation_index(conn)
     conn.executescript(_ARTIFACT_OBSERVATION_DDL)
     conn.executescript(_PUBLICATION_DDL)
     conn.executescript(_ACTION_EVENT_DDL)

@@ -140,6 +140,10 @@ ARCHIVE_STORAGE_DDL = """
         CREATE INDEX IF NOT EXISTS idx_content_blocks_conv_type
         ON content_blocks(conversation_id, type);
 
+        CREATE INDEX IF NOT EXISTS idx_content_blocks_tool_use_conversation
+        ON content_blocks(conversation_id)
+        WHERE type = 'tool_use';
+
         CREATE INDEX IF NOT EXISTS idx_content_blocks_semantic_type
         ON content_blocks(semantic_type);
 
