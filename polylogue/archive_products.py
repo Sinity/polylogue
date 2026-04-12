@@ -31,6 +31,10 @@ class ArchiveProductModel(BaseModel):
         return self.model_dump_json(indent=2, exclude_none=exclude_none)
 
 
+class ArchiveProductUnavailableError(RuntimeError):
+    """Raised when a durable archive-product surface is not ready to read."""
+
+
 class ArchiveProductProvenance(ArchiveProductModel):
     materializer_version: int
     materialized_at: str
@@ -567,6 +571,7 @@ __all__ = [
     "ArchiveInferenceProvenance",
     "ArchiveProductModel",
     "ArchiveProductProvenance",
+    "ArchiveProductUnavailableError",
     "DaySessionSummaryProduct",
     "DaySessionSummaryProductQuery",
     "ProviderAnalyticsProduct",
