@@ -9,6 +9,8 @@ import pytest
 from click.testing import CliRunner
 
 from polylogue.cli import cli
+from polylogue.cli.check_workflow import CheckCommandOptions, run_check_workflow
+from polylogue.cli.types import AppEnv
 from polylogue.health import HealthCheck, HealthReport, VerifyStatus
 from polylogue.schemas.operator_models import (
     ArtifactCohortListResult,
@@ -25,6 +27,7 @@ from polylogue.storage.backends.connection import open_connection
 from polylogue.storage.state_views import ArtifactCohortSummary
 from polylogue.storage.store import ArtifactObservationRecord
 from polylogue.types import ArtifactSupportStatus, Provider
+from polylogue.ui import create_ui
 from tests.infra.storage_records import ConversationBuilder, DbFactory
 
 
@@ -218,6 +221,47 @@ class TestCheckCommand:
         assert "ok" in data["summary"]
         assert "warning" in data["summary"]
         assert "error" in data["summary"]
+
+    def test_check_runtime_only_skips_archive_health(self, monkeypatch) -> None:
+        runtime_report = HealthReport(checks=[HealthCheck("runtime_only", VerifyStatus.OK, summary="runtime ok")])
+        env = AppEnv(ui=create_ui(True))
+        options = CheckCommandOptions(
+            json_output=True,
+            verbose=False,
+            repair=False,
+            cleanup=False,
+            preview=False,
+            vacuum=False,
+            deep=False,
+            runtime=True,
+            check_blob=False,
+            check_schemas=False,
+            check_proof=False,
+            check_artifacts=False,
+            check_cohorts=False,
+            schema_providers=(),
+            artifact_providers=(),
+            artifact_statuses=(),
+            artifact_kinds=(),
+            artifact_limit=None,
+            artifact_offset=0,
+            schema_samples="all",
+            schema_record_limit=None,
+            schema_record_offset=0,
+            schema_quarantine_malformed=False,
+            maintenance_targets=(),
+        )
+
+        monkeypatch.setattr(
+            "polylogue.cli.check_workflow.get_health",
+            lambda config, *, deep=False: (_ for _ in ()).throw(AssertionError("archive health should be skipped")),
+        )
+        monkeypatch.setattr("polylogue.cli.check_workflow.run_runtime_health", lambda config: runtime_report)
+
+        result = run_check_workflow(env, options)
+
+        assert result.report is runtime_report
+        assert result.runtime_report is None
 
     def test_check_detects_orphan_messages(self, db_path, cli_runner):
         """Check detects messages without conversations."""
