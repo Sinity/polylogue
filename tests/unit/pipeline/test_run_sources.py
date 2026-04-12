@@ -174,6 +174,71 @@ def test_explicit_leaf_stage_sequence_uses_order_sensitive_leaf_semantics(worksp
     assert mock_index.await_args.kwargs["stage"] == "all"
 
 
+def test_ingest_stage_log_omits_full_batch_telemetry(workspace_env, tmp_path: Path) -> None:
+    config = Config(
+        sources=[Source(name="explicit", path=tmp_path / "explicit")],
+        archive_root=workspace_env["archive_root"],
+        render_root=workspace_env["archive_root"] / "render",
+    )
+    config.sources[0].path.mkdir(parents=True, exist_ok=True)
+
+    parse_result = ParseResult()
+    parse_result.processed_ids.add("conv-log")
+    ingest_result = IngestResult(
+        acquire_result=AcquireResult(),
+        validation_result=None,
+        parse_result=parse_result,
+        parse_raw_ids=["raw-log"],
+        timings={"acquire": 0.0, "ingest": 0.02},
+        diagnostics={
+            "batch_observations": {
+                "batch_count": 2,
+                "slow_batch_count": 1,
+                "batches": [
+                    {"elapsed_ms": 123.4, "blob_mb": 12.3},
+                    {"elapsed_ms": 456.7, "blob_mb": 45.6},
+                ],
+            }
+        },
+    )
+    persisted_result = RunResult(
+        run_id="test-run",
+        counts={"conversations": 1},
+        drift={"new": {"conversations": 1}, "changed": {"conversations": 0}, "removed": {"conversations": 0}},
+        indexed=False,
+        index_error=None,
+        duration_ms=1,
+        render_failures=[],
+        run_path=None,
+    )
+
+    with (
+        patch(
+            "polylogue.pipeline.run_execution.execute_ingest_stage",
+            new_callable=AsyncMock,
+            return_value=ingest_result,
+        ),
+        patch(
+            "polylogue.pipeline.run_execution.persist_run_result",
+            new_callable=AsyncMock,
+            return_value=persisted_result,
+        ),
+        patch("polylogue.pipeline.run_execution.logger.info") as mock_logger_info,
+    ):
+        asyncio.run(run_sources(config=config, stage="parse"))
+
+    ingest_complete_calls = [
+        call
+        for call in mock_logger_info.call_args_list
+        if call.args and call.args[0] == "Ingest complete"
+    ]
+    assert len(ingest_complete_calls) == 1
+    details = ingest_complete_calls[0].kwargs["details"]
+    assert details["batch_observations"]["batch_count"] == 2
+    assert details["batch_observations"]["slow_batch_count"] == 1
+    assert "batches" not in details["batch_observations"]
+
+
 class TestRunSourcesRenderFailures:
     def test_render_failure_tracked_in_result(self, workspace_env):
         from polylogue.storage.state_views import RunResult
