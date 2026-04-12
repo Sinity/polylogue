@@ -51,11 +51,48 @@ _DIALOGUE_LANGUAGE_HINT_PATTERNS = {
     lang_name: re.compile(rf"\b{re.escape(lang_name)}\b")
     for lang_name in ("python", "rust", "typescript", "javascript", "nix", "go", "java", "ruby", "sql")
 }
+_IGNORED_ABSOLUTE_PATH_PARTS = frozenset({".snapshot", ".snapshots", "tool-results"})
+_IGNORED_RELATIVE_PATH_PREFIXES = (
+    ".btrfs/snapshot",
+    ".claude",
+    ".codex",
+    ".snapshot",
+    ".snapshots",
+)
+
+
+def _is_ignored_absolute_path(path: PurePosixPath) -> bool:
+    parts = tuple(part for part in path.parts if part != "/")
+    if not parts:
+        return True
+    if any(part in _IGNORED_ABSOLUTE_PATH_PARTS for part in parts):
+        return True
+    if parts[:2] == ("nix", "store"):
+        return True
+    if parts[0] == "tmp" and any(part.startswith("claude-") or part.startswith("codex-") for part in parts[1:]):
+        return True
+    if parts[:2] == ("home", Path.home().name):
+        if parts[2:3] in ((".claude",), (".codex",)):
+            return True
+        if parts[2:5] == (".config", "claude", "projects"):
+            return True
+        if parts[2:4] in ((".config", "claude"), (".config", "codex")):
+            return True
+        if parts[2:4] == (".claude", "projects"):
+            return True
+        if parts[2:4] == (".codex", "sessions"):
+            return True
+    return False
 
 
 def _repo_root_from_path(path: str) -> str | None:
     """Derive a likely repository root from a file path."""
     return normalize_repo_path(path)
+
+
+def _is_ignored_repo_relative_path(path: PurePosixPath) -> bool:
+    candidate = path.as_posix()
+    return any(candidate == prefix or candidate.startswith(f"{prefix}/") for prefix in _IGNORED_RELATIVE_PATH_PREFIXES)
 
 
 def _language_from_path(path: str) -> str | None:
@@ -77,18 +114,31 @@ def _clean_attributed_path(path: str) -> str | None:
     if not candidate.startswith(("/", "~/")):
         if not looks_like_path_candidate(candidate):
             return None
+        if _is_ignored_repo_relative_path(PurePosixPath(candidate)):
+            return None
         return candidate
-    canonical = str(Path(candidate).expanduser().resolve(strict=False))
-    if _repo_root_from_path(canonical) is not None:
-        return canonical
+    expanded_path = Path(candidate).expanduser()
+    expanded = str(expanded_path)
+    resolved = str(expanded_path.resolve(strict=False))
+    repo_root = _repo_root_from_path(resolved)
+    if repo_root is not None:
+        try:
+            repo_relative = PurePosixPath(Path(resolved).relative_to(repo_root).as_posix())
+        except ValueError:
+            repo_relative = None
+        if repo_relative is not None and _is_ignored_repo_relative_path(repo_relative):
+            return None
+        return resolved
 
-    parts = [part for part in PurePosixPath(canonical).parts if part != "/"]
+    pure_path = PurePosixPath(expanded)
+    if _is_ignored_absolute_path(pure_path):
+        return None
+
+    parts = [part for part in pure_path.parts if part != "/"]
     if len(parts) < 2:
         return None
-    if PurePosixPath(canonical).suffix:
-        return canonical
-    if any(part.startswith(".") for part in parts):
-        return canonical
+    if pure_path.suffix:
+        return expanded
     return None
 
 
