@@ -1351,7 +1351,8 @@ async def test_output_stats_sql_uses_summary_pushdown_contract() -> None:
             "user": 4,
             "assistant": 5,
             "words_approx": 42,
-            "attachments": 2,
+            "attachment_refs": 2,
+            "distinct_attachments": 1,
             "min_sort_key": 1704067200,
             "max_sort_key": 1704153600,
             "providers": {"claude-ai": 2, "chatgpt": 1},
@@ -1396,7 +1397,8 @@ async def test_output_stats_sql_uses_summary_pushdown_contract() -> None:
         "Messages: 9 total (4 user, 5 assistant)",
         "Words: ~42",
         "Providers: claude-ai (2), chatgpt (1)",
-        "Attachments: 2",
+        "Attachment refs: 2",
+        "Unique attachments: 1",
         "Date range: 2024-01-01 to 2024-01-02",
     ]
 
@@ -1415,6 +1417,9 @@ async def test_output_stats_sql_empty_paths_contract(
     env = _make_env()
     repo = MagicMock()
     repo.queries.aggregate_message_stats = AsyncMock()
+    conn = _SnapshotConn()
+    repo.backend.read_connection.return_value = _async_connection(conn)
+    repo.get_archive_stats = AsyncMock(return_value=SimpleNamespace(total_conversations=0))
 
     filter_chain = MagicMock()
     filter_chain.describe.return_value = described
@@ -1445,6 +1450,9 @@ async def test_output_stats_sql_empty_paths_json_contract(
     env = _make_env()
     repo = MagicMock()
     repo.queries.aggregate_message_stats = AsyncMock()
+    conn = _SnapshotConn()
+    repo.backend.read_connection.return_value = _async_connection(conn)
+    repo.get_archive_stats = AsyncMock(return_value=SimpleNamespace(total_conversations=0))
 
     filter_chain = MagicMock()
     filter_chain.describe.return_value = described
@@ -1490,17 +1498,18 @@ async def test_output_stats_sql_archive_scope_includes_embedding_state() -> None
     with patch(
         "polylogue.cli.query_stats.stats_q.aggregate_message_stats",
         new=AsyncMock(
-            return_value={
-                "total": 9,
-                "user": 4,
-                "assistant": 5,
-                "words_approx": 42,
-                "providers": {"claude-ai": 2, "chatgpt": 1},
-                "attachments": 2,
-                "min_sort_key": 1704067200,
-                "max_sort_key": 1704153600,
-            }
-        ),
+                return_value={
+                    "total": 9,
+                    "user": 4,
+                    "assistant": 5,
+                    "words_approx": 42,
+                    "providers": {"claude-ai": 2, "chatgpt": 1},
+                    "attachment_refs": 2,
+                    "distinct_attachments": 1,
+                    "min_sort_key": 1704067200,
+                    "max_sort_key": 1704153600,
+                }
+            ),
     ) as mock_aggregate:
         await output_stats_sql(env, filter_chain, repo)
 
@@ -1514,7 +1523,8 @@ async def test_output_stats_sql_archive_scope_includes_embedding_state() -> None
         "Messages: 9 total (4 user, 5 assistant)",
         "Words: ~42",
         "Providers: claude-ai (2), chatgpt (1)",
-        "Attachments: 2",
+        "Attachment refs: 2",
+        "Unique attachments: 1",
         "Embeddings: 1/2 convs, 5 msgs (50.0%), pending 1",
         "Date range: 2024-01-01 to 2024-01-02",
     ]
@@ -1551,7 +1561,8 @@ async def test_output_stats_sql_json_contract() -> None:
                     "user": 4,
                     "assistant": 5,
                     "words_approx": 42,
-                    "attachments": 2,
+                    "attachment_refs": 2,
+                    "distinct_attachments": 1,
                     "min_sort_key": 1704067200,
                     "max_sort_key": 1704153600,
                     "providers": {"claude-ai": 2, "chatgpt": 1},
@@ -1572,10 +1583,13 @@ async def test_output_stats_sql_json_contract() -> None:
     assert payload["rows"] == []
     assert payload["summary"]["conversations"] == 2
     assert payload["summary"]["messages_total"] == 9
+    assert payload["summary"]["attachment_refs"] == 2
+    assert payload["summary"]["distinct_attachments"] == 1
     assert payload["summary"]["providers"] == {"claude-ai": 2, "chatgpt": 1}
     assert payload["summary"]["date_range"] == "2024-01-01 to 2024-01-02"
     assert payload["summary"]["embeddings"]["embedded_conversations"] == 1
-    assert payload["summary"]["embeddings"]["total_conversations"] == payload["summary"]["conversations"]
+    assert payload["summary"]["embeddings"]["embedding_coverage_percent"] == 50.0
+    assert "total_attachments" not in payload["summary"]["embeddings"]
 
 
 # ---------------------------------------------------------------------------

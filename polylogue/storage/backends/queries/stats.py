@@ -72,14 +72,18 @@ async def aggregate_message_stats(
 
         att_row = await (
             await conn.execute("""
-            SELECT COUNT(*) as cnt FROM attachment_refs
+            SELECT
+                COUNT(*) AS attachment_ref_count,
+                COUNT(DISTINCT attachment_id) AS distinct_attachment_count
+            FROM attachment_refs
             WHERE conversation_id IN (SELECT cid FROM _stat_ids)
         """)
         ).fetchone()
 
         result = {
             **message_stats,
-            "attachments": att_row["cnt"] or 0,
+            "attachment_refs": att_row["attachment_ref_count"] or 0,
+            "distinct_attachments": att_row["distinct_attachment_count"] or 0,
             "min_sort_key": date_row["min_sk"],
             "max_sort_key": date_row["max_sk"],
             "providers": providers,
@@ -101,11 +105,19 @@ async def aggregate_message_stats(
     ).fetchall()
     providers = {r["provider_name"]: r["cnt"] for r in prov_rows}
 
-    att_cnt = (await (await conn.execute("SELECT COUNT(*) FROM attachment_refs")).fetchone())[0] or 0
+    att_row = await (
+        await conn.execute("""
+        SELECT
+            COUNT(*) AS attachment_ref_count,
+            COUNT(DISTINCT attachment_id) AS distinct_attachment_count
+        FROM attachment_refs
+        """)
+    ).fetchone()
 
     return {
         **message_stats,
-        "attachments": att_cnt,
+        "attachment_refs": att_row["attachment_ref_count"] or 0,
+        "distinct_attachments": att_row["distinct_attachment_count"] or 0,
         "min_sort_key": date_row["min_sk"],
         "max_sort_key": date_row["max_sk"],
         "providers": providers,
