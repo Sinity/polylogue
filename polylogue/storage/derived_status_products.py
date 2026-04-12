@@ -25,13 +25,13 @@ def build_action_statuses(metrics: dict[str, int | bool]) -> dict[str, DerivedMo
             name="messages_fts",
             ready=bool(metrics["message_fts_ready"]),
             detail=(
-                f"Messages FTS ready ({metrics['message_fts_rows']:,}/{metrics['total_messages']:,} rows)"
+                f"Messages FTS ready ({metrics['message_fts_rows']:,}/{metrics['message_source_rows']:,} rows)"
                 if bool(metrics["message_fts_ready"])
-                else f"Messages FTS pending ({metrics['message_fts_rows']:,}/{metrics['total_messages']:,} rows)"
+                else f"Messages FTS pending ({metrics['message_fts_rows']:,}/{metrics['message_source_rows']:,} rows)"
             ),
-            source_rows=int(metrics["total_messages"]),
+            source_rows=int(metrics["message_source_rows"]),
             materialized_rows=int(metrics["message_fts_rows"]),
-            pending_rows=pending_rows(int(metrics["total_messages"]), int(metrics["message_fts_rows"])),
+            pending_rows=pending_rows(int(metrics["message_source_rows"]), int(metrics["message_fts_rows"])),
         ),
         "action_events": DerivedModelStatus(
             name="action_events",

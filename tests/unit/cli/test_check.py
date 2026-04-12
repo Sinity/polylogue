@@ -234,6 +234,34 @@ def test_check_warns_when_message_index_is_incomplete(cli_workspace, cli_runner)
     assert index_check["detail"] == "messages indexed: 0/2"
 
 
+def test_check_ignores_null_text_messages_in_fts_readiness(cli_workspace, cli_runner):
+    db_path = cli_workspace["db_path"]
+    factory = DbFactory(db_path)
+    factory.create_conversation(
+        id="conv-null-text",
+        provider="chatgpt",
+        messages=[
+            {"id": "m-null-text-1", "role": "user", "text": "indexed"},
+            {"id": "m-null-text-2", "role": "assistant", "text": "to be nulled"},
+        ],
+    )
+    with open_connection(db_path) as conn:
+        conn.execute("UPDATE messages SET text = NULL WHERE message_id = ?", ("m-null-text-2",))
+        conn.commit()
+
+    result = cli_runner.invoke(cli, ["--plain", "doctor", "--json"])
+    assert result.exit_code == 0
+
+    data = _extract_json(result.output)
+    index_check = next(c for c in data["checks"] if c["name"] == "index")
+    fts_check = next(c for c in data["checks"] if c["name"] == "fts_sync")
+
+    assert index_check["status"] == "ok"
+    assert index_check["detail"] == "messages indexed: 1"
+    assert fts_check["status"] == "ok"
+    assert fts_check["detail"] == "Messages FTS ready (1/1 rows)"
+
+
 class TestCheckCommand:
     """Tests for polylogue check command."""
 
