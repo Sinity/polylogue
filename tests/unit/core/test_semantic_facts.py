@@ -548,6 +548,89 @@ def test_build_session_profile_discards_markdown_glob_paths_in_dialogue_text() -
     assert not any("*" in path for path in profile.file_paths_touched)
 
 
+def test_build_session_profile_discards_dialogue_pseudo_paths_and_keeps_real_paths() -> None:
+    noisy_repo_path = f"/../../{REPO_ROOT.relative_to(Path('/'))}"
+    noisy_file_path = f"{noisy_repo_path}/README.md"
+    conversation = Conversation(
+        id="conv-dialogue-path-noise",
+        provider="claude-code",
+        messages=MessageCollection(
+            messages=[
+                Message(
+                    id="u1",
+                    role="user",
+                    provider="claude-code",
+                    text=(
+                        f"Inspect {README_PATH} and {noisy_file_path}, "
+                        "but ignore /# /12 /AFK/browser /Codex and /DAG."
+                    ),
+                    timestamp=datetime(2026, 3, 23, 9, 0, tzinfo=timezone.utc),
+                ),
+                Message(
+                    id="a1",
+                    role="assistant",
+                    provider="claude-code",
+                    text="I will inspect the real files only.",
+                    timestamp=datetime(2026, 3, 23, 9, 1, tzinfo=timezone.utc),
+                ),
+            ]
+        ),
+    )
+
+    profile = build_session_profile(conversation)
+
+    assert str(README_PATH) in profile.file_paths_touched
+    assert str(REPO_ROOT / "README.md") in profile.file_paths_touched
+    assert str(REPO_ROOT) in profile.repo_paths
+    assert "/#" not in profile.file_paths_touched
+    assert "/12" not in profile.file_paths_touched
+    assert "/AFK/browser" not in profile.file_paths_touched
+    assert "/Codex" not in profile.file_paths_touched
+    assert "/DAG" not in profile.file_paths_touched
+
+
+def test_build_session_profile_discards_shell_path_noise_from_action_events() -> None:
+    conversation = Conversation(
+        id="conv-action-path-noise",
+        provider="claude-code",
+        messages=MessageCollection(
+            messages=[
+                Message(
+                    id="a1",
+                    role="assistant",
+                    provider="claude-code",
+                    text="Running a shell command.",
+                    timestamp=datetime(2026, 3, 23, 9, 0, tzinfo=timezone.utc),
+                    content_blocks=[
+                        {
+                            "type": "tool_use",
+                            "tool_name": "Bash",
+                            "tool_input": {
+                                "command": (
+                                    f"echo /# /12 /AFK/browser /Codex /DAG && "
+                                    f"cat {README_PATH} {LIB_PATH / 'action_events.py'}"
+                                )
+                            },
+                            "semantic_type": "shell",
+                        }
+                    ],
+                )
+            ]
+        ),
+    )
+
+    profile = build_session_profile(conversation)
+
+    assert str(README_PATH) in profile.file_paths_touched
+    assert str(LIB_PATH / "action_events.py") in profile.file_paths_touched
+    assert str(REPO_ROOT) in profile.repo_paths
+    assert "/#" not in profile.file_paths_touched
+    assert "/12" not in profile.file_paths_touched
+    assert "/AFK/browser" not in profile.file_paths_touched
+    assert "/Codex" not in profile.file_paths_touched
+    assert "/DAG" not in profile.file_paths_touched
+
+
 def test_build_session_profile_uses_conversation_level_git_context() -> None:
     conversation = Conversation(
         id="conv-git-context",
