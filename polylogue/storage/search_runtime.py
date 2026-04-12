@@ -8,7 +8,7 @@ from pathlib import Path
 
 from polylogue.errors import DatabaseError
 
-from .backends.connection import open_connection
+from .backends.connection import open_read_connection
 from .search_cache import SearchCacheKey
 from .search_models import SearchHit, SearchResult
 from .search_query_builders import build_ranked_conversation_search_query, resolve_conversation_path
@@ -49,7 +49,7 @@ def search_messages_impl(
         return SearchResult(hits=[])
 
     sql, params = query_spec
-    with open_connection(db_path) as conn:
+    with open_read_connection(db_path) as conn:
         exists = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='messages_fts'").fetchone()
         if not exists:
             raise DatabaseError("Search index not built. Run `polylogue run` with index enabled.")
