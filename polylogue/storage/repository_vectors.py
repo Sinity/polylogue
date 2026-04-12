@@ -66,7 +66,7 @@ class RepositoryVectorMixin:
         placeholders = ",".join("?" * len(message_ids))
         query = f"SELECT message_id, conversation_id FROM messages WHERE message_id IN ({placeholders})"
 
-        async with self._backend.connection() as conn:
+        async with self._backend.read_connection() as conn:
             cursor = await conn.execute(query, message_ids)
             rows = await cursor.fetchall()
 
@@ -120,7 +120,7 @@ class RepositoryVectorMixin:
     async def get_archive_stats(self):
         from polylogue.lib.stats import ArchiveStats
 
-        async with self._backend.connection() as conn:
+        async with self._backend.read_connection() as conn:
             cursor = await conn.execute("SELECT COUNT(*) FROM conversations")
             conv_count = (await cursor.fetchone())[0]
 

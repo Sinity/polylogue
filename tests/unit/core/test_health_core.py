@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 from unittest.mock import patch
 
@@ -237,6 +238,36 @@ def test_run_health_includes_source_checks(cli_workspace) -> None:
     report = run_archive_health(config)
     source_checks = [check for check in report.checks if check.name.startswith("source:")]
     assert len(source_checks) >= len(config.sources)
+
+
+def test_run_archive_health_reports_busy_archive_with_operator_message(tmp_path: Path) -> None:
+    from polylogue.config import Config, Source
+    from polylogue.health import run_archive_health
+
+    archive_root = tmp_path / "archive"
+    render_root = tmp_path / "render"
+    archive_root.mkdir(parents=True, exist_ok=True)
+    render_root.mkdir(parents=True, exist_ok=True)
+
+    config = Config(archive_root=archive_root, render_root=render_root, sources=[Source(name="test", path=tmp_path)])
+
+    with patch(
+        "polylogue.storage.backends.connection.open_connection",
+        side_effect=sqlite3.OperationalError("database is locked"),
+    ):
+        report = run_archive_health(config)
+
+    database_check = next(check for check in report.checks if check.name == "database")
+    index_check = next(check for check in report.checks if check.name == "index")
+
+    assert (
+        database_check.summary
+        == "DB error: database is locked (archive is busy; retry after the current run completes)"
+    )
+    assert (
+        index_check.summary
+        == "Skipped: database unavailable (database is locked (archive is busy; retry after the current run completes))"
+    )
 
 
 @pytest.mark.parametrize("deep", [False, True])

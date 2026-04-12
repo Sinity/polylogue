@@ -9,10 +9,10 @@ import click
 
 def embedding_status_payload(env) -> dict[str, object]:
     """Read canonical embedding-status statistics for operator surfaces."""
-    from polylogue.storage.backends.connection import open_connection
+    from polylogue.storage.backends.connection import open_read_connection
     from polylogue.storage.embedding_stats import read_embedding_stats_sync
 
-    with open_connection(env.config.db_path) as conn:
+    with open_read_connection(env.config.db_path) as conn:
         total_convs = conn.execute("SELECT COUNT(*) FROM conversations").fetchone()[0]
         embedding_stats = read_embedding_stats_sync(conn)
 

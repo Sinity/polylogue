@@ -23,7 +23,7 @@ from polylogue.errors import DatabaseError
 from polylogue.storage.backends.async_sqlite_archive import SQLiteArchiveMixin
 from polylogue.storage.backends.async_sqlite_raw import SQLiteRawMixin
 from polylogue.storage.backends.async_sqlite_schema import ensure_schema as ensure_current_schema
-from polylogue.storage.backends.connection import DB_TIMEOUT
+from polylogue.storage.backends.connection import DB_TIMEOUT, READ_DB_TIMEOUT
 from polylogue.storage.backends.queries import action_events as action_events_q
 from polylogue.storage.backends.queries import (
     session_product_profile_writes as session_product_profiles_q,
@@ -81,6 +81,15 @@ async def configure_connection(conn: aiosqlite.Connection) -> None:
     await conn.execute("PRAGMA wal_autocheckpoint = 10000")
 
 
+async def configure_read_connection(conn: aiosqlite.Connection) -> None:
+    """Apply read-safe settings without mutating database-wide state."""
+    conn.row_factory = aiosqlite.Row
+    await conn.execute(f"PRAGMA busy_timeout = {READ_DB_TIMEOUT * 1000}")
+    await conn.execute("PRAGMA cache_size = -524288")
+    await conn.execute("PRAGMA mmap_size = 1073741824")
+    await conn.execute("PRAGMA temp_store = MEMORY")
+
+
 # ---------------------------------------------------------------------------
 # Runtime/state helpers (formerly async_sqlite_runtime.py)
 # ---------------------------------------------------------------------------
@@ -99,7 +108,7 @@ def initialize_backend_state(backend: SQLiteBackend, db_path: Path | None) -> No
     backend._bulk_conn = None
     backend._read_pool = None
 
-    backend.queries = SQLiteQueryStore(connection_factory=backend._get_connection)
+    backend.queries = SQLiteQueryStore(connection_factory=backend._get_read_connection)
 
     # Keep the shared DDL visibly anchored in the async backend module family.
     backend._shared_schema_ddl = SCHEMA_DDL
@@ -312,6 +321,35 @@ async def _get_connection(backend: SQLiteBackend) -> AsyncIterator[aiosqlite.Con
         yield conn
 
 
+@asynccontextmanager
+async def _get_read_connection(backend: SQLiteBackend) -> AsyncIterator[aiosqlite.Connection]:
+    """Get a read-oriented connection that stays responsive during bulk writes."""
+    if backend._txn_conn is not None and backend._transaction_depth > 0:
+        yield backend._txn_conn
+        return
+
+    if backend._bulk_conn is not None:
+        yield backend._bulk_conn
+        return
+
+    if backend._read_pool is not None:
+        conn = await backend._read_pool.get()
+        try:
+            yield conn
+        finally:
+            backend._read_pool.put_nowait(conn)
+        return
+
+    if not backend._schema_ensured or not backend._db_path.exists():
+        async with _get_connection(backend) as conn:
+            yield conn
+        return
+
+    async with aiosqlite.connect(f"file:{backend._db_path}?mode=ro", uri=True, timeout=READ_DB_TIMEOUT) as conn:
+        await configure_read_connection(conn)
+        yield conn
+
+
 class SQLiteBackend(
     SQLiteArchiveMixin,
     SQLiteRawMixin,
@@ -341,6 +379,10 @@ class SQLiteBackend(
         """Public connection context for read/query helpers."""
         return _backend_connection(self)
 
+    def read_connection(self):
+        """Public read-oriented connection context for query/report helpers."""
+        return _get_read_connection(self)
+
     async def _ensure_schema_once(self) -> None:
         """Ensure schema is initialized exactly once (thread-safe via asyncio lock)."""
         await ensure_schema_once(self)
@@ -360,6 +402,10 @@ class SQLiteBackend(
     def _get_connection(self):
         """Get async database connection with schema ensured."""
         return _get_connection(self)
+
+    def _get_read_connection(self):
+        """Get async read connection with read-only semantics when possible."""
+        return _get_read_connection(self)
 
     async def _ensure_schema(self, conn) -> None:
         """Ensure database schema exists and is at the current schema version."""
