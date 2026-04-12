@@ -123,6 +123,11 @@ def _make_callback(pt: ProductType):
                 if root_val is not None:
                     kwargs[key] = root_val
 
+        if output_format is None:
+            root_output_format = root_params.get("output_format")
+            if isinstance(root_output_format, str):
+                output_format = root_output_format
+
         try:
             items = fetch_products(pt, env.operations, **kwargs)
         except ProductQueryError as exc:
