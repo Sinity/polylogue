@@ -12,9 +12,9 @@ from polylogue.storage.fts_lifecycle_sql import (
     ACTION_FTS_INDEX_EXISTS_SQL,
     ACTION_FTS_REBUILD_SQL,
     FTS_ACTIONS_TABLE_SQL,
-    FTS_INDEXABLE_MESSAGE_COUNT_SQL,
     FTS_INDEX_DOC_COUNT_SQL,
     FTS_INDEX_EXISTS_SQL,
+    FTS_INDEXABLE_MESSAGE_COUNT_SQL,
     FTS_MESSAGES_TABLE_SQL,
     FTS_REBUILD_SQL,
     IndexedMessage,
@@ -278,13 +278,25 @@ async def fts_index_status_async(conn: aiosqlite.Connection) -> dict[str, object
     return {"exists": exists, "count": int(count), "action_count": int(action_count)}
 
 
-def message_fts_readiness_sync(conn: sqlite3.Connection) -> dict[str, int | bool]:
+def message_fts_readiness_sync(
+    conn: sqlite3.Connection,
+    *,
+    verify_total_rows: bool = True,
+) -> dict[str, int | bool]:
     """Return whether the message FTS index is present and fully populated."""
-    status = fts_index_status_sync(conn)
-    total_messages = int(conn.execute(FTS_INDEXABLE_MESSAGE_COUNT_SQL).fetchone()[0] or 0)
-    indexed_rows = int(status.get("count", 0) or 0)
-    exists = bool(status.get("exists", False))
-    ready = exists and indexed_rows == total_messages
+    if verify_total_rows:
+        status = fts_index_status_sync(conn)
+        indexed_rows = int(status.get("count", 0) or 0)
+        exists = bool(status.get("exists", False))
+        total_messages = int(conn.execute(FTS_INDEXABLE_MESSAGE_COUNT_SQL).fetchone()[0] or 0)
+        ready = exists and indexed_rows == total_messages
+    else:
+        exists = bool(conn.execute(FTS_INDEX_EXISTS_SQL).fetchone())
+        has_indexed_rows = exists and bool(conn.execute("SELECT 1 FROM messages_fts LIMIT 1").fetchone())
+        has_indexable_messages = bool(conn.execute("SELECT 1 FROM messages WHERE text IS NOT NULL LIMIT 1").fetchone())
+        indexed_rows = 0
+        total_messages = 0
+        ready = exists and (has_indexed_rows or not has_indexable_messages)
     return {
         "exists": exists,
         "indexed_rows": indexed_rows,
@@ -293,14 +305,26 @@ def message_fts_readiness_sync(conn: sqlite3.Connection) -> dict[str, int | bool
     }
 
 
-async def message_fts_readiness_async(conn: aiosqlite.Connection) -> dict[str, int | bool]:
+async def message_fts_readiness_async(
+    conn: aiosqlite.Connection,
+    *,
+    verify_total_rows: bool = True,
+) -> dict[str, int | bool]:
     """Return whether the message FTS index is present and fully populated."""
-    status = await fts_index_status_async(conn)
-    row = await (await conn.execute(FTS_INDEXABLE_MESSAGE_COUNT_SQL)).fetchone()
-    total_messages = int(row[0] or 0) if row else 0
-    indexed_rows = int(status.get("count", 0) or 0)
-    exists = bool(status.get("exists", False))
-    ready = exists and indexed_rows == total_messages
+    if verify_total_rows:
+        status = await fts_index_status_async(conn)
+        indexed_rows = int(status.get("count", 0) or 0)
+        exists = bool(status.get("exists", False))
+        row = await (await conn.execute(FTS_INDEXABLE_MESSAGE_COUNT_SQL)).fetchone()
+        total_messages = int(row[0] or 0) if row else 0
+        ready = exists and indexed_rows == total_messages
+    else:
+        exists = bool(await (await conn.execute(FTS_INDEX_EXISTS_SQL)).fetchone())
+        has_indexed_rows = exists and bool(await (await conn.execute("SELECT 1 FROM messages_fts LIMIT 1")).fetchone())
+        has_indexable_messages = bool(await (await conn.execute("SELECT 1 FROM messages WHERE text IS NOT NULL LIMIT 1")).fetchone())
+        indexed_rows = 0
+        total_messages = 0
+        ready = exists and (has_indexed_rows or not has_indexable_messages)
     return {
         "exists": exists,
         "indexed_rows": indexed_rows,
