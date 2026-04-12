@@ -25,6 +25,10 @@ from polylogue.storage.session_product_threads import (
     thread_root_ids_async,
 )
 
+# Keep incremental refreshes on the same bounded chunk size as full rebuilds.
+# Hydrating 100 conversations at once inflates RSS badly on pathological archives.
+_SESSION_PRODUCT_REFRESH_PAGE_SIZE = 10
+
 
 @dataclass(slots=True)
 class _SessionProductRefreshUpdate:
@@ -258,7 +262,7 @@ async def _apply_session_product_conversation_updates_async(
     conversation_ids: Sequence[str],
     *,
     transaction_depth: int,
-    page_size: int = 100,
+    page_size: int = _SESSION_PRODUCT_REFRESH_PAGE_SIZE,
 ) -> _SessionProductBulkRefreshUpdate:
     from polylogue.storage.backends.queries.session_product_profile_writes import (
         replace_session_profiles_bulk,
