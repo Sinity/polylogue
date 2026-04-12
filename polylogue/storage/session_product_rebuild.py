@@ -9,6 +9,7 @@ from collections.abc import Iterable, Sequence
 import aiosqlite
 
 from polylogue.lib.session_profile import build_session_analysis, build_session_profile
+from polylogue.protocols import ProgressCallback
 from polylogue.storage.action_event_rows import attach_blocks_to_messages
 from polylogue.storage.backends.queries.attachments import get_attachments_batch
 from polylogue.storage.backends.queries.mappers import (
@@ -61,9 +62,10 @@ SELECT *
 FROM session_profiles
 ORDER BY COALESCE(source_sort_key, 0) DESC, conversation_id
 """
-# Full rebuilds must tolerate pathological historical provider_meta blobs
-# without letting one chunk inflate RSS into multi-GB territory.
-_SESSION_PRODUCT_REBUILD_PAGE_SIZE = 10
+# Full rebuilds must tolerate pathological historical provider_meta blobs and
+# very large conversation payloads without letting a single chunk inflate RSS
+# into multi-GB territory.
+_SESSION_PRODUCT_REBUILD_PAGE_SIZE = 1
 _SESSION_PRODUCT_CONVERSATION_SQL_TEMPLATE = """
 SELECT
     conversation_id,
@@ -415,6 +417,8 @@ async def rebuild_session_products_async(
     conversation_ids: Sequence[str] | None = None,
     page_size: int = _SESSION_PRODUCT_REBUILD_PAGE_SIZE,
     transaction_depth: int = 0,
+    progress_callback: ProgressCallback | None = None,
+    progress_total: int | None = None,
 ) -> dict[str, int]:
     from polylogue.storage.backends.queries.session_product_profile_writes import (
         replace_session_profile,
@@ -444,6 +448,7 @@ async def rebuild_session_products_async(
     if conversation_ids is None:
         async for chunk in iter_conversation_id_pages_async(conn, page_size=page_size):
             conversations, messages, attachments, blocks = await load_async_batch(conn, chunk)
+            chunk_profiles = 0
             for conversation in hydrate_conversations(conversations, messages, attachments, blocks):
                 profile_record, event_records, phase_records = build_session_product_records(conversation)
                 await replace_session_profile(conn, profile_record, transaction_depth)
@@ -452,11 +457,20 @@ async def rebuild_session_products_async(
                 )
                 await replace_session_phases(conn, profile_record.conversation_id, phase_records, transaction_depth)
                 profile_count += 1
+                chunk_profiles += 1
                 work_event_count += len(event_records)
                 phase_count += len(phase_records)
+            if progress_callback is not None and chunk_profiles:
+                desc = (
+                    f"Materializing: {profile_count}/{progress_total}"
+                    if progress_total is not None
+                    else f"Materializing: {profile_count}"
+                )
+                progress_callback(chunk_profiles, desc=desc)
     else:
         for chunk in chunked(list(conversation_ids), size=page_size):
             conversations, messages, attachments, blocks = await load_async_batch(conn, chunk)
+            chunk_profiles = 0
             for conversation in hydrate_conversations(conversations, messages, attachments, blocks):
                 profile_record, event_records, phase_records = build_session_product_records(conversation)
                 await replace_session_profile(conn, profile_record, transaction_depth)
@@ -465,8 +479,16 @@ async def rebuild_session_products_async(
                 )
                 await replace_session_phases(conn, profile_record.conversation_id, phase_records, transaction_depth)
                 profile_count += 1
+                chunk_profiles += 1
                 work_event_count += len(event_records)
                 phase_count += len(phase_records)
+            if progress_callback is not None and chunk_profiles:
+                desc = (
+                    f"Materializing: {profile_count}/{progress_total}"
+                    if progress_total is not None
+                    else f"Materializing: {profile_count}"
+                )
+                progress_callback(chunk_profiles, desc=desc)
 
     await conn.execute("DELETE FROM work_threads")
     thread_count = 0
