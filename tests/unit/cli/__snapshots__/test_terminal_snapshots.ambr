@@ -88,10 +88,11 @@
     site         Generate a static HTML site from the archive.
   '''
 # ---
-# name: TestErrorOutput.test_invalid_command_error_output
+# name: TestErrorOutput.test_invalid_option_error_output
   '''
-  Error: Database schema version 1 is incompatible with expected version 2. Delete
-   the database file and re-run polylogue to create a fresh v2 schema.
+  Usage: polylogue [OPTIONS] COMMAND [ARGS]...
+  Try 'polylogue -h' for help.
+  Error: No such option: --bogus Did you mean --verbose?
   '''
 # ---
 # name: TestHelpOutput.test_help_output_snapshot
@@ -118,7 +119,7 @@
         polylogue "pytest -q tests<PATH>" --retrieval-l
   ane actions --limit 5
         polylogue --action other stats --by tool --format json
-        polylogue --provider claude-code --since 2026-01-01 stats --by repo --form
+        polylogue stats --by repo --provider claude-code --since 2026-01-01 --form
   at json
         polylogue --tool bash --exclude-tool read list
         polylogue --similar "sqlite locking bug in parser" --limit 5
@@ -237,8 +238,8 @@
         polylogue "pytest -q tests<PATH>
   ts.py" --retrieval-lane actions --limit 5
         polylogue --action other stats --by tool --format json
-        polylogue --provider claude-code --since 2026-01-01 st
-  ats --by repo --format json
+        polylogue stats --by repo --provider claude-code --sin
+  ce 2026-01-01 --format json
         polylogue --tool bash --exclude-tool read list
         polylogue --similar "sqlite locking bug in parser" --l
   imit 5
@@ -392,7 +393,7 @@
         polylogue --action-text "pytest -q" list
         polylogue "pytest -q tests<PATH>" --retrieval-lane actions --limit 5
         polylogue --action other stats --by tool --format json
-        polylogue --provider claude-code --since 2026-01-01 stats --by repo --format json
+        polylogue stats --by repo --provider claude-code --since 2026-01-01 --format json
         polylogue --tool bash --exclude-tool read list
         polylogue --similar "sqlite locking bug in parser" --limit 5
     Modifiers (write operations):
