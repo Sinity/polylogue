@@ -38,20 +38,26 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 
+def _compact_log_details(value: object) -> object:
+    if isinstance(value, dict):
+        compact: dict[str, object] = {}
+        for key, nested in value.items():
+            if isinstance(nested, list):
+                count_key = f"{key}_count"
+                if count_key not in value:
+                    compact[count_key] = len(nested)
+                continue
+            compact[key] = _compact_log_details(nested)
+        return compact
+    return value
+
+
 def _compact_stage_log_payload(payload: dict[str, object]) -> dict[str, object]:
     """Trim oversized telemetry from normal stage-complete log lines."""
     compact = dict(payload)
     details = compact.get("details")
-    if not isinstance(details, dict):
-        return compact
-
-    compact_details = dict(details)
-    batch_observations = compact_details.get("batch_observations")
-    if isinstance(batch_observations, dict) and "batches" in batch_observations:
-        compact_details["batch_observations"] = {
-            key: value for key, value in batch_observations.items() if key != "batches"
-        }
-    compact["details"] = compact_details
+    if isinstance(details, dict):
+        compact["details"] = _compact_log_details(details)
     return compact
 
 
@@ -171,9 +177,10 @@ async def run_sources(
                 sm.details.update(materialize_outcome.observation)
             state.record_materialize(materialized=materialize_outcome.item_count)
             sm.stop(items=materialize_outcome.item_count)
+            materialize_log_payload = _compact_stage_log_payload(sm.to_dict())
             logger.info(
                 "Materialize stage complete",
-                **sm.to_dict(),
+                **materialize_log_payload,
                 rebuilt=materialize_outcome.rebuilt,
             )
             executed_stages.add("materialize")
