@@ -175,6 +175,24 @@ def test_cli_query_stats_by_provider_reports_provider_groups(tmp_path):
     assert "unknown" in output
 
 
+def test_cli_query_stats_by_provider_accepts_limit_after_verb(tmp_path):
+    workspace = setup_isolated_workspace(tmp_path)
+    inbox = workspace["paths"]["inbox"]
+
+    GenericConversationBuilder("conv-stats-limit").title("Stats Limit").add_user("alpha").add_assistant(
+        "beta"
+    ).write_to(inbox / "conversation.json")
+    _run_inbox(workspace, cwd=tmp_path)
+
+    result = run_cli(["--plain", "stats", "--by", "provider", "--limit", "1", "-f", "json"], env=workspace["env"], cwd=tmp_path)
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert payload["dimension"] == "provider"
+    assert payload["summary"]["conversations"] == 1
+    assert len(payload["rows"]) == 1
+
+
 def test_cli_no_args_stats_surface_still_works(tmp_path):
     workspace = setup_isolated_workspace(tmp_path)
 
