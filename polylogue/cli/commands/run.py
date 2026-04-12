@@ -280,7 +280,9 @@ def _run_result_callback(
         return
 
     if reparse:
-        reset_count = run_coroutine_sync(env.repository.reset_parse_status())
+        reset_count = run_coroutine_sync(
+            env.repository.reset_parse_status(source_names=selected_sources or None)
+        )
         click.echo(f"Reset parse status for {reset_count:,} raw records.", err=False)
 
     if watch:
