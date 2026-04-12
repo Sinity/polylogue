@@ -29,7 +29,11 @@ CHECK_COMMAND_OPTION_DECORATORS: tuple[Callable[[Callable[..., Any]], Callable[.
     click.option(
         "--vacuum", is_flag=True, help="Reclaim unused space after maintenance (requires --repair or --cleanup)"
     ),
-    click.option("--deep", is_flag=True, help="Run SQLite integrity check (slow on large databases)"),
+    click.option(
+        "--deep",
+        is_flag=True,
+        help="Run SQLite integrity and expensive orphan scans (slow on large databases)",
+    ),
     click.option("--runtime", is_flag=True, help="Run environment and runtime verification checks"),
     click.option("--blob", "check_blob", is_flag=True, help="Verify blob store integrity (missing/orphaned blobs)"),
     click.option("--schemas", "check_schemas", is_flag=True, help="Run raw-corpus schema verification (non-mutating)"),

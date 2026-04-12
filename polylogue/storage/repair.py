@@ -217,20 +217,20 @@ def collect_archive_debt_statuses_sync(
     conn: sqlite3.Connection,
     *,
     derived_statuses: dict[str, DerivedModelStatus] | None = None,
+    include_expensive: bool = True,
 ) -> dict[str, ArchiveDebtStatus]:
     from polylogue.storage.derived_status import collect_derived_model_statuses_sync
 
     statuses = derived_statuses or collect_derived_model_statuses_sync(conn)
 
     orphaned_messages = count_orphaned_messages_sync(conn)
-    orphaned_content_blocks = count_orphaned_content_blocks_sync(conn)
     empty_conversations = count_empty_conversations_sync(conn)
     orphaned_attachments = count_orphaned_attachments_sync(conn)
     session_products = session_product_repair_count(statuses)
     action_events = action_event_repair_count(statuses)
     dangling_fts = dangling_fts_repair_count(statuses)
 
-    return {
+    debt_statuses = {
         "orphaned_messages": ArchiveDebtStatus(
             name="orphaned_messages",
             category=_CAT_CLEANUP,
@@ -238,16 +238,6 @@ def collect_archive_debt_statuses_sync(
             issue_count=orphaned_messages,
             detail="No orphaned messages" if orphaned_messages == 0 else f"{orphaned_messages:,} orphaned messages",
             maintenance_target="orphaned_messages",
-        ),
-        "orphaned_content_blocks": ArchiveDebtStatus(
-            name="orphaned_content_blocks",
-            category=_CAT_CLEANUP,
-            destructive=True,
-            issue_count=orphaned_content_blocks,
-            detail="No orphaned content blocks"
-            if orphaned_content_blocks == 0
-            else f"{orphaned_content_blocks:,} orphaned content blocks",
-            maintenance_target="orphaned_content_blocks",
         ),
         "empty_conversations": ArchiveDebtStatus(
             name="empty_conversations",
@@ -298,6 +288,19 @@ def collect_archive_debt_statuses_sync(
             maintenance_target="dangling_fts",
         ),
     }
+    if include_expensive:
+        orphaned_content_blocks = count_orphaned_content_blocks_sync(conn)
+        debt_statuses["orphaned_content_blocks"] = ArchiveDebtStatus(
+            name="orphaned_content_blocks",
+            category=_CAT_CLEANUP,
+            destructive=True,
+            issue_count=orphaned_content_blocks,
+            detail="No orphaned content blocks"
+            if orphaned_content_blocks == 0
+            else f"{orphaned_content_blocks:,} orphaned content blocks",
+            maintenance_target="orphaned_content_blocks",
+        )
+    return debt_statuses
 
 
 def preview_counts_from_archive_debt(
