@@ -581,7 +581,9 @@ class TestGroupedStatsOutput:
     def test_output_stats_by_empty_contract(self) -> None:
         env = MagicMock()
         env.ui.console = MagicMock()
-        _output_stats_by(env, [], "provider")
+        with pytest.raises(SystemExit) as exc_info:
+            _output_stats_by(env, [], "provider")
+        assert exc_info.value.code == 2
         env.ui.console.print.assert_called_once_with("No conversations matched.")
 
     def test_output_stats_by_action_json_contract(self) -> None:

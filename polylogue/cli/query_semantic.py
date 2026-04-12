@@ -6,6 +6,7 @@ import inspect
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from polylogue.cli.machine_errors import error_no_results
 from polylogue.cli.query_stats import emit_structured_stats
 
 if TYPE_CHECKING:
@@ -20,6 +21,26 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 # Semantic slice (from query_semantic_slice.py)
 # ---------------------------------------------------------------------------
+
+
+def _emit_grouped_no_results(
+    env: AppEnv,
+    *,
+    output_format: str = "text",
+    selection: ConversationQuerySpec | None = None,
+) -> None:
+    filters = selection.describe() if selection is not None else []
+    if output_format == "json":
+        message = "No conversations matched filters." if filters else "No conversations matched."
+        error_no_results(message, filters=filters or None).emit(exit_code=2)
+    if filters:
+        env.ui.console.print("No conversations matched filters:")
+        for item in filters:
+            env.ui.console.print(f"  {item}")
+        env.ui.console.print("Hint: try broadening your filters or use `list` to browse")
+    else:
+        env.ui.console.print("No conversations matched.")
+    raise SystemExit(2)
 
 
 @dataclass(frozen=True, slots=True)
@@ -219,8 +240,7 @@ async def output_stats_by_semantic_ids(
     if dimension not in {"action", "tool"}:
         raise ValueError(f"Unsupported semantic stats dimension: {dimension}")
     if not conversation_ids:
-        env.ui.console.print("No conversations matched.")
-        return
+        _emit_grouped_no_results(env, output_format=output_format, selection=selection)
 
     semantic_slice = SemanticStatsSlice.from_selection(selection)
     groups: dict[str, dict[str, int]] = defaultdict(lambda: {"convs": 0, "facts": 0, "msgs": 0})
