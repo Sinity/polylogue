@@ -15,6 +15,7 @@ import pytest
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.backends.connection import connection_context, open_connection, open_read_connection
 from polylogue.storage.backends.schema import SCHEMA_VERSION, _ensure_schema
+from polylogue.storage.embedding_stats_models import EmbeddingStatsSnapshot
 from polylogue.storage.query_models import ConversationRecordQuery
 from polylogue.storage.repository import ConversationRepository
 from polylogue.storage.store import ContentBlockRecord, ConversationRecord, RawConversationRecord
@@ -635,4 +636,27 @@ async def test_backend_lifecycle_reopen_contract(tmp_path: Path) -> None:
         assert conn is not None
 
     assert await backend.get_conversation("conv-life") is not None
+    await backend.close()
+
+
+@pytest.mark.asyncio
+async def test_get_archive_stats_skips_retrieval_band_status(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    backend = SQLiteBackend(db_path=tmp_path / "archive-stats.db")
+    repo = ConversationRepository(backend=backend)
+    observed: list[bool] = []
+
+    async def fake_read_embedding_stats(conn, *, include_retrieval_bands: bool = True):
+        observed.append(include_retrieval_bands)
+        return EmbeddingStatsSnapshot(
+            embedded_conversations=0,
+            embedded_messages=0,
+            pending_conversations=0,
+        )
+
+    monkeypatch.setattr("polylogue.storage.repository_vectors.read_embedding_stats_async", fake_read_embedding_stats)
+
+    stats = await repo.get_archive_stats()
+
+    assert stats.total_conversations == 0
+    assert observed == [False]
     await backend.close()
