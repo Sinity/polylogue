@@ -650,6 +650,34 @@ class TestRunSourcesIntegration:
             "Materializing: 2/2",
         ]
 
+    def test_all_stage_uses_bounded_rebuild_when_products_are_empty(self, workspace_env):
+        _seed_conversations(workspace_env, "test:all-a", "test:all-b", with_message=True)
+        backend = create_backend(workspace_env["data_root"] / "polylogue" / "polylogue.db")
+        callback = MagicMock()
+
+        result = asyncio.run(
+            execute_materialize_stage(
+                stage="all",
+                source_names=None,
+                processed_ids={"test:all-a", "test:all-b"},
+                backend=backend,
+                progress_callback=callback,
+            )
+        )
+        asyncio.run(backend.close())
+
+        assert result.item_count == 2
+        assert result.rebuilt is True
+        assert result.observation is not None
+        assert result.observation["mode"] == "rebuild-from-empty"
+        assert callback.call_args_list[0].args == (0,)
+        assert callback.call_args_list[0].kwargs == {"desc": "Materializing: 0/2"}
+        assert [call.args[0] for call in callback.call_args_list[1:]] == [1, 1]
+        assert [call.kwargs["desc"] for call in callback.call_args_list[1:]] == [
+            "Materializing: 1/2",
+            "Materializing: 2/2",
+        ]
+
     def test_parse_with_explicit_source_filter_skips_acquire(self, workspace_env, tmp_path: Path):
         scoped_source = tmp_path / "scoped"
         scoped_source.mkdir()
