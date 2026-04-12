@@ -14,6 +14,7 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from polylogue.lib.artifact_taxonomy import classify_artifact
 from polylogue.lib.json import dumps as json_dumps
 from polylogue.lib.viewports import ToolCategory, classify_tool
 from polylogue.pipeline.ids import (
@@ -26,9 +27,11 @@ from polylogue.pipeline.ids import message_id as make_message_id
 from polylogue.pipeline.prepare_transform_content import canonicalize_conversation_content
 from polylogue.pipeline.semantic_metadata import extract_tool_metadata
 from polylogue.schemas.code_detection import detect_language
+from polylogue.sources.decoders import _iter_json_stream
+from polylogue.sources.dispatch import STREAM_RECORD_PROVIDERS
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.store import RawConversationRecord, _json_or_none
-from polylogue.types import ValidationMode, ValidationStatus
+from polylogue.types import Provider, ValidationMode, ValidationStatus
 
 _SOURCE_HASH_SUFFIX = re.compile(r"-(?:[0-9a-f]{16,64})$", re.IGNORECASE)
 _SCHEMA_REGISTRY = None
@@ -152,6 +155,185 @@ def _finalize_result(result: IngestRecordResult, *, measure_serialized_size: boo
     return result
 
 
+def _is_stream_record_provider(source_path: str | None, provider: str | Provider | None) -> bool:
+    if provider is None:
+        return False
+    normalized_path = (source_path or "").lower()
+    if not normalized_path.endswith((".jsonl", ".jsonl.txt", ".ndjson")):
+        return False
+    return Provider.from_string(provider) in STREAM_RECORD_PROVIDERS
+
+
+def _stream_grouped_jsonl_record(
+    raw_record: RawConversationRecord,
+    *,
+    raw_source: Path,
+    archive_root: Path,
+    payload_provider: str | None,
+    validation_mode: ValidationMode,
+    measure_serialized_size: bool,
+) -> IngestRecordResult | None:
+    from polylogue.lib.raw_payload import sample_jsonl_payload
+    from polylogue.schemas.validator import SchemaValidator
+    from polylogue.sources.dispatch import detect_provider, parse_stream_payload
+
+    stream_name = raw_record.source_path or raw_record.raw_id
+
+    try:
+        sample_payloads, malformed_lines = sample_jsonl_payload(
+            raw_source,
+            max_samples=64,
+            jsonl_dict_only=True,
+        )
+    except Exception:
+        return None
+
+    runtime_provider = Provider.from_string(payload_provider or raw_record.provider_name)
+    detected_provider = Provider.from_string(payload_provider or runtime_provider)
+    sniffed_provider = runtime_provider
+    if sample_payloads:
+        sniffed_provider = detect_provider(sample_payloads) or runtime_provider
+    if sniffed_provider in STREAM_RECORD_PROVIDERS:
+        detected_provider = sniffed_provider
+    else:
+        return None
+
+    artifact = classify_artifact(
+        sample_payloads,
+        provider=detected_provider,
+        source_path=raw_record.source_path,
+    )
+    if not artifact.parse_as_conversation:
+        return _finalize_result(
+            IngestRecordResult(
+                raw_id=raw_record.raw_id,
+                payload_provider=str(detected_provider),
+                validation_status=ValidationStatus.SKIPPED.value,
+            ),
+            measure_serialized_size=measure_serialized_size,
+        )
+
+    v_status = ValidationStatus.PASSED
+    v_error: str | None = None
+    schema_resolution = None
+
+    if validation_mode is not ValidationMode.OFF and artifact.schema_eligible:
+        if malformed_lines and validation_mode is ValidationMode.STRICT:
+            return _finalize_result(
+                IngestRecordResult(
+                    raw_id=raw_record.raw_id,
+                    payload_provider=str(detected_provider),
+                    validation_status=ValidationStatus.FAILED.value,
+                    validation_error=f"Malformed JSONL lines: {malformed_lines}",
+                    error=f"Malformed JSONL lines: {malformed_lines}",
+                ),
+                measure_serialized_size=measure_serialized_size,
+            )
+
+        schema_resolution = _runtime_schema_registry().resolve_payload(
+            detected_provider,
+            sample_payloads,
+            source_path=raw_record.source_path,
+        )
+
+        try:
+            validator = SchemaValidator.for_payload(
+                detected_provider,
+                sample_payloads,
+                source_path=raw_record.source_path,
+                schema_resolution=schema_resolution,
+            )
+        except (FileNotFoundError, ImportError):
+            validator = None
+            v_status = ValidationStatus.SKIPPED
+
+        if validator is not None:
+            validation_samples = validator.validation_samples(sample_payloads)
+            if validation_samples:
+                collected_errors: list[str] = []
+                for sample in validation_samples:
+                    sample_result = validator.validate(sample, include_drift=False)
+                    if not sample_result.is_valid:
+                        collected_errors.extend(sample_result.errors[:2])
+                if collected_errors and validation_mode is ValidationMode.STRICT:
+                    first_error = collected_errors[0]
+                    return _finalize_result(
+                        IngestRecordResult(
+                            raw_id=raw_record.raw_id,
+                            payload_provider=str(detected_provider),
+                            validation_status=ValidationStatus.FAILED.value,
+                            validation_error=f"Schema validation failed: {first_error}",
+                            error=f"Schema validation failed: {first_error}",
+                        ),
+                        measure_serialized_size=measure_serialized_size,
+                    )
+    elif validation_mode is ValidationMode.OFF:
+        v_status = ValidationStatus.SKIPPED
+
+    del sample_payloads
+    schema_resolution = None
+
+    try:
+        with raw_source.open("rb") as handle:
+            parsed_conversations = parse_stream_payload(
+                detected_provider,
+                _iter_json_stream(handle, stream_name),
+                _fallback_id(raw_record.source_path, raw_record.raw_id),
+            )
+    except Exception as exc:
+        return _finalize_result(
+            IngestRecordResult(
+                raw_id=raw_record.raw_id,
+                payload_provider=str(detected_provider),
+                validation_status=v_status.value,
+                error=f"parse: {exc}",
+            ),
+            measure_serialized_size=measure_serialized_size,
+        )
+
+    fallback_timestamp = raw_record.file_mtime
+    source_name = raw_record.source_name or raw_record.source_path or ""
+    result_convos: list[ConversationData] = []
+    for convo in parsed_conversations:
+        updates: dict[str, object] = {}
+        if convo.created_at is None and fallback_timestamp:
+            updates["created_at"] = fallback_timestamp
+        effective_created = updates.get("created_at", convo.created_at)
+        if convo.updated_at is None and isinstance(effective_created, str) and effective_created:
+            updates["updated_at"] = effective_created
+        normalized_convo = convo.model_copy(update=updates) if updates else convo
+        try:
+            cdata = _transform_to_tuples(
+                normalized_convo,
+                source_name=source_name,
+                archive_root=archive_root,
+                raw_id=raw_record.raw_id,
+            )
+            result_convos.append(cdata)
+        except Exception as exc:
+            return _finalize_result(
+                IngestRecordResult(
+                    raw_id=raw_record.raw_id,
+                    payload_provider=str(detected_provider),
+                    validation_status=v_status.value,
+                    error=f"transform: {exc}",
+                ),
+                measure_serialized_size=measure_serialized_size,
+            )
+
+    return _finalize_result(
+        IngestRecordResult(
+            raw_id=raw_record.raw_id,
+            payload_provider=str(detected_provider),
+            validation_status=v_status.value,
+            validation_error=v_error,
+            conversations=result_convos,
+            source_name=source_name,
+        ),
+        measure_serialized_size=measure_serialized_size,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Main worker function — runs in subprocess
 # ---------------------------------------------------------------------------
@@ -186,6 +368,18 @@ def ingest_record(
     resolved_blob_root = Path(blob_root_str) if blob_root_str is not None else blob_store_root()
     blob_store = BlobStore(resolved_blob_root)
     raw_source = blob_store.blob_path(raw_record.raw_id)
+
+    if _is_stream_record_provider(raw_record.source_path, stored_payload_provider or raw_record.provider_name):
+        streamed = _stream_grouped_jsonl_record(
+            raw_record,
+            raw_source=raw_source,
+            archive_root=archive_root,
+            payload_provider=stored_payload_provider,
+            validation_mode=validation_mode,
+            measure_serialized_size=measure_serialized_size,
+        )
+        if streamed is not None:
+            return streamed
 
     # ── Phase 1: Decode blob (ONE decode, not two) ────────────────────
     try:

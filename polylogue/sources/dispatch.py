@@ -19,6 +19,7 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 GROUP_PROVIDERS = frozenset({Provider.CLAUDE_CODE, Provider.CODEX, Provider.GEMINI, Provider.DRIVE})
+STREAM_RECORD_PROVIDERS = frozenset({Provider.CLAUDE_CODE, Provider.CODEX})
 _MAX_PARSE_DEPTH = 10
 
 
@@ -199,6 +200,20 @@ def parse_payload(
     return []
 
 
+def parse_stream_payload(
+    provider: str | Provider,
+    payloads: Any,
+    fallback_id: str,
+) -> list[ParsedConversation]:
+    """Parse a grouped record stream without materializing the full payload list."""
+    runtime_provider = Provider.from_string(provider)
+    if runtime_provider is Provider.CLAUDE_CODE:
+        return [claude.parse_stream(payloads, fallback_id)]
+    if runtime_provider is Provider.CODEX:
+        return [codex.parse_stream(payloads, fallback_id)]
+    raise ValueError(f"provider {runtime_provider} does not support stream parsing")
+
+
 def parse_drive_payload(
     provider: str | Provider, payload: Any, fallback_id: str, _depth: int = 0
 ) -> list[ParsedConversation]:
@@ -224,8 +239,10 @@ def parse_drive_payload(
 
 __all__ = [
     "GROUP_PROVIDERS",
+    "STREAM_RECORD_PROVIDERS",
     "_detect_provider_from_raw_bytes",
     "detect_provider",
     "parse_drive_payload",
     "parse_payload",
+    "parse_stream_payload",
 ]
