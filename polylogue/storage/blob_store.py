@@ -19,11 +19,12 @@ from __future__ import annotations
 import hashlib
 import os
 import tempfile
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import BinaryIO
 
 _CHUNK_SIZE = 128 * 1024  # 128 KB
+Heartbeat = Callable[[], None]
 
 
 class BlobStore:
@@ -44,7 +45,12 @@ class BlobStore:
     # Write
     # ------------------------------------------------------------------
 
-    def write_from_path(self, source: Path) -> tuple[str, int]:
+    def write_from_path(
+        self,
+        source: Path,
+        *,
+        heartbeat: Heartbeat | None = None,
+    ) -> tuple[str, int]:
         """Stream-hash a file and copy it to the store.
 
         Reads the source in 128 KB chunks — never loads the full file into
@@ -62,6 +68,8 @@ class BlobStore:
                     break
                 hasher.update(chunk)
                 size += len(chunk)
+                if heartbeat is not None:
+                    heartbeat()
 
         hash_hex = hasher.hexdigest()
         dest = self.blob_path(hash_hex)
@@ -80,6 +88,8 @@ class BlobStore:
                     if not chunk:
                         break
                     os.write(fd, chunk)
+                    if heartbeat is not None:
+                        heartbeat()
             os.close(fd)
             fd = None
             os.replace(tmp_path, dest)
@@ -92,7 +102,12 @@ class BlobStore:
 
         return hash_hex, size
 
-    def write_from_fileobj(self, source: BinaryIO) -> tuple[str, int]:
+    def write_from_fileobj(
+        self,
+        source: BinaryIO,
+        *,
+        heartbeat: Heartbeat | None = None,
+    ) -> tuple[str, int]:
         """Stream-hash an open binary file-like object into the store.
 
         Reads from ``source`` in 128 KB chunks, hashing and writing to a
@@ -112,6 +127,8 @@ class BlobStore:
                 hasher.update(chunk)
                 size += len(chunk)
                 os.write(fd, chunk)
+                if heartbeat is not None:
+                    heartbeat()
 
             hash_hex = hasher.hexdigest()
             dest = self.blob_path(hash_hex)

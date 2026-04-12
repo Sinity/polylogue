@@ -5,6 +5,7 @@ from __future__ import annotations
 import time
 import zipfile
 from collections.abc import Callable, Iterable
+from pathlib import Path
 from typing import Any
 
 from polylogue.config import Source
@@ -28,6 +29,36 @@ _cursor.logger = logger
 _decoders.logger = logger
 
 _DETECTION_PREFIX_SIZE = 8192  # 8 KB — enough for provider detection
+_HEARTBEAT_INTERVAL_S = 5.0
+
+
+def _heartbeat_label(source_path: str) -> str:
+    base_path, separator, zip_entry = source_path.partition(":")
+    base_name = Path(base_path).name if base_path else source_path
+    return f"{base_name}:{zip_entry}" if separator else base_name
+
+
+def _make_status_heartbeat(
+    status_callback: Callable[[str], None] | None,
+    *,
+    source_name: str,
+    source_path: str,
+) -> Callable[[], None] | None:
+    if status_callback is None:
+        return None
+
+    label = _heartbeat_label(source_path)
+    last_emit = 0.0
+
+    def emit() -> None:
+        nonlocal last_emit
+        now = time.monotonic()
+        if last_emit and now - last_emit < _HEARTBEAT_INTERVAL_S:
+            return
+        last_emit = now
+        status_callback(f"Scanning [{source_name}] reading {label}")
+
+    return emit
 
 
 def _observe_acquisition(
@@ -117,6 +148,7 @@ def iter_source_raw_data(
     cursor_state: dict[str, Any] | None = None,
     known_mtimes: dict[str, str] | None = None,
     observation_callback: Callable[[dict[str, object]], None] | None = None,
+    status_callback: Callable[[str], None] | None = None,
 ) -> Iterable[RawConversationData]:
     """Iterate raw source payloads without parsing provider payload semantics.
 
@@ -166,8 +198,18 @@ def iter_source_raw_data(
                             continue
                         entry_provider_hint = _zip_entry_provider_hint(info.filename, provider_hint)
                         if entry_provider_hint in GROUP_PROVIDERS:
+                            heartbeat = _make_status_heartbeat(
+                                status_callback,
+                                source_name=source.name,
+                                source_path=entry_path,
+                            )
+                            if heartbeat is not None:
+                                heartbeat()
                             with zf.open(info.filename) as handle:
-                                blob_hash, blob_size = blob_store.write_from_fileobj(handle)
+                                blob_hash, blob_size = blob_store.write_from_fileobj(
+                                    handle,
+                                    heartbeat=heartbeat,
+                                )
                             _observe_acquisition(
                                 observation_callback,
                                 phase="zip-entry-streamed",
@@ -258,8 +300,18 @@ def iter_source_raw_data(
                         # Preserve original ZIP entry bytes when the entry is
                         # grouped, non-conversation metadata, or a single
                         # conversation document.
+                        heartbeat = _make_status_heartbeat(
+                            status_callback,
+                            source_name=source.name,
+                            source_path=entry_path,
+                        )
+                        if heartbeat is not None:
+                            heartbeat()
                         with zf.open(info.filename) as handle:
-                            blob_hash, blob_size = blob_store.write_from_fileobj(handle)
+                            blob_hash, blob_size = blob_store.write_from_fileobj(
+                                handle,
+                                heartbeat=heartbeat,
+                            )
                         _observe_acquisition(
                             observation_callback,
                             phase="zip-entry-streamed",
@@ -280,7 +332,14 @@ def iter_source_raw_data(
                 # Stream-hash the file to blob store — never loads full
                 # content into Python memory. A 1.5 GB file is hashed and
                 # copied in 128 KB chunks.
-                blob_hash, blob_size = blob_store.write_from_path(path)
+                heartbeat = _make_status_heartbeat(
+                    status_callback,
+                    source_name=source.name,
+                    source_path=str(path),
+                )
+                if heartbeat is not None:
+                    heartbeat()
+                blob_hash, blob_size = blob_store.write_from_path(path, heartbeat=heartbeat)
                 # Read a small prefix for provider detection only.
                 prefix = blob_store.read_prefix(blob_hash, _DETECTION_PREFIX_SIZE)
                 detected_provider = _detect_provider_from_raw_bytes(

@@ -24,14 +24,23 @@ async def iter_source_raw_stream(
     *,
     known_mtimes: dict[str, str] | None = None,
     observation_callback: ObservationCallback | None = None,
+    progress_callback: Callable[[int, str | None], None] | None = None,
 ) -> AsyncIterator[RawConversationData]:
     """Stream raw source payloads without materializing the full iterator."""
     from polylogue.pipeline.services import acquisition as acquisition_root
+
+    loop = asyncio.get_running_loop()
+
+    def _status_callback(desc: str) -> None:
+        if progress_callback is None:
+            return
+        loop.call_soon_threadsafe(progress_callback, 0, desc)
 
     iterator = acquisition_root.iter_source_raw_data(
         source,
         known_mtimes=known_mtimes,
         observation_callback=observation_callback,
+        status_callback=_status_callback if progress_callback is not None else None,
     )
     sentinel = object()
     batch_size = 128
@@ -103,6 +112,7 @@ async def iter_raw_record_stream(
     cursor_state: dict[str, object] | None = None,
     drive_config: DriveConfig | None = None,
     observation_callback: ObservationCallback | None = None,
+    progress_callback: Callable[[int, str | None], None] | None = None,
 ) -> AsyncIterator[RawConversationRecord]:
     """Yield prepared RawConversationRecord values for a source."""
     raw_stream: AsyncIterator[RawConversationData]
@@ -119,6 +129,7 @@ async def iter_raw_record_stream(
             source,
             known_mtimes=known_mtimes,
             observation_callback=observation_callback,
+            progress_callback=progress_callback,
         )
 
     async for raw_data in raw_stream:
