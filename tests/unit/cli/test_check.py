@@ -175,6 +175,41 @@ def test_check_records_scoped_maintenance_apply(cli_workspace, cli_runner):
     assert payload["maintenance"]["items"][0]["success"] is True
 
 
+def test_check_plain_preview_summarizes_changes_not_issues(cli_workspace, cli_runner):
+    from polylogue.storage.session_product_rebuild import rebuild_session_products_sync
+
+    db_path = cli_workspace["db_path"]
+    (
+        ConversationBuilder(db_path, "conv-check-products-preview-plain")
+        .provider("claude-code")
+        .title("Scoped Check Repair Preview Plain")
+        .add_message("u1", role="user", text="Preview the repair output")
+        .save()
+    )
+    with open_connection(db_path) as conn:
+        rebuild_session_products_sync(conn)
+        conn.execute("DELETE FROM session_profiles")
+        conn.commit()
+
+    result = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "doctor",
+            "--repair",
+            "--preview",
+            "--target",
+            "session_products",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0
+    assert "Would apply" in result.output
+    assert "change(s)" in result.output
+    assert "issue(s)" not in result.output
+
+
 def test_check_warns_when_message_index_is_incomplete(cli_workspace, cli_runner):
     db_path = cli_workspace["db_path"]
     factory = DbFactory(db_path)

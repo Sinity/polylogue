@@ -227,8 +227,8 @@ def emit_maintenance_output(
                 total_repaired += repair.repaired_count
 
         if total_repaired > 0:
-            action = "Would change" if options.preview else "Changed"
-            click.echo(f"\n{action} {total_repaired} issue(s)")
+            action = "Would apply" if options.preview else "Applied"
+            click.echo(f"\n{action} {total_repaired:,} change(s)")
         else:
             click.echo("  No selected maintenance work was needed.")
     elif options.repair or options.cleanup:
