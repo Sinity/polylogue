@@ -1005,8 +1005,16 @@ def test_search_invalid_query_reports_error(monkeypatch, workspace_env):
 
     class StubConn:
         def execute(self, sql, params=()):
+            if "action_events_fts_docsize" in sql:
+                return StubCursor(row=(0,))
+            if "action_events_fts" in sql and "sqlite_master" in sql:
+                return StubCursor(row=None)
             if "sqlite_master" in sql:
                 return StubCursor(row={"name": "messages_fts"})
+            if "messages_fts_docsize" in sql:
+                return StubCursor(row=(1,))
+            if "COUNT(*) FROM messages" in sql:
+                return StubCursor(row=(1,))
             if "MATCH" in sql:
                 raise sqlite3.OperationalError("fts5: syntax error")
             return StubCursor()
@@ -1193,6 +1201,31 @@ def test_search_without_fts_table_raises_descriptive_error(workspace_env, db_wit
         search_messages("hello", archive_root=archive_root, limit=5)
     assert exc_info.type.__name__ == "DatabaseError"
     assert "Search index not built" in str(exc_info.value)
+
+
+def test_search_with_empty_fts_rows_raises_descriptive_error(workspace_env, db_path):
+    """search() rejects archives whose FTS table exists but is not populated."""
+    from polylogue.storage.backends.connection import open_connection
+
+    archive_root = workspace_env["archive_root"]
+    factory = DbFactory(db_path)
+    factory.create_conversation(
+        id="conv-incomplete-fts",
+        provider="chatgpt",
+        title="Incomplete FTS",
+        messages=[
+            {"id": "m-incomplete-1", "role": "user", "text": "search me"},
+            {"id": "m-incomplete-2", "role": "assistant", "text": "still not indexed"},
+        ],
+    )
+    with open_connection(db_path) as conn:
+        conn.execute("DELETE FROM messages_fts")
+        conn.commit()
+
+    with pytest.raises(Exception) as exc_info:
+        search_messages("search", archive_root=archive_root, db_path=db_path, limit=5)
+    assert exc_info.type.__name__ == "DatabaseError"
+    assert "Search index is incomplete" in str(exc_info.value)
 
 
 # ============================================================================

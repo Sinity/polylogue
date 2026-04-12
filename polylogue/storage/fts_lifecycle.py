@@ -275,12 +275,45 @@ async def fts_index_status_async(conn: aiosqlite.Connection) -> dict[str, object
     return {"exists": exists, "count": int(count), "action_count": int(action_count)}
 
 
+def message_fts_readiness_sync(conn: sqlite3.Connection) -> dict[str, int | bool]:
+    """Return whether the message FTS index is present and fully populated."""
+    status = fts_index_status_sync(conn)
+    total_messages = int(conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0] or 0)
+    indexed_rows = int(status.get("count", 0) or 0)
+    exists = bool(status.get("exists", False))
+    ready = exists and indexed_rows == total_messages
+    return {
+        "exists": exists,
+        "indexed_rows": indexed_rows,
+        "total_rows": total_messages,
+        "ready": ready,
+    }
+
+
+async def message_fts_readiness_async(conn: aiosqlite.Connection) -> dict[str, int | bool]:
+    """Return whether the message FTS index is present and fully populated."""
+    status = await fts_index_status_async(conn)
+    row = await (await conn.execute("SELECT COUNT(*) FROM messages")).fetchone()
+    total_messages = int(row[0] or 0) if row else 0
+    indexed_rows = int(status.get("count", 0) or 0)
+    exists = bool(status.get("exists", False))
+    ready = exists and indexed_rows == total_messages
+    return {
+        "exists": exists,
+        "indexed_rows": indexed_rows,
+        "total_rows": total_messages,
+        "ready": ready,
+    }
+
+
 __all__ = [
     "_chunked",
     "ensure_fts_index_async",
     "ensure_fts_index_sync",
     "fts_index_status_async",
     "fts_index_status_sync",
+    "message_fts_readiness_async",
+    "message_fts_readiness_sync",
     "rebuild_fts_index_async",
     "rebuild_fts_index_sync",
     "repair_fts_index_async",
