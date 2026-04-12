@@ -9,7 +9,12 @@ from pydantic import BaseModel, Field, field_validator
 
 from polylogue.lib.roles import Role
 from polylogue.lib.viewport_enums import ContentType, ToolCategory
-from polylogue.lib.viewport_tools import PATH_PATTERN, clean_path_candidate, clean_shell_path_candidate
+from polylogue.lib.viewport_tools import (
+    PATH_PATTERN,
+    clean_metadata_path_candidate,
+    clean_path_candidate,
+    clean_shell_path_candidate,
+)
 from polylogue.types import Provider
 
 
@@ -76,13 +81,13 @@ class ToolCall(BaseModel):
         metadata = self.raw.get("metadata") if isinstance(self.raw, dict) else None
         if isinstance(metadata, dict):
             for field in ("path", "file_path"):
-                value = clean_path_candidate(metadata.get(field))
+                value = clean_metadata_path_candidate(metadata.get(field))
                 if value:
                     paths.append(value)
             files = metadata.get("files")
             if isinstance(files, list):
                 for item in files:
-                    value = clean_path_candidate(item)
+                    value = clean_metadata_path_candidate(item)
                     if value:
                         paths.append(value)
 

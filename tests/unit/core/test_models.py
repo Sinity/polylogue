@@ -122,6 +122,30 @@ class TestToolCallProperties:
         )
         assert tool.affected_paths == ["pyproject.toml", "/workspace/polylogue/README.md"]
 
+    def test_affected_paths_filters_noisy_structured_metadata_files(self):
+        tool = ToolCall(
+            name="Bash",
+            id="t1",
+            input={"command": "git add modules/services/sinex/bridge.nix && git commit -m \"$(cat <<'EOF'\""},
+            category=classify_tool("Bash", {"command": "git add modules/services/sinex/bridge.nix"}),
+            raw={
+                "metadata": {
+                    "files": [
+                        "modules/services/sinex/bridge.nix",
+                        "&&",
+                        "git",
+                        "commit",
+                        "\"$(cat",
+                        "<<'EOF'",
+                        "fix(sinex):",
+                        "(1M",
+                        "README.md",
+                    ]
+                }
+            },
+        )
+        assert tool.affected_paths == ["modules/services/sinex/bridge.nix", "README.md"]
+
 
 class TestMessageCollectionContracts:
     def test_is_lazy_is_always_false(self):

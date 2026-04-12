@@ -5,7 +5,7 @@ from __future__ import annotations
 SESSION_PRODUCT_PROFILE_DDL = """
         CREATE TABLE IF NOT EXISTS session_profiles (
             conversation_id TEXT PRIMARY KEY REFERENCES conversations(conversation_id) ON DELETE CASCADE,
-            materializer_version INTEGER NOT NULL DEFAULT 4,
+            materializer_version INTEGER NOT NULL DEFAULT 5,
             materialized_at TEXT NOT NULL,
             source_updated_at TEXT,
             source_sort_key REAL,

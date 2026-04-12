@@ -11,6 +11,7 @@ from typing import Any
 
 import click
 
+from polylogue.archive_products import ArchiveProductUnavailableError
 from polylogue.cli.helper_support import fail
 from polylogue.cli.types import AppEnv
 from polylogue.products.registry import (
@@ -130,7 +131,7 @@ def _make_callback(pt: ProductType):
 
         try:
             items = fetch_products(pt, env.operations, **kwargs)
-        except ProductQueryError as exc:
+        except (ArchiveProductUnavailableError, ProductQueryError) as exc:
             fail(f"products {pt.resolved_cli_command_name}", str(exc))
         render_product_items(items, pt, json_mode=(json_mode or output_format == "json"))
 

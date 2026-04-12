@@ -28,6 +28,10 @@ def _extract_json(output: str) -> dict[str, object]:
     return data
 
 
+def _exception_message(result) -> str:
+    return str(result.exception) if result.exception is not None else result.output.strip()
+
+
 def _seed_products(cli_workspace) -> None:
     db_path = cli_workspace["db_path"]
     (
@@ -528,3 +532,79 @@ def test_session_product_status_marks_older_materializer_versions_stale(cli_work
     assert status["profile_row_count"] == 2
     assert status["stale_profile_row_count"] == 2
     assert status["profile_rows_ready"] is False
+
+
+@pytest.mark.parametrize(
+    ("argv", "sql", "expected"),
+    [
+        (
+            ["products", "profiles", "--json"],
+            "UPDATE session_profiles SET materializer_version = ?",
+            "Session-profile rows are incomplete.",
+        ),
+        (
+            ["products", "work-events", "--json"],
+            "UPDATE session_work_events SET materializer_version = ?",
+            "Session work-event rows are incomplete.",
+        ),
+        (
+            ["products", "phases", "--json"],
+            "UPDATE session_phases SET materializer_version = ?",
+            "Session phase rows are incomplete.",
+        ),
+        (
+            ["products", "threads", "--json"],
+            "UPDATE work_threads SET materializer_version = ?",
+            "Work-thread rows are incomplete.",
+        ),
+        (
+            ["products", "tags", "--json"],
+            "UPDATE session_tag_rollups SET materializer_version = ?",
+            "Session tag rollups are incomplete.",
+        ),
+        (
+            ["products", "day-summaries", "--json"],
+            "UPDATE day_session_summaries SET materializer_version = ?",
+            "Day session summaries are incomplete.",
+        ),
+        (
+            ["products", "week-summaries", "--json"],
+            "UPDATE day_session_summaries SET materializer_version = ?",
+            "Week session summaries are incomplete.",
+        ),
+    ],
+)
+def test_products_reject_stale_session_product_surfaces(cli_workspace, argv, sql, expected):
+    _seed_products(cli_workspace)
+
+    with open_connection(cli_workspace["db_path"]) as conn:
+        conn.execute(sql, (SESSION_PRODUCT_MATERIALIZER_VERSION - 1,))
+        conn.commit()
+
+    runner = CliRunner()
+    result = runner.invoke(cli, argv, catch_exceptions=False)
+
+    assert result.exit_code == 1
+    message = _exception_message(result)
+    assert expected in message
+    assert "polylogue doctor --repair --target session_products" in message
+
+
+def test_products_profiles_reject_incomplete_profile_search_index(cli_workspace):
+    _seed_products(cli_workspace)
+
+    with open_connection(cli_workspace["db_path"]) as conn:
+        conn.execute("DELETE FROM session_profiles_fts")
+        conn.commit()
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        ["products", "profiles", "--query", "refactor", "--json"],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 1
+    message = _exception_message(result)
+    assert "Session-profile merged search index is incomplete." in message
+    assert "polylogue doctor --repair --target session_products" in message

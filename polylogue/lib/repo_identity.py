@@ -88,6 +88,9 @@ def _repo_name_from_remote(value: str) -> str | None:
     if parsed.scheme in {"http", "https", "ssh", "git"}:
         return _repo_name_from_slug(parsed.path)
     if _REPO_SLUG_RE.fullmatch(raw):
+        parts = raw.split("/")
+        if any(part.startswith(".") for part in parts):
+            return None
         return _repo_name_from_slug(raw)
     return None
 

@@ -41,6 +41,7 @@ def test_repo_identity_normalization_filters_noise(tmp_path: Path) -> None:
     assert normalize_repo_names(["sinex"]) == ("sinex",)
     assert normalize_repo_name("\\S+") is None
     assert normalize_repo_name("README.md") is None
+    assert normalize_repo_name(".snapshots/root") is None
     assert normalize_repo_names(
         [
             "https://github.com/Sinity/polylogue.git",

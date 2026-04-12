@@ -15,6 +15,7 @@ from polylogue.lib.repo_identity import (
     normalize_repo_paths,
 )
 from polylogue.lib.semantic_facts import ConversationSemanticFacts, build_conversation_semantic_facts
+from polylogue.lib.viewport_tools import looks_like_path_candidate
 
 if TYPE_CHECKING:
     from polylogue.lib.models import Conversation
@@ -74,6 +75,8 @@ def _clean_attributed_path(path: str) -> str | None:
     if set(candidate) <= {".", "/"}:
         return None
     if not candidate.startswith(("/", "~/")):
+        if not looks_like_path_candidate(candidate):
+            return None
         return candidate
     canonical = str(Path(candidate).expanduser().resolve(strict=False))
     if _repo_root_from_path(canonical) is not None:
@@ -89,7 +92,7 @@ def _clean_attributed_path(path: str) -> str | None:
     return None
 
 
-def _add_repo_candidate(value: str, *, repo_paths: set[str], repo_names: set[str]) -> None:
+def _add_repo_candidate_from_path(value: str, *, repo_paths: set[str], repo_names: set[str]) -> None:
     repo = _repo_root_from_path(value)
     if repo is not None:
         repo_paths.add(repo)
@@ -97,6 +100,10 @@ def _add_repo_candidate(value: str, *, repo_paths: set[str], repo_names: set[str
         if repo_name:
             repo_names.add(repo_name)
         return
+
+
+def _add_repo_candidate_from_hint(value: str, *, repo_paths: set[str], repo_names: set[str]) -> None:
+    _add_repo_candidate_from_path(value, repo_paths=repo_paths, repo_names=repo_names)
     repo_name = normalize_repo_name(value)
     if repo_name:
         repo_names.add(repo_name)
@@ -131,11 +138,11 @@ def extract_attribution_from_action_events(
     cwd_value = provider_meta.get("cwd")
     if isinstance(cwd_value, str) and cwd_value:
         cwd_paths.add(cwd_value)
-        _add_repo_candidate(cwd_value, repo_paths=repo_paths, repo_names=repo_names)
+        _add_repo_candidate_from_path(cwd_value, repo_paths=repo_paths, repo_names=repo_names)
     for working_directory in provider_meta.get("working_directories", []) or []:
         if isinstance(working_directory, str) and working_directory:
             cwd_paths.add(working_directory)
-            _add_repo_candidate(working_directory, repo_paths=repo_paths, repo_names=repo_names)
+            _add_repo_candidate_from_path(working_directory, repo_paths=repo_paths, repo_names=repo_names)
 
     git_branch = provider_meta.get("gitBranch")
     if isinstance(git_branch, str) and git_branch:
@@ -148,12 +155,12 @@ def extract_attribution_from_action_events(
             branch_names.add(branch)
         repository_url = git_meta.get("repository_url")
         if isinstance(repository_url, str) and repository_url:
-            _add_repo_candidate(repository_url, repo_paths=repo_paths, repo_names=repo_names)
+            _add_repo_candidate_from_hint(repository_url, repo_paths=repo_paths, repo_names=repo_names)
 
     for action in actions:
         if action.cwd_path:
             cwd_paths.add(action.cwd_path)
-            _add_repo_candidate(action.cwd_path, repo_paths=repo_paths, repo_names=repo_names)
+            _add_repo_candidate_from_path(action.cwd_path, repo_paths=repo_paths, repo_names=repo_names)
         for branch in action.branch_names:
             branch_names.add(branch)
         for path in action.affected_paths:
@@ -164,7 +171,7 @@ def extract_attribution_from_action_events(
             lang = _language_from_path(clean_path)
             if lang:
                 languages.add(lang)
-            _add_repo_candidate(clean_path, repo_paths=repo_paths, repo_names=repo_names)
+            _add_repo_candidate_from_path(clean_path, repo_paths=repo_paths, repo_names=repo_names)
 
     normalized_repo_paths = normalize_repo_paths(repo_paths)
 
