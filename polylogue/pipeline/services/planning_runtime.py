@@ -43,6 +43,7 @@ async def build_ingest_plan(
     ui: object | None = None,
     progress_callback: ProgressCallback | None = None,
     preview: bool = False,
+    force_reparse: bool = False,
 ) -> IngestPlan:
     source_names = [source.name for source in sources]
     db_scope_names = source_names or None
@@ -88,11 +89,13 @@ async def build_ingest_plan(
             service.backend,
             source_names=db_scope_names,
             exclude_raw_ids=[],
+            force_reparse=force_reparse,
         )
         parse_ready_raw_ids = await collect_parse_backlog(
             service.backend,
             source_names=db_scope_names,
             exclude_raw_ids=validate_raw_ids,
+            force_reparse=force_reparse,
         )
         reprocess_raw_ids = dedupe_ids([*validate_raw_ids, *parse_ready_raw_ids])
         counts: dict[str, int] = {}
@@ -164,7 +167,7 @@ async def build_ingest_plan(
 
             if has_parse:
                 current_status = state.validation_status if state is not None else None
-                parsed_at = state.parsed_at if state is not None else None
+                parsed_at = None if force_reparse else (state.parsed_at if state is not None else None)
                 if parsed_at is None:
                     if current_status is None:
                         validate_raw_ids.append(record.raw_id)
@@ -208,6 +211,7 @@ async def build_ingest_plan(
             service.backend,
             source_names=db_scope_names,
             exclude_raw_ids=validate_raw_ids,
+            force_reparse=force_reparse,
         )
         if backlog_validate_ids:
             details["backlog_validate"] = len(backlog_validate_ids)
@@ -230,6 +234,7 @@ async def build_ingest_plan(
             service.backend,
             source_names=db_scope_names,
             exclude_raw_ids=validate_raw_ids,
+            force_reparse=force_reparse,
         )
         details["backlog_parse"] = len(backlog_parse_ids)
         parse_ready_raw_ids.extend(backlog_parse_ids)
