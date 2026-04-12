@@ -37,6 +37,13 @@ _SOURCE_HASH_SUFFIX = re.compile(r"-(?:[0-9a-f]{16,64})$", re.IGNORECASE)
 _SCHEMA_REGISTRY = None
 
 
+def _format_malformed_jsonl_error(*, malformed_lines: int, malformed_detail: str | None) -> str:
+    message = f"Malformed JSONL lines: {malformed_lines}"
+    if malformed_detail:
+        return f"{message} (first bad {malformed_detail})"
+    return message
+
+
 # ---------------------------------------------------------------------------
 # Result dataclasses — cheap to pickle (no Pydantic)
 # ---------------------------------------------------------------------------
@@ -173,14 +180,14 @@ def _stream_grouped_jsonl_record(
     validation_mode: ValidationMode,
     measure_serialized_size: bool,
 ) -> IngestRecordResult | None:
-    from polylogue.lib.raw_payload import sample_jsonl_payload
+    from polylogue.lib.raw_payload_decode import _sample_jsonl_payload_with_detail
     from polylogue.schemas.validator import SchemaValidator
     from polylogue.sources.dispatch import detect_provider, parse_stream_payload
 
     stream_name = raw_record.source_path or raw_record.raw_id
 
     try:
-        sample_payloads, malformed_lines = sample_jsonl_payload(
+        sample_payloads, malformed_lines, malformed_detail = _sample_jsonl_payload_with_detail(
             raw_source,
             max_samples=64,
             jsonl_dict_only=True,
@@ -219,13 +226,17 @@ def _stream_grouped_jsonl_record(
 
     if validation_mode is not ValidationMode.OFF and artifact.schema_eligible:
         if malformed_lines and validation_mode is ValidationMode.STRICT:
+            malformed_error = _format_malformed_jsonl_error(
+                malformed_lines=malformed_lines,
+                malformed_detail=malformed_detail,
+            )
             return _finalize_result(
                 IngestRecordResult(
                     raw_id=raw_record.raw_id,
                     payload_provider=str(detected_provider),
                     validation_status=ValidationStatus.FAILED.value,
-                    validation_error=f"Malformed JSONL lines: {malformed_lines}",
-                    error=f"Malformed JSONL lines: {malformed_lines}",
+                    validation_error=malformed_error,
+                    error=malformed_error,
                 ),
                 measure_serialized_size=measure_serialized_size,
             )
@@ -419,14 +430,19 @@ def ingest_record(
 
     if validation_mode is not ValidationMode.OFF and envelope.artifact.schema_eligible:
         malformed_lines = envelope.malformed_jsonl_lines
+        malformed_detail = envelope.malformed_jsonl_detail
         if malformed_lines and validation_mode is ValidationMode.STRICT:
+            malformed_error = _format_malformed_jsonl_error(
+                malformed_lines=malformed_lines,
+                malformed_detail=malformed_detail,
+            )
             return _finalize_result(
                 IngestRecordResult(
                     raw_id=raw_record.raw_id,
                     payload_provider=payload_provider,
                     validation_status=ValidationStatus.FAILED.value,
-                    validation_error=f"Malformed JSONL lines: {malformed_lines}",
-                    error=f"Malformed JSONL lines: {malformed_lines}",
+                    validation_error=malformed_error,
+                    error=malformed_error,
                 ),
                 measure_serialized_size=measure_serialized_size,
             )
