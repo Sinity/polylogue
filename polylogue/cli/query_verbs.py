@@ -62,8 +62,9 @@ def count_verb(ctx: click.Context) -> None:
     type=click.Choice(["markdown", "json", "html", "obsidian", "org", "yaml", "plaintext", "csv"]),
     help="Output format",
 )
+@click.option("--limit", "-n", type=int, help="Max matched conversations before grouping")
 @click.pass_context
-def stats_verb(ctx: click.Context, stats_by: str | None, output_format: str | None) -> None:
+def stats_verb(ctx: click.Context, stats_by: str | None, output_format: str | None, limit: int | None) -> None:
     """Show statistics for matched conversations."""
     params = _parent_params(ctx)
     params["stats_only"] = stats_by is None
@@ -71,6 +72,8 @@ def stats_verb(ctx: click.Context, stats_by: str | None, output_format: str | No
         params["stats_by"] = stats_by
     if output_format:
         params["output_format"] = output_format
+    if limit is not None:
+        params["limit"] = limit
     _execute_query_verb(ctx, params)
 
 
