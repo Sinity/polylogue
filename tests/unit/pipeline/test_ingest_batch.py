@@ -17,6 +17,7 @@ from polylogue.pipeline.services.ingest_batch import (
     _iter_ingest_results_sync,
     _persist_batch_raw_state_updates,
     _RawIngestOutcome,
+    _select_ingest_worker_count,
     _successful_raw_state_update,
     _topo_sort_conversation_entries,
     _unattributed_batch_elapsed_s,
@@ -361,6 +362,26 @@ def test_iter_ingest_results_sync_runs_inline_for_single_worker(
 
     assert seen == ["raw-1", "raw-2"]
     assert [result.raw_id for result in results] == ["raw-1", "raw-2"]
+
+
+def test_select_ingest_worker_count_throttles_large_batches(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("polylogue.pipeline.services.ingest_batch.os.cpu_count", lambda: 16)
+    raw_records = [SimpleNamespace(blob_size=60 * 1024 * 1024) for _ in range(2)]
+
+    worker_count = _select_ingest_worker_count(raw_records, None)
+
+    assert worker_count == 2
+
+
+def test_select_ingest_worker_count_keeps_parallelism_for_small_batches(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("polylogue.pipeline.services.ingest_batch.os.cpu_count", lambda: 16)
+    raw_records = [SimpleNamespace(blob_size=4 * 1024 * 1024) for _ in range(6)]
+
+    worker_count = _select_ingest_worker_count(raw_records, None)
+
+    assert worker_count == 6
 
 
 def test_drain_ready_conversation_entries_preserves_late_parent_fk(tmp_path: Path) -> None:
