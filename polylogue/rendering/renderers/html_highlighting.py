@@ -14,6 +14,7 @@ from pygments.util import ClassNotFound
 
 HTML_RENDER_CACHE_MAX_ENTRIES = 8192
 HTML_RENDER_CACHE_TEXT_MAX_CHARS = 4096
+HTML_RENDER_MARKDOWN_MAX_CHARS = 200_000
 _URL_RE = re.compile(r"(https?://|www\.)", re.IGNORECASE)
 _MARKDOWN_BLOCK_RE = re.compile(r"(^|\n)(?: {0,3}(?:[-+*] |\d+[.)] |>)| {4}|\t)")
 _PLAIN_TEXT_MARKDOWN_CHARS = frozenset("`*_#[]|~")
@@ -65,6 +66,8 @@ class HTMLMessageRenderer:
     def render(self, text: str) -> str:
         if not text:
             return ""
+        if len(text) > HTML_RENDER_MARKDOWN_MAX_CHARS:
+            return self._render_large_text_fast(text)
         if len(text) > HTML_RENDER_CACHE_TEXT_MAX_CHARS:
             return self._render_uncached(text)
         return self._render_cached(text)
@@ -92,6 +95,10 @@ class HTMLMessageRenderer:
     def _render_plain_text_fast(cls, text: str) -> str:
         parts = [paragraph.strip() for paragraph in re.split(r"\n\s*\n+", text.strip()) if paragraph.strip()]
         return "".join(f"<p>{cls._escape_like_markdown_it(paragraph)}</p>\n" for paragraph in parts)
+
+    @classmethod
+    def _render_large_text_fast(cls, text: str) -> str:
+        return f'<pre class="plain-text-block">{cls._escape_like_markdown_it(text)}</pre>'
 
     def _enhance_code_blocks(self, html: str) -> str:
         pattern = r'<pre><code class="language-(\w+)">(.*?)</code></pre>'
