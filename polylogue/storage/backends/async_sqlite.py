@@ -23,7 +23,12 @@ from polylogue.errors import DatabaseError
 from polylogue.storage.backends.async_sqlite_archive import SQLiteArchiveMixin
 from polylogue.storage.backends.async_sqlite_raw import SQLiteRawMixin
 from polylogue.storage.backends.async_sqlite_schema import ensure_schema as ensure_current_schema
-from polylogue.storage.backends.connection import DB_TIMEOUT, READ_DB_TIMEOUT
+from polylogue.storage.backends.connection import (
+    DB_TIMEOUT,
+    READ_CACHE_SIZE_KIB,
+    READ_DB_TIMEOUT,
+    WRITE_CACHE_SIZE_KIB,
+)
 from polylogue.storage.backends.queries import action_events as action_events_q
 from polylogue.storage.backends.queries import (
     session_product_profile_writes as session_product_profiles_q,
@@ -68,8 +73,9 @@ async def configure_connection(conn: aiosqlite.Connection) -> None:
     await conn.execute("PRAGMA foreign_keys = ON")
     await conn.execute("PRAGMA journal_mode=WAL")
     await conn.execute(f"PRAGMA busy_timeout = {DB_TIMEOUT * 1000}")
-    # Performance: 512 MB page cache (default is 2 MB — unusable for large DBs)
-    await conn.execute("PRAGMA cache_size = -524288")
+    # Keep write-path cache large enough for bulk work without multiplying
+    # per-connection RSS into server-scale memory use on a local CLI utility.
+    await conn.execute(f"PRAGMA cache_size = -{WRITE_CACHE_SIZE_KIB}")
     # Performance: NORMAL sync is safe with WAL and avoids fsync per write
     await conn.execute("PRAGMA synchronous = NORMAL")
     # Performance: 1 GB memory-mapped I/O for faster reads on large DBs
@@ -85,7 +91,7 @@ async def configure_read_connection(conn: aiosqlite.Connection) -> None:
     """Apply read-safe settings without mutating database-wide state."""
     conn.row_factory = aiosqlite.Row
     await conn.execute(f"PRAGMA busy_timeout = {READ_DB_TIMEOUT * 1000}")
-    await conn.execute("PRAGMA cache_size = -524288")
+    await conn.execute(f"PRAGMA cache_size = -{READ_CACHE_SIZE_KIB}")
     await conn.execute("PRAGMA mmap_size = 1073741824")
     await conn.execute("PRAGMA temp_store = MEMORY")
 
@@ -281,8 +287,12 @@ async def _read_pool(backend: SQLiteBackend, size: int = 4) -> AsyncIterator[Non
     connections: list[aiosqlite.Connection] = []
 
     for _ in range(size):
-        conn = await aiosqlite.connect(backend._db_path, timeout=DB_TIMEOUT)
-        await configure_connection(conn)
+        conn = await aiosqlite.connect(
+            f"file:{backend._db_path}?mode=ro",
+            uri=True,
+            timeout=READ_DB_TIMEOUT,
+        )
+        await configure_read_connection(conn)
         connections.append(conn)
         pool.put_nowait(conn)
 
@@ -309,11 +319,13 @@ async def _get_connection(backend: SQLiteBackend) -> AsyncIterator[aiosqlite.Con
         return
 
     if backend._read_pool is not None:
-        conn = await backend._read_pool.get()
+        pool = backend._read_pool
+        conn = await pool.get()
         try:
             yield conn
         finally:
-            backend._read_pool.put_nowait(conn)
+            if backend._read_pool is pool:
+                pool.put_nowait(conn)
         return
 
     async with aiosqlite.connect(backend._db_path, timeout=DB_TIMEOUT) as conn:
@@ -333,11 +345,13 @@ async def _get_read_connection(backend: SQLiteBackend) -> AsyncIterator[aiosqlit
         return
 
     if backend._read_pool is not None:
-        conn = await backend._read_pool.get()
+        pool = backend._read_pool
+        conn = await pool.get()
         try:
             yield conn
         finally:
-            backend._read_pool.put_nowait(conn)
+            if backend._read_pool is pool:
+                pool.put_nowait(conn)
         return
 
     if not backend._db_path.exists():
