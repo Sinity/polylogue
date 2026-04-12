@@ -6,9 +6,15 @@ search (FTS5) with semantic vector search (sqlite-vec) using Reciprocal Rank Fus
 
 from __future__ import annotations
 
+import sqlite3
 from typing import TYPE_CHECKING
 
-from polylogue.storage.backends.connection import open_read_connection
+from polylogue.storage.backends.connection import (
+    open_connection as _open_connection,
+)
+from polylogue.storage.backends.connection import (
+    open_read_connection,
+)
 from polylogue.storage.search_providers.hybrid_conversations import _resolve_ranked_conversation_ids
 from polylogue.storage.search_providers.hybrid_factory import create_hybrid_provider
 
@@ -20,6 +26,13 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 # Reciprocal Rank Fusion (formerly hybrid_rrf.py)
 # ---------------------------------------------------------------------------
+
+
+def open_connection(db_path: str | sqlite3.Connection):
+    """Return a readable connection for either DB paths or injected sqlite handles."""
+    if isinstance(db_path, sqlite3.Connection):
+        return _open_connection(db_path)
+    return open_read_connection(db_path)
 
 
 def reciprocal_rank_fusion(
@@ -156,7 +169,7 @@ class HybridSearchProvider:
         if not message_results:
             return []
 
-        with open_read_connection(self.fts_provider.db_path) as conn:
+        with open_connection(self.fts_provider.db_path) as conn:
             return _resolve_ranked_conversation_ids(
                 conn,
                 message_results=message_results,
