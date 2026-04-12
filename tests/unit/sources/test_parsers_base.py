@@ -1236,6 +1236,42 @@ def test_parse_code_semantic_projection_contract() -> None:
     assert result.provider_meta["total_duration_ms"] == 3000
 
 
+def test_parse_code_deduplicates_repeated_record_uuids() -> None:
+    repeated_user = {
+        "type": "user",
+        "uuid": "user-1",
+        "sessionId": "sess-1",
+        "timestamp": "2026-03-09T19:51:01.185Z",
+        "message": {"role": "user", "content": "Investigate duplicate rows"},
+    }
+    repeated_assistant = {
+        "type": "assistant",
+        "uuid": "assistant-1",
+        "sessionId": "sess-1",
+        "timestamp": "2026-03-09T19:51:39.108Z",
+        "costUSD": 0.25,
+        "durationMs": 1500,
+        "message": {
+            "role": "assistant",
+            "content": [
+                {"type": "text", "text": "Reading the file now."},
+                {"type": "tool_use", "name": "Read", "id": "tool-1", "input": {"file_path": "/tmp/x"}},
+            ],
+        },
+    }
+
+    result = parse_code(
+        [repeated_user, repeated_user, repeated_assistant, repeated_assistant],
+        "agent-dup-test",
+    )
+
+    assert len(result.messages) == 2
+    assert [message.provider_message_id for message in result.messages] == ["user-1", "assistant-1"]
+    assert result.provider_meta is not None
+    assert result.provider_meta["total_cost_usd"] == pytest.approx(0.25)
+    assert result.provider_meta["total_duration_ms"] == 1500
+
+
 @given(st.lists(st.text(min_size=1, max_size=50), min_size=0, max_size=5))
 @settings(max_examples=50, suppress_health_check=[HealthCheck.too_slow])
 def test_thinking_extraction_never_crashes(texts: list[str]) -> None:

@@ -75,6 +75,7 @@ def parse_code(payload: list[object], fallback_id: str) -> ParsedConversation:
     """Parse Claude Code JSONL payloads into a canonical conversation model."""
     messages: list[ParsedMessage] = []
     timestamps: list[str] = []
+    seen_record_uuids: dict[str, dict[str, Any]] = {}
     session_id: str | None = None
     context_compactions: list[dict[str, Any]] = []
     provider_events: list[ParsedProviderEvent] = []
@@ -111,6 +112,19 @@ def parse_code(payload: list[object], fallback_id: str) -> ParsedConversation:
         except ValidationError as exc:
             logger.debug("Skipping invalid record at index %d: %s", index, exc)
             continue
+
+        if record.uuid:
+            previous = seen_record_uuids.get(record.uuid)
+            if previous is not None:
+                if previous == item:
+                    continue
+                logger.debug(
+                    "Skipping repeated Claude Code record uuid with differing payload at index %d: %s",
+                    index,
+                    record.uuid,
+                )
+                continue
+            seen_record_uuids[record.uuid] = item
 
         if record.type in {"init", "file-history-snapshot", "queue-operation"}:
             continue
