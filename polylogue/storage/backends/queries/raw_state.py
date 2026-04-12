@@ -7,6 +7,7 @@ from typing import Any
 
 import aiosqlite
 
+from polylogue.storage.backends.connection import _build_source_scope_filter
 from polylogue.storage.state_views import UNSET, RawConversationStateUpdate
 from polylogue.types import Provider, ValidationMode, ValidationStatus
 
@@ -165,20 +166,26 @@ async def reset_parse_status(
     conn: aiosqlite.Connection,
     *,
     provider: str | None = None,
+    source_names: list[str] | None = None,
     transaction_depth: int,
 ) -> int:
+    where_clauses = ["(parsed_at IS NOT NULL OR parse_error IS NOT NULL)"]
+    params: list[str] = []
     if provider is not None:
-        cursor = await conn.execute(
-            "UPDATE raw_conversations SET parsed_at = NULL, parse_error = NULL "
-            f"WHERE {EFFECTIVE_RAW_PROVIDER_SQL} = ? "
-            "AND (parsed_at IS NOT NULL OR parse_error IS NOT NULL)",
-            (provider,),
-        )
-    else:
-        cursor = await conn.execute(
-            "UPDATE raw_conversations SET parsed_at = NULL, parse_error = NULL "
-            "WHERE parsed_at IS NOT NULL OR parse_error IS NOT NULL"
-        )
+        where_clauses.append(f"{EFFECTIVE_RAW_PROVIDER_SQL} = ?")
+        params.append(provider)
+    predicate, scope_params = _build_source_scope_filter(
+        source_names,
+        source_column="source_name",
+    )
+    if predicate:
+        where_clauses.append(predicate)
+        params.extend(scope_params)
+    cursor = await conn.execute(
+        "UPDATE raw_conversations SET parsed_at = NULL, parse_error = NULL "
+        f"WHERE {' AND '.join(where_clauses)}",
+        tuple(params),
+    )
     if transaction_depth == 0:
         await conn.commit()
     return cursor.rowcount
@@ -188,24 +195,30 @@ async def reset_validation_status(
     conn: aiosqlite.Connection,
     *,
     provider: str | None = None,
+    source_names: list[str] | None = None,
     transaction_depth: int,
 ) -> int:
+    where_clauses = [
+        "(validated_at IS NOT NULL OR validation_status IS NOT NULL OR validation_error IS NOT NULL)"
+    ]
+    params: list[str] = []
     if provider is not None:
-        cursor = await conn.execute(
-            "UPDATE raw_conversations "
-            "SET validated_at = NULL, validation_status = NULL, validation_error = NULL, "
-            "validation_drift_count = NULL, validation_provider = NULL, validation_mode = NULL "
-            f"WHERE {EFFECTIVE_RAW_PROVIDER_SQL} = ? "
-            "AND (validated_at IS NOT NULL OR validation_status IS NOT NULL OR validation_error IS NOT NULL)",
-            (provider,),
-        )
-    else:
-        cursor = await conn.execute(
-            "UPDATE raw_conversations "
-            "SET validated_at = NULL, validation_status = NULL, validation_error = NULL, "
-            "validation_drift_count = NULL, validation_provider = NULL, validation_mode = NULL "
-            "WHERE validated_at IS NOT NULL OR validation_status IS NOT NULL OR validation_error IS NOT NULL"
-        )
+        where_clauses.append(f"{EFFECTIVE_RAW_PROVIDER_SQL} = ?")
+        params.append(provider)
+    predicate, scope_params = _build_source_scope_filter(
+        source_names,
+        source_column="source_name",
+    )
+    if predicate:
+        where_clauses.append(predicate)
+        params.extend(scope_params)
+    cursor = await conn.execute(
+        "UPDATE raw_conversations "
+        "SET validated_at = NULL, validation_status = NULL, validation_error = NULL, "
+        "validation_drift_count = NULL, validation_provider = NULL, validation_mode = NULL "
+        f"WHERE {' AND '.join(where_clauses)}",
+        tuple(params),
+    )
     if transaction_depth == 0:
         await conn.commit()
     return cursor.rowcount
