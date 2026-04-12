@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from pathlib import PurePosixPath
 
 from polylogue.lib.action_event_parsing import _clean_str, _extract_first_string
 from polylogue.lib.hashing import hash_text_short
@@ -13,6 +14,17 @@ _QUERY_FIELDS = ("q", "query", "pattern", "search_query", "searchQuery", "needle
 _URL_FIELDS = ("url", "uri", "href", "ref_id")
 _CWD_FIELDS = ("cwd", "workdir", "directory")
 _BRANCH_FIELDS = ("branch", "from_branch", "base", "base_ref", "head")
+
+
+def _looks_like_checkout_pathspec(value: str) -> bool:
+    candidate = value.strip().strip("\"'`")
+    if not candidate or candidate.startswith("-"):
+        return False
+    if candidate.startswith(("/", "~/", "./", "../")):
+        return True
+    if candidate.startswith("."):
+        return True
+    return "/" in candidate and bool(PurePosixPath(candidate).suffix)
 
 
 def extract_search_query(call: ToolCall) -> str | None:
@@ -54,7 +66,7 @@ def extract_branch_names(call: ToolCall, command: str | None) -> tuple[str, ...]
     if command:
         for match in _GIT_BRANCH_PATTERN.finditer(command):
             branch = match.group(1)
-            if branch and not branch.startswith("-"):
+            if branch and not branch.startswith("-") and not _looks_like_checkout_pathspec(branch):
                 branches.append(branch)
     return tuple(dict.fromkeys(branches))
 

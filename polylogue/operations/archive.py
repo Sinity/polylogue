@@ -15,6 +15,7 @@ from polylogue.archive_product_summaries import (
 from polylogue.archive_products import (
     ArchiveDebtProduct,
     ArchiveDebtProductQuery,
+    ArchiveProductUnavailableError,
     DaySessionSummaryProduct,
     DaySessionSummaryProductQuery,
     ProviderAnalyticsProduct,
@@ -42,6 +43,14 @@ from polylogue.storage.repair import collect_archive_debt_statuses_sync
 from polylogue.storage.search import SearchHit, SearchResult
 
 logger = structlog.get_logger(__name__)
+
+_SESSION_PRODUCT_REPAIR_HINT = "Run `polylogue doctor --repair --target session_products` or `polylogue run all`."
+_PROFILE_FTS_STATUS_BY_TIER = {
+    "merged": "profile_merged_fts_ready",
+    "evidence": "profile_evidence_fts_ready",
+    "inference": "profile_inference_fts_ready",
+    "enrichment": "profile_enrichment_fts_ready",
+}
 
 if TYPE_CHECKING:
     from polylogue.config import Config
@@ -127,6 +136,20 @@ def provider_analytics_product(row) -> ProviderAnalyticsProduct:
         tool_use_percentage=tool_use_percentage,
         thinking_percentage=thinking_percentage,
     )
+
+
+def _require_ready_flag(
+    status: dict[str, int | bool],
+    flag: str,
+    detail: str,
+) -> None:
+    if bool(status.get(flag, False)):
+        return
+    raise ArchiveProductUnavailableError(f"{detail} {_SESSION_PRODUCT_REPAIR_HINT}")
+
+
+async def _read_session_product_status(repository: ConversationRepository) -> dict[str, int | bool]:
+    return await repository.queries.get_session_product_status()
 
 
 class ArchiveSearchMixin:
@@ -241,12 +264,17 @@ class ArchiveStatsMixin:
 
 
 class ArchiveProductSessionMixin:
+    async def _session_product_status(self) -> dict[str, int | bool]:
+        return await _read_session_product_status(self.repository)
+
     async def get_session_profile_product(
         self,
         conversation_id: str,
         *,
         tier: str = "merged",
     ) -> SessionProfileProduct | None:
+        status = await self._session_product_status()
+        _require_ready_flag(status, "profile_rows_ready", "Session-profile rows are incomplete.")
         record = await self.repository.get_session_profile_record(conversation_id)
         return SessionProfileProduct.from_record(record, tier=tier) if record is not None else None
 
@@ -255,6 +283,14 @@ class ArchiveProductSessionMixin:
         query: SessionProfileProductQuery | None = None,
     ) -> list[SessionProfileProduct]:
         request = query or SessionProfileProductQuery()
+        status = await self._session_product_status()
+        _require_ready_flag(status, "profile_rows_ready", "Session-profile rows are incomplete.")
+        if request.query:
+            _require_ready_flag(
+                status,
+                _PROFILE_FTS_STATUS_BY_TIER.get(request.tier, "profile_merged_fts_ready"),
+                f"Session-profile {request.tier} search index is incomplete.",
+            )
         records = await self.repository.list_session_profile_records(
             provider=request.provider,
             since=request.since,
@@ -274,6 +310,8 @@ class ArchiveProductSessionMixin:
         self,
         conversation_id: str,
     ) -> SessionEnrichmentProduct | None:
+        status = await self._session_product_status()
+        _require_ready_flag(status, "profile_rows_ready", "Session-profile rows are incomplete.")
         record = await self.repository.get_session_enrichment_record(conversation_id)
         return SessionEnrichmentProduct.from_record(record) if record is not None else None
 
@@ -282,6 +320,14 @@ class ArchiveProductSessionMixin:
         query: SessionEnrichmentProductQuery | None = None,
     ) -> list[SessionEnrichmentProduct]:
         request = query or SessionEnrichmentProductQuery()
+        status = await self._session_product_status()
+        _require_ready_flag(status, "profile_rows_ready", "Session-profile rows are incomplete.")
+        if request.query:
+            _require_ready_flag(
+                status,
+                "profile_enrichment_fts_ready",
+                "Session-profile enrichment search index is incomplete.",
+            )
         records = await self.repository.list_session_enrichment_records(
             provider=request.provider,
             since=request.since,
@@ -300,6 +346,8 @@ class ArchiveProductSessionMixin:
         self,
         conversation_id: str,
     ) -> list[SessionWorkEventProduct]:
+        status = await self._session_product_status()
+        _require_ready_flag(status, "work_event_inference_rows_ready", "Session work-event rows are incomplete.")
         records = await self.repository.get_session_work_event_records(conversation_id)
         return [SessionWorkEventProduct.from_record(record) for record in records]
 
@@ -308,6 +356,14 @@ class ArchiveProductSessionMixin:
         query: SessionWorkEventProductQuery | None = None,
     ) -> list[SessionWorkEventProduct]:
         request = query or SessionWorkEventProductQuery()
+        status = await self._session_product_status()
+        _require_ready_flag(status, "work_event_inference_rows_ready", "Session work-event rows are incomplete.")
+        if request.query:
+            _require_ready_flag(
+                status,
+                "work_event_inference_fts_ready",
+                "Session work-event search index is incomplete.",
+            )
         records = await self.repository.list_session_work_event_records(
             conversation_id=request.conversation_id,
             provider=request.provider,
@@ -324,6 +380,8 @@ class ArchiveProductSessionMixin:
         self,
         conversation_id: str,
     ) -> list[SessionPhaseProduct]:
+        status = await self._session_product_status()
+        _require_ready_flag(status, "phase_inference_rows_ready", "Session phase rows are incomplete.")
         records = await self.repository.get_session_phase_records(conversation_id)
         return [SessionPhaseProduct.from_record(record) for record in records]
 
@@ -332,6 +390,8 @@ class ArchiveProductSessionMixin:
         query: SessionPhaseProductQuery | None = None,
     ) -> list[SessionPhaseProduct]:
         request = query or SessionPhaseProductQuery()
+        status = await self._session_product_status()
+        _require_ready_flag(status, "phase_inference_rows_ready", "Session phase rows are incomplete.")
         records = await self.repository.list_session_phase_records(
             conversation_id=request.conversation_id,
             provider=request.provider,
@@ -344,6 +404,8 @@ class ArchiveProductSessionMixin:
         return [SessionPhaseProduct.from_record(record) for record in records]
 
     async def get_work_thread_product(self, thread_id: str) -> WorkThreadProduct | None:
+        status = await self._session_product_status()
+        _require_ready_flag(status, "threads_ready", "Work-thread rows are incomplete.")
         record = await self.repository.get_work_thread_record(thread_id)
         return WorkThreadProduct.from_record(record) if record is not None else None
 
@@ -352,6 +414,10 @@ class ArchiveProductSessionMixin:
         query: WorkThreadProductQuery | None = None,
     ) -> list[WorkThreadProduct]:
         request = query or WorkThreadProductQuery()
+        status = await self._session_product_status()
+        _require_ready_flag(status, "threads_ready", "Work-thread rows are incomplete.")
+        if request.query:
+            _require_ready_flag(status, "threads_fts_ready", "Work-thread search index is incomplete.")
         records = await self.repository.list_work_thread_records(
             since=request.since,
             until=request.until,
@@ -368,6 +434,8 @@ class ArchiveProductAggregateMixin:
         query: SessionTagRollupQuery | None = None,
     ) -> list[SessionTagRollupProduct]:
         request = query or SessionTagRollupQuery()
+        status = await _read_session_product_status(self.repository)
+        _require_ready_flag(status, "tag_rollups_ready", "Session tag rollups are incomplete.")
         rows = await self.repository.list_session_tag_rollup_records(
             provider=request.provider,
             since=request.since,
@@ -386,6 +454,8 @@ class ArchiveProductAggregateMixin:
         query: DaySessionSummaryProductQuery | None = None,
     ) -> list[DaySessionSummaryProduct]:
         request = query or DaySessionSummaryProductQuery()
+        status = await _read_session_product_status(self.repository)
+        _require_ready_flag(status, "day_summaries_ready", "Day session summaries are incomplete.")
         rows = await self.repository.list_day_session_summary_records(
             provider=request.provider,
             since=request.since,
@@ -403,6 +473,8 @@ class ArchiveProductAggregateMixin:
         query: WeekSessionSummaryProductQuery | None = None,
     ) -> list[WeekSessionSummaryProduct]:
         request = query or WeekSessionSummaryProductQuery()
+        status = await _read_session_product_status(self.repository)
+        _require_ready_flag(status, "week_summaries_ready", "Week session summaries are incomplete.")
         rows = await self.repository.list_day_session_summary_records(
             provider=request.provider,
             since=request.since,
