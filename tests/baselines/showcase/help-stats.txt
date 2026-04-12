@@ -7,4 +7,5 @@ Options:
                                   Aggregate by dimension
   -f, --format [markdown|json|html|obsidian|org|yaml|plaintext|csv]
                                   Output format
+  -n, --limit INTEGER             Max matched conversations before grouping
   -h, --help                      Show this message and exit.

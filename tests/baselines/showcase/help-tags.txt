@@ -11,5 +11,6 @@ Usage: polylogue tags [OPTIONS]
 Options:
   -p, --provider TEXT  Filter tags by provider
   --json               Output as JSON
+  -f, --format [json]  Output format
   -n, --count INTEGER  Show top N tags
   -h, --help           Show this message and exit.

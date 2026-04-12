@@ -157,6 +157,7 @@ Options:
                                   Aggregate by dimension
   -f, --format [markdown|json|html|obsidian|org|yaml|plaintext|csv]
                                   Output format
+  -n, --limit INTEGER             Max matched conversations before grouping
   -h, --help                      Show this message and exit.
 ```
 
@@ -174,7 +175,7 @@ Options:
 ## Open Verb
 
 ```text
-Usage: polylogue open [OPTIONS]
+Usage: polylogue open [OPTIONS] [TARGET_TERMS]...
 
   Open matched conversation in browser/editor.
 
@@ -442,6 +443,7 @@ Usage: polylogue tags [OPTIONS]
 Options:
   -p, --provider TEXT  Filter tags by provider
   --json               Output as JSON
+  -f, --format [json]  Output format
   -n, --count INTEGER  Show top N tags
   -h, --help           Show this message and exit.
 ```
