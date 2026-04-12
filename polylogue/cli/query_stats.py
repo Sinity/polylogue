@@ -80,6 +80,26 @@ def emit_structured_stats(
     return False
 
 
+def _emit_grouped_no_results(
+    env: AppEnv,
+    *,
+    output_format: str = "text",
+    selection: ConversationQuerySpec | None = None,
+) -> None:
+    filters = selection.describe() if selection is not None else []
+    if output_format == "json":
+        message = "No conversations matched filters." if filters else "No conversations matched."
+        error_no_results(message, filters=filters or None).emit(exit_code=2)
+    if filters:
+        env.ui.console.print("No conversations matched filters:")
+        for item in filters:
+            env.ui.console.print(f"  {item}")
+        env.ui.console.print("Hint: try broadening your filters or use `list` to browse")
+    else:
+        env.ui.console.print("No conversations matched.")
+    raise SystemExit(2)
+
+
 # ---------------------------------------------------------------------------
 # SQL-backed archive stats (from query_sql_stats.py)
 # ---------------------------------------------------------------------------
@@ -219,6 +239,7 @@ def output_stats_by_summaries(
     msg_counts: dict[str, int],
     dimension: str,
     *,
+    selection: ConversationQuerySpec | None = None,
     output_format: str = "text",
 ) -> None:
     from collections import defaultdict
@@ -228,8 +249,7 @@ def output_stats_by_summaries(
     from polylogue.ui.theme import provider_color
 
     if not summaries:
-        env.ui.console.print("No conversations matched.")
-        return
+        _emit_grouped_no_results(env, output_format=output_format, selection=selection)
 
     groups: dict[str, list[ConversationSummary]] = defaultdict(list)
     for summary in summaries:
@@ -563,8 +583,7 @@ def output_stats_by_conversations(
     output_format: str = "text",
 ) -> None:
     if not results:
-        env.ui.console.print("No conversations matched.")
-        return
+        _emit_grouped_no_results(env, output_format=output_format, selection=selection)
 
     if output_semantic_grouped_stats(
         env,
@@ -594,6 +613,7 @@ async def output_stats_by_profile_summaries(
     repo: ConversationRepository,
     dimension: str,
     *,
+    selection: ConversationQuerySpec | None = None,
     output_format: str = "text",
     batch_size: int = 100,
 ) -> None:
@@ -602,6 +622,7 @@ async def output_stats_by_profile_summaries(
         [str(summary.id) for summary in summaries],
         repo,
         dimension,
+        selection=selection,
         output_format=output_format,
         batch_size=batch_size,
     )
@@ -613,6 +634,7 @@ async def output_stats_by_profile_query(
     repo: ConversationRepository,
     dimension: str,
     *,
+    selection: ConversationQuerySpec | None = None,
     output_format: str = "text",
     batch_size: int = 100,
 ) -> None:
@@ -621,6 +643,7 @@ async def output_stats_by_profile_query(
         conversation_ids,
         repo,
         dimension,
+        selection=selection,
         output_format=output_format,
         batch_size=batch_size,
     )
@@ -632,6 +655,7 @@ async def output_stats_by_profile_ids(
     repo: ConversationRepository,
     dimension: str,
     *,
+    selection: ConversationQuerySpec | None = None,
     output_format: str = "text",
     batch_size: int = 100,
 ) -> None:
@@ -642,8 +666,7 @@ async def output_stats_by_profile_ids(
     if dimension not in {"repo", "work-kind"}:
         raise ValueError(f"Unsupported profile stats dimension: {dimension}")
     if not conversation_ids:
-        env.ui.console.print("No conversations matched.")
-        return
+        _emit_grouped_no_results(env, output_format=output_format, selection=selection)
 
     from polylogue.lib.session_profile import build_session_profile
 
