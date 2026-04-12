@@ -39,7 +39,12 @@ from polylogue.storage.repair import (
     run_selected_maintenance,
 )
 
-from .check_support import make_schema_progress_callback, parse_schema_samples, vacuum_database
+from .check_support import (
+    make_schema_progress_callback,
+    make_session_product_progress_callback,
+    parse_schema_samples,
+    vacuum_database,
+)
 
 
 @dataclass(frozen=True)
@@ -189,6 +194,14 @@ def run_check_workflow(env: AppEnv, options: CheckCommandOptions) -> CheckComman
             safe_repair_targets=SAFE_REPAIR_TARGETS,
             cleanup_targets=CLEANUP_TARGETS,
         )
+        session_product_progress_callback = None
+        if (
+            options.repair
+            and not options.preview
+            and not options.json_output
+            and (not selected_targets or "session_products" in selected_targets)
+        ):
+            session_product_progress_callback = make_session_product_progress_callback()
         result.maintenance_results = run_selected_maintenance(
             config,
             repair=options.repair,
@@ -196,6 +209,7 @@ def run_check_workflow(env: AppEnv, options: CheckCommandOptions) -> CheckComman
             dry_run=options.preview,
             preview_counts=preview_counts,
             targets=selected_targets,
+            session_product_progress_callback=session_product_progress_callback,
         )
 
     if (options.repair or options.cleanup) and options.vacuum:

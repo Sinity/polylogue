@@ -343,6 +343,25 @@ def test_session_product_rebuild_pages_full_rebuild(cli_workspace):
     assert status["phase_inference_rows_ready"] is True
 
 
+def test_session_product_rebuild_sync_reports_progress(cli_workspace):
+    _seed_products(cli_workspace)
+
+    observed: list[tuple[int, str | None]] = []
+
+    with open_connection(cli_workspace["db_path"]) as conn:
+        rebuild_session_products_sync(
+            conn,
+            page_size=1,
+            progress_callback=lambda amount, desc=None: observed.append((amount, desc)),
+            progress_total=2,
+        )
+
+    assert observed == [
+        (1, "Materializing: 1/2"),
+        (1, "Materializing: 2/2"),
+    ]
+
+
 def test_session_product_rebuild_preserves_profile_semantics_without_loading_full_provider_meta(cli_workspace):
     db_path = cli_workspace["db_path"]
     (
