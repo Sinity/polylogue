@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from polylogue.archive_product_summaries import aggregate_day_session_summary_products
+from polylogue.lib.attribution import extract_attribution
 from polylogue.lib.messages import MessageCollection
 from polylogue.lib.models import Conversation, Message
 from polylogue.lib.repo_identity import (
@@ -151,6 +152,34 @@ def test_build_session_profile_normalizes_repo_roots_from_workdirs_and_tool_path
 
     assert profile.repo_paths == (str(REPO_ROOT), str(sinnix_repo))
     assert profile.repo_names == ("polylogue", "sinnix")
+
+
+def test_extract_attribution_preserves_repo_name_from_provider_git_remote() -> None:
+    conversation = Conversation(
+        id="conv-provider-git-remote",
+        provider="codex",
+        title="Provider Git Remote",
+        created_at=datetime(2026, 3, 24, 10, 0, tzinfo=timezone.utc),
+        updated_at=datetime(2026, 3, 24, 10, 5, tzinfo=timezone.utc),
+        provider_meta={"git": {"branch": "master", "repository_url": "git@github.com:Sinity/sinex.git"}},
+        messages=MessageCollection(
+            messages=[
+                Message(
+                    id="u1",
+                    role="user",
+                    provider="codex",
+                    text="Continue work on the branch and summarize the status.",
+                    timestamp=datetime(2026, 3, 24, 10, 0, tzinfo=timezone.utc),
+                )
+            ]
+        ),
+    )
+
+    attribution = extract_attribution(conversation)
+
+    assert attribution.repo_names == ("sinex",)
+    assert attribution.branch_names == ("master",)
+    assert attribution.languages_detected == ()
 
 
 def test_day_summary_and_aggregate_products_preserve_repo_names() -> None:

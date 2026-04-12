@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
@@ -45,6 +46,11 @@ _LANGUAGE_EXTENSIONS = {
     ".html": "html",
     ".css": "css",
 }
+_DIALOGUE_LANGUAGE_HINT_PATTERNS = {
+    lang_name: re.compile(rf"\b{re.escape(lang_name)}\b") for lang_name in ("python", "rust", "typescript", "javascript", "nix", "go", "java", "ruby", "sql", "r")
+}
+
+
 def _repo_root_from_path(path: str) -> str | None:
     """Derive a likely repository root from a file path."""
     return normalize_repo_path(path)
@@ -92,7 +98,7 @@ def _add_repo_candidate(value: str, *, repo_paths: set[str], repo_names: set[str
         return
     repo_name = normalize_repo_name(value)
     if repo_name:
-        repo_names.add(repo_name)
+        repo_names.add(str(value).strip())
 
 
 @dataclass(frozen=True)
@@ -191,19 +197,20 @@ def extract_attribution(
 
     # Dialogue text can mention transcript-store or persisted-output paths that are not
     # evidence of the repos actually worked on. Keep only low-risk language hints here.
-    language_names = {"python", "rust", "typescript", "javascript", "nix", "go", "java", "ruby", "sql", "r"}
     for message in semantic_facts.message_facts:
         if not message.is_dialogue or not message.text:
             continue
         text_lower = message.text.lower()
-        for lang_name in language_names:
-            if lang_name in text_lower:
+        for lang_name, pattern in _DIALOGUE_LANGUAGE_HINT_PATTERNS.items():
+            if pattern.search(text_lower):
                 languages.add(lang_name)
 
     normalized_repo_paths = normalize_repo_paths(repo_paths)
+    normalized_repo_names = {name.strip() for name in repo_names if name and str(name).strip()}
+    normalized_repo_names.update(normalize_repo_names(repo_paths=normalized_repo_paths))
     return ConversationAttribution(
         repo_paths=normalized_repo_paths,
-        repo_names=normalize_repo_names(repo_names, repo_paths=normalized_repo_paths),
+        repo_names=tuple(sorted(normalized_repo_names)),
         cwd_paths=tuple(sorted(cwd_paths)),
         branch_names=tuple(sorted(branch_names)),
         file_paths_touched=tuple(sorted(file_paths)),

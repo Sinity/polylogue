@@ -664,7 +664,7 @@ async def test_async_execute_query_uses_action_event_stats_lane_for_semantic_sta
 
 
 @pytest.mark.asyncio
-async def test_async_execute_query_uses_session_product_stats_lane_for_project_stats() -> None:
+async def test_async_execute_query_uses_session_product_stats_lane_for_repo_stats() -> None:
     from polylogue.cli.query import async_execute_query
 
     repo = MagicMock()
@@ -684,7 +684,7 @@ async def test_async_execute_query_uses_session_product_stats_lane_for_project_s
         await async_execute_query(
             env,
             _make_params(
-                stats_by="project",
+                stats_by="repo",
                 provider="claude-code",
                 since="2026-01-01",
                 limit=20,
@@ -978,7 +978,7 @@ class TestBuildQueryExecutionPlan:
             ({"stats_by": "provider", "query": ()}, QueryAction.STATS_BY),
             ({"stats_by": "action", "query": ()}, QueryAction.STATS_BY),
             ({"stats_by": "tool", "query": ()}, QueryAction.STATS_BY),
-            ({"stats_by": "project", "query": ()}, QueryAction.STATS_BY),
+            ({"stats_by": "repo", "query": ()}, QueryAction.STATS_BY),
             ({"stats_by": "work-kind", "query": ()}, QueryAction.STATS_BY),
             ({"add_tag": ["x"], "query": ()}, QueryAction.MODIFY),
             ({"delete_matched": True, "provider": "claude-ai", "query": ()}, QueryAction.DELETE),
@@ -1039,7 +1039,7 @@ class TestBuildQueryExecutionPlan:
             ({"stats_by": "action", "query": ()}, False, QueryRoute.STATS_BY),
             ({"stats_by": "tool", "query": ()}, True, QueryRoute.STATS_BY),
             ({"stats_by": "tool", "query": ()}, False, QueryRoute.STATS_BY),
-            ({"stats_by": "project", "query": ()}, True, QueryRoute.STATS_BY),
+            ({"stats_by": "repo", "query": ()}, True, QueryRoute.STATS_BY),
             ({"stats_by": "work-kind", "query": ()}, True, QueryRoute.STATS_BY),
             (
                 {"set_meta": [("priority", "1")], "query": ("abc",)},
