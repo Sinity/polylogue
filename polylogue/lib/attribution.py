@@ -47,7 +47,8 @@ _LANGUAGE_EXTENSIONS = {
     ".css": "css",
 }
 _DIALOGUE_LANGUAGE_HINT_PATTERNS = {
-    lang_name: re.compile(rf"\b{re.escape(lang_name)}\b") for lang_name in ("python", "rust", "typescript", "javascript", "nix", "go", "java", "ruby", "sql", "r")
+    lang_name: re.compile(rf"\b{re.escape(lang_name)}\b")
+    for lang_name in ("python", "rust", "typescript", "javascript", "nix", "go", "java", "ruby", "sql")
 }
 
 

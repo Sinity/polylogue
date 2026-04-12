@@ -85,6 +85,19 @@ def test_repo_identity_normalization_ignores_unreadable_git_admin_paths(monkeypa
     assert normalize_repo_paths([str(unreadable_git_dir)]) == ()
 
 
+def test_repo_identity_normalization_ignores_transcript_and_state_git_repos(tmp_path: Path) -> None:
+    transcript_repo = tmp_path / ".claude" / "projects"
+    (transcript_repo / ".git").mkdir(parents=True)
+    state_repo = tmp_path / ".local" / "state" / "sinex" / "blob-repository"
+    (state_repo / ".git").mkdir(parents=True)
+
+    assert normalize_repo_path(str(transcript_repo)) is None
+    assert normalize_repo_name(str(transcript_repo)) is None
+    assert normalize_repo_path(str(state_repo)) is None
+    assert normalize_repo_name(str(state_repo)) is None
+    assert normalize_repo_names(repo_paths=[str(transcript_repo), str(state_repo)]) == ()
+
+
 def test_session_profile_from_dict_preserves_explicit_repo_names_and_normalizes_repo_paths(tmp_path: Path) -> None:
     polylogue_repo = _make_repo(tmp_path, "polylogue")
     sinnix_repo = _make_repo(tmp_path, "sinnix")
@@ -179,6 +192,31 @@ def test_extract_attribution_preserves_repo_name_from_provider_git_remote() -> N
 
     assert attribution.repo_names == ("sinex",)
     assert attribution.branch_names == ("master",)
+    assert attribution.languages_detected == ()
+
+
+def test_extract_attribution_does_not_infer_r_from_dialogue_text() -> None:
+    conversation = Conversation(
+        id="conv-dialogue-r-noise",
+        provider="codex",
+        title="Dialogue R Noise",
+        created_at=datetime(2026, 3, 24, 10, 0, tzinfo=timezone.utc),
+        updated_at=datetime(2026, 3, 24, 10, 5, tzinfo=timezone.utc),
+        messages=MessageCollection(
+            messages=[
+                Message(
+                    id="u1",
+                    role="user",
+                    provider="codex",
+                    text="Keep the variable r untouched and summarize the branch status.",
+                    timestamp=datetime(2026, 3, 24, 10, 0, tzinfo=timezone.utc),
+                )
+            ]
+        ),
+    )
+
+    attribution = extract_attribution(conversation)
+
     assert attribution.languages_detected == ()
 
 
