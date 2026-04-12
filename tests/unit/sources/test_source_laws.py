@@ -18,6 +18,7 @@ from hypothesis import strategies as st
 from polylogue.config import Source
 from polylogue.sources import decoders as decoders_module
 from polylogue.sources import dispatch as dispatch_module
+from polylogue.sources import source_acquisition
 from polylogue.sources.cursor import (
     _get_file_mtime,
     _initialize_cursor_state,
@@ -1914,6 +1915,36 @@ def test_iter_source_raw_data_skips_zero_byte_plain_files_and_tracks_failure(tmp
     assert cursor_state["failed_files"] == [{"path": str(empty), "error": "empty file"}]
 
 
+def test_iter_source_raw_data_summarizes_zero_byte_plain_files(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    first = tmp_path / "first.jsonl"
+    second = tmp_path / "second.jsonl"
+    first.write_bytes(b"")
+    second.write_bytes(b"")
+
+    warnings: list[str] = []
+    debugs: list[str] = []
+
+    monkeypatch.setattr(
+        source_acquisition.logger,
+        "warning",
+        lambda message, *args: warnings.append(message % args if args else message),
+    )
+    monkeypatch.setattr(
+        source_acquisition.logger,
+        "debug",
+        lambda message, *args: debugs.append(message % args if args else message),
+    )
+
+    items = list(iter_source_raw_data(Source(name="codex", path=tmp_path)))
+
+    assert items == []
+    assert warnings == ["Skipped 2 empty artifacts from source 'codex'. Run with --verbose for details."]
+    assert debugs == [
+        f"Skipping empty source file: {first}",
+        f"Skipping empty source file: {second}",
+    ]
+
+
 def test_iter_source_raw_data_skips_zero_byte_zip_entries_and_tracks_failure(tmp_path: Path) -> None:
     archive_path = tmp_path / "bundle.zip"
     with zipfile.ZipFile(archive_path, "w") as zf:
@@ -1926,6 +1957,36 @@ def test_iter_source_raw_data_skips_zero_byte_zip_entries_and_tracks_failure(tmp
     assert cursor_state["failed_count"] == 1
     assert cursor_state["failed_files"] == [
         {"path": f"{archive_path}:nested/empty.jsonl", "error": "empty file"}
+    ]
+
+
+def test_iter_source_raw_data_summarizes_zero_byte_zip_entries(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    archive_path = tmp_path / "bundle.zip"
+    with zipfile.ZipFile(archive_path, "w") as zf:
+        zf.writestr("nested/empty-a.jsonl", b"")
+        zf.writestr("nested/empty-b.jsonl", b"")
+
+    warnings: list[str] = []
+    debugs: list[str] = []
+
+    monkeypatch.setattr(
+        source_acquisition.logger,
+        "warning",
+        lambda message, *args: warnings.append(message % args if args else message),
+    )
+    monkeypatch.setattr(
+        source_acquisition.logger,
+        "debug",
+        lambda message, *args: debugs.append(message % args if args else message),
+    )
+
+    items = list(iter_source_raw_data(Source(name="codex", path=archive_path)))
+
+    assert items == []
+    assert warnings == ["Skipped 2 empty artifacts from source 'codex'. Run with --verbose for details."]
+    assert debugs == [
+        f"Skipping empty source entry: {archive_path}:nested/empty-a.jsonl",
+        f"Skipping empty source entry: {archive_path}:nested/empty-b.jsonl",
     ]
 
 
