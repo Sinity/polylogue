@@ -34,6 +34,21 @@ async def ensure_schema(conn: aiosqlite.Connection) -> None:
         await conn.commit()
         return
 
+    cursor = await conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='raw_conversations'")
+    raw_table_exists = await cursor.fetchone() is not None
+    if raw_table_exists:
+        cursor = await conn.execute("PRAGMA table_info(raw_conversations)")
+        raw_columns = {row[1] for row in await cursor.fetchall()}
+        if "raw_content" in raw_columns:
+            from polylogue.errors import DatabaseError
+
+            raise DatabaseError(
+                "Database uses the legacy inline raw-content layout and is incompatible with the current blob-store "
+                "archive format. Move the database aside or run `polylogue reset --database` before re-importing."
+            )
+    else:
+        raw_columns = set()
+
     if current_version != SCHEMA_VERSION:
         from polylogue.errors import DatabaseError
 
@@ -41,6 +56,9 @@ async def ensure_schema(conn: aiosqlite.Connection) -> None:
             f"Database schema version {current_version} is incompatible with expected version {SCHEMA_VERSION}. "
             f"Delete the database file and re-run polylogue to create a fresh v{SCHEMA_VERSION} schema."
         )
+
+    if "blob_size" not in raw_columns:
+        await conn.execute("ALTER TABLE raw_conversations ADD COLUMN blob_size INTEGER NOT NULL DEFAULT 0")
 
     await conn.executescript(_ARTIFACT_OBSERVATION_DDL)
     await conn.executescript(_PUBLICATION_DDL)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib
 import sqlite3
 from pathlib import Path
 from unittest.mock import patch
@@ -268,6 +269,56 @@ def test_run_archive_health_reports_busy_archive_with_operator_message(tmp_path:
         index_check.summary
         == "Skipped: database unavailable (database is locked (archive is busy; retry after the current run completes))"
     )
+
+
+def test_run_archive_health_reports_legacy_inline_raw_layout(tmp_path: Path, monkeypatch) -> None:
+    import polylogue.paths
+    import polylogue.storage.backends.connection as connection_module
+    from polylogue.config import get_config
+    from polylogue.health import VerifyStatus, run_archive_health
+
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    importlib.reload(polylogue.paths)
+    importlib.reload(connection_module)
+
+    db_path = connection_module.default_db_path()
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(db_path)
+    conn.executescript(
+        """
+        CREATE TABLE raw_conversations (
+            raw_id TEXT PRIMARY KEY,
+            provider_name TEXT NOT NULL,
+            payload_provider TEXT,
+            source_name TEXT,
+            source_path TEXT NOT NULL,
+            source_index INTEGER,
+            raw_content BLOB NOT NULL,
+            acquired_at TEXT NOT NULL,
+            file_mtime TEXT,
+            parsed_at TEXT,
+            parse_error TEXT,
+            validated_at TEXT,
+            validation_status TEXT,
+            validation_error TEXT,
+            validation_drift_count INTEGER DEFAULT 0,
+            validation_provider TEXT,
+            validation_mode TEXT
+        );
+        PRAGMA user_version = 1;
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    report = run_archive_health(get_config())
+
+    database_check = next(check for check in report.checks if check.name == "database")
+    index_check = next(check for check in report.checks if check.name == "index")
+    assert database_check.status == VerifyStatus.ERROR
+    assert "legacy inline raw-content layout" in database_check.summary
+    assert index_check.status == VerifyStatus.WARNING
 
 
 @pytest.mark.parametrize("deep", [False, True])

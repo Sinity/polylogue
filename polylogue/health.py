@@ -86,6 +86,7 @@ def _open_health_probe_connection(db_path: Path) -> Any:
 
 
 def run_archive_health(config: Any, *, deep: bool = False) -> HealthReport:
+    from polylogue.storage.backends.schema_upgrade import assert_supported_archive_layout
     from polylogue.storage.derived_status import collect_derived_model_statuses_sync
     from polylogue.storage.index import index_status
     from polylogue.storage.repair import collect_archive_debt_statuses_sync
@@ -104,6 +105,7 @@ def run_archive_health(config: Any, *, deep: bool = False) -> HealthReport:
     db_error: str | None = None
     try:
         with _open_health_probe_connection(config.db_path) as conn:
+            assert_supported_archive_layout(conn)
             checks.append(HealthCheck("database", VerifyStatus.OK, summary="DB reachable"))
             if deep:
                 integrity = conn.execute("PRAGMA integrity_check").fetchone()[0]
@@ -312,8 +314,10 @@ def run_runtime_health(config: Any) -> HealthReport:
 
     try:
         from polylogue.storage.backends.schema import SCHEMA_VERSION
+        from polylogue.storage.backends.schema_upgrade import assert_supported_archive_layout
 
         with _open_health_probe_connection(config.db_path) as conn:
+            assert_supported_archive_layout(conn)
             current = conn.execute("PRAGMA user_version").fetchone()[0]
             if current == SCHEMA_VERSION:
                 checks.append(HealthCheck("schema_version", VerifyStatus.OK, summary=f"v{current} (current)"))
