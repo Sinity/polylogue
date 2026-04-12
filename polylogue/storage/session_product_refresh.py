@@ -15,7 +15,6 @@ from polylogue.storage.session_product_aggregates import (
 )
 from polylogue.storage.session_product_rebuild import (
     build_session_product_records,
-    chunked,
     hydrate_conversations,
     load_async_batch,
 )
@@ -28,6 +27,7 @@ from polylogue.storage.session_product_threads import (
 # Keep incremental refreshes on the same bounded chunk size as full rebuilds.
 # Hydrating 100 conversations at once inflates RSS badly on pathological archives.
 _SESSION_PRODUCT_REFRESH_PAGE_SIZE = 10
+_SESSION_PRODUCT_REFRESH_MESSAGE_BUDGET = 5_000
 
 
 @dataclass(slots=True)
@@ -257,6 +257,53 @@ async def _load_existing_session_profile_records_async(
     return {str(row["conversation_id"]): _row_to_session_profile_record(row) for row in rows}
 
 
+async def _load_message_counts_async(
+    conn: aiosqlite.Connection,
+    conversation_ids: Sequence[str],
+) -> dict[str, int]:
+    if not conversation_ids:
+        return {}
+    placeholders = ", ".join("?" for _ in conversation_ids)
+    rows = await (
+        await conn.execute(
+            f"""
+            SELECT conversation_id, message_count
+            FROM conversation_stats
+            WHERE conversation_id IN ({placeholders})
+            """,
+            tuple(conversation_ids),
+        )
+    ).fetchall()
+    return {str(row["conversation_id"]): int(row["message_count"] or 0) for row in rows}
+
+
+def _chunk_conversation_ids_by_message_budget(
+    conversation_ids: Sequence[str],
+    *,
+    message_counts: dict[str, int],
+    page_size: int,
+    message_budget: int,
+) -> list[list[str]]:
+    chunks: list[list[str]] = []
+    current_chunk: list[str] = []
+    current_messages = 0
+
+    for conversation_id in conversation_ids:
+        estimated_messages = max(int(message_counts.get(conversation_id, 0) or 0), 1)
+        if current_chunk and (
+            len(current_chunk) >= page_size or current_messages + estimated_messages > message_budget
+        ):
+            chunks.append(current_chunk)
+            current_chunk = []
+            current_messages = 0
+        current_chunk.append(conversation_id)
+        current_messages += estimated_messages
+
+    if current_chunk:
+        chunks.append(current_chunk)
+    return chunks
+
+
 async def _apply_session_product_conversation_updates_async(
     conn: aiosqlite.Connection,
     conversation_ids: Sequence[str],
@@ -277,8 +324,15 @@ async def _apply_session_product_conversation_updates_async(
     affected_groups: set[tuple[str, str]] = set()
     chunk_observations: list[dict[str, object]] = []
     conversation_id_list = list(conversation_ids)
+    message_counts = await _load_message_counts_async(conn, conversation_id_list)
+    conversation_chunks = _chunk_conversation_ids_by_message_budget(
+        conversation_id_list,
+        message_counts=message_counts,
+        page_size=page_size,
+        message_budget=_SESSION_PRODUCT_REFRESH_MESSAGE_BUDGET,
+    )
 
-    for chunk in chunked(conversation_id_list, size=page_size):
+    for chunk in conversation_chunks:
         chunk_started = time.perf_counter()
         load_started = time.perf_counter()
         old_profile_records = await _load_existing_session_profile_records_async(conn, chunk)
@@ -348,6 +402,10 @@ async def _apply_session_product_conversation_updates_async(
         write_elapsed_ms = round((time.perf_counter() - write_started) * 1000.0, 1)
         chunk_observation = {
             "conversation_count": len(chunk),
+            "estimated_message_count": sum(max(int(message_counts.get(conversation_id, 0) or 0), 1) for conversation_id in chunk),
+            "max_estimated_conversation_messages": max(
+                max(int(message_counts.get(conversation_id, 0) or 0), 1) for conversation_id in chunk
+            ),
             "hydrated_count": len(hydrated_by_id),
             "profiles_written": len(profile_records_to_write),
             "work_events_written": len(work_event_records_to_write),
