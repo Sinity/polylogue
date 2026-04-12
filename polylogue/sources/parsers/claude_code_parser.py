@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from typing import Any
 
 from pydantic import ValidationError
@@ -71,7 +72,7 @@ def _content_blocks_from_record(record: ClaudeCodeRecord, text: str | None) -> l
     return content_blocks
 
 
-def parse_code(payload: list[object], fallback_id: str) -> ParsedConversation:
+def _parse_code_records(records: Iterable[object], fallback_id: str) -> ParsedConversation:
     """Parse Claude Code JSONL payloads into a canonical conversation model."""
     messages: list[ParsedMessage] = []
     timestamps: list[str] = []
@@ -90,7 +91,7 @@ def parse_code(payload: list[object], fallback_id: str) -> ParsedConversation:
     # Deferred import avoids circular dependency via pipeline/__init__.py.
     from polylogue.pipeline.semantic_capture import detect_context_compaction  # noqa: PLC0415
 
-    for index, item in enumerate(payload, start=1):
+    for index, item in enumerate(records, start=1):
         if not isinstance(item, dict):
             continue
 
@@ -220,5 +221,12 @@ def parse_code(payload: list[object], fallback_id: str) -> ParsedConversation:
         branch_type=branch_type,
     )
 
+def parse_code(payload: list[object], fallback_id: str) -> ParsedConversation:
+    return _parse_code_records(payload, fallback_id)
 
-__all__ = ["parse_code"]
+
+def parse_code_stream(records: Iterable[object], fallback_id: str) -> ParsedConversation:
+    return _parse_code_records(records, fallback_id)
+
+
+__all__ = ["parse_code", "parse_code_stream"]
