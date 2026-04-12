@@ -342,6 +342,8 @@ def rebuild_session_products_sync(
     *,
     conversation_ids: Sequence[str] | None = None,
     page_size: int = _SESSION_PRODUCT_REBUILD_PAGE_SIZE,
+    progress_callback: ProgressCallback | None = None,
+    progress_total: int | None = None,
 ) -> dict[str, int]:
     conversation_chunks: Iterable[Sequence[str]]
     if conversation_ids is None:
@@ -368,14 +370,23 @@ def rebuild_session_products_sync(
     for chunk in conversation_chunks:
         saw_conversation_ids = True
         conversations, messages, attachments, blocks = load_sync_batch(conn, chunk)
+        chunk_profiles = 0
         for conversation in hydrate_conversations(conversations, messages, attachments, blocks):
             profile_record, event_records, phase_records = build_session_product_records(conversation)
             replace_session_profile_sync(conn, profile_record)
             replace_session_work_events_sync(conn, profile_record.conversation_id, event_records)
             replace_session_phases_sync(conn, profile_record.conversation_id, phase_records)
             profile_count += 1
+            chunk_profiles += 1
             work_event_count += len(event_records)
             phase_count += len(phase_records)
+        if progress_callback is not None and chunk_profiles:
+            desc = (
+                f"Materializing: {profile_count}/{progress_total}"
+                if progress_total is not None
+                else f"Materializing: {profile_count}"
+            )
+            progress_callback(chunk_profiles, desc=desc)
     if not saw_conversation_ids:
         conn.execute("DELETE FROM work_threads")
         conn.execute("DELETE FROM session_phases")

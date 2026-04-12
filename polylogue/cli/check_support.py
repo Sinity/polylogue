@@ -38,8 +38,8 @@ def parse_schema_samples(raw: str) -> int | None:
     return parsed
 
 
-def make_schema_progress_callback():
-    """Return a stderr progress reporter for schema verification."""
+def make_count_progress_callback(*, label: str, unit: str):
+    """Return a stderr progress reporter for monotonically increasing counters."""
     start = time.monotonic()
     count = 0
 
@@ -50,13 +50,23 @@ def make_schema_progress_callback():
         rate = count / elapsed if elapsed > 0 else 0
         elapsed_str = f"{int(elapsed // 60)}m {int(elapsed % 60)}s"
         print(
-            f"\rVerifying schemas: {count:,} raw records ({rate:.1f}/s, {elapsed_str} elapsed)...",
+            f"\r{label}: {desc or f'{count:,} {unit}'} ({rate:.1f}/s, {elapsed_str} elapsed)...",
             end="",
             flush=True,
             file=sys.stderr,
         )
 
     return _cb
+
+
+def make_schema_progress_callback():
+    """Return a stderr progress reporter for schema verification."""
+    return make_count_progress_callback(label="Verifying schemas", unit="raw records")
+
+
+def make_session_product_progress_callback():
+    """Return a stderr progress reporter for session-product repairs."""
+    return make_count_progress_callback(label="Repairing session products", unit="conversations")
 
 
 def vacuum_database(env: AppEnv) -> dict[str, Any]:
