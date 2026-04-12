@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 
 import pytest
 
@@ -15,6 +16,32 @@ pytestmark = [pytest.mark.integration, pytest.mark.query_routing]
 def _run_inbox(workspace, *, cwd) -> None:
     result = run_cli(["--plain", "run", "--source", "inbox"], env=workspace["env"], cwd=cwd)
     assert result.exit_code == 0, result.output
+
+
+def _run_completion(workspace, *, cwd, words: str, cword: int) -> list[dict[str, str]]:
+    result = run_cli(
+        [],
+        env={
+            **workspace["env"],
+            "_POLYLOGUE_COMPLETE": "zsh_complete",
+            "COMP_WORDS": words,
+            "COMP_CWORD": str(cword),
+        },
+        cwd=cwd,
+    )
+    assert result.exit_code == 0, result.output
+    lines = [line for line in result.stdout.splitlines() if line.strip()]
+    assert len(lines) % 3 == 0, lines
+    records: list[dict[str, str]] = []
+    for index in range(0, len(lines), 3):
+        records.append(
+            {
+                "type": lines[index],
+                "value": lines[index + 1].replace("\\:", ":"),
+                "help": lines[index + 2],
+            }
+        )
+    return records
 
 
 def test_cli_query_count_route_returns_exact_count(tmp_path):
@@ -191,6 +218,115 @@ def test_cli_query_stats_by_provider_accepts_limit_after_verb(tmp_path):
     assert payload["dimension"] == "provider"
     assert payload["summary"]["conversations"] == 1
     assert len(payload["rows"]) == 1
+
+
+def test_cli_completion_id_offers_recent_conversation_ids_with_titles(tmp_path):
+    workspace = setup_isolated_workspace(tmp_path)
+    inbox = workspace["paths"]["inbox"]
+
+    GenericConversationBuilder("conv-complete-id").title("Completion Target").add_user("alpha").add_assistant(
+        "beta"
+    ).write_to(inbox / "conversation.json")
+    _run_inbox(workspace, cwd=tmp_path)
+    list_result = run_cli(["--plain", "--latest", "list", "-f", "json"], env=workspace["env"], cwd=tmp_path)
+    assert list_result.exit_code == 0, list_result.output
+    conv_id = json.loads(list_result.stdout)[0]["id"]
+
+    records = _run_completion(workspace, cwd=tmp_path, words="polylogue --id conv", cword=2)
+
+    match = next(record for record in records if record["value"] == conv_id)
+    assert match["type"] == "plain"
+    assert "Completion Target" in match["help"]
+
+
+def test_cli_completion_open_target_offers_recent_conversation_ids(tmp_path):
+    workspace = setup_isolated_workspace(tmp_path)
+    inbox = workspace["paths"]["inbox"]
+
+    GenericConversationBuilder("conv-open-complete").title("Open Completion").add_user("alpha").add_assistant(
+        "beta"
+    ).write_to(inbox / "conversation.json")
+    _run_inbox(workspace, cwd=tmp_path)
+    list_result = run_cli(["--plain", "--latest", "list", "-f", "json"], env=workspace["env"], cwd=tmp_path)
+    assert list_result.exit_code == 0, list_result.output
+    conv_id = json.loads(list_result.stdout)[0]["id"]
+
+    records = _run_completion(workspace, cwd=tmp_path, words="polylogue open conv", cword=2)
+
+    assert any(record["value"] == conv_id for record in records)
+
+
+def test_cli_completion_tag_and_tool_values_are_archive_backed(tmp_path):
+    workspace = setup_isolated_workspace(tmp_path)
+    inbox = workspace["paths"]["inbox"]
+
+    GenericConversationBuilder("conv-complete-meta").title("Completion Metadata").add_user("alpha").add_assistant(
+        "beta"
+    ).write_to(inbox / "conversation.json")
+    _run_inbox(workspace, cwd=tmp_path)
+    list_result = run_cli(["--plain", "--latest", "list", "-f", "json"], env=workspace["env"], cwd=tmp_path)
+    assert list_result.exit_code == 0, list_result.output
+    conv_id = json.loads(list_result.stdout)[0]["id"]
+
+    db_path = workspace["paths"]["db_path"]
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "UPDATE conversations SET metadata = json(?) WHERE conversation_id = ?",
+            (json.dumps({"tags": ["review"]}), conv_id),
+        )
+        message_id = conn.execute(
+            "SELECT message_id FROM messages WHERE conversation_id = ? ORDER BY sort_key ASC LIMIT 1",
+            (conv_id,),
+        ).fetchone()[0]
+        conn.execute(
+            """
+            INSERT INTO action_events (
+                event_id,
+                conversation_id,
+                message_id,
+                materializer_version,
+                source_block_id,
+                timestamp,
+                sort_key,
+                sequence_index,
+                provider_name,
+                action_kind,
+                tool_name,
+                normalized_tool_name,
+                tool_id,
+                affected_paths_json,
+                cwd_path,
+                branch_names_json,
+                command,
+                query_text,
+                url,
+                output_text,
+                search_text
+            ) VALUES (?, ?, ?, 1, NULL, NULL, 1.0, 0, 'unknown', 'shell', 'bash', 'bash', NULL, '[]', NULL, '[]', 'bash', NULL, NULL, NULL, 'bash')
+            """,
+            ("event-complete-bash", conv_id, message_id),
+        )
+        conn.commit()
+
+    tag_records = _run_completion(workspace, cwd=tmp_path, words="polylogue --tag re", cword=2)
+    tool_records = _run_completion(workspace, cwd=tmp_path, words="polylogue --tool ba", cword=2)
+
+    review = next(record for record in tag_records if record["value"] == "review")
+    bash = next(record for record in tool_records if record["value"] == "bash")
+    assert review["help"] == "1 conversations"
+    assert bash["help"] == "1 actions"
+
+
+def test_cli_completion_provider_values_keep_csv_prefix_and_descriptions(tmp_path):
+    workspace = setup_isolated_workspace(tmp_path)
+
+    records = _run_completion(workspace, cwd=tmp_path, words="polylogue --provider claude-ai,c", cword=2)
+
+    assert any(
+        record["value"] == "claude-ai,claude-code" and record["help"] == "Claude Code local sessions"
+        for record in records
+    )
+    assert any(record["value"] == "claude-ai,codex" and record["help"] == "OpenAI Codex sessions" for record in records)
 
 
 def test_cli_no_args_stats_surface_still_works(tmp_path):
