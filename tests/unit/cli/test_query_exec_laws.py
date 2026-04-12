@@ -37,6 +37,7 @@ from polylogue.cli.query_output import (
     _send_output,
     output_results,
     output_stats_by_conversations,
+    output_stats_by_profile_ids,
     output_stats_by_semantic_summaries,
     output_stats_by_summaries,
     output_stats_sql,
@@ -159,6 +160,9 @@ def _build_plan(case: str) -> QueryExecutionPlan:
     elif case == "stats_by_semantic_summaries":
         action = QueryAction.STATS_BY
         stats_dimension = "action"
+    elif case == "stats_by_profile_summaries":
+        action = QueryAction.STATS_BY
+        stats_dimension = "repo"
     elif case == "stream":
         action = QueryAction.STREAM
         output = QueryOutputSpec("json", ("stdout", "browser"), None, True, "strip-tools", False)
@@ -562,6 +566,28 @@ def test_output_stats_by_summaries_json_contract() -> None:
     }
 
 
+def test_output_stats_by_summaries_empty_json_contract(capsys) -> None:
+    env = _make_env()
+    selection = ConversationQuerySpec.from_params({"provider": "claude-ai"})
+
+    with pytest.raises(SystemExit) as exc_info:
+        output_stats_by_summaries(
+            env,
+            [],
+            {},
+            "provider",
+            selection=selection,
+            output_format="json",
+        )
+
+    assert exc_info.value.code == 2
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "error"
+    assert payload["code"] == "no_results"
+    assert payload["message"] == "No conversations matched filters."
+    assert payload["details"]["filters"] == ["provider: claude-ai"]
+
+
 @pytest.mark.asyncio
 async def test_output_stats_by_semantic_summaries_json_contract() -> None:
     env = _make_env()
@@ -690,6 +716,50 @@ async def test_output_stats_by_semantic_summaries_json_contract() -> None:
     }
     assert repo.queries.get_conversations_batch.await_count == 2
     assert repo.queries.get_messages_batch.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_output_stats_by_profile_ids_empty_json_contract(capsys) -> None:
+    env = _make_env()
+    selection = ConversationQuerySpec.from_params({"provider": "claude-ai"})
+
+    with pytest.raises(SystemExit) as exc_info:
+        await output_stats_by_profile_ids(
+            env,
+            [],
+            MagicMock(),
+            "repo",
+            selection=selection,
+            output_format="json",
+        )
+
+    assert exc_info.value.code == 2
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "error"
+    assert payload["code"] == "no_results"
+    assert payload["message"] == "No conversations matched filters."
+    assert payload["details"]["filters"] == ["provider: claude-ai"]
+
+
+def test_output_stats_by_conversations_empty_json_contract(capsys) -> None:
+    env = _make_env()
+    selection = ConversationQuerySpec.from_params({"provider": "claude-ai"})
+
+    with pytest.raises(SystemExit) as exc_info:
+        output_stats_by_conversations(
+            env,
+            [],
+            "provider",
+            selection=selection,
+            output_format="json",
+        )
+
+    assert exc_info.value.code == 2
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "error"
+    assert payload["code"] == "no_results"
+    assert payload["message"] == "No conversations matched filters."
+    assert payload["details"]["filters"] == ["provider: claude-ai"]
 
 
 def test_output_stats_by_conversations_action_slice_respects_selected_action() -> None:
@@ -899,6 +969,7 @@ def test_project_query_results_contract() -> None:
         ("stats_sql", "stats_sql"),
         ("stats_by_summaries", "stats_by_summaries"),
         ("stats_by_semantic_summaries", "stats_by_semantic_summaries"),
+        ("stats_by_profile_summaries", "stats_by_profile_summaries"),
         ("stream", "stream"),
         ("modify", "modify"),
         ("delete", "delete"),
@@ -930,6 +1001,7 @@ def test_async_execute_query_action_routing_contract(case, expected_helper) -> N
         patch(
             "polylogue.cli.query_output.output_stats_by_semantic_summaries", new_callable=AsyncMock
         ) as mock_output_stats_by_semantic_summaries,
+        patch("polylogue.cli.query_output.output_stats_by_profile_summaries", new_callable=AsyncMock) as mock_output_stats_by_profile_summaries,
         patch("polylogue.cli.query_output._output_stats_by") as mock_output_stats_by,
         patch("polylogue.cli.query_actions.apply_modifiers", new_callable=AsyncMock) as mock_apply_modifiers,
         patch("polylogue.cli.query_actions.delete_conversations", new_callable=AsyncMock) as mock_delete_conversations,
@@ -960,11 +1032,19 @@ def test_async_execute_query_action_routing_contract(case, expected_helper) -> N
         repo.queries.get_message_counts_batch.assert_awaited_once_with([str(summary.id)])
         mock_output_stats_by_summaries.assert_called_once()
         mock_output_stats_by_semantic_summaries.assert_not_called()
+        mock_output_stats_by_profile_summaries.assert_not_called()
         mock_output_stats_by.assert_not_called()
     elif expected_helper == "stats_by_semantic_summaries":
         filter_chain.list.assert_not_called()
         filter_chain.list_summaries.assert_awaited_once()
         mock_output_stats_by_semantic_summaries.assert_awaited_once()
+        mock_output_stats_by_profile_summaries.assert_not_called()
+        mock_output_stats_by.assert_not_called()
+    elif expected_helper == "stats_by_profile_summaries":
+        filter_chain.list.assert_not_called()
+        filter_chain.list_summaries.assert_awaited_once()
+        mock_output_stats_by_profile_summaries.assert_awaited_once()
+        mock_output_stats_by_semantic_summaries.assert_not_called()
         mock_output_stats_by.assert_not_called()
     elif expected_helper == "modify":
         filter_chain.list.assert_not_called()
@@ -1100,6 +1180,30 @@ def test_async_execute_query_semantic_stats_by_falls_back_without_summaries_cont
     filter_chain.list_summaries.assert_not_called()
     mock_output_stats_by_semantic_summaries.assert_not_called()
     mock_output_stats_by.assert_called_once()
+
+
+def test_async_execute_query_profile_stats_by_uses_summary_batches_contract() -> None:
+    env = _make_env(repo=MagicMock(), config=MagicMock())
+    plan = _build_plan("stats_by_profile_summaries")
+    filter_chain = MagicMock()
+    filter_chain.can_use_summaries.return_value = True
+    filter_chain.list = AsyncMock(return_value=[_sample_conversation()])
+    filter_chain.list_summaries = AsyncMock(return_value=[build_conversation_summary(_sample_summary_spec())])
+    plan.selection.build_filter.return_value = filter_chain
+
+    with (
+        patch("polylogue.cli.helpers.load_effective_config", return_value=MagicMock()),
+        patch("polylogue.storage.search_providers.create_vector_provider", return_value=None),
+        patch("polylogue.cli.query.build_query_execution_plan", return_value=plan),
+        patch("polylogue.cli.query_output.output_stats_by_profile_summaries", new_callable=AsyncMock) as mock_output_stats_by_profile_summaries,
+        patch("polylogue.cli.query_output._output_stats_by") as mock_output_stats_by,
+    ):
+        asyncio.run(async_execute_query(env, {}))
+
+    filter_chain.list.assert_not_called()
+    filter_chain.list_summaries.assert_awaited_once()
+    mock_output_stats_by_profile_summaries.assert_awaited_once()
+    mock_output_stats_by.assert_not_called()
 
 
 def test_async_execute_query_summary_list_no_results_contract() -> None:
