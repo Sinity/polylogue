@@ -61,6 +61,7 @@ async def scan_archive_for_builder(
             incremental=rebuild,
         ),
         incremental=incremental,
+        progress_callback=builder._progress_callback,
     )
 
 
