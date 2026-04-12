@@ -99,7 +99,7 @@ def _add_repo_candidate(value: str, *, repo_paths: set[str], repo_names: set[str
         return
     repo_name = normalize_repo_name(value)
     if repo_name:
-        repo_names.add(str(value).strip())
+        repo_names.add(repo_name)
 
 
 @dataclass(frozen=True)
@@ -207,7 +207,7 @@ def extract_attribution(
                 languages.add(lang_name)
 
     normalized_repo_paths = normalize_repo_paths(repo_paths)
-    normalized_repo_names = {name.strip() for name in repo_names if name and str(name).strip()}
+    normalized_repo_names = {str(name).strip() for name in repo_names if isinstance(name, str) and name.strip()}
     normalized_repo_names.update(normalize_repo_names(repo_paths=normalized_repo_paths))
     return ConversationAttribution(
         repo_paths=normalized_repo_paths,
