@@ -90,8 +90,26 @@ def validate_check_options(options: CheckCommandOptions) -> None:
     )
 
 
+def _runtime_only_requested(options: CheckCommandOptions) -> bool:
+    return options.runtime and not any(
+        (
+            options.repair,
+            options.cleanup,
+            options.deep,
+            options.check_blob,
+            options.check_schemas,
+            options.check_proof,
+            options.check_artifacts,
+            options.check_cohorts,
+        )
+    )
+
+
 def run_check_workflow(env: AppEnv, options: CheckCommandOptions) -> CheckCommandResult:
     config = load_effective_config(env)
+    if _runtime_only_requested(options):
+        return CheckCommandResult(report=run_runtime_health(config))
+
     report = get_health(config, deep=options.deep)
     result = CheckCommandResult(report=report)
 
