@@ -87,6 +87,8 @@ def _assert_claude_code_cleanup(_payload: Any, result: ParsedConversation) -> No
 def _assert_codex_text_recovery(payload: list[dict[str, Any]], result: ParsedConversation) -> None:
     if not result.messages:
         return
+    for message in result.messages:
+        assert message.provider_meta is None
     response_items = [
         record.get("payload", record)
         for record in payload

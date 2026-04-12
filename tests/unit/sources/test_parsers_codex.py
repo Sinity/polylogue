@@ -234,6 +234,27 @@ class TestMessageParsing:
         assert len(result.messages) == 1
         assert result.messages[0].text == "query"
 
+    def test_messages_do_not_keep_raw_provider_meta(self) -> None:
+        payload = [
+            {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "hello"}],
+                "timestamp": "2024-01-01T00:00:00Z",
+            },
+            {
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "hi"}],
+                "timestamp": "2024-01-01T00:00:01Z",
+            },
+        ]
+
+        result = parse(payload, "fallback")
+
+        assert len(result.messages) == 2
+        assert all(message.provider_meta is None for message in result.messages)
+
 
 # =============================================================================
 # Git Context and Instructions

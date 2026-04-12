@@ -168,8 +168,9 @@ def build_raw_payload_envelope(
     """Decode raw payload and attach canonical provider/wire-format identity.
 
     When *raw_content* is a :class:`~pathlib.Path`, JSONL payloads are
-    streamed line-by-line from disk — enabling constant-memory parsing
-    of multi-GB files.
+    decoded line-by-line from disk before being materialized into a
+    Python list. This avoids reading the whole file into one byte string,
+    but grouped-provider parses still hold the decoded records in memory.
     """
     normalized_path = str(source_path or "").lower()
     prefer_jsonl = normalized_path.endswith((".jsonl", ".jsonl.txt", ".ndjson"))
