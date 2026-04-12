@@ -222,3 +222,30 @@ async def test_read_embedding_stats_async_derives_pending_from_total_conversatio
     assert stats.pending_conversations == 3
     assert stats.retrieval_bands["transcript_embeddings"]["pending_documents"] == 3
     assert "pending 3" in str(stats.retrieval_bands["transcript_embeddings"]["detail"])
+
+
+@pytest.mark.asyncio
+async def test_read_embedding_stats_async_can_skip_retrieval_band_status(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fail_action_status(_conn):
+        raise AssertionError("action-event status should not be read")
+
+    async def fail_session_status(_conn):
+        raise AssertionError("session-product status should not be read")
+
+    async with aiosqlite.connect(":memory:") as conn:
+        await conn.execute("CREATE TABLE conversations (conversation_id TEXT)")
+        await conn.executemany(
+            "INSERT INTO conversations (conversation_id) VALUES (?)",
+            [("conv-1",), ("conv-2",)],
+        )
+        await conn.commit()
+
+        monkeypatch.setattr(embedding_stats_mod, "action_event_read_model_status_async", fail_action_status)
+        monkeypatch.setattr(embedding_stats_mod, "session_product_status_async", fail_session_status)
+
+        stats = await read_embedding_stats_async(conn, include_retrieval_bands=False)
+
+    assert stats.pending_conversations == 2
+    assert stats.retrieval_bands == {}
