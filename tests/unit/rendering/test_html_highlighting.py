@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from polylogue.rendering.renderers.html_highlighting import (
     HTML_RENDER_CACHE_TEXT_MAX_CHARS,
+    HTML_RENDER_MARKDOWN_MAX_CHARS,
     HTMLMessageRenderer,
 )
 
@@ -54,3 +55,18 @@ def test_html_message_renderer_preserves_hard_breaks_via_markdown_it() -> None:
     rendered = renderer.render("first line  \nsecond line")
 
     assert "<br />" in rendered
+
+
+def test_html_message_renderer_oversized_markdown_like_text_bypasses_markdown_it(monkeypatch) -> None:
+    renderer = HTMLMessageRenderer()
+    oversized = "# heading\n" + ("x" * HTML_RENDER_MARKDOWN_MAX_CHARS)
+
+    def _fail(_text: str) -> str:
+        raise AssertionError("oversized text should not hit markdown-it")
+
+    monkeypatch.setattr(renderer.md, "render", _fail)
+
+    rendered = renderer.render(oversized)
+
+    assert rendered.startswith('<pre class="plain-text-block">')
+    assert "# heading" in rendered
