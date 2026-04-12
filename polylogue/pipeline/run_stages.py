@@ -171,10 +171,15 @@ async def execute_materialize_stage(
             observation=observation,
         )
 
-    if progress_callback is not None:
-        progress_callback(0, desc="Materializing: rebuilding all session products")
     async with backend.connection() as conn:
-        counts = await rebuild_session_products_async(conn)
+        total_conversations = int((await (await conn.execute("SELECT COUNT(*) FROM conversations")).fetchone())[0] or 0)
+        if progress_callback is not None:
+            progress_callback(0, desc=f"Materializing: 0/{total_conversations}")
+        counts = await rebuild_session_products_async(
+            conn,
+            progress_callback=progress_callback,
+            progress_total=total_conversations,
+        )
         await conn.commit()
     observation = {"mode": "rebuild", **counts}
     return MaterializeStageOutcome(
