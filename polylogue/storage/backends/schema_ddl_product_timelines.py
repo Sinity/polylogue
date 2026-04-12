@@ -6,7 +6,7 @@ SESSION_PRODUCT_TIMELINE_DDL = """
         CREATE TABLE IF NOT EXISTS session_work_events (
             event_id TEXT PRIMARY KEY,
             conversation_id TEXT NOT NULL REFERENCES conversations(conversation_id) ON DELETE CASCADE,
-            materializer_version INTEGER NOT NULL DEFAULT 3,
+            materializer_version INTEGER NOT NULL DEFAULT 4,
             materialized_at TEXT NOT NULL,
             source_updated_at TEXT,
             source_sort_key REAL,
@@ -60,7 +60,7 @@ SESSION_PRODUCT_TIMELINE_DDL = """
         CREATE TABLE IF NOT EXISTS session_phases (
             phase_id TEXT PRIMARY KEY,
             conversation_id TEXT NOT NULL REFERENCES conversations(conversation_id) ON DELETE CASCADE,
-            materializer_version INTEGER NOT NULL DEFAULT 3,
+            materializer_version INTEGER NOT NULL DEFAULT 4,
             materialized_at TEXT NOT NULL,
             source_updated_at TEXT,
             source_sort_key REAL,

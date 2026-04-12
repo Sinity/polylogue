@@ -17,6 +17,7 @@ from polylogue.storage.action_event_rebuild_runtime import rebuild_action_event_
 from polylogue.storage.backends.connection import open_connection
 from polylogue.storage.session_product_rebuild import rebuild_session_products_sync
 from polylogue.storage.session_product_status import session_product_status_sync
+from polylogue.storage.store_constants import SESSION_PRODUCT_MATERIALIZER_VERSION
 from tests.infra.storage_records import ConversationBuilder
 
 
@@ -495,3 +496,20 @@ def test_targeted_session_product_rebuild_does_not_duplicate_profile_fts(cli_wor
     assert status["profile_merged_fts_count"] == 2
     assert status["profile_merged_fts_duplicate_count"] == 0
     assert status["profile_merged_fts_ready"] is True
+
+
+def test_session_product_status_marks_older_materializer_versions_stale(cli_workspace):
+    _seed_products(cli_workspace)
+
+    with open_connection(cli_workspace["db_path"]) as conn:
+        rebuild_session_products_sync(conn)
+        conn.execute(
+            "UPDATE session_profiles SET materializer_version = ?",
+            (SESSION_PRODUCT_MATERIALIZER_VERSION - 1,),
+        )
+        conn.commit()
+        status = session_product_status_sync(conn)
+
+    assert status["profile_row_count"] == 2
+    assert status["stale_profile_row_count"] == 2
+    assert status["profile_rows_ready"] is False
