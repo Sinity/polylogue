@@ -7,7 +7,7 @@ branch tracking, git context, and edge cases.
 from __future__ import annotations
 
 from polylogue.lib.branch_type import BranchType
-from polylogue.sources.parsers.codex import looks_like, parse
+from polylogue.sources.parsers.codex import looks_like, parse, parse_stream
 
 # =============================================================================
 # Format Detection (looks_like)
@@ -254,6 +254,30 @@ class TestMessageParsing:
 
         assert len(result.messages) == 2
         assert all(message.provider_meta is None for message in result.messages)
+
+    def test_parse_stream_matches_list_parse(self) -> None:
+        payload = [
+            {"type": "session_meta", "payload": {"id": "conv-abc", "timestamp": "2024-01-01T00:00:00Z"}},
+            {
+                "type": "message",
+                "id": "msg-1",
+                "role": "user",
+                "timestamp": "2024-01-01T00:00:01Z",
+                "content": [{"type": "input_text", "text": "hello"}],
+            },
+            {
+                "type": "message",
+                "id": "msg-2",
+                "role": "assistant",
+                "timestamp": "2024-01-01T00:00:02Z",
+                "content": [{"type": "output_text", "text": "hi"}],
+            },
+        ]
+
+        from_list = parse(payload, "fallback")
+        from_stream = parse_stream(iter(payload), "fallback")
+
+        assert from_stream == from_list
 
 
 # =============================================================================

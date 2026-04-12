@@ -10,7 +10,7 @@ from .base import ParsedConversation
 from .claude_ai_parser import looks_like_ai as _looks_like_ai
 from .claude_ai_parser import parse_ai as _parse_ai
 from .claude_code_detection import looks_like_code
-from .claude_code_parser import parse_code
+from .claude_code_parser import parse_code, parse_code_stream
 from .claude_common import (
     extract_messages_from_chat_messages as _extract_messages_from_chat_messages,
 )
@@ -66,4 +66,5 @@ def parse_ai(payload: dict[str, object], fallback_id: str) -> ParsedConversation
 # as chatgpt.py and codex.py (parse + looks_like at module level).
 # parse_code / looks_like_code remain for explicit dispatch in source.py.
 parse = parse_code
+parse_stream = parse_code_stream
 looks_like = looks_like_code

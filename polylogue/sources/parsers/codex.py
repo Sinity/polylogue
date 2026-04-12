@@ -6,6 +6,8 @@ with automatic validation and normalization.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
+
 from pydantic import ValidationError
 
 from polylogue.lib.branch_type import BranchType
@@ -77,7 +79,7 @@ def looks_like(payload: list[object]) -> bool:
     return False
 
 
-def parse(payload: list[object], fallback_id: str) -> ParsedConversation:
+def _parse_records(records: Iterable[object], fallback_id: str) -> ParsedConversation:
     """Parse Codex JSONL session file using typed CodexRecord model.
 
     Supports two format generations via CodexRecord.format_type:
@@ -100,7 +102,7 @@ def parse(payload: list[object], fallback_id: str) -> ParsedConversation:
     session_git: dict[str, object] | None = None  # Git context from session metadata
     session_instructions: str | None = None  # System instructions from session metadata
 
-    for idx, item in enumerate(payload, start=1):
+    for idx, item in enumerate(records, start=1):
         if not isinstance(item, dict):
             continue
 
@@ -253,3 +255,11 @@ def parse(payload: list[object], fallback_id: str) -> ParsedConversation:
         parent_conversation_provider_id=parent_id,
         branch_type=branch_type,
     )
+
+
+def parse(payload: list[object], fallback_id: str) -> ParsedConversation:
+    return _parse_records(payload, fallback_id)
+
+
+def parse_stream(records: Iterable[object], fallback_id: str) -> ParsedConversation:
+    return _parse_records(records, fallback_id)

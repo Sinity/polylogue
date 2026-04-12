@@ -6,6 +6,7 @@ from polylogue.lib.raw_payload_decode import (
     RawPayloadEnvelope,
     WireFormat,
     build_raw_payload_envelope,
+    sample_jsonl_payload,
 )
 from polylogue.lib.raw_payload_sampling_buckets import is_record_candidate, record_bucket_key
 from polylogue.lib.raw_payload_sampling_extract import (
@@ -25,4 +26,5 @@ __all__ = [
     "is_record_candidate",
     "limit_samples",
     "record_bucket_key",
+    "sample_jsonl_payload",
 ]

@@ -21,6 +21,7 @@ from polylogue.sources.parsers.claude import (
     extract_text_from_segments,
     parse_ai,
     parse_code,
+    parse_stream,
 )
 from tests.infra.source_builders import make_claude_chat_message
 from tests.infra.strategies import parsed_attachment_model_strategy
@@ -258,6 +259,32 @@ def test_parse_code_result_record_text_never_none():
     for msg in result.messages:
         assert msg.text is not None, f"Message {msg.provider_message_id} has text=None"
         assert isinstance(msg.text, str)
+
+
+def test_parse_code_stream_matches_list_parse():
+    items = [
+        {
+            "sessionId": "session-1",
+            "uuid": "msg-1",
+            "parentUuid": None,
+            "timestamp": "2025-01-01T00:00:00Z",
+            "type": "user",
+            "message": {"role": "user", "content": "hello"},
+        },
+        {
+            "sessionId": "session-1",
+            "uuid": "msg-2",
+            "parentUuid": "msg-1",
+            "timestamp": "2025-01-01T00:00:01Z",
+            "type": "assistant",
+            "message": {"role": "assistant", "content": [{"type": "text", "text": "hi"}]},
+        },
+    ]
+
+    from_list = parse_code(items, "fallback")
+    from_stream = parse_stream(iter(items), "fallback")
+
+    assert from_stream == from_list
 
 
 def test_parse_code_assistant_no_text_blocks_text_never_none():

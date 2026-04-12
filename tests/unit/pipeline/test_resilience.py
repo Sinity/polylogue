@@ -629,3 +629,26 @@ def test_transform_with_tool_use_message_keeps_non_empty_message_hash(tmp_path: 
 
     assert cdata.message_tuples[0][6]
     assert len(cdata.action_event_tuples) == 1
+
+
+def test_ingest_record_streams_codex_jsonl_without_full_envelope_decode(tmp_path: Path) -> None:
+    from polylogue.pipeline.services.ingest_worker import ingest_record
+
+    content = (
+        b'{"type":"session_meta","payload":{"id":"session-1","timestamp":"2025-01-01T00:00:00Z"}}\n'
+        b'{"type":"message","id":"msg-1","role":"user","timestamp":"2025-01-01T00:00:01Z",'
+        b'"content":[{"type":"input_text","text":"hello"}]}\n'
+        b'{"type":"message","id":"msg-2","role":"assistant","timestamp":"2025-01-01T00:00:02Z",'
+        b'"content":[{"type":"output_text","text":"hi"}]}\n'
+    )
+    record = _make_raw_record("codex-streaming", "codex", content, "/exports/codex.jsonl")
+
+    with patch(
+        "polylogue.lib.raw_payload.build_raw_payload_envelope",
+        side_effect=AssertionError("legacy full envelope decode should be bypassed"),
+    ):
+        result = ingest_record(record, str(tmp_path / "archive"), "off")
+
+    assert result.error is None
+    assert len(result.conversations) == 1
+    assert result.conversations[0].provider_name == "codex"
