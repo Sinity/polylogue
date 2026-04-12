@@ -36,7 +36,7 @@ from polylogue.storage.backends.schema_ddl_product_timelines import (
     SESSION_PRODUCT_TIMELINE_DDL as _SESSION_PRODUCT_TIMELINE_DDL,
 )
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 1
 
 
 # Complete target schema applied to fresh databases.

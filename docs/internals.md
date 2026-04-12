@@ -23,7 +23,7 @@ polylogue audit --only exercises --tier 0
 | Archive writes are idempotent | unchanged conversations are skipped by content hash |
 | Content hash excludes editable metadata | titles, summaries, and tags can change without re-import churn |
 | Search and products read from the archive, not from provider-specific files | surface code should not bypass the substrate |
-| SQLite schema is fresh-only on mismatch | current storage schema version is `v2` |
+| SQLite schema is fresh-only on mismatch | current storage schema version is `v1` |
 | FTS assumptions use `unicode61` | porter stemming is not assumed in this build |
 | Repo-maintenance automation goes through `devtools` | avoid new shell-wrapper entrypoints |
 
