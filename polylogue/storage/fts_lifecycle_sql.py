@@ -28,6 +28,7 @@ FTS_ACTIONS_TABLE_SQL = """
 
 FTS_INDEX_EXISTS_SQL = "SELECT name FROM sqlite_master WHERE type='table' AND name='messages_fts'"
 FTS_INDEX_DOC_COUNT_SQL = "SELECT COUNT(*) FROM messages_fts_docsize"
+FTS_INDEXABLE_MESSAGE_COUNT_SQL = "SELECT COUNT(*) FROM messages WHERE text IS NOT NULL"
 ACTION_FTS_INDEX_EXISTS_SQL = "SELECT name FROM sqlite_master WHERE type='table' AND name='action_events_fts'"
 ACTION_FTS_INDEX_DOC_COUNT_SQL = "SELECT COUNT(*) FROM action_events_fts_docsize"
 FTS_REBUILD_SQL = """
@@ -102,6 +103,7 @@ __all__ = [
     "ACTION_FTS_INDEX_EXISTS_SQL",
     "ACTION_FTS_REBUILD_SQL",
     "FTS_ACTIONS_TABLE_SQL",
+    "FTS_INDEXABLE_MESSAGE_COUNT_SQL",
     "FTS_INDEX_DOC_COUNT_SQL",
     "FTS_INDEX_EXISTS_SQL",
     "FTS_MESSAGES_TABLE_SQL",

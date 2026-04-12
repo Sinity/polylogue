@@ -231,7 +231,8 @@ MESSAGE_FTS_DDL = """
         CREATE TRIGGER IF NOT EXISTS messages_fts_ai
         AFTER INSERT ON messages BEGIN
             INSERT INTO messages_fts(rowid, message_id, conversation_id, text)
-            VALUES (new.rowid, new.message_id, new.conversation_id, new.text);
+            SELECT new.rowid, new.message_id, new.conversation_id, new.text
+            WHERE new.text IS NOT NULL;
         END;
 
         CREATE TRIGGER IF NOT EXISTS messages_fts_ad
@@ -243,7 +244,8 @@ MESSAGE_FTS_DDL = """
         AFTER UPDATE ON messages BEGIN
             DELETE FROM messages_fts WHERE rowid = old.rowid;
             INSERT INTO messages_fts(rowid, message_id, conversation_id, text)
-            VALUES (new.rowid, new.message_id, new.conversation_id, new.text);
+            SELECT new.rowid, new.message_id, new.conversation_id, new.text
+            WHERE new.text IS NOT NULL;
         END;
 """
 

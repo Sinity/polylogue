@@ -8,7 +8,7 @@ from polylogue.maintenance_models import DerivedModelStatus
 from polylogue.storage.action_event_status import action_event_read_model_status_sync
 from polylogue.storage.derived_status_products import build_archive_product_statuses, pending_docs, pending_rows
 from polylogue.storage.embedding_stats import read_embedding_stats_sync
-from polylogue.storage.fts_lifecycle import fts_index_status_sync
+from polylogue.storage.fts_lifecycle import message_fts_readiness_sync
 from polylogue.storage.session_product_status import session_product_status_sync
 
 
@@ -16,19 +16,17 @@ def collect_derived_model_statuses_sync(
     conn: sqlite3.Connection,
 ) -> dict[str, DerivedModelStatus]:
     total_conversations = int(conn.execute("SELECT COUNT(*) FROM conversations").fetchone()[0] or 0)
-    total_messages = int(conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0] or 0)
 
-    fts_status = fts_index_status_sync(conn)
+    fts_status = message_fts_readiness_sync(conn)
     action_status = action_event_read_model_status_sync(conn)
     session_status = session_product_status_sync(conn)
     embedding_stats = read_embedding_stats_sync(conn, include_retrieval_bands=False)
 
     metrics: dict[str, int | bool] = {
         "total_conversations": total_conversations,
-        "total_messages": total_messages,
-        "message_fts_rows": int(fts_status.get("count", 0)),
-        "message_fts_ready": bool(fts_status.get("exists", False))
-        and int(fts_status.get("count", 0)) == total_messages,
+        "message_source_rows": int(fts_status["total_rows"]),
+        "message_fts_rows": int(fts_status["indexed_rows"]),
+        "message_fts_ready": bool(fts_status["ready"]),
         "action_rows": int(action_status["count"]),
         "action_documents": int(action_status["materialized_conversation_count"]),
         "action_source_documents": int(action_status["valid_source_conversation_count"]),
