@@ -9,6 +9,7 @@ from pathlib import Path
 from polylogue.errors import DatabaseError
 
 from .backends.connection import open_read_connection
+from .fts_lifecycle import message_fts_readiness_sync
 from .search_cache import SearchCacheKey
 from .search_models import SearchHit, SearchResult
 from .search_query_builders import build_ranked_conversation_search_query, resolve_conversation_path
@@ -50,9 +51,13 @@ def search_messages_impl(
 
     sql, params = query_spec
     with open_read_connection(db_path) as conn:
-        exists = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='messages_fts'").fetchone()
-        if not exists:
-            raise DatabaseError("Search index not built. Run `polylogue run` with index enabled.")
+        readiness = message_fts_readiness_sync(conn)
+        if not bool(readiness["exists"]):
+            raise DatabaseError("Search index not built. Run `polylogue doctor --repair` or `polylogue run all`.")
+        if not bool(readiness["ready"]):
+            raise DatabaseError(
+                "Search index is incomplete. Run `polylogue doctor --repair` or `polylogue run all`."
+            )
         try:
             rows = conn.execute(sql, tuple(params)).fetchall()
         except sqlite3.Error as exc:
