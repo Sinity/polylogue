@@ -18,22 +18,16 @@ nix develop
 All commands below assume you are already inside that environment. If not, use
 `nix develop -c <command>`.
 
-The devshell regenerates `AGENTS.md` from [CLAUDE.md](CLAUDE.md)
-automatically. `AGENTS.md` is generated locally and ignored.
+The devshell regenerates `AGENTS.md` from [CLAUDE.md](CLAUDE.md) on entry.
+It is gitignored.
 
 For repository maintenance, use `devtools`:
 
 ```bash
 devtools --help
-devtools --list-commands
-devtools --list-commands --json
 devtools status
-devtools status --json
 devtools render-all
 ```
-
-The JSON discovery/status forms are the best fit for agents and other
-automation that need to inspect the devtools surface without scraping prose.
 
 ## Workflow
 
@@ -43,8 +37,6 @@ targeting `master`.
 1. Create a branch from `origin/master`.
 2. Push the branch and open a pull request.
 3. Squash-merge the pull request into `master`.
-
-Direct pushes to `master` should not be used for normal development.
 
 ## Branch Naming
 
@@ -84,12 +76,9 @@ Branch commits can be iterative while you are working, but the published branch
 should still tell one coherent story. Avoid noisy “final final” or context-free
 messages that leave reviewers guessing.
 
-Squash-merge behavior matters here:
-
-- the pull-request title becomes the final commit subject on `master`
-- write that title as the history line you want to keep
-- keep branch-local commits useful for review, but optimize the PR title and PR
-  body for the final preserved narrative
+The PR title becomes the squash-merge subject on `master` — write it as the
+history line you want. Branch-local commits serve review; the PR title and body
+serve history.
 
 ## Versioning and Releases
 
@@ -136,7 +125,6 @@ When you do open an issue:
 - use the provided issue templates
 - write in terms of outcome, constraints, and acceptance criteria
 - prefer planning issues over retroactive bookkeeping
-- keep the language concise and operational
 - convert anonymous debt into tracked debt:
   - expected-failure tests that represent real bugs
   - TODO comments that would otherwise persist beyond the current PR
@@ -158,13 +146,6 @@ Pull requests should:
 Use `Ref #NNN` when the issue should stay open after merge, and `Closes #NNN`
 when the merge should close it.
 
-The default shape for a good PR here is:
-
-- one coherent implementation slice
-- a title that can stand alone in `master` history
-- a body that records summary, problem, solution, and verification
-- no requirement for a linked issue unless that issue added planning value
-
 ## Repository Settings
 
 The repository should stay aligned with the workflow above:
@@ -174,44 +155,21 @@ The repository should stay aligned with the workflow above:
 - require the `CI`, `Nix`, and `Pull Request Policy` checks before merge
 - keep squash merge enabled and leave merge-commit and rebase-merge disabled
 - enable automatic deletion of head branches after merge
-- allow “Update branch” when required checks need a refreshed base
+- allow Update branch for stale PRs
 - do not require an issue for every pull request
 
 ## Verification Baseline
 
-Once you are inside the devshell, for most code changes run:
+For most code changes:
 
 ```bash
 pytest -q --ignore=tests/integration
-```
-
-Add narrower or broader checks as needed for the touched area:
-
-```bash
 ruff check polylogue tests devtools
-devtools build-package
-nix flake check
-```
-
-See [TESTING.md](TESTING.md) for the baseline test matrix and protected test
-areas, and [docs/test-quality-workflows.md](docs/test-quality-workflows.md)
-for the generated validation-lane, mutation-campaign, and benchmark catalog.
-
-The following files are generated from live sources and should be refreshed when
-their source surface changes:
-
-- `AGENTS.md` from `CLAUDE.md`
-- `docs/cli-reference.md` from the live CLI help
-- `docs/test-quality-workflows.md` from the live quality registries
-- `docs/README.md` and the generated documentation table in `README.md` from the shared docs registry
-
-Refresh them together with:
-
-```bash
-devtools render-all
 devtools render-all --check
 ```
 
-See [docs/devtools.md](docs/devtools.md) for the `devtools` commands and the
-local-state layout under [`.cache/README.md`](.cache/README.md) and
-[`.local/README.md`](.local/README.md).
+Add `devtools build-package` or `nix flake check` when touching packaging or
+Nix expressions.
+
+See [TESTING.md](TESTING.md) and [docs/devtools.md](docs/devtools.md) for
+details.

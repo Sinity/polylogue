@@ -1,17 +1,7 @@
 # Testing
 
-Use the project devshell before running commands:
-
-```bash
-cd path/to/polylogue
-direnv allow   # one-time setup; afterward the devshell loads automatically on cd
-```
-
-If you are not using `direnv`, enter the same environment manually:
-
-```bash
-nix develop
-```
+All commands below assume you are inside the project devshell. See
+[CONTRIBUTING.md](CONTRIBUTING.md) for environment setup.
 
 ## Running Tests
 
@@ -37,11 +27,11 @@ see [docs/test-quality-workflows.md](docs/test-quality-workflows.md).
 
 ```text
 tests/
-├── conftest.py              # Root fixtures
+├── conftest.py              # Root fixtures (workspace_env, tmp paths)
 ├── infra/                   # Shared infrastructure
-│   ├── helpers.py           # ConversationBuilder, db_setup
+│   ├── storage_records.py   # ConversationBuilder, make_message, db_setup
 │   ├── tables.py            # Parametrize tables
-│   └── strategies/          # Hypothesis strategies
+│   └── strategies/          # Hypothesis strategies (schema-driven payloads)
 ├── unit/                    # Fast tests (~95% of suite)
 │   ├── core/                # Domain: models, filters, roles, timestamps, schema
 │   ├── sources/             # Parser crashlessness, null guards, acquisition
@@ -52,12 +42,30 @@ tests/
 │   ├── showcase/            # QA runner, reports
 │   └── security/            # Protected — never delete
 ├── property/                # Hypothesis property tests
-│   ├── test_rendering_preservation.py  # Block rendering invariants
-│   └── test_schema_roundtrip.py        # Schema extraction roundtrips
 ├── integration/             # End-to-end (slow, protected)
 ├── benchmarks/              # pytest-benchmark suite
 └── fuzz/                    # Atheris fuzz targets
 ```
+
+## Test Patterns
+
+**`workspace_env` fixture** (`conftest.py`): Isolated XDG paths and archive
+root in `tmp_path`. Disables schema validation by default. Most tests
+that touch storage or pipeline use this.
+
+**`ConversationBuilder`** (`infra/storage_records.py`): Fluent builder for
+populating a test database. Chain `.title()`, `.provider()`, `.message()`, etc.
+and call `.build()` to persist.
+
+**`make_message()` / `make_conversation()`** (`infra/storage_records.py`):
+Quick factories for creating model instances without database setup.
+
+**`corpus_seeded_db`** (`infra/corpus_fixtures.py`): Pre-populated database
+fixture using the synthetic corpus generator. For tests needing a realistic archive.
+
+**Hypothesis strategies** (`infra/strategies/`): Schema-driven payload
+generators. `schema_conformant_payload(provider)` produces payloads that match
+each provider's JSON schema.
 
 ## QA Exercises
 
@@ -84,16 +92,20 @@ Policy:
 
 - keep the committed mutmut configuration broad; narrow work happens through
   focused campaigns
-- write durable local artifacts under `.local/mutation-campaigns/`
-- rebuild the local mutation index after a meaningful campaign wave
-
-Use the generated quality reference for the named campaign catalog and
-benchmark surfaces.
+- write local artifacts under `.local/mutation-campaigns/`
+- rebuild the mutation index after a campaign run
 
 ## Protected Files
 
-- `tests/unit/sources/test_parsers_props.py`, `test_null_guard_properties.py`
-- `tests/unit/core/test_properties.py`
-- `tests/integration/`
-- `tests/unit/security/`
-- `tests/unit/storage/test_crud.py`
+Never delete:
+
+- **`tests/unit/sources/test_parsers_props.py`**, **`test_null_guard_properties.py`**:
+  Hypothesis property tests ensuring parsers never crash on arbitrary input and
+  handle nulls in every field position.
+- **`tests/unit/core/test_properties.py`**: Domain model invariants (role
+  normalization, timestamp parsing, hashing determinism).
+- **`tests/integration/`**: End-to-end pipeline tests against real archive
+  shapes.
+- **`tests/unit/security/`**: Security boundary tests.
+- **`tests/unit/storage/test_crud.py`**: Core storage contract tests (create,
+  read, update, delete round-trips).

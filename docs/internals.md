@@ -1,107 +1,95 @@
 # Internals Reference
 
-This is the working map of the live codebase: invariants, hot files,
-and maintenance landmarks. For the conceptual system shape, see
-[architecture.md](architecture.md). For the generated validation and campaign
-catalog, see [test-quality-workflows.md](test-quality-workflows.md).
-
-## Fast Commands
-
-```bash
-pytest -q --ignore=tests/integration
-ruff check polylogue tests devtools
-devtools status
-devtools render-all --check
-polylogue doctor --repair --preview
-polylogue audit --only exercises --tier 0
-```
+Working map of the live codebase: invariants, hot files, extension points, and
+debugging landmarks. For the conceptual system shape, see
+[architecture.md](architecture.md).
 
 ## Key Invariants
 
-| Invariant | Notes |
+| Invariant | Enforced in |
 | --- | --- |
-| Archive writes are idempotent | unchanged conversations are skipped by content hash |
-| Content hash excludes editable metadata | titles, summaries, and tags can change without re-import churn |
-| Search and products read from the archive, not from provider-specific files | surface code should not bypass the substrate |
-| SQLite schema is fresh-only on mismatch | current storage schema version is `v1` |
-| FTS assumptions use `unicode61` | porter stemming is not assumed in this build |
-| Repo-maintenance automation goes through `devtools` | avoid new shell-wrapper entrypoints |
+| Archive writes are idempotent by content hash | `pipeline/ids.py`, `pipeline/prepare_enrichment.py` |
+| Content hash excludes user metadata (tags, summaries) | `pipeline/ids.py:conversation_content_hash()` |
+| Content hash uses NFC normalization | `lib/hashing.py:hash_text()` |
+| FTS tokenizer is `unicode61` (no porter stemmer) | `storage/backends/schema_ddl_archive.py` |
+| Schema is fresh-only on version mismatch | `storage/backends/schema_upgrade.py` |
 
 ## Hot Files
 
-### Root Entry Points
+### Entry Points
 
 | File | Purpose |
 | --- | --- |
-| `polylogue/facade.py` | async-first public API |
-| `polylogue/config.py` | runtime configuration and XDG resolution |
-| `polylogue/cli/click_app.py` | root query-first CLI dispatch |
-| `polylogue/cli/command_inventory.py` | command inventory for the public CLI surface |
-| `polylogue/operations/archive.py` | archive-facing high-level operations |
+| `polylogue/facade.py` | Async library API |
+| `polylogue/config.py` | Runtime configuration and XDG resolution |
+| `polylogue/cli/click_app.py` | Root query-first CLI dispatch |
+| `polylogue/cli/command_inventory.py` | CLI command inventory |
+| `polylogue/operations/archive.py` | High-level archive operations |
 
-### Storage and Search
+### Storage
 
 | File | Purpose |
 | --- | --- |
-| `polylogue/storage/backends/schema_ddl.py` | schema definition and `SCHEMA_VERSION` |
-| `polylogue/storage/backends/schema_upgrade.py` | fresh-init and version guard |
-| `polylogue/storage/repository.py` | repository facade over archive reads and writes |
-| `polylogue/storage/repository_archive_*.py` | archive read and query helpers |
-| `polylogue/storage/repository_product_*.py` | product read helpers |
-| `polylogue/storage/search_providers/fts5.py` | lexical search provider |
-| `polylogue/storage/search_providers/hybrid.py` | hybrid retrieval routing |
-| `polylogue/storage/search_providers/sqlite_vec.py` | vector-search integration |
+| `storage/backends/schema_ddl.py` | Schema definition and `SCHEMA_VERSION` |
+| `storage/backends/schema_upgrade.py` | Fresh-init and version guard |
+| `storage/repository.py` | Repository facade (10 mixin composition) |
+| `storage/search_providers/fts5.py` | Lexical search |
+| `storage/search_providers/hybrid.py` | Hybrid retrieval (RRF fusion) |
 
 ### Sources and Pipeline
 
 | File | Purpose |
 | --- | --- |
-| `polylogue/sources/dispatch.py` | provider detection and parser routing |
-| `polylogue/sources/parsers/*.py` | provider-specific import logic |
-| `polylogue/pipeline/runner.py` | stage orchestration |
-| `polylogue/pipeline/services/*.py` | acquire, parse, materialize, render, index services |
+| `sources/dispatch.py` | Provider detection and parser routing |
+| `sources/parsers/*.py` | Per-provider parsing |
+| `pipeline/run_support.py` | Stage definitions and sequences |
+| `pipeline/ids.py` | Content hashing and ID generation |
+| `pipeline/services/ingest_batch.py` | Batch ingest (largest pipeline file) |
 
-### Products and Maintenance
+## Extension Points
 
-| File | Purpose |
-| --- | --- |
-| `polylogue/products/*.py` | derived-product models |
-| `polylogue/storage/session_product_*.py` | product persistence and rebuild logic |
-| `polylogue/schemas/*.py` | schema inference, verification, provider bundles |
-| `polylogue/showcase/*.py` | deterministic exercises and acceptance harness |
-| `devtools/*.py` | repo maintenance tools |
+**Adding a provider**: Start at `sources/dispatch.py:detect_provider()`. Add a
+`looks_like()` function in a new parser under `sources/parsers/`. Add a
+`Provider` enum variant in `types.py`. Add a provider schema bundle under
+`schemas/providers/`.
 
-## Local State
+**Adding a filter**: Filter chain: `lib/filters.py`. If the filter
+needs a stats-table join, update `_needs_stats_join()` in
+`storage/backends/connection.py`. Add the corresponding CLI flag in
+`cli/query.py` and MCP parameter in `mcp/`.
 
-Use the hidden roots instead of creating new top-level scratch directories:
+**Adding a CLI command**: Register in `cli/command_inventory.py`. Implementation
+goes in `cli/commands/`. The CLI is query-first — bare `polylogue` is search,
+not help.
 
-- [`.cache/README.md`](../.cache/README.md) for disposable caches
-- [`.local/README.md`](../.local/README.md) for untracked outputs
+**Adding a session product**: Define the product model in `products/`. Add
+storage in `storage/session_product_*.py`. Wire rebuild logic and register in
+`products/registry.py`.
 
-Important examples:
-
-- `.cache/hypothesis/` for Hypothesis storage
-- `.cache/pytest/` and `.cache/pytest-benchmark/`
-- `.cache/mypy/` and `.cache/ruff/`
-- `.local/mutation-campaigns/`
-- `.local/benchmark-campaigns/`
-- `.local/showcase/` or other demo or verification outputs
+**Adding a devtools command**: Add a `CommandSpec` to
+`devtools/command_catalog.py`. Implementation goes in `devtools/<name>.py`.
+Run `devtools render-all` to update the generated catalog in
+`docs/devtools.md`.
 
 ## Debugging Landmarks
 
-When a change lands in one surface, check the adjacent surface that shares the
-same archive semantics:
+Cross-check adjacent surfaces after changes:
 
-- query behavior: `cli/query*.py`, `lib/filters.py`, `storage/search*.py`
-- pipeline behavior: `cli/commands/run.py`, `pipeline/`, `storage/`, `products/`
-- maintenance behavior: `cli/commands/check.py`, `storage/repair.py`, `health.py`
-- publication behavior: `rendering/`, `site/`, `showcase/`
-- schema behavior: `schemas/`, `sources/providers/`, `pipeline/services/validation_*`
+- query: `cli/query*.py` ↔ `lib/filters.py` ↔ `storage/search*.py`
+- pipeline: `cli/commands/run.py` ↔ `pipeline/` ↔ `storage/` ↔ `products/`
+- maintenance: `cli/commands/check.py` ↔ `storage/repair.py` ↔ `health.py`
+- publication: `rendering/` ↔ `site/` ↔ `showcase/`
+- schema: `schemas/` ↔ `sources/providers/` ↔ `pipeline/services/validation_*`
 
-The fastest way to spot drift is to compare the archive-facing implementation
-and the public docs together:
+Drift check:
 
 ```bash
 devtools render-all --check
 devtools verify-showcase
 ```
+
+## Local State
+
+- [`.cache/README.md`](../.cache/README.md): disposable caches (hypothesis, pytest, mypy, ruff)
+- [`.local/README.md`](../.local/README.md): untracked outputs (campaigns, showcases, build artifacts)
+- `.local/result`: out-link for `devtools build-package`

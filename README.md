@@ -10,21 +10,13 @@ Polylogue is a local archive for AI conversation exports. It ingests provider
 exports into a SQLite archive with lexical search, optional semantic retrieval,
 derived products, and rendered outputs.
 
-## What It Covers
+## What It Does
 
-- archive substrate: acquire, parse, normalize, store, query
-- derived products: profiles, work events, phases, threads, day and week summaries
-- surfaces: CLI, Python API, MCP server, static site, dashboard
-- verification and maintenance: schema verification, synthetic corpora, showcase baselines,
-  validation lanes, mutation campaigns, benchmark campaigns
-
-Supported providers:
-
-- ChatGPT
-- Claude web
-- Claude Code
-- Codex
-- Gemini via Google Drive
+- Ingest exports from ChatGPT, Claude, Claude Code, Codex, and Gemini
+- Full-text and semantic search across all conversations
+- Derived products: session profiles, work events, threads, summaries
+- CLI, Python API, MCP server, static site, dashboard
+- Synthetic corpora, QA exercises, mutation testing, benchmarks
 
 ## Quickstart
 
@@ -46,8 +38,7 @@ polylogue products profiles --limit 5
 polylogue run site -o ./site-preview
 ```
 
-The seeded environment exercises the real archive pipeline and keeps demo data
-isolated from your normal archive.
+Demo data is isolated from your normal archive.
 
 ### Ingest Real Exports
 
@@ -108,10 +99,9 @@ values for recent conversation IDs, tags, tools, and configured sources.
 
 ### Archive and Query
 
-- provider detection from file content, not filename conventions alone
-- FTS-backed lexical search with composable filters
+- provider detection from file content
+- full-text search with composable filters
 - optional vector search for semantic similarity
-- local-first storage and rendering
 
 ### Durable Products
 
@@ -121,8 +111,7 @@ polylogue products phases --limit 10
 polylogue products threads --limit 10
 ```
 
-These products are materialized read models over the archive, not one-off
-reports.
+Products are materialized from the archive and updated incrementally.
 
 ### Publication and MCP
 
@@ -131,8 +120,8 @@ polylogue run site -o ./site-preview
 polylogue mcp
 ```
 
-- the site surface publishes a browsable HTML archive with search
-- the MCP surface exposes archive retrieval to AI assistants
+- static HTML archive with search
+- archive queries for AI assistants via MCP
 
 ### Library API
 
@@ -150,7 +139,7 @@ async with Polylogue() as archive:
     )
 ```
 
-The Python API is async-first and shares the same archive semantics as the CLI.
+The Python API is async-first.
 
 ## Developer Tools
 
@@ -164,10 +153,7 @@ devtools render-all
 devtools run-validation-lanes --lane frontier-local
 ```
 
-Use it for generated surfaces, validation lanes, mutation campaigns, benchmark
-campaigns, showcase verification, and repository hygiene. See
-[docs/devtools.md](docs/devtools.md). JSON forms are available for scripts and
-other tooling.
+See [docs/devtools.md](docs/devtools.md) for the full command catalog.
 
 <!-- BEGIN GENERATED: docs-surface -->
 ## Documentation
@@ -189,32 +175,14 @@ For the full docs map, see [docs/README.md](docs/README.md).
 |----------|-------------|
 | [Contributing](CONTRIBUTING.md) | Branching, issues, PRs, squash-merge history, and repo policy. |
 | [Testing](TESTING.md) | Baseline test matrix, protected surfaces, and QA entrypoints. |
-| [Agent Guide](CLAUDE.md) | Repository-specific agent memory, workflow rules, and included references. |
+| [Agent Guide](CLAUDE.md) | Agent memory and working rules. |
 
 <!-- END GENERATED: docs-surface -->
 
 ## Development
 
-```bash
-pytest -q --ignore=tests/integration
-ruff check polylogue tests devtools
-devtools render-all --check
-devtools build-package
-nix flake check
-```
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for workflow and PR rules,
-[TESTING.md](TESTING.md) for the testing guide, and
-[docs/internals.md](docs/internals.md) for debugging landmarks and invariants.
-
-## Versioning
-
-`pyproject.toml` records the last tagged release. Development builds are
-identified by git metadata, and `polylogue --version` includes the current
-commit hash so day-to-day builds stay identifiable without fake release churn.
-
-Routine merges do not bump the package version. Only release-tagging slices
-change `version = "X.Y.Z"`.
+See [CONTRIBUTING.md](CONTRIBUTING.md), [TESTING.md](TESTING.md), and
+[docs/internals.md](docs/internals.md).
 
 ## License
 
