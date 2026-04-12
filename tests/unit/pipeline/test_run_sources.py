@@ -598,7 +598,7 @@ class TestAcquisitionServiceAcquireSources:
 
         await service.acquire_sources([source], progress_callback=callback)
 
-        callback.assert_any_call(1, desc="Acquiring [test-source]")
+        callback.assert_any_call(1, desc="Scanning [test-source]")
         assert mock_iter.call_args is not None
         assert mock_iter.call_args.kwargs.get("known_mtimes") is not None
 
