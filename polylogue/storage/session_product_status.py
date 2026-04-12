@@ -346,102 +346,162 @@ async def session_profile_repair_candidate_ids_async(conn: aiosqlite.Connection)
     return [str(row["conversation_id"]) for row in rows]
 
 
-def session_product_status_sync(conn: sqlite3.Connection) -> dict[str, int | bool]:
+def session_product_status_sync(
+    conn: sqlite3.Connection,
+    *,
+    verify_freshness: bool = True,
+) -> dict[str, int | bool]:
     tables = {key: bool(conn.execute(sql).fetchone()) for key, sql in _TABLE_SQLS.items()}
 
     def count(sql: str, *params: object) -> int:
         return _to_int(conn.execute(sql, params).fetchone())
 
+    def table_count(table_exists: bool, table_name: str) -> int:
+        return _to_int(conn.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()) if table_exists else 0
+
+    total_conversations = count(TOTAL_CONVERSATIONS_SQL)
+    thread_count = count(WORK_THREAD_COUNT_SQL) if tables["work_threads"] else 0
+    root_threads = count(ROOT_THREAD_COUNT_SQL) if verify_freshness else thread_count
+    profile_row_count = count(SESSION_PROFILE_COUNT_SQL) if tables["session_profiles"] else 0
+    profile_merged_fts_count = (
+        count(SESSION_PROFILE_MERGED_FTS_DOC_COUNT_SQL)
+        if verify_freshness and tables["session_profiles_fts"]
+        else table_count(tables["session_profiles_fts"], "session_profiles_fts")
+    )
+    profile_evidence_fts_count = (
+        count(SESSION_PROFILE_EVIDENCE_FTS_DOC_COUNT_SQL)
+        if verify_freshness and tables["session_profile_evidence_fts"]
+        else table_count(tables["session_profile_evidence_fts"], "session_profile_evidence_fts")
+    )
+    profile_inference_fts_count = (
+        count(SESSION_PROFILE_INFERENCE_FTS_DOC_COUNT_SQL)
+        if verify_freshness and tables["session_profile_inference_fts"]
+        else table_count(tables["session_profile_inference_fts"], "session_profile_inference_fts")
+    )
+    profile_enrichment_fts_count = (
+        count(SESSION_PROFILE_ENRICHMENT_FTS_DOC_COUNT_SQL)
+        if verify_freshness and tables["session_profile_enrichment_fts"]
+        else table_count(tables["session_profile_enrichment_fts"], "session_profile_enrichment_fts")
+    )
+    work_event_inference_count = count(SESSION_WORK_EVENT_COUNT_SQL) if tables["session_work_events"] else 0
+    work_event_inference_fts_count = (
+        count(SESSION_WORK_EVENT_FTS_DOC_COUNT_SQL)
+        if verify_freshness and tables["session_work_events_fts"]
+        else table_count(tables["session_work_events_fts"], "session_work_events_fts")
+    )
+    phase_inference_count = count(SESSION_PHASE_COUNT_SQL) if tables["session_phases"] else 0
+    thread_fts_count = (
+        count(WORK_THREAD_FTS_DOC_COUNT_SQL)
+        if verify_freshness and tables["work_threads_fts"]
+        else table_count(tables["work_threads_fts"], "work_threads_fts")
+    )
+    tag_rollup_count = count(SESSION_TAG_ROLLUP_COUNT_SQL) if tables["session_tag_rollups"] else 0
+    day_summary_count = count(DAY_SESSION_SUMMARY_COUNT_SQL) if tables["day_session_summaries"] else 0
+
     counts = {
-        "total_conversations": count(TOTAL_CONVERSATIONS_SQL),
-        "root_threads": count(ROOT_THREAD_COUNT_SQL),
-        "profile_row_count": count(SESSION_PROFILE_COUNT_SQL) if tables["session_profiles"] else 0,
-        "profile_merged_fts_count": count(SESSION_PROFILE_MERGED_FTS_DOC_COUNT_SQL)
-        if tables["session_profiles_fts"]
-        else 0,
-        "profile_merged_fts_duplicate_count": count(SESSION_PROFILE_MERGED_FTS_DUPLICATE_COUNT_SQL)
-        if tables["session_profiles_fts"]
-        else 0,
-        "profile_evidence_fts_count": count(SESSION_PROFILE_EVIDENCE_FTS_DOC_COUNT_SQL)
-        if tables["session_profile_evidence_fts"]
-        else 0,
-        "profile_evidence_fts_duplicate_count": count(SESSION_PROFILE_EVIDENCE_FTS_DUPLICATE_COUNT_SQL)
-        if tables["session_profile_evidence_fts"]
-        else 0,
-        "profile_inference_fts_count": count(SESSION_PROFILE_INFERENCE_FTS_DOC_COUNT_SQL)
-        if tables["session_profile_inference_fts"]
-        else 0,
-        "profile_inference_fts_duplicate_count": count(SESSION_PROFILE_INFERENCE_FTS_DUPLICATE_COUNT_SQL)
-        if tables["session_profile_inference_fts"]
-        else 0,
-        "profile_enrichment_fts_count": count(SESSION_PROFILE_ENRICHMENT_FTS_DOC_COUNT_SQL)
-        if tables["session_profile_enrichment_fts"]
-        else 0,
-        "profile_enrichment_fts_duplicate_count": count(SESSION_PROFILE_ENRICHMENT_FTS_DUPLICATE_COUNT_SQL)
-        if tables["session_profile_enrichment_fts"]
-        else 0,
-        "work_event_inference_count": count(SESSION_WORK_EVENT_COUNT_SQL) if tables["session_work_events"] else 0,
-        "work_event_inference_fts_count": count(SESSION_WORK_EVENT_FTS_DOC_COUNT_SQL)
-        if tables["session_work_events_fts"]
-        else 0,
-        "work_event_inference_fts_duplicate_count": count(SESSION_WORK_EVENT_FTS_DUPLICATE_COUNT_SQL)
-        if tables["session_work_events_fts"]
-        else 0,
-        "phase_inference_count": count(SESSION_PHASE_COUNT_SQL) if tables["session_phases"] else 0,
-        "thread_count": count(WORK_THREAD_COUNT_SQL) if tables["work_threads"] else 0,
-        "thread_fts_count": count(WORK_THREAD_FTS_DOC_COUNT_SQL) if tables["work_threads_fts"] else 0,
-        "thread_fts_duplicate_count": count(WORK_THREAD_FTS_DUPLICATE_COUNT_SQL) if tables["work_threads_fts"] else 0,
-        "tag_rollup_count": count(SESSION_TAG_ROLLUP_COUNT_SQL) if tables["session_tag_rollups"] else 0,
-        "day_summary_count": count(DAY_SESSION_SUMMARY_COUNT_SQL) if tables["day_session_summaries"] else 0,
+        "total_conversations": total_conversations,
+        "root_threads": root_threads,
+        "profile_row_count": profile_row_count,
+        "profile_merged_fts_count": profile_merged_fts_count,
+        "profile_merged_fts_duplicate_count": (
+            count(SESSION_PROFILE_MERGED_FTS_DUPLICATE_COUNT_SQL)
+            if verify_freshness and tables["session_profiles_fts"]
+            else max(0, profile_merged_fts_count - profile_row_count)
+        ),
+        "profile_evidence_fts_count": profile_evidence_fts_count,
+        "profile_evidence_fts_duplicate_count": (
+            count(SESSION_PROFILE_EVIDENCE_FTS_DUPLICATE_COUNT_SQL)
+            if verify_freshness and tables["session_profile_evidence_fts"]
+            else max(0, profile_evidence_fts_count - profile_row_count)
+        ),
+        "profile_inference_fts_count": profile_inference_fts_count,
+        "profile_inference_fts_duplicate_count": (
+            count(SESSION_PROFILE_INFERENCE_FTS_DUPLICATE_COUNT_SQL)
+            if verify_freshness and tables["session_profile_inference_fts"]
+            else max(0, profile_inference_fts_count - profile_row_count)
+        ),
+        "profile_enrichment_fts_count": profile_enrichment_fts_count,
+        "profile_enrichment_fts_duplicate_count": (
+            count(SESSION_PROFILE_ENRICHMENT_FTS_DUPLICATE_COUNT_SQL)
+            if verify_freshness and tables["session_profile_enrichment_fts"]
+            else max(0, profile_enrichment_fts_count - profile_row_count)
+        ),
+        "work_event_inference_count": work_event_inference_count,
+        "work_event_inference_fts_count": work_event_inference_fts_count,
+        "work_event_inference_fts_duplicate_count": (
+            count(SESSION_WORK_EVENT_FTS_DUPLICATE_COUNT_SQL)
+            if verify_freshness and tables["session_work_events_fts"]
+            else max(0, work_event_inference_fts_count - work_event_inference_count)
+        ),
+        "phase_inference_count": phase_inference_count,
+        "thread_count": thread_count,
+        "thread_fts_count": thread_fts_count,
+        "thread_fts_duplicate_count": (
+            count(WORK_THREAD_FTS_DUPLICATE_COUNT_SQL)
+            if verify_freshness and tables["work_threads_fts"]
+            else max(0, thread_fts_count - thread_count)
+        ),
+        "tag_rollup_count": tag_rollup_count,
+        "day_summary_count": day_summary_count,
     }
     counts["missing_profile_row_count"] = (
         count(MISSING_SESSION_PROFILE_COUNT_SQL) if tables["session_profiles"] else counts["total_conversations"]
     )
     counts["stale_profile_row_count"] = (
         count(STALE_SESSION_PROFILE_COUNT_SQL, SESSION_PRODUCT_MATERIALIZER_VERSION)
-        if tables["session_profiles"]
-        else counts["total_conversations"]
+        if verify_freshness and tables["session_profiles"]
+        else 0
     )
-    counts["orphan_profile_row_count"] = count(ORPHAN_SESSION_PROFILE_COUNT_SQL) if tables["session_profiles"] else 0
+    counts["orphan_profile_row_count"] = (
+        count(ORPHAN_SESSION_PROFILE_COUNT_SQL) if verify_freshness and tables["session_profiles"] else 0
+    )
     counts["expected_work_event_inference_count"] = (
         count(EXPECTED_WORK_EVENT_COUNT_SQL) if tables["session_profiles"] else 0
     )
     counts["expected_phase_inference_count"] = count(EXPECTED_PHASE_COUNT_SQL) if tables["session_profiles"] else 0
     counts["stale_work_event_inference_count"] = (
         count(STALE_WORK_EVENT_COUNT_SQL, SESSION_PRODUCT_MATERIALIZER_VERSION)
-        if tables["session_work_events"]
-        else counts["expected_work_event_inference_count"]
+        if verify_freshness and tables["session_work_events"]
+        else 0
     )
     counts["orphan_work_event_inference_count"] = (
-        count(ORPHAN_SESSION_WORK_EVENT_COUNT_SQL) if tables["session_work_events"] else 0
+        count(ORPHAN_SESSION_WORK_EVENT_COUNT_SQL) if verify_freshness and tables["session_work_events"] else 0
     )
     counts["stale_phase_inference_count"] = (
         count(STALE_SESSION_PHASE_COUNT_SQL, SESSION_PRODUCT_MATERIALIZER_VERSION)
-        if tables["session_phases"]
-        else counts["expected_phase_inference_count"]
+        if verify_freshness and tables["session_phases"]
+        else 0
     )
-    counts["orphan_phase_inference_count"] = count(ORPHAN_SESSION_PHASE_COUNT_SQL) if tables["session_phases"] else 0
+    counts["orphan_phase_inference_count"] = (
+        count(ORPHAN_SESSION_PHASE_COUNT_SQL) if verify_freshness and tables["session_phases"] else 0
+    )
     counts["stale_thread_count"] = (
         count(STALE_WORK_THREAD_COUNT_SQL, SESSION_PRODUCT_MATERIALIZER_VERSION)
-        if tables["work_threads"]
-        else counts["root_threads"]
+        if verify_freshness and tables["work_threads"]
+        else 0
     )
-    counts["orphan_thread_count"] = count(ORPHAN_WORK_THREAD_COUNT_SQL) if tables["work_threads"] else 0
+    counts["orphan_thread_count"] = (
+        count(ORPHAN_WORK_THREAD_COUNT_SQL) if verify_freshness and tables["work_threads"] else 0
+    )
     counts["expected_tag_rollup_count"] = (
-        count(EXPECTED_SESSION_TAG_ROLLUP_COUNT_SQL) if tables["session_profiles"] else 0
+        count(EXPECTED_SESSION_TAG_ROLLUP_COUNT_SQL)
+        if verify_freshness and tables["session_profiles"]
+        else counts["tag_rollup_count"]
     )
     counts["stale_tag_rollup_count"] = (
         count(STALE_SESSION_TAG_ROLLUP_COUNT_SQL, SESSION_PRODUCT_MATERIALIZER_VERSION)
-        if tables["session_tag_rollups"]
-        else counts["expected_tag_rollup_count"]
+        if verify_freshness and tables["session_tag_rollups"]
+        else 0
     )
     counts["expected_day_summary_count"] = (
-        count(EXPECTED_DAY_SESSION_SUMMARY_COUNT_SQL) if tables["session_profiles"] else 0
+        count(EXPECTED_DAY_SESSION_SUMMARY_COUNT_SQL)
+        if verify_freshness and tables["session_profiles"]
+        else counts["day_summary_count"]
     )
     counts["stale_day_summary_count"] = (
         count(STALE_DAY_SESSION_SUMMARY_COUNT_SQL, SESSION_PRODUCT_MATERIALIZER_VERSION)
-        if tables["day_session_summaries"]
-        else counts["expected_day_summary_count"]
+        if verify_freshness and tables["day_session_summaries"]
+        else 0
     )
     return _status_payload(tables, counts)
 

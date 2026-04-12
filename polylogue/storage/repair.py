@@ -69,20 +69,29 @@ _CAT_DB = MaintenanceCategory.DATABASE_MAINTENANCE
 
 
 def count_orphaned_messages_sync(conn: sqlite3.Connection) -> int:
-    orphan_cids = conn.execute(
-        """
-        SELECT DISTINCT m.conversation_id FROM messages m
-        WHERE NOT EXISTS (SELECT 1 FROM conversations c WHERE c.conversation_id = m.conversation_id)
-        """
-    ).fetchall()
-    if not orphan_cids:
-        return 0
-    placeholders = ",".join("?" for _ in orphan_cids)
     return int(
         conn.execute(
-            f"SELECT COUNT(*) FROM messages WHERE conversation_id IN ({placeholders})",
-            [row[0] for row in orphan_cids],
+            """
+            SELECT COUNT(*)
+            FROM messages m
+            LEFT JOIN conversations c ON c.conversation_id = m.conversation_id
+            WHERE c.conversation_id IS NULL
+            """
         ).fetchone()[0]
+    )
+
+
+def has_orphaned_messages_sync(conn: sqlite3.Connection) -> bool:
+    return bool(
+        conn.execute(
+            """
+            SELECT 1
+            FROM messages m
+            LEFT JOIN conversations c ON c.conversation_id = m.conversation_id
+            WHERE c.conversation_id IS NULL
+            LIMIT 1
+            """
+        ).fetchone()
     )
 
 
@@ -103,8 +112,10 @@ def count_empty_conversations_sync(conn: sqlite3.Connection) -> int:
     return int(
         conn.execute(
             """
-            SELECT COUNT(*) FROM conversations c
-            WHERE NOT EXISTS (SELECT 1 FROM messages m WHERE m.conversation_id = c.conversation_id)
+            SELECT COUNT(*)
+            FROM conversations c
+            LEFT JOIN messages m ON m.conversation_id = c.conversation_id
+            WHERE m.conversation_id IS NULL
             """
         ).fetchone()[0]
     )
@@ -241,12 +252,17 @@ def collect_archive_debt_statuses_sync(
     *,
     derived_statuses: dict[str, DerivedModelStatus] | None = None,
     include_expensive: bool = True,
+    probe_only: bool = False,
 ) -> dict[str, ArchiveDebtStatus]:
     from polylogue.storage.derived_status import collect_derived_model_statuses_sync
 
-    statuses = derived_statuses or collect_derived_model_statuses_sync(conn)
+    statuses = derived_statuses or collect_derived_model_statuses_sync(conn, verify_full=include_expensive)
 
-    orphaned_messages = count_orphaned_messages_sync(conn)
+    orphaned_messages = (
+        1 if has_orphaned_messages_sync(conn) else 0
+        if probe_only and not include_expensive
+        else count_orphaned_messages_sync(conn)
+    )
     empty_conversations = count_empty_conversations_sync(conn)
     orphaned_attachments = count_orphaned_attachments_sync(conn)
     session_products = session_product_repair_count(statuses)
@@ -259,7 +275,15 @@ def collect_archive_debt_statuses_sync(
             category=_CAT_CLEANUP,
             destructive=True,
             issue_count=orphaned_messages,
-            detail="No orphaned messages" if orphaned_messages == 0 else f"{orphaned_messages:,} orphaned messages",
+            detail=(
+                "No orphaned messages"
+                if orphaned_messages == 0
+                else (
+                    "Orphaned messages present; use --deep for exact count"
+                    if probe_only and not include_expensive
+                    else f"{orphaned_messages:,} orphaned messages"
+                )
+            ),
             maintenance_target="orphaned_messages",
         ),
         "empty_conversations": ArchiveDebtStatus(
