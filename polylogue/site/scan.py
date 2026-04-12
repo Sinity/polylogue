@@ -42,6 +42,7 @@ async def scan_archive(
     conversation_iter: Callable[[], AsyncIterator[ConversationIndex]],
     generate_conversation_page: Callable[[ConversationIndex, bool], Awaitable[str]],
     incremental: bool,
+    progress_callback: Callable[[int, str | None], None] | None = None,
 ) -> tuple[ArchiveIndexStats, ConversationPageBuildStats]:
     """Scan archive summaries once and drive streaming site outputs from that pass."""
     stats = ArchiveIndexStats()
@@ -55,6 +56,8 @@ async def scan_archive(
         search_handle.write("[")
 
     try:
+        if progress_callback is not None:
+            progress_callback(0, desc="Building site: scanning archive 0")
         async for conversation in conversation_iter():
             stats.record(
                 conversation,
@@ -71,6 +74,8 @@ async def scan_archive(
                     incremental,
                 )
             )
+            if progress_callback is not None:
+                progress_callback(1, desc=f"Building site: scanning archive {stats.total_conversations:,}")
     except Exception:
         if search_handle is not None:
             search_handle.close()

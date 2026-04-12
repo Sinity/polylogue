@@ -108,3 +108,37 @@ def test_site_builder_reports_reused_pages_on_incremental_rebuild(db_path, tmp_p
     assert second.outputs.rendered_conversation_pages == 0
     assert second.outputs.reused_conversation_pages == 1
     assert second.outputs.failed_conversation_pages == 0
+
+
+def test_site_builder_emits_progress_during_scan_and_manifest_write(db_path, tmp_path) -> None:
+    (
+        ConversationBuilder(db_path, "conv-site-progress")
+        .provider("chatgpt")
+        .title("Progress")
+        .updated_at("2020-03-22T12:00:00+00:00")
+        .add_message("m1", role="user", text="hello")
+        .save()
+    )
+
+    progress_events: list[tuple[int, str | None]] = []
+
+    backend = SQLiteBackend(db_path=db_path)
+    repository = ConversationRepository(backend=backend)
+    builder = SiteBuilder(
+        output_dir=tmp_path / "site",
+        config=SiteConfig(enable_search=False),
+        backend=backend,
+        repository=repository,
+        progress_callback=lambda amount, desc=None: progress_events.append((amount, desc)),
+    )
+
+    try:
+        builder.build()
+    finally:
+        asyncio.run(backend.close())
+
+    descriptions = [desc for _, desc in progress_events if desc]
+    assert "Building site: preparing output" in descriptions
+    assert any(desc.startswith("Building site: scanning archive ") for desc in descriptions)
+    assert "Building site: writing manifest" in descriptions
+    assert any(amount == 1 for amount, _ in progress_events)

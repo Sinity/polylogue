@@ -39,6 +39,7 @@ from polylogue.sync_bridge import run_coroutine_sync
 if TYPE_CHECKING:
     from jinja2 import Template
 
+    from polylogue.protocols import ProgressCallback
     from polylogue.storage.backends.async_sqlite import SQLiteBackend
     from polylogue.storage.repository import ConversationRepository
 
@@ -55,6 +56,7 @@ class SiteBuilder:
         *,
         backend: SQLiteBackend | None = None,
         repository: ConversationRepository | None = None,
+        progress_callback: ProgressCallback | None = None,
     ) -> None:
         self.output_dir = Path(output_dir)
         self.config = config or SiteConfig()
@@ -63,6 +65,7 @@ class SiteBuilder:
         self._backend = backend
         self._repository = repository
         self._owns_storage = backend is None and repository is None
+        self._progress_callback = progress_callback
 
         self._highlighter = PygmentsHighlighter()
         self._message_renderer = HTMLMessageRenderer(self._highlighter)
@@ -91,8 +94,12 @@ class SiteBuilder:
         try:
             generated_display = datetime.now().strftime("%Y-%m-%d %H:%M")
             generated_at = datetime.now(timezone.utc).isoformat()
+            if self._progress_callback is not None:
+                self._progress_callback(0, desc="Building site: preparing output")
             archive_stats, conversation_pages = await self._scan_archive(incremental=incremental)
 
+            if self._progress_callback is not None:
+                self._progress_callback(0, desc="Building site: writing indexes")
             await self._generate_root_index(archive_stats, generated_at=generated_display)
             provider_index_pages = await self._generate_provider_indexes(
                 archive_stats,
@@ -101,6 +108,8 @@ class SiteBuilder:
 
             dashboard_pages = 0
             if self.config.include_dashboard:
+                if self._progress_callback is not None:
+                    self._progress_callback(0, desc="Building site: writing dashboard")
                 await self._generate_dashboard(
                     archive_stats,
                     generated_at=generated_display,
@@ -109,12 +118,16 @@ class SiteBuilder:
 
             search_status = "disabled"
             if self.config.enable_search and self.config.search_provider == "pagefind":
+                if self._progress_callback is not None:
+                    self._progress_callback(0, desc="Building site: writing pagefind config")
                 search_status = await asyncio.to_thread(self._generate_pagefind_config)
             elif self.config.enable_search:
                 search_status = "json_index_written"
 
             duration_ms = int((perf_counter() - build_started) * 1000)
             backend, repository = self._open_storage()
+            if self._progress_callback is not None:
+                self._progress_callback(0, desc="Building site: writing manifest")
             manifest = await build_site_publication_manifest(
                 output_dir=self.output_dir,
                 config=self.config,
@@ -131,6 +144,8 @@ class SiteBuilder:
                 maintenance=await load_archive_maintenance_summary_for_backend(backend),
             )
             write_site_publication_manifest(self.output_dir, manifest)
+            if self._progress_callback is not None:
+                self._progress_callback(0, desc="Building site: recording publication")
             await record_site_publication_manifest(repository, manifest)
             return manifest
         finally:
