@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 import click
 
 from polylogue.cli.machine_errors import error_no_results
+from polylogue.storage.backends.queries import stats as stats_q
 
 if TYPE_CHECKING:
     from polylogue.cli.types import AppEnv
@@ -95,6 +96,7 @@ async def output_stats_sql(
     described_filters = filter_chain.describe()
     has_filters = bool(described_filters)
 
+    archive_stats = None
     if has_filters:
         summaries = await filter_chain.list_summaries() if filter_chain.can_use_summaries() else None
         if summaries is not None:
@@ -115,14 +117,23 @@ async def output_stats_sql(
             conv_ids = None
     else:
         conv_ids = None
-        conv_count = await filter_chain.count()
-        if conv_count == 0:
-            if output_format == "json":
-                error_no_results("No conversations in archive.").emit(exit_code=2)
-            env.ui.console.print("No conversations in archive.")
-            return
+        async with repo.backend.read_connection() as conn:
+            await conn.execute("BEGIN")
+            try:
+                archive_stats = await repo.get_archive_stats(conn=conn)
+                conv_count = archive_stats.total_conversations
+                if conv_count == 0:
+                    if output_format == "json":
+                        error_no_results("No conversations in archive.").emit(exit_code=2)
+                    env.ui.console.print("No conversations in archive.")
+                    return
+                stats = await stats_q.aggregate_message_stats(conn, None)
+            finally:
+                if conn.in_transaction:
+                    await conn.rollback()
 
-    stats = await repo.queries.aggregate_message_stats(conv_ids)
+    if has_filters:
+        stats = await repo.queries.aggregate_message_stats(conv_ids)
 
     date_range = ""
     if stats["min_sort_key"] and stats["max_sort_key"]:
@@ -142,7 +153,7 @@ async def output_stats_sql(
         "filtered": has_filters,
     }
     if not has_filters:
-        archive_stats = await repo.get_archive_stats()
+        assert archive_stats is not None
         pending_embedding_conversations = getattr(archive_stats, "pending_embedding_conversations", 0)
         stale_embedding_messages = getattr(archive_stats, "stale_embedding_messages", 0)
         if hasattr(archive_stats, "to_dict"):
