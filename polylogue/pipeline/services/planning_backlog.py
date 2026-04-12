@@ -44,10 +44,11 @@ async def collect_parse_backlog(
 ) -> list[str]:
     exclude = set(exclude_raw_ids or [])
     backlog_parse_ids: list[str] = []
+    validation_statuses = None if force_reparse else ["passed", "skipped"]
     async for raw_id in backend.queries.iter_raw_ids(
         source_names=source_names,
         require_unparsed=not force_reparse,
-        validation_statuses=["passed", "skipped"],
+        validation_statuses=validation_statuses,
     ):
         if raw_id not in exclude:
             backlog_parse_ids.append(raw_id)
