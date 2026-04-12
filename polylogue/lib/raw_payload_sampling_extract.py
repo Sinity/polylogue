@@ -138,8 +138,8 @@ def extract_record_samples_from_raw_content(
     """Stream-record sample extraction for large JSONL payloads.
 
     When *raw_content* is a :class:`~pathlib.Path`, lines are streamed
-    directly from the file handle — enabling constant-memory sampling
-    of multi-GB files.
+    directly from the file handle. Bounded sampling stays memory-light,
+    while ``max_samples=None`` still materializes the full result set.
 
     When *max_samples* is ``None`` (full-corpus mode), all records are
     returned without bucketing or scan caps.
