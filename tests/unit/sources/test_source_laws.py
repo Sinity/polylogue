@@ -1902,6 +1902,33 @@ def test_iter_source_raw_data_skips_known_mtimes_without_reading_file(tmp_path: 
     assert [item.source_path for item in items] == [str(fresh)]
 
 
+def test_iter_source_raw_data_skips_zero_byte_plain_files_and_tracks_failure(tmp_path: Path) -> None:
+    empty = tmp_path / "empty.jsonl"
+    empty.write_bytes(b"")
+
+    cursor_state: dict[str, object] = {}
+    items = list(iter_source_raw_data(Source(name="codex", path=empty), cursor_state=cursor_state))
+
+    assert items == []
+    assert cursor_state["failed_count"] == 1
+    assert cursor_state["failed_files"] == [{"path": str(empty), "error": "empty file"}]
+
+
+def test_iter_source_raw_data_skips_zero_byte_zip_entries_and_tracks_failure(tmp_path: Path) -> None:
+    archive_path = tmp_path / "bundle.zip"
+    with zipfile.ZipFile(archive_path, "w") as zf:
+        zf.writestr("nested/empty.jsonl", b"")
+
+    cursor_state: dict[str, object] = {}
+    items = list(iter_source_raw_data(Source(name="codex", path=archive_path), cursor_state=cursor_state))
+
+    assert items == []
+    assert cursor_state["failed_count"] == 1
+    assert cursor_state["failed_files"] == [
+        {"path": f"{archive_path}:nested/empty.jsonl", "error": "empty file"}
+    ]
+
+
 def test_iter_source_raw_data_tracks_read_failures_without_stopping(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
