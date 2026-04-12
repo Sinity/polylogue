@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from polylogue.pipeline.services.ingest_batch import (
+    _build_batch_memory_observation,
     _drain_ready_conversation_entries,
     _failed_raw_state_update,
     _IngestBatchSummary,
@@ -520,6 +521,27 @@ def test_unattributed_batch_elapsed_subtracts_setup_and_teardown() -> None:
     )
 
     assert residual == pytest.approx(0.10)
+
+
+def test_build_batch_memory_observation_separates_lifetime_peak_from_batch_growth() -> None:
+    observation = _build_batch_memory_observation(
+        rss_start_mb=512.0,
+        rss_end_mb=544.5,
+        peak_rss_self_start_mb=768.0,
+        peak_rss_self_end_mb=1024.0,
+        peak_rss_children_mb=64.0,
+        max_current_rss_mb=812.2,
+    )
+
+    assert observation == {
+        "rss_start_mb": 512.0,
+        "rss_end_mb": 544.5,
+        "rss_delta_mb": 32.5,
+        "process_peak_rss_self_mb": 1024.0,
+        "peak_rss_growth_mb": 256.0,
+        "peak_rss_children_mb": 64.0,
+        "max_current_rss_mb": 812.2,
+    }
 
 
 @pytest.mark.asyncio
