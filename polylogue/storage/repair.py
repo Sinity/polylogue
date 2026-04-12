@@ -165,15 +165,38 @@ def session_product_repair_count(derived_statuses: dict[str, DerivedModelStatus]
 
 
 def action_event_repair_count(derived_statuses: dict[str, DerivedModelStatus]) -> int:
+    missing_conversations, stale_rows, fts_pending_rows = _action_event_repair_components(derived_statuses)
+    return missing_conversations + stale_rows + fts_pending_rows
+
+
+def _action_event_repair_components(
+    derived_statuses: dict[str, DerivedModelStatus],
+) -> tuple[int, int, int]:
     action_events = derived_statuses.get("action_events")
     action_events_fts = derived_statuses.get("action_events_fts")
     if action_events is None or action_events_fts is None:
-        return 0
+        return (0, 0, 0)
     return (
-        max(0, int(action_events.pending_documents or 0))
-        + max(0, int(action_events.stale_rows or 0))
-        + max(0, int(action_events_fts.pending_rows or 0))
+        max(0, int(action_events.pending_documents or 0)),
+        max(0, int(action_events.stale_rows or 0)),
+        max(0, int(action_events_fts.pending_rows or 0)),
     )
+
+
+def _action_event_repair_detail(derived_statuses: dict[str, DerivedModelStatus]) -> str:
+    missing_conversations, stale_rows, fts_pending_rows = _action_event_repair_components(derived_statuses)
+    if missing_conversations == 0 and stale_rows == 0 and fts_pending_rows == 0:
+        return "Action-event read model ready"
+
+    detail_parts: list[str] = []
+    if missing_conversations:
+        detail_parts.append(f"{missing_conversations:,} missing conversations")
+    if stale_rows:
+        detail_parts.append(f"{stale_rows:,} stale action-event rows")
+    if fts_pending_rows:
+        detail_parts.append(f"{fts_pending_rows:,} pending action-event FTS rows")
+    joined = ", ".join(detail_parts)
+    return f"Action-event read model pending ({joined})"
 
 
 def dangling_fts_repair_count(derived_statuses: dict[str, DerivedModelStatus]) -> int:
@@ -274,9 +297,7 @@ def collect_archive_debt_statuses_sync(
             category=_CAT_DERIVED,
             destructive=False,
             issue_count=action_events,
-            detail="Action-event read model ready"
-            if action_events == 0
-            else f"{action_events:,} pending/stale action-event rows",
+            detail=_action_event_repair_detail(statuses),
             maintenance_target="action_event_read_model",
         ),
         "dangling_fts": ArchiveDebtStatus(
