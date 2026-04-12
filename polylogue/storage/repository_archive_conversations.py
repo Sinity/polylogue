@@ -96,7 +96,7 @@ class RepositoryArchiveConversationMixin:
         self,
         query: ConversationRecordQuery,
     ) -> builtins.list[ConversationSummary]:
-        conv_records = await self.queries.list_conversations(query)
+        conv_records = await self.queries.list_conversation_summaries(query)
         return [conversation_summary_from_record(record) for record in conv_records]
 
     async def list_by_query(

@@ -22,19 +22,17 @@ from polylogue.pipeline.runner import latest_run
 def latest_render_path(render_root: Path) -> Path | None:
     if not render_root.exists():
         return None
-    candidates = list(render_root.rglob("conversation.md")) + list(render_root.rglob("conversation.html"))
-    if not candidates:
-        return None
     latest: Path | None = None
     latest_mtime = 0.0
-    for path in candidates:
-        try:
-            mtime = path.stat().st_mtime
-            if mtime > latest_mtime:
-                latest_mtime = mtime
-                latest = path
-        except OSError:
-            continue
+    for pattern in ("conversation.md", "conversation.html"):
+        for path in render_root.rglob(pattern):
+            try:
+                mtime = path.stat().st_mtime
+                if mtime > latest_mtime:
+                    latest_mtime = mtime
+                    latest = path
+            except OSError:
+                continue
     return latest
 
 

@@ -33,6 +33,13 @@ class SQLiteQueryStoreArchiveMixin:
         async with self._connection_factory() as conn:
             return await conversations_q.list_conversations(conn, **request.to_list_kwargs())
 
+    async def list_conversation_summaries(
+        self,
+        request: ConversationRecordQuery,
+    ) -> list[ConversationRecord]:
+        async with self._connection_factory() as conn:
+            return await conversations_q.list_conversation_summaries(conn, **request.to_list_kwargs())
+
     async def count_conversations(
         self,
         request: ConversationRecordQuery,

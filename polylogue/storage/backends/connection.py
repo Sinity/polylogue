@@ -25,7 +25,8 @@ logger = get_logger(__name__)
 DB_TIMEOUT = 30
 READ_DB_TIMEOUT = 1
 WRITE_CACHE_SIZE_KIB = 131072  # 128 MiB
-READ_CACHE_SIZE_KIB = 131072  # 128 MiB
+READ_CACHE_SIZE_KIB = 32768  # 32 MiB
+READ_MMAP_SIZE_BYTES = 134217728  # 128 MiB
 
 
 def _load_sqlite_vec(conn: sqlite3.Connection) -> bool:
@@ -60,7 +61,7 @@ def _configure_read_connection(conn: sqlite3.Connection) -> None:
     conn.row_factory = sqlite3.Row
     conn.execute(f"PRAGMA busy_timeout = {READ_DB_TIMEOUT * 1000}")
     conn.execute(f"PRAGMA cache_size = -{READ_CACHE_SIZE_KIB}")
-    conn.execute("PRAGMA mmap_size = 1073741824")  # 1 GB
+    conn.execute(f"PRAGMA mmap_size = {READ_MMAP_SIZE_BYTES}")
     conn.execute("PRAGMA temp_store = MEMORY")
 
 
@@ -232,6 +233,7 @@ def _build_provider_scope_filter(
 
 __all__ = [
     "DB_TIMEOUT",
+    "READ_MMAP_SIZE_BYTES",
     "READ_DB_TIMEOUT",
     "_build_provider_scope_filter",
     "_build_scope_filter",

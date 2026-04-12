@@ -27,6 +27,7 @@ from polylogue.storage.backends.connection import (
     DB_TIMEOUT,
     READ_CACHE_SIZE_KIB,
     READ_DB_TIMEOUT,
+    READ_MMAP_SIZE_BYTES,
     WRITE_CACHE_SIZE_KIB,
 )
 from polylogue.storage.backends.queries import action_events as action_events_q
@@ -92,7 +93,7 @@ async def configure_read_connection(conn: aiosqlite.Connection) -> None:
     conn.row_factory = aiosqlite.Row
     await conn.execute(f"PRAGMA busy_timeout = {READ_DB_TIMEOUT * 1000}")
     await conn.execute(f"PRAGMA cache_size = -{READ_CACHE_SIZE_KIB}")
-    await conn.execute("PRAGMA mmap_size = 1073741824")
+    await conn.execute(f"PRAGMA mmap_size = {READ_MMAP_SIZE_BYTES}")
     await conn.execute("PRAGMA temp_store = MEMORY")
 
 

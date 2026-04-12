@@ -975,8 +975,8 @@ def test_async_execute_query_action_routing_contract(case, expected_helper) -> N
         filter_chain.list_summaries.assert_awaited_once()
         mock_delete_conversations.assert_awaited_once()
     elif expected_helper == "open":
-        filter_chain.list.assert_awaited_once()
-        filter_chain.list_summaries.assert_not_called()
+        filter_chain.list.assert_not_called()
+        filter_chain.list_summaries.assert_awaited_once()
         mock_open_result.assert_called_once()
     elif expected_helper == "stream":
         filter_chain.list.assert_not_called()
@@ -1001,6 +1001,28 @@ def test_async_execute_query_action_routing_contract(case, expected_helper) -> N
         filter_chain.list.assert_awaited_once()
         filter_chain.list_summaries.assert_not_called()
         mock_output_results.assert_called_once()
+
+
+def test_async_execute_query_open_falls_back_to_full_results_without_summaries_contract() -> None:
+    env = _make_env(repo=MagicMock(), config=MagicMock())
+    plan = _build_plan("open")
+    filter_chain = MagicMock()
+    filter_chain.can_use_summaries.return_value = False
+    filter_chain.list_summaries = AsyncMock(return_value=[])
+    filter_chain.list = AsyncMock(return_value=[MagicMock()])
+    plan.selection.build_filter.return_value = filter_chain
+
+    with (
+        patch("polylogue.cli.helpers.load_effective_config", return_value=MagicMock()),
+        patch("polylogue.storage.search_providers.create_vector_provider", return_value=None),
+        patch("polylogue.cli.query.build_query_execution_plan", return_value=plan),
+        patch("polylogue.cli.query_output._open_result") as mock_open_result,
+    ):
+        asyncio.run(async_execute_query(env, {"limit": 1}))
+
+    filter_chain.list.assert_awaited_once()
+    filter_chain.list_summaries.assert_not_called()
+    mock_open_result.assert_called_once()
 
 
 def test_async_execute_query_stats_by_falls_back_to_full_results_without_summaries_contract() -> None:
