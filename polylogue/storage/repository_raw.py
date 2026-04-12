@@ -116,6 +116,13 @@ class RepositoryRawMixin:
         async with self._backend.connection() as conn:
             return await raw_queries.get_raw_conversations_batch(conn, raw_ids)
 
+    async def get_raw_blob_sizes(
+        self,
+        raw_ids: list[str],
+    ) -> list[tuple[str, int]]:
+        async with self._backend.connection() as conn:
+            return await raw_queries.get_raw_blob_sizes(conn, raw_ids)
+
     async def get_raw_conversation_states(
         self,
         raw_ids: list[str],
@@ -135,6 +142,28 @@ class RepositoryRawMixin:
                 limit=limit,
             ):
                 yield record
+
+    async def iter_raw_headers(
+        self,
+        *,
+        source_names: list[str] | None = None,
+        provider_name: str | None = None,
+        require_unparsed: bool = False,
+        require_unvalidated: bool = False,
+        validation_statuses: list[str] | None = None,
+        page_size: int = 1000,
+    ) -> AsyncIterator[tuple[str, int]]:
+        async with self._backend.connection() as conn:
+            async for header in raw_queries.iter_raw_headers(
+                conn,
+                source_names=source_names,
+                provider_name=provider_name,
+                require_unparsed=require_unparsed,
+                require_unvalidated=require_unvalidated,
+                validation_statuses=validation_statuses,
+                page_size=page_size,
+            ):
+                yield header
 
     async def get_raw_conversation_count(self, provider: str | None = None) -> int:
         async with self._backend.connection() as conn:

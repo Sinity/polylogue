@@ -50,6 +50,28 @@ class SQLiteQueryStoreMaintenanceMixin:
             ):
                 yield raw_id
 
+    async def iter_raw_headers(
+        self,
+        *,
+        source_names: list[str] | None = None,
+        provider_name: str | None = None,
+        require_unparsed: bool = False,
+        require_unvalidated: bool = False,
+        validation_statuses: list[str] | None = None,
+        page_size: int = 1000,
+    ) -> AsyncIterator[tuple[str, int]]:
+        async with self._connection_factory() as conn:
+            async for raw_header in raw_queries.iter_raw_headers(
+                conn,
+                source_names=source_names,
+                provider_name=provider_name,
+                require_unparsed=require_unparsed,
+                require_unvalidated=require_unvalidated,
+                validation_statuses=validation_statuses,
+                page_size=page_size,
+            ):
+                yield raw_header
+
     async def get_known_source_mtimes(self) -> dict[str, str]:
         async with self._connection_factory() as conn:
             return await raw_queries.get_known_source_mtimes(conn)

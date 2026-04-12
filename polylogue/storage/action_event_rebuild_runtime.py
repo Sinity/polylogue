@@ -9,12 +9,13 @@ import aiosqlite
 
 from polylogue.storage.action_event_rebuild_loading import (
     chunked,
+    iter_conversation_id_pages_async,
+    iter_conversation_id_pages_sync,
     load_async_batch,
     load_sync_batch,
 )
 from polylogue.storage.action_event_rebuild_materialization import materialize_batch
 from polylogue.storage.action_event_rebuild_sql import (
-    ACTION_EVENT_CONVERSATION_IDS_SQL,
     ACTION_EVENT_REPAIR_CANDIDATE_IDS_SQL,
     ACTION_EVENT_VALID_SOURCE_IDS_SQL,
 )
@@ -33,15 +34,15 @@ def rebuild_action_event_read_model_sync(
 ) -> int:
     if conversation_ids is None:
         conn.execute("DELETE FROM action_events")
-        conversation_ids = [
-            row["conversation_id"] for row in conn.execute(ACTION_EVENT_CONVERSATION_IDS_SQL).fetchall()
-        ]
-    if not conversation_ids:
+        conversation_chunks = iter_conversation_id_pages_sync(conn, page_size=page_size)
+    elif not conversation_ids:
         conn.execute("DELETE FROM action_events")
         return 0
+    else:
+        conversation_chunks = chunked(list(conversation_ids), size=page_size)
 
     replaced = 0
-    for chunk in chunked(list(conversation_ids), size=page_size):
+    for chunk in conversation_chunks:
         conversations, messages, blocks = load_sync_batch(conn, chunk)
         materialized = materialize_batch(conversations, messages, blocks)
         for conversation_id in chunk:
@@ -61,26 +62,41 @@ async def rebuild_action_event_read_model_async(
 ) -> int:
     if conversation_ids is None:
         await conn.execute("DELETE FROM action_events")
-        rows = await (await conn.execute(ACTION_EVENT_CONVERSATION_IDS_SQL)).fetchall()
-        conversation_ids = [row["conversation_id"] for row in rows]
-    if not conversation_ids:
+        total = int((await (await conn.execute("SELECT COUNT(*) FROM conversations")).fetchone())[0] or 0)
+        conversation_chunks = iter_conversation_id_pages_async(conn, page_size=page_size)
+    elif not conversation_ids:
         await conn.execute("DELETE FROM action_events")
         return 0
+    else:
+        total = len(conversation_ids)
+        conversation_chunks = chunked(list(conversation_ids), size=page_size)
 
     replaced = 0
-    total = len(conversation_ids)
     processed = 0
-    for chunk in chunked(list(conversation_ids), size=page_size):
-        conversations, messages, blocks = await load_async_batch(conn, chunk)
-        materialized = materialize_batch(conversations, messages, blocks)
-        for conversation_id in chunk:
-            records = materialized.get(conversation_id, [])
-            await replace_action_events_async(conn, conversation_id, records)
-            replaced += len(records)
-        processed += len(chunk)
-        if progress_callback is not None:
-            desc = progress_desc(processed, total) if progress_desc is not None else None
-            progress_callback(len(chunk), desc)
+    if conversation_ids is None:
+        async for chunk in conversation_chunks:
+            conversations, messages, blocks = await load_async_batch(conn, chunk)
+            materialized = materialize_batch(conversations, messages, blocks)
+            for conversation_id in chunk:
+                records = materialized.get(conversation_id, [])
+                await replace_action_events_async(conn, conversation_id, records)
+                replaced += len(records)
+            processed += len(chunk)
+            if progress_callback is not None:
+                desc = progress_desc(processed, total) if progress_desc is not None else None
+                progress_callback(len(chunk), desc)
+    else:
+        for chunk in conversation_chunks:
+            conversations, messages, blocks = await load_async_batch(conn, chunk)
+            materialized = materialize_batch(conversations, messages, blocks)
+            for conversation_id in chunk:
+                records = materialized.get(conversation_id, [])
+                await replace_action_events_async(conn, conversation_id, records)
+                replaced += len(records)
+            processed += len(chunk)
+            if progress_callback is not None:
+                desc = progress_desc(processed, total) if progress_desc is not None else None
+                progress_callback(len(chunk), desc)
     return replaced
 
 

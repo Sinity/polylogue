@@ -338,6 +338,56 @@ def test_session_product_rebuild_pages_full_rebuild(cli_workspace):
     assert status["phase_inference_rows_ready"] is True
 
 
+def test_session_product_rebuild_preserves_profile_semantics_without_loading_full_provider_meta(cli_workspace):
+    db_path = cli_workspace["db_path"]
+    (
+        ConversationBuilder(db_path, "conv-heavy")
+        .provider("codex")
+        .title("Heavy Provider Meta")
+        .created_at("2026-03-01T10:00:00+00:00")
+        .updated_at("2026-03-01T10:10:00+00:00")
+        .add_message(
+            "u1",
+            role="user",
+            text="Continue work on /realm/project/sinex and inspect the branch.",
+            timestamp="2026-03-01T10:00:00+00:00",
+        )
+        .add_message(
+            "a1",
+            role="assistant",
+            text="Inspecting the repository state.",
+            timestamp="2026-03-01T10:05:00+00:00",
+        )
+        .save()
+    )
+    huge_provider_meta = {
+        "git": {
+            "branch": "master",
+            "repository_url": "git@github.com:Sinity/sinex.git",
+        },
+        "context_compactions": [{"summary": "Earlier context collapsed."}],
+        "raw": {"payload": "x" * 200_000},
+    }
+
+    with open_connection(db_path) as conn:
+        conn.execute(
+            "UPDATE conversations SET provider_meta = ? WHERE conversation_id = ?",
+            (json.dumps(huge_provider_meta), "conv-heavy"),
+        )
+        counts = rebuild_session_products_sync(conn, page_size=1)
+        row = conn.execute(
+            "SELECT repo_names_json, evidence_payload_json FROM session_profiles WHERE conversation_id = ?",
+            ("conv-heavy",),
+        ).fetchone()
+
+    assert counts["profiles"] == 1
+    assert row is not None
+    repo_names = json.loads(row["repo_names_json"])
+    evidence_payload = json.loads(row["evidence_payload_json"])
+    assert "sinex" in repo_names
+    assert evidence_payload["compaction_count"] == 1
+
+
 def test_products_threads_json(cli_workspace):
     _seed_products(cli_workspace)
 

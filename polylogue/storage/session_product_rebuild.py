@@ -12,8 +12,9 @@ from polylogue.lib.session_profile import build_session_analysis, build_session_
 from polylogue.storage.action_event_rows import attach_blocks_to_messages
 from polylogue.storage.backends.queries.attachments import get_attachments_batch
 from polylogue.storage.backends.queries.mappers import (
+    _parse_json,
+    _row_get,
     _row_to_content_block,
-    _row_to_conversation,
     _row_to_message,
     _row_to_session_profile_record,
 )
@@ -36,8 +37,10 @@ from polylogue.storage.session_product_storage import (
     replace_work_thread_sync,
 )
 from polylogue.storage.session_product_threads import (
-    build_all_thread_records_async,
-    build_all_thread_records_sync,
+    build_thread_records_for_roots_async,
+    build_thread_records_for_roots_sync,
+    iter_root_id_pages_async,
+    iter_root_id_pages_sync,
 )
 from polylogue.storage.session_product_timeline_rows import (
     build_session_phase_records,
@@ -57,6 +60,31 @@ _ALL_SESSION_PROFILE_ROWS_SQL = """
 SELECT *
 FROM session_profiles
 ORDER BY COALESCE(source_sort_key, 0) DESC, conversation_id
+"""
+# Full rebuilds must tolerate pathological historical provider_meta blobs
+# without letting one chunk inflate RSS into multi-GB territory.
+_SESSION_PRODUCT_REBUILD_PAGE_SIZE = 10
+_SESSION_PRODUCT_CONVERSATION_SQL_TEMPLATE = """
+SELECT
+    conversation_id,
+    provider_name,
+    provider_conversation_id,
+    title,
+    created_at,
+    updated_at,
+    sort_key,
+    content_hash,
+    metadata,
+    version,
+    parent_conversation_id,
+    branch_type,
+    raw_id,
+    json_extract(provider_meta, '$.cwd') AS provider_meta_cwd,
+    json_extract(provider_meta, '$.gitBranch') AS provider_meta_git_branch,
+    json_extract(provider_meta, '$.git') AS provider_meta_git,
+    json_extract(provider_meta, '$.context_compactions') AS provider_meta_context_compactions
+FROM conversations
+WHERE conversation_id IN ({placeholders})
 """
 
 
@@ -90,6 +118,60 @@ def iter_hydrated_session_profiles_sync(
             break
         for row in rows:
             yield hydrate_session_profile(_row_to_session_profile_record(row))
+
+
+async def iter_conversation_id_pages_async(
+    conn: aiosqlite.Connection,
+    *,
+    page_size: int,
+):
+    cursor = await conn.execute(_ALL_CONVERSATION_IDS_SQL)
+    while True:
+        rows = await cursor.fetchmany(page_size)
+        if not rows:
+            break
+        yield [str(row["conversation_id"]) for row in rows]
+
+
+def _row_to_session_product_conversation(row: sqlite3.Row) -> ConversationRecord:
+    provider_meta: dict[str, object] = {}
+    cwd_value = _row_get(row, "provider_meta_cwd")
+    if isinstance(cwd_value, str) and cwd_value:
+        provider_meta["cwd"] = cwd_value
+    git_branch = _row_get(row, "provider_meta_git_branch")
+    if isinstance(git_branch, str) and git_branch:
+        provider_meta["gitBranch"] = git_branch
+    git_raw = _row_get(row, "provider_meta_git")
+    if isinstance(git_raw, str) and git_raw:
+        parsed_git = _parse_json(git_raw, field="provider_meta.git", record_id=row["conversation_id"])
+        if isinstance(parsed_git, dict) and parsed_git:
+            provider_meta["git"] = parsed_git
+    compactions_raw = _row_get(row, "provider_meta_context_compactions")
+    if isinstance(compactions_raw, str) and compactions_raw:
+        parsed_compactions = _parse_json(
+            compactions_raw,
+            field="provider_meta.context_compactions",
+            record_id=row["conversation_id"],
+        )
+        if isinstance(parsed_compactions, list) and parsed_compactions:
+            provider_meta["context_compactions"] = parsed_compactions
+
+    return ConversationRecord(
+        conversation_id=row["conversation_id"],
+        provider_name=row["provider_name"],
+        provider_conversation_id=row["provider_conversation_id"],
+        title=row["title"],
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+        sort_key=_row_get(row, "sort_key"),
+        content_hash=row["content_hash"],
+        provider_meta=provider_meta or None,
+        metadata=_parse_json(row["metadata"], field="metadata", record_id=row["conversation_id"]),
+        version=row["version"],
+        parent_conversation_id=_row_get(row, "parent_conversation_id"),
+        branch_type=_row_get(row, "branch_type"),
+        raw_id=_row_get(row, "raw_id"),
+    )
 
 
 def sync_attachment_batch(
@@ -131,9 +213,9 @@ def load_sync_batch(
 ) -> tuple[list[ConversationRecord], list[MessageRecord], dict[str, list[AttachmentRecord]], list[ContentBlockRecord]]:
     placeholders = ", ".join("?" for _ in conversation_ids)
     conversations = [
-        _row_to_conversation(row)
+        _row_to_session_product_conversation(row)
         for row in conn.execute(
-            f"SELECT * FROM conversations WHERE conversation_id IN ({placeholders})",
+            _SESSION_PRODUCT_CONVERSATION_SQL_TEMPLATE.format(placeholders=placeholders),
             tuple(conversation_ids),
         ).fetchall()
     ]
@@ -170,10 +252,10 @@ async def load_async_batch(
 ) -> tuple[list[ConversationRecord], list[MessageRecord], dict[str, list[AttachmentRecord]], list[ContentBlockRecord]]:
     placeholders = ", ".join("?" for _ in conversation_ids)
     conversations = [
-        _row_to_conversation(row)
+        _row_to_session_product_conversation(row)
         for row in await (
             await conn.execute(
-                f"SELECT * FROM conversations WHERE conversation_id IN ({placeholders})",
+                _SESSION_PRODUCT_CONVERSATION_SQL_TEMPLATE.format(placeholders=placeholders),
                 tuple(conversation_ids),
             )
         ).fetchall()
@@ -257,7 +339,7 @@ def rebuild_session_products_sync(
     conn: sqlite3.Connection,
     *,
     conversation_ids: Sequence[str] | None = None,
-    page_size: int = 100,
+    page_size: int = _SESSION_PRODUCT_REBUILD_PAGE_SIZE,
 ) -> dict[str, int]:
     conversation_chunks: Iterable[Sequence[str]]
     if conversation_ids is None:
@@ -301,9 +383,15 @@ def rebuild_session_products_sync(
         return {"profiles": 0, "work_events": 0, "phases": 0, "threads": 0, "tag_rollups": 0, "day_summaries": 0}
 
     conn.execute("DELETE FROM work_threads")
-    thread_records = build_all_thread_records_sync(conn)
-    for record in thread_records:
-        replace_work_thread_sync(conn, record.thread_id, record)
+    thread_count = 0
+    for root_chunk in iter_root_id_pages_sync(conn):
+        records_by_root = build_thread_records_for_roots_sync(conn, root_chunk)
+        for root_id in root_chunk:
+            record = records_by_root.get(root_id)
+            if record is None:
+                continue
+            replace_work_thread_sync(conn, record.thread_id, record)
+            thread_count += 1
     conn.execute("DELETE FROM day_session_summaries")
     conn.execute("DELETE FROM session_tag_rollups")
     provider_day_groups = set(list_sync_provider_day_groups(conn))
@@ -315,7 +403,7 @@ def rebuild_session_products_sync(
         "profiles": profile_count,
         "work_events": work_event_count,
         "phases": phase_count,
-        "threads": len(thread_records),
+        "threads": thread_count,
         "tag_rollups": int(tag_rollup_count),
         "day_summaries": int(day_summary_count),
     }
@@ -325,7 +413,7 @@ async def rebuild_session_products_async(
     conn: aiosqlite.Connection,
     *,
     conversation_ids: Sequence[str] | None = None,
-    page_size: int = 100,
+    page_size: int = _SESSION_PRODUCT_REBUILD_PAGE_SIZE,
     transaction_depth: int = 0,
 ) -> dict[str, int]:
     from polylogue.storage.backends.queries.session_product_profile_writes import (
@@ -343,9 +431,7 @@ async def rebuild_session_products_async(
         await conn.execute("DELETE FROM session_profiles")
         await conn.execute("DELETE FROM session_tag_rollups")
         await conn.execute("DELETE FROM day_session_summaries")
-        rows = await (await conn.execute(_ALL_CONVERSATION_IDS_SQL)).fetchall()
-        conversation_ids = [str(row["conversation_id"]) for row in rows]
-    if not conversation_ids:
+    elif not conversation_ids:
         await conn.execute("DELETE FROM work_threads")
         await conn.execute("DELETE FROM session_phases")
         await conn.execute("DELETE FROM session_tag_rollups")
@@ -355,21 +441,39 @@ async def rebuild_session_products_async(
     profile_count = 0
     work_event_count = 0
     phase_count = 0
-    for chunk in chunked(list(conversation_ids), size=page_size):
-        conversations, messages, attachments, blocks = await load_async_batch(conn, chunk)
-        for conversation in hydrate_conversations(conversations, messages, attachments, blocks):
-            profile_record, event_records, phase_records = build_session_product_records(conversation)
-            await replace_session_profile(conn, profile_record, transaction_depth)
-            await replace_session_work_events(conn, profile_record.conversation_id, event_records, transaction_depth)
-            await replace_session_phases(conn, profile_record.conversation_id, phase_records, transaction_depth)
-            profile_count += 1
-            work_event_count += len(event_records)
-            phase_count += len(phase_records)
+    if conversation_ids is None:
+        async for chunk in iter_conversation_id_pages_async(conn, page_size=page_size):
+            conversations, messages, attachments, blocks = await load_async_batch(conn, chunk)
+            for conversation in hydrate_conversations(conversations, messages, attachments, blocks):
+                profile_record, event_records, phase_records = build_session_product_records(conversation)
+                await replace_session_profile(conn, profile_record, transaction_depth)
+                await replace_session_work_events(conn, profile_record.conversation_id, event_records, transaction_depth)
+                await replace_session_phases(conn, profile_record.conversation_id, phase_records, transaction_depth)
+                profile_count += 1
+                work_event_count += len(event_records)
+                phase_count += len(phase_records)
+    else:
+        for chunk in chunked(list(conversation_ids), size=page_size):
+            conversations, messages, attachments, blocks = await load_async_batch(conn, chunk)
+            for conversation in hydrate_conversations(conversations, messages, attachments, blocks):
+                profile_record, event_records, phase_records = build_session_product_records(conversation)
+                await replace_session_profile(conn, profile_record, transaction_depth)
+                await replace_session_work_events(conn, profile_record.conversation_id, event_records, transaction_depth)
+                await replace_session_phases(conn, profile_record.conversation_id, phase_records, transaction_depth)
+                profile_count += 1
+                work_event_count += len(event_records)
+                phase_count += len(phase_records)
 
     await conn.execute("DELETE FROM work_threads")
-    thread_records = await build_all_thread_records_async(conn)
-    for record in thread_records:
-        await replace_work_thread(conn, record.thread_id, record, transaction_depth)
+    thread_count = 0
+    async for root_chunk in iter_root_id_pages_async(conn):
+        records_by_root = await build_thread_records_for_roots_async(conn, root_chunk)
+        for root_id in root_chunk:
+            record = records_by_root.get(root_id)
+            if record is None:
+                continue
+            await replace_work_thread(conn, record.thread_id, record, transaction_depth)
+            thread_count += 1
     await conn.execute("DELETE FROM day_session_summaries")
     await conn.execute("DELETE FROM session_tag_rollups")
     provider_day_groups = set(await list_async_provider_day_groups(conn))
@@ -384,7 +488,7 @@ async def rebuild_session_products_async(
         "profiles": profile_count,
         "work_events": work_event_count,
         "phases": phase_count,
-        "threads": len(thread_records),
+        "threads": thread_count,
         "tag_rollups": int(tag_rollup_count),
         "day_summaries": int(day_summary_count),
     }
@@ -396,6 +500,7 @@ __all__ = [
     "build_session_product_records",
     "chunked",
     "hydrate_conversations",
+    "iter_conversation_id_pages_async",
     "iter_conversation_id_pages_sync",
     "iter_hydrated_session_profiles_sync",
     "load_async_batch",
