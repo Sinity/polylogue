@@ -205,7 +205,7 @@ def copy_to_clipboard(env: AppEnv, content: str) -> None:
 
 def open_result(
     env: AppEnv,
-    results: list[Conversation],
+    results: list[Conversation | ConversationSummary],
     params: dict[str, object],
 ) -> None:
     if not results:
@@ -234,12 +234,14 @@ def open_result(
         click.echo("Run 'polylogue run' first to render conversations.", err=True)
         raise SystemExit(1)
 
-    conv_id_short = str(conv.id)[:8] if conv.id else ""
-    html_file = next(render_root.rglob(f"*{conv_id_short}*/conversation.html"), None)
-    md_file = next(render_root.rglob(f"*{conv_id_short}*/conversation.md"), None)
+    from polylogue.paths import conversation_render_root
 
-    render_file = html_file or md_file
-    if not render_file:
+    render_dir = conversation_render_root(render_root, str(conv.provider), str(conv.id))
+    html_file = render_dir / "conversation.html"
+    md_file = render_dir / "conversation.md"
+
+    render_file = html_file if html_file.exists() else md_file if md_file.exists() else None
+    if render_file is None:
         render_file = latest_render_path(render_root)
 
     if not render_file:

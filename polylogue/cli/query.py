@@ -610,6 +610,14 @@ async def async_execute_query(env: AppEnv, params: dict[str, Any]) -> None:
         )
         return
 
+    if route == QueryRoute.OPEN:
+        if filter_chain.can_use_summaries():
+            results = await filter_chain.list_summaries()
+        else:
+            results = await filter_chain.list()
+        _query_output._open_result(env, results, params)
+        return
+
     if route in {QueryRoute.SUMMARY_MODIFY, QueryRoute.SUMMARY_DELETE}:
         results = await filter_chain.list_summaries()
     else:
@@ -633,10 +641,6 @@ async def async_execute_query(env: AppEnv, params: dict[str, Any]) -> None:
             selection=plan.selection,
             output_format=plan.output.output_format,
         )
-        return
-
-    if route == QueryRoute.OPEN:
-        _query_output._open_result(env, results, params)
         return
 
     _query_output.output_results(env, results, params)

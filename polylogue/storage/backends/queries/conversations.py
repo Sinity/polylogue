@@ -17,6 +17,7 @@ from polylogue.storage.backends.queries.conversations_reads import (
     count_conversations,
     get_conversation,
     get_conversations_batch,
+    list_conversation_summaries,
     list_conversations,
     list_conversations_by_parent,
 )
@@ -41,6 +42,7 @@ __all__ = [
     "get_last_sync_timestamp",
     "get_metadata",
     "iter_conversation_ids",
+    "list_conversation_summaries",
     "list_conversations",
     "list_conversations_by_parent",
     "list_tags",
