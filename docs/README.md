@@ -26,6 +26,6 @@ This directory holds the current repository-facing documentation.
 |----------|-------------|
 | [Contributing](../CONTRIBUTING.md) | Branching, issues, PRs, squash-merge history, and repo policy. |
 | [Testing](../TESTING.md) | Baseline test matrix, protected surfaces, and QA entrypoints. |
-| [Agent Guide](../CLAUDE.md) | Repository-specific agent memory, workflow rules, and included references. |
+| [Agent Guide](../CLAUDE.md) | Agent memory and working rules. |
 | [Local Cache Layout](../.cache/README.md) | Disposable cache roots chosen by the repo itself. |
 | [Local Working Outputs](../.local/README.md) | Untracked local outputs such as campaigns, showcases, and reports. |
