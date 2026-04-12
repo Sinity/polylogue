@@ -710,6 +710,33 @@ def _unattributed_batch_elapsed_s(
     return max(elapsed_s - accounted_elapsed_s, 0.0)
 
 
+def _build_batch_memory_observation(
+    *,
+    rss_start_mb: float | None,
+    rss_end_mb: float | None,
+    peak_rss_self_start_mb: float | None,
+    peak_rss_self_end_mb: float | None,
+    peak_rss_children_mb: float | None,
+    max_current_rss_mb: float | None,
+) -> dict[str, object]:
+    observation: dict[str, object] = {}
+    if rss_start_mb is not None:
+        observation["rss_start_mb"] = rss_start_mb
+    if rss_end_mb is not None:
+        observation["rss_end_mb"] = rss_end_mb
+    if rss_start_mb is not None and rss_end_mb is not None:
+        observation["rss_delta_mb"] = round(rss_end_mb - rss_start_mb, 1)
+    if peak_rss_self_end_mb is not None:
+        observation["process_peak_rss_self_mb"] = peak_rss_self_end_mb
+    if peak_rss_self_start_mb is not None and peak_rss_self_end_mb is not None:
+        observation["peak_rss_growth_mb"] = round(max(peak_rss_self_end_mb - peak_rss_self_start_mb, 0.0), 1)
+    if peak_rss_children_mb is not None:
+        observation["peak_rss_children_mb"] = peak_rss_children_mb
+    if max_current_rss_mb is not None:
+        observation["max_current_rss_mb"] = max_current_rss_mb
+    return observation
+
+
 # ---------------------------------------------------------------------------
 # Batch processing
 # ---------------------------------------------------------------------------
@@ -738,6 +765,7 @@ async def process_ingest_batch(
     blob_root_str = str(blob_store_root())
     batch_started = time.perf_counter()
     rss_start_mb = read_current_rss_mb()
+    peak_rss_self_start_mb = read_peak_rss_self_mb()
 
     # Get validation mode from environment
     validation_mode = os.environ.get("POLYLOGUE_SCHEMA_VALIDATION", "strict")
@@ -801,7 +829,7 @@ async def process_ingest_batch(
 
     elapsed_s = time.perf_counter() - batch_started
     rss_end_mb = read_current_rss_mb()
-    peak_rss_self_mb = read_peak_rss_self_mb()
+    peak_rss_self_end_mb = read_peak_rss_self_mb()
     peak_rss_children_mb = read_peak_rss_children_mb()
     observation: dict[str, object] = {
         "records": batch_summary.raw_record_count,
@@ -832,18 +860,16 @@ async def process_ingest_batch(
         raw_state_update_elapsed_s=raw_state_update_elapsed_s,
     )
     observation["unattributed_elapsed_ms"] = round(max(residual_elapsed_s, 0.0) * 1000, 1)
-    if rss_start_mb is not None:
-        observation["rss_start_mb"] = rss_start_mb
-    if rss_end_mb is not None:
-        observation["rss_end_mb"] = rss_end_mb
-    if rss_start_mb is not None and rss_end_mb is not None:
-        observation["rss_delta_mb"] = round(rss_end_mb - rss_start_mb, 1)
-    if peak_rss_self_mb is not None:
-        observation["peak_rss_self_mb"] = peak_rss_self_mb
-    if peak_rss_children_mb is not None:
-        observation["peak_rss_children_mb"] = peak_rss_children_mb
-    if batch_summary.max_current_rss_mb is not None:
-        observation["max_current_rss_mb"] = batch_summary.max_current_rss_mb
+    observation.update(
+        _build_batch_memory_observation(
+            rss_start_mb=rss_start_mb,
+            rss_end_mb=rss_end_mb,
+            peak_rss_self_start_mb=peak_rss_self_start_mb,
+            peak_rss_self_end_mb=peak_rss_self_end_mb,
+            peak_rss_children_mb=peak_rss_children_mb,
+            max_current_rss_mb=batch_summary.max_current_rss_mb,
+        )
+    )
     if batch_summary.max_result_raw_id is not None:
         observation["max_result_raw_id"] = batch_summary.max_result_raw_id
     return observation

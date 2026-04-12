@@ -116,6 +116,7 @@ def _summarize_batch_observations(
         "max_current_rss_mb": _max_float("max_current_rss_mb"),
         "max_rss_end_mb": _max_float("rss_end_mb"),
         "max_rss_delta_mb": _max_float("rss_delta_mb"),
+        "max_peak_rss_growth_mb": _max_float("peak_rss_growth_mb"),
         "batches": batch_observations,
     }
 
