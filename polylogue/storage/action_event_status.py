@@ -39,33 +39,44 @@ _ACTION_EVENT_ORPHAN_TOOL_BLOCK_COUNT_SQL = """
 """
 
 
-def action_event_read_model_status_sync(conn: sqlite3.Connection) -> dict[str, int | bool]:
+def action_event_read_model_status_sync(
+    conn: sqlite3.Connection,
+    *,
+    verify_source_alignment: bool = True,
+) -> dict[str, int | bool]:
     from polylogue.storage.fts_lifecycle import fts_index_status_sync
 
     exists = bool(conn.execute(_ACTION_EVENTS_EXISTS_SQL).fetchone())
     count = 0
     stale_count = 0
-    valid_source_conversation_count = int(
-        conn.execute(_ACTION_EVENT_VALID_SOURCE_CONVERSATION_COUNT_SQL).fetchone()[0] or 0
-    )
-    orphan_source_conversation_count = int(
-        conn.execute(_ACTION_EVENT_ORPHAN_SOURCE_CONVERSATION_COUNT_SQL).fetchone()[0] or 0
-    )
-    orphan_tool_block_count = int(conn.execute(_ACTION_EVENT_ORPHAN_TOOL_BLOCK_COUNT_SQL).fetchone()[0] or 0)
     materialized_conversation_count = 0
     if exists:
         count = int(conn.execute(_ACTION_EVENT_DOC_COUNT_SQL).fetchone()[0] or 0)
-        stale_count = int(
-            conn.execute(
-                _ACTION_EVENT_MISMATCH_COUNT_SQL,
-                (ACTION_EVENT_MATERIALIZER_VERSION,),
-            ).fetchone()[0]
-            or 0
-        )
         materialized_conversation_count = int(
             conn.execute(_ACTION_EVENT_MATERIALIZED_CONVERSATION_COUNT_SQL).fetchone()[0] or 0
         )
-    source_conversation_count = valid_source_conversation_count + orphan_source_conversation_count
+    if verify_source_alignment:
+        valid_source_conversation_count = int(
+            conn.execute(_ACTION_EVENT_VALID_SOURCE_CONVERSATION_COUNT_SQL).fetchone()[0] or 0
+        )
+        orphan_source_conversation_count = int(
+            conn.execute(_ACTION_EVENT_ORPHAN_SOURCE_CONVERSATION_COUNT_SQL).fetchone()[0] or 0
+        )
+        orphan_tool_block_count = int(conn.execute(_ACTION_EVENT_ORPHAN_TOOL_BLOCK_COUNT_SQL).fetchone()[0] or 0)
+        if exists:
+            stale_count = int(
+                conn.execute(
+                    _ACTION_EVENT_MISMATCH_COUNT_SQL,
+                    (ACTION_EVENT_MATERIALIZER_VERSION,),
+                ).fetchone()[0]
+                or 0
+            )
+        source_conversation_count = valid_source_conversation_count + orphan_source_conversation_count
+    else:
+        valid_source_conversation_count = materialized_conversation_count
+        orphan_source_conversation_count = 0
+        orphan_tool_block_count = 0
+        source_conversation_count = materialized_conversation_count
     fts_status = fts_index_status_sync(conn)
     action_fts_count = int(fts_status.get("action_count", 0))
     action_fts_ready = count == action_fts_count
@@ -91,32 +102,43 @@ def action_event_read_model_status_sync(conn: sqlite3.Connection) -> dict[str, i
     }
 
 
-async def action_event_read_model_status_async(conn: aiosqlite.Connection) -> dict[str, int | bool]:
+async def action_event_read_model_status_async(
+    conn: aiosqlite.Connection,
+    *,
+    verify_source_alignment: bool = True,
+) -> dict[str, int | bool]:
     from polylogue.storage.fts_lifecycle import fts_index_status_async
 
     exists = bool(await (await conn.execute(_ACTION_EVENTS_EXISTS_SQL)).fetchone())
     count = 0
     stale_count = 0
-    valid_source_row = await (await conn.execute(_ACTION_EVENT_VALID_SOURCE_CONVERSATION_COUNT_SQL)).fetchone()
-    valid_source_conversation_count = int(valid_source_row[0] or 0) if valid_source_row else 0
-    orphan_source_row = await (await conn.execute(_ACTION_EVENT_ORPHAN_SOURCE_CONVERSATION_COUNT_SQL)).fetchone()
-    orphan_source_conversation_count = int(orphan_source_row[0] or 0) if orphan_source_row else 0
-    orphan_block_row = await (await conn.execute(_ACTION_EVENT_ORPHAN_TOOL_BLOCK_COUNT_SQL)).fetchone()
-    orphan_tool_block_count = int(orphan_block_row[0] or 0) if orphan_block_row else 0
     materialized_conversation_count = 0
     if exists:
         row = await (await conn.execute(_ACTION_EVENT_DOC_COUNT_SQL)).fetchone()
         count = int(row[0] or 0) if row else 0
-        mismatch_row = await (
-            await conn.execute(
-                _ACTION_EVENT_MISMATCH_COUNT_SQL,
-                (ACTION_EVENT_MATERIALIZER_VERSION,),
-            )
-        ).fetchone()
-        stale_count = int(mismatch_row[0] or 0) if mismatch_row else 0
         materialized_row = await (await conn.execute(_ACTION_EVENT_MATERIALIZED_CONVERSATION_COUNT_SQL)).fetchone()
         materialized_conversation_count = int(materialized_row[0] or 0) if materialized_row else 0
-    source_conversation_count = valid_source_conversation_count + orphan_source_conversation_count
+    if verify_source_alignment:
+        valid_source_row = await (await conn.execute(_ACTION_EVENT_VALID_SOURCE_CONVERSATION_COUNT_SQL)).fetchone()
+        valid_source_conversation_count = int(valid_source_row[0] or 0) if valid_source_row else 0
+        orphan_source_row = await (await conn.execute(_ACTION_EVENT_ORPHAN_SOURCE_CONVERSATION_COUNT_SQL)).fetchone()
+        orphan_source_conversation_count = int(orphan_source_row[0] or 0) if orphan_source_row else 0
+        orphan_block_row = await (await conn.execute(_ACTION_EVENT_ORPHAN_TOOL_BLOCK_COUNT_SQL)).fetchone()
+        orphan_tool_block_count = int(orphan_block_row[0] or 0) if orphan_block_row else 0
+        if exists:
+            mismatch_row = await (
+                await conn.execute(
+                    _ACTION_EVENT_MISMATCH_COUNT_SQL,
+                    (ACTION_EVENT_MATERIALIZER_VERSION,),
+                )
+            ).fetchone()
+            stale_count = int(mismatch_row[0] or 0) if mismatch_row else 0
+        source_conversation_count = valid_source_conversation_count + orphan_source_conversation_count
+    else:
+        valid_source_conversation_count = materialized_conversation_count
+        orphan_source_conversation_count = 0
+        orphan_tool_block_count = 0
+        source_conversation_count = materialized_conversation_count
     fts_status = await fts_index_status_async(conn)
     action_fts_count = int(fts_status.get("action_count", 0))
     action_fts_ready = count == action_fts_count

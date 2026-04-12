@@ -115,7 +115,11 @@ def run_check_workflow(env: AppEnv, options: CheckCommandOptions) -> CheckComman
     if _runtime_only_requested(options):
         return CheckCommandResult(report=run_runtime_health(config))
 
-    report = get_health(config, deep=options.deep)
+    report = get_health(
+        config,
+        deep=options.deep,
+        probe_only=not (options.deep or options.repair or options.cleanup),
+    )
     result = CheckCommandResult(report=report)
 
     if options.runtime:

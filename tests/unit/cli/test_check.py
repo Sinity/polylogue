@@ -231,7 +231,7 @@ def test_check_warns_when_message_index_is_incomplete(cli_workspace, cli_runner)
     payload = _extract_json(result.output)
     index_check = next(check for check in payload["checks"] if check["name"] == "index")
     assert index_check["status"] == "warning"
-    assert index_check["detail"] == "messages indexed: 0/2"
+    assert index_check["detail"] == "messages FTS missing or empty; use --deep to verify full coverage"
 
 
 def test_check_ignores_null_text_messages_in_fts_readiness(cli_workspace, cli_runner):
@@ -257,9 +257,9 @@ def test_check_ignores_null_text_messages_in_fts_readiness(cli_workspace, cli_ru
     fts_check = next(c for c in data["checks"] if c["name"] == "fts_sync")
 
     assert index_check["status"] == "ok"
-    assert index_check["detail"] == "messages indexed: 1"
+    assert index_check["detail"] == "messages FTS present"
     assert fts_check["status"] == "ok"
-    assert fts_check["detail"] == "Messages FTS ready (1/1 rows)"
+    assert fts_check["detail"] == "Messages FTS present"
 
 
 class TestCheckCommand:

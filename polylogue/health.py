@@ -85,7 +85,7 @@ def _open_health_probe_connection(db_path: Path) -> Any:
 # ---------------------------------------------------------------------------
 
 
-def run_archive_health(config: Any, *, deep: bool = False) -> HealthReport:
+def run_archive_health(config: Any, *, deep: bool = False, probe_only: bool = False) -> HealthReport:
     from polylogue.storage.backends.schema_upgrade import assert_supported_archive_layout
     from polylogue.storage.derived_status import collect_derived_model_statuses_sync
     from polylogue.storage.fts_lifecycle import message_fts_readiness_sync
@@ -135,7 +135,8 @@ def run_archive_health(config: Any, *, deep: bool = False) -> HealthReport:
     derived_statuses: dict[str, DerivedModelStatus] = {}
     archive_debt: dict[str, Any] = {}
     with _open_health_probe_connection(config.db_path) as conn:
-        index_readiness = message_fts_readiness_sync(conn)
+        exact_index_counts = deep or not probe_only
+        index_readiness = message_fts_readiness_sync(conn, verify_total_rows=exact_index_counts)
         if not index_readiness["exists"]:
             checks.append(HealthCheck("index", VerifyStatus.WARNING, summary="index not built"))
         else:
@@ -146,8 +147,12 @@ def run_archive_health(config: Any, *, deep: bool = False) -> HealthReport:
                     HealthCheck(
                         "index",
                         VerifyStatus.OK,
-                        count=indexed_rows,
-                        summary=f"messages indexed: {indexed_rows}",
+                        count=indexed_rows if exact_index_counts else 0,
+                        summary=(
+                            f"messages indexed: {indexed_rows}"
+                            if exact_index_counts
+                            else "messages FTS present"
+                        ),
                     )
                 )
             else:
@@ -155,16 +160,21 @@ def run_archive_health(config: Any, *, deep: bool = False) -> HealthReport:
                     HealthCheck(
                         "index",
                         VerifyStatus.WARNING,
-                        count=indexed_rows,
-                        summary=f"messages indexed: {indexed_rows:,}/{total_rows:,}",
+                        count=indexed_rows if exact_index_counts else 0,
+                        summary=(
+                            f"messages indexed: {indexed_rows:,}/{total_rows:,}"
+                            if exact_index_counts
+                            else "messages FTS missing or empty; use --deep to verify full coverage"
+                        ),
                     )
                 )
 
-        derived_statuses = collect_derived_model_statuses_sync(conn)
+        derived_statuses = collect_derived_model_statuses_sync(conn, verify_full=deep)
         archive_debt = collect_archive_debt_statuses_sync(
             conn,
             derived_statuses=derived_statuses,
             include_expensive=deep,
+            probe_only=probe_only,
         )
         for debt_name in ("orphaned_messages", "orphaned_attachments"):
             debt = archive_debt[debt_name]
@@ -304,9 +314,9 @@ def run_archive_health(config: Any, *, deep: bool = False) -> HealthReport:
     return HealthReport(checks=checks, derived_models=derived_statuses, archive_debt=archive_debt)
 
 
-def get_health(config: Any, *, deep: bool = False) -> HealthReport:
+def get_health(config: Any, *, deep: bool = False, probe_only: bool = False) -> HealthReport:
     """Get a live archive health report."""
-    return run_archive_health(config, deep=deep)
+    return run_archive_health(config, deep=deep, probe_only=probe_only)
 
 
 # ---------------------------------------------------------------------------

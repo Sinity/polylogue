@@ -20,14 +20,23 @@ def pending_docs(source_docs: int, materialized_docs: int) -> int:
 
 
 def build_action_statuses(metrics: dict[str, int | bool]) -> dict[str, DerivedModelStatus]:
+    message_fts_exact_counts = bool(metrics.get("message_fts_exact_counts", True))
     return {
         "messages_fts": DerivedModelStatus(
             name="messages_fts",
             ready=bool(metrics["message_fts_ready"]),
             detail=(
-                f"Messages FTS ready ({metrics['message_fts_rows']:,}/{metrics['message_source_rows']:,} rows)"
+                (
+                    f"Messages FTS ready ({metrics['message_fts_rows']:,}/{metrics['message_source_rows']:,} rows)"
+                    if message_fts_exact_counts
+                    else "Messages FTS present"
+                )
                 if bool(metrics["message_fts_ready"])
-                else f"Messages FTS pending ({metrics['message_fts_rows']:,}/{metrics['message_source_rows']:,} rows)"
+                else (
+                    f"Messages FTS pending ({metrics['message_fts_rows']:,}/{metrics['message_source_rows']:,} rows)"
+                    if message_fts_exact_counts
+                    else "Messages FTS missing or empty; use --deep to verify full coverage"
+                )
             ),
             source_rows=int(metrics["message_source_rows"]),
             materialized_rows=int(metrics["message_fts_rows"]),
