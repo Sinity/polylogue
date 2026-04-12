@@ -43,11 +43,22 @@ def _path_exists(path: Path) -> bool:
         return False
 
 
+def _is_non_work_repo_root(path: Path) -> bool:
+    parts = path.parts
+    if ".claude" in parts and path.name == "projects":
+        return True
+    if ".codex" in parts and path.name in {"projects", "sessions"}:
+        return True
+    return path.name == "blob-repository" and ".local" in parts and "state" in parts
+
+
 def _find_git_root(path: Path) -> Path | None:
     for candidate in _iter_repo_root_candidates(path):
         if candidate.name == ".git" and _path_exists(candidate):
-            return candidate.parent
-        if _path_exists(candidate / ".git"):
+            repo_root = candidate.parent
+            if not _is_non_work_repo_root(repo_root):
+                return repo_root
+        if _path_exists(candidate / ".git") and not _is_non_work_repo_root(candidate):
             return candidate
     return None
 
