@@ -153,14 +153,11 @@ async def fetch_search_results(
         return True, await search_hybrid_results(plan, repository, limit=search_limit(plan))
     query = " ".join(plan.fts_terms)
     provider_names = list(provider_values(plan.providers)) or None
-    try:
-        if summaries:
-            results = await repository.search_summaries(query, limit=search_limit(plan), providers=provider_names)
-        else:
-            results = await repository.search(query, limit=search_limit(plan), providers=provider_names)
-        return True, results
-    except Exception:
-        return False, []
+    if summaries:
+        results = await repository.search_summaries(query, limit=search_limit(plan), providers=provider_names)
+    else:
+        results = await repository.search(query, limit=search_limit(plan), providers=provider_names)
+    return True, results
 
 
 async def fetch_candidates(
