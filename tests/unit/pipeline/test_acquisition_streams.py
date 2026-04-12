@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
+
+import pytest
 
 from polylogue.config import Source
 from polylogue.pipeline.services import acquisition_streams
@@ -46,3 +49,40 @@ async def test_iter_raw_record_stream_logs_make_raw_record_value_errors(
             },
         )
     ]
+
+
+@pytest.mark.asyncio
+async def test_iter_raw_record_stream_forwards_source_status_progress(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from polylogue.pipeline.services import acquisition as acquisition_module
+
+    def _iter_source_raw_data(*args, **kwargs):
+        del args
+        status_callback = kwargs["status_callback"]
+        status_callback("Scanning [chatgpt] reading export.json")
+        yield RawConversationData(
+            raw_bytes=b'{"mapping": {}, "id": "ok"}',
+            source_path=str(tmp_path / "export.json"),
+            provider_hint=Provider.CHATGPT,
+        )
+
+    progress_events: list[tuple[int, str | None]] = []
+
+    def _record_progress(amount: int, desc: str | None = None) -> None:
+        progress_events.append((amount, desc))
+
+    monkeypatch.setattr(acquisition_module, "iter_source_raw_data", _iter_source_raw_data)
+
+    items = [
+        item
+        async for item in acquisition_streams.iter_raw_record_stream(
+            Source(name="chatgpt", path=tmp_path),
+            progress_callback=_record_progress,
+        )
+    ]
+    await asyncio.sleep(0)
+
+    assert len(items) == 1
+    assert progress_events == [(0, "Scanning [chatgpt] reading export.json")]
