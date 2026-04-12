@@ -92,6 +92,44 @@ async def test_apply_session_product_conversation_updates_async_preserves_thread
 
 
 @pytest.mark.asyncio
+async def test_apply_session_product_conversation_updates_async_uses_small_default_chunks(
+    tmp_path,
+) -> None:
+    db_path = tmp_path / "refresh-default-chunks.db"
+    conversation_ids: list[str] = []
+    with open_connection(db_path) as conn:
+        for index in range(11):
+            conversation_id = f"conv-{index:02d}"
+            conversation_ids.append(conversation_id)
+            store_records(
+                conversation=make_conversation(conversation_id, title=f"Conversation {index:02d}"),
+                messages=[
+                    make_message(
+                        f"{conversation_id}:msg-1",
+                        conversation_id,
+                        text=f"Message for {conversation_id}",
+                    )
+                ],
+                attachments=[],
+                conn=conn,
+            )
+        conn.commit()
+
+    backend = SQLiteBackend(db_path=db_path)
+    async with backend.connection() as conn:
+        update = await _apply_session_product_conversation_updates_async(
+            conn,
+            conversation_ids,
+            transaction_depth=1,
+        )
+
+    assert update.counts["profiles"] == 11
+    assert len(update.chunk_observations) == 2
+    assert update.chunk_observations[0]["conversation_count"] == 10
+    assert update.chunk_observations[1]["conversation_count"] == 1
+
+
+@pytest.mark.asyncio
 async def test_apply_session_product_conversation_updates_async_clears_deleted_conversations(
     tmp_path,
 ) -> None:
