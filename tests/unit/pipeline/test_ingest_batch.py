@@ -14,6 +14,7 @@ from polylogue.pipeline.services.ingest_batch import (
     _drain_ready_conversation_entries,
     _failed_raw_state_update,
     _IngestBatchSummary,
+    _iter_ingest_results_sync,
     _persist_batch_raw_state_updates,
     _RawIngestOutcome,
     _successful_raw_state_update,
@@ -22,7 +23,7 @@ from polylogue.pipeline.services.ingest_batch import (
     _write_conversation,
     refresh_session_products_bulk,
 )
-from polylogue.pipeline.services.ingest_worker import ConversationData
+from polylogue.pipeline.services.ingest_worker import ConversationData, IngestRecordResult
 from polylogue.storage.backends.connection import open_connection
 from polylogue.storage.state_views import RawConversationStateUpdate
 from polylogue.storage.store import _make_ref_id
@@ -315,6 +316,51 @@ def test_write_conversation_replaces_runtime_rows_on_content_change(tmp_path: Pa
         ).fetchone()
         assert stats_row is not None
         assert stats_row[0] == 1
+
+
+def test_iter_ingest_results_sync_runs_inline_for_single_worker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw_records = [
+        SimpleNamespace(raw_id="raw-1"),
+        SimpleNamespace(raw_id="raw-2"),
+    ]
+    seen: list[str] = []
+
+    def fake_ingest_record(
+        raw_record,
+        archive_root_str: str,
+        validation_mode: str = "strict",
+        measure_ingest_result_size: bool = False,
+        *,
+        blob_root_str: str | None = None,
+    ) -> IngestRecordResult:
+        del archive_root_str, validation_mode, measure_ingest_result_size, blob_root_str
+        seen.append(raw_record.raw_id)
+        return IngestRecordResult(raw_id=raw_record.raw_id)
+
+    def fail_process_pool_executor(*, max_workers: int):
+        raise AssertionError(f"process pool should not be used for single-worker batches: {max_workers}")
+
+    monkeypatch.setattr("polylogue.pipeline.services.ingest_batch.ingest_record", fake_ingest_record)
+    monkeypatch.setattr(
+        "polylogue.pipeline.services.ingest_batch.process_pool_executor",
+        fail_process_pool_executor,
+    )
+
+    results = list(
+        _iter_ingest_results_sync(
+            raw_records,
+            archive_root_str="/tmp/archive",
+            blob_root_str="/tmp/blob-store",
+            validation_mode="strict",
+            worker_count=1,
+            measure_ingest_result_size=False,
+        )
+    )
+
+    assert seen == ["raw-1", "raw-2"]
+    assert [result.raw_id for result in results] == ["raw-1", "raw-2"]
 
 
 def test_drain_ready_conversation_entries_preserves_late_parent_fk(tmp_path: Path) -> None:
