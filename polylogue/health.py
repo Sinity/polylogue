@@ -88,7 +88,7 @@ def _open_health_probe_connection(db_path: Path) -> Any:
 def run_archive_health(config: Any, *, deep: bool = False) -> HealthReport:
     from polylogue.storage.backends.schema_upgrade import assert_supported_archive_layout
     from polylogue.storage.derived_status import collect_derived_model_statuses_sync
-    from polylogue.storage.index import index_status
+    from polylogue.storage.fts_lifecycle import message_fts_readiness_sync
     from polylogue.storage.repair import collect_archive_debt_statuses_sync
 
     checks: list[HealthCheck] = []
@@ -135,18 +135,30 @@ def run_archive_health(config: Any, *, deep: bool = False) -> HealthReport:
     derived_statuses: dict[str, DerivedModelStatus] = {}
     archive_debt: dict[str, Any] = {}
     with _open_health_probe_connection(config.db_path) as conn:
-        idx = index_status(conn)
-        if idx["exists"]:
-            checks.append(
-                HealthCheck(
-                    "index",
-                    VerifyStatus.OK,
-                    count=int(cast(Any, idx["count"])),
-                    summary=f"messages indexed: {idx['count']}",
-                )
-            )
-        else:
+        index_readiness = message_fts_readiness_sync(conn)
+        if not index_readiness["exists"]:
             checks.append(HealthCheck("index", VerifyStatus.WARNING, summary="index not built"))
+        else:
+            indexed_rows = int(cast(Any, index_readiness["indexed_rows"]))
+            total_rows = int(cast(Any, index_readiness["total_rows"]))
+            if bool(index_readiness["ready"]):
+                checks.append(
+                    HealthCheck(
+                        "index",
+                        VerifyStatus.OK,
+                        count=indexed_rows,
+                        summary=f"messages indexed: {indexed_rows}",
+                    )
+                )
+            else:
+                checks.append(
+                    HealthCheck(
+                        "index",
+                        VerifyStatus.WARNING,
+                        count=indexed_rows,
+                        summary=f"messages indexed: {indexed_rows:,}/{total_rows:,}",
+                    )
+                )
 
         derived_statuses = collect_derived_model_statuses_sync(conn)
         archive_debt = collect_archive_debt_statuses_sync(

@@ -175,6 +175,30 @@ def test_check_records_scoped_maintenance_apply(cli_workspace, cli_runner):
     assert payload["maintenance"]["items"][0]["success"] is True
 
 
+def test_check_warns_when_message_index_is_incomplete(cli_workspace, cli_runner):
+    db_path = cli_workspace["db_path"]
+    factory = DbFactory(db_path)
+    factory.create_conversation(
+        id="conv-incomplete-index",
+        provider="chatgpt",
+        messages=[
+            {"id": "m-incomplete-index-1", "role": "user", "text": "index me"},
+            {"id": "m-incomplete-index-2", "role": "assistant", "text": "still pending"},
+        ],
+    )
+    with open_connection(db_path) as conn:
+        conn.execute("DELETE FROM messages_fts")
+        conn.commit()
+
+    result = cli_runner.invoke(cli, ["--plain", "doctor", "--json"], catch_exceptions=False)
+
+    assert result.exit_code == 0
+    payload = _extract_json(result.output)
+    index_check = next(check for check in payload["checks"] if check["name"] == "index")
+    assert index_check["status"] == "warning"
+    assert index_check["detail"] == "messages indexed: 0/2"
+
+
 class TestCheckCommand:
     """Tests for polylogue check command."""
 

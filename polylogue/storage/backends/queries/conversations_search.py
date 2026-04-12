@@ -11,14 +11,16 @@ async def search_conversations(
     limit: int = 100,
     providers: list[str] | None = None,
 ) -> list[str]:
+    from polylogue.errors import DatabaseError
+    from polylogue.storage.fts_lifecycle import message_fts_readiness_async
+
+    readiness = await message_fts_readiness_async(conn)
+    if not bool(readiness["exists"]):
+        raise DatabaseError("Search index not built. Run `polylogue doctor --repair` or `polylogue run all`.")
+    if not bool(readiness["ready"]):
+        raise DatabaseError("Search index is incomplete. Run `polylogue doctor --repair` or `polylogue run all`.")
+
     from polylogue.storage.search import build_ranked_conversation_search_query
-
-    cursor = await conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='messages_fts'")
-    exists = await cursor.fetchone()
-    if not exists:
-        from polylogue.errors import DatabaseError
-
-        raise DatabaseError("Search index not built. Run indexing first or use a different backend.")
 
     query_spec = build_ranked_conversation_search_query(
         query=query,
@@ -40,14 +42,17 @@ async def search_action_conversations(
     limit: int = 100,
     providers: list[str] | None = None,
 ) -> list[str]:
+    from polylogue.errors import DatabaseError
+    from polylogue.storage.action_event_status import action_event_read_model_status_async
     from polylogue.storage.search import build_ranked_action_search_query
 
-    cursor = await conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='action_events_fts'")
-    exists = await cursor.fetchone()
-    if not exists:
-        from polylogue.errors import DatabaseError
-
-        raise DatabaseError("Action search index not built. Rebuild the search index first.")
+    status = await action_event_read_model_status_async(conn)
+    if not bool(status["action_fts_exists"]):
+        raise DatabaseError("Action search index not built. Run `polylogue doctor --repair` or `polylogue run all`.")
+    if not bool(status["action_fts_ready"]):
+        raise DatabaseError(
+            "Action search index is incomplete. Run `polylogue doctor --repair` or `polylogue run all`."
+        )
 
     query_spec = build_ranked_action_search_query(
         query=query,
