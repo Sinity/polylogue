@@ -6,7 +6,7 @@ SESSION_PRODUCT_AGGREGATE_DDL = """
         CREATE TABLE IF NOT EXISTS work_threads (
             thread_id TEXT PRIMARY KEY,
             root_id TEXT NOT NULL REFERENCES conversations(conversation_id) ON DELETE CASCADE,
-            materializer_version INTEGER NOT NULL DEFAULT 1,
+            materializer_version INTEGER NOT NULL DEFAULT 4,
             materialized_at TEXT NOT NULL,
             start_time TEXT,
             end_time TEXT,
@@ -58,7 +58,7 @@ SESSION_PRODUCT_AGGREGATE_DDL = """
             tag TEXT NOT NULL,
             bucket_day TEXT NOT NULL,
             provider_name TEXT NOT NULL,
-            materializer_version INTEGER NOT NULL DEFAULT 1,
+            materializer_version INTEGER NOT NULL DEFAULT 4,
             materialized_at TEXT NOT NULL,
             source_updated_at TEXT,
             source_sort_key REAL,
@@ -79,7 +79,7 @@ SESSION_PRODUCT_AGGREGATE_DDL = """
         CREATE TABLE IF NOT EXISTS day_session_summaries (
             day TEXT NOT NULL,
             provider_name TEXT NOT NULL,
-            materializer_version INTEGER NOT NULL DEFAULT 1,
+            materializer_version INTEGER NOT NULL DEFAULT 4,
             materialized_at TEXT NOT NULL,
             source_updated_at TEXT,
             source_sort_key REAL,
