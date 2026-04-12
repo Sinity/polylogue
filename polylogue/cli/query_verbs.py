@@ -76,13 +76,18 @@ def stats_verb(ctx: click.Context, stats_by: str | None, output_format: str | No
 
 @click.command("open")
 @click.option("--print-path", is_flag=True, help="Print the matched render path instead of opening it")
+@click.argument("target_terms", nargs=-1)
 @click.pass_context
-def open_verb(ctx: click.Context, print_path: bool) -> None:
+def open_verb(ctx: click.Context, print_path: bool, target_terms: tuple[str, ...]) -> None:
     """Open matched conversation in browser/editor."""
     params = _parent_params(ctx)
     params["open_result"] = True
     params["print_path"] = print_path
-    _execute_query_verb(ctx, params)
+    if not ctx.parent.meta.get("polylogue_query_terms") and len(target_terms) == 1 and ":" in target_terms[0]:
+        params["conv_id"] = target_terms[0]
+        _execute_query_verb(ctx, params)
+        return
+    _execute_query_verb(ctx, params, extra_query_terms=target_terms)
 
 
 @click.command("delete")
@@ -103,13 +108,18 @@ def _parent_params(ctx: click.Context) -> dict[str, Any]:
     return dict(ctx.parent.params)
 
 
-def _execute_query_verb(ctx: click.Context, params: dict[str, Any]) -> None:
+def _execute_query_verb(
+    ctx: click.Context,
+    params: dict[str, Any],
+    *,
+    extra_query_terms: tuple[str, ...] = (),
+) -> None:
     """Execute query with verb-modified params."""
     from polylogue.cli.query import execute_query
 
     env: AppEnv = ctx.obj
-    query_terms = ctx.parent.meta.get("polylogue_query_terms", ())
-    params["query"] = query_terms
+    query_terms = tuple(ctx.parent.meta.get("polylogue_query_terms", ()))
+    params["query"] = query_terms + tuple(extra_query_terms)
     execute_query(env, params)
 
 
