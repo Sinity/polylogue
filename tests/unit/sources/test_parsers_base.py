@@ -1286,9 +1286,16 @@ def test_parse_code_deduplicates_repeated_record_uuids() -> None:
             ],
         },
     }
+    repeated_assistant_conflict = {
+        **repeated_assistant,
+        "message": {
+            "role": "assistant",
+            "content": [{"type": "text", "text": "A conflicting duplicate should still be ignored."}],
+        },
+    }
 
     result = parse_code(
-        [repeated_user, repeated_user, repeated_assistant, repeated_assistant],
+        [repeated_user, repeated_user, repeated_assistant, repeated_assistant_conflict],
         "agent-dup-test",
     )
 

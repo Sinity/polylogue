@@ -76,7 +76,7 @@ def _parse_code_records(records: Iterable[object], fallback_id: str) -> ParsedCo
     """Parse Claude Code JSONL payloads into a canonical conversation model."""
     messages: list[ParsedMessage] = []
     timestamps: list[str] = []
-    seen_record_uuids: dict[str, dict[str, Any]] = {}
+    seen_record_uuids: set[str] = set()
     session_id: str | None = None
     context_compactions: list[dict[str, Any]] = []
     provider_events: list[ParsedProviderEvent] = []
@@ -115,17 +115,10 @@ def _parse_code_records(records: Iterable[object], fallback_id: str) -> ParsedCo
             continue
 
         if record.uuid:
-            previous = seen_record_uuids.get(record.uuid)
-            if previous is not None:
-                if previous == item:
-                    continue
-                logger.debug(
-                    "Skipping repeated Claude Code record uuid with differing payload at index %d: %s",
-                    index,
-                    record.uuid,
-                )
+            if record.uuid in seen_record_uuids:
+                logger.debug("Skipping repeated Claude Code record uuid at index %d: %s", index, record.uuid)
                 continue
-            seen_record_uuids[record.uuid] = item
+            seen_record_uuids.add(record.uuid)
 
         if record.type in {"init", "file-history-snapshot", "queue-operation"}:
             continue
