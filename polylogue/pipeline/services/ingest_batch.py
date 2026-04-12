@@ -34,7 +34,11 @@ from polylogue.pipeline.services.ingest_worker import (
     ingest_record,
 )
 from polylogue.pipeline.services.process_pool import process_pool_executor
-from polylogue.storage.backends.connection import DB_TIMEOUT, _load_sqlite_vec
+from polylogue.storage.backends.connection import (
+    DB_TIMEOUT,
+    WRITE_CACHE_SIZE_KIB,
+    _load_sqlite_vec,
+)
 from polylogue.storage.conversation_replacement import (
     recount_and_prune_attachments_sync,
     replace_conversation_runtime_state_sync,
@@ -232,7 +236,7 @@ def _open_sync_connection(db_path: Path) -> sqlite3.Connection:
     conn.execute("PRAGMA foreign_keys = ON")
     conn.execute("PRAGMA journal_mode = WAL")
     conn.execute(f"PRAGMA busy_timeout = {DB_TIMEOUT * 1000}")
-    conn.execute("PRAGMA cache_size = -524288")
+    conn.execute(f"PRAGMA cache_size = -{WRITE_CACHE_SIZE_KIB}")
     conn.execute("PRAGMA synchronous = NORMAL")
     conn.execute("PRAGMA mmap_size = 1073741824")
     conn.execute("PRAGMA temp_store = MEMORY")

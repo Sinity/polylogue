@@ -13,7 +13,13 @@ from pathlib import Path
 import pytest
 
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
-from polylogue.storage.backends.connection import connection_context, open_connection, open_read_connection
+from polylogue.storage.backends.connection import (
+    READ_CACHE_SIZE_KIB,
+    WRITE_CACHE_SIZE_KIB,
+    connection_context,
+    open_connection,
+    open_read_connection,
+)
 from polylogue.storage.backends.schema import SCHEMA_VERSION, _ensure_schema
 from polylogue.storage.embedding_stats_models import EmbeddingStatsSnapshot
 from polylogue.storage.query_models import ConversationRecordQuery
@@ -85,6 +91,7 @@ def test_open_connection_contract(tmp_path: Path) -> None:
         assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
         assert conn.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"
         assert conn.execute("PRAGMA busy_timeout").fetchone()[0] == 30000
+        assert conn.execute("PRAGMA cache_size").fetchone()[0] == -WRITE_CACHE_SIZE_KIB
         assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
         assert {
             "artifact_observations",
@@ -110,6 +117,7 @@ def test_open_read_connection_contract(tmp_path: Path) -> None:
     with open_read_connection(db_path) as conn:
         assert conn.execute("PRAGMA query_only").fetchone()[0] == 0
         assert conn.execute("PRAGMA busy_timeout").fetchone()[0] == 1000
+        assert conn.execute("PRAGMA cache_size").fetchone()[0] == -READ_CACHE_SIZE_KIB
         assert conn.execute("SELECT value FROM sentinel").fetchone()[0] == 1
         with pytest.raises(sqlite3.OperationalError):
             conn.execute("INSERT INTO sentinel(value) VALUES (2)")
@@ -218,6 +226,51 @@ async def test_async_backend_schema_and_lock_contracts(tmp_path: Path) -> None:
 
     results = await asyncio.gather(*[backend.get_conversation(f"conv:{idx}") for idx in range(10)])
     assert all(result is None for result in results)
+
+
+async def test_async_read_pool_uses_read_connection_settings(tmp_path: Path) -> None:
+    """read_pool() should reuse read-oriented connections instead of writer-style ones."""
+    backend = SQLiteBackend(db_path=tmp_path / "pooled.db")
+
+    async with backend.connection() as conn:
+        await conn.execute("CREATE TABLE IF NOT EXISTS sentinel(value INTEGER)")
+        await conn.execute("INSERT INTO sentinel(value) VALUES (1)")
+        await conn.commit()
+
+    async with backend.read_pool(size=1):
+        async with backend.read_connection() as conn:
+            cursor = await conn.execute("PRAGMA busy_timeout")
+            assert (await cursor.fetchone())[0] == 1000
+            cursor = await conn.execute("PRAGMA cache_size")
+            assert (await cursor.fetchone())[0] == -READ_CACHE_SIZE_KIB
+            cursor = await conn.execute("SELECT value FROM sentinel")
+            assert (await cursor.fetchone())[0] == 1
+            with pytest.raises(Exception) as exc_info:
+                await conn.execute("INSERT INTO sentinel(value) VALUES (2)")
+                await conn.commit()
+            assert "readonly" in str(exc_info.value).lower() or "read-only" in str(exc_info.value).lower()
+
+    await backend.close()
+
+
+async def test_async_read_connection_closes_cleanly_after_pool_teardown(tmp_path: Path) -> None:
+    """Checked-out read connections should not explode if the pool tears down first."""
+    backend = SQLiteBackend(db_path=tmp_path / "pool-teardown.db")
+
+    async with backend.connection() as conn:
+        await conn.execute("CREATE TABLE IF NOT EXISTS sentinel(value INTEGER)")
+        await conn.commit()
+
+    pool_cm = backend.read_pool(size=1)
+    await pool_cm.__aenter__()
+    conn_cm = backend.read_connection()
+    conn = await conn_cm.__aenter__()
+    cursor = await conn.execute("SELECT 1")
+    assert (await cursor.fetchone())[0] == 1
+
+    await pool_cm.__aexit__(None, None, None)
+    await conn_cm.__aexit__(None, None, None)
+    await backend.close()
     assert backend._schema_ensured is True
 
     init_count = 0
