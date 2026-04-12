@@ -143,8 +143,27 @@ async def execute_materialize_stage(
         conversation_ids = sorted(processed_ids)
         if not conversation_ids:
             return MaterializeStageOutcome(item_count=0, rebuilt=False)
+        status = await backend.queries.get_session_product_status()
+        total_conversations = int(status.get("total_conversations", 0) or 0)
+        profile_row_count = int(status.get("profile_row_count", 0) or 0)
+        use_bounded_rebuild = profile_row_count == 0 and total_conversations == len(conversation_ids)
         if progress_callback is not None:
             progress_callback(0, desc=f"Materializing: 0/{len(conversation_ids)}")
+        if use_bounded_rebuild:
+            async with backend.connection() as conn:
+                counts = await rebuild_session_products_async(
+                    conn,
+                    conversation_ids=conversation_ids,
+                    progress_callback=progress_callback,
+                    progress_total=len(conversation_ids),
+                )
+                await conn.commit()
+            observation = {"mode": "rebuild-from-empty", **counts}
+            return MaterializeStageOutcome(
+                item_count=len(conversation_ids),
+                rebuilt=True,
+                observation=observation,
+            )
         observation = await refresh_session_products_bulk(backend, conversation_ids)
         return MaterializeStageOutcome(
             item_count=len(conversation_ids),
@@ -341,10 +360,8 @@ async def execute_site_stage(
         config=config,
         backend=backend,
         repository=repository,
+        progress_callback=progress_callback,
     )
-
-    if progress_callback is not None:
-        progress_callback(0, desc="Building site...")
 
     try:
         import asyncio
