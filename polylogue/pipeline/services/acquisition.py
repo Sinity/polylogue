@@ -191,7 +191,7 @@ class AcquisitionService:
                 progress_callback=progress_callback,
                 ui=ui,
                 drive_config=drive_config,
-                progress_label="Acquiring",
+                progress_label="Scanning",
                 on_record=_store,
                 observation_callback=_observe,
             )
