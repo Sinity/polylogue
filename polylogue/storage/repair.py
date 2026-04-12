@@ -784,6 +784,7 @@ def preview_action_event_read_model(*, count: int) -> RepairResult:
 
 def repair_dangling_fts(config: Any, dry_run: bool = False) -> RepairResult:
     from polylogue.storage.backends.connection import connection_context
+    from polylogue.storage.fts_lifecycle_sql import FTS_INDEXABLE_MESSAGE_COUNT_SQL
 
     try:
         with connection_context(None) as conn:
@@ -801,7 +802,7 @@ def repair_dangling_fts(config: Any, dry_run: bool = False) -> RepairResult:
                 )
 
             if dry_run:
-                msg_count = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+                msg_count = conn.execute(FTS_INDEXABLE_MESSAGE_COUNT_SQL).fetchone()[0]
                 fts_count = conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0]
                 diff = abs(msg_count - fts_count)
                 if diff == 0:
@@ -826,7 +827,7 @@ def repair_dangling_fts(config: Any, dry_run: bool = False) -> RepairResult:
                 "DELETE FROM messages_fts WHERE rowid IN (SELECT f.rowid FROM messages_fts f WHERE NOT EXISTS (SELECT 1 FROM messages m WHERE m.rowid = f.rowid))"
             ).rowcount
             inserted = conn.execute(
-                "INSERT INTO messages_fts (rowid, message_id, conversation_id, text) SELECT m.rowid, m.message_id, m.conversation_id, m.text FROM messages m WHERE NOT EXISTS (SELECT 1 FROM messages_fts f WHERE f.rowid = m.rowid)"
+                "INSERT INTO messages_fts (rowid, message_id, conversation_id, text) SELECT m.rowid, m.message_id, m.conversation_id, m.text FROM messages m WHERE m.text IS NOT NULL AND NOT EXISTS (SELECT 1 FROM messages_fts f WHERE f.rowid = m.rowid)"
             ).rowcount
             conn.commit()
             total = deleted + inserted
