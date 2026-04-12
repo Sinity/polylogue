@@ -10,7 +10,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from polylogue.config import Config, Source
-from polylogue.pipeline.run_stages import IndexStageOutcome, MaterializeStageOutcome, RenderStageOutcome
+from polylogue.pipeline.run_stages import (
+    IndexStageOutcome,
+    MaterializeStageOutcome,
+    RenderStageOutcome,
+    execute_materialize_stage,
+)
 from polylogue.pipeline.run_support import expand_requested_stage, normalize_stage_sequence
 from polylogue.pipeline.runner import _select_sources, latest_run, plan_sources, run_sources
 from polylogue.pipeline.services.parsing_models import IngestResult, ParseResult
@@ -419,6 +424,8 @@ class TestRunSourcesIntegration:
             result = asyncio.run(run_sources(config=config, stage="materialize"))
 
         mock_rebuild.assert_awaited_once()
+        assert mock_rebuild.await_args.kwargs["progress_total"] == 1
+        assert "progress_callback" in mock_rebuild.await_args.kwargs
         assert result.counts["materialized"] == 1
         assert result.indexed is False
 
@@ -492,6 +499,32 @@ class TestRunSourcesIntegration:
         result = asyncio.run(run_sources(config=config, stage="parse"))
         asyncio.run(backend.close())
         assert result.counts["conversations"] >= 1
+
+    def test_materialize_stage_rebuild_progress_advances_by_processed_chunk(self, workspace_env):
+        _seed_conversations(workspace_env, "test:materialize-a", "test:materialize-b", with_message=True)
+        backend = create_backend(workspace_env["data_root"] / "polylogue" / "polylogue.db")
+        callback = MagicMock()
+
+        result = asyncio.run(
+            execute_materialize_stage(
+                stage="materialize",
+                source_names=None,
+                processed_ids=set(),
+                backend=backend,
+                progress_callback=callback,
+            )
+        )
+        asyncio.run(backend.close())
+
+        assert result.item_count == 2
+        assert result.rebuilt is True
+        assert callback.call_args_list[0].args == (0,)
+        assert callback.call_args_list[0].kwargs == {"desc": "Materializing: 0/2"}
+        assert [call.args[0] for call in callback.call_args_list[1:]] == [1, 1]
+        assert [call.kwargs["desc"] for call in callback.call_args_list[1:]] == [
+            "Materializing: 1/2",
+            "Materializing: 2/2",
+        ]
 
     def test_parse_with_explicit_source_filter_skips_acquire(self, workspace_env, tmp_path: Path):
         scoped_source = tmp_path / "scoped"
