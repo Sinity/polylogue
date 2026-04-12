@@ -239,6 +239,65 @@ def test_ingest_stage_log_omits_full_batch_telemetry(workspace_env, tmp_path: Pa
     assert "batches" not in details["batch_observations"]
 
 
+def test_materialize_stage_log_omits_full_chunk_telemetry(workspace_env, tmp_path: Path) -> None:
+    config = Config(
+        sources=[Source(name="explicit", path=tmp_path / "explicit")],
+        archive_root=workspace_env["archive_root"],
+        render_root=workspace_env["archive_root"] / "render",
+    )
+    config.sources[0].path.mkdir(parents=True, exist_ok=True)
+
+    materialize_outcome = MaterializeStageOutcome(
+        item_count=12,
+        rebuilt=False,
+        observation={
+            "conversations": 12,
+            "update_chunk_count": 2,
+            "update_slow_chunk_count": 1,
+            "update_chunks": [
+                {"total_ms": 123.4, "conversation_count": 10},
+                {"total_ms": 456.7, "conversation_count": 2},
+            ],
+        },
+    )
+    persisted_result = RunResult(
+        run_id="test-run",
+        counts={"conversations": 1, "materialized": 12},
+        drift={"new": {"conversations": 1}, "changed": {"conversations": 0}, "removed": {"conversations": 0}},
+        indexed=False,
+        index_error=None,
+        duration_ms=1,
+        render_failures=[],
+        run_path=None,
+    )
+
+    with (
+        patch(
+            "polylogue.pipeline.run_execution.execute_materialize_stage",
+            new_callable=AsyncMock,
+            return_value=materialize_outcome,
+        ),
+        patch(
+            "polylogue.pipeline.run_execution.persist_run_result",
+            new_callable=AsyncMock,
+            return_value=persisted_result,
+        ),
+        patch("polylogue.pipeline.run_execution.logger.info") as mock_logger_info,
+    ):
+        asyncio.run(run_sources(config=config, stage="materialize"))
+
+    materialize_calls = [
+        call
+        for call in mock_logger_info.call_args_list
+        if call.args and call.args[0] == "Materialize stage complete"
+    ]
+    assert len(materialize_calls) == 1
+    details = materialize_calls[0].kwargs["details"]
+    assert details["update_chunk_count"] == 2
+    assert details["update_slow_chunk_count"] == 1
+    assert "update_chunks" not in details
+
+
 class TestRunSourcesRenderFailures:
     def test_render_failure_tracked_in_result(self, workspace_env):
         from polylogue.storage.state_views import RunResult
