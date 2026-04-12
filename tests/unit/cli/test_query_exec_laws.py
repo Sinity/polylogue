@@ -7,6 +7,7 @@ import csv
 import io
 import json
 import tempfile
+from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -75,6 +76,26 @@ def _make_env(*, repo: MagicMock | None = None, config: MagicMock | None = None)
         if not isinstance(queries.aggregate_message_stats, AsyncMock):
             queries.aggregate_message_stats = AsyncMock(return_value={})
     return AppEnv(ui=ui, services=build_runtime_services(config=config, repository=repo))
+
+
+@asynccontextmanager
+async def _async_connection(conn: object):
+    yield conn
+
+
+class _SnapshotConn:
+    def __init__(self) -> None:
+        self.in_transaction = False
+        self.execute = AsyncMock(side_effect=self._execute)
+        self.rollback = AsyncMock(side_effect=self._rollback)
+
+    async def _execute(self, sql: str, *args, **kwargs) -> None:
+        del args, kwargs
+        if sql == "BEGIN":
+            self.in_transaction = True
+
+    async def _rollback(self) -> None:
+        self.in_transaction = False
 
 
 def _fields_arg(fields: tuple[str, ...] | None) -> str | None:
@@ -1323,18 +1344,8 @@ async def test_output_stats_sql_empty_paths_json_contract(
 async def test_output_stats_sql_archive_scope_includes_embedding_state() -> None:
     env = _make_env()
     repo = MagicMock()
-    repo.queries.aggregate_message_stats = AsyncMock(
-        return_value={
-            "total": 9,
-            "user": 4,
-            "assistant": 5,
-            "words_approx": 42,
-            "providers": {"claude-ai": 2, "chatgpt": 1},
-            "attachments": 2,
-            "min_sort_key": 1704067200,
-            "max_sort_key": 1704153600,
-        }
-    )
+    conn = _SnapshotConn()
+    repo.backend.read_connection.return_value = _async_connection(conn)
     repo.get_archive_stats = AsyncMock(
         return_value=SimpleNamespace(
             total_conversations=2,
@@ -1348,11 +1359,29 @@ async def test_output_stats_sql_archive_scope_includes_embedding_state() -> None
     filter_chain = MagicMock()
     filter_chain.describe.return_value = []
     filter_chain.can_use_summaries.return_value = False
-    filter_chain.count = AsyncMock(return_value=2)
+    filter_chain.count = AsyncMock(side_effect=AssertionError("archive-scope stats should reuse archive snapshot"))
 
-    await output_stats_sql(env, filter_chain, repo)
+    with patch(
+        "polylogue.cli.query_stats.stats_q.aggregate_message_stats",
+        new=AsyncMock(
+            return_value={
+                "total": 9,
+                "user": 4,
+                "assistant": 5,
+                "words_approx": 42,
+                "providers": {"claude-ai": 2, "chatgpt": 1},
+                "attachments": 2,
+                "min_sort_key": 1704067200,
+                "max_sort_key": 1704153600,
+            }
+        ),
+    ) as mock_aggregate:
+        await output_stats_sql(env, filter_chain, repo)
 
-    repo.get_archive_stats.assert_awaited_once()
+    repo.get_archive_stats.assert_awaited_once_with(conn=conn)
+    mock_aggregate.assert_awaited_once_with(conn, None)
+    conn.execute.assert_awaited_once_with("BEGIN")
+    conn.rollback.assert_awaited_once()
     printed = [call.args[0] for call in env.ui.console.print.call_args_list if call.args]
     assert printed == [
         "\nConversations: 2\n",
@@ -1363,25 +1392,14 @@ async def test_output_stats_sql_archive_scope_includes_embedding_state() -> None
         "Embeddings: 1/2 convs, 5 msgs (50.0%), pending 1",
         "Date range: 2024-01-01 to 2024-01-02",
     ]
-    repo.queries.aggregate_message_stats.assert_awaited_once_with(None)
 
 
 @pytest.mark.asyncio
 async def test_output_stats_sql_json_contract() -> None:
     env = _make_env()
     repo = MagicMock()
-    repo.queries.aggregate_message_stats = AsyncMock(
-        return_value={
-            "total": 9,
-            "user": 4,
-            "assistant": 5,
-            "words_approx": 42,
-            "attachments": 2,
-            "min_sort_key": 1704067200,
-            "max_sort_key": 1704153600,
-            "providers": {"claude-ai": 2, "chatgpt": 1},
-        }
-    )
+    conn = _SnapshotConn()
+    repo.backend.read_connection.return_value = _async_connection(conn)
     repo.get_archive_stats = AsyncMock(
         return_value=SimpleNamespace(
             total_conversations=2,
@@ -1396,12 +1414,33 @@ async def test_output_stats_sql_json_contract() -> None:
     filter_chain = MagicMock()
     filter_chain.describe.return_value = []
     filter_chain.can_use_summaries.return_value = False
-    filter_chain.count = AsyncMock(return_value=2)
+    filter_chain.count = AsyncMock(side_effect=AssertionError("archive-scope stats should reuse archive snapshot"))
 
-    with patch("click.echo") as mock_echo:
+    with (
+        patch(
+            "polylogue.cli.query_stats.stats_q.aggregate_message_stats",
+            new=AsyncMock(
+                return_value={
+                    "total": 9,
+                    "user": 4,
+                    "assistant": 5,
+                    "words_approx": 42,
+                    "attachments": 2,
+                    "min_sort_key": 1704067200,
+                    "max_sort_key": 1704153600,
+                    "providers": {"claude-ai": 2, "chatgpt": 1},
+                }
+            ),
+        ) as mock_aggregate,
+        patch("click.echo") as mock_echo,
+    ):
         await output_stats_sql(env, filter_chain, repo, output_format="json")
 
     env.ui.console.print.assert_not_called()
+    repo.get_archive_stats.assert_awaited_once_with(conn=conn)
+    mock_aggregate.assert_awaited_once_with(conn, None)
+    conn.execute.assert_awaited_once_with("BEGIN")
+    conn.rollback.assert_awaited_once()
     payload = json.loads(mock_echo.call_args.args[0])
     assert payload["dimension"] == "archive"
     assert payload["rows"] == []
@@ -1410,6 +1449,7 @@ async def test_output_stats_sql_json_contract() -> None:
     assert payload["summary"]["providers"] == {"claude-ai": 2, "chatgpt": 1}
     assert payload["summary"]["date_range"] == "2024-01-01 to 2024-01-02"
     assert payload["summary"]["embeddings"]["embedded_conversations"] == 1
+    assert payload["summary"]["embeddings"]["total_conversations"] == payload["summary"]["conversations"]
 
 
 # ---------------------------------------------------------------------------
