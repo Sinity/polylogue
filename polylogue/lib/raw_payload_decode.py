@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from io import BytesIO, StringIO
 from pathlib import Path
@@ -14,6 +15,16 @@ from polylogue.sources.dispatch import detect_provider
 from polylogue.types import Provider
 
 WireFormat = Literal["json", "jsonl"]
+
+
+def _load_json_record(line: str) -> Any:
+    try:
+        return orjson.loads(line)
+    except (orjson.JSONDecodeError, ValueError) as exc:
+        try:
+            return json.loads(line)
+        except json.JSONDecodeError:
+            raise exc from None
 
 
 @dataclass(frozen=True)
@@ -63,7 +74,7 @@ def _decode_jsonl_payload(
             if not line:
                 continue
             try:
-                parsed = orjson.loads(line)
+                parsed = _load_json_record(line)
             except (orjson.JSONDecodeError, ValueError):
                 malformed_lines += 1
                 continue
@@ -118,7 +129,7 @@ def sample_jsonl_payload(
             if not line:
                 continue
             try:
-                parsed = orjson.loads(line)
+                parsed = _load_json_record(line)
             except (orjson.JSONDecodeError, ValueError):
                 malformed_lines += 1
                 continue
