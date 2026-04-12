@@ -25,6 +25,7 @@ def plan_sources(
     source_names: Sequence[str] | None = None,
     backend: SQLiteBackend | None = None,
     progress_callback: ProgressCallback | None = None,
+    force_reparse: bool = False,
 ) -> PlanResult:
     """Build a canonical preview plan without writing pipeline state."""
     from polylogue.pipeline.services.planning import PlanningService
@@ -38,6 +39,7 @@ def plan_sources(
             ui=ui,
             progress_callback=progress_callback,
             preview=True,
+            force_reparse=force_reparse,
         )
         return plan.summary
 

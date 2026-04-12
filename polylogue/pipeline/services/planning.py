@@ -25,11 +25,13 @@ class PlanningService:
         *,
         source_names: list[str] | None,
         exclude_raw_ids: list[str] | None = None,
+        force_reparse: bool = False,
     ) -> list[str]:
         return await collect_validation_backlog(
             self.backend,
             source_names=source_names,
             exclude_raw_ids=exclude_raw_ids,
+            force_reparse=force_reparse,
         )
 
     async def collect_parse_backlog(
@@ -37,11 +39,13 @@ class PlanningService:
         *,
         source_names: list[str] | None,
         exclude_raw_ids: list[str] | None = None,
+        force_reparse: bool = False,
     ) -> list[str]:
         return await collect_parse_backlog(
             self.backend,
             source_names=source_names,
             exclude_raw_ids=exclude_raw_ids,
+            force_reparse=force_reparse,
         )
 
     async def build_plan(
@@ -53,6 +57,7 @@ class PlanningService:
         ui: object | None = None,
         progress_callback: ProgressCallback | None = None,
         preview: bool = False,
+        force_reparse: bool = False,
     ) -> IngestPlan:
         return await build_ingest_plan(
             self,
@@ -62,6 +67,7 @@ class PlanningService:
             ui=ui,
             progress_callback=progress_callback,
             preview=preview,
+            force_reparse=force_reparse,
         )
 
 
