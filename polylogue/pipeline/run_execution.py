@@ -38,6 +38,23 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 
+def _compact_stage_log_payload(payload: dict[str, object]) -> dict[str, object]:
+    """Trim oversized telemetry from normal stage-complete log lines."""
+    compact = dict(payload)
+    details = compact.get("details")
+    if not isinstance(details, dict):
+        return compact
+
+    compact_details = dict(details)
+    batch_observations = compact_details.get("batch_observations")
+    if isinstance(batch_observations, dict) and "batches" in batch_observations:
+        compact_details["batch_observations"] = {
+            key: value for key, value in batch_observations.items() if key != "batches"
+        }
+    compact["details"] = compact_details
+    return compact
+
+
 async def run_sources(
     *,
     config: Config,
@@ -122,9 +139,10 @@ async def run_sources(
             sm.stop(items=len(ingest_result.parse_raw_ids))
             if "acquire" not in executed_stages:
                 state.record_acquire(ingest_result.acquire_result)
+            ingest_log_payload = _compact_stage_log_payload(sm.to_dict())
             logger.info(
                 "Ingest complete",
-                **sm.to_dict(),
+                **ingest_log_payload,
                 **ingest_result.acquire_result.counts,
             )
 
