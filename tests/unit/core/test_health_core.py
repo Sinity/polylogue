@@ -53,7 +53,6 @@ def test_health_check_dataclass_contract(name: str, status_name: str, detail: st
                 "database",
                 "index",
                 "orphaned_messages",
-                "orphaned_content_blocks",
                 "action_event_read_model",
                 "action_event_fts",
                 "fts_sync",

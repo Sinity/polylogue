@@ -148,7 +148,7 @@ class SqliteVecQueryMixin:
         """Get embedding statistics."""
         conn = self._get_connection()
         try:
-            embedding_stats = read_embedding_stats_sync(conn)
+            embedding_stats = read_embedding_stats_sync(conn, include_retrieval_bands=False)
             return {
                 "embedded_messages": embedding_stats.embedded_messages,
                 "pending_conversations": embedding_stats.pending_conversations,

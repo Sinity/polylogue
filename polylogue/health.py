@@ -149,9 +149,23 @@ def run_archive_health(config: Any, *, deep: bool = False) -> HealthReport:
             checks.append(HealthCheck("index", VerifyStatus.WARNING, summary="index not built"))
 
         derived_statuses = collect_derived_model_statuses_sync(conn)
-        archive_debt = collect_archive_debt_statuses_sync(conn, derived_statuses=derived_statuses)
-        for debt_name in ("orphaned_messages", "orphaned_content_blocks", "orphaned_attachments"):
+        archive_debt = collect_archive_debt_statuses_sync(
+            conn,
+            derived_statuses=derived_statuses,
+            include_expensive=deep,
+        )
+        for debt_name in ("orphaned_messages", "orphaned_attachments"):
             debt = archive_debt[debt_name]
+            checks.append(
+                HealthCheck(
+                    debt.name,
+                    VerifyStatus.OK if debt.healthy else VerifyStatus.ERROR,
+                    count=debt.issue_count,
+                    summary=debt.detail,
+                )
+            )
+        if deep and "orphaned_content_blocks" in archive_debt:
+            debt = archive_debt["orphaned_content_blocks"]
             checks.append(
                 HealthCheck(
                     debt.name,

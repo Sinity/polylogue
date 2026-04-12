@@ -60,6 +60,17 @@ async def ensure_schema(conn: aiosqlite.Connection) -> None:
     if "blob_size" not in raw_columns:
         await conn.execute("ALTER TABLE raw_conversations ADD COLUMN blob_size INTEGER NOT NULL DEFAULT 0")
 
+    content_blocks_exists = bool(
+        await (await conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='content_blocks'")).fetchone()
+    )
+    if content_blocks_exists:
+        await conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_content_blocks_tool_use_conversation
+            ON content_blocks(conversation_id)
+            WHERE type = 'tool_use'
+            """
+        )
     await conn.executescript(_ARTIFACT_OBSERVATION_DDL)
     await conn.executescript(_PUBLICATION_DDL)
     await conn.executescript(_ACTION_EVENT_DDL)

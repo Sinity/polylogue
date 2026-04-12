@@ -97,6 +97,22 @@ async def configure_read_connection(conn: aiosqlite.Connection) -> None:
     await conn.execute("PRAGMA temp_store = MEMORY")
 
 
+async def _read_schema_ready(backend: SQLiteBackend) -> bool:
+    """Check whether an existing database already has the archive schema."""
+    if not backend._db_path.exists():
+        return False
+
+    async with aiosqlite.connect(f"file:{backend._db_path}?mode=ro", uri=True, timeout=READ_DB_TIMEOUT) as conn:
+        await configure_read_connection(conn)
+        cursor = await conn.execute("PRAGMA user_version")
+        row = await cursor.fetchone()
+        if not row or row[0] <= 0:
+            return False
+
+        cursor = await conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='conversations'")
+        return await cursor.fetchone() is not None
+
+
 # ---------------------------------------------------------------------------
 # Runtime/state helpers (formerly async_sqlite_runtime.py)
 # ---------------------------------------------------------------------------
@@ -337,6 +353,12 @@ async def _get_connection(backend: SQLiteBackend) -> AsyncIterator[aiosqlite.Con
 @asynccontextmanager
 async def _get_read_connection(backend: SQLiteBackend) -> AsyncIterator[aiosqlite.Connection]:
     """Get a read-oriented connection that stays responsive during bulk writes."""
+    if not backend._schema_ensured:
+        if await _read_schema_ready(backend):
+            backend._schema_ensured = True
+        else:
+            await backend._ensure_schema_once()
+
     if backend._txn_conn is not None and backend._transaction_depth > 0:
         yield backend._txn_conn
         return
@@ -353,11 +375,6 @@ async def _get_read_connection(backend: SQLiteBackend) -> AsyncIterator[aiosqlit
         finally:
             if backend._read_pool is pool:
                 pool.put_nowait(conn)
-        return
-
-    if not backend._db_path.exists():
-        async with _get_connection(backend) as conn:
-            yield conn
         return
 
     async with aiosqlite.connect(f"file:{backend._db_path}?mode=ro", uri=True, timeout=READ_DB_TIMEOUT) as conn:
