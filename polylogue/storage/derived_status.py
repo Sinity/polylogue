@@ -21,7 +21,7 @@ def collect_derived_model_statuses_sync(
     fts_status = fts_index_status_sync(conn)
     action_status = action_event_read_model_status_sync(conn)
     session_status = session_product_status_sync(conn)
-    embedding_stats = read_embedding_stats_sync(conn)
+    embedding_stats = read_embedding_stats_sync(conn, include_retrieval_bands=False)
 
     metrics: dict[str, int | bool] = {
         "total_conversations": total_conversations,
