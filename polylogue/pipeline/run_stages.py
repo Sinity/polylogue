@@ -21,6 +21,7 @@ class RenderStageOutcome:
     rendered_count: int
     failures: list[dict[str, str]]
     total: int
+    observation: dict[str, object] | None = None
 
 
 @dataclass(slots=True)
@@ -235,10 +236,20 @@ async def execute_render_stage(
         total=render_total,
         progress_callback=progress_callback,
     )
+    observation: dict[str, object] = {"workers": render_result.worker_count}
+    if render_result.rss_start_mb is not None:
+        observation["rss_start_mb"] = render_result.rss_start_mb
+    if render_result.rss_end_mb is not None:
+        observation["rss_end_mb"] = render_result.rss_end_mb
+    if render_result.rss_start_mb is not None and render_result.rss_end_mb is not None:
+        observation["rss_delta_mb"] = round(render_result.rss_end_mb - render_result.rss_start_mb, 1)
+    if render_result.max_current_rss_mb is not None:
+        observation["max_current_rss_mb"] = render_result.max_current_rss_mb
     return RenderStageOutcome(
         rendered_count=render_result.rendered_count,
         failures=render_result.failures,
         total=render_total,
+        observation=observation,
     )
 
 
