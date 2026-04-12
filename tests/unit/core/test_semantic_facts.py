@@ -488,6 +488,69 @@ def test_action_events_capture_normalized_command_query_branch_and_cwd() -> None
     assert profile.repo_names == ("polylogue",)
 
 
+def test_action_events_do_not_treat_checkout_pathspec_as_branch_or_commit_message_words_as_paths() -> None:
+    conversation = Conversation(
+        id="conv-action-noise-guard",
+        provider="claude-code",
+        messages=MessageCollection(
+            messages=[
+                Message(
+                    id="a1",
+                    role="assistant",
+                    provider="claude-code",
+                    text="Running git maintenance.",
+                    timestamp=datetime(2026, 3, 23, 10, 0, tzinfo=timezone.utc),
+                    content_blocks=[
+                        {
+                            "type": "tool_use",
+                            "tool_name": "Bash",
+                            "tool_input": {
+                                "command": (
+                                    "git add modules/services/sinex/bridge.nix && git commit -m "
+                                    "\"$(cat <<'EOF'\\nfix(sinex): cap schema-apply pool\\nEOF\\n)\""
+                                ),
+                            },
+                            "metadata": {
+                                "files": [
+                                    "modules/services/sinex/bridge.nix",
+                                    "&&",
+                                    "git",
+                                    "commit",
+                                    "\"$(cat",
+                                    "<<'EOF'",
+                                    "fix(sinex):",
+                                    "(1M",
+                                ]
+                            },
+                            "semantic_type": "git",
+                        },
+                        {
+                            "type": "tool_use",
+                            "tool_name": "Bash",
+                            "tool_input": {
+                                "command": "git checkout dots/transmission/settings.json",
+                                "cwd": str(REPO_ROOT),
+                            },
+                            "semantic_type": "git",
+                        },
+                    ],
+                )
+            ]
+        ),
+    )
+
+    facts = build_conversation_semantic_facts(conversation)
+
+    commit_action, checkout_action = facts.action_events
+    assert commit_action.affected_paths == ("modules/services/sinex/bridge.nix",)
+    assert checkout_action.branch_names == ()
+
+    profile = build_session_profile(conversation)
+    assert profile.branch_names == ()
+    assert profile.file_paths_touched == ("modules/services/sinex/bridge.nix",)
+    assert profile.repo_names == ("polylogue",)
+
+
 def test_build_session_profile_does_not_infer_repos_from_dialogue_paths() -> None:
     conversation = Conversation(
         id="conv-user-paths",

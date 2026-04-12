@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import re
+from pathlib import PurePosixPath
 from typing import Any
 
 from polylogue.lib.viewport_enums import ToolCategory
 
 PATH_PATTERN = re.compile(r'(?:^|[\s"\'])(/[^\s"\']+|[./][^\s"\']+)')
 NOISE_PATH_TOKENS = frozenset({"...", "//", "/dev/null", "|", "||", "&&", ";"})
+METADATA_FILE_BASENAME_ALLOWLIST = frozenset({"LICENSE", "COPYING", "NOTICE", "Makefile", "Dockerfile", "Justfile"})
 
 
 def classify_tool(name: str, input_data: dict[str, Any]) -> ToolCategory:
@@ -97,6 +99,30 @@ def clean_path_candidate(value: object) -> str | None:
     return candidate
 
 
+def looks_like_path_candidate(value: object) -> bool:
+    candidate = clean_path_candidate(value)
+    if candidate is None:
+        return False
+    if candidate.startswith(("/", "~/", "./", "../")):
+        return True
+    if "/" in candidate:
+        return True
+    if candidate.startswith("."):
+        return True
+    if PurePosixPath(candidate).suffix:
+        return True
+    return candidate in METADATA_FILE_BASENAME_ALLOWLIST
+
+
+def clean_metadata_path_candidate(value: object) -> str | None:
+    candidate = clean_path_candidate(value)
+    if candidate is None:
+        return None
+    if not looks_like_path_candidate(candidate):
+        return None
+    return candidate
+
+
 def clean_shell_path_candidate(value: object) -> str | None:
     candidate = clean_path_candidate(value)
     if candidate is None:
@@ -107,9 +133,12 @@ def clean_shell_path_candidate(value: object) -> str | None:
 
 
 __all__ = [
+    "METADATA_FILE_BASENAME_ALLOWLIST",
     "NOISE_PATH_TOKENS",
     "PATH_PATTERN",
     "classify_tool",
+    "clean_metadata_path_candidate",
     "clean_path_candidate",
     "clean_shell_path_candidate",
+    "looks_like_path_candidate",
 ]
