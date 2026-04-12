@@ -1,4 +1,4 @@
-Usage: polylogue open [OPTIONS]
+Usage: polylogue open [OPTIONS] [TARGET_TERMS]...
 
   Open matched conversation in browser/editor.
 
