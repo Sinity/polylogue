@@ -351,6 +351,17 @@ def test_missing_provider_raises():
                 "type": "session_meta",
                 "payload": {
                     "id": "019ce713-cf30-7aa1-832b-cd953aa7c7ec",
+                    "source": {"subagent": "review"},
+                },
+            },
+        ),
+        (
+            "/tmp/codex-session.jsonl",
+            {
+                "timestamp": "2026-03-13T12:02:43.171Z",
+                "type": "session_meta",
+                "payload": {
+                    "id": "019ce713-cf30-7aa1-832b-cd953aa7c7ec",
                     "source": {
                         "subagent": {
                             "thread_spawn": {
