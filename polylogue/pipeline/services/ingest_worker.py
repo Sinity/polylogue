@@ -305,9 +305,15 @@ def ingest_record(
             measure_serialized_size=measure_serialized_size,
         )
 
-    # Apply raw record defaults (timestamps)
+    # The decoded payload can be much larger than the normalized conversation
+    # objects; drop it before tuple transformation to avoid overlapping heaps.
+    del envelope
+    schema_resolution = None
+
+    # Apply raw record defaults (timestamps) and transform immediately.
     fallback_timestamp = raw_record.file_mtime
-    enriched_convos = []
+    source_name = raw_record.source_name or raw_record.source_path or ""
+    result_convos: list[ConversationData] = []
     for convo in parsed_conversations:
         updates: dict[str, object] = {}
         if convo.created_at is None and fallback_timestamp:
@@ -315,16 +321,10 @@ def ingest_record(
         effective_created = updates.get("created_at", convo.created_at)
         if convo.updated_at is None and isinstance(effective_created, str) and effective_created:
             updates["updated_at"] = effective_created
-        enriched_convos.append(convo.model_copy(update=updates) if updates else convo)
-
-    source_name = raw_record.source_name or raw_record.source_path or ""
-
-    # ── Phase 4: Transform each conversation to DB-ready tuples ───────
-    result_convos: list[ConversationData] = []
-    for convo in enriched_convos:
+        normalized_convo = convo.model_copy(update=updates) if updates else convo
         try:
             cdata = _transform_to_tuples(
-                convo,
+                normalized_convo,
                 source_name=source_name,
                 archive_root=archive_root,
                 raw_id=raw_record.raw_id,
@@ -340,6 +340,7 @@ def ingest_record(
                 ),
                 measure_serialized_size=measure_serialized_size,
             )
+    del parsed_conversations
 
     return _finalize_result(
         IngestRecordResult(
