@@ -2001,7 +2001,13 @@ def test_iter_source_raw_data_tracks_read_failures_without_stopping(
 
     original_write = BlobStore.write_from_path
 
-    def flaky_write(self: BlobStore, source: Path) -> tuple[str, int]:
+    def flaky_write(
+        self: BlobStore,
+        source: Path,
+        *,
+        heartbeat=None,
+    ) -> tuple[str, int]:
+        del heartbeat
         if source == bad:
             raise OSError("boom")
         return original_write(self, source)

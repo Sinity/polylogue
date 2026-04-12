@@ -28,3 +28,18 @@ def test_write_from_fileobj_deduplicates_existing_blob(tmp_path: Path) -> None:
     assert second_hash == first_hash
     assert second_size == first_size == len(payload)
     assert blob_store.stats()["count"] == 1
+
+
+def test_write_from_fileobj_invokes_heartbeat(tmp_path: Path) -> None:
+    blob_store = BlobStore(tmp_path / "blobs")
+    payload = b"x" * (256 * 1024)
+
+    beats = 0
+
+    def heartbeat() -> None:
+        nonlocal beats
+        beats += 1
+
+    blob_store.write_from_fileobj(BytesIO(payload), heartbeat=heartbeat)
+
+    assert beats >= 2

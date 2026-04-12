@@ -87,6 +87,7 @@ class AcquisitionService:
                     cursor_state=cursor_state,
                     drive_config=drive_config,
                     observation_callback=observation_callback,
+                    progress_callback=progress_callback,
                 ):
                     await _consume(record)
                     if progress_callback:
