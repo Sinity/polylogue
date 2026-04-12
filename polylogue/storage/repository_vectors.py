@@ -153,7 +153,7 @@ class RepositoryVectorMixin:
             provider_rows = await cursor.fetchall()
             providers = {row["provider_name"]: row["count"] for row in provider_rows}
 
-            embedding_stats = await read_embedding_stats_async(conn)
+            embedding_stats = await read_embedding_stats_async(conn, include_retrieval_bands=False)
         finally:
             if started_snapshot and conn.in_transaction:
                 await conn.rollback()
