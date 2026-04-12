@@ -14,7 +14,9 @@ Validates health checks for the runtime environment, including:
 
 from __future__ import annotations
 
+import importlib
 import os
+import sqlite3
 
 import pytest
 
@@ -369,6 +371,64 @@ class TestRuntimeHealthReadOnlyPaths:
         finally:
             # Restore permissions for cleanup
             archive_root.chmod(0o755)
+
+
+class TestRuntimeHealthLegacySchema:
+    """Tests for explicit reporting of unsupported legacy archive layouts."""
+
+    def test_runtime_health_reports_legacy_inline_raw_layout(self, tmp_path, monkeypatch):
+        import polylogue.paths
+        import polylogue.storage.backends.connection as connection_module
+
+        monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+        importlib.reload(polylogue.paths)
+        importlib.reload(connection_module)
+
+        db_path = connection_module.default_db_path()
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(db_path)
+        conn.executescript(
+            """
+            CREATE TABLE raw_conversations (
+                raw_id TEXT PRIMARY KEY,
+                provider_name TEXT NOT NULL,
+                payload_provider TEXT,
+                source_name TEXT,
+                source_path TEXT NOT NULL,
+                source_index INTEGER,
+                raw_content BLOB NOT NULL,
+                acquired_at TEXT NOT NULL,
+                file_mtime TEXT,
+                parsed_at TEXT,
+                parse_error TEXT,
+                validated_at TEXT,
+                validation_status TEXT,
+                validation_error TEXT,
+                validation_drift_count INTEGER DEFAULT 0,
+                validation_provider TEXT,
+                validation_mode TEXT
+            );
+            PRAGMA user_version = 1;
+            """
+        )
+        conn.commit()
+        conn.close()
+
+        config = Config(
+            archive_root=tmp_path / "archive",
+            render_root=tmp_path / "render",
+            sources=[Source(name="test", path=tmp_path / "inbox")],
+        )
+        (tmp_path / "archive").mkdir(parents=True, exist_ok=True)
+        (tmp_path / "render").mkdir(parents=True, exist_ok=True)
+
+        report = run_runtime_health(config)
+
+        schema_check = next((c for c in report.checks if c.name == "schema_version"), None)
+        assert schema_check is not None
+        assert schema_check.status == VerifyStatus.ERROR
+        assert "legacy inline raw-content layout" in schema_check.summary
 
 
 class TestRuntimeHealthToDict:

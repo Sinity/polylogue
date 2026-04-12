@@ -65,6 +65,8 @@ def test_ensure_schema_contract(tmp_path: Path) -> None:
         "publications",
     }.issubset(_table_names(conn))
     assert "message_meta" not in _table_names(conn)
+    raw_columns = {row[1] for row in conn.execute("PRAGMA table_info(raw_conversations)").fetchall()}
+    assert "blob_size" in raw_columns
     conn.close()
 
 
@@ -80,6 +82,82 @@ def test_ensure_schema_rejects_unsupported_version(tmp_path: Path) -> None:
 
     assert exc_info.type.__name__ == "DatabaseError"
     assert "schema version" in str(exc_info.value).lower() or "incompatible" in str(exc_info.value).lower()
+    conn.close()
+
+
+def test_ensure_schema_adds_blob_size_to_legacy_v1_raw_table(tmp_path: Path) -> None:
+    """Legacy v1 databases without blob_size should be extended in place."""
+    db_path = tmp_path / "legacy-v1.db"
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    conn.executescript(
+        """
+        CREATE TABLE raw_conversations (
+            raw_id TEXT PRIMARY KEY,
+            provider_name TEXT NOT NULL,
+            payload_provider TEXT,
+            source_name TEXT,
+            source_path TEXT NOT NULL,
+            source_index INTEGER,
+            acquired_at TEXT NOT NULL,
+            file_mtime TEXT,
+            parsed_at TEXT,
+            parse_error TEXT,
+            validated_at TEXT,
+            validation_status TEXT,
+            validation_error TEXT,
+            validation_drift_count INTEGER DEFAULT 0,
+            validation_provider TEXT,
+            validation_mode TEXT
+        );
+        PRAGMA user_version = 1;
+        """
+    )
+    conn.commit()
+
+    _ensure_schema(conn)
+
+    raw_columns = {row[1] for row in conn.execute("PRAGMA table_info(raw_conversations)").fetchall()}
+    assert "blob_size" in raw_columns
+    conn.close()
+
+
+def test_ensure_schema_rejects_legacy_inline_raw_layout(tmp_path: Path) -> None:
+    """Legacy inline-raw databases should fail with a clear reset/back-up message."""
+    db_path = tmp_path / "legacy-inline-raw.db"
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    conn.executescript(
+        """
+        CREATE TABLE raw_conversations (
+            raw_id TEXT PRIMARY KEY,
+            provider_name TEXT NOT NULL,
+            payload_provider TEXT,
+            source_name TEXT,
+            source_path TEXT NOT NULL,
+            source_index INTEGER,
+            raw_content BLOB NOT NULL,
+            acquired_at TEXT NOT NULL,
+            file_mtime TEXT,
+            parsed_at TEXT,
+            parse_error TEXT,
+            validated_at TEXT,
+            validation_status TEXT,
+            validation_error TEXT,
+            validation_drift_count INTEGER DEFAULT 0,
+            validation_provider TEXT,
+            validation_mode TEXT
+        );
+        PRAGMA user_version = 1;
+        """
+    )
+    conn.commit()
+
+    with pytest.raises(Exception) as exc_info:
+        _ensure_schema(conn)
+
+    assert exc_info.type.__name__ == "DatabaseError"
+    assert "legacy inline raw-content layout" in str(exc_info.value)
     conn.close()
 
 
@@ -220,12 +298,106 @@ async def test_sqlite_backend_init_contract(tmp_path: Path, monkeypatch) -> None
     await default_backend.close()
 
 
+async def test_async_backend_rejects_legacy_inline_raw_layout(tmp_path: Path) -> None:
+    """Async backend writes should reject legacy inline-raw databases before acquisition begins."""
+    db_path = tmp_path / "legacy-inline-raw.db"
+    conn = sqlite3.connect(db_path)
+    conn.executescript(
+        """
+        CREATE TABLE raw_conversations (
+            raw_id TEXT PRIMARY KEY,
+            provider_name TEXT NOT NULL,
+            payload_provider TEXT,
+            source_name TEXT,
+            source_path TEXT NOT NULL,
+            source_index INTEGER,
+            raw_content BLOB NOT NULL,
+            acquired_at TEXT NOT NULL,
+            file_mtime TEXT,
+            parsed_at TEXT,
+            parse_error TEXT,
+            validated_at TEXT,
+            validation_status TEXT,
+            validation_error TEXT,
+            validation_drift_count INTEGER DEFAULT 0,
+            validation_provider TEXT,
+            validation_mode TEXT
+        );
+        PRAGMA user_version = 1;
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    backend = SQLiteBackend(db_path=db_path)
+    with pytest.raises(Exception) as exc_info:
+        await backend.get_raw_conversation_count()
+
+    assert exc_info.type.__name__ == "DatabaseError"
+    assert "legacy inline raw-content layout" in str(exc_info.value)
+    await backend.close()
+
+
 async def test_async_backend_schema_and_lock_contracts(tmp_path: Path) -> None:
     """Async schema guards and write locks must serialize correctly without blocking readers."""
     backend = SQLiteBackend(db_path=tmp_path / "async.db")
 
     results = await asyncio.gather(*[backend.get_conversation(f"conv:{idx}") for idx in range(10)])
     assert all(result is None for result in results)
+
+
+async def test_async_backend_extends_legacy_v1_raw_table(tmp_path: Path) -> None:
+    """Async backend init should repair legacy v1 raw tables before writes."""
+    db_path = tmp_path / "legacy-v1-async.db"
+    conn = sqlite3.connect(db_path)
+    conn.executescript(
+        """
+        CREATE TABLE raw_conversations (
+            raw_id TEXT PRIMARY KEY,
+            provider_name TEXT NOT NULL,
+            payload_provider TEXT,
+            source_name TEXT,
+            source_path TEXT NOT NULL,
+            source_index INTEGER,
+            acquired_at TEXT NOT NULL,
+            file_mtime TEXT,
+            parsed_at TEXT,
+            parse_error TEXT,
+            validated_at TEXT,
+            validation_status TEXT,
+            validation_error TEXT,
+            validation_drift_count INTEGER DEFAULT 0,
+            validation_provider TEXT,
+            validation_mode TEXT
+        );
+        PRAGMA user_version = 1;
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    backend = SQLiteBackend(db_path=db_path)
+    await backend.save_raw_conversation(
+        RawConversationRecord(
+            raw_id="raw-legacy",
+            provider_name="chatgpt",
+            source_path="/tmp/legacy.json",
+            blob_size=123,
+            acquired_at=datetime.now(timezone.utc).isoformat(),
+        )
+    )
+
+    with sqlite3.connect(db_path) as verify_conn:
+        columns = {row[1] for row in verify_conn.execute("PRAGMA table_info(raw_conversations)").fetchall()}
+        row = verify_conn.execute(
+            "SELECT blob_size FROM raw_conversations WHERE raw_id = ?",
+            ("raw-legacy",),
+        ).fetchone()
+
+    assert "blob_size" in columns
+    assert row is not None
+    assert row[0] == 123
+    await backend.close()
 
 
 async def test_async_read_pool_uses_read_connection_settings(tmp_path: Path) -> None:
