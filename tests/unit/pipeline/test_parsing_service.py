@@ -678,6 +678,24 @@ class TestPlanningService:
         )
         await backend.mark_raw_parsed("raw-unvalidated", payload_provider="chatgpt")
 
+        await backend.save_raw_conversation(
+            RawConversationRecord(
+                raw_id="raw-validation-failed",
+                provider_name="chatgpt",
+                source_name="inbox-a",
+                source_path="/tmp/validation-failed.json",
+                blob_size=len(b'{"id":"x"}'),
+                acquired_at=datetime.now(tz=timezone.utc).isoformat(),
+            )
+        )
+        await backend.mark_raw_validated(
+            "raw-validation-failed",
+            status="failed",
+            error="Malformed JSONL lines: 1",
+            provider="chatgpt",
+            mode="strict",
+        )
+
         ordinary = await planner.build_plan(sources=[Source(name="inbox-a", path=source_dir)], stage="parse")
         forced = await planner.build_plan(
             sources=[Source(name="inbox-a", path=source_dir)],
@@ -690,10 +708,14 @@ class TestPlanningService:
         assert ordinary.parse_ready_raw_ids == []
 
         assert forced.summary.counts["validate"] == 1
-        assert forced.summary.counts["parse"] == 2
-        assert forced.summary.details["backlog_parse"] == 1
+        assert forced.summary.counts["parse"] == 3
+        assert forced.summary.details["backlog_parse"] == 2
         assert set(forced.validate_raw_ids) == {"raw-unvalidated"}
-        assert set(forced.parse_ready_raw_ids) == {"raw-unvalidated", "raw-validated"}
+        assert set(forced.parse_ready_raw_ids) == {
+            "raw-unvalidated",
+            "raw-validated",
+            "raw-validation-failed",
+        }
 
     @patch("polylogue.pipeline.services.acquisition.AcquisitionService.visit_sources")
     async def test_build_plan_force_reparse_counts_scanned_existing_records(
