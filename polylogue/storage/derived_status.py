@@ -35,6 +35,7 @@ def collect_derived_model_statuses_sync(
         "action_source_documents": int(action_status["valid_source_conversation_count"]),
         "action_orphan_rows": int(action_status["orphan_tool_block_count"]),
         "action_fts_rows": int(action_status["action_fts_count"]),
+        "action_fts_stale_rows": int(action_status.get("action_fts_stale_rows", 0)),
         "action_rows_ready": bool(action_status["rows_ready"]),
         "action_fts_ready": bool(action_status["action_fts_ready"]),
         "action_stale_rows": int(action_status["stale_count"]),
@@ -172,7 +173,11 @@ def build_retrieval_statuses(metrics: dict[str, int | bool]) -> dict[str, Derive
             pending_rows=pending_rows(
                 int(metrics["expected_evidence_retrieval_rows"]), int(metrics["evidence_retrieval_rows"])
             ),
-            stale_rows=int(metrics["profile_evidence_fts_duplicates"]) + int(metrics["action_stale_rows"]),
+            stale_rows=(
+                int(metrics["profile_evidence_fts_duplicates"])
+                + int(metrics["action_stale_rows"])
+                + int(metrics.get("action_fts_stale_rows", 0))
+            ),
             orphan_rows=int(metrics["action_orphan_rows"]) + int(metrics["orphan_profile_rows"]),
         ),
         "retrieval_inference": DerivedModelStatus(
