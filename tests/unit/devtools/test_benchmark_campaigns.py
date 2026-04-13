@@ -60,7 +60,7 @@ async def test_run_synthetic_benchmark_campaign_preserves_scenario_metadata(monk
 
 @pytest.mark.asyncio
 async def test_run_full_campaign_skips_scenarios_outside_scale_targets(monkeypatch, tmp_path: Path) -> None:
-    async def fake_generate_archive(_spec, archive_dir: Path):
+    async def fake_generate_archive(_spec, archive_dir: Path, *, corpus_source=None):
         from devtools.large_archive_generator import ArchiveMetrics
 
         archive_dir.mkdir(parents=True, exist_ok=True)

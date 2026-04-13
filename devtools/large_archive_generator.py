@@ -8,13 +8,20 @@ from __future__ import annotations
 
 import hashlib
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from polylogue.scenarios import CorpusScenario, CorpusSpec, build_corpus_scenarios, flatten_corpus_specs
+from polylogue.scenarios import (
+    CorpusScenario,
+    CorpusSourceKind,
+    CorpusSpec,
+    build_corpus_scenarios,
+    flatten_corpus_specs,
+)
+from polylogue.schemas.operator_inference import list_inferred_corpus_scenarios
 
 if TYPE_CHECKING:
     pass
@@ -48,37 +55,86 @@ class ArchiveSpec:
         high = self.avg_messages_per_conv * 2
         return range(low, high + 1)
 
-    def corpus_specs(self, *, available_providers: set[str]) -> tuple[CorpusSpec, ...]:
+    def corpus_specs(
+        self,
+        *,
+        available_providers: set[str],
+        corpus_source: CorpusSourceKind | str = CorpusSourceKind.DEFAULT,
+    ) -> tuple[CorpusSpec, ...]:
         """Compile the archive spec into per-provider synthetic corpus specs."""
-        return flatten_corpus_specs(self.corpus_scenarios(available_providers=available_providers))
+        return flatten_corpus_specs(
+            self.corpus_scenarios(
+                available_providers=available_providers,
+                corpus_source=corpus_source,
+            )
+        )
 
-    def corpus_scenarios(self, *, available_providers: set[str]) -> tuple[CorpusScenario, ...]:
+    def corpus_scenarios(
+        self,
+        *,
+        available_providers: set[str],
+        corpus_source: CorpusSourceKind | str = CorpusSourceKind.DEFAULT,
+    ) -> tuple[CorpusScenario, ...]:
         """Compile the archive spec into named per-provider synthetic corpus scenarios."""
+        source_kind = CorpusSourceKind(corpus_source)
         filtered_mix = {provider: weight for provider, weight in self.provider_mix.items() if provider in available_providers}
         if not filtered_mix:
             raise ValueError(
                 f"No providers from spec are available. "
                 f"Requested: {list(self.provider_mix)}, available: {sorted(available_providers)}"
             )
+        if source_kind is CorpusSourceKind.DEFAULT:
+            total_weight = sum(filtered_mix.values())
+            normalized_mix = {provider: weight / total_weight for provider, weight in filtered_mix.items()}
+            distribution = _distribute_conversations(self.conversations, normalized_mix)
+            return build_corpus_scenarios(
+                tuple(
+                    CorpusSpec.for_provider(
+                        provider,
+                        count=conversation_count,
+                        messages_min=self.messages_per_conversation_range.start,
+                        messages_max=self.messages_per_conversation_range.stop - 1,
+                        seed=self.seed,
+                        origin="generated.large-archive",
+                        tags=("synthetic", "benchmark", "scale", self.level.value),
+                    )
+                    for provider, conversation_count in distribution.items()
+                    if conversation_count > 0
+                ),
+                origin="compiled.large-archive-scenario",
+                tags=("synthetic", "benchmark", "scale", self.level.value, "scenario"),
+            )
+
+        base_scenarios = tuple(
+            scenario
+            for scenario in list_inferred_corpus_scenarios()
+            if scenario.provider in filtered_mix
+        )
+        if not base_scenarios:
+            raise ValueError(
+                f"No inferred corpus scenarios available for providers: {sorted(filtered_mix)}"
+            )
+
         total_weight = sum(filtered_mix.values())
         normalized_mix = {provider: weight / total_weight for provider, weight in filtered_mix.items()}
         distribution = _distribute_conversations(self.conversations, normalized_mix)
-        return build_corpus_scenarios(
-            tuple(
-                CorpusSpec.for_provider(
-                    provider,
-                    count=conversation_count,
+        scaled_specs: list[CorpusSpec] = []
+        for provider, conversation_count in distribution.items():
+            provider_scenarios = tuple(scenario for scenario in base_scenarios if scenario.provider == provider)
+            scaled_specs.extend(
+                _scale_corpus_specs(
+                    tuple(spec for scenario in provider_scenarios for spec in scenario.corpus_specs),
+                    total=conversation_count,
+                    level=self.level.value,
+                    seed=self.seed,
                     messages_min=self.messages_per_conversation_range.start,
                     messages_max=self.messages_per_conversation_range.stop - 1,
-                    seed=self.seed,
-                    origin="generated.large-archive",
-                    tags=("synthetic", "benchmark", "scale", self.level.value),
                 )
-                for provider, conversation_count in distribution.items()
-                if conversation_count > 0
-            ),
+            )
+        return build_corpus_scenarios(
+            tuple(scaled_specs),
             origin="compiled.large-archive-scenario",
-            tags=("synthetic", "benchmark", "scale", self.level.value, "scenario"),
+            tags=("synthetic", "benchmark", "scale", self.level.value, "scenario", "inferred"),
         )
 
 
@@ -162,6 +218,54 @@ def _distribute_conversations(
     return allocated
 
 
+def _scale_integer_weights(total: int, weights: tuple[int, ...]) -> tuple[int, ...]:
+    if total <= 0 or not weights:
+        return tuple(0 for _ in weights)
+    positive_weights = tuple(max(1, weight) for weight in weights)
+    total_weight = sum(positive_weights)
+    raw = [total * weight / total_weight for weight in positive_weights]
+    counts = [int(value) for value in raw]
+    remainder = total - sum(counts)
+    order = sorted(
+        range(len(weights)),
+        key=lambda index: (raw[index] - counts[index], positive_weights[index]),
+        reverse=True,
+    )
+    for index in order[:remainder]:
+        counts[index] += 1
+    return tuple(counts)
+
+
+def _scale_corpus_specs(
+    specs: tuple[CorpusSpec, ...],
+    *,
+    total: int,
+    level: str,
+    seed: int,
+    messages_min: int,
+    messages_max: int,
+) -> tuple[CorpusSpec, ...]:
+    if total <= 0 or not specs:
+        return ()
+    counts = _scale_integer_weights(total, tuple(spec.count for spec in specs))
+    scaled: list[CorpusSpec] = []
+    for spec, count in zip(specs, counts, strict=True):
+        if count <= 0:
+            continue
+        scaled.append(
+            replace(
+                spec,
+                count=count,
+                seed=seed,
+                messages_min=messages_min,
+                messages_max=messages_max,
+                origin="generated.large-archive",
+                tags=tuple(dict.fromkeys((*spec.tags, "synthetic", "benchmark", "scale", level, "inferred"))),
+            )
+        )
+    return tuple(scaled)
+
+
 def _available_providers() -> set[str]:
     """Return the set of providers that have both schemas and wire formats."""
     from polylogue.schemas.synthetic import SyntheticCorpus
@@ -169,7 +273,12 @@ def _available_providers() -> set[str]:
     return set(SyntheticCorpus.available_providers())
 
 
-async def generate_archive(spec: ArchiveSpec, output_dir: Path) -> ArchiveMetrics:
+async def generate_archive(
+    spec: ArchiveSpec,
+    output_dir: Path,
+    *,
+    corpus_source: CorpusSourceKind | str = CorpusSourceKind.DEFAULT,
+) -> ArchiveMetrics:
     """Generate a synthetic archive at the specified scale level.
 
     Creates synthetic conversations using polylogue's SyntheticCorpus engine,
@@ -211,7 +320,10 @@ async def generate_archive(spec: ArchiveSpec, output_dir: Path) -> ArchiveMetric
 
     try:
         async with backend.bulk_connection():
-            for corpus_scenario in spec.corpus_scenarios(available_providers=_available_providers()):
+            for corpus_scenario in spec.corpus_scenarios(
+                available_providers=_available_providers(),
+                corpus_source=corpus_source,
+            ):
                 provider = corpus_scenario.provider
                 provider_conv_count = 0
                 for corpus_spec in corpus_scenario.corpus_specs:

@@ -20,7 +20,7 @@ from typing import Any
 from polylogue.config import Config, Source
 from polylogue.paths import blob_store_root
 from polylogue.pipeline.runner import RUN_STAGE_CHOICES, run_sources
-from polylogue.scenarios import resolve_corpus_scenarios
+from polylogue.scenarios import CorpusSourceKind, resolve_corpus_scenarios
 from polylogue.schemas.synthetic import SyntheticCorpus
 from polylogue.storage.backends import create_backend
 from polylogue.storage.backends.connection import (
@@ -81,6 +81,12 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             f"({', '.join(sorted(SyntheticCorpus.available_providers()))}). "
             "In archive-subset mode it filters the sampled providers and may be repeated."
         ),
+    )
+    parser.add_argument(
+        "--corpus-source",
+        choices=[kind.value for kind in CorpusSourceKind],
+        default=CorpusSourceKind.DEFAULT.value,
+        help="Synthetic corpus source to use in synthetic mode (default: default)",
     )
     parser.add_argument(
         "--count",
@@ -392,6 +398,7 @@ def _build_probe_provenance(
 def _write_probe_sources(
     *,
     provider: str,
+    corpus_source: CorpusSourceKind | str,
     count: int,
     messages_min: int,
     messages_max: int,
@@ -401,7 +408,7 @@ def _write_probe_sources(
     scenarios = resolve_corpus_scenarios(
         providers=(provider,),
         count=count,
-        source="default",
+        source=corpus_source,
         messages_min=messages_min,
         messages_max=messages_max,
         seed=seed,
@@ -888,6 +895,7 @@ async def run_probe(args: argparse.Namespace) -> dict[str, Any]:
         with _isolated_env(workdir):
             files, total_bytes = _write_probe_sources(
                 provider=provider_name,
+                corpus_source=CorpusSourceKind(args.corpus_source),
                 count=args.count,
                 messages_min=args.messages_min,
                 messages_max=args.messages_max,
@@ -914,6 +922,7 @@ async def run_probe(args: argparse.Namespace) -> dict[str, Any]:
             "probe": {
                 "input_mode": "synthetic",
                 "provider": provider_name,
+                "corpus_source": args.corpus_source,
                 "stage": args.stage,
                 "stage_sequence": stage_sequence,
                 "count": args.count,

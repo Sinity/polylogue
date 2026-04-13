@@ -13,6 +13,8 @@ import asyncio
 import sys
 from pathlib import Path
 
+from polylogue.scenarios import CorpusSourceKind
+
 ROOT = Path(__file__).resolve().parent.parent
 
 
@@ -49,6 +51,12 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=42,
         help="Random seed for reproducibility (default: 42)",
     )
+    parser.add_argument(
+        "--corpus-source",
+        choices=[kind.value for kind in CorpusSourceKind],
+        default=CorpusSourceKind.DEFAULT.value,
+        help="Synthetic corpus source to use for archive generation (default: default)",
+    )
     return parser.parse_args(argv)
 
 
@@ -73,7 +81,11 @@ async def _run(args: argparse.Namespace) -> int:
         return 0
 
     if args.campaign == "all":
-        results = await run_full_campaign(args.scale, args.output)
+        results = await run_full_campaign(
+            args.scale,
+            args.output,
+            corpus_source=CorpusSourceKind(args.corpus_source),
+        )
     else:
         # Generate archive first
         if args.campaign not in SYNTHETIC_CAMPAIGNS:
@@ -91,8 +103,12 @@ async def _run(args: argparse.Namespace) -> int:
             spec = replace(spec, seed=args.seed)
 
         archive_dir = args.output / f"archive-{args.scale}"
-        print(f"Generating {args.scale} archive...")
-        await generate_archive(spec, archive_dir)
+        print(f"Generating {args.scale} archive from {args.corpus_source} corpus source...")
+        await generate_archive(
+            spec,
+            archive_dir,
+            corpus_source=CorpusSourceKind(args.corpus_source),
+        )
         db_path = archive_dir / "benchmark.db"
 
         result = await run_synthetic_benchmark_campaign(args.campaign, db_path)
