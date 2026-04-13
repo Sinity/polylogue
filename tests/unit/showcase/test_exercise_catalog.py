@@ -89,10 +89,43 @@ class TestExercisesByGroup:
             if exercise.group == "subcommands" and exercise.name.startswith("json-")
         }
         assert observed["json-audit"].args == ["audit", "--only", "audit", "--json"]
+        assert observed["json-doctor-action-event-preview"].args == [
+            "doctor",
+            "--json",
+            "--repair",
+            "--preview",
+            "--target",
+            "action_event_read_model",
+        ]
         assert observed["json-run-embed"].args == ["run", "embed", "--stats", "--json"]
         assert "json-schema-compare" not in observed
         assert "json-schema-generate" not in observed
         assert "json-schema-promote" not in observed
+
+    def test_runtime_aligned_json_contract_exercise_preserves_declared_targets(self):
+        observed = {
+            exercise.name: exercise
+            for exercise in EXERCISES
+            if exercise.group == "subcommands" and exercise.name.startswith("json-")
+        }
+
+        action_preview = observed["json-doctor-action-event-preview"]
+
+        assert action_preview.artifact_targets == (
+            "action_event_rows",
+            "action_event_fts",
+            "action_event_health",
+        )
+        assert action_preview.operation_targets == (
+            "cli.json-contract",
+            "project-action-event-health",
+        )
+        assert action_preview.tags == (
+            "generated",
+            "json-contract",
+            "maintenance",
+            "action-events",
+        )
 
 
 class TestVhsExercises:
