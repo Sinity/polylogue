@@ -1,10 +1,14 @@
 from __future__ import annotations
 
-from polylogue.operations import OperationKind, build_runtime_operation_specs
+from polylogue.operations import (
+    OperationKind,
+    build_declared_operation_catalog,
+    build_runtime_operation_catalog,
+)
 
 
-def test_runtime_operation_specs_cover_the_two_proven_paths() -> None:
-    specs = {spec.name: spec for spec in build_runtime_operation_specs()}
+def test_runtime_operation_catalog_covers_the_two_proven_paths() -> None:
+    specs = build_runtime_operation_catalog().by_name()
 
     assert set(specs) == {
         "plan-validation-backlog",
@@ -25,7 +29,23 @@ def test_runtime_operation_specs_cover_the_two_proven_paths() -> None:
     assert specs["project-session-product-health"].previewable is True
 
 
-def test_runtime_operation_specs_have_declared_surfaces_and_code_refs() -> None:
-    for spec in build_runtime_operation_specs():
+def test_runtime_operation_catalog_has_declared_surfaces_and_code_refs() -> None:
+    for spec in build_runtime_operation_catalog().specs:
         assert spec.surfaces
         assert spec.code_refs
+
+
+def test_declared_operation_catalog_contains_runtime_and_control_plane_operations() -> None:
+    catalog = build_declared_operation_catalog()
+
+    assert "project-action-event-health" in catalog.names()
+    assert "benchmark.storage.crud" in catalog.names()
+    assert "cli.json-contract" in catalog.names()
+
+
+def test_operation_catalog_resolve_filters_unknown_names() -> None:
+    catalog = build_declared_operation_catalog()
+
+    assert tuple(spec.name for spec in catalog.resolve(("project-action-event-health", "missing"))) == (
+        "project-action-event-health",
+    )
