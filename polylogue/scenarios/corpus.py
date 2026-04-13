@@ -8,7 +8,7 @@ from enum import Enum
 from typing import TYPE_CHECKING, Any
 
 from .metadata import ScenarioMetadata
-from .projections import ScenarioProjectionEntry, ScenarioProjectionSourceKind
+from .projections import ScenarioProjectionSource, ScenarioProjectionSourceKind
 
 if TYPE_CHECKING:
     from polylogue.schemas.tooling_models import ClusterManifest, SchemaCluster
@@ -51,7 +51,7 @@ class CorpusSourceKind(str, Enum):
 
 
 @dataclass(frozen=True, kw_only=True)
-class CorpusSpec(ScenarioMetadata):
+class CorpusSpec(ScenarioProjectionSource, ScenarioMetadata):
     """Authored or inferred synthetic corpus configuration."""
 
     provider: str
@@ -214,14 +214,12 @@ class CorpusSpec(ScenarioMetadata):
             payload["representative_paths"] = list(self.representative_paths)
         return payload
 
-    def to_projection_entry(self) -> ScenarioProjectionEntry:
-        return ScenarioProjectionEntry.from_object(
-            source_kind=ScenarioProjectionSourceKind.INFERRED_CORPUS,
-            name=self.projection_name,
-            description=self.projection_description,
-            obj=self,
-            source_payload=self.to_payload(),
-        )
+    @property
+    def projection_source_kind(self) -> ScenarioProjectionSourceKind:
+        return ScenarioProjectionSourceKind.INFERRED_CORPUS
+
+    def projection_source_payload(self) -> Mapping[str, object]:
+        return self.to_payload()
 
 
 def build_default_corpus_specs(

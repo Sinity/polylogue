@@ -5,11 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from devtools.execution_specs import ExecutionSpec
-from polylogue.scenarios import ScenarioMetadata
+from polylogue.scenarios import ScenarioMetadata, ScenarioProjectionSource, ScenarioProjectionSourceKind
 
 
 @dataclass(frozen=True)
-class BenchmarkCampaignEntry(ScenarioMetadata):
+class BenchmarkCampaignEntry(ScenarioProjectionSource, ScenarioMetadata):
     name: str
     description: str
     execution: ExecutionSpec | None = None
@@ -20,6 +20,19 @@ class BenchmarkCampaignEntry(ScenarioMetadata):
     summary_metric: str = ""
     summary_label: str = ""
     scale_targets: tuple[str, ...] = ()
+    projection_kind: ScenarioProjectionSourceKind = ScenarioProjectionSourceKind.BENCHMARK_CAMPAIGN
+
+    @property
+    def projection_source_kind(self) -> ScenarioProjectionSourceKind:
+        return self.projection_kind
+
+    @property
+    def projection_name(self) -> str:
+        return self.name
+
+    @property
+    def projection_description(self) -> str:
+        return self.description
 
     @property
     def tests(self) -> tuple[str, ...]:
