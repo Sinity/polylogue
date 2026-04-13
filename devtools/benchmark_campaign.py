@@ -7,7 +7,7 @@ import json
 import subprocess
 import tempfile
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -27,6 +27,10 @@ class Campaign:
     notes: tuple[str, ...] = ()
     warn_pct: float = DEFAULT_WARN_PCT
     fail_pct: float = DEFAULT_FAIL_PCT
+    origin: str = "authored"
+    artifact_targets: tuple[str, ...] = ()
+    operation_targets: tuple[str, ...] = ()
+    tags: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -52,6 +56,10 @@ class BenchmarkScenario:
             notes=self.notes,
             warn_pct=self.warn_pct,
             fail_pct=self.fail_pct,
+            origin=self.origin,
+            artifact_targets=self.artifact_targets,
+            operation_targets=self.operation_targets,
+            tags=self.tags,
         )
 
 
@@ -99,6 +107,10 @@ class CampaignResult:
     fail_pct: float
     regressions: list[dict[str, Any]]
     worst_regression_pct: float | None
+    origin: str = "authored"
+    artifact_targets: list[str] = field(default_factory=list)
+    operation_targets: list[str] = field(default_factory=list)
+    tags: list[str] = field(default_factory=list)
 
 
 def compile_benchmark_scenarios(scenarios: tuple[BenchmarkScenario, ...]) -> dict[str, Campaign]:
@@ -324,6 +336,10 @@ def run_campaign(
         fail_pct=fail_threshold,
         regressions=[asdict(item) for item in regressions],
         worst_regression_pct=worst_regression,
+        origin=campaign.origin,
+        artifact_targets=list(campaign.artifact_targets),
+        operation_targets=list(campaign.operation_targets),
+        tags=list(campaign.tags),
     )
 
     artifact_json.write_text(json.dumps(asdict(result), indent=2, sort_keys=True) + "\n")
