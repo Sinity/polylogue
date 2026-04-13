@@ -46,12 +46,12 @@ def pytest_lane(
     operation_targets: tuple[str, ...] = (),
     tags: tuple[str, ...] = (),
 ) -> LaneEntry:
-    return cli_lane(
-        name,
-        description,
-        timeout_s,
-        *pytest_execution("pytest", *args).argv,
+    return LaneEntry(
+        name=name,
+        description=description,
+        timeout_s=timeout_s,
         category=category,
+        execution=pytest_execution("pytest", *args),
         origin=origin,
         path_targets=path_targets,
         artifact_targets=artifact_targets,
