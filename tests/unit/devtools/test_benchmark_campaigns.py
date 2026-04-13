@@ -6,6 +6,8 @@ import pytest
 
 from devtools.benchmark_campaigns import (
     CAMPAIGN_REGISTRY,
+    SYNTHETIC_CAMPAIGNS,
+    run_full_campaign,
     run_synthetic_benchmark_campaign,
 )
 from devtools.synthetic_benchmark_catalog import (
@@ -17,6 +19,8 @@ from devtools.synthetic_benchmark_catalog import (
 def test_synthetic_benchmark_registry_is_compiled_from_authored_scenarios() -> None:
     assert set(CAMPAIGN_REGISTRY) == {scenario.scenario_id for scenario in SYNTHETIC_BENCHMARK_SCENARIOS}
     assert set(SYNTHETIC_BENCHMARK_REGISTRY) == set(CAMPAIGN_REGISTRY)
+    assert SYNTHETIC_CAMPAIGNS["incremental-index"].runner_name == "incremental-index"
+    assert SYNTHETIC_CAMPAIGNS["incremental-index"].scale_targets == ("small", "medium", "large", "stretch")
     assert SYNTHETIC_BENCHMARK_REGISTRY["fts-rebuild"].description == "Benchmark full FTS5 index rebuild"
     assert (
         SYNTHETIC_BENCHMARK_REGISTRY["action-event-materialization"].description
@@ -50,6 +54,51 @@ async def test_run_synthetic_benchmark_campaign_preserves_scenario_metadata(monk
     assert result.artifact_targets == ["message_fts"]
     assert result.operation_targets == ["index.message-fts-incremental"]
     assert result.tags == ["benchmark", "synthetic", "fts"]
+
+
+@pytest.mark.asyncio
+async def test_run_full_campaign_skips_scenarios_outside_scale_targets(monkeypatch, tmp_path: Path) -> None:
+    async def fake_generate_archive(_spec, archive_dir: Path):
+        from devtools.large_archive_generator import ArchiveMetrics
+
+        archive_dir.mkdir(parents=True, exist_ok=True)
+        (archive_dir / "benchmark.db").write_bytes(b"")
+        return ArchiveMetrics(
+            wall_time_s=0.5,
+            db_size_bytes=0,
+            message_count=10,
+            conversation_count=2,
+        )
+
+    async def fake_run_campaign(name: str, _db_path: Path):
+        from devtools.benchmark_campaigns import CampaignResult
+
+        return CampaignResult(
+            campaign_name=name,
+            scale_level="",
+            metrics={"rebuild_wall_s": 1.0, "total_wall_s": 1.0, "list_50_wall_s": 1.0, "total_health_s": 1.0},
+            db_stats={},
+        )
+
+    skipped = SYNTHETIC_CAMPAIGNS["startup-health"]
+    limited = SYNTHETIC_CAMPAIGNS["incremental-index"]
+    monkeypatch.setitem(
+        SYNTHETIC_CAMPAIGNS,
+        skipped.name,
+        type(skipped)(**{**skipped.__dict__, "scale_targets": ("large", "stretch")}),
+    )
+    monkeypatch.setitem(
+        SYNTHETIC_CAMPAIGNS,
+        limited.name,
+        type(limited)(**{**limited.__dict__, "scale_targets": ("small",)}),
+    )
+    monkeypatch.setattr("devtools.large_archive_generator.generate_archive", fake_generate_archive)
+    monkeypatch.setattr("devtools.benchmark_campaigns.run_synthetic_benchmark_campaign", fake_run_campaign)
+
+    results = await run_full_campaign("small", tmp_path)
+
+    assert "incremental-index" in {result.campaign_name for result in results}
+    assert "startup-health" not in {result.campaign_name for result in results}
 
 
 def test_action_event_materialization_campaign_reports_action_row_counts(monkeypatch, tmp_path: Path) -> None:
