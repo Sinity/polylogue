@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import sys
 
-from polylogue.scenarios import CorpusRequest
 from polylogue.showcase.invariants import check_invariants
 from polylogue.showcase.qa_runner_models import QAResult
 from polylogue.showcase.qa_runner_reporting import save_qa_reports
@@ -37,13 +36,7 @@ def run_qa_session(
         workspace = create_verification_workspace(request.workspace_dir)
         seed_workspace_from_corpus_request(
             workspace,
-            request=CorpusRequest(
-                count=request.synthetic_count,
-                style="showcase",
-                messages_min=6,
-                messages_max=19,
-                seed=42,
-            ),
+            request=request.corpus_request,
             regenerate_schemas=request.regenerate_schemas,
         )
         workspace_env_for_runner = dict(workspace.env_vars)
@@ -127,6 +120,7 @@ def run_qa_session(
             tier_filter=request.tier_filter,
             extra_exercises=generate_extra_exercises(),
             workspace_env=workspace_env_for_runner,
+            corpus_request=request.corpus_request,
         )
         result.showcase_result = runner.run()
 

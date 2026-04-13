@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
+
+from polylogue.scenarios import CorpusRequest
+from polylogue.showcase.corpus_requests import showcase_corpus_request
 
 
 class QAStage(str, Enum):
@@ -33,7 +36,7 @@ class QASessionRequest:
     verbose: bool = False
     fail_fast: bool = False
     tier_filter: int | None = None
-    synthetic_count: int = 3
+    corpus_request: CorpusRequest = field(default_factory=showcase_corpus_request)
 
     @property
     def needs_workspace(self) -> bool:
@@ -102,6 +105,7 @@ def build_qa_session_request(
         verbose=verbose,
         fail_fast=fail_fast,
         tier_filter=tier_filter,
+        corpus_request=showcase_corpus_request(),
     )
 
 
