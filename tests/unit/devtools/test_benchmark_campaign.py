@@ -19,7 +19,7 @@ from devtools.benchmark_scenario_catalog import (
     BENCHMARK_SCENARIOS,
     compile_benchmark_campaigns,
 )
-from polylogue.scenarios import ExecutionKind, ScenarioProjectionSourceKind, pytest_execution
+from polylogue.scenarios import AssertionSpec, ExecutionKind, ScenarioProjectionSourceKind, pytest_execution
 
 
 def test_compare_results_orders_regressions_by_worst_delta() -> None:
@@ -182,6 +182,7 @@ def test_benchmark_entry_exposes_tests_from_execution() -> None:
         name="action-events",
         description="action-event repair benchmark",
         execution=pytest_execution("tests/benchmarks/test_action_events.py"),
+        assertion=AssertionSpec(benchmark_warn_pct=10.0, benchmark_fail_pct=20.0),
         notes=("Tracks action-event repair throughput.",),
         origin="generated.action-events",
         artifact_targets=("action_event_rows", "action_event_fts"),
@@ -190,6 +191,8 @@ def test_benchmark_entry_exposes_tests_from_execution() -> None:
     )
 
     assert scenario.tests == ("tests/benchmarks/test_action_events.py",)
+    assert scenario.warn_pct == 10.0
+    assert scenario.fail_pct == 20.0
     assert scenario.origin == "generated.action-events"
     assert scenario.artifact_targets == ("action_event_rows", "action_event_fts")
     assert scenario.operation_targets == ("benchmark.repair.action-events",)
@@ -289,6 +292,7 @@ def test_run_campaign_executes_authored_pytest_through_shared_runtime(tmp_path: 
         name="search-filters",
         description="FTS benchmark",
         execution=pytest_execution("tests/benchmarks/test_search_filters.py"),
+        assertion=AssertionSpec(benchmark_warn_pct=10.0, benchmark_fail_pct=20.0),
         notes=("Canonical domain.",),
     )
 
@@ -306,6 +310,8 @@ def test_run_campaign_executes_authored_pytest_through_shared_runtime(tmp_path: 
     assert "--benchmark-enable" in captured["execution"].pytest_targets
     assert "tests/benchmarks/test_search_filters.py" in captured["execution"].pytest_targets
     assert result.exit_code == 0
+    assert result.warn_pct == 10.0
+    assert result.fail_pct == 20.0
     assert result.command[0] == "pytest"
     assert artifact_json.exists()
     assert artifact_md.exists()

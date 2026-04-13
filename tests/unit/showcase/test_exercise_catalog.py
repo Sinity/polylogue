@@ -82,7 +82,7 @@ class TestExercisesByGroup:
         }
         assert set(observed) == expected
         for exercise in observed.values():
-            assert exercise.validation.stdout_is_valid_json is True
+            assert exercise.assertion.stdout_is_valid_json is True
             assert exercise.output_ext == ".json"
 
     def test_json_contract_exercises_use_curated_runnable_args(self):

@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from polylogue.scenarios import (
+    AssertionSpec,
     ExecutableScenario,
     ExecutionKind,
     ExecutionSpec,
@@ -14,25 +14,13 @@ from polylogue.scenarios import (
 )
 
 
-@dataclass(frozen=True)
-class Validation:
-    """Expected outcome for an exercise."""
-
-    exit_code: int | None = 0  # None = delegated to custom validator
-    stdout_contains: tuple[str, ...] = ()
-    stdout_not_contains: tuple[str, ...] = ()
-    stdout_is_valid_json: bool = False
-    stdout_min_lines: int | None = None
-    custom: Callable[[str, int], str | None] | None = None  # (output, exit_code) -> error|None
-
-
 @dataclass(frozen=True, kw_only=True)
 class Exercise(ExecutableScenario):
     """A single showcase exercise — one CLI invocation with validation."""
 
     group: str  # structural | sources | pipeline | query-read | query-write | subcommands | advanced
     execution: ExecutionSpec = field(default_factory=polylogue_execution)
-    validation: Validation = field(default_factory=Validation)
+    assertion: AssertionSpec = field(default_factory=AssertionSpec)
     needs_data: bool = False  # Requires populated database
     writes: bool = False  # Mutates state — skip in --live mode
     depends_on: str | None = None  # Exercise that must complete first
@@ -80,4 +68,4 @@ class Exercise(ExecutableScenario):
         return " ".join(self.execution.polylogue_args) if self.execution.polylogue_args else "(default stats)"
 
 
-__all__ = ["Exercise", "Validation"]
+__all__ = ["AssertionSpec", "Exercise"]
