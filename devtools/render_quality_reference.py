@@ -8,13 +8,10 @@ from pathlib import Path
 
 from devtools.benchmark_catalog import BenchmarkCampaignEntry
 from devtools.command_catalog import control_plane_command
-from devtools.quality_registry import (
-    MutationCampaignEntry,
-    QualityRegistry,
-    ValidationLaneEntry,
-    build_quality_registry,
-)
+from devtools.mutation_catalog import MutationCampaignEntry
+from devtools.quality_registry import QualityRegistry, build_quality_registry
 from devtools.scenario_coverage import RuntimeScenarioCoverage, build_runtime_scenario_coverage
+from devtools.validation_catalog import ValidationLaneEntry
 from polylogue.scenarios import ScenarioProjectionEntry
 
 
