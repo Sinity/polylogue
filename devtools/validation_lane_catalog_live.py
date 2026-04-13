@@ -28,9 +28,6 @@ LIVE_LANES = {
         "/tmp/polylogue-live-archive-subset-parse-probe",
         "--json-out",
         "/tmp/polylogue-live-archive-subset-parse-probe.json",
-        path_targets=("raw-reparse-loop",),
-        artifact_targets=("parse_backlog",),
-        operation_targets=("plan-parse-backlog",),
         tags=("live", "probe", "parse"),
     ),
     "live-exercises": polylogue_lane(
@@ -187,9 +184,6 @@ LIVE_LANES = {
         "--repair",
         "--target",
         "session_products",
-        path_targets=("session-product-repair-loop",),
-        artifact_targets=("session_product_rows", "session_product_fts", "session_product_health"),
-        operation_targets=("cli.json-contract", "materialize-session-products", "project-session-product-health"),
         tags=("live", "repair", "session-products"),
     ),
     "live-project-stats": polylogue_lane(
@@ -213,14 +207,6 @@ LIVE_LANES = {
         180,
         "doctor",
         "--json",
-        path_targets=("action-event-repair-loop", "session-product-repair-loop", "message-fts-health-loop"),
-        artifact_targets=("action_event_health", "session_product_health", "archive_health"),
-        operation_targets=(
-            "cli.json-contract",
-            "project-action-event-health",
-            "project-session-product-health",
-            "project-archive-health",
-        ),
         tags=("live", "health", "maintenance"),
     ),
     "live-maintenance-preview": polylogue_lane(
@@ -232,14 +218,6 @@ LIVE_LANES = {
         "--repair",
         "--cleanup",
         "--preview",
-        path_targets=("action-event-repair-loop", "session-product-repair-loop", "message-fts-health-loop"),
-        artifact_targets=("action_event_health", "session_product_health", "archive_health"),
-        operation_targets=(
-            "cli.json-contract",
-            "project-action-event-health",
-            "project-session-product-health",
-            "project-archive-health",
-        ),
         tags=("live", "maintenance", "preview"),
     ),
     "memory-budget": memory_budget_lane(

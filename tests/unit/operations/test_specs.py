@@ -7,7 +7,7 @@ from polylogue.operations import (
 )
 
 
-def test_runtime_operation_catalog_covers_the_two_proven_paths() -> None:
+def test_runtime_operation_catalog_covers_the_current_runtime_paths() -> None:
     specs = build_runtime_operation_catalog().by_name()
 
     assert set(specs) == {
@@ -28,6 +28,9 @@ def test_runtime_operation_catalog_covers_the_two_proven_paths() -> None:
         "query-day-session-summaries",
         "query-week-session-summaries",
         "query-provider-analytics",
+        "query-session-enrichments",
+        "query-session-product-status",
+        "query-archive-debt",
     }
     assert specs["plan-validation-backlog"].kind is OperationKind.PLANNING
     assert specs["plan-validation-backlog"].path_targets == ("raw-reparse-loop",)
@@ -45,7 +48,10 @@ def test_runtime_operation_catalog_covers_the_two_proven_paths() -> None:
     assert specs["project-action-event-health"].previewable is True
     assert specs["project-session-product-health"].previewable is True
     assert specs["query-session-profiles"].path_targets == ("session-profile-query-loop",)
+    assert specs["query-session-enrichments"].path_targets == ("session-enrichment-query-loop",)
     assert specs["query-session-work-events"].path_targets == ("session-work-event-query-loop",)
+    assert specs["query-session-product-status"].path_targets == ("session-product-status-query-loop",)
+    assert specs["query-archive-debt"].path_targets == ("archive-debt-query-loop",)
     assert specs["query-provider-analytics"].path_targets == ("provider-analytics-query-loop",)
 
 

@@ -210,6 +210,20 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         previewable=True,
     ),
     OperationSpec(
+        name="query-session-enrichments",
+        kind=OperationKind.QUERY,
+        description="Resolve durable session enrichments from profile rows and enrichment FTS.",
+        consumes=("session_profile_rows", "session_profile_enrichment_fts"),
+        produces=("session_enrichment_results",),
+        path_targets=("session-enrichment-query-loop",),
+        code_refs=(
+            "polylogue.operations.archive.ArchiveProductMixin.list_session_enrichment_products",
+            "polylogue.cli.commands.products",
+        ),
+        surfaces=("products", "facade", "mcp"),
+        previewable=True,
+    ),
+    OperationSpec(
         name="query-session-work-events",
         kind=OperationKind.QUERY,
         description="Resolve durable session work-event products from work-event rows and work-event FTS.",
@@ -294,6 +308,20 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         previewable=True,
     ),
     OperationSpec(
+        name="query-session-product-status",
+        kind=OperationKind.QUERY,
+        description="Resolve projected session-product status views from session-product health state.",
+        consumes=("session_product_health",),
+        produces=("session_product_status_results",),
+        path_targets=("session-product-status-query-loop",),
+        code_refs=(
+            "polylogue.operations.archive.ArchiveStatsMixin.get_session_product_status",
+            "polylogue.cli.commands.products",
+        ),
+        surfaces=("products", "facade", "mcp"),
+        previewable=True,
+    ),
+    OperationSpec(
         name="query-provider-analytics",
         kind=OperationKind.QUERY,
         description="Resolve provider analytics from durable session-product aggregates.",
@@ -306,6 +334,20 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
             "polylogue.cli.helper_summary",
         ),
         surfaces=("products", "facade", "mcp", "helpers"),
+        previewable=True,
+    ),
+    OperationSpec(
+        name="query-archive-debt",
+        kind=OperationKind.QUERY,
+        description="Resolve archive debt views from projected derived-model health and maintenance state.",
+        consumes=("action_event_health", "session_product_health", "archive_health"),
+        produces=("archive_debt_results",),
+        path_targets=("archive-debt-query-loop",),
+        code_refs=(
+            "polylogue.operations.archive.ArchiveProductDebtMixin.list_archive_debt_products",
+            "polylogue.cli.commands.products",
+        ),
+        surfaces=("products", "facade", "mcp", "maintenance"),
         previewable=True,
     ),
     OperationSpec(

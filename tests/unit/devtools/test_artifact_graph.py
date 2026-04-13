@@ -29,8 +29,11 @@ def test_render_artifact_graph_text_mentions_the_current_runtime_paths() -> None
     assert "index-message-fts" in rendered
     assert "query-conversations" in rendered
     assert "query-session-profiles" in rendered
+    assert "query-session-enrichments" in rendered
     assert "query-session-work-events" in rendered
     assert "query-work-threads" in rendered
+    assert "query-session-product-status" in rendered
+    assert "query-archive-debt" in rendered
     assert "project-action-event-health" in rendered
     assert "project-session-product-health" in rendered
     assert "project-archive-health" in rendered
@@ -43,6 +46,8 @@ def test_render_artifact_graph_text_mentions_the_current_runtime_paths() -> None
     assert "synthetic-benchmark:session-product-materialization" in rendered
     assert "exercise:json-products-profiles" in rendered
     assert "exercise:json-products-work-events" in rendered
+    assert "validation-lane:live-products-status" in rendered
+    assert "validation-lane:live-products-debt" in rendered
     assert "uncovered artifacts:" not in rendered
     assert "uncovered operations:" not in rendered
 
@@ -57,6 +62,7 @@ def test_render_artifact_graph_json_is_machine_readable() -> None:
         "action-event-repair-loop",
         "session-product-repair-loop",
         "session-profile-query-loop",
+        "session-enrichment-query-loop",
         "session-work-event-query-loop",
         "session-phase-query-loop",
         "work-thread-query-loop",
@@ -64,6 +70,8 @@ def test_render_artifact_graph_json_is_machine_readable() -> None:
         "day-summary-query-loop",
         "week-summary-query-loop",
         "provider-analytics-query-loop",
+        "session-product-status-query-loop",
+        "archive-debt-query-loop",
     }
     assert any(node["name"] == "raw_validation_state" for node in payload["nodes"])
     assert any(node["name"] == "message_fts" for node in payload["nodes"])
@@ -100,20 +108,22 @@ def test_render_artifact_graph_json_is_machine_readable() -> None:
         (ref["source"], ref["name"], ref["origin"])
         for ref in payload["scenario_coverage"]["operations"]["project-session-product-health"]
     }
-    assert payload["scenario_coverage"]["artifacts"]["raw_validation_state"] == [
-        {
-            "source": "exercise",
-            "name": "run-preview-reparse",
-            "origin": "authored.showcase-catalog",
-        }
-    ]
-    assert payload["scenario_coverage"]["operations"]["plan-validation-backlog"] == [
-        {
-            "source": "exercise",
-            "name": "run-preview-reparse",
-            "origin": "authored.showcase-catalog",
-        }
-    ]
+    assert (
+        "exercise",
+        "run-preview-reparse",
+        "authored.showcase-catalog",
+    ) in {
+        (ref["source"], ref["name"], ref["origin"])
+        for ref in payload["scenario_coverage"]["artifacts"]["raw_validation_state"]
+    }
+    assert (
+        "exercise",
+        "run-preview-reparse",
+        "authored.showcase-catalog",
+    ) in {
+        (ref["source"], ref["name"], ref["origin"])
+        for ref in payload["scenario_coverage"]["operations"]["plan-validation-backlog"]
+    }
     assert {
         (ref["source"], ref["name"], ref["origin"])
         for ref in payload["scenario_coverage"]["artifacts"]["message_source_rows"]
@@ -181,6 +191,14 @@ def test_render_artifact_graph_json_is_machine_readable() -> None:
         for ref in payload["scenario_coverage"]["operations"]["query-session-profiles"]
     }
     assert (
+        "validation-lane",
+        "live-products-enrichments",
+        "authored.validation-lane",
+    ) in {
+        (ref["source"], ref["name"], ref["origin"])
+        for ref in payload["scenario_coverage"]["operations"]["query-session-enrichments"]
+    }
+    assert (
         "exercise",
         "json-products-work-events",
         "generated.json-contract",
@@ -196,7 +214,24 @@ def test_render_artifact_graph_json_is_machine_readable() -> None:
         (ref["source"], ref["name"], ref["origin"])
         for ref in payload["scenario_coverage"]["operations"]["query-work-threads"]
     }
+    assert (
+        "validation-lane",
+        "live-products-status",
+        "authored.validation-lane",
+    ) in {
+        (ref["source"], ref["name"], ref["origin"])
+        for ref in payload["scenario_coverage"]["operations"]["query-session-product-status"]
+    }
+    assert (
+        "validation-lane",
+        "live-products-debt",
+        "authored.validation-lane",
+    ) in {
+        (ref["source"], ref["name"], ref["origin"])
+        for ref in payload["scenario_coverage"]["operations"]["query-archive-debt"]
+    }
     assert payload["scenario_coverage"]["paths"]["session-profile-query-loop"]["complete"] is True
+    assert payload["scenario_coverage"]["paths"]["session-enrichment-query-loop"]["complete"] is True
     assert payload["scenario_coverage"]["paths"]["session-work-event-query-loop"]["complete"] is True
     assert payload["scenario_coverage"]["paths"]["session-phase-query-loop"]["complete"] is True
     assert payload["scenario_coverage"]["paths"]["work-thread-query-loop"]["complete"] is True
@@ -204,6 +239,8 @@ def test_render_artifact_graph_json_is_machine_readable() -> None:
     assert payload["scenario_coverage"]["paths"]["day-summary-query-loop"]["complete"] is True
     assert payload["scenario_coverage"]["paths"]["week-summary-query-loop"]["complete"] is True
     assert payload["scenario_coverage"]["paths"]["provider-analytics-query-loop"]["complete"] is True
+    assert payload["scenario_coverage"]["paths"]["session-product-status-query-loop"]["complete"] is True
+    assert payload["scenario_coverage"]["paths"]["archive-debt-query-loop"]["complete"] is True
     assert payload["scenario_coverage"]["paths"]["action-event-repair-loop"]["complete"] is True
     assert payload["scenario_coverage"]["paths"]["message-fts-health-loop"]["complete"] is True
     assert payload["scenario_coverage"]["paths"]["conversation-query-loop"]["complete"] is True

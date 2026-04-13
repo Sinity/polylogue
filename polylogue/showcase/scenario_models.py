@@ -28,6 +28,7 @@ class ExerciseScenario(ExecutableScenario):
     def __post_init__(self) -> None:
         if self.execution is None:
             object.__setattr__(self, "execution", polylogue_execution())
+        super().__post_init__()
 
     @property
     def args(self) -> tuple[str, ...]:
