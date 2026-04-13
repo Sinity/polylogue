@@ -67,9 +67,12 @@ class CampaignResult:
     regressions: list[dict[str, Any]]
     worst_regression_pct: float | None
     origin: str = "authored"
+    path_targets: list[str] = field(default_factory=list)
     artifact_targets: list[str] = field(default_factory=list)
     operation_targets: list[str] = field(default_factory=list)
     tags: list[str] = field(default_factory=list)
+
+
 def _git_output(*args: str) -> str:
     return subprocess.check_output(["git", *args], cwd=ROOT, text=True).strip()
 
@@ -153,11 +156,27 @@ def _render_markdown(result: CampaignResult) -> str:
         f"- Warn threshold: `{result.warn_pct:.1f}%`",
         f"- Fail threshold: `{result.fail_pct:.1f}%`",
         "",
-        "## Slowest Benchmarks",
-        "",
-        "| Benchmark | Mean (s) | Median (s) | Ops/s | Rounds |",
-        "| --- | ---: | ---: | ---: | ---: |",
     ]
+    if result.path_targets or result.artifact_targets or result.operation_targets or result.tags:
+        lines.extend(["## Scenario Metadata", ""])
+        lines.append(f"- Origin: `{result.origin}`")
+        if result.path_targets:
+            lines.append(f"- Path targets: `{', '.join(result.path_targets)}`")
+        if result.artifact_targets:
+            lines.append(f"- Artifact targets: `{', '.join(result.artifact_targets)}`")
+        if result.operation_targets:
+            lines.append(f"- Operation targets: `{', '.join(result.operation_targets)}`")
+        if result.tags:
+            lines.append(f"- Tags: `{', '.join(result.tags)}`")
+        lines.append("")
+    lines.extend(
+        [
+            "## Slowest Benchmarks",
+            "",
+            "| Benchmark | Mean (s) | Median (s) | Ops/s | Rounds |",
+            "| --- | ---: | ---: | ---: | ---: |",
+        ]
+    )
     for bench in result.slowest:
         ops = "-" if bench["ops"] is None else f"{bench['ops']:.2f}"
         lines.append(

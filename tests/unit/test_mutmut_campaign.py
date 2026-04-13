@@ -113,12 +113,20 @@ def test_format_markdown_records_dirty_worktree_status() -> None:
         runtime_seconds=1.5,
         exit_code=0,
         notes=[],
+        origin="authored.mutation-campaign",
+        path_targets=["json-law-loop"],
+        artifact_targets=["raw_payload", "validation_state"],
+        operation_targets=["plan-validation-backlog"],
+        tags=["mutation", "json"],
     )
 
     rendered = format_markdown(result)
     assert "- Worktree dirty: `yes`" in rendered
     assert "## Source Worktree Status" in rendered
     assert "` M tests/unit/core/test_json.py`" in rendered
+    assert "## Scenario Metadata" in rendered
+    assert "- Origin: `authored.mutation-campaign`" in rendered
+    assert "- Path targets: `json-law-loop`" in rendered
 
 
 def test_git_status_summary_ignores_campaign_artifacts(tmp_path: Path) -> None:
@@ -162,6 +170,11 @@ def test_load_results_and_index_use_latest_campaign_entry(tmp_path: Path) -> Non
         "runtime_seconds": 7.0,
         "exit_code": 0,
         "notes": [],
+        "origin": "authored.mutation-campaign",
+        "path_targets": ["json-law-loop"],
+        "artifact_targets": ["raw_payload", "validation_state"],
+        "operation_targets": ["plan-validation-backlog"],
+        "tags": ["mutation", "json"],
     }
     new = {
         **old,
@@ -192,6 +205,11 @@ def test_load_results_and_index_use_latest_campaign_entry(tmp_path: Path) -> Non
     assert [result.campaign for result in latest] == ["filters", "json"]
     json_result = next(result for result in latest if result.campaign == "json")
     assert json_result.commit == "bbbbbbbbbbbb"
+    assert json_result.origin == "authored.mutation-campaign"
+    assert json_result.path_targets == ["json-law-loop"]
+    assert json_result.artifact_targets == ["raw_payload", "validation_state"]
+    assert json_result.operation_targets == ["plan-validation-backlog"]
+    assert json_result.tags == ["mutation", "json"]
     rendered = format_index(results)
     assert "`json` | `2026-03-11T01:00:00+00:00` | `bbbbbbbbbbbb` | 24 | 2 | 0 | 0 | yes | 7.00s |" in rendered
     assert "`filters` | `2026-03-11T02:00:00+00:00` | `cccccccccccc` | 486 | 11 | 100 | 0 | no | 7.00s |" in rendered

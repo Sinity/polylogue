@@ -136,6 +136,43 @@ def test_render_index_lists_saved_artifacts(tmp_path: Path, monkeypatch) -> None
     assert "[2026-04-11-search-filters.md](./2026-04-11-search-filters.md)" in rendered
 
 
+def test_campaign_result_round_trips_path_targets_from_artifact(tmp_path: Path) -> None:
+    result = CampaignResult(
+        campaign="search-filters",
+        description="candidate",
+        commit="b" * 40,
+        worktree_dirty=False,
+        created_at="2026-04-11T00:00:00+00:00",
+        workspace="/tmp/workspace",
+        command=["pytest"],
+        tests=["tests/benchmarks/test_search_filters.py"],
+        notes=[],
+        benchmark_count=1,
+        runtime_seconds=1.0,
+        exit_code=0,
+        machine_info={},
+        benchmarks=[],
+        slowest=[],
+        compare_to=None,
+        warn_pct=10.0,
+        fail_pct=20.0,
+        regressions=[],
+        worst_regression_pct=None,
+        origin="generated.search-filters",
+        path_targets=["search-filter-loop"],
+        artifact_targets=["conversation_query_results"],
+        operation_targets=["benchmark.query.search-filters"],
+        tags=["benchmark", "search"],
+    )
+    artifact = tmp_path / "artifact.json"
+    artifact.write_text(json.dumps(result.__dict__), encoding="utf-8")
+
+    loaded = CampaignResult(**json.loads(artifact.read_text(encoding="utf-8")))
+
+    assert loaded.path_targets == ["search-filter-loop"]
+    assert loaded.origin == "generated.search-filters"
+
+
 def test_benchmark_scenario_compiles_to_campaign() -> None:
     scenario = BenchmarkScenario(
         scenario_id="action-events",
