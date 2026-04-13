@@ -55,6 +55,13 @@ def test_build_document_includes_live_registry_sections() -> None:
                 fail_pct=20.0,
             ),
         ),
+        synthetic_benchmark_campaigns=(
+            BenchmarkCampaignEntry(
+                name="startup-health",
+                description="Synthetic startup-health benchmark.",
+                tests=(),
+            ),
+        ),
     )
 
     rendered = render_quality_reference.build_document(registry)
@@ -65,6 +72,8 @@ def test_build_document_includes_live_registry_sections() -> None:
     assert "`frontier-local`" in rendered
     assert "`filters`" in rendered
     assert "`search-filters`" in rendered
+    assert "`startup-health`" in rendered
+    assert "## Synthetic Benchmark Campaign Catalog" in rendered
 
 
 def test_write_if_changed_reuses_existing_output(tmp_path: Path) -> None:
