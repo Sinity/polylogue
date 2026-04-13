@@ -10,6 +10,7 @@ from hypothesis.configuration import set_hypothesis_home_dir
 from hypothesis.database import DirectoryBasedExampleDatabase
 
 from polylogue.lib.messages import MessageCollection
+from polylogue.scenarios import CorpusSpec, build_default_corpus_specs
 
 # ---------------------------------------------------------------------------
 # Scale markers for data-gravity and long-haul validation (Workstream H)
@@ -504,32 +505,34 @@ def seeded_db(tmp_path_factory):
     backend = SQLiteBackend(db_path=db_path)
     repository = ConversationRepository(backend=backend)
 
-    # File extension per provider encoding
-    ext_map = {"chatgpt": ".json", "claude-ai": ".json", "gemini": ".json", "claude-code": ".jsonl", "codex": ".jsonl"}
-
     # Generate synthetic data and write to temp files
     corpus_dir = tmp_dir / "corpus"
     corpus_dir.mkdir()
 
     async def _seed() -> None:
-        for provider in SyntheticCorpus.available_providers():
-            corpus = SyntheticCorpus.for_provider(provider)
-            raw_items = corpus.generate(count=3, messages_per_conversation=range(4, 12), seed=42)
-            provider_dir = corpus_dir / provider
-            provider_dir.mkdir()
+        specs = build_default_corpus_specs(
+            providers=SyntheticCorpus.available_providers(),
+            count=3,
+            messages_min=4,
+            messages_max=11,
+            seed=42,
+            origin="generated.test-seeded-db",
+            tags=("synthetic", "test", "seeded-db"),
+        )
+        for spec in specs:
+            provider_dir = corpus_dir / spec.provider
+            written = SyntheticCorpus.write_spec_artifacts(spec, provider_dir, prefix="synthetic")
 
-            for idx, raw_bytes in enumerate(raw_items):
-                ext = ext_map.get(provider, ".json")
-                file_path = provider_dir / f"synthetic-{idx:02d}{ext}"
-                file_path.write_bytes(raw_bytes)
+            for file_path, artifact in zip(written.files, written.batch.artifacts, strict=True):
+                raw_bytes = artifact.raw_bytes
 
                 # Step 1: Store as raw conversation (acquire stage)
                 try:
                     raw_id, blob_size = blob_store.write_from_bytes(raw_bytes)
                     record = RawConversationRecord(
                         raw_id=raw_id,
-                        provider_name=provider,
-                        source_name=provider,
+                        provider_name=spec.provider,
+                        source_name=spec.provider,
                         source_path=str(file_path),
                         blob_size=blob_size,
                         acquired_at=datetime.now(timezone.utc).isoformat(),
@@ -538,7 +541,7 @@ def seeded_db(tmp_path_factory):
                 except Exception as e:
                     import warnings
 
-                    warnings.warn(f"Failed to store raw {provider}/{idx}: {e}", stacklevel=2)
+                    warnings.warn(f"Failed to store raw {spec.provider}/{file_path.name}: {e}", stacklevel=2)
 
         # Step 2: Parse and ingest (parse stage)
         archive_root = tmp_dir / "archive"
@@ -606,17 +609,25 @@ def raw_synthetic_samples():
     from polylogue.schemas.synthetic import SyntheticCorpus
     from polylogue.storage.store import RawConversationRecord
 
+    specs = build_default_corpus_specs(
+        providers=SyntheticCorpus.available_providers(),
+        count=5,
+        seed=42,
+        origin="generated.test-raw-samples",
+        tags=("synthetic", "test", "raw-samples"),
+    )
+
     samples: list[RawConversationRecord] = []
-    for provider in SyntheticCorpus.available_providers():
-        corpus = SyntheticCorpus.for_provider(provider)
-        for idx, raw_bytes in enumerate(corpus.generate(count=5, seed=42)):
+    for spec in specs:
+        batch = SyntheticCorpus.generate_batch_for_spec(spec)
+        for idx, raw_bytes in enumerate(batch.raw_items):
             raw_id = hashlib.sha256(raw_bytes).hexdigest()
             samples.append(
                 RawConversationRecord(
                     raw_id=raw_id,
-                    provider_name=provider,
-                    source_name=provider,
-                    source_path=f"<synthetic:{provider}:{idx}>",
+                    provider_name=spec.provider,
+                    source_name=spec.provider,
+                    source_path=f"<synthetic:{spec.provider}:{idx}>",
                     blob_size=len(raw_bytes),
                     acquired_at=datetime.now(timezone.utc).isoformat(),
                 )
@@ -659,24 +670,22 @@ def synthetic_source(tmp_path):
         messages_per_conversation: range = range(4, 12),
         seed: int = 42,
     ) -> Source:
-        corpus = SyntheticCorpus.for_provider(provider)
-        ext = ".json" if corpus.wire_format.encoding == "json" else ".jsonl"
-        raw_items = corpus.generate(
+        spec = CorpusSpec.for_provider(
+            provider,
             count=count,
-            messages_per_conversation=messages_per_conversation,
+            messages_min=messages_per_conversation.start,
+            messages_max=messages_per_conversation.stop - 1,
             seed=seed,
+            origin="generated.test-source",
+            tags=("synthetic", "test", "source"),
         )
-
         provider_dir = tmp_path / "synthetic" / provider
-        provider_dir.mkdir(parents=True, exist_ok=True)
-
-        for idx, raw_bytes in enumerate(raw_items):
-            (provider_dir / f"synth-{idx:02d}{ext}").write_bytes(raw_bytes)
+        written = SyntheticCorpus.write_spec_artifacts(spec, provider_dir, prefix="synth")
 
         if count == 1:
-            return Source(name=f"{provider}-test", path=provider_dir / f"synth-00{ext}")
+            return Source(name=f"{provider}-test", path=written.files[0])
         # For multiple files, return Source pointing to first file
         # (pipeline processes individual files, not directories)
-        return Source(name=f"{provider}-test", path=provider_dir / f"synth-00{ext}")
+        return Source(name=f"{provider}-test", path=written.files[0])
 
     return _factory
