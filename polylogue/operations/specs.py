@@ -30,6 +30,7 @@ class OperationSpec:
     description: str
     consumes: tuple[str, ...] = ()
     produces: tuple[str, ...] = ()
+    path_targets: tuple[str, ...] = ()
     code_refs: tuple[str, ...] = ()
     surfaces: tuple[str, ...] = ()
     mutates_state: bool = False
@@ -69,6 +70,7 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         description="Select raw records that still require validation before normal parse planning.",
         consumes=("raw_validation_state",),
         produces=("validation_backlog",),
+        path_targets=("raw-reparse-loop",),
         code_refs=(
             "polylogue.storage.raw_ingest_artifacts.validation_backlog_query_spec",
             "polylogue.pipeline.services.planning_backlog.collect_validation_backlog",
@@ -82,6 +84,7 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         description="Select raw records that are eligible for parse planning under ordinary or force-reparse rules.",
         consumes=("raw_validation_state",),
         produces=("parse_backlog", "parse_quarantine"),
+        path_targets=("raw-reparse-loop",),
         code_refs=(
             "polylogue.storage.raw_ingest_artifacts.parse_backlog_query_spec",
             "polylogue.pipeline.services.planning_backlog.collect_parse_backlog",
@@ -95,6 +98,7 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         description="Build the action-event read model and trigger-maintained FTS projection from tool-use source blocks.",
         consumes=("tool_use_source_blocks",),
         produces=("action_event_rows", "action_event_fts"),
+        path_targets=("action-event-repair-loop",),
         code_refs=(
             "polylogue.storage.action_event_rebuild_runtime.rebuild_action_event_read_model_sync",
             "polylogue.storage.backends.schema_ddl_actions.ACTION_FTS_DDL",
@@ -108,6 +112,7 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         description="Project health, debt, and repair semantics from action-event rows and FTS state.",
         consumes=("action_event_rows", "action_event_fts"),
         produces=("action_event_health",),
+        path_targets=("action-event-repair-loop",),
         code_refs=(
             "polylogue.storage.derived_status",
             "polylogue.storage.repair",
@@ -122,6 +127,7 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         description="Build durable session-product rows and their trigger-maintained FTS projections from archive conversations.",
         consumes=("session_product_source_conversations",),
         produces=("session_product_rows", "session_product_fts"),
+        path_targets=("session-product-repair-loop",),
         code_refs=(
             "polylogue.storage.session_product_rebuild.rebuild_session_products_sync",
             "polylogue.storage.session_product_refresh.refresh_session_products_for_conversation_async",
@@ -135,6 +141,7 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         description="Project readiness, debt, and stale-surface semantics from durable session-product rows and FTS state.",
         consumes=("session_product_rows", "session_product_fts"),
         produces=("session_product_health",),
+        path_targets=("session-product-repair-loop",),
         code_refs=(
             "polylogue.storage.session_product_status",
             "polylogue.storage.repair",

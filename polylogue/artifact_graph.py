@@ -55,12 +55,10 @@ class ArtifactGraph:
 
     def operations_for_path(self, path: ArtifactPath | str) -> tuple[OperationSpec, ...]:
         path_name = path if isinstance(path, str) else path.name
-        selected_path = self.path_by_name()[path_name]
-        path_nodes = set(selected_path.nodes)
         return tuple(
             operation
             for operation in self.operations
-            if set(operation.consumes).union(operation.produces).intersection(path_nodes)
+            if path_name in operation.path_targets
         )
 
     def to_dict(self) -> dict[str, Any]:
