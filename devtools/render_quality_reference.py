@@ -11,11 +11,11 @@ from devtools.quality_registry import (
     BenchmarkCampaignEntry,
     MutationCampaignEntry,
     QualityRegistry,
-    ScenarioProjectionEntry,
     ValidationLaneEntry,
     build_quality_registry,
 )
 from devtools.scenario_coverage import RuntimeScenarioCoverage, build_runtime_scenario_coverage
+from polylogue.scenarios import ScenarioProjectionEntry
 
 
 def _format_code_list(items: tuple[str, ...]) -> str:

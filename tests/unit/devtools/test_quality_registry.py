@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from devtools.quality_registry import ScenarioProjectionSourceKind, build_quality_registry
+from devtools.quality_registry import build_quality_registry
+from polylogue.scenarios import ScenarioProjectionSourceKind
 
 ROOT = Path(__file__).resolve().parents[3]
 
