@@ -7,7 +7,7 @@ from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
 
-from devtools.benchmark_campaigns import CampaignResult
+from devtools.synthetic_benchmark_runtime import CampaignResult
 
 
 def generate_campaign_markdown(results: list[CampaignResult]) -> str:
