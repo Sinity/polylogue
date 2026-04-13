@@ -152,6 +152,10 @@ def test_benchmark_scenario_compiles_to_campaign() -> None:
     assert campaign.description == "action-event repair benchmark"
     assert campaign.tests == ("tests/benchmarks/test_action_events.py",)
     assert campaign.notes == ("Tracks action-event repair throughput.",)
+    assert campaign.origin == "generated.action-events"
+    assert campaign.artifact_targets == ("action_event_rows", "action_event_fts")
+    assert campaign.operation_targets == ("benchmark.repair.action-events",)
+    assert campaign.tags == ("benchmark", "action-events")
 
 
 def test_compile_benchmark_scenarios_indexes_by_id() -> None:
