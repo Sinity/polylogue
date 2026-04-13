@@ -15,7 +15,7 @@ import click
 
 from polylogue.cli.click_app import cli as root_cli
 from polylogue.cli.command_inventory import CommandPath, iter_command_paths
-from polylogue.scenarios import polylogue_execution
+from polylogue.scenarios import build_product_contract_surfaces, polylogue_execution
 from polylogue.showcase.dimensions import query_read, schema_exercise
 from polylogue.showcase.exercise_models import AssertionSpec, Exercise
 
@@ -210,6 +210,21 @@ def _json_contract_scenario(
     )
 
 
+def _product_json_contract_scenarios() -> tuple[Exercise, ...]:
+    return tuple(
+        _json_contract_scenario(
+            spec.name,
+            spec.description,
+            *spec.args,
+            needs_data=spec.needs_data,
+            tier=spec.tier,
+            env=spec.env,
+            tags=spec.tags,
+        )
+        for spec in build_product_contract_surfaces()
+    )
+
+
 JSON_CONTRACT_SCENARIOS: tuple[Exercise, ...] = (
     _json_contract_scenario("json-doctor", "doctor JSON contract", "doctor", "--json", needs_data=False, tier=0, env="any"),
     _json_contract_scenario(
@@ -260,14 +275,7 @@ JSON_CONTRACT_SCENARIOS: tuple[Exercise, ...] = (
     ),
     _json_contract_scenario("json-schema-list", "schema list JSON contract", "schema", "list", "--json", needs_data=False, tier=0, env="any"),
     _json_contract_scenario("json-schema-audit", "schema audit JSON contract", "schema", "audit", "--json", needs_data=False, tier=0, env="any"),
-    _json_contract_scenario("json-products-profiles", "products profiles JSON contract", "products", "profiles", "--json", needs_data=True, tier=1, env="seeded", tags=("products", "session-profiles")),
-    _json_contract_scenario("json-products-work-events", "products work-events JSON contract", "products", "work-events", "--json", needs_data=True, tier=1, env="seeded", tags=("products", "work-events")),
-    _json_contract_scenario("json-products-phases", "products phases JSON contract", "products", "phases", "--json", needs_data=True, tier=1, env="seeded", tags=("products", "phases")),
-    _json_contract_scenario("json-products-threads", "products threads JSON contract", "products", "threads", "--json", needs_data=True, tier=1, env="seeded", tags=("products", "threads")),
-    _json_contract_scenario("json-products-tags", "products tags JSON contract", "products", "tags", "--json", needs_data=True, tier=1, env="seeded", tags=("products", "tags")),
-    _json_contract_scenario("json-products-day-summaries", "products day-summaries JSON contract", "products", "day-summaries", "--json", needs_data=True, tier=1, env="seeded", tags=("products", "day-summaries")),
-    _json_contract_scenario("json-products-week-summaries", "products week-summaries JSON contract", "products", "week-summaries", "--json", needs_data=True, tier=1, env="seeded", tags=("products", "week-summaries")),
-    _json_contract_scenario("json-products-analytics", "products analytics JSON contract", "products", "analytics", "--json", needs_data=True, tier=1, env="seeded", tags=("products", "analytics")),
+    *_product_json_contract_scenarios(),
     _json_contract_scenario("json-run-embed", "run embed JSON contract", "run", "embed", "--stats", "--json", needs_data=True, tier=1, env="seeded"),
 )
 
