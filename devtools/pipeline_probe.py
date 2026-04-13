@@ -20,7 +20,7 @@ from typing import Any
 from polylogue.config import Config, Source
 from polylogue.paths import blob_store_root
 from polylogue.pipeline.runner import RUN_STAGE_CHOICES, run_sources
-from polylogue.scenarios import CorpusSpec
+from polylogue.scenarios import resolve_corpus_scenarios
 from polylogue.schemas.synthetic import SyntheticCorpus
 from polylogue.storage.backends import create_backend
 from polylogue.storage.backends.connection import (
@@ -398,19 +398,26 @@ def _write_probe_sources(
     seed: int,
     source_root: Path,
 ) -> tuple[list[Path], int]:
-    spec = CorpusSpec.for_provider(
-        provider,
+    scenarios = resolve_corpus_scenarios(
+        providers=(provider,),
         count=count,
+        source="default",
         messages_min=messages_min,
         messages_max=messages_max,
         seed=seed,
-        origin="generated.pipeline-probe",
-        tags=("synthetic", "probe"),
+        style="default",
+        origin="compiled.pipeline-probe",
+        tags=("synthetic", "probe", "scenario"),
     )
+    corpus_specs = tuple(spec for scenario in scenarios for spec in scenario.corpus_specs)
     source_root.mkdir(parents=True, exist_ok=True)
-    written = SyntheticCorpus.write_spec_artifacts(spec, source_root, prefix=provider, index_width=3)
-    files = list(written.files)
-    total_bytes = sum(len(artifact.raw_bytes) for artifact in written.batch.artifacts)
+    written_batches = SyntheticCorpus.write_specs_artifacts(corpus_specs, source_root, prefix=provider, index_width=3)
+    files = [path for written in written_batches for path in written.files]
+    total_bytes = sum(
+        len(artifact.raw_bytes)
+        for written in written_batches
+        for artifact in written.batch.artifacts
+    )
     return files, total_bytes
 
 

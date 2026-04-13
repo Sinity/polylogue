@@ -9,6 +9,7 @@ from polylogue.scenarios import (
     build_corpus_scenarios,
     build_default_corpus_specs,
     build_inferred_corpus_specs,
+    resolve_corpus_scenarios,
     resolve_corpus_specs,
 )
 from polylogue.schemas.tooling_models import ClusterManifest, SchemaCluster
@@ -142,6 +143,59 @@ def test_resolve_corpus_specs_applies_generation_overrides_to_inferred_specs() -
     assert specs[0].style == "showcase"
     assert specs[0].origin == "generated.synthetic-inferred"
     assert specs[0].tags == ("synthetic", "generated", "inferred")
+
+
+def test_resolve_corpus_scenarios_compiles_named_groups_from_defaults() -> None:
+    scenarios = resolve_corpus_scenarios(
+        providers=("chatgpt", "codex"),
+        count=2,
+        messages_min=4,
+        messages_max=6,
+        seed=11,
+        style="showcase",
+    )
+
+    assert tuple(scenario.projection_name for scenario in scenarios) == ("chatgpt:default", "codex:default")
+    assert all(scenario.origin == "compiled.synthetic-corpus-scenario" for scenario in scenarios)
+    assert all(scenario.tags == ("synthetic", "scenario", "generated") for scenario in scenarios)
+
+
+def test_resolve_corpus_scenarios_supports_inferred_source() -> None:
+    inferred = (
+        CorpusSpec(
+            provider="chatgpt",
+            package_version="v7",
+            count=1,
+            messages_min=4,
+            messages_max=4,
+            seed=3,
+            profile_family_ids=("cluster-a",),
+            origin="inferred.schema",
+            tags=("inferred", "schema", "synthetic"),
+        ),
+    )
+
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setattr(
+            "polylogue.schemas.operator_inference.list_inferred_corpus_specs",
+            lambda registry=None: inferred,
+        )
+        scenarios = resolve_corpus_scenarios(
+            source="inferred",
+            count=2,
+            messages_min=6,
+            messages_max=8,
+            seed=42,
+            style="showcase",
+        )
+
+    assert len(scenarios) == 1
+    assert scenarios[0].provider == "chatgpt"
+    assert scenarios[0].package_version == "v7"
+    assert scenarios[0].origin == "compiled.synthetic-corpus-scenario"
+    assert scenarios[0].corpus_specs[0].count == 2
+    assert scenarios[0].corpus_specs[0].messages_min == 6
+    assert scenarios[0].corpus_specs[0].messages_max == 8
 
 
 def test_corpus_spec_scope_label_includes_version_and_profile_family() -> None:

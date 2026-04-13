@@ -7,6 +7,7 @@ from .corpus import (
     build_corpus_scenarios,
     build_default_corpus_specs,
     build_inferred_corpus_specs,
+    resolve_corpus_scenarios,
     resolve_corpus_specs,
 )
 from .metadata import (
@@ -24,11 +25,13 @@ from .projections import (
     compile_projection_entries,
 )
 from .sources import NamedScenarioSource
+from .specs import ScenarioSpec
 
 __all__ = [
     "build_default_corpus_specs",
     "build_corpus_scenarios",
     "build_inferred_corpus_specs",
+    "resolve_corpus_scenarios",
     "resolve_corpus_specs",
     "CorpusSourceKind",
     "CorpusScenario",
@@ -39,6 +42,7 @@ __all__ = [
     "ScenarioProjectionEntry",
     "ScenarioProjectionSource",
     "ScenarioProjectionSourceKind",
+    "ScenarioSpec",
     "NamedScenarioSource",
     "runtime_artifact_graph",
     "runtime_artifact_target_names",

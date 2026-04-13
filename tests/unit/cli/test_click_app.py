@@ -570,7 +570,7 @@ class TestGenerateSeed:
             )
 
         assert result.exit_code != 0
-        assert "No corpus specs matched" in result.output
+        assert "No corpus scenarios matched" in result.output
 
 
 # ---------------------------------------------------------------------------

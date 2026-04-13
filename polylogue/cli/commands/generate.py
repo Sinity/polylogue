@@ -82,10 +82,13 @@ def _do_corpus(
     output_dir: Path | None,
 ) -> None:
     """Generate raw wire-format files for each provider."""
-    from polylogue.showcase.workspace import build_synthetic_corpus_specs, generate_synthetic_fixtures_from_specs
+    from polylogue.showcase.workspace import (
+        build_synthetic_corpus_scenarios,
+        generate_synthetic_fixtures_from_scenarios,
+    )
 
     out = output_dir or Path(tempfile.mkdtemp(prefix="polylogue-corpus-"))
-    specs = build_synthetic_corpus_specs(
+    scenarios = build_synthetic_corpus_scenarios(
         providers=providers or None,
         corpus_source=corpus_source,
         count=count,
@@ -94,12 +97,13 @@ def _do_corpus(
         messages_max=15,
         seed=42,
     )
-    if not specs:
+    if not scenarios:
         raise click.BadParameter(
-            "No corpus specs matched the selected source/providers.",
+            "No corpus scenarios matched the selected source/providers.",
             param_hint="--corpus-source",
         )
-    written_batches = generate_synthetic_fixtures_from_specs(out, corpus_specs=specs, prefix="sample")
+    written_batches = generate_synthetic_fixtures_from_scenarios(out, corpus_scenarios=scenarios, prefix="sample")
+    specs = tuple(spec for scenario in scenarios for spec in scenario.corpus_specs)
 
     for spec, written in zip(specs, written_batches, strict=True):
         provider_dir = out / spec.provider
@@ -122,14 +126,14 @@ def _do_seed(
 ) -> None:
     """Seed a full demo database via the pipeline."""
     from polylogue.showcase.workspace import (
-        build_synthetic_corpus_specs,
+        build_synthetic_corpus_scenarios,
         create_verification_workspace,
-        seed_workspace_from_specs,
+        seed_workspace_from_scenarios,
     )
 
     out = output_dir or Path(tempfile.mkdtemp(prefix="polylogue-demo-"))
     workspace = create_verification_workspace(out)
-    specs = build_synthetic_corpus_specs(
+    scenarios = build_synthetic_corpus_scenarios(
         providers=providers or None,
         corpus_source=corpus_source,
         count=count,
@@ -138,12 +142,12 @@ def _do_seed(
         messages_max=19,
         seed=42,
     )
-    if not specs:
+    if not scenarios:
         raise click.BadParameter(
-            "No corpus specs matched the selected source/providers.",
+            "No corpus scenarios matched the selected source/providers.",
             param_hint="--corpus-source",
         )
-    result = seed_workspace_from_specs(workspace, corpus_specs=specs, prefix="demo")
+    result = seed_workspace_from_scenarios(workspace, corpus_scenarios=scenarios, prefix="demo")
 
     if env_only:
         for key, value in workspace.env_vars.items():
