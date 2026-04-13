@@ -24,6 +24,7 @@ class CampaignResult:
     db_stats: dict[str, int] = field(default_factory=dict)
     timestamp: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
     origin: str = "authored"
+    path_targets: list[str] = field(default_factory=list)
     artifact_targets: list[str] = field(default_factory=list)
     operation_targets: list[str] = field(default_factory=list)
     tags: list[str] = field(default_factory=list)
@@ -410,6 +411,7 @@ async def run_synthetic_benchmark_campaign(name: str, db_path: Path) -> Campaign
         case _:
             raise KeyError(name)
     result.origin = scenario.origin
+    result.path_targets = list(scenario.path_targets)
     result.artifact_targets = list(scenario.artifact_targets)
     result.operation_targets = list(scenario.operation_targets)
     result.tags = list(scenario.tags)
