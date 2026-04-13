@@ -163,25 +163,28 @@ def qa_command(
     # --- Execute QA session ---
     from polylogue.showcase.qa_report import generate_qa_session
     from polylogue.showcase.qa_runner import (
+        QASessionRequest,
         format_qa_summary,
         run_qa_session,
     )
 
     result = run_qa_session(
-        live=live,
-        fresh=fresh,
-        ingest=ingest,
-        source_names=selected_source_names,
-        regenerate_schemas=regenerate_schemas,
-        skip_audit=not run_audit,
-        skip_proof=not run_proof,
-        skip_exercises=not run_exercises,
-        skip_invariants=not run_invariants,
-        workspace_dir=workspace,
-        report_dir=report_dir,
-        verbose=verbose,
-        fail_fast=fail_fast,
-        tier_filter=tier_filter,
+        QASessionRequest(
+            live=live,
+            fresh=fresh,
+            ingest=ingest,
+            source_names=tuple(selected_source_names) if selected_source_names else None,
+            regenerate_schemas=regenerate_schemas,
+            skip_audit=not run_audit,
+            skip_proof=not run_proof,
+            skip_exercises=not run_exercises,
+            skip_invariants=not run_invariants,
+            workspace_dir=workspace,
+            report_dir=report_dir,
+            verbose=verbose,
+            fail_fast=fail_fast,
+            tier_filter=tier_filter,
+        )
     )
 
     # --- VHS capture ---
