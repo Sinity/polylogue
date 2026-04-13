@@ -1,11 +1,11 @@
-"""Shared authored executable scenario models for control-plane surfaces."""
+"""Shared executable scenario-source models."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
-from devtools.execution_specs import ExecutionSpec
-from polylogue.scenarios import NamedScenarioSource
+from .execution import ExecutionSpec
+from .sources import NamedScenarioSource
 
 
 @dataclass(frozen=True, kw_only=True)
