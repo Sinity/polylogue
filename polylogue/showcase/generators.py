@@ -172,6 +172,7 @@ def _has_json_flag(cmd: click.Command) -> bool:
 
 _JSON_CONTRACT_SPECS: tuple[dict[str, Any], ...] = (
     {
+        "scenario_id": "json-doctor",
         "path": ("doctor",),
         "args": ["doctor", "--json"],
         "needs_data": False,
@@ -179,6 +180,18 @@ _JSON_CONTRACT_SPECS: tuple[dict[str, Any], ...] = (
         "env": "any",
     },
     {
+        "scenario_id": "json-doctor-action-event-preview",
+        "path": ("doctor",),
+        "args": ["doctor", "--json", "--repair", "--preview", "--target", "action_event_read_model"],
+        "needs_data": False,
+        "tier": 0,
+        "env": "any",
+        "artifact_targets": ["action_event_rows", "action_event_fts", "action_event_health"],
+        "operation_targets": ["project-action-event-health"],
+        "tags": ["maintenance", "action-events"],
+    },
+    {
+        "scenario_id": "json-tags",
         "path": ("tags",),
         "args": ["tags", "--json"],
         "needs_data": False,
@@ -186,6 +199,7 @@ _JSON_CONTRACT_SPECS: tuple[dict[str, Any], ...] = (
         "env": "any",
     },
     {
+        "scenario_id": "json-audit",
         "path": ("audit",),
         "args": ["audit", "--only", "audit", "--json"],
         "needs_data": False,
@@ -193,6 +207,7 @@ _JSON_CONTRACT_SPECS: tuple[dict[str, Any], ...] = (
         "env": "any",
     },
     {
+        "scenario_id": "json-schema-list",
         "path": ("schema", "list"),
         "args": ["schema", "list", "--json"],
         "needs_data": False,
@@ -200,6 +215,7 @@ _JSON_CONTRACT_SPECS: tuple[dict[str, Any], ...] = (
         "env": "any",
     },
     {
+        "scenario_id": "json-schema-audit",
         "path": ("schema", "audit"),
         "args": ["schema", "audit", "--json"],
         "needs_data": False,
@@ -207,6 +223,7 @@ _JSON_CONTRACT_SPECS: tuple[dict[str, Any], ...] = (
         "env": "any",
     },
     {
+        "scenario_id": "json-products-profiles",
         "path": ("products", "profiles"),
         "args": ["products", "profiles", "--json"],
         "needs_data": True,
@@ -214,6 +231,7 @@ _JSON_CONTRACT_SPECS: tuple[dict[str, Any], ...] = (
         "env": "seeded",
     },
     {
+        "scenario_id": "json-products-work-events",
         "path": ("products", "work-events"),
         "args": ["products", "work-events", "--json"],
         "needs_data": True,
@@ -221,6 +239,7 @@ _JSON_CONTRACT_SPECS: tuple[dict[str, Any], ...] = (
         "env": "seeded",
     },
     {
+        "scenario_id": "json-products-phases",
         "path": ("products", "phases"),
         "args": ["products", "phases", "--json"],
         "needs_data": True,
@@ -228,6 +247,7 @@ _JSON_CONTRACT_SPECS: tuple[dict[str, Any], ...] = (
         "env": "seeded",
     },
     {
+        "scenario_id": "json-products-threads",
         "path": ("products", "threads"),
         "args": ["products", "threads", "--json"],
         "needs_data": True,
@@ -235,6 +255,7 @@ _JSON_CONTRACT_SPECS: tuple[dict[str, Any], ...] = (
         "env": "seeded",
     },
     {
+        "scenario_id": "json-products-tags",
         "path": ("products", "tags"),
         "args": ["products", "tags", "--json"],
         "needs_data": True,
@@ -242,6 +263,7 @@ _JSON_CONTRACT_SPECS: tuple[dict[str, Any], ...] = (
         "env": "seeded",
     },
     {
+        "scenario_id": "json-products-day-summaries",
         "path": ("products", "day-summaries"),
         "args": ["products", "day-summaries", "--json"],
         "needs_data": True,
@@ -249,6 +271,7 @@ _JSON_CONTRACT_SPECS: tuple[dict[str, Any], ...] = (
         "env": "seeded",
     },
     {
+        "scenario_id": "json-products-week-summaries",
         "path": ("products", "week-summaries"),
         "args": ["products", "week-summaries", "--json"],
         "needs_data": True,
@@ -256,6 +279,7 @@ _JSON_CONTRACT_SPECS: tuple[dict[str, Any], ...] = (
         "env": "seeded",
     },
     {
+        "scenario_id": "json-products-analytics",
         "path": ("products", "analytics"),
         "args": ["products", "analytics", "--json"],
         "needs_data": True,
@@ -263,6 +287,7 @@ _JSON_CONTRACT_SPECS: tuple[dict[str, Any], ...] = (
         "env": "seeded",
     },
     {
+        "scenario_id": "json-run-embed",
         "path": ("run", "embed"),
         "args": ["run", "embed", "--stats", "--json"],
         "needs_data": True,
@@ -272,8 +297,17 @@ _JSON_CONTRACT_SPECS: tuple[dict[str, Any], ...] = (
 )
 
 
-def _json_contract_spec_by_path() -> dict[tuple[str, ...], dict[str, Any]]:
-    return {tuple(spec["path"]): spec for spec in _JSON_CONTRACT_SPECS}
+def _coerce_optional_string_tuple(value: object) -> tuple[str, ...]:
+    if isinstance(value, (list, tuple)) and all(isinstance(item, str) for item in value):
+        return tuple(value)
+    return ()
+
+
+def _json_contract_specs_by_path() -> dict[tuple[str, ...], tuple[dict[str, Any], ...]]:
+    specs_by_path: dict[tuple[str, ...], list[dict[str, Any]]] = {}
+    for spec in _JSON_CONTRACT_SPECS:
+        specs_by_path.setdefault(tuple(spec["path"]), []).append(spec)
+    return {path: tuple(specs) for path, specs in specs_by_path.items()}
 
 
 def json_contract_exercise_names() -> set[str]:
@@ -284,28 +318,30 @@ def json_contract_exercise_names() -> set[str]:
 def generate_json_contract_scenarios() -> tuple[ExerciseScenario, ...]:
     """Generate JSON contract scenarios for curated runnable commands."""
     scenarios: list[ExerciseScenario] = []
-    by_path = _json_contract_spec_by_path()
+    by_path = _json_contract_specs_by_path()
     for cp in inventory_command_paths():
-        spec = by_path.get(tuple(cp.path))
-        if spec is None or not _has_json_flag(cp.command):
+        specs = by_path.get(tuple(cp.path))
+        if specs is None or not _has_json_flag(cp.command):
             continue
-        scenarios.append(
-            ExerciseScenario(
-                scenario_id=f"json-{'-'.join(cp.path)}",
-                group="subcommands",
-                description=f"{cp.display_name} JSON contract",
-                args=tuple(spec["args"]),
-                validation=Validation(stdout_is_valid_json=True),
-                needs_data=bool(spec["needs_data"]),
-                tier=int(spec["tier"]),
-                env=str(spec["env"]),
-                output_ext=".json",
-                artifact_class="json",
-                origin="generated.json-contract",
-                operation_targets=("cli.json-contract",),
-                tags=("generated", "json-contract"),
+        for spec in specs:
+            scenarios.append(
+                ExerciseScenario(
+                    scenario_id=str(spec.get("scenario_id", f"json-{'-'.join(cp.path)}")),
+                    group="subcommands",
+                    description=f"{cp.display_name} JSON contract",
+                    args=tuple(spec["args"]),
+                    validation=Validation(stdout_is_valid_json=True),
+                    needs_data=bool(spec["needs_data"]),
+                    tier=int(spec["tier"]),
+                    env=str(spec["env"]),
+                    output_ext=".json",
+                    artifact_class="json",
+                    origin="generated.json-contract",
+                    artifact_targets=_coerce_optional_string_tuple(spec.get("artifact_targets")),
+                    operation_targets=("cli.json-contract", *_coerce_optional_string_tuple(spec.get("operation_targets"))),
+                    tags=("generated", "json-contract", *_coerce_optional_string_tuple(spec.get("tags"))),
+                )
             )
-        )
     return tuple(scenarios)
 
 
