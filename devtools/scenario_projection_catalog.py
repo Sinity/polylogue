@@ -8,7 +8,7 @@ from polylogue.scenarios import (
 )
 from polylogue.showcase.exercises import EXERCISES
 
-from .benchmark_campaign import CAMPAIGNS as BENCHMARK_CAMPAIGNS
+from .benchmark_scenario_catalog import BENCHMARK_CAMPAIGNS
 from .synthetic_benchmark_catalog import SYNTHETIC_BENCHMARK_SCENARIOS
 
 
