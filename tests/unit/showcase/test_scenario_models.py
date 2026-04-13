@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from polylogue.scenarios import ScenarioProjectionSourceKind, polylogue_execution
-from polylogue.showcase.exercise_models import Exercise, Validation
+from polylogue.scenarios import AssertionSpec, ScenarioProjectionSourceKind, polylogue_execution
+from polylogue.showcase.exercise_models import Exercise
 
 
 def test_exercise_scenario_compiles_to_exercise() -> None:
@@ -12,7 +12,7 @@ def test_exercise_scenario_compiles_to_exercise() -> None:
         group="subcommands",
         description="doctor JSON contract",
         execution=polylogue_execution("doctor", "--json"),
-        validation=Validation(stdout_is_valid_json=True),
+        assertion=AssertionSpec(stdout_is_valid_json=True),
         needs_data=False,
         output_ext=".json",
         artifact_class="json",
@@ -26,7 +26,7 @@ def test_exercise_scenario_compiles_to_exercise() -> None:
 
     assert exercise.name == "json-doctor"
     assert exercise.args == ["doctor", "--json"]
-    assert exercise.validation.stdout_is_valid_json is True
+    assert exercise.assertion.stdout_is_valid_json is True
     assert exercise.output_ext == ".json"
     assert exercise.artifact_class == "json"
     assert exercise.origin == "generated.json-contract"

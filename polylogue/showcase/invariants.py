@@ -74,7 +74,7 @@ def _check_json_valid(result: ExerciseResult) -> str | None:
 
 def _check_exit_code(result: ExerciseResult) -> str | None:
     """Exit code matches validation spec."""
-    expected = result.exercise.validation.exit_code
+    expected = result.exercise.assertion.exit_code
     if expected is None:
         return SKIP  # Delegated to custom validator
     if result.exit_code != expected:

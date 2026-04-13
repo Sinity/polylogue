@@ -11,8 +11,9 @@ from devtools.run_validation_lanes import (
     build_lane_command,
     main,
     parse_lane,
+    run_lane,
 )
-from polylogue.scenarios import ExecutionKind
+from polylogue.scenarios import AssertionSpec, ExecutionKind, polylogue_execution
 
 
 class TestValidationLanesImportable:
@@ -419,6 +420,32 @@ class TestCommandConstruction:
         assert "products" in cmd
         assert "day-summaries" in cmd
         assert "--json" in cmd
+
+
+class TestLaneAssertions:
+    def test_run_lane_enforces_shared_assertion_spec(self, monkeypatch, capsys) -> None:
+        lane = LaneEntry(
+            name="json-contract",
+            description="JSON contract lane",
+            timeout_s=30,
+            category="contract",
+            execution=polylogue_execution("doctor", "--json"),
+            assertion=AssertionSpec(stdout_is_valid_json=True),
+        )
+
+        class _Result:
+            exit_code = 0
+            stdout = "not-json"
+            stderr = ""
+            output = "not-json"
+
+        monkeypatch.setattr("devtools.validation_lane_runtime.run_execution", lambda *_args, **_kwargs: _Result())
+
+        exit_code = run_lane(lane)
+
+        captured = capsys.readouterr()
+        assert exit_code == 1
+        assert "failed assertion" in captured.out
 
     def test_live_products_analytics_lane_uses_products_entrypoint(self):
         cmd = build_lane_command(LANES["live-products-analytics"])
