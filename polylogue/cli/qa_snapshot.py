@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from polylogue.cli.machine_errors import emit_success
+from polylogue.cli.qa_requests import QASnapshotPlan
 from polylogue.paths import safe_path_component
 
 
@@ -106,4 +107,26 @@ def snapshot_results(
         env.ui.console.print(f"Files captured: {len(entries)}")
 
 
-__all__ = ["snapshot_results"]
+def execute_snapshot_plan(
+    plan: QASnapshotPlan,
+    *,
+    fallback_source_dir: Path | None,
+    output_root: Path,
+    json_output: bool,
+    env,
+) -> bool:
+    """Execute a normalized snapshot plan if a source directory is available."""
+    source_dir = plan.resolve_source_dir(fallback_source_dir)
+    if source_dir is None:
+        return False
+    snapshot_results(
+        source_dir,
+        label=plan.label,
+        output_root=output_root,
+        json_output=json_output,
+        env=env,
+    )
+    return True
+
+
+__all__ = ["execute_snapshot_plan", "snapshot_results"]
