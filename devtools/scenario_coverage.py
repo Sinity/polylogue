@@ -7,6 +7,7 @@ from typing import Any
 
 from devtools.scenario_projection_catalog import build_scenario_projection_entries
 from polylogue.artifact_graph import build_artifact_graph
+from polylogue.operations import build_declared_operation_specs
 from polylogue.scenarios import ScenarioProjectionEntry
 
 
@@ -48,9 +49,11 @@ class RuntimePathCoverage:
 class RuntimeScenarioCoverage:
     artifacts: dict[str, tuple[ScenarioCoverageRef, ...]]
     operations: dict[str, tuple[ScenarioCoverageRef, ...]]
+    declared_operations: dict[str, tuple[ScenarioCoverageRef, ...]]
     paths: dict[str, RuntimePathCoverage]
     uncovered_artifacts: tuple[str, ...]
     uncovered_operations: tuple[str, ...]
+    uncovered_declared_operations: tuple[str, ...]
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -62,12 +65,17 @@ class RuntimeScenarioCoverage:
                 name: [ref.to_dict() for ref in refs]
                 for name, refs in self.operations.items()
             },
+            "declared_operations": {
+                name: [ref.to_dict() for ref in refs]
+                for name, refs in self.declared_operations.items()
+            },
             "paths": {
                 name: path.to_dict()
                 for name, path in self.paths.items()
             },
             "uncovered_artifacts": list(self.uncovered_artifacts),
             "uncovered_operations": list(self.uncovered_operations),
+            "uncovered_declared_operations": list(self.uncovered_declared_operations),
         }
 
 
@@ -79,6 +87,9 @@ def build_runtime_scenario_coverage(
     graph = build_artifact_graph()
     artifact_refs: dict[str, list[ScenarioCoverageRef]] = {name: [] for name in graph.by_name()}
     operation_refs: dict[str, list[ScenarioCoverageRef]] = {operation.name: [] for operation in graph.operations}
+    declared_operation_refs: dict[str, list[ScenarioCoverageRef]] = {
+        operation.name: [] for operation in build_declared_operation_specs()
+    }
 
     for projection in scenario_projections:
         ref = ScenarioCoverageRef(source=projection.source_kind.value, name=projection.name, origin=projection.origin)
@@ -86,6 +97,8 @@ def build_runtime_scenario_coverage(
             artifact_refs[artifact.name].append(ref)
         for operation in projection.resolve_runtime_operations():
             operation_refs[operation.name].append(ref)
+        for operation in projection.resolve_declared_operations():
+            declared_operation_refs[operation.name].append(ref)
 
     covered_artifacts = {
         name: tuple(refs)
@@ -95,6 +108,11 @@ def build_runtime_scenario_coverage(
     covered_operations = {
         name: tuple(refs)
         for name, refs in operation_refs.items()
+        if refs
+    }
+    covered_declared_operations = {
+        name: tuple(refs)
+        for name, refs in declared_operation_refs.items()
         if refs
     }
     path_coverage: dict[str, RuntimePathCoverage] = {}
@@ -124,9 +142,13 @@ def build_runtime_scenario_coverage(
     return RuntimeScenarioCoverage(
         artifacts=covered_artifacts,
         operations=covered_operations,
+        declared_operations=covered_declared_operations,
         paths=path_coverage,
         uncovered_artifacts=tuple(sorted(name for name, refs in artifact_refs.items() if not refs)),
         uncovered_operations=tuple(sorted(name for name, refs in operation_refs.items() if not refs)),
+        uncovered_declared_operations=tuple(
+            sorted(name for name, refs in declared_operation_refs.items() if not refs)
+        ),
     )
 
 

@@ -127,6 +127,7 @@ def test_build_document_includes_runtime_coverage_section() -> None:
             ),
         },
         operations={},
+        declared_operations={},
         paths={
             "action-event-repair-loop": RuntimePathCoverage(
                 name="action-event-repair-loop",
@@ -143,6 +144,7 @@ def test_build_document_includes_runtime_coverage_section() -> None:
         },
         uncovered_artifacts=("tool_use_source_blocks",),
         uncovered_operations=("materialize-action-events",),
+        uncovered_declared_operations=("benchmark.repair.action-events",),
     )
 
     rendered = render_quality_reference.build_document(registry, runtime_coverage=coverage)
@@ -150,9 +152,11 @@ def test_build_document_includes_runtime_coverage_section() -> None:
     assert "## Runtime Coverage" in rendered
     assert "- covered runtime paths: `0`" in rendered
     assert "- covered runtime artifacts: `1`" in rendered
+    assert "- covered declared operation targets: `0`" in rendered
     assert "- uncovered runtime paths: `action-event-repair-loop`" in rendered
     assert "- uncovered runtime artifacts: `tool_use_source_blocks`" in rendered
     assert "- uncovered runtime operations: `materialize-action-events`" in rendered
+    assert "- uncovered declared operation targets: `benchmark.repair.action-events`" in rendered
     assert "devtools artifact-graph" in rendered
 
 
