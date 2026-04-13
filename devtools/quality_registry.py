@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
+from enum import Enum
 
 from devtools.benchmark_campaign import CAMPAIGNS as BENCHMARK_CAMPAIGNS
 from devtools.benchmark_campaigns import SYNTHETIC_BENCHMARK_SCENARIOS
@@ -43,11 +44,42 @@ class BenchmarkCampaignEntry(ScenarioMetadata):
     fail_pct: float = 0.0
 
 
+class ScenarioProjectionSourceKind(str, Enum):
+    EXERCISE = "exercise"
+    BENCHMARK_CAMPAIGN = "benchmark-campaign"
+    SYNTHETIC_BENCHMARK = "synthetic-benchmark"
+
+
 @dataclass(frozen=True)
 class ScenarioProjectionEntry(ScenarioMetadata):
-    source_kind: str
+    source_kind: ScenarioProjectionSourceKind
     name: str
     description: str
+
+    @classmethod
+    def from_object(
+        cls,
+        *,
+        source_kind: ScenarioProjectionSourceKind,
+        name: str,
+        description: str,
+        obj: object,
+    ) -> ScenarioProjectionEntry:
+        metadata = ScenarioMetadata.from_object(obj)
+        return cls(
+            source_kind=source_kind,
+            name=name,
+            description=description,
+            origin=metadata.origin,
+            artifact_targets=metadata.artifact_targets,
+            operation_targets=metadata.operation_targets,
+            tags=metadata.tags,
+        )
+
+    def to_dict(self) -> dict[str, object]:
+        data = asdict(self)
+        data["source_kind"] = self.source_kind.value
+        return data
 
 
 @dataclass(frozen=True)
@@ -127,42 +159,33 @@ def _synthetic_benchmark_entries() -> tuple[BenchmarkCampaignEntry, ...]:
 
 def _scenario_projection_entries() -> tuple[ScenarioProjectionEntry, ...]:
     entries = [
-        ScenarioProjectionEntry(
-            source_kind="exercise",
+        ScenarioProjectionEntry.from_object(
+            source_kind=ScenarioProjectionSourceKind.EXERCISE,
             name=exercise.name,
             description=exercise.description,
-            origin=exercise.origin,
-            artifact_targets=tuple(exercise.artifact_targets),
-            operation_targets=tuple(exercise.operation_targets),
-            tags=tuple(exercise.tags),
+            obj=exercise,
         )
         for exercise in EXERCISES
     ]
     entries.extend(
-        ScenarioProjectionEntry(
-            source_kind="benchmark-campaign",
+        ScenarioProjectionEntry.from_object(
+            source_kind=ScenarioProjectionSourceKind.BENCHMARK_CAMPAIGN,
             name=campaign.name,
             description=campaign.description,
-            origin=campaign.origin,
-            artifact_targets=tuple(campaign.artifact_targets),
-            operation_targets=tuple(campaign.operation_targets),
-            tags=tuple(campaign.tags),
+            obj=campaign,
         )
         for campaign in BENCHMARK_CAMPAIGNS.values()
     )
     entries.extend(
-        ScenarioProjectionEntry(
-            source_kind="synthetic-benchmark",
+        ScenarioProjectionEntry.from_object(
+            source_kind=ScenarioProjectionSourceKind.SYNTHETIC_BENCHMARK,
             name=scenario.scenario_id,
             description=scenario.description,
-            origin=scenario.origin,
-            artifact_targets=tuple(scenario.artifact_targets),
-            operation_targets=tuple(scenario.operation_targets),
-            tags=tuple(scenario.tags),
+            obj=scenario,
         )
         for scenario in SYNTHETIC_BENCHMARK_SCENARIOS
     )
-    return tuple(sorted(entries, key=lambda item: (item.source_kind, item.name)))
+    return tuple(sorted(entries, key=lambda item: (item.source_kind.value, item.name)))
 
 
 def build_quality_registry() -> QualityRegistry:
@@ -182,6 +205,7 @@ __all__ = [
     "MutationCampaignEntry",
     "QualityRegistry",
     "ScenarioProjectionEntry",
+    "ScenarioProjectionSourceKind",
     "ValidationLaneEntry",
     "build_quality_registry",
 ]

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from devtools.quality_registry import build_quality_registry
+from devtools.quality_registry import ScenarioProjectionSourceKind, build_quality_registry
 
 ROOT = Path(__file__).resolve().parents[3]
 
@@ -52,7 +52,7 @@ def test_build_quality_registry_exposes_live_catalogs() -> None:
     action_event_preview = next(
         entry for entry in registry.scenario_projections if entry.name == "json-doctor-action-event-preview"
     )
-    assert action_event_preview.source_kind == "exercise"
+    assert action_event_preview.source_kind is ScenarioProjectionSourceKind.EXERCISE
     assert action_event_preview.artifact_targets == (
         "action_event_rows",
         "action_event_fts",

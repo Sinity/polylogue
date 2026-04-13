@@ -101,7 +101,8 @@ def _render_runtime_coverage_section(coverage: RuntimeScenarioCoverage) -> list[
 def _render_scenario_projection_snapshot(registry: QualityRegistry) -> list[str]:
     projection_counts: dict[str, int] = {}
     for entry in registry.scenario_projections:
-        projection_counts[entry.source_kind] = projection_counts.get(entry.source_kind, 0) + 1
+        source_kind = entry.source_kind.value
+        projection_counts[source_kind] = projection_counts.get(source_kind, 0) + 1
     return [
         f"- scenario projections: `{len(registry.scenario_projections)}`",
         *(
