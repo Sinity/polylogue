@@ -127,6 +127,36 @@ class TestExercisesByGroup:
             "action-events",
         )
 
+    def test_static_reparse_preview_exercise_preserves_declared_targets(self):
+        observed = {exercise.name: exercise for exercise in EXERCISES}
+
+        reparse_preview = observed["run-preview-reparse"]
+
+        assert reparse_preview.args == [
+            "run",
+            "--preview",
+            "--reparse",
+            "--source",
+            "inbox",
+            "parse",
+        ]
+        assert reparse_preview.origin == "authored.showcase-catalog"
+        assert reparse_preview.artifact_targets == (
+            "raw_validation_state",
+            "validation_backlog",
+            "parse_backlog",
+            "parse_quarantine",
+        )
+        assert reparse_preview.operation_targets == (
+            "plan-validation-backlog",
+            "plan-parse-backlog",
+        )
+        assert reparse_preview.tags == (
+            "pipeline",
+            "reparse",
+            "maintenance",
+        )
+
 
 class TestVhsExercises:
     """vhs_exercises returns only capturable exercises."""
