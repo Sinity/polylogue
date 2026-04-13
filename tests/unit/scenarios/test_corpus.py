@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from polylogue.scenarios import (
+    CorpusRequest,
     CorpusScenario,
     CorpusSpec,
     ScenarioProjectionSourceKind,
@@ -43,6 +44,11 @@ def test_corpus_spec_payload_round_trip_preserves_inference_fields() -> None:
 def test_corpus_spec_rejects_invalid_message_bounds() -> None:
     with pytest.raises(ValueError, match="messages_max"):
         CorpusSpec(provider="chatgpt", messages_min=6, messages_max=5)
+
+
+def test_corpus_request_rejects_invalid_message_bounds() -> None:
+    with pytest.raises(ValueError, match="messages_max"):
+        CorpusRequest(messages_min=6, messages_max=5)
 
 
 def test_build_default_corpus_specs_preserves_provider_order() -> None:
@@ -207,6 +213,59 @@ def test_resolve_corpus_scenarios_supports_inferred_source() -> None:
     assert scenarios[0].corpus_specs[0].count == 2
     assert scenarios[0].corpus_specs[0].messages_min == 6
     assert scenarios[0].corpus_specs[0].messages_max == 8
+
+
+def test_corpus_request_resolves_default_provider_inventory() -> None:
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setattr(
+            "polylogue.schemas.synthetic.SyntheticCorpus.available_providers",
+            staticmethod(lambda: ["codex", "chatgpt"]),
+        )
+        request = CorpusRequest(
+            count=2,
+            messages_min=4,
+            messages_max=6,
+            seed=11,
+            style="showcase",
+        )
+        assert request.available_providers() == ("codex", "chatgpt")
+        scenarios = request.resolve_scenarios()
+
+    assert tuple(scenario.provider for scenario in scenarios) == ("chatgpt", "codex")
+
+
+def test_corpus_request_resolves_inferred_source_without_provider_inventory() -> None:
+    inferred = (
+        CorpusSpec(
+            provider="chatgpt",
+            package_version="v7",
+            count=1,
+            messages_min=4,
+            messages_max=4,
+            seed=3,
+            profile_family_ids=("cluster-a",),
+            origin="inferred.schema",
+            tags=("inferred", "schema", "synthetic"),
+        ),
+    )
+
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setattr(
+            "polylogue.schemas.operator_inference.list_inferred_corpus_specs",
+            lambda registry=None: inferred,
+        )
+        specs = CorpusRequest(
+            source="inferred",
+            count=2,
+            messages_min=6,
+            messages_max=8,
+            seed=42,
+            style="showcase",
+        ).resolve_specs()
+
+    assert len(specs) == 1
+    assert specs[0].provider == "chatgpt"
+    assert specs[0].count == 2
 
 
 def test_corpus_spec_scope_label_includes_version_and_profile_family() -> None:

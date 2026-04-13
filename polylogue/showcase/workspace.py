@@ -11,12 +11,12 @@ from pathlib import Path
 
 from polylogue.config import Config, Source, get_config
 from polylogue.scenarios import (
+    CorpusRequest,
     CorpusScenario,
     CorpusSourceKind,
     CorpusSpec,
     build_corpus_scenarios,
     flatten_corpus_specs,
-    resolve_corpus_scenarios,
 )
 from polylogue.sync_bridge import run_coroutine_sync
 
@@ -103,6 +103,7 @@ def ensure_report_dir(
 
 def build_synthetic_corpus_specs(
     *,
+    request: CorpusRequest | None = None,
     providers: tuple[str, ...] | None = None,
     count: int = 3,
     style: str = "showcase",
@@ -112,21 +113,21 @@ def build_synthetic_corpus_specs(
     seed: int = 42,
 ) -> tuple[CorpusSpec, ...]:
     """Resolve synthetic corpus specs for showcase and demo workflows."""
-    return flatten_corpus_specs(
-        build_synthetic_corpus_scenarios(
-            providers=providers,
-            count=count,
-            style=style,
-            corpus_source=corpus_source,
-            messages_min=messages_min,
-            messages_max=messages_max,
-            seed=seed,
-        )
+    resolved_request = request or CorpusRequest(
+        providers=providers,
+        count=count,
+        style=style,
+        source=corpus_source,
+        messages_min=messages_min,
+        messages_max=messages_max,
+        seed=seed,
     )
+    return flatten_corpus_specs(build_synthetic_corpus_scenarios(request=resolved_request))
 
 
 def build_synthetic_corpus_scenarios(
     *,
+    request: CorpusRequest | None = None,
     providers: tuple[str, ...] | None = None,
     count: int = 3,
     style: str = "showcase",
@@ -136,25 +137,22 @@ def build_synthetic_corpus_scenarios(
     seed: int = 42,
 ) -> tuple[CorpusScenario, ...]:
     """Resolve named synthetic corpus scenarios for showcase and demo workflows."""
-    from polylogue.schemas.synthetic import SyntheticCorpus
-
-    provider_names = providers
-    if provider_names is None and CorpusSourceKind(corpus_source) is CorpusSourceKind.DEFAULT:
-        provider_names = tuple(SyntheticCorpus.available_providers())
-    return resolve_corpus_scenarios(
-        providers=provider_names,
-        source=corpus_source,
+    resolved_request = request or CorpusRequest(
+        providers=providers,
         count=count,
+        style=style,
+        source=corpus_source,
         messages_min=messages_min,
         messages_max=messages_max,
         seed=seed,
-        style=style,
     )
+    return resolved_request.resolve_scenarios()
 
 
 def generate_synthetic_fixtures(
     fixture_dir: Path,
     *,
+    request: CorpusRequest | None = None,
     providers: tuple[str, ...] | None = None,
     count: int = 3,
     style: str = "showcase",
@@ -162,6 +160,7 @@ def generate_synthetic_fixtures(
 ) -> None:
     """Generate schema-driven synthetic fixtures for all providers."""
     scenarios = build_synthetic_corpus_scenarios(
+        request=request,
         providers=providers,
         count=count,
         style=style,
@@ -241,6 +240,23 @@ def seed_workspace_from_scenarios(
     )
 
 
+def seed_workspace_from_corpus_request(
+    workspace: VerificationWorkspace,
+    *,
+    request: CorpusRequest,
+    regenerate_schemas: bool = False,
+    prefix: str = "showcase",
+):
+    """Resolve corpus specs, generate fixtures, and ingest them into the workspace."""
+    scenarios = build_synthetic_corpus_scenarios(request=request)
+    return seed_workspace_from_scenarios(
+        workspace,
+        corpus_scenarios=scenarios,
+        regenerate_schemas=regenerate_schemas,
+        prefix=prefix,
+    )
+
+
 def seed_workspace_from_corpus_options(
     workspace: VerificationWorkspace,
     *,
@@ -255,18 +271,17 @@ def seed_workspace_from_corpus_options(
     prefix: str = "showcase",
 ):
     """Resolve corpus specs, generate fixtures, and ingest them into the workspace."""
-    scenarios = build_synthetic_corpus_scenarios(
-        providers=providers,
-        count=count,
-        style=style,
-        corpus_source=corpus_source,
-        messages_min=messages_min,
-        messages_max=messages_max,
-        seed=seed,
-    )
-    return seed_workspace_from_scenarios(
+    return seed_workspace_from_corpus_request(
         workspace,
-        corpus_scenarios=scenarios,
+        request=CorpusRequest(
+            providers=providers,
+            count=count,
+            style=style,
+            source=corpus_source,
+            messages_min=messages_min,
+            messages_max=messages_max,
+            seed=seed,
+        ),
         regenerate_schemas=regenerate_schemas,
         prefix=prefix,
     )

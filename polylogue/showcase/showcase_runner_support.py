@@ -8,7 +8,7 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
-from polylogue.scenarios import CorpusSpec
+from polylogue.scenarios import CorpusRequest, CorpusSpec
 from polylogue.showcase.exercises import EXERCISES, Exercise, topological_order
 from polylogue.showcase.showcase_runner_models import ExerciseResult
 from polylogue.showcase.workspace import (
@@ -48,8 +48,13 @@ def seed_workspace(workspace_dir: Path, *, synthetic_count: int) -> dict[str, st
     seed_workspace_from_scenarios(
         workspace,
         corpus_scenarios=build_synthetic_corpus_scenarios(
-            count=synthetic_count,
-            style="showcase",
+            request=CorpusRequest(
+                count=synthetic_count,
+                style="showcase",
+                messages_min=6,
+                messages_max=19,
+                seed=42,
+            ),
         ),
     )
     return dict(workspace.env_vars)
