@@ -12,6 +12,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from polylogue.scenarios import ScenarioMetadata
+
 ROOT = Path(__file__).resolve().parent.parent
 ARTIFACT_DIR = Path(".local/benchmark-campaigns")
 STATUS_IGNORE_PREFIXES = (f"{ARTIFACT_DIR.as_posix()}/",)
@@ -20,21 +22,17 @@ DEFAULT_FAIL_PCT = 20.0
 
 
 @dataclass(frozen=True)
-class Campaign:
+class Campaign(ScenarioMetadata):
     name: str
     description: str
     tests: tuple[str, ...]
     notes: tuple[str, ...] = ()
     warn_pct: float = DEFAULT_WARN_PCT
     fail_pct: float = DEFAULT_FAIL_PCT
-    origin: str = "authored"
-    artifact_targets: tuple[str, ...] = ()
-    operation_targets: tuple[str, ...] = ()
-    tags: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
-class BenchmarkScenario:
+class BenchmarkScenario(ScenarioMetadata):
     """Authored scenario metadata for one durable benchmark campaign."""
 
     scenario_id: str
@@ -43,10 +41,6 @@ class BenchmarkScenario:
     notes: tuple[str, ...] = ()
     warn_pct: float = DEFAULT_WARN_PCT
     fail_pct: float = DEFAULT_FAIL_PCT
-    origin: str = "authored"
-    artifact_targets: tuple[str, ...] = ()
-    operation_targets: tuple[str, ...] = ()
-    tags: tuple[str, ...] = ()
 
     def compile(self) -> Campaign:
         return Campaign(
@@ -336,10 +330,7 @@ def run_campaign(
         fail_pct=fail_threshold,
         regressions=[asdict(item) for item in regressions],
         worst_regression_pct=worst_regression,
-        origin=campaign.origin,
-        artifact_targets=list(campaign.artifact_targets),
-        operation_targets=list(campaign.operation_targets),
-        tags=list(campaign.tags),
+        **campaign.to_payload(),
     )
 
     artifact_json.write_text(json.dumps(asdict(result), indent=2, sort_keys=True) + "\n")

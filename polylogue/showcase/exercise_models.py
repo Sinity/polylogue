@@ -5,6 +5,8 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
+from polylogue.scenarios import ScenarioMetadata
+
 
 @dataclass(frozen=True)
 class Validation:
@@ -19,7 +21,7 @@ class Validation:
 
 
 @dataclass(frozen=True)
-class Exercise:
+class Exercise(ScenarioMetadata):
     """A single showcase exercise — one CLI invocation with validation."""
 
     name: str  # Unique ID e.g. "query.list-json"
@@ -37,10 +39,6 @@ class Exercise:
     vhs_capture: bool = False  # Whether this exercise should be captured as VHS recording
     artifact_class: str = "text"  # "text" | "json" | "visual" | "bundle"
     capture_steps: tuple[str, ...] = ()  # Optional VHS interaction steps for complex scenarios
-    origin: str = "authored"
-    artifact_targets: tuple[str, ...] = ()
-    operation_targets: tuple[str, ...] = ()
-    tags: tuple[str, ...] = ()
 
 
 __all__ = ["Exercise", "Validation"]

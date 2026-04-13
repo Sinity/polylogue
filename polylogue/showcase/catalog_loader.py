@@ -6,6 +6,7 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
+from polylogue.scenarios import ScenarioMetadata
 from polylogue.showcase.exercise_models import Exercise, Validation
 
 _CATALOG_PATH = Path(__file__).with_name("exercise_catalog.json")
@@ -119,6 +120,7 @@ def _load_validation(payload: dict[str, object] | None) -> Validation:
 
 
 def _load_exercise(payload: dict[str, object]) -> Exercise:
+    metadata = ScenarioMetadata.from_payload(payload)
     return Exercise(
         name=str(payload["name"]),
         group=str(payload["group"]),
@@ -135,10 +137,10 @@ def _load_exercise(payload: dict[str, object]) -> Exercise:
         vhs_capture=bool(payload.get("vhs_capture", False)),
         artifact_class=str(payload.get("artifact_class", "text")),
         capture_steps=tuple(str(item) for item in payload.get("capture_steps", ())),
-        origin=str(payload.get("origin", "authored")),
-        artifact_targets=tuple(str(item) for item in payload.get("artifact_targets", ())),
-        operation_targets=tuple(str(item) for item in payload.get("operation_targets", ())),
-        tags=tuple(str(item) for item in payload.get("tags", ())),
+        origin=metadata.origin,
+        artifact_targets=metadata.artifact_targets,
+        operation_targets=metadata.operation_targets,
+        tags=metadata.tags,
     )
 
 

@@ -4,11 +4,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from polylogue.scenarios import ScenarioMetadata
 from polylogue.showcase.exercise_models import Exercise, Validation
 
 
 @dataclass(frozen=True)
-class ExerciseScenario:
+class ExerciseScenario(ScenarioMetadata):
     """Authored scenario metadata for one CLI-backed showcase proof."""
 
     scenario_id: str
@@ -26,10 +27,6 @@ class ExerciseScenario:
     vhs_capture: bool = False
     artifact_class: str = "text"
     capture_steps: tuple[str, ...] = ()
-    origin: str = "authored"
-    artifact_targets: tuple[str, ...] = ()
-    operation_targets: tuple[str, ...] = ()
-    tags: tuple[str, ...] = ()
 
     def compile(self) -> Exercise:
         """Lower the scenario into the concrete showcase exercise artifact."""
