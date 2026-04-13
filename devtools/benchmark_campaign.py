@@ -12,8 +12,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from polylogue.scenarios import ExecutionKind
+
 from .benchmark_catalog import BenchmarkCampaignEntry, build_benchmark_entries
-from .execution_specs import ExecutionKind
 
 ROOT = Path(__file__).resolve().parent.parent
 ARTIFACT_DIR = Path(".local/benchmark-campaigns")

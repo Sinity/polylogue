@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from devtools.execution_specs import (
+from polylogue.scenarios import (
     ExecutionKind,
     command_execution,
     composite_execution,

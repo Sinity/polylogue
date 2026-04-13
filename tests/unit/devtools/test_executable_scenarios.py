@@ -2,9 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from devtools.executable_scenarios import ExecutableScenario
-from devtools.execution_specs import pytest_execution
-from polylogue.scenarios import CorpusSpec, ScenarioProjectionSourceKind
+from polylogue.scenarios import CorpusSpec, ExecutableScenario, ScenarioProjectionSourceKind, pytest_execution
 
 
 @dataclass(frozen=True, kw_only=True)
