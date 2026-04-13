@@ -10,16 +10,14 @@ from polylogue.cli.commands.generate import generate_command
 from polylogue.cli.helpers import complete_configured_source_names, load_effective_config, resolve_sources
 from polylogue.cli.qa_finalization import finalize_qa_run
 from polylogue.cli.qa_requests import (
-    QACaptureMode,
-    build_qa_finalization_plan,
-    build_qa_snapshot_plan,
+    build_qa_invocation_plan,
 )
 from polylogue.cli.qa_snapshot import execute_snapshot_plan
 from polylogue.cli.types import AppEnv
-from polylogue.showcase.qa_runner_request import QAStage, build_qa_session_request
+from polylogue.showcase.qa_runner_request import QAStage
 
 _STAGE_CHOICES = click.Choice([stage.value for stage in QAStage])
-_CAPTURE_CHOICES = click.Choice([mode.value for mode in QACaptureMode])
+_CAPTURE_CHOICES = click.Choice(["none", "vhs"])
 
 
 @click.group("audit", invoke_without_command=True)
@@ -113,17 +111,34 @@ def qa_command(
     ctx = click.get_current_context()
     if ctx.invoked_subcommand is not None:
         return
-    capture_mode = QACaptureMode(capture.lower())
-    snapshot_plan = build_qa_snapshot_plan(snapshot_label=snapshot_label, snapshot_from=snapshot_from)
-    finalization_plan = build_qa_finalization_plan(
-        capture_mode=capture_mode,
-        json_output=json_output,
-        snapshot_plan=snapshot_plan,
-    )
+    config = load_effective_config(env)
+    selected_source_names = resolve_sources(config, source_names, "audit") if source_names else None
+    try:
+        invocation_plan = build_qa_invocation_plan(
+            synthetic=synthetic,
+            source_names=tuple(selected_source_names) if selected_source_names else None,
+            fresh=fresh,
+            ingest=ingest,
+            regenerate_schemas=regenerate_schemas,
+            only_stage=only_stage,
+            skip_stages=skip_stages,
+            workspace=workspace,
+            report_dir=report_dir,
+            verbose=verbose,
+            fail_fast=fail_fast,
+            tier_filter=tier_filter,
+            capture=capture,
+            json_output=json_output,
+            snapshot_label=snapshot_label,
+            snapshot_from=snapshot_from,
+        )
+    except ValueError as exc:
+        raise click.UsageError(str(exc)) from exc
+
+    snapshot_plan = invocation_plan.snapshot_plan
 
     # --- Snapshot-from: archive only, no QA ---
-    if snapshot_plan and snapshot_plan.skips_qa and snapshot_plan.source_dir is not None:
-        config = load_effective_config(env)
+    if invocation_plan.snapshot_only and snapshot_plan and snapshot_plan.source_dir is not None:
         root = report_dir or (config.archive_root / "qa" / "snapshots")
         execute_snapshot_plan(
             snapshot_plan,
@@ -134,34 +149,18 @@ def qa_command(
         )
         return
 
-    config = load_effective_config(env)
-    selected_source_names = resolve_sources(config, source_names, "audit") if source_names else None
-    try:
-        request = build_qa_session_request(
-            synthetic=synthetic,
-            source_names=tuple(selected_source_names) if selected_source_names else None,
-            fresh=fresh,
-            ingest=ingest,
-            regenerate_schemas=regenerate_schemas,
-            only_stage=QAStage(only_stage) if only_stage else None,
-            skip_stages=tuple(QAStage(stage) for stage in skip_stages),
-            workspace=workspace,
-            report_dir=report_dir,
-            verbose=verbose,
-            fail_fast=fail_fast,
-            tier_filter=tier_filter,
-        )
-    except ValueError as exc:
-        raise click.UsageError(str(exc)) from exc
-
     # --- Execute QA session ---
     from polylogue.showcase.qa_runner import run_qa_session
+
+    request = invocation_plan.session_request
+    if request is None:
+        raise click.UsageError("QA invocation plan did not produce an executable session request.")
 
     result = run_qa_session(request)
 
     finalize_qa_run(
         result,
-        plan=finalization_plan,
+        plan=invocation_plan.finalization_plan,
         archive_root=config.archive_root,
         env=env,
     )
