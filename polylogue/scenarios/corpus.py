@@ -324,6 +324,12 @@ def build_corpus_scenarios(
     return tuple(scenarios)
 
 
+def flatten_corpus_specs(
+    corpus_scenarios: Iterable[CorpusScenario],
+) -> tuple[CorpusSpec, ...]:
+    return tuple(spec for scenario in corpus_scenarios for spec in scenario.corpus_specs)
+
+
 def build_default_corpus_specs(
     *,
     providers: Iterable[str],
@@ -490,6 +496,7 @@ def build_inferred_corpus_specs(
 
 __all__ = [
     "build_corpus_scenarios",
+    "flatten_corpus_specs",
     "CorpusSourceKind",
     "CorpusScenario",
     "CorpusSpec",
