@@ -15,10 +15,10 @@ Current registry snapshot:
 - benchmark campaigns: `3`
 - synthetic benchmark campaigns: `6`
 - scenario projections: `237`
-- inferred corpus specs: `5`
+- inferred corpus scenarios: `5`
   - benchmark-campaign: `3`
   - exercise: `137`
-  - inferred-corpus: `5`
+  - inferred-corpus-scenario: `5`
   - mutation-campaign: `19`
   - synthetic-benchmark: `6`
   - validation-lane: `67`
@@ -242,13 +242,13 @@ These campaigns generate synthetic archives and run long-haul benchmark workload
 
 These inferred corpus specs come from the live schema registry and participate in the shared scenario projection map.
 
-| Provider | Package | Target | Count | Messages | Tags |
-| --- | --- | --- | ---: | --- | --- |
-| `chatgpt` | `v1` | `default` | 5 | `4-16` | `inferred`<br>`schema`<br>`synthetic` |
-| `claude-ai` | `v1` | `default` | 5 | `4-16` | `inferred`<br>`schema`<br>`synthetic` |
-| `claude-code` | `v1` | `default` | 5 | `4-16` | `inferred`<br>`schema`<br>`synthetic` |
-| `codex` | `v1` | `default` | 5 | `4-16` | `inferred`<br>`schema`<br>`synthetic` |
-| `gemini` | `v1` | `default` | 5 | `4-16` | `inferred`<br>`schema`<br>`synthetic` |
+| Provider | Package | Variants | Targets | Tags |
+| --- | --- | ---: | --- | --- |
+| `chatgpt` | `v1` | `1` | `default` | `inferred`<br>`schema`<br>`synthetic`<br>`scenario` |
+| `claude-ai` | `v1` | `1` | `default` | `inferred`<br>`schema`<br>`synthetic`<br>`scenario` |
+| `claude-code` | `v1` | `1` | `default` | `inferred`<br>`schema`<br>`synthetic`<br>`scenario` |
+| `codex` | `v1` | `1` | `default` | `inferred`<br>`schema`<br>`synthetic`<br>`scenario` |
+| `gemini` | `v1` | `1` | `default` | `inferred`<br>`schema`<br>`synthetic`<br>`scenario` |
 
 ## Scenario Projection Catalog
 
@@ -396,11 +396,11 @@ These are the authored scenario-bearing projections currently feeding runtime co
 | `exercise` | `tags-json` | — | — | — | — | Tags as JSON |
 | `exercise` | `transform-strip` | — | — | — | — | Strip tool calls from output |
 | `exercise` | `version` | — | — | — | — | Version output |
-| `inferred-corpus` | `chatgpt:v1:default` | — | — | — | `inferred`<br>`schema`<br>`synthetic` | Inferred synthetic corpus spec for chatgpt default from 2122 observed sample(s). |
-| `inferred-corpus` | `claude-ai:v1:default` | — | — | — | `inferred`<br>`schema`<br>`synthetic` | Inferred synthetic corpus spec for claude-ai default from 904 observed sample(s). |
-| `inferred-corpus` | `claude-code:v1:default` | — | — | — | `inferred`<br>`schema`<br>`synthetic` | Inferred synthetic corpus spec for claude-code default from 2171910 observed sample(s). |
-| `inferred-corpus` | `codex:v1:default` | — | — | — | `inferred`<br>`schema`<br>`synthetic` | Inferred synthetic corpus spec for codex default from 151159 observed sample(s). |
-| `inferred-corpus` | `gemini:v1:default` | — | — | — | `inferred`<br>`schema`<br>`synthetic` | Inferred synthetic corpus spec for gemini default from 226 observed sample(s). |
+| `inferred-corpus-scenario` | `chatgpt:v1` | — | — | — | `inferred`<br>`schema`<br>`synthetic`<br>`scenario` | Compiled inferred corpus scenario for chatgpt v1 across 1 corpus variant(s). |
+| `inferred-corpus-scenario` | `claude-ai:v1` | — | — | — | `inferred`<br>`schema`<br>`synthetic`<br>`scenario` | Compiled inferred corpus scenario for claude-ai v1 across 1 corpus variant(s). |
+| `inferred-corpus-scenario` | `claude-code:v1` | — | — | — | `inferred`<br>`schema`<br>`synthetic`<br>`scenario` | Compiled inferred corpus scenario for claude-code v1 across 1 corpus variant(s). |
+| `inferred-corpus-scenario` | `codex:v1` | — | — | — | `inferred`<br>`schema`<br>`synthetic`<br>`scenario` | Compiled inferred corpus scenario for codex v1 across 1 corpus variant(s). |
+| `inferred-corpus-scenario` | `gemini:v1` | — | — | — | `inferred`<br>`schema`<br>`synthetic`<br>`scenario` | Compiled inferred corpus scenario for gemini v1 across 1 corpus variant(s). |
 | `mutation-campaign` | `cli-query` | — | — | — | `mutation` | Query command planning, action routing, and summary output contracts |
 | `mutation-campaign` | `cli-run` | — | — | — | `mutation` | Run command execution, display, and watch contracts |
 | `mutation-campaign` | `drive-client` | — | — | — | `mutation` | Drive auth, transport, JSON payload parsing, and ingest attachment contracts |

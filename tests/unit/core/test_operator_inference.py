@@ -5,7 +5,11 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from polylogue.schemas.generation_models import GenerationResult
-from polylogue.schemas.operator_inference import infer_schema, list_inferred_corpus_specs
+from polylogue.schemas.operator_inference import (
+    infer_schema,
+    list_inferred_corpus_scenarios,
+    list_inferred_corpus_specs,
+)
 from polylogue.schemas.operator_models import SchemaInferRequest
 from polylogue.schemas.packages import SchemaElementManifest, SchemaPackageCatalog, SchemaVersionPackage
 from polylogue.schemas.tooling_models import ClusterManifest, SchemaCluster
@@ -30,9 +34,12 @@ def test_infer_schema_emits_default_corpus_specs_without_clustering(tmp_path: Pa
 
     assert result.manifest is None
     assert len(result.corpus_specs) == 1
+    assert len(result.corpus_scenarios) == 1
     assert result.corpus_specs[0].provider == "chatgpt"
     assert result.corpus_specs[0].package_version == "v3"
     assert result.corpus_specs[0].observed_sample_count == 9
+    assert result.corpus_scenarios[0].provider == "chatgpt"
+    assert result.corpus_scenarios[0].package_version == "v3"
 
 
 def test_infer_schema_emits_cluster_backed_corpus_specs_when_manifest_exists(tmp_path: Path) -> None:
@@ -82,8 +89,10 @@ def test_infer_schema_emits_cluster_backed_corpus_specs_when_manifest_exists(tmp
     assert result.manifest is manifest
     assert result.manifest_path == tmp_path / "manifest.json"
     assert len(result.corpus_specs) == 1
+    assert len(result.corpus_scenarios) == 1
     assert result.corpus_specs[0].profile_family_ids == ("cluster-a",)
     assert result.corpus_specs[0].element_kind == "conversation_document"
+    assert result.corpus_scenarios[0].corpus_specs[0].profile_family_ids == ("cluster-a",)
 
 
 def test_list_inferred_corpus_specs_reads_registry_catalog_and_manifest() -> None:
@@ -145,6 +154,66 @@ def test_list_inferred_corpus_specs_reads_registry_catalog_and_manifest() -> Non
     assert specs[0].package_version == "v7"
     assert specs[0].profile_family_ids == ("cluster-a",)
     assert specs[0].observed_sample_count == 12
+
+
+def test_list_inferred_corpus_scenarios_groups_specs_by_provider_and_version() -> None:
+    catalog = SchemaPackageCatalog(
+        provider="chatgpt",
+        default_version="v7",
+        packages=[
+            SchemaVersionPackage(
+                provider="chatgpt",
+                version="v7",
+                anchor_kind="conversation_document",
+                default_element_kind="conversation_document",
+                first_seen="2026-04-01T00:00:00Z",
+                last_seen="2026-04-02T00:00:00Z",
+                bundle_scope_count=1,
+                sample_count=12,
+            )
+        ],
+    )
+    manifest = ClusterManifest(
+        provider="chatgpt",
+        clusters=[
+            SchemaCluster(
+                cluster_id="cluster-a",
+                provider="chatgpt",
+                sample_count=7,
+                first_seen="2026-04-01T00:00:00Z",
+                last_seen="2026-04-02T00:00:00Z",
+                representative_paths=["/tmp/source-a.json"],
+                dominant_keys=["id"],
+                confidence=0.9,
+                artifact_kind="conversation_document",
+            ),
+            SchemaCluster(
+                cluster_id="cluster-b",
+                provider="chatgpt",
+                sample_count=5,
+                first_seen="2026-04-01T00:00:00Z",
+                last_seen="2026-04-02T00:00:00Z",
+                representative_paths=["/tmp/source-b.json"],
+                dominant_keys=["id"],
+                confidence=0.8,
+                artifact_kind="conversation_document",
+            ),
+        ],
+        default_version="v7",
+    )
+    fake_registry = SimpleNamespace(
+        list_providers=lambda: ["chatgpt"],
+        load_package_catalog=lambda provider: catalog,
+        load_cluster_manifest=lambda provider: manifest,
+    )
+
+    with patch("polylogue.schemas.operator_inference.schema_registry", return_value=fake_registry):
+        scenarios = list_inferred_corpus_scenarios()
+
+    assert len(scenarios) == 1
+    assert scenarios[0].provider == "chatgpt"
+    assert scenarios[0].package_version == "v7"
+    assert tuple(spec.profile_family_ids[0] for spec in scenarios[0].corpus_specs) == ("cluster-a", "cluster-b")
 
 
 def test_list_inferred_corpus_specs_can_scope_to_one_provider() -> None:

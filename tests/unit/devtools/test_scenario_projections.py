@@ -17,7 +17,7 @@ def test_render_scenario_projections_text_lists_authored_sources() -> None:
     assert "mutation-campaign:filters" in rendered
     assert "benchmark-campaign:search-filters" in rendered
     assert "synthetic-benchmark:action-event-materialization" in rendered
-    assert "inferred-corpus:chatgpt:v1:default" in rendered
+    assert "inferred-corpus-scenario:chatgpt:v1" in rendered
 
 
 def test_render_scenario_projections_json_is_machine_readable() -> None:
@@ -33,9 +33,9 @@ def test_render_scenario_projections_json_is_machine_readable() -> None:
         entry["source_kind"] == "synthetic-benchmark" and entry["name"] == "session-product-materialization"
         for entry in payload
     )
-    assert any(entry["source_kind"] == "inferred-corpus" and entry["name"] == "chatgpt:v1:default" for entry in payload)
+    assert any(entry["source_kind"] == "inferred-corpus-scenario" and entry["name"] == "chatgpt:v1" for entry in payload)
     inferred = next(
-        entry for entry in payload if entry["source_kind"] == "inferred-corpus" and entry["name"] == "chatgpt:v1:default"
+        entry for entry in payload if entry["source_kind"] == "inferred-corpus-scenario" and entry["name"] == "chatgpt:v1"
     )
     assert inferred["source_payload"]["provider"] == "chatgpt"
     assert inferred["source_payload"]["package_version"] == "v1"

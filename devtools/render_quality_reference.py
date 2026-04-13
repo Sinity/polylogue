@@ -12,7 +12,7 @@ from devtools.lane_models import LaneEntry
 from devtools.mutation_catalog import MutationCampaignEntry
 from devtools.quality_registry import QualityRegistry, build_quality_registry
 from devtools.scenario_coverage import RuntimeScenarioCoverage, build_runtime_scenario_coverage
-from polylogue.scenarios import CorpusSpec, ScenarioProjectionEntry, ScenarioProjectionSourceKind
+from polylogue.scenarios import CorpusScenario, ScenarioProjectionEntry
 
 
 def _format_code_list(items: tuple[str, ...]) -> str:
@@ -68,21 +68,15 @@ def _render_benchmark_table(entries: tuple[BenchmarkCampaignEntry, ...]) -> list
     return lines
 
 
-def _render_inferred_corpus_table(entries: tuple[ScenarioProjectionEntry, ...]) -> list[str]:
-    corpus_specs = tuple(
-        CorpusSpec.from_payload(entry.source_payload)
-        for entry in entries
-        if entry.source_kind is ScenarioProjectionSourceKind.INFERRED_CORPUS and entry.source_payload
-    )
+def _render_inferred_corpus_table(entries: tuple[CorpusScenario, ...]) -> list[str]:
     lines = [
-        "| Provider | Package | Target | Count | Messages | Tags |",
-        "| --- | --- | --- | ---: | --- | --- |",
+        "| Provider | Package | Variants | Targets | Tags |",
+        "| --- | --- | ---: | --- | --- |",
     ]
-    for entry in corpus_specs:
-        target = entry.profile_family_ids[0] if entry.profile_family_ids else (entry.element_kind or entry.artifact_kind or "default")
+    for entry in entries:
         lines.append(
-            f"| `{entry.provider}` | `{entry.package_version}` | `{target}` | "
-            f"{entry.count} | `{entry.messages_min}-{entry.messages_max}` | "
+            f"| `{entry.provider}` | `{entry.package_version}` | `{len(entry.corpus_specs)}` | "
+            f"{_format_code_list(entry.target_labels)} | "
             f"{_format_code_list(entry.tags)} |"
         )
     return lines
@@ -146,7 +140,7 @@ def _render_scenario_projection_snapshot(registry: QualityRegistry) -> list[str]
         projection_counts[source_kind] = projection_counts.get(source_kind, 0) + 1
     return [
         f"- scenario projections: `{len(registry.scenario_projections)}`",
-        f"- inferred corpus specs: `{sum(1 for entry in registry.scenario_projections if entry.source_kind.value == 'inferred-corpus')}`",
+        f"- inferred corpus scenarios: `{len(registry.inferred_corpus_scenarios)}`",
         *(
             f"  - {source_kind}: `{count}`"
             for source_kind, count in sorted(projection_counts.items())
@@ -310,7 +304,7 @@ def build_document(registry: QualityRegistry, *, runtime_coverage: RuntimeScenar
         "",
         "These inferred corpus specs come from the live schema registry and participate in the shared scenario projection map.",
         "",
-        *_render_inferred_corpus_table(registry.scenario_projections),
+        *_render_inferred_corpus_table(registry.inferred_corpus_scenarios),
         "",
         "## Scenario Projection Catalog",
         "",
