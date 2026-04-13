@@ -3,6 +3,7 @@ from __future__ import annotations
 from devtools.validation_family_models import (
     ValidationLaneCompositeSpec,
     ValidationLaneFamily,
+    ValidationLaneStageSpec,
     compile_validation_lane_families,
 )
 
@@ -58,3 +59,35 @@ def test_compile_validation_lane_families_indexes_entries_by_name() -> None:
 
     assert tuple(compiled) == ("domain-read-model-live",)
     assert compiled["domain-read-model-live"].family == "domain-read-model"
+
+
+def test_validation_lane_family_from_stages_derives_stage_names_and_members() -> None:
+    family = ValidationLaneFamily.from_stages(
+        name="runtime-substrate",
+        description="Runtime substrate family.",
+        stages=(
+            ValidationLaneStageSpec(
+                suffix="contracts",
+                description="Contracts lane.",
+                timeout_s=120,
+                members=("query-routing", "semantic-stack"),
+            ),
+            ValidationLaneStageSpec(
+                suffix="hardening",
+                description="Hardening lane.",
+                timeout_s=240,
+                member_stages=("contracts", "live"),
+            ),
+        ),
+    )
+
+    entries = family.compile_entries()
+
+    assert [entry.name for entry in entries] == [
+        "runtime-substrate-contracts",
+        "runtime-substrate-hardening",
+    ]
+    assert entries[1].sub_lanes == (
+        "runtime-substrate-contracts",
+        "runtime-substrate-live",
+    )
