@@ -35,10 +35,29 @@ class TestShowcaseRunnerSeeding:
 
         with patch.object(runner, "_generate_synthetic_fixtures", side_effect=_fake_generate) as mock_generate:
             with patch("polylogue.pipeline.runner.run_sources", new_callable=AsyncMock, side_effect=_fake_run_sources):
-                runner._seed_workspace(workspace)
+                runner._seed_workspace(workspace, exercises=[])
 
         assert mock_generate.call_count == 1
         assert (workspace / "data" / "polylogue" / "inbox" / "codex" / "sample.json").exists()
+
+    def test_runner_seeds_workspace_with_selected_exercises(self, tmp_path):
+        runner = ShowcaseRunner(output_dir=tmp_path / "output")
+        selected = [
+            Exercise(
+                name="help-main",
+                group="structural",
+                description="Main help",
+                execution=polylogue_execution("--help"),
+                corpus_specs=(CorpusSpec.for_provider("chatgpt", count=2),),
+            )
+        ]
+
+        with patch.object(runner, "_select_exercises", return_value=selected):
+            with patch.object(runner, "_seed_workspace") as mock_seed:
+                runner.run()
+
+        mock_seed.assert_called_once()
+        assert mock_seed.call_args.kwargs["exercises"] == selected
 
     def test_generate_synthetic_fixtures_uses_showcase_style(self, tmp_path):
         runner = ShowcaseRunner(synthetic_count=1)
@@ -101,12 +120,21 @@ class TestShowcaseRunnerWorkspaceEnv:
             output_dir=tmp_path / "output",
             tier_filter=0,
         )
+        selected = [
+            Exercise(
+                name="help-main",
+                group="structural",
+                description="Main help",
+                execution=polylogue_execution("--help"),
+            )
+        ]
 
         with patch.object(runner, "_seed_workspace") as mock_seed:
-            with patch.object(runner, "_select_exercises", return_value=[]):
+            with patch.object(runner, "_select_exercises", return_value=selected):
                 runner.run()
 
         mock_seed.assert_called_once()
+        assert mock_seed.call_args.kwargs["exercises"] == selected
 
 
 class TestShowcaseRunnerExecution:

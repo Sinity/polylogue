@@ -16,8 +16,10 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from polylogue.lib.outcomes import OutcomeCheck, OutcomeStatus
+from polylogue.scenarios import CorpusSpec, polylogue_execution
 from polylogue.schemas.audit_models import AuditReport
 from polylogue.schemas.verification_models import ArtifactProofReport, ProviderArtifactProof
+from polylogue.showcase.exercise_models import Exercise
 from polylogue.showcase.invariants import InvariantResult
 from polylogue.showcase.qa_report import (
     generate_qa_markdown,
@@ -217,6 +219,30 @@ def test_qa_session_exercise_tier_preserved():
     session = generate_showcase_session(_make_showcase(results))
     tiers = {e["name"]: e["tier"] for e in session["exercises"]}
     assert tiers == {"e1": 1, "e2": 2, "e3": 3}
+
+
+def test_generate_json_report_preserves_exercise_corpus_specs():
+    exercise = Exercise(
+        name="seeded-query",
+        group="query-read",
+        description="Seeded query",
+        execution=polylogue_execution("list", "-n", "1"),
+        corpus_specs=(CorpusSpec.for_provider("chatgpt", count=2),),
+    )
+    result = ShowcaseResult()
+    result.results = [
+        ExerciseResult(
+            exercise=exercise,
+            passed=True,
+            exit_code=0,
+            output="[]",
+            duration_ms=12.0,
+        )
+    ]
+
+    payload = json.loads(generate_json_report(result))
+
+    assert payload["exercises"][0]["corpus_specs"][0]["provider"] == "chatgpt"
 
 
 def test_full_qa_session_contains_composed_stage_payloads():

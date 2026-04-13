@@ -4,8 +4,12 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from polylogue.scenarios import ExecutionKind, ExecutionSpec, ScenarioMetadata, polylogue_execution
+
+if TYPE_CHECKING:
+    from polylogue.scenarios import CorpusSpec
 
 
 @dataclass(frozen=True)
@@ -28,6 +32,7 @@ class Exercise(ScenarioMetadata):
     group: str  # structural | sources | pipeline | query-read | query-write | subcommands | advanced
     description: str  # Human-readable, used in cookbook headings
     execution: ExecutionSpec = field(default_factory=polylogue_execution)
+    corpus_specs: tuple[CorpusSpec, ...] = ()
     validation: Validation = field(default_factory=Validation)
     needs_data: bool = False  # Requires populated database
     writes: bool = False  # Mutates state — skip in --live mode
