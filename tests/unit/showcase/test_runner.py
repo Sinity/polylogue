@@ -6,7 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from polylogue.scenarios import CorpusSpec
+from polylogue.scenarios import CorpusSpec, polylogue_execution
 from polylogue.showcase.cli_boundary import ShowcaseCliResult
 from polylogue.showcase.exercises import Exercise
 from polylogue.showcase.runner import ShowcaseRunner
@@ -119,7 +119,7 @@ class TestShowcaseRunnerExecution:
             name="help-main",
             group="structural",
             description="Main help",
-            args=["--help"],
+            execution=polylogue_execution("--help"),
         )
 
         with patch(

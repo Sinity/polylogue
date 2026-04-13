@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 
+from polylogue.scenarios import polylogue_execution
 from polylogue.showcase.exercises import Exercise, Validation
 from polylogue.showcase.report_files import save_reports
 from polylogue.showcase.runner import ExerciseResult, ShowcaseResult
@@ -19,8 +20,14 @@ def _make_result(exercises: list[Exercise] | None = None) -> ShowcaseResult:
     """Build a ShowcaseResult with predictable test data."""
     if exercises is None:
         exercises = [
-            Exercise("test-1", "structural", "Test one", ["--help"], Validation(stdout_contains=("polylogue",))),
-            Exercise("test-2", "sources", "Test two", ["sources"]),
+            Exercise(
+                "test-1",
+                "structural",
+                "Test one",
+                polylogue_execution("--help"),
+                Validation(stdout_contains=("polylogue",)),
+            ),
+            Exercise("test-2", "sources", "Test two", polylogue_execution("sources")),
         ]
 
     result = ShowcaseResult()

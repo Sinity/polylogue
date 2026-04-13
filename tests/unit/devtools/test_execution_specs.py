@@ -43,6 +43,14 @@ def test_polylogue_execution_renders_runtime_and_display_forms() -> None:
     assert execution.polylogue_invoke_args == ("--plain", "doctor", "--json")
 
 
+def test_execution_spec_round_trips_payload() -> None:
+    execution = polylogue_execution("audit", "--only", "exercises")
+
+    restored = type(execution).from_payload(execution.to_payload())
+
+    assert restored == execution
+
+
 def test_composite_execution_has_members_only() -> None:
     execution = composite_execution("lane-a", "lane-b")
 

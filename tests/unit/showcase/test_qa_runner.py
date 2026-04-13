@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 
 from polylogue.lib.outcomes import OutcomeCheck, OutcomeStatus
+from polylogue.scenarios import polylogue_execution
 from polylogue.schemas.audit_models import AuditReport
 from polylogue.schemas.verification_models import ArtifactProofReport, ProviderArtifactProof
 from polylogue.showcase.exercises import Exercise, Validation
@@ -18,7 +19,7 @@ def _make_showcase_result(output_dir) -> ShowcaseResult:
         "test-help",
         "structural",
         "Help output",
-        ["--help"],
+        polylogue_execution("--help"),
         Validation(stdout_contains=("polylogue",)),
     )
     result = ShowcaseResult(

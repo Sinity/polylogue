@@ -47,5 +47,11 @@ class ExecutableScenario(NamedScenarioSource):
             return ()
         return self.execution.pytest_targets
 
+    def projection_source_payload(self) -> dict[str, object]:
+        payload = self.scenario_payload()
+        if self.execution is not None:
+            payload["execution"] = self.execution.to_payload()
+        return payload
+
 
 __all__ = ["ExecutableScenario"]

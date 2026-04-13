@@ -6,7 +6,7 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
-from polylogue.scenarios import ScenarioMetadata
+from polylogue.scenarios import ScenarioMetadata, polylogue_execution
 from polylogue.showcase.exercise_models import Exercise, Validation
 from polylogue.showcase.scenario_models import ExerciseScenario
 
@@ -136,7 +136,7 @@ def _load_exercise_scenario(payload: dict[str, object]) -> ExerciseScenario:
         name=str(payload["name"]),
         group=str(payload["group"]),
         description=str(payload["description"]),
-        args=tuple(str(item) for item in payload.get("args", ())),
+        execution=polylogue_execution(*tuple(str(item) for item in payload.get("args", ()))),
         validation=_load_validation(payload.get("validation") if isinstance(payload.get("validation"), dict) else None),
         needs_data=bool(payload.get("needs_data", False)),
         writes=bool(payload.get("writes", False)),

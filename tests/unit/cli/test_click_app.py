@@ -247,10 +247,10 @@ class TestQueryFirstGroupParseArgs:
     def test_root_query_option_after_verb_gets_specific_usage_error(self, cli_runner):
         from polylogue.cli.click_app import cli
 
-        result = cli_runner.invoke(cli, ["stats", "--by", "provider", "--limit", "20"], catch_exceptions=False)
+        result = cli_runner.invoke(cli, ["stats", "--by", "provider", "--since", "2026-01-01"], catch_exceptions=False)
         assert result.exit_code == 2
         assert "Query filters and root output flags must appear before the verb." in result.output
-        assert "Move --limit before `stats`." in result.output
+        assert "Move --since before `stats`." in result.output
 
     def test_root_filter_after_verb_gets_specific_usage_error(self, cli_runner):
         from polylogue.cli.click_app import cli
@@ -674,6 +674,7 @@ class TestQaCommand:
         assert payload["overall_status"] == "ok"
 
     def test_exercises_only_skips_artifact_proof(self, cli_runner):
+        from polylogue.scenarios import polylogue_execution
         from polylogue.showcase.exercises import Exercise, Validation
         from polylogue.showcase.qa_runner import QAResult
         from polylogue.showcase.runner import ExerciseResult, ShowcaseResult
@@ -684,7 +685,13 @@ class TestQaCommand:
             showcase_result=ShowcaseResult(
                 results=[
                     ExerciseResult(
-                        exercise=Exercise("smoke", "structural", "smoke", ["--help"], Validation()),
+                        exercise=Exercise(
+                            "smoke",
+                            "structural",
+                            "smoke",
+                            polylogue_execution("--help"),
+                            Validation(),
+                        ),
                         passed=True,
                         exit_code=0,
                         output="ok",
