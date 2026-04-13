@@ -15,6 +15,11 @@ def test_build_quality_registry_exposes_live_catalogs() -> None:
     assert any(entry.name == "live-exercises" for entry in registry.live_lanes)
     assert any(entry.name == "filters" for entry in registry.mutation_campaigns)
     assert any(entry.name == "search-filters" for entry in registry.benchmark_campaigns)
+    search_filters = next(entry for entry in registry.benchmark_campaigns if entry.name == "search-filters")
+    assert search_filters.origin == "authored.benchmark-domain"
+    assert search_filters.artifact_targets == ("conversation_query_results", "message_fts")
+    assert search_filters.operation_targets == ("benchmark.query.search-filters",)
+    assert search_filters.tags == ("benchmark", "search", "filters")
 
 
 def test_quality_registry_references_existing_files() -> None:
