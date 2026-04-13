@@ -7,6 +7,7 @@ from polylogue.scenarios import (
     runtime_artifact_graph,
     runtime_artifact_target_names,
     runtime_operation_target_names,
+    runtime_path_target_names,
 )
 
 
@@ -14,6 +15,7 @@ def test_scenario_metadata_from_payload_normalizes_strings_and_targets() -> None
     metadata = ScenarioMetadata.from_payload(
         {
             "origin": "generated.contract",
+            "path_targets": ["action-event-repair-loop"],
             "artifact_targets": ["doctor_runtime", "message_fts"],
             "operation_targets": ("cli.doctor",),
             "tags": ["generated", "json-contract"],
@@ -21,6 +23,7 @@ def test_scenario_metadata_from_payload_normalizes_strings_and_targets() -> None
     )
 
     assert metadata.origin == "generated.contract"
+    assert metadata.path_targets == ("action-event-repair-loop",)
     assert metadata.artifact_targets == ("doctor_runtime", "message_fts")
     assert metadata.operation_targets == ("cli.doctor",)
     assert metadata.tags == ("generated", "json-contract")
@@ -40,6 +43,7 @@ def test_scenario_metadata_from_object_falls_back_for_mock_attributes() -> None:
 def test_scenario_metadata_payload_omits_empty_collections() -> None:
     metadata = ScenarioMetadata(
         origin="generated.contract",
+        path_targets=("raw-reparse-loop",),
         artifact_targets=("doctor_runtime",),
         operation_targets=(),
         tags=("generated",),
@@ -47,6 +51,7 @@ def test_scenario_metadata_payload_omits_empty_collections() -> None:
 
     assert metadata.to_payload() == {
         "origin": "generated.contract",
+        "path_targets": ["raw-reparse-loop"],
         "artifact_targets": ["doctor_runtime"],
         "tags": ["generated"],
     }
@@ -55,15 +60,18 @@ def test_scenario_metadata_payload_omits_empty_collections() -> None:
 def test_runtime_target_names_include_declared_runtime_specs() -> None:
     assert "action_event_rows" in runtime_artifact_target_names()
     assert "project-action-event-health" in runtime_operation_target_names()
+    assert "action-event-repair-loop" in runtime_path_target_names()
 
 
 def test_scenario_metadata_resolves_only_runtime_declared_targets() -> None:
     metadata = ScenarioMetadata(
         origin="generated.contract",
+        path_targets=("action-event-repair-loop",),
         artifact_targets=("action_event_rows", "message_fts"),
         operation_targets=("project-action-event-health", "benchmark.storage.crud"),
     )
 
+    assert metadata.runtime_path_targets() == ("action-event-repair-loop",)
     assert metadata.runtime_artifact_targets() == ("action_event_rows",)
     assert metadata.runtime_operation_targets() == ("project-action-event-health",)
 
@@ -78,10 +86,12 @@ def test_runtime_artifact_graph_exposes_resolved_specs() -> None:
 def test_scenario_metadata_resolves_runtime_specs() -> None:
     metadata = ScenarioMetadata(
         origin="generated.contract",
+        path_targets=("action-event-repair-loop",),
         artifact_targets=("action_event_rows", "message_fts"),
         operation_targets=("project-action-event-health", "benchmark.storage.crud"),
     )
 
+    assert tuple(path.name for path in metadata.resolve_runtime_paths()) == ("action-event-repair-loop",)
     assert tuple(artifact.name for artifact in metadata.resolve_runtime_artifacts()) == ("action_event_rows",)
     assert tuple(operation.name for operation in metadata.resolve_runtime_operations()) == (
         "project-action-event-health",

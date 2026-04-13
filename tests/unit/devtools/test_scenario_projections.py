@@ -31,6 +31,7 @@ def test_render_scenario_projections_supports_targeted_filters() -> None:
     rendered = scenario_projections.render_scenario_projections(
         as_json=False,
         source_kinds=("exercise",),
+        path_target="action-event-repair-loop",
         artifact_target="action_event_rows",
         operation_target="project-action-event-health",
         tag="maintenance",
@@ -39,3 +40,4 @@ def test_render_scenario_projections_supports_targeted_filters() -> None:
     assert "exercise:json-doctor-action-event-preview" in rendered
     assert "synthetic-benchmark:action-event-materialization" not in rendered
     assert "exercise:json-doctor-session-products-preview" not in rendered
+    assert "path targets: action-event-repair-loop" in rendered

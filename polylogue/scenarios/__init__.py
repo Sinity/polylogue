@@ -5,6 +5,7 @@ from .metadata import (
     runtime_artifact_graph,
     runtime_artifact_target_names,
     runtime_operation_target_names,
+    runtime_path_target_names,
 )
 
 __all__ = [
@@ -12,4 +13,5 @@ __all__ = [
     "runtime_artifact_graph",
     "runtime_artifact_target_names",
     "runtime_operation_target_names",
+    "runtime_path_target_names",
 ]

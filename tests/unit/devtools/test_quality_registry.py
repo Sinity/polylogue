@@ -53,6 +53,7 @@ def test_build_quality_registry_exposes_live_catalogs() -> None:
         entry for entry in registry.scenario_projections if entry.name == "json-doctor-action-event-preview"
     )
     assert action_event_preview.source_kind is ScenarioProjectionSourceKind.EXERCISE
+    assert action_event_preview.path_targets == ("action-event-repair-loop",)
     assert action_event_preview.artifact_targets == (
         "action_event_rows",
         "action_event_fts",

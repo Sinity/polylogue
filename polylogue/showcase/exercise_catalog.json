@@ -194,6 +194,9 @@
       },
       "env": "seeded",
       "origin": "authored.showcase-catalog",
+      "path_targets": [
+        "raw-reparse-loop"
+      ],
       "artifact_targets": [
         "raw_validation_state",
         "validation_backlog",

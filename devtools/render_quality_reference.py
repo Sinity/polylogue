@@ -73,12 +73,13 @@ def _render_benchmark_table(entries: tuple[BenchmarkCampaignEntry, ...]) -> list
 
 def _render_scenario_projection_table(entries: tuple[ScenarioProjectionEntry, ...]) -> list[str]:
     lines = [
-        "| Source | Projection | Artifact Targets | Operation Targets | Tags | Description |",
-        "| --- | --- | --- | --- | --- | --- |",
+        "| Source | Projection | Path Targets | Artifact Targets | Operation Targets | Tags | Description |",
+        "| --- | --- | --- | --- | --- | --- | --- |",
     ]
     for entry in entries:
         lines.append(
             f"| `{entry.source_kind.value}` | `{entry.name}` | "
+            f"{_format_code_list(entry.runtime_path_targets())} | "
             f"{_format_code_list(entry.artifact_targets)} | "
             f"{_format_code_list(entry.operation_targets)} | "
             f"{_format_code_list(entry.tags)} | {entry.description} |"

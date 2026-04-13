@@ -71,6 +71,7 @@ def test_build_document_includes_live_registry_sections() -> None:
                 name="json-doctor-action-event-preview",
                 description="Action-event doctor preview.",
                 origin="generated.json-contract",
+                path_targets=("action-event-repair-loop",),
                 artifact_targets=("action_event_rows",),
                 operation_targets=("project-action-event-health",),
                 tags=("generated", "json-contract"),
@@ -102,6 +103,7 @@ def test_build_document_includes_live_registry_sections() -> None:
     assert "  - exercise: `1`" in rendered
     assert "## Scenario Projection Catalog" in rendered
     assert "| `exercise` | `json-doctor-action-event-preview` |" in rendered
+    assert "`action-event-repair-loop`" in rendered
 
 
 def test_build_document_includes_runtime_coverage_section() -> None:

@@ -51,6 +51,7 @@ class BenchmarkScenario(ScenarioMetadata):
             warn_pct=self.warn_pct,
             fail_pct=self.fail_pct,
             origin=self.origin,
+            path_targets=self.path_targets,
             artifact_targets=self.artifact_targets,
             operation_targets=self.operation_targets,
             tags=self.tags,
