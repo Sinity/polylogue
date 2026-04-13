@@ -6,10 +6,7 @@ from polylogue.scenarios import (
     ScenarioProjectionEntry,
     ScenarioProjectionSourceKind,
 )
-from polylogue.showcase.exercises import EXERCISE_SCENARIOS
-from polylogue.showcase.generators import (
-    generate_qa_extra_scenarios,
-)
+from polylogue.showcase.exercises import EXERCISE_SCENARIOS, QA_EXTRA_SCENARIOS
 
 from .benchmark_scenario_catalog import BENCHMARK_CAMPAIGNS
 from .mutation_catalog import build_mutation_entries
@@ -34,7 +31,7 @@ def build_scenario_projection_entries() -> tuple[ScenarioProjectionEntry, ...]:
             description=scenario.description,
             obj=scenario,
         )
-        for scenario in generate_qa_extra_scenarios()
+        for scenario in QA_EXTRA_SCENARIOS
     )
     entries.extend(
         ScenarioProjectionEntry.from_object(
