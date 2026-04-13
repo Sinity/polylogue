@@ -1,36 +1,13 @@
-"""Authored durable benchmark scenarios shared across control-plane surfaces."""
+"""Authored durable benchmark campaigns shared across control-plane surfaces."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from devtools.benchmark_models import BenchmarkCampaignEntry, compile_benchmark_campaigns
+from devtools.execution_specs import pytest_execution
 
-from devtools.execution_specs import ExecutionSpec, pytest_execution
-from polylogue.scenarios import ScenarioMetadata
-
-
-@dataclass(frozen=True)
-class BenchmarkScenario(ScenarioMetadata):
-    """Authored scenario metadata for one durable benchmark campaign."""
-
-    scenario_id: str
-    description: str
-    execution: ExecutionSpec
-    notes: tuple[str, ...] = ()
-    warn_pct: float = 10.0
-    fail_pct: float = 20.0
-
-    @property
-    def tests(self) -> tuple[str, ...]:
-        return self.execution.pytest_targets
-
-
-def compile_benchmark_scenarios(scenarios: tuple[BenchmarkScenario, ...]) -> dict[str, BenchmarkScenario]:
-    return {scenario.scenario_id: scenario for scenario in scenarios}
-
-
-BENCHMARK_SCENARIOS: tuple[BenchmarkScenario, ...] = (
-    BenchmarkScenario(
-        scenario_id="search-filters",
+BENCHMARK_SCENARIOS: tuple[BenchmarkCampaignEntry, ...] = (
+    BenchmarkCampaignEntry(
+        name="search-filters",
         description="FTS and ConversationFilter benchmark domain",
         execution=pytest_execution("tests/benchmarks/test_search_filters.py"),
         notes=(
@@ -42,8 +19,8 @@ BENCHMARK_SCENARIOS: tuple[BenchmarkScenario, ...] = (
         operation_targets=("benchmark.query.search-filters",),
         tags=("benchmark", "search", "filters"),
     ),
-    BenchmarkScenario(
-        scenario_id="storage",
+    BenchmarkCampaignEntry(
+        name="storage",
         description="Repository/backend list/get-many/save benchmark domain",
         execution=pytest_execution("tests/benchmarks/test_storage.py"),
         notes=("Canonical storage CRUD and batch-write latency domain.",),
@@ -52,8 +29,8 @@ BENCHMARK_SCENARIOS: tuple[BenchmarkScenario, ...] = (
         operation_targets=("benchmark.storage.crud",),
         tags=("benchmark", "storage"),
     ),
-    BenchmarkScenario(
-        scenario_id="pipeline",
+    BenchmarkCampaignEntry(
+        name="pipeline",
         description="Index rebuild/update, action-event repair, plus hashing/semantic helper benchmark domain",
         execution=pytest_execution("tests/benchmarks/test_pipeline.py"),
         notes=("Covers indexing, repair, and hot helper throughput.",),
@@ -67,12 +44,12 @@ BENCHMARK_SCENARIOS: tuple[BenchmarkScenario, ...] = (
     ),
 )
 
-BENCHMARK_SCENARIO_INDEX: dict[str, BenchmarkScenario] = compile_benchmark_scenarios(BENCHMARK_SCENARIOS)
+BENCHMARK_SCENARIO_INDEX: dict[str, BenchmarkCampaignEntry] = compile_benchmark_campaigns(BENCHMARK_SCENARIOS)
 
 
 __all__ = [
     "BENCHMARK_SCENARIO_INDEX",
     "BENCHMARK_SCENARIOS",
-    "BenchmarkScenario",
-    "compile_benchmark_scenarios",
+    "BenchmarkCampaignEntry",
+    "compile_benchmark_campaigns",
 ]
