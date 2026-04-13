@@ -9,6 +9,7 @@ from devtools.quality_registry import (
     QualityRegistry,
     ValidationLaneEntry,
 )
+from devtools.scenario_coverage import RuntimeScenarioCoverage, ScenarioCoverageRef
 
 
 def test_build_document_includes_live_registry_sections() -> None:
@@ -74,6 +75,39 @@ def test_build_document_includes_live_registry_sections() -> None:
     assert "`search-filters`" in rendered
     assert "`startup-health`" in rendered
     assert "## Synthetic Benchmark Campaign Catalog" in rendered
+
+
+def test_build_document_includes_runtime_coverage_section() -> None:
+    registry = QualityRegistry(
+        contract_lanes=(),
+        live_lanes=(),
+        composite_lanes=(),
+        mutation_campaigns=(),
+        benchmark_campaigns=(),
+        synthetic_benchmark_campaigns=(),
+    )
+    coverage = RuntimeScenarioCoverage(
+        artifacts={
+            "action_event_rows": (
+                ScenarioCoverageRef(
+                    source="exercise",
+                    name="json-doctor-action-event-preview",
+                    origin="generated.json-contract",
+                ),
+            ),
+        },
+        operations={},
+        uncovered_artifacts=("tool_use_source_blocks",),
+        uncovered_operations=("materialize-action-events",),
+    )
+
+    rendered = render_quality_reference.build_document(registry, runtime_coverage=coverage)
+
+    assert "## Runtime Coverage" in rendered
+    assert "- covered runtime artifacts: `1`" in rendered
+    assert "- uncovered runtime artifacts: `tool_use_source_blocks`" in rendered
+    assert "- uncovered runtime operations: `materialize-action-events`" in rendered
+    assert "devtools artifact-graph" in rendered
 
 
 def test_write_if_changed_reuses_existing_output(tmp_path: Path) -> None:
