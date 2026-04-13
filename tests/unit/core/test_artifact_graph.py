@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from polylogue.artifact_graph import ArtifactLayer, build_artifact_graph
+from polylogue.artifacts import build_runtime_artifact_nodes, build_runtime_artifact_paths
 from polylogue.operations import OperationKind, build_runtime_operation_specs
 
 
@@ -49,6 +50,13 @@ def test_artifact_graph_paths_reference_only_declared_nodes() -> None:
     for path in graph.paths:
         assert path.nodes
         assert set(path.nodes).issubset(node_names)
+
+
+def test_artifact_graph_nodes_and_paths_come_from_runtime_artifact_specs() -> None:
+    graph = build_artifact_graph()
+
+    assert graph.nodes == build_runtime_artifact_nodes()
+    assert graph.paths == build_runtime_artifact_paths()
 
 
 def test_artifact_graph_serializes_layers_as_strings() -> None:
