@@ -25,6 +25,37 @@ def _coerce_string_tuple(value: object) -> tuple[str, ...]:
     return ()
 
 
+def _merge_unique_string_tuples(*groups: tuple[str, ...]) -> tuple[str, ...]:
+    seen: set[str] = set()
+    merged: list[str] = []
+    for group in groups:
+        for item in group:
+            if item in seen:
+                continue
+            seen.add(item)
+            merged.append(item)
+    return tuple(merged)
+
+
+def _partition_runtime_operation_targets(operation_targets: tuple[str, ...]) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    runtime_names = set(runtime_operation_target_names())
+    runtime_targets: list[str] = []
+    declared_only_targets: list[str] = []
+    for target in operation_targets:
+        if target in runtime_names:
+            runtime_targets.append(target)
+        else:
+            declared_only_targets.append(target)
+    return tuple(runtime_targets), tuple(declared_only_targets)
+
+
+def _contains_non_runtime_artifact_targets(artifact_targets: tuple[str, ...]) -> bool:
+    if not artifact_targets:
+        return False
+    runtime_names = set(runtime_artifact_target_names())
+    return any(target not in runtime_names for target in artifact_targets)
+
+
 @lru_cache(maxsize=1)
 def runtime_artifact_graph() -> ArtifactGraph:
     from polylogue.artifact_graph import build_artifact_graph
@@ -95,6 +126,43 @@ class ScenarioMetadata:
         if self.tags:
             payload["tags"] = list(self.tags)
         return payload
+
+    def merged(self, *others: ScenarioMetadata) -> ScenarioMetadata:
+        if not others:
+            return self
+        return ScenarioMetadata(
+            origin=self.origin,
+            path_targets=_merge_unique_string_tuples(self.path_targets, *(other.path_targets for other in others)),
+            artifact_targets=_merge_unique_string_tuples(
+                self.artifact_targets, *(other.artifact_targets for other in others)
+            ),
+            operation_targets=_merge_unique_string_tuples(
+                self.operation_targets, *(other.operation_targets for other in others)
+            ),
+            tags=_merge_unique_string_tuples(self.tags, *(other.tags for other in others)),
+        )
+
+    def with_inferred_defaults(self, inferred: ScenarioMetadata) -> ScenarioMetadata:
+        explicit_runtime_operations, explicit_declared_only_operations = _partition_runtime_operation_targets(
+            self.operation_targets
+        )
+        preserve_explicit_operations = bool(explicit_runtime_operations) or _contains_non_runtime_artifact_targets(
+            self.artifact_targets
+        )
+        return ScenarioMetadata(
+            origin=self.origin,
+            path_targets=self.path_targets or inferred.path_targets,
+            artifact_targets=self.artifact_targets or inferred.artifact_targets,
+            operation_targets=(
+                self.operation_targets
+                if preserve_explicit_operations
+                else _merge_unique_string_tuples(
+                    explicit_declared_only_operations,
+                    explicit_runtime_operations or inferred.operation_targets,
+                )
+            ),
+            tags=_merge_unique_string_tuples(self.tags, inferred.tags),
+        )
 
     def runtime_path_targets(self) -> tuple[str, ...]:
         return tuple(path.name for path in self.resolve_runtime_paths())

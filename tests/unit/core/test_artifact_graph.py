@@ -38,6 +38,7 @@ def test_artifact_graph_contains_the_current_runtime_paths() -> None:
         "session_product_fts",
         "session_product_health",
         "session_profile_results",
+        "session_enrichment_results",
         "session_work_event_results",
         "session_phase_results",
         "work_thread_results",
@@ -45,6 +46,8 @@ def test_artifact_graph_contains_the_current_runtime_paths() -> None:
         "day_session_summary_results",
         "week_session_summary_results",
         "provider_analytics_results",
+        "session_product_status_results",
+        "archive_debt_results",
         "conversation_query_results",
         "archive_health",
     }
@@ -77,6 +80,7 @@ def test_artifact_graph_contains_the_current_runtime_paths() -> None:
     assert "work_thread_fts" in operations["materialize-session-products"].produces
     assert operations["project-session-product-health"].consumes == ("session_product_rows", "session_product_fts")
     assert operations["query-session-profiles"].produces == ("session_profile_results",)
+    assert operations["query-session-enrichments"].produces == ("session_enrichment_results",)
     assert operations["query-session-work-events"].produces == ("session_work_event_results",)
     assert operations["query-session-phases"].produces == ("session_phase_results",)
     assert operations["query-work-threads"].produces == ("work_thread_results",)
@@ -84,6 +88,8 @@ def test_artifact_graph_contains_the_current_runtime_paths() -> None:
     assert operations["query-day-session-summaries"].produces == ("day_session_summary_results",)
     assert operations["query-week-session-summaries"].produces == ("week_session_summary_results",)
     assert operations["query-provider-analytics"].produces == ("provider_analytics_results",)
+    assert operations["query-session-product-status"].produces == ("session_product_status_results",)
+    assert operations["query-archive-debt"].produces == ("archive_debt_results",)
     assert operations["project-archive-health"].consumes == (
         "message_fts",
         "action_event_health",
@@ -111,6 +117,7 @@ def test_artifact_graph_paths_reference_only_declared_nodes() -> None:
         "action-event-repair-loop",
         "session-product-repair-loop",
         "session-profile-query-loop",
+        "session-enrichment-query-loop",
         "session-work-event-query-loop",
         "session-phase-query-loop",
         "work-thread-query-loop",
@@ -118,6 +125,8 @@ def test_artifact_graph_paths_reference_only_declared_nodes() -> None:
         "day-summary-query-loop",
         "week-summary-query-loop",
         "provider-analytics-query-loop",
+        "session-product-status-query-loop",
+        "archive-debt-query-loop",
     }
     for path in graph.paths:
         assert path.nodes
@@ -190,6 +199,9 @@ def test_artifact_graph_lists_operations_for_each_runtime_path() -> None:
     assert tuple(operation.name for operation in graph.operations_for_path("session-profile-query-loop")) == (
         "query-session-profiles",
     )
+    assert tuple(operation.name for operation in graph.operations_for_path("session-enrichment-query-loop")) == (
+        "query-session-enrichments",
+    )
     assert tuple(operation.name for operation in graph.operations_for_path("session-work-event-query-loop")) == (
         "query-session-work-events",
     )
@@ -198,4 +210,10 @@ def test_artifact_graph_lists_operations_for_each_runtime_path() -> None:
     )
     assert tuple(operation.name for operation in graph.operations_for_path("work-thread-query-loop")) == (
         "query-work-threads",
+    )
+    assert tuple(operation.name for operation in graph.operations_for_path("session-product-status-query-loop")) == (
+        "query-session-product-status",
+    )
+    assert tuple(operation.name for operation in graph.operations_for_path("archive-debt-query-loop")) == (
+        "query-archive-debt",
     )

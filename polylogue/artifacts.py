@@ -364,6 +364,17 @@ RUNTIME_ARTIFACT_NODES: tuple[ArtifactNode, ...] = (
         health_surfaces=("products", "facade", "mcp"),
     ),
     ArtifactNode(
+        name="session_enrichment_results",
+        layer=ArtifactLayer.PROJECTION,
+        description="Query/read results for durable session enrichments.",
+        depends_on=("session_profile_rows", "session_profile_enrichment_fts"),
+        code_refs=(
+            "polylogue.operations.archive.ArchiveProductMixin.list_session_enrichment_products",
+            "polylogue.cli.commands.products",
+        ),
+        health_surfaces=("products", "facade", "mcp"),
+    ),
+    ArtifactNode(
         name="session_work_event_results",
         layer=ArtifactLayer.PROJECTION,
         description="Query/read results for durable session work events.",
@@ -430,6 +441,17 @@ RUNTIME_ARTIFACT_NODES: tuple[ArtifactNode, ...] = (
         health_surfaces=("products", "facade", "mcp"),
     ),
     ArtifactNode(
+        name="session_product_status_results",
+        layer=ArtifactLayer.PROJECTION,
+        description="Query/read results for durable session-product status views.",
+        depends_on=("session_product_health",),
+        code_refs=(
+            "polylogue.operations.archive.ArchiveStatsMixin.get_session_product_status",
+            "polylogue.cli.commands.products",
+        ),
+        health_surfaces=("products", "facade", "mcp"),
+    ),
+    ArtifactNode(
         name="provider_analytics_results",
         layer=ArtifactLayer.PROJECTION,
         description="Query/read results for provider analytics derived from durable session products.",
@@ -440,6 +462,17 @@ RUNTIME_ARTIFACT_NODES: tuple[ArtifactNode, ...] = (
             "polylogue.cli.helper_summary",
         ),
         health_surfaces=("products", "facade", "mcp", "helpers"),
+    ),
+    ArtifactNode(
+        name="archive_debt_results",
+        layer=ArtifactLayer.PROJECTION,
+        description="Query/read results for archive debt views derived from projected health and maintenance state.",
+        depends_on=("action_event_health", "session_product_health", "archive_health"),
+        code_refs=(
+            "polylogue.operations.archive.ArchiveProductDebtMixin.list_archive_debt_products",
+            "polylogue.cli.commands.products",
+        ),
+        health_surfaces=("products", "facade", "mcp", "maintenance"),
     ),
     ArtifactNode(
         name="conversation_query_results",
@@ -521,6 +554,15 @@ RUNTIME_ARTIFACT_PATHS: tuple[ArtifactPath, ...] = (
         ),
     ),
     ArtifactPath(
+        name="session-enrichment-query-loop",
+        description="Durable session profile rows through enrichment FTS and enrichment query results.",
+        nodes=(
+            "session_profile_rows",
+            "session_profile_enrichment_fts",
+            "session_enrichment_results",
+        ),
+    ),
+    ArtifactPath(
         name="session-work-event-query-loop",
         description="Durable session work-event rows through work-event FTS and query results.",
         nodes=(
@@ -571,11 +613,29 @@ RUNTIME_ARTIFACT_PATHS: tuple[ArtifactPath, ...] = (
         ),
     ),
     ArtifactPath(
+        name="session-product-status-query-loop",
+        description="Projected session-product health through status query results.",
+        nodes=(
+            "session_product_health",
+            "session_product_status_results",
+        ),
+    ),
+    ArtifactPath(
         name="provider-analytics-query-loop",
         description="Durable session-product aggregates through provider-analytics query results.",
         nodes=(
             "session_product_rows",
             "provider_analytics_results",
+        ),
+    ),
+    ArtifactPath(
+        name="archive-debt-query-loop",
+        description="Projected derived-model health through archive debt query results.",
+        nodes=(
+            "action_event_health",
+            "session_product_health",
+            "archive_health",
+            "archive_debt_results",
         ),
     ),
     ArtifactPath(

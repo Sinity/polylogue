@@ -159,7 +159,11 @@ class TestExercisesByGroup:
 
         profiles = observed["json-products-profiles"]
         assert profiles.path_targets == ("session-profile-query-loop",)
-        assert profiles.artifact_targets == ("session_profile_results",)
+        assert profiles.artifact_targets == (
+            "session_profile_rows",
+            "session_profile_merged_fts",
+            "session_profile_results",
+        )
         assert profiles.operation_targets == (
             "cli.json-contract",
             "query-session-profiles",
@@ -173,7 +177,7 @@ class TestExercisesByGroup:
 
         threads = observed["json-products-threads"]
         assert threads.path_targets == ("work-thread-query-loop",)
-        assert threads.artifact_targets == ("work_thread_results",)
+        assert threads.artifact_targets == ("work_thread_rows", "work_thread_fts", "work_thread_results")
         assert threads.operation_targets == (
             "cli.json-contract",
             "query-work-threads",

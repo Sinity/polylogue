@@ -4,6 +4,8 @@ from polylogue.scenarios import (
     ExecutionKind,
     command_execution,
     composite_execution,
+    devtools_execution,
+    memory_budget_execution,
     polylogue_execution,
     pytest_execution,
     runner_execution,
@@ -43,8 +45,62 @@ def test_polylogue_execution_renders_runtime_and_display_forms() -> None:
     assert execution.polylogue_invoke_args == ("--plain", "doctor", "--json")
 
 
+def test_devtools_execution_renders_control_plane_command() -> None:
+    execution = devtools_execution("pipeline-probe", "--provider", "chatgpt", "--stage", "parse")
+
+    assert execution.kind is ExecutionKind.DEVTOOLS
+    assert execution.command == (
+        "devtools",
+        "pipeline-probe",
+        "--provider",
+        "chatgpt",
+        "--stage",
+        "parse",
+    )
+    assert execution.display_command == execution.command
+
+
+def test_memory_budget_execution_wraps_structured_execution() -> None:
+    wrapped = polylogue_execution("doctor", "--json")
+    execution = memory_budget_execution(1536, wrapped)
+
+    assert execution.kind is ExecutionKind.MEMORY_BUDGET
+    assert execution.command == (
+        "devtools",
+        "query-memory-budget",
+        "--max-rss-mb",
+        "1536",
+        "--",
+        "polylogue",
+        "--plain",
+        "doctor",
+        "--json",
+    )
+    assert execution.display_command == (
+        "devtools",
+        "query-memory-budget",
+        "--max-rss-mb",
+        "1536",
+        "--",
+        "polylogue",
+        "doctor",
+        "--json",
+    )
+
+
 def test_execution_spec_round_trips_payload() -> None:
     execution = polylogue_execution("audit", "--only", "exercises")
+
+    restored = type(execution).from_payload(execution.to_payload())
+
+    assert restored == execution
+
+
+def test_nested_execution_spec_round_trips_payload() -> None:
+    execution = memory_budget_execution(
+        1536,
+        devtools_execution("pipeline-probe", "--provider", "chatgpt", "--stage", "parse"),
+    )
 
     restored = type(execution).from_payload(execution.to_payload())
 
