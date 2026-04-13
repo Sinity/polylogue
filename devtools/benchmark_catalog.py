@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from devtools.execution_specs import ExecutionSpec
 from polylogue.scenarios import ScenarioMetadata
 
-from .benchmark_scenario_catalog import BENCHMARK_CAMPAIGNS
+from .benchmark_scenario_catalog import BENCHMARK_SCENARIOS
 from .synthetic_benchmark_catalog import SYNTHETIC_BENCHMARK_SCENARIOS
 
 
@@ -34,19 +34,19 @@ class BenchmarkCampaignEntry(ScenarioMetadata):
 def build_benchmark_entries() -> tuple[BenchmarkCampaignEntry, ...]:
     entries = [
         BenchmarkCampaignEntry(
-            name=campaign.name,
-            description=campaign.description,
-            execution=campaign.execution,
-            notes=tuple(campaign.notes),
-            warn_pct=campaign.warn_pct,
-            fail_pct=campaign.fail_pct,
-            origin=campaign.origin,
-            path_targets=tuple(campaign.path_targets),
-            artifact_targets=tuple(campaign.artifact_targets),
-            operation_targets=tuple(campaign.operation_targets),
-            tags=tuple(campaign.tags),
+            name=scenario.scenario_id,
+            description=scenario.description,
+            execution=scenario.execution,
+            notes=tuple(scenario.notes),
+            warn_pct=scenario.warn_pct,
+            fail_pct=scenario.fail_pct,
+            origin=scenario.origin,
+            path_targets=tuple(scenario.path_targets),
+            artifact_targets=tuple(scenario.artifact_targets),
+            operation_targets=tuple(scenario.operation_targets),
+            tags=tuple(scenario.tags),
         )
-        for campaign in BENCHMARK_CAMPAIGNS.values()
+        for scenario in BENCHMARK_SCENARIOS
     ]
     return tuple(sorted(entries, key=lambda item: item.name))
 
