@@ -164,6 +164,36 @@ class TestSyntheticConversationEnvelope:
         assert written.files[0].exists()
         assert written.batch.report.generated_count == 1
 
+    def test_write_specs_artifacts_avoids_same_provider_name_collisions(self, tmp_path) -> None:
+        specs = (
+            CorpusSpec(
+                provider="chatgpt",
+                package_version="v1",
+                count=1,
+                messages_min=4,
+                messages_max=4,
+                seed=9,
+                profile_family_ids=("cluster-a",),
+            ),
+            CorpusSpec(
+                provider="chatgpt",
+                package_version="v1",
+                count=1,
+                messages_min=4,
+                messages_max=4,
+                seed=10,
+                profile_family_ids=("cluster-b",),
+            ),
+        )
+
+        written_batches = SyntheticCorpus.write_specs_artifacts(specs, tmp_path, prefix="sample")
+
+        assert len(written_batches) == 2
+        assert {path.name for batch in written_batches for path in batch.files} == {
+            "sample-v1-cluster-a-00.json",
+            "sample-v1-cluster-b-00.json",
+        }
+
 
 # ---------------------------------------------------------------------------
 # SemanticValueGenerator.try_generate — message_role

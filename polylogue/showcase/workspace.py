@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from polylogue.config import Config, Source, get_config
-from polylogue.scenarios import CorpusSpec, build_default_corpus_specs
+from polylogue.scenarios import CorpusSourceKind, CorpusSpec, resolve_corpus_specs
 from polylogue.sync_bridge import run_coroutine_sync
 
 
@@ -86,14 +86,20 @@ def ensure_report_dir(
 def generate_synthetic_fixtures(
     fixture_dir: Path,
     *,
+    providers: tuple[str, ...] | None = None,
     count: int = 3,
     style: str = "showcase",
+    corpus_source: CorpusSourceKind | str = CorpusSourceKind.DEFAULT,
 ) -> None:
     """Generate schema-driven synthetic fixtures for all providers."""
     from polylogue.schemas.synthetic import SyntheticCorpus
 
-    specs = build_default_corpus_specs(
-        providers=SyntheticCorpus.available_providers(),
+    provider_names = providers
+    if provider_names is None and CorpusSourceKind(corpus_source) is CorpusSourceKind.DEFAULT:
+        provider_names = tuple(SyntheticCorpus.available_providers())
+    specs = resolve_corpus_specs(
+        providers=provider_names,
+        source=corpus_source,
         count=count,
         messages_min=6,
         messages_max=19,

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
@@ -147,11 +148,12 @@ class SyntheticCorpus:
         prefix: str,
         index_width: int = 2,
     ) -> tuple[SyntheticWrittenBatch, ...]:
+        provider_counts = Counter(spec.provider for spec in corpus_specs)
         return tuple(
             cls.write_spec_artifacts(
                 spec,
                 output_root / spec.provider,
-                prefix=prefix,
+                prefix=prefix if provider_counts[spec.provider] == 1 else f"{prefix}-{spec.scope_label}",
                 index_width=index_width,
             )
             for spec in corpus_specs

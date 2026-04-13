@@ -11,7 +11,7 @@ from pathlib import Path
 import click
 
 from polylogue.cli.types import AppEnv
-from polylogue.scenarios import build_default_corpus_specs
+from polylogue.scenarios import CorpusSourceKind, resolve_corpus_specs
 
 
 @contextmanager
@@ -38,6 +38,13 @@ def _temporary_env(updates: dict[str, str]) -> Iterator[None]:
     help="Providers to include (default: all). Can be repeated.",
 )
 @click.option("--count", "-n", default=3, show_default=True, help="Conversations per provider")
+@click.option(
+    "--corpus-source",
+    type=click.Choice([kind.value for kind in CorpusSourceKind], case_sensitive=False),
+    default=CorpusSourceKind.DEFAULT.value,
+    show_default=True,
+    help="Corpus spec source to execute.",
+)
 @click.option("--output-dir", "-o", type=click.Path(path_type=Path), default=None, help="Output directory")
 @click.option("--seed", is_flag=True, help="Run pipeline to produce a usable demo environment")
 @click.option("--env-only", is_flag=True, help="Print shell export statements only (requires --seed)")
@@ -46,6 +53,7 @@ def generate_command(
     env: AppEnv,
     providers: tuple[str, ...],
     count: int,
+    corpus_source: str,
     output_dir: Path | None,
     seed: bool,
     env_only: bool,
@@ -64,47 +72,57 @@ def generate_command(
         raise click.UsageError("--env-only requires --seed")
 
     from polylogue.schemas.synthetic import SyntheticCorpus
+    source_kind = CorpusSourceKind(corpus_source)
 
-    available = SyntheticCorpus.available_providers()
-    selected = list(providers) if providers else available
-
-    invalid = set(selected) - set(available)
-    if invalid:
-        raise click.BadParameter(
-            f"Unknown provider(s): {', '.join(sorted(invalid))}. Available: {', '.join(available)}",
-            param_hint="--provider",
-        )
+    if source_kind is CorpusSourceKind.DEFAULT:
+        available = SyntheticCorpus.available_providers()
+        selected = list(providers) if providers else available
+        invalid = set(selected) - set(available)
+        if invalid:
+            raise click.BadParameter(
+                f"Unknown provider(s): {', '.join(sorted(invalid))}. Available: {', '.join(available)}",
+                param_hint="--provider",
+            )
+    else:
+        selected = list(providers)
 
     if seed:
-        _do_seed(env, selected, count, output_dir, env_only)
+        _do_seed(env, selected, count, source_kind, output_dir, env_only)
     else:
-        _do_corpus(env, selected, count, output_dir)
+        _do_corpus(env, selected, count, source_kind, output_dir)
 
 
 def _do_corpus(
     env: AppEnv,
     providers: list[str],
     count: int,
+    corpus_source: CorpusSourceKind,
     output_dir: Path | None,
 ) -> None:
     """Generate raw wire-format files for each provider."""
     from polylogue.schemas.synthetic import SyntheticCorpus
 
     out = output_dir or Path(tempfile.mkdtemp(prefix="polylogue-corpus-"))
-    specs = build_default_corpus_specs(
-        providers=providers,
+    specs = resolve_corpus_specs(
+        providers=providers or None,
+        source=corpus_source,
         count=count,
         messages_min=4,
         messages_max=15,
         seed=42,
     )
+    if not specs:
+        raise click.BadParameter(
+            "No corpus specs matched the selected source/providers.",
+            param_hint="--corpus-source",
+        )
     written_batches = SyntheticCorpus.write_specs_artifacts(specs, out, prefix="sample")
 
     for spec, written in zip(specs, written_batches, strict=True):
         provider_dir = out / spec.provider
 
         env.ui.console.print(
-            f"  {spec.provider}: {written.batch.report.generated_count} files "
+            f"  {spec.provider}:{spec.scope_label}: {written.batch.report.generated_count} files "
             f"({written.batch.report.element_kind or 'default'}) → {provider_dir}"
         )
 
@@ -115,6 +133,7 @@ def _do_seed(
     env: AppEnv,
     providers: list[str],
     count: int,
+    corpus_source: CorpusSourceKind,
     output_dir: Path | None,
     env_only: bool,
 ) -> None:
@@ -150,17 +169,26 @@ def _do_seed(
     }
 
     sources: list[Source] = []
-    specs = build_default_corpus_specs(
-        providers=providers,
+    specs = resolve_corpus_specs(
+        providers=providers or None,
+        source=corpus_source,
         count=count,
         messages_min=6,
         messages_max=19,
         seed=42,
     )
+    if not specs:
+        raise click.BadParameter(
+            "No corpus specs matched the selected source/providers.",
+            param_hint="--corpus-source",
+        )
     SyntheticCorpus.write_specs_artifacts(specs, fixture_dir, prefix="demo")
+    seen_providers: set[str] = set()
     for spec in specs:
         provider_dir = fixture_dir / spec.provider
-        sources.append(Source(name=spec.provider, path=provider_dir))
+        if spec.provider not in seen_providers:
+            sources.append(Source(name=spec.provider, path=provider_dir))
+            seen_providers.add(spec.provider)
         inbox_provider_dir = inbox_dir / spec.provider
         inbox_provider_dir.mkdir(parents=True, exist_ok=True)
         for fixture in provider_dir.iterdir():

@@ -12,6 +12,7 @@ import pytest
 
 from polylogue.cli.click_app import cli as click_cli
 from polylogue.cli.click_app import mcp_command
+from polylogue.scenarios import CorpusSpec
 from tests.infra.cli_subprocess import run_cli
 
 
@@ -523,6 +524,55 @@ class TestGenerateSeed:
         assert f'export HOME="{tmp_path / "home"}"' in result.output
         assert f'export XDG_CONFIG_HOME="{tmp_path / "config"}"' in result.output
         assert f'export XDG_CACHE_HOME="{tmp_path / "cache"}"' in result.output
+
+    def test_inferred_corpus_generation_uses_unique_prefixes_per_same_provider_spec(self, cli_runner, tmp_path):
+        inferred_specs = (
+            CorpusSpec(
+                provider="chatgpt",
+                package_version="v1",
+                count=1,
+                messages_min=4,
+                messages_max=4,
+                seed=7,
+                profile_family_ids=("cluster-a",),
+            ),
+            CorpusSpec(
+                provider="chatgpt",
+                package_version="v1",
+                count=1,
+                messages_min=4,
+                messages_max=4,
+                seed=8,
+                profile_family_ids=("cluster-b",),
+            ),
+        )
+
+        with patch(
+            "polylogue.schemas.operator_inference.list_inferred_corpus_specs",
+            return_value=inferred_specs,
+        ):
+            result = cli_runner.invoke(
+                click_cli,
+                ["audit", "generate", "--corpus-source", "inferred", "-o", str(tmp_path), "-n", "1", "-p", "chatgpt"],
+            )
+
+        assert result.exit_code == 0
+        provider_dir = tmp_path / "chatgpt"
+        assert (provider_dir / "sample-v1-cluster-a-00.json").exists()
+        assert (provider_dir / "sample-v1-cluster-b-00.json").exists()
+
+    def test_inferred_corpus_generation_fails_when_no_specs_match(self, cli_runner, tmp_path):
+        with patch(
+            "polylogue.schemas.operator_inference.list_inferred_corpus_specs",
+            return_value=(),
+        ):
+            result = cli_runner.invoke(
+                click_cli,
+                ["audit", "generate", "--corpus-source", "inferred", "-o", str(tmp_path), "-p", "chatgpt"],
+            )
+
+        assert result.exit_code != 0
+        assert "No corpus specs matched" in result.output
 
 
 # ---------------------------------------------------------------------------
