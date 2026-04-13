@@ -5,8 +5,8 @@ from __future__ import annotations
 from functools import partial
 
 from devtools.validation_family_models import (
-    ValidationLaneCompositeSpec,
     ValidationLaneFamily,
+    ValidationLaneStageSpec,
     compile_validation_lane_families,
 )
 from devtools.validation_lane_base import composite_lane as _composite_lane
@@ -14,18 +14,18 @@ from devtools.validation_lane_base import composite_lane as _composite_lane
 composite_lane = partial(_composite_lane, category="composite")
 
 VALIDATION_FAMILIES: tuple[ValidationLaneFamily, ...] = (
-    ValidationLaneFamily(
+    ValidationLaneFamily.from_stages(
         name="domain-read-model",
         description="Validation family for read-model contracts, live checks, and hardening lanes.",
-        lanes=(
-            ValidationLaneCompositeSpec(
-                name="domain-read-model-contracts",
+        stages=(
+            ValidationLaneStageSpec(
+                suffix="contracts",
                 description="Local domain read-model lane for analytics/products, consumer contracts, and debt views",
                 timeout_s=2400,
                 members=("archive-data-products", "maintenance-workflows"),
             ),
-            ValidationLaneCompositeSpec(
-                name="domain-read-model-live",
+            ValidationLaneStageSpec(
+                suffix="live",
                 description="Bounded live archive lane for products, analytics/debt views, and maintenance checks",
                 timeout_s=1800,
                 members=(
@@ -35,44 +35,44 @@ VALIDATION_FAMILIES: tuple[ValidationLaneFamily, ...] = (
                     "live-maintenance-small",
                 ),
             ),
-            ValidationLaneCompositeSpec(
-                name="domain-read-model-hardening",
+            ValidationLaneStageSpec(
+                suffix="hardening",
                 description="Full domain read-model lane with local contracts and bounded live checks",
                 timeout_s=3600,
-                members=("domain-read-model-contracts", "domain-read-model-live"),
+                member_stages=("contracts", "live"),
             ),
         ),
     ),
-    ValidationLaneFamily(
+    ValidationLaneFamily.from_stages(
         name="runtime-substrate",
         description="Validation family for runtime-substrate contract, live, and hardening lanes.",
-        lanes=(
-            ValidationLaneCompositeSpec(
-                name="runtime-substrate-contracts",
+        stages=(
+            ValidationLaneStageSpec(
+                suffix="contracts",
                 description="Local runtime-substrate lane across query, semantic checks, archive products, and maintenance workflows",
                 timeout_s=2400,
                 members=("query-routing", "semantic-stack", "maintenance-workflows", "archive-data-products"),
             ),
-            ValidationLaneCompositeSpec(
-                name="runtime-substrate-live",
+            ValidationLaneStageSpec(
+                suffix="live",
                 description="Bounded live archive lane for runtime-substrate checks, maintenance checks, and memory budgets",
                 timeout_s=1800,
                 members=("live-archive-small", "live-maintenance-small", "memory-budget"),
             ),
-            ValidationLaneCompositeSpec(
-                name="runtime-substrate-hardening",
+            ValidationLaneStageSpec(
+                suffix="hardening",
                 description="Full runtime-substrate validation lane covering local contracts plus bounded live archive checks",
                 timeout_s=3600,
-                members=("runtime-substrate-contracts", "runtime-substrate-live"),
+                member_stages=("contracts", "live"),
             ),
         ),
     ),
-    ValidationLaneFamily(
+    ValidationLaneFamily.from_stages(
         name="evidence",
         description="Validation family for evidence-tier contracts, live checks, and hardening lanes.",
-        lanes=(
-            ValidationLaneCompositeSpec(
-                name="evidence-contracts",
+        stages=(
+            ValidationLaneStageSpec(
+                suffix="contracts",
                 description="Evidence/inference contract lane across explicit evidence, inferred semantics, consumer parity, and retrieval readiness",
                 timeout_s=2400,
                 members=(
@@ -82,8 +82,8 @@ VALIDATION_FAMILIES: tuple[ValidationLaneFamily, ...] = (
                     "retrieval-band-readiness",
                 ),
             ),
-            ValidationLaneCompositeSpec(
-                name="evidence-live",
+            ValidationLaneStageSpec(
+                suffix="live",
                 description="Bounded live archive lane for tiered product views, live migration, health, and retrieval-band budgets",
                 timeout_s=2400,
                 members=(
@@ -98,20 +98,20 @@ VALIDATION_FAMILIES: tuple[ValidationLaneFamily, ...] = (
                     "maintenance-memory-budget",
                 ),
             ),
-            ValidationLaneCompositeSpec(
-                name="evidence-hardening",
+            ValidationLaneStageSpec(
+                suffix="hardening",
                 description="Full evidence lane with contracts and bounded live checks",
                 timeout_s=4800,
-                members=("evidence-contracts", "evidence-live"),
+                member_stages=("contracts", "live"),
             ),
         ),
     ),
-    ValidationLaneFamily(
+    ValidationLaneFamily.from_stages(
         name="semantic-product",
         description="Validation family for semantic-product live and hardening lanes.",
-        lanes=(
-            ValidationLaneCompositeSpec(
-                name="semantic-product-live",
+        stages=(
+            ValidationLaneStageSpec(
+                suffix="live",
                 description="Bounded live archive lane for normalized products, maintenance preview, and memory budgets",
                 timeout_s=1800,
                 members=(
@@ -122,20 +122,20 @@ VALIDATION_FAMILIES: tuple[ValidationLaneFamily, ...] = (
                     "live-maintenance-small",
                 ),
             ),
-            ValidationLaneCompositeSpec(
-                name="semantic-product-hardening",
+            ValidationLaneStageSpec(
+                suffix="hardening",
                 description="Full semantic-product normalization and toolchain convergence lane",
                 timeout_s=3600,
                 members=("semantic-product-normalization", "semantic-product-live"),
             ),
         ),
     ),
-    ValidationLaneFamily(
+    ValidationLaneFamily.from_stages(
         name="probabilistic-enrichment",
         description="Validation family for probabilistic-enrichment, cleanup, and hardening lanes.",
-        lanes=(
-            ValidationLaneCompositeSpec(
-                name="probabilistic-enrichment-live",
+        stages=(
+            ValidationLaneStageSpec(
+                suffix="live",
                 description="Bounded live archive lane for enrichment products, retrieval bands, and health surfaces",
                 timeout_s=2400,
                 members=(
@@ -148,23 +148,22 @@ VALIDATION_FAMILIES: tuple[ValidationLaneFamily, ...] = (
                     "memory-budget",
                 ),
             ),
-            ValidationLaneCompositeSpec(
-                name="cleanup-live",
+            ValidationLaneStageSpec(
+                suffix="cleanup-live",
                 description="Bounded live archive lane for cleanup/debt preview and maintenance budgets",
                 timeout_s=2400,
                 members=("live-products-debt", "live-maintenance-preview", "maintenance-memory-budget"),
             ),
-            ValidationLaneCompositeSpec(
-                name="probabilistic-enrichment-hardening",
+            ValidationLaneStageSpec(
+                suffix="hardening",
                 description="Full probabilistic-enrichment and cleanup lane",
                 timeout_s=5400,
                 members=(
                     "heuristic-inference-contracts",
                     "probabilistic-enrichment-contracts",
                     "cleanup-contracts",
-                    "probabilistic-enrichment-live",
-                    "cleanup-live",
                 ),
+                member_stages=("live", "cleanup-live"),
             ),
         ),
     ),
