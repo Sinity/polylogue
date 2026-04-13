@@ -16,9 +16,8 @@ from polylogue.showcase.runner import ShowcaseRunner
 from polylogue.showcase.workspace import (
     create_verification_workspace,
     ensure_report_dir,
-    generate_synthetic_fixtures,
     run_pipeline_for_configured_sources,
-    run_pipeline_for_fixture_workspace,
+    seed_workspace_from_corpus_options,
 )
 from polylogue.sync_bridge import run_coroutine_sync
 
@@ -35,9 +34,10 @@ def run_qa_session(
 
     if needs_workspace and request.fresh and not request.live:
         workspace = create_verification_workspace(request.workspace_dir)
-        generate_synthetic_fixtures(workspace.fixture_dir, count=request.synthetic_count, style="showcase")
-        run_pipeline_for_fixture_workspace(
+        seed_workspace_from_corpus_options(
             workspace,
+            count=request.synthetic_count,
+            style="showcase",
             regenerate_schemas=request.regenerate_schemas,
         )
         workspace_env_for_runner = dict(workspace.env_vars)
