@@ -6,7 +6,9 @@ import time
 from pathlib import Path
 from typing import Any
 
+from polylogue.scenarios import CorpusRequest
 from polylogue.showcase.cli_boundary import invoke_showcase_cli
+from polylogue.showcase.corpus_requests import showcase_corpus_request
 from polylogue.showcase.exercises import Exercise
 from polylogue.showcase.showcase_runner_models import ExerciseResult, ShowcaseResult
 from polylogue.showcase.showcase_runner_support import (
@@ -28,7 +30,7 @@ class ShowcaseRunner:
         output_dir: Path | None = None,
         fail_fast: bool = False,
         verbose: bool = False,
-        synthetic_count: int = 3,
+        corpus_request: CorpusRequest | None = None,
         tier_filter: int | None = None,
         extra_exercises: list[Exercise] | None = None,
         workspace_env: dict[str, str] | None = None,
@@ -37,7 +39,7 @@ class ShowcaseRunner:
         self.output_dir = output_dir
         self.fail_fast = fail_fast
         self.verbose = verbose
-        self.synthetic_count = synthetic_count
+        self.corpus_request = corpus_request or showcase_corpus_request()
         self.tier_filter = tier_filter
         self.extra_exercises = extra_exercises or []
         self._env_vars: dict[str, str] = {}
@@ -110,16 +112,13 @@ class ShowcaseRunner:
     def _seed_workspace(self, workspace_dir: Path, *, exercises: list[Exercise]) -> None:
         self._env_vars = seed_workspace_with(
             workspace_dir,
-            synthetic_count=self.synthetic_count,
+            corpus_request=self.corpus_request,
             exercises=tuple(exercises),
-            generate_fixtures=lambda fixture_dir: self._generate_synthetic_fixtures(
-                fixture_dir,
-                count=self.synthetic_count,
-            ),
+            generate_fixtures=lambda fixture_dir, request: self._generate_synthetic_fixtures(fixture_dir, request=request),
         )
 
-    def _generate_synthetic_fixtures(self, fixture_dir: Path, *, count: int) -> None:
-        generate_showcase_fixtures(fixture_dir, count=count)
+    def _generate_synthetic_fixtures(self, fixture_dir: Path, *, request: CorpusRequest) -> None:
+        generate_showcase_fixtures(fixture_dir, request=request)
 
     def _run_exercise(self, exercise: Exercise) -> ExerciseResult:
         return run_exercise(
