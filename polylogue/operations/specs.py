@@ -65,6 +65,22 @@ class OperationCatalog:
 
 RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
     OperationSpec(
+        name="acquire-raw-conversations",
+        kind=OperationKind.MATERIALIZATION,
+        description="Traverse configured sources, detect provider-shaped payloads, and persist raw conversation records plus artifact observations.",
+        consumes=("configured_sources", "source_payload_stream"),
+        produces=("raw_validation_state", "artifact_observation_rows"),
+        path_targets=("source-acquisition-loop",),
+        code_refs=(
+            "polylogue.pipeline.run_stages.execute_acquire_stage",
+            "polylogue.pipeline.services.acquisition.AcquisitionService.acquire_sources",
+            "polylogue.sources.source_acquisition.iter_source_raw_data",
+            "polylogue.pipeline.services.acquisition_persistence.persist_raw_record",
+        ),
+        surfaces=("run.acquire", "run.parse", "sources"),
+        mutates_state=True,
+    ),
+    OperationSpec(
         name="plan-validation-backlog",
         kind=OperationKind.PLANNING,
         description="Select raw records that still require validation before normal parse planning.",

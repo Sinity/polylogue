@@ -11,7 +11,10 @@ def test_artifact_graph_contains_the_current_runtime_paths() -> None:
     operations = {operation.name: operation for operation in graph.operations}
 
     assert set(nodes) >= {
+        "configured_sources",
+        "source_payload_stream",
         "raw_validation_state",
+        "artifact_observation_rows",
         "validation_backlog",
         "parse_backlog",
         "parse_quarantine",
@@ -68,7 +71,11 @@ def test_artifact_graph_contains_the_current_runtime_paths() -> None:
         "conversation_query_results",
         "archive_health",
     }
+    assert nodes["configured_sources"].layer is ArtifactLayer.SOURCE
+    assert nodes["source_payload_stream"].depends_on == ("configured_sources",)
     assert nodes["raw_validation_state"].layer is ArtifactLayer.DURABLE
+    assert nodes["raw_validation_state"].depends_on == ("source_payload_stream",)
+    assert nodes["artifact_observation_rows"].depends_on == ("raw_validation_state",)
     assert nodes["archive_conversation_rows"].layer is ArtifactLayer.DURABLE
     assert nodes["archive_conversation_rows"].depends_on == ("raw_validation_state",)
     assert nodes["message_fts"].layer is ArtifactLayer.INDEX
@@ -126,6 +133,7 @@ def test_artifact_graph_contains_the_current_runtime_paths() -> None:
         "session_product_health",
         "retrieval_band_health",
     )
+    assert operations["acquire-raw-conversations"].produces == ("raw_validation_state", "artifact_observation_rows")
     assert operations["plan-validation-backlog"].produces == ("validation_backlog",)
     assert operations["plan-parse-backlog"].produces == ("parse_backlog", "parse_quarantine")
     assert operations["ingest-archive-runtime"].produces == ("raw_validation_state", "archive_conversation_rows")
@@ -187,6 +195,7 @@ def test_artifact_graph_paths_reference_only_declared_nodes() -> None:
     node_names = set(graph.by_name())
 
     assert {path.name for path in graph.paths} == {
+        "source-acquisition-loop",
         "raw-reparse-loop",
         "raw-archive-ingest-loop",
         "message-fts-health-loop",
@@ -264,6 +273,9 @@ def test_artifact_graph_lists_operations_for_each_runtime_path() -> None:
     assert tuple(operation.name for operation in graph.operations_for_path("raw-reparse-loop")) == (
         "plan-validation-backlog",
         "plan-parse-backlog",
+    )
+    assert tuple(operation.name for operation in graph.operations_for_path("source-acquisition-loop")) == (
+        "acquire-raw-conversations",
     )
     assert tuple(operation.name for operation in graph.operations_for_path("raw-archive-ingest-loop")) == (
         "plan-validation-backlog",
