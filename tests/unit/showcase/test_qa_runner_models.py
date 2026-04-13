@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from polylogue.showcase.qa_runner_models import QASessionRequest
+from polylogue.showcase.qa_runner_request import QASessionRequest
 
 
 def test_qa_session_request_needs_workspace_when_exercises_run() -> None:
