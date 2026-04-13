@@ -36,6 +36,8 @@ class ExecutionSpec:
     def command(self) -> tuple[str, ...] | None:
         if self.is_composite or self.is_runner:
             return None
+        if self.kind is ExecutionKind.PYTEST:
+            return ("pytest", *self.argv)
         return self.argv
 
     @property
@@ -44,12 +46,19 @@ class ExecutionSpec:
             return ()
         return self.argv
 
+    def pytest_command(self, *prefix_args: str) -> tuple[str, ...]:
+        if self.kind is not ExecutionKind.PYTEST:
+            raise ValueError(f"{self.kind.value} execution cannot render a pytest command")
+        return ("pytest", *prefix_args, *self.argv)
+
 
 def command_execution(*argv: str) -> ExecutionSpec:
     return ExecutionSpec(kind=ExecutionKind.COMMAND, argv=tuple(argv))
 
 
 def pytest_execution(*argv: str) -> ExecutionSpec:
+    if argv and argv[0] == "pytest":
+        argv = argv[1:]
     return ExecutionSpec(kind=ExecutionKind.PYTEST, argv=tuple(argv))
 
 
