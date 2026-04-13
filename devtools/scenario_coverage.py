@@ -24,9 +24,30 @@ class ScenarioCoverageRef:
 
 
 @dataclass(frozen=True, slots=True)
+class RuntimePathCoverage:
+    name: str
+    refs: tuple[ScenarioCoverageRef, ...]
+    uncovered_artifacts: tuple[str, ...]
+    uncovered_operations: tuple[str, ...]
+
+    @property
+    def complete(self) -> bool:
+        return not self.uncovered_artifacts and not self.uncovered_operations
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "refs": [ref.to_dict() for ref in self.refs],
+            "uncovered_artifacts": list(self.uncovered_artifacts),
+            "uncovered_operations": list(self.uncovered_operations),
+            "complete": self.complete,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class RuntimeScenarioCoverage:
     artifacts: dict[str, tuple[ScenarioCoverageRef, ...]]
     operations: dict[str, tuple[ScenarioCoverageRef, ...]]
+    paths: dict[str, RuntimePathCoverage]
     uncovered_artifacts: tuple[str, ...]
     uncovered_operations: tuple[str, ...]
 
@@ -39,6 +60,10 @@ class RuntimeScenarioCoverage:
             "operations": {
                 name: [ref.to_dict() for ref in refs]
                 for name, refs in self.operations.items()
+            },
+            "paths": {
+                name: path.to_dict()
+                for name, path in self.paths.items()
             },
             "uncovered_artifacts": list(self.uncovered_artifacts),
             "uncovered_operations": list(self.uncovered_operations),
@@ -69,10 +94,38 @@ def build_runtime_scenario_coverage(*, registry: QualityRegistry | None = None) 
         for name, refs in operation_refs.items()
         if refs
     }
+    path_coverage: dict[str, RuntimePathCoverage] = {}
+    for path in graph.paths:
+        relevant_operations = tuple(
+            operation.name
+            for operation in graph.operations
+            if set(operation.consumes).union(operation.produces).intersection(path.nodes)
+        )
+        refs = {
+            *(
+                ref
+                for node_name in path.nodes
+                for ref in artifact_refs[node_name]
+            ),
+            *(
+                ref
+                for operation_name in relevant_operations
+                for ref in operation_refs[operation_name]
+            ),
+        }
+        path_coverage[path.name] = RuntimePathCoverage(
+            name=path.name,
+            refs=tuple(sorted(refs, key=lambda ref: (ref.source, ref.name, ref.origin))),
+            uncovered_artifacts=tuple(sorted(node_name for node_name in path.nodes if not artifact_refs[node_name])),
+            uncovered_operations=tuple(
+                sorted(operation_name for operation_name in relevant_operations if not operation_refs[operation_name])
+            ),
+        )
 
     return RuntimeScenarioCoverage(
         artifacts=covered_artifacts,
         operations=covered_operations,
+        paths=path_coverage,
         uncovered_artifacts=tuple(sorted(name for name, refs in artifact_refs.items() if not refs)),
         uncovered_operations=tuple(sorted(name for name, refs in operation_refs.items() if not refs)),
     )
@@ -80,6 +133,7 @@ def build_runtime_scenario_coverage(*, registry: QualityRegistry | None = None) 
 
 __all__ = [
     "RuntimeScenarioCoverage",
+    "RuntimePathCoverage",
     "ScenarioCoverageRef",
     "build_runtime_scenario_coverage",
 ]

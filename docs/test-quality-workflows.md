@@ -21,8 +21,10 @@ Current registry snapshot:
 
 ## Runtime Coverage
 
+- covered runtime paths: `3`
 - covered runtime artifacts: `12`
 - covered runtime operations: `6`
+- uncovered runtime paths: —
 - uncovered runtime artifacts: —
 - uncovered runtime operations: —
 
