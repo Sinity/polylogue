@@ -2,7 +2,12 @@ from __future__ import annotations
 
 import pytest
 
-from polylogue.scenarios import CorpusSpec, build_default_corpus_specs, build_inferred_corpus_specs
+from polylogue.scenarios import (
+    CorpusSpec,
+    build_default_corpus_specs,
+    build_inferred_corpus_specs,
+    resolve_corpus_specs,
+)
 from polylogue.schemas.tooling_models import ClusterManifest, SchemaCluster
 
 
@@ -92,3 +97,55 @@ def test_build_inferred_corpus_specs_uses_cluster_families_when_present() -> Non
     assert specs[0].profile_family_ids == ("cluster-a",)
     assert specs[0].observed_sample_count == 12
     assert specs[0].origin == "inferred.schema"
+
+
+def test_resolve_corpus_specs_applies_generation_overrides_to_inferred_specs() -> None:
+    inferred = (
+        CorpusSpec(
+            provider="chatgpt",
+            package_version="v7",
+            count=12,
+            messages_min=4,
+            messages_max=16,
+            style="default",
+            profile_family_ids=("cluster-a",),
+            origin="inferred.schema",
+            tags=("inferred", "schema", "synthetic"),
+        ),
+    )
+
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setattr(
+            "polylogue.schemas.operator_inference.list_inferred_corpus_specs",
+            lambda registry=None: inferred,
+        )
+        specs = resolve_corpus_specs(
+            source="inferred",
+            count=2,
+            messages_min=6,
+            messages_max=8,
+            seed=42,
+            style="showcase",
+        )
+
+    assert len(specs) == 1
+    assert specs[0].provider == "chatgpt"
+    assert specs[0].package_version == "v7"
+    assert specs[0].profile_family_ids == ("cluster-a",)
+    assert specs[0].count == 2
+    assert specs[0].messages_min == 6
+    assert specs[0].messages_max == 8
+    assert specs[0].seed == 42
+    assert specs[0].style == "showcase"
+    assert specs[0].origin == "generated.synthetic-inferred"
+    assert specs[0].tags == ("synthetic", "generated", "inferred")
+
+
+def test_corpus_spec_scope_label_includes_version_and_profile_family() -> None:
+    spec = CorpusSpec(
+        provider="chatgpt",
+        package_version="v7",
+        profile_family_ids=("cluster/a",),
+    )
+
+    assert spec.scope_label == "v7-cluster-a"

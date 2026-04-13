@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from enum import Enum
 from typing import TYPE_CHECKING, Any
 
 from .metadata import ScenarioMetadata
@@ -34,6 +35,18 @@ def _coerce_string_tuple(value: object) -> tuple[str, ...]:
     if isinstance(value, (list, tuple)) and all(isinstance(item, str) for item in value):
         return tuple(value)
     return ()
+
+
+def _slugify_corpus_token(value: str) -> str:
+    token = "".join(char.lower() if char.isalnum() else "-" for char in value).strip("-")
+    while "--" in token:
+        token = token.replace("--", "-")
+    return token or "default"
+
+
+class CorpusSourceKind(str, Enum):
+    DEFAULT = "default"
+    INFERRED = "inferred"
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -67,6 +80,37 @@ class CorpusSpec(ScenarioMetadata):
     @property
     def messages_per_conversation(self) -> range:
         return range(self.messages_min, self.messages_max + 1)
+
+    @property
+    def scope_label(self) -> str:
+        scope = self.profile_family_ids[0] if self.profile_family_ids else (self.element_kind or self.artifact_kind or "default")
+        parts: list[str] = []
+        if self.package_version != "default":
+            parts.append(self.package_version)
+        parts.append(scope)
+        return "-".join(_slugify_corpus_token(part) for part in parts)
+
+    def with_generation_overrides(
+        self,
+        *,
+        count: int | None = None,
+        messages_min: int | None = None,
+        messages_max: int | None = None,
+        seed: int | None = None,
+        style: str | None = None,
+        origin: str | None = None,
+        tags: tuple[str, ...] | None = None,
+    ) -> CorpusSpec:
+        return replace(
+            self,
+            count=self.count if count is None else count,
+            messages_min=self.messages_min if messages_min is None else messages_min,
+            messages_max=self.messages_max if messages_max is None else messages_max,
+            seed=self.seed if seed is None else seed,
+            style=self.style if style is None else style,
+            origin=self.origin if origin is None else origin,
+            tags=self.tags if tags is None else tags,
+        )
 
     @classmethod
     def for_provider(
@@ -180,6 +224,55 @@ def build_default_corpus_specs(
     )
 
 
+def resolve_corpus_specs(
+    *,
+    providers: Iterable[str] | None = None,
+    source: CorpusSourceKind | str = CorpusSourceKind.DEFAULT,
+    count: int = 5,
+    messages_min: int = 3,
+    messages_max: int = 15,
+    seed: int | None = None,
+    style: str = "default",
+    package_version: str = "default",
+    origin: str | None = None,
+    tags: tuple[str, ...] | None = None,
+    registry: Any | None = None,
+) -> tuple[CorpusSpec, ...]:
+    source_kind = CorpusSourceKind(source)
+    provider_names = tuple(providers) if providers is not None else None
+    if source_kind is CorpusSourceKind.DEFAULT:
+        return build_default_corpus_specs(
+            providers=provider_names or (),
+            count=count,
+            messages_min=messages_min,
+            messages_max=messages_max,
+            seed=seed,
+            style=style,
+            package_version=package_version,
+            origin=origin or "generated.synthetic-defaults",
+            tags=tags or ("synthetic", "generated"),
+        )
+
+    from polylogue.schemas.operator_inference import list_inferred_corpus_specs
+
+    inferred_specs = list_inferred_corpus_specs(registry=registry)
+    if provider_names is not None:
+        allowed = set(provider_names)
+        inferred_specs = tuple(spec for spec in inferred_specs if spec.provider in allowed)
+    return tuple(
+        spec.with_generation_overrides(
+            count=count,
+            messages_min=messages_min,
+            messages_max=messages_max,
+            seed=seed,
+            style=style,
+            origin=origin or "generated.synthetic-inferred",
+            tags=tags or ("synthetic", "generated", "inferred"),
+        )
+        for spec in inferred_specs
+    )
+
+
 def _cluster_to_corpus_spec(
     cluster: SchemaCluster,
     *,
@@ -240,7 +333,9 @@ def build_inferred_corpus_specs(
 
 
 __all__ = [
+    "CorpusSourceKind",
     "CorpusSpec",
     "build_default_corpus_specs",
     "build_inferred_corpus_specs",
+    "resolve_corpus_specs",
 ]

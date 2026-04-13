@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 from polylogue.config import Config
 from polylogue.paths import Source
+from polylogue.scenarios import CorpusSpec
 from polylogue.showcase.workspace import (
     create_verification_workspace,
+    generate_synthetic_fixtures,
     run_pipeline_for_configured_sources,
     run_pipeline_for_fixture_workspace,
 )
@@ -66,3 +69,30 @@ def test_run_pipeline_for_fixture_workspace_mirrors_fixtures_to_inbox(tmp_path):
     selected = mock_run.await_args.kwargs["config"].sources
     assert [source.name for source in selected] == ["claude-ai"]
     assert [source.path for source in selected] == [fixture_dir]
+
+
+def test_generate_synthetic_fixtures_supports_inferred_corpus_specs(tmp_path):
+    inferred = (
+        CorpusSpec(
+            provider="chatgpt",
+            package_version="v1",
+            count=1,
+            messages_min=4,
+            messages_max=4,
+            seed=3,
+            profile_family_ids=("cluster-a",),
+        ),
+    )
+
+    with patch(
+        "polylogue.schemas.operator_inference.list_inferred_corpus_specs",
+        return_value=inferred,
+    ):
+        generate_synthetic_fixtures(
+            tmp_path / "fixtures",
+            count=1,
+            style="showcase",
+            corpus_source="inferred",
+        )
+
+    assert (Path(tmp_path) / "fixtures" / "chatgpt" / "showcase-00.json").exists()
