@@ -8,7 +8,7 @@ from pathlib import Path
 import click
 
 from polylogue.cli.types import AppEnv
-from polylogue.scenarios import CorpusSourceKind
+from polylogue.scenarios import CorpusRequest, CorpusSourceKind
 
 
 @click.command("generate")
@@ -88,15 +88,16 @@ def _do_corpus(
     )
 
     out = output_dir or Path(tempfile.mkdtemp(prefix="polylogue-corpus-"))
-    scenarios = build_synthetic_corpus_scenarios(
-        providers=providers or None,
-        corpus_source=corpus_source,
+    request = CorpusRequest(
+        providers=tuple(providers) or None,
+        source=corpus_source,
         count=count,
         style="default",
         messages_min=4,
         messages_max=15,
         seed=42,
     )
+    scenarios = build_synthetic_corpus_scenarios(request=request)
     if not scenarios:
         raise click.BadParameter(
             "No corpus scenarios matched the selected source/providers.",
@@ -133,15 +134,16 @@ def _do_seed(
 
     out = output_dir or Path(tempfile.mkdtemp(prefix="polylogue-demo-"))
     workspace = create_verification_workspace(out)
-    scenarios = build_synthetic_corpus_scenarios(
-        providers=providers or None,
-        corpus_source=corpus_source,
+    request = CorpusRequest(
+        providers=tuple(providers) or None,
+        source=corpus_source,
         count=count,
         style="default",
         messages_min=6,
         messages_max=19,
         seed=42,
     )
+    scenarios = build_synthetic_corpus_scenarios(request=request)
     if not scenarios:
         raise click.BadParameter(
             "No corpus scenarios matched the selected source/providers.",

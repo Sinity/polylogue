@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sys
 
+from polylogue.scenarios import CorpusRequest
 from polylogue.showcase.invariants import check_invariants
 from polylogue.showcase.qa_runner_models import QAResult
 from polylogue.showcase.qa_runner_reporting import save_qa_reports
@@ -17,7 +18,7 @@ from polylogue.showcase.workspace import (
     create_verification_workspace,
     ensure_report_dir,
     run_pipeline_for_configured_sources,
-    seed_workspace_from_corpus_options,
+    seed_workspace_from_corpus_request,
 )
 from polylogue.sync_bridge import run_coroutine_sync
 
@@ -34,10 +35,15 @@ def run_qa_session(
 
     if needs_workspace and request.fresh and not request.live:
         workspace = create_verification_workspace(request.workspace_dir)
-        seed_workspace_from_corpus_options(
+        seed_workspace_from_corpus_request(
             workspace,
-            count=request.synthetic_count,
-            style="showcase",
+            request=CorpusRequest(
+                count=request.synthetic_count,
+                style="showcase",
+                messages_min=6,
+                messages_max=19,
+                seed=42,
+            ),
             regenerate_schemas=request.regenerate_schemas,
         )
         workspace_env_for_runner = dict(workspace.env_vars)
