@@ -22,8 +22,15 @@ def test_pytest_execution_exposes_pytest_targets() -> None:
     execution = pytest_execution("tests/unit/core/test_filters.py", "-q")
 
     assert execution.kind is ExecutionKind.PYTEST
-    assert execution.command == ("tests/unit/core/test_filters.py", "-q")
+    assert execution.command == ("pytest", "tests/unit/core/test_filters.py", "-q")
     assert execution.pytest_targets == ("tests/unit/core/test_filters.py", "-q")
+
+
+def test_pytest_execution_normalizes_leading_pytest_binary() -> None:
+    execution = pytest_execution("pytest", "-m", "machine_contract")
+
+    assert execution.command == ("pytest", "-m", "machine_contract")
+    assert execution.pytest_targets == ("-m", "machine_contract")
 
 
 def test_composite_execution_has_members_only() -> None:
