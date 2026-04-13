@@ -7,11 +7,19 @@ from .archive import (
     get_provider_counts,
     list_provider_analytics_products,
 )
+from .specs import (
+    OperationKind,
+    OperationSpec,
+    build_runtime_operation_specs,
+)
 
 __all__ = [
     "ArchiveDebtProduct",
     "ArchiveOperations",
     "ArchiveStats",
+    "OperationKind",
+    "OperationSpec",
+    "build_runtime_operation_specs",
     "get_provider_counts",
     "list_provider_analytics_products",
 ]

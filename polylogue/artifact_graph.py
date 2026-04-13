@@ -6,6 +6,8 @@ from dataclasses import asdict, dataclass
 from enum import Enum
 from typing import Any
 
+from polylogue.operations import OperationSpec, build_runtime_operation_specs
+
 
 class ArtifactLayer(str, Enum):
     SOURCE = "source"
@@ -46,27 +48,12 @@ class ArtifactPath:
 
 
 @dataclass(frozen=True, slots=True)
-class ArtifactOperation:
-    """One named runtime operation over declared artifact nodes."""
-
-    name: str
-    description: str
-    consumes: tuple[str, ...] = ()
-    produces: tuple[str, ...] = ()
-    code_refs: tuple[str, ...] = ()
-    surfaces: tuple[str, ...] = ()
-
-    def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
-
-
-@dataclass(frozen=True, slots=True)
 class ArtifactGraph:
     """Named artifact nodes plus curated high-value paths through them."""
 
     nodes: tuple[ArtifactNode, ...]
     paths: tuple[ArtifactPath, ...]
-    operations: tuple[ArtifactOperation, ...]
+    operations: tuple[OperationSpec, ...]
 
     def by_name(self) -> dict[str, ArtifactNode]:
         return {node.name: node for node in self.nodes}
@@ -184,64 +171,7 @@ def build_artifact_graph() -> ArtifactGraph:
             ),
         ),
     )
-    operations = (
-        ArtifactOperation(
-            name="plan-validation-backlog",
-            description="Select raw records that still require validation before normal parse planning.",
-            consumes=("raw_validation_state",),
-            produces=("validation_backlog",),
-            code_refs=(
-                "polylogue.storage.raw_ingest_artifacts.validation_backlog_query_spec",
-                "polylogue.pipeline.services.planning_backlog.collect_validation_backlog",
-            ),
-            surfaces=("run.parse", "reparse"),
-        ),
-        ArtifactOperation(
-            name="plan-parse-backlog",
-            description="Select raw records that are eligible for parse planning under ordinary or force-reparse rules.",
-            consumes=("raw_validation_state",),
-            produces=("parse_backlog", "parse_quarantine"),
-            code_refs=(
-                "polylogue.storage.raw_ingest_artifacts.parse_backlog_query_spec",
-                "polylogue.pipeline.services.planning_backlog.collect_parse_backlog",
-            ),
-            surfaces=("run.parse", "reparse"),
-        ),
-        ArtifactOperation(
-            name="materialize-action-events",
-            description="Build the action-event read model from tool-use source blocks.",
-            consumes=("tool_use_source_blocks",),
-            produces=("action_event_rows",),
-            code_refs=(
-                "polylogue.storage.action_event_status",
-                "polylogue.storage.action_event_artifacts.ActionEventArtifactState",
-            ),
-            surfaces=("doctor", "repair"),
-        ),
-        ArtifactOperation(
-            name="index-action-events",
-            description="Refresh the action-event FTS projection from the materialized action-event rows.",
-            consumes=("action_event_rows",),
-            produces=("action_event_fts",),
-            code_refs=(
-                "polylogue.storage.derived_status_products.build_action_statuses",
-                "polylogue.storage.action_event_artifacts.ActionEventArtifactState",
-            ),
-            surfaces=("doctor", "repair", "retrieval_evidence"),
-        ),
-        ArtifactOperation(
-            name="project-action-event-health",
-            description="Project health, debt, and repair semantics from action-event rows and FTS state.",
-            consumes=("action_event_rows", "action_event_fts"),
-            produces=("action_event_health",),
-            code_refs=(
-                "polylogue.storage.derived_status",
-                "polylogue.storage.repair",
-                "polylogue.storage.embedding_stats_support",
-            ),
-            surfaces=("doctor", "archive_debt", "repair"),
-        ),
-    )
+    operations = build_runtime_operation_specs()
     return ArtifactGraph(nodes=nodes, paths=paths, operations=operations)
 
 
@@ -249,7 +179,6 @@ __all__ = [
     "ArtifactGraph",
     "ArtifactLayer",
     "ArtifactNode",
-    "ArtifactOperation",
     "ArtifactPath",
     "build_artifact_graph",
 ]
