@@ -98,6 +98,47 @@ def test_executable_scenario_infers_run_render_metadata_from_polylogue_execution
     assert scenario.operation_targets == ("render-conversations",)
 
 
+def test_executable_scenario_infers_run_embed_metadata_from_polylogue_execution() -> None:
+    scenario = _ExecutableFixture(
+        name="run-embed-contract",
+        description="embed contract",
+        execution=polylogue_execution("run", "embed", "--limit", "5"),
+    )
+
+    assert scenario.path_targets == ("embedding-materialization-loop",)
+    assert scenario.artifact_targets == (
+        "archive_conversation_rows",
+        "embedding_metadata_rows",
+        "embedding_status_rows",
+        "message_embedding_vectors",
+    )
+    assert scenario.operation_targets == ("materialize-transcript-embeddings",)
+
+
+def test_executable_scenario_infers_embed_stats_metadata_from_polylogue_execution() -> None:
+    scenario = _ExecutableFixture(
+        name="embed-stats-contract",
+        description="embed stats contract",
+        execution=polylogue_execution("embed", "--stats", "--json"),
+    )
+
+    assert scenario.path_targets == ("retrieval-band-health-loop", "embedding-status-query-loop")
+    assert scenario.artifact_targets == (
+        "embedding_metadata_rows",
+        "embedding_status_rows",
+        "message_embedding_vectors",
+        "action_event_health",
+        "session_product_health",
+        "retrieval_band_health",
+        "embedding_status_results",
+    )
+    assert scenario.operation_targets == (
+        "project-retrieval-band-health",
+        "query-embedding-status",
+        "cli.json-contract",
+    )
+
+
 def test_executable_scenario_infers_run_site_metadata_from_polylogue_execution() -> None:
     scenario = _ExecutableFixture(
         name="run-site-contract",

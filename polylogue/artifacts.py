@@ -120,6 +120,40 @@ RUNTIME_ARTIFACT_NODES: tuple[ArtifactNode, ...] = (
         health_surfaces=("doctor", "archive_debt", "query"),
     ),
     ArtifactNode(
+        name="embedding_metadata_rows",
+        layer=ArtifactLayer.DURABLE,
+        description="Durable embedding metadata rows storing model, dimension, timestamp, and provenance for embedded messages.",
+        depends_on=("archive_conversation_rows",),
+        code_refs=(
+            "polylogue.storage.search_providers.sqlite_vec_runtime.SqliteVecRuntimeMixin._ensure_tables",
+            "polylogue.storage.search_providers.sqlite_vec_queries.SqliteVecQueryMixin.upsert",
+        ),
+        health_surfaces=("embed", "doctor", "retrieval"),
+    ),
+    ArtifactNode(
+        name="embedding_status_rows",
+        layer=ArtifactLayer.DURABLE,
+        description="Durable per-conversation embedding status rows recording embedded message counts and reindex needs.",
+        depends_on=("archive_conversation_rows",),
+        code_refs=(
+            "polylogue.storage.search_providers.sqlite_vec_runtime.SqliteVecRuntimeMixin._ensure_tables",
+            "polylogue.storage.search_providers.sqlite_vec_queries.SqliteVecQueryMixin.upsert",
+        ),
+        health_surfaces=("embed", "doctor", "retrieval"),
+    ),
+    ArtifactNode(
+        name="message_embedding_vectors",
+        layer=ArtifactLayer.INDEX,
+        description="Semantic vector index over embedded archive messages.",
+        depends_on=("archive_conversation_rows",),
+        code_refs=(
+            "polylogue.storage.search_providers.sqlite_vec_runtime.SqliteVecRuntimeMixin._ensure_tables",
+            "polylogue.storage.search_providers.sqlite_vec_queries.SqliteVecQueryMixin.upsert",
+            "polylogue.storage.search_providers.sqlite_vec_queries.SqliteVecQueryMixin.query",
+        ),
+        health_surfaces=("embed", "retrieval", "query"),
+    ),
+    ArtifactNode(
         name="tool_use_source_blocks",
         layer=ArtifactLayer.SOURCE,
         description="Tool-use content blocks anchored to valid conversations.",
@@ -367,6 +401,40 @@ RUNTIME_ARTIFACT_NODES: tuple[ArtifactNode, ...] = (
         ),
         repair_targets=("session_products",),
         health_surfaces=("doctor", "archive_debt", "products"),
+    ),
+    ArtifactNode(
+        name="retrieval_band_health",
+        layer=ArtifactLayer.PROJECTION,
+        description="Projected transcript/evidence/inference/enrichment retrieval readiness over embeddings and durable read models.",
+        depends_on=(
+            "embedding_metadata_rows",
+            "embedding_status_rows",
+            "message_embedding_vectors",
+            "action_event_health",
+            "session_product_health",
+        ),
+        code_refs=(
+            "polylogue.storage.embedding_stats.read_embedding_stats_sync",
+            "polylogue.storage.embedding_stats_support.build_retrieval_bands_from_status",
+            "polylogue.storage.derived_status.build_retrieval_statuses",
+        ),
+        health_surfaces=("embed", "doctor", "retrieval"),
+    ),
+    ArtifactNode(
+        name="embedding_status_results",
+        layer=ArtifactLayer.PROJECTION,
+        description="Operator-facing embedding status payload and retrieval-band readiness view.",
+        depends_on=(
+            "embedding_metadata_rows",
+            "embedding_status_rows",
+            "message_embedding_vectors",
+            "retrieval_band_health",
+        ),
+        code_refs=(
+            "polylogue.cli.embed_stats.embedding_status_payload",
+            "polylogue.cli.commands.embed._embedding_status_payload",
+        ),
+        health_surfaces=("embed", "doctor", "retrieval", "cli"),
     ),
     ArtifactNode(
         name="session_profile_results",
@@ -628,7 +696,7 @@ RUNTIME_ARTIFACT_NODES: tuple[ArtifactNode, ...] = (
         name="archive_health",
         layer=ArtifactLayer.PROJECTION,
         description="Projected archive-wide health and maintenance view over message FTS and durable derived-model readiness.",
-        depends_on=("message_fts", "action_event_health", "session_product_health"),
+        depends_on=("message_fts", "action_event_health", "session_product_health", "retrieval_band_health"),
         code_refs=(
             "polylogue.health.run_archive_health",
             "polylogue.storage.derived_status.collect_derived_model_statuses_sync",
@@ -675,6 +743,16 @@ RUNTIME_ARTIFACT_PATHS: tuple[ArtifactPath, ...] = (
         ),
     ),
     ArtifactPath(
+        name="embedding-materialization-loop",
+        description="Durable archive conversations through embedding metadata, status rows, and vector index materialization.",
+        nodes=(
+            "archive_conversation_rows",
+            "embedding_metadata_rows",
+            "embedding_status_rows",
+            "message_embedding_vectors",
+        ),
+    ),
+    ArtifactPath(
         name="session-product-repair-loop",
         description="Archive conversations through durable session-product rows, FTS, and projected repair semantics.",
         nodes=(
@@ -694,6 +772,19 @@ RUNTIME_ARTIFACT_PATHS: tuple[ArtifactPath, ...] = (
             "session_product_rows",
             "session_product_fts",
             "session_product_health",
+        ),
+    ),
+    ArtifactPath(
+        name="retrieval-band-health-loop",
+        description="Embedding state plus action/session-product health through retrieval-band readiness and archive health projections.",
+        nodes=(
+            "embedding_metadata_rows",
+            "embedding_status_rows",
+            "message_embedding_vectors",
+            "action_event_health",
+            "session_product_health",
+            "retrieval_band_health",
+            "archive_health",
         ),
     ),
     ArtifactPath(
@@ -778,6 +869,17 @@ RUNTIME_ARTIFACT_PATHS: tuple[ArtifactPath, ...] = (
         nodes=(
             "session_product_rows",
             "provider_analytics_results",
+        ),
+    ),
+    ArtifactPath(
+        name="embedding-status-query-loop",
+        description="Embedding state and retrieval-band readiness through operator-facing embedding status results.",
+        nodes=(
+            "embedding_metadata_rows",
+            "embedding_status_rows",
+            "message_embedding_vectors",
+            "retrieval_band_health",
+            "embedding_status_results",
         ),
     ),
     ArtifactPath(

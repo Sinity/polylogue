@@ -95,6 +95,25 @@ class TestLaneParsing:
         )
         assert lane.operation_targets == ("query-archive-debt",)
 
+    def test_live_embed_stats_lane_infers_embedding_status_metadata(self):
+        lane = LANES["live-embed-stats"]
+
+        assert lane.path_targets == ("retrieval-band-health-loop", "embedding-status-query-loop")
+        assert lane.artifact_targets == (
+            "embedding_metadata_rows",
+            "embedding_status_rows",
+            "message_embedding_vectors",
+            "action_event_health",
+            "session_product_health",
+            "retrieval_band_health",
+            "embedding_status_results",
+        )
+        assert lane.operation_targets == (
+            "project-retrieval-band-health",
+            "query-embedding-status",
+            "cli.json-contract",
+        )
+
     def test_pipeline_probe_chatgpt_lane_infers_parse_stage_runtime_metadata(self):
         lane = LANES["pipeline-probe-chatgpt"]
 
@@ -215,6 +234,29 @@ class TestCommandConstruction:
         assert "tests/unit/cli/test_embed.py" in cmd
         assert "tests/unit/storage/test_embedding_stats.py" in cmd
 
+    def test_embeddings_coverage_lane_carries_embedding_runtime_metadata(self):
+        lane = LANES["embeddings-coverage"]
+
+        assert lane.path_targets == (
+            "embedding-materialization-loop",
+            "embedding-status-query-loop",
+            "retrieval-band-health-loop",
+        )
+        assert lane.artifact_targets == (
+            "archive_conversation_rows",
+            "embedding_metadata_rows",
+            "embedding_status_rows",
+            "message_embedding_vectors",
+            "retrieval_band_health",
+            "embedding_status_results",
+        )
+        assert lane.operation_targets == (
+            "materialize-transcript-embeddings",
+            "project-retrieval-band-health",
+            "query-embedding-status",
+        )
+        assert lane.tags == ("contract", "embeddings", "retrieval")
+
     def test_evidence_tier_contracts_lane_uses_evidence_suite(self):
         cmd = build_lane_command(LANES["evidence-tier-contracts"])
         assert cmd[0] == "pytest"
@@ -241,6 +283,29 @@ class TestCommandConstruction:
         assert "tests/unit/cli/test_embed.py" in cmd
         assert "tests/unit/storage/test_embedding_stats.py" in cmd
         assert "tests/unit/core/test_health_core.py" in cmd
+
+    def test_retrieval_band_readiness_lane_carries_retrieval_health_metadata(self):
+        lane = LANES["retrieval-band-readiness"]
+
+        assert lane.path_targets == (
+            "embedding-status-query-loop",
+            "retrieval-band-health-loop",
+            "message-fts-health-loop",
+        )
+        assert lane.artifact_targets == (
+            "embedding_metadata_rows",
+            "embedding_status_rows",
+            "message_embedding_vectors",
+            "retrieval_band_health",
+            "embedding_status_results",
+            "archive_health",
+        )
+        assert lane.operation_targets == (
+            "project-retrieval-band-health",
+            "query-embedding-status",
+            "project-archive-health",
+        )
+        assert lane.tags == ("contract", "retrieval", "embeddings", "health")
 
     def test_heuristic_inference_contracts_lane_uses_semantic_product_suite(self):
         cmd = build_lane_command(LANES["heuristic-inference-contracts"])

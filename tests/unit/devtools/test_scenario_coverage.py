@@ -10,6 +10,9 @@ def test_build_runtime_scenario_coverage_tracks_the_current_authored_map() -> No
         "raw-reparse-loop",
         "raw-archive-ingest-loop",
         "message-fts-health-loop",
+        "embedding-materialization-loop",
+        "retrieval-band-health-loop",
+        "embedding-status-query-loop",
         "conversation-query-loop",
         "action-event-repair-loop",
         "session-product-repair-loop",
@@ -35,7 +38,12 @@ def test_build_runtime_scenario_coverage_tracks_the_current_authored_map() -> No
     assert "archive_conversation_rows" in coverage.artifacts
     assert "message_source_rows" in coverage.artifacts
     assert "message_fts" in coverage.artifacts
+    assert "embedding_metadata_rows" in coverage.artifacts
+    assert "embedding_status_rows" in coverage.artifacts
+    assert "message_embedding_vectors" in coverage.artifacts
     assert "tool_use_source_blocks" in coverage.artifacts
+    assert "retrieval_band_health" in coverage.artifacts
+    assert "embedding_status_results" in coverage.artifacts
     assert "conversation_query_results" in coverage.artifacts
     assert "archive_health" in coverage.artifacts
     assert "conversation_render_projection" in coverage.artifacts
@@ -51,7 +59,10 @@ def test_build_runtime_scenario_coverage_tracks_the_current_authored_map() -> No
     assert "plan-validation-backlog" in coverage.operations
     assert "ingest-archive-runtime" in coverage.operations
     assert "index-message-fts" in coverage.operations
+    assert "materialize-transcript-embeddings" in coverage.operations
     assert "materialize-action-events" in coverage.operations
+    assert "project-retrieval-band-health" in coverage.operations
+    assert "query-embedding-status" in coverage.operations
     assert "query-conversations" in coverage.operations
     assert "render-conversations" in coverage.operations
     assert "publish-site" in coverage.operations

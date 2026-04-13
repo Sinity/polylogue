@@ -156,6 +156,17 @@ def _infer_polylogue_doctor_metadata(argv: tuple[str, ...]) -> ScenarioMetadata:
     return _metadata_for_operations(*operations)
 
 
+def _infer_polylogue_embed_metadata(argv: tuple[str, ...]) -> ScenarioMetadata:
+    operations: list[str] = []
+    if "--stats" in argv:
+        operations.extend(("project-retrieval-band-health", "query-embedding-status"))
+    else:
+        operations.append("materialize-transcript-embeddings")
+    if "--json" in argv:
+        operations.append("cli.json-contract")
+    return _metadata_for_operations(*operations)
+
+
 def _infer_polylogue_run_metadata(argv: tuple[str, ...]) -> ScenarioMetadata:
     try:
         run_index = argv.index("run")
@@ -168,6 +179,8 @@ def _infer_polylogue_run_metadata(argv: tuple[str, ...]) -> ScenarioMetadata:
         return _metadata_for_operations("render-conversations")
     if stage == "site":
         return _metadata_for_operations("publish-site")
+    if stage == "embed":
+        return _infer_polylogue_embed_metadata(argv[run_index + 2 :])
     return ScenarioMetadata()
 
 
@@ -187,6 +200,8 @@ def _infer_polylogue_metadata(argv: tuple[str, ...]) -> ScenarioMetadata:
         return _infer_polylogue_product_metadata(argv)
     if "doctor" in argv:
         return _infer_polylogue_doctor_metadata(argv)
+    if "embed" in argv:
+        return _infer_polylogue_embed_metadata(argv[argv.index("embed") + 1 :])
     if "run" in argv:
         return _infer_polylogue_run_metadata(argv)
     return _infer_polylogue_query_metadata(argv)

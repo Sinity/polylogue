@@ -18,6 +18,9 @@ def test_artifact_graph_contains_the_current_runtime_paths() -> None:
         "archive_conversation_rows",
         "message_source_rows",
         "message_fts",
+        "embedding_metadata_rows",
+        "embedding_status_rows",
+        "message_embedding_vectors",
         "tool_use_source_blocks",
         "action_event_rows",
         "action_event_fts",
@@ -38,6 +41,8 @@ def test_artifact_graph_contains_the_current_runtime_paths() -> None:
         "session_product_rows",
         "session_product_fts",
         "session_product_health",
+        "retrieval_band_health",
+        "embedding_status_results",
         "session_profile_results",
         "session_enrichment_results",
         "session_work_event_results",
@@ -69,6 +74,9 @@ def test_artifact_graph_contains_the_current_runtime_paths() -> None:
     assert nodes["message_fts"].layer is ArtifactLayer.INDEX
     assert nodes["message_source_rows"].depends_on == ("archive_conversation_rows",)
     assert nodes["message_fts"].depends_on == ("message_source_rows",)
+    assert nodes["embedding_metadata_rows"].depends_on == ("archive_conversation_rows",)
+    assert nodes["embedding_status_rows"].depends_on == ("archive_conversation_rows",)
+    assert nodes["message_embedding_vectors"].depends_on == ("archive_conversation_rows",)
     assert nodes["tool_use_source_blocks"].depends_on == ("archive_conversation_rows",)
     assert nodes["action_event_fts"].layer is ArtifactLayer.INDEX
     assert nodes["action_event_fts"].depends_on == ("action_event_rows",)
@@ -79,6 +87,19 @@ def test_artifact_graph_contains_the_current_runtime_paths() -> None:
     assert nodes["session_product_fts"].layer is ArtifactLayer.INDEX
     assert "session_profile_merged_fts" in nodes["session_product_fts"].depends_on
     assert nodes["session_product_health"].depends_on == ("session_product_rows", "session_product_fts")
+    assert nodes["retrieval_band_health"].depends_on == (
+        "embedding_metadata_rows",
+        "embedding_status_rows",
+        "message_embedding_vectors",
+        "action_event_health",
+        "session_product_health",
+    )
+    assert nodes["embedding_status_results"].depends_on == (
+        "embedding_metadata_rows",
+        "embedding_status_rows",
+        "message_embedding_vectors",
+        "retrieval_band_health",
+    )
     assert nodes["parse_quarantine"].depends_on == ("raw_validation_state",)
     assert nodes["session_product_source_conversations"].depends_on == ("archive_conversation_rows",)
     assert nodes["conversation_query_results"].depends_on == ("message_fts",)
@@ -99,12 +120,24 @@ def test_artifact_graph_contains_the_current_runtime_paths() -> None:
         "inferred_corpus_scenarios",
     )
     assert nodes["schema_explanation_results"].depends_on == ("schema_packages",)
-    assert nodes["archive_health"].depends_on == ("message_fts", "action_event_health", "session_product_health")
+    assert nodes["archive_health"].depends_on == (
+        "message_fts",
+        "action_event_health",
+        "session_product_health",
+        "retrieval_band_health",
+    )
     assert operations["plan-validation-backlog"].produces == ("validation_backlog",)
     assert operations["plan-parse-backlog"].produces == ("parse_backlog", "parse_quarantine")
     assert operations["ingest-archive-runtime"].produces == ("raw_validation_state", "archive_conversation_rows")
     assert operations["index-message-fts"].produces == ("message_fts",)
+    assert operations["materialize-transcript-embeddings"].produces == (
+        "embedding_metadata_rows",
+        "embedding_status_rows",
+        "message_embedding_vectors",
+    )
     assert operations["materialize-action-events"].produces == ("action_event_rows", "action_event_fts")
+    assert operations["project-retrieval-band-health"].produces == ("retrieval_band_health",)
+    assert operations["query-embedding-status"].produces == ("embedding_status_results",)
     assert operations["query-conversations"].produces == ("conversation_query_results",)
     assert operations["render-conversations"].produces == ("rendered_conversation_artifacts",)
     assert operations["publish-site"].produces == (
@@ -136,6 +169,7 @@ def test_artifact_graph_contains_the_current_runtime_paths() -> None:
         "message_fts",
         "action_event_health",
         "session_product_health",
+        "retrieval_band_health",
     )
     assert operations["plan-validation-backlog"].kind is OperationKind.PLANNING
 
@@ -156,6 +190,9 @@ def test_artifact_graph_paths_reference_only_declared_nodes() -> None:
         "raw-reparse-loop",
         "raw-archive-ingest-loop",
         "message-fts-health-loop",
+        "embedding-materialization-loop",
+        "retrieval-band-health-loop",
+        "embedding-status-query-loop",
         "conversation-query-loop",
         "action-event-repair-loop",
         "session-product-repair-loop",
@@ -236,6 +273,16 @@ def test_artifact_graph_lists_operations_for_each_runtime_path() -> None:
     assert tuple(operation.name for operation in graph.operations_for_path("message-fts-health-loop")) == (
         "index-message-fts",
         "project-archive-health",
+    )
+    assert tuple(operation.name for operation in graph.operations_for_path("embedding-materialization-loop")) == (
+        "materialize-transcript-embeddings",
+    )
+    assert tuple(operation.name for operation in graph.operations_for_path("retrieval-band-health-loop")) == (
+        "project-retrieval-band-health",
+        "project-archive-health",
+    )
+    assert tuple(operation.name for operation in graph.operations_for_path("embedding-status-query-loop")) == (
+        "query-embedding-status",
     )
     assert tuple(operation.name for operation in graph.operations_for_path("conversation-query-loop")) == (
         "index-message-fts",
