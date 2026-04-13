@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from devtools import render_quality_reference
+from devtools.authored_scenario_catalog import AuthoredScenarioCatalog
 from devtools.benchmark_catalog import BenchmarkCampaignEntry
 from devtools.execution_specs import command_execution, composite_execution, pytest_execution
 from devtools.lane_models import LaneEntry
@@ -19,73 +20,73 @@ from polylogue.scenarios import (
 
 def test_build_document_includes_live_registry_sections() -> None:
     registry = QualityRegistry(
-        contract_lanes=(
-            LaneEntry(
-                name="machine-contract",
-                description="Machine-readable CLI surface.",
-                timeout_s=120,
-                category="contract",
-                execution=pytest_execution("pytest", "-m", "machine_contract"),
-            ),
-        ),
-        live_lanes=(
-            LaneEntry(
-                name="live-exercises",
-                description="Read-only live archive exercises.",
-                timeout_s=300,
-                category="live",
-                execution=command_execution("polylogue", "--plain", "audit", "--only", "exercises"),
-            ),
-        ),
-        composite_lanes=(
-            LaneEntry(
-                name="frontier-local",
-                description="Composite local frontier lane.",
-                timeout_s=900,
-                category="composite",
-                execution=composite_execution("machine-contract"),
-            ),
-        ),
-        mutation_campaigns=(
-            MutationCampaignEntry(
-                name="filters",
-                description="Filter semantics.",
-                paths_to_mutate=("polylogue/lib/filters.py",),
-                tests=("tests/unit/core/test_filters.py",),
-            ),
-        ),
-        benchmark_campaigns=(
-            BenchmarkCampaignEntry(
-                name="search-filters",
-                description="Search latency domain.",
-                execution=pytest_execution("tests/benchmarks/test_search_filters.py"),
-                warn_pct=10.0,
-                fail_pct=20.0,
-            ),
-        ),
-        synthetic_benchmark_campaigns=(
-            BenchmarkCampaignEntry(
-                name="startup-health",
-                description="Synthetic startup-health benchmark.",
-            ),
-        ),
-        inferred_corpus_scenarios=(
-            CorpusScenario(
-                provider="chatgpt",
-                package_version="v1",
-                corpus_specs=(
-                    CorpusSpec.for_provider(
-                        "chatgpt",
-                        package_version="v1",
-                        count=3,
-                        messages_min=4,
-                        messages_max=16,
-                        origin="inferred.schema",
-                        tags=("inferred", "schema", "synthetic"),
-                    ),
+        catalog=AuthoredScenarioCatalog(
+            exercise_scenarios=(),
+            qa_extra_scenarios=(),
+            validation_lanes=(
+                LaneEntry(
+                    name="machine-contract",
+                    description="Machine-readable CLI surface.",
+                    timeout_s=120,
+                    category="contract",
+                    execution=pytest_execution("pytest", "-m", "machine_contract"),
                 ),
-                origin="compiled.inferred-corpus-scenario",
-                tags=("inferred", "schema", "synthetic", "scenario"),
+                LaneEntry(
+                    name="live-exercises",
+                    description="Read-only live archive exercises.",
+                    timeout_s=300,
+                    category="live",
+                    execution=command_execution("polylogue", "--plain", "audit", "--only", "exercises"),
+                ),
+                LaneEntry(
+                    name="frontier-local",
+                    description="Composite local frontier lane.",
+                    timeout_s=900,
+                    category="composite",
+                    execution=composite_execution("machine-contract"),
+                ),
+            ),
+            mutation_campaigns=(
+                MutationCampaignEntry(
+                    name="filters",
+                    description="Filter semantics.",
+                    paths_to_mutate=("polylogue/lib/filters.py",),
+                    tests=("tests/unit/core/test_filters.py",),
+                ),
+            ),
+            benchmark_campaigns=(
+                BenchmarkCampaignEntry(
+                    name="search-filters",
+                    description="Search latency domain.",
+                    execution=pytest_execution("tests/benchmarks/test_search_filters.py"),
+                    warn_pct=10.0,
+                    fail_pct=20.0,
+                ),
+            ),
+            synthetic_benchmark_campaigns=(
+                BenchmarkCampaignEntry(
+                    name="startup-health",
+                    description="Synthetic startup-health benchmark.",
+                ),
+            ),
+            inferred_corpus_scenarios=(
+                CorpusScenario(
+                    provider="chatgpt",
+                    package_version="v1",
+                    corpus_specs=(
+                        CorpusSpec.for_provider(
+                            "chatgpt",
+                            package_version="v1",
+                            count=3,
+                            messages_min=4,
+                            messages_max=16,
+                            origin="inferred.schema",
+                            tags=("inferred", "schema", "synthetic"),
+                        ),
+                    ),
+                    origin="compiled.inferred-corpus-scenario",
+                    tags=("inferred", "schema", "synthetic", "scenario"),
+                ),
             ),
         ),
         scenario_projections=(
@@ -152,13 +153,15 @@ def test_build_document_includes_live_registry_sections() -> None:
 
 def test_build_document_includes_runtime_coverage_section() -> None:
     registry = QualityRegistry(
-        contract_lanes=(),
-        live_lanes=(),
-        composite_lanes=(),
-        mutation_campaigns=(),
-        benchmark_campaigns=(),
-        synthetic_benchmark_campaigns=(),
-        inferred_corpus_scenarios=(),
+        catalog=AuthoredScenarioCatalog(
+            exercise_scenarios=(),
+            qa_extra_scenarios=(),
+            validation_lanes=(),
+            mutation_campaigns=(),
+            benchmark_campaigns=(),
+            synthetic_benchmark_campaigns=(),
+            inferred_corpus_scenarios=(),
+        ),
         scenario_projections=(),
     )
     coverage = RuntimeScenarioCoverage(
