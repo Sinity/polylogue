@@ -11,6 +11,7 @@ def test_runtime_operation_catalog_covers_the_current_runtime_paths() -> None:
     specs = build_runtime_operation_catalog().by_name()
 
     assert set(specs) == {
+        "acquire-raw-conversations",
         "plan-validation-backlog",
         "plan-parse-backlog",
         "ingest-archive-runtime",
@@ -42,6 +43,10 @@ def test_runtime_operation_catalog_covers_the_current_runtime_paths() -> None:
         "query-schema-catalog",
         "query-schema-explanations",
     }
+    assert specs["acquire-raw-conversations"].kind is OperationKind.MATERIALIZATION
+    assert specs["acquire-raw-conversations"].mutates_state is True
+    assert specs["acquire-raw-conversations"].produces == ("raw_validation_state", "artifact_observation_rows")
+    assert specs["acquire-raw-conversations"].path_targets == ("source-acquisition-loop",)
     assert specs["plan-validation-backlog"].kind is OperationKind.PLANNING
     assert specs["plan-validation-backlog"].path_targets == ("raw-reparse-loop", "raw-archive-ingest-loop")
     assert specs["ingest-archive-runtime"].kind is OperationKind.MATERIALIZATION

@@ -179,6 +179,15 @@ def _infer_polylogue_run_metadata(argv: tuple[str, ...]) -> ScenarioMetadata:
         return _metadata_for_operations("render-conversations")
     if stage == "site":
         return _metadata_for_operations("publish-site")
+    if stage == "acquire":
+        return _metadata_for_operations("acquire-raw-conversations")
+    if stage == "parse":
+        return _metadata_for_operations(
+            "acquire-raw-conversations",
+            "plan-validation-backlog",
+            "plan-parse-backlog",
+            "ingest-archive-runtime",
+        )
     if stage == "embed":
         return _infer_polylogue_embed_metadata(argv[run_index + 2 :])
     return ScenarioMetadata()
@@ -212,6 +221,7 @@ def _infer_devtools_metadata(execution: ExecutionSpec) -> ScenarioMetadata:
         stage = _find_flag_value(execution.argv, "--stage") or "all"
         if stage == "parse":
             return _metadata_for_operations(
+                "acquire-raw-conversations",
                 "plan-validation-backlog",
                 "plan-parse-backlog",
                 "ingest-archive-runtime",
