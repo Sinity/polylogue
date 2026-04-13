@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from devtools.execution_specs import ExecutionSpec
 from polylogue.scenarios import ScenarioMetadata
 
 from .benchmark_scenario_catalog import BENCHMARK_CAMPAIGNS
@@ -14,7 +15,7 @@ from .synthetic_benchmark_catalog import SYNTHETIC_BENCHMARK_SCENARIOS
 class BenchmarkCampaignEntry(ScenarioMetadata):
     name: str
     description: str
-    tests: tuple[str, ...]
+    execution: ExecutionSpec | None = None
     notes: tuple[str, ...] = ()
     warn_pct: float = 0.0
     fail_pct: float = 0.0
@@ -23,13 +24,19 @@ class BenchmarkCampaignEntry(ScenarioMetadata):
     summary_label: str = ""
     scale_targets: tuple[str, ...] = ()
 
+    @property
+    def tests(self) -> tuple[str, ...]:
+        if self.execution is None:
+            return ()
+        return self.execution.pytest_targets
+
 
 def build_benchmark_entries() -> tuple[BenchmarkCampaignEntry, ...]:
     entries = [
         BenchmarkCampaignEntry(
             name=campaign.name,
             description=campaign.description,
-            tests=tuple(campaign.tests),
+            execution=campaign.execution,
             notes=tuple(campaign.notes),
             warn_pct=campaign.warn_pct,
             fail_pct=campaign.fail_pct,
@@ -49,7 +56,6 @@ def build_synthetic_benchmark_entries() -> tuple[BenchmarkCampaignEntry, ...]:
         BenchmarkCampaignEntry(
             name=scenario.scenario_id,
             description=scenario.description,
-            tests=(),
             notes=(),
             runner_name=scenario.runner_name,
             summary_metric=scenario.summary_metric,
