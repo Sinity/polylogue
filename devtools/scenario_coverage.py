@@ -5,8 +5,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from devtools.quality_registry import QualityRegistry, build_quality_registry
+from devtools.scenario_projection_catalog import build_scenario_projection_entries
 from polylogue.artifact_graph import build_artifact_graph
+from polylogue.scenarios import ScenarioProjectionEntry
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,14 +71,16 @@ class RuntimeScenarioCoverage:
         }
 
 
-def build_runtime_scenario_coverage(*, registry: QualityRegistry | None = None) -> RuntimeScenarioCoverage:
-    quality_registry = registry or build_quality_registry()
-
+def build_runtime_scenario_coverage(
+    *,
+    projections: tuple[ScenarioProjectionEntry, ...] | None = None,
+) -> RuntimeScenarioCoverage:
+    scenario_projections = projections or build_scenario_projection_entries()
     graph = build_artifact_graph()
     artifact_refs: dict[str, list[ScenarioCoverageRef]] = {name: [] for name in graph.by_name()}
     operation_refs: dict[str, list[ScenarioCoverageRef]] = {operation.name: [] for operation in graph.operations}
 
-    for projection in quality_registry.scenario_projections:
+    for projection in scenario_projections:
         ref = ScenarioCoverageRef(source=projection.source_kind.value, name=projection.name, origin=projection.origin)
         for artifact in projection.resolve_runtime_artifacts():
             artifact_refs[artifact.name].append(ref)

@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from devtools.benchmark_campaign import CAMPAIGNS as BENCHMARK_CAMPAIGNS
 from devtools.benchmark_campaigns import SYNTHETIC_BENCHMARK_SCENARIOS
 from devtools.mutmut_campaign import CAMPAIGNS as MUTATION_CAMPAIGNS
+from devtools.scenario_projection_catalog import build_scenario_projection_entries
 from devtools.validation_lane_base import LaneConfig
 from devtools.validation_lane_catalog_composites import COMPOSITE_LANES
 from devtools.validation_lane_catalog_contracts import CONTRACT_LANES
@@ -16,7 +17,6 @@ from polylogue.scenarios import (
     ScenarioProjectionEntry,
     ScenarioProjectionSourceKind,
 )
-from polylogue.showcase.exercises import EXERCISES
 
 
 @dataclass(frozen=True)
@@ -124,37 +124,6 @@ def _synthetic_benchmark_entries() -> tuple[BenchmarkCampaignEntry, ...]:
     return tuple(sorted(entries, key=lambda item: item.name))
 
 
-def _scenario_projection_entries() -> tuple[ScenarioProjectionEntry, ...]:
-    entries = [
-        ScenarioProjectionEntry.from_object(
-            source_kind=ScenarioProjectionSourceKind.EXERCISE,
-            name=exercise.name,
-            description=exercise.description,
-            obj=exercise,
-        )
-        for exercise in EXERCISES
-    ]
-    entries.extend(
-        ScenarioProjectionEntry.from_object(
-            source_kind=ScenarioProjectionSourceKind.BENCHMARK_CAMPAIGN,
-            name=campaign.name,
-            description=campaign.description,
-            obj=campaign,
-        )
-        for campaign in BENCHMARK_CAMPAIGNS.values()
-    )
-    entries.extend(
-        ScenarioProjectionEntry.from_object(
-            source_kind=ScenarioProjectionSourceKind.SYNTHETIC_BENCHMARK,
-            name=scenario.scenario_id,
-            description=scenario.description,
-            obj=scenario,
-        )
-        for scenario in SYNTHETIC_BENCHMARK_SCENARIOS
-    )
-    return tuple(sorted(entries, key=lambda item: (item.source_kind.value, item.name)))
-
-
 def build_quality_registry() -> QualityRegistry:
     return QualityRegistry(
         contract_lanes=_lane_entries("contract", CONTRACT_LANES),
@@ -163,7 +132,7 @@ def build_quality_registry() -> QualityRegistry:
         mutation_campaigns=_mutation_entries(),
         benchmark_campaigns=_benchmark_entries(),
         synthetic_benchmark_campaigns=_synthetic_benchmark_entries(),
-        scenario_projections=_scenario_projection_entries(),
+        scenario_projections=build_scenario_projection_entries(),
     )
 
 

@@ -7,7 +7,7 @@ import json
 import sys
 from collections.abc import Iterable
 
-from devtools.quality_registry import build_quality_registry
+from devtools.scenario_projection_catalog import build_scenario_projection_entries
 from polylogue.scenarios import ScenarioProjectionEntry
 
 
@@ -46,7 +46,7 @@ def render_scenario_projections(
     tag: str | None = None,
 ) -> str:
     projections = _select_projections(
-        build_quality_registry().scenario_projections,
+        build_scenario_projection_entries(),
         source_kinds=source_kinds,
         path_target=path_target,
         artifact_target=artifact_target,
