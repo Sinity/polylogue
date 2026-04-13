@@ -191,6 +191,17 @@ _JSON_CONTRACT_SPECS: tuple[dict[str, Any], ...] = (
         "tags": ["maintenance", "action-events"],
     },
     {
+        "scenario_id": "json-doctor-session-products-preview",
+        "path": ("doctor",),
+        "args": ["doctor", "--json", "--repair", "--preview", "--target", "session_products"],
+        "needs_data": False,
+        "tier": 0,
+        "env": "any",
+        "artifact_targets": ["session_product_rows", "session_product_fts", "session_product_health"],
+        "operation_targets": ["project-session-product-health"],
+        "tags": ["maintenance", "session-products"],
+    },
+    {
         "scenario_id": "json-tags",
         "path": ("tags",),
         "args": ["tags", "--json"],

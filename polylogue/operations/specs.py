@@ -91,6 +91,33 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         surfaces=("doctor", "archive_debt", "repair"),
         previewable=True,
     ),
+    OperationSpec(
+        name="materialize-session-products",
+        kind=OperationKind.MATERIALIZATION,
+        description="Build durable session-product rows and their trigger-maintained FTS projections from archive conversations.",
+        consumes=("session_product_source_conversations",),
+        produces=("session_product_rows", "session_product_fts"),
+        code_refs=(
+            "polylogue.storage.session_product_rebuild.rebuild_session_products_sync",
+            "polylogue.storage.session_product_refresh.refresh_session_products_for_conversation_async",
+        ),
+        surfaces=("products", "doctor", "repair", "run.materialize"),
+        mutates_state=True,
+    ),
+    OperationSpec(
+        name="project-session-product-health",
+        kind=OperationKind.PROJECTION,
+        description="Project readiness, debt, and stale-surface semantics from durable session-product rows and FTS state.",
+        consumes=("session_product_rows", "session_product_fts"),
+        produces=("session_product_health",),
+        code_refs=(
+            "polylogue.storage.session_product_status",
+            "polylogue.storage.repair",
+            "polylogue.cli.commands.products",
+        ),
+        surfaces=("products", "doctor", "archive_debt", "repair"),
+        previewable=True,
+    ),
 )
 
 

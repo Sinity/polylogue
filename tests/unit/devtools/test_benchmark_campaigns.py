@@ -20,6 +20,10 @@ def test_synthetic_benchmark_registry_is_compiled_from_authored_scenarios() -> N
         SYNTHETIC_BENCHMARK_REGISTRY["action-event-materialization"].description
         == "Benchmark action-event read-model rebuild over synthetic tool-use transcripts"
     )
+    assert (
+        SYNTHETIC_BENCHMARK_REGISTRY["session-product-materialization"].description
+        == "Benchmark durable session-product rebuild over synthetic archive conversations"
+    )
 
 
 @pytest.mark.asyncio
@@ -91,4 +95,72 @@ def test_action_event_materialization_campaign_reports_action_row_counts(monkeyp
         "action_events_after": 7,
         "action_fts_rows_after": 7,
         "db_size_bytes": 256,
+    }
+
+
+def test_session_product_materialization_campaign_reports_rebuild_counts(monkeypatch, tmp_path: Path) -> None:
+    from devtools.benchmark_campaigns import run_session_product_materialization_campaign
+
+    before = {
+        "session_profiles_count": 1,
+        "session_profiles_fts_count": 1,
+    }
+    after = {
+        "session_profiles_count": 5,
+        "session_profiles_fts_count": 5,
+        "session_work_events_count": 8,
+        "session_work_events_fts_count": 8,
+        "session_phases_count": 3,
+        "work_threads_count": 2,
+        "work_threads_fts_count": 2,
+        "session_tag_rollups_count": 4,
+        "day_session_summaries_count": 2,
+        "week_session_summaries_count": 1,
+    }
+    table_counts = iter((before, after))
+    committed: list[str] = []
+
+    class FakeConn:
+        def commit(self) -> None:
+            committed.append("commit")
+
+    class FakeContext:
+        def __enter__(self) -> FakeConn:
+            return FakeConn()
+
+        def __exit__(self, exc_type, exc, tb) -> bool:
+            return False
+
+    monkeypatch.setattr("devtools.benchmark_campaigns._session_product_table_counts", lambda _db_path: next(table_counts))
+    monkeypatch.setattr("polylogue.storage.backends.connection.open_connection", lambda _db_path: FakeContext())
+    monkeypatch.setattr(
+        "polylogue.storage.session_product_rebuild.rebuild_session_products_sync",
+        lambda conn: {
+            "profiles": 5,
+            "work_events": 8,
+            "phases": 3,
+            "threads": 2,
+            "tag_rollups": 4,
+            "day_summaries": 2,
+        },
+    )
+
+    result = run_session_product_materialization_campaign(tmp_path / "benchmark.db")
+
+    assert committed == ["commit"]
+    assert result.campaign_name == "session-product-materialization"
+    assert result.metrics["profiles_rebuilt"] == 5
+    assert result.metrics["threads_rebuilt"] == 2
+    assert result.db_stats == {
+        "session_profiles_before": 1,
+        "session_profiles_after": 5,
+        "session_profiles_fts_after": 5,
+        "session_work_events_after": 8,
+        "session_work_events_fts_after": 8,
+        "session_phases_after": 3,
+        "work_threads_after": 2,
+        "work_threads_fts_after": 2,
+        "session_tag_rollups_after": 4,
+        "day_session_summaries_after": 2,
+        "week_session_summaries_after": 1,
     }

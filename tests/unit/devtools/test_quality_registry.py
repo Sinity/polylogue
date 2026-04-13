@@ -16,6 +16,7 @@ def test_build_quality_registry_exposes_live_catalogs() -> None:
     assert any(entry.name == "filters" for entry in registry.mutation_campaigns)
     assert any(entry.name == "search-filters" for entry in registry.benchmark_campaigns)
     assert any(entry.name == "action-event-materialization" for entry in registry.synthetic_benchmark_campaigns)
+    assert any(entry.name == "session-product-materialization" for entry in registry.synthetic_benchmark_campaigns)
     assert any(entry.name == "startup-health" for entry in registry.synthetic_benchmark_campaigns)
     search_filters = next(entry for entry in registry.benchmark_campaigns if entry.name == "search-filters")
     assert search_filters.origin == "authored.benchmark-domain"
@@ -34,6 +35,17 @@ def test_build_quality_registry_exposes_live_catalogs() -> None:
     assert action_events.artifact_targets == ("tool_use_source_blocks", "action_event_rows", "action_event_fts")
     assert action_events.operation_targets == ("materialize-action-events",)
     assert action_events.tags == ("benchmark", "synthetic", "action-events")
+    session_products = next(
+        entry for entry in registry.synthetic_benchmark_campaigns if entry.name == "session-product-materialization"
+    )
+    assert session_products.origin == "authored.synthetic-benchmark"
+    assert session_products.artifact_targets == (
+        "session_product_source_conversations",
+        "session_product_rows",
+        "session_product_fts",
+    )
+    assert session_products.operation_targets == ("materialize-session-products",)
+    assert session_products.tags == ("benchmark", "synthetic", "session-products")
 
 
 def test_quality_registry_references_existing_files() -> None:
