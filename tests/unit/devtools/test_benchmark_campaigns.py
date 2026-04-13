@@ -6,6 +6,7 @@ import pytest
 
 from devtools.benchmark_campaigns import (
     SYNTHETIC_CAMPAIGNS,
+    _resolve_synthetic_benchmark_runner,
     run_full_campaign,
     run_synthetic_benchmark_campaign,
 )
@@ -32,6 +33,11 @@ def test_synthetic_benchmark_registry_is_compiled_from_authored_scenarios() -> N
         SYNTHETIC_BENCHMARK_REGISTRY["session-product-materialization"].description
         == "Benchmark durable session-product rebuild over synthetic archive conversations"
     )
+
+
+def test_all_authored_synthetic_benchmark_runners_resolve() -> None:
+    for campaign in SYNTHETIC_CAMPAIGNS.values():
+        assert callable(_resolve_synthetic_benchmark_runner(campaign))
 
 
 @pytest.mark.asyncio
