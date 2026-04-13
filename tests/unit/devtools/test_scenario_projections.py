@@ -14,6 +14,7 @@ def test_render_scenario_projections_text_lists_authored_sources() -> None:
     assert "exercise:json-doctor-action-event-preview" in rendered
     assert "exercise:gen-schema-list" in rendered
     assert "validation-lane:machine-contract" in rendered
+    assert "mutation-campaign:filters" in rendered
     assert "benchmark-campaign:search-filters" in rendered
     assert "synthetic-benchmark:action-event-materialization" in rendered
 
@@ -26,6 +27,7 @@ def test_render_scenario_projections_json_is_machine_readable() -> None:
         for entry in payload
     )
     assert any(entry["source_kind"] == "validation-lane" and entry["name"] == "machine-contract" for entry in payload)
+    assert any(entry["source_kind"] == "mutation-campaign" and entry["name"] == "filters" for entry in payload)
     assert any(entry["source_kind"] == "exercise" and entry["name"] == "gen-fmt-json-latest" for entry in payload)
     assert any(
         entry["source_kind"] == "synthetic-benchmark" and entry["name"] == "session-product-materialization"
