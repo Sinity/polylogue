@@ -4,11 +4,14 @@ import json
 from pathlib import Path
 
 from devtools.benchmark_campaign import (
+    BENCHMARK_SCENARIOS,
+    BenchmarkScenario,
     BenchmarkStat,
     CampaignResult,
     Regression,
     _compare_results,
     compare_artifacts,
+    compile_benchmark_scenarios,
     render_index,
 )
 
@@ -129,3 +132,30 @@ def test_render_index_lists_saved_artifacts(tmp_path: Path, monkeypatch) -> None
     assert "# Benchmark Campaign Artifacts" in rendered
     assert "`search-filters`" in rendered
     assert "[2026-04-11-search-filters.md](./2026-04-11-search-filters.md)" in rendered
+
+
+def test_benchmark_scenario_compiles_to_campaign() -> None:
+    scenario = BenchmarkScenario(
+        scenario_id="action-events",
+        description="action-event repair benchmark",
+        tests=("tests/benchmarks/test_action_events.py",),
+        notes=("Tracks action-event repair throughput.",),
+        origin="generated.action-events",
+        artifact_targets=("action_event_rows", "action_event_fts"),
+        operation_targets=("benchmark.repair.action-events",),
+        tags=("benchmark", "action-events"),
+    )
+
+    campaign = scenario.compile()
+
+    assert campaign.name == "action-events"
+    assert campaign.description == "action-event repair benchmark"
+    assert campaign.tests == ("tests/benchmarks/test_action_events.py",)
+    assert campaign.notes == ("Tracks action-event repair throughput.",)
+
+
+def test_compile_benchmark_scenarios_indexes_by_id() -> None:
+    campaigns = compile_benchmark_scenarios(BENCHMARK_SCENARIOS)
+
+    assert set(campaigns) == {"search-filters", "storage", "pipeline"}
+    assert campaigns["search-filters"].tests == ("tests/benchmarks/test_search_filters.py",)
