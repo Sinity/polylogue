@@ -60,17 +60,18 @@ class ShowcaseRunner:
 
         exercises_dir = self.output_dir / "exercises"
         exercises_dir.mkdir(exist_ok=True)
+        selected_exercises = self._select_exercises()
 
         if not self.live:
             if self._workspace_env:
                 self._env_vars = dict(self._workspace_env)
             else:
                 self._workspace_dir = self.output_dir / "workspace"
-                self._seed_workspace(self._workspace_dir)
+                self._seed_workspace(self._workspace_dir, exercises=selected_exercises)
                 result.workspace_dir = self._workspace_dir
 
         completed: set[str] = set()
-        for exercise in self._select_exercises():
+        for exercise in selected_exercises:
             if exercise.depends_on and exercise.depends_on not in completed:
                 result.results.append(
                     ExerciseResult(
@@ -106,10 +107,11 @@ class ShowcaseRunner:
             extra_exercises=self.extra_exercises,
         )
 
-    def _seed_workspace(self, workspace_dir: Path) -> None:
+    def _seed_workspace(self, workspace_dir: Path, *, exercises: list[Exercise]) -> None:
         self._env_vars = seed_workspace_with(
             workspace_dir,
             synthetic_count=self.synthetic_count,
+            exercises=tuple(exercises),
             generate_fixtures=lambda fixture_dir: self._generate_synthetic_fixtures(
                 fixture_dir,
                 count=self.synthetic_count,
