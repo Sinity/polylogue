@@ -5,7 +5,6 @@ from pathlib import Path
 import pytest
 
 from devtools.benchmark_campaigns import (
-    CAMPAIGN_REGISTRY,
     SYNTHETIC_CAMPAIGNS,
     run_full_campaign,
     run_synthetic_benchmark_campaign,
@@ -17,8 +16,8 @@ from devtools.synthetic_benchmark_catalog import (
 
 
 def test_synthetic_benchmark_registry_is_compiled_from_authored_scenarios() -> None:
-    assert set(CAMPAIGN_REGISTRY) == {scenario.name for scenario in SYNTHETIC_BENCHMARK_SCENARIOS}
-    assert set(SYNTHETIC_BENCHMARK_REGISTRY) == set(CAMPAIGN_REGISTRY)
+    assert set(SYNTHETIC_CAMPAIGNS) == {scenario.name for scenario in SYNTHETIC_BENCHMARK_SCENARIOS}
+    assert set(SYNTHETIC_BENCHMARK_REGISTRY) == set(SYNTHETIC_CAMPAIGNS)
     assert SYNTHETIC_CAMPAIGNS["incremental-index"].runner_name == "incremental-index"
     assert SYNTHETIC_CAMPAIGNS["incremental-index"].scale_targets == ("small", "medium", "large", "stretch")
     assert SYNTHETIC_BENCHMARK_REGISTRY["fts-rebuild"].description == "Benchmark full FTS5 index rebuild"
