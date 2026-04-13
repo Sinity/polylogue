@@ -7,11 +7,13 @@ from devtools.quality_registry import (
     BenchmarkCampaignEntry,
     MutationCampaignEntry,
     QualityRegistry,
-    ScenarioProjectionEntry,
-    ScenarioProjectionSourceKind,
     ValidationLaneEntry,
 )
 from devtools.scenario_coverage import RuntimePathCoverage, RuntimeScenarioCoverage, ScenarioCoverageRef
+from polylogue.scenarios import (
+    ScenarioProjectionEntry,
+    ScenarioProjectionSourceKind,
+)
 
 
 def test_build_document_includes_live_registry_sections() -> None:
