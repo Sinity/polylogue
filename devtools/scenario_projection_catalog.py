@@ -6,7 +6,7 @@ from polylogue.scenarios import (
     ScenarioProjectionEntry,
     ScenarioProjectionSourceKind,
 )
-from polylogue.showcase.exercises import EXERCISES
+from polylogue.showcase.exercises import EXERCISE_SCENARIOS
 
 from .benchmark_scenario_catalog import BENCHMARK_CAMPAIGNS
 from .synthetic_benchmark_catalog import SYNTHETIC_BENCHMARK_SCENARIOS
@@ -16,11 +16,11 @@ def build_scenario_projection_entries() -> tuple[ScenarioProjectionEntry, ...]:
     entries = [
         ScenarioProjectionEntry.from_object(
             source_kind=ScenarioProjectionSourceKind.EXERCISE,
-            name=exercise.name,
-            description=exercise.description,
-            obj=exercise,
+            name=scenario.scenario_id,
+            description=scenario.description,
+            obj=scenario,
         )
-        for exercise in EXERCISES
+        for scenario in EXERCISE_SCENARIOS
     ]
     entries.extend(
         ScenarioProjectionEntry.from_object(

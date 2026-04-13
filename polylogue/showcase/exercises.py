@@ -2,27 +2,27 @@
 
 from __future__ import annotations
 
-from polylogue.showcase.catalog_loader import load_exercise_catalog
+from polylogue.showcase.catalog_loader import load_exercise_scenario_catalog
 from polylogue.showcase.exercise_models import Exercise, Validation
 from polylogue.showcase.generators import (
-    command_help_exercise_names,
-    generate_command_help_exercises,
-    generate_json_contract_exercises,
-    json_contract_exercise_names,
+    generate_command_help_scenarios,
+    generate_json_contract_scenarios,
 )
+from polylogue.showcase.scenario_models import ExerciseScenario, compile_exercise_scenarios
 
-_CATALOG = load_exercise_catalog()
-_GENERATED_COMMAND_HELP_EXERCISES = tuple(generate_command_help_exercises())
-_GENERATED_COMMAND_HELP_NAMES = command_help_exercise_names()
-_GENERATED_JSON_CONTRACT_EXERCISES = tuple(generate_json_contract_exercises())
-_GENERATED_JSON_CONTRACT_NAMES = json_contract_exercise_names()
+_CATALOG = load_exercise_scenario_catalog()
+_GENERATED_COMMAND_HELP_SCENARIOS = generate_command_help_scenarios()
+_GENERATED_COMMAND_HELP_NAMES = {scenario.scenario_id for scenario in _GENERATED_COMMAND_HELP_SCENARIOS}
+_GENERATED_JSON_CONTRACT_SCENARIOS = generate_json_contract_scenarios()
+_GENERATED_JSON_CONTRACT_NAMES = {scenario.scenario_id for scenario in _GENERATED_JSON_CONTRACT_SCENARIOS}
 _GENERATED_EXERCISE_NAMES = _GENERATED_COMMAND_HELP_NAMES | _GENERATED_JSON_CONTRACT_NAMES
-_GENERATED_EXERCISES = _GENERATED_COMMAND_HELP_EXERCISES + _GENERATED_JSON_CONTRACT_EXERCISES
+_GENERATED_EXERCISE_SCENARIOS = _GENERATED_COMMAND_HELP_SCENARIOS + _GENERATED_JSON_CONTRACT_SCENARIOS
 
-EXERCISES: tuple[Exercise, ...] = (
-    tuple(exercise for exercise in _CATALOG.exercises if exercise.name not in _GENERATED_EXERCISE_NAMES)
-    + _GENERATED_EXERCISES
+EXERCISE_SCENARIOS: tuple[ExerciseScenario, ...] = (
+    tuple(scenario for scenario in _CATALOG.scenarios if scenario.scenario_id not in _GENERATED_EXERCISE_NAMES)
+    + _GENERATED_EXERCISE_SCENARIOS
 )
+EXERCISES: tuple[Exercise, ...] = compile_exercise_scenarios(EXERCISE_SCENARIOS)
 
 EXERCISE_INDEX: dict[str, Exercise] = {e.name: e for e in EXERCISES}
 
@@ -66,6 +66,7 @@ def topological_order(exercises: list[Exercise]) -> list[Exercise]:
 
 __all__ = [
     "EXERCISES",
+    "EXERCISE_SCENARIOS",
     "EXERCISE_INDEX",
     "GROUPS",
     "Exercise",
