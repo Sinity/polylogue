@@ -4,6 +4,7 @@ from pathlib import Path
 
 from devtools import render_quality_reference
 from devtools.benchmark_catalog import BenchmarkCampaignEntry
+from devtools.execution_specs import command_execution, composite_execution, pytest_execution
 from devtools.mutation_catalog import MutationCampaignEntry
 from devtools.quality_registry import QualityRegistry
 from devtools.scenario_coverage import RuntimePathCoverage, RuntimeScenarioCoverage, ScenarioCoverageRef
@@ -23,6 +24,7 @@ def test_build_document_includes_live_registry_sections() -> None:
                 description="Machine-readable CLI surface.",
                 timeout_s=120,
                 category="contract",
+                execution=pytest_execution("pytest", "-m", "machine_contract"),
             ),
         ),
         live_lanes=(
@@ -31,6 +33,7 @@ def test_build_document_includes_live_registry_sections() -> None:
                 description="Read-only live archive exercises.",
                 timeout_s=300,
                 category="live",
+                execution=command_execution("polylogue", "--plain", "audit", "--only", "exercises"),
             ),
         ),
         composite_lanes=(
@@ -39,7 +42,7 @@ def test_build_document_includes_live_registry_sections() -> None:
                 description="Composite local frontier lane.",
                 timeout_s=900,
                 category="composite",
-                sub_lanes=("machine-contract",),
+                execution=composite_execution("machine-contract"),
             ),
         ),
         mutation_campaigns=(
@@ -54,7 +57,7 @@ def test_build_document_includes_live_registry_sections() -> None:
             BenchmarkCampaignEntry(
                 name="search-filters",
                 description="Search latency domain.",
-                tests=("tests/benchmarks/test_search_filters.py",),
+                execution=pytest_execution("tests/benchmarks/test_search_filters.py"),
                 warn_pct=10.0,
                 fail_pct=20.0,
             ),
@@ -63,7 +66,6 @@ def test_build_document_includes_live_registry_sections() -> None:
             BenchmarkCampaignEntry(
                 name="startup-health",
                 description="Synthetic startup-health benchmark.",
-                tests=(),
             ),
         ),
         scenario_projections=(
