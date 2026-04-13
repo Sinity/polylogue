@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Any
 
 
@@ -17,6 +18,20 @@ def _coerce_string_tuple(value: object) -> tuple[str, ...]:
     if isinstance(value, (list, tuple)) and all(isinstance(item, str) for item in value):
         return tuple(value)
     return ()
+
+
+@lru_cache(maxsize=1)
+def runtime_artifact_target_names() -> tuple[str, ...]:
+    from polylogue.artifacts import build_runtime_artifact_nodes
+
+    return tuple(node.name for node in build_runtime_artifact_nodes())
+
+
+@lru_cache(maxsize=1)
+def runtime_operation_target_names() -> tuple[str, ...]:
+    from polylogue.operations import build_runtime_operation_specs
+
+    return tuple(operation.name for operation in build_runtime_operation_specs())
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -56,5 +71,17 @@ class ScenarioMetadata:
             payload["tags"] = list(self.tags)
         return payload
 
+    def runtime_artifact_targets(self) -> tuple[str, ...]:
+        known = set(runtime_artifact_target_names())
+        return tuple(target for target in self.artifact_targets if target in known)
 
-__all__ = ["ScenarioMetadata"]
+    def runtime_operation_targets(self) -> tuple[str, ...]:
+        known = set(runtime_operation_target_names())
+        return tuple(target for target in self.operation_targets if target in known)
+
+
+__all__ = [
+    "ScenarioMetadata",
+    "runtime_artifact_target_names",
+    "runtime_operation_target_names",
+]

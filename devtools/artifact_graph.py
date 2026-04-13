@@ -29,22 +29,14 @@ def _runtime_scenario_coverage() -> dict[str, dict[str, list[dict[str, str]]]]:
     )
 
     graph = build_artifact_graph()
-    known_artifacts = set(graph.by_name())
-    known_operations = {operation.name for operation in graph.operations}
-    artifact_refs: dict[str, list[dict[str, str]]] = {name: [] for name in known_artifacts}
-    operation_refs: dict[str, list[dict[str, str]]] = {name: [] for name in known_operations}
+    artifact_refs: dict[str, list[dict[str, str]]] = {name: [] for name in graph.by_name()}
+    operation_refs: dict[str, list[dict[str, str]]] = {operation.name: [] for operation in graph.operations}
 
     for source_kind, name, metadata in scenario_like_items:
-        for artifact_name in metadata.artifact_targets:
-            if artifact_name in artifact_refs:
-                artifact_refs[artifact_name].append(
-                    {"source": source_kind, "name": name, "origin": metadata.origin}
-                )
-        for operation_name in metadata.operation_targets:
-            if operation_name in operation_refs:
-                operation_refs[operation_name].append(
-                    {"source": source_kind, "name": name, "origin": metadata.origin}
-                )
+        for artifact_name in metadata.runtime_artifact_targets():
+            artifact_refs[artifact_name].append({"source": source_kind, "name": name, "origin": metadata.origin})
+        for operation_name in metadata.runtime_operation_targets():
+            operation_refs[operation_name].append({"source": source_kind, "name": name, "origin": metadata.origin})
 
     return {
         "artifacts": {name: refs for name, refs in artifact_refs.items() if refs},
