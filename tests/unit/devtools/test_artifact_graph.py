@@ -13,12 +13,17 @@ def test_render_artifact_graph_text_mentions_both_vertical_paths() -> None:
     assert "Runtime Scenario Coverage:" in rendered
     assert "raw-reparse-loop" in rendered
     assert "action-event-repair-loop" in rendered
+    assert "session-product-repair-loop" in rendered
     assert "action_event_fts [index] <- action_event_rows" in rendered
+    assert "session_product_fts [index] <- session_product_rows" in rendered
     assert "plan-validation-backlog [planning]" in rendered
     assert "project-action-event-health" in rendered
+    assert "project-session-product-health" in rendered
     assert "json-doctor-action-event-preview" in rendered
+    assert "json-doctor-session-products-preview" in rendered
     assert "run-preview-reparse" in rendered
     assert "synthetic-benchmark:action-event-materialization" in rendered
+    assert "synthetic-benchmark:session-product-materialization" in rendered
     assert "uncovered artifacts:" not in rendered
     assert "uncovered operations:" not in rendered
 
@@ -29,6 +34,7 @@ def test_render_artifact_graph_json_is_machine_readable() -> None:
     assert {path["name"] for path in payload["paths"]} == {
         "raw-reparse-loop",
         "action-event-repair-loop",
+        "session-product-repair-loop",
     }
     assert any(node["name"] == "raw_validation_state" for node in payload["nodes"])
     assert any(operation["name"] == "plan-parse-backlog" for operation in payload["operations"])
@@ -49,6 +55,25 @@ def test_render_artifact_graph_json_is_machine_readable() -> None:
         {
             "source": "exercise",
             "name": "json-doctor-action-event-preview",
+            "origin": "generated.json-contract",
+        }
+    ]
+    assert payload["scenario_coverage"]["artifacts"]["session_product_rows"] == [
+        {
+            "source": "exercise",
+            "name": "json-doctor-session-products-preview",
+            "origin": "generated.json-contract",
+        },
+        {
+            "source": "synthetic-benchmark",
+            "name": "session-product-materialization",
+            "origin": "authored.synthetic-benchmark",
+        }
+    ]
+    assert payload["scenario_coverage"]["operations"]["project-session-product-health"] == [
+        {
+            "source": "exercise",
+            "name": "json-doctor-session-products-preview",
             "origin": "generated.json-contract",
         }
     ]
@@ -77,6 +102,20 @@ def test_render_artifact_graph_json_is_machine_readable() -> None:
         {
             "source": "synthetic-benchmark",
             "name": "action-event-materialization",
+            "origin": "authored.synthetic-benchmark",
+        }
+    ]
+    assert payload["scenario_coverage"]["artifacts"]["session_product_source_conversations"] == [
+        {
+            "source": "synthetic-benchmark",
+            "name": "session-product-materialization",
+            "origin": "authored.synthetic-benchmark",
+        }
+    ]
+    assert payload["scenario_coverage"]["operations"]["materialize-session-products"] == [
+        {
+            "source": "synthetic-benchmark",
+            "name": "session-product-materialization",
             "origin": "authored.synthetic-benchmark",
         }
     ]

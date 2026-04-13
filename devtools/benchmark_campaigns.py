@@ -90,6 +90,16 @@ SYNTHETIC_BENCHMARK_SCENARIOS: tuple[SyntheticBenchmarkScenario, ...] = (
         operation_targets=("materialize-action-events",),
         tags=("benchmark", "synthetic", "action-events"),
     ),
+    SyntheticBenchmarkScenario(
+        scenario_id="session-product-materialization",
+        description="Benchmark durable session-product rebuild over synthetic archive conversations",
+        summary_metric="rebuild_wall_s",
+        summary_label="s",
+        origin="authored.synthetic-benchmark",
+        artifact_targets=("session_product_source_conversations", "session_product_rows", "session_product_fts"),
+        operation_targets=("materialize-session-products",),
+        tags=("benchmark", "synthetic", "session-products"),
+    ),
 )
 
 SYNTHETIC_BENCHMARK_REGISTRY: dict[str, SyntheticBenchmarkScenario] = {
@@ -138,6 +148,34 @@ async def _ameasure(coro) -> tuple[float, object]:
     t0 = time.monotonic()
     result = await coro
     return time.monotonic() - t0, result
+
+
+def _session_product_table_counts(db_path: Path) -> dict[str, int]:
+    """Collect row counts for durable session-product tables and FTS projections."""
+    from polylogue.storage.backends.connection import open_connection
+
+    stats: dict[str, int] = {}
+    if not db_path.exists():
+        return stats
+    with open_connection(db_path) as conn:
+        for table in (
+            "session_profiles",
+            "session_profiles_fts",
+            "session_work_events",
+            "session_work_events_fts",
+            "session_phases",
+            "work_threads",
+            "work_threads_fts",
+            "session_tag_rollups",
+            "day_session_summaries",
+            "week_session_summaries",
+        ):
+            try:
+                row = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()
+                stats[f"{table}_count"] = row[0] if row else 0
+            except Exception:
+                stats[f"{table}_count"] = 0
+    return stats
 
 
 def run_fts_rebuild_campaign(db_path: Path) -> CampaignResult:
@@ -385,6 +423,51 @@ def run_action_event_materialization_campaign(db_path: Path) -> CampaignResult:
     )
 
 
+def run_session_product_materialization_campaign(db_path: Path) -> CampaignResult:
+    """Benchmark full durable session-product rebuild.
+
+    Clears the durable session-product family, then rebuilds rows and FTS-backed
+    projections from persisted archive conversations.
+    """
+    from polylogue.storage.backends.connection import open_connection
+    from polylogue.storage.session_product_rebuild import rebuild_session_products_sync
+
+    stats_before = _session_product_table_counts(db_path)
+
+    with open_connection(db_path) as conn:
+        elapsed, rebuilt = _measure(rebuild_session_products_sync, conn)
+        conn.commit()
+
+    stats_after = _session_product_table_counts(db_path)
+
+    return CampaignResult(
+        campaign_name="session-product-materialization",
+        scale_level="",
+        metrics={
+            "rebuild_wall_s": round(elapsed, 3),
+            "profiles_rebuilt": int(rebuilt["profiles"]),
+            "work_events_rebuilt": int(rebuilt["work_events"]),
+            "phases_rebuilt": int(rebuilt["phases"]),
+            "threads_rebuilt": int(rebuilt["threads"]),
+            "tag_rollups_rebuilt": int(rebuilt["tag_rollups"]),
+            "day_summaries_rebuilt": int(rebuilt["day_summaries"]),
+        },
+        db_stats={
+            "session_profiles_before": stats_before.get("session_profiles_count", 0),
+            "session_profiles_after": stats_after.get("session_profiles_count", 0),
+            "session_profiles_fts_after": stats_after.get("session_profiles_fts_count", 0),
+            "session_work_events_after": stats_after.get("session_work_events_count", 0),
+            "session_work_events_fts_after": stats_after.get("session_work_events_fts_count", 0),
+            "session_phases_after": stats_after.get("session_phases_count", 0),
+            "work_threads_after": stats_after.get("work_threads_count", 0),
+            "work_threads_fts_after": stats_after.get("work_threads_fts_count", 0),
+            "session_tag_rollups_after": stats_after.get("session_tag_rollups_count", 0),
+            "day_session_summaries_after": stats_after.get("day_session_summaries_count", 0),
+            "week_session_summaries_after": stats_after.get("week_session_summaries_count", 0),
+        },
+    )
+
+
 async def run_synthetic_benchmark_campaign(name: str, db_path: Path) -> CampaignResult:
     """Dispatch one synthetic benchmark campaign by authored scenario id."""
 
@@ -400,6 +483,8 @@ async def run_synthetic_benchmark_campaign(name: str, db_path: Path) -> Campaign
             result = await run_startup_health_campaign(db_path)
         case "action-event-materialization":
             result = run_action_event_materialization_campaign(db_path)
+        case "session-product-materialization":
+            result = run_session_product_materialization_campaign(db_path)
         case _:
             raise KeyError(name)
     result.origin = scenario.origin
@@ -471,6 +556,7 @@ __all__ = [
     "run_action_event_materialization_campaign",
     "run_full_campaign",
     "run_incremental_index_campaign",
+    "run_session_product_materialization_campaign",
     "run_synthetic_benchmark_campaign",
     "run_startup_health_campaign",
 ]

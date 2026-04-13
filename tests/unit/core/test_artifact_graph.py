@@ -19,16 +19,24 @@ def test_artifact_graph_contains_the_two_proven_vertical_paths() -> None:
         "action_event_rows",
         "action_event_fts",
         "action_event_health",
+        "session_product_source_conversations",
+        "session_product_rows",
+        "session_product_fts",
+        "session_product_health",
     }
     assert nodes["raw_validation_state"].layer is ArtifactLayer.DURABLE
     assert nodes["action_event_fts"].layer is ArtifactLayer.INDEX
     assert nodes["action_event_fts"].depends_on == ("action_event_rows",)
     assert nodes["action_event_health"].depends_on == ("action_event_rows", "action_event_fts")
+    assert nodes["session_product_fts"].layer is ArtifactLayer.INDEX
+    assert nodes["session_product_health"].depends_on == ("session_product_rows", "session_product_fts")
     assert nodes["parse_quarantine"].depends_on == ("raw_validation_state",)
     assert operations["plan-validation-backlog"].produces == ("validation_backlog",)
     assert operations["plan-parse-backlog"].produces == ("parse_backlog", "parse_quarantine")
     assert operations["materialize-action-events"].produces == ("action_event_rows", "action_event_fts")
     assert operations["project-action-event-health"].consumes == ("action_event_rows", "action_event_fts")
+    assert operations["materialize-session-products"].produces == ("session_product_rows", "session_product_fts")
+    assert operations["project-session-product-health"].consumes == ("session_product_rows", "session_product_fts")
     assert operations["plan-validation-backlog"].kind is OperationKind.PLANNING
 
 
@@ -47,6 +55,7 @@ def test_artifact_graph_paths_reference_only_declared_nodes() -> None:
     assert {path.name for path in graph.paths} == {
         "raw-reparse-loop",
         "action-event-repair-loop",
+        "session-product-repair-loop",
     }
     for path in graph.paths:
         assert path.nodes

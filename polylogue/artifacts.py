@@ -126,6 +126,52 @@ RUNTIME_ARTIFACT_NODES: tuple[ArtifactNode, ...] = (
         repair_targets=("action_event_read_model",),
         health_surfaces=("doctor", "archive_debt", "retrieval_evidence"),
     ),
+    ArtifactNode(
+        name="session_product_source_conversations",
+        layer=ArtifactLayer.SOURCE,
+        description="Hydratable conversation/message/attachment/block rows that feed durable session-product rebuilds.",
+        code_refs=(
+            "polylogue.storage.session_product_rebuild.rebuild_session_products_sync",
+            "polylogue.storage.session_product_refresh.refresh_session_products_for_conversation_async",
+        ),
+    ),
+    ArtifactNode(
+        name="session_product_rows",
+        layer=ArtifactLayer.DERIVED,
+        description="Durable session-profile, timeline, thread, and aggregate rows derived from archive conversations.",
+        depends_on=("session_product_source_conversations",),
+        code_refs=(
+            "polylogue.storage.session_product_rebuild.rebuild_session_products_sync",
+            "polylogue.storage.session_product_status",
+        ),
+        repair_targets=("session_products",),
+        health_surfaces=("doctor", "archive_debt", "products"),
+    ),
+    ArtifactNode(
+        name="session_product_fts",
+        layer=ArtifactLayer.INDEX,
+        description="The session-product FTS family over profiles, work events, and threads.",
+        depends_on=("session_product_rows",),
+        code_refs=(
+            "polylogue.storage.session_product_status",
+            "polylogue.storage.derived_status_products",
+        ),
+        repair_targets=("session_products",),
+        health_surfaces=("doctor", "archive_debt", "products"),
+    ),
+    ArtifactNode(
+        name="session_product_health",
+        layer=ArtifactLayer.PROJECTION,
+        description="Projected readiness, debt, and stale-surface semantics for durable session products.",
+        depends_on=("session_product_rows", "session_product_fts"),
+        code_refs=(
+            "polylogue.storage.session_product_status",
+            "polylogue.storage.repair",
+            "polylogue.cli.commands.products",
+        ),
+        repair_targets=("session_products",),
+        health_surfaces=("doctor", "archive_debt", "products"),
+    ),
 )
 
 RUNTIME_ARTIFACT_PATHS: tuple[ArtifactPath, ...] = (
@@ -147,6 +193,16 @@ RUNTIME_ARTIFACT_PATHS: tuple[ArtifactPath, ...] = (
             "action_event_rows",
             "action_event_fts",
             "action_event_health",
+        ),
+    ),
+    ArtifactPath(
+        name="session-product-repair-loop",
+        description="Archive conversations through durable session-product rows, FTS, and projected repair semantics.",
+        nodes=(
+            "session_product_source_conversations",
+            "session_product_rows",
+            "session_product_fts",
+            "session_product_health",
         ),
     ),
 )

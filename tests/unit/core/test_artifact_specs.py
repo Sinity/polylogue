@@ -16,10 +16,15 @@ def test_runtime_artifact_specs_expose_the_curated_vertical_paths() -> None:
         "action_event_rows",
         "action_event_fts",
         "action_event_health",
+        "session_product_source_conversations",
+        "session_product_rows",
+        "session_product_fts",
+        "session_product_health",
     }
     assert {path.name for path in paths} == {
         "raw-reparse-loop",
         "action-event-repair-loop",
+        "session-product-repair-loop",
     }
 
 
