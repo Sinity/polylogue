@@ -17,7 +17,7 @@ from devtools.synthetic_benchmark_catalog import (
 
 
 def test_synthetic_benchmark_registry_is_compiled_from_authored_scenarios() -> None:
-    assert set(CAMPAIGN_REGISTRY) == {scenario.scenario_id for scenario in SYNTHETIC_BENCHMARK_SCENARIOS}
+    assert set(CAMPAIGN_REGISTRY) == {scenario.name for scenario in SYNTHETIC_BENCHMARK_SCENARIOS}
     assert set(SYNTHETIC_BENCHMARK_REGISTRY) == set(CAMPAIGN_REGISTRY)
     assert SYNTHETIC_CAMPAIGNS["incremental-index"].runner_name == "incremental-index"
     assert SYNTHETIC_CAMPAIGNS["incremental-index"].scale_targets == ("small", "medium", "large", "stretch")
