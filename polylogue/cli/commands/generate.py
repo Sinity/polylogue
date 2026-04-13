@@ -2,31 +2,13 @@
 
 from __future__ import annotations
 
-import os
 import tempfile
-from collections.abc import Iterator
-from contextlib import contextmanager
 from pathlib import Path
 
 import click
 
 from polylogue.cli.types import AppEnv
-from polylogue.scenarios import CorpusSourceKind, resolve_corpus_specs
-
-
-@contextmanager
-def _temporary_env(updates: dict[str, str]) -> Iterator[None]:
-    """Temporarily set environment variables and restore previous values on exit."""
-    previous = {key: os.environ.get(key) for key in updates}
-    os.environ.update(updates)
-    try:
-        yield
-    finally:
-        for key, value in previous.items():
-            if value is None:
-                os.environ.pop(key, None)
-            else:
-                os.environ[key] = value
+from polylogue.scenarios import CorpusSourceKind
 
 
 @click.command("generate")
@@ -100,13 +82,14 @@ def _do_corpus(
     output_dir: Path | None,
 ) -> None:
     """Generate raw wire-format files for each provider."""
-    from polylogue.schemas.synthetic import SyntheticCorpus
+    from polylogue.showcase.workspace import build_synthetic_corpus_specs, generate_synthetic_fixtures_from_specs
 
     out = output_dir or Path(tempfile.mkdtemp(prefix="polylogue-corpus-"))
-    specs = resolve_corpus_specs(
+    specs = build_synthetic_corpus_specs(
         providers=providers or None,
-        source=corpus_source,
+        corpus_source=corpus_source,
         count=count,
+        style="default",
         messages_min=4,
         messages_max=15,
         seed=42,
@@ -116,7 +99,7 @@ def _do_corpus(
             "No corpus specs matched the selected source/providers.",
             param_hint="--corpus-source",
         )
-    written_batches = SyntheticCorpus.write_specs_artifacts(specs, out, prefix="sample")
+    written_batches = generate_synthetic_fixtures_from_specs(out, corpus_specs=specs, prefix="sample")
 
     for spec, written in zip(specs, written_batches, strict=True):
         provider_dir = out / spec.provider
@@ -138,41 +121,19 @@ def _do_seed(
     env_only: bool,
 ) -> None:
     """Seed a full demo database via the pipeline."""
-    from polylogue.config import Config, Source
-    from polylogue.pipeline.runner import run_sources
-    from polylogue.schemas.synthetic import SyntheticCorpus
-    from polylogue.sync_bridge import run_coroutine_sync
+    from polylogue.showcase.workspace import (
+        build_synthetic_corpus_specs,
+        create_verification_workspace,
+        seed_workspace_from_specs,
+    )
 
     out = output_dir or Path(tempfile.mkdtemp(prefix="polylogue-demo-"))
-
-    data_home = out / "data"
-    state_home = out / "state"
-    config_home = out / "config"
-    cache_home = out / "cache"
-    archive_root = out / "archive"
-    render_root = archive_root / "render"
-    fake_home = out / "home"
-    fixture_dir = out / "fixtures"
-    inbox_dir = data_home / "polylogue" / "inbox"
-
-    for d in [data_home, state_home, config_home, cache_home, archive_root, render_root, fake_home, inbox_dir]:
-        d.mkdir(parents=True, exist_ok=True)
-
-    env_vars = {
-        "HOME": str(fake_home),
-        "XDG_CONFIG_HOME": str(config_home),
-        "XDG_CACHE_HOME": str(cache_home),
-        "XDG_DATA_HOME": str(data_home),
-        "XDG_STATE_HOME": str(state_home),
-        "POLYLOGUE_ARCHIVE_ROOT": str(archive_root),
-        "POLYLOGUE_FORCE_PLAIN": "1",
-    }
-
-    sources: list[Source] = []
-    specs = resolve_corpus_specs(
+    workspace = create_verification_workspace(out)
+    specs = build_synthetic_corpus_specs(
         providers=providers or None,
-        source=corpus_source,
+        corpus_source=corpus_source,
         count=count,
+        style="default",
         messages_min=6,
         messages_max=19,
         seed=42,
@@ -182,45 +143,17 @@ def _do_seed(
             "No corpus specs matched the selected source/providers.",
             param_hint="--corpus-source",
         )
-    SyntheticCorpus.write_specs_artifacts(specs, fixture_dir, prefix="demo")
-    seen_providers: set[str] = set()
-    for spec in specs:
-        provider_dir = fixture_dir / spec.provider
-        if spec.provider not in seen_providers:
-            sources.append(Source(name=spec.provider, path=provider_dir))
-            seen_providers.add(spec.provider)
-        inbox_provider_dir = inbox_dir / spec.provider
-        inbox_provider_dir.mkdir(parents=True, exist_ok=True)
-        for fixture in provider_dir.iterdir():
-            if fixture.is_file():
-                (inbox_provider_dir / fixture.name).write_bytes(fixture.read_bytes())
-
-    with _temporary_env(env_vars):
-        config = Config(
-            archive_root=archive_root,
-            render_root=render_root,
-            sources=sources,
-        )
-
-        result = run_coroutine_sync(
-            run_sources(
-                config=config,
-                stage="all",
-                plan=None,
-                ui=None,
-                source_names=None,
-            )
-        )
+    result = seed_workspace_from_specs(workspace, corpus_specs=specs, prefix="demo")
 
     if env_only:
-        for key, value in env_vars.items():
+        for key, value in workspace.env_vars.items():
             click.echo(f'export {key}="{value}"')
     else:
         c = result.counts
         env.ui.console.print(f"Seeded {c.get('conversations', 0)} conversations, {c.get('messages', 0)} messages")
         env.ui.console.print(f"\nDemo environment: {out}")
         env.ui.console.print("\nTo use:")
-        for key, value in env_vars.items():
+        for key, value in workspace.env_vars.items():
             env.ui.console.print(f'  export {key}="{value}"')
 
 
