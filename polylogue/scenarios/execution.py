@@ -1,4 +1,4 @@
-"""Typed authored execution specs shared across control-plane scenario catalogs."""
+"""Shared authored execution specs for scenario-bearing surfaces."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from enum import Enum
 
 
 class ExecutionKind(str, Enum):
-    """Authored execution substrate for control-plane scenario catalogs."""
+    """Authored execution substrate for scenario-bearing catalogs."""
 
     COMMAND = "command"
     PYTEST = "pytest"

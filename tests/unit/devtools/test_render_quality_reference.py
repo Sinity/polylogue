@@ -5,7 +5,6 @@ from pathlib import Path
 from devtools import render_quality_reference
 from devtools.authored_scenario_catalog import AuthoredScenarioCatalog
 from devtools.benchmark_catalog import BenchmarkCampaignEntry
-from devtools.execution_specs import command_execution, composite_execution, pytest_execution
 from devtools.lane_models import LaneEntry
 from devtools.mutation_catalog import MutationCampaignEntry
 from devtools.quality_registry import QualityRegistry
@@ -15,6 +14,9 @@ from polylogue.scenarios import (
     CorpusSpec,
     ScenarioProjectionEntry,
     ScenarioProjectionSourceKind,
+    command_execution,
+    composite_execution,
+    pytest_execution,
 )
 
 

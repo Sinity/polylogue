@@ -17,8 +17,7 @@ from devtools.benchmark_scenario_catalog import (
     BENCHMARK_SCENARIOS,
     compile_benchmark_campaigns,
 )
-from devtools.execution_specs import pytest_execution
-from polylogue.scenarios import ScenarioProjectionSourceKind
+from polylogue.scenarios import ScenarioProjectionSourceKind, pytest_execution
 
 
 def test_compare_results_orders_regressions_by_worst_delta() -> None:

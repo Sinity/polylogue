@@ -9,11 +9,11 @@ from devtools.benchmark_campaigns import (
     run_full_campaign,
     run_synthetic_benchmark_campaign,
 )
-from devtools.execution_specs import ExecutionKind
 from devtools.synthetic_benchmark_catalog import (
     SYNTHETIC_BENCHMARK_REGISTRY,
     SYNTHETIC_BENCHMARK_SCENARIOS,
 )
+from polylogue.scenarios import ExecutionKind
 
 
 def test_synthetic_benchmark_registry_is_compiled_from_authored_scenarios() -> None:

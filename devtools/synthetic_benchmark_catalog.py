@@ -3,8 +3,7 @@
 from __future__ import annotations
 
 from devtools.benchmark_models import BenchmarkCampaignEntry, compile_benchmark_campaigns
-from devtools.execution_specs import runner_execution
-from polylogue.scenarios import ScenarioProjectionSourceKind
+from polylogue.scenarios import ScenarioProjectionSourceKind, runner_execution
 
 SYNTHETIC_BENCHMARK_SCENARIOS: tuple[BenchmarkCampaignEntry, ...] = (
     BenchmarkCampaignEntry(

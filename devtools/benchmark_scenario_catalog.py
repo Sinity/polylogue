@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from devtools.benchmark_models import BenchmarkCampaignEntry, compile_benchmark_campaigns
-from devtools.execution_specs import pytest_execution
+from polylogue.scenarios import pytest_execution
 
 BENCHMARK_SCENARIOS: tuple[BenchmarkCampaignEntry, ...] = (
     BenchmarkCampaignEntry(
