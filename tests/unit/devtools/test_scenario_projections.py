@@ -35,6 +35,11 @@ def test_render_scenario_projections_json_is_machine_readable() -> None:
         for entry in payload
     )
     assert any(entry["source_kind"] == "inferred-corpus" and entry["name"] == "chatgpt:v1:default" for entry in payload)
+    inferred = next(
+        entry for entry in payload if entry["source_kind"] == "inferred-corpus" and entry["name"] == "chatgpt:v1:default"
+    )
+    assert inferred["source_payload"]["provider"] == "chatgpt"
+    assert inferred["source_payload"]["package_version"] == "v1"
 
 
 def test_render_scenario_projections_supports_targeted_filters() -> None:
