@@ -97,6 +97,14 @@ class TestExercisesByGroup:
             "--target",
             "action_event_read_model",
         ]
+        assert observed["json-doctor-session-products-preview"].args == [
+            "doctor",
+            "--json",
+            "--repair",
+            "--preview",
+            "--target",
+            "session_products",
+        ]
         assert observed["json-run-embed"].args == ["run", "embed", "--stats", "--json"]
         assert "json-schema-compare" not in observed
         assert "json-schema-generate" not in observed
@@ -125,6 +133,23 @@ class TestExercisesByGroup:
             "json-contract",
             "maintenance",
             "action-events",
+        )
+
+        session_preview = observed["json-doctor-session-products-preview"]
+        assert session_preview.artifact_targets == (
+            "session_product_rows",
+            "session_product_fts",
+            "session_product_health",
+        )
+        assert session_preview.operation_targets == (
+            "cli.json-contract",
+            "project-session-product-health",
+        )
+        assert session_preview.tags == (
+            "generated",
+            "json-contract",
+            "maintenance",
+            "session-products",
         )
 
     def test_static_reparse_preview_exercise_preserves_declared_targets(self):
