@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from polylogue.showcase.qa_runner_request import build_qa_session_request
+from polylogue.showcase.qa_runner_request import QAStage, build_qa_session_request
 
 
 def test_build_qa_session_request_defaults_to_fresh_synthetic_full_run() -> None:
@@ -59,7 +59,7 @@ def test_build_qa_session_request_audit_only_skips_follow_on_work() -> None:
         fresh=None,
         ingest=None,
         regenerate_schemas=False,
-        only_stage="audit",
+        only_stage=QAStage.AUDIT,
         skip_stages=(),
         workspace=None,
         report_dir=None,
@@ -82,8 +82,8 @@ def test_build_qa_session_request_rejects_conflicting_stage_options() -> None:
             fresh=None,
             ingest=None,
             regenerate_schemas=False,
-            only_stage="audit",
-            skip_stages=("exercises",),
+            only_stage=QAStage.AUDIT,
+            skip_stages=(QAStage.EXERCISES,),
             workspace=None,
             report_dir=None,
             verbose=False,
