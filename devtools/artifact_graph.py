@@ -21,6 +21,14 @@ def render_artifact_graph(*, as_json: bool) -> str:
             node = graph.by_name()[node_name]
             dependencies = f" <- {', '.join(node.depends_on)}" if node.depends_on else ""
             lines.append(f"  - {node.name} [{node.layer.value}]{dependencies}")
+    lines.append("")
+    lines.append("Artifact Operations:")
+    for operation in graph.operations:
+        consumes = ", ".join(operation.consumes) if operation.consumes else "—"
+        produces = ", ".join(operation.produces) if operation.produces else "—"
+        lines.append(f"- {operation.name}: {operation.description}")
+        lines.append(f"  - consumes: {consumes}")
+        lines.append(f"  - produces: {produces}")
     return "\n".join(lines)
 
 
