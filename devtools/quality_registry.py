@@ -10,6 +10,7 @@ from devtools.validation_lane_base import LaneConfig
 from devtools.validation_lane_catalog_composites import COMPOSITE_LANES
 from devtools.validation_lane_catalog_contracts import CONTRACT_LANES
 from devtools.validation_lane_catalog_live import LIVE_LANES
+from polylogue.scenarios import ScenarioMetadata
 
 
 @dataclass(frozen=True)
@@ -31,7 +32,7 @@ class MutationCampaignEntry:
 
 
 @dataclass(frozen=True)
-class BenchmarkCampaignEntry:
+class BenchmarkCampaignEntry(ScenarioMetadata):
     name: str
     description: str
     tests: tuple[str, ...]
@@ -86,6 +87,10 @@ def _benchmark_entries() -> tuple[BenchmarkCampaignEntry, ...]:
             notes=tuple(campaign.notes),
             warn_pct=campaign.warn_pct,
             fail_pct=campaign.fail_pct,
+            origin=campaign.origin,
+            artifact_targets=tuple(campaign.artifact_targets),
+            operation_targets=tuple(campaign.operation_targets),
+            tags=tuple(campaign.tags),
         )
         for campaign in BENCHMARK_CAMPAIGNS.values()
     ]
