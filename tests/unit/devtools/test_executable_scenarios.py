@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 from devtools.executable_scenarios import ExecutableScenario
 from devtools.execution_specs import pytest_execution
-from polylogue.scenarios import ScenarioProjectionSourceKind
+from polylogue.scenarios import CorpusSpec, ScenarioProjectionSourceKind
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -31,3 +31,17 @@ def test_executable_scenario_exposes_pytest_targets() -> None:
     assert projection.name == "machine-contract"
     assert projection.operation_targets == ("cli.json-contract",)
     assert projection.tags == ("contract", "json")
+
+
+def test_executable_scenario_projection_payload_preserves_corpus_specs() -> None:
+    scenario = _ExecutableFixture(
+        name="synthetic-lane",
+        description="synthetic contract lane",
+        execution=pytest_execution("tests/unit/cli/test_machine_contract.py"),
+        corpus_specs=(CorpusSpec.for_provider("chatgpt", count=2),),
+        origin="authored.validation-lane",
+    )
+
+    projection = scenario.to_projection_entry()
+
+    assert projection.source_payload["corpus_specs"][0]["provider"] == "chatgpt"

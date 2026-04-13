@@ -9,12 +9,15 @@ from polylogue.config import Config
 from polylogue.paths import Source
 from polylogue.scenarios import CorpusSpec
 from polylogue.showcase.workspace import (
+    build_synthetic_corpus_scenarios,
     build_synthetic_corpus_specs,
     create_verification_workspace,
     generate_synthetic_fixtures,
+    generate_synthetic_fixtures_from_scenarios,
     run_pipeline_for_configured_sources,
     run_pipeline_for_fixture_workspace,
     seed_workspace_from_corpus_options,
+    seed_workspace_from_scenarios,
 )
 
 
@@ -137,11 +140,77 @@ def test_build_synthetic_corpus_specs_supports_inferred_source() -> None:
     assert specs[0].origin == "generated.synthetic-inferred"
 
 
+def test_build_synthetic_corpus_scenarios_supports_inferred_source() -> None:
+    inferred = (
+        CorpusSpec(
+            provider="chatgpt",
+            package_version="v1",
+            count=1,
+            messages_min=4,
+            messages_max=4,
+            seed=3,
+            profile_family_ids=("cluster-a",),
+        ),
+    )
+
+    with patch(
+        "polylogue.schemas.operator_inference.list_inferred_corpus_specs",
+        return_value=inferred,
+    ):
+        scenarios = build_synthetic_corpus_scenarios(
+            count=1,
+            style="showcase",
+            corpus_source="inferred",
+        )
+
+    assert len(scenarios) == 1
+    assert scenarios[0].provider == "chatgpt"
+    assert scenarios[0].corpus_specs[0].origin == "generated.synthetic-inferred"
+
+
+def test_generate_synthetic_fixtures_from_scenarios_writes_grouped_specs(tmp_path) -> None:
+    scenario = build_synthetic_corpus_scenarios(
+        providers=("chatgpt",),
+        count=1,
+        style="showcase",
+        messages_min=4,
+        messages_max=4,
+        seed=7,
+    )[0]
+
+    generate_synthetic_fixtures_from_scenarios(
+        tmp_path / "fixtures",
+        corpus_scenarios=(scenario,),
+        prefix="scenario",
+    )
+
+    assert (tmp_path / "fixtures" / "chatgpt" / "scenario-00.json").exists()
+
+
 def test_seed_workspace_from_corpus_options_routes_through_pipeline(tmp_path):
     workspace = create_verification_workspace(tmp_path / "workspace")
 
     with patch("polylogue.pipeline.runner.run_sources", new_callable=AsyncMock) as mock_run:
         seed_workspace_from_corpus_options(workspace, providers=("chatgpt",), count=1, style="showcase")
+
+    assert (workspace.inbox_dir / "chatgpt").exists()
+    selected = mock_run.await_args.kwargs["config"].sources
+    assert [source.name for source in selected] == ["chatgpt"]
+
+
+def test_seed_workspace_from_scenarios_routes_through_pipeline(tmp_path):
+    workspace = create_verification_workspace(tmp_path / "workspace")
+    scenario = build_synthetic_corpus_scenarios(
+        providers=("chatgpt",),
+        count=1,
+        style="showcase",
+        messages_min=4,
+        messages_max=4,
+        seed=9,
+    )[0]
+
+    with patch("polylogue.pipeline.runner.run_sources", new_callable=AsyncMock) as mock_run:
+        seed_workspace_from_scenarios(workspace, corpus_scenarios=(scenario,), prefix="demo")
 
     assert (workspace.inbox_dir / "chatgpt").exists()
     selected = mock_run.await_args.kwargs["config"].sources

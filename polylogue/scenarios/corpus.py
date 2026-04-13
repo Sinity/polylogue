@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any
 
 from .metadata import ScenarioMetadata
 from .projections import ScenarioProjectionSource, ScenarioProjectionSourceKind
+from .specs import ScenarioSpec
 
 if TYPE_CHECKING:
     from polylogue.schemas.tooling_models import ClusterManifest, SchemaCluster
@@ -234,7 +235,7 @@ def _merge_unique_string_tuples(*groups: tuple[str, ...]) -> tuple[str, ...]:
 
 
 @dataclass(frozen=True, kw_only=True)
-class CorpusScenario(ScenarioProjectionSource, ScenarioMetadata):
+class CorpusScenario(ScenarioSpec):
     """Named scenario compiled from one or more corpus specs."""
 
     provider: str
@@ -275,13 +276,16 @@ class CorpusScenario(ScenarioProjectionSource, ScenarioMetadata):
         return tuple(spec.projection_scope for spec in self.corpus_specs)
 
     def projection_source_payload(self) -> Mapping[str, object]:
-        return {
-            "provider": self.provider,
-            "package_version": self.package_version,
-            "variant_count": len(self.corpus_specs),
-            "target_labels": list(self.target_labels),
-            "corpus_specs": [spec.to_payload() for spec in self.corpus_specs],
-        }
+        payload = self.scenario_payload()
+        payload.update(
+            {
+                "provider": self.provider,
+                "package_version": self.package_version,
+                "variant_count": len(self.corpus_specs),
+                "target_labels": list(self.target_labels),
+            }
+        )
+        return payload
 
 
 def build_corpus_scenarios(
@@ -397,6 +401,34 @@ def resolve_corpus_specs(
     )
 
 
+def resolve_corpus_scenarios(
+    *,
+    providers: Iterable[str] | None = None,
+    source: CorpusSourceKind | str = CorpusSourceKind.DEFAULT,
+    count: int = 5,
+    messages_min: int = 3,
+    messages_max: int = 15,
+    seed: int | None = None,
+    style: str = "default",
+    package_version: str = "default",
+    origin: str = "compiled.synthetic-corpus-scenario",
+    tags: tuple[str, ...] = ("synthetic", "scenario"),
+    registry: Any | None = None,
+) -> tuple[CorpusScenario, ...]:
+    specs = resolve_corpus_specs(
+        providers=providers,
+        source=source,
+        count=count,
+        messages_min=messages_min,
+        messages_max=messages_max,
+        seed=seed,
+        style=style,
+        package_version=package_version,
+        registry=registry,
+    )
+    return build_corpus_scenarios(specs, origin=origin, tags=tags)
+
+
 def _cluster_to_corpus_spec(
     cluster: SchemaCluster,
     *,
@@ -463,5 +495,6 @@ __all__ = [
     "CorpusSpec",
     "build_default_corpus_specs",
     "build_inferred_corpus_specs",
+    "resolve_corpus_scenarios",
     "resolve_corpus_specs",
 ]

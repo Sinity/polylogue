@@ -4,12 +4,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .metadata import ScenarioMetadata
-from .projections import ScenarioProjectionSource
+from .specs import ScenarioSpec
 
 
 @dataclass(frozen=True, kw_only=True)
-class NamedScenarioSource(ScenarioProjectionSource, ScenarioMetadata):
+class NamedScenarioSource(ScenarioSpec):
     """One authored scenario source with a stable name and description."""
 
     name: str
