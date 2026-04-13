@@ -12,7 +12,7 @@ from polylogue.artifacts import (
     build_runtime_artifact_nodes,
     build_runtime_artifact_paths,
 )
-from polylogue.operations import OperationSpec, build_runtime_operation_specs
+from polylogue.operations import OperationSpec, build_runtime_operation_catalog
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,7 +74,7 @@ class ArtifactGraph:
 def build_artifact_graph() -> ArtifactGraph:
     nodes = build_runtime_artifact_nodes()
     paths = build_runtime_artifact_paths()
-    operations = build_runtime_operation_specs()
+    operations = build_runtime_operation_catalog().specs
     return ArtifactGraph(nodes=nodes, paths=paths, operations=operations)
 
 
