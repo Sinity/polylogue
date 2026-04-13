@@ -12,6 +12,7 @@ def test_list_commands_json_includes_generated_surface(capsys) -> None:
     payload = json.loads(capsys.readouterr().out)
     commands = {entry["name"] for entry in payload["commands"]}
     assert "artifact-graph" in commands
+    assert "scenario-projections" in commands
     assert "render-devtools-reference" in commands
     assert "status" in commands
 
@@ -21,6 +22,7 @@ def test_list_commands_human_output(capsys) -> None:
     captured = capsys.readouterr()
     assert "generated surfaces:" in captured.out
     assert "artifact-graph" in captured.out
+    assert "scenario-projections" in captured.out
     assert "render-devtools-reference" in captured.out
 
 

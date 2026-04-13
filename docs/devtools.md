@@ -59,6 +59,7 @@ These are the commands worth remembering during normal repo work:
 | `devtools query-memory-budget` | Measure query-memory envelopes on generated fixtures. |
 | `devtools run-scale-lanes` | Run scale-validation lanes. |
 | `devtools run-validation-lanes` | Run named validation lanes. |
+| `devtools scenario-projections` | Render the authored scenario-bearing verification projections. |
 | `devtools verify-showcase` | Verify committed showcase/demo surfaces. |
 
 ### Campaigns
