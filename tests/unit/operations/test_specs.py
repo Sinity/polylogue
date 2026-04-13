@@ -15,12 +15,15 @@ def test_runtime_operation_catalog_covers_the_current_runtime_paths() -> None:
         "plan-parse-backlog",
         "ingest-archive-runtime",
         "index-message-fts",
+        "materialize-transcript-embeddings",
         "materialize-action-events",
         "query-conversations",
         "render-conversations",
         "publish-site",
         "project-action-event-health",
         "materialize-session-products",
+        "project-retrieval-band-health",
+        "query-embedding-status",
         "project-session-product-health",
         "project-archive-health",
         "query-session-profiles",
@@ -49,6 +52,14 @@ def test_runtime_operation_catalog_covers_the_current_runtime_paths() -> None:
     assert specs["materialize-action-events"].mutates_state is True
     assert specs["materialize-action-events"].produces == ("action_event_rows", "action_event_fts")
     assert specs["materialize-action-events"].path_targets == ("action-event-repair-loop",)
+    assert specs["materialize-transcript-embeddings"].kind is OperationKind.MATERIALIZATION
+    assert specs["materialize-transcript-embeddings"].mutates_state is True
+    assert specs["materialize-transcript-embeddings"].produces == (
+        "embedding_metadata_rows",
+        "embedding_status_rows",
+        "message_embedding_vectors",
+    )
+    assert specs["materialize-transcript-embeddings"].path_targets == ("embedding-materialization-loop",)
     assert specs["render-conversations"].kind is OperationKind.MATERIALIZATION
     assert specs["render-conversations"].mutates_state is True
     assert specs["render-conversations"].produces == ("rendered_conversation_artifacts",)
@@ -69,6 +80,9 @@ def test_runtime_operation_catalog_covers_the_current_runtime_paths() -> None:
     assert "work_thread_fts" in specs["materialize-session-products"].produces
     assert specs["materialize-session-products"].path_targets == ("session-product-repair-loop",)
     assert specs["project-action-event-health"].previewable is True
+    assert specs["project-retrieval-band-health"].previewable is True
+    assert specs["project-retrieval-band-health"].path_targets == ("retrieval-band-health-loop",)
+    assert specs["query-embedding-status"].path_targets == ("embedding-status-query-loop",)
     assert specs["project-session-product-health"].previewable is True
     assert specs["query-session-profiles"].path_targets == ("session-profile-query-loop",)
     assert specs["query-session-enrichments"].path_targets == ("session-enrichment-query-loop",)
@@ -80,6 +94,7 @@ def test_runtime_operation_catalog_covers_the_current_runtime_paths() -> None:
     assert specs["compile-inferred-corpus-scenarios"].path_targets == ("inferred-corpus-compilation-loop",)
     assert specs["query-schema-catalog"].path_targets == ("schema-list-query-loop",)
     assert specs["query-schema-explanations"].path_targets == ("schema-explain-query-loop",)
+    assert specs["project-archive-health"].path_targets == ("message-fts-health-loop", "retrieval-band-health-loop")
 
 
 def test_runtime_operation_catalog_has_declared_surfaces_and_code_refs() -> None:
