@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import asdict, dataclass, field
 from enum import Enum
 
@@ -18,6 +18,39 @@ class ScenarioProjectionSourceKind(str, Enum):
     INFERRED_CORPUS = "inferred-corpus"
 
 
+class ScenarioProjectionSource:
+    """Protocol-style mixin for authored types that can project themselves."""
+
+    @property
+    def projection_source_kind(self) -> ScenarioProjectionSourceKind:
+        raise NotImplementedError
+
+    @property
+    def projection_name(self) -> str:
+        raise NotImplementedError
+
+    @property
+    def projection_description(self) -> str:
+        raise NotImplementedError
+
+    def projection_source_payload(self) -> Mapping[str, object]:
+        return {}
+
+    def to_projection_entry(self) -> ScenarioProjectionEntry:
+        metadata = ScenarioMetadata.from_object(self)
+        return ScenarioProjectionEntry(
+            source_kind=self.projection_source_kind,
+            name=self.projection_name,
+            description=self.projection_description,
+            origin=metadata.origin,
+            path_targets=metadata.path_targets,
+            artifact_targets=metadata.artifact_targets,
+            operation_targets=metadata.operation_targets,
+            tags=metadata.tags,
+            source_payload=dict(self.projection_source_payload()),
+        )
+
+
 @dataclass(frozen=True)
 class ScenarioProjectionEntry(ScenarioMetadata):
     source_kind: ScenarioProjectionSourceKind
@@ -26,27 +59,8 @@ class ScenarioProjectionEntry(ScenarioMetadata):
     source_payload: dict[str, object] = field(default_factory=dict)
 
     @classmethod
-    def from_object(
-        cls,
-        *,
-        source_kind: ScenarioProjectionSourceKind,
-        name: str,
-        description: str,
-        obj: object,
-        source_payload: Mapping[str, object] | None = None,
-    ) -> ScenarioProjectionEntry:
-        metadata = ScenarioMetadata.from_object(obj)
-        return cls(
-            source_kind=source_kind,
-            name=name,
-            description=description,
-            origin=metadata.origin,
-            path_targets=metadata.path_targets,
-            artifact_targets=metadata.artifact_targets,
-            operation_targets=metadata.operation_targets,
-            tags=metadata.tags,
-            source_payload=dict(source_payload or {}),
-        )
+    def from_source(cls, source: ScenarioProjectionSource) -> ScenarioProjectionEntry:
+        return source.to_projection_entry()
 
     def to_dict(self) -> dict[str, object]:
         data = asdict(self)
@@ -54,7 +68,15 @@ class ScenarioProjectionEntry(ScenarioMetadata):
         return data
 
 
+def compile_projection_entries(
+    sources: Iterable[ScenarioProjectionSource],
+) -> tuple[ScenarioProjectionEntry, ...]:
+    return tuple(source.to_projection_entry() for source in sources)
+
+
 __all__ = [
+    "compile_projection_entries",
     "ScenarioProjectionEntry",
+    "ScenarioProjectionSource",
     "ScenarioProjectionSourceKind",
 ]

@@ -18,6 +18,7 @@ from devtools.benchmark_scenario_catalog import (
     compile_benchmark_campaigns,
 )
 from devtools.execution_specs import pytest_execution
+from polylogue.scenarios import ScenarioProjectionSourceKind
 
 
 def test_compare_results_orders_regressions_by_worst_delta() -> None:
@@ -203,3 +204,23 @@ def test_compile_benchmark_campaigns_indexes_by_name() -> None:
 
 def test_benchmark_scenario_index_tracks_authored_catalog() -> None:
     assert set(BENCHMARK_SCENARIO_INDEX) == {"search-filters", "storage", "pipeline"}
+
+
+def test_benchmark_entry_compiles_its_own_projection_entry() -> None:
+    campaign = BenchmarkCampaignEntry(
+        name="startup-health",
+        description="startup health benchmark",
+        origin="authored.synthetic-benchmark",
+        artifact_targets=("archive_health",),
+        operation_targets=("health.startup.synthetic",),
+        tags=("benchmark", "synthetic", "health"),
+        projection_kind=ScenarioProjectionSourceKind.SYNTHETIC_BENCHMARK,
+    )
+
+    projection = campaign.to_projection_entry()
+
+    assert projection.source_kind is ScenarioProjectionSourceKind.SYNTHETIC_BENCHMARK
+    assert projection.name == "startup-health"
+    assert projection.description == "startup health benchmark"
+    assert projection.artifact_targets == ("archive_health",)
+    assert projection.operation_targets == ("health.startup.synthetic",)

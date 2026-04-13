@@ -4,11 +4,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from polylogue.scenarios import ScenarioMetadata
+from polylogue.scenarios import ScenarioMetadata, ScenarioProjectionSource, ScenarioProjectionSourceKind
 
 
 @dataclass(frozen=True)
-class MutationCampaign(ScenarioMetadata):
+class MutationCampaign(ScenarioProjectionSource, ScenarioMetadata):
     name: str
     description: str
     paths_to_mutate: tuple[str, ...]
@@ -20,6 +20,18 @@ class MutationCampaign(ScenarioMetadata):
             object.__setattr__(self, "origin", "authored.mutation-campaign")
         if not self.tags:
             object.__setattr__(self, "tags", ("mutation",))
+
+    @property
+    def projection_source_kind(self) -> ScenarioProjectionSourceKind:
+        return ScenarioProjectionSourceKind.MUTATION_CAMPAIGN
+
+    @property
+    def projection_name(self) -> str:
+        return self.name
+
+    @property
+    def projection_description(self) -> str:
+        return self.description
 
 
 MUTATION_CAMPAIGNS: dict[str, MutationCampaign] = {
