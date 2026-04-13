@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import subprocess
 
-from devtools.authored_scenario_catalog import build_authored_scenario_catalog
+from devtools.authored_scenario_catalog import get_authored_scenario_catalog
 from devtools.lane_models import LaneEntry
 from polylogue.scenarios import resolve_execution_command, run_execution
 
-LANES: dict[str, LaneEntry] = build_authored_scenario_catalog().validation_lane_index()
+LANES: dict[str, LaneEntry] = get_authored_scenario_catalog().validation_lane_index()
 VALID_LANES = frozenset(LANES)
 
 

@@ -24,7 +24,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
-from .authored_scenario_catalog import build_authored_scenario_catalog
+from .authored_scenario_catalog import get_authored_scenario_catalog
 from .mutation_catalog import MutationCampaignEntry
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -43,7 +43,7 @@ DEFAULT_IGNORE_PATTERNS = shutil.ignore_patterns(
     "qa_outputs",
     "qa_2026-03-10",
 )
-CAMPAIGNS = build_authored_scenario_catalog().mutation_campaign_index()
+CAMPAIGNS = get_authored_scenario_catalog().mutation_campaign_index()
 
 
 @dataclass(frozen=True)

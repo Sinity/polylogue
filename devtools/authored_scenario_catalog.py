@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import lru_cache
 
 from devtools.benchmark_catalog import (
     BenchmarkCampaignEntry,
@@ -80,7 +81,8 @@ class AuthoredScenarioCatalog:
         )
 
 
-def build_authored_scenario_catalog() -> AuthoredScenarioCatalog:
+@lru_cache(maxsize=1)
+def get_authored_scenario_catalog() -> AuthoredScenarioCatalog:
     return AuthoredScenarioCatalog(
         exercise_scenarios=EXERCISE_SCENARIOS,
         qa_extra_scenarios=QA_EXTRA_SCENARIOS,
@@ -93,4 +95,4 @@ def build_authored_scenario_catalog() -> AuthoredScenarioCatalog:
     )
 
 
-__all__ = ["AuthoredScenarioCatalog", "build_authored_scenario_catalog"]
+__all__ = ["AuthoredScenarioCatalog", "get_authored_scenario_catalog"]
