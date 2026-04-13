@@ -16,6 +16,7 @@ from typing import Any
 
 from hypothesis import strategies as st
 
+from polylogue.scenarios import CorpusSpec
 from polylogue.schemas.synthetic import SyntheticCorpus
 
 # =============================================================================
@@ -26,7 +27,7 @@ from polylogue.schemas.synthetic import SyntheticCorpus
 def _corpus_for(provider: str) -> SyntheticCorpus:
     """Get or create a SyntheticCorpus for a provider (cached per provider)."""
     if provider not in _CORPUS_CACHE:
-        _CORPUS_CACHE[provider] = SyntheticCorpus.for_provider(provider)
+        _CORPUS_CACHE[provider] = SyntheticCorpus.from_spec(CorpusSpec.for_provider(provider))
     return _CORPUS_CACHE[provider]
 
 
