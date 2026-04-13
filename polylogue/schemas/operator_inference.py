@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from polylogue.scenarios import build_inferred_corpus_specs
+from polylogue.scenarios import CorpusSpec, build_inferred_corpus_specs
 from polylogue.schemas.operator_models import (
     SchemaCompareRequest,
     SchemaCompareResult,
@@ -84,6 +84,38 @@ def infer_schema(request: SchemaInferRequest) -> SchemaInferResult:
             sample_count=result.sample_count,
         ),
     )
+
+
+def list_inferred_corpus_specs(*, provider: str | None = None) -> tuple[CorpusSpec, ...]:
+    registry = schema_registry()
+    providers = (provider,) if provider is not None else tuple(registry.list_providers())
+    specs: list[CorpusSpec] = []
+    for provider_name in providers:
+        catalog = registry.load_package_catalog(provider_name)
+        manifest = registry.load_cluster_manifest(provider_name)
+        package_version = "default"
+        sample_count = 0
+        if catalog is not None:
+            package_version = (
+                catalog.default_version
+                or catalog.latest_version
+                or catalog.recommended_version
+                or package_version
+            )
+            package = catalog.package(package_version)
+            if package is not None:
+                sample_count = package.sample_count
+        elif manifest is not None and manifest.default_version:
+            package_version = manifest.default_version
+        specs.extend(
+            build_inferred_corpus_specs(
+                provider=provider_name,
+                package_version=package_version,
+                manifest=manifest,
+                sample_count=sample_count,
+            )
+        )
+    return tuple(specs)
 
 
 def list_schemas(request: SchemaListRequest) -> SchemaListResult:
@@ -177,6 +209,7 @@ __all__ = [
     "audit_schemas",
     "compare_schema_versions",
     "infer_schema",
+    "list_inferred_corpus_specs",
     "list_schemas",
     "promote_schema_cluster",
 ]
