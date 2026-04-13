@@ -2,18 +2,31 @@
 
 from __future__ import annotations
 
+from devtools.benchmark_catalog import (
+    BenchmarkCampaignEntry,
+    build_benchmark_entries,
+    build_synthetic_benchmark_entries,
+)
+from devtools.mutation_catalog import MutationCampaignEntry, build_mutation_entries
+from devtools.validation_catalog import ValidationLaneEntry, build_validation_lane_entries
 from polylogue.scenarios import (
     ScenarioProjectionEntry,
     ScenarioProjectionSourceKind,
 )
 from polylogue.showcase.exercises import EXERCISE_SCENARIOS, QA_EXTRA_SCENARIOS
 
-from .benchmark_catalog import build_benchmark_entries, build_synthetic_benchmark_entries
-from .mutation_catalog import build_mutation_entries
-from .validation_catalog import build_validation_lane_entries
 
-
-def build_scenario_projection_entries() -> tuple[ScenarioProjectionEntry, ...]:
+def build_scenario_projection_entries(
+    *,
+    validation_lanes: tuple[ValidationLaneEntry, ...] | None = None,
+    mutation_campaigns: tuple[MutationCampaignEntry, ...] | None = None,
+    benchmark_campaigns: tuple[BenchmarkCampaignEntry, ...] | None = None,
+    synthetic_benchmark_campaigns: tuple[BenchmarkCampaignEntry, ...] | None = None,
+) -> tuple[ScenarioProjectionEntry, ...]:
+    lane_entries = validation_lanes or build_validation_lane_entries()
+    mutation_entries = mutation_campaigns or build_mutation_entries()
+    benchmark_entries = benchmark_campaigns or build_benchmark_entries()
+    synthetic_benchmark_entries = synthetic_benchmark_campaigns or build_synthetic_benchmark_entries()
     entries = [
         ScenarioProjectionEntry.from_object(
             source_kind=ScenarioProjectionSourceKind.EXERCISE,
@@ -39,7 +52,7 @@ def build_scenario_projection_entries() -> tuple[ScenarioProjectionEntry, ...]:
             description=lane.description,
             obj=lane,
         )
-        for lane in build_validation_lane_entries()
+        for lane in lane_entries
     )
     entries.extend(
         ScenarioProjectionEntry.from_object(
@@ -48,7 +61,7 @@ def build_scenario_projection_entries() -> tuple[ScenarioProjectionEntry, ...]:
             description=campaign.description,
             obj=campaign,
         )
-        for campaign in build_mutation_entries()
+        for campaign in mutation_entries
     )
     entries.extend(
         ScenarioProjectionEntry.from_object(
@@ -57,7 +70,7 @@ def build_scenario_projection_entries() -> tuple[ScenarioProjectionEntry, ...]:
             description=entry.description,
             obj=entry,
         )
-        for entry in build_benchmark_entries()
+        for entry in benchmark_entries
     )
     entries.extend(
         ScenarioProjectionEntry.from_object(
@@ -66,7 +79,7 @@ def build_scenario_projection_entries() -> tuple[ScenarioProjectionEntry, ...]:
             description=entry.description,
             obj=entry,
         )
-        for entry in build_synthetic_benchmark_entries()
+        for entry in synthetic_benchmark_entries
     )
     return tuple(sorted(entries, key=lambda item: (item.source_kind.value, item.name)))
 

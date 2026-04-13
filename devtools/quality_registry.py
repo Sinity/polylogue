@@ -13,9 +13,7 @@ from devtools.mutation_catalog import MutationCampaignEntry, build_mutation_entr
 from devtools.scenario_projection_catalog import build_scenario_projection_entries
 from devtools.validation_catalog import (
     ValidationLaneEntry,
-    build_composite_lane_entries,
-    build_contract_lane_entries,
-    build_live_lane_entries,
+    build_validation_lane_entries,
 )
 from polylogue.scenarios import ScenarioProjectionEntry
 
@@ -32,14 +30,26 @@ class QualityRegistry:
 
 
 def build_quality_registry() -> QualityRegistry:
+    validation_lanes = build_validation_lane_entries()
+    contract_lanes = tuple(entry for entry in validation_lanes if entry.category == "contract")
+    live_lanes = tuple(entry for entry in validation_lanes if entry.category == "live")
+    composite_lanes = tuple(entry for entry in validation_lanes if entry.category == "composite")
+    mutation_campaigns = build_mutation_entries()
+    benchmark_campaigns = build_benchmark_entries()
+    synthetic_benchmark_campaigns = build_synthetic_benchmark_entries()
     return QualityRegistry(
-        contract_lanes=build_contract_lane_entries(),
-        live_lanes=build_live_lane_entries(),
-        composite_lanes=build_composite_lane_entries(),
-        mutation_campaigns=build_mutation_entries(),
-        benchmark_campaigns=build_benchmark_entries(),
-        synthetic_benchmark_campaigns=build_synthetic_benchmark_entries(),
-        scenario_projections=build_scenario_projection_entries(),
+        contract_lanes=contract_lanes,
+        live_lanes=live_lanes,
+        composite_lanes=composite_lanes,
+        mutation_campaigns=mutation_campaigns,
+        benchmark_campaigns=benchmark_campaigns,
+        synthetic_benchmark_campaigns=synthetic_benchmark_campaigns,
+        scenario_projections=build_scenario_projection_entries(
+            validation_lanes=validation_lanes,
+            mutation_campaigns=mutation_campaigns,
+            benchmark_campaigns=benchmark_campaigns,
+            synthetic_benchmark_campaigns=synthetic_benchmark_campaigns,
+        ),
     )
 
 
