@@ -21,8 +21,20 @@ def test_build_quality_registry_exposes_live_catalogs() -> None:
     assert any(entry.name == "session-product-materialization" for entry in registry.synthetic_benchmark_campaigns)
     assert any(entry.name == "startup-health" for entry in registry.synthetic_benchmark_campaigns)
     assert any(entry.name == "json-doctor-action-event-preview" for entry in registry.scenario_projections)
+    assert any(entry.name == "machine-contract" for entry in registry.scenario_projections)
     assert any(entry.name == "search-filters" for entry in registry.scenario_projections)
     assert any(entry.name == "session-product-materialization" for entry in registry.scenario_projections)
+    machine_contract = next(entry for entry in registry.contract_lanes if entry.name == "machine-contract")
+    assert machine_contract.origin == "authored.validation-lane"
+    assert machine_contract.operation_targets == ("cli.json-contract",)
+    assert machine_contract.tags == ("contract", "json", "cli")
+    live_session_product_repair = next(entry for entry in registry.live_lanes if entry.name == "live-session-product-repair")
+    assert live_session_product_repair.path_targets == ("session-product-repair-loop",)
+    assert live_session_product_repair.operation_targets == (
+        "cli.json-contract",
+        "materialize-session-products",
+        "project-session-product-health",
+    )
     search_filters = next(entry for entry in registry.benchmark_campaigns if entry.name == "search-filters")
     assert search_filters.origin == "authored.benchmark-domain"
     assert search_filters.artifact_targets == ("conversation_query_results", "message_fts")
@@ -71,6 +83,9 @@ def test_build_quality_registry_exposes_live_catalogs() -> None:
     assert "cli.json-contract" in action_event_preview.operation_targets
     assert "project-action-event-health" in action_event_preview.operation_targets
     assert action_event_preview.tags == ("generated", "json-contract", "maintenance", "action-events")
+    frontier_local = next(entry for entry in registry.composite_lanes if entry.name == "frontier-local")
+    assert "cli.json-contract" in frontier_local.operation_targets
+    assert "cli.help" in frontier_local.operation_targets
 
 
 def test_quality_registry_references_existing_files() -> None:
