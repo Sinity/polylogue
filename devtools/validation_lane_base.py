@@ -2,34 +2,9 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-
 from devtools.command_catalog import control_plane_argv
-from devtools.execution_specs import ExecutionSpec, command_execution, composite_execution, pytest_execution
-from polylogue.scenarios import ScenarioMetadata
-
-
-@dataclass(frozen=True)
-class LaneConfig(ScenarioMetadata):
-    """Configuration for a validation lane."""
-
-    name: str
-    description: str
-    timeout_s: int
-    execution: ExecutionSpec
-
-    @property
-    def is_composite(self) -> bool:
-        return self.execution.is_composite
-
-    @property
-    def command(self) -> list[str] | None:
-        command = self.execution.command
-        return list(command) if command is not None else None
-
-    @property
-    def sub_lanes(self) -> tuple[str, ...]:
-        return self.execution.members
+from devtools.execution_specs import command_execution, composite_execution, pytest_execution
+from devtools.lane_models import LaneEntry
 
 
 def cli_lane(
@@ -38,16 +13,18 @@ def cli_lane(
     timeout_s: int,
     executable: str,
     *args: str,
+    category: str,
     origin: str = "authored.validation-lane",
     path_targets: tuple[str, ...] = (),
     artifact_targets: tuple[str, ...] = (),
     operation_targets: tuple[str, ...] = (),
     tags: tuple[str, ...] = (),
-) -> LaneConfig:
-    return LaneConfig(
+) -> LaneEntry:
+    return LaneEntry(
         name=name,
         description=description,
         timeout_s=timeout_s,
+        category=category,
         execution=command_execution(executable, *args),
         origin=origin,
         path_targets=path_targets,
@@ -62,17 +39,19 @@ def pytest_lane(
     description: str,
     timeout_s: int,
     *args: str,
+    category: str,
     origin: str = "authored.validation-lane",
     path_targets: tuple[str, ...] = (),
     artifact_targets: tuple[str, ...] = (),
     operation_targets: tuple[str, ...] = (),
     tags: tuple[str, ...] = (),
-) -> LaneConfig:
+) -> LaneEntry:
     return cli_lane(
         name,
         description,
         timeout_s,
         *pytest_execution("pytest", *args).argv,
+        category=category,
         origin=origin,
         path_targets=path_targets,
         artifact_targets=artifact_targets,
@@ -87,16 +66,18 @@ def devtools_lane(
     timeout_s: int,
     subcommand: str,
     *args: str,
+    category: str,
     origin: str = "authored.validation-lane",
     path_targets: tuple[str, ...] = (),
     artifact_targets: tuple[str, ...] = (),
     operation_targets: tuple[str, ...] = (),
     tags: tuple[str, ...] = (),
-) -> LaneConfig:
-    return LaneConfig(
+) -> LaneEntry:
+    return LaneEntry(
         name=name,
         description=description,
         timeout_s=timeout_s,
+        category=category,
         execution=command_execution(*control_plane_argv(subcommand, *args)),
         origin=origin,
         path_targets=path_targets,
@@ -111,12 +92,13 @@ def polylogue_lane(
     description: str,
     timeout_s: int,
     *args: str,
+    category: str,
     origin: str = "authored.validation-lane",
     path_targets: tuple[str, ...] = (),
     artifact_targets: tuple[str, ...] = (),
     operation_targets: tuple[str, ...] = (),
     tags: tuple[str, ...] = (),
-) -> LaneConfig:
+) -> LaneEntry:
     return cli_lane(
         name,
         description,
@@ -124,6 +106,7 @@ def polylogue_lane(
         "polylogue",
         "--plain",
         *args,
+        category=category,
         origin=origin,
         path_targets=path_targets,
         artifact_targets=artifact_targets,
@@ -139,12 +122,13 @@ def memory_budget_lane(
     *,
     max_rss_mb: int,
     command: list[str],
+    category: str,
     origin: str = "authored.validation-lane",
     path_targets: tuple[str, ...] = (),
     artifact_targets: tuple[str, ...] = (),
     operation_targets: tuple[str, ...] = (),
     tags: tuple[str, ...] = (),
-) -> LaneConfig:
+) -> LaneEntry:
     return devtools_lane(
         name,
         description,
@@ -154,6 +138,7 @@ def memory_budget_lane(
         str(max_rss_mb),
         "--",
         *command,
+        category=category,
         origin=origin,
         path_targets=path_targets,
         artifact_targets=artifact_targets,
@@ -167,16 +152,18 @@ def composite_lane(
     description: str,
     timeout_s: int,
     *sub_lanes: str,
+    category: str,
     origin: str = "authored.validation-lane.composite",
     path_targets: tuple[str, ...] = (),
     artifact_targets: tuple[str, ...] = (),
     operation_targets: tuple[str, ...] = (),
     tags: tuple[str, ...] = (),
-) -> LaneConfig:
-    return LaneConfig(
+) -> LaneEntry:
+    return LaneEntry(
         name=name,
         description=description,
         timeout_s=timeout_s,
+        category=category,
         execution=composite_execution(*sub_lanes),
         origin=origin,
         path_targets=path_targets,
@@ -187,10 +174,10 @@ def composite_lane(
 
 
 __all__ = [
-    "LaneConfig",
     "cli_lane",
     "composite_lane",
     "devtools_lane",
+    "LaneEntry",
     "memory_budget_lane",
     "polylogue_lane",
     "pytest_lane",

@@ -9,21 +9,19 @@ from devtools.benchmark_catalog import (
     build_benchmark_entries,
     build_synthetic_benchmark_entries,
 )
+from devtools.lane_models import LaneEntry
 from devtools.mutation_catalog import MutationCampaignEntry, build_mutation_entries
 from devtools.scenario_projection_catalog import build_scenario_projection_entries
-from devtools.validation_catalog import (
-    ValidationLaneEntry,
-    build_validation_lane_entries,
-)
+from devtools.validation_catalog import build_validation_lane_entries
 from polylogue.scenarios import ScenarioProjectionEntry
 from polylogue.schemas.operator_inference import list_inferred_corpus_specs
 
 
 @dataclass(frozen=True)
 class QualityRegistry:
-    contract_lanes: tuple[ValidationLaneEntry, ...]
-    live_lanes: tuple[ValidationLaneEntry, ...]
-    composite_lanes: tuple[ValidationLaneEntry, ...]
+    contract_lanes: tuple[LaneEntry, ...]
+    live_lanes: tuple[LaneEntry, ...]
+    composite_lanes: tuple[LaneEntry, ...]
     mutation_campaigns: tuple[MutationCampaignEntry, ...]
     benchmark_campaigns: tuple[BenchmarkCampaignEntry, ...]
     synthetic_benchmark_campaigns: tuple[BenchmarkCampaignEntry, ...]

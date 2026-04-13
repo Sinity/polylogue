@@ -5,10 +5,10 @@ from pathlib import Path
 from devtools import render_quality_reference
 from devtools.benchmark_catalog import BenchmarkCampaignEntry
 from devtools.execution_specs import command_execution, composite_execution, pytest_execution
+from devtools.lane_models import LaneEntry
 from devtools.mutation_catalog import MutationCampaignEntry
 from devtools.quality_registry import QualityRegistry
 from devtools.scenario_coverage import RuntimePathCoverage, RuntimeScenarioCoverage, ScenarioCoverageRef
-from devtools.validation_catalog import ValidationLaneEntry
 from polylogue.scenarios import (
     CorpusSpec,
     ScenarioProjectionEntry,
@@ -19,7 +19,7 @@ from polylogue.scenarios import (
 def test_build_document_includes_live_registry_sections() -> None:
     registry = QualityRegistry(
         contract_lanes=(
-            ValidationLaneEntry(
+            LaneEntry(
                 name="machine-contract",
                 description="Machine-readable CLI surface.",
                 timeout_s=120,
@@ -28,7 +28,7 @@ def test_build_document_includes_live_registry_sections() -> None:
             ),
         ),
         live_lanes=(
-            ValidationLaneEntry(
+            LaneEntry(
                 name="live-exercises",
                 description="Read-only live archive exercises.",
                 timeout_s=300,
@@ -37,7 +37,7 @@ def test_build_document_includes_live_registry_sections() -> None:
             ),
         ),
         composite_lanes=(
-            ValidationLaneEntry(
+            LaneEntry(
                 name="frontier-local",
                 description="Composite local frontier lane.",
                 timeout_s=900,

@@ -7,8 +7,9 @@ from devtools.benchmark_catalog import (
     build_benchmark_entries,
     build_synthetic_benchmark_entries,
 )
+from devtools.lane_models import LaneEntry
 from devtools.mutation_catalog import MutationCampaignEntry, build_mutation_entries
-from devtools.validation_catalog import ValidationLaneEntry, build_validation_lane_entries
+from devtools.validation_catalog import build_validation_lane_entries
 from polylogue.scenarios import (
     ScenarioProjectionEntry,
     ScenarioProjectionSourceKind,
@@ -19,7 +20,7 @@ from polylogue.showcase.exercises import EXERCISE_SCENARIOS, QA_EXTRA_SCENARIOS
 
 def build_scenario_projection_entries(
     *,
-    validation_lanes: tuple[ValidationLaneEntry, ...] | None = None,
+    validation_lanes: tuple[LaneEntry, ...] | None = None,
     mutation_campaigns: tuple[MutationCampaignEntry, ...] | None = None,
     benchmark_campaigns: tuple[BenchmarkCampaignEntry, ...] | None = None,
     synthetic_benchmark_campaigns: tuple[BenchmarkCampaignEntry, ...] | None = None,

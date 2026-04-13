@@ -8,10 +8,10 @@ from pathlib import Path
 
 from devtools.benchmark_catalog import BenchmarkCampaignEntry
 from devtools.command_catalog import control_plane_command
+from devtools.lane_models import LaneEntry
 from devtools.mutation_catalog import MutationCampaignEntry
 from devtools.quality_registry import QualityRegistry, build_quality_registry
 from devtools.scenario_coverage import RuntimeScenarioCoverage, build_runtime_scenario_coverage
-from devtools.validation_catalog import ValidationLaneEntry
 from polylogue.scenarios import CorpusSpec, ScenarioProjectionEntry, ScenarioProjectionSourceKind
 
 
@@ -21,7 +21,7 @@ def _format_code_list(items: tuple[str, ...]) -> str:
     return "<br>".join(f"`{item}`" for item in items)
 
 
-def _render_lane_table(entries: tuple[ValidationLaneEntry, ...]) -> list[str]:
+def _render_lane_table(entries: tuple[LaneEntry, ...]) -> list[str]:
     lines = [
         "| Lane | Timeout (s) | Description |",
         "| --- | ---: | --- |",
@@ -31,7 +31,7 @@ def _render_lane_table(entries: tuple[ValidationLaneEntry, ...]) -> list[str]:
     return lines
 
 
-def _render_composite_lane_table(entries: tuple[ValidationLaneEntry, ...]) -> list[str]:
+def _render_composite_lane_table(entries: tuple[LaneEntry, ...]) -> list[str]:
     lines = [
         "| Lane | Timeout (s) | Includes | Description |",
         "| --- | ---: | --- | --- |",
