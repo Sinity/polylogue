@@ -13,9 +13,12 @@
       "name": "help-main",
       "group": "structural",
       "description": "Main help screen",
-      "args": [
-        "--help"
-      ],
+      "execution": {
+        "kind": "polylogue",
+        "argv": [
+          "--help"
+        ]
+      },
       "validation": {
         "stdout_contains": [
           "polylogue"
@@ -28,10 +31,13 @@
       "name": "help-run",
       "group": "structural",
       "description": "Run subcommand help",
-      "args": [
-        "run",
-        "--help"
-      ],
+      "execution": {
+        "kind": "polylogue",
+        "argv": [
+          "run",
+          "--help"
+        ]
+      },
       "validation": {
         "stdout_contains": [
           "COMMAND1"
@@ -43,10 +49,13 @@
       "name": "help-doctor",
       "group": "structural",
       "description": "Doctor subcommand help",
-      "args": [
-        "doctor",
-        "--help"
-      ],
+      "execution": {
+        "kind": "polylogue",
+        "argv": [
+          "doctor",
+          "--help"
+        ]
+      },
       "validation": {
         "stdout_contains": [
           "--repair"
@@ -58,11 +67,14 @@
       "name": "help-audit-generate",
       "group": "structural",
       "description": "Audit generate subcommand help",
-      "args": [
-        "audit",
-        "generate",
-        "--help"
-      ],
+      "execution": {
+        "kind": "polylogue",
+        "argv": [
+          "audit",
+          "generate",
+          "--help"
+        ]
+      },
       "validation": {
         "stdout_contains": [
           "--seed"
@@ -74,10 +86,13 @@
       "name": "help-audit",
       "group": "structural",
       "description": "Audit subcommand help",
-      "args": [
-        "audit",
-        "--help"
-      ],
+      "execution": {
+        "kind": "polylogue",
+        "argv": [
+          "audit",
+          "--help"
+        ]
+      },
       "validation": {
         "stdout_contains": [
           "--live"
@@ -89,10 +104,13 @@
       "name": "help-tags",
       "group": "structural",
       "description": "Tags subcommand help",
-      "args": [
-        "tags",
-        "--help"
-      ],
+      "execution": {
+        "kind": "polylogue",
+        "argv": [
+          "tags",
+          "--help"
+        ]
+      },
       "validation": {
         "stdout_contains": [
           "--json"
@@ -104,11 +122,14 @@
       "name": "help-run-embed",
       "group": "structural",
       "description": "Run embed subcommand help",
-      "args": [
-        "run",
-        "embed",
-        "--help"
-      ],
+      "execution": {
+        "kind": "polylogue",
+        "argv": [
+          "run",
+          "embed",
+          "--help"
+        ]
+      },
       "validation": {
         "stdout_contains": [
           "--stats"
@@ -120,11 +141,14 @@
       "name": "help-run-site",
       "group": "structural",
       "description": "Run site stage help",
-      "args": [
-        "run",
-        "site",
-        "--help"
-      ],
+      "execution": {
+        "kind": "polylogue",
+        "argv": [
+          "run",
+          "site",
+          "--help"
+        ]
+      },
       "validation": {
         "stdout_contains": [
           "--output"
@@ -136,9 +160,12 @@
       "name": "version",
       "group": "structural",
       "description": "Version output",
-      "args": [
-        "--version"
-      ],
+      "execution": {
+        "kind": "polylogue",
+        "argv": [
+          "--version"
+        ]
+      },
       "validation": {
         "stdout_contains": [
           "polylogue"
@@ -150,11 +177,14 @@
       "name": "completions-bash",
       "group": "sources",
       "description": "Bash shell completions",
-      "args": [
-        "completions",
-        "--shell",
-        "bash"
-      ],
+      "execution": {
+        "kind": "polylogue",
+        "argv": [
+          "completions",
+          "--shell",
+          "bash"
+        ]
+      },
       "validation": {
         "stdout_contains": [
           "complete"
@@ -166,12 +196,15 @@
       "name": "run-preview",
       "group": "pipeline",
       "description": "Preview pipeline plan (seeded fixtures)",
-      "args": [
-        "run",
-        "--preview",
-        "--source",
-        "inbox"
-      ],
+      "execution": {
+        "kind": "polylogue",
+        "argv": [
+          "run",
+          "--preview",
+          "--source",
+          "inbox"
+        ]
+      },
       "env": "seeded",
       "vhs_capture": true
     },
@@ -179,14 +212,17 @@
       "name": "run-preview-reparse",
       "group": "pipeline",
       "description": "Preview force-reparse planning (seeded fixtures)",
-      "args": [
-        "run",
-        "--preview",
-        "--reparse",
-        "--source",
-        "inbox",
-        "parse"
-      ],
+      "execution": {
+        "kind": "polylogue",
+        "argv": [
+          "run",
+          "--preview",
+          "--reparse",
+          "--source",
+          "inbox",
+          "parse"
+        ]
+      },
       "validation": {
         "stdout_contains": [
           "Reparse requested."
@@ -217,10 +253,13 @@
       "name": "run-preview-live",
       "group": "pipeline",
       "description": "Preview pipeline against live sources",
-      "args": [
-        "run",
-        "--preview"
-      ],
+      "execution": {
+        "kind": "polylogue",
+        "argv": [
+          "run",
+          "--preview"
+        ]
+      },
       "validation": {
         "stdout_contains": [
           "Preview"
@@ -233,11 +272,14 @@
       "name": "run-all",
       "group": "pipeline",
       "description": "Run full pipeline (seeded fixtures)",
-      "args": [
-        "run",
-        "--source",
-        "inbox"
-      ],
+      "execution": {
+        "kind": "polylogue",
+        "argv": [
+          "run",
+          "--source",
+          "inbox"
+        ]
+      },
       "writes": true,
       "tier": 2,
       "env": "seeded"
@@ -246,12 +288,15 @@
       "name": "run-stage-render",
       "group": "pipeline",
       "description": "Run render stage only",
-      "args": [
-        "run",
-        "--source",
-        "inbox",
-        "render"
-      ],
+      "execution": {
+        "kind": "polylogue",
+        "argv": [
+          "run",
+          "--source",
+          "inbox",
+          "render"
+        ]
+      },
       "writes": true,
       "depends_on": "run-all",
       "tier": 2,
@@ -261,12 +306,15 @@
       "name": "run-stage-index",
       "group": "pipeline",
       "description": "Run index stage only",
-      "args": [
-        "run",
-        "--source",
-        "inbox",
-        "index"
-      ],
+      "execution": {
+        "kind": "polylogue",
+        "argv": [
+          "run",
+          "--source",
+          "inbox",
+          "index"
+        ]
+      },
       "writes": true,
       "depends_on": "run-all",
       "tier": 2,
@@ -282,24 +330,34 @@
         ]
       },
       "needs_data": true,
-      "vhs_capture": true
+      "vhs_capture": true,
+      "execution": {
+        "kind": "polylogue",
+        "argv": []
+      }
     },
     {
       "name": "stats-verbose",
       "group": "query-read",
       "description": "Verbose statistics",
-      "args": [
-        "-v"
-      ],
+      "execution": {
+        "kind": "polylogue",
+        "argv": [
+          "-v"
+        ]
+      },
       "needs_data": true
     },
     {
       "name": "query-list",
       "group": "query-read",
       "description": "List conversations",
-      "args": [
-        "list"
-      ],
+      "execution": {
+        "kind": "polylogue",
+        "argv": [
+          "list"
+        ]
+      },
       "validation": {
         "stdout_min_lines": 1
       },
@@ -310,11 +368,14 @@
       "name": "query-list-json",
       "group": "query-read",
       "description": "List conversations as JSON",
-      "args": [
-        "list",
-        "-f",
-        "json"
-      ],
+      "execution": {
+        "kind": "polylogue",
+        "argv": [
+          "list",
+          "-f",
+          "json"
+        ]
+      },
       "validation": {
         "custom": {
           "kind": "is_valid_json_array"
@@ -327,11 +388,14 @@
       "name": "query-list-csv",
       "group": "query-read",
       "description": "List conversations as CSV",
-      "args": [
-        "list",
-        "-f",
-        "csv"
-      ],
+      "execution": {
+        "kind": "polylogue",
+        "argv": [
+          "list",
+          "-f",
+          "csv"
+        ]
+      },
       "validation": {
         "stdout_contains": [
           "id"
@@ -344,11 +408,14 @@
       "name": "query-list-yaml",
       "group": "query-read",
       "description": "List conversations as YAML",
-      "args": [
-        "list",
-        "-f",
-        "yaml"
-      ],
+      "execution": {
+        "kind": "polylogue",
+        "argv": [
+          "list",
+          "-f",
+          "yaml"
+        ]
+      },
       "validation": {
         "stdout_contains": [
           "provider:"
@@ -360,9 +427,12 @@
       "name": "query-count",
       "group": "query-read",
       "description": "Count conversations",
-      "args": [
-        "count"
-      ],
+      "execution": {
+        "kind": "polylogue",
+        "argv": [
+          "count"
+        ]
+      },
       "validation": {
         "custom": {
           "kind": "is_integer"
@@ -374,9 +444,12 @@
       "name": "query-latest",
       "group": "query-read",
       "description": "Show latest conversation",
-      "args": [
-        "--latest"
-      ],
+      "execution": {
+        "kind": "polylogue",
+        "argv": [
+          "--latest"
+        ]
+      },
       "validation": {
         "stdout_min_lines": 1
       },
@@ -386,11 +459,14 @@
       "name": "query-latest-json",
       "group": "query-read",
       "description": "Latest conversation as JSON",
-      "args": [
-        "--latest",
-        "-f",
-        "json"
-      ],
+      "execution": {
+        "kind": "polylogue",
+        "argv": [
+          "--latest",
+          "-f",
+          "json"
+        ]
+      },
       "validation": {
         "stdout_is_valid_json": true
       },
@@ -401,11 +477,14 @@
       "name": "query-latest-md",
       "group": "query-read",
       "description": "Latest conversation as Markdown",
-      "args": [
-        "--latest",
-        "-f",
-        "markdown"
-      ],
+      "execution": {
+        "kind": "polylogue",
+        "argv": [
+          "--latest",
+          "-f",
+          "markdown"
+        ]
+      },
       "validation": {
         "stdout_contains": [
           "#"
@@ -419,11 +498,14 @@
       "name": "query-latest-html",
       "group": "query-read",
       "description": "Latest conversation as HTML",
-      "args": [
-        "--latest",
-        "-f",
-        "html"
-      ],
+      "execution": {
+        "kind": "polylogue",
+        "argv": [
+          "--latest",
+          "-f",
+          "html"
+        ]
+      },
       "validation": {
         "stdout_contains": [
           "<"
@@ -436,11 +518,14 @@
       "name": "query-latest-plaintext",
       "group": "query-read",
       "description": "Latest conversation as plaintext",
-      "args": [
-        "--latest",
-        "-f",
-        "plaintext"
-      ],
+      "execution": {
+        "kind": "polylogue",
+        "argv": [
+          "--latest",
+          "-f",
+          "plaintext"
+        ]
+      },
       "validation": {
         "stdout_min_lines": 1
       },
@@ -450,11 +535,14 @@
       "name": "query-latest-obsidian",
       "group": "query-read",
       "description": "Latest conversation as Obsidian note",
-      "args": [
-        "--latest",
-        "-f",
-        "obsidian"
-      ],
+      "execution": {
+        "kind": "polylogue",
+        "argv": [
+          "--latest",
+          "-f",
+          "obsidian"
+        ]
+      },
       "validation": {
         "stdout_contains": [
           "---"
@@ -467,11 +555,14 @@
       "name": "query-latest-org",
       "group": "query-read",
       "description": "Latest conversation as Org-mode",
-      "args": [
-        "--latest",
-        "-f",
-        "org"
-      ],
+      "execution": {
+        "kind": "polylogue",
+        "argv": [
+          "--latest",
+          "-f",
+          "org"
+        ]
+      },
       "validation": {
         "stdout_contains": [
           "#+TITLE"
@@ -484,11 +575,14 @@
       "name": "query-latest-csv",
       "group": "query-read",
       "description": "Latest conversation as CSV",
-      "args": [
-        "--latest",
-        "-f",
-        "csv"
-      ],
+      "execution": {
+        "kind": "polylogue",
+        "argv": [
+          "--latest",
+          "-f",
+          "csv"
+        ]
+      },
       "validation": {
         "stdout_contains": [
           "conversation_id"
@@ -501,22 +595,28 @@
       "name": "query-filter-provider",
       "group": "query-read",
       "description": "Filter by provider",
-      "args": [
-        "-p",
-        "chatgpt",
-        "list"
-      ],
+      "execution": {
+        "kind": "polylogue",
+        "argv": [
+          "-p",
+          "chatgpt",
+          "list"
+        ]
+      },
       "needs_data": true
     },
     {
       "name": "query-filter-since",
       "group": "query-read",
       "description": "Filter by date",
-      "args": [
-        "--since",
-        "2020-01-01",
-        "count"
-      ],
+      "execution": {
+        "kind": "polylogue",
+        "argv": [
+          "--since",
+          "2020-01-01",
+          "count"
+        ]
+      },
       "validation": {
         "custom": {
           "kind": "is_integer"
@@ -528,67 +628,85 @@
       "name": "query-sort-tokens",
       "group": "query-read",
       "description": "Sort by token count",
-      "args": [
-        "--sort",
-        "tokens",
-        "list",
-        "-n",
-        "3"
-      ],
+      "execution": {
+        "kind": "polylogue",
+        "argv": [
+          "--sort",
+          "tokens",
+          "list",
+          "-n",
+          "3"
+        ]
+      },
       "needs_data": true
     },
     {
       "name": "query-sort-messages",
       "group": "query-read",
       "description": "Sort by message count",
-      "args": [
-        "--sort",
-        "messages",
-        "list",
-        "-n",
-        "3"
-      ],
+      "execution": {
+        "kind": "polylogue",
+        "argv": [
+          "--sort",
+          "messages",
+          "list",
+          "-n",
+          "3"
+        ]
+      },
       "needs_data": true
     },
     {
       "name": "query-stats",
       "group": "query-read",
       "description": "Conversation statistics",
-      "args": [
-        "stats"
-      ],
+      "execution": {
+        "kind": "polylogue",
+        "argv": [
+          "stats"
+        ]
+      },
       "needs_data": true
     },
     {
       "name": "query-stats-by-provider",
       "group": "query-read",
       "description": "Statistics by provider",
-      "args": [
-        "stats",
-        "--by",
-        "provider"
-      ],
+      "execution": {
+        "kind": "polylogue",
+        "argv": [
+          "stats",
+          "--by",
+          "provider"
+        ]
+      },
       "needs_data": true
     },
     {
       "name": "query-stats-by-month",
       "group": "query-read",
       "description": "Statistics by month",
-      "args": [
-        "stats",
-        "--by",
-        "month"
-      ],
+      "execution": {
+        "kind": "polylogue",
+        "argv": [
+          "stats",
+          "--by",
+          "month"
+        ]
+      },
       "needs_data": true
     },
     {
       "name": "query-stream-latest",
       "group": "query-read",
       "description": "Stream latest conversation",
-      "args": [
-        "--stream",
-        "--latest"
-      ],
+      "execution": {
+        "kind": "polylogue",
+        "argv": [
+          "--stream",
+          "--latest"
+        ]
+      },
       "validation": {
         "stdout_min_lines": 1
       },
@@ -598,12 +716,15 @@
       "name": "query-stream-json",
       "group": "query-read",
       "description": "Stream latest as JSON lines",
-      "args": [
-        "--stream",
-        "--latest",
-        "-f",
-        "json"
-      ],
+      "execution": {
+        "kind": "polylogue",
+        "argv": [
+          "--stream",
+          "--latest",
+          "-f",
+          "json"
+        ]
+      },
       "validation": {
         "custom": {
           "kind": "each_line_valid_json"
@@ -616,19 +737,25 @@
       "name": "query-dialogue-only",
       "group": "query-read",
       "description": "Latest with dialogue only",
-      "args": [
-        "--latest",
-        "-d"
-      ],
+      "execution": {
+        "kind": "polylogue",
+        "argv": [
+          "--latest",
+          "-d"
+        ]
+      },
       "needs_data": true
     },
     {
       "name": "count-baseline",
       "group": "query-write",
       "description": "Baseline count before mutations",
-      "args": [
-        "count"
-      ],
+      "execution": {
+        "kind": "polylogue",
+        "argv": [
+          "count"
+        ]
+      },
       "validation": {
         "custom": {
           "kind": "is_integer"
@@ -643,11 +770,14 @@
       "name": "tag-add",
       "group": "query-write",
       "description": "Add tag to latest conversation",
-      "args": [
-        "--latest",
-        "--add-tag",
-        "showcase-test"
-      ],
+      "execution": {
+        "kind": "polylogue",
+        "argv": [
+          "--latest",
+          "--add-tag",
+          "showcase-test"
+        ]
+      },
       "needs_data": true,
       "writes": true,
       "depends_on": "count-baseline",
@@ -658,11 +788,14 @@
       "name": "tag-verify",
       "group": "query-write",
       "description": "Verify tag was added",
-      "args": [
-        "-t",
-        "showcase-test",
-        "count"
-      ],
+      "execution": {
+        "kind": "polylogue",
+        "argv": [
+          "-t",
+          "showcase-test",
+          "count"
+        ]
+      },
       "validation": {
         "custom": {
           "kind": "is_integer"
@@ -678,9 +811,12 @@
       "name": "tags-after-add",
       "group": "query-write",
       "description": "List tags after add",
-      "args": [
-        "tags"
-      ],
+      "execution": {
+        "kind": "polylogue",
+        "argv": [
+          "tags"
+        ]
+      },
       "needs_data": true,
       "writes": true,
       "depends_on": "tag-add",
@@ -691,12 +827,15 @@
       "name": "set-meta",
       "group": "query-write",
       "description": "Set metadata on conversation",
-      "args": [
-        "--latest",
-        "--set",
-        "note",
-        "exercise"
-      ],
+      "execution": {
+        "kind": "polylogue",
+        "argv": [
+          "--latest",
+          "--set",
+          "note",
+          "exercise"
+        ]
+      },
       "needs_data": true,
       "writes": true,
       "depends_on": "count-baseline",
@@ -707,13 +846,16 @@
       "name": "delete-dry-run",
       "group": "query-write",
       "description": "Dry-run delete",
-      "args": [
-        "-p",
-        "chatgpt",
-        "--latest",
-        "delete",
-        "--dry-run"
-      ],
+      "execution": {
+        "kind": "polylogue",
+        "argv": [
+          "-p",
+          "chatgpt",
+          "--latest",
+          "delete",
+          "--dry-run"
+        ]
+      },
       "needs_data": true,
       "writes": true,
       "depends_on": "count-baseline",
@@ -724,14 +866,17 @@
       "name": "delete-one",
       "group": "query-write",
       "description": "Delete one conversation",
-      "args": [
-        "-p",
-        "chatgpt",
-        "-n",
-        "1",
-        "delete",
-        "--force"
-      ],
+      "execution": {
+        "kind": "polylogue",
+        "argv": [
+          "-p",
+          "chatgpt",
+          "-n",
+          "1",
+          "delete",
+          "--force"
+        ]
+      },
       "needs_data": true,
       "writes": true,
       "depends_on": "count-baseline",
@@ -742,9 +887,12 @@
       "name": "count-decreased",
       "group": "query-write",
       "description": "Verify count decreased after delete",
-      "args": [
-        "count"
-      ],
+      "execution": {
+        "kind": "polylogue",
+        "argv": [
+          "count"
+        ]
+      },
       "validation": {
         "custom": {
           "kind": "is_integer"
@@ -760,9 +908,12 @@
       "name": "doctor-health",
       "group": "subcommands",
       "description": "Health check",
-      "args": [
-        "doctor"
-      ],
+      "execution": {
+        "kind": "polylogue",
+        "argv": [
+          "doctor"
+        ]
+      },
       "validation": {
         "stdout_contains": [
           "ok"
@@ -775,10 +926,13 @@
       "name": "doctor-json",
       "group": "subcommands",
       "description": "Health check as JSON",
-      "args": [
-        "doctor",
-        "--json"
-      ],
+      "execution": {
+        "kind": "polylogue",
+        "argv": [
+          "doctor",
+          "--json"
+        ]
+      },
       "validation": {
         "stdout_is_valid_json": true
       },
@@ -789,21 +943,27 @@
       "name": "doctor-verbose",
       "group": "subcommands",
       "description": "Verbose health check",
-      "args": [
-        "doctor",
-        "-v"
-      ],
+      "execution": {
+        "kind": "polylogue",
+        "argv": [
+          "doctor",
+          "-v"
+        ]
+      },
       "needs_data": true
     },
     {
       "name": "doctor-proof-json",
       "group": "subcommands",
       "description": "Artifact proof as JSON",
-      "args": [
-        "doctor",
-        "--json",
-        "--proof"
-      ],
+      "execution": {
+        "kind": "polylogue",
+        "argv": [
+          "doctor",
+          "--json",
+          "--proof"
+        ]
+      },
       "validation": {
         "stdout_is_valid_json": true
       },
@@ -814,11 +974,14 @@
       "name": "doctor-cohorts-json",
       "group": "subcommands",
       "description": "Artifact cohorts as JSON",
-      "args": [
-        "doctor",
-        "--json",
-        "--cohorts"
-      ],
+      "execution": {
+        "kind": "polylogue",
+        "argv": [
+          "doctor",
+          "--json",
+          "--cohorts"
+        ]
+      },
       "validation": {
         "stdout_is_valid_json": true
       },
@@ -829,21 +992,27 @@
       "name": "embed-stats",
       "group": "subcommands",
       "description": "Embedding statistics",
-      "args": [
-        "run",
-        "embed",
-        "--stats"
-      ],
+      "execution": {
+        "kind": "polylogue",
+        "argv": [
+          "run",
+          "embed",
+          "--stats"
+        ]
+      },
       "needs_data": true
     },
     {
       "name": "tags-json",
       "group": "subcommands",
       "description": "Tags as JSON",
-      "args": [
-        "tags",
-        "--json"
-      ],
+      "execution": {
+        "kind": "polylogue",
+        "argv": [
+          "tags",
+          "--json"
+        ]
+      },
       "validation": {
         "stdout_is_valid_json": true
       },
@@ -854,10 +1023,13 @@
       "name": "site-generate",
       "group": "subcommands",
       "description": "Generate static site via run stage",
-      "args": [
-        "run",
-        "site"
-      ],
+      "execution": {
+        "kind": "polylogue",
+        "argv": [
+          "run",
+          "site"
+        ]
+      },
       "validation": {
         "stdout_contains": [
           "site"
@@ -872,15 +1044,18 @@
       "name": "combined-filters",
       "group": "advanced",
       "description": "Combined provider + date filter",
-      "args": [
-        "-p",
-        "chatgpt",
-        "--since",
-        "2020-01-01",
-        "list",
-        "-f",
-        "json"
-      ],
+      "execution": {
+        "kind": "polylogue",
+        "argv": [
+          "-p",
+          "chatgpt",
+          "--since",
+          "2020-01-01",
+          "list",
+          "-f",
+          "json"
+        ]
+      },
       "validation": {
         "custom": {
           "kind": "is_valid_json_array"
@@ -894,14 +1069,17 @@
       "name": "reverse-sort",
       "group": "advanced",
       "description": "Reverse sort by date",
-      "args": [
-        "--sort",
-        "date",
-        "--reverse",
-        "list",
-        "-n",
-        "3"
-      ],
+      "execution": {
+        "kind": "polylogue",
+        "argv": [
+          "--sort",
+          "date",
+          "--reverse",
+          "list",
+          "-n",
+          "3"
+        ]
+      },
       "needs_data": true,
       "tier": 2
     },
@@ -909,11 +1087,14 @@
       "name": "exclude-provider",
       "group": "advanced",
       "description": "Exclude a provider",
-      "args": [
-        "--exclude-provider",
-        "gemini",
-        "count"
-      ],
+      "execution": {
+        "kind": "polylogue",
+        "argv": [
+          "--exclude-provider",
+          "gemini",
+          "count"
+        ]
+      },
       "validation": {
         "custom": {
           "kind": "is_integer"
@@ -926,13 +1107,16 @@
       "name": "fields-selector",
       "group": "advanced",
       "description": "Select specific JSON fields",
-      "args": [
-        "list",
-        "-f",
-        "json",
-        "--fields",
-        "id,title,provider"
-      ],
+      "execution": {
+        "kind": "polylogue",
+        "argv": [
+          "list",
+          "-f",
+          "json",
+          "--fields",
+          "id,title,provider"
+        ]
+      },
       "validation": {
         "custom": {
           "kind": "json_only_fields",
@@ -951,11 +1135,14 @@
       "name": "transform-strip",
       "group": "advanced",
       "description": "Strip tool calls from output",
-      "args": [
-        "--latest",
-        "--transform",
-        "strip-all"
-      ],
+      "execution": {
+        "kind": "polylogue",
+        "argv": [
+          "--latest",
+          "--transform",
+          "strip-all"
+        ]
+      },
       "needs_data": true,
       "tier": 2,
       "timeout_s": 300.0
@@ -964,11 +1151,14 @@
       "name": "sample-random",
       "group": "advanced",
       "description": "Random sample of conversations",
-      "args": [
-        "--sample",
-        "2",
-        "list"
-      ],
+      "execution": {
+        "kind": "polylogue",
+        "argv": [
+          "--sample",
+          "2",
+          "list"
+        ]
+      },
       "needs_data": true,
       "tier": 2
     },
@@ -976,10 +1166,13 @@
       "name": "query-search-term",
       "group": "advanced",
       "description": "Full-text search",
-      "args": [
-        "implementation",
-        "list"
-      ],
+      "execution": {
+        "kind": "polylogue",
+        "argv": [
+          "implementation",
+          "list"
+        ]
+      },
       "validation": {
         "exit_code": null,
         "custom": {

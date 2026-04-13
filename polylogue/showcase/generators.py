@@ -184,7 +184,7 @@ _JSON_CONTRACT_SPECS: tuple[dict[str, Any], ...] = (
     {
         "name": "json-doctor",
         "path": ("doctor",),
-        "args": ["doctor", "--json"],
+        "execution": polylogue_execution("doctor", "--json"),
         "needs_data": False,
         "tier": 0,
         "env": "any",
@@ -192,7 +192,14 @@ _JSON_CONTRACT_SPECS: tuple[dict[str, Any], ...] = (
     {
         "name": "json-doctor-action-event-preview",
         "path": ("doctor",),
-        "args": ["doctor", "--json", "--repair", "--preview", "--target", "action_event_read_model"],
+        "execution": polylogue_execution(
+            "doctor",
+            "--json",
+            "--repair",
+            "--preview",
+            "--target",
+            "action_event_read_model",
+        ),
         "needs_data": False,
         "tier": 0,
         "env": "any",
@@ -204,7 +211,14 @@ _JSON_CONTRACT_SPECS: tuple[dict[str, Any], ...] = (
     {
         "name": "json-doctor-session-products-preview",
         "path": ("doctor",),
-        "args": ["doctor", "--json", "--repair", "--preview", "--target", "session_products"],
+        "execution": polylogue_execution(
+            "doctor",
+            "--json",
+            "--repair",
+            "--preview",
+            "--target",
+            "session_products",
+        ),
         "needs_data": False,
         "tier": 0,
         "env": "any",
@@ -216,7 +230,7 @@ _JSON_CONTRACT_SPECS: tuple[dict[str, Any], ...] = (
     {
         "name": "json-tags",
         "path": ("tags",),
-        "args": ["tags", "--json"],
+        "execution": polylogue_execution("tags", "--json"),
         "needs_data": False,
         "tier": 0,
         "env": "any",
@@ -224,7 +238,7 @@ _JSON_CONTRACT_SPECS: tuple[dict[str, Any], ...] = (
     {
         "name": "json-audit",
         "path": ("audit",),
-        "args": ["audit", "--only", "audit", "--json"],
+        "execution": polylogue_execution("audit", "--only", "audit", "--json"),
         "needs_data": False,
         "tier": 0,
         "env": "any",
@@ -232,7 +246,7 @@ _JSON_CONTRACT_SPECS: tuple[dict[str, Any], ...] = (
     {
         "name": "json-schema-list",
         "path": ("schema", "list"),
-        "args": ["schema", "list", "--json"],
+        "execution": polylogue_execution("schema", "list", "--json"),
         "needs_data": False,
         "tier": 0,
         "env": "any",
@@ -240,7 +254,7 @@ _JSON_CONTRACT_SPECS: tuple[dict[str, Any], ...] = (
     {
         "name": "json-schema-audit",
         "path": ("schema", "audit"),
-        "args": ["schema", "audit", "--json"],
+        "execution": polylogue_execution("schema", "audit", "--json"),
         "needs_data": False,
         "tier": 0,
         "env": "any",
@@ -248,7 +262,7 @@ _JSON_CONTRACT_SPECS: tuple[dict[str, Any], ...] = (
     {
         "name": "json-products-profiles",
         "path": ("products", "profiles"),
-        "args": ["products", "profiles", "--json"],
+        "execution": polylogue_execution("products", "profiles", "--json"),
         "needs_data": True,
         "tier": 1,
         "env": "seeded",
@@ -256,7 +270,7 @@ _JSON_CONTRACT_SPECS: tuple[dict[str, Any], ...] = (
     {
         "name": "json-products-work-events",
         "path": ("products", "work-events"),
-        "args": ["products", "work-events", "--json"],
+        "execution": polylogue_execution("products", "work-events", "--json"),
         "needs_data": True,
         "tier": 1,
         "env": "seeded",
@@ -264,7 +278,7 @@ _JSON_CONTRACT_SPECS: tuple[dict[str, Any], ...] = (
     {
         "name": "json-products-phases",
         "path": ("products", "phases"),
-        "args": ["products", "phases", "--json"],
+        "execution": polylogue_execution("products", "phases", "--json"),
         "needs_data": True,
         "tier": 1,
         "env": "seeded",
@@ -272,7 +286,7 @@ _JSON_CONTRACT_SPECS: tuple[dict[str, Any], ...] = (
     {
         "name": "json-products-threads",
         "path": ("products", "threads"),
-        "args": ["products", "threads", "--json"],
+        "execution": polylogue_execution("products", "threads", "--json"),
         "needs_data": True,
         "tier": 1,
         "env": "seeded",
@@ -280,7 +294,7 @@ _JSON_CONTRACT_SPECS: tuple[dict[str, Any], ...] = (
     {
         "name": "json-products-tags",
         "path": ("products", "tags"),
-        "args": ["products", "tags", "--json"],
+        "execution": polylogue_execution("products", "tags", "--json"),
         "needs_data": True,
         "tier": 1,
         "env": "seeded",
@@ -288,7 +302,7 @@ _JSON_CONTRACT_SPECS: tuple[dict[str, Any], ...] = (
     {
         "name": "json-products-day-summaries",
         "path": ("products", "day-summaries"),
-        "args": ["products", "day-summaries", "--json"],
+        "execution": polylogue_execution("products", "day-summaries", "--json"),
         "needs_data": True,
         "tier": 1,
         "env": "seeded",
@@ -296,7 +310,7 @@ _JSON_CONTRACT_SPECS: tuple[dict[str, Any], ...] = (
     {
         "name": "json-products-week-summaries",
         "path": ("products", "week-summaries"),
-        "args": ["products", "week-summaries", "--json"],
+        "execution": polylogue_execution("products", "week-summaries", "--json"),
         "needs_data": True,
         "tier": 1,
         "env": "seeded",
@@ -304,7 +318,7 @@ _JSON_CONTRACT_SPECS: tuple[dict[str, Any], ...] = (
     {
         "name": "json-products-analytics",
         "path": ("products", "analytics"),
-        "args": ["products", "analytics", "--json"],
+        "execution": polylogue_execution("products", "analytics", "--json"),
         "needs_data": True,
         "tier": 1,
         "env": "seeded",
@@ -312,7 +326,7 @@ _JSON_CONTRACT_SPECS: tuple[dict[str, Any], ...] = (
     {
         "name": "json-run-embed",
         "path": ("run", "embed"),
-        "args": ["run", "embed", "--stats", "--json"],
+        "execution": polylogue_execution("run", "embed", "--stats", "--json"),
         "needs_data": True,
         "tier": 1,
         "env": "seeded",
@@ -352,7 +366,7 @@ def generate_json_contract_scenarios() -> tuple[ExerciseScenario, ...]:
                     name=str(spec.get("name", f"json-{'-'.join(cp.path)}")),
                     group="subcommands",
                     description=f"{cp.display_name} JSON contract",
-                    execution=polylogue_execution(*spec["args"]),
+                    execution=spec["execution"],
                     validation=Validation(stdout_is_valid_json=True),
                     needs_data=bool(spec["needs_data"]),
                     tier=int(spec["tier"]),
