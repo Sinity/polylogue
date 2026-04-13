@@ -6,9 +6,11 @@ import pytest
 
 from devtools.benchmark_campaigns import (
     CAMPAIGN_REGISTRY,
+    run_synthetic_benchmark_campaign,
+)
+from devtools.synthetic_benchmark_catalog import (
     SYNTHETIC_BENCHMARK_REGISTRY,
     SYNTHETIC_BENCHMARK_SCENARIOS,
-    run_synthetic_benchmark_campaign,
 )
 
 
