@@ -66,17 +66,6 @@ def test_build_document_includes_live_registry_sections() -> None:
                 tests=(),
             ),
         ),
-        inferred_corpus_specs=(
-            CorpusSpec.for_provider(
-                "chatgpt",
-                package_version="v1",
-                count=3,
-                messages_min=4,
-                messages_max=16,
-                origin="inferred.schema",
-                tags=("inferred", "schema", "synthetic"),
-            ),
-        ),
         scenario_projections=(
             ScenarioProjectionEntry(
                 source_kind=ScenarioProjectionSourceKind.EXERCISE,
@@ -103,6 +92,15 @@ def test_build_document_includes_live_registry_sections() -> None:
                 description="Inferred synthetic corpus spec for chatgpt default.",
                 origin="inferred.schema",
                 tags=("inferred", "schema", "synthetic"),
+                source_payload=CorpusSpec.for_provider(
+                    "chatgpt",
+                    package_version="v1",
+                    count=3,
+                    messages_min=4,
+                    messages_max=16,
+                    origin="inferred.schema",
+                    tags=("inferred", "schema", "synthetic"),
+                ).to_payload(),
             ),
         ),
     )
@@ -138,7 +136,6 @@ def test_build_document_includes_runtime_coverage_section() -> None:
         mutation_campaigns=(),
         benchmark_campaigns=(),
         synthetic_benchmark_campaigns=(),
-        inferred_corpus_specs=(),
         scenario_projections=(),
     )
     coverage = RuntimeScenarioCoverage(
