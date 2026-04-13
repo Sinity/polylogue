@@ -12,14 +12,14 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from .benchmark_scenario_catalog import BENCHMARK_CAMPAIGNS as CAMPAIGNS
-from .benchmark_scenario_catalog import Campaign
+from .benchmark_catalog import BenchmarkCampaignEntry, build_benchmark_entries
 
 ROOT = Path(__file__).resolve().parent.parent
 ARTIFACT_DIR = Path(".local/benchmark-campaigns")
 STATUS_IGNORE_PREFIXES = (f"{ARTIFACT_DIR.as_posix()}/",)
 DEFAULT_WARN_PCT = 10.0
 DEFAULT_FAIL_PCT = 20.0
+CAMPAIGNS = {entry.name: entry for entry in build_benchmark_entries()}
 
 
 @dataclass(frozen=True)
@@ -203,7 +203,7 @@ def _render_markdown(result: CampaignResult) -> str:
 
 
 def run_campaign(
-    campaign: Campaign,
+    campaign: BenchmarkCampaignEntry,
     *,
     json_out: Path | None,
     markdown_out: Path | None,
