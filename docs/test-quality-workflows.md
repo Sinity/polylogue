@@ -13,6 +13,7 @@ Current registry snapshot:
 - composite lanes: `23`
 - mutation campaigns: `19`
 - benchmark campaigns: `3`
+- synthetic benchmark campaigns: `4`
 
 ## Common Commands
 
@@ -57,6 +58,8 @@ devtools benchmark-campaign compare \
   .local/benchmark-campaigns/<baseline>.json \
   .local/benchmark-campaigns/<candidate>.json
 devtools benchmark-campaign index
+devtools run-benchmark-campaigns --list
+devtools run-benchmark-campaigns --scale medium --campaign <campaign>
 ```
 
 ### Fast pipeline probes
@@ -194,6 +197,17 @@ Benchmark comparisons are manual.
 | `pipeline` | `tests/benchmarks/test_pipeline.py` | 10.0% | 20.0% | Index rebuild/update plus hashing/semantic helper benchmark domain |
 | `search-filters` | `tests/benchmarks/test_search_filters.py` | 10.0% | 20.0% | FTS and ConversationFilter benchmark domain |
 | `storage` | `tests/benchmarks/test_storage.py` | 10.0% | 20.0% | Repository/backend list/get-many/save benchmark domain |
+
+## Synthetic Benchmark Campaign Catalog
+
+These campaigns generate synthetic archives and run long-haul benchmark workloads through `devtools run-benchmark-campaigns`.
+
+| Campaign | Tests | Warn | Fail | Description |
+| --- | --- | ---: | ---: | --- |
+| `filter-scan` | — | 0.0% | 0.0% | Benchmark common filter query patterns |
+| `fts-rebuild` | — | 0.0% | 0.0% | Benchmark full FTS5 index rebuild |
+| `incremental-index` | — | 0.0% | 0.0% | Benchmark incremental FTS index updates |
+| `startup-health` | — | 0.0% | 0.0% | Benchmark check --runtime startup speed |
 
 ## Artifact Locations
 

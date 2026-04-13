@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from devtools.benchmark_campaign import CAMPAIGNS as BENCHMARK_CAMPAIGNS
+from devtools.benchmark_campaigns import SYNTHETIC_BENCHMARK_SCENARIOS
 from devtools.mutmut_campaign import CAMPAIGNS as MUTATION_CAMPAIGNS
 from devtools.validation_lane_base import LaneConfig
 from devtools.validation_lane_catalog_composites import COMPOSITE_LANES
@@ -48,6 +49,7 @@ class QualityRegistry:
     composite_lanes: tuple[ValidationLaneEntry, ...]
     mutation_campaigns: tuple[MutationCampaignEntry, ...]
     benchmark_campaigns: tuple[BenchmarkCampaignEntry, ...]
+    synthetic_benchmark_campaigns: tuple[BenchmarkCampaignEntry, ...]
 
 
 def _lane_entries(category: str, lanes: dict[str, LaneConfig]) -> tuple[ValidationLaneEntry, ...]:
@@ -97,6 +99,23 @@ def _benchmark_entries() -> tuple[BenchmarkCampaignEntry, ...]:
     return tuple(sorted(entries, key=lambda item: item.name))
 
 
+def _synthetic_benchmark_entries() -> tuple[BenchmarkCampaignEntry, ...]:
+    entries = [
+        BenchmarkCampaignEntry(
+            name=scenario.scenario_id,
+            description=scenario.description,
+            tests=(),
+            notes=(),
+            origin=scenario.origin,
+            artifact_targets=scenario.artifact_targets,
+            operation_targets=scenario.operation_targets,
+            tags=scenario.tags,
+        )
+        for scenario in SYNTHETIC_BENCHMARK_SCENARIOS
+    ]
+    return tuple(sorted(entries, key=lambda item: item.name))
+
+
 def build_quality_registry() -> QualityRegistry:
     return QualityRegistry(
         contract_lanes=_lane_entries("contract", CONTRACT_LANES),
@@ -104,6 +123,7 @@ def build_quality_registry() -> QualityRegistry:
         composite_lanes=_lane_entries("composite", COMPOSITE_LANES),
         mutation_campaigns=_mutation_entries(),
         benchmark_campaigns=_benchmark_entries(),
+        synthetic_benchmark_campaigns=_synthetic_benchmark_entries(),
     )
 
 
