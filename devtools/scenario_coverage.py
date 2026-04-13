@@ -96,11 +96,7 @@ def build_runtime_scenario_coverage(*, registry: QualityRegistry | None = None) 
     }
     path_coverage: dict[str, RuntimePathCoverage] = {}
     for path in graph.paths:
-        relevant_operations = tuple(
-            operation.name
-            for operation in graph.operations
-            if set(operation.consumes).union(operation.produces).intersection(path.nodes)
-        )
+        relevant_operations = tuple(operation.name for operation in graph.operations_for_path(path))
         refs = {
             *(
                 ref

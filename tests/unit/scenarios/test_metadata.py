@@ -4,9 +4,9 @@ from unittest.mock import MagicMock
 
 from polylogue.scenarios import (
     ScenarioMetadata,
+    runtime_artifact_graph,
     runtime_artifact_target_names,
     runtime_operation_target_names,
-    runtime_target_catalog,
 )
 
 
@@ -68,11 +68,11 @@ def test_scenario_metadata_resolves_only_runtime_declared_targets() -> None:
     assert metadata.runtime_operation_targets() == ("project-action-event-health",)
 
 
-def test_runtime_target_catalog_exposes_resolved_specs() -> None:
-    catalog = runtime_target_catalog()
+def test_runtime_artifact_graph_exposes_resolved_specs() -> None:
+    graph = runtime_artifact_graph()
 
-    assert "action_event_rows" in catalog.artifact_names()
-    assert "materialize-session-products" in catalog.operation_names()
+    assert "action_event_rows" in graph.artifact_names()
+    assert "materialize-session-products" in graph.operation_names()
 
 
 def test_scenario_metadata_resolves_runtime_specs() -> None:
