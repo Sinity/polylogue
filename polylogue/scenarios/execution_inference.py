@@ -162,7 +162,11 @@ def _infer_devtools_metadata(execution: ExecutionSpec) -> ScenarioMetadata:
     if execution.subcommand == "pipeline-probe":
         stage = _find_flag_value(execution.argv, "--stage") or "all"
         if stage == "parse":
-            return _metadata_for_operations("plan-parse-backlog")
+            return _metadata_for_operations(
+                "plan-validation-backlog",
+                "plan-parse-backlog",
+                "ingest-archive-runtime",
+            )
     return ScenarioMetadata()
 
 

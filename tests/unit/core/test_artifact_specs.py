@@ -12,6 +12,7 @@ def test_runtime_artifact_specs_expose_the_curated_vertical_paths() -> None:
         "validation_backlog",
         "parse_backlog",
         "parse_quarantine",
+        "archive_conversation_rows",
         "tool_use_source_blocks",
         "action_event_rows",
         "action_event_fts",
@@ -40,11 +41,13 @@ def test_runtime_artifact_specs_expose_the_curated_vertical_paths() -> None:
     }
     assert {path.name for path in paths} == {
         "raw-reparse-loop",
+        "raw-archive-ingest-loop",
         "action-event-repair-loop",
         "session-product-repair-loop",
         "message-fts-health-loop",
         "conversation-query-loop",
         "session-profile-query-loop",
+        "session-enrichment-query-loop",
         "session-work-event-query-loop",
         "session-phase-query-loop",
         "work-thread-query-loop",
@@ -52,6 +55,8 @@ def test_runtime_artifact_specs_expose_the_curated_vertical_paths() -> None:
         "day-summary-query-loop",
         "week-summary-query-loop",
         "provider-analytics-query-loop",
+        "session-product-status-query-loop",
+        "archive-debt-query-loop",
     }
 
 
