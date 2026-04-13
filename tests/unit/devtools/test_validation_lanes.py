@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from devtools.execution_specs import ExecutionKind
 from devtools.run_validation_lanes import (
     LANES,
     VALID_LANES,
@@ -41,6 +42,7 @@ class TestLaneParsing:
     def test_machine_contract_lane_carries_shared_operation_metadata(self):
         lane = LANES["machine-contract"]
 
+        assert lane.execution.kind is ExecutionKind.COMMAND
         assert lane.operation_targets == ("cli.json-contract",)
         assert lane.tags == ("contract", "json", "cli")
 
