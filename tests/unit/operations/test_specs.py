@@ -19,12 +19,15 @@ def test_runtime_operation_catalog_covers_the_two_proven_paths() -> None:
         "project-session-product-health",
     }
     assert specs["plan-validation-backlog"].kind is OperationKind.PLANNING
+    assert specs["plan-validation-backlog"].path_targets == ("raw-reparse-loop",)
     assert specs["materialize-action-events"].kind is OperationKind.MATERIALIZATION
     assert specs["materialize-action-events"].mutates_state is True
     assert specs["materialize-action-events"].produces == ("action_event_rows", "action_event_fts")
+    assert specs["materialize-action-events"].path_targets == ("action-event-repair-loop",)
     assert specs["materialize-session-products"].kind is OperationKind.MATERIALIZATION
     assert specs["materialize-session-products"].mutates_state is True
     assert specs["materialize-session-products"].produces == ("session_product_rows", "session_product_fts")
+    assert specs["materialize-session-products"].path_targets == ("session-product-repair-loop",)
     assert specs["project-action-event-health"].previewable is True
     assert specs["project-session-product-health"].previewable is True
 
