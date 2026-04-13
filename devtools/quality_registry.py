@@ -15,7 +15,6 @@ from devtools.validation_lane_catalog_live import LIVE_LANES
 from polylogue.scenarios import (
     ScenarioMetadata,
     ScenarioProjectionEntry,
-    ScenarioProjectionSourceKind,
 )
 
 
@@ -140,8 +139,6 @@ __all__ = [
     "BenchmarkCampaignEntry",
     "MutationCampaignEntry",
     "QualityRegistry",
-    "ScenarioProjectionEntry",
-    "ScenarioProjectionSourceKind",
     "ValidationLaneEntry",
     "build_quality_registry",
 ]
