@@ -9,7 +9,7 @@ from polylogue.showcase.scenario_models import ExerciseScenario, compile_exercis
 
 def test_exercise_scenario_compiles_to_exercise() -> None:
     scenario = ExerciseScenario(
-        scenario_id="json-doctor",
+        name="json-doctor",
         group="subcommands",
         description="doctor JSON contract",
         args=("doctor", "--json"),
@@ -38,8 +38,8 @@ def test_exercise_scenario_compiles_to_exercise() -> None:
 
 def test_compile_exercise_scenarios_preserves_order() -> None:
     scenarios = (
-        ExerciseScenario(scenario_id="a", group="structural", description="A"),
-        ExerciseScenario(scenario_id="b", group="structural", description="B"),
+        ExerciseScenario(name="a", group="structural", description="A"),
+        ExerciseScenario(name="b", group="structural", description="B"),
     )
 
     exercises = compile_exercise_scenarios(scenarios)
@@ -49,7 +49,7 @@ def test_compile_exercise_scenarios_preserves_order() -> None:
 
 def test_exercise_scenario_compiles_its_own_projection_entry() -> None:
     scenario = ExerciseScenario(
-        scenario_id="json-doctor",
+        name="json-doctor",
         group="subcommands",
         description="doctor JSON contract",
         origin="generated.json-contract",

@@ -12,6 +12,7 @@ class ExecutionKind(str, Enum):
     COMMAND = "command"
     PYTEST = "pytest"
     COMPOSITE = "composite"
+    RUNNER = "runner"
 
 
 @dataclass(frozen=True, slots=True)
@@ -21,14 +22,19 @@ class ExecutionSpec:
     kind: ExecutionKind
     argv: tuple[str, ...] = ()
     members: tuple[str, ...] = ()
+    runner: str = ""
 
     @property
     def is_composite(self) -> bool:
         return self.kind is ExecutionKind.COMPOSITE
 
     @property
+    def is_runner(self) -> bool:
+        return self.kind is ExecutionKind.RUNNER
+
+    @property
     def command(self) -> tuple[str, ...] | None:
-        if self.is_composite:
+        if self.is_composite or self.is_runner:
             return None
         return self.argv
 
@@ -51,10 +57,15 @@ def composite_execution(*members: str) -> ExecutionSpec:
     return ExecutionSpec(kind=ExecutionKind.COMPOSITE, members=tuple(members))
 
 
+def runner_execution(runner: str) -> ExecutionSpec:
+    return ExecutionSpec(kind=ExecutionKind.RUNNER, runner=runner)
+
+
 __all__ = [
     "command_execution",
     "composite_execution",
     "ExecutionKind",
     "ExecutionSpec",
     "pytest_execution",
+    "runner_execution",
 ]

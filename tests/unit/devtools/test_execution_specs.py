@@ -5,6 +5,7 @@ from devtools.execution_specs import (
     command_execution,
     composite_execution,
     pytest_execution,
+    runner_execution,
 )
 
 
@@ -32,3 +33,13 @@ def test_composite_execution_has_members_only() -> None:
     assert execution.is_composite is True
     assert execution.command is None
     assert execution.members == ("lane-a", "lane-b")
+
+
+def test_runner_execution_has_runner_only() -> None:
+    execution = runner_execution("startup-health")
+
+    assert execution.kind is ExecutionKind.RUNNER
+    assert execution.is_runner is True
+    assert execution.command is None
+    assert execution.pytest_targets == ()
+    assert execution.runner == "startup-health"

@@ -4,44 +4,24 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from devtools.execution_specs import ExecutionSpec
-from polylogue.scenarios import ScenarioMetadata, ScenarioProjectionSource, ScenarioProjectionSourceKind
+from devtools.executable_scenarios import ExecutableScenario
+from polylogue.scenarios import ScenarioProjectionSourceKind
 
 
-@dataclass(frozen=True)
-class LaneEntry(ScenarioProjectionSource, ScenarioMetadata):
+@dataclass(frozen=True, kw_only=True)
+class LaneEntry(ExecutableScenario):
     """One named control-plane lane."""
 
-    name: str
-    description: str
     timeout_s: int
     category: str
-    execution: ExecutionSpec
 
     @property
     def projection_source_kind(self) -> ScenarioProjectionSourceKind:
         return ScenarioProjectionSourceKind.VALIDATION_LANE
 
     @property
-    def projection_name(self) -> str:
-        return self.name
-
-    @property
-    def projection_description(self) -> str:
-        return self.description
-
-    @property
-    def is_composite(self) -> bool:
-        return self.execution.is_composite
-
-    @property
-    def command(self) -> list[str] | None:
-        command = self.execution.command
-        return list(command) if command is not None else None
-
-    @property
     def sub_lanes(self) -> tuple[str, ...]:
-        return self.execution.members
+        return self.members
 
 
 __all__ = ["LaneEntry"]

@@ -189,9 +189,9 @@ class TestExercisesByGroup:
         )
 
     def test_exported_qa_extra_roots_match_generated_family(self):
-        expected_names = [scenario.scenario_id for scenario in generate_qa_extra_scenarios()]
+        expected_names = [scenario.name for scenario in generate_qa_extra_scenarios()]
 
-        assert [scenario.scenario_id for scenario in QA_EXTRA_SCENARIOS] == expected_names
+        assert [scenario.name for scenario in QA_EXTRA_SCENARIOS] == expected_names
         assert [exercise.name for exercise in QA_EXTRA_EXERCISES] == expected_names
 
 

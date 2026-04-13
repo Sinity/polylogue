@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 from devtools.benchmark_models import BenchmarkCampaignEntry, compile_benchmark_campaigns
+from devtools.execution_specs import runner_execution
 from polylogue.scenarios import ScenarioProjectionSourceKind
 
 SYNTHETIC_BENCHMARK_SCENARIOS: tuple[BenchmarkCampaignEntry, ...] = (
     BenchmarkCampaignEntry(
         name="fts-rebuild",
         description="Benchmark full FTS5 index rebuild",
-        runner_name="fts-rebuild",
+        execution=runner_execution("fts-rebuild"),
         summary_metric="rebuild_wall_s",
         summary_label="s",
         scale_targets=("small", "medium", "large", "stretch"),
@@ -22,7 +23,7 @@ SYNTHETIC_BENCHMARK_SCENARIOS: tuple[BenchmarkCampaignEntry, ...] = (
     BenchmarkCampaignEntry(
         name="incremental-index",
         description="Benchmark incremental FTS index updates",
-        runner_name="incremental-index",
+        execution=runner_execution("incremental-index"),
         summary_metric="total_wall_s",
         summary_label="s",
         scale_targets=("small", "medium", "large", "stretch"),
@@ -35,7 +36,7 @@ SYNTHETIC_BENCHMARK_SCENARIOS: tuple[BenchmarkCampaignEntry, ...] = (
     BenchmarkCampaignEntry(
         name="filter-scan",
         description="Benchmark common filter query patterns",
-        runner_name="filter-scan",
+        execution=runner_execution("filter-scan"),
         summary_metric="list_50_wall_s",
         summary_label="s",
         scale_targets=("small", "medium", "large", "stretch"),
@@ -48,7 +49,7 @@ SYNTHETIC_BENCHMARK_SCENARIOS: tuple[BenchmarkCampaignEntry, ...] = (
     BenchmarkCampaignEntry(
         name="startup-health",
         description="Benchmark check --runtime startup speed",
-        runner_name="startup-health",
+        execution=runner_execution("startup-health"),
         summary_metric="total_health_s",
         summary_label="s",
         scale_targets=("small", "medium", "large", "stretch"),
@@ -61,7 +62,7 @@ SYNTHETIC_BENCHMARK_SCENARIOS: tuple[BenchmarkCampaignEntry, ...] = (
     BenchmarkCampaignEntry(
         name="action-event-materialization",
         description="Benchmark action-event read-model rebuild over synthetic tool-use transcripts",
-        runner_name="action-event-materialization",
+        execution=runner_execution("action-event-materialization"),
         summary_metric="rebuild_wall_s",
         summary_label="s",
         scale_targets=("small", "medium", "large", "stretch"),
@@ -74,7 +75,7 @@ SYNTHETIC_BENCHMARK_SCENARIOS: tuple[BenchmarkCampaignEntry, ...] = (
     BenchmarkCampaignEntry(
         name="session-product-materialization",
         description="Benchmark durable session-product rebuild over synthetic archive conversations",
-        runner_name="session-product-materialization",
+        execution=runner_execution("session-product-materialization"),
         summary_metric="rebuild_wall_s",
         summary_label="s",
         scale_targets=("small", "medium", "large", "stretch"),

@@ -23,6 +23,7 @@ from .projections import (
     ScenarioProjectionSourceKind,
     compile_projection_entries,
 )
+from .sources import NamedScenarioSource
 
 __all__ = [
     "build_default_corpus_specs",
@@ -38,6 +39,7 @@ __all__ = [
     "ScenarioProjectionEntry",
     "ScenarioProjectionSource",
     "ScenarioProjectionSourceKind",
+    "NamedScenarioSource",
     "runtime_artifact_graph",
     "runtime_artifact_target_names",
     "runtime_operation_target_names",

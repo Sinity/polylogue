@@ -133,7 +133,7 @@ def _load_exercise(payload: dict[str, object]) -> Exercise:
 def _load_exercise_scenario(payload: dict[str, object]) -> ExerciseScenario:
     metadata = ScenarioMetadata.from_payload(payload)
     return ExerciseScenario(
-        scenario_id=str(payload["name"]),
+        name=str(payload["name"]),
         group=str(payload["group"]),
         description=str(payload["description"]),
         args=tuple(str(item) for item in payload.get("args", ())),

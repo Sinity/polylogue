@@ -4,13 +4,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from polylogue.scenarios import ScenarioMetadata, ScenarioProjectionSource, ScenarioProjectionSourceKind
+from polylogue.scenarios import NamedScenarioSource, ScenarioProjectionSourceKind
 
 
-@dataclass(frozen=True)
-class MutationCampaign(ScenarioProjectionSource, ScenarioMetadata):
-    name: str
-    description: str
+@dataclass(frozen=True, kw_only=True)
+class MutationCampaign(NamedScenarioSource):
     paths_to_mutate: tuple[str, ...]
     tests: tuple[str, ...]
     notes: tuple[str, ...] = ()
@@ -24,14 +22,6 @@ class MutationCampaign(ScenarioProjectionSource, ScenarioMetadata):
     @property
     def projection_source_kind(self) -> ScenarioProjectionSourceKind:
         return ScenarioProjectionSourceKind.MUTATION_CAMPAIGN
-
-    @property
-    def projection_name(self) -> str:
-        return self.name
-
-    @property
-    def projection_description(self) -> str:
-        return self.description
 
 
 MUTATION_CAMPAIGNS: dict[str, MutationCampaign] = {

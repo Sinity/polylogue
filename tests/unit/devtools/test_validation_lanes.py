@@ -42,7 +42,7 @@ class TestLaneParsing:
     def test_machine_contract_lane_carries_shared_operation_metadata(self):
         lane = LANES["machine-contract"]
 
-        assert lane.execution.kind is ExecutionKind.COMMAND
+        assert lane.execution.kind is ExecutionKind.PYTEST
         assert lane.operation_targets == ("cli.json-contract",)
         assert lane.tags == ("contract", "json", "cli")
 
