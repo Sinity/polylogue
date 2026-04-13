@@ -59,11 +59,15 @@ class TestLaneParsing:
 
         frontier_local = next(entry for entry in build_composite_lane_entries() if entry.name == "frontier-local")
         archive_intelligence = next(entry for entry in build_composite_lane_entries() if entry.name == "archive-intelligence")
+        runtime_substrate = next(
+            entry for entry in build_composite_lane_entries() if entry.name == "runtime-substrate-hardening"
+        )
 
         assert "cli.json-contract" in frontier_local.operation_targets
         assert "cli.help" in frontier_local.operation_targets
         assert "query-conversations" in archive_intelligence.operation_targets
         assert "project-archive-health" in archive_intelligence.operation_targets
+        assert runtime_substrate.family == "runtime-substrate"
 
     def test_live_health_json_lane_carries_archive_health_metadata(self):
         lane = LANES["live-health-json"]

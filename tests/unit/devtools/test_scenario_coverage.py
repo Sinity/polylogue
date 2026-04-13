@@ -24,6 +24,9 @@ def test_build_runtime_scenario_coverage_tracks_the_current_authored_map() -> No
         "provider-analytics-query-loop",
         "session-product-status-query-loop",
         "archive-debt-query-loop",
+        "inferred-corpus-compilation-loop",
+        "schema-list-query-loop",
+        "schema-explain-query-loop",
     }
     assert all(path.complete for path in coverage.paths.values())
     assert "raw_validation_state" in coverage.artifacts
@@ -34,6 +37,10 @@ def test_build_runtime_scenario_coverage_tracks_the_current_authored_map() -> No
     assert "conversation_query_results" in coverage.artifacts
     assert "archive_health" in coverage.artifacts
     assert "session_product_source_conversations" in coverage.artifacts
+    assert "inferred_corpus_specs" in coverage.artifacts
+    assert "inferred_corpus_scenarios" in coverage.artifacts
+    assert "schema_list_results" in coverage.artifacts
+    assert "schema_explanation_results" in coverage.artifacts
     assert "plan-validation-backlog" in coverage.operations
     assert "ingest-archive-runtime" in coverage.operations
     assert "index-message-fts" in coverage.operations
@@ -41,6 +48,10 @@ def test_build_runtime_scenario_coverage_tracks_the_current_authored_map() -> No
     assert "query-conversations" in coverage.operations
     assert "materialize-session-products" in coverage.operations
     assert "project-archive-health" in coverage.operations
+    assert "compile-inferred-corpus-specs" in coverage.operations
+    assert "compile-inferred-corpus-scenarios" in coverage.operations
+    assert "query-schema-catalog" in coverage.operations
+    assert "query-schema-explanations" in coverage.operations
     assert "cli.help" in coverage.declared_operations
     assert "benchmark.query.search-filters" in coverage.declared_operations
     assert coverage.uncovered_artifacts == ()

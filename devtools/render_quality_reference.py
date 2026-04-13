@@ -12,6 +12,7 @@ from devtools.lane_models import LaneEntry
 from devtools.mutation_catalog import MutationCampaignEntry
 from devtools.quality_registry import QualityRegistry, build_quality_registry
 from devtools.scenario_coverage import RuntimeScenarioCoverage, build_runtime_scenario_coverage
+from devtools.validation_family_models import ValidationLaneFamily
 from polylogue.scenarios import CorpusScenario, ScenarioProjectionEntry
 
 
@@ -28,6 +29,17 @@ def _render_lane_table(entries: tuple[LaneEntry, ...]) -> list[str]:
     ]
     for entry in entries:
         lines.append(f"| `{entry.name}` | {entry.timeout_s} | {entry.description} |")
+    return lines
+
+
+def _render_validation_family_table(entries: tuple[ValidationLaneFamily, ...]) -> list[str]:
+    lines = [
+        "| Family | Composite Lanes | Description |",
+        "| --- | --- | --- |",
+    ]
+    for entry in entries:
+        lane_names = tuple(lane.name for lane in entry.lanes)
+        lines.append(f"| `{entry.name}` | {_format_code_list(lane_names)} | {entry.description} |")
     return lines
 
 
@@ -164,6 +176,7 @@ def build_document(registry: QualityRegistry, *, runtime_coverage: RuntimeScenar
         f"- contract lanes: `{len(registry.contract_lanes)}`",
         f"- live lanes: `{len(registry.live_lanes)}`",
         f"- composite lanes: `{len(registry.composite_lanes)}`",
+        f"- validation families: `{len(registry.validation_families)}`",
         f"- mutation campaigns: `{len(registry.mutation_campaigns)}`",
         f"- benchmark campaigns: `{len(registry.benchmark_campaigns)}`",
         f"- synthetic benchmark campaigns: `{len(registry.synthetic_benchmark_campaigns)}`",
@@ -269,6 +282,10 @@ def build_document(registry: QualityRegistry, *, runtime_coverage: RuntimeScenar
         "## Validation Lane Catalog",
         "",
         "Use the named lanes through the runner.",
+        "",
+        "### Validation Families",
+        "",
+        *_render_validation_family_table(registry.validation_families),
         "",
         "### Contract Lanes",
         "",

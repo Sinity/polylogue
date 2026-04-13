@@ -32,6 +32,10 @@ def test_runtime_operation_catalog_covers_the_current_runtime_paths() -> None:
         "query-session-enrichments",
         "query-session-product-status",
         "query-archive-debt",
+        "compile-inferred-corpus-specs",
+        "compile-inferred-corpus-scenarios",
+        "query-schema-catalog",
+        "query-schema-explanations",
     }
     assert specs["plan-validation-backlog"].kind is OperationKind.PLANNING
     assert specs["plan-validation-backlog"].path_targets == ("raw-reparse-loop", "raw-archive-ingest-loop")
@@ -58,6 +62,10 @@ def test_runtime_operation_catalog_covers_the_current_runtime_paths() -> None:
     assert specs["query-session-product-status"].path_targets == ("session-product-status-query-loop",)
     assert specs["query-archive-debt"].path_targets == ("archive-debt-query-loop",)
     assert specs["query-provider-analytics"].path_targets == ("provider-analytics-query-loop",)
+    assert specs["compile-inferred-corpus-specs"].path_targets == ("inferred-corpus-compilation-loop",)
+    assert specs["compile-inferred-corpus-scenarios"].path_targets == ("inferred-corpus-compilation-loop",)
+    assert specs["query-schema-catalog"].path_targets == ("schema-list-query-loop",)
+    assert specs["query-schema-explanations"].path_targets == ("schema-explain-query-loop",)
 
 
 def test_runtime_operation_catalog_has_declared_surfaces_and_code_refs() -> None:
