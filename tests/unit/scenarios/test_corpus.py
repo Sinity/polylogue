@@ -4,6 +4,7 @@ import pytest
 
 from polylogue.scenarios import (
     CorpusSpec,
+    ScenarioProjectionSourceKind,
     build_default_corpus_specs,
     build_inferred_corpus_specs,
     resolve_corpus_specs,
@@ -149,3 +150,25 @@ def test_corpus_spec_scope_label_includes_version_and_profile_family() -> None:
     )
 
     assert spec.scope_label == "v7-cluster-a"
+
+
+def test_inferred_corpus_spec_compiles_its_own_projection_entry() -> None:
+    spec = CorpusSpec(
+        provider="chatgpt",
+        package_version="v7",
+        element_kind="conversation_document",
+        profile_family_ids=("cluster/a",),
+        observed_sample_count=12,
+        origin="inferred.schema",
+        tags=("inferred", "schema", "synthetic"),
+    )
+
+    projection = spec.to_projection_entry()
+
+    assert projection.source_kind is ScenarioProjectionSourceKind.INFERRED_CORPUS
+    assert projection.name == "chatgpt:v7:cluster/a"
+    assert projection.description == "Inferred synthetic corpus spec for chatgpt conversation_document from 12 observed sample(s)."
+    assert projection.origin == "inferred.schema"
+    assert projection.tags == ("inferred", "schema", "synthetic")
+    assert projection.source_payload["provider"] == "chatgpt"
+    assert projection.source_payload["package_version"] == "v7"
