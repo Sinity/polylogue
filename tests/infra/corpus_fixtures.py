@@ -21,15 +21,6 @@ from pathlib import Path
 
 import pytest
 
-# Extension per provider encoding
-_EXT_MAP = {
-    "chatgpt": ".json",
-    "claude-ai": ".json",
-    "gemini": ".json",
-    "claude-code": ".jsonl",
-    "codex": ".jsonl",
-}
-
 
 def _seed_db(
     tmp_path: Path,
@@ -41,6 +32,7 @@ def _seed_db(
     # Defer all heavy imports to avoid circular import at conftest collection time
     from polylogue.paths import Source
     from polylogue.pipeline.prepare import prepare_records
+    from polylogue.scenarios import build_default_corpus_specs
     from polylogue.schemas.synthetic import SyntheticCorpus
     from polylogue.sources import iter_source_conversations
     from polylogue.storage.backends.async_sqlite import SQLiteBackend
@@ -59,23 +51,21 @@ def _seed_db(
     corpus_dir.mkdir()
 
     async def _do_seed() -> None:
-        for provider in providers:
-            if provider not in SyntheticCorpus.available_providers():
-                continue
-            corpus = SyntheticCorpus.for_provider(provider)
-            raw_items = corpus.generate(
-                count=count,
-                messages_per_conversation=range(4, 12),
-                seed=seed,
-            )
+        available = set(SyntheticCorpus.available_providers())
+        specs = build_default_corpus_specs(
+            providers=(provider for provider in providers if provider in available),
+            count=count,
+            messages_min=4,
+            messages_max=11,
+            seed=seed,
+        )
+        for spec in specs:
+            provider = spec.provider
             provider_dir = corpus_dir / provider
-            provider_dir.mkdir(exist_ok=True)
+            written = SyntheticCorpus.write_spec_artifacts(spec, provider_dir, prefix="corpus")
 
-            ext = _EXT_MAP.get(provider, ".json")
-            for idx, raw_bytes in enumerate(raw_items):
-                file_path = provider_dir / f"corpus-{idx:02d}{ext}"
-                file_path.write_bytes(raw_bytes)
-
+            for file_path, artifact in zip(written.files, written.batch.artifacts, strict=True):
+                raw_bytes = artifact.raw_bytes
                 raw_id = hashlib.sha256(raw_bytes).hexdigest()
                 record = RawConversationRecord(
                     raw_id=raw_id,
