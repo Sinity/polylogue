@@ -73,3 +73,46 @@ def test_action_event_repair_detail_reports_stale_extra_fts_rows() -> None:
     assert repair_mod._action_event_repair_detail(statuses) == (
         "Action-event read model pending (3 stale extra action-event FTS rows)"
     )
+
+
+def test_preview_counts_from_archive_debt_include_healthy_preview_targets_only() -> None:
+    statuses = {
+        "session_products": repair_mod.ArchiveDebtStatus(
+            name="session_products",
+            category=repair_mod._maintenance_target_spec("session_products").category,
+            destructive=False,
+            issue_count=0,
+            detail="ready",
+            maintenance_target="session_products",
+        ),
+        "dangling_fts": repair_mod.ArchiveDebtStatus(
+            name="dangling_fts",
+            category=repair_mod._maintenance_target_spec("dangling_fts").category,
+            destructive=False,
+            issue_count=0,
+            detail="ready",
+            maintenance_target="dangling_fts",
+        ),
+        "orphaned_messages": repair_mod.ArchiveDebtStatus(
+            name="orphaned_messages",
+            category=repair_mod._maintenance_target_spec("orphaned_messages").category,
+            destructive=True,
+            issue_count=0,
+            detail="clean",
+            maintenance_target="orphaned_messages",
+        ),
+        "empty_conversations": repair_mod.ArchiveDebtStatus(
+            name="empty_conversations",
+            category=repair_mod._maintenance_target_spec("empty_conversations").category,
+            destructive=True,
+            issue_count=4,
+            detail="needs cleanup",
+            maintenance_target="empty_conversations",
+        ),
+    }
+
+    assert repair_mod.preview_counts_from_archive_debt(statuses) == {
+        "session_products": 0,
+        "dangling_fts": 0,
+        "empty_conversations": 4,
+    }

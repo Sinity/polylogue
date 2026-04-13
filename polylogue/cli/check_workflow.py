@@ -33,11 +33,7 @@ from polylogue.schemas.verification_requests import (
     SchemaVerificationRequest,
 )
 from polylogue.storage.backends.connection import connection_context
-from polylogue.storage.repair import (
-    CLEANUP_TARGETS,
-    SAFE_REPAIR_TARGETS,
-    run_selected_maintenance,
-)
+from polylogue.storage.repair import run_selected_maintenance
 
 from .check_support import (
     make_schema_progress_callback,
@@ -88,11 +84,7 @@ class CheckCommandResult:
 
 
 def validate_check_options(options: CheckCommandOptions) -> None:
-    _validate_check_options(
-        options,
-        safe_repair_targets=SAFE_REPAIR_TARGETS,
-        cleanup_targets=CLEANUP_TARGETS,
-    )
+    _validate_check_options(options)
 
 
 def _runtime_only_requested(options: CheckCommandOptions) -> bool:
@@ -196,11 +188,7 @@ def run_check_workflow(env: AppEnv, options: CheckCommandOptions) -> CheckComman
 
     if options.repair or options.cleanup:
         preview_counts = _build_preview_counts(report) if options.preview else None
-        selected_targets = _resolve_selected_maintenance_targets(
-            options,
-            safe_repair_targets=SAFE_REPAIR_TARGETS,
-            cleanup_targets=CLEANUP_TARGETS,
-        )
+        selected_targets = _resolve_selected_maintenance_targets(options)
         session_product_progress_callback = None
         if (
             options.repair
@@ -230,11 +218,7 @@ def run_check_workflow(env: AppEnv, options: CheckCommandOptions) -> CheckComman
             result.vacuum_result = vacuum_database(env)
 
     if result.maintenance_results is not None:
-        selected_targets = _resolve_selected_maintenance_targets(
-            options,
-            safe_repair_targets=SAFE_REPAIR_TARGETS,
-            cleanup_targets=CLEANUP_TARGETS,
-        )
+        selected_targets = _resolve_selected_maintenance_targets(options)
         preview_counts = _build_preview_counts(report) if options.preview else None
         persist_maintenance_run(
             env,

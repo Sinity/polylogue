@@ -7,7 +7,9 @@ from typing import Any
 
 import click
 
-from polylogue.storage.repair import MAINTENANCE_TARGET_NAMES
+from polylogue.maintenance_targets import MAINTENANCE_TARGET_NAMES, build_maintenance_target_catalog
+
+_MAINTENANCE_TARGET_HELP = build_maintenance_target_catalog().help_text()
 
 CHECK_COMMAND_OPTION_DECORATORS: tuple[Callable[[Callable[..., Any]], Callable[..., Any]], ...] = (
     click.option("--json", "json_output", is_flag=True, help="Output as JSON"),
@@ -21,7 +23,7 @@ CHECK_COMMAND_OPTION_DECORATORS: tuple[Callable[[Callable[..., Any]], Callable[.
         "maintenance_targets",
         multiple=True,
         type=click.Choice(MAINTENANCE_TARGET_NAMES),
-        help="Limit maintenance to named targets such as session_products, action_event_read_model, dangling_fts, wal_checkpoint, orphaned_messages, orphaned_content_blocks, empty_conversations, or orphaned_attachments",
+        help=_MAINTENANCE_TARGET_HELP,
     ),
     click.option(
         "--preview", is_flag=True, help="Preview maintenance without executing (requires --repair or --cleanup)"

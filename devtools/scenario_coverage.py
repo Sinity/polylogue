@@ -49,10 +49,12 @@ class RuntimePathCoverage:
 class RuntimeScenarioCoverage:
     artifacts: dict[str, tuple[ScenarioCoverageRef, ...]]
     operations: dict[str, tuple[ScenarioCoverageRef, ...]]
+    maintenance_targets: dict[str, tuple[ScenarioCoverageRef, ...]]
     declared_operations: dict[str, tuple[ScenarioCoverageRef, ...]]
     paths: dict[str, RuntimePathCoverage]
     uncovered_artifacts: tuple[str, ...]
     uncovered_operations: tuple[str, ...]
+    uncovered_maintenance_targets: tuple[str, ...]
     uncovered_declared_operations: tuple[str, ...]
 
     def to_dict(self) -> dict[str, Any]:
@@ -65,6 +67,10 @@ class RuntimeScenarioCoverage:
                 name: [ref.to_dict() for ref in refs]
                 for name, refs in self.operations.items()
             },
+            "maintenance_targets": {
+                name: [ref.to_dict() for ref in refs]
+                for name, refs in self.maintenance_targets.items()
+            },
             "declared_operations": {
                 name: [ref.to_dict() for ref in refs]
                 for name, refs in self.declared_operations.items()
@@ -75,6 +81,7 @@ class RuntimeScenarioCoverage:
             },
             "uncovered_artifacts": list(self.uncovered_artifacts),
             "uncovered_operations": list(self.uncovered_operations),
+            "uncovered_maintenance_targets": list(self.uncovered_maintenance_targets),
             "uncovered_declared_operations": list(self.uncovered_declared_operations),
         }
 
@@ -88,6 +95,9 @@ def build_runtime_scenario_coverage(
     declared_operation_catalog = build_declared_operation_catalog()
     artifact_refs: dict[str, list[ScenarioCoverageRef]] = {name: [] for name in graph.by_name()}
     operation_refs: dict[str, list[ScenarioCoverageRef]] = {operation.name: [] for operation in graph.operations}
+    maintenance_target_refs: dict[str, list[ScenarioCoverageRef]] = {
+        target.name: [] for target in graph.maintenance_targets
+    }
     declared_operation_refs: dict[str, list[ScenarioCoverageRef]] = {
         operation.name: [] for operation in declared_operation_catalog.specs
     }
@@ -98,6 +108,12 @@ def build_runtime_scenario_coverage(
             artifact_refs[artifact.name].append(ref)
         for operation in projection.resolve_runtime_operations():
             operation_refs[operation.name].append(ref)
+        maintenance_targets = {
+            *projection.resolve_runtime_maintenance_targets(),
+            *graph.maintenance_targets_for_operation_names(projection.runtime_operation_targets()),
+        }
+        for target in maintenance_targets:
+            maintenance_target_refs[target.name].append(ref)
         for operation in projection.resolve_declared_operations():
             declared_operation_refs[operation.name].append(ref)
 
@@ -109,6 +125,11 @@ def build_runtime_scenario_coverage(
     covered_operations = {
         name: tuple(refs)
         for name, refs in operation_refs.items()
+        if refs
+    }
+    covered_maintenance_targets = {
+        name: tuple(refs)
+        for name, refs in maintenance_target_refs.items()
         if refs
     }
     covered_declared_operations = {
@@ -143,10 +164,14 @@ def build_runtime_scenario_coverage(
     return RuntimeScenarioCoverage(
         artifacts=covered_artifacts,
         operations=covered_operations,
+        maintenance_targets=covered_maintenance_targets,
         declared_operations=covered_declared_operations,
         paths=path_coverage,
         uncovered_artifacts=tuple(sorted(name for name, refs in artifact_refs.items() if not refs)),
         uncovered_operations=tuple(sorted(name for name, refs in operation_refs.items() if not refs)),
+        uncovered_maintenance_targets=tuple(
+            sorted(name for name, refs in maintenance_target_refs.items() if not refs)
+        ),
         uncovered_declared_operations=tuple(
             sorted(name for name, refs in declared_operation_refs.items() if not refs)
         ),

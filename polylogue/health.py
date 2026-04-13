@@ -10,12 +10,14 @@ from typing import Any, cast
 
 from polylogue.lib.outcomes import OutcomeCheck, OutcomeReport, OutcomeStatus
 from polylogue.maintenance_models import DerivedModelStatus
+from polylogue.maintenance_targets import build_maintenance_target_catalog
 
 # Re-export canonical types for downstream consumers.
 HealthCheck = OutcomeCheck
 VerifyStatus = OutcomeStatus
 
 HEALTH_TTL_SECONDS = 600
+_MAINTENANCE_TARGET_CATALOG = build_maintenance_target_catalog()
 
 
 @dataclass
@@ -176,22 +178,14 @@ def run_archive_health(config: Any, *, deep: bool = False, probe_only: bool = Fa
             include_expensive=deep,
             probe_only=probe_only,
         )
-        for debt_name in ("orphaned_messages", "orphaned_attachments"):
-            debt = archive_debt[debt_name]
+        for spec in _MAINTENANCE_TARGET_CATALOG.archive_health_specs(deep=deep):
+            debt = archive_debt.get(spec.name)
+            if debt is None:
+                continue
             checks.append(
                 HealthCheck(
                     debt.name,
-                    VerifyStatus.OK if debt.healthy else VerifyStatus.ERROR,
-                    count=debt.issue_count,
-                    summary=debt.detail,
-                )
-            )
-        if deep and "orphaned_content_blocks" in archive_debt:
-            debt = archive_debt["orphaned_content_blocks"]
-            checks.append(
-                HealthCheck(
-                    debt.name,
-                    VerifyStatus.OK if debt.healthy else VerifyStatus.ERROR,
+                    VerifyStatus.OK if debt.healthy else cast(VerifyStatus, spec.archive_health_unhealthy_status),
                     count=debt.issue_count,
                     summary=debt.detail,
                 )
@@ -210,16 +204,6 @@ def run_archive_health(config: Any, *, deep: bool = False, probe_only: bool = Fa
                 VerifyStatus.OK if dup_conv == 0 else VerifyStatus.ERROR,
                 count=dup_conv,
                 summary="No duplicates" if dup_conv == 0 else f"{dup_conv} duplicate conversation IDs",
-            )
-        )
-
-        empty_debt = archive_debt["empty_conversations"]
-        checks.append(
-            HealthCheck(
-                "empty_conversations",
-                VerifyStatus.OK if empty_debt.healthy else VerifyStatus.WARNING,
-                count=empty_debt.issue_count,
-                summary=empty_debt.detail,
             )
         )
 

@@ -96,8 +96,8 @@ def _render_inferred_corpus_table(entries: tuple[CorpusScenario, ...]) -> list[s
 
 def _render_scenario_projection_table(entries: tuple[ScenarioProjectionEntry, ...]) -> list[str]:
     lines = [
-        "| Source | Projection | Path Targets | Artifact Targets | Operation Targets | Tags | Description |",
-        "| --- | --- | --- | --- | --- | --- | --- |",
+        "| Source | Projection | Path Targets | Artifact Targets | Operation Targets | Maintenance Targets | Tags | Description |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     for entry in entries:
         lines.append(
@@ -105,6 +105,7 @@ def _render_scenario_projection_table(entries: tuple[ScenarioProjectionEntry, ..
             f"{_format_code_list(entry.runtime_path_targets())} | "
             f"{_format_code_list(entry.artifact_targets)} | "
             f"{_format_code_list(entry.operation_targets)} | "
+            f"{_format_code_list(entry.maintenance_targets)} | "
             f"{_format_code_list(entry.tags)} | {entry.description} |"
         )
     return lines
@@ -118,6 +119,7 @@ def _render_runtime_coverage_section(coverage: RuntimeScenarioCoverage) -> list[
         f"- covered runtime paths: `{sum(1 for path in coverage.paths.values() if path.complete)}`",
         f"- covered runtime artifacts: `{len(coverage.artifacts)}`",
         f"- covered runtime operations: `{len(coverage.operations)}`",
+        f"- covered maintenance targets: `{len(coverage.maintenance_targets)}`",
         f"- covered declared operation targets: `{len(coverage.declared_operations)}`",
         "- uncovered runtime paths: " + ("—" if not uncovered_paths else ", ".join(f"`{name}`" for name in uncovered_paths)),
         "- uncovered runtime artifacts: "
@@ -127,6 +129,12 @@ def _render_runtime_coverage_section(coverage: RuntimeScenarioCoverage) -> list[
             "—"
             if not coverage.uncovered_operations
             else ", ".join(f"`{name}`" for name in coverage.uncovered_operations)
+        ),
+        "- uncovered maintenance targets: "
+        + (
+            "—"
+            if not coverage.uncovered_maintenance_targets
+            else ", ".join(f"`{name}`" for name in coverage.uncovered_maintenance_targets)
         ),
         "- uncovered declared operation targets: "
         + (

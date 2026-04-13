@@ -33,6 +33,7 @@ from .metadata import (
     declared_operation_target_names,
     runtime_artifact_graph,
     runtime_artifact_target_names,
+    runtime_maintenance_target_names,
     runtime_operation_target_names,
     runtime_path_target_names,
 )
@@ -92,6 +93,7 @@ __all__ = [
     "run_execution",
     "runtime_artifact_graph",
     "runtime_artifact_target_names",
+    "runtime_maintenance_target_names",
     "runtime_operation_target_names",
     "runtime_path_target_names",
 ]

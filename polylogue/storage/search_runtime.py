@@ -7,6 +7,7 @@ from functools import lru_cache
 from pathlib import Path
 
 from polylogue.errors import DatabaseError
+from polylogue.maintenance_targets import build_maintenance_target_catalog
 
 from .backends.connection import open_read_connection
 from .fts_lifecycle import message_fts_readiness_sync
@@ -14,6 +15,9 @@ from .search_cache import SearchCacheKey
 from .search_models import SearchHit, SearchResult
 from .search_query_builders import build_ranked_conversation_search_query, resolve_conversation_path
 from .search_query_support import sort_key_to_iso
+
+_MAINTENANCE_TARGET_CATALOG = build_maintenance_target_catalog()
+_MESSAGE_SEARCH_REPAIR_HINT = _MAINTENANCE_TARGET_CATALOG.repair_hint(("dangling_fts",), include_run_all=True)
 
 
 @lru_cache(maxsize=128)
@@ -53,11 +57,9 @@ def search_messages_impl(
     with open_read_connection(db_path) as conn:
         readiness = message_fts_readiness_sync(conn)
         if not bool(readiness["exists"]):
-            raise DatabaseError("Search index not built. Run `polylogue doctor --repair` or `polylogue run all`.")
+            raise DatabaseError(f"Search index not built. {_MESSAGE_SEARCH_REPAIR_HINT}")
         if not bool(readiness["ready"]):
-            raise DatabaseError(
-                "Search index is incomplete. Run `polylogue doctor --repair` or `polylogue run all`."
-            )
+            raise DatabaseError(f"Search index is incomplete. {_MESSAGE_SEARCH_REPAIR_HINT}")
         try:
             rows = conn.execute(sql, tuple(params)).fetchall()
         except sqlite3.Error as exc:

@@ -7,6 +7,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
+from polylogue.maintenance_targets import build_maintenance_target_catalog
+
 from .corpus import CorpusRequest, CorpusSourceKind
 from .metadata import ScenarioMetadata
 
@@ -62,18 +64,6 @@ _PRODUCT_SUBCOMMAND_OPERATION_NAMES = {
     "status": "query-session-product-status",
     "debt": "query-archive-debt",
 }
-_DOCTOR_TARGET_HEALTH_OPERATIONS = {
-    "action_event_read_model": "project-action-event-health",
-    "action_events": "project-action-event-health",
-    "session_products": "project-session-product-health",
-}
-_DOCTOR_TARGET_REPAIR_OPERATIONS = {
-    "action_event_read_model": "materialize-action-events",
-    "action_events": "materialize-action-events",
-    "session_products": "materialize-session-products",
-}
-
-
 def _unique(items: tuple[str, ...]) -> tuple[str, ...]:
     seen: set[str] = set()
     merged: list[str] = []
@@ -158,19 +148,15 @@ def _metadata_for_polylogue_doctor(argv: tuple[str, ...]) -> ScenarioMetadata:
     if "--json" in argv:
         operations.append("cli.json-contract")
     targets = tuple(target for target in _find_repeated_flag_values(argv, "--target") if target)
+    catalog = build_maintenance_target_catalog()
+    resolved_target_names = tuple(spec.name for spec in catalog.resolve(targets))
     if targets:
         if "--repair" in argv and "--preview" not in argv:
-            for target in targets:
-                repair_operation = _DOCTOR_TARGET_REPAIR_OPERATIONS.get(target)
-                if repair_operation:
-                    operations.append(repair_operation)
-        for target in targets:
-            health_operation = _DOCTOR_TARGET_HEALTH_OPERATIONS.get(target)
-            if health_operation:
-                operations.append(health_operation)
+            operations.extend(catalog.doctor_repair_operations_for_names(targets))
+        operations.extend(catalog.doctor_health_operations_for_names(targets))
     else:
         operations.append("project-archive-health")
-    return _metadata_for_operations(*operations)
+    return ScenarioMetadata(maintenance_targets=resolved_target_names).merged(_metadata_for_operations(*operations))
 
 
 def _metadata_for_polylogue_embed(argv: tuple[str, ...]) -> ScenarioMetadata:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from polylogue.maintenance_targets import MaintenanceTargetMode, build_maintenance_target_catalog
 from polylogue.storage.repair import preview_counts_from_archive_debt
 
 
@@ -13,17 +14,15 @@ def build_preview_counts(report: Any) -> dict[str, int]:
 
 def resolve_selected_maintenance_targets(
     options,
-    *,
-    safe_repair_targets: tuple[str, ...],
-    cleanup_targets: tuple[str, ...],
 ) -> tuple[str, ...]:
     if options.maintenance_targets:
         return tuple(options.maintenance_targets)
+    catalog = build_maintenance_target_catalog()
     targets: list[str] = []
     if options.repair:
-        targets.extend(safe_repair_targets)
+        targets.extend(catalog.names_for_mode(MaintenanceTargetMode.REPAIR))
     if options.cleanup:
-        targets.extend(cleanup_targets)
+        targets.extend(catalog.names_for_mode(MaintenanceTargetMode.CLEANUP))
     return tuple(targets)
 
 
