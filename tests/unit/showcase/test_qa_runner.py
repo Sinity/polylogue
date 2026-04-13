@@ -16,11 +16,11 @@ from polylogue.showcase.runner import ExerciseResult, ShowcaseResult
 
 def _make_showcase_result(output_dir) -> ShowcaseResult:
     exercise = Exercise(
-        "test-help",
-        "structural",
-        "Help output",
-        polylogue_execution("--help"),
-        Validation(stdout_contains=("polylogue",)),
+        name="test-help",
+        group="structural",
+        description="Help output",
+        execution=polylogue_execution("--help"),
+        validation=Validation(stdout_contains=("polylogue",)),
     )
     result = ShowcaseResult(
         results=[
