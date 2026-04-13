@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from polylogue.artifact_graph import ArtifactLayer, build_artifact_graph
+from polylogue.operations import OperationKind, build_runtime_operation_specs
 
 
 def test_artifact_graph_contains_the_two_proven_vertical_paths() -> None:
@@ -26,6 +27,15 @@ def test_artifact_graph_contains_the_two_proven_vertical_paths() -> None:
     assert operations["plan-validation-backlog"].produces == ("validation_backlog",)
     assert operations["plan-parse-backlog"].produces == ("parse_backlog", "parse_quarantine")
     assert operations["project-action-event-health"].consumes == ("action_event_rows", "action_event_fts")
+    assert operations["plan-validation-backlog"].kind is OperationKind.PLANNING
+
+
+def test_artifact_graph_operations_come_from_runtime_operation_specs() -> None:
+    graph = build_artifact_graph()
+    authored = build_runtime_operation_specs()
+
+    assert tuple(operation.name for operation in graph.operations) == tuple(operation.name for operation in authored)
+    assert graph.operations == authored
 
 
 def test_artifact_graph_paths_reference_only_declared_nodes() -> None:
@@ -47,3 +57,13 @@ def test_artifact_graph_serializes_layers_as_strings() -> None:
     assert any(node["layer"] == "durable" for node in payload["nodes"])
     assert any(path["name"] == "raw-reparse-loop" for path in payload["paths"])
     assert any(operation["name"] == "plan-validation-backlog" for operation in payload["operations"])
+    assert any(operation["kind"] == "planning" for operation in payload["operations"])
+
+
+def test_artifact_graph_operations_reference_only_declared_nodes() -> None:
+    graph = build_artifact_graph()
+    node_names = set(graph.by_name())
+
+    for operation in graph.operations:
+        assert set(operation.consumes).issubset(node_names)
+        assert set(operation.produces).issubset(node_names)
