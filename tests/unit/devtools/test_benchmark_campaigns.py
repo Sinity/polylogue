@@ -53,8 +53,8 @@ async def test_run_synthetic_benchmark_campaign_preserves_scenario_metadata(monk
 
     assert result.origin == "authored.synthetic-benchmark"
     assert result.path_targets == []
-    assert result.artifact_targets == ["message_fts"]
-    assert result.operation_targets == ["index.message-fts-incremental"]
+    assert result.artifact_targets == ["message_source_rows", "message_fts"]
+    assert result.operation_targets == ["index-message-fts", "index.message-fts-incremental"]
     assert result.tags == ["benchmark", "synthetic", "fts"]
 
 
