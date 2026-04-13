@@ -4,11 +4,175 @@ from __future__ import annotations
 
 from functools import partial
 
+from devtools.validation_family_models import (
+    ValidationLaneCompositeSpec,
+    ValidationLaneFamily,
+    compile_validation_lane_families,
+)
 from devtools.validation_lane_base import composite_lane as _composite_lane
 
 composite_lane = partial(_composite_lane, category="composite")
 
-COMPOSITE_LANES = {
+VALIDATION_FAMILIES: tuple[ValidationLaneFamily, ...] = (
+    ValidationLaneFamily(
+        name="domain-read-model",
+        description="Validation family for read-model contracts, live checks, and hardening lanes.",
+        lanes=(
+            ValidationLaneCompositeSpec(
+                name="domain-read-model-contracts",
+                description="Local domain read-model lane for analytics/products, consumer contracts, and debt views",
+                timeout_s=2400,
+                members=("archive-data-products", "maintenance-workflows"),
+            ),
+            ValidationLaneCompositeSpec(
+                name="domain-read-model-live",
+                description="Bounded live archive lane for products, analytics/debt views, and maintenance checks",
+                timeout_s=1800,
+                members=(
+                    "live-products-small",
+                    "live-products-analytics",
+                    "live-products-debt",
+                    "live-maintenance-small",
+                ),
+            ),
+            ValidationLaneCompositeSpec(
+                name="domain-read-model-hardening",
+                description="Full domain read-model lane with local contracts and bounded live checks",
+                timeout_s=3600,
+                members=("domain-read-model-contracts", "domain-read-model-live"),
+            ),
+        ),
+    ),
+    ValidationLaneFamily(
+        name="runtime-substrate",
+        description="Validation family for runtime-substrate contract, live, and hardening lanes.",
+        lanes=(
+            ValidationLaneCompositeSpec(
+                name="runtime-substrate-contracts",
+                description="Local runtime-substrate lane across query, semantic checks, archive products, and maintenance workflows",
+                timeout_s=2400,
+                members=("query-routing", "semantic-stack", "maintenance-workflows", "archive-data-products"),
+            ),
+            ValidationLaneCompositeSpec(
+                name="runtime-substrate-live",
+                description="Bounded live archive lane for runtime-substrate checks, maintenance checks, and memory budgets",
+                timeout_s=1800,
+                members=("live-archive-small", "live-maintenance-small", "memory-budget"),
+            ),
+            ValidationLaneCompositeSpec(
+                name="runtime-substrate-hardening",
+                description="Full runtime-substrate validation lane covering local contracts plus bounded live archive checks",
+                timeout_s=3600,
+                members=("runtime-substrate-contracts", "runtime-substrate-live"),
+            ),
+        ),
+    ),
+    ValidationLaneFamily(
+        name="evidence",
+        description="Validation family for evidence-tier contracts, live checks, and hardening lanes.",
+        lanes=(
+            ValidationLaneCompositeSpec(
+                name="evidence-contracts",
+                description="Evidence/inference contract lane across explicit evidence, inferred semantics, consumer parity, and retrieval readiness",
+                timeout_s=2400,
+                members=(
+                    "evidence-tier-contracts",
+                    "inference-tier-contracts",
+                    "mixed-consumer-contracts",
+                    "retrieval-band-readiness",
+                ),
+            ),
+            ValidationLaneCompositeSpec(
+                name="evidence-live",
+                description="Bounded live archive lane for tiered product views, live migration, health, and retrieval-band budgets",
+                timeout_s=2400,
+                members=(
+                    "live-session-product-repair",
+                    "live-products-status",
+                    "live-products-profiles-evidence",
+                    "live-products-profiles-inference",
+                    "live-products-work-events",
+                    "live-products-phases",
+                    "live-embed-stats",
+                    "live-health-json",
+                    "maintenance-memory-budget",
+                ),
+            ),
+            ValidationLaneCompositeSpec(
+                name="evidence-hardening",
+                description="Full evidence lane with contracts and bounded live checks",
+                timeout_s=4800,
+                members=("evidence-contracts", "evidence-live"),
+            ),
+        ),
+    ),
+    ValidationLaneFamily(
+        name="semantic-product",
+        description="Validation family for semantic-product live and hardening lanes.",
+        lanes=(
+            ValidationLaneCompositeSpec(
+                name="semantic-product-live",
+                description="Bounded live archive lane for normalized products, maintenance preview, and memory budgets",
+                timeout_s=1800,
+                members=(
+                    "live-products-status",
+                    "live-products-tags",
+                    "live-products-day-summaries",
+                    "live-products-debt",
+                    "live-maintenance-small",
+                ),
+            ),
+            ValidationLaneCompositeSpec(
+                name="semantic-product-hardening",
+                description="Full semantic-product normalization and toolchain convergence lane",
+                timeout_s=3600,
+                members=("semantic-product-normalization", "semantic-product-live"),
+            ),
+        ),
+    ),
+    ValidationLaneFamily(
+        name="probabilistic-enrichment",
+        description="Validation family for probabilistic-enrichment, cleanup, and hardening lanes.",
+        lanes=(
+            ValidationLaneCompositeSpec(
+                name="probabilistic-enrichment-live",
+                description="Bounded live archive lane for enrichment products, retrieval bands, and health surfaces",
+                timeout_s=2400,
+                members=(
+                    "live-session-product-repair",
+                    "live-products-status",
+                    "live-products-profiles-inference",
+                    "live-products-enrichments",
+                    "live-embed-stats",
+                    "live-health-json",
+                    "memory-budget",
+                ),
+            ),
+            ValidationLaneCompositeSpec(
+                name="cleanup-live",
+                description="Bounded live archive lane for cleanup/debt preview and maintenance budgets",
+                timeout_s=2400,
+                members=("live-products-debt", "live-maintenance-preview", "maintenance-memory-budget"),
+            ),
+            ValidationLaneCompositeSpec(
+                name="probabilistic-enrichment-hardening",
+                description="Full probabilistic-enrichment and cleanup lane",
+                timeout_s=5400,
+                members=(
+                    "heuristic-inference-contracts",
+                    "probabilistic-enrichment-contracts",
+                    "cleanup-contracts",
+                    "probabilistic-enrichment-live",
+                    "cleanup-live",
+                ),
+            ),
+        ),
+    ),
+)
+
+FAMILY_COMPOSITE_LANES = compile_validation_lane_families(VALIDATION_FAMILIES)
+
+STANDALONE_COMPOSITE_LANES = {
     "source-runtime-alignment": composite_lane(
         "source-runtime-alignment",
         "Local source/provider fidelity plus runtime maintenance alignment",
@@ -62,130 +226,6 @@ COMPOSITE_LANES = {
         "live-maintenance-preview",
         "maintenance-memory-budget",
     ),
-    "domain-read-model-contracts": composite_lane(
-        "domain-read-model-contracts",
-        "Local domain read-model lane for analytics/products, consumer contracts, and debt views",
-        2400,
-        "archive-data-products",
-        "maintenance-workflows",
-    ),
-    "domain-read-model-live": composite_lane(
-        "domain-read-model-live",
-        "Bounded live archive lane for products, analytics/debt views, and maintenance checks",
-        1800,
-        "live-products-small",
-        "live-products-analytics",
-        "live-products-debt",
-        "live-maintenance-small",
-    ),
-    "domain-read-model-hardening": composite_lane(
-        "domain-read-model-hardening",
-        "Full domain read-model lane with local contracts and bounded live checks",
-        3600,
-        "domain-read-model-contracts",
-        "domain-read-model-live",
-    ),
-    "runtime-substrate-contracts": composite_lane(
-        "runtime-substrate-contracts",
-        "Local runtime-substrate lane across query, semantic checks, archive products, and maintenance workflows",
-        2400,
-        "query-routing",
-        "semantic-stack",
-        "maintenance-workflows",
-        "archive-data-products",
-    ),
-    "runtime-substrate-live": composite_lane(
-        "runtime-substrate-live",
-        "Bounded live archive lane for runtime-substrate checks, maintenance checks, and memory budgets",
-        1800,
-        "live-archive-small",
-        "live-maintenance-small",
-        "memory-budget",
-    ),
-    "runtime-substrate-hardening": composite_lane(
-        "runtime-substrate-hardening",
-        "Full runtime-substrate validation lane covering local contracts plus bounded live archive checks",
-        3600,
-        "runtime-substrate-contracts",
-        "runtime-substrate-live",
-    ),
-    "semantic-product-live": composite_lane(
-        "semantic-product-live",
-        "Bounded live archive lane for normalized products, maintenance preview, and memory budgets",
-        1800,
-        "live-products-status",
-        "live-products-tags",
-        "live-products-day-summaries",
-        "live-products-debt",
-        "live-maintenance-small",
-    ),
-    "semantic-product-hardening": composite_lane(
-        "semantic-product-hardening",
-        "Full semantic-product normalization and toolchain convergence lane",
-        3600,
-        "semantic-product-normalization",
-        "semantic-product-live",
-    ),
-    "evidence-contracts": composite_lane(
-        "evidence-contracts",
-        "Evidence/inference contract lane across explicit evidence, inferred semantics, consumer parity, and retrieval readiness",
-        2400,
-        "evidence-tier-contracts",
-        "inference-tier-contracts",
-        "mixed-consumer-contracts",
-        "retrieval-band-readiness",
-    ),
-    "evidence-live": composite_lane(
-        "evidence-live",
-        "Bounded live archive lane for tiered product views, live migration, health, and retrieval-band budgets",
-        2400,
-        "live-session-product-repair",
-        "live-products-status",
-        "live-products-profiles-evidence",
-        "live-products-profiles-inference",
-        "live-products-work-events",
-        "live-products-phases",
-        "live-embed-stats",
-        "live-health-json",
-        "maintenance-memory-budget",
-    ),
-    "evidence-hardening": composite_lane(
-        "evidence-hardening",
-        "Full evidence lane with contracts and bounded live checks",
-        4800,
-        "evidence-contracts",
-        "evidence-live",
-    ),
-    "probabilistic-enrichment-live": composite_lane(
-        "probabilistic-enrichment-live",
-        "Bounded live archive lane for enrichment products, retrieval bands, and health surfaces",
-        2400,
-        "live-session-product-repair",
-        "live-products-status",
-        "live-products-profiles-inference",
-        "live-products-enrichments",
-        "live-embed-stats",
-        "live-health-json",
-        "memory-budget",
-    ),
-    "cleanup-live": composite_lane(
-        "cleanup-live",
-        "Bounded live archive lane for cleanup/debt preview and maintenance budgets",
-        2400,
-        "live-products-debt",
-        "live-maintenance-preview",
-        "maintenance-memory-budget",
-    ),
-    "probabilistic-enrichment-hardening": composite_lane(
-        "probabilistic-enrichment-hardening",
-        "Full probabilistic-enrichment and cleanup lane",
-        5400,
-        "heuristic-inference-contracts",
-        "probabilistic-enrichment-contracts",
-        "cleanup-contracts",
-        "probabilistic-enrichment-live",
-        "cleanup-live",
-    ),
     "scale-stretch": composite_lane(
         "scale-stretch",
         "Combined fast and slow storage scale budgets",
@@ -215,5 +255,10 @@ COMPOSITE_LANES = {
     ),
 }
 
+COMPOSITE_LANES = {
+    **FAMILY_COMPOSITE_LANES,
+    **STANDALONE_COMPOSITE_LANES,
+}
 
-__all__ = ["COMPOSITE_LANES"]
+
+__all__ = ["COMPOSITE_LANES", "VALIDATION_FAMILIES"]

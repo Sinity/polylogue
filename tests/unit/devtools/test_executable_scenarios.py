@@ -2,7 +2,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from polylogue.scenarios import CorpusSpec, ExecutableScenario, ScenarioProjectionSourceKind, pytest_execution
+from polylogue.scenarios import (
+    CorpusSpec,
+    ExecutableScenario,
+    ScenarioProjectionSourceKind,
+    polylogue_execution,
+    pytest_execution,
+)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -45,3 +51,33 @@ def test_executable_scenario_projection_payload_preserves_corpus_specs() -> None
     projection = scenario.to_projection_entry()
 
     assert projection.source_payload["corpus_specs"][0]["provider"] == "chatgpt"
+
+
+def test_executable_scenario_infers_schema_query_metadata_from_polylogue_execution() -> None:
+    scenario = _ExecutableFixture(
+        name="gen-schema-list",
+        description="schema list contract",
+        execution=polylogue_execution("schema", "list", "--json"),
+    )
+
+    assert scenario.path_targets == ("schema-list-query-loop",)
+    assert scenario.artifact_targets == (
+        "schema_packages",
+        "schema_cluster_manifests",
+        "inferred_corpus_specs",
+        "inferred_corpus_scenarios",
+        "schema_list_results",
+    )
+    assert scenario.operation_targets == ("query-schema-catalog",)
+
+
+def test_executable_scenario_infers_schema_explain_metadata_from_polylogue_execution() -> None:
+    scenario = _ExecutableFixture(
+        name="gen-schema-explain-chatgpt",
+        description="schema explain contract",
+        execution=polylogue_execution("schema", "explain", "--provider", "chatgpt", "--json"),
+    )
+
+    assert scenario.path_targets == ("schema-explain-query-loop",)
+    assert scenario.artifact_targets == ("schema_packages", "schema_explanation_results")
+    assert scenario.operation_targets == ("query-schema-explanations",)

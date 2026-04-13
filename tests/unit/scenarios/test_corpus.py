@@ -101,6 +101,17 @@ def test_build_inferred_corpus_specs_uses_cluster_families_when_present() -> Non
     assert specs[0].profile_family_ids == ("cluster-a",)
     assert specs[0].observed_sample_count == 12
     assert specs[0].origin == "inferred.schema"
+    assert specs[0].path_targets == ("inferred-corpus-compilation-loop",)
+    assert specs[0].artifact_targets == (
+        "schema_packages",
+        "schema_cluster_manifests",
+        "inferred_corpus_specs",
+        "inferred_corpus_scenarios",
+    )
+    assert specs[0].operation_targets == (
+        "compile-inferred-corpus-specs",
+        "compile-inferred-corpus-scenarios",
+    )
 
 
 def test_resolve_corpus_specs_applies_generation_overrides_to_inferred_specs() -> None:

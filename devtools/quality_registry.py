@@ -9,6 +9,7 @@ from devtools.benchmark_catalog import BenchmarkCampaignEntry
 from devtools.lane_models import LaneEntry
 from devtools.mutation_catalog import MutationCampaignEntry
 from devtools.scenario_projection_catalog import build_scenario_projection_entries
+from devtools.validation_family_models import ValidationLaneFamily
 from polylogue.scenarios import CorpusScenario, ScenarioProjectionEntry
 from polylogue.showcase.exercise_models import Exercise
 
@@ -29,6 +30,10 @@ class QualityRegistry:
     @property
     def contract_lanes(self) -> tuple[LaneEntry, ...]:
         return self.catalog.contract_lanes
+
+    @property
+    def validation_families(self) -> tuple[ValidationLaneFamily, ...]:
+        return self.catalog.validation_families
 
     @property
     def live_lanes(self) -> tuple[LaneEntry, ...]:

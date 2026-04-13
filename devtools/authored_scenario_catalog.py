@@ -11,7 +11,8 @@ from devtools.benchmark_catalog import (
 )
 from devtools.lane_models import LaneEntry
 from devtools.mutation_catalog import MutationCampaignEntry, build_mutation_entries
-from devtools.validation_catalog import build_validation_lane_entries
+from devtools.validation_catalog import build_validation_family_entries, build_validation_lane_entries
+from devtools.validation_family_models import ValidationLaneFamily
 from polylogue.scenarios import (
     CorpusScenario,
     ScenarioProjectionEntry,
@@ -27,6 +28,7 @@ from polylogue.showcase.exercises import EXERCISE_SCENARIOS, QA_EXTRA_SCENARIOS
 class AuthoredScenarioCatalog:
     exercise_scenarios: tuple[Exercise, ...]
     qa_extra_scenarios: tuple[Exercise, ...]
+    validation_families: tuple[ValidationLaneFamily, ...]
     validation_lanes: tuple[LaneEntry, ...]
     mutation_campaigns: tuple[MutationCampaignEntry, ...]
     benchmark_campaigns: tuple[BenchmarkCampaignEntry, ...]
@@ -49,6 +51,7 @@ class AuthoredScenarioCatalog:
         return (
             *self.exercise_scenarios,
             *self.qa_extra_scenarios,
+            *self.validation_families,
             *self.validation_lanes,
             *self.mutation_campaigns,
             *self.benchmark_campaigns,
@@ -69,6 +72,7 @@ def build_authored_scenario_catalog() -> AuthoredScenarioCatalog:
     return AuthoredScenarioCatalog(
         exercise_scenarios=EXERCISE_SCENARIOS,
         qa_extra_scenarios=QA_EXTRA_SCENARIOS,
+        validation_families=build_validation_family_entries(),
         validation_lanes=build_validation_lane_entries(),
         mutation_campaigns=build_mutation_entries(),
         benchmark_campaigns=build_benchmark_entries(),

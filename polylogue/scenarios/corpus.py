@@ -234,6 +234,21 @@ def _merge_unique_string_tuples(*groups: tuple[str, ...]) -> tuple[str, ...]:
     return tuple(merged)
 
 
+def _inferred_schema_metadata() -> ScenarioMetadata:
+    return ScenarioMetadata(
+        origin="inferred.schema",
+        path_targets=("inferred-corpus-compilation-loop",),
+        artifact_targets=(
+            "schema_packages",
+            "schema_cluster_manifests",
+            "inferred_corpus_specs",
+            "inferred_corpus_scenarios",
+        ),
+        operation_targets=("compile-inferred-corpus-specs", "compile-inferred-corpus-scenarios"),
+        tags=("inferred", "schema", "synthetic"),
+    )
+
+
 @dataclass(frozen=True, kw_only=True)
 class CorpusScenario(ScenarioSpec):
     """Named scenario compiled from one or more corpus specs."""
@@ -443,6 +458,7 @@ def _cluster_to_corpus_spec(
     default_count: int,
 ) -> CorpusSpec:
     observed_artifact_kind = cluster.artifact_kind if cluster.artifact_kind != "unspecified" else None
+    metadata = _inferred_schema_metadata()
     return CorpusSpec(
         provider=provider,
         package_version=package_version,
@@ -451,13 +467,16 @@ def _cluster_to_corpus_spec(
         messages_min=4,
         messages_max=16,
         style="default",
-        origin="inferred.schema",
         profile_family_ids=(cluster.cluster_id,),
         artifact_kind=observed_artifact_kind,
         observed_sample_count=cluster.sample_count,
         observed_confidence=cluster.confidence,
         representative_paths=tuple(cluster.representative_paths),
-        tags=("inferred", "schema", "synthetic"),
+        origin=metadata.origin,
+        path_targets=metadata.path_targets,
+        artifact_targets=metadata.artifact_targets,
+        operation_targets=metadata.operation_targets,
+        tags=metadata.tags,
     )
 
 
@@ -469,6 +488,7 @@ def build_inferred_corpus_specs(
     sample_count: int = 0,
     default_count: int = 5,
 ) -> tuple[CorpusSpec, ...]:
+    metadata = _inferred_schema_metadata()
     if manifest is not None and manifest.clusters:
         return tuple(
             _cluster_to_corpus_spec(
@@ -487,9 +507,12 @@ def build_inferred_corpus_specs(
             messages_min=4,
             messages_max=16,
             style="default",
-            origin="inferred.schema",
+            origin=metadata.origin,
             observed_sample_count=sample_count or None,
-            tags=("inferred", "schema", "synthetic"),
+            path_targets=metadata.path_targets,
+            artifact_targets=metadata.artifact_targets,
+            operation_targets=metadata.operation_targets,
+            tags=metadata.tags,
         ),
     )
 
