@@ -11,9 +11,11 @@ from pathlib import Path
 from polylogue.showcase.exercises import EXERCISES, Exercise, topological_order
 from polylogue.showcase.showcase_runner_models import ExerciseResult
 from polylogue.showcase.workspace import (
+    build_synthetic_corpus_specs,
     create_verification_workspace,
     generate_synthetic_fixtures,
     run_pipeline_for_fixture_workspace,
+    seed_workspace_from_specs,
 )
 
 
@@ -41,8 +43,13 @@ def select_exercises(
 def seed_workspace(workspace_dir: Path, *, synthetic_count: int) -> dict[str, str]:
     """Populate an isolated verification workspace and ingest its fixtures."""
     workspace = create_verification_workspace(workspace_dir)
-    generate_showcase_fixtures(workspace.fixture_dir, count=synthetic_count)
-    run_pipeline_for_fixture_workspace(workspace)
+    seed_workspace_from_specs(
+        workspace,
+        corpus_specs=build_synthetic_corpus_specs(
+            count=synthetic_count,
+            style="showcase",
+        ),
+    )
     return dict(workspace.env_vars)
 
 
