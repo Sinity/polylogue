@@ -105,6 +105,7 @@ def build_scenario_projection_entries(
             name=_inferred_corpus_projection_name(spec),
             description=_inferred_corpus_projection_description(spec),
             obj=spec,
+            source_payload=spec.to_payload(),
         )
         for spec in inferred_specs
     )

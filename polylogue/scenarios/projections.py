@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from collections.abc import Mapping
+from dataclasses import asdict, dataclass, field
 from enum import Enum
 
 from .metadata import ScenarioMetadata
@@ -22,6 +23,7 @@ class ScenarioProjectionEntry(ScenarioMetadata):
     source_kind: ScenarioProjectionSourceKind
     name: str
     description: str
+    source_payload: dict[str, object] = field(default_factory=dict)
 
     @classmethod
     def from_object(
@@ -31,6 +33,7 @@ class ScenarioProjectionEntry(ScenarioMetadata):
         name: str,
         description: str,
         obj: object,
+        source_payload: Mapping[str, object] | None = None,
     ) -> ScenarioProjectionEntry:
         metadata = ScenarioMetadata.from_object(obj)
         return cls(
@@ -42,6 +45,7 @@ class ScenarioProjectionEntry(ScenarioMetadata):
             artifact_targets=metadata.artifact_targets,
             operation_targets=metadata.operation_targets,
             tags=metadata.tags,
+            source_payload=dict(source_payload or {}),
         )
 
     def to_dict(self) -> dict[str, object]:
