@@ -162,4 +162,4 @@ class TestShowcaseRunnerExecution:
         assert result.passed is True
         assert result.exit_code == 0
         mock_invoke.assert_called_once()
-        assert mock_invoke.call_args.args[0] == ["--plain", "--help"]
+        assert mock_invoke.call_args.args[0] == exercise.execution

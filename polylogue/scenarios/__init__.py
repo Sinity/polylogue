@@ -41,6 +41,7 @@ from .projections import (
     ScenarioProjectionSourceKind,
     compile_projection_entries,
 )
+from .runtime import ExecutionResult, resolve_execution_command, run_execution
 from .sources import NamedScenarioSource
 from .specs import ScenarioSpec
 
@@ -73,9 +74,12 @@ __all__ = [
     "ScenarioProjectionSourceKind",
     "ScenarioSpec",
     "NamedScenarioSource",
+    "ExecutionResult",
     "polylogue_execution",
     "pytest_execution",
+    "resolve_execution_command",
     "runner_execution",
+    "run_execution",
     "runtime_artifact_graph",
     "runtime_artifact_target_names",
     "runtime_operation_target_names",
