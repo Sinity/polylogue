@@ -175,7 +175,7 @@ def memory_budget_lane(
     timeout_s: int,
     *,
     max_rss_mb: int,
-    command: list[str],
+    execution: ExecutionSpec,
     category: str,
     origin: str = "authored.validation-lane",
     path_targets: tuple[str, ...] = (),
@@ -183,32 +183,18 @@ def memory_budget_lane(
     operation_targets: tuple[str, ...] = (),
     tags: tuple[str, ...] = (),
 ) -> LaneEntry:
-    wrapped = _command_list_to_execution(command)
     return LaneEntry(
         name=name,
         description=description,
         timeout_s=timeout_s,
         category=category,
-        execution=memory_budget_execution(max_rss_mb, wrapped),
+        execution=memory_budget_execution(max_rss_mb, execution),
         origin=origin,
         path_targets=path_targets,
         artifact_targets=artifact_targets,
         operation_targets=operation_targets,
         tags=tags,
     )
-
-
-def _command_list_to_execution(command: list[str]) -> ExecutionSpec:
-    if not command:
-        raise ValueError("memory_budget_lane requires a non-empty command")
-    binary, *argv = command
-    if binary == "polylogue":
-        return polylogue_execution(*argv)
-    if binary == "pytest":
-        return pytest_execution(*argv)
-    if binary == "devtools" and argv:
-        return devtools_execution(argv[0], *argv[1:])
-    return command_execution(binary, *argv)
 
 
 def composite_lane(
