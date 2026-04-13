@@ -1,4 +1,4 @@
-"""Route scale test lanes to appropriate pytest invocations.
+"""Route scale test lanes through the shared lane substrate.
 
 Usage: devtools run-scale-lanes --lane fast|slow|stretch
 
@@ -12,53 +12,48 @@ from __future__ import annotations
 
 import subprocess
 import sys
-from dataclasses import dataclass
 
+from devtools.validation_lane_base import LaneConfig, cli_lane
 
-@dataclass(frozen=True)
-class LaneConfig:
-    """Configuration for a scale test lane."""
-
-    name: str
-    description: str
-    pytest_args: list[str]
-    timeout_s: int
-
-
-# Lane definitions
 LANES: dict[str, LaneConfig] = {
-    "fast": LaneConfig(
-        name="fast",
-        description="Unit-level scale tests (200 conversations)",
-        pytest_args=[
-            "tests/unit/storage/test_scale.py",
-            "-x",
-            "--timeout=30",
-        ],
-        timeout_s=60,
+    "fast": cli_lane(
+        "fast",
+        "Unit-level scale tests (200 conversations)",
+        60,
+        "pytest",
+        "-v",
+        "tests/unit/storage/test_scale.py",
+        "-x",
+        "--timeout=30",
+        origin="authored.scale-lane",
+        tags=("scale", "fast"),
     ),
-    "slow": LaneConfig(
-        name="slow",
-        description="Storage-heavy tests marked @pytest.mark.slow",
-        pytest_args=[
-            "-m",
-            "slow",
-            "tests/unit/storage/",
-            "--timeout=120",
-        ],
-        timeout_s=300,
+    "slow": cli_lane(
+        "slow",
+        "Storage-heavy tests marked @pytest.mark.slow",
+        300,
+        "pytest",
+        "-v",
+        "-m",
+        "slow",
+        "tests/unit/storage/",
+        "--timeout=120",
+        origin="authored.scale-lane",
+        tags=("scale", "slow"),
     ),
-    "stretch": LaneConfig(
-        name="stretch",
-        description="All scale and slow tests combined",
-        pytest_args=[
-            "tests/unit/storage/test_scale.py",
-            "-m",
-            "slow or not slow",
-            "tests/unit/storage/",
-            "--timeout=120",
-        ],
-        timeout_s=600,
+    "stretch": cli_lane(
+        "stretch",
+        "All scale and slow tests combined",
+        600,
+        "pytest",
+        "-v",
+        "tests/unit/storage/test_scale.py",
+        "-m",
+        "slow or not slow",
+        "tests/unit/storage/",
+        "--timeout=120",
+        origin="authored.scale-lane",
+        tags=("scale", "stretch"),
     ),
 }
 
@@ -66,40 +61,21 @@ VALID_LANES = frozenset(LANES.keys())
 
 
 def build_pytest_command(lane: LaneConfig) -> list[str]:
-    """Build the full pytest command for a lane.
-
-    Returns:
-        List of command parts suitable for subprocess.run().
-    """
-    return ["pytest", "-v", *lane.pytest_args]
+    """Build the full pytest command for a lane."""
+    if lane.command is None:
+        raise ValueError(f"Lane {lane.name!r} is composite and has no direct command")
+    return lane.command
 
 
 def parse_lane(lane_name: str) -> LaneConfig:
-    """Parse and validate a lane name.
-
-    Args:
-        lane_name: One of 'fast', 'slow', 'stretch'.
-
-    Returns:
-        Corresponding LaneConfig.
-
-    Raises:
-        ValueError: If lane_name is not valid.
-    """
+    """Parse and validate a lane name."""
     if lane_name not in LANES:
         raise ValueError(f"Invalid lane: {lane_name!r}. Valid lanes: {', '.join(sorted(VALID_LANES))}")
     return LANES[lane_name]
 
 
 def run_lane(lane: LaneConfig) -> int:
-    """Execute a scale test lane via subprocess.
-
-    Args:
-        lane: Lane configuration to execute.
-
-    Returns:
-        Process exit code.
-    """
+    """Execute a scale test lane via subprocess."""
     cmd = build_pytest_command(lane)
     print(f"Scale lane: {lane.name} — {lane.description}")
     print(f"Command: {' '.join(cmd)}")
@@ -118,14 +94,7 @@ def run_lane(lane: LaneConfig) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Main entry point.
-
-    Args:
-        argv: Command-line arguments (for testing).
-
-    Returns:
-        Exit code: 0 = all passed, 1 = failures, 2 = timeout.
-    """
+    """Main entry point."""
     import argparse
 
     parser = argparse.ArgumentParser(
