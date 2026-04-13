@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, patch
 from polylogue.config import Config
 from polylogue.paths import Source
 from polylogue.scenarios import CorpusSpec
+from polylogue.showcase.showcase_runner_support import seed_workspace_with
 from polylogue.showcase.workspace import (
     build_synthetic_corpus_scenarios,
     build_synthetic_corpus_specs,
@@ -215,3 +216,25 @@ def test_seed_workspace_from_scenarios_routes_through_pipeline(tmp_path):
     assert (workspace.inbox_dir / "chatgpt").exists()
     selected = mock_run.await_args.kwargs["config"].sources
     assert [source.name for source in selected] == ["chatgpt"]
+
+
+def test_seed_workspace_with_uses_compiled_corpus_specs(tmp_path):
+    workspace_dir = tmp_path / "workspace"
+    corpus_spec = CorpusSpec.for_provider("chatgpt", count=2, messages_min=4, messages_max=4)
+
+    with patch("polylogue.showcase.showcase_runner_support.seed_workspace_from_specs") as mock_seed_from_specs:
+        seed_workspace_with(
+            workspace_dir,
+            synthetic_count=3,
+            exercises=(
+                type(
+                    "ExerciseStub",
+                    (),
+                    {"corpus_specs": (corpus_spec,)},
+                )(),
+            ),
+            generate_fixtures=lambda _fixture_dir: (_ for _ in ()).throw(AssertionError("should not generate fixtures")),
+        )
+
+    mock_seed_from_specs.assert_called_once()
+    assert mock_seed_from_specs.call_args.kwargs["corpus_specs"] == (corpus_spec,)
