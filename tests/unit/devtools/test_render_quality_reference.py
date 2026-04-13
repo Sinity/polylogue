@@ -7,6 +7,7 @@ from devtools.quality_registry import (
     BenchmarkCampaignEntry,
     MutationCampaignEntry,
     QualityRegistry,
+    ScenarioProjectionEntry,
     ValidationLaneEntry,
 )
 from devtools.scenario_coverage import RuntimeScenarioCoverage, ScenarioCoverageRef
@@ -63,6 +64,26 @@ def test_build_document_includes_live_registry_sections() -> None:
                 tests=(),
             ),
         ),
+        scenario_projections=(
+            ScenarioProjectionEntry(
+                source_kind="exercise",
+                name="json-doctor-action-event-preview",
+                description="Action-event doctor preview.",
+                origin="generated.json-contract",
+                artifact_targets=("action_event_rows",),
+                operation_targets=("project-action-event-health",),
+                tags=("generated", "json-contract"),
+            ),
+            ScenarioProjectionEntry(
+                source_kind="benchmark-campaign",
+                name="search-filters",
+                description="Search latency domain.",
+                origin="authored.benchmark-domain",
+                artifact_targets=("message_fts",),
+                operation_targets=("benchmark.query.search-filters",),
+                tags=("benchmark", "search"),
+            ),
+        ),
     )
 
     rendered = render_quality_reference.build_document(registry)
@@ -75,6 +96,9 @@ def test_build_document_includes_live_registry_sections() -> None:
     assert "`search-filters`" in rendered
     assert "`startup-health`" in rendered
     assert "## Synthetic Benchmark Campaign Catalog" in rendered
+    assert "- scenario projections: `2`" in rendered
+    assert "  - benchmark-campaign: `1`" in rendered
+    assert "  - exercise: `1`" in rendered
 
 
 def test_build_document_includes_runtime_coverage_section() -> None:
@@ -85,6 +109,7 @@ def test_build_document_includes_runtime_coverage_section() -> None:
         mutation_campaigns=(),
         benchmark_campaigns=(),
         synthetic_benchmark_campaigns=(),
+        scenario_projections=(),
     )
     coverage = RuntimeScenarioCoverage(
         artifacts={

@@ -12,6 +12,7 @@ from devtools.validation_lane_catalog_composites import COMPOSITE_LANES
 from devtools.validation_lane_catalog_contracts import CONTRACT_LANES
 from devtools.validation_lane_catalog_live import LIVE_LANES
 from polylogue.scenarios import ScenarioMetadata
+from polylogue.showcase.exercises import EXERCISES
 
 
 @dataclass(frozen=True)
@@ -43,6 +44,13 @@ class BenchmarkCampaignEntry(ScenarioMetadata):
 
 
 @dataclass(frozen=True)
+class ScenarioProjectionEntry(ScenarioMetadata):
+    source_kind: str
+    name: str
+    description: str
+
+
+@dataclass(frozen=True)
 class QualityRegistry:
     contract_lanes: tuple[ValidationLaneEntry, ...]
     live_lanes: tuple[ValidationLaneEntry, ...]
@@ -50,6 +58,7 @@ class QualityRegistry:
     mutation_campaigns: tuple[MutationCampaignEntry, ...]
     benchmark_campaigns: tuple[BenchmarkCampaignEntry, ...]
     synthetic_benchmark_campaigns: tuple[BenchmarkCampaignEntry, ...]
+    scenario_projections: tuple[ScenarioProjectionEntry, ...]
 
 
 def _lane_entries(category: str, lanes: dict[str, LaneConfig]) -> tuple[ValidationLaneEntry, ...]:
@@ -116,6 +125,46 @@ def _synthetic_benchmark_entries() -> tuple[BenchmarkCampaignEntry, ...]:
     return tuple(sorted(entries, key=lambda item: item.name))
 
 
+def _scenario_projection_entries() -> tuple[ScenarioProjectionEntry, ...]:
+    entries = [
+        ScenarioProjectionEntry(
+            source_kind="exercise",
+            name=exercise.name,
+            description=exercise.description,
+            origin=exercise.origin,
+            artifact_targets=tuple(exercise.artifact_targets),
+            operation_targets=tuple(exercise.operation_targets),
+            tags=tuple(exercise.tags),
+        )
+        for exercise in EXERCISES
+    ]
+    entries.extend(
+        ScenarioProjectionEntry(
+            source_kind="benchmark-campaign",
+            name=campaign.name,
+            description=campaign.description,
+            origin=campaign.origin,
+            artifact_targets=tuple(campaign.artifact_targets),
+            operation_targets=tuple(campaign.operation_targets),
+            tags=tuple(campaign.tags),
+        )
+        for campaign in BENCHMARK_CAMPAIGNS.values()
+    )
+    entries.extend(
+        ScenarioProjectionEntry(
+            source_kind="synthetic-benchmark",
+            name=scenario.scenario_id,
+            description=scenario.description,
+            origin=scenario.origin,
+            artifact_targets=tuple(scenario.artifact_targets),
+            operation_targets=tuple(scenario.operation_targets),
+            tags=tuple(scenario.tags),
+        )
+        for scenario in SYNTHETIC_BENCHMARK_SCENARIOS
+    )
+    return tuple(sorted(entries, key=lambda item: (item.source_kind, item.name)))
+
+
 def build_quality_registry() -> QualityRegistry:
     return QualityRegistry(
         contract_lanes=_lane_entries("contract", CONTRACT_LANES),
@@ -124,6 +173,7 @@ def build_quality_registry() -> QualityRegistry:
         mutation_campaigns=_mutation_entries(),
         benchmark_campaigns=_benchmark_entries(),
         synthetic_benchmark_campaigns=_synthetic_benchmark_entries(),
+        scenario_projections=_scenario_projection_entries(),
     )
 
 
@@ -131,6 +181,7 @@ __all__ = [
     "BenchmarkCampaignEntry",
     "MutationCampaignEntry",
     "QualityRegistry",
+    "ScenarioProjectionEntry",
     "ValidationLaneEntry",
     "build_quality_registry",
 ]
