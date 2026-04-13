@@ -14,6 +14,8 @@ CONTRACT_LANES = {
         "0",
         "-m",
         "machine_contract",
+        operation_targets=("cli.json-contract",),
+        tags=("contract", "json", "cli"),
     ),
     "query-routing": pytest_lane(
         "query-routing",
@@ -30,6 +32,8 @@ CONTRACT_LANES = {
         "Registry-derived tier-0 CLI help/source showcase baselines",
         180,
         "verify-showcase",
+        operation_targets=("cli.help",),
+        tags=("contract", "showcase", "help"),
     ),
     "pipeline-probe-chatgpt": devtools_lane(
         "pipeline-probe-chatgpt",

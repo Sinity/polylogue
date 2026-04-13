@@ -13,6 +13,7 @@ from polylogue.showcase.generators import (
 
 from .benchmark_scenario_catalog import BENCHMARK_CAMPAIGNS
 from .synthetic_benchmark_catalog import SYNTHETIC_BENCHMARK_SCENARIOS
+from .validation_catalog import build_validation_lane_entries
 
 
 def build_scenario_projection_entries() -> tuple[ScenarioProjectionEntry, ...]:
@@ -33,6 +34,15 @@ def build_scenario_projection_entries() -> tuple[ScenarioProjectionEntry, ...]:
             obj=scenario,
         )
         for scenario in generate_qa_extra_scenarios()
+    )
+    entries.extend(
+        ScenarioProjectionEntry.from_object(
+            source_kind=ScenarioProjectionSourceKind.VALIDATION_LANE,
+            name=lane.name,
+            description=lane.description,
+            obj=lane,
+        )
+        for lane in build_validation_lane_entries()
     )
     entries.extend(
         ScenarioProjectionEntry.from_object(

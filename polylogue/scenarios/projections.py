@@ -10,6 +10,7 @@ from .metadata import ScenarioMetadata
 
 class ScenarioProjectionSourceKind(str, Enum):
     EXERCISE = "exercise"
+    VALIDATION_LANE = "validation-lane"
     BENCHMARK_CAMPAIGN = "benchmark-campaign"
     SYNTHETIC_BENCHMARK = "synthetic-benchmark"
 

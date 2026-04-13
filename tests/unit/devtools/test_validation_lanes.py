@@ -38,6 +38,20 @@ class TestLaneParsing:
             assert lane.description
             assert lane.timeout_s > 0
 
+    def test_machine_contract_lane_carries_shared_operation_metadata(self):
+        lane = LANES["machine-contract"]
+
+        assert lane.operation_targets == ("cli.json-contract",)
+        assert lane.tags == ("contract", "json", "cli")
+
+    def test_composite_lane_inherits_metadata_through_catalog_entries(self):
+        from devtools.validation_catalog import build_composite_lane_entries
+
+        frontier_local = next(entry for entry in build_composite_lane_entries() if entry.name == "frontier-local")
+
+        assert "cli.json-contract" in frontier_local.operation_targets
+        assert "cli.help" in frontier_local.operation_targets
+
 
 class TestCommandConstruction:
     def test_machine_contract_lane_uses_pytest_marker(self):

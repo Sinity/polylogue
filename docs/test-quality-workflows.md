@@ -14,10 +14,11 @@ Current registry snapshot:
 - mutation campaigns: `19`
 - benchmark campaigns: `3`
 - synthetic benchmark campaigns: `6`
-- scenario projections: `146`
+- scenario projections: `212`
   - benchmark-campaign: `3`
   - exercise: `137`
   - synthetic-benchmark: `6`
+  - validation-lane: `66`
 
 ## Runtime Coverage
 
@@ -385,6 +386,72 @@ These are the authored scenario-bearing projections currently feeding runtime co
 | `synthetic-benchmark` | `incremental-index` | — | `message_fts` | `index.message-fts-incremental` | `benchmark`<br>`synthetic`<br>`fts` | Benchmark incremental FTS index updates |
 | `synthetic-benchmark` | `session-product-materialization` | — | `session_product_source_conversations`<br>`session_product_rows`<br>`session_product_fts` | `materialize-session-products` | `benchmark`<br>`synthetic`<br>`session-products` | Benchmark durable session-product rebuild over synthetic archive conversations |
 | `synthetic-benchmark` | `startup-health` | — | `archive_health` | `health.startup.synthetic` | `benchmark`<br>`synthetic`<br>`health` | Benchmark check --runtime startup speed |
+| `validation-lane` | `archive-data-products` | — | — | — | — | Archive products, consumer contracts, grouped stats, and health/debt surfaces |
+| `validation-lane` | `archive-data-products-live` | — | — | — | — | Local product-contract lane plus bounded live archive product checks |
+| `validation-lane` | `archive-intelligence` | — | — | — | — | Local archive-intelligence closure lane for retrieval and embedding readiness |
+| `validation-lane` | `chaos` | — | — | — | — | Hostility, interruption, and chronology integration coverage |
+| `validation-lane` | `cleanup-contracts` | — | — | — | — | Cleanup lineage, health/debt views, and maintenance workflow coverage |
+| `validation-lane` | `cleanup-live` | `action-event-repair-loop`<br>`session-product-repair-loop` | `action_event_health`<br>`session_product_health` | `cli.json-contract`<br>`project-action-event-health`<br>`project-session-product-health` | `live`<br>`maintenance`<br>`preview` | Bounded live archive lane for cleanup/debt preview and maintenance budgets |
+| `validation-lane` | `domain-read-model-contracts` | — | — | — | — | Local domain read-model lane for analytics/products, consumer contracts, and debt views |
+| `validation-lane` | `domain-read-model-hardening` | `action-event-repair-loop`<br>`session-product-repair-loop` | `action_event_health`<br>`session_product_health` | `cli.json-contract`<br>`project-action-event-health`<br>`project-session-product-health` | `live`<br>`health`<br>`maintenance`<br>`preview` | Full domain read-model lane with local contracts and bounded live checks |
+| `validation-lane` | `domain-read-model-live` | `action-event-repair-loop`<br>`session-product-repair-loop` | `action_event_health`<br>`session_product_health` | `cli.json-contract`<br>`project-action-event-health`<br>`project-session-product-health` | `live`<br>`health`<br>`maintenance`<br>`preview` | Bounded live archive lane for products, analytics/debt views, and maintenance checks |
+| `validation-lane` | `embeddings-coverage` | — | — | — | — | Embedding coverage/readiness stats, health exposure, and embed command contracts |
+| `validation-lane` | `evidence-contracts` | — | — | — | — | Evidence/inference contract lane across explicit evidence, inferred semantics, consumer parity, and retrieval readiness |
+| `validation-lane` | `evidence-hardening` | `session-product-repair-loop`<br>`action-event-repair-loop` | `session_product_rows`<br>`session_product_fts`<br>`session_product_health`<br>`action_event_health` | `cli.json-contract`<br>`materialize-session-products`<br>`project-session-product-health`<br>`project-action-event-health` | `live`<br>`repair`<br>`session-products`<br>`health`<br>`maintenance` | Full evidence lane with contracts and bounded live checks |
+| `validation-lane` | `evidence-live` | `session-product-repair-loop`<br>`action-event-repair-loop` | `session_product_rows`<br>`session_product_fts`<br>`session_product_health`<br>`action_event_health` | `cli.json-contract`<br>`materialize-session-products`<br>`project-session-product-health`<br>`project-action-event-health` | `live`<br>`repair`<br>`session-products`<br>`health`<br>`maintenance` | Bounded live archive lane for tiered product views, live migration, health, and retrieval-band budgets |
+| `validation-lane` | `evidence-tier-contracts` | — | — | — | — | Explicit evidence-tier product contracts, chronology fields, and evidence payload/query surfaces |
+| `validation-lane` | `frontier-extended` | — | — | `cli.json-contract`<br>`cli.help` | `contract`<br>`json`<br>`cli`<br>`showcase`<br>`help` | Local closure lane plus fast scale and small long-haul campaign |
+| `validation-lane` | `frontier-local` | — | — | `cli.json-contract`<br>`cli.help` | `contract`<br>`json`<br>`cli`<br>`showcase`<br>`help` | Non-live local closure lane for machine/query/semantic/TUI/chaos validation |
+| `validation-lane` | `heuristic-inference-contracts` | — | — | — | — | Heuristic session/work/phase contract hardening with explicit supporting metadata and consumer parity |
+| `validation-lane` | `inference-tier-contracts` | — | — | — | — | Inference-tier work-event/phase/profile contracts with confidence/provenance-bearing semantic payloads |
+| `validation-lane` | `live-archive-slow` | `action-event-repair-loop`<br>`session-product-repair-loop` | `action_event_health`<br>`session_product_health` | `cli.json-contract`<br>`project-action-event-health`<br>`project-session-product-health` | `live`<br>`health`<br>`maintenance` | Broader live archive dogfood lane including retrieval/readiness and live QA exercises |
+| `validation-lane` | `live-archive-small` | `action-event-repair-loop`<br>`session-product-repair-loop` | `action_event_health`<br>`session_product_health` | `cli.json-contract`<br>`project-action-event-health`<br>`project-session-product-health` | `live`<br>`health`<br>`maintenance` | Bounded live archive retrieval/readiness/health dogfood lane |
+| `validation-lane` | `live-archive-subset-parse-probe` | `raw-reparse-loop` | `parse_backlog` | `plan-parse-backlog` | `live`<br>`probe`<br>`parse` | Live archive medium archive-subset parse probe with persisted manifest/workdir artifacts |
+| `validation-lane` | `live-embed-stats` | — | — | — | — | Live archive embedding status JSON view |
+| `validation-lane` | `live-exercises` | — | — | — | — | Manual live archive showcase/QA exercise lane |
+| `validation-lane` | `live-health-json` | `action-event-repair-loop`<br>`session-product-repair-loop` | `action_event_health`<br>`session_product_health` | `cli.json-contract`<br>`project-action-event-health`<br>`project-session-product-health` | `live`<br>`health`<br>`maintenance` | Live archive machine-readable health report |
+| `validation-lane` | `live-maintenance-preview` | `action-event-repair-loop`<br>`session-product-repair-loop` | `action_event_health`<br>`session_product_health` | `cli.json-contract`<br>`project-action-event-health`<br>`project-session-product-health` | `live`<br>`maintenance`<br>`preview` | Live archive machine-readable maintenance preview for safe repairs and destructive cleanup |
+| `validation-lane` | `live-maintenance-small` | `action-event-repair-loop`<br>`session-product-repair-loop` | `action_event_health`<br>`session_product_health` | `cli.json-contract`<br>`project-action-event-health`<br>`project-session-product-health` | `live`<br>`health`<br>`maintenance`<br>`preview` | Bounded live archive lane for health, maintenance preview, and maintenance memory budget |
+| `validation-lane` | `live-products-analytics` | — | — | — | — | Live archive provider-analytics product surface |
+| `validation-lane` | `live-products-day-summaries` | — | — | — | — | Live archive day-summary product surface over the recent semantic slice |
+| `validation-lane` | `live-products-debt` | — | — | — | — | Live archive debt and cleanup product view |
+| `validation-lane` | `live-products-enrichments` | — | — | — | — | Live archive probabilistic session-enrichment product surface |
+| `validation-lane` | `live-products-phases` | — | — | — | — | Live archive inferred phase product surface |
+| `validation-lane` | `live-products-profiles-evidence` | — | — | — | — | Live archive evidence-tier session-profile product surface |
+| `validation-lane` | `live-products-profiles-inference` | — | — | — | — | Live archive inference-tier session-profile product surface |
+| `validation-lane` | `live-products-small` | — | — | — | — | Bounded live archive product and grouped-stats lane |
+| `validation-lane` | `live-products-status` | — | — | — | — | Live archive product status view |
+| `validation-lane` | `live-products-tags` | — | — | — | — | Live archive tag-rollup product view |
+| `validation-lane` | `live-products-work-events` | — | — | — | — | Live archive inferred work-event product surface |
+| `validation-lane` | `live-project-stats` | — | — | — | — | Live archive project-grouped stats over session products |
+| `validation-lane` | `live-retrieval-checks` | — | — | — | — | Live archive action-aware grouped retrieval stats on a bounded semantic slice |
+| `validation-lane` | `live-session-product-repair` | `session-product-repair-loop` | `session_product_rows`<br>`session_product_fts`<br>`session_product_health` | `cli.json-contract`<br>`materialize-session-products`<br>`project-session-product-health` | `live`<br>`repair`<br>`session-products` | Live archive evidence/inference session-product rebuild and migration surface |
+| `validation-lane` | `long-haul-small` | — | — | — | — | Small reproducible benchmark/long-haul campaign |
+| `validation-lane` | `machine-contract` | — | — | `cli.json-contract` | `contract`<br>`json`<br>`cli` | Root CLI JSON success/failure envelopes and runtime-health machine surfaces |
+| `validation-lane` | `maintenance-memory-budget` | — | — | — | — | Live archive maintenance preview under an explicit RSS budget |
+| `validation-lane` | `maintenance-workflows` | — | — | — | — | Health, maintenance selection, cache/live provenance, publication summaries, and machine output |
+| `validation-lane` | `memory-budget` | — | — | — | — | Live archive grouped retrieval command under an explicit RSS budget |
+| `validation-lane` | `mixed-consumer-contracts` | — | — | — | — | CLI, facade, MCP, and health surfaces consuming the same evidence/inference product model |
+| `validation-lane` | `pipeline-probe-chatgpt` | — | — | — | — | Synthetic ChatGPT parse-stage pipeline probe under explicit runtime and RSS budgets |
+| `validation-lane` | `probabilistic-enrichment-contracts` | — | — | — | — | Session-enrichment contracts across CLI, facade, MCP, storage, and retrieval-band status |
+| `validation-lane` | `probabilistic-enrichment-hardening` | `session-product-repair-loop`<br>`action-event-repair-loop` | `session_product_rows`<br>`session_product_fts`<br>`session_product_health`<br>`action_event_health` | `cli.json-contract`<br>`materialize-session-products`<br>`project-session-product-health`<br>`project-action-event-health` | `live`<br>`repair`<br>`session-products`<br>`health`<br>`maintenance`<br>`preview` | Full probabilistic-enrichment and cleanup lane |
+| `validation-lane` | `probabilistic-enrichment-live` | `session-product-repair-loop`<br>`action-event-repair-loop` | `session_product_rows`<br>`session_product_fts`<br>`session_product_health`<br>`action_event_health` | `cli.json-contract`<br>`materialize-session-products`<br>`project-session-product-health`<br>`project-action-event-health` | `live`<br>`repair`<br>`session-products`<br>`health`<br>`maintenance` | Bounded live archive lane for enrichment products, retrieval bands, and health surfaces |
+| `validation-lane` | `query-routing` | — | — | — | — | Query-first CLI route planning, integration, and streamed read checks |
+| `validation-lane` | `retrieval-band-readiness` | — | — | — | — | Transcript/evidence/inference retrieval-band readiness, embedding stats, and health exposure |
+| `validation-lane` | `retrieval-checks` | — | — | — | — | Action-aware query truth, grouped retrieval stats, archive health, and MCP retrieval payload coverage |
+| `validation-lane` | `runtime-substrate-contracts` | — | — | — | — | Local runtime-substrate lane across query, semantic checks, archive products, and maintenance workflows |
+| `validation-lane` | `runtime-substrate-hardening` | `action-event-repair-loop`<br>`session-product-repair-loop` | `action_event_health`<br>`session_product_health` | `cli.json-contract`<br>`project-action-event-health`<br>`project-session-product-health` | `live`<br>`health`<br>`maintenance`<br>`preview` | Full runtime-substrate validation lane covering local contracts plus bounded live archive checks |
+| `validation-lane` | `runtime-substrate-live` | `action-event-repair-loop`<br>`session-product-repair-loop` | `action_event_health`<br>`session_product_health` | `cli.json-contract`<br>`project-action-event-health`<br>`project-session-product-health` | `live`<br>`health`<br>`maintenance`<br>`preview` | Bounded live archive lane for runtime-substrate checks, maintenance checks, and memory budgets |
+| `validation-lane` | `scale-fast` | — | — | — | — | Fast storage scale budgets |
+| `validation-lane` | `scale-slow` | — | — | — | — | Slow local storage scale budgets |
+| `validation-lane` | `semantic-product-hardening` | `action-event-repair-loop`<br>`session-product-repair-loop` | `action_event_health`<br>`session_product_health` | `cli.json-contract`<br>`project-action-event-health`<br>`project-session-product-health` | `live`<br>`health`<br>`maintenance`<br>`preview` | Full semantic-product normalization and toolchain convergence lane |
+| `validation-lane` | `semantic-product-live` | `action-event-repair-loop`<br>`session-product-repair-loop` | `action_event_health`<br>`session_product_health` | `cli.json-contract`<br>`project-action-event-health`<br>`project-session-product-health` | `live`<br>`health`<br>`maintenance`<br>`preview` | Bounded live archive lane for normalized products, maintenance preview, and memory budgets |
+| `validation-lane` | `semantic-product-normalization` | — | — | — | — | Semantic/session product normalization, operator/toolchain narrowing, schema contracts, and provider parser cleanup |
+| `validation-lane` | `semantic-stack` | — | — | — | — | Unified harmonization, semantic facts/profile convergence, and contract inventory coverage |
+| `validation-lane` | `showcase-baselines` | — | — | `cli.help` | `contract`<br>`showcase`<br>`help` | Registry-derived tier-0 CLI help/source showcase baselines |
+| `validation-lane` | `source-provider-fidelity` | — | — | — | — | Source traversal, Drive/runtime source boundaries, parser decoding, and provider-ingest fidelity |
+| `validation-lane` | `source-runtime-alignment` | — | — | — | — | Local source/provider fidelity plus runtime maintenance alignment |
+| `validation-lane` | `tui` | — | — | — | — | Textual dashboard screens and interaction-state coverage |
 
 ## Artifact Locations
 
