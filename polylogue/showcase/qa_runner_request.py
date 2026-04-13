@@ -3,7 +3,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
+
+
+class QAStage(str, Enum):
+    AUDIT = "audit"
+    EXERCISES = "exercises"
+    INVARIANTS = "invariants"
 
 
 @dataclass
@@ -40,8 +47,8 @@ def build_qa_session_request(
     fresh: bool | None,
     ingest: bool | None,
     regenerate_schemas: bool,
-    only_stage: str | None,
-    skip_stages: tuple[str, ...],
+    only_stage: QAStage | None,
+    skip_stages: tuple[QAStage, ...],
     workspace: Path | None,
     report_dir: Path | None,
     verbose: bool,
@@ -68,15 +75,15 @@ def build_qa_session_request(
     run_exercises = True
     run_invariants = True
     if only_stage:
-        run_audit = only_stage == "audit"
-        run_exercises = only_stage == "exercises"
-        run_invariants = only_stage == "invariants"
+        run_audit = only_stage is QAStage.AUDIT
+        run_exercises = only_stage is QAStage.EXERCISES
+        run_invariants = only_stage is QAStage.INVARIANTS
     else:
-        if "audit" in skip_stages:
+        if QAStage.AUDIT in skip_stages:
             run_audit = False
-        if "exercises" in skip_stages:
+        if QAStage.EXERCISES in skip_stages:
             run_exercises = False
-        if "invariants" in skip_stages:
+        if QAStage.INVARIANTS in skip_stages:
             run_invariants = False
     run_proof = only_stage is None and run_audit
 
@@ -98,4 +105,4 @@ def build_qa_session_request(
     )
 
 
-__all__ = ["QASessionRequest", "build_qa_session_request"]
+__all__ = ["QAStage", "QASessionRequest", "build_qa_session_request"]
