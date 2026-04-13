@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-from polylogue.scenarios import ScenarioMetadata
+from polylogue.scenarios import ScenarioMetadata, runtime_artifact_target_names, runtime_operation_target_names
 
 
 def test_scenario_metadata_from_payload_normalizes_strings_and_targets() -> None:
@@ -45,3 +45,19 @@ def test_scenario_metadata_payload_omits_empty_collections() -> None:
         "artifact_targets": ["doctor_runtime"],
         "tags": ["generated"],
     }
+
+
+def test_runtime_target_names_include_declared_runtime_specs() -> None:
+    assert "action_event_rows" in runtime_artifact_target_names()
+    assert "project-action-event-health" in runtime_operation_target_names()
+
+
+def test_scenario_metadata_resolves_only_runtime_declared_targets() -> None:
+    metadata = ScenarioMetadata(
+        origin="generated.contract",
+        artifact_targets=("action_event_rows", "message_fts"),
+        operation_targets=("project-action-event-health", "benchmark.storage.crud"),
+    )
+
+    assert metadata.runtime_artifact_targets() == ("action_event_rows",)
+    assert metadata.runtime_operation_targets() == ("project-action-event-health",)
