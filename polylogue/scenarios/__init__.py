@@ -1,5 +1,10 @@
 """Shared scenario models used across verification projections."""
 
+from .corpus import (
+    CorpusSpec,
+    build_default_corpus_specs,
+    build_inferred_corpus_specs,
+)
 from .metadata import (
     ScenarioMetadata,
     declared_operation_target_names,
@@ -14,6 +19,9 @@ from .projections import (
 )
 
 __all__ = [
+    "build_default_corpus_specs",
+    "build_inferred_corpus_specs",
+    "CorpusSpec",
     "declared_operation_target_names",
     "ScenarioMetadata",
     "ScenarioProjectionEntry",

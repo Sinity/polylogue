@@ -6,6 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from polylogue.scenarios import CorpusSpec
 from polylogue.showcase.cli_boundary import ShowcaseCliResult
 from polylogue.showcase.exercises import Exercise
 from polylogue.showcase.runner import ShowcaseRunner
@@ -55,13 +56,19 @@ class TestShowcaseRunnerSeeding:
             return_value=["chatgpt"],
         ):
             with patch(
-                "polylogue.schemas.synthetic.SyntheticCorpus.for_provider",
+                "polylogue.schemas.synthetic.SyntheticCorpus.from_spec",
                 return_value=fake_corpus,
             ):
-                runner._generate_synthetic_fixtures(fixture_root, count=1)
+                with patch(
+                    "polylogue.schemas.synthetic.SyntheticCorpus.generate_batch_for_spec",
+                    return_value=fake_corpus.generate_batch.return_value,
+                ) as mock_generate_batch_for_spec:
+                    runner._generate_synthetic_fixtures(fixture_root, count=1)
 
-        fake_corpus.generate_batch.assert_called_once()
-        assert fake_corpus.generate_batch.call_args.kwargs["style"] == "showcase"
+        mock_generate_batch_for_spec.assert_called_once()
+        spec = mock_generate_batch_for_spec.call_args.args[0]
+        assert isinstance(spec, CorpusSpec)
+        assert spec.style == "showcase"
 
 
 class TestShowcaseRunnerWorkspaceEnv:
