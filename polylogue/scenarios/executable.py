@@ -5,7 +5,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from .execution import ExecutionSpec
-from .execution_inference import infer_metadata_from_execution
 from .metadata import ScenarioMetadata
 from .sources import NamedScenarioSource
 
@@ -19,8 +18,7 @@ class ExecutableScenario(NamedScenarioSource):
     def __post_init__(self) -> None:
         if self.execution is None:
             return
-        inferred = infer_metadata_from_execution(self.execution)
-        merged = ScenarioMetadata.from_object(self).with_inferred_defaults(inferred)
+        merged = ScenarioMetadata.from_object(self).with_default_targets(self.execution.metadata)
         object.__setattr__(self, "path_targets", merged.path_targets)
         object.__setattr__(self, "artifact_targets", merged.artifact_targets)
         object.__setattr__(self, "operation_targets", merged.operation_targets)

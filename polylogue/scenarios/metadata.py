@@ -142,7 +142,7 @@ class ScenarioMetadata:
             tags=_merge_unique_string_tuples(self.tags, *(other.tags for other in others)),
         )
 
-    def with_inferred_defaults(self, inferred: ScenarioMetadata) -> ScenarioMetadata:
+    def with_default_targets(self, defaults: ScenarioMetadata) -> ScenarioMetadata:
         explicit_runtime_operations, explicit_declared_only_operations = _partition_runtime_operation_targets(
             self.operation_targets
         )
@@ -151,17 +151,17 @@ class ScenarioMetadata:
         )
         return ScenarioMetadata(
             origin=self.origin,
-            path_targets=self.path_targets or inferred.path_targets,
-            artifact_targets=self.artifact_targets or inferred.artifact_targets,
+            path_targets=self.path_targets or defaults.path_targets,
+            artifact_targets=self.artifact_targets or defaults.artifact_targets,
             operation_targets=(
                 self.operation_targets
                 if preserve_explicit_operations
                 else _merge_unique_string_tuples(
                     explicit_declared_only_operations,
-                    explicit_runtime_operations or inferred.operation_targets,
+                    explicit_runtime_operations or defaults.operation_targets,
                 )
             ),
-            tags=_merge_unique_string_tuples(self.tags, inferred.tags),
+            tags=_merge_unique_string_tuples(self.tags, defaults.tags),
         )
 
     def runtime_path_targets(self) -> tuple[str, ...]:
