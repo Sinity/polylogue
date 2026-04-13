@@ -161,6 +161,8 @@ def build_default_corpus_specs(
     seed: int | None = None,
     style: str = "default",
     package_version: str = "default",
+    origin: str = "generated.synthetic-defaults",
+    tags: tuple[str, ...] = ("synthetic", "generated"),
 ) -> tuple[CorpusSpec, ...]:
     return tuple(
         CorpusSpec.for_provider(
@@ -171,8 +173,8 @@ def build_default_corpus_specs(
             messages_max=messages_max,
             seed=seed,
             style=style,
-            origin="generated.synthetic-defaults",
-            tags=("synthetic", "generated"),
+            origin=origin,
+            tags=tags,
         )
         for provider in providers
     )
