@@ -151,6 +151,10 @@ MUTATION_CAMPAIGNS: dict[str, MutationCampaign] = {
             "tests/unit/cli/test_run_int.py",
             "tests/unit/cli/test_run_laws.py",
         ),
+        path_targets=("conversation-render-loop",),
+        artifact_targets=("conversation_render_projection", "rendered_conversation_artifacts"),
+        operation_targets=("render-conversations",),
+        tags=("mutation", "run", "render"),
     ),
     "ui-core": MutationCampaign(
         name="ui-core",
@@ -173,6 +177,15 @@ MUTATION_CAMPAIGNS: dict[str, MutationCampaign] = {
             "tests/integration/test_site.py",
             "tests/integration/test_site_laws.py",
         ),
+        path_targets=("site-publication-loop",),
+        artifact_targets=(
+            "conversation_render_projection",
+            "site_conversation_pages",
+            "site_publication_manifest",
+            "publication_records",
+        ),
+        operation_targets=("publish-site",),
+        tags=("mutation", "site", "publication"),
     ),
     "drive-client": MutationCampaign(
         name="drive-client",

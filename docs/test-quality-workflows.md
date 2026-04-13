@@ -11,24 +11,26 @@ Current registry snapshot:
 - contract lanes: `23`
 - live lanes: `20`
 - composite lanes: `24`
+- validation families: `5`
 - mutation campaigns: `19`
 - benchmark campaigns: `3`
 - synthetic benchmark campaigns: `6`
-- scenario projections: `237`
+- scenario projections: `242`
 - inferred corpus scenarios: `5`
   - benchmark-campaign: `3`
   - exercise: `137`
   - inferred-corpus-scenario: `5`
   - mutation-campaign: `19`
   - synthetic-benchmark: `6`
+  - validation-family: `5`
   - validation-lane: `67`
 
 ## Runtime Coverage
 
-- covered runtime paths: `3`
-- covered runtime artifacts: `12`
-- covered runtime operations: `6`
-- covered declared operation targets: `16`
+- covered runtime paths: `22`
+- covered runtime artifacts: `51`
+- covered runtime operations: `27`
+- covered declared operation targets: `37`
 - uncovered runtime paths: —
 - uncovered runtime artifacts: —
 - uncovered runtime operations: —
@@ -106,6 +108,16 @@ devtools verify-showcase --update
 ## Validation Lane Catalog
 
 Use the named lanes through the runner.
+
+### Validation Families
+
+| Family | Composite Lanes | Description |
+| --- | --- | --- |
+| `domain-read-model` | `domain-read-model-contracts`<br>`domain-read-model-live`<br>`domain-read-model-hardening` | Validation family for read-model contracts, live checks, and hardening lanes. |
+| `evidence` | `evidence-contracts`<br>`evidence-live`<br>`evidence-hardening` | Validation family for evidence-tier contracts, live checks, and hardening lanes. |
+| `probabilistic-enrichment` | `probabilistic-enrichment-live`<br>`cleanup-live`<br>`probabilistic-enrichment-hardening` | Validation family for probabilistic-enrichment, cleanup, and hardening lanes. |
+| `runtime-substrate` | `runtime-substrate-contracts`<br>`runtime-substrate-live`<br>`runtime-substrate-hardening` | Validation family for runtime-substrate contract, live, and hardening lanes. |
+| `semantic-product` | `semantic-product-live`<br>`semantic-product-hardening` | Validation family for semantic-product live and hardening lanes. |
 
 ### Contract Lanes
 
@@ -257,67 +269,67 @@ These are the authored scenario-bearing projections currently feeding runtime co
 | Source | Projection | Path Targets | Artifact Targets | Operation Targets | Tags | Description |
 | --- | --- | --- | --- | --- | --- | --- |
 | `benchmark-campaign` | `pipeline` | — | `index_state`<br>`pipeline_helpers` | `benchmark.pipeline.index-and-helpers`<br>`benchmark.repair.action-events` | `benchmark`<br>`pipeline` | Index rebuild/update, action-event repair, plus hashing/semantic helper benchmark domain |
-| `benchmark-campaign` | `search-filters` | — | `conversation_query_results`<br>`message_fts` | `benchmark.query.search-filters` | `benchmark`<br>`search`<br>`filters` | FTS and ConversationFilter benchmark domain |
+| `benchmark-campaign` | `search-filters` | — | `conversation_query_results`<br>`message_fts` | `query-conversations`<br>`benchmark.query.search-filters` | `benchmark`<br>`search`<br>`filters` | FTS and ConversationFilter benchmark domain |
 | `benchmark-campaign` | `storage` | — | `conversation_rows`<br>`message_rows`<br>`raw_rows` | `benchmark.storage.crud` | `benchmark`<br>`storage` | Repository/backend list/get-many/save benchmark domain |
-| `exercise` | `combined-filters` | — | — | — | — | Combined provider + date filter |
-| `exercise` | `completions-bash` | — | — | — | — | Bash shell completions |
-| `exercise` | `count-baseline` | — | — | — | — | Baseline count before mutations |
-| `exercise` | `count-decreased` | — | — | — | — | Verify count decreased after delete |
-| `exercise` | `delete-dry-run` | — | — | — | — | Dry-run delete |
-| `exercise` | `delete-one` | — | — | — | — | Delete one conversation |
-| `exercise` | `doctor-cohorts-json` | — | — | — | — | Artifact cohorts as JSON |
-| `exercise` | `doctor-health` | — | — | — | — | Health check |
-| `exercise` | `doctor-json` | — | — | — | — | Health check as JSON |
-| `exercise` | `doctor-proof-json` | — | — | — | — | Artifact proof as JSON |
-| `exercise` | `doctor-verbose` | — | — | — | — | Verbose health check |
+| `exercise` | `combined-filters` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `query-conversations` | — | Combined provider + date filter |
+| `exercise` | `completions-bash` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `query-conversations` | — | Bash shell completions |
+| `exercise` | `count-baseline` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `query-conversations` | — | Baseline count before mutations |
+| `exercise` | `count-decreased` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `query-conversations` | — | Verify count decreased after delete |
+| `exercise` | `delete-dry-run` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `query-conversations` | — | Dry-run delete |
+| `exercise` | `delete-one` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `query-conversations` | — | Delete one conversation |
+| `exercise` | `doctor-cohorts-json` | `message-fts-health-loop` | `message_fts`<br>`action_event_health`<br>`session_product_health`<br>`archive_health` | `cli.json-contract`<br>`project-archive-health` | — | Artifact cohorts as JSON |
+| `exercise` | `doctor-health` | `message-fts-health-loop` | `message_fts`<br>`action_event_health`<br>`session_product_health`<br>`archive_health` | `project-archive-health` | — | Health check |
+| `exercise` | `doctor-json` | `message-fts-health-loop` | `message_fts`<br>`action_event_health`<br>`session_product_health`<br>`archive_health` | `cli.json-contract`<br>`project-archive-health` | — | Health check as JSON |
+| `exercise` | `doctor-proof-json` | `message-fts-health-loop` | `message_fts`<br>`action_event_health`<br>`session_product_health`<br>`archive_health` | `cli.json-contract`<br>`project-archive-health` | — | Artifact proof as JSON |
+| `exercise` | `doctor-verbose` | `message-fts-health-loop` | `message_fts`<br>`action_event_health`<br>`session_product_health`<br>`archive_health` | `project-archive-health` | — | Verbose health check |
 | `exercise` | `embed-stats` | — | — | — | — | Embedding statistics |
-| `exercise` | `exclude-provider` | — | — | — | — | Exclude a provider |
-| `exercise` | `fields-selector` | — | — | — | — | Select specific JSON fields |
-| `exercise` | `gen-fmt-csv-latest` | — | — | — | `generated`<br>`formats`<br>`csv`<br>`latest` | Generated: csv format in latest mode |
-| `exercise` | `gen-fmt-csv-list` | — | — | — | `generated`<br>`formats`<br>`csv`<br>`list` | Generated: csv format in list mode |
-| `exercise` | `gen-fmt-html-latest` | — | — | — | `generated`<br>`formats`<br>`html`<br>`latest` | Generated: html format in latest mode |
-| `exercise` | `gen-fmt-html-list` | — | — | — | `generated`<br>`formats`<br>`html`<br>`list` | Generated: html format in list mode |
-| `exercise` | `gen-fmt-json-latest` | — | — | — | `generated`<br>`formats`<br>`json`<br>`latest` | Generated: json format in latest mode |
-| `exercise` | `gen-fmt-json-list` | — | — | — | `generated`<br>`formats`<br>`json`<br>`list` | Generated: json format in list mode |
-| `exercise` | `gen-fmt-markdown-latest` | — | — | — | `generated`<br>`formats`<br>`markdown`<br>`latest` | Generated: markdown format in latest mode |
-| `exercise` | `gen-fmt-markdown-list` | — | — | — | `generated`<br>`formats`<br>`markdown`<br>`list` | Generated: markdown format in list mode |
-| `exercise` | `gen-fmt-obsidian-latest` | — | — | — | `generated`<br>`formats`<br>`obsidian`<br>`latest` | Generated: obsidian format in latest mode |
-| `exercise` | `gen-fmt-obsidian-list` | — | — | — | `generated`<br>`formats`<br>`obsidian`<br>`list` | Generated: obsidian format in list mode |
-| `exercise` | `gen-fmt-org-latest` | — | — | — | `generated`<br>`formats`<br>`org`<br>`latest` | Generated: org format in latest mode |
-| `exercise` | `gen-fmt-org-list` | — | — | — | `generated`<br>`formats`<br>`org`<br>`list` | Generated: org format in list mode |
-| `exercise` | `gen-fmt-plaintext-latest` | — | — | — | `generated`<br>`formats`<br>`plaintext`<br>`latest` | Generated: plaintext format in latest mode |
-| `exercise` | `gen-fmt-plaintext-list` | — | — | — | `generated`<br>`formats`<br>`plaintext`<br>`list` | Generated: plaintext format in list mode |
-| `exercise` | `gen-fmt-yaml-latest` | — | — | — | `generated`<br>`formats`<br>`yaml`<br>`latest` | Generated: yaml format in latest mode |
-| `exercise` | `gen-fmt-yaml-list` | — | — | — | `generated`<br>`formats`<br>`yaml`<br>`list` | Generated: yaml format in list mode |
-| `exercise` | `gen-schema-explain-chatgpt` | — | — | — | `generated`<br>`schema`<br>`chatgpt` | Generated: schema explain --provider chatgpt |
-| `exercise` | `gen-schema-explain-claude-ai` | — | — | — | `generated`<br>`schema`<br>`claude-ai` | Generated: schema explain --provider claude-ai |
-| `exercise` | `gen-schema-explain-claude-code` | — | — | — | `generated`<br>`schema`<br>`claude-code` | Generated: schema explain --provider claude-code |
-| `exercise` | `gen-schema-explain-codex` | — | — | — | `generated`<br>`schema`<br>`codex` | Generated: schema explain --provider codex |
-| `exercise` | `gen-schema-explain-gemini` | — | — | — | `generated`<br>`schema`<br>`gemini` | Generated: schema explain --provider gemini |
-| `exercise` | `gen-schema-list` | — | — | — | `generated`<br>`schema`<br>`list` | Generated: schema list --json returns valid JSON |
+| `exercise` | `exclude-provider` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `query-conversations` | — | Exclude a provider |
+| `exercise` | `fields-selector` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `query-conversations` | — | Select specific JSON fields |
+| `exercise` | `gen-fmt-csv-latest` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `query-conversations` | `generated`<br>`formats`<br>`csv`<br>`latest` | Generated: csv format in latest mode |
+| `exercise` | `gen-fmt-csv-list` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `query-conversations` | `generated`<br>`formats`<br>`csv`<br>`list` | Generated: csv format in list mode |
+| `exercise` | `gen-fmt-html-latest` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `query-conversations` | `generated`<br>`formats`<br>`html`<br>`latest` | Generated: html format in latest mode |
+| `exercise` | `gen-fmt-html-list` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `query-conversations` | `generated`<br>`formats`<br>`html`<br>`list` | Generated: html format in list mode |
+| `exercise` | `gen-fmt-json-latest` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `query-conversations` | `generated`<br>`formats`<br>`json`<br>`latest` | Generated: json format in latest mode |
+| `exercise` | `gen-fmt-json-list` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `query-conversations` | `generated`<br>`formats`<br>`json`<br>`list` | Generated: json format in list mode |
+| `exercise` | `gen-fmt-markdown-latest` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `query-conversations` | `generated`<br>`formats`<br>`markdown`<br>`latest` | Generated: markdown format in latest mode |
+| `exercise` | `gen-fmt-markdown-list` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `query-conversations` | `generated`<br>`formats`<br>`markdown`<br>`list` | Generated: markdown format in list mode |
+| `exercise` | `gen-fmt-obsidian-latest` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `query-conversations` | `generated`<br>`formats`<br>`obsidian`<br>`latest` | Generated: obsidian format in latest mode |
+| `exercise` | `gen-fmt-obsidian-list` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `query-conversations` | `generated`<br>`formats`<br>`obsidian`<br>`list` | Generated: obsidian format in list mode |
+| `exercise` | `gen-fmt-org-latest` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `query-conversations` | `generated`<br>`formats`<br>`org`<br>`latest` | Generated: org format in latest mode |
+| `exercise` | `gen-fmt-org-list` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `query-conversations` | `generated`<br>`formats`<br>`org`<br>`list` | Generated: org format in list mode |
+| `exercise` | `gen-fmt-plaintext-latest` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `query-conversations` | `generated`<br>`formats`<br>`plaintext`<br>`latest` | Generated: plaintext format in latest mode |
+| `exercise` | `gen-fmt-plaintext-list` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `query-conversations` | `generated`<br>`formats`<br>`plaintext`<br>`list` | Generated: plaintext format in list mode |
+| `exercise` | `gen-fmt-yaml-latest` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `query-conversations` | `generated`<br>`formats`<br>`yaml`<br>`latest` | Generated: yaml format in latest mode |
+| `exercise` | `gen-fmt-yaml-list` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `query-conversations` | `generated`<br>`formats`<br>`yaml`<br>`list` | Generated: yaml format in list mode |
+| `exercise` | `gen-schema-explain-chatgpt` | `schema-explain-query-loop` | `schema_packages`<br>`schema_explanation_results` | `query-schema-explanations` | `generated`<br>`schema`<br>`chatgpt` | Generated: schema explain --provider chatgpt |
+| `exercise` | `gen-schema-explain-claude-ai` | `schema-explain-query-loop` | `schema_packages`<br>`schema_explanation_results` | `query-schema-explanations` | `generated`<br>`schema`<br>`claude-ai` | Generated: schema explain --provider claude-ai |
+| `exercise` | `gen-schema-explain-claude-code` | `schema-explain-query-loop` | `schema_packages`<br>`schema_explanation_results` | `query-schema-explanations` | `generated`<br>`schema`<br>`claude-code` | Generated: schema explain --provider claude-code |
+| `exercise` | `gen-schema-explain-codex` | `schema-explain-query-loop` | `schema_packages`<br>`schema_explanation_results` | `query-schema-explanations` | `generated`<br>`schema`<br>`codex` | Generated: schema explain --provider codex |
+| `exercise` | `gen-schema-explain-gemini` | `schema-explain-query-loop` | `schema_packages`<br>`schema_explanation_results` | `query-schema-explanations` | `generated`<br>`schema`<br>`gemini` | Generated: schema explain --provider gemini |
+| `exercise` | `gen-schema-list` | `schema-list-query-loop` | `schema_packages`<br>`schema_cluster_manifests`<br>`inferred_corpus_specs`<br>`inferred_corpus_scenarios`<br>`schema_list_results` | `query-schema-catalog` | `generated`<br>`schema`<br>`list` | Generated: schema list --json returns valid JSON |
 | `exercise` | `help-audit` | — | — | `cli.help` | `generated`<br>`help`<br>`structural` | audit help |
 | `exercise` | `help-audit-generate` | — | — | `cli.help` | `generated`<br>`help`<br>`structural` | audit generate help |
-| `exercise` | `help-auth` | — | — | `cli.help` | `generated`<br>`help`<br>`structural` | auth help |
-| `exercise` | `help-completions` | — | — | `cli.help` | `generated`<br>`help`<br>`structural` | completions help |
-| `exercise` | `help-count` | — | — | `cli.help` | `generated`<br>`help`<br>`structural` | count help |
-| `exercise` | `help-dashboard` | — | — | `cli.help` | `generated`<br>`help`<br>`structural` | dashboard help |
-| `exercise` | `help-delete` | — | — | `cli.help` | `generated`<br>`help`<br>`structural` | delete help |
-| `exercise` | `help-doctor` | — | — | `cli.help` | `generated`<br>`help`<br>`structural` | doctor help |
-| `exercise` | `help-list` | — | — | `cli.help` | `generated`<br>`help`<br>`structural` | list help |
-| `exercise` | `help-main` | — | — | — | — | Main help screen |
-| `exercise` | `help-mcp` | — | — | `cli.help` | `generated`<br>`help`<br>`structural` | mcp help |
-| `exercise` | `help-open` | — | — | `cli.help` | `generated`<br>`help`<br>`structural` | open help |
+| `exercise` | `help-auth` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `cli.help`<br>`query-conversations` | `generated`<br>`help`<br>`structural` | auth help |
+| `exercise` | `help-completions` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `cli.help`<br>`query-conversations` | `generated`<br>`help`<br>`structural` | completions help |
+| `exercise` | `help-count` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `cli.help`<br>`query-conversations` | `generated`<br>`help`<br>`structural` | count help |
+| `exercise` | `help-dashboard` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `cli.help`<br>`query-conversations` | `generated`<br>`help`<br>`structural` | dashboard help |
+| `exercise` | `help-delete` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `cli.help`<br>`query-conversations` | `generated`<br>`help`<br>`structural` | delete help |
+| `exercise` | `help-doctor` | `message-fts-health-loop` | `message_fts`<br>`action_event_health`<br>`session_product_health`<br>`archive_health` | `cli.help`<br>`project-archive-health` | `generated`<br>`help`<br>`structural` | doctor help |
+| `exercise` | `help-list` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `cli.help`<br>`query-conversations` | `generated`<br>`help`<br>`structural` | list help |
+| `exercise` | `help-main` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `query-conversations` | — | Main help screen |
+| `exercise` | `help-mcp` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `cli.help`<br>`query-conversations` | `generated`<br>`help`<br>`structural` | mcp help |
+| `exercise` | `help-open` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `cli.help`<br>`query-conversations` | `generated`<br>`help`<br>`structural` | open help |
 | `exercise` | `help-products` | — | — | `cli.help` | `generated`<br>`help`<br>`structural` | products help |
-| `exercise` | `help-products-analytics` | — | — | `cli.help` | `generated`<br>`help`<br>`structural` | products analytics help |
-| `exercise` | `help-products-day-summaries` | — | — | `cli.help` | `generated`<br>`help`<br>`structural` | products day-summaries help |
-| `exercise` | `help-products-enrichments` | — | — | `cli.help` | `generated`<br>`help`<br>`structural` | products enrichments help |
-| `exercise` | `help-products-phases` | — | — | `cli.help` | `generated`<br>`help`<br>`structural` | products phases help |
-| `exercise` | `help-products-profiles` | — | — | `cli.help` | `generated`<br>`help`<br>`structural` | products profiles help |
-| `exercise` | `help-products-tags` | — | — | `cli.help` | `generated`<br>`help`<br>`structural` | products tags help |
-| `exercise` | `help-products-threads` | — | — | `cli.help` | `generated`<br>`help`<br>`structural` | products threads help |
-| `exercise` | `help-products-week-summaries` | — | — | `cli.help` | `generated`<br>`help`<br>`structural` | products week-summaries help |
-| `exercise` | `help-products-work-events` | — | — | `cli.help` | `generated`<br>`help`<br>`structural` | products work-events help |
-| `exercise` | `help-reset` | — | — | `cli.help` | `generated`<br>`help`<br>`structural` | reset help |
+| `exercise` | `help-products-analytics` | `provider-analytics-query-loop` | `session_product_rows`<br>`provider_analytics_results` | `cli.help`<br>`query-provider-analytics` | `generated`<br>`help`<br>`structural` | products analytics help |
+| `exercise` | `help-products-day-summaries` | `day-summary-query-loop` | `day_session_summary_rows`<br>`day_session_summary_results` | `cli.help`<br>`query-day-session-summaries` | `generated`<br>`help`<br>`structural` | products day-summaries help |
+| `exercise` | `help-products-enrichments` | `session-enrichment-query-loop` | `session_profile_rows`<br>`session_profile_enrichment_fts`<br>`session_enrichment_results` | `cli.help`<br>`query-session-enrichments` | `generated`<br>`help`<br>`structural` | products enrichments help |
+| `exercise` | `help-products-phases` | `session-phase-query-loop` | `session_phase_rows`<br>`session_phase_results` | `cli.help`<br>`query-session-phases` | `generated`<br>`help`<br>`structural` | products phases help |
+| `exercise` | `help-products-profiles` | `session-profile-query-loop` | `session_profile_rows`<br>`session_profile_merged_fts`<br>`session_profile_results` | `cli.help`<br>`query-session-profiles` | `generated`<br>`help`<br>`structural` | products profiles help |
+| `exercise` | `help-products-tags` | `session-tag-rollup-query-loop` | `session_tag_rollup_rows`<br>`session_tag_rollup_results` | `cli.help`<br>`query-session-tag-rollups` | `generated`<br>`help`<br>`structural` | products tags help |
+| `exercise` | `help-products-threads` | `work-thread-query-loop` | `work_thread_rows`<br>`work_thread_fts`<br>`work_thread_results` | `cli.help`<br>`query-work-threads` | `generated`<br>`help`<br>`structural` | products threads help |
+| `exercise` | `help-products-week-summaries` | `week-summary-query-loop` | `day_session_summary_rows`<br>`week_session_summary_results` | `cli.help`<br>`query-week-session-summaries` | `generated`<br>`help`<br>`structural` | products week-summaries help |
+| `exercise` | `help-products-work-events` | `session-work-event-query-loop` | `session_work_event_rows`<br>`session_work_event_fts`<br>`session_work_event_results` | `cli.help`<br>`query-session-work-events` | `generated`<br>`help`<br>`structural` | products work-events help |
+| `exercise` | `help-reset` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `cli.help`<br>`query-conversations` | `generated`<br>`help`<br>`structural` | reset help |
 | `exercise` | `help-run` | — | — | `cli.help` | `generated`<br>`help`<br>`structural` | run help |
 | `exercise` | `help-run-acquire` | — | — | `cli.help` | `generated`<br>`help`<br>`structural` | run acquire help |
 | `exercise` | `help-run-all` | — | — | `cli.help` | `generated`<br>`help`<br>`structural` | run all help |
@@ -325,84 +337,84 @@ These are the authored scenario-bearing projections currently feeding runtime co
 | `exercise` | `help-run-index` | — | — | `cli.help` | `generated`<br>`help`<br>`structural` | run index help |
 | `exercise` | `help-run-materialize` | — | — | `cli.help` | `generated`<br>`help`<br>`structural` | run materialize help |
 | `exercise` | `help-run-parse` | — | — | `cli.help` | `generated`<br>`help`<br>`structural` | run parse help |
-| `exercise` | `help-run-render` | — | — | `cli.help` | `generated`<br>`help`<br>`structural` | run render help |
+| `exercise` | `help-run-render` | `conversation-render-loop` | `conversation_render_projection`<br>`rendered_conversation_artifacts` | `cli.help`<br>`render-conversations` | `generated`<br>`help`<br>`structural` | run render help |
 | `exercise` | `help-run-reprocess` | — | — | `cli.help` | `generated`<br>`help`<br>`structural` | run reprocess help |
 | `exercise` | `help-run-schema` | — | — | `cli.help` | `generated`<br>`help`<br>`structural` | run schema help |
-| `exercise` | `help-run-site` | — | — | `cli.help` | `generated`<br>`help`<br>`structural` | run site help |
+| `exercise` | `help-run-site` | `site-publication-loop` | `conversation_render_projection`<br>`site_conversation_pages`<br>`site_publication_manifest`<br>`publication_records` | `cli.help`<br>`publish-site` | `generated`<br>`help`<br>`structural` | run site help |
 | `exercise` | `help-schema` | — | — | `cli.help` | `generated`<br>`help`<br>`structural` | schema help |
 | `exercise` | `help-schema-audit` | — | — | `cli.help` | `generated`<br>`help`<br>`structural` | schema audit help |
 | `exercise` | `help-schema-compare` | — | — | `cli.help` | `generated`<br>`help`<br>`structural` | schema compare help |
-| `exercise` | `help-schema-explain` | — | — | `cli.help` | `generated`<br>`help`<br>`structural` | schema explain help |
+| `exercise` | `help-schema-explain` | `schema-explain-query-loop` | `schema_packages`<br>`schema_explanation_results` | `cli.help`<br>`query-schema-explanations` | `generated`<br>`help`<br>`structural` | schema explain help |
 | `exercise` | `help-schema-generate` | — | — | `cli.help` | `generated`<br>`help`<br>`structural` | schema generate help |
-| `exercise` | `help-schema-list` | — | — | `cli.help` | `generated`<br>`help`<br>`structural` | schema list help |
+| `exercise` | `help-schema-list` | `schema-list-query-loop` | `schema_packages`<br>`schema_cluster_manifests`<br>`inferred_corpus_specs`<br>`inferred_corpus_scenarios`<br>`schema_list_results` | `cli.help`<br>`query-schema-catalog` | `generated`<br>`help`<br>`structural` | schema list help |
 | `exercise` | `help-schema-promote` | — | — | `cli.help` | `generated`<br>`help`<br>`structural` | schema promote help |
-| `exercise` | `help-stats` | — | — | `cli.help` | `generated`<br>`help`<br>`structural` | stats help |
+| `exercise` | `help-stats` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `cli.help`<br>`query-conversations` | `generated`<br>`help`<br>`structural` | stats help |
 | `exercise` | `help-tags` | — | — | `cli.help` | `generated`<br>`help`<br>`structural` | tags help |
 | `exercise` | `json-audit` | — | — | `cli.json-contract` | `generated`<br>`json-contract` | audit JSON contract |
-| `exercise` | `json-doctor` | — | — | `cli.json-contract` | `generated`<br>`json-contract` | doctor JSON contract |
+| `exercise` | `json-doctor` | `message-fts-health-loop` | `message_fts`<br>`action_event_health`<br>`session_product_health`<br>`archive_health` | `cli.json-contract`<br>`project-archive-health` | `generated`<br>`json-contract` | doctor JSON contract |
 | `exercise` | `json-doctor-action-event-preview` | `action-event-repair-loop` | `action_event_rows`<br>`action_event_fts`<br>`action_event_health` | `cli.json-contract`<br>`project-action-event-health` | `generated`<br>`json-contract`<br>`maintenance`<br>`action-events` | doctor JSON contract |
 | `exercise` | `json-doctor-session-products-preview` | `session-product-repair-loop` | `session_product_rows`<br>`session_product_fts`<br>`session_product_health` | `cli.json-contract`<br>`project-session-product-health` | `generated`<br>`json-contract`<br>`maintenance`<br>`session-products` | doctor JSON contract |
-| `exercise` | `json-products-analytics` | — | — | `cli.json-contract` | `generated`<br>`json-contract` | products analytics JSON contract |
-| `exercise` | `json-products-day-summaries` | — | — | `cli.json-contract` | `generated`<br>`json-contract` | products day-summaries JSON contract |
-| `exercise` | `json-products-phases` | — | — | `cli.json-contract` | `generated`<br>`json-contract` | products phases JSON contract |
-| `exercise` | `json-products-profiles` | — | — | `cli.json-contract` | `generated`<br>`json-contract` | products profiles JSON contract |
-| `exercise` | `json-products-tags` | — | — | `cli.json-contract` | `generated`<br>`json-contract` | products tags JSON contract |
-| `exercise` | `json-products-threads` | — | — | `cli.json-contract` | `generated`<br>`json-contract` | products threads JSON contract |
-| `exercise` | `json-products-week-summaries` | — | — | `cli.json-contract` | `generated`<br>`json-contract` | products week-summaries JSON contract |
-| `exercise` | `json-products-work-events` | — | — | `cli.json-contract` | `generated`<br>`json-contract` | products work-events JSON contract |
+| `exercise` | `json-products-analytics` | `provider-analytics-query-loop` | `session_product_rows`<br>`provider_analytics_results` | `cli.json-contract`<br>`query-provider-analytics` | `generated`<br>`json-contract`<br>`products`<br>`analytics` | products analytics JSON contract |
+| `exercise` | `json-products-day-summaries` | `day-summary-query-loop` | `day_session_summary_rows`<br>`day_session_summary_results` | `cli.json-contract`<br>`query-day-session-summaries` | `generated`<br>`json-contract`<br>`products`<br>`day-summaries` | products day-summaries JSON contract |
+| `exercise` | `json-products-phases` | `session-phase-query-loop` | `session_phase_rows`<br>`session_phase_results` | `cli.json-contract`<br>`query-session-phases` | `generated`<br>`json-contract`<br>`products`<br>`phases` | products phases JSON contract |
+| `exercise` | `json-products-profiles` | `session-profile-query-loop` | `session_profile_rows`<br>`session_profile_merged_fts`<br>`session_profile_results` | `cli.json-contract`<br>`query-session-profiles` | `generated`<br>`json-contract`<br>`products`<br>`session-profiles` | products profiles JSON contract |
+| `exercise` | `json-products-tags` | `session-tag-rollup-query-loop` | `session_tag_rollup_rows`<br>`session_tag_rollup_results` | `cli.json-contract`<br>`query-session-tag-rollups` | `generated`<br>`json-contract`<br>`products`<br>`tags` | products tags JSON contract |
+| `exercise` | `json-products-threads` | `work-thread-query-loop` | `work_thread_rows`<br>`work_thread_fts`<br>`work_thread_results` | `cli.json-contract`<br>`query-work-threads` | `generated`<br>`json-contract`<br>`products`<br>`threads` | products threads JSON contract |
+| `exercise` | `json-products-week-summaries` | `week-summary-query-loop` | `day_session_summary_rows`<br>`week_session_summary_results` | `cli.json-contract`<br>`query-week-session-summaries` | `generated`<br>`json-contract`<br>`products`<br>`week-summaries` | products week-summaries JSON contract |
+| `exercise` | `json-products-work-events` | `session-work-event-query-loop` | `session_work_event_rows`<br>`session_work_event_fts`<br>`session_work_event_results` | `cli.json-contract`<br>`query-session-work-events` | `generated`<br>`json-contract`<br>`products`<br>`work-events` | products work-events JSON contract |
 | `exercise` | `json-run-embed` | — | — | `cli.json-contract` | `generated`<br>`json-contract` | run embed JSON contract |
 | `exercise` | `json-schema-audit` | — | — | `cli.json-contract` | `generated`<br>`json-contract` | schema audit JSON contract |
-| `exercise` | `json-schema-list` | — | — | `cli.json-contract` | `generated`<br>`json-contract` | schema list JSON contract |
+| `exercise` | `json-schema-list` | `schema-list-query-loop` | `schema_packages`<br>`schema_cluster_manifests`<br>`inferred_corpus_specs`<br>`inferred_corpus_scenarios`<br>`schema_list_results` | `cli.json-contract`<br>`query-schema-catalog` | `generated`<br>`json-contract` | schema list JSON contract |
 | `exercise` | `json-tags` | — | — | `cli.json-contract` | `generated`<br>`json-contract` | tags JSON contract |
-| `exercise` | `query-count` | — | — | — | — | Count conversations |
-| `exercise` | `query-dialogue-only` | — | — | — | — | Latest with dialogue only |
-| `exercise` | `query-filter-provider` | — | — | — | — | Filter by provider |
-| `exercise` | `query-filter-since` | — | — | — | — | Filter by date |
-| `exercise` | `query-latest` | — | — | — | — | Show latest conversation |
-| `exercise` | `query-latest-csv` | — | — | — | — | Latest conversation as CSV |
-| `exercise` | `query-latest-html` | — | — | — | — | Latest conversation as HTML |
-| `exercise` | `query-latest-json` | — | — | — | — | Latest conversation as JSON |
-| `exercise` | `query-latest-md` | — | — | — | — | Latest conversation as Markdown |
-| `exercise` | `query-latest-obsidian` | — | — | — | — | Latest conversation as Obsidian note |
-| `exercise` | `query-latest-org` | — | — | — | — | Latest conversation as Org-mode |
-| `exercise` | `query-latest-plaintext` | — | — | — | — | Latest conversation as plaintext |
-| `exercise` | `query-list` | — | — | — | — | List conversations |
-| `exercise` | `query-list-csv` | — | — | — | — | List conversations as CSV |
-| `exercise` | `query-list-json` | — | — | — | — | List conversations as JSON |
-| `exercise` | `query-list-yaml` | — | — | — | — | List conversations as YAML |
-| `exercise` | `query-search-term` | — | — | — | — | Full-text search |
-| `exercise` | `query-sort-messages` | — | — | — | — | Sort by message count |
-| `exercise` | `query-sort-tokens` | — | — | — | — | Sort by token count |
-| `exercise` | `query-stats` | — | — | — | — | Conversation statistics |
-| `exercise` | `query-stats-by-month` | — | — | — | — | Statistics by month |
-| `exercise` | `query-stats-by-provider` | — | — | — | — | Statistics by provider |
-| `exercise` | `query-stream-json` | — | — | — | — | Stream latest as JSON lines |
-| `exercise` | `query-stream-latest` | — | — | — | — | Stream latest conversation |
-| `exercise` | `reverse-sort` | — | — | — | — | Reverse sort by date |
+| `exercise` | `query-count` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `query-conversations` | — | Count conversations |
+| `exercise` | `query-dialogue-only` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `query-conversations` | — | Latest with dialogue only |
+| `exercise` | `query-filter-provider` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `query-conversations` | — | Filter by provider |
+| `exercise` | `query-filter-since` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `query-conversations` | — | Filter by date |
+| `exercise` | `query-latest` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `query-conversations` | — | Show latest conversation |
+| `exercise` | `query-latest-csv` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `query-conversations` | — | Latest conversation as CSV |
+| `exercise` | `query-latest-html` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `query-conversations` | — | Latest conversation as HTML |
+| `exercise` | `query-latest-json` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `query-conversations` | — | Latest conversation as JSON |
+| `exercise` | `query-latest-md` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `query-conversations` | — | Latest conversation as Markdown |
+| `exercise` | `query-latest-obsidian` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `query-conversations` | — | Latest conversation as Obsidian note |
+| `exercise` | `query-latest-org` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `query-conversations` | — | Latest conversation as Org-mode |
+| `exercise` | `query-latest-plaintext` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `query-conversations` | — | Latest conversation as plaintext |
+| `exercise` | `query-list` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `query-conversations` | — | List conversations |
+| `exercise` | `query-list-csv` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `query-conversations` | — | List conversations as CSV |
+| `exercise` | `query-list-json` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `query-conversations` | — | List conversations as JSON |
+| `exercise` | `query-list-yaml` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `query-conversations` | — | List conversations as YAML |
+| `exercise` | `query-search-term` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `query-conversations` | — | Full-text search |
+| `exercise` | `query-sort-messages` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `query-conversations` | — | Sort by message count |
+| `exercise` | `query-sort-tokens` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `query-conversations` | — | Sort by token count |
+| `exercise` | `query-stats` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `query-conversations` | — | Conversation statistics |
+| `exercise` | `query-stats-by-month` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `query-conversations` | — | Statistics by month |
+| `exercise` | `query-stats-by-provider` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `query-conversations` | — | Statistics by provider |
+| `exercise` | `query-stream-json` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `query-conversations` | — | Stream latest as JSON lines |
+| `exercise` | `query-stream-latest` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `query-conversations` | — | Stream latest conversation |
+| `exercise` | `reverse-sort` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `query-conversations` | — | Reverse sort by date |
 | `exercise` | `run-all` | — | — | — | — | Run full pipeline (seeded fixtures) |
 | `exercise` | `run-preview` | — | — | — | — | Preview pipeline plan (seeded fixtures) |
 | `exercise` | `run-preview-live` | — | — | — | — | Preview pipeline against live sources |
 | `exercise` | `run-preview-reparse` | `raw-reparse-loop` | `raw_validation_state`<br>`validation_backlog`<br>`parse_backlog`<br>`parse_quarantine` | `plan-validation-backlog`<br>`plan-parse-backlog` | `pipeline`<br>`reparse`<br>`maintenance` | Preview force-reparse planning (seeded fixtures) |
 | `exercise` | `run-stage-index` | — | — | — | — | Run index stage only |
 | `exercise` | `run-stage-render` | — | — | — | — | Run render stage only |
-| `exercise` | `sample-random` | — | — | — | — | Random sample of conversations |
-| `exercise` | `set-meta` | — | — | — | — | Set metadata on conversation |
-| `exercise` | `site-generate` | — | — | — | — | Generate static site via run stage |
+| `exercise` | `sample-random` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `query-conversations` | — | Random sample of conversations |
+| `exercise` | `set-meta` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `query-conversations` | — | Set metadata on conversation |
+| `exercise` | `site-generate` | `site-publication-loop` | `conversation_render_projection`<br>`site_conversation_pages`<br>`site_publication_manifest`<br>`publication_records` | `publish-site` | — | Generate static site via run stage |
 | `exercise` | `stats-default` | — | — | — | — | Default archive statistics |
-| `exercise` | `stats-verbose` | — | — | — | — | Verbose statistics |
-| `exercise` | `tag-add` | — | — | — | — | Add tag to latest conversation |
-| `exercise` | `tag-verify` | — | — | — | — | Verify tag was added |
+| `exercise` | `stats-verbose` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `query-conversations` | — | Verbose statistics |
+| `exercise` | `tag-add` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `query-conversations` | — | Add tag to latest conversation |
+| `exercise` | `tag-verify` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `query-conversations` | — | Verify tag was added |
 | `exercise` | `tags-after-add` | — | — | — | — | List tags after add |
 | `exercise` | `tags-json` | — | — | — | — | Tags as JSON |
-| `exercise` | `transform-strip` | — | — | — | — | Strip tool calls from output |
-| `exercise` | `version` | — | — | — | — | Version output |
-| `inferred-corpus-scenario` | `chatgpt:v1` | — | — | — | `inferred`<br>`schema`<br>`synthetic`<br>`scenario` | Compiled inferred corpus scenario for chatgpt v1 across 1 corpus variant(s). |
-| `inferred-corpus-scenario` | `claude-ai:v1` | — | — | — | `inferred`<br>`schema`<br>`synthetic`<br>`scenario` | Compiled inferred corpus scenario for claude-ai v1 across 1 corpus variant(s). |
-| `inferred-corpus-scenario` | `claude-code:v1` | — | — | — | `inferred`<br>`schema`<br>`synthetic`<br>`scenario` | Compiled inferred corpus scenario for claude-code v1 across 1 corpus variant(s). |
-| `inferred-corpus-scenario` | `codex:v1` | — | — | — | `inferred`<br>`schema`<br>`synthetic`<br>`scenario` | Compiled inferred corpus scenario for codex v1 across 1 corpus variant(s). |
-| `inferred-corpus-scenario` | `gemini:v1` | — | — | — | `inferred`<br>`schema`<br>`synthetic`<br>`scenario` | Compiled inferred corpus scenario for gemini v1 across 1 corpus variant(s). |
+| `exercise` | `transform-strip` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `query-conversations` | — | Strip tool calls from output |
+| `exercise` | `version` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `query-conversations` | — | Version output |
+| `inferred-corpus-scenario` | `chatgpt:v1` | `inferred-corpus-compilation-loop` | `schema_packages`<br>`schema_cluster_manifests`<br>`inferred_corpus_specs`<br>`inferred_corpus_scenarios` | `compile-inferred-corpus-specs`<br>`compile-inferred-corpus-scenarios` | `inferred`<br>`schema`<br>`synthetic`<br>`scenario` | Compiled inferred corpus scenario for chatgpt v1 across 1 corpus variant(s). |
+| `inferred-corpus-scenario` | `claude-ai:v1` | `inferred-corpus-compilation-loop` | `schema_packages`<br>`schema_cluster_manifests`<br>`inferred_corpus_specs`<br>`inferred_corpus_scenarios` | `compile-inferred-corpus-specs`<br>`compile-inferred-corpus-scenarios` | `inferred`<br>`schema`<br>`synthetic`<br>`scenario` | Compiled inferred corpus scenario for claude-ai v1 across 1 corpus variant(s). |
+| `inferred-corpus-scenario` | `claude-code:v1` | `inferred-corpus-compilation-loop` | `schema_packages`<br>`schema_cluster_manifests`<br>`inferred_corpus_specs`<br>`inferred_corpus_scenarios` | `compile-inferred-corpus-specs`<br>`compile-inferred-corpus-scenarios` | `inferred`<br>`schema`<br>`synthetic`<br>`scenario` | Compiled inferred corpus scenario for claude-code v1 across 1 corpus variant(s). |
+| `inferred-corpus-scenario` | `codex:v1` | `inferred-corpus-compilation-loop` | `schema_packages`<br>`schema_cluster_manifests`<br>`inferred_corpus_specs`<br>`inferred_corpus_scenarios` | `compile-inferred-corpus-specs`<br>`compile-inferred-corpus-scenarios` | `inferred`<br>`schema`<br>`synthetic`<br>`scenario` | Compiled inferred corpus scenario for codex v1 across 1 corpus variant(s). |
+| `inferred-corpus-scenario` | `gemini:v1` | `inferred-corpus-compilation-loop` | `schema_packages`<br>`schema_cluster_manifests`<br>`inferred_corpus_specs`<br>`inferred_corpus_scenarios` | `compile-inferred-corpus-specs`<br>`compile-inferred-corpus-scenarios` | `inferred`<br>`schema`<br>`synthetic`<br>`scenario` | Compiled inferred corpus scenario for gemini v1 across 1 corpus variant(s). |
 | `mutation-campaign` | `cli-query` | — | — | — | `mutation` | Query command planning, action routing, and summary output contracts |
-| `mutation-campaign` | `cli-run` | — | — | — | `mutation` | Run command execution, display, and watch contracts |
+| `mutation-campaign` | `cli-run` | `conversation-render-loop` | `conversation_render_projection`<br>`rendered_conversation_artifacts` | `render-conversations` | `mutation`<br>`run`<br>`render` | Run command execution, display, and watch contracts |
 | `mutation-campaign` | `drive-client` | — | — | — | `mutation` | Drive auth, transport, JSON payload parsing, and ingest attachment contracts |
 | `mutation-campaign` | `filters` | — | — | — | `mutation` | ConversationFilter semantics and summary/picker contracts |
 | `mutation-campaign` | `fts5` | — | — | — | `mutation` | FTS5 query escaping and conversation search semantics |
@@ -416,82 +428,87 @@ These are the authored scenario-bearing projections currently feeding runtime co
 | `mutation-campaign` | `schema-core` | — | — | — | `mutation` | Schema generation, privacy, verification, and safety contracts |
 | `mutation-campaign` | `schema-inference` | — | — | — | `mutation` | Schema inference and privacy heuristics |
 | `mutation-campaign` | `schema-validation` | — | — | — | `mutation` | Schema validator and verification contracts |
-| `mutation-campaign` | `site-builder` | — | — | — | `mutation` | Static-site builder and CLI archive contracts |
+| `mutation-campaign` | `site-builder` | `site-publication-loop` | `conversation_render_projection`<br>`site_conversation_pages`<br>`site_publication_manifest`<br>`publication_records` | `publish-site` | `mutation`<br>`site`<br>`publication` | Static-site builder and CLI archive contracts |
 | `mutation-campaign` | `source-detection` | — | — | — | `mutation` | Source detection, sniffing, and parser dispatch |
 | `mutation-campaign` | `sources-parse` | — | — | — | `mutation` | Provider detection, parsing, harmonization, and parser laws |
 | `mutation-campaign` | `ui-core` | — | — | — | `mutation` | UI prompt, progress, and facade interaction contracts |
 | `synthetic-benchmark` | `action-event-materialization` | — | `tool_use_source_blocks`<br>`action_event_rows`<br>`action_event_fts` | `materialize-action-events` | `benchmark`<br>`synthetic`<br>`action-events` | Benchmark action-event read-model rebuild over synthetic tool-use transcripts |
-| `synthetic-benchmark` | `filter-scan` | — | `conversation_query_results` | `query.filters.synthetic-scan` | `benchmark`<br>`synthetic`<br>`filters` | Benchmark common filter query patterns |
-| `synthetic-benchmark` | `fts-rebuild` | — | `message_fts` | `index.message-fts-rebuild` | `benchmark`<br>`synthetic`<br>`fts` | Benchmark full FTS5 index rebuild |
-| `synthetic-benchmark` | `incremental-index` | — | `message_fts` | `index.message-fts-incremental` | `benchmark`<br>`synthetic`<br>`fts` | Benchmark incremental FTS index updates |
-| `synthetic-benchmark` | `session-product-materialization` | — | `session_product_source_conversations`<br>`session_product_rows`<br>`session_product_fts` | `materialize-session-products` | `benchmark`<br>`synthetic`<br>`session-products` | Benchmark durable session-product rebuild over synthetic archive conversations |
-| `synthetic-benchmark` | `startup-health` | — | `archive_health` | `health.startup.synthetic` | `benchmark`<br>`synthetic`<br>`health` | Benchmark check --runtime startup speed |
+| `synthetic-benchmark` | `filter-scan` | — | `message_fts`<br>`conversation_query_results` | `query-conversations`<br>`query.filters.synthetic-scan` | `benchmark`<br>`synthetic`<br>`filters` | Benchmark common filter query patterns |
+| `synthetic-benchmark` | `fts-rebuild` | — | `message_source_rows`<br>`message_fts` | `index-message-fts`<br>`index.message-fts-rebuild` | `benchmark`<br>`synthetic`<br>`fts` | Benchmark full FTS5 index rebuild |
+| `synthetic-benchmark` | `incremental-index` | — | `message_source_rows`<br>`message_fts` | `index-message-fts`<br>`index.message-fts-incremental` | `benchmark`<br>`synthetic`<br>`fts` | Benchmark incremental FTS index updates |
+| `synthetic-benchmark` | `session-product-materialization` | — | `session_product_source_conversations`<br>`session_profile_rows`<br>`session_profile_merged_fts`<br>`session_profile_evidence_fts`<br>`session_profile_inference_fts`<br>`session_profile_enrichment_fts`<br>`session_work_event_rows`<br>`session_work_event_fts`<br>`session_phase_rows`<br>`work_thread_rows`<br>`work_thread_fts`<br>`session_tag_rollup_rows`<br>`day_session_summary_rows`<br>`session_product_rows`<br>`session_product_fts` | `materialize-session-products` | `benchmark`<br>`synthetic`<br>`session-products` | Benchmark durable session-product rebuild over synthetic archive conversations |
+| `synthetic-benchmark` | `startup-health` | — | `message_fts`<br>`archive_health` | `project-archive-health`<br>`health.startup.synthetic` | `benchmark`<br>`synthetic`<br>`health` | Benchmark check --runtime startup speed |
+| `validation-family` | `domain-read-model` | — | — | — | — | Validation family for read-model contracts, live checks, and hardening lanes. |
+| `validation-family` | `evidence` | — | — | — | — | Validation family for evidence-tier contracts, live checks, and hardening lanes. |
+| `validation-family` | `probabilistic-enrichment` | — | — | — | — | Validation family for probabilistic-enrichment, cleanup, and hardening lanes. |
+| `validation-family` | `runtime-substrate` | — | — | — | — | Validation family for runtime-substrate contract, live, and hardening lanes. |
+| `validation-family` | `semantic-product` | — | — | — | — | Validation family for semantic-product live and hardening lanes. |
 | `validation-lane` | `archive-data-products` | — | — | — | — | Archive products, consumer contracts, grouped stats, and health/debt surfaces |
-| `validation-lane` | `archive-data-products-live` | — | — | — | — | Local product-contract lane plus bounded live archive product checks |
-| `validation-lane` | `archive-intelligence` | — | — | — | — | Local archive-intelligence closure lane for retrieval and embedding readiness |
+| `validation-lane` | `archive-data-products-live` | `session-product-status-query-loop`<br>`session-tag-rollup-query-loop`<br>`conversation-query-loop` | `session_product_health`<br>`session_product_status_results`<br>`session_tag_rollup_rows`<br>`session_tag_rollup_results`<br>`message_fts`<br>`conversation_query_results` | `query-session-product-status`<br>`query-session-tag-rollups`<br>`query-conversations` | — | Local product-contract lane plus bounded live archive product checks |
+| `validation-lane` | `archive-intelligence` | `conversation-query-loop`<br>`message-fts-health-loop` | `message_fts`<br>`conversation_query_results`<br>`archive_health` | `query-conversations`<br>`project-archive-health` | `contract`<br>`retrieval`<br>`health` | Local archive-intelligence closure lane for retrieval and embedding readiness |
 | `validation-lane` | `chaos` | — | — | — | — | Hostility, interruption, and chronology integration coverage |
 | `validation-lane` | `cleanup-contracts` | — | — | — | — | Cleanup lineage, health/debt views, and maintenance workflow coverage |
-| `validation-lane` | `cleanup-live` | `action-event-repair-loop`<br>`session-product-repair-loop` | `action_event_health`<br>`session_product_health` | `cli.json-contract`<br>`project-action-event-health`<br>`project-session-product-health` | `live`<br>`maintenance`<br>`preview` | Bounded live archive lane for cleanup/debt preview and maintenance budgets |
-| `validation-lane` | `domain-read-model-contracts` | — | — | — | — | Local domain read-model lane for analytics/products, consumer contracts, and debt views |
-| `validation-lane` | `domain-read-model-hardening` | `action-event-repair-loop`<br>`session-product-repair-loop` | `action_event_health`<br>`session_product_health` | `cli.json-contract`<br>`project-action-event-health`<br>`project-session-product-health` | `live`<br>`health`<br>`maintenance`<br>`preview` | Full domain read-model lane with local contracts and bounded live checks |
-| `validation-lane` | `domain-read-model-live` | `action-event-repair-loop`<br>`session-product-repair-loop` | `action_event_health`<br>`session_product_health` | `cli.json-contract`<br>`project-action-event-health`<br>`project-session-product-health` | `live`<br>`health`<br>`maintenance`<br>`preview` | Bounded live archive lane for products, analytics/debt views, and maintenance checks |
+| `validation-lane` | `cleanup-live` | `archive-debt-query-loop`<br>`message-fts-health-loop` | `action_event_health`<br>`session_product_health`<br>`archive_health`<br>`archive_debt_results`<br>`message_fts` | `query-archive-debt`<br>`cli.json-contract`<br>`project-archive-health` | `live`<br>`maintenance`<br>`preview` | Bounded live archive lane for cleanup/debt preview and maintenance budgets |
+| `validation-lane` | `domain-read-model-contracts` | `site-publication-loop` | `conversation_render_projection`<br>`site_conversation_pages`<br>`site_publication_manifest`<br>`publication_records` | `publish-site` | `contract`<br>`maintenance`<br>`publication` | Local domain read-model lane for analytics/products, consumer contracts, and debt views |
+| `validation-lane` | `domain-read-model-hardening` | `site-publication-loop`<br>`session-product-status-query-loop`<br>`session-tag-rollup-query-loop`<br>`conversation-query-loop`<br>`provider-analytics-query-loop`<br>`archive-debt-query-loop`<br>`message-fts-health-loop` | `conversation_render_projection`<br>`site_conversation_pages`<br>`site_publication_manifest`<br>`publication_records`<br>`session_product_health`<br>`session_product_status_results`<br>`session_tag_rollup_rows`<br>`session_tag_rollup_results`<br>`message_fts`<br>`conversation_query_results`<br>`session_product_rows`<br>`provider_analytics_results`<br>`action_event_health`<br>`archive_health`<br>`archive_debt_results` | `publish-site`<br>`query-session-product-status`<br>`query-session-tag-rollups`<br>`query-conversations`<br>`query-provider-analytics`<br>`query-archive-debt`<br>`cli.json-contract`<br>`project-archive-health` | `contract`<br>`maintenance`<br>`publication`<br>`live`<br>`health`<br>`preview` | Full domain read-model lane with local contracts and bounded live checks |
+| `validation-lane` | `domain-read-model-live` | `session-product-status-query-loop`<br>`session-tag-rollup-query-loop`<br>`conversation-query-loop`<br>`provider-analytics-query-loop`<br>`archive-debt-query-loop`<br>`message-fts-health-loop` | `session_product_health`<br>`session_product_status_results`<br>`session_tag_rollup_rows`<br>`session_tag_rollup_results`<br>`message_fts`<br>`conversation_query_results`<br>`session_product_rows`<br>`provider_analytics_results`<br>`action_event_health`<br>`archive_health`<br>`archive_debt_results` | `query-session-product-status`<br>`query-session-tag-rollups`<br>`query-conversations`<br>`query-provider-analytics`<br>`query-archive-debt`<br>`cli.json-contract`<br>`project-archive-health` | `live`<br>`health`<br>`maintenance`<br>`preview` | Bounded live archive lane for products, analytics/debt views, and maintenance checks |
 | `validation-lane` | `embeddings-coverage` | — | — | — | — | Embedding coverage/readiness stats, health exposure, and embed command contracts |
 | `validation-lane` | `evidence-contracts` | — | — | — | — | Evidence/inference contract lane across explicit evidence, inferred semantics, consumer parity, and retrieval readiness |
-| `validation-lane` | `evidence-hardening` | `session-product-repair-loop`<br>`action-event-repair-loop` | `session_product_rows`<br>`session_product_fts`<br>`session_product_health`<br>`action_event_health` | `cli.json-contract`<br>`materialize-session-products`<br>`project-session-product-health`<br>`project-action-event-health` | `live`<br>`repair`<br>`session-products`<br>`health`<br>`maintenance` | Full evidence lane with contracts and bounded live checks |
-| `validation-lane` | `evidence-live` | `session-product-repair-loop`<br>`action-event-repair-loop` | `session_product_rows`<br>`session_product_fts`<br>`session_product_health`<br>`action_event_health` | `cli.json-contract`<br>`materialize-session-products`<br>`project-session-product-health`<br>`project-action-event-health` | `live`<br>`repair`<br>`session-products`<br>`health`<br>`maintenance` | Bounded live archive lane for tiered product views, live migration, health, and retrieval-band budgets |
+| `validation-lane` | `evidence-hardening` | `session-product-repair-loop`<br>`session-product-status-query-loop`<br>`session-profile-query-loop`<br>`session-work-event-query-loop`<br>`session-phase-query-loop`<br>`message-fts-health-loop` | `session_product_source_conversations`<br>`session_profile_rows`<br>`session_profile_merged_fts`<br>`session_profile_evidence_fts`<br>`session_profile_inference_fts`<br>`session_profile_enrichment_fts`<br>`session_work_event_rows`<br>`session_work_event_fts`<br>`session_phase_rows`<br>`work_thread_rows`<br>`work_thread_fts`<br>`session_tag_rollup_rows`<br>`day_session_summary_rows`<br>`session_product_rows`<br>`session_product_fts`<br>`session_product_health`<br>`session_product_status_results`<br>`session_profile_results`<br>`session_work_event_results`<br>`session_phase_results`<br>`message_fts`<br>`action_event_health`<br>`archive_health` | `cli.json-contract`<br>`materialize-session-products`<br>`project-session-product-health`<br>`query-session-product-status`<br>`query-session-profiles`<br>`query-session-work-events`<br>`query-session-phases`<br>`project-archive-health` | `live`<br>`repair`<br>`session-products`<br>`health`<br>`maintenance` | Full evidence lane with contracts and bounded live checks |
+| `validation-lane` | `evidence-live` | `session-product-repair-loop`<br>`session-product-status-query-loop`<br>`session-profile-query-loop`<br>`session-work-event-query-loop`<br>`session-phase-query-loop`<br>`message-fts-health-loop` | `session_product_source_conversations`<br>`session_profile_rows`<br>`session_profile_merged_fts`<br>`session_profile_evidence_fts`<br>`session_profile_inference_fts`<br>`session_profile_enrichment_fts`<br>`session_work_event_rows`<br>`session_work_event_fts`<br>`session_phase_rows`<br>`work_thread_rows`<br>`work_thread_fts`<br>`session_tag_rollup_rows`<br>`day_session_summary_rows`<br>`session_product_rows`<br>`session_product_fts`<br>`session_product_health`<br>`session_product_status_results`<br>`session_profile_results`<br>`session_work_event_results`<br>`session_phase_results`<br>`message_fts`<br>`action_event_health`<br>`archive_health` | `cli.json-contract`<br>`materialize-session-products`<br>`project-session-product-health`<br>`query-session-product-status`<br>`query-session-profiles`<br>`query-session-work-events`<br>`query-session-phases`<br>`project-archive-health` | `live`<br>`repair`<br>`session-products`<br>`health`<br>`maintenance` | Bounded live archive lane for tiered product views, live migration, health, and retrieval-band budgets |
 | `validation-lane` | `evidence-tier-contracts` | — | — | — | — | Explicit evidence-tier product contracts, chronology fields, and evidence payload/query surfaces |
-| `validation-lane` | `frontier-extended` | — | — | `cli.json-contract`<br>`cli.help` | `contract`<br>`json`<br>`cli`<br>`showcase`<br>`help` | Local closure lane plus fast scale and small long-haul campaign |
+| `validation-lane` | `frontier-extended` | `raw-reparse-loop`<br>`raw-archive-ingest-loop` | `raw_validation_state`<br>`validation_backlog`<br>`parse_backlog`<br>`parse_quarantine`<br>`archive_conversation_rows` | `cli.json-contract`<br>`cli.help`<br>`plan-validation-backlog`<br>`plan-parse-backlog`<br>`ingest-archive-runtime` | `contract`<br>`json`<br>`cli`<br>`showcase`<br>`help` | Local closure lane plus fast scale and small long-haul campaign |
 | `validation-lane` | `frontier-local` | — | — | `cli.json-contract`<br>`cli.help` | `contract`<br>`json`<br>`cli`<br>`showcase`<br>`help` | Non-live local closure lane for machine/query/semantic/TUI/chaos validation |
 | `validation-lane` | `heuristic-inference-contracts` | — | — | — | — | Heuristic session/work/phase contract hardening with explicit supporting metadata and consumer parity |
 | `validation-lane` | `inference-tier-contracts` | — | — | — | — | Inference-tier work-event/phase/profile contracts with confidence/provenance-bearing semantic payloads |
-| `validation-lane` | `live-archive-slow` | `action-event-repair-loop`<br>`session-product-repair-loop` | `action_event_health`<br>`session_product_health` | `cli.json-contract`<br>`project-action-event-health`<br>`project-session-product-health` | `live`<br>`health`<br>`maintenance` | Broader live archive dogfood lane including retrieval/readiness and live QA exercises |
-| `validation-lane` | `live-archive-small` | `action-event-repair-loop`<br>`session-product-repair-loop` | `action_event_health`<br>`session_product_health` | `cli.json-contract`<br>`project-action-event-health`<br>`project-session-product-health` | `live`<br>`health`<br>`maintenance` | Bounded live archive retrieval/readiness/health dogfood lane |
-| `validation-lane` | `live-archive-subset-parse-probe` | `raw-reparse-loop` | `parse_backlog` | `plan-parse-backlog` | `live`<br>`probe`<br>`parse` | Live archive medium archive-subset parse probe with persisted manifest/workdir artifacts |
+| `validation-lane` | `live-archive-slow` | `conversation-query-loop`<br>`message-fts-health-loop`<br>`session-product-status-query-loop` | `message_fts`<br>`conversation_query_results`<br>`archive_health`<br>`session_product_health`<br>`session_product_status_results`<br>`action_event_health` | `query-conversations`<br>`project-archive-health`<br>`query-session-product-status`<br>`cli.json-contract` | `live`<br>`retrieval`<br>`health`<br>`maintenance` | Broader live archive dogfood lane including retrieval/readiness and live QA exercises |
+| `validation-lane` | `live-archive-small` | `conversation-query-loop`<br>`message-fts-health-loop`<br>`session-product-status-query-loop` | `message_fts`<br>`conversation_query_results`<br>`archive_health`<br>`session_product_health`<br>`session_product_status_results`<br>`action_event_health` | `query-conversations`<br>`project-archive-health`<br>`query-session-product-status`<br>`cli.json-contract` | `live`<br>`retrieval`<br>`health`<br>`maintenance` | Bounded live archive retrieval/readiness/health dogfood lane |
+| `validation-lane` | `live-archive-subset-parse-probe` | `raw-reparse-loop`<br>`raw-archive-ingest-loop` | `raw_validation_state`<br>`validation_backlog`<br>`parse_backlog`<br>`parse_quarantine`<br>`archive_conversation_rows` | `plan-validation-backlog`<br>`plan-parse-backlog`<br>`ingest-archive-runtime` | `live`<br>`probe`<br>`parse` | Live archive medium archive-subset parse probe with persisted manifest/workdir artifacts |
 | `validation-lane` | `live-embed-stats` | — | — | — | — | Live archive embedding status JSON view |
 | `validation-lane` | `live-exercises` | — | — | — | — | Manual live archive showcase/QA exercise lane |
-| `validation-lane` | `live-health-json` | `action-event-repair-loop`<br>`session-product-repair-loop` | `action_event_health`<br>`session_product_health` | `cli.json-contract`<br>`project-action-event-health`<br>`project-session-product-health` | `live`<br>`health`<br>`maintenance` | Live archive machine-readable health report |
-| `validation-lane` | `live-maintenance-preview` | `action-event-repair-loop`<br>`session-product-repair-loop` | `action_event_health`<br>`session_product_health` | `cli.json-contract`<br>`project-action-event-health`<br>`project-session-product-health` | `live`<br>`maintenance`<br>`preview` | Live archive machine-readable maintenance preview for safe repairs and destructive cleanup |
-| `validation-lane` | `live-maintenance-small` | `action-event-repair-loop`<br>`session-product-repair-loop` | `action_event_health`<br>`session_product_health` | `cli.json-contract`<br>`project-action-event-health`<br>`project-session-product-health` | `live`<br>`health`<br>`maintenance`<br>`preview` | Bounded live archive lane for health, maintenance preview, and maintenance memory budget |
-| `validation-lane` | `live-products-analytics` | — | — | — | — | Live archive provider-analytics product surface |
-| `validation-lane` | `live-products-day-summaries` | — | — | — | — | Live archive day-summary product surface over the recent semantic slice |
-| `validation-lane` | `live-products-debt` | — | — | — | — | Live archive debt and cleanup product view |
-| `validation-lane` | `live-products-enrichments` | — | — | — | — | Live archive probabilistic session-enrichment product surface |
-| `validation-lane` | `live-products-phases` | — | — | — | — | Live archive inferred phase product surface |
-| `validation-lane` | `live-products-profiles-evidence` | — | — | — | — | Live archive evidence-tier session-profile product surface |
-| `validation-lane` | `live-products-profiles-inference` | — | — | — | — | Live archive inference-tier session-profile product surface |
-| `validation-lane` | `live-products-small` | — | — | — | — | Bounded live archive product and grouped-stats lane |
-| `validation-lane` | `live-products-status` | — | — | — | — | Live archive product status view |
-| `validation-lane` | `live-products-tags` | — | — | — | — | Live archive tag-rollup product view |
-| `validation-lane` | `live-products-work-events` | — | — | — | — | Live archive inferred work-event product surface |
-| `validation-lane` | `live-project-stats` | — | — | — | — | Live archive project-grouped stats over session products |
-| `validation-lane` | `live-retrieval-checks` | — | — | — | — | Live archive action-aware grouped retrieval stats on a bounded semantic slice |
-| `validation-lane` | `live-session-product-repair` | `session-product-repair-loop` | `session_product_rows`<br>`session_product_fts`<br>`session_product_health` | `cli.json-contract`<br>`materialize-session-products`<br>`project-session-product-health` | `live`<br>`repair`<br>`session-products` | Live archive evidence/inference session-product rebuild and migration surface |
+| `validation-lane` | `live-health-json` | `message-fts-health-loop` | `message_fts`<br>`action_event_health`<br>`session_product_health`<br>`archive_health` | `cli.json-contract`<br>`project-archive-health` | `live`<br>`health`<br>`maintenance` | Live archive machine-readable health report |
+| `validation-lane` | `live-maintenance-preview` | `message-fts-health-loop` | `message_fts`<br>`action_event_health`<br>`session_product_health`<br>`archive_health` | `cli.json-contract`<br>`project-archive-health` | `live`<br>`maintenance`<br>`preview` | Live archive machine-readable maintenance preview for safe repairs and destructive cleanup |
+| `validation-lane` | `live-maintenance-small` | `message-fts-health-loop` | `message_fts`<br>`action_event_health`<br>`session_product_health`<br>`archive_health` | `cli.json-contract`<br>`project-archive-health` | `live`<br>`health`<br>`maintenance`<br>`preview` | Bounded live archive lane for health, maintenance preview, and maintenance memory budget |
+| `validation-lane` | `live-products-analytics` | `provider-analytics-query-loop` | `session_product_rows`<br>`provider_analytics_results` | `query-provider-analytics` | — | Live archive provider-analytics product surface |
+| `validation-lane` | `live-products-day-summaries` | `day-summary-query-loop` | `day_session_summary_rows`<br>`day_session_summary_results` | `query-day-session-summaries` | — | Live archive day-summary product surface over the recent semantic slice |
+| `validation-lane` | `live-products-debt` | `archive-debt-query-loop` | `action_event_health`<br>`session_product_health`<br>`archive_health`<br>`archive_debt_results` | `query-archive-debt` | — | Live archive debt and cleanup product view |
+| `validation-lane` | `live-products-enrichments` | `session-enrichment-query-loop` | `session_profile_rows`<br>`session_profile_enrichment_fts`<br>`session_enrichment_results` | `query-session-enrichments` | — | Live archive probabilistic session-enrichment product surface |
+| `validation-lane` | `live-products-phases` | `session-phase-query-loop` | `session_phase_rows`<br>`session_phase_results` | `query-session-phases` | — | Live archive inferred phase product surface |
+| `validation-lane` | `live-products-profiles-evidence` | `session-profile-query-loop` | `session_profile_rows`<br>`session_profile_merged_fts`<br>`session_profile_results` | `query-session-profiles` | — | Live archive evidence-tier session-profile product surface |
+| `validation-lane` | `live-products-profiles-inference` | `session-profile-query-loop` | `session_profile_rows`<br>`session_profile_merged_fts`<br>`session_profile_results` | `query-session-profiles` | — | Live archive inference-tier session-profile product surface |
+| `validation-lane` | `live-products-small` | `session-product-status-query-loop`<br>`session-tag-rollup-query-loop`<br>`conversation-query-loop` | `session_product_health`<br>`session_product_status_results`<br>`session_tag_rollup_rows`<br>`session_tag_rollup_results`<br>`message_fts`<br>`conversation_query_results` | `query-session-product-status`<br>`query-session-tag-rollups`<br>`query-conversations` | — | Bounded live archive product and grouped-stats lane |
+| `validation-lane` | `live-products-status` | `session-product-status-query-loop` | `session_product_health`<br>`session_product_status_results` | `query-session-product-status` | — | Live archive product status view |
+| `validation-lane` | `live-products-tags` | `session-tag-rollup-query-loop` | `session_tag_rollup_rows`<br>`session_tag_rollup_results` | `query-session-tag-rollups` | — | Live archive tag-rollup product view |
+| `validation-lane` | `live-products-work-events` | `session-work-event-query-loop` | `session_work_event_rows`<br>`session_work_event_fts`<br>`session_work_event_results` | `query-session-work-events` | — | Live archive inferred work-event product surface |
+| `validation-lane` | `live-project-stats` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `query-conversations` | — | Live archive project-grouped stats over session products |
+| `validation-lane` | `live-retrieval-checks` | `conversation-query-loop`<br>`message-fts-health-loop` | `message_fts`<br>`conversation_query_results`<br>`archive_health` | `query-conversations`<br>`project-archive-health` | `live`<br>`retrieval`<br>`health` | Live archive action-aware grouped retrieval stats on a bounded semantic slice |
+| `validation-lane` | `live-session-product-repair` | `session-product-repair-loop` | `session_product_source_conversations`<br>`session_profile_rows`<br>`session_profile_merged_fts`<br>`session_profile_evidence_fts`<br>`session_profile_inference_fts`<br>`session_profile_enrichment_fts`<br>`session_work_event_rows`<br>`session_work_event_fts`<br>`session_phase_rows`<br>`work_thread_rows`<br>`work_thread_fts`<br>`session_tag_rollup_rows`<br>`day_session_summary_rows`<br>`session_product_rows`<br>`session_product_fts`<br>`session_product_health` | `cli.json-contract`<br>`materialize-session-products`<br>`project-session-product-health` | `live`<br>`repair`<br>`session-products` | Live archive evidence/inference session-product rebuild and migration surface |
 | `validation-lane` | `long-haul-small` | — | — | — | — | Small reproducible benchmark/long-haul campaign |
 | `validation-lane` | `machine-contract` | — | — | `cli.json-contract` | `contract`<br>`json`<br>`cli` | Root CLI JSON success/failure envelopes and runtime-health machine surfaces |
-| `validation-lane` | `maintenance-memory-budget` | — | — | — | — | Live archive maintenance preview under an explicit RSS budget |
-| `validation-lane` | `maintenance-workflows` | — | — | — | — | Health, maintenance selection, cache/live provenance, publication summaries, and machine output |
-| `validation-lane` | `memory-budget` | — | — | — | — | Live archive grouped retrieval command under an explicit RSS budget |
+| `validation-lane` | `maintenance-memory-budget` | `message-fts-health-loop` | `message_fts`<br>`action_event_health`<br>`session_product_health`<br>`archive_health` | `cli.json-contract`<br>`project-archive-health` | — | Live archive maintenance preview under an explicit RSS budget |
+| `validation-lane` | `maintenance-workflows` | `site-publication-loop` | `conversation_render_projection`<br>`site_conversation_pages`<br>`site_publication_manifest`<br>`publication_records` | `publish-site` | `contract`<br>`maintenance`<br>`publication` | Health, maintenance selection, cache/live provenance, publication summaries, and machine output |
+| `validation-lane` | `memory-budget` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `query-conversations` | — | Live archive grouped retrieval command under an explicit RSS budget |
 | `validation-lane` | `mixed-consumer-contracts` | — | — | — | — | CLI, facade, MCP, and health surfaces consuming the same evidence/inference product model |
-| `validation-lane` | `pipeline-probe-chatgpt` | — | — | — | — | Synthetic ChatGPT parse-stage pipeline probe under explicit runtime and RSS budgets |
+| `validation-lane` | `pipeline-probe-chatgpt` | `raw-reparse-loop`<br>`raw-archive-ingest-loop` | `raw_validation_state`<br>`validation_backlog`<br>`parse_backlog`<br>`parse_quarantine`<br>`archive_conversation_rows` | `plan-validation-backlog`<br>`plan-parse-backlog`<br>`ingest-archive-runtime` | — | Synthetic ChatGPT parse-stage pipeline probe under explicit runtime and RSS budgets |
 | `validation-lane` | `probabilistic-enrichment-contracts` | — | — | — | — | Session-enrichment contracts across CLI, facade, MCP, storage, and retrieval-band status |
-| `validation-lane` | `probabilistic-enrichment-hardening` | `session-product-repair-loop`<br>`action-event-repair-loop` | `session_product_rows`<br>`session_product_fts`<br>`session_product_health`<br>`action_event_health` | `cli.json-contract`<br>`materialize-session-products`<br>`project-session-product-health`<br>`project-action-event-health` | `live`<br>`repair`<br>`session-products`<br>`health`<br>`maintenance`<br>`preview` | Full probabilistic-enrichment and cleanup lane |
-| `validation-lane` | `probabilistic-enrichment-live` | `session-product-repair-loop`<br>`action-event-repair-loop` | `session_product_rows`<br>`session_product_fts`<br>`session_product_health`<br>`action_event_health` | `cli.json-contract`<br>`materialize-session-products`<br>`project-session-product-health`<br>`project-action-event-health` | `live`<br>`repair`<br>`session-products`<br>`health`<br>`maintenance` | Bounded live archive lane for enrichment products, retrieval bands, and health surfaces |
+| `validation-lane` | `probabilistic-enrichment-hardening` | `session-product-repair-loop`<br>`session-product-status-query-loop`<br>`session-profile-query-loop`<br>`session-enrichment-query-loop`<br>`message-fts-health-loop`<br>`conversation-query-loop`<br>`archive-debt-query-loop` | `session_product_source_conversations`<br>`session_profile_rows`<br>`session_profile_merged_fts`<br>`session_profile_evidence_fts`<br>`session_profile_inference_fts`<br>`session_profile_enrichment_fts`<br>`session_work_event_rows`<br>`session_work_event_fts`<br>`session_phase_rows`<br>`work_thread_rows`<br>`work_thread_fts`<br>`session_tag_rollup_rows`<br>`day_session_summary_rows`<br>`session_product_rows`<br>`session_product_fts`<br>`session_product_health`<br>`session_product_status_results`<br>`session_profile_results`<br>`session_enrichment_results`<br>`message_fts`<br>`action_event_health`<br>`archive_health`<br>`conversation_query_results`<br>`archive_debt_results` | `cli.json-contract`<br>`materialize-session-products`<br>`project-session-product-health`<br>`query-session-product-status`<br>`query-session-profiles`<br>`query-session-enrichments`<br>`project-archive-health`<br>`query-conversations`<br>`query-archive-debt` | `live`<br>`repair`<br>`session-products`<br>`health`<br>`maintenance`<br>`preview` | Full probabilistic-enrichment and cleanup lane |
+| `validation-lane` | `probabilistic-enrichment-live` | `session-product-repair-loop`<br>`session-product-status-query-loop`<br>`session-profile-query-loop`<br>`session-enrichment-query-loop`<br>`message-fts-health-loop`<br>`conversation-query-loop` | `session_product_source_conversations`<br>`session_profile_rows`<br>`session_profile_merged_fts`<br>`session_profile_evidence_fts`<br>`session_profile_inference_fts`<br>`session_profile_enrichment_fts`<br>`session_work_event_rows`<br>`session_work_event_fts`<br>`session_phase_rows`<br>`work_thread_rows`<br>`work_thread_fts`<br>`session_tag_rollup_rows`<br>`day_session_summary_rows`<br>`session_product_rows`<br>`session_product_fts`<br>`session_product_health`<br>`session_product_status_results`<br>`session_profile_results`<br>`session_enrichment_results`<br>`message_fts`<br>`action_event_health`<br>`archive_health`<br>`conversation_query_results` | `cli.json-contract`<br>`materialize-session-products`<br>`project-session-product-health`<br>`query-session-product-status`<br>`query-session-profiles`<br>`query-session-enrichments`<br>`project-archive-health`<br>`query-conversations` | `live`<br>`repair`<br>`session-products`<br>`health`<br>`maintenance` | Bounded live archive lane for enrichment products, retrieval bands, and health surfaces |
 | `validation-lane` | `query-routing` | — | — | — | — | Query-first CLI route planning, integration, and streamed read checks |
 | `validation-lane` | `retrieval-band-readiness` | — | — | — | — | Transcript/evidence/inference retrieval-band readiness, embedding stats, and health exposure |
-| `validation-lane` | `retrieval-checks` | — | — | — | — | Action-aware query truth, grouped retrieval stats, archive health, and MCP retrieval payload coverage |
-| `validation-lane` | `runtime-substrate-contracts` | — | — | — | — | Local runtime-substrate lane across query, semantic checks, archive products, and maintenance workflows |
-| `validation-lane` | `runtime-substrate-hardening` | `action-event-repair-loop`<br>`session-product-repair-loop` | `action_event_health`<br>`session_product_health` | `cli.json-contract`<br>`project-action-event-health`<br>`project-session-product-health` | `live`<br>`health`<br>`maintenance`<br>`preview` | Full runtime-substrate validation lane covering local contracts plus bounded live archive checks |
-| `validation-lane` | `runtime-substrate-live` | `action-event-repair-loop`<br>`session-product-repair-loop` | `action_event_health`<br>`session_product_health` | `cli.json-contract`<br>`project-action-event-health`<br>`project-session-product-health` | `live`<br>`health`<br>`maintenance`<br>`preview` | Bounded live archive lane for runtime-substrate checks, maintenance checks, and memory budgets |
+| `validation-lane` | `retrieval-checks` | `conversation-query-loop`<br>`message-fts-health-loop` | `message_fts`<br>`conversation_query_results`<br>`archive_health` | `query-conversations`<br>`project-archive-health` | `contract`<br>`retrieval`<br>`health` | Action-aware query truth, grouped retrieval stats, archive health, and MCP retrieval payload coverage |
+| `validation-lane` | `runtime-substrate-contracts` | `site-publication-loop` | `conversation_render_projection`<br>`site_conversation_pages`<br>`site_publication_manifest`<br>`publication_records` | `publish-site` | `contract`<br>`maintenance`<br>`publication` | Local runtime-substrate lane across query, semantic checks, archive products, and maintenance workflows |
+| `validation-lane` | `runtime-substrate-hardening` | `site-publication-loop`<br>`conversation-query-loop`<br>`message-fts-health-loop`<br>`session-product-status-query-loop` | `conversation_render_projection`<br>`site_conversation_pages`<br>`site_publication_manifest`<br>`publication_records`<br>`message_fts`<br>`conversation_query_results`<br>`archive_health`<br>`session_product_health`<br>`session_product_status_results`<br>`action_event_health` | `publish-site`<br>`query-conversations`<br>`project-archive-health`<br>`query-session-product-status`<br>`cli.json-contract` | `contract`<br>`maintenance`<br>`publication`<br>`live`<br>`retrieval`<br>`health`<br>`preview` | Full runtime-substrate validation lane covering local contracts plus bounded live archive checks |
+| `validation-lane` | `runtime-substrate-live` | `conversation-query-loop`<br>`message-fts-health-loop`<br>`session-product-status-query-loop` | `message_fts`<br>`conversation_query_results`<br>`archive_health`<br>`session_product_health`<br>`session_product_status_results`<br>`action_event_health` | `query-conversations`<br>`project-archive-health`<br>`query-session-product-status`<br>`cli.json-contract` | `live`<br>`retrieval`<br>`health`<br>`maintenance`<br>`preview` | Bounded live archive lane for runtime-substrate checks, maintenance checks, and memory budgets |
 | `validation-lane` | `scale-fast` | — | — | — | — | Fast storage scale budgets |
 | `validation-lane` | `scale-slow` | — | — | — | — | Slow local storage scale budgets |
 | `validation-lane` | `scale-stretch` | — | — | — | — | Combined fast and slow storage scale budgets |
-| `validation-lane` | `semantic-product-hardening` | `action-event-repair-loop`<br>`session-product-repair-loop` | `action_event_health`<br>`session_product_health` | `cli.json-contract`<br>`project-action-event-health`<br>`project-session-product-health` | `live`<br>`health`<br>`maintenance`<br>`preview` | Full semantic-product normalization and toolchain convergence lane |
-| `validation-lane` | `semantic-product-live` | `action-event-repair-loop`<br>`session-product-repair-loop` | `action_event_health`<br>`session_product_health` | `cli.json-contract`<br>`project-action-event-health`<br>`project-session-product-health` | `live`<br>`health`<br>`maintenance`<br>`preview` | Bounded live archive lane for normalized products, maintenance preview, and memory budgets |
+| `validation-lane` | `semantic-product-hardening` | `session-product-status-query-loop`<br>`session-tag-rollup-query-loop`<br>`day-summary-query-loop`<br>`archive-debt-query-loop`<br>`message-fts-health-loop` | `session_product_health`<br>`session_product_status_results`<br>`session_tag_rollup_rows`<br>`session_tag_rollup_results`<br>`day_session_summary_rows`<br>`day_session_summary_results`<br>`action_event_health`<br>`archive_health`<br>`archive_debt_results`<br>`message_fts` | `query-session-product-status`<br>`query-session-tag-rollups`<br>`query-day-session-summaries`<br>`query-archive-debt`<br>`cli.json-contract`<br>`project-archive-health` | `live`<br>`health`<br>`maintenance`<br>`preview` | Full semantic-product normalization and toolchain convergence lane |
+| `validation-lane` | `semantic-product-live` | `session-product-status-query-loop`<br>`session-tag-rollup-query-loop`<br>`day-summary-query-loop`<br>`archive-debt-query-loop`<br>`message-fts-health-loop` | `session_product_health`<br>`session_product_status_results`<br>`session_tag_rollup_rows`<br>`session_tag_rollup_results`<br>`day_session_summary_rows`<br>`day_session_summary_results`<br>`action_event_health`<br>`archive_health`<br>`archive_debt_results`<br>`message_fts` | `query-session-product-status`<br>`query-session-tag-rollups`<br>`query-day-session-summaries`<br>`query-archive-debt`<br>`cli.json-contract`<br>`project-archive-health` | `live`<br>`health`<br>`maintenance`<br>`preview` | Bounded live archive lane for normalized products, maintenance preview, and memory budgets |
 | `validation-lane` | `semantic-product-normalization` | — | — | — | — | Semantic/session product normalization, operator/toolchain narrowing, schema contracts, and provider parser cleanup |
 | `validation-lane` | `semantic-stack` | — | — | — | — | Unified harmonization, semantic facts/profile convergence, and contract inventory coverage |
 | `validation-lane` | `showcase-baselines` | — | — | `cli.help` | `contract`<br>`showcase`<br>`help` | Registry-derived tier-0 CLI help/source showcase baselines |
 | `validation-lane` | `source-provider-fidelity` | — | — | — | — | Source traversal, Drive/runtime source boundaries, parser decoding, and provider-ingest fidelity |
-| `validation-lane` | `source-runtime-alignment` | — | — | — | — | Local source/provider fidelity plus runtime maintenance alignment |
+| `validation-lane` | `source-runtime-alignment` | `site-publication-loop` | `conversation_render_projection`<br>`site_conversation_pages`<br>`site_publication_manifest`<br>`publication_records` | `publish-site` | `contract`<br>`maintenance`<br>`publication` | Local source/provider fidelity plus runtime maintenance alignment |
 | `validation-lane` | `tui` | — | — | — | — | Textual dashboard screens and interaction-state coverage |
 
 ## Artifact Locations

@@ -17,6 +17,8 @@ def test_runtime_operation_catalog_covers_the_current_runtime_paths() -> None:
         "index-message-fts",
         "materialize-action-events",
         "query-conversations",
+        "render-conversations",
+        "publish-site",
         "project-action-event-health",
         "materialize-session-products",
         "project-session-product-health",
@@ -47,6 +49,18 @@ def test_runtime_operation_catalog_covers_the_current_runtime_paths() -> None:
     assert specs["materialize-action-events"].mutates_state is True
     assert specs["materialize-action-events"].produces == ("action_event_rows", "action_event_fts")
     assert specs["materialize-action-events"].path_targets == ("action-event-repair-loop",)
+    assert specs["render-conversations"].kind is OperationKind.MATERIALIZATION
+    assert specs["render-conversations"].mutates_state is True
+    assert specs["render-conversations"].produces == ("rendered_conversation_artifacts",)
+    assert specs["render-conversations"].path_targets == ("conversation-render-loop",)
+    assert specs["publish-site"].kind is OperationKind.MATERIALIZATION
+    assert specs["publish-site"].mutates_state is True
+    assert specs["publish-site"].produces == (
+        "site_conversation_pages",
+        "site_publication_manifest",
+        "publication_records",
+    )
+    assert specs["publish-site"].path_targets == ("site-publication-loop",)
     assert specs["materialize-session-products"].kind is OperationKind.MATERIALIZATION
     assert specs["materialize-session-products"].mutates_state is True
     assert "session_product_rows" in specs["materialize-session-products"].produces

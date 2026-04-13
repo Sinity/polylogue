@@ -156,6 +156,21 @@ def _infer_polylogue_doctor_metadata(argv: tuple[str, ...]) -> ScenarioMetadata:
     return _metadata_for_operations(*operations)
 
 
+def _infer_polylogue_run_metadata(argv: tuple[str, ...]) -> ScenarioMetadata:
+    try:
+        run_index = argv.index("run")
+    except ValueError:
+        return ScenarioMetadata()
+    if run_index + 1 >= len(argv):
+        return ScenarioMetadata()
+    stage = argv[run_index + 1]
+    if stage == "render":
+        return _metadata_for_operations("render-conversations")
+    if stage == "site":
+        return _metadata_for_operations("publish-site")
+    return ScenarioMetadata()
+
+
 def _infer_polylogue_query_metadata(argv: tuple[str, ...]) -> ScenarioMetadata:
     first_token = _first_non_option(argv)
     if first_token in _KNOWN_POLYLOGUE_SUBCOMMANDS:
@@ -172,6 +187,8 @@ def _infer_polylogue_metadata(argv: tuple[str, ...]) -> ScenarioMetadata:
         return _infer_polylogue_product_metadata(argv)
     if "doctor" in argv:
         return _infer_polylogue_doctor_metadata(argv)
+    if "run" in argv:
+        return _infer_polylogue_run_metadata(argv)
     return _infer_polylogue_query_metadata(argv)
 
 

@@ -81,3 +81,35 @@ def test_executable_scenario_infers_schema_explain_metadata_from_polylogue_execu
     assert scenario.path_targets == ("schema-explain-query-loop",)
     assert scenario.artifact_targets == ("schema_packages", "schema_explanation_results")
     assert scenario.operation_targets == ("query-schema-explanations",)
+
+
+def test_executable_scenario_infers_run_render_metadata_from_polylogue_execution() -> None:
+    scenario = _ExecutableFixture(
+        name="run-render-contract",
+        description="render contract",
+        execution=polylogue_execution("run", "render", "--format", "html"),
+    )
+
+    assert scenario.path_targets == ("conversation-render-loop",)
+    assert scenario.artifact_targets == (
+        "conversation_render_projection",
+        "rendered_conversation_artifacts",
+    )
+    assert scenario.operation_targets == ("render-conversations",)
+
+
+def test_executable_scenario_infers_run_site_metadata_from_polylogue_execution() -> None:
+    scenario = _ExecutableFixture(
+        name="run-site-contract",
+        description="site contract",
+        execution=polylogue_execution("run", "site"),
+    )
+
+    assert scenario.path_targets == ("site-publication-loop",)
+    assert scenario.artifact_targets == (
+        "conversation_render_projection",
+        "site_conversation_pages",
+        "site_publication_manifest",
+        "publication_records",
+    )
+    assert scenario.operation_targets == ("publish-site",)
