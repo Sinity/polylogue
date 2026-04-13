@@ -7,6 +7,7 @@ from polylogue.showcase.exercise_models import Exercise, Validation
 from polylogue.showcase.generators import (
     generate_command_help_scenarios,
     generate_json_contract_scenarios,
+    generate_qa_extra_scenarios,
 )
 from polylogue.showcase.scenario_models import ExerciseScenario, compile_exercise_scenarios
 
@@ -23,6 +24,8 @@ EXERCISE_SCENARIOS: tuple[ExerciseScenario, ...] = (
     + _GENERATED_EXERCISE_SCENARIOS
 )
 EXERCISES: tuple[Exercise, ...] = compile_exercise_scenarios(EXERCISE_SCENARIOS)
+QA_EXTRA_SCENARIOS: tuple[ExerciseScenario, ...] = generate_qa_extra_scenarios()
+QA_EXTRA_EXERCISES: tuple[Exercise, ...] = compile_exercise_scenarios(QA_EXTRA_SCENARIOS)
 
 EXERCISE_INDEX: dict[str, Exercise] = {e.name: e for e in EXERCISES}
 
@@ -69,6 +72,8 @@ __all__ = [
     "EXERCISE_SCENARIOS",
     "EXERCISE_INDEX",
     "GROUPS",
+    "QA_EXTRA_EXERCISES",
+    "QA_EXTRA_SCENARIOS",
     "Exercise",
     "Validation",
     "exercises_by_group",

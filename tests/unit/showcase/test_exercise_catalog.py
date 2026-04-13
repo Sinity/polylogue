@@ -5,6 +5,8 @@ from __future__ import annotations
 from polylogue.showcase.exercises import (
     EXERCISES,
     GROUPS,
+    QA_EXTRA_EXERCISES,
+    QA_EXTRA_SCENARIOS,
     Exercise,
     exercises_by_group,
     topological_order,
@@ -12,6 +14,7 @@ from polylogue.showcase.exercises import (
 )
 from polylogue.showcase.generators import (
     command_help_exercise_names,
+    generate_qa_extra_scenarios,
     inventory_command_paths,
     json_contract_exercise_names,
 )
@@ -184,6 +187,12 @@ class TestExercisesByGroup:
             "reparse",
             "maintenance",
         )
+
+    def test_exported_qa_extra_roots_match_generated_family(self):
+        expected_names = [scenario.scenario_id for scenario in generate_qa_extra_scenarios()]
+
+        assert [scenario.scenario_id for scenario in QA_EXTRA_SCENARIOS] == expected_names
+        assert [exercise.name for exercise in QA_EXTRA_EXERCISES] == expected_names
 
 
 class TestVhsExercises:
