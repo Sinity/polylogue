@@ -16,7 +16,7 @@ BENCHMARK_SCENARIOS: tuple[BenchmarkCampaignEntry, ...] = (
         ),
         origin="authored.benchmark-domain",
         artifact_targets=("conversation_query_results", "message_fts"),
-        operation_targets=("benchmark.query.search-filters",),
+        operation_targets=("query-conversations", "benchmark.query.search-filters"),
         tags=("benchmark", "search", "filters"),
     ),
     BenchmarkCampaignEntry(

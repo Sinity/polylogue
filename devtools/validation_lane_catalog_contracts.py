@@ -156,6 +156,10 @@ CONTRACT_LANES = {
         "tests/unit/core/test_health_core.py",
         "tests/unit/mcp/test_tool_contracts.py",
         "tests/unit/cli/test_source_selection_helpers.py",
+        path_targets=("conversation-query-loop", "message-fts-health-loop"),
+        artifact_targets=("message_fts", "conversation_query_results", "archive_health"),
+        operation_targets=("query-conversations", "project-archive-health"),
+        tags=("contract", "retrieval", "health"),
     ),
     "embeddings-coverage": pytest_lane(
         "embeddings-coverage",

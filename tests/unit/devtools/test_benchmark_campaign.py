@@ -164,7 +164,7 @@ def test_campaign_result_round_trips_path_targets_from_artifact(tmp_path: Path) 
         origin="generated.search-filters",
         path_targets=["search-filter-loop"],
         artifact_targets=["conversation_query_results"],
-        operation_targets=["benchmark.query.search-filters"],
+        operation_targets=["query-conversations", "benchmark.query.search-filters"],
         tags=["benchmark", "search"],
     )
     artifact = tmp_path / "artifact.json"
@@ -211,8 +211,8 @@ def test_benchmark_entry_compiles_its_own_projection_entry() -> None:
         name="startup-health",
         description="startup health benchmark",
         origin="authored.synthetic-benchmark",
-        artifact_targets=("archive_health",),
-        operation_targets=("health.startup.synthetic",),
+        artifact_targets=("message_fts", "archive_health"),
+        operation_targets=("project-archive-health", "health.startup.synthetic"),
         tags=("benchmark", "synthetic", "health"),
         projection_kind=ScenarioProjectionSourceKind.SYNTHETIC_BENCHMARK,
     )
@@ -222,5 +222,5 @@ def test_benchmark_entry_compiles_its_own_projection_entry() -> None:
     assert projection.source_kind is ScenarioProjectionSourceKind.SYNTHETIC_BENCHMARK
     assert projection.name == "startup-health"
     assert projection.description == "startup health benchmark"
-    assert projection.artifact_targets == ("archive_health",)
-    assert projection.operation_targets == ("health.startup.synthetic",)
+    assert projection.artifact_targets == ("message_fts", "archive_health")
+    assert projection.operation_targets == ("project-archive-health", "health.startup.synthetic")

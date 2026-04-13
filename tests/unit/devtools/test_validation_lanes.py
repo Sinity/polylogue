@@ -46,13 +46,31 @@ class TestLaneParsing:
         assert lane.operation_targets == ("cli.json-contract",)
         assert lane.tags == ("contract", "json", "cli")
 
+    def test_retrieval_checks_lane_carries_runtime_query_and_health_metadata(self):
+        lane = LANES["retrieval-checks"]
+
+        assert lane.path_targets == ("conversation-query-loop", "message-fts-health-loop")
+        assert lane.artifact_targets == ("message_fts", "conversation_query_results", "archive_health")
+        assert lane.operation_targets == ("query-conversations", "project-archive-health")
+        assert lane.tags == ("contract", "retrieval", "health")
+
     def test_composite_lane_inherits_metadata_through_catalog_entries(self):
         from devtools.validation_catalog import build_composite_lane_entries
 
         frontier_local = next(entry for entry in build_composite_lane_entries() if entry.name == "frontier-local")
+        archive_intelligence = next(entry for entry in build_composite_lane_entries() if entry.name == "archive-intelligence")
 
         assert "cli.json-contract" in frontier_local.operation_targets
         assert "cli.help" in frontier_local.operation_targets
+        assert "query-conversations" in archive_intelligence.operation_targets
+        assert "project-archive-health" in archive_intelligence.operation_targets
+
+    def test_live_health_json_lane_carries_archive_health_metadata(self):
+        lane = LANES["live-health-json"]
+
+        assert "message-fts-health-loop" in lane.path_targets
+        assert "archive_health" in lane.artifact_targets
+        assert "project-archive-health" in lane.operation_targets
 
 
 class TestCommandConstruction:

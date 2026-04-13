@@ -84,6 +84,28 @@ RUNTIME_ARTIFACT_NODES: tuple[ArtifactNode, ...] = (
         code_refs=("polylogue.storage.raw_ingest_artifacts.RawIngestArtifactState",),
     ),
     ArtifactNode(
+        name="message_source_rows",
+        layer=ArtifactLayer.SOURCE,
+        description="Persisted message rows that feed lexical FTS indexing and archive search.",
+        code_refs=(
+            "polylogue.storage.fts_lifecycle.FTS_INDEXABLE_MESSAGE_COUNT_SQL",
+            "polylogue.storage.fts_lifecycle.repair_fts_index_sync",
+        ),
+    ),
+    ArtifactNode(
+        name="message_fts",
+        layer=ArtifactLayer.INDEX,
+        description="Lexical FTS projection over persisted message rows.",
+        depends_on=("message_source_rows",),
+        code_refs=(
+            "polylogue.storage.fts_lifecycle.message_fts_readiness_sync",
+            "polylogue.storage.fts_lifecycle.rebuild_fts_index_sync",
+            "polylogue.storage.fts_lifecycle.repair_fts_index_sync",
+        ),
+        repair_targets=("fts",),
+        health_surfaces=("doctor", "archive_debt", "query"),
+    ),
+    ArtifactNode(
         name="tool_use_source_blocks",
         layer=ArtifactLayer.SOURCE,
         description="Tool-use content blocks anchored to valid conversations.",
@@ -172,6 +194,31 @@ RUNTIME_ARTIFACT_NODES: tuple[ArtifactNode, ...] = (
         repair_targets=("session_products",),
         health_surfaces=("doctor", "archive_debt", "products"),
     ),
+    ArtifactNode(
+        name="conversation_query_results",
+        layer=ArtifactLayer.PROJECTION,
+        description="Conversation-level query and search results resolved from lexical retrieval over the archive.",
+        depends_on=("message_fts",),
+        code_refs=(
+            "polylogue.operations.archive.ArchiveSearchMixin.query_conversations",
+            "polylogue.operations.archive.ArchiveSearchMixin.search",
+            "polylogue.lib.query_plan_execution",
+        ),
+        health_surfaces=("query", "mcp", "facade"),
+    ),
+    ArtifactNode(
+        name="archive_health",
+        layer=ArtifactLayer.PROJECTION,
+        description="Projected archive-wide health and maintenance view over message FTS and durable derived-model readiness.",
+        depends_on=("message_fts", "action_event_health", "session_product_health"),
+        code_refs=(
+            "polylogue.health.run_archive_health",
+            "polylogue.storage.derived_status.collect_derived_model_statuses_sync",
+            "polylogue.storage.repair.collect_archive_debt_statuses_sync",
+        ),
+        repair_targets=("fts", "action_event_read_model", "session_products"),
+        health_surfaces=("doctor", "archive_debt", "maintenance"),
+    ),
 )
 
 RUNTIME_ARTIFACT_PATHS: tuple[ArtifactPath, ...] = (
@@ -203,6 +250,25 @@ RUNTIME_ARTIFACT_PATHS: tuple[ArtifactPath, ...] = (
             "session_product_rows",
             "session_product_fts",
             "session_product_health",
+        ),
+    ),
+    ArtifactPath(
+        name="message-fts-health-loop",
+        description="Persisted messages through lexical FTS and the archive-wide health projection.",
+        nodes=(
+            "message_source_rows",
+            "message_fts",
+            "action_event_health",
+            "session_product_health",
+            "archive_health",
+        ),
+    ),
+    ArtifactPath(
+        name="conversation-query-loop",
+        description="Lexical message FTS through conversation-level query and search result projections.",
+        nodes=(
+            "message_fts",
+            "conversation_query_results",
         ),
     ),
 )
