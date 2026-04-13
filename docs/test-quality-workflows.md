@@ -24,11 +24,11 @@ Current registry snapshot:
 - covered runtime paths: `3`
 - covered runtime artifacts: `12`
 - covered runtime operations: `6`
-- covered declared operation targets: `15`
+- covered declared operation targets: `16`
 - uncovered runtime paths: —
 - uncovered runtime artifacts: —
 - uncovered runtime operations: —
-- uncovered declared operation targets: `benchmark.repair.action-events`
+- uncovered declared operation targets: —
 
 Inspect the full authored map with:
 
@@ -216,7 +216,7 @@ Benchmark comparisons are manual.
 
 | Campaign | Tests | Warn | Fail | Description |
 | --- | --- | ---: | ---: | --- |
-| `pipeline` | `tests/benchmarks/test_pipeline.py` | 10.0% | 20.0% | Index rebuild/update plus hashing/semantic helper benchmark domain |
+| `pipeline` | `tests/benchmarks/test_pipeline.py` | 10.0% | 20.0% | Index rebuild/update, action-event repair, plus hashing/semantic helper benchmark domain |
 | `search-filters` | `tests/benchmarks/test_search_filters.py` | 10.0% | 20.0% | FTS and ConversationFilter benchmark domain |
 | `storage` | `tests/benchmarks/test_storage.py` | 10.0% | 20.0% | Repository/backend list/get-many/save benchmark domain |
 
@@ -239,7 +239,7 @@ These are the authored scenario-bearing projections currently feeding runtime co
 
 | Source | Projection | Path Targets | Artifact Targets | Operation Targets | Tags | Description |
 | --- | --- | --- | --- | --- | --- | --- |
-| `benchmark-campaign` | `pipeline` | — | `index_state`<br>`pipeline_helpers` | `benchmark.pipeline.index-and-helpers` | `benchmark`<br>`pipeline` | Index rebuild/update plus hashing/semantic helper benchmark domain |
+| `benchmark-campaign` | `pipeline` | — | `index_state`<br>`pipeline_helpers` | `benchmark.pipeline.index-and-helpers`<br>`benchmark.repair.action-events` | `benchmark`<br>`pipeline` | Index rebuild/update, action-event repair, plus hashing/semantic helper benchmark domain |
 | `benchmark-campaign` | `search-filters` | — | `conversation_query_results`<br>`message_fts` | `benchmark.query.search-filters` | `benchmark`<br>`search`<br>`filters` | FTS and ConversationFilter benchmark domain |
 | `benchmark-campaign` | `storage` | — | `conversation_rows`<br>`message_rows`<br>`raw_rows` | `benchmark.storage.crud` | `benchmark`<br>`storage` | Repository/backend list/get-many/save benchmark domain |
 | `exercise` | `combined-filters` | — | — | — | — | Combined provider + date filter |

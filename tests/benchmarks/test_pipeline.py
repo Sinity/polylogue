@@ -18,6 +18,11 @@ from polylogue.lib.hashing import hash_payload, hash_text
 from polylogue.lib.viewports import classify_tool
 from polylogue.pipeline.prepare import PrepareCache
 from polylogue.pipeline.semantic_metadata import extract_tool_metadata
+from polylogue.storage.action_event_rebuild_runtime import (
+    rebuild_action_event_read_model_sync,
+    valid_action_event_source_ids_sync,
+)
+from polylogue.storage.fts_lifecycle import repair_fts_index_sync
 from polylogue.storage.index import rebuild_index, update_index_for_conversations
 from tests.benchmarks.helpers import (
     benchmark_connection_call,
@@ -90,6 +95,24 @@ def test_bench_fts_incremental_update(benchmark, bench_db_5k: Path, n: int) -> N
         bench_db_5k,
         lambda conn: update_index_for_conversations(ids, conn),
     )
+
+
+@pytest.mark.benchmark
+def test_bench_action_event_repair_rebuild(benchmark, bench_db_5k: Path) -> None:
+    """Action-event repair loop over a realistic seeded archive."""
+
+    def repair_action_events(conn) -> int:
+        targets = valid_action_event_source_ids_sync(conn)
+        conn.execute("DELETE FROM action_events")
+        conn.execute("DELETE FROM action_events_fts")
+        conn.commit()
+        rebuilt = rebuild_action_event_read_model_sync(conn, conversation_ids=targets or None)
+        if targets:
+            repair_fts_index_sync(conn, targets)
+        conn.commit()
+        return rebuilt
+
+    benchmark_connection_call(benchmark, bench_db_5k, repair_action_events)
 
 
 @pytest.mark.benchmark

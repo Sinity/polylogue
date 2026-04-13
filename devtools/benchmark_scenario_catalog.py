@@ -74,12 +74,15 @@ BENCHMARK_SCENARIOS: tuple[BenchmarkScenario, ...] = (
     ),
     BenchmarkScenario(
         scenario_id="pipeline",
-        description="Index rebuild/update plus hashing/semantic helper benchmark domain",
+        description="Index rebuild/update, action-event repair, plus hashing/semantic helper benchmark domain",
         tests=("tests/benchmarks/test_pipeline.py",),
-        notes=("Covers indexing plus hot helper throughput.",),
+        notes=("Covers indexing, repair, and hot helper throughput.",),
         origin="authored.benchmark-domain",
         artifact_targets=("index_state", "pipeline_helpers"),
-        operation_targets=("benchmark.pipeline.index-and-helpers",),
+        operation_targets=(
+            "benchmark.pipeline.index-and-helpers",
+            "benchmark.repair.action-events",
+        ),
         tags=("benchmark", "pipeline"),
     ),
 )
