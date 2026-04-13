@@ -11,6 +11,8 @@ ROOT = Path(__file__).resolve().parents[3]
 def test_build_quality_registry_exposes_live_catalogs() -> None:
     registry = build_quality_registry()
 
+    assert any(entry.name == "json-doctor-action-event-preview" for entry in registry.catalog.exercise_scenarios)
+    assert any(entry.name == "gen-schema-list" for entry in registry.catalog.qa_extra_scenarios)
     assert any(entry.name == "frontier-local" for entry in registry.composite_lanes)
     assert any(entry.name == "machine-contract" for entry in registry.contract_lanes)
     assert any(entry.name == "live-exercises" for entry in registry.live_lanes)
@@ -27,6 +29,7 @@ def test_build_quality_registry_exposes_live_catalogs() -> None:
     assert any(entry.name == "search-filters" for entry in registry.scenario_projections)
     assert any(entry.name == "session-product-materialization" for entry in registry.scenario_projections)
     assert any(entry.source_kind.value == "inferred-corpus-scenario" for entry in registry.scenario_projections)
+    assert registry.scenario_projections == registry.catalog.compile_projection_entries()
     inferred_chatgpt = next(
         entry
         for entry in registry.scenario_projections
