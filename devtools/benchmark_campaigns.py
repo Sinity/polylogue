@@ -42,6 +42,18 @@ class CampaignResult:
 SyntheticBenchmarkRunner = Callable[[Path], CampaignResult | Awaitable[CampaignResult]]
 
 
+def _resolve_synthetic_benchmark_runner(campaign: BenchmarkCampaignEntry) -> SyntheticBenchmarkRunner:
+    if not campaign.is_runner or campaign.runner is None:
+        raise ValueError(f"Synthetic benchmark campaign {campaign.name!r} must use runner execution")
+    runner_name = f"run_{campaign.runner.replace('-', '_')}_campaign"
+    runner = globals().get(runner_name)
+    if not callable(runner):
+        raise ValueError(
+            f"Synthetic benchmark campaign {campaign.name!r} references unknown runner {campaign.runner!r}"
+        )
+    return runner
+
+
 def _db_row_counts(db_path: Path) -> dict[str, int]:
     """Collect row counts and file size for a database."""
     from polylogue.storage.backends.connection import open_connection
@@ -407,17 +419,7 @@ async def run_synthetic_benchmark_campaign(name: str, db_path: Path) -> Campaign
     """Dispatch one synthetic benchmark campaign by authored scenario id."""
 
     campaign = SYNTHETIC_CAMPAIGNS[name]
-    runners: dict[str, SyntheticBenchmarkRunner] = {
-        "fts-rebuild": run_fts_rebuild_campaign,
-        "incremental-index": run_incremental_index_campaign,
-        "filter-scan": run_filter_scan_campaign,
-        "startup-health": run_startup_health_campaign,
-        "action-event-materialization": run_action_event_materialization_campaign,
-        "session-product-materialization": run_session_product_materialization_campaign,
-    }
-    if not campaign.is_runner or campaign.runner is None:
-        raise ValueError(f"Synthetic benchmark campaign {campaign.name!r} must use runner execution")
-    runner = runners[campaign.runner]
+    runner = _resolve_synthetic_benchmark_runner(campaign)
     dispatched = runner(db_path)
     result = await dispatched if inspect.isawaitable(dispatched) else dispatched
     result.origin = campaign.origin
