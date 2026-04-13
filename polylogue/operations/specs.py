@@ -67,27 +67,14 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
     OperationSpec(
         name="materialize-action-events",
         kind=OperationKind.MATERIALIZATION,
-        description="Build the action-event read model from tool-use source blocks.",
+        description="Build the action-event read model and trigger-maintained FTS projection from tool-use source blocks.",
         consumes=("tool_use_source_blocks",),
-        produces=("action_event_rows",),
+        produces=("action_event_rows", "action_event_fts"),
         code_refs=(
-            "polylogue.storage.action_event_status",
-            "polylogue.storage.action_event_artifacts.ActionEventArtifactState",
+            "polylogue.storage.action_event_rebuild_runtime.rebuild_action_event_read_model_sync",
+            "polylogue.storage.backends.schema_ddl_actions.ACTION_FTS_DDL",
         ),
-        surfaces=("doctor", "repair"),
-        mutates_state=True,
-    ),
-    OperationSpec(
-        name="index-action-events",
-        kind=OperationKind.INDEXING,
-        description="Refresh the action-event FTS projection from the materialized action-event rows.",
-        consumes=("action_event_rows",),
-        produces=("action_event_fts",),
-        code_refs=(
-            "polylogue.storage.derived_status_products.build_action_statuses",
-            "polylogue.storage.action_event_artifacts.ActionEventArtifactState",
-        ),
-        surfaces=("doctor", "repair", "retrieval_evidence"),
+        surfaces=("index", "doctor", "repair", "retrieval_evidence"),
         mutates_state=True,
     ),
     OperationSpec(

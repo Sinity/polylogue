@@ -27,6 +27,7 @@ def test_artifact_graph_contains_the_two_proven_vertical_paths() -> None:
     assert nodes["parse_quarantine"].depends_on == ("raw_validation_state",)
     assert operations["plan-validation-backlog"].produces == ("validation_backlog",)
     assert operations["plan-parse-backlog"].produces == ("parse_backlog", "parse_quarantine")
+    assert operations["materialize-action-events"].produces == ("action_event_rows", "action_event_fts")
     assert operations["project-action-event-health"].consumes == ("action_event_rows", "action_event_fts")
     assert operations["plan-validation-backlog"].kind is OperationKind.PLANNING
 
