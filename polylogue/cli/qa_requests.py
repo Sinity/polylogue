@@ -27,6 +27,15 @@ class QASnapshotPlan:
         return self.source_dir or fallback
 
 
+@dataclass(frozen=True, slots=True)
+class QAFinalizationPlan:
+    """Normalized post-run intent for one QA invocation."""
+
+    capture_mode: QACaptureMode = QACaptureMode.NONE
+    json_output: bool = False
+    snapshot_plan: QASnapshotPlan | None = None
+
+
 def build_qa_snapshot_plan(*, snapshot_label: str | None, snapshot_from: Path | None) -> QASnapshotPlan | None:
     """Normalize the optional snapshot intent from QA command flags."""
     if snapshot_label is None and snapshot_from is None:
@@ -37,8 +46,24 @@ def build_qa_snapshot_plan(*, snapshot_label: str | None, snapshot_from: Path | 
     )
 
 
+def build_qa_finalization_plan(
+    *,
+    capture_mode: QACaptureMode,
+    json_output: bool,
+    snapshot_plan: QASnapshotPlan | None,
+) -> QAFinalizationPlan:
+    """Normalize post-run capture/output intent for QA command surfaces."""
+    return QAFinalizationPlan(
+        capture_mode=capture_mode,
+        json_output=json_output,
+        snapshot_plan=snapshot_plan,
+    )
+
+
 __all__ = [
+    "QAFinalizationPlan",
     "QACaptureMode",
     "QASnapshotPlan",
+    "build_qa_finalization_plan",
     "build_qa_snapshot_plan",
 ]
