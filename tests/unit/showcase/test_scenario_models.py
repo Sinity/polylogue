@@ -29,6 +29,10 @@ def test_exercise_scenario_compiles_to_exercise() -> None:
     assert exercise.validation.stdout_is_valid_json is True
     assert exercise.output_ext == ".json"
     assert exercise.artifact_class == "json"
+    assert exercise.origin == "generated.json-contract"
+    assert exercise.artifact_targets == ("doctor_runtime",)
+    assert exercise.operation_targets == ("cli.json-contract",)
+    assert exercise.tags == ("generated", "json-contract")
 
 
 def test_compile_exercise_scenarios_preserves_order() -> None:
