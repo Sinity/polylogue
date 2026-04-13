@@ -11,6 +11,7 @@ from devtools.quality_registry import (
     BenchmarkCampaignEntry,
     MutationCampaignEntry,
     QualityRegistry,
+    ScenarioProjectionEntry,
     ValidationLaneEntry,
     build_quality_registry,
 )
@@ -66,6 +67,21 @@ def _render_benchmark_table(entries: tuple[BenchmarkCampaignEntry, ...]) -> list
         lines.append(
             f"| `{entry.name}` | {_format_code_list(entry.tests)} | "
             f"{entry.warn_pct:.1f}% | {entry.fail_pct:.1f}% | {entry.description} |"
+        )
+    return lines
+
+
+def _render_scenario_projection_table(entries: tuple[ScenarioProjectionEntry, ...]) -> list[str]:
+    lines = [
+        "| Source | Projection | Artifact Targets | Operation Targets | Tags | Description |",
+        "| --- | --- | --- | --- | --- | --- |",
+    ]
+    for entry in entries:
+        lines.append(
+            f"| `{entry.source_kind.value}` | `{entry.name}` | "
+            f"{_format_code_list(entry.artifact_targets)} | "
+            f"{_format_code_list(entry.operation_targets)} | "
+            f"{_format_code_list(entry.tags)} | {entry.description} |"
         )
     return lines
 
@@ -263,6 +279,12 @@ def build_document(registry: QualityRegistry, *, runtime_coverage: RuntimeScenar
         "These campaigns generate synthetic archives and run long-haul benchmark workloads through `devtools run-benchmark-campaigns`.",
         "",
         *_render_benchmark_table(registry.synthetic_benchmark_campaigns),
+        "",
+        "## Scenario Projection Catalog",
+        "",
+        "These are the authored scenario-bearing projections currently feeding runtime coverage and related control-plane maps.",
+        "",
+        *_render_scenario_projection_table(registry.scenario_projections),
         "",
         "## Artifact Locations",
         "",
