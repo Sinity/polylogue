@@ -119,6 +119,7 @@ class TestExercisesByGroup:
 
         action_preview = observed["json-doctor-action-event-preview"]
 
+        assert action_preview.path_targets == ("action-event-repair-loop",)
         assert action_preview.artifact_targets == (
             "action_event_rows",
             "action_event_fts",
@@ -136,6 +137,7 @@ class TestExercisesByGroup:
         )
 
         session_preview = observed["json-doctor-session-products-preview"]
+        assert session_preview.path_targets == ("session-product-repair-loop",)
         assert session_preview.artifact_targets == (
             "session_product_rows",
             "session_product_fts",
@@ -166,6 +168,7 @@ class TestExercisesByGroup:
             "parse",
         ]
         assert reparse_preview.origin == "authored.showcase-catalog"
+        assert reparse_preview.path_targets == ("raw-reparse-loop",)
         assert reparse_preview.artifact_targets == (
             "raw_validation_state",
             "validation_backlog",

@@ -235,132 +235,132 @@ These campaigns generate synthetic archives and run long-haul benchmark workload
 
 These are the authored scenario-bearing projections currently feeding runtime coverage and related control-plane maps.
 
-| Source | Projection | Artifact Targets | Operation Targets | Tags | Description |
-| --- | --- | --- | --- | --- | --- |
-| `benchmark-campaign` | `pipeline` | `index_state`<br>`pipeline_helpers` | `benchmark.pipeline.index-and-helpers` | `benchmark`<br>`pipeline` | Index rebuild/update plus hashing/semantic helper benchmark domain |
-| `benchmark-campaign` | `search-filters` | `conversation_query_results`<br>`message_fts` | `benchmark.query.search-filters` | `benchmark`<br>`search`<br>`filters` | FTS and ConversationFilter benchmark domain |
-| `benchmark-campaign` | `storage` | `conversation_rows`<br>`message_rows`<br>`raw_rows` | `benchmark.storage.crud` | `benchmark`<br>`storage` | Repository/backend list/get-many/save benchmark domain |
-| `exercise` | `combined-filters` | — | — | — | Combined provider + date filter |
-| `exercise` | `completions-bash` | — | — | — | Bash shell completions |
-| `exercise` | `count-baseline` | — | — | — | Baseline count before mutations |
-| `exercise` | `count-decreased` | — | — | — | Verify count decreased after delete |
-| `exercise` | `delete-dry-run` | — | — | — | Dry-run delete |
-| `exercise` | `delete-one` | — | — | — | Delete one conversation |
-| `exercise` | `doctor-cohorts-json` | — | — | — | Artifact cohorts as JSON |
-| `exercise` | `doctor-health` | — | — | — | Health check |
-| `exercise` | `doctor-json` | — | — | — | Health check as JSON |
-| `exercise` | `doctor-proof-json` | — | — | — | Artifact proof as JSON |
-| `exercise` | `doctor-verbose` | — | — | — | Verbose health check |
-| `exercise` | `embed-stats` | — | — | — | Embedding statistics |
-| `exercise` | `exclude-provider` | — | — | — | Exclude a provider |
-| `exercise` | `fields-selector` | — | — | — | Select specific JSON fields |
-| `exercise` | `help-audit` | — | `cli.help` | `generated`<br>`help`<br>`structural` | audit help |
-| `exercise` | `help-audit-generate` | — | `cli.help` | `generated`<br>`help`<br>`structural` | audit generate help |
-| `exercise` | `help-auth` | — | `cli.help` | `generated`<br>`help`<br>`structural` | auth help |
-| `exercise` | `help-completions` | — | `cli.help` | `generated`<br>`help`<br>`structural` | completions help |
-| `exercise` | `help-count` | — | `cli.help` | `generated`<br>`help`<br>`structural` | count help |
-| `exercise` | `help-dashboard` | — | `cli.help` | `generated`<br>`help`<br>`structural` | dashboard help |
-| `exercise` | `help-delete` | — | `cli.help` | `generated`<br>`help`<br>`structural` | delete help |
-| `exercise` | `help-doctor` | — | `cli.help` | `generated`<br>`help`<br>`structural` | doctor help |
-| `exercise` | `help-list` | — | `cli.help` | `generated`<br>`help`<br>`structural` | list help |
-| `exercise` | `help-main` | — | — | — | Main help screen |
-| `exercise` | `help-mcp` | — | `cli.help` | `generated`<br>`help`<br>`structural` | mcp help |
-| `exercise` | `help-open` | — | `cli.help` | `generated`<br>`help`<br>`structural` | open help |
-| `exercise` | `help-products` | — | `cli.help` | `generated`<br>`help`<br>`structural` | products help |
-| `exercise` | `help-products-analytics` | — | `cli.help` | `generated`<br>`help`<br>`structural` | products analytics help |
-| `exercise` | `help-products-day-summaries` | — | `cli.help` | `generated`<br>`help`<br>`structural` | products day-summaries help |
-| `exercise` | `help-products-enrichments` | — | `cli.help` | `generated`<br>`help`<br>`structural` | products enrichments help |
-| `exercise` | `help-products-phases` | — | `cli.help` | `generated`<br>`help`<br>`structural` | products phases help |
-| `exercise` | `help-products-profiles` | — | `cli.help` | `generated`<br>`help`<br>`structural` | products profiles help |
-| `exercise` | `help-products-tags` | — | `cli.help` | `generated`<br>`help`<br>`structural` | products tags help |
-| `exercise` | `help-products-threads` | — | `cli.help` | `generated`<br>`help`<br>`structural` | products threads help |
-| `exercise` | `help-products-week-summaries` | — | `cli.help` | `generated`<br>`help`<br>`structural` | products week-summaries help |
-| `exercise` | `help-products-work-events` | — | `cli.help` | `generated`<br>`help`<br>`structural` | products work-events help |
-| `exercise` | `help-reset` | — | `cli.help` | `generated`<br>`help`<br>`structural` | reset help |
-| `exercise` | `help-run` | — | `cli.help` | `generated`<br>`help`<br>`structural` | run help |
-| `exercise` | `help-run-acquire` | — | `cli.help` | `generated`<br>`help`<br>`structural` | run acquire help |
-| `exercise` | `help-run-all` | — | `cli.help` | `generated`<br>`help`<br>`structural` | run all help |
-| `exercise` | `help-run-embed` | — | `cli.help` | `generated`<br>`help`<br>`structural` | run embed help |
-| `exercise` | `help-run-index` | — | `cli.help` | `generated`<br>`help`<br>`structural` | run index help |
-| `exercise` | `help-run-materialize` | — | `cli.help` | `generated`<br>`help`<br>`structural` | run materialize help |
-| `exercise` | `help-run-parse` | — | `cli.help` | `generated`<br>`help`<br>`structural` | run parse help |
-| `exercise` | `help-run-render` | — | `cli.help` | `generated`<br>`help`<br>`structural` | run render help |
-| `exercise` | `help-run-reprocess` | — | `cli.help` | `generated`<br>`help`<br>`structural` | run reprocess help |
-| `exercise` | `help-run-schema` | — | `cli.help` | `generated`<br>`help`<br>`structural` | run schema help |
-| `exercise` | `help-run-site` | — | `cli.help` | `generated`<br>`help`<br>`structural` | run site help |
-| `exercise` | `help-schema` | — | `cli.help` | `generated`<br>`help`<br>`structural` | schema help |
-| `exercise` | `help-schema-audit` | — | `cli.help` | `generated`<br>`help`<br>`structural` | schema audit help |
-| `exercise` | `help-schema-compare` | — | `cli.help` | `generated`<br>`help`<br>`structural` | schema compare help |
-| `exercise` | `help-schema-explain` | — | `cli.help` | `generated`<br>`help`<br>`structural` | schema explain help |
-| `exercise` | `help-schema-generate` | — | `cli.help` | `generated`<br>`help`<br>`structural` | schema generate help |
-| `exercise` | `help-schema-list` | — | `cli.help` | `generated`<br>`help`<br>`structural` | schema list help |
-| `exercise` | `help-schema-promote` | — | `cli.help` | `generated`<br>`help`<br>`structural` | schema promote help |
-| `exercise` | `help-stats` | — | `cli.help` | `generated`<br>`help`<br>`structural` | stats help |
-| `exercise` | `help-tags` | — | `cli.help` | `generated`<br>`help`<br>`structural` | tags help |
-| `exercise` | `json-audit` | — | `cli.json-contract` | `generated`<br>`json-contract` | audit JSON contract |
-| `exercise` | `json-doctor` | — | `cli.json-contract` | `generated`<br>`json-contract` | doctor JSON contract |
-| `exercise` | `json-doctor-action-event-preview` | `action_event_rows`<br>`action_event_fts`<br>`action_event_health` | `cli.json-contract`<br>`project-action-event-health` | `generated`<br>`json-contract`<br>`maintenance`<br>`action-events` | doctor JSON contract |
-| `exercise` | `json-doctor-session-products-preview` | `session_product_rows`<br>`session_product_fts`<br>`session_product_health` | `cli.json-contract`<br>`project-session-product-health` | `generated`<br>`json-contract`<br>`maintenance`<br>`session-products` | doctor JSON contract |
-| `exercise` | `json-products-analytics` | — | `cli.json-contract` | `generated`<br>`json-contract` | products analytics JSON contract |
-| `exercise` | `json-products-day-summaries` | — | `cli.json-contract` | `generated`<br>`json-contract` | products day-summaries JSON contract |
-| `exercise` | `json-products-phases` | — | `cli.json-contract` | `generated`<br>`json-contract` | products phases JSON contract |
-| `exercise` | `json-products-profiles` | — | `cli.json-contract` | `generated`<br>`json-contract` | products profiles JSON contract |
-| `exercise` | `json-products-tags` | — | `cli.json-contract` | `generated`<br>`json-contract` | products tags JSON contract |
-| `exercise` | `json-products-threads` | — | `cli.json-contract` | `generated`<br>`json-contract` | products threads JSON contract |
-| `exercise` | `json-products-week-summaries` | — | `cli.json-contract` | `generated`<br>`json-contract` | products week-summaries JSON contract |
-| `exercise` | `json-products-work-events` | — | `cli.json-contract` | `generated`<br>`json-contract` | products work-events JSON contract |
-| `exercise` | `json-run-embed` | — | `cli.json-contract` | `generated`<br>`json-contract` | run embed JSON contract |
-| `exercise` | `json-schema-audit` | — | `cli.json-contract` | `generated`<br>`json-contract` | schema audit JSON contract |
-| `exercise` | `json-schema-list` | — | `cli.json-contract` | `generated`<br>`json-contract` | schema list JSON contract |
-| `exercise` | `json-tags` | — | `cli.json-contract` | `generated`<br>`json-contract` | tags JSON contract |
-| `exercise` | `query-count` | — | — | — | Count conversations |
-| `exercise` | `query-dialogue-only` | — | — | — | Latest with dialogue only |
-| `exercise` | `query-filter-provider` | — | — | — | Filter by provider |
-| `exercise` | `query-filter-since` | — | — | — | Filter by date |
-| `exercise` | `query-latest` | — | — | — | Show latest conversation |
-| `exercise` | `query-latest-csv` | — | — | — | Latest conversation as CSV |
-| `exercise` | `query-latest-html` | — | — | — | Latest conversation as HTML |
-| `exercise` | `query-latest-json` | — | — | — | Latest conversation as JSON |
-| `exercise` | `query-latest-md` | — | — | — | Latest conversation as Markdown |
-| `exercise` | `query-latest-obsidian` | — | — | — | Latest conversation as Obsidian note |
-| `exercise` | `query-latest-org` | — | — | — | Latest conversation as Org-mode |
-| `exercise` | `query-latest-plaintext` | — | — | — | Latest conversation as plaintext |
-| `exercise` | `query-list` | — | — | — | List conversations |
-| `exercise` | `query-list-csv` | — | — | — | List conversations as CSV |
-| `exercise` | `query-list-json` | — | — | — | List conversations as JSON |
-| `exercise` | `query-list-yaml` | — | — | — | List conversations as YAML |
-| `exercise` | `query-search-term` | — | — | — | Full-text search |
-| `exercise` | `query-sort-messages` | — | — | — | Sort by message count |
-| `exercise` | `query-sort-tokens` | — | — | — | Sort by token count |
-| `exercise` | `query-stats` | — | — | — | Conversation statistics |
-| `exercise` | `query-stats-by-month` | — | — | — | Statistics by month |
-| `exercise` | `query-stats-by-provider` | — | — | — | Statistics by provider |
-| `exercise` | `query-stream-json` | — | — | — | Stream latest as JSON lines |
-| `exercise` | `query-stream-latest` | — | — | — | Stream latest conversation |
-| `exercise` | `reverse-sort` | — | — | — | Reverse sort by date |
-| `exercise` | `run-all` | — | — | — | Run full pipeline (seeded fixtures) |
-| `exercise` | `run-preview` | — | — | — | Preview pipeline plan (seeded fixtures) |
-| `exercise` | `run-preview-live` | — | — | — | Preview pipeline against live sources |
-| `exercise` | `run-preview-reparse` | `raw_validation_state`<br>`validation_backlog`<br>`parse_backlog`<br>`parse_quarantine` | `plan-validation-backlog`<br>`plan-parse-backlog` | `pipeline`<br>`reparse`<br>`maintenance` | Preview force-reparse planning (seeded fixtures) |
-| `exercise` | `run-stage-index` | — | — | — | Run index stage only |
-| `exercise` | `run-stage-render` | — | — | — | Run render stage only |
-| `exercise` | `sample-random` | — | — | — | Random sample of conversations |
-| `exercise` | `set-meta` | — | — | — | Set metadata on conversation |
-| `exercise` | `site-generate` | — | — | — | Generate static site via run stage |
-| `exercise` | `stats-default` | — | — | — | Default archive statistics |
-| `exercise` | `stats-verbose` | — | — | — | Verbose statistics |
-| `exercise` | `tag-add` | — | — | — | Add tag to latest conversation |
-| `exercise` | `tag-verify` | — | — | — | Verify tag was added |
-| `exercise` | `tags-after-add` | — | — | — | List tags after add |
-| `exercise` | `tags-json` | — | — | — | Tags as JSON |
-| `exercise` | `transform-strip` | — | — | — | Strip tool calls from output |
-| `exercise` | `version` | — | — | — | Version output |
-| `synthetic-benchmark` | `action-event-materialization` | `tool_use_source_blocks`<br>`action_event_rows`<br>`action_event_fts` | `materialize-action-events` | `benchmark`<br>`synthetic`<br>`action-events` | Benchmark action-event read-model rebuild over synthetic tool-use transcripts |
-| `synthetic-benchmark` | `filter-scan` | `conversation_query_results` | `query.filters.synthetic-scan` | `benchmark`<br>`synthetic`<br>`filters` | Benchmark common filter query patterns |
-| `synthetic-benchmark` | `fts-rebuild` | `message_fts` | `index.message-fts-rebuild` | `benchmark`<br>`synthetic`<br>`fts` | Benchmark full FTS5 index rebuild |
-| `synthetic-benchmark` | `incremental-index` | `message_fts` | `index.message-fts-incremental` | `benchmark`<br>`synthetic`<br>`fts` | Benchmark incremental FTS index updates |
-| `synthetic-benchmark` | `session-product-materialization` | `session_product_source_conversations`<br>`session_product_rows`<br>`session_product_fts` | `materialize-session-products` | `benchmark`<br>`synthetic`<br>`session-products` | Benchmark durable session-product rebuild over synthetic archive conversations |
-| `synthetic-benchmark` | `startup-health` | `archive_health` | `health.startup.synthetic` | `benchmark`<br>`synthetic`<br>`health` | Benchmark check --runtime startup speed |
+| Source | Projection | Path Targets | Artifact Targets | Operation Targets | Tags | Description |
+| --- | --- | --- | --- | --- | --- | --- |
+| `benchmark-campaign` | `pipeline` | — | `index_state`<br>`pipeline_helpers` | `benchmark.pipeline.index-and-helpers` | `benchmark`<br>`pipeline` | Index rebuild/update plus hashing/semantic helper benchmark domain |
+| `benchmark-campaign` | `search-filters` | — | `conversation_query_results`<br>`message_fts` | `benchmark.query.search-filters` | `benchmark`<br>`search`<br>`filters` | FTS and ConversationFilter benchmark domain |
+| `benchmark-campaign` | `storage` | — | `conversation_rows`<br>`message_rows`<br>`raw_rows` | `benchmark.storage.crud` | `benchmark`<br>`storage` | Repository/backend list/get-many/save benchmark domain |
+| `exercise` | `combined-filters` | — | — | — | — | Combined provider + date filter |
+| `exercise` | `completions-bash` | — | — | — | — | Bash shell completions |
+| `exercise` | `count-baseline` | — | — | — | — | Baseline count before mutations |
+| `exercise` | `count-decreased` | — | — | — | — | Verify count decreased after delete |
+| `exercise` | `delete-dry-run` | — | — | — | — | Dry-run delete |
+| `exercise` | `delete-one` | — | — | — | — | Delete one conversation |
+| `exercise` | `doctor-cohorts-json` | — | — | — | — | Artifact cohorts as JSON |
+| `exercise` | `doctor-health` | — | — | — | — | Health check |
+| `exercise` | `doctor-json` | — | — | — | — | Health check as JSON |
+| `exercise` | `doctor-proof-json` | — | — | — | — | Artifact proof as JSON |
+| `exercise` | `doctor-verbose` | — | — | — | — | Verbose health check |
+| `exercise` | `embed-stats` | — | — | — | — | Embedding statistics |
+| `exercise` | `exclude-provider` | — | — | — | — | Exclude a provider |
+| `exercise` | `fields-selector` | — | — | — | — | Select specific JSON fields |
+| `exercise` | `help-audit` | — | — | `cli.help` | `generated`<br>`help`<br>`structural` | audit help |
+| `exercise` | `help-audit-generate` | — | — | `cli.help` | `generated`<br>`help`<br>`structural` | audit generate help |
+| `exercise` | `help-auth` | — | — | `cli.help` | `generated`<br>`help`<br>`structural` | auth help |
+| `exercise` | `help-completions` | — | — | `cli.help` | `generated`<br>`help`<br>`structural` | completions help |
+| `exercise` | `help-count` | — | — | `cli.help` | `generated`<br>`help`<br>`structural` | count help |
+| `exercise` | `help-dashboard` | — | — | `cli.help` | `generated`<br>`help`<br>`structural` | dashboard help |
+| `exercise` | `help-delete` | — | — | `cli.help` | `generated`<br>`help`<br>`structural` | delete help |
+| `exercise` | `help-doctor` | — | — | `cli.help` | `generated`<br>`help`<br>`structural` | doctor help |
+| `exercise` | `help-list` | — | — | `cli.help` | `generated`<br>`help`<br>`structural` | list help |
+| `exercise` | `help-main` | — | — | — | — | Main help screen |
+| `exercise` | `help-mcp` | — | — | `cli.help` | `generated`<br>`help`<br>`structural` | mcp help |
+| `exercise` | `help-open` | — | — | `cli.help` | `generated`<br>`help`<br>`structural` | open help |
+| `exercise` | `help-products` | — | — | `cli.help` | `generated`<br>`help`<br>`structural` | products help |
+| `exercise` | `help-products-analytics` | — | — | `cli.help` | `generated`<br>`help`<br>`structural` | products analytics help |
+| `exercise` | `help-products-day-summaries` | — | — | `cli.help` | `generated`<br>`help`<br>`structural` | products day-summaries help |
+| `exercise` | `help-products-enrichments` | — | — | `cli.help` | `generated`<br>`help`<br>`structural` | products enrichments help |
+| `exercise` | `help-products-phases` | — | — | `cli.help` | `generated`<br>`help`<br>`structural` | products phases help |
+| `exercise` | `help-products-profiles` | — | — | `cli.help` | `generated`<br>`help`<br>`structural` | products profiles help |
+| `exercise` | `help-products-tags` | — | — | `cli.help` | `generated`<br>`help`<br>`structural` | products tags help |
+| `exercise` | `help-products-threads` | — | — | `cli.help` | `generated`<br>`help`<br>`structural` | products threads help |
+| `exercise` | `help-products-week-summaries` | — | — | `cli.help` | `generated`<br>`help`<br>`structural` | products week-summaries help |
+| `exercise` | `help-products-work-events` | — | — | `cli.help` | `generated`<br>`help`<br>`structural` | products work-events help |
+| `exercise` | `help-reset` | — | — | `cli.help` | `generated`<br>`help`<br>`structural` | reset help |
+| `exercise` | `help-run` | — | — | `cli.help` | `generated`<br>`help`<br>`structural` | run help |
+| `exercise` | `help-run-acquire` | — | — | `cli.help` | `generated`<br>`help`<br>`structural` | run acquire help |
+| `exercise` | `help-run-all` | — | — | `cli.help` | `generated`<br>`help`<br>`structural` | run all help |
+| `exercise` | `help-run-embed` | — | — | `cli.help` | `generated`<br>`help`<br>`structural` | run embed help |
+| `exercise` | `help-run-index` | — | — | `cli.help` | `generated`<br>`help`<br>`structural` | run index help |
+| `exercise` | `help-run-materialize` | — | — | `cli.help` | `generated`<br>`help`<br>`structural` | run materialize help |
+| `exercise` | `help-run-parse` | — | — | `cli.help` | `generated`<br>`help`<br>`structural` | run parse help |
+| `exercise` | `help-run-render` | — | — | `cli.help` | `generated`<br>`help`<br>`structural` | run render help |
+| `exercise` | `help-run-reprocess` | — | — | `cli.help` | `generated`<br>`help`<br>`structural` | run reprocess help |
+| `exercise` | `help-run-schema` | — | — | `cli.help` | `generated`<br>`help`<br>`structural` | run schema help |
+| `exercise` | `help-run-site` | — | — | `cli.help` | `generated`<br>`help`<br>`structural` | run site help |
+| `exercise` | `help-schema` | — | — | `cli.help` | `generated`<br>`help`<br>`structural` | schema help |
+| `exercise` | `help-schema-audit` | — | — | `cli.help` | `generated`<br>`help`<br>`structural` | schema audit help |
+| `exercise` | `help-schema-compare` | — | — | `cli.help` | `generated`<br>`help`<br>`structural` | schema compare help |
+| `exercise` | `help-schema-explain` | — | — | `cli.help` | `generated`<br>`help`<br>`structural` | schema explain help |
+| `exercise` | `help-schema-generate` | — | — | `cli.help` | `generated`<br>`help`<br>`structural` | schema generate help |
+| `exercise` | `help-schema-list` | — | — | `cli.help` | `generated`<br>`help`<br>`structural` | schema list help |
+| `exercise` | `help-schema-promote` | — | — | `cli.help` | `generated`<br>`help`<br>`structural` | schema promote help |
+| `exercise` | `help-stats` | — | — | `cli.help` | `generated`<br>`help`<br>`structural` | stats help |
+| `exercise` | `help-tags` | — | — | `cli.help` | `generated`<br>`help`<br>`structural` | tags help |
+| `exercise` | `json-audit` | — | — | `cli.json-contract` | `generated`<br>`json-contract` | audit JSON contract |
+| `exercise` | `json-doctor` | — | — | `cli.json-contract` | `generated`<br>`json-contract` | doctor JSON contract |
+| `exercise` | `json-doctor-action-event-preview` | `action-event-repair-loop` | `action_event_rows`<br>`action_event_fts`<br>`action_event_health` | `cli.json-contract`<br>`project-action-event-health` | `generated`<br>`json-contract`<br>`maintenance`<br>`action-events` | doctor JSON contract |
+| `exercise` | `json-doctor-session-products-preview` | `session-product-repair-loop` | `session_product_rows`<br>`session_product_fts`<br>`session_product_health` | `cli.json-contract`<br>`project-session-product-health` | `generated`<br>`json-contract`<br>`maintenance`<br>`session-products` | doctor JSON contract |
+| `exercise` | `json-products-analytics` | — | — | `cli.json-contract` | `generated`<br>`json-contract` | products analytics JSON contract |
+| `exercise` | `json-products-day-summaries` | — | — | `cli.json-contract` | `generated`<br>`json-contract` | products day-summaries JSON contract |
+| `exercise` | `json-products-phases` | — | — | `cli.json-contract` | `generated`<br>`json-contract` | products phases JSON contract |
+| `exercise` | `json-products-profiles` | — | — | `cli.json-contract` | `generated`<br>`json-contract` | products profiles JSON contract |
+| `exercise` | `json-products-tags` | — | — | `cli.json-contract` | `generated`<br>`json-contract` | products tags JSON contract |
+| `exercise` | `json-products-threads` | — | — | `cli.json-contract` | `generated`<br>`json-contract` | products threads JSON contract |
+| `exercise` | `json-products-week-summaries` | — | — | `cli.json-contract` | `generated`<br>`json-contract` | products week-summaries JSON contract |
+| `exercise` | `json-products-work-events` | — | — | `cli.json-contract` | `generated`<br>`json-contract` | products work-events JSON contract |
+| `exercise` | `json-run-embed` | — | — | `cli.json-contract` | `generated`<br>`json-contract` | run embed JSON contract |
+| `exercise` | `json-schema-audit` | — | — | `cli.json-contract` | `generated`<br>`json-contract` | schema audit JSON contract |
+| `exercise` | `json-schema-list` | — | — | `cli.json-contract` | `generated`<br>`json-contract` | schema list JSON contract |
+| `exercise` | `json-tags` | — | — | `cli.json-contract` | `generated`<br>`json-contract` | tags JSON contract |
+| `exercise` | `query-count` | — | — | — | — | Count conversations |
+| `exercise` | `query-dialogue-only` | — | — | — | — | Latest with dialogue only |
+| `exercise` | `query-filter-provider` | — | — | — | — | Filter by provider |
+| `exercise` | `query-filter-since` | — | — | — | — | Filter by date |
+| `exercise` | `query-latest` | — | — | — | — | Show latest conversation |
+| `exercise` | `query-latest-csv` | — | — | — | — | Latest conversation as CSV |
+| `exercise` | `query-latest-html` | — | — | — | — | Latest conversation as HTML |
+| `exercise` | `query-latest-json` | — | — | — | — | Latest conversation as JSON |
+| `exercise` | `query-latest-md` | — | — | — | — | Latest conversation as Markdown |
+| `exercise` | `query-latest-obsidian` | — | — | — | — | Latest conversation as Obsidian note |
+| `exercise` | `query-latest-org` | — | — | — | — | Latest conversation as Org-mode |
+| `exercise` | `query-latest-plaintext` | — | — | — | — | Latest conversation as plaintext |
+| `exercise` | `query-list` | — | — | — | — | List conversations |
+| `exercise` | `query-list-csv` | — | — | — | — | List conversations as CSV |
+| `exercise` | `query-list-json` | — | — | — | — | List conversations as JSON |
+| `exercise` | `query-list-yaml` | — | — | — | — | List conversations as YAML |
+| `exercise` | `query-search-term` | — | — | — | — | Full-text search |
+| `exercise` | `query-sort-messages` | — | — | — | — | Sort by message count |
+| `exercise` | `query-sort-tokens` | — | — | — | — | Sort by token count |
+| `exercise` | `query-stats` | — | — | — | — | Conversation statistics |
+| `exercise` | `query-stats-by-month` | — | — | — | — | Statistics by month |
+| `exercise` | `query-stats-by-provider` | — | — | — | — | Statistics by provider |
+| `exercise` | `query-stream-json` | — | — | — | — | Stream latest as JSON lines |
+| `exercise` | `query-stream-latest` | — | — | — | — | Stream latest conversation |
+| `exercise` | `reverse-sort` | — | — | — | — | Reverse sort by date |
+| `exercise` | `run-all` | — | — | — | — | Run full pipeline (seeded fixtures) |
+| `exercise` | `run-preview` | — | — | — | — | Preview pipeline plan (seeded fixtures) |
+| `exercise` | `run-preview-live` | — | — | — | — | Preview pipeline against live sources |
+| `exercise` | `run-preview-reparse` | `raw-reparse-loop` | `raw_validation_state`<br>`validation_backlog`<br>`parse_backlog`<br>`parse_quarantine` | `plan-validation-backlog`<br>`plan-parse-backlog` | `pipeline`<br>`reparse`<br>`maintenance` | Preview force-reparse planning (seeded fixtures) |
+| `exercise` | `run-stage-index` | — | — | — | — | Run index stage only |
+| `exercise` | `run-stage-render` | — | — | — | — | Run render stage only |
+| `exercise` | `sample-random` | — | — | — | — | Random sample of conversations |
+| `exercise` | `set-meta` | — | — | — | — | Set metadata on conversation |
+| `exercise` | `site-generate` | — | — | — | — | Generate static site via run stage |
+| `exercise` | `stats-default` | — | — | — | — | Default archive statistics |
+| `exercise` | `stats-verbose` | — | — | — | — | Verbose statistics |
+| `exercise` | `tag-add` | — | — | — | — | Add tag to latest conversation |
+| `exercise` | `tag-verify` | — | — | — | — | Verify tag was added |
+| `exercise` | `tags-after-add` | — | — | — | — | List tags after add |
+| `exercise` | `tags-json` | — | — | — | — | Tags as JSON |
+| `exercise` | `transform-strip` | — | — | — | — | Strip tool calls from output |
+| `exercise` | `version` | — | — | — | — | Version output |
+| `synthetic-benchmark` | `action-event-materialization` | — | `tool_use_source_blocks`<br>`action_event_rows`<br>`action_event_fts` | `materialize-action-events` | `benchmark`<br>`synthetic`<br>`action-events` | Benchmark action-event read-model rebuild over synthetic tool-use transcripts |
+| `synthetic-benchmark` | `filter-scan` | — | `conversation_query_results` | `query.filters.synthetic-scan` | `benchmark`<br>`synthetic`<br>`filters` | Benchmark common filter query patterns |
+| `synthetic-benchmark` | `fts-rebuild` | — | `message_fts` | `index.message-fts-rebuild` | `benchmark`<br>`synthetic`<br>`fts` | Benchmark full FTS5 index rebuild |
+| `synthetic-benchmark` | `incremental-index` | — | `message_fts` | `index.message-fts-incremental` | `benchmark`<br>`synthetic`<br>`fts` | Benchmark incremental FTS index updates |
+| `synthetic-benchmark` | `session-product-materialization` | — | `session_product_source_conversations`<br>`session_product_rows`<br>`session_product_fts` | `materialize-session-products` | `benchmark`<br>`synthetic`<br>`session-products` | Benchmark durable session-product rebuild over synthetic archive conversations |
+| `synthetic-benchmark` | `startup-health` | — | `archive_health` | `health.startup.synthetic` | `benchmark`<br>`synthetic`<br>`health` | Benchmark check --runtime startup speed |
 
 ## Artifact Locations
 

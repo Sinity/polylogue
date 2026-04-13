@@ -47,6 +47,7 @@ class ExerciseScenario(ScenarioMetadata):
             artifact_class=self.artifact_class,
             capture_steps=self.capture_steps,
             origin=self.origin,
+            path_targets=self.path_targets,
             artifact_targets=self.artifact_targets,
             operation_targets=self.operation_targets,
             tags=self.tags,
