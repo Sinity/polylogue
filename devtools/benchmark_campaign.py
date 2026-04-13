@@ -30,6 +30,32 @@ class Campaign:
 
 
 @dataclass(frozen=True)
+class BenchmarkScenario:
+    """Authored scenario metadata for one durable benchmark campaign."""
+
+    scenario_id: str
+    description: str
+    tests: tuple[str, ...]
+    notes: tuple[str, ...] = ()
+    warn_pct: float = DEFAULT_WARN_PCT
+    fail_pct: float = DEFAULT_FAIL_PCT
+    origin: str = "authored"
+    artifact_targets: tuple[str, ...] = ()
+    operation_targets: tuple[str, ...] = ()
+    tags: tuple[str, ...] = ()
+
+    def compile(self) -> Campaign:
+        return Campaign(
+            name=self.scenario_id,
+            description=self.description,
+            tests=self.tests,
+            notes=self.notes,
+            warn_pct=self.warn_pct,
+            fail_pct=self.fail_pct,
+        )
+
+
+@dataclass(frozen=True)
 class BenchmarkStat:
     name: str
     fullname: str
@@ -75,29 +101,48 @@ class CampaignResult:
     worst_regression_pct: float | None
 
 
-CAMPAIGNS: dict[str, Campaign] = {
-    "search-filters": Campaign(
-        name="search-filters",
+def compile_benchmark_scenarios(scenarios: tuple[BenchmarkScenario, ...]) -> dict[str, Campaign]:
+    return {scenario.scenario_id: scenario.compile() for scenario in scenarios}
+
+
+BENCHMARK_SCENARIOS: tuple[BenchmarkScenario, ...] = (
+    BenchmarkScenario(
+        scenario_id="search-filters",
         description="FTS and ConversationFilter benchmark domain",
         tests=("tests/benchmarks/test_search_filters.py",),
         notes=(
             "Canonical search/filter latency domain.",
             "Keep on session-seeded DB fixtures for comparability.",
         ),
+        origin="authored.benchmark-domain",
+        artifact_targets=("conversation_query_results", "message_fts"),
+        operation_targets=("benchmark.query.search-filters",),
+        tags=("benchmark", "search", "filters"),
     ),
-    "storage": Campaign(
-        name="storage",
+    BenchmarkScenario(
+        scenario_id="storage",
         description="Repository/backend list/get-many/save benchmark domain",
         tests=("tests/benchmarks/test_storage.py",),
         notes=("Canonical storage CRUD and batch-write latency domain.",),
+        origin="authored.benchmark-domain",
+        artifact_targets=("conversation_rows", "message_rows", "raw_rows"),
+        operation_targets=("benchmark.storage.crud",),
+        tags=("benchmark", "storage"),
     ),
-    "pipeline": Campaign(
-        name="pipeline",
+    BenchmarkScenario(
+        scenario_id="pipeline",
         description="Index rebuild/update plus hashing/semantic helper benchmark domain",
         tests=("tests/benchmarks/test_pipeline.py",),
         notes=("Covers indexing plus hot helper throughput.",),
+        origin="authored.benchmark-domain",
+        artifact_targets=("index_state", "pipeline_helpers"),
+        operation_targets=("benchmark.pipeline.index-and-helpers",),
+        tags=("benchmark", "pipeline"),
     ),
-}
+)
+
+
+CAMPAIGNS: dict[str, Campaign] = compile_benchmark_scenarios(BENCHMARK_SCENARIOS)
 
 
 def _git_output(*args: str) -> str:
