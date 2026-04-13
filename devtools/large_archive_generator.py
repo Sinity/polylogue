@@ -14,7 +14,7 @@ from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from polylogue.scenarios import CorpusSpec
+from polylogue.scenarios import CorpusScenario, CorpusSpec, build_corpus_scenarios, flatten_corpus_specs
 
 if TYPE_CHECKING:
     pass
@@ -50,6 +50,10 @@ class ArchiveSpec:
 
     def corpus_specs(self, *, available_providers: set[str]) -> tuple[CorpusSpec, ...]:
         """Compile the archive spec into per-provider synthetic corpus specs."""
+        return flatten_corpus_specs(self.corpus_scenarios(available_providers=available_providers))
+
+    def corpus_scenarios(self, *, available_providers: set[str]) -> tuple[CorpusScenario, ...]:
+        """Compile the archive spec into named per-provider synthetic corpus scenarios."""
         filtered_mix = {provider: weight for provider, weight in self.provider_mix.items() if provider in available_providers}
         if not filtered_mix:
             raise ValueError(
@@ -59,18 +63,22 @@ class ArchiveSpec:
         total_weight = sum(filtered_mix.values())
         normalized_mix = {provider: weight / total_weight for provider, weight in filtered_mix.items()}
         distribution = _distribute_conversations(self.conversations, normalized_mix)
-        return tuple(
-            CorpusSpec.for_provider(
-                provider,
-                count=conversation_count,
-                messages_min=self.messages_per_conversation_range.start,
-                messages_max=self.messages_per_conversation_range.stop - 1,
-                seed=self.seed,
-                origin="generated.large-archive",
-                tags=("synthetic", "benchmark", "scale", self.level.value),
-            )
-            for provider, conversation_count in distribution.items()
-            if conversation_count > 0
+        return build_corpus_scenarios(
+            tuple(
+                CorpusSpec.for_provider(
+                    provider,
+                    count=conversation_count,
+                    messages_min=self.messages_per_conversation_range.start,
+                    messages_max=self.messages_per_conversation_range.stop - 1,
+                    seed=self.seed,
+                    origin="generated.large-archive",
+                    tags=("synthetic", "benchmark", "scale", self.level.value),
+                )
+                for provider, conversation_count in distribution.items()
+                if conversation_count > 0
+            ),
+            origin="compiled.large-archive-scenario",
+            tags=("synthetic", "benchmark", "scale", self.level.value, "scenario"),
         )
 
 
@@ -203,48 +211,49 @@ async def generate_archive(spec: ArchiveSpec, output_dir: Path) -> ArchiveMetric
 
     try:
         async with backend.bulk_connection():
-            for corpus_spec in spec.corpus_specs(available_providers=_available_providers()):
-                provider = corpus_spec.provider
-                provider_dir = corpus_dir / provider
-                written = SyntheticCorpus.write_spec_artifacts(
-                    corpus_spec,
-                    provider_dir,
-                    prefix="synth",
-                    index_width=5,
-                )
-
+            for corpus_scenario in spec.corpus_scenarios(available_providers=_available_providers()):
+                provider = corpus_scenario.provider
                 provider_conv_count = 0
-                for file_path, artifact in zip(written.files, written.batch.artifacts, strict=True):
-                    raw_bytes = artifact.raw_bytes
-                    # Store raw record
-                    raw_id = hashlib.sha256(raw_bytes).hexdigest()
-                    raw_record = RawConversationRecord(
-                        raw_id=raw_id,
-                        provider_name=provider,
-                        source_name=provider,
-                        source_path=str(file_path),
-                        raw_content=raw_bytes,
-                        acquired_at=datetime.now(timezone.utc).isoformat(),
+                for corpus_spec in corpus_scenario.corpus_specs:
+                    provider_dir = corpus_dir / provider
+                    written = SyntheticCorpus.write_spec_artifacts(
+                        corpus_spec,
+                        provider_dir,
+                        prefix="synth",
+                        index_width=5,
                     )
-                    await backend.save_raw_conversation(raw_record)
 
-                    # Parse and ingest
-                    source = Source(name=provider, path=file_path)
-                    for convo in iter_source_conversations(source):
-                        await prepare_records(
-                            convo,
-                            source_name=provider,
-                            archive_root=archive_root,
-                            backend=backend,
-                            repository=repository,
+                    for file_path, artifact in zip(written.files, written.batch.artifacts, strict=True):
+                        raw_bytes = artifact.raw_bytes
+                        # Store raw record
+                        raw_id = hashlib.sha256(raw_bytes).hexdigest()
+                        raw_record = RawConversationRecord(
                             raw_id=raw_id,
+                            provider_name=provider,
+                            source_name=provider,
+                            source_path=str(file_path),
+                            raw_content=raw_bytes,
+                            acquired_at=datetime.now(timezone.utc).isoformat(),
                         )
-                        provider_conv_count += 1
-                        message_count += len(convo.messages)
+                        await backend.save_raw_conversation(raw_record)
 
-                    # Periodic flush every 100 files
-                    if provider_conv_count > 0 and provider_conv_count % 100 == 0:
-                        await backend.bulk_flush()
+                        # Parse and ingest
+                        source = Source(name=provider, path=file_path)
+                        for convo in iter_source_conversations(source):
+                            await prepare_records(
+                                convo,
+                                source_name=provider,
+                                archive_root=archive_root,
+                                backend=backend,
+                                repository=repository,
+                                raw_id=raw_id,
+                            )
+                            provider_conv_count += 1
+                            message_count += len(convo.messages)
+
+                        # Periodic flush every 100 files
+                        if provider_conv_count > 0 and provider_conv_count % 100 == 0:
+                            await backend.bulk_flush()
 
                 provider_breakdown[provider] = provider_conv_count
                 conversation_count += provider_conv_count
