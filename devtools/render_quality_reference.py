@@ -71,11 +71,14 @@ def _render_benchmark_table(entries: tuple[BenchmarkCampaignEntry, ...]) -> list
 
 
 def _render_runtime_coverage_section(coverage: RuntimeScenarioCoverage) -> list[str]:
+    uncovered_paths = tuple(sorted(name for name, path in coverage.paths.items() if not path.complete))
     return [
         "## Runtime Coverage",
         "",
+        f"- covered runtime paths: `{sum(1 for path in coverage.paths.values() if path.complete)}`",
         f"- covered runtime artifacts: `{len(coverage.artifacts)}`",
         f"- covered runtime operations: `{len(coverage.operations)}`",
+        "- uncovered runtime paths: " + ("—" if not uncovered_paths else ", ".join(f"`{name}`" for name in uncovered_paths)),
         "- uncovered runtime artifacts: "
         + ("—" if not coverage.uncovered_artifacts else ", ".join(f"`{name}`" for name in coverage.uncovered_artifacts)),
         "- uncovered runtime operations: "

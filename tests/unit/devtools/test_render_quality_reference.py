@@ -10,7 +10,7 @@ from devtools.quality_registry import (
     ScenarioProjectionEntry,
     ValidationLaneEntry,
 )
-from devtools.scenario_coverage import RuntimeScenarioCoverage, ScenarioCoverageRef
+from devtools.scenario_coverage import RuntimePathCoverage, RuntimeScenarioCoverage, ScenarioCoverageRef
 
 
 def test_build_document_includes_live_registry_sections() -> None:
@@ -122,6 +122,20 @@ def test_build_document_includes_runtime_coverage_section() -> None:
             ),
         },
         operations={},
+        paths={
+            "action-event-repair-loop": RuntimePathCoverage(
+                name="action-event-repair-loop",
+                refs=(
+                    ScenarioCoverageRef(
+                        source="exercise",
+                        name="json-doctor-action-event-preview",
+                        origin="generated.json-contract",
+                    ),
+                ),
+                uncovered_artifacts=("tool_use_source_blocks",),
+                uncovered_operations=("materialize-action-events",),
+            ),
+        },
         uncovered_artifacts=("tool_use_source_blocks",),
         uncovered_operations=("materialize-action-events",),
     )
@@ -129,7 +143,9 @@ def test_build_document_includes_runtime_coverage_section() -> None:
     rendered = render_quality_reference.build_document(registry, runtime_coverage=coverage)
 
     assert "## Runtime Coverage" in rendered
+    assert "- covered runtime paths: `0`" in rendered
     assert "- covered runtime artifacts: `1`" in rendered
+    assert "- uncovered runtime paths: `action-event-repair-loop`" in rendered
     assert "- uncovered runtime artifacts: `tool_use_source_blocks`" in rendered
     assert "- uncovered runtime operations: `materialize-action-events`" in rendered
     assert "devtools artifact-graph" in rendered

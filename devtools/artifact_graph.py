@@ -34,6 +34,16 @@ def render_artifact_graph(*, as_json: bool) -> str:
         lines.append(f"  - consumes: {consumes}")
         lines.append(f"  - produces: {produces}")
     lines.append("")
+    lines.append("Runtime Path Coverage:")
+    for path_name, path_coverage in sorted(coverage.paths.items()):
+        status = "complete" if path_coverage.complete else "partial"
+        rendered_refs = ", ".join(f"{ref.source}:{ref.name}" for ref in path_coverage.refs) or "—"
+        lines.append(f"- {path_name} [{status}]: {rendered_refs}")
+        if path_coverage.uncovered_artifacts:
+            lines.append(f"  - uncovered artifacts: {', '.join(path_coverage.uncovered_artifacts)}")
+        if path_coverage.uncovered_operations:
+            lines.append(f"  - uncovered operations: {', '.join(path_coverage.uncovered_operations)}")
+    lines.append("")
     lines.append("Runtime Scenario Coverage:")
     if not coverage.artifacts and not coverage.operations:
         lines.append("- none")

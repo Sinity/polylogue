@@ -10,6 +10,7 @@ def test_render_artifact_graph_text_mentions_both_vertical_paths() -> None:
 
     assert "Artifact Paths:" in rendered
     assert "Artifact Operations:" in rendered
+    assert "Runtime Path Coverage:" in rendered
     assert "Runtime Scenario Coverage:" in rendered
     assert "raw-reparse-loop" in rendered
     assert "action-event-repair-loop" in rendered
@@ -119,5 +120,8 @@ def test_render_artifact_graph_json_is_machine_readable() -> None:
             "origin": "authored.synthetic-benchmark",
         }
     ]
+    assert payload["scenario_coverage"]["paths"]["action-event-repair-loop"]["complete"] is True
+    assert payload["scenario_coverage"]["paths"]["raw-reparse-loop"]["complete"] is True
+    assert payload["scenario_coverage"]["paths"]["session-product-repair-loop"]["complete"] is True
     assert payload["scenario_coverage"]["uncovered_artifacts"] == []
     assert payload["scenario_coverage"]["uncovered_operations"] == []
