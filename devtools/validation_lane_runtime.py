@@ -4,13 +4,10 @@ from __future__ import annotations
 
 import subprocess
 
+from devtools.authored_scenario_catalog import build_authored_scenario_catalog
 from devtools.lane_models import LaneEntry
-from devtools.validation_catalog import build_validation_lane_entries
 
-LANES: dict[str, LaneEntry] = {
-    entry.name: entry
-    for entry in build_validation_lane_entries()
-}
+LANES: dict[str, LaneEntry] = build_authored_scenario_catalog().validation_lane_index()
 VALID_LANES = frozenset(LANES)
 
 

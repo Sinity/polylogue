@@ -13,11 +13,12 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
-from .benchmark_catalog import BenchmarkCampaignEntry, build_synthetic_benchmark_entries
+from .authored_scenario_catalog import build_authored_scenario_catalog
+from .benchmark_catalog import BenchmarkCampaignEntry
 
-SYNTHETIC_CAMPAIGNS: dict[str, BenchmarkCampaignEntry] = {
-    entry.name: entry for entry in build_synthetic_benchmark_entries()
-}
+SYNTHETIC_CAMPAIGNS: dict[str, BenchmarkCampaignEntry] = (
+    build_authored_scenario_catalog().synthetic_benchmark_campaign_index()
+)
 
 @dataclass
 class CampaignResult:

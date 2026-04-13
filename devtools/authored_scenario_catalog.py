@@ -59,6 +59,18 @@ class AuthoredScenarioCatalog:
             *self.inferred_corpus_scenarios,
         )
 
+    def validation_lane_index(self) -> dict[str, LaneEntry]:
+        return {entry.name: entry for entry in self.validation_lanes}
+
+    def mutation_campaign_index(self) -> dict[str, MutationCampaignEntry]:
+        return {entry.name: entry for entry in self.mutation_campaigns}
+
+    def benchmark_campaign_index(self) -> dict[str, BenchmarkCampaignEntry]:
+        return {entry.name: entry for entry in self.benchmark_campaigns}
+
+    def synthetic_benchmark_campaign_index(self) -> dict[str, BenchmarkCampaignEntry]:
+        return {entry.name: entry for entry in self.synthetic_benchmark_campaigns}
+
     def compile_projection_entries(self) -> tuple[ScenarioProjectionEntry, ...]:
         return tuple(
             sorted(
