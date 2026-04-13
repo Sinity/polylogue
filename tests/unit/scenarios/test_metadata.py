@@ -4,6 +4,7 @@ from unittest.mock import MagicMock
 
 from polylogue.scenarios import (
     ScenarioMetadata,
+    declared_operation_target_names,
     runtime_artifact_graph,
     runtime_artifact_target_names,
     runtime_operation_target_names,
@@ -61,6 +62,8 @@ def test_runtime_target_names_include_declared_runtime_specs() -> None:
     assert "action_event_rows" in runtime_artifact_target_names()
     assert "project-action-event-health" in runtime_operation_target_names()
     assert "action-event-repair-loop" in runtime_path_target_names()
+    assert "cli.json-contract" in declared_operation_target_names()
+    assert "benchmark.storage.crud" in declared_operation_target_names()
 
 
 def test_scenario_metadata_resolves_only_runtime_declared_targets() -> None:
@@ -95,4 +98,20 @@ def test_scenario_metadata_resolves_runtime_specs() -> None:
     assert tuple(artifact.name for artifact in metadata.resolve_runtime_artifacts()) == ("action_event_rows",)
     assert tuple(operation.name for operation in metadata.resolve_runtime_operations()) == (
         "project-action-event-health",
+    )
+
+
+def test_scenario_metadata_resolves_declared_operation_targets() -> None:
+    metadata = ScenarioMetadata(
+        origin="generated.contract",
+        operation_targets=("project-action-event-health", "benchmark.storage.crud", "missing.operation"),
+    )
+
+    assert metadata.declared_operation_targets() == (
+        "project-action-event-health",
+        "benchmark.storage.crud",
+    )
+    assert tuple(operation.name for operation in metadata.resolve_declared_operations()) == (
+        "project-action-event-health",
+        "benchmark.storage.crud",
     )

@@ -14,6 +14,10 @@ class OperationKind(str, Enum):
     MATERIALIZATION = "materialization"
     INDEXING = "indexing"
     PROJECTION = "projection"
+    CLI = "cli"
+    BENCHMARK = "benchmark"
+    QUERY = "query"
+    HEALTHCHECK = "healthcheck"
 
 
 @dataclass(frozen=True, slots=True)
@@ -120,6 +124,84 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
     ),
 )
 
+DECLARED_CONTROL_PLANE_OPERATION_SPECS: tuple[OperationSpec, ...] = (
+    OperationSpec(
+        name="cli.help",
+        kind=OperationKind.CLI,
+        description="Render Click help for one command path without mutating archive state.",
+        surfaces=("help", "showcase"),
+        previewable=True,
+    ),
+    OperationSpec(
+        name="cli.json-contract",
+        kind=OperationKind.CLI,
+        description="Exercise a machine-readable CLI JSON surface and verify its contract envelope.",
+        surfaces=("doctor", "audit", "schema", "tags", "showcase"),
+        previewable=True,
+    ),
+    OperationSpec(
+        name="benchmark.query.search-filters",
+        kind=OperationKind.BENCHMARK,
+        description="Measure the canonical FTS and ConversationFilter query benchmark domain.",
+        surfaces=("benchmark-campaign",),
+        previewable=True,
+    ),
+    OperationSpec(
+        name="benchmark.storage.crud",
+        kind=OperationKind.BENCHMARK,
+        description="Measure repository and backend CRUD latency for the storage benchmark domain.",
+        surfaces=("benchmark-campaign",),
+        previewable=True,
+    ),
+    OperationSpec(
+        name="benchmark.pipeline.index-and-helpers",
+        kind=OperationKind.BENCHMARK,
+        description="Measure indexing and hot pipeline-helper throughput in the benchmark campaign domain.",
+        surfaces=("benchmark-campaign",),
+        previewable=True,
+    ),
+    OperationSpec(
+        name="benchmark.repair.action-events",
+        kind=OperationKind.BENCHMARK,
+        description="Measure action-event repair throughput in focused benchmark scenarios.",
+        surfaces=("benchmark-campaign",),
+        previewable=True,
+    ),
+    OperationSpec(
+        name="index.message-fts-rebuild",
+        kind=OperationKind.INDEXING,
+        description="Benchmark full message FTS rebuild over a synthetic archive.",
+        surfaces=("synthetic-benchmark",),
+        previewable=True,
+    ),
+    OperationSpec(
+        name="index.message-fts-incremental",
+        kind=OperationKind.INDEXING,
+        description="Benchmark incremental message FTS updates over a synthetic archive.",
+        surfaces=("synthetic-benchmark",),
+        previewable=True,
+    ),
+    OperationSpec(
+        name="query.filters.synthetic-scan",
+        kind=OperationKind.QUERY,
+        description="Benchmark common synthetic filter-query scans over generated archives.",
+        surfaces=("synthetic-benchmark",),
+        previewable=True,
+    ),
+    OperationSpec(
+        name="health.startup.synthetic",
+        kind=OperationKind.HEALTHCHECK,
+        description="Benchmark startup health checks over a synthetic archive.",
+        surfaces=("synthetic-benchmark",),
+        previewable=True,
+    ),
+)
+
+DECLARED_OPERATION_SPECS: tuple[OperationSpec, ...] = (
+    *RUNTIME_OPERATION_SPECS,
+    *DECLARED_CONTROL_PLANE_OPERATION_SPECS,
+)
+
 
 def build_runtime_operation_specs() -> tuple[OperationSpec, ...]:
     """Return the authored runtime operation metadata."""
@@ -127,9 +209,18 @@ def build_runtime_operation_specs() -> tuple[OperationSpec, ...]:
     return RUNTIME_OPERATION_SPECS
 
 
+def build_declared_operation_specs() -> tuple[OperationSpec, ...]:
+    """Return every authored operation target referenced across verification surfaces."""
+
+    return DECLARED_OPERATION_SPECS
+
+
 __all__ = [
+    "DECLARED_CONTROL_PLANE_OPERATION_SPECS",
+    "DECLARED_OPERATION_SPECS",
     "OperationKind",
     "OperationSpec",
+    "build_declared_operation_specs",
     "RUNTIME_OPERATION_SPECS",
     "build_runtime_operation_specs",
 ]
