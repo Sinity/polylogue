@@ -49,6 +49,18 @@ def test_build_default_corpus_specs_preserves_provider_order() -> None:
     assert all(spec.origin == "generated.synthetic-defaults" for spec in specs)
 
 
+def test_build_default_corpus_specs_accepts_metadata_overrides() -> None:
+    specs = build_default_corpus_specs(
+        providers=("chatgpt",),
+        count=1,
+        origin="generated.test-suite",
+        tags=("synthetic", "test", "fixtures"),
+    )
+
+    assert specs[0].origin == "generated.test-suite"
+    assert specs[0].tags == ("synthetic", "test", "fixtures")
+
+
 def test_build_inferred_corpus_specs_uses_cluster_families_when_present() -> None:
     manifest = ClusterManifest(
         provider="chatgpt",
