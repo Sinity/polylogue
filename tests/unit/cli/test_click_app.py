@@ -12,7 +12,7 @@ import pytest
 
 from polylogue.cli.click_app import cli as click_cli
 from polylogue.cli.click_app import mcp_command
-from polylogue.scenarios import CorpusSpec
+from polylogue.scenarios import CorpusProfile, CorpusSpec
 from tests.infra.cli_subprocess import run_cli
 
 
@@ -534,7 +534,7 @@ class TestGenerateSeed:
                 messages_min=4,
                 messages_max=4,
                 seed=7,
-                profile_family_ids=("cluster-a",),
+                profile=CorpusProfile(family_ids=("cluster-a",)),
             ),
             CorpusSpec(
                 provider="chatgpt",
@@ -543,7 +543,7 @@ class TestGenerateSeed:
                 messages_min=4,
                 messages_max=4,
                 seed=8,
-                profile_family_ids=("cluster-b",),
+                profile=CorpusProfile(family_ids=("cluster-b",)),
             ),
         )
 
