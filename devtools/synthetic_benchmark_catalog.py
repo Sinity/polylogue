@@ -2,85 +2,76 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from devtools.benchmark_models import BenchmarkCampaignEntry, compile_benchmark_campaigns
 
-from polylogue.scenarios import ScenarioMetadata
-
-
-@dataclass(frozen=True)
-class SyntheticBenchmarkScenario(ScenarioMetadata):
-    """Authored scenario metadata for synthetic long-haul benchmark campaigns."""
-
-    scenario_id: str
-    description: str
-    runner_name: str
-    summary_metric: str
-    summary_label: str
-    scale_targets: tuple[str, ...] = ("small", "medium", "large", "stretch")
-
-
-SYNTHETIC_BENCHMARK_SCENARIOS: tuple[SyntheticBenchmarkScenario, ...] = (
-    SyntheticBenchmarkScenario(
-        scenario_id="fts-rebuild",
+SYNTHETIC_BENCHMARK_SCENARIOS: tuple[BenchmarkCampaignEntry, ...] = (
+    BenchmarkCampaignEntry(
+        name="fts-rebuild",
         description="Benchmark full FTS5 index rebuild",
         runner_name="fts-rebuild",
         summary_metric="rebuild_wall_s",
         summary_label="s",
+        scale_targets=("small", "medium", "large", "stretch"),
         origin="authored.synthetic-benchmark",
         artifact_targets=("message_fts",),
         operation_targets=("index.message-fts-rebuild",),
         tags=("benchmark", "synthetic", "fts"),
     ),
-    SyntheticBenchmarkScenario(
-        scenario_id="incremental-index",
+    BenchmarkCampaignEntry(
+        name="incremental-index",
         description="Benchmark incremental FTS index updates",
         runner_name="incremental-index",
         summary_metric="total_wall_s",
         summary_label="s",
+        scale_targets=("small", "medium", "large", "stretch"),
         origin="authored.synthetic-benchmark",
         artifact_targets=("message_fts",),
         operation_targets=("index.message-fts-incremental",),
         tags=("benchmark", "synthetic", "fts"),
     ),
-    SyntheticBenchmarkScenario(
-        scenario_id="filter-scan",
+    BenchmarkCampaignEntry(
+        name="filter-scan",
         description="Benchmark common filter query patterns",
         runner_name="filter-scan",
         summary_metric="list_50_wall_s",
         summary_label="s",
+        scale_targets=("small", "medium", "large", "stretch"),
         origin="authored.synthetic-benchmark",
         artifact_targets=("conversation_query_results",),
         operation_targets=("query.filters.synthetic-scan",),
         tags=("benchmark", "synthetic", "filters"),
     ),
-    SyntheticBenchmarkScenario(
-        scenario_id="startup-health",
+    BenchmarkCampaignEntry(
+        name="startup-health",
         description="Benchmark check --runtime startup speed",
         runner_name="startup-health",
         summary_metric="total_health_s",
         summary_label="s",
+        scale_targets=("small", "medium", "large", "stretch"),
         origin="authored.synthetic-benchmark",
         artifact_targets=("archive_health",),
         operation_targets=("health.startup.synthetic",),
         tags=("benchmark", "synthetic", "health"),
     ),
-    SyntheticBenchmarkScenario(
-        scenario_id="action-event-materialization",
+    BenchmarkCampaignEntry(
+        name="action-event-materialization",
         description="Benchmark action-event read-model rebuild over synthetic tool-use transcripts",
         runner_name="action-event-materialization",
         summary_metric="rebuild_wall_s",
         summary_label="s",
+        scale_targets=("small", "medium", "large", "stretch"),
         origin="authored.synthetic-benchmark",
         artifact_targets=("tool_use_source_blocks", "action_event_rows", "action_event_fts"),
         operation_targets=("materialize-action-events",),
         tags=("benchmark", "synthetic", "action-events"),
     ),
-    SyntheticBenchmarkScenario(
-        scenario_id="session-product-materialization",
+    BenchmarkCampaignEntry(
+        name="session-product-materialization",
         description="Benchmark durable session-product rebuild over synthetic archive conversations",
         runner_name="session-product-materialization",
         summary_metric="rebuild_wall_s",
         summary_label="s",
+        scale_targets=("small", "medium", "large", "stretch"),
         origin="authored.synthetic-benchmark",
         artifact_targets=("session_product_source_conversations", "session_product_rows", "session_product_fts"),
         operation_targets=("materialize-session-products",),
@@ -88,13 +79,13 @@ SYNTHETIC_BENCHMARK_SCENARIOS: tuple[SyntheticBenchmarkScenario, ...] = (
     ),
 )
 
-SYNTHETIC_BENCHMARK_REGISTRY: dict[str, SyntheticBenchmarkScenario] = {
-    scenario.scenario_id: scenario for scenario in SYNTHETIC_BENCHMARK_SCENARIOS
-}
+SYNTHETIC_BENCHMARK_REGISTRY: dict[str, BenchmarkCampaignEntry] = compile_benchmark_campaigns(
+    SYNTHETIC_BENCHMARK_SCENARIOS
+)
 
 
 __all__ = [
     "SYNTHETIC_BENCHMARK_REGISTRY",
     "SYNTHETIC_BENCHMARK_SCENARIOS",
-    "SyntheticBenchmarkScenario",
+    "BenchmarkCampaignEntry",
 ]
