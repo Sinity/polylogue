@@ -117,15 +117,23 @@ class TestLaneParsing:
     def test_pipeline_probe_chatgpt_lane_infers_parse_stage_runtime_metadata(self):
         lane = LANES["pipeline-probe-chatgpt"]
 
-        assert lane.path_targets == ("raw-reparse-loop", "raw-archive-ingest-loop")
+        assert lane.path_targets == (
+            "source-acquisition-loop",
+            "raw-reparse-loop",
+            "raw-archive-ingest-loop",
+        )
         assert lane.artifact_targets == (
+            "configured_sources",
+            "source_payload_stream",
             "raw_validation_state",
+            "artifact_observation_rows",
             "validation_backlog",
             "parse_backlog",
             "parse_quarantine",
             "archive_conversation_rows",
         )
         assert lane.operation_targets == (
+            "acquire-raw-conversations",
             "plan-validation-backlog",
             "plan-parse-backlog",
             "ingest-archive-runtime",
@@ -185,6 +193,19 @@ class TestCommandConstruction:
         assert "tests/unit/sources/test_source_laws.py" in cmd
         assert "tests/unit/sources/test_drive_ops.py" in cmd
         assert "tests/integration/test_security.py" in cmd
+
+    def test_source_provider_fidelity_lane_carries_source_acquisition_metadata(self):
+        lane = LANES["source-provider-fidelity"]
+
+        assert lane.path_targets == ("source-acquisition-loop",)
+        assert lane.artifact_targets == (
+            "configured_sources",
+            "source_payload_stream",
+            "raw_validation_state",
+            "artifact_observation_rows",
+        )
+        assert lane.operation_targets == ("acquire-raw-conversations",)
+        assert lane.tags == ("contract", "sources", "acquisition")
 
     def test_maintenance_workflows_lane_uses_health_and_check_suite(self):
         cmd = build_lane_command(LANES["maintenance-workflows"])

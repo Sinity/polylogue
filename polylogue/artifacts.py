@@ -47,13 +47,48 @@ class ArtifactPath:
 
 RUNTIME_ARTIFACT_NODES: tuple[ArtifactNode, ...] = (
     ArtifactNode(
+        name="configured_sources",
+        layer=ArtifactLayer.SOURCE,
+        description="Configured filesystem and Drive source descriptors selected for an archive run.",
+        code_refs=(
+            "polylogue.config.Source",
+            "polylogue.pipeline.run_planning.plan_sources",
+            "polylogue.cli.helpers.resolve_sources",
+        ),
+        health_surfaces=("run", "sources"),
+    ),
+    ArtifactNode(
+        name="source_payload_stream",
+        layer=ArtifactLayer.SOURCE,
+        description="Traversed raw source payloads yielded as RawConversationData before durable persistence.",
+        depends_on=("configured_sources",),
+        code_refs=(
+            "polylogue.sources.source_acquisition.iter_source_raw_data",
+            "polylogue.pipeline.services.acquisition.AcquisitionService.visit_sources",
+        ),
+        health_surfaces=("run", "sources"),
+    ),
+    ArtifactNode(
         name="raw_validation_state",
         layer=ArtifactLayer.DURABLE,
         description="Persisted raw-conversation validation and parse state in raw_conversations.",
+        depends_on=("source_payload_stream",),
         code_refs=(
             "polylogue.storage.raw_ingest_artifacts.RawIngestArtifactState",
             "polylogue.storage.backends.queries.raw_state",
         ),
+    ),
+    ArtifactNode(
+        name="artifact_observation_rows",
+        layer=ArtifactLayer.DURABLE,
+        description="Persisted artifact observations recorded alongside acquired raw conversations.",
+        depends_on=("raw_validation_state",),
+        code_refs=(
+            "polylogue.pipeline.services.acquisition_persistence.persist_raw_record",
+            "polylogue.storage.repository_writes.RepositoryWritesMixin.save_artifact_observation",
+            "polylogue.storage.artifact_inspection.inspect_raw_artifact",
+        ),
+        health_surfaces=("run", "sources"),
     ),
     ArtifactNode(
         name="validation_backlog",
@@ -709,6 +744,16 @@ RUNTIME_ARTIFACT_NODES: tuple[ArtifactNode, ...] = (
 
 RUNTIME_ARTIFACT_PATHS: tuple[ArtifactPath, ...] = (
     ArtifactPath(
+        name="source-acquisition-loop",
+        description="Configured sources through traversed raw payloads into durable raw conversation state and artifact observations.",
+        nodes=(
+            "configured_sources",
+            "source_payload_stream",
+            "raw_validation_state",
+            "artifact_observation_rows",
+        ),
+    ),
+    ArtifactPath(
         name="raw-reparse-loop",
         description="Raw validation state to validation/parse backlog and quarantine projections.",
         nodes=(
@@ -722,7 +767,10 @@ RUNTIME_ARTIFACT_PATHS: tuple[ArtifactPath, ...] = (
         name="raw-archive-ingest-loop",
         description="Raw validation and parse planning through durable archive runtime rows and their downstream source surfaces.",
         nodes=(
+            "configured_sources",
+            "source_payload_stream",
             "raw_validation_state",
+            "artifact_observation_rows",
             "validation_backlog",
             "parse_backlog",
             "parse_quarantine",
