@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from devtools.authored_scenario_catalog import AuthoredScenarioCatalog, build_authored_scenario_catalog
+from devtools.authored_scenario_catalog import AuthoredScenarioCatalog, get_authored_scenario_catalog
 from devtools.benchmark_catalog import BenchmarkCampaignEntry
 from devtools.lane_models import LaneEntry
 from devtools.mutation_catalog import MutationCampaignEntry
@@ -61,7 +61,7 @@ class QualityRegistry:
 
 
 def build_quality_registry() -> QualityRegistry:
-    catalog = build_authored_scenario_catalog()
+    catalog = get_authored_scenario_catalog()
     return QualityRegistry(
         catalog=catalog,
         scenario_projections=build_scenario_projection_entries(catalog=catalog),
