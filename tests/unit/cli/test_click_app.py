@@ -674,8 +674,8 @@ class TestQaCommand:
         assert payload["overall_status"] == "ok"
 
     def test_exercises_only_skips_artifact_proof(self, cli_runner):
-        from polylogue.scenarios import polylogue_execution
-        from polylogue.showcase.exercises import Exercise, Validation
+        from polylogue.scenarios import AssertionSpec, polylogue_execution
+        from polylogue.showcase.exercises import Exercise
         from polylogue.showcase.qa_runner import QAResult
         from polylogue.showcase.runner import ExerciseResult, ShowcaseResult
 
@@ -690,7 +690,7 @@ class TestQaCommand:
                             group="structural",
                             description="smoke",
                             execution=polylogue_execution("--help"),
-                            validation=Validation(),
+                            assertion=AssertionSpec(),
                         ),
                         passed=True,
                         exit_code=0,

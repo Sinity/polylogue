@@ -19,7 +19,7 @@
           "--help"
         ]
       },
-      "validation": {
+      "assertion": {
         "stdout_contains": [
           "polylogue"
         ]
@@ -38,7 +38,7 @@
           "--help"
         ]
       },
-      "validation": {
+      "assertion": {
         "stdout_contains": [
           "COMMAND1"
         ]
@@ -56,7 +56,7 @@
           "--help"
         ]
       },
-      "validation": {
+      "assertion": {
         "stdout_contains": [
           "--repair"
         ]
@@ -75,7 +75,7 @@
           "--help"
         ]
       },
-      "validation": {
+      "assertion": {
         "stdout_contains": [
           "--seed"
         ]
@@ -93,7 +93,7 @@
           "--help"
         ]
       },
-      "validation": {
+      "assertion": {
         "stdout_contains": [
           "--live"
         ]
@@ -111,7 +111,7 @@
           "--help"
         ]
       },
-      "validation": {
+      "assertion": {
         "stdout_contains": [
           "--json"
         ]
@@ -130,7 +130,7 @@
           "--help"
         ]
       },
-      "validation": {
+      "assertion": {
         "stdout_contains": [
           "--stats"
         ]
@@ -149,7 +149,7 @@
           "--help"
         ]
       },
-      "validation": {
+      "assertion": {
         "stdout_contains": [
           "--output"
         ]
@@ -166,7 +166,7 @@
           "--version"
         ]
       },
-      "validation": {
+      "assertion": {
         "stdout_contains": [
           "polylogue"
         ]
@@ -185,7 +185,7 @@
           "bash"
         ]
       },
-      "validation": {
+      "assertion": {
         "stdout_contains": [
           "complete"
         ]
@@ -223,7 +223,7 @@
           "parse"
         ]
       },
-      "validation": {
+      "assertion": {
         "stdout_contains": [
           "Reparse requested."
         ]
@@ -260,7 +260,7 @@
           "--preview"
         ]
       },
-      "validation": {
+      "assertion": {
         "stdout_contains": [
           "Preview"
         ]
@@ -324,7 +324,7 @@
       "name": "stats-default",
       "group": "query-read",
       "description": "Default archive statistics",
-      "validation": {
+      "assertion": {
         "stdout_contains": [
           "Archive"
         ]
@@ -358,7 +358,7 @@
           "list"
         ]
       },
-      "validation": {
+      "assertion": {
         "stdout_min_lines": 1
       },
       "needs_data": true,
@@ -376,7 +376,7 @@
           "json"
         ]
       },
-      "validation": {
+      "assertion": {
         "custom": {
           "kind": "is_valid_json_array"
         }
@@ -396,7 +396,7 @@
           "csv"
         ]
       },
-      "validation": {
+      "assertion": {
         "stdout_contains": [
           "id"
         ]
@@ -416,7 +416,7 @@
           "yaml"
         ]
       },
-      "validation": {
+      "assertion": {
         "stdout_contains": [
           "provider:"
         ]
@@ -433,7 +433,7 @@
           "count"
         ]
       },
-      "validation": {
+      "assertion": {
         "custom": {
           "kind": "is_integer"
         }
@@ -450,7 +450,7 @@
           "--latest"
         ]
       },
-      "validation": {
+      "assertion": {
         "stdout_min_lines": 1
       },
       "needs_data": true
@@ -467,7 +467,7 @@
           "json"
         ]
       },
-      "validation": {
+      "assertion": {
         "stdout_is_valid_json": true
       },
       "needs_data": true,
@@ -485,7 +485,7 @@
           "markdown"
         ]
       },
-      "validation": {
+      "assertion": {
         "stdout_contains": [
           "#"
         ]
@@ -506,7 +506,7 @@
           "html"
         ]
       },
-      "validation": {
+      "assertion": {
         "stdout_contains": [
           "<"
         ]
@@ -526,7 +526,7 @@
           "plaintext"
         ]
       },
-      "validation": {
+      "assertion": {
         "stdout_min_lines": 1
       },
       "needs_data": true
@@ -543,7 +543,7 @@
           "obsidian"
         ]
       },
-      "validation": {
+      "assertion": {
         "stdout_contains": [
           "---"
         ]
@@ -563,7 +563,7 @@
           "org"
         ]
       },
-      "validation": {
+      "assertion": {
         "stdout_contains": [
           "#+TITLE"
         ]
@@ -583,7 +583,7 @@
           "csv"
         ]
       },
-      "validation": {
+      "assertion": {
         "stdout_contains": [
           "conversation_id"
         ]
@@ -617,7 +617,7 @@
           "count"
         ]
       },
-      "validation": {
+      "assertion": {
         "custom": {
           "kind": "is_integer"
         }
@@ -707,7 +707,7 @@
           "--latest"
         ]
       },
-      "validation": {
+      "assertion": {
         "stdout_min_lines": 1
       },
       "needs_data": true
@@ -725,7 +725,7 @@
           "json"
         ]
       },
-      "validation": {
+      "assertion": {
         "custom": {
           "kind": "each_line_valid_json"
         }
@@ -756,7 +756,7 @@
           "count"
         ]
       },
-      "validation": {
+      "assertion": {
         "custom": {
           "kind": "is_integer"
         }
@@ -796,7 +796,7 @@
           "count"
         ]
       },
-      "validation": {
+      "assertion": {
         "custom": {
           "kind": "is_integer"
         }
@@ -893,7 +893,7 @@
           "count"
         ]
       },
-      "validation": {
+      "assertion": {
         "custom": {
           "kind": "is_integer"
         }
@@ -914,7 +914,7 @@
           "doctor"
         ]
       },
-      "validation": {
+      "assertion": {
         "stdout_contains": [
           "ok"
         ]
@@ -933,7 +933,7 @@
           "--json"
         ]
       },
-      "validation": {
+      "assertion": {
         "stdout_is_valid_json": true
       },
       "needs_data": true,
@@ -964,7 +964,7 @@
           "--proof"
         ]
       },
-      "validation": {
+      "assertion": {
         "stdout_is_valid_json": true
       },
       "needs_data": true,
@@ -982,7 +982,7 @@
           "--cohorts"
         ]
       },
-      "validation": {
+      "assertion": {
         "stdout_is_valid_json": true
       },
       "needs_data": true,
@@ -1013,7 +1013,7 @@
           "--json"
         ]
       },
-      "validation": {
+      "assertion": {
         "stdout_is_valid_json": true
       },
       "needs_data": true,
@@ -1030,7 +1030,7 @@
           "site"
         ]
       },
-      "validation": {
+      "assertion": {
         "stdout_contains": [
           "site"
         ]
@@ -1056,7 +1056,7 @@
           "json"
         ]
       },
-      "validation": {
+      "assertion": {
         "custom": {
           "kind": "is_valid_json_array"
         }
@@ -1095,7 +1095,7 @@
           "count"
         ]
       },
-      "validation": {
+      "assertion": {
         "custom": {
           "kind": "is_integer"
         }
@@ -1117,7 +1117,7 @@
           "id,title,provider"
         ]
       },
-      "validation": {
+      "assertion": {
         "custom": {
           "kind": "json_only_fields",
           "allowed": [
@@ -1173,7 +1173,7 @@
           "list"
         ]
       },
-      "validation": {
+      "assertion": {
         "exit_code": null,
         "custom": {
           "kind": "search_exit_ok"
