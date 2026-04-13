@@ -16,6 +16,7 @@ from typing import Any
 
 import pytest
 
+from polylogue.scenarios import CorpusSpec
 from polylogue.sources.parsers.drive import (
     _attachment_from_doc,
     _collect_drive_docs,
@@ -28,8 +29,17 @@ from polylogue.sources.parsers.drive import (
 def synthetic_gemini_payload() -> dict[str, Any]:
     from polylogue.schemas.synthetic import SyntheticCorpus
 
-    corpus = SyntheticCorpus.for_provider("gemini")
-    raw = corpus.generate(count=1, messages_per_conversation=range(4, 8), seed=42)[0]
+    raw = SyntheticCorpus.generate_for_spec(
+        CorpusSpec.for_provider(
+            "gemini",
+            count=1,
+            messages_min=4,
+            messages_max=7,
+            seed=42,
+            origin="generated.test-drive-parser",
+            tags=("synthetic", "test", "drive-parser"),
+        )
+    )[0]
     return json.loads(raw)
 
 
