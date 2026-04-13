@@ -7,7 +7,8 @@ import json
 import sys
 from collections.abc import Iterable
 
-from devtools.quality_registry import ScenarioProjectionEntry, build_quality_registry
+from devtools.quality_registry import build_quality_registry
+from polylogue.scenarios import ScenarioProjectionEntry
 
 
 def _select_projections(
