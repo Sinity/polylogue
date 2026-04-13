@@ -72,6 +72,39 @@ class TestLaneParsing:
         assert "archive_health" in lane.artifact_targets
         assert "project-archive-health" in lane.operation_targets
 
+    def test_live_products_status_lane_infers_status_query_metadata(self):
+        lane = LANES["live-products-status"]
+
+        assert lane.path_targets == ("session-product-status-query-loop",)
+        assert lane.artifact_targets == ("session_product_health", "session_product_status_results")
+        assert lane.operation_targets == ("query-session-product-status",)
+
+    def test_live_products_debt_lane_infers_archive_debt_metadata(self):
+        lane = LANES["live-products-debt"]
+
+        assert lane.path_targets == ("archive-debt-query-loop",)
+        assert lane.artifact_targets == (
+            "action_event_health",
+            "session_product_health",
+            "archive_health",
+            "archive_debt_results",
+        )
+        assert lane.operation_targets == ("query-archive-debt",)
+
+    def test_pipeline_probe_chatgpt_lane_infers_parse_backlog_metadata(self):
+        lane = LANES["pipeline-probe-chatgpt"]
+
+        assert lane.path_targets == ("raw-reparse-loop",)
+        assert lane.artifact_targets == ("raw_validation_state", "parse_backlog", "parse_quarantine")
+        assert lane.operation_targets == ("plan-parse-backlog",)
+
+    def test_memory_budget_lane_preserves_wrapped_runtime_metadata(self):
+        lane = LANES["memory-budget"]
+
+        assert lane.path_targets == ("conversation-query-loop",)
+        assert lane.artifact_targets == ("message_fts", "conversation_query_results")
+        assert lane.operation_targets == ("query-conversations",)
+
 
 class TestCommandConstruction:
     def test_machine_contract_lane_uses_pytest_marker(self):
