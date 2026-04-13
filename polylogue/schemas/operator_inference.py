@@ -19,18 +19,27 @@ from polylogue.schemas.operator_models import (
 from polylogue.schemas.operator_registry import schema_registry
 
 
+def _registry_catalog(registry, provider: str):
+    load_catalog = getattr(registry, "load_package_catalog", None)
+    if load_catalog is None:
+        return None
+    return load_catalog(provider)
+
+
 def _build_inferred_outputs(
     *,
     provider: str,
     package_version: str,
     manifest=None,
     sample_count: int = 0,
+    catalog=None,
 ) -> tuple[tuple[CorpusSpec, ...], tuple[CorpusScenario, ...]]:
     corpus_specs = build_inferred_corpus_specs(
         provider=provider,
         package_version=package_version,
         manifest=manifest,
         sample_count=sample_count,
+        catalog=catalog,
     )
     corpus_scenarios = build_corpus_scenarios(
         corpus_specs,
@@ -53,11 +62,13 @@ def infer_schema(request: SchemaInferRequest) -> SchemaInferResult:
         full_corpus=request.full_corpus,
     )
     package_version = result.default_version or "default"
+    registry = schema_registry()
     if not request.cluster or not result.success:
         corpus_specs, corpus_scenarios = _build_inferred_outputs(
             provider=request.provider,
             package_version=package_version,
             sample_count=result.sample_count,
+            catalog=_registry_catalog(registry, request.provider),
         )
         return SchemaInferResult(
             generation=result,
@@ -71,6 +82,7 @@ def infer_schema(request: SchemaInferRequest) -> SchemaInferResult:
             provider=request.provider,
             package_version=package_version,
             sample_count=result.sample_count,
+            catalog=_registry_catalog(registry, request.provider),
         )
         return SchemaInferResult(
             generation=result,
@@ -88,6 +100,7 @@ def infer_schema(request: SchemaInferRequest) -> SchemaInferResult:
             provider=request.provider,
             package_version=package_version,
             sample_count=result.sample_count,
+            catalog=_registry_catalog(registry, request.provider),
         )
         return SchemaInferResult(
             generation=result,
@@ -95,7 +108,6 @@ def infer_schema(request: SchemaInferRequest) -> SchemaInferResult:
             corpus_scenarios=corpus_scenarios,
         )
 
-    registry = schema_registry()
     manifest = registry.cluster_samples(request.provider, samples)
     manifest_path = registry.save_cluster_manifest(manifest)
     corpus_specs, corpus_scenarios = _build_inferred_outputs(
@@ -103,6 +115,7 @@ def infer_schema(request: SchemaInferRequest) -> SchemaInferResult:
         package_version=package_version,
         manifest=manifest,
         sample_count=result.sample_count,
+        catalog=_registry_catalog(registry, request.provider),
     )
     return SchemaInferResult(
         generation=result,
@@ -141,6 +154,7 @@ def list_inferred_corpus_specs(
                 package_version=package_version,
                 manifest=manifest,
                 sample_count=sample_count,
+                catalog=catalog,
             )
         )
     return tuple(specs)
