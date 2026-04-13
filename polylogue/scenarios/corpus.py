@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import TYPE_CHECKING, Any
 
@@ -49,6 +49,61 @@ def _slugify_corpus_token(value: str) -> str:
 class CorpusSourceKind(str, Enum):
     DEFAULT = "default"
     INFERRED = "inferred"
+
+
+@dataclass(frozen=True, kw_only=True)
+class CorpusProfile:
+    """Observed or inferred corpus-profile metadata separate from generation controls."""
+
+    family_ids: tuple[str, ...] = ()
+    artifact_kind: str | None = None
+    observed_sample_count: int | None = None
+    observed_confidence: float | None = None
+    representative_paths: tuple[str, ...] = ()
+
+    @property
+    def primary_family_id(self) -> str | None:
+        return self.family_ids[0] if self.family_ids else None
+
+    @property
+    def is_empty(self) -> bool:
+        return (
+            not self.family_ids
+            and self.artifact_kind is None
+            and self.observed_sample_count is None
+            and self.observed_confidence is None
+            and not self.representative_paths
+        )
+
+    def scope_token(self, *, element_kind: str | None = None) -> str:
+        return self.primary_family_id or element_kind or self.artifact_kind or "default"
+
+    def target_kind(self, *, element_kind: str | None = None) -> str:
+        return element_kind or self.artifact_kind or "default"
+
+    @classmethod
+    def from_payload(cls, payload: Mapping[str, object]) -> CorpusProfile:
+        return cls(
+            family_ids=_coerce_string_tuple(payload.get("family_ids")),
+            artifact_kind=_coerce_optional_string(payload.get("artifact_kind")),
+            observed_sample_count=_coerce_optional_int(payload.get("observed_sample_count")),
+            observed_confidence=_coerce_optional_float(payload.get("observed_confidence")),
+            representative_paths=_coerce_string_tuple(payload.get("representative_paths")),
+        )
+
+    def to_payload(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {}
+        if self.family_ids:
+            payload["family_ids"] = list(self.family_ids)
+        if self.artifact_kind is not None:
+            payload["artifact_kind"] = self.artifact_kind
+        if self.observed_sample_count is not None:
+            payload["observed_sample_count"] = self.observed_sample_count
+        if self.observed_confidence is not None:
+            payload["observed_confidence"] = self.observed_confidence
+        if self.representative_paths:
+            payload["representative_paths"] = list(self.representative_paths)
+        return payload
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -140,11 +195,7 @@ class CorpusSpec(ScenarioProjectionSource, ScenarioMetadata):
     messages_max: int = 15
     seed: int | None = None
     style: str = "default"
-    profile_family_ids: tuple[str, ...] = ()
-    artifact_kind: str | None = None
-    observed_sample_count: int | None = None
-    observed_confidence: float | None = None
-    representative_paths: tuple[str, ...] = ()
+    profile: CorpusProfile = field(default_factory=CorpusProfile)
 
     def __post_init__(self) -> None:
         if not self.provider:
@@ -162,11 +213,7 @@ class CorpusSpec(ScenarioProjectionSource, ScenarioMetadata):
 
     @property
     def scope_label(self) -> str:
-        scope = (
-            self.profile_family_ids[0]
-            if self.profile_family_ids
-            else (self.element_kind or self.artifact_kind or "default")
-        )
+        scope = self.profile.scope_token(element_kind=self.element_kind)
         parts: list[str] = []
         if self.package_version != "default":
             parts.append(self.package_version)
@@ -175,11 +222,7 @@ class CorpusSpec(ScenarioProjectionSource, ScenarioMetadata):
 
     @property
     def projection_scope(self) -> str:
-        return (
-            self.profile_family_ids[0]
-            if self.profile_family_ids
-            else (self.element_kind or self.artifact_kind or "default")
-        )
+        return self.profile.scope_token(element_kind=self.element_kind)
 
     @property
     def projection_name(self) -> str:
@@ -187,9 +230,11 @@ class CorpusSpec(ScenarioProjectionSource, ScenarioMetadata):
 
     @property
     def projection_description(self) -> str:
-        target = self.element_kind or self.artifact_kind or "default"
+        target = self.profile.target_kind(element_kind=self.element_kind)
         observed = (
-            f" from {self.observed_sample_count} observed sample(s)" if self.observed_sample_count is not None else ""
+            f" from {self.profile.observed_sample_count} observed sample(s)"
+            if self.profile.observed_sample_count is not None
+            else ""
         )
         return f"Inferred synthetic corpus spec for {self.provider} {target}{observed}."
 
@@ -222,6 +267,7 @@ class CorpusSpec(ScenarioProjectionSource, ScenarioMetadata):
         *,
         package_version: str = "default",
         element_kind: str | None = None,
+        profile: CorpusProfile | None = None,
         count: int = 5,
         messages_min: int = 3,
         messages_max: int = 15,
@@ -234,6 +280,7 @@ class CorpusSpec(ScenarioProjectionSource, ScenarioMetadata):
             provider=provider,
             package_version=package_version,
             element_kind=element_kind,
+            profile=profile or CorpusProfile(),
             count=count,
             messages_min=messages_min,
             messages_max=messages_max,
@@ -249,20 +296,22 @@ class CorpusSpec(ScenarioProjectionSource, ScenarioMetadata):
         provider = _coerce_optional_string(payload.get("provider"))
         if provider is None:
             raise ValueError("CorpusSpec payload must include provider")
+        profile_payload = payload.get("profile")
+        profile = (
+            CorpusProfile.from_payload(profile_payload)
+            if isinstance(profile_payload, Mapping)
+            else CorpusProfile()
+        )
         return cls(
             provider=provider,
             package_version=_coerce_optional_string(payload.get("package_version")) or "default",
             element_kind=_coerce_optional_string(payload.get("element_kind")),
+            profile=profile,
             count=_coerce_optional_int(payload.get("count")) or 5,
             messages_min=_coerce_optional_int(payload.get("messages_min")) or 3,
             messages_max=_coerce_optional_int(payload.get("messages_max")) or 15,
             seed=_coerce_optional_int(payload.get("seed")),
             style=_coerce_optional_string(payload.get("style")) or "default",
-            profile_family_ids=_coerce_string_tuple(payload.get("profile_family_ids")),
-            artifact_kind=_coerce_optional_string(payload.get("artifact_kind")),
-            observed_sample_count=_coerce_optional_int(payload.get("observed_sample_count")),
-            observed_confidence=_coerce_optional_float(payload.get("observed_confidence")),
-            representative_paths=_coerce_string_tuple(payload.get("representative_paths")),
             origin=metadata.origin,
             path_targets=metadata.path_targets,
             artifact_targets=metadata.artifact_targets,
@@ -286,16 +335,8 @@ class CorpusSpec(ScenarioProjectionSource, ScenarioMetadata):
             payload["element_kind"] = self.element_kind
         if self.seed is not None:
             payload["seed"] = self.seed
-        if self.profile_family_ids:
-            payload["profile_family_ids"] = list(self.profile_family_ids)
-        if self.artifact_kind is not None:
-            payload["artifact_kind"] = self.artifact_kind
-        if self.observed_sample_count is not None:
-            payload["observed_sample_count"] = self.observed_sample_count
-        if self.observed_confidence is not None:
-            payload["observed_confidence"] = self.observed_confidence
-        if self.representative_paths:
-            payload["representative_paths"] = list(self.representative_paths)
+        if not self.profile.is_empty:
+            payload["profile"] = self.profile.to_payload()
         return payload
 
     @property
@@ -347,9 +388,7 @@ class CorpusScenario(ScenarioSpec):
             raise ValueError("CorpusScenario.corpus_specs must be non-empty")
         providers = {spec.provider for spec in self.corpus_specs}
         if providers != {self.provider}:
-            raise ValueError(
-                f"CorpusScenario.provider mismatch: expected only {self.provider!r}, got {sorted(providers)!r}"
-            )
+            raise ValueError(f"CorpusScenario.provider mismatch: expected only {self.provider!r}, got {sorted(providers)!r}")
         versions = {spec.package_version for spec in self.corpus_specs}
         if versions != {self.package_version}:
             raise ValueError(
@@ -403,9 +442,9 @@ def build_corpus_scenarios(
             sorted(
                 specs,
                 key=lambda spec: (
-                    spec.profile_family_ids[0] if spec.profile_family_ids else "",
+                    spec.profile.primary_family_id or "",
                     spec.element_kind or "",
-                    spec.artifact_kind or "",
+                    spec.profile.artifact_kind or "",
                 ),
             )
         )
@@ -548,15 +587,17 @@ def _cluster_to_corpus_spec(
         provider=provider,
         package_version=package_version,
         element_kind=observed_artifact_kind,
+        profile=CorpusProfile(
+            family_ids=(cluster.cluster_id,),
+            artifact_kind=observed_artifact_kind,
+            observed_sample_count=cluster.sample_count,
+            observed_confidence=cluster.confidence,
+            representative_paths=tuple(cluster.representative_paths),
+        ),
         count=max(1, min(cluster.sample_count, default_count)),
         messages_min=4,
         messages_max=16,
         style="default",
-        profile_family_ids=(cluster.cluster_id,),
-        artifact_kind=observed_artifact_kind,
-        observed_sample_count=cluster.sample_count,
-        observed_confidence=cluster.confidence,
-        representative_paths=tuple(cluster.representative_paths),
         origin=metadata.origin,
         path_targets=metadata.path_targets,
         artifact_targets=metadata.artifact_targets,
@@ -588,12 +629,12 @@ def build_inferred_corpus_specs(
         CorpusSpec(
             provider=provider,
             package_version=package_version,
+            profile=CorpusProfile(observed_sample_count=sample_count or None),
             count=max(1, min(sample_count or 1, default_count)),
             messages_min=4,
             messages_max=16,
             style="default",
             origin=metadata.origin,
-            observed_sample_count=sample_count or None,
             path_targets=metadata.path_targets,
             artifact_targets=metadata.artifact_targets,
             operation_targets=metadata.operation_targets,
@@ -606,6 +647,7 @@ __all__ = [
     "build_corpus_scenarios",
     "flatten_corpus_specs",
     "CorpusRequest",
+    "CorpusProfile",
     "CorpusSourceKind",
     "CorpusScenario",
     "CorpusSpec",

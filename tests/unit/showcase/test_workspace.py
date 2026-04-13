@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, patch
 
 from polylogue.config import Config
 from polylogue.paths import Source
-from polylogue.scenarios import CorpusRequest, CorpusSpec
+from polylogue.scenarios import CorpusProfile, CorpusRequest, CorpusSpec
 from polylogue.showcase.corpus_requests import showcase_corpus_request
 from polylogue.showcase.showcase_runner_support import seed_workspace_with
 from polylogue.showcase.workspace import (
@@ -98,7 +98,7 @@ def test_generate_synthetic_fixtures_supports_inferred_corpus_specs(tmp_path):
             messages_min=4,
             messages_max=4,
             seed=3,
-            profile_family_ids=("cluster-a",),
+            profile=CorpusProfile(family_ids=("cluster-a",)),
         ),
     )
 
@@ -125,7 +125,7 @@ def test_build_synthetic_corpus_specs_supports_inferred_source() -> None:
             messages_min=4,
             messages_max=4,
             seed=3,
-            profile_family_ids=("cluster-a",),
+            profile=CorpusProfile(family_ids=("cluster-a",)),
         ),
     )
 
@@ -152,7 +152,7 @@ def test_build_synthetic_corpus_scenarios_supports_inferred_source() -> None:
             messages_min=4,
             messages_max=4,
             seed=3,
-            profile_family_ids=("cluster-a",),
+            profile=CorpusProfile(family_ids=("cluster-a",)),
         ),
     )
 
