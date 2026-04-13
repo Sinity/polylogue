@@ -17,12 +17,20 @@ def test_render_artifact_graph_text_mentions_the_current_runtime_paths() -> None
     assert "conversation-query-loop" in rendered
     assert "action-event-repair-loop" in rendered
     assert "session-product-repair-loop" in rendered
+    assert "session-profile-query-loop" in rendered
+    assert "session-work-event-query-loop" in rendered
+    assert "work-thread-query-loop" in rendered
     assert "message_fts [index] <- message_source_rows" in rendered
     assert "action_event_fts [index] <- action_event_rows" in rendered
-    assert "session_product_fts [index] <- session_product_rows" in rendered
+    assert "session_profile_merged_fts [index] <- session_profile_rows" in rendered
+    assert "session_work_event_fts [index] <- session_work_event_rows" in rendered
+    assert "work_thread_fts [index] <- work_thread_rows" in rendered
     assert "plan-validation-backlog [planning]" in rendered
     assert "index-message-fts" in rendered
     assert "query-conversations" in rendered
+    assert "query-session-profiles" in rendered
+    assert "query-session-work-events" in rendered
+    assert "query-work-threads" in rendered
     assert "project-action-event-health" in rendered
     assert "project-session-product-health" in rendered
     assert "project-archive-health" in rendered
@@ -33,6 +41,8 @@ def test_render_artifact_graph_text_mentions_the_current_runtime_paths() -> None
     assert "retrieval-checks" in rendered
     assert "synthetic-benchmark:action-event-materialization" in rendered
     assert "synthetic-benchmark:session-product-materialization" in rendered
+    assert "exercise:json-products-profiles" in rendered
+    assert "exercise:json-products-work-events" in rendered
     assert "uncovered artifacts:" not in rendered
     assert "uncovered operations:" not in rendered
 
@@ -46,6 +56,14 @@ def test_render_artifact_graph_json_is_machine_readable() -> None:
         "conversation-query-loop",
         "action-event-repair-loop",
         "session-product-repair-loop",
+        "session-profile-query-loop",
+        "session-work-event-query-loop",
+        "session-phase-query-loop",
+        "work-thread-query-loop",
+        "session-tag-rollup-query-loop",
+        "day-summary-query-loop",
+        "week-summary-query-loop",
+        "provider-analytics-query-loop",
     }
     assert any(node["name"] == "raw_validation_state" for node in payload["nodes"])
     assert any(node["name"] == "message_fts" for node in payload["nodes"])
@@ -154,6 +172,38 @@ def test_render_artifact_graph_json_is_machine_readable() -> None:
         (ref["source"], ref["name"], ref["origin"])
         for ref in payload["scenario_coverage"]["operations"]["materialize-session-products"]
     }
+    assert (
+        "exercise",
+        "json-products-profiles",
+        "generated.json-contract",
+    ) in {
+        (ref["source"], ref["name"], ref["origin"])
+        for ref in payload["scenario_coverage"]["operations"]["query-session-profiles"]
+    }
+    assert (
+        "exercise",
+        "json-products-work-events",
+        "generated.json-contract",
+    ) in {
+        (ref["source"], ref["name"], ref["origin"])
+        for ref in payload["scenario_coverage"]["operations"]["query-session-work-events"]
+    }
+    assert (
+        "exercise",
+        "json-products-threads",
+        "generated.json-contract",
+    ) in {
+        (ref["source"], ref["name"], ref["origin"])
+        for ref in payload["scenario_coverage"]["operations"]["query-work-threads"]
+    }
+    assert payload["scenario_coverage"]["paths"]["session-profile-query-loop"]["complete"] is True
+    assert payload["scenario_coverage"]["paths"]["session-work-event-query-loop"]["complete"] is True
+    assert payload["scenario_coverage"]["paths"]["session-phase-query-loop"]["complete"] is True
+    assert payload["scenario_coverage"]["paths"]["work-thread-query-loop"]["complete"] is True
+    assert payload["scenario_coverage"]["paths"]["session-tag-rollup-query-loop"]["complete"] is True
+    assert payload["scenario_coverage"]["paths"]["day-summary-query-loop"]["complete"] is True
+    assert payload["scenario_coverage"]["paths"]["week-summary-query-loop"]["complete"] is True
+    assert payload["scenario_coverage"]["paths"]["provider-analytics-query-loop"]["complete"] is True
     assert payload["scenario_coverage"]["paths"]["action-event-repair-loop"]["complete"] is True
     assert payload["scenario_coverage"]["paths"]["message-fts-health-loop"]["complete"] is True
     assert payload["scenario_coverage"]["paths"]["conversation-query-loop"]["complete"] is True
