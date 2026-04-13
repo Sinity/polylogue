@@ -70,7 +70,7 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         description="Select raw records that still require validation before normal parse planning.",
         consumes=("raw_validation_state",),
         produces=("validation_backlog",),
-        path_targets=("raw-reparse-loop",),
+        path_targets=("raw-reparse-loop", "raw-archive-ingest-loop"),
         code_refs=(
             "polylogue.storage.raw_ingest_artifacts.validation_backlog_query_spec",
             "polylogue.pipeline.services.planning_backlog.collect_validation_backlog",
@@ -84,13 +84,33 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         description="Select raw records that are eligible for parse planning under ordinary or force-reparse rules.",
         consumes=("raw_validation_state",),
         produces=("parse_backlog", "parse_quarantine"),
-        path_targets=("raw-reparse-loop",),
+        path_targets=("raw-reparse-loop", "raw-archive-ingest-loop"),
         code_refs=(
             "polylogue.storage.raw_ingest_artifacts.parse_backlog_query_spec",
             "polylogue.pipeline.services.planning_backlog.collect_parse_backlog",
         ),
         surfaces=("run.parse", "reparse"),
         previewable=True,
+    ),
+    OperationSpec(
+        name="ingest-archive-runtime",
+        kind=OperationKind.MATERIALIZATION,
+        description=(
+            "Decode, validate, parse, transform, and persist raw conversations into the durable archive runtime tables."
+        ),
+        consumes=("raw_validation_state", "validation_backlog", "parse_backlog"),
+        produces=("raw_validation_state", "archive_conversation_rows"),
+        path_targets=("raw-archive-ingest-loop",),
+        code_refs=(
+            "polylogue.pipeline.services.parsing_workflow.parse_from_raw",
+            "polylogue.pipeline.prepare.prepare_records",
+            "polylogue.pipeline.prepare.persist_prepared_bundle",
+            "polylogue.storage.repository_write_conversations.save_via_backend",
+            "polylogue.storage.repository_raw.RepositoryRawMixin.mark_raw_validated",
+            "polylogue.storage.repository_raw.RepositoryRawMixin.mark_raw_parsed",
+        ),
+        surfaces=("run.parse", "reprocess", "ingest"),
+        mutates_state=True,
     ),
     OperationSpec(
         name="index-message-fts",

@@ -13,6 +13,7 @@ def test_render_artifact_graph_text_mentions_the_current_runtime_paths() -> None
     assert "Runtime Path Coverage:" in rendered
     assert "Runtime Scenario Coverage:" in rendered
     assert "raw-reparse-loop" in rendered
+    assert "raw-archive-ingest-loop" in rendered
     assert "message-fts-health-loop" in rendered
     assert "conversation-query-loop" in rendered
     assert "action-event-repair-loop" in rendered
@@ -20,12 +21,15 @@ def test_render_artifact_graph_text_mentions_the_current_runtime_paths() -> None
     assert "session-profile-query-loop" in rendered
     assert "session-work-event-query-loop" in rendered
     assert "work-thread-query-loop" in rendered
+    assert "archive_conversation_rows [durable] <- raw_validation_state" in rendered
+    assert "message_source_rows [source] <- archive_conversation_rows" in rendered
     assert "message_fts [index] <- message_source_rows" in rendered
     assert "action_event_fts [index] <- action_event_rows" in rendered
     assert "session_profile_merged_fts [index] <- session_profile_rows" in rendered
     assert "session_work_event_fts [index] <- session_work_event_rows" in rendered
     assert "work_thread_fts [index] <- work_thread_rows" in rendered
     assert "plan-validation-backlog [planning]" in rendered
+    assert "ingest-archive-runtime [materialization]" in rendered
     assert "index-message-fts" in rendered
     assert "query-conversations" in rendered
     assert "query-session-profiles" in rendered
@@ -57,6 +61,7 @@ def test_render_artifact_graph_json_is_machine_readable() -> None:
 
     assert {path["name"] for path in payload["paths"]} == {
         "raw-reparse-loop",
+        "raw-archive-ingest-loop",
         "message-fts-health-loop",
         "conversation-query-loop",
         "action-event-repair-loop",
@@ -74,8 +79,10 @@ def test_render_artifact_graph_json_is_machine_readable() -> None:
         "archive-debt-query-loop",
     }
     assert any(node["name"] == "raw_validation_state" for node in payload["nodes"])
+    assert any(node["name"] == "archive_conversation_rows" for node in payload["nodes"])
     assert any(node["name"] == "message_fts" for node in payload["nodes"])
     assert any(operation["name"] == "plan-parse-backlog" for operation in payload["operations"])
+    assert any(operation["name"] == "ingest-archive-runtime" for operation in payload["operations"])
     assert any(operation["name"] == "index-message-fts" for operation in payload["operations"])
     assert any(operation["kind"] == "projection" for operation in payload["operations"])
     assert {
@@ -123,6 +130,20 @@ def test_render_artifact_graph_json_is_machine_readable() -> None:
     ) in {
         (ref["source"], ref["name"], ref["origin"])
         for ref in payload["scenario_coverage"]["operations"]["plan-validation-backlog"]
+    }
+    assert {
+        (ref["source"], ref["name"], ref["origin"])
+        for ref in payload["scenario_coverage"]["artifacts"]["archive_conversation_rows"]
+    } >= {
+        ("validation-lane", "pipeline-probe-chatgpt", "authored.validation-lane"),
+        ("validation-lane", "live-archive-subset-parse-probe", "authored.validation-lane"),
+    }
+    assert {
+        (ref["source"], ref["name"], ref["origin"])
+        for ref in payload["scenario_coverage"]["operations"]["ingest-archive-runtime"]
+    } >= {
+        ("validation-lane", "pipeline-probe-chatgpt", "authored.validation-lane"),
+        ("validation-lane", "live-archive-subset-parse-probe", "authored.validation-lane"),
     }
     assert {
         (ref["source"], ref["name"], ref["origin"])
@@ -245,6 +266,7 @@ def test_render_artifact_graph_json_is_machine_readable() -> None:
     assert payload["scenario_coverage"]["paths"]["message-fts-health-loop"]["complete"] is True
     assert payload["scenario_coverage"]["paths"]["conversation-query-loop"]["complete"] is True
     assert payload["scenario_coverage"]["paths"]["raw-reparse-loop"]["complete"] is True
+    assert payload["scenario_coverage"]["paths"]["raw-archive-ingest-loop"]["complete"] is True
     assert payload["scenario_coverage"]["paths"]["session-product-repair-loop"]["complete"] is True
     assert payload["scenario_coverage"]["uncovered_artifacts"] == []
     assert payload["scenario_coverage"]["uncovered_operations"] == []

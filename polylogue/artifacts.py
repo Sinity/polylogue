@@ -84,9 +84,23 @@ RUNTIME_ARTIFACT_NODES: tuple[ArtifactNode, ...] = (
         code_refs=("polylogue.storage.raw_ingest_artifacts.RawIngestArtifactState",),
     ),
     ArtifactNode(
+        name="archive_conversation_rows",
+        layer=ArtifactLayer.DURABLE,
+        description="Durable conversation, message, attachment, and content-block rows written from parsed raw conversations.",
+        depends_on=("raw_validation_state",),
+        code_refs=(
+            "polylogue.pipeline.services.parsing_workflow.parse_from_raw",
+            "polylogue.pipeline.prepare.prepare_records",
+            "polylogue.pipeline.prepare.persist_prepared_bundle",
+            "polylogue.storage.repository_write_conversations.save_via_backend",
+            "polylogue.storage.repository_raw.RepositoryRawMixin.mark_raw_parsed",
+        ),
+    ),
+    ArtifactNode(
         name="message_source_rows",
         layer=ArtifactLayer.SOURCE,
         description="Persisted message rows that feed lexical FTS indexing and archive search.",
+        depends_on=("archive_conversation_rows",),
         code_refs=(
             "polylogue.storage.fts_lifecycle.FTS_INDEXABLE_MESSAGE_COUNT_SQL",
             "polylogue.storage.fts_lifecycle.repair_fts_index_sync",
@@ -109,6 +123,7 @@ RUNTIME_ARTIFACT_NODES: tuple[ArtifactNode, ...] = (
         name="tool_use_source_blocks",
         layer=ArtifactLayer.SOURCE,
         description="Tool-use content blocks anchored to valid conversations.",
+        depends_on=("archive_conversation_rows",),
         code_refs=("polylogue.storage.action_event_status",),
     ),
     ArtifactNode(
@@ -152,6 +167,7 @@ RUNTIME_ARTIFACT_NODES: tuple[ArtifactNode, ...] = (
         name="session_product_source_conversations",
         layer=ArtifactLayer.SOURCE,
         description="Hydratable conversation/message/attachment/block rows that feed durable session-product rebuilds.",
+        depends_on=("archive_conversation_rows",),
         code_refs=(
             "polylogue.storage.session_product_rebuild.rebuild_session_products_sync",
             "polylogue.storage.session_product_refresh.refresh_session_products_for_conversation_async",
@@ -510,6 +526,20 @@ RUNTIME_ARTIFACT_PATHS: tuple[ArtifactPath, ...] = (
             "validation_backlog",
             "parse_backlog",
             "parse_quarantine",
+        ),
+    ),
+    ArtifactPath(
+        name="raw-archive-ingest-loop",
+        description="Raw validation and parse planning through durable archive runtime rows and their downstream source surfaces.",
+        nodes=(
+            "raw_validation_state",
+            "validation_backlog",
+            "parse_backlog",
+            "parse_quarantine",
+            "archive_conversation_rows",
+            "message_source_rows",
+            "tool_use_source_blocks",
+            "session_product_source_conversations",
         ),
     ),
     ArtifactPath(
