@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .mutmut_campaign import CAMPAIGNS as MUTATION_CAMPAIGNS
+from .mutation_scenario_catalog import MUTATION_CAMPAIGNS
 
 
 @dataclass(frozen=True)
