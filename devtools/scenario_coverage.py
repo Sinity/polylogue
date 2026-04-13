@@ -78,7 +78,7 @@ def build_runtime_scenario_coverage(*, registry: QualityRegistry | None = None) 
     operation_refs: dict[str, list[ScenarioCoverageRef]] = {operation.name: [] for operation in graph.operations}
 
     for projection in quality_registry.scenario_projections:
-        ref = ScenarioCoverageRef(source=projection.source_kind, name=projection.name, origin=projection.origin)
+        ref = ScenarioCoverageRef(source=projection.source_kind.value, name=projection.name, origin=projection.origin)
         for artifact in projection.resolve_runtime_artifacts():
             artifact_refs[artifact.name].append(ref)
         for operation in projection.resolve_runtime_operations():

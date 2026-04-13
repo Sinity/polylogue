@@ -8,6 +8,7 @@ from devtools.quality_registry import (
     MutationCampaignEntry,
     QualityRegistry,
     ScenarioProjectionEntry,
+    ScenarioProjectionSourceKind,
     ValidationLaneEntry,
 )
 from devtools.scenario_coverage import RuntimePathCoverage, RuntimeScenarioCoverage, ScenarioCoverageRef
@@ -66,7 +67,7 @@ def test_build_document_includes_live_registry_sections() -> None:
         ),
         scenario_projections=(
             ScenarioProjectionEntry(
-                source_kind="exercise",
+                source_kind=ScenarioProjectionSourceKind.EXERCISE,
                 name="json-doctor-action-event-preview",
                 description="Action-event doctor preview.",
                 origin="generated.json-contract",
@@ -75,7 +76,7 @@ def test_build_document_includes_live_registry_sections() -> None:
                 tags=("generated", "json-contract"),
             ),
             ScenarioProjectionEntry(
-                source_kind="benchmark-campaign",
+                source_kind=ScenarioProjectionSourceKind.BENCHMARK_CAMPAIGN,
                 name="search-filters",
                 description="Search latency domain.",
                 origin="authored.benchmark-domain",
