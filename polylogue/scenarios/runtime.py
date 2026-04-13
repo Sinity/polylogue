@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import inspect
 import os
 import subprocess
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from .execution import ExecutionSpec
 
@@ -24,6 +26,10 @@ class ExecutionResult:
     @property
     def output(self) -> str:
         return self.stdout + self.stderr
+
+
+ExecutionRunner = Callable[..., object | Awaitable[object]]
+ExecutionRunnerResolver = Callable[[str], ExecutionRunner]
 
 
 def resolve_execution_command(
@@ -76,4 +82,52 @@ def run_execution(
     )
 
 
-__all__ = ["ExecutionResult", "resolve_execution_command", "run_execution"]
+def resolve_execution_runner(
+    execution: ExecutionSpec,
+    *,
+    runner_resolver: ExecutionRunnerResolver,
+) -> ExecutionRunner:
+    """Resolve one runner-backed execution spec into a callable."""
+    if not execution.is_runner or not execution.runner:
+        raise ValueError(f"{execution.kind.value} execution has no named runner")
+    return runner_resolver(execution.runner)
+
+
+async def dispatch_execution(
+    execution: ExecutionSpec,
+    *,
+    cwd: Path | None = None,
+    env: Mapping[str, str] | None = None,
+    timeout: float | None = None,
+    capture_output: bool = False,
+    binary_overrides: Mapping[str, str] | None = None,
+    runner_resolver: ExecutionRunnerResolver | None = None,
+    runner_args: Sequence[object] = (),
+    runner_kwargs: Mapping[str, object] | None = None,
+) -> Any:
+    """Dispatch one authored execution through either subprocess or runner runtime."""
+    if execution.is_runner:
+        if runner_resolver is None:
+            raise ValueError("runner execution requires a runner_resolver")
+        runner = resolve_execution_runner(execution, runner_resolver=runner_resolver)
+        dispatched = runner(*runner_args, **dict(runner_kwargs or {}))
+        return await dispatched if inspect.isawaitable(dispatched) else dispatched
+    return run_execution(
+        execution,
+        cwd=cwd,
+        env=env,
+        timeout=timeout,
+        capture_output=capture_output,
+        binary_overrides=binary_overrides,
+    )
+
+
+__all__ = [
+    "dispatch_execution",
+    "ExecutionResult",
+    "ExecutionRunner",
+    "ExecutionRunnerResolver",
+    "resolve_execution_command",
+    "resolve_execution_runner",
+    "run_execution",
+]
