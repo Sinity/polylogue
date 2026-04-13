@@ -222,18 +222,18 @@ def run_campaign(
 
     with tempfile.TemporaryDirectory(prefix=f"benchmark-{campaign.name}-") as tmpdir:
         raw_json = Path(tmpdir) / "pytest-benchmark.json"
-        command = [
-            "pytest",
-            "-q",
-            "--override-ini=addopts=-ra",
-            "-n",
-            "0",
-            "-p",
-            "no:randomly",
-            "--benchmark-enable",
-            f"--benchmark-json={raw_json}",
-            *campaign.execution.pytest_targets,
-        ]
+        command = list(
+            campaign.execution.pytest_command(
+                "-q",
+                "--override-ini=addopts=-ra",
+                "-n",
+                "0",
+                "-p",
+                "no:randomly",
+                "--benchmark-enable",
+                f"--benchmark-json={raw_json}",
+            )
+        )
         start = time.monotonic()
         completed = subprocess.run(command, cwd=ROOT)
         runtime_seconds = time.monotonic() - start
