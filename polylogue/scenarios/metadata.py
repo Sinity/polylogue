@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from polylogue.artifact_graph import ArtifactGraph
-    from polylogue.artifacts import ArtifactNode
+    from polylogue.artifacts import ArtifactNode, ArtifactPath
     from polylogue.operations import OperationSpec
 
 
@@ -42,11 +42,17 @@ def runtime_operation_target_names() -> tuple[str, ...]:
     return runtime_artifact_graph().operation_names()
 
 
+@lru_cache(maxsize=1)
+def runtime_path_target_names() -> tuple[str, ...]:
+    return runtime_artifact_graph().path_names()
+
+
 @dataclass(frozen=True, kw_only=True)
 class ScenarioMetadata:
     """Portable scenario metadata shared by exercises, campaigns, and reports."""
 
     origin: str = "authored"
+    path_targets: tuple[str, ...] = ()
     artifact_targets: tuple[str, ...] = ()
     operation_targets: tuple[str, ...] = ()
     tags: tuple[str, ...] = ()
@@ -55,6 +61,7 @@ class ScenarioMetadata:
     def from_payload(cls, payload: Mapping[str, object]) -> ScenarioMetadata:
         return cls(
             origin=_coerce_string(payload.get("origin"), "authored"),
+            path_targets=_coerce_string_tuple(payload.get("path_targets")),
             artifact_targets=_coerce_string_tuple(payload.get("artifact_targets")),
             operation_targets=_coerce_string_tuple(payload.get("operation_targets")),
             tags=_coerce_string_tuple(payload.get("tags")),
@@ -64,6 +71,7 @@ class ScenarioMetadata:
     def from_object(cls, obj: object) -> ScenarioMetadata:
         return cls(
             origin=_coerce_string(getattr(obj, "origin", None), "authored"),
+            path_targets=_coerce_string_tuple(getattr(obj, "path_targets", None)),
             artifact_targets=_coerce_string_tuple(getattr(obj, "artifact_targets", None)),
             operation_targets=_coerce_string_tuple(getattr(obj, "operation_targets", None)),
             tags=_coerce_string_tuple(getattr(obj, "tags", None)),
@@ -71,6 +79,8 @@ class ScenarioMetadata:
 
     def to_payload(self) -> dict[str, Any]:
         payload: dict[str, Any] = {"origin": self.origin}
+        if self.path_targets:
+            payload["path_targets"] = list(self.path_targets)
         if self.artifact_targets:
             payload["artifact_targets"] = list(self.artifact_targets)
         if self.operation_targets:
@@ -79,11 +89,17 @@ class ScenarioMetadata:
             payload["tags"] = list(self.tags)
         return payload
 
+    def runtime_path_targets(self) -> tuple[str, ...]:
+        return tuple(path.name for path in self.resolve_runtime_paths())
+
     def runtime_artifact_targets(self) -> tuple[str, ...]:
         return tuple(artifact.name for artifact in self.resolve_runtime_artifacts())
 
     def runtime_operation_targets(self) -> tuple[str, ...]:
         return tuple(operation.name for operation in self.resolve_runtime_operations())
+
+    def resolve_runtime_paths(self) -> tuple[ArtifactPath, ...]:
+        return runtime_artifact_graph().resolve_paths(self.path_targets)
 
     def resolve_runtime_artifacts(self) -> tuple[ArtifactNode, ...]:
         return runtime_artifact_graph().resolve_artifacts(self.artifact_targets)
@@ -97,4 +113,5 @@ __all__ = [
     "runtime_artifact_graph",
     "runtime_artifact_target_names",
     "runtime_operation_target_names",
+    "runtime_path_target_names",
 ]

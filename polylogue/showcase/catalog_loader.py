@@ -138,6 +138,7 @@ def _load_exercise(payload: dict[str, object]) -> Exercise:
         artifact_class=str(payload.get("artifact_class", "text")),
         capture_steps=tuple(str(item) for item in payload.get("capture_steps", ())),
         origin=metadata.origin,
+        path_targets=metadata.path_targets,
         artifact_targets=metadata.artifact_targets,
         operation_targets=metadata.operation_targets,
         tags=metadata.tags,
