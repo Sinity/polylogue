@@ -85,3 +85,33 @@ def test_artifact_graph_operations_reference_only_declared_nodes() -> None:
     for operation in graph.operations:
         assert set(operation.consumes).issubset(node_names)
         assert set(operation.produces).issubset(node_names)
+
+
+def test_artifact_graph_resolves_runtime_targets() -> None:
+    graph = build_artifact_graph()
+
+    assert "action_event_rows" in graph.artifact_names()
+    assert "materialize-session-products" in graph.operation_names()
+    assert tuple(artifact.name for artifact in graph.resolve_artifacts(("action_event_rows", "missing"))) == (
+        "action_event_rows",
+    )
+    assert tuple(
+        operation.name for operation in graph.resolve_operations(("project-action-event-health", "missing"))
+    ) == ("project-action-event-health",)
+
+
+def test_artifact_graph_lists_operations_for_each_runtime_path() -> None:
+    graph = build_artifact_graph()
+
+    assert tuple(operation.name for operation in graph.operations_for_path("raw-reparse-loop")) == (
+        "plan-validation-backlog",
+        "plan-parse-backlog",
+    )
+    assert tuple(operation.name for operation in graph.operations_for_path("action-event-repair-loop")) == (
+        "materialize-action-events",
+        "project-action-event-health",
+    )
+    assert tuple(operation.name for operation in graph.operations_for_path("session-product-repair-loop")) == (
+        "materialize-session-products",
+        "project-session-product-health",
+    )
