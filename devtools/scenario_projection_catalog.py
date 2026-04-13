@@ -8,9 +8,8 @@ from polylogue.scenarios import (
 )
 from polylogue.showcase.exercises import EXERCISE_SCENARIOS, QA_EXTRA_SCENARIOS
 
-from .benchmark_scenario_catalog import BENCHMARK_CAMPAIGNS
+from .benchmark_catalog import build_benchmark_entries, build_synthetic_benchmark_entries
 from .mutation_catalog import build_mutation_entries
-from .synthetic_benchmark_catalog import SYNTHETIC_BENCHMARK_SCENARIOS
 from .validation_catalog import build_validation_lane_entries
 
 
@@ -54,20 +53,20 @@ def build_scenario_projection_entries() -> tuple[ScenarioProjectionEntry, ...]:
     entries.extend(
         ScenarioProjectionEntry.from_object(
             source_kind=ScenarioProjectionSourceKind.BENCHMARK_CAMPAIGN,
-            name=campaign.name,
-            description=campaign.description,
-            obj=campaign,
+            name=entry.name,
+            description=entry.description,
+            obj=entry,
         )
-        for campaign in BENCHMARK_CAMPAIGNS.values()
+        for entry in build_benchmark_entries()
     )
     entries.extend(
         ScenarioProjectionEntry.from_object(
             source_kind=ScenarioProjectionSourceKind.SYNTHETIC_BENCHMARK,
-            name=scenario.scenario_id,
-            description=scenario.description,
-            obj=scenario,
+            name=entry.name,
+            description=entry.description,
+            obj=entry,
         )
-        for scenario in SYNTHETIC_BENCHMARK_SCENARIOS
+        for entry in build_synthetic_benchmark_entries()
     )
     return tuple(sorted(entries, key=lambda item: (item.source_kind.value, item.name)))
 
