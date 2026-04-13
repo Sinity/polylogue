@@ -10,6 +10,20 @@ import click
 from polylogue.cli.machine_errors import emit_success
 
 
+def _render_corpus_spec_preview(*, corpus_specs, header: str) -> None:
+    if not corpus_specs:
+        return
+    click.echo(header)
+    for spec in corpus_specs[:3]:
+        target = spec.profile_family_ids[0] if spec.profile_family_ids else (spec.element_kind or spec.artifact_kind or "default")
+        click.echo(
+            f"    - {spec.provider}:{spec.package_version}:{target} "
+            f"x{spec.count} messages={spec.messages_min}-{spec.messages_max}"
+        )
+    if len(corpus_specs) > 3:
+        click.echo(f"    … {len(corpus_specs) - 3} more")
+
+
 def render_schema_generate_result(
     *,
     provider: str,
@@ -60,16 +74,7 @@ def render_schema_generate_result(
         click.echo(f"  Default package: {generation.default_version}")
     if result.manifest_path is not None:
         click.echo(f"  Evidence manifest: {result.manifest_path}")
-    if result.corpus_specs:
-        click.echo("  Suggested synthetic corpus specs:")
-        for spec in result.corpus_specs[:3]:
-            target = spec.element_kind or spec.artifact_kind or "default"
-            click.echo(
-                f"    - {spec.provider}:{spec.package_version}:{target} "
-                f"x{spec.count} messages={spec.messages_min}-{spec.messages_max}"
-            )
-        if len(result.corpus_specs) > 3:
-            click.echo(f"    … {len(result.corpus_specs) - 3} more")
+    _render_corpus_spec_preview(corpus_specs=result.corpus_specs, header="  Suggested synthetic corpus specs:")
 
 
 def render_schema_list_result(
@@ -127,6 +132,12 @@ def render_schema_list_result(
                 click.echo(
                     f"  {cluster.cluster_id}: {cluster.sample_count:,} samples, confidence={cluster.confidence}{status}"
                 )
+        if selected.corpus_specs:
+            click.echo()
+            _render_corpus_spec_preview(
+                corpus_specs=selected.corpus_specs,
+                header="Suggested synthetic corpus specs:",
+            )
         return
 
     if json_output:
@@ -144,7 +155,11 @@ def render_schema_list_result(
         ) or "none"
         age_str = f" ({snapshot.latest_age_days}d old)" if snapshot.latest_age_days is not None else ""
         package_str = f", packages={len(snapshot.catalog.packages)}" if snapshot.catalog else ""
-        click.echo(f"  {snapshot.provider}: {len(snapshot.versions)} version(s){package_str}, latest={latest}{age_str}")
+        corpus_spec_str = f", corpus-specs={len(snapshot.corpus_specs)}" if snapshot.corpus_specs else ""
+        click.echo(
+            f"  {snapshot.provider}: {len(snapshot.versions)} version(s){package_str}{corpus_spec_str}, "
+            f"latest={latest}{age_str}"
+        )
 
 
 def render_schema_compare_result(*, result, json_output: bool, md_output: bool) -> None:

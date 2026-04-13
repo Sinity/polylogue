@@ -86,8 +86,12 @@ def infer_schema(request: SchemaInferRequest) -> SchemaInferResult:
     )
 
 
-def list_inferred_corpus_specs(*, provider: str | None = None) -> tuple[CorpusSpec, ...]:
-    registry = schema_registry()
+def list_inferred_corpus_specs(
+    *,
+    provider: str | None = None,
+    registry: Any | None = None,
+) -> tuple[CorpusSpec, ...]:
+    registry = registry or schema_registry()
     providers = (provider,) if provider is not None else tuple(registry.list_providers())
     specs: list[CorpusSpec] = []
     for provider_name in providers:
@@ -130,9 +134,14 @@ def list_schemas(request: SchemaListRequest) -> SchemaListResult:
                 catalog=registry.load_package_catalog(provider),
                 manifest=registry.load_cluster_manifest(provider),
                 latest_age_days=registry.get_schema_age_days(provider),
+                corpus_specs=list_inferred_corpus_specs(provider=provider, registry=registry),
             ),
         )
 
+    all_corpus_specs = list_inferred_corpus_specs(registry=registry)
+    corpus_specs_by_provider: dict[str, list[CorpusSpec]] = {}
+    for spec in all_corpus_specs:
+        corpus_specs_by_provider.setdefault(spec.provider, []).append(spec)
     snapshots = [
         SchemaProviderSnapshot(
             provider=provider,
@@ -140,6 +149,7 @@ def list_schemas(request: SchemaListRequest) -> SchemaListResult:
             catalog=registry.load_package_catalog(provider),
             manifest=registry.load_cluster_manifest(provider),
             latest_age_days=registry.get_schema_age_days(provider),
+            corpus_specs=tuple(corpus_specs_by_provider.get(provider, ())),
         )
         for provider in registry.list_providers()
     ]

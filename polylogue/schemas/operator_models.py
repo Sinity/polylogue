@@ -46,6 +46,7 @@ class SchemaProviderSnapshot:
     catalog: SchemaPackageCatalog | None = None
     manifest: ClusterManifest | None = None
     latest_age_days: int | None = None
+    corpus_specs: tuple[CorpusSpec, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         payload = {"provider": self.provider, "versions": list(self.versions)}
@@ -53,6 +54,8 @@ class SchemaProviderSnapshot:
             payload["catalog"] = self.catalog.to_dict()
         if self.manifest is not None:
             payload["manifest"] = self.manifest.to_dict()
+        if self.corpus_specs:
+            payload["corpus_specs"] = [spec.to_payload() for spec in self.corpus_specs]
         return payload
 
     def to_list_item_dict(self) -> dict[str, Any]:
@@ -63,6 +66,7 @@ class SchemaProviderSnapshot:
             "default_version": self.catalog.default_version if self.catalog is not None else None,
             "latest_version": self.catalog.latest_version if self.catalog is not None else None,
             "cluster_count": len(self.manifest.clusters) if self.manifest is not None else 0,
+            "corpus_spec_count": len(self.corpus_specs),
         }
 
 
