@@ -20,7 +20,7 @@ from typing import Any
 from polylogue.config import Config, Source
 from polylogue.paths import blob_store_root
 from polylogue.pipeline.runner import RUN_STAGE_CHOICES, run_sources
-from polylogue.scenarios import CorpusSourceKind, resolve_corpus_scenarios
+from polylogue.scenarios import CorpusRequest, CorpusSourceKind
 from polylogue.schemas.synthetic import SyntheticCorpus
 from polylogue.storage.backends import create_backend
 from polylogue.storage.backends.connection import (
@@ -397,27 +397,16 @@ def _build_probe_provenance(
 
 def _write_probe_sources(
     *,
-    provider: str,
-    corpus_source: CorpusSourceKind | str,
-    count: int,
-    messages_min: int,
-    messages_max: int,
-    seed: int,
+    request: CorpusRequest,
     source_root: Path,
 ) -> tuple[list[Path], int]:
-    scenarios = resolve_corpus_scenarios(
-        providers=(provider,),
-        count=count,
-        source=corpus_source,
-        messages_min=messages_min,
-        messages_max=messages_max,
-        seed=seed,
-        style="default",
+    scenarios = request.resolve_scenarios(
         origin="compiled.pipeline-probe",
         tags=("synthetic", "probe", "scenario"),
     )
     corpus_specs = tuple(spec for scenario in scenarios for spec in scenario.corpus_specs)
     source_root.mkdir(parents=True, exist_ok=True)
+    provider = request.providers[0] if request.providers else "probe"
     written_batches = SyntheticCorpus.write_specs_artifacts(corpus_specs, source_root, prefix=provider, index_width=3)
     files = [path for written in written_batches for path in written.files]
     total_bytes = sum(
@@ -894,12 +883,15 @@ async def run_probe(args: argparse.Namespace) -> dict[str, Any]:
         stage_sequence = _probe_stage_sequence(probe_mode, args.stage)
         with _isolated_env(workdir):
             files, total_bytes = _write_probe_sources(
-                provider=provider_name,
-                corpus_source=CorpusSourceKind(args.corpus_source),
-                count=args.count,
-                messages_min=args.messages_min,
-                messages_max=args.messages_max,
-                seed=args.seed,
+                request=CorpusRequest(
+                    providers=(provider_name,),
+                    source=CorpusSourceKind(args.corpus_source),
+                    count=args.count,
+                    messages_min=args.messages_min,
+                    messages_max=args.messages_max,
+                    seed=args.seed,
+                    style="default",
+                ),
                 source_root=source_root,
             )
             config = Config(

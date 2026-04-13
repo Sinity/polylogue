@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, patch
 
 from polylogue.config import Config
 from polylogue.paths import Source
-from polylogue.scenarios import CorpusSpec
+from polylogue.scenarios import CorpusRequest, CorpusSpec
 from polylogue.showcase.showcase_runner_support import seed_workspace_with
 from polylogue.showcase.workspace import (
     build_synthetic_corpus_scenarios,
@@ -18,6 +18,7 @@ from polylogue.showcase.workspace import (
     run_pipeline_for_configured_sources,
     run_pipeline_for_fixture_workspace,
     seed_workspace_from_corpus_options,
+    seed_workspace_from_corpus_request,
     seed_workspace_from_scenarios,
 )
 
@@ -188,7 +189,21 @@ def test_generate_synthetic_fixtures_from_scenarios_writes_grouped_specs(tmp_pat
     assert (tmp_path / "fixtures" / "chatgpt" / "scenario-00.json").exists()
 
 
-def test_seed_workspace_from_corpus_options_routes_through_pipeline(tmp_path):
+def test_seed_workspace_from_corpus_request_routes_through_pipeline(tmp_path):
+    workspace = create_verification_workspace(tmp_path / "workspace")
+
+    with patch("polylogue.pipeline.runner.run_sources", new_callable=AsyncMock) as mock_run:
+        seed_workspace_from_corpus_request(
+            workspace,
+            request=CorpusRequest(providers=("chatgpt",), count=1, style="showcase", messages_min=6, messages_max=19),
+        )
+
+    assert (workspace.inbox_dir / "chatgpt").exists()
+    selected = mock_run.await_args.kwargs["config"].sources
+    assert [source.name for source in selected] == ["chatgpt"]
+
+
+def test_seed_workspace_from_corpus_options_builds_request_routes_through_pipeline(tmp_path):
     workspace = create_verification_workspace(tmp_path / "workspace")
 
     with patch("polylogue.pipeline.runner.run_sources", new_callable=AsyncMock) as mock_run:

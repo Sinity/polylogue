@@ -52,6 +52,83 @@ class CorpusSourceKind(str, Enum):
 
 
 @dataclass(frozen=True, kw_only=True)
+class CorpusRequest:
+    """Typed synthetic corpus selection and generation request."""
+
+    providers: tuple[str, ...] | None = None
+    source: CorpusSourceKind | str = CorpusSourceKind.DEFAULT
+    count: int = 5
+    messages_min: int = 3
+    messages_max: int = 15
+    seed: int | None = None
+    style: str = "default"
+    package_version: str = "default"
+
+    def __post_init__(self) -> None:
+        if self.count < 1:
+            raise ValueError("CorpusRequest.count must be >= 1")
+        if self.messages_min < 1:
+            raise ValueError("CorpusRequest.messages_min must be >= 1")
+        if self.messages_max < self.messages_min:
+            raise ValueError("CorpusRequest.messages_max must be >= messages_min")
+
+    @property
+    def source_kind(self) -> CorpusSourceKind:
+        return CorpusSourceKind(self.source)
+
+    def available_providers(self) -> tuple[str, ...] | None:
+        if self.providers is not None:
+            return self.providers
+        if self.source_kind is not CorpusSourceKind.DEFAULT:
+            return None
+        from polylogue.schemas.synthetic import SyntheticCorpus
+
+        return tuple(SyntheticCorpus.available_providers())
+
+    def resolve_specs(
+        self,
+        *,
+        origin: str | None = None,
+        tags: tuple[str, ...] | None = None,
+        registry: Any | None = None,
+    ) -> tuple[CorpusSpec, ...]:
+        return resolve_corpus_specs(
+            providers=self.available_providers(),
+            source=self.source_kind,
+            count=self.count,
+            messages_min=self.messages_min,
+            messages_max=self.messages_max,
+            seed=self.seed,
+            style=self.style,
+            package_version=self.package_version,
+            origin=origin,
+            tags=tags,
+            registry=registry,
+        )
+
+    def resolve_scenarios(
+        self,
+        *,
+        origin: str = "compiled.synthetic-corpus-scenario",
+        tags: tuple[str, ...] = ("synthetic", "scenario"),
+        registry: Any | None = None,
+    ) -> tuple[CorpusScenario, ...]:
+        return resolve_corpus_scenarios(
+            providers=self.available_providers(),
+            source=self.source_kind,
+            count=self.count,
+            messages_min=self.messages_min,
+            messages_max=self.messages_max,
+            seed=self.seed,
+            style=self.style,
+            package_version=self.package_version,
+            origin=origin,
+            tags=tags,
+            registry=registry,
+        )
+
+
+@dataclass(frozen=True, kw_only=True)
 class CorpusSpec(ScenarioProjectionSource, ScenarioMetadata):
     """Authored or inferred synthetic corpus configuration."""
 
@@ -520,6 +597,7 @@ def build_inferred_corpus_specs(
 __all__ = [
     "build_corpus_scenarios",
     "flatten_corpus_specs",
+    "CorpusRequest",
     "CorpusSourceKind",
     "CorpusScenario",
     "CorpusSpec",
