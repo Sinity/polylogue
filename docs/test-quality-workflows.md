@@ -14,6 +14,10 @@ Current registry snapshot:
 - mutation campaigns: `19`
 - benchmark campaigns: `3`
 - synthetic benchmark campaigns: `6`
+- scenario projections: `124`
+  - benchmark-campaign: `3`
+  - exercise: `115`
+  - synthetic-benchmark: `6`
 
 ## Runtime Coverage
 

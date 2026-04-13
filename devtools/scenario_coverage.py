@@ -5,10 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from devtools.quality_registry import build_quality_registry
+from devtools.quality_registry import QualityRegistry, build_quality_registry
 from polylogue.artifact_graph import build_artifact_graph
-from polylogue.scenarios import ScenarioMetadata
-from polylogue.showcase.exercises import EXERCISES
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,30 +45,18 @@ class RuntimeScenarioCoverage:
         }
 
 
-def build_runtime_scenario_coverage() -> RuntimeScenarioCoverage:
-    registry = build_quality_registry()
-    scenario_like_items = [
-        ("exercise", exercise.name, ScenarioMetadata.from_object(exercise))
-        for exercise in EXERCISES
-    ]
-    scenario_like_items.extend(
-        ("benchmark-campaign", campaign.name, ScenarioMetadata.from_object(campaign))
-        for campaign in registry.benchmark_campaigns
-    )
-    scenario_like_items.extend(
-        ("synthetic-benchmark", campaign.name, ScenarioMetadata.from_object(campaign))
-        for campaign in registry.synthetic_benchmark_campaigns
-    )
+def build_runtime_scenario_coverage(*, registry: QualityRegistry | None = None) -> RuntimeScenarioCoverage:
+    quality_registry = registry or build_quality_registry()
 
     graph = build_artifact_graph()
     artifact_refs: dict[str, list[ScenarioCoverageRef]] = {name: [] for name in graph.by_name()}
     operation_refs: dict[str, list[ScenarioCoverageRef]] = {operation.name: [] for operation in graph.operations}
 
-    for source_kind, name, metadata in scenario_like_items:
-        ref = ScenarioCoverageRef(source=source_kind, name=name, origin=metadata.origin)
-        for artifact in metadata.resolve_runtime_artifacts():
+    for projection in quality_registry.scenario_projections:
+        ref = ScenarioCoverageRef(source=projection.source_kind, name=projection.name, origin=projection.origin)
+        for artifact in projection.resolve_runtime_artifacts():
             artifact_refs[artifact.name].append(ref)
-        for operation in metadata.resolve_runtime_operations():
+        for operation in projection.resolve_runtime_operations():
             operation_refs[operation.name].append(ref)
 
     covered_artifacts = {

@@ -95,8 +95,21 @@ def _render_runtime_coverage_section(coverage: RuntimeScenarioCoverage) -> list[
     ]
 
 
+def _render_scenario_projection_snapshot(registry: QualityRegistry) -> list[str]:
+    projection_counts: dict[str, int] = {}
+    for entry in registry.scenario_projections:
+        projection_counts[entry.source_kind] = projection_counts.get(entry.source_kind, 0) + 1
+    return [
+        f"- scenario projections: `{len(registry.scenario_projections)}`",
+        *(
+            f"  - {source_kind}: `{count}`"
+            for source_kind, count in sorted(projection_counts.items())
+        ),
+    ]
+
+
 def build_document(registry: QualityRegistry, *, runtime_coverage: RuntimeScenarioCoverage | None = None) -> str:
-    coverage = runtime_coverage or build_runtime_scenario_coverage()
+    coverage = runtime_coverage or build_runtime_scenario_coverage(registry=registry)
     parts = [
         "[← Back to README](../README.md)",
         "",
@@ -114,6 +127,7 @@ def build_document(registry: QualityRegistry, *, runtime_coverage: RuntimeScenar
         f"- mutation campaigns: `{len(registry.mutation_campaigns)}`",
         f"- benchmark campaigns: `{len(registry.benchmark_campaigns)}`",
         f"- synthetic benchmark campaigns: `{len(registry.synthetic_benchmark_campaigns)}`",
+        *_render_scenario_projection_snapshot(registry),
         "",
         *_render_runtime_coverage_section(coverage),
         "## Common Commands",

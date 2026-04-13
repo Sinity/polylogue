@@ -18,6 +18,9 @@ def test_build_quality_registry_exposes_live_catalogs() -> None:
     assert any(entry.name == "action-event-materialization" for entry in registry.synthetic_benchmark_campaigns)
     assert any(entry.name == "session-product-materialization" for entry in registry.synthetic_benchmark_campaigns)
     assert any(entry.name == "startup-health" for entry in registry.synthetic_benchmark_campaigns)
+    assert any(entry.name == "json-doctor-action-event-preview" for entry in registry.scenario_projections)
+    assert any(entry.name == "search-filters" for entry in registry.scenario_projections)
+    assert any(entry.name == "session-product-materialization" for entry in registry.scenario_projections)
     search_filters = next(entry for entry in registry.benchmark_campaigns if entry.name == "search-filters")
     assert search_filters.origin == "authored.benchmark-domain"
     assert search_filters.artifact_targets == ("conversation_query_results", "message_fts")
@@ -46,6 +49,18 @@ def test_build_quality_registry_exposes_live_catalogs() -> None:
     )
     assert session_products.operation_targets == ("materialize-session-products",)
     assert session_products.tags == ("benchmark", "synthetic", "session-products")
+    action_event_preview = next(
+        entry for entry in registry.scenario_projections if entry.name == "json-doctor-action-event-preview"
+    )
+    assert action_event_preview.source_kind == "exercise"
+    assert action_event_preview.artifact_targets == (
+        "action_event_rows",
+        "action_event_fts",
+        "action_event_health",
+    )
+    assert "cli.json-contract" in action_event_preview.operation_targets
+    assert "project-action-event-health" in action_event_preview.operation_targets
+    assert action_event_preview.tags == ("generated", "json-contract", "maintenance", "action-events")
 
 
 def test_quality_registry_references_existing_files() -> None:
