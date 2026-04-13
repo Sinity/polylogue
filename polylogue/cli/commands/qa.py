@@ -11,7 +11,7 @@ from polylogue.cli.commands.generate import generate_command
 from polylogue.cli.helpers import complete_configured_source_names, load_effective_config, resolve_sources
 from polylogue.cli.qa_capture import run_vhs_capture as _run_vhs_capture
 from polylogue.cli.qa_requests import QACaptureMode, build_qa_snapshot_plan
-from polylogue.cli.qa_snapshot import snapshot_results
+from polylogue.cli.qa_snapshot import execute_snapshot_plan
 from polylogue.cli.types import AppEnv
 from polylogue.showcase.qa_runner_request import QAStage, build_qa_session_request
 
@@ -117,9 +117,9 @@ def qa_command(
     if snapshot_plan and snapshot_plan.skips_qa and snapshot_plan.source_dir is not None:
         config = load_effective_config(env)
         root = report_dir or (config.archive_root / "qa" / "snapshots")
-        snapshot_results(
-            snapshot_plan.source_dir,
-            label=snapshot_plan.label,
+        execute_snapshot_plan(
+            snapshot_plan,
+            fallback_source_dir=None,
             output_root=root,
             json_output=json_output,
             env=env,
@@ -168,9 +168,9 @@ def qa_command(
     # --- Snapshot ---
     if snapshot_plan and not snapshot_plan.skips_qa and result.report_dir:
         root = config.archive_root / "qa" / "snapshots"
-        snapshot_results(
-            result.report_dir,
-            label=snapshot_plan.label,
+        execute_snapshot_plan(
+            snapshot_plan,
+            fallback_source_dir=result.report_dir,
             output_root=root,
             json_output=json_output,
             env=env,
