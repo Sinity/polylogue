@@ -13,14 +13,17 @@ class SyntheticBenchmarkScenario(ScenarioMetadata):
 
     scenario_id: str
     description: str
+    runner_name: str
     summary_metric: str
     summary_label: str
+    scale_targets: tuple[str, ...] = ("small", "medium", "large", "stretch")
 
 
 SYNTHETIC_BENCHMARK_SCENARIOS: tuple[SyntheticBenchmarkScenario, ...] = (
     SyntheticBenchmarkScenario(
         scenario_id="fts-rebuild",
         description="Benchmark full FTS5 index rebuild",
+        runner_name="fts-rebuild",
         summary_metric="rebuild_wall_s",
         summary_label="s",
         origin="authored.synthetic-benchmark",
@@ -31,6 +34,7 @@ SYNTHETIC_BENCHMARK_SCENARIOS: tuple[SyntheticBenchmarkScenario, ...] = (
     SyntheticBenchmarkScenario(
         scenario_id="incremental-index",
         description="Benchmark incremental FTS index updates",
+        runner_name="incremental-index",
         summary_metric="total_wall_s",
         summary_label="s",
         origin="authored.synthetic-benchmark",
@@ -41,6 +45,7 @@ SYNTHETIC_BENCHMARK_SCENARIOS: tuple[SyntheticBenchmarkScenario, ...] = (
     SyntheticBenchmarkScenario(
         scenario_id="filter-scan",
         description="Benchmark common filter query patterns",
+        runner_name="filter-scan",
         summary_metric="list_50_wall_s",
         summary_label="s",
         origin="authored.synthetic-benchmark",
@@ -51,6 +56,7 @@ SYNTHETIC_BENCHMARK_SCENARIOS: tuple[SyntheticBenchmarkScenario, ...] = (
     SyntheticBenchmarkScenario(
         scenario_id="startup-health",
         description="Benchmark check --runtime startup speed",
+        runner_name="startup-health",
         summary_metric="total_health_s",
         summary_label="s",
         origin="authored.synthetic-benchmark",
@@ -61,6 +67,7 @@ SYNTHETIC_BENCHMARK_SCENARIOS: tuple[SyntheticBenchmarkScenario, ...] = (
     SyntheticBenchmarkScenario(
         scenario_id="action-event-materialization",
         description="Benchmark action-event read-model rebuild over synthetic tool-use transcripts",
+        runner_name="action-event-materialization",
         summary_metric="rebuild_wall_s",
         summary_label="s",
         origin="authored.synthetic-benchmark",
@@ -71,6 +78,7 @@ SYNTHETIC_BENCHMARK_SCENARIOS: tuple[SyntheticBenchmarkScenario, ...] = (
     SyntheticBenchmarkScenario(
         scenario_id="session-product-materialization",
         description="Benchmark durable session-product rebuild over synthetic archive conversations",
+        runner_name="session-product-materialization",
         summary_metric="rebuild_wall_s",
         summary_label="s",
         origin="authored.synthetic-benchmark",

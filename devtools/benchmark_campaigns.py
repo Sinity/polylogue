@@ -6,7 +6,9 @@ and produces durable JSON + Markdown reports under .local/benchmark-campaigns/.
 
 from __future__ import annotations
 
+import inspect
 import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -16,7 +18,6 @@ from .benchmark_catalog import BenchmarkCampaignEntry, build_synthetic_benchmark
 SYNTHETIC_CAMPAIGNS: dict[str, BenchmarkCampaignEntry] = {
     entry.name: entry for entry in build_synthetic_benchmark_entries()
 }
-
 
 @dataclass
 class CampaignResult:
@@ -32,6 +33,9 @@ class CampaignResult:
     artifact_targets: list[str] = field(default_factory=list)
     operation_targets: list[str] = field(default_factory=list)
     tags: list[str] = field(default_factory=list)
+
+
+SyntheticBenchmarkRunner = Callable[[Path], CampaignResult | Awaitable[CampaignResult]]
 
 
 def _db_row_counts(db_path: Path) -> dict[str, int]:
@@ -399,21 +403,17 @@ async def run_synthetic_benchmark_campaign(name: str, db_path: Path) -> Campaign
     """Dispatch one synthetic benchmark campaign by authored scenario id."""
 
     campaign = SYNTHETIC_CAMPAIGNS[name]
-    match name:
-        case "fts-rebuild":
-            result = run_fts_rebuild_campaign(db_path)
-        case "incremental-index":
-            result = await run_incremental_index_campaign(db_path)
-        case "filter-scan":
-            result = await run_filter_scan_campaign(db_path)
-        case "startup-health":
-            result = await run_startup_health_campaign(db_path)
-        case "action-event-materialization":
-            result = run_action_event_materialization_campaign(db_path)
-        case "session-product-materialization":
-            result = run_session_product_materialization_campaign(db_path)
-        case _:
-            raise KeyError(name)
+    runners: dict[str, SyntheticBenchmarkRunner] = {
+        "fts-rebuild": run_fts_rebuild_campaign,
+        "incremental-index": run_incremental_index_campaign,
+        "filter-scan": run_filter_scan_campaign,
+        "startup-health": run_startup_health_campaign,
+        "action-event-materialization": run_action_event_materialization_campaign,
+        "session-product-materialization": run_session_product_materialization_campaign,
+    }
+    runner = runners[campaign.runner_name]
+    dispatched = runner(db_path)
+    result = await dispatched if inspect.isawaitable(dispatched) else dispatched
     result.origin = campaign.origin
     result.path_targets = list(campaign.path_targets)
     result.artifact_targets = list(campaign.artifact_targets)
@@ -458,6 +458,8 @@ async def run_full_campaign(scale_level: str, output_dir: Path) -> list[Campaign
     results: list[CampaignResult] = []
 
     for campaign in SYNTHETIC_CAMPAIGNS.values():
+        if campaign.scale_targets and scale_level not in campaign.scale_targets:
+            continue
         print(f"Running {campaign.name} campaign...")
         result = await run_synthetic_benchmark_campaign(campaign.name, db_path)
         result.scale_level = scale_level
