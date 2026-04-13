@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from .benchmark_catalog import BenchmarkCampaignEntry, build_benchmark_entries
+from .execution_specs import ExecutionKind
 
 ROOT = Path(__file__).resolve().parent.parent
 ARTIFACT_DIR = Path(".local/benchmark-campaigns")
@@ -211,6 +212,9 @@ def run_campaign(
     warn_pct: float | None,
     fail_pct: float | None,
 ) -> CampaignResult:
+    if campaign.execution is None or campaign.execution.kind is not ExecutionKind.PYTEST:
+        raise ValueError(f"Benchmark campaign {campaign.name!r} must use pytest execution")
+
     artifact_json = json_out or _default_artifact_path(campaign.name, "json")
     artifact_md = markdown_out or _default_artifact_path(campaign.name, "md")
     artifact_json.parent.mkdir(parents=True, exist_ok=True)
@@ -228,7 +232,7 @@ def run_campaign(
             "no:randomly",
             "--benchmark-enable",
             f"--benchmark-json={raw_json}",
-            *campaign.tests,
+            *campaign.execution.pytest_targets,
         ]
         start = time.monotonic()
         completed = subprocess.run(command, cwd=ROOT)

@@ -13,14 +13,14 @@ from polylogue.showcase.scenario_models import ExerciseScenario, compile_exercis
 
 _CATALOG = load_exercise_scenario_catalog()
 _GENERATED_COMMAND_HELP_SCENARIOS = generate_command_help_scenarios()
-_GENERATED_COMMAND_HELP_NAMES = {scenario.scenario_id for scenario in _GENERATED_COMMAND_HELP_SCENARIOS}
+_GENERATED_COMMAND_HELP_NAMES = {scenario.name for scenario in _GENERATED_COMMAND_HELP_SCENARIOS}
 _GENERATED_JSON_CONTRACT_SCENARIOS = generate_json_contract_scenarios()
-_GENERATED_JSON_CONTRACT_NAMES = {scenario.scenario_id for scenario in _GENERATED_JSON_CONTRACT_SCENARIOS}
+_GENERATED_JSON_CONTRACT_NAMES = {scenario.name for scenario in _GENERATED_JSON_CONTRACT_SCENARIOS}
 _GENERATED_EXERCISE_NAMES = _GENERATED_COMMAND_HELP_NAMES | _GENERATED_JSON_CONTRACT_NAMES
 _GENERATED_EXERCISE_SCENARIOS = _GENERATED_COMMAND_HELP_SCENARIOS + _GENERATED_JSON_CONTRACT_SCENARIOS
 
 EXERCISE_SCENARIOS: tuple[ExerciseScenario, ...] = (
-    tuple(scenario for scenario in _CATALOG.scenarios if scenario.scenario_id not in _GENERATED_EXERCISE_NAMES)
+    tuple(scenario for scenario in _CATALOG.scenarios if scenario.name not in _GENERATED_EXERCISE_NAMES)
     + _GENERATED_EXERCISE_SCENARIOS
 )
 EXERCISES: tuple[Exercise, ...] = compile_exercise_scenarios(EXERCISE_SCENARIOS)

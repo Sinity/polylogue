@@ -411,7 +411,9 @@ async def run_synthetic_benchmark_campaign(name: str, db_path: Path) -> Campaign
         "action-event-materialization": run_action_event_materialization_campaign,
         "session-product-materialization": run_session_product_materialization_campaign,
     }
-    runner = runners[campaign.runner_name]
+    if not campaign.is_runner or campaign.runner is None:
+        raise ValueError(f"Synthetic benchmark campaign {campaign.name!r} must use runner execution")
+    runner = runners[campaign.runner]
     dispatched = runner(db_path)
     result = await dispatched if inspect.isawaitable(dispatched) else dispatched
     result.origin = campaign.origin

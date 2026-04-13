@@ -20,7 +20,7 @@ from polylogue.showcase.scenario_models import compile_exercise_scenarios
 
 
 def _names(items: list | tuple) -> list[str]:
-    return [item.name if hasattr(item, "name") else item.scenario_id for item in items]
+    return [item.name for item in items]
 
 
 def test_generate_filter_exercises_compile_from_scenarios() -> None:
