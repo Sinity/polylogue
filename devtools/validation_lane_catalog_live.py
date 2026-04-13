@@ -4,30 +4,25 @@ from __future__ import annotations
 
 from functools import partial
 
-from devtools.validation_lane_base import devtools_lane as _devtools_lane
 from devtools.validation_lane_base import memory_budget_lane as _memory_budget_lane
+from devtools.validation_lane_base import pipeline_probe_lane as _pipeline_probe_lane
 from devtools.validation_lane_base import polylogue_lane as _polylogue_lane
+from polylogue.scenarios import PipelineProbeInputMode
 
-devtools_lane = partial(_devtools_lane, category="live")
 memory_budget_lane = partial(_memory_budget_lane, category="live")
+pipeline_probe_lane = partial(_pipeline_probe_lane, category="live")
 polylogue_lane = partial(_polylogue_lane, category="live")
 
 LIVE_LANES = {
-    "live-archive-subset-parse-probe": devtools_lane(
+    "live-archive-subset-parse-probe": pipeline_probe_lane(
         "live-archive-subset-parse-probe",
         "Live archive medium archive-subset parse probe with persisted manifest/workdir artifacts",
         1800,
-        "pipeline-probe",
-        "--input-mode",
-        "archive-subset",
-        "--stage",
-        "parse",
-        "--sample-per-provider",
-        "50",
-        "--workdir",
-        "/tmp/polylogue-live-archive-subset-parse-probe",
-        "--json-out",
-        "/tmp/polylogue-live-archive-subset-parse-probe.json",
+        input_mode=PipelineProbeInputMode.ARCHIVE_SUBSET,
+        stage="parse",
+        sample_per_provider=50,
+        workdir="/tmp/polylogue-live-archive-subset-parse-probe",
+        json_out="/tmp/polylogue-live-archive-subset-parse-probe.json",
         tags=("live", "probe", "parse"),
     ),
     "live-exercises": polylogue_lane(

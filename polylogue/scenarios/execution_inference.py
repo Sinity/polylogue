@@ -77,13 +77,6 @@ def _metadata_for_operations(*operation_names: str) -> ScenarioMetadata:
     )
 
 
-def _find_flag_value(argv: tuple[str, ...], flag: str) -> str | None:
-    for index, item in enumerate(argv[:-1]):
-        if item == flag:
-            return argv[index + 1]
-    return None
-
-
 def _find_repeated_flag_values(argv: tuple[str, ...], flag: str) -> tuple[str, ...]:
     values: list[str] = []
     for index, item in enumerate(argv[:-1]):
@@ -216,16 +209,17 @@ def _infer_polylogue_metadata(argv: tuple[str, ...]) -> ScenarioMetadata:
     return _infer_polylogue_query_metadata(argv)
 
 
-def _infer_devtools_metadata(execution: ExecutionSpec) -> ScenarioMetadata:
-    if execution.subcommand == "pipeline-probe":
-        stage = _find_flag_value(execution.argv, "--stage") or "all"
-        if stage == "parse":
-            return _metadata_for_operations(
-                "acquire-raw-conversations",
-                "plan-validation-backlog",
-                "plan-parse-backlog",
-                "ingest-archive-runtime",
-            )
+def _infer_pipeline_probe_metadata(execution: ExecutionSpec) -> ScenarioMetadata:
+    request = execution.pipeline_probe
+    if request is None:
+        return ScenarioMetadata()
+    if request.stage == "parse":
+        return _metadata_for_operations(
+            "acquire-raw-conversations",
+            "plan-validation-backlog",
+            "plan-parse-backlog",
+            "ingest-archive-runtime",
+        )
     return ScenarioMetadata()
 
 
@@ -234,8 +228,10 @@ def infer_metadata_from_execution(execution: ExecutionSpec | None) -> ScenarioMe
         return ScenarioMetadata()
     if execution.kind is ExecutionKind.POLYLOGUE:
         return _infer_polylogue_metadata(execution.argv)
+    if execution.kind is ExecutionKind.PIPELINE_PROBE:
+        return _infer_pipeline_probe_metadata(execution)
     if execution.kind is ExecutionKind.DEVTOOLS:
-        return _infer_devtools_metadata(execution)
+        return ScenarioMetadata()
     if execution.kind is ExecutionKind.MEMORY_BUDGET:
         return infer_metadata_from_execution(execution.wrapped)
     return ScenarioMetadata()
