@@ -4,6 +4,7 @@ from polylogue.scenarios import (
     ExecutionKind,
     command_execution,
     composite_execution,
+    polylogue_execution,
     pytest_execution,
     runner_execution,
 )
@@ -31,6 +32,15 @@ def test_pytest_execution_normalizes_leading_pytest_binary() -> None:
 
     assert execution.command == ("pytest", "-m", "machine_contract")
     assert execution.pytest_targets == ("-m", "machine_contract")
+
+
+def test_polylogue_execution_renders_runtime_and_display_forms() -> None:
+    execution = polylogue_execution("doctor", "--json")
+
+    assert execution.kind is ExecutionKind.POLYLOGUE
+    assert execution.command == ("polylogue", "--plain", "doctor", "--json")
+    assert execution.display_command == ("polylogue", "doctor", "--json")
+    assert execution.polylogue_invoke_args == ("--plain", "doctor", "--json")
 
 
 def test_composite_execution_has_members_only() -> None:

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from devtools.command_catalog import control_plane_argv
 from devtools.lane_models import LaneEntry
-from polylogue.scenarios import command_execution, composite_execution, pytest_execution
+from polylogue.scenarios import command_execution, composite_execution, polylogue_execution, pytest_execution
 
 
 def cli_lane(
@@ -99,14 +99,12 @@ def polylogue_lane(
     operation_targets: tuple[str, ...] = (),
     tags: tuple[str, ...] = (),
 ) -> LaneEntry:
-    return cli_lane(
-        name,
-        description,
-        timeout_s,
-        "polylogue",
-        "--plain",
-        *args,
+    return LaneEntry(
+        name=name,
+        description=description,
+        timeout_s=timeout_s,
         category=category,
+        execution=polylogue_execution(*args),
         origin=origin,
         path_targets=path_targets,
         artifact_targets=artifact_targets,
