@@ -81,10 +81,12 @@ def test_artifact_graph_serializes_layers_as_strings() -> None:
 def test_artifact_graph_operations_reference_only_declared_nodes() -> None:
     graph = build_artifact_graph()
     node_names = set(graph.by_name())
+    path_names = set(graph.path_names())
 
     for operation in graph.operations:
         assert set(operation.consumes).issubset(node_names)
         assert set(operation.produces).issubset(node_names)
+        assert set(operation.path_targets).issubset(path_names)
 
 
 def test_artifact_graph_resolves_runtime_targets() -> None:
