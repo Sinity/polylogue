@@ -18,6 +18,8 @@ class BenchmarkCampaignEntry(ScenarioMetadata):
     notes: tuple[str, ...] = ()
     warn_pct: float = 0.0
     fail_pct: float = 0.0
+    summary_metric: str = ""
+    summary_label: str = ""
 
 
 def build_benchmark_entries() -> tuple[BenchmarkCampaignEntry, ...]:
@@ -47,6 +49,8 @@ def build_synthetic_benchmark_entries() -> tuple[BenchmarkCampaignEntry, ...]:
             description=scenario.description,
             tests=(),
             notes=(),
+            summary_metric=scenario.summary_metric,
+            summary_label=scenario.summary_label,
             origin=scenario.origin,
             path_targets=scenario.path_targets,
             artifact_targets=scenario.artifact_targets,

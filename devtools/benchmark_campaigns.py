@@ -11,7 +11,11 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
-from .synthetic_benchmark_catalog import SYNTHETIC_BENCHMARK_REGISTRY, SYNTHETIC_BENCHMARK_SCENARIOS
+from .benchmark_catalog import BenchmarkCampaignEntry, build_synthetic_benchmark_entries
+
+SYNTHETIC_CAMPAIGNS: dict[str, BenchmarkCampaignEntry] = {
+    entry.name: entry for entry in build_synthetic_benchmark_entries()
+}
 
 
 @dataclass
@@ -394,7 +398,7 @@ def run_session_product_materialization_campaign(db_path: Path) -> CampaignResul
 async def run_synthetic_benchmark_campaign(name: str, db_path: Path) -> CampaignResult:
     """Dispatch one synthetic benchmark campaign by authored scenario id."""
 
-    scenario = SYNTHETIC_BENCHMARK_REGISTRY[name]
+    campaign = SYNTHETIC_CAMPAIGNS[name]
     match name:
         case "fts-rebuild":
             result = run_fts_rebuild_campaign(db_path)
@@ -410,11 +414,11 @@ async def run_synthetic_benchmark_campaign(name: str, db_path: Path) -> Campaign
             result = run_session_product_materialization_campaign(db_path)
         case _:
             raise KeyError(name)
-    result.origin = scenario.origin
-    result.path_targets = list(scenario.path_targets)
-    result.artifact_targets = list(scenario.artifact_targets)
-    result.operation_targets = list(scenario.operation_targets)
-    result.tags = list(scenario.tags)
+    result.origin = campaign.origin
+    result.path_targets = list(campaign.path_targets)
+    result.artifact_targets = list(campaign.artifact_targets)
+    result.operation_targets = list(campaign.operation_targets)
+    result.tags = list(campaign.tags)
     return result
 
 
@@ -453,27 +457,26 @@ async def run_full_campaign(scale_level: str, output_dir: Path) -> list[Campaign
     db_path = archive_dir / "benchmark.db"
     results: list[CampaignResult] = []
 
-    for scenario in SYNTHETIC_BENCHMARK_SCENARIOS:
-        print(f"Running {scenario.scenario_id} campaign...")
-        result = await run_synthetic_benchmark_campaign(scenario.scenario_id, db_path)
+    for campaign in SYNTHETIC_CAMPAIGNS.values():
+        print(f"Running {campaign.name} campaign...")
+        result = await run_synthetic_benchmark_campaign(campaign.name, db_path)
         result.scale_level = scale_level
         results.append(result)
-        metric_value = result.metrics.get(scenario.summary_metric, 0)
-        print(f"  -> {metric_value:.4f}{scenario.summary_label}")
+        metric_value = result.metrics.get(campaign.summary_metric, 0)
+        print(f"  -> {metric_value:.4f}{campaign.summary_label}")
 
     return results
 
 
 CAMPAIGN_REGISTRY: dict[str, str] = {
-    scenario.scenario_id: scenario.description for scenario in SYNTHETIC_BENCHMARK_SCENARIOS
+    campaign.name: campaign.description for campaign in SYNTHETIC_CAMPAIGNS.values()
 }
 
 
 __all__ = [
     "CAMPAIGN_REGISTRY",
     "CampaignResult",
-    "SYNTHETIC_BENCHMARK_REGISTRY",
-    "SYNTHETIC_BENCHMARK_SCENARIOS",
+    "SYNTHETIC_CAMPAIGNS",
     "run_filter_scan_campaign",
     "run_fts_rebuild_campaign",
     "run_action_event_materialization_campaign",
