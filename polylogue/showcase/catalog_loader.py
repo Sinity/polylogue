@@ -8,7 +8,6 @@ from pathlib import Path
 
 from polylogue.scenarios import CorpusSpec, ExecutionSpec, ScenarioMetadata
 from polylogue.showcase.exercise_models import Exercise, Validation
-from polylogue.showcase.scenario_models import ExerciseScenario
 
 _CATALOG_PATH = Path(__file__).with_name("exercise_catalog.json")
 
@@ -92,12 +91,6 @@ class ExerciseCatalog:
     exercises: tuple[Exercise, ...]
 
 
-@dataclass(frozen=True)
-class ExerciseScenarioCatalog:
-    groups: tuple[str, ...]
-    scenarios: tuple[ExerciseScenario, ...]
-
-
 def _load_custom_validator(payload: dict[str, object]):
     kind = str(payload["kind"])
     if kind == "json_only_fields":
@@ -127,10 +120,6 @@ def _load_validation(payload: dict[str, object] | None) -> Validation:
 
 
 def _load_exercise(payload: dict[str, object]) -> Exercise:
-    return _load_exercise_scenario(payload).compile()
-
-
-def _load_exercise_scenario(payload: dict[str, object]) -> ExerciseScenario:
     metadata = ScenarioMetadata.from_payload(payload)
     execution_payload = payload.get("execution")
     if not isinstance(execution_payload, dict):
@@ -143,7 +132,7 @@ def _load_exercise_scenario(payload: dict[str, object]) -> ExerciseScenario:
             for spec_payload in corpus_payloads
             if isinstance(spec_payload, dict)
         )
-    return ExerciseScenario(
+    return Exercise(
         name=str(payload["name"]),
         group=str(payload["group"]),
         description=str(payload["description"]),
@@ -168,25 +157,16 @@ def _load_exercise_scenario(payload: dict[str, object]) -> ExerciseScenario:
     )
 
 
-def load_exercise_scenario_catalog(path: Path | None = None) -> ExerciseScenarioCatalog:
-    """Load the serialized exercise catalog as authored scenarios."""
+def load_exercise_catalog(path: Path | None = None) -> ExerciseCatalog:
+    """Load the serialized exercise catalog."""
     catalog_path = path or _CATALOG_PATH
     payload = json.loads(catalog_path.read_text(encoding="utf-8"))
     groups = tuple(str(group) for group in payload.get("groups", ()))
-    scenarios = tuple(_load_exercise_scenario(exercise) for exercise in payload.get("exercises", ()))
-    return ExerciseScenarioCatalog(groups=groups, scenarios=scenarios)
-
-
-def load_exercise_catalog(path: Path | None = None) -> ExerciseCatalog:
-    """Load the serialized exercise catalog."""
-    scenario_catalog = load_exercise_scenario_catalog(path)
-    exercises = tuple(scenario.compile() for scenario in scenario_catalog.scenarios)
-    return ExerciseCatalog(groups=scenario_catalog.groups, exercises=exercises)
+    exercises = tuple(_load_exercise(exercise) for exercise in payload.get("exercises", ()))
+    return ExerciseCatalog(groups=groups, exercises=exercises)
 
 
 __all__ = [
     "ExerciseCatalog",
-    "ExerciseScenarioCatalog",
     "load_exercise_catalog",
-    "load_exercise_scenario_catalog",
 ]

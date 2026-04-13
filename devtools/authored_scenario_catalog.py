@@ -19,14 +19,14 @@ from polylogue.scenarios import (
     compile_projection_entries,
 )
 from polylogue.schemas.operator_inference import list_inferred_corpus_scenarios
+from polylogue.showcase.exercise_models import Exercise
 from polylogue.showcase.exercises import EXERCISE_SCENARIOS, QA_EXTRA_SCENARIOS
-from polylogue.showcase.scenario_models import ExerciseScenario
 
 
 @dataclass(frozen=True)
 class AuthoredScenarioCatalog:
-    exercise_scenarios: tuple[ExerciseScenario, ...]
-    qa_extra_scenarios: tuple[ExerciseScenario, ...]
+    exercise_scenarios: tuple[Exercise, ...]
+    qa_extra_scenarios: tuple[Exercise, ...]
     validation_lanes: tuple[LaneEntry, ...]
     mutation_campaigns: tuple[MutationCampaignEntry, ...]
     benchmark_campaigns: tuple[BenchmarkCampaignEntry, ...]
