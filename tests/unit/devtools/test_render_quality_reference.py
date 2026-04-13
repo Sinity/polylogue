@@ -100,6 +100,8 @@ def test_build_document_includes_live_registry_sections() -> None:
     assert "- scenario projections: `2`" in rendered
     assert "  - benchmark-campaign: `1`" in rendered
     assert "  - exercise: `1`" in rendered
+    assert "## Scenario Projection Catalog" in rendered
+    assert "| `exercise` | `json-doctor-action-event-preview` |" in rendered
 
 
 def test_build_document_includes_runtime_coverage_section() -> None:
