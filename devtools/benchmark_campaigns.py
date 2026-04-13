@@ -13,6 +13,8 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
+from polylogue.scenarios import CorpusSourceKind
+
 from .authored_scenario_catalog import build_authored_scenario_catalog
 from .benchmark_catalog import BenchmarkCampaignEntry
 
@@ -425,7 +427,12 @@ async def run_synthetic_benchmark_campaign(name: str, db_path: Path) -> Campaign
     return result
 
 
-async def run_full_campaign(scale_level: str, output_dir: Path) -> list[CampaignResult]:
+async def run_full_campaign(
+    scale_level: str,
+    output_dir: Path,
+    *,
+    corpus_source: CorpusSourceKind | str = CorpusSourceKind.DEFAULT,
+) -> list[CampaignResult]:
     """Run all benchmark campaigns at a given scale level.
 
     Generates a synthetic archive at the specified scale, then runs
@@ -448,8 +455,12 @@ async def run_full_campaign(scale_level: str, output_dir: Path) -> list[Campaign
     spec = get_default_spec(level)
 
     archive_dir = output_dir / f"archive-{scale_level}"
-    print(f"Generating {scale_level} archive ({spec.conversations} conversations, ~{spec.message_count} messages)...")
-    archive_metrics = await generate_archive(spec, archive_dir)
+    source_kind = CorpusSourceKind(corpus_source)
+    print(
+        f"Generating {scale_level} archive from {source_kind.value} corpus source "
+        f"({spec.conversations} conversations, ~{spec.message_count} messages)..."
+    )
+    archive_metrics = await generate_archive(spec, archive_dir, corpus_source=source_kind)
     print(
         f"Archive generated in {archive_metrics.wall_time_s:.1f}s "
         f"({archive_metrics.conversation_count} convs, "
