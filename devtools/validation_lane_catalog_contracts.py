@@ -104,6 +104,15 @@ CONTRACT_LANES = {
         "tests/unit/site/test_builder.py",
         "tests/unit/cli/test_site.py",
         "tests/integration/test_health.py",
+        path_targets=("site-publication-loop",),
+        artifact_targets=(
+            "conversation_render_projection",
+            "site_conversation_pages",
+            "site_publication_manifest",
+            "publication_records",
+        ),
+        operation_targets=("publish-site",),
+        tags=("contract", "maintenance", "publication"),
     ),
     "archive-data-products": pytest_lane(
         "archive-data-products",
