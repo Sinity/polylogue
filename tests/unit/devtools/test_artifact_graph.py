@@ -9,9 +9,12 @@ def test_render_artifact_graph_text_mentions_both_vertical_paths() -> None:
     rendered = artifact_graph.render_artifact_graph(as_json=False)
 
     assert "Artifact Paths:" in rendered
+    assert "Artifact Operations:" in rendered
     assert "raw-reparse-loop" in rendered
     assert "action-event-repair-loop" in rendered
     assert "action_event_fts [index] <- action_event_rows" in rendered
+    assert "plan-validation-backlog" in rendered
+    assert "project-action-event-health" in rendered
 
 
 def test_render_artifact_graph_json_is_machine_readable() -> None:
@@ -22,3 +25,4 @@ def test_render_artifact_graph_json_is_machine_readable() -> None:
         "action-event-repair-loop",
     }
     assert any(node["name"] == "raw_validation_state" for node in payload["nodes"])
+    assert any(operation["name"] == "plan-parse-backlog" for operation in payload["operations"])

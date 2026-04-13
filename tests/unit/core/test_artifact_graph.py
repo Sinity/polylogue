@@ -6,6 +6,7 @@ from polylogue.artifact_graph import ArtifactLayer, build_artifact_graph
 def test_artifact_graph_contains_the_two_proven_vertical_paths() -> None:
     graph = build_artifact_graph()
     nodes = graph.by_name()
+    operations = {operation.name: operation for operation in graph.operations}
 
     assert set(nodes) >= {
         "raw_validation_state",
@@ -22,6 +23,9 @@ def test_artifact_graph_contains_the_two_proven_vertical_paths() -> None:
     assert nodes["action_event_fts"].depends_on == ("action_event_rows",)
     assert nodes["action_event_health"].depends_on == ("action_event_rows", "action_event_fts")
     assert nodes["parse_quarantine"].depends_on == ("raw_validation_state",)
+    assert operations["plan-validation-backlog"].produces == ("validation_backlog",)
+    assert operations["plan-parse-backlog"].produces == ("parse_backlog", "parse_quarantine")
+    assert operations["project-action-event-health"].consumes == ("action_event_rows", "action_event_fts")
 
 
 def test_artifact_graph_paths_reference_only_declared_nodes() -> None:
@@ -42,3 +46,4 @@ def test_artifact_graph_serializes_layers_as_strings() -> None:
 
     assert any(node["layer"] == "durable" for node in payload["nodes"])
     assert any(path["name"] == "raw-reparse-loop" for path in payload["paths"])
+    assert any(operation["name"] == "plan-validation-backlog" for operation in payload["operations"])
