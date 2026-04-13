@@ -617,7 +617,7 @@ class TestQaCommand:
             result = cli_runner.invoke(click_cli, ["audit", "--only", "audit", "--json"])
 
         assert result.exit_code == 0
-        assert mock_run.call_args.kwargs["skip_proof"] is True
+        assert mock_run.call_args.args[0].skip_proof is True
         payload = json.loads(result.output)
         assert payload["proof"]["status"] == "skip"
         assert payload["proof"]["skipped"] is True
@@ -650,7 +650,7 @@ class TestQaCommand:
             result = cli_runner.invoke(click_cli, ["audit", "--only", "exercises", "--json"])
 
         assert result.exit_code == 0
-        assert mock_run.call_args.kwargs["skip_proof"] is True
+        assert mock_run.call_args.args[0].skip_proof is True
         payload = json.loads(result.output)
         assert payload["proof"]["status"] == "skip"
         assert payload["proof"]["skipped"] is True

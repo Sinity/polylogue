@@ -1,4 +1,4 @@
-"""Typed QA orchestration result models."""
+"""Typed QA orchestration request and result models."""
 
 from __future__ import annotations
 
@@ -13,6 +13,33 @@ from polylogue.showcase.runner import ShowcaseResult
 if TYPE_CHECKING:
     from polylogue.schemas.audit_models import AuditReport
     from polylogue.schemas.verification_models import ArtifactProofReport
+
+
+@dataclass
+class QASessionRequest:
+    """Canonical request for one QA workflow run."""
+
+    live: bool = False
+    fresh: bool = True
+    ingest: bool = False
+    source_names: tuple[str, ...] | None = None
+    regenerate_schemas: bool = False
+    skip_audit: bool = False
+    skip_proof: bool = False
+    skip_exercises: bool = False
+    skip_invariants: bool = False
+    workspace_dir: Path | None = None
+    workspace_env: dict[str, str] | None = None
+    report_dir: Path | None = None
+    provider: str | None = None
+    verbose: bool = False
+    fail_fast: bool = False
+    tier_filter: int | None = None
+    synthetic_count: int = 3
+
+    @property
+    def needs_workspace(self) -> bool:
+        return not self.skip_exercises
 
 
 @dataclass
@@ -85,5 +112,4 @@ class QAResult:
     def all_passed(self) -> bool:
         return self.overall_status is OutcomeStatus.OK
 
-
-__all__ = ["QAResult"]
+__all__ = ["QAResult", "QASessionRequest"]
