@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
-from polylogue.scenarios import ScenarioMetadata, polylogue_execution
+from polylogue.scenarios import ExecutionKind, ExecutionSpec, ScenarioMetadata, polylogue_execution
 
 
 @dataclass(frozen=True)
@@ -27,7 +27,7 @@ class Exercise(ScenarioMetadata):
     name: str  # Unique ID e.g. "query.list-json"
     group: str  # structural | sources | pipeline | query-read | query-write | subcommands | advanced
     description: str  # Human-readable, used in cookbook headings
-    args: list[str] = field(default_factory=list)  # CLI args (without 'polylogue' prefix)
+    execution: ExecutionSpec = field(default_factory=polylogue_execution)
     validation: Validation = field(default_factory=Validation)
     needs_data: bool = False  # Requires populated database
     writes: bool = False  # Mutates state — skip in --live mode
@@ -41,8 +41,12 @@ class Exercise(ScenarioMetadata):
     capture_steps: tuple[str, ...] = ()  # Optional VHS interaction steps for complex scenarios
 
     @property
-    def execution(self):
-        return polylogue_execution(*self.args)
+    def args(self) -> list[str]:
+        return list(self.execution.polylogue_args)
+
+    def __post_init__(self) -> None:
+        if self.execution.kind is not ExecutionKind.POLYLOGUE:
+            raise ValueError("showcase exercises require polylogue execution")
 
     @property
     def invoke_args(self) -> list[str]:
@@ -59,7 +63,7 @@ class Exercise(ScenarioMetadata):
 
     @property
     def args_text(self) -> str:
-        return " ".join(self.args) if self.args else "(default stats)"
+        return " ".join(self.execution.polylogue_args) if self.execution.polylogue_args else "(default stats)"
 
 
 __all__ = ["Exercise", "Validation"]

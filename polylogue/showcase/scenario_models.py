@@ -4,16 +4,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from polylogue.scenarios import NamedScenarioSource, ScenarioProjectionSourceKind
+from polylogue.scenarios import ExecutableScenario, ScenarioProjectionSourceKind, polylogue_execution
 from polylogue.showcase.exercise_models import Exercise, Validation
 
 
 @dataclass(frozen=True, kw_only=True)
-class ExerciseScenario(NamedScenarioSource):
+class ExerciseScenario(ExecutableScenario):
     """Authored scenario metadata for one CLI-backed showcase proof."""
 
     group: str
-    args: tuple[str, ...] = ()
     validation: Validation = field(default_factory=Validation)
     needs_data: bool = False
     writes: bool = False
@@ -26,6 +25,16 @@ class ExerciseScenario(NamedScenarioSource):
     artifact_class: str = "text"
     capture_steps: tuple[str, ...] = ()
 
+    def __post_init__(self) -> None:
+        if self.execution is None:
+            object.__setattr__(self, "execution", polylogue_execution())
+
+    @property
+    def args(self) -> tuple[str, ...]:
+        if self.execution is None:
+            return ()
+        return self.execution.polylogue_args
+
     @property
     def projection_source_kind(self) -> ScenarioProjectionSourceKind:
         return ScenarioProjectionSourceKind.EXERCISE
@@ -36,7 +45,7 @@ class ExerciseScenario(NamedScenarioSource):
             name=self.name,
             group=self.group,
             description=self.description,
-            args=list(self.args),
+            execution=self.execution or polylogue_execution(),
             validation=self.validation,
             needs_data=self.needs_data,
             writes=self.writes,
