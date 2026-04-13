@@ -11,6 +11,8 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
+from polylogue.scenarios import ScenarioMetadata
+
 
 @dataclass
 class CampaignResult:
@@ -21,6 +23,68 @@ class CampaignResult:
     metrics: dict[str, float] = field(default_factory=dict)
     db_stats: dict[str, int] = field(default_factory=dict)
     timestamp: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
+    origin: str = "authored"
+    artifact_targets: list[str] = field(default_factory=list)
+    operation_targets: list[str] = field(default_factory=list)
+    tags: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class SyntheticBenchmarkScenario(ScenarioMetadata):
+    """Authored scenario metadata for synthetic long-haul benchmark campaigns."""
+
+    scenario_id: str
+    description: str
+    summary_metric: str
+    summary_label: str
+
+
+SYNTHETIC_BENCHMARK_SCENARIOS: tuple[SyntheticBenchmarkScenario, ...] = (
+    SyntheticBenchmarkScenario(
+        scenario_id="fts-rebuild",
+        description="Benchmark full FTS5 index rebuild",
+        summary_metric="rebuild_wall_s",
+        summary_label="s",
+        origin="authored.synthetic-benchmark",
+        artifact_targets=("message_fts",),
+        operation_targets=("index.message-fts-rebuild",),
+        tags=("benchmark", "synthetic", "fts"),
+    ),
+    SyntheticBenchmarkScenario(
+        scenario_id="incremental-index",
+        description="Benchmark incremental FTS index updates",
+        summary_metric="total_wall_s",
+        summary_label="s",
+        origin="authored.synthetic-benchmark",
+        artifact_targets=("message_fts",),
+        operation_targets=("index.message-fts-incremental",),
+        tags=("benchmark", "synthetic", "fts"),
+    ),
+    SyntheticBenchmarkScenario(
+        scenario_id="filter-scan",
+        description="Benchmark common filter query patterns",
+        summary_metric="list_50_wall_s",
+        summary_label="s",
+        origin="authored.synthetic-benchmark",
+        artifact_targets=("conversation_query_results",),
+        operation_targets=("query.filters.synthetic-scan",),
+        tags=("benchmark", "synthetic", "filters"),
+    ),
+    SyntheticBenchmarkScenario(
+        scenario_id="startup-health",
+        description="Benchmark check --runtime startup speed",
+        summary_metric="total_health_s",
+        summary_label="s",
+        origin="authored.synthetic-benchmark",
+        artifact_targets=("archive_health",),
+        operation_targets=("health.startup.synthetic",),
+        tags=("benchmark", "synthetic", "health"),
+    ),
+)
+
+SYNTHETIC_BENCHMARK_REGISTRY: dict[str, SyntheticBenchmarkScenario] = {
+    scenario.scenario_id: scenario for scenario in SYNTHETIC_BENCHMARK_SCENARIOS
+}
 
 
 def _db_row_counts(db_path: Path) -> dict[str, int]:
@@ -266,6 +330,28 @@ async def run_startup_health_campaign(db_path: Path) -> CampaignResult:
         await backend.close()
 
 
+async def run_synthetic_benchmark_campaign(name: str, db_path: Path) -> CampaignResult:
+    """Dispatch one synthetic benchmark campaign by authored scenario id."""
+
+    scenario = SYNTHETIC_BENCHMARK_REGISTRY[name]
+    match name:
+        case "fts-rebuild":
+            result = run_fts_rebuild_campaign(db_path)
+        case "incremental-index":
+            result = await run_incremental_index_campaign(db_path)
+        case "filter-scan":
+            result = await run_filter_scan_campaign(db_path)
+        case "startup-health":
+            result = await run_startup_health_campaign(db_path)
+        case _:
+            raise KeyError(name)
+    result.origin = scenario.origin
+    result.artifact_targets = list(scenario.artifact_targets)
+    result.operation_targets = list(scenario.operation_targets)
+    result.tags = list(scenario.tags)
+    return result
+
+
 async def run_full_campaign(scale_level: str, output_dir: Path) -> list[CampaignResult]:
     """Run all benchmark campaigns at a given scale level.
 
@@ -301,51 +387,32 @@ async def run_full_campaign(scale_level: str, output_dir: Path) -> list[Campaign
     db_path = archive_dir / "benchmark.db"
     results: list[CampaignResult] = []
 
-    # FTS rebuild
-    print("Running fts-rebuild campaign...")
-    result = run_fts_rebuild_campaign(db_path)
-    result.scale_level = scale_level
-    results.append(result)
-    print(f"  -> {result.metrics.get('rebuild_wall_s', 0):.3f}s")
-
-    # Incremental index
-    print("Running incremental-index campaign...")
-    result = await run_incremental_index_campaign(db_path)
-    result.scale_level = scale_level
-    results.append(result)
-    print(f"  -> {result.metrics.get('total_wall_s', 0):.3f}s")
-
-    # Filter scan
-    print("Running filter-scan campaign...")
-    result = await run_filter_scan_campaign(db_path)
-    result.scale_level = scale_level
-    results.append(result)
-    print(f"  -> list_50: {result.metrics.get('list_50_wall_s', 0):.4f}s")
-
-    # Startup health
-    print("Running startup-health campaign...")
-    result = await run_startup_health_campaign(db_path)
-    result.scale_level = scale_level
-    results.append(result)
-    print(f"  -> total: {result.metrics.get('total_health_s', 0):.4f}s")
+    for scenario in SYNTHETIC_BENCHMARK_SCENARIOS:
+        print(f"Running {scenario.scenario_id} campaign...")
+        result = await run_synthetic_benchmark_campaign(scenario.scenario_id, db_path)
+        result.scale_level = scale_level
+        results.append(result)
+        metric_value = result.metrics.get(scenario.summary_metric, 0)
+        print(f"  -> {metric_value:.4f}{scenario.summary_label}")
 
     return results
 
 
 CAMPAIGN_REGISTRY: dict[str, str] = {
-    "fts-rebuild": "Benchmark full FTS5 index rebuild",
-    "incremental-index": "Benchmark incremental FTS index updates",
-    "filter-scan": "Benchmark common filter query patterns",
-    "startup-health": "Benchmark check --runtime startup speed",
+    scenario.scenario_id: scenario.description for scenario in SYNTHETIC_BENCHMARK_SCENARIOS
 }
 
 
 __all__ = [
     "CAMPAIGN_REGISTRY",
     "CampaignResult",
+    "SYNTHETIC_BENCHMARK_REGISTRY",
+    "SYNTHETIC_BENCHMARK_SCENARIOS",
+    "SyntheticBenchmarkScenario",
     "run_filter_scan_campaign",
     "run_fts_rebuild_campaign",
     "run_full_campaign",
     "run_incremental_index_campaign",
+    "run_synthetic_benchmark_campaign",
     "run_startup_health_campaign",
 ]
