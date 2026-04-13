@@ -48,6 +48,31 @@ class ArchiveSpec:
         high = self.avg_messages_per_conv * 2
         return range(low, high + 1)
 
+    def corpus_specs(self, *, available_providers: set[str]) -> tuple[CorpusSpec, ...]:
+        """Compile the archive spec into per-provider synthetic corpus specs."""
+        filtered_mix = {provider: weight for provider, weight in self.provider_mix.items() if provider in available_providers}
+        if not filtered_mix:
+            raise ValueError(
+                f"No providers from spec are available. "
+                f"Requested: {list(self.provider_mix)}, available: {sorted(available_providers)}"
+            )
+        total_weight = sum(filtered_mix.values())
+        normalized_mix = {provider: weight / total_weight for provider, weight in filtered_mix.items()}
+        distribution = _distribute_conversations(self.conversations, normalized_mix)
+        return tuple(
+            CorpusSpec.for_provider(
+                provider,
+                count=conversation_count,
+                messages_min=self.messages_per_conversation_range.start,
+                messages_max=self.messages_per_conversation_range.stop - 1,
+                seed=self.seed,
+                origin="generated.large-archive",
+                tags=("synthetic", "benchmark", "scale", self.level.value),
+            )
+            for provider, conversation_count in distribution.items()
+            if conversation_count > 0
+        )
+
 
 @dataclass
 class ArchiveMetrics:
@@ -168,18 +193,6 @@ async def generate_archive(spec: ArchiveSpec, output_dir: Path) -> ArchiveMetric
     archive_root.mkdir(parents=True, exist_ok=True)
 
     # Filter provider mix to only available providers
-    available = _available_providers()
-    filtered_mix = {p: w for p, w in spec.provider_mix.items() if p in available}
-    if not filtered_mix:
-        raise ValueError(
-            f"No providers from spec are available. "
-            f"Requested: {list(spec.provider_mix)}, available: {sorted(available)}"
-        )
-    # Renormalize weights
-    total_weight = sum(filtered_mix.values())
-    filtered_mix = {p: w / total_weight for p, w in filtered_mix.items()}
-
-    distribution = _distribute_conversations(spec.conversations, filtered_mix)
     provider_breakdown: dict[str, int] = {}
 
     backend = SQLiteBackend(db_path=db_path)
@@ -190,20 +203,9 @@ async def generate_archive(spec: ArchiveSpec, output_dir: Path) -> ArchiveMetric
 
     try:
         async with backend.bulk_connection():
-            for provider, conv_count in distribution.items():
-                if conv_count <= 0:
-                    continue
-
+            for corpus_spec in spec.corpus_specs(available_providers=_available_providers()):
+                provider = corpus_spec.provider
                 provider_dir = corpus_dir / provider
-                corpus_spec = CorpusSpec.for_provider(
-                    provider,
-                    count=conv_count,
-                    messages_min=spec.messages_per_conversation_range.start,
-                    messages_max=spec.messages_per_conversation_range.stop - 1,
-                    seed=spec.seed,
-                    origin="generated.large-archive",
-                    tags=("synthetic", "benchmark", "scale"),
-                )
                 written = SyntheticCorpus.write_spec_artifacts(
                     corpus_spec,
                     provider_dir,
