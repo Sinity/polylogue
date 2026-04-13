@@ -98,6 +98,53 @@ def test_executable_scenario_infers_run_render_metadata_from_polylogue_execution
     assert scenario.operation_targets == ("render-conversations",)
 
 
+def test_executable_scenario_infers_run_acquire_metadata_from_polylogue_execution() -> None:
+    scenario = _ExecutableFixture(
+        name="run-acquire-contract",
+        description="acquire contract",
+        execution=polylogue_execution("run", "acquire"),
+    )
+
+    assert scenario.path_targets == ("source-acquisition-loop",)
+    assert scenario.artifact_targets == (
+        "configured_sources",
+        "source_payload_stream",
+        "raw_validation_state",
+        "artifact_observation_rows",
+    )
+    assert scenario.operation_targets == ("acquire-raw-conversations",)
+
+
+def test_executable_scenario_infers_run_parse_metadata_from_polylogue_execution() -> None:
+    scenario = _ExecutableFixture(
+        name="run-parse-contract",
+        description="parse contract",
+        execution=polylogue_execution("run", "parse"),
+    )
+
+    assert scenario.path_targets == (
+        "source-acquisition-loop",
+        "raw-reparse-loop",
+        "raw-archive-ingest-loop",
+    )
+    assert scenario.artifact_targets == (
+        "configured_sources",
+        "source_payload_stream",
+        "raw_validation_state",
+        "artifact_observation_rows",
+        "validation_backlog",
+        "parse_backlog",
+        "parse_quarantine",
+        "archive_conversation_rows",
+    )
+    assert scenario.operation_targets == (
+        "acquire-raw-conversations",
+        "plan-validation-backlog",
+        "plan-parse-backlog",
+        "ingest-archive-runtime",
+    )
+
+
 def test_executable_scenario_infers_run_embed_metadata_from_polylogue_execution() -> None:
     scenario = _ExecutableFixture(
         name="run-embed-contract",

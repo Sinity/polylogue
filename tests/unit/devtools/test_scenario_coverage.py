@@ -7,6 +7,7 @@ def test_build_runtime_scenario_coverage_tracks_the_current_authored_map() -> No
     coverage = build_runtime_scenario_coverage()
 
     assert set(coverage.paths) == {
+        "source-acquisition-loop",
         "raw-reparse-loop",
         "raw-archive-ingest-loop",
         "message-fts-health-loop",
@@ -35,6 +36,9 @@ def test_build_runtime_scenario_coverage_tracks_the_current_authored_map() -> No
     }
     assert all(path.complete for path in coverage.paths.values())
     assert "raw_validation_state" in coverage.artifacts
+    assert "configured_sources" in coverage.artifacts
+    assert "source_payload_stream" in coverage.artifacts
+    assert "artifact_observation_rows" in coverage.artifacts
     assert "archive_conversation_rows" in coverage.artifacts
     assert "message_source_rows" in coverage.artifacts
     assert "message_fts" in coverage.artifacts
@@ -56,6 +60,7 @@ def test_build_runtime_scenario_coverage_tracks_the_current_authored_map() -> No
     assert "inferred_corpus_scenarios" in coverage.artifacts
     assert "schema_list_results" in coverage.artifacts
     assert "schema_explanation_results" in coverage.artifacts
+    assert "acquire-raw-conversations" in coverage.operations
     assert "plan-validation-backlog" in coverage.operations
     assert "ingest-archive-runtime" in coverage.operations
     assert "index-message-fts" in coverage.operations
