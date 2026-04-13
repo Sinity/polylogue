@@ -17,6 +17,7 @@ from polylogue.cli.click_app import cli as root_cli
 from polylogue.cli.command_inventory import CommandPath, iter_command_paths
 from polylogue.showcase.dimensions import query_read, schema_exercise
 from polylogue.showcase.exercise_models import Exercise, Validation
+from polylogue.showcase.scenario_models import ExerciseScenario, compile_exercise_scenarios
 
 
 def discover_filter_flags(cli_group: click.Group) -> list[dict[str, Any]]:
@@ -135,25 +136,33 @@ def inventory_command_paths() -> tuple[CommandPath, ...]:
 
 def command_help_exercise_names() -> set[str]:
     """Return the canonical showcase exercise names for command-path help."""
-    return {command_path.help_exercise_name for command_path in inventory_command_paths()}
+    return {scenario.scenario_id for scenario in generate_command_help_scenarios()}
+
+
+def generate_command_help_scenarios() -> tuple[ExerciseScenario, ...]:
+    """Generate tier-0 help scenarios from the recursive Click command tree."""
+    scenarios: list[ExerciseScenario] = []
+    for command_path in inventory_command_paths():
+        display_name = command_path.display_name
+        scenarios.append(
+            ExerciseScenario(
+                scenario_id=command_path.help_exercise_name,
+                group="structural",
+                description=f"{display_name} help",
+                args=(*command_path.path, "--help"),
+                validation=Validation(stdout_contains=(f"polylogue {display_name}",)),
+                tier=0,
+                origin="generated.command-help",
+                operation_targets=("cli.help",),
+                tags=("generated", "help", "structural"),
+            )
+        )
+    return tuple(scenarios)
 
 
 def generate_command_help_exercises() -> list[Exercise]:
     """Generate tier-0 help exercises from the recursive Click command tree."""
-    exercises: list[Exercise] = []
-    for command_path in inventory_command_paths():
-        display_name = command_path.display_name
-        exercises.append(
-            Exercise(
-                name=command_path.help_exercise_name,
-                group="structural",
-                description=f"{display_name} help",
-                args=[*command_path.path, "--help"],
-                validation=Validation(stdout_contains=(f"polylogue {display_name}",)),
-                tier=0,
-            )
-        )
-    return exercises
+    return list(compile_exercise_scenarios(generate_command_help_scenarios()))
 
 
 def _has_json_flag(cmd: click.Command) -> bool:
@@ -269,32 +278,40 @@ def _json_contract_spec_by_path() -> dict[tuple[str, ...], dict[str, Any]]:
 
 def json_contract_exercise_names() -> set[str]:
     """Return the canonical showcase exercise names for curated JSON-contract commands."""
-    return {f"json-{'-'.join(spec['path'])}" for spec in _JSON_CONTRACT_SPECS}
+    return {scenario.scenario_id for scenario in generate_json_contract_scenarios()}
 
 
-def generate_json_contract_exercises() -> list[Exercise]:
-    """Generate JSON contract exercises for curated runnable commands."""
-    exercises: list[Exercise] = []
+def generate_json_contract_scenarios() -> tuple[ExerciseScenario, ...]:
+    """Generate JSON contract scenarios for curated runnable commands."""
+    scenarios: list[ExerciseScenario] = []
     by_path = _json_contract_spec_by_path()
     for cp in inventory_command_paths():
         spec = by_path.get(tuple(cp.path))
         if spec is None or not _has_json_flag(cp.command):
             continue
-        exercises.append(
-            Exercise(
-                name=f"json-{'-'.join(cp.path)}",
+        scenarios.append(
+            ExerciseScenario(
+                scenario_id=f"json-{'-'.join(cp.path)}",
                 group="subcommands",
                 description=f"{cp.display_name} JSON contract",
-                args=list(spec["args"]),
+                args=tuple(spec["args"]),
                 validation=Validation(stdout_is_valid_json=True),
                 needs_data=bool(spec["needs_data"]),
                 tier=int(spec["tier"]),
                 env=str(spec["env"]),
                 output_ext=".json",
                 artifact_class="json",
+                origin="generated.json-contract",
+                operation_targets=("cli.json-contract",),
+                tags=("generated", "json-contract"),
             )
         )
-    return exercises
+    return tuple(scenarios)
+
+
+def generate_json_contract_exercises() -> list[Exercise]:
+    """Generate JSON contract exercises for curated runnable commands."""
+    return list(compile_exercise_scenarios(generate_json_contract_scenarios()))
 
 
 # ---------------------------------------------------------------------------
@@ -457,7 +474,9 @@ __all__ = [
     "generate_provider_feature_exercises",
     "command_help_exercise_names",
     "generate_command_help_exercises",
+    "generate_command_help_scenarios",
     "generate_json_contract_exercises",
+    "generate_json_contract_scenarios",
     "generate_schema_exercises",
     "inventory_command_paths",
     "json_contract_exercise_names",
