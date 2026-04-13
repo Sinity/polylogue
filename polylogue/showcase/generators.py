@@ -536,6 +536,14 @@ def generate_provider_feature_exercises() -> list[Exercise]:
     return list(compile_exercise_scenarios(generate_provider_feature_scenarios()))
 
 
+def generate_qa_extra_scenarios() -> tuple[ExerciseScenario, ...]:
+    """Generate the extra scenario families exercised by the QA workflow."""
+    return (
+        *generate_schema_scenarios(),
+        *generate_format_scenarios(),
+    )
+
+
 def generate_all_scenarios(cli_group: click.Group | None = None) -> tuple[ExerciseScenario, ...]:
     """Generate all scenario categories."""
     scenarios: list[ExerciseScenario] = []
@@ -562,6 +570,7 @@ __all__ = [
     "generate_filter_scenarios",
     "generate_format_exercises",
     "generate_format_scenarios",
+    "generate_qa_extra_scenarios",
     "generate_provider_feature_exercises",
     "generate_provider_feature_scenarios",
     "command_help_exercise_names",

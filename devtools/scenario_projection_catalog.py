@@ -8,8 +8,7 @@ from polylogue.scenarios import (
 )
 from polylogue.showcase.exercises import EXERCISE_SCENARIOS
 from polylogue.showcase.generators import (
-    generate_format_scenarios,
-    generate_schema_scenarios,
+    generate_qa_extra_scenarios,
 )
 
 from .benchmark_scenario_catalog import BENCHMARK_CAMPAIGNS
@@ -33,10 +32,7 @@ def build_scenario_projection_entries() -> tuple[ScenarioProjectionEntry, ...]:
             description=scenario.description,
             obj=scenario,
         )
-        for scenario in (
-            *generate_schema_scenarios(),
-            *generate_format_scenarios(),
-        )
+        for scenario in generate_qa_extra_scenarios()
     )
     entries.extend(
         ScenarioProjectionEntry.from_object(
