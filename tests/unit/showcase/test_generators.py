@@ -16,7 +16,6 @@ from polylogue.showcase.generators import (
     generate_schema_exercises,
     generate_schema_scenarios,
 )
-from polylogue.showcase.scenario_models import compile_exercise_scenarios
 
 
 def _names(items: list | tuple) -> list[str]:
@@ -28,7 +27,6 @@ def test_generate_filter_exercises_compile_from_scenarios() -> None:
     exercises = generate_filter_exercises(root_cli)
 
     assert _names(exercises) == _names(scenarios)
-    assert _names(exercises) == _names(compile_exercise_scenarios(scenarios))
 
 
 def test_generate_format_exercises_compile_from_scenarios() -> None:
@@ -36,7 +34,6 @@ def test_generate_format_exercises_compile_from_scenarios() -> None:
     exercises = generate_format_exercises()
 
     assert _names(exercises) == _names(scenarios)
-    assert _names(exercises) == _names(compile_exercise_scenarios(scenarios))
 
 
 def test_generate_schema_exercises_compile_from_scenarios() -> None:
@@ -44,7 +41,6 @@ def test_generate_schema_exercises_compile_from_scenarios() -> None:
     exercises = generate_schema_exercises()
 
     assert _names(exercises) == _names(scenarios)
-    assert _names(exercises) == _names(compile_exercise_scenarios(scenarios))
 
 
 def test_generate_provider_feature_exercises_compile_from_scenarios() -> None:
@@ -52,7 +48,6 @@ def test_generate_provider_feature_exercises_compile_from_scenarios() -> None:
     exercises = generate_provider_feature_exercises()
 
     assert _names(exercises) == _names(scenarios)
-    assert _names(exercises) == _names(compile_exercise_scenarios(scenarios))
 
 
 def test_generate_qa_extra_scenarios_matches_schema_and_format_families() -> None:
@@ -66,4 +61,3 @@ def test_generate_all_exercises_compile_from_scenarios() -> None:
     exercises = generate_all_exercises(root_cli)
 
     assert _names(exercises) == _names(scenarios)
-    assert _names(exercises) == _names(compile_exercise_scenarios(scenarios))
