@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from polylogue.schemas.synthetic.wire_formats import WireFormat
@@ -46,9 +47,16 @@ class SyntheticGenerationBatch:
         return [artifact.raw_bytes for artifact in self.artifacts]
 
 
+@dataclass(frozen=True)
+class SyntheticWrittenBatch:
+    batch: SyntheticGenerationBatch
+    files: tuple[Path, ...]
+
+
 __all__ = [
     "SyntheticArtifact",
     "SyntheticGenerationBatch",
     "SyntheticGenerationReport",
     "SyntheticSchemaSelection",
+    "SyntheticWrittenBatch",
 ]

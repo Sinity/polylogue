@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from polylogue.config import Config, Source, get_config
+from polylogue.scenarios import CorpusSpec, build_default_corpus_specs
 from polylogue.sync_bridge import run_coroutine_sync
 
 
@@ -91,20 +92,29 @@ def generate_synthetic_fixtures(
     """Generate schema-driven synthetic fixtures for all providers."""
     from polylogue.schemas.synthetic import SyntheticCorpus
 
+    specs = build_default_corpus_specs(
+        providers=SyntheticCorpus.available_providers(),
+        count=count,
+        messages_min=6,
+        messages_max=19,
+        seed=42,
+        style=style,
+    )
+    generate_synthetic_fixtures_from_specs(fixture_dir, corpus_specs=specs)
+
+
+def generate_synthetic_fixtures_from_specs(
+    fixture_dir: Path,
+    *,
+    corpus_specs: tuple[CorpusSpec, ...],
+) -> None:
+    """Generate schema-driven synthetic fixtures for explicit corpus specs."""
+    from polylogue.schemas.synthetic import SyntheticCorpus
+
     fixture_dir.mkdir(parents=True, exist_ok=True)
-    for provider in SyntheticCorpus.available_providers():
-        corpus = SyntheticCorpus.for_provider(provider)
-        provider_dir = fixture_dir / provider
-        provider_dir.mkdir(parents=True, exist_ok=True)
-        ext = ".json" if corpus.wire_format.encoding == "json" else ".jsonl"
-        batch = corpus.generate_batch(
-            count=count,
-            messages_per_conversation=range(6, 20),
-            seed=42,
-            style=style,
-        )
-        for idx, artifact in enumerate(batch.artifacts):
-            (provider_dir / f"showcase-{idx:02d}{ext}").write_bytes(artifact.raw_bytes)
+    for spec in corpus_specs:
+        provider_dir = fixture_dir / spec.provider
+        SyntheticCorpus.write_spec_artifacts(spec, provider_dir, prefix="showcase")
 
 
 def mirror_fixtures_to_inbox(fixture_dir: Path, inbox_dir: Path) -> None:
@@ -213,6 +223,7 @@ __all__ = [
     "create_verification_workspace",
     "ensure_report_dir",
     "generate_synthetic_fixtures",
+    "generate_synthetic_fixtures_from_specs",
     "mirror_fixtures_to_inbox",
     "override_workspace_env",
     "run_pipeline_for_configured_sources",
