@@ -121,6 +121,21 @@ def _infer_polylogue_product_metadata(argv: tuple[str, ...]) -> ScenarioMetadata
     return _metadata_for_operations(operation_name) if operation_name else ScenarioMetadata()
 
 
+def _infer_polylogue_schema_metadata(argv: tuple[str, ...]) -> ScenarioMetadata:
+    try:
+        schema_index = argv.index("schema")
+    except ValueError:
+        return ScenarioMetadata()
+    if schema_index + 1 >= len(argv):
+        return ScenarioMetadata()
+    subcommand = argv[schema_index + 1]
+    if subcommand == "list":
+        return _metadata_for_operations("query-schema-catalog")
+    if subcommand == "explain":
+        return _metadata_for_operations("query-schema-explanations")
+    return ScenarioMetadata()
+
+
 def _infer_polylogue_doctor_metadata(argv: tuple[str, ...]) -> ScenarioMetadata:
     operations: list[str] = []
     if "--json" in argv:
@@ -151,6 +166,8 @@ def _infer_polylogue_query_metadata(argv: tuple[str, ...]) -> ScenarioMetadata:
 
 
 def _infer_polylogue_metadata(argv: tuple[str, ...]) -> ScenarioMetadata:
+    if "schema" in argv:
+        return _infer_polylogue_schema_metadata(argv)
     if "products" in argv:
         return _infer_polylogue_product_metadata(argv)
     if "doctor" in argv:
