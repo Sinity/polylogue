@@ -17,6 +17,10 @@ def test_render_artifact_graph_text_mentions_both_vertical_paths() -> None:
     assert "plan-validation-backlog [planning]" in rendered
     assert "project-action-event-health" in rendered
     assert "json-doctor-action-event-preview" in rendered
+    assert "uncovered artifacts:" in rendered
+    assert "raw_validation_state" in rendered
+    assert "uncovered operations:" in rendered
+    assert "plan-validation-backlog" in rendered
 
 
 def test_render_artifact_graph_json_is_machine_readable() -> None:
@@ -43,3 +47,5 @@ def test_render_artifact_graph_json_is_machine_readable() -> None:
             "origin": "generated.json-contract",
         }
     ]
+    assert "raw_validation_state" in payload["scenario_coverage"]["uncovered_artifacts"]
+    assert "plan-validation-backlog" in payload["scenario_coverage"]["uncovered_operations"]

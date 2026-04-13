@@ -38,9 +38,14 @@ def _runtime_scenario_coverage() -> dict[str, dict[str, list[dict[str, str]]]]:
         for operation_name in metadata.runtime_operation_targets():
             operation_refs[operation_name].append({"source": source_kind, "name": name, "origin": metadata.origin})
 
+    covered_artifacts = {name: refs for name, refs in artifact_refs.items() if refs}
+    covered_operations = {name: refs for name, refs in operation_refs.items() if refs}
+
     return {
-        "artifacts": {name: refs for name, refs in artifact_refs.items() if refs},
-        "operations": {name: refs for name, refs in operation_refs.items() if refs},
+        "artifacts": covered_artifacts,
+        "operations": covered_operations,
+        "uncovered_artifacts": sorted(name for name, refs in artifact_refs.items() if not refs),
+        "uncovered_operations": sorted(name for name, refs in operation_refs.items() if not refs),
     }
 
 
@@ -78,6 +83,10 @@ def render_artifact_graph(*, as_json: bool) -> str:
     for operation_name, refs in sorted(coverage["operations"].items()):
         rendered_refs = ", ".join(f"{ref['source']}:{ref['name']}" for ref in refs)
         lines.append(f"- operation {operation_name}: {rendered_refs}")
+    if coverage["uncovered_artifacts"]:
+        lines.append("- uncovered artifacts: " + ", ".join(coverage["uncovered_artifacts"]))
+    if coverage["uncovered_operations"]:
+        lines.append("- uncovered operations: " + ", ".join(coverage["uncovered_operations"]))
     return "\n".join(lines)
 
 
