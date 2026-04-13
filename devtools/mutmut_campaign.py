@@ -20,7 +20,7 @@ import shutil
 import subprocess
 import tempfile
 from collections import Counter
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -65,6 +65,13 @@ class CampaignResult:
     runtime_seconds: float
     exit_code: int
     notes: list[str]
+    origin: str = "authored"
+    path_targets: list[str] = field(default_factory=list)
+    artifact_targets: list[str] = field(default_factory=list)
+    operation_targets: list[str] = field(default_factory=list)
+    tags: list[str] = field(default_factory=list)
+
+
 def _toml_list(items: tuple[str, ...] | list[str]) -> str:
     rendered = ", ".join(json.dumps(item) for item in items)
     return f"[{rendered}]"
@@ -265,33 +272,48 @@ def format_markdown(result: CampaignResult) -> str:
         "",
         f"- Mutated paths: {', '.join(f'`{path}`' for path in result.paths_to_mutate)}",
         f"- Selected tests: {', '.join(f'`{path}`' for path in result.tests)}",
-        "",
-        "## Counts",
-        "",
-        "| Status | Count |",
-        "| --- | ---: |",
-        f"| Killed | {result.counts.get('killed', 0)} |",
-        f"| Survived | {result.counts.get('survived', 0)} |",
-        f"| Timeout | {result.counts.get('timeout', 0)} |",
-        f"| Not checked | {result.counts.get('not_checked', 0)} |",
-        f"| Suspicious | {result.counts.get('suspicious', 0)} |",
-        f"| Skipped | {result.counts.get('skipped', 0)} |",
-        "",
-        f"- Runtime: `{result.runtime_seconds:.2f}s`",
-        f"- Exit code: `{result.exit_code}`",
-        "",
-        "## Dominant Survivors",
-        "",
-        render_table(result.dominant_survivors),
-        "",
-        "## Dominant Timeouts",
-        "",
-        render_table(result.dominant_timeouts),
-        "",
-        "## Dominant Not-Checked Clusters",
-        "",
-        render_table(result.dominant_not_checked),
     ]
+    if result.path_targets or result.artifact_targets or result.operation_targets or result.tags:
+        lines.extend(["", "## Scenario Metadata", ""])
+        lines.append(f"- Origin: `{result.origin}`")
+        if result.path_targets:
+            lines.append(f"- Path targets: `{', '.join(result.path_targets)}`")
+        if result.artifact_targets:
+            lines.append(f"- Artifact targets: `{', '.join(result.artifact_targets)}`")
+        if result.operation_targets:
+            lines.append(f"- Operation targets: `{', '.join(result.operation_targets)}`")
+        if result.tags:
+            lines.append(f"- Tags: `{', '.join(result.tags)}`")
+    lines.extend(
+        [
+            "",
+            "## Counts",
+            "",
+            "| Status | Count |",
+            "| --- | ---: |",
+            f"| Killed | {result.counts.get('killed', 0)} |",
+            f"| Survived | {result.counts.get('survived', 0)} |",
+            f"| Timeout | {result.counts.get('timeout', 0)} |",
+            f"| Not checked | {result.counts.get('not_checked', 0)} |",
+            f"| Suspicious | {result.counts.get('suspicious', 0)} |",
+            f"| Skipped | {result.counts.get('skipped', 0)} |",
+            "",
+            f"- Runtime: `{result.runtime_seconds:.2f}s`",
+            f"- Exit code: `{result.exit_code}`",
+            "",
+            "## Dominant Survivors",
+            "",
+            render_table(result.dominant_survivors),
+            "",
+            "## Dominant Timeouts",
+            "",
+            render_table(result.dominant_timeouts),
+            "",
+            "## Dominant Not-Checked Clusters",
+            "",
+            render_table(result.dominant_not_checked),
+        ]
+    )
     if result.survivor_keys:
         lines.extend(
             [
@@ -362,6 +384,11 @@ def load_results(campaign_dir: Path) -> list[CampaignResult]:
             runtime_seconds=float(payload["runtime_seconds"]),
             exit_code=int(payload["exit_code"]),
             notes=list(payload.get("notes", [])),
+            origin=str(payload.get("origin", "authored")),
+            path_targets=list(payload.get("path_targets", [])),
+            artifact_targets=list(payload.get("artifact_targets", [])),
+            operation_targets=list(payload.get("operation_targets", [])),
+            tags=list(payload.get("tags", [])),
         )
         results.append(result)
     return results
@@ -498,6 +525,11 @@ def run_campaign(
             runtime_seconds=runtime,
             exit_code=completed.returncode,
             notes=list(campaign.notes),
+            origin="authored.mutation-campaign" if campaign.origin == "authored" else campaign.origin,
+            path_targets=list(campaign.path_targets),
+            artifact_targets=list(campaign.artifact_targets),
+            operation_targets=list(campaign.operation_targets),
+            tags=list(campaign.tags or ("mutation",)),
         )
         write_artifacts(result, json_out=json_out, markdown_out=markdown_out)
         return result
