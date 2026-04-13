@@ -4,12 +4,10 @@ from pathlib import Path
 
 from devtools import render_quality_reference
 from devtools.benchmark_catalog import BenchmarkCampaignEntry
-from devtools.quality_registry import (
-    MutationCampaignEntry,
-    QualityRegistry,
-    ValidationLaneEntry,
-)
+from devtools.mutation_catalog import MutationCampaignEntry
+from devtools.quality_registry import QualityRegistry
 from devtools.scenario_coverage import RuntimePathCoverage, RuntimeScenarioCoverage, ScenarioCoverageRef
+from devtools.validation_catalog import ValidationLaneEntry
 from polylogue.scenarios import (
     ScenarioProjectionEntry,
     ScenarioProjectionSourceKind,
