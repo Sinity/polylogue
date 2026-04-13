@@ -29,6 +29,8 @@ def test_executable_scenario_exposes_pytest_targets() -> None:
     assert projection.name == "machine-contract"
     assert projection.operation_targets == ("cli.json-contract",)
     assert projection.tags == ("contract", "json")
+    assert projection.source_payload["execution"]["kind"] == "pytest"
+    assert projection.source_payload["execution"]["argv"] == ["tests/unit/cli/test_machine_contract.py"]
 
 
 def test_executable_scenario_projection_payload_preserves_corpus_specs() -> None:

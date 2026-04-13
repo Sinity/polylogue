@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import Enum
+from typing import Any
 
 
 class ExecutionKind(str, Enum):
@@ -74,6 +76,24 @@ class ExecutionSpec:
         if self.kind is not ExecutionKind.PYTEST:
             raise ValueError(f"{self.kind.value} execution cannot render a pytest command")
         return ("pytest", *prefix_args, *self.argv)
+
+    def to_payload(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {"kind": self.kind.value}
+        if self.argv:
+            payload["argv"] = list(self.argv)
+        if self.members:
+            payload["members"] = list(self.members)
+        if self.runner:
+            payload["runner"] = self.runner
+        return payload
+
+    @classmethod
+    def from_payload(cls, payload: Mapping[str, object]) -> ExecutionSpec:
+        kind = ExecutionKind(str(payload["kind"]))
+        argv = tuple(str(item) for item in payload.get("argv", ()))
+        members = tuple(str(item) for item in payload.get("members", ()))
+        runner = str(payload.get("runner", "")) if payload.get("runner") is not None else ""
+        return cls(kind=kind, argv=argv, members=members, runner=runner)
 
 
 def command_execution(*argv: str) -> ExecutionSpec:
