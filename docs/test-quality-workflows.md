@@ -15,6 +15,20 @@ Current registry snapshot:
 - benchmark campaigns: `3`
 - synthetic benchmark campaigns: `6`
 
+## Runtime Coverage
+
+- covered runtime artifacts: `12`
+- covered runtime operations: `6`
+- uncovered runtime artifacts: —
+- uncovered runtime operations: —
+
+Inspect the full authored map with:
+
+```bash
+devtools artifact-graph
+devtools artifact-graph --json
+```
+
 ## Common Commands
 
 Commands below assume the project devshell is already active. If not, prefix them with `nix develop -c`.
