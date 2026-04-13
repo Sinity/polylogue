@@ -4,15 +4,17 @@ import json
 from pathlib import Path
 
 from devtools.benchmark_campaign import (
-    BENCHMARK_SCENARIOS,
-    BenchmarkScenario,
     BenchmarkStat,
     CampaignResult,
     Regression,
     _compare_results,
     compare_artifacts,
-    compile_benchmark_scenarios,
     render_index,
+)
+from devtools.benchmark_scenario_catalog import (
+    BENCHMARK_SCENARIOS,
+    BenchmarkScenario,
+    compile_benchmark_scenarios,
 )
 
 
