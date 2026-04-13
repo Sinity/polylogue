@@ -36,6 +36,7 @@ from polylogue.archive_products import (
     WorkThreadProductQuery,
 )
 from polylogue.lib.query_spec import ConversationQuerySpec
+from polylogue.maintenance_targets import build_maintenance_target_catalog
 from polylogue.paths import conversation_render_root
 from polylogue.services import RuntimeServices, build_runtime_services
 from polylogue.storage.backends.connection import connection_context
@@ -43,8 +44,8 @@ from polylogue.storage.repair import collect_archive_debt_statuses_sync
 from polylogue.storage.search import SearchHit, SearchResult
 
 logger = structlog.get_logger(__name__)
-
-_SESSION_PRODUCT_REPAIR_HINT = "Run `polylogue doctor --repair --target session_products` or `polylogue run all`."
+_MAINTENANCE_TARGET_CATALOG = build_maintenance_target_catalog()
+_SESSION_PRODUCT_REPAIR_HINT = _MAINTENANCE_TARGET_CATALOG.repair_hint(("session_products",), include_run_all=True)
 _PROFILE_FTS_STATUS_BY_TIER = {
     "merged": "profile_merged_fts_ready",
     "evidence": "profile_evidence_fts_ready",

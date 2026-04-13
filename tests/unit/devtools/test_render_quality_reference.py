@@ -122,6 +122,7 @@ def test_build_document_includes_live_registry_sections() -> None:
                 path_targets=("action-event-repair-loop",),
                 artifact_targets=("action_event_rows",),
                 operation_targets=("project-action-event-health",),
+                maintenance_targets=("action_event_read_model",),
                 tags=("generated", "json-contract"),
             ),
             ScenarioProjectionEntry(
@@ -206,6 +207,7 @@ def test_build_document_includes_runtime_coverage_section() -> None:
             ),
         },
         operations={},
+        maintenance_targets={},
         declared_operations={},
         paths={
             "action-event-repair-loop": RuntimePathCoverage(
@@ -223,6 +225,7 @@ def test_build_document_includes_runtime_coverage_section() -> None:
         },
         uncovered_artifacts=("tool_use_source_blocks",),
         uncovered_operations=("materialize-action-events",),
+        uncovered_maintenance_targets=("wal_checkpoint",),
         uncovered_declared_operations=("benchmark.repair.action-events",),
     )
 
@@ -231,10 +234,12 @@ def test_build_document_includes_runtime_coverage_section() -> None:
     assert "## Runtime Coverage" in rendered
     assert "- covered runtime paths: `0`" in rendered
     assert "- covered runtime artifacts: `1`" in rendered
+    assert "- covered maintenance targets: `0`" in rendered
     assert "- covered declared operation targets: `0`" in rendered
     assert "- uncovered runtime paths: `action-event-repair-loop`" in rendered
     assert "- uncovered runtime artifacts: `tool_use_source_blocks`" in rendered
     assert "- uncovered runtime operations: `materialize-action-events`" in rendered
+    assert "- uncovered maintenance targets: `wal_checkpoint`" in rendered
     assert "- uncovered declared operation targets: `benchmark.repair.action-events`" in rendered
     assert "devtools artifact-graph" in rendered
 

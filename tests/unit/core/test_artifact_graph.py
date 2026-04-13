@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from polylogue.artifact_graph import ArtifactLayer, build_artifact_graph
 from polylogue.artifacts import build_runtime_artifact_nodes, build_runtime_artifact_paths
+from polylogue.maintenance_targets import MAINTENANCE_TARGET_NAMES
 from polylogue.operations import OperationKind, build_runtime_operation_catalog
 
 
@@ -81,6 +82,7 @@ def test_artifact_graph_contains_the_current_runtime_paths() -> None:
     assert nodes["message_fts"].layer is ArtifactLayer.INDEX
     assert nodes["message_source_rows"].depends_on == ("archive_conversation_rows",)
     assert nodes["message_fts"].depends_on == ("message_source_rows",)
+    assert nodes["message_fts"].repair_targets == ("dangling_fts",)
     assert nodes["embedding_metadata_rows"].depends_on == ("archive_conversation_rows",)
     assert nodes["embedding_status_rows"].depends_on == ("archive_conversation_rows",)
     assert nodes["message_embedding_vectors"].depends_on == ("archive_conversation_rows",)
@@ -133,6 +135,11 @@ def test_artifact_graph_contains_the_current_runtime_paths() -> None:
         "session_product_health",
         "retrieval_band_health",
     )
+    assert nodes["archive_health"].repair_targets == (
+        "dangling_fts",
+        "action_event_read_model",
+        "session_products",
+    )
     assert operations["acquire-raw-conversations"].produces == ("raw_validation_state", "artifact_observation_rows")
     assert operations["plan-validation-backlog"].produces == ("validation_backlog",)
     assert operations["plan-parse-backlog"].produces == ("parse_backlog", "parse_quarantine")
@@ -180,6 +187,28 @@ def test_artifact_graph_contains_the_current_runtime_paths() -> None:
         "retrieval_band_health",
     )
     assert operations["plan-validation-backlog"].kind is OperationKind.PLANNING
+    assert graph.maintenance_target_names() == MAINTENANCE_TARGET_NAMES
+    assert {node.name for node in graph.artifacts_for_maintenance_target("session_products")} == {
+        "session_profile_rows",
+        "session_profile_merged_fts",
+        "session_profile_evidence_fts",
+        "session_profile_inference_fts",
+        "session_profile_enrichment_fts",
+        "session_work_event_rows",
+        "session_work_event_fts",
+        "session_phase_rows",
+        "work_thread_rows",
+        "work_thread_fts",
+        "session_tag_rollup_rows",
+        "day_session_summary_rows",
+        "session_product_rows",
+        "session_product_fts",
+        "session_product_health",
+        "archive_health",
+    }
+    assert tuple(
+        target.name for target in graph.maintenance_targets_for_operation_names(("index-message-fts", "missing"))
+    ) == ("dangling_fts",)
 
 
 def test_artifact_graph_operations_come_from_runtime_operation_catalog() -> None:
@@ -188,6 +217,7 @@ def test_artifact_graph_operations_come_from_runtime_operation_catalog() -> None
 
     assert tuple(operation.name for operation in graph.operations) == authored.names()
     assert graph.operations == authored.specs
+    assert tuple(target.name for target in graph.maintenance_targets) == MAINTENANCE_TARGET_NAMES
 
 
 def test_artifact_graph_paths_reference_only_declared_nodes() -> None:

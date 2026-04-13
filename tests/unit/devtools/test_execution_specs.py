@@ -38,6 +38,35 @@ def test_polylogue_execution_renders_runtime_and_display_forms() -> None:
     assert execution.polylogue_invoke_args == ("--plain", "doctor", "--json")
 
 
+def test_polylogue_doctor_targeted_execution_uses_maintenance_target_catalog_metadata() -> None:
+    execution = polylogue_execution(
+        "doctor",
+        "--repair",
+        "--target",
+        "action_event_read_model",
+        "--target",
+        "session_products",
+    )
+
+    assert execution.metadata.operation_targets == (
+        "materialize-action-events",
+        "materialize-session-products",
+        "project-action-event-health",
+        "project-session-product-health",
+    )
+    assert execution.metadata.maintenance_targets == (
+        "action_event_read_model",
+        "session_products",
+    )
+
+
+def test_polylogue_doctor_target_aliases_resolve_through_catalog() -> None:
+    execution = polylogue_execution("doctor", "--target", "action_events")
+
+    assert execution.metadata.operation_targets == ("project-action-event-health",)
+    assert execution.metadata.maintenance_targets == ("action_event_read_model",)
+
+
 def test_pipeline_probe_execution_renders_control_plane_command() -> None:
     execution = pipeline_probe_execution(
         PipelineProbeRequest(
