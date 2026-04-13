@@ -14,9 +14,9 @@ Current registry snapshot:
 - mutation campaigns: `19`
 - benchmark campaigns: `3`
 - synthetic benchmark campaigns: `6`
-- scenario projections: `124`
+- scenario projections: `146`
   - benchmark-campaign: `3`
-  - exercise: `115`
+  - exercise: `137`
   - synthetic-benchmark: `6`
 
 ## Runtime Coverage
@@ -24,9 +24,11 @@ Current registry snapshot:
 - covered runtime paths: `3`
 - covered runtime artifacts: `12`
 - covered runtime operations: `6`
+- covered declared operation targets: `15`
 - uncovered runtime paths: —
 - uncovered runtime artifacts: —
 - uncovered runtime operations: —
+- uncovered declared operation targets: `benchmark.repair.action-events`
 
 Inspect the full authored map with:
 
@@ -254,6 +256,28 @@ These are the authored scenario-bearing projections currently feeding runtime co
 | `exercise` | `embed-stats` | — | — | — | — | Embedding statistics |
 | `exercise` | `exclude-provider` | — | — | — | — | Exclude a provider |
 | `exercise` | `fields-selector` | — | — | — | — | Select specific JSON fields |
+| `exercise` | `gen-fmt-csv-latest` | — | — | — | `generated`<br>`formats`<br>`csv`<br>`latest` | Generated: csv format in latest mode |
+| `exercise` | `gen-fmt-csv-list` | — | — | — | `generated`<br>`formats`<br>`csv`<br>`list` | Generated: csv format in list mode |
+| `exercise` | `gen-fmt-html-latest` | — | — | — | `generated`<br>`formats`<br>`html`<br>`latest` | Generated: html format in latest mode |
+| `exercise` | `gen-fmt-html-list` | — | — | — | `generated`<br>`formats`<br>`html`<br>`list` | Generated: html format in list mode |
+| `exercise` | `gen-fmt-json-latest` | — | — | — | `generated`<br>`formats`<br>`json`<br>`latest` | Generated: json format in latest mode |
+| `exercise` | `gen-fmt-json-list` | — | — | — | `generated`<br>`formats`<br>`json`<br>`list` | Generated: json format in list mode |
+| `exercise` | `gen-fmt-markdown-latest` | — | — | — | `generated`<br>`formats`<br>`markdown`<br>`latest` | Generated: markdown format in latest mode |
+| `exercise` | `gen-fmt-markdown-list` | — | — | — | `generated`<br>`formats`<br>`markdown`<br>`list` | Generated: markdown format in list mode |
+| `exercise` | `gen-fmt-obsidian-latest` | — | — | — | `generated`<br>`formats`<br>`obsidian`<br>`latest` | Generated: obsidian format in latest mode |
+| `exercise` | `gen-fmt-obsidian-list` | — | — | — | `generated`<br>`formats`<br>`obsidian`<br>`list` | Generated: obsidian format in list mode |
+| `exercise` | `gen-fmt-org-latest` | — | — | — | `generated`<br>`formats`<br>`org`<br>`latest` | Generated: org format in latest mode |
+| `exercise` | `gen-fmt-org-list` | — | — | — | `generated`<br>`formats`<br>`org`<br>`list` | Generated: org format in list mode |
+| `exercise` | `gen-fmt-plaintext-latest` | — | — | — | `generated`<br>`formats`<br>`plaintext`<br>`latest` | Generated: plaintext format in latest mode |
+| `exercise` | `gen-fmt-plaintext-list` | — | — | — | `generated`<br>`formats`<br>`plaintext`<br>`list` | Generated: plaintext format in list mode |
+| `exercise` | `gen-fmt-yaml-latest` | — | — | — | `generated`<br>`formats`<br>`yaml`<br>`latest` | Generated: yaml format in latest mode |
+| `exercise` | `gen-fmt-yaml-list` | — | — | — | `generated`<br>`formats`<br>`yaml`<br>`list` | Generated: yaml format in list mode |
+| `exercise` | `gen-schema-explain-chatgpt` | — | — | — | `generated`<br>`schema`<br>`chatgpt` | Generated: schema explain --provider chatgpt |
+| `exercise` | `gen-schema-explain-claude-ai` | — | — | — | `generated`<br>`schema`<br>`claude-ai` | Generated: schema explain --provider claude-ai |
+| `exercise` | `gen-schema-explain-claude-code` | — | — | — | `generated`<br>`schema`<br>`claude-code` | Generated: schema explain --provider claude-code |
+| `exercise` | `gen-schema-explain-codex` | — | — | — | `generated`<br>`schema`<br>`codex` | Generated: schema explain --provider codex |
+| `exercise` | `gen-schema-explain-gemini` | — | — | — | `generated`<br>`schema`<br>`gemini` | Generated: schema explain --provider gemini |
+| `exercise` | `gen-schema-list` | — | — | — | `generated`<br>`schema`<br>`list` | Generated: schema list --json returns valid JSON |
 | `exercise` | `help-audit` | — | — | `cli.help` | `generated`<br>`help`<br>`structural` | audit help |
 | `exercise` | `help-audit-generate` | — | — | `cli.help` | `generated`<br>`help`<br>`structural` | audit generate help |
 | `exercise` | `help-auth` | — | — | `cli.help` | `generated`<br>`help`<br>`structural` | auth help |
