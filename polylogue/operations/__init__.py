@@ -10,6 +10,7 @@ from .archive import (
 from .specs import (
     OperationKind,
     OperationSpec,
+    build_declared_operation_specs,
     build_runtime_operation_specs,
 )
 
@@ -19,6 +20,7 @@ __all__ = [
     "ArchiveStats",
     "OperationKind",
     "OperationSpec",
+    "build_declared_operation_specs",
     "build_runtime_operation_specs",
     "get_provider_counts",
     "list_provider_analytics_products",
