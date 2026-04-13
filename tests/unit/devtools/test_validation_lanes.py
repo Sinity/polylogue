@@ -91,12 +91,22 @@ class TestLaneParsing:
         )
         assert lane.operation_targets == ("query-archive-debt",)
 
-    def test_pipeline_probe_chatgpt_lane_infers_parse_backlog_metadata(self):
+    def test_pipeline_probe_chatgpt_lane_infers_parse_stage_runtime_metadata(self):
         lane = LANES["pipeline-probe-chatgpt"]
 
-        assert lane.path_targets == ("raw-reparse-loop",)
-        assert lane.artifact_targets == ("raw_validation_state", "parse_backlog", "parse_quarantine")
-        assert lane.operation_targets == ("plan-parse-backlog",)
+        assert lane.path_targets == ("raw-reparse-loop", "raw-archive-ingest-loop")
+        assert lane.artifact_targets == (
+            "raw_validation_state",
+            "validation_backlog",
+            "parse_backlog",
+            "parse_quarantine",
+            "archive_conversation_rows",
+        )
+        assert lane.operation_targets == (
+            "plan-validation-backlog",
+            "plan-parse-backlog",
+            "ingest-archive-runtime",
+        )
 
     def test_memory_budget_lane_preserves_wrapped_runtime_metadata(self):
         lane = LANES["memory-budget"]
