@@ -115,7 +115,11 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         "Render the authored scenario-bearing verification projections.",
         "devtools.scenario_projections",
         use_when="Inspect the unified projection inventory that feeds runtime coverage, generated docs, and control-plane maps.",
-        examples=("devtools scenario-projections", "devtools scenario-projections --json"),
+        examples=(
+            "devtools scenario-projections",
+            "devtools scenario-projections --source-kind exercise --artifact-target action_event_rows",
+            "devtools scenario-projections --json",
+        ),
     ),
     CommandSpec(
         "verify-showcase",
