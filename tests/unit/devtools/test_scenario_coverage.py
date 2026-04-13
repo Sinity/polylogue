@@ -73,6 +73,9 @@ def test_build_runtime_scenario_coverage_tracks_the_current_authored_map() -> No
     assert "publish-site" in coverage.operations
     assert "materialize-session-products" in coverage.operations
     assert "project-archive-health" in coverage.operations
+    assert "session_products" in coverage.maintenance_targets
+    assert "action_event_read_model" in coverage.maintenance_targets
+    assert "dangling_fts" in coverage.maintenance_targets
     assert "compile-inferred-corpus-specs" in coverage.operations
     assert "compile-inferred-corpus-scenarios" in coverage.operations
     assert "query-schema-catalog" in coverage.operations
@@ -81,4 +84,11 @@ def test_build_runtime_scenario_coverage_tracks_the_current_authored_map() -> No
     assert "benchmark.query.search-filters" in coverage.declared_operations
     assert coverage.uncovered_artifacts == ()
     assert coverage.uncovered_operations == ()
+    assert coverage.uncovered_maintenance_targets == (
+        "empty_conversations",
+        "orphaned_attachments",
+        "orphaned_content_blocks",
+        "orphaned_messages",
+        "wal_checkpoint",
+    )
     assert coverage.uncovered_declared_operations == ()

@@ -3,14 +3,11 @@
 from __future__ import annotations
 
 from polylogue.cli.helpers import fail
+from polylogue.maintenance_targets import MaintenanceTargetMode, build_maintenance_target_catalog
 
 
-def validate_check_options(
-    options,
-    *,
-    safe_repair_targets: tuple[str, ...],
-    cleanup_targets: tuple[str, ...],
-) -> None:
+def validate_check_options(options) -> None:
+    catalog = build_maintenance_target_catalog()
     if options.vacuum and not (options.repair or options.cleanup):
         fail("doctor", "--vacuum requires --repair or --cleanup")
     if options.preview and not (options.repair or options.cleanup):
@@ -48,16 +45,17 @@ def validate_check_options(
     if options.artifact_offset < 0:
         fail("doctor", "--artifact-offset must be >= 0")
     if options.maintenance_targets:
+        selected = catalog.resolve(tuple(options.maintenance_targets))
         if (
             options.repair
             and not options.cleanup
-            and not any(name in safe_repair_targets for name in options.maintenance_targets)
+            and not any(spec.mode is MaintenanceTargetMode.REPAIR for spec in selected)
         ):
             fail("doctor", "--target only selected cleanup targets while running --repair")
         if (
             options.cleanup
             and not options.repair
-            and not any(name in cleanup_targets for name in options.maintenance_targets)
+            and not any(spec.mode is MaintenanceTargetMode.CLEANUP for spec in selected)
         ):
             fail("doctor", "--target only selected repair targets while running --cleanup")
 
