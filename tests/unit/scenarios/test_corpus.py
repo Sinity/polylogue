@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from polylogue.scenarios import (
+    CorpusProfile,
     CorpusRequest,
     CorpusScenario,
     CorpusSpec,
@@ -21,22 +22,31 @@ def test_corpus_spec_payload_round_trip_preserves_inference_fields() -> None:
         provider="chatgpt",
         package_version="v3",
         element_kind="conversation_document",
+        profile=CorpusProfile(
+            family_ids=("cluster-a",),
+            artifact_kind="conversation_document",
+            observed_sample_count=23,
+            observed_confidence=0.75,
+            representative_paths=("/tmp/example.json",),
+        ),
         count=4,
         messages_min=5,
         messages_max=9,
         seed=7,
         style="showcase",
-        profile_family_ids=("cluster-a",),
-        artifact_kind="conversation_document",
-        observed_sample_count=23,
-        observed_confidence=0.75,
-        representative_paths=("/tmp/example.json",),
         origin="inferred.schema",
         tags=("synthetic", "schema"),
     )
 
     payload = spec.to_payload()
 
+    assert payload["profile"] == {
+        "family_ids": ["cluster-a"],
+        "artifact_kind": "conversation_document",
+        "observed_sample_count": 23,
+        "observed_confidence": 0.75,
+        "representative_paths": ["/tmp/example.json"],
+    }
     assert CorpusSpec.from_payload(payload) == spec
     assert spec.messages_per_conversation == range(5, 10)
 
@@ -104,8 +114,8 @@ def test_build_inferred_corpus_specs_uses_cluster_families_when_present() -> Non
     assert len(specs) == 1
     assert specs[0].package_version == "v5"
     assert specs[0].element_kind == "conversation_document"
-    assert specs[0].profile_family_ids == ("cluster-a",)
-    assert specs[0].observed_sample_count == 12
+    assert specs[0].profile.family_ids == ("cluster-a",)
+    assert specs[0].profile.observed_sample_count == 12
     assert specs[0].origin == "inferred.schema"
     assert specs[0].path_targets == ("inferred-corpus-compilation-loop",)
     assert specs[0].artifact_targets == (
@@ -129,7 +139,7 @@ def test_resolve_corpus_specs_applies_generation_overrides_to_inferred_specs() -
             messages_min=4,
             messages_max=16,
             style="default",
-            profile_family_ids=("cluster-a",),
+            profile=CorpusProfile(family_ids=("cluster-a",)),
             origin="inferred.schema",
             tags=("inferred", "schema", "synthetic"),
         ),
@@ -152,7 +162,7 @@ def test_resolve_corpus_specs_applies_generation_overrides_to_inferred_specs() -
     assert len(specs) == 1
     assert specs[0].provider == "chatgpt"
     assert specs[0].package_version == "v7"
-    assert specs[0].profile_family_ids == ("cluster-a",)
+    assert specs[0].profile.family_ids == ("cluster-a",)
     assert specs[0].count == 2
     assert specs[0].messages_min == 6
     assert specs[0].messages_max == 8
@@ -186,7 +196,7 @@ def test_resolve_corpus_scenarios_supports_inferred_source() -> None:
             messages_min=4,
             messages_max=4,
             seed=3,
-            profile_family_ids=("cluster-a",),
+            profile=CorpusProfile(family_ids=("cluster-a",)),
             origin="inferred.schema",
             tags=("inferred", "schema", "synthetic"),
         ),
@@ -243,7 +253,7 @@ def test_corpus_request_resolves_inferred_source_without_provider_inventory() ->
             messages_min=4,
             messages_max=4,
             seed=3,
-            profile_family_ids=("cluster-a",),
+            profile=CorpusProfile(family_ids=("cluster-a",)),
             origin="inferred.schema",
             tags=("inferred", "schema", "synthetic"),
         ),
@@ -272,7 +282,7 @@ def test_corpus_spec_scope_label_includes_version_and_profile_family() -> None:
     spec = CorpusSpec(
         provider="chatgpt",
         package_version="v7",
-        profile_family_ids=("cluster/a",),
+        profile=CorpusProfile(family_ids=("cluster/a",)),
     )
 
     assert spec.scope_label == "v7-cluster-a"
@@ -284,14 +294,14 @@ def test_build_corpus_scenarios_groups_specs_by_provider_and_version() -> None:
             CorpusSpec(
                 provider="chatgpt",
                 package_version="v7",
-                profile_family_ids=("cluster-a",),
+                profile=CorpusProfile(family_ids=("cluster-a",)),
                 origin="inferred.schema",
                 tags=("inferred", "schema", "synthetic"),
             ),
             CorpusSpec(
                 provider="chatgpt",
                 package_version="v7",
-                profile_family_ids=("cluster-b",),
+                profile=CorpusProfile(family_ids=("cluster-b",)),
                 origin="inferred.schema",
                 tags=("inferred", "schema", "synthetic"),
             ),
@@ -308,14 +318,14 @@ def test_build_corpus_scenarios_groups_specs_by_provider_and_version() -> None:
                 CorpusSpec(
                     provider="chatgpt",
                     package_version="v7",
-                    profile_family_ids=("cluster-a",),
+                    profile=CorpusProfile(family_ids=("cluster-a",)),
                     origin="inferred.schema",
                     tags=("inferred", "schema", "synthetic"),
                 ),
                 CorpusSpec(
                     provider="chatgpt",
                     package_version="v7",
-                    profile_family_ids=("cluster-b",),
+                    profile=CorpusProfile(family_ids=("cluster-b",)),
                     origin="inferred.schema",
                     tags=("inferred", "schema", "synthetic"),
                 ),
@@ -335,8 +345,10 @@ def test_corpus_scenario_compiles_its_own_projection_entry() -> None:
                 provider="chatgpt",
                 package_version="v7",
                 element_kind="conversation_document",
-                profile_family_ids=("cluster/a",),
-                observed_sample_count=12,
+                profile=CorpusProfile(
+                    family_ids=("cluster/a",),
+                    observed_sample_count=12,
+                ),
                 origin="inferred.schema",
                 tags=("inferred", "schema", "synthetic"),
             ),
@@ -362,8 +374,10 @@ def test_inferred_corpus_spec_compiles_its_own_projection_entry() -> None:
         provider="chatgpt",
         package_version="v7",
         element_kind="conversation_document",
-        profile_family_ids=("cluster/a",),
-        observed_sample_count=12,
+        profile=CorpusProfile(
+            family_ids=("cluster/a",),
+            observed_sample_count=12,
+        ),
         origin="inferred.schema",
         tags=("inferred", "schema", "synthetic"),
     )

@@ -37,7 +37,7 @@ def test_infer_schema_emits_default_corpus_specs_without_clustering(tmp_path: Pa
     assert len(result.corpus_scenarios) == 1
     assert result.corpus_specs[0].provider == "chatgpt"
     assert result.corpus_specs[0].package_version == "v3"
-    assert result.corpus_specs[0].observed_sample_count == 9
+    assert result.corpus_specs[0].profile.observed_sample_count == 9
     assert result.corpus_scenarios[0].provider == "chatgpt"
     assert result.corpus_scenarios[0].package_version == "v3"
 
@@ -90,9 +90,9 @@ def test_infer_schema_emits_cluster_backed_corpus_specs_when_manifest_exists(tmp
     assert result.manifest_path == tmp_path / "manifest.json"
     assert len(result.corpus_specs) == 1
     assert len(result.corpus_scenarios) == 1
-    assert result.corpus_specs[0].profile_family_ids == ("cluster-a",)
+    assert result.corpus_specs[0].profile.family_ids == ("cluster-a",)
     assert result.corpus_specs[0].element_kind == "conversation_document"
-    assert result.corpus_scenarios[0].corpus_specs[0].profile_family_ids == ("cluster-a",)
+    assert result.corpus_scenarios[0].corpus_specs[0].profile.family_ids == ("cluster-a",)
 
 
 def test_list_inferred_corpus_specs_reads_registry_catalog_and_manifest() -> None:
@@ -152,8 +152,8 @@ def test_list_inferred_corpus_specs_reads_registry_catalog_and_manifest() -> Non
     assert len(specs) == 1
     assert specs[0].provider == "chatgpt"
     assert specs[0].package_version == "v7"
-    assert specs[0].profile_family_ids == ("cluster-a",)
-    assert specs[0].observed_sample_count == 12
+    assert specs[0].profile.family_ids == ("cluster-a",)
+    assert specs[0].profile.observed_sample_count == 12
 
 
 def test_list_inferred_corpus_scenarios_groups_specs_by_provider_and_version() -> None:
@@ -213,7 +213,7 @@ def test_list_inferred_corpus_scenarios_groups_specs_by_provider_and_version() -
     assert len(scenarios) == 1
     assert scenarios[0].provider == "chatgpt"
     assert scenarios[0].package_version == "v7"
-    assert tuple(spec.profile_family_ids[0] for spec in scenarios[0].corpus_specs) == ("cluster-a", "cluster-b")
+    assert tuple(spec.profile.primary_family_id for spec in scenarios[0].corpus_specs) == ("cluster-a", "cluster-b")
 
 
 def test_list_inferred_corpus_specs_can_scope_to_one_provider() -> None:

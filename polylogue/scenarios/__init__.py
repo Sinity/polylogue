@@ -2,6 +2,7 @@
 
 from .assertions import AssertionSpec
 from .corpus import (
+    CorpusProfile,
     CorpusRequest,
     CorpusScenario,
     CorpusSourceKind,
@@ -64,6 +65,7 @@ __all__ = [
     "resolve_corpus_scenarios",
     "resolve_corpus_specs",
     "CorpusRequest",
+    "CorpusProfile",
     "CorpusSourceKind",
     "CorpusScenario",
     "CorpusSpec",
