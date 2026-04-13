@@ -8,7 +8,6 @@ from polylogue.scenarios import (
     ExecutionSpec,
     PipelineProbeInputMode,
     PipelineProbeRequest,
-    command_execution,
     composite_execution,
     devtools_execution,
     memory_budget_execution,
@@ -16,33 +15,6 @@ from polylogue.scenarios import (
     polylogue_execution,
     pytest_execution,
 )
-
-
-def cli_lane(
-    name: str,
-    description: str,
-    timeout_s: int,
-    executable: str,
-    *args: str,
-    category: str,
-    origin: str = "authored.validation-lane",
-    path_targets: tuple[str, ...] = (),
-    artifact_targets: tuple[str, ...] = (),
-    operation_targets: tuple[str, ...] = (),
-    tags: tuple[str, ...] = (),
-) -> LaneEntry:
-    return LaneEntry(
-        name=name,
-        description=description,
-        timeout_s=timeout_s,
-        category=category,
-        execution=command_execution(executable, *args),
-        origin=origin,
-        path_targets=path_targets,
-        artifact_targets=artifact_targets,
-        operation_targets=operation_targets,
-        tags=tags,
-    )
 
 
 def pytest_lane(
@@ -226,7 +198,6 @@ def composite_lane(
 
 
 __all__ = [
-    "cli_lane",
     "composite_lane",
     "devtools_lane",
     "LaneEntry",

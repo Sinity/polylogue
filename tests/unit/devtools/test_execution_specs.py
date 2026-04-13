@@ -5,7 +5,6 @@ from polylogue.scenarios import (
     ExecutionKind,
     PipelineProbeInputMode,
     PipelineProbeRequest,
-    command_execution,
     composite_execution,
     memory_budget_execution,
     pipeline_probe_execution,
@@ -13,15 +12,6 @@ from polylogue.scenarios import (
     pytest_execution,
     runner_execution,
 )
-
-
-def test_command_execution_exposes_command_shape() -> None:
-    execution = command_execution("devtools", "verify-showcase")
-
-    assert execution.kind is ExecutionKind.COMMAND
-    assert execution.command == ("devtools", "verify-showcase")
-    assert execution.pytest_targets == ()
-    assert execution.members == ()
 
 
 def test_pytest_execution_exposes_pytest_targets() -> None:

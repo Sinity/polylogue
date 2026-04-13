@@ -3,17 +3,17 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
 from .corpus import CorpusRequest, CorpusSourceKind
+from .metadata import ScenarioMetadata
 
 
 class ExecutionKind(str, Enum):
     """Authored execution substrate for scenario-bearing catalogs."""
 
-    COMMAND = "command"
     POLYLOGUE = "polylogue"
     DEVTOOLS = "devtools"
     PIPELINE_PROBE = "pipeline-probe"
@@ -33,6 +33,209 @@ _PIPELINE_PROBE_DEFAULT_COUNT = 5
 _PIPELINE_PROBE_DEFAULT_MESSAGES_MIN = 4
 _PIPELINE_PROBE_DEFAULT_MESSAGES_MAX = 12
 _PIPELINE_PROBE_DEFAULT_SEED = 42
+_KNOWN_POLYLOGUE_SUBCOMMANDS = frozenset(
+    {
+        "audit",
+        "doctor",
+        "embed",
+        "products",
+        "render",
+        "run",
+        "schema",
+        "site",
+        "tags",
+    }
+)
+_PRODUCT_OPERATION_BY_METHOD = {
+    "list_session_profile_products": "query-session-profiles",
+    "list_session_enrichment_products": "query-session-enrichments",
+    "list_session_work_event_products": "query-session-work-events",
+    "list_session_phase_products": "query-session-phases",
+    "list_work_thread_products": "query-work-threads",
+    "list_session_tag_rollup_products": "query-session-tag-rollups",
+    "list_day_session_summary_products": "query-day-session-summaries",
+    "list_week_session_summary_products": "query-week-session-summaries",
+    "list_provider_analytics_products": "query-provider-analytics",
+    "list_archive_debt_products": "query-archive-debt",
+}
+_PRODUCT_SUBCOMMAND_OPERATION_NAMES = {
+    "status": "query-session-product-status",
+    "debt": "query-archive-debt",
+}
+_DOCTOR_TARGET_HEALTH_OPERATIONS = {
+    "action_event_read_model": "project-action-event-health",
+    "action_events": "project-action-event-health",
+    "session_products": "project-session-product-health",
+}
+_DOCTOR_TARGET_REPAIR_OPERATIONS = {
+    "action_event_read_model": "materialize-action-events",
+    "action_events": "materialize-action-events",
+    "session_products": "materialize-session-products",
+}
+
+
+def _unique(items: tuple[str, ...]) -> tuple[str, ...]:
+    seen: set[str] = set()
+    merged: list[str] = []
+    for item in items:
+        if item in seen:
+            continue
+        seen.add(item)
+        merged.append(item)
+    return tuple(merged)
+
+
+def _metadata_for_operations(*operation_names: str) -> ScenarioMetadata:
+    from polylogue.operations import build_runtime_operation_catalog
+
+    target_names = _unique(tuple(name for name in operation_names if name))
+    operations = build_runtime_operation_catalog().resolve(target_names)
+    return ScenarioMetadata(
+        path_targets=_unique(tuple(path for operation in operations for path in operation.path_targets)),
+        artifact_targets=_unique(
+            tuple(artifact for operation in operations for artifact in (*operation.consumes, *operation.produces))
+        ),
+        operation_targets=target_names,
+    )
+
+
+def _find_repeated_flag_values(argv: tuple[str, ...], flag: str) -> tuple[str, ...]:
+    values: list[str] = []
+    for index, item in enumerate(argv[:-1]):
+        if item == flag:
+            values.append(argv[index + 1])
+    return tuple(values)
+
+
+def _first_non_option(argv: tuple[str, ...]) -> str | None:
+    for item in argv:
+        if not item.startswith("-"):
+            return item
+    return None
+
+
+def _metadata_for_polylogue_products(argv: tuple[str, ...]) -> ScenarioMetadata:
+    from polylogue.products.registry import PRODUCT_REGISTRY
+
+    try:
+        products_index = argv.index("products")
+    except ValueError:
+        return ScenarioMetadata()
+    if products_index + 1 >= len(argv):
+        return ScenarioMetadata()
+    subcommand = argv[products_index + 1]
+    direct_operation = _PRODUCT_SUBCOMMAND_OPERATION_NAMES.get(subcommand)
+    if direct_operation:
+        return _metadata_for_operations(direct_operation)
+    operation_name = next(
+        (
+            _PRODUCT_OPERATION_BY_METHOD[product.operations_method]
+            for product in PRODUCT_REGISTRY.values()
+            if product.resolved_cli_command_name == subcommand and product.operations_method in _PRODUCT_OPERATION_BY_METHOD
+        ),
+        "",
+    )
+    return _metadata_for_operations(operation_name) if operation_name else ScenarioMetadata()
+
+
+def _metadata_for_polylogue_schema(argv: tuple[str, ...]) -> ScenarioMetadata:
+    try:
+        schema_index = argv.index("schema")
+    except ValueError:
+        return ScenarioMetadata()
+    if schema_index + 1 >= len(argv):
+        return ScenarioMetadata()
+    subcommand = argv[schema_index + 1]
+    if subcommand == "list":
+        return _metadata_for_operations("query-schema-catalog")
+    if subcommand == "explain":
+        return _metadata_for_operations("query-schema-explanations")
+    return ScenarioMetadata()
+
+
+def _metadata_for_polylogue_doctor(argv: tuple[str, ...]) -> ScenarioMetadata:
+    operations: list[str] = []
+    if "--json" in argv:
+        operations.append("cli.json-contract")
+    targets = tuple(target for target in _find_repeated_flag_values(argv, "--target") if target)
+    if targets:
+        if "--repair" in argv and "--preview" not in argv:
+            for target in targets:
+                repair_operation = _DOCTOR_TARGET_REPAIR_OPERATIONS.get(target)
+                if repair_operation:
+                    operations.append(repair_operation)
+        for target in targets:
+            health_operation = _DOCTOR_TARGET_HEALTH_OPERATIONS.get(target)
+            if health_operation:
+                operations.append(health_operation)
+    else:
+        operations.append("project-archive-health")
+    return _metadata_for_operations(*operations)
+
+
+def _metadata_for_polylogue_embed(argv: tuple[str, ...]) -> ScenarioMetadata:
+    operations: list[str] = []
+    if "--stats" in argv:
+        operations.extend(("project-retrieval-band-health", "query-embedding-status"))
+    else:
+        operations.append("materialize-transcript-embeddings")
+    if "--json" in argv:
+        operations.append("cli.json-contract")
+    return _metadata_for_operations(*operations)
+
+
+def _metadata_for_polylogue_run(argv: tuple[str, ...]) -> ScenarioMetadata:
+    try:
+        run_index = argv.index("run")
+    except ValueError:
+        return ScenarioMetadata()
+    if run_index + 1 >= len(argv):
+        return ScenarioMetadata()
+    stage = argv[run_index + 1]
+    if stage == "render":
+        return _metadata_for_operations("render-conversations")
+    if stage == "site":
+        return _metadata_for_operations("publish-site")
+    if stage == "acquire":
+        return _metadata_for_operations("acquire-raw-conversations")
+    if stage == "parse":
+        return _metadata_for_operations(
+            "acquire-raw-conversations",
+            "plan-validation-backlog",
+            "plan-parse-backlog",
+            "ingest-archive-runtime",
+        )
+    if stage == "embed":
+        return _metadata_for_polylogue_embed(argv[run_index + 2 :])
+    return ScenarioMetadata()
+
+
+def _default_metadata_for_polylogue(argv: tuple[str, ...]) -> ScenarioMetadata:
+    if "schema" in argv:
+        return _metadata_for_polylogue_schema(argv)
+    if "products" in argv:
+        return _metadata_for_polylogue_products(argv)
+    if "doctor" in argv:
+        return _metadata_for_polylogue_doctor(argv)
+    if "embed" in argv:
+        return _metadata_for_polylogue_embed(argv[argv.index("embed") + 1 :])
+    if "run" in argv:
+        return _metadata_for_polylogue_run(argv)
+    first_token = _first_non_option(argv)
+    if first_token in _KNOWN_POLYLOGUE_SUBCOMMANDS or not argv:
+        return ScenarioMetadata()
+    return _metadata_for_operations("query-conversations")
+
+
+def _default_metadata_for_pipeline_probe(request: PipelineProbeRequest) -> ScenarioMetadata:
+    if request.stage == "parse":
+        return _metadata_for_operations(
+            "acquire-raw-conversations",
+            "plan-validation-backlog",
+            "plan-parse-backlog",
+            "ingest-archive-runtime",
+        )
+    return ScenarioMetadata()
 
 
 @dataclass(frozen=True, slots=True)
@@ -230,6 +433,7 @@ class ExecutionSpec:
     max_rss_mb: int = 0
     wrapped: ExecutionSpec | None = None
     pipeline_probe: PipelineProbeRequest | None = None
+    metadata: ScenarioMetadata = field(default_factory=ScenarioMetadata)
 
     @property
     def is_composite(self) -> bool:
@@ -284,7 +488,7 @@ class ExecutionSpec:
             )
         if self.kind is ExecutionKind.PYTEST:
             return ("pytest", *self.argv)
-        return self.argv
+        return None
 
     @property
     def display_command(self) -> tuple[str, ...] | None:
@@ -346,6 +550,9 @@ class ExecutionSpec:
             payload["wrapped"] = self.wrapped.to_payload()
         if self.pipeline_probe is not None:
             payload["pipeline_probe"] = self.pipeline_probe.to_payload()
+        metadata_payload = self.metadata.to_payload()
+        if metadata_payload != {"origin": "authored"}:
+            payload["metadata"] = metadata_payload
         return payload
 
     @classmethod
@@ -362,6 +569,8 @@ class ExecutionSpec:
         pipeline_probe = (
             PipelineProbeRequest.from_payload(probe_payload) if isinstance(probe_payload, Mapping) else None
         )
+        metadata_payload = payload.get("metadata")
+        metadata = ScenarioMetadata.from_payload(metadata_payload) if isinstance(metadata_payload, Mapping) else ScenarioMetadata()
         return cls(
             kind=kind,
             argv=argv,
@@ -371,49 +580,65 @@ class ExecutionSpec:
             max_rss_mb=max_rss_mb,
             wrapped=wrapped,
             pipeline_probe=pipeline_probe,
+            metadata=metadata,
         )
 
 
-def command_execution(*argv: str) -> ExecutionSpec:
-    return ExecutionSpec(kind=ExecutionKind.COMMAND, argv=tuple(argv))
-
-
-def polylogue_execution(*argv: str) -> ExecutionSpec:
+def polylogue_execution(*argv: str, metadata: ScenarioMetadata | None = None) -> ExecutionSpec:
     if argv[:2] == ("polylogue", "--plain"):
         argv = argv[2:]
     elif argv[:1] == ("polylogue",):
         argv = argv[1:]
-    return ExecutionSpec(kind=ExecutionKind.POLYLOGUE, argv=tuple(argv))
+    defaults = _default_metadata_for_polylogue(tuple(argv))
+    return ExecutionSpec(
+        kind=ExecutionKind.POLYLOGUE,
+        argv=tuple(argv),
+        metadata=defaults if metadata is None else metadata.with_default_targets(defaults),
+    )
 
 
-def devtools_execution(subcommand: str, *argv: str) -> ExecutionSpec:
-    return ExecutionSpec(kind=ExecutionKind.DEVTOOLS, subcommand=subcommand, argv=tuple(argv))
+def devtools_execution(subcommand: str, *argv: str, metadata: ScenarioMetadata | None = None) -> ExecutionSpec:
+    return ExecutionSpec(
+        kind=ExecutionKind.DEVTOOLS,
+        subcommand=subcommand,
+        argv=tuple(argv),
+        metadata=metadata or ScenarioMetadata(),
+    )
 
 
-def pipeline_probe_execution(request: PipelineProbeRequest) -> ExecutionSpec:
-    return ExecutionSpec(kind=ExecutionKind.PIPELINE_PROBE, pipeline_probe=request)
+def pipeline_probe_execution(request: PipelineProbeRequest, metadata: ScenarioMetadata | None = None) -> ExecutionSpec:
+    defaults = _default_metadata_for_pipeline_probe(request)
+    return ExecutionSpec(
+        kind=ExecutionKind.PIPELINE_PROBE,
+        pipeline_probe=request,
+        metadata=defaults if metadata is None else metadata.with_default_targets(defaults),
+    )
 
 
-def pytest_execution(*argv: str) -> ExecutionSpec:
+def pytest_execution(*argv: str, metadata: ScenarioMetadata | None = None) -> ExecutionSpec:
     if argv and argv[0] == "pytest":
         argv = argv[1:]
-    return ExecutionSpec(kind=ExecutionKind.PYTEST, argv=tuple(argv))
+    return ExecutionSpec(kind=ExecutionKind.PYTEST, argv=tuple(argv), metadata=metadata or ScenarioMetadata())
 
 
-def composite_execution(*members: str) -> ExecutionSpec:
-    return ExecutionSpec(kind=ExecutionKind.COMPOSITE, members=tuple(members))
+def composite_execution(*members: str, metadata: ScenarioMetadata | None = None) -> ExecutionSpec:
+    return ExecutionSpec(kind=ExecutionKind.COMPOSITE, members=tuple(members), metadata=metadata or ScenarioMetadata())
 
 
-def runner_execution(runner: str) -> ExecutionSpec:
-    return ExecutionSpec(kind=ExecutionKind.RUNNER, runner=runner)
+def runner_execution(runner: str, metadata: ScenarioMetadata | None = None) -> ExecutionSpec:
+    return ExecutionSpec(kind=ExecutionKind.RUNNER, runner=runner, metadata=metadata or ScenarioMetadata())
 
 
 def memory_budget_execution(max_rss_mb: int, execution: ExecutionSpec) -> ExecutionSpec:
-    return ExecutionSpec(kind=ExecutionKind.MEMORY_BUDGET, max_rss_mb=max_rss_mb, wrapped=execution)
+    return ExecutionSpec(
+        kind=ExecutionKind.MEMORY_BUDGET,
+        max_rss_mb=max_rss_mb,
+        wrapped=execution,
+        metadata=execution.metadata,
+    )
 
 
 __all__ = [
-    "command_execution",
     "composite_execution",
     "devtools_execution",
     "ExecutionKind",
