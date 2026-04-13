@@ -24,8 +24,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
-from .mutation_scenario_catalog import MUTATION_CAMPAIGNS as CAMPAIGNS
-from .mutation_scenario_catalog import MutationCampaign
+from .mutation_catalog import MutationCampaignEntry, build_mutation_entries
 
 ROOT = Path(__file__).resolve().parent.parent
 CAMPAIGN_ARTIFACT_DIR = Path(".local/mutation-campaigns")
@@ -43,6 +42,7 @@ DEFAULT_IGNORE_PATTERNS = shutil.ignore_patterns(
     "qa_outputs",
     "qa_2026-03-10",
 )
+CAMPAIGNS = {entry.name: entry for entry in build_mutation_entries()}
 
 
 @dataclass(frozen=True)
@@ -452,7 +452,7 @@ def write_artifacts(result: CampaignResult, *, json_out: Path | None, markdown_o
 
 
 def run_campaign(
-    campaign: MutationCampaign,
+    campaign: MutationCampaignEntry,
     *,
     repo_root: Path,
     json_out: Path | None,
