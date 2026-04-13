@@ -15,6 +15,7 @@ from polylogue.scenarios import (
     CorpusSourceKind,
     CorpusSpec,
     build_corpus_scenarios,
+    flatten_corpus_specs,
     resolve_corpus_scenarios,
 )
 from polylogue.sync_bridge import run_coroutine_sync
@@ -111,9 +112,8 @@ def build_synthetic_corpus_specs(
     seed: int = 42,
 ) -> tuple[CorpusSpec, ...]:
     """Resolve synthetic corpus specs for showcase and demo workflows."""
-    return tuple(
-        spec
-        for scenario in build_synthetic_corpus_scenarios(
+    return flatten_corpus_specs(
+        build_synthetic_corpus_scenarios(
             providers=providers,
             count=count,
             style=style,
@@ -122,7 +122,6 @@ def build_synthetic_corpus_specs(
             messages_max=messages_max,
             seed=seed,
         )
-        for spec in scenario.corpus_specs
     )
 
 
@@ -199,7 +198,7 @@ def generate_synthetic_fixtures_from_scenarios(
     from polylogue.schemas.synthetic import SyntheticCorpus
 
     fixture_dir.mkdir(parents=True, exist_ok=True)
-    corpus_specs = tuple(spec for scenario in corpus_scenarios for spec in scenario.corpus_specs)
+    corpus_specs = flatten_corpus_specs(corpus_scenarios)
     return SyntheticCorpus.write_specs_artifacts(corpus_specs, fixture_dir, prefix=prefix)
 
 

@@ -7,6 +7,7 @@ from .corpus import (
     build_corpus_scenarios,
     build_default_corpus_specs,
     build_inferred_corpus_specs,
+    flatten_corpus_specs,
     resolve_corpus_scenarios,
     resolve_corpus_specs,
 )
@@ -31,6 +32,7 @@ __all__ = [
     "build_default_corpus_specs",
     "build_corpus_scenarios",
     "build_inferred_corpus_specs",
+    "flatten_corpus_specs",
     "resolve_corpus_scenarios",
     "resolve_corpus_specs",
     "CorpusSourceKind",
