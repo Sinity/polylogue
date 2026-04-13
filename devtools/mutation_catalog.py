@@ -1,40 +1,14 @@
-"""Typed mutation-campaign catalog shared across control-plane surfaces."""
+"""Mutation-campaign catalog shared across control-plane surfaces."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from .mutation_scenario_catalog import MUTATION_CAMPAIGNS, MutationCampaign
 
-from polylogue.scenarios import ScenarioMetadata
-
-from .mutation_scenario_catalog import MUTATION_CAMPAIGNS
-
-
-@dataclass(frozen=True)
-class MutationCampaignEntry(ScenarioMetadata):
-    name: str
-    description: str
-    paths_to_mutate: tuple[str, ...]
-    tests: tuple[str, ...]
-    notes: tuple[str, ...] = ()
+MutationCampaignEntry = MutationCampaign
 
 
 def build_mutation_entries() -> tuple[MutationCampaignEntry, ...]:
-    entries = [
-        MutationCampaignEntry(
-            name=campaign.name,
-            description=campaign.description,
-            paths_to_mutate=tuple(campaign.paths_to_mutate),
-            tests=tuple(campaign.tests),
-            notes=tuple(campaign.notes),
-            origin="authored.mutation-campaign" if campaign.origin == "authored" else campaign.origin,
-            path_targets=campaign.path_targets,
-            artifact_targets=campaign.artifact_targets,
-            operation_targets=campaign.operation_targets,
-            tags=campaign.tags or ("mutation",),
-        )
-        for campaign in MUTATION_CAMPAIGNS.values()
-    ]
-    return tuple(sorted(entries, key=lambda item: item.name))
+    return tuple(sorted(MUTATION_CAMPAIGNS.values(), key=lambda item: item.name))
 
 
 __all__ = [
