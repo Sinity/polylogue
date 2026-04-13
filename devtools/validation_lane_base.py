@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from devtools.command_catalog import control_plane_argv
+from devtools.execution_specs import ExecutionSpec, command_execution, composite_execution, pytest_execution
 from polylogue.scenarios import ScenarioMetadata
 
 
@@ -15,12 +16,20 @@ class LaneConfig(ScenarioMetadata):
     name: str
     description: str
     timeout_s: int
-    command: list[str] | None = None
-    sub_lanes: tuple[str, ...] = ()
+    execution: ExecutionSpec
 
     @property
     def is_composite(self) -> bool:
-        return bool(self.sub_lanes)
+        return self.execution.is_composite
+
+    @property
+    def command(self) -> list[str] | None:
+        command = self.execution.command
+        return list(command) if command is not None else None
+
+    @property
+    def sub_lanes(self) -> tuple[str, ...]:
+        return self.execution.members
 
 
 def cli_lane(
@@ -39,7 +48,7 @@ def cli_lane(
         name=name,
         description=description,
         timeout_s=timeout_s,
-        command=[executable, *args],
+        execution=command_execution(executable, *args),
         origin=origin,
         path_targets=path_targets,
         artifact_targets=artifact_targets,
@@ -63,8 +72,7 @@ def pytest_lane(
         name,
         description,
         timeout_s,
-        "pytest",
-        *args,
+        *pytest_execution("pytest", *args).argv,
         origin=origin,
         path_targets=path_targets,
         artifact_targets=artifact_targets,
@@ -89,7 +97,7 @@ def devtools_lane(
         name=name,
         description=description,
         timeout_s=timeout_s,
-        command=list(control_plane_argv(subcommand, *args)),
+        execution=command_execution(*control_plane_argv(subcommand, *args)),
         origin=origin,
         path_targets=path_targets,
         artifact_targets=artifact_targets,
@@ -169,7 +177,7 @@ def composite_lane(
         name=name,
         description=description,
         timeout_s=timeout_s,
-        sub_lanes=sub_lanes,
+        execution=composite_execution(*sub_lanes),
         origin=origin,
         path_targets=path_targets,
         artifact_targets=artifact_targets,

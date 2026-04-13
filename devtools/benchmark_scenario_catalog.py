@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from devtools.execution_specs import ExecutionSpec, pytest_execution
 from polylogue.scenarios import ScenarioMetadata
 
 
@@ -11,10 +12,14 @@ from polylogue.scenarios import ScenarioMetadata
 class Campaign(ScenarioMetadata):
     name: str
     description: str
-    tests: tuple[str, ...]
+    execution: ExecutionSpec
     notes: tuple[str, ...] = ()
     warn_pct: float = 10.0
     fail_pct: float = 20.0
+
+    @property
+    def tests(self) -> tuple[str, ...]:
+        return self.execution.pytest_targets
 
 
 @dataclass(frozen=True)
@@ -23,7 +28,7 @@ class BenchmarkScenario(ScenarioMetadata):
 
     scenario_id: str
     description: str
-    tests: tuple[str, ...]
+    execution: ExecutionSpec
     notes: tuple[str, ...] = ()
     warn_pct: float = 10.0
     fail_pct: float = 20.0
@@ -32,7 +37,7 @@ class BenchmarkScenario(ScenarioMetadata):
         return Campaign(
             name=self.scenario_id,
             description=self.description,
-            tests=self.tests,
+            execution=self.execution,
             notes=self.notes,
             warn_pct=self.warn_pct,
             fail_pct=self.fail_pct,
@@ -52,7 +57,7 @@ BENCHMARK_SCENARIOS: tuple[BenchmarkScenario, ...] = (
     BenchmarkScenario(
         scenario_id="search-filters",
         description="FTS and ConversationFilter benchmark domain",
-        tests=("tests/benchmarks/test_search_filters.py",),
+        execution=pytest_execution("tests/benchmarks/test_search_filters.py"),
         notes=(
             "Canonical search/filter latency domain.",
             "Keep on session-seeded DB fixtures for comparability.",
@@ -65,7 +70,7 @@ BENCHMARK_SCENARIOS: tuple[BenchmarkScenario, ...] = (
     BenchmarkScenario(
         scenario_id="storage",
         description="Repository/backend list/get-many/save benchmark domain",
-        tests=("tests/benchmarks/test_storage.py",),
+        execution=pytest_execution("tests/benchmarks/test_storage.py"),
         notes=("Canonical storage CRUD and batch-write latency domain.",),
         origin="authored.benchmark-domain",
         artifact_targets=("conversation_rows", "message_rows", "raw_rows"),
@@ -75,7 +80,7 @@ BENCHMARK_SCENARIOS: tuple[BenchmarkScenario, ...] = (
     BenchmarkScenario(
         scenario_id="pipeline",
         description="Index rebuild/update, action-event repair, plus hashing/semantic helper benchmark domain",
-        tests=("tests/benchmarks/test_pipeline.py",),
+        execution=pytest_execution("tests/benchmarks/test_pipeline.py"),
         notes=("Covers indexing, repair, and hot helper throughput.",),
         origin="authored.benchmark-domain",
         artifact_targets=("index_state", "pipeline_helpers"),
