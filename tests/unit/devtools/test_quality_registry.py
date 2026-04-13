@@ -16,6 +16,7 @@ def test_build_quality_registry_exposes_live_catalogs() -> None:
     assert any(entry.name == "live-exercises" for entry in registry.live_lanes)
     assert any(entry.name == "filters" for entry in registry.mutation_campaigns)
     assert any(entry.name == "search-filters" for entry in registry.benchmark_campaigns)
+    assert any(entry.name == "pipeline" for entry in registry.benchmark_campaigns)
     assert any(entry.name == "action-event-materialization" for entry in registry.synthetic_benchmark_campaigns)
     assert any(entry.name == "session-product-materialization" for entry in registry.synthetic_benchmark_campaigns)
     assert any(entry.name == "startup-health" for entry in registry.synthetic_benchmark_campaigns)
@@ -27,6 +28,13 @@ def test_build_quality_registry_exposes_live_catalogs() -> None:
     assert search_filters.artifact_targets == ("conversation_query_results", "message_fts")
     assert search_filters.operation_targets == ("benchmark.query.search-filters",)
     assert search_filters.tags == ("benchmark", "search", "filters")
+    pipeline = next(entry for entry in registry.benchmark_campaigns if entry.name == "pipeline")
+    assert pipeline.origin == "authored.benchmark-domain"
+    assert pipeline.operation_targets == (
+        "benchmark.pipeline.index-and-helpers",
+        "benchmark.repair.action-events",
+    )
+    assert pipeline.tags == ("benchmark", "pipeline")
     startup_health = next(entry for entry in registry.synthetic_benchmark_campaigns if entry.name == "startup-health")
     assert startup_health.origin == "authored.synthetic-benchmark"
     assert startup_health.artifact_targets == ("archive_health",)
