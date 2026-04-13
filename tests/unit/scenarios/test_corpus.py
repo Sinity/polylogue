@@ -14,6 +14,7 @@ from polylogue.scenarios import (
     resolve_corpus_scenarios,
     resolve_corpus_specs,
 )
+from polylogue.schemas.packages import SchemaElementManifest, SchemaPackageCatalog, SchemaVersionPackage
 from polylogue.schemas.tooling_models import ClusterManifest, SchemaCluster
 
 
@@ -24,10 +25,16 @@ def test_corpus_spec_payload_round_trip_preserves_inference_fields() -> None:
         element_kind="conversation_document",
         profile=CorpusProfile(
             family_ids=("cluster-a",),
+            profile_tokens=("conversation", "tool-use"),
             artifact_kind="conversation_document",
+            anchor_kind="conversation_document",
             observed_sample_count=23,
+            observed_artifact_count=21,
             observed_confidence=0.75,
+            bundle_scope_count=4,
             representative_paths=("/tmp/example.json",),
+            first_seen="2026-04-01T00:00:00Z",
+            last_seen="2026-04-02T00:00:00Z",
         ),
         count=4,
         messages_min=5,
@@ -42,10 +49,16 @@ def test_corpus_spec_payload_round_trip_preserves_inference_fields() -> None:
 
     assert payload["profile"] == {
         "family_ids": ["cluster-a"],
+        "profile_tokens": ["conversation", "tool-use"],
         "artifact_kind": "conversation_document",
+        "anchor_kind": "conversation_document",
         "observed_sample_count": 23,
+        "observed_artifact_count": 21,
         "observed_confidence": 0.75,
+        "bundle_scope_count": 4,
         "representative_paths": ["/tmp/example.json"],
+        "first_seen": "2026-04-01T00:00:00Z",
+        "last_seen": "2026-04-02T00:00:00Z",
     }
     assert CorpusSpec.from_payload(payload) == spec
     assert spec.messages_per_conversation == range(5, 10)
@@ -115,6 +128,7 @@ def test_build_inferred_corpus_specs_uses_cluster_families_when_present() -> Non
     assert specs[0].package_version == "v5"
     assert specs[0].element_kind == "conversation_document"
     assert specs[0].profile.family_ids == ("cluster-a",)
+    assert specs[0].profile.profile_tokens == ()
     assert specs[0].profile.observed_sample_count == 12
     assert specs[0].origin == "inferred.schema"
     assert specs[0].path_targets == ("inferred-corpus-compilation-loop",)
@@ -128,6 +142,80 @@ def test_build_inferred_corpus_specs_uses_cluster_families_when_present() -> Non
         "compile-inferred-corpus-specs",
         "compile-inferred-corpus-scenarios",
     )
+
+
+def test_build_inferred_corpus_specs_merges_package_profile_metadata() -> None:
+    manifest = ClusterManifest(
+        provider="chatgpt",
+        clusters=[
+            SchemaCluster(
+                cluster_id="cluster-a",
+                provider="chatgpt",
+                sample_count=12,
+                first_seen="2026-04-01T00:00:00Z",
+                last_seen="2026-04-02T00:00:00Z",
+                representative_paths=["/tmp/one.json"],
+                dominant_keys=["id"],
+                confidence=0.8,
+                artifact_kind="conversation_document",
+                profile_tokens=["conversation", "tool-use"],
+                bundle_scope_count=3,
+                promoted_package_version="v5",
+            )
+        ],
+    )
+    catalog = SchemaPackageCatalog(
+        provider="chatgpt",
+        default_version="v5",
+        latest_version="v5",
+        packages=[
+            SchemaVersionPackage(
+                provider="chatgpt",
+                version="v5",
+                anchor_kind="conversation_document",
+                default_element_kind="conversation_document",
+                first_seen="2026-03-01T00:00:00Z",
+                last_seen="2026-04-03T00:00:00Z",
+                bundle_scope_count=7,
+                sample_count=18,
+                profile_family_ids=["pkg-family"],
+                representative_paths=["/tmp/package.json"],
+                elements=[
+                    SchemaElementManifest(
+                        element_kind="conversation_document",
+                        schema_file=None,
+                        sample_count=18,
+                        artifact_count=16,
+                        bundle_scope_count=7,
+                        profile_family_ids=["pkg-family"],
+                        profile_tokens=["conversation", "tool-use"],
+                        representative_paths=["/tmp/package.json"],
+                        observed_artifact_count=16,
+                        first_seen="2026-03-01T00:00:00Z",
+                        last_seen="2026-04-03T00:00:00Z",
+                    )
+                ],
+            )
+        ],
+    )
+
+    specs = build_inferred_corpus_specs(
+        provider="chatgpt",
+        package_version="v5",
+        manifest=manifest,
+        sample_count=12,
+        catalog=catalog,
+    )
+
+    assert len(specs) == 1
+    assert specs[0].package_version == "v5"
+    assert specs[0].profile.family_ids == ("pkg-family", "cluster-a")
+    assert specs[0].profile.profile_tokens == ("conversation", "tool-use")
+    assert specs[0].profile.anchor_kind == "conversation_document"
+    assert specs[0].profile.observed_artifact_count == 16
+    assert specs[0].profile.bundle_scope_count == 7
+    assert specs[0].profile.first_seen == "2026-03-01T00:00:00Z"
+    assert specs[0].profile.last_seen == "2026-04-03T00:00:00Z"
 
 
 def test_resolve_corpus_specs_applies_generation_overrides_to_inferred_specs() -> None:

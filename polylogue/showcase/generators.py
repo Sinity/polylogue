@@ -15,7 +15,11 @@ import click
 
 from polylogue.cli.click_app import cli as root_cli
 from polylogue.cli.command_inventory import CommandPath, iter_command_paths
-from polylogue.scenarios import build_product_contract_surfaces, polylogue_execution
+from polylogue.scenarios import (
+    build_operational_contract_surfaces,
+    build_product_contract_surfaces,
+    polylogue_execution,
+)
 from polylogue.showcase.dimensions import query_read, schema_exercise
 from polylogue.showcase.exercise_models import AssertionSpec, Exercise
 
@@ -225,42 +229,23 @@ def _product_json_contract_scenarios() -> tuple[Exercise, ...]:
     )
 
 
+def _operational_json_contract_scenarios() -> tuple[Exercise, ...]:
+    return tuple(
+        _json_contract_scenario(
+            spec.name,
+            spec.description,
+            *spec.args,
+            needs_data=spec.needs_data,
+            tier=spec.tier,
+            env=spec.env,
+            tags=spec.tags,
+        )
+        for spec in build_operational_contract_surfaces()
+    )
+
+
 JSON_CONTRACT_SCENARIOS: tuple[Exercise, ...] = (
-    _json_contract_scenario("json-doctor", "doctor JSON contract", "doctor", "--json", needs_data=False, tier=0, env="any"),
-    _json_contract_scenario(
-        "json-doctor-action-event-preview",
-        "doctor JSON contract",
-        "doctor",
-        "--json",
-        "--repair",
-        "--preview",
-        "--target",
-        "action_event_read_model",
-        needs_data=False,
-        tier=0,
-        env="any",
-        path_targets=("action-event-repair-loop",),
-        artifact_targets=("action_event_rows", "action_event_fts", "action_event_health"),
-        operation_targets=("project-action-event-health",),
-        tags=("maintenance", "action-events"),
-    ),
-    _json_contract_scenario(
-        "json-doctor-session-products-preview",
-        "doctor JSON contract",
-        "doctor",
-        "--json",
-        "--repair",
-        "--preview",
-        "--target",
-        "session_products",
-        needs_data=False,
-        tier=0,
-        env="any",
-        path_targets=("session-product-repair-loop",),
-        artifact_targets=("session_product_rows", "session_product_fts", "session_product_health"),
-        operation_targets=("project-session-product-health",),
-        tags=("maintenance", "session-products"),
-    ),
+    *_operational_json_contract_scenarios(),
     _json_contract_scenario("json-tags", "tags JSON contract", "tags", "--json", needs_data=False, tier=0, env="any"),
     _json_contract_scenario(
         "json-audit",
