@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from devtools.benchmark_models import BenchmarkCampaignEntry, compile_benchmark_campaigns
+from polylogue.scenarios import ScenarioProjectionSourceKind
 
 SYNTHETIC_BENCHMARK_SCENARIOS: tuple[BenchmarkCampaignEntry, ...] = (
     BenchmarkCampaignEntry(
@@ -16,6 +17,7 @@ SYNTHETIC_BENCHMARK_SCENARIOS: tuple[BenchmarkCampaignEntry, ...] = (
         artifact_targets=("message_fts",),
         operation_targets=("index.message-fts-rebuild",),
         tags=("benchmark", "synthetic", "fts"),
+        projection_kind=ScenarioProjectionSourceKind.SYNTHETIC_BENCHMARK,
     ),
     BenchmarkCampaignEntry(
         name="incremental-index",
@@ -28,6 +30,7 @@ SYNTHETIC_BENCHMARK_SCENARIOS: tuple[BenchmarkCampaignEntry, ...] = (
         artifact_targets=("message_fts",),
         operation_targets=("index.message-fts-incremental",),
         tags=("benchmark", "synthetic", "fts"),
+        projection_kind=ScenarioProjectionSourceKind.SYNTHETIC_BENCHMARK,
     ),
     BenchmarkCampaignEntry(
         name="filter-scan",
@@ -40,6 +43,7 @@ SYNTHETIC_BENCHMARK_SCENARIOS: tuple[BenchmarkCampaignEntry, ...] = (
         artifact_targets=("conversation_query_results",),
         operation_targets=("query.filters.synthetic-scan",),
         tags=("benchmark", "synthetic", "filters"),
+        projection_kind=ScenarioProjectionSourceKind.SYNTHETIC_BENCHMARK,
     ),
     BenchmarkCampaignEntry(
         name="startup-health",
@@ -52,6 +56,7 @@ SYNTHETIC_BENCHMARK_SCENARIOS: tuple[BenchmarkCampaignEntry, ...] = (
         artifact_targets=("archive_health",),
         operation_targets=("health.startup.synthetic",),
         tags=("benchmark", "synthetic", "health"),
+        projection_kind=ScenarioProjectionSourceKind.SYNTHETIC_BENCHMARK,
     ),
     BenchmarkCampaignEntry(
         name="action-event-materialization",
@@ -64,6 +69,7 @@ SYNTHETIC_BENCHMARK_SCENARIOS: tuple[BenchmarkCampaignEntry, ...] = (
         artifact_targets=("tool_use_source_blocks", "action_event_rows", "action_event_fts"),
         operation_targets=("materialize-action-events",),
         tags=("benchmark", "synthetic", "action-events"),
+        projection_kind=ScenarioProjectionSourceKind.SYNTHETIC_BENCHMARK,
     ),
     BenchmarkCampaignEntry(
         name="session-product-materialization",
@@ -76,6 +82,7 @@ SYNTHETIC_BENCHMARK_SCENARIOS: tuple[BenchmarkCampaignEntry, ...] = (
         artifact_targets=("session_product_source_conversations", "session_product_rows", "session_product_fts"),
         operation_targets=("materialize-session-products",),
         tags=("benchmark", "synthetic", "session-products"),
+        projection_kind=ScenarioProjectionSourceKind.SYNTHETIC_BENCHMARK,
     ),
 )
 

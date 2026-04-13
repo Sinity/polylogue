@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from polylogue.scenarios import ScenarioProjectionSourceKind
 from polylogue.showcase.exercise_models import Validation
 from polylogue.showcase.scenario_models import ExerciseScenario, compile_exercise_scenarios
 
@@ -44,3 +45,25 @@ def test_compile_exercise_scenarios_preserves_order() -> None:
     exercises = compile_exercise_scenarios(scenarios)
 
     assert [exercise.name for exercise in exercises] == ["a", "b"]
+
+
+def test_exercise_scenario_compiles_its_own_projection_entry() -> None:
+    scenario = ExerciseScenario(
+        scenario_id="json-doctor",
+        group="subcommands",
+        description="doctor JSON contract",
+        origin="generated.json-contract",
+        artifact_targets=("doctor_runtime",),
+        operation_targets=("cli.json-contract",),
+        tags=("generated", "json-contract"),
+    )
+
+    projection = scenario.to_projection_entry()
+
+    assert projection.source_kind is ScenarioProjectionSourceKind.EXERCISE
+    assert projection.name == "json-doctor"
+    assert projection.description == "doctor JSON contract"
+    assert projection.origin == "generated.json-contract"
+    assert projection.artifact_targets == ("doctor_runtime",)
+    assert projection.operation_targets == ("cli.json-contract",)
+    assert projection.tags == ("generated", "json-contract")

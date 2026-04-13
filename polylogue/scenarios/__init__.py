@@ -17,7 +17,9 @@ from .metadata import (
 )
 from .projections import (
     ScenarioProjectionEntry,
+    ScenarioProjectionSource,
     ScenarioProjectionSourceKind,
+    compile_projection_entries,
 )
 
 __all__ = [
@@ -26,9 +28,11 @@ __all__ = [
     "resolve_corpus_specs",
     "CorpusSourceKind",
     "CorpusSpec",
+    "compile_projection_entries",
     "declared_operation_target_names",
     "ScenarioMetadata",
     "ScenarioProjectionEntry",
+    "ScenarioProjectionSource",
     "ScenarioProjectionSourceKind",
     "runtime_artifact_graph",
     "runtime_artifact_target_names",

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from devtools.mutation_catalog import build_mutation_entries
 from devtools.mutation_scenario_catalog import MUTATION_CAMPAIGNS
+from polylogue.scenarios import ScenarioProjectionSourceKind
 
 
 def test_build_mutation_entries_tracks_authored_catalog() -> None:
@@ -17,3 +18,14 @@ def test_build_mutation_entries_tracks_authored_catalog() -> None:
         "tests/unit/core/test_filters_props.py",
     )
     assert filters.tags == ("mutation",)
+
+
+def test_mutation_campaign_compiles_its_own_projection_entry() -> None:
+    filters = MUTATION_CAMPAIGNS["filters"]
+
+    projection = filters.to_projection_entry()
+
+    assert projection.source_kind is ScenarioProjectionSourceKind.MUTATION_CAMPAIGN
+    assert projection.name == "filters"
+    assert projection.description == "ConversationFilter semantics and summary/picker contracts"
+    assert projection.tags == ("mutation",)

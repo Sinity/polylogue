@@ -5,11 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from devtools.execution_specs import ExecutionSpec
-from polylogue.scenarios import ScenarioMetadata
+from polylogue.scenarios import ScenarioMetadata, ScenarioProjectionSource, ScenarioProjectionSourceKind
 
 
 @dataclass(frozen=True)
-class LaneEntry(ScenarioMetadata):
+class LaneEntry(ScenarioProjectionSource, ScenarioMetadata):
     """One named control-plane lane."""
 
     name: str
@@ -17,6 +17,18 @@ class LaneEntry(ScenarioMetadata):
     timeout_s: int
     category: str
     execution: ExecutionSpec
+
+    @property
+    def projection_source_kind(self) -> ScenarioProjectionSourceKind:
+        return ScenarioProjectionSourceKind.VALIDATION_LANE
+
+    @property
+    def projection_name(self) -> str:
+        return self.name
+
+    @property
+    def projection_description(self) -> str:
+        return self.description
 
     @property
     def is_composite(self) -> bool:
