@@ -44,9 +44,9 @@ def runtime_operation_target_names() -> tuple[str, ...]:
 
 @lru_cache(maxsize=1)
 def declared_operation_target_names() -> tuple[str, ...]:
-    from polylogue.operations import build_declared_operation_specs
+    from polylogue.operations import build_declared_operation_catalog
 
-    return tuple(spec.name for spec in build_declared_operation_specs())
+    return build_declared_operation_catalog().names()
 
 
 @lru_cache(maxsize=1)
@@ -118,10 +118,9 @@ class ScenarioMetadata:
         return runtime_artifact_graph().resolve_operations(self.operation_targets)
 
     def resolve_declared_operations(self) -> tuple[OperationSpec, ...]:
-        from polylogue.operations import build_declared_operation_specs
+        from polylogue.operations import build_declared_operation_catalog
 
-        by_name = {operation.name: operation for operation in build_declared_operation_specs()}
-        return tuple(by_name[name] for name in self.operation_targets if name in by_name)
+        return build_declared_operation_catalog().resolve(self.operation_targets)
 
 
 __all__ = [

@@ -7,7 +7,7 @@ from typing import Any
 
 from devtools.scenario_projection_catalog import build_scenario_projection_entries
 from polylogue.artifact_graph import build_artifact_graph
-from polylogue.operations import build_declared_operation_specs
+from polylogue.operations import build_declared_operation_catalog
 from polylogue.scenarios import ScenarioProjectionEntry
 
 
@@ -85,10 +85,11 @@ def build_runtime_scenario_coverage(
 ) -> RuntimeScenarioCoverage:
     scenario_projections = projections or build_scenario_projection_entries()
     graph = build_artifact_graph()
+    declared_operation_catalog = build_declared_operation_catalog()
     artifact_refs: dict[str, list[ScenarioCoverageRef]] = {name: [] for name in graph.by_name()}
     operation_refs: dict[str, list[ScenarioCoverageRef]] = {operation.name: [] for operation in graph.operations}
     declared_operation_refs: dict[str, list[ScenarioCoverageRef]] = {
-        operation.name: [] for operation in build_declared_operation_specs()
+        operation.name: [] for operation in declared_operation_catalog.specs
     }
 
     for projection in scenario_projections:

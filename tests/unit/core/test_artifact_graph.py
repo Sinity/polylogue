@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from polylogue.artifact_graph import ArtifactLayer, build_artifact_graph
 from polylogue.artifacts import build_runtime_artifact_nodes, build_runtime_artifact_paths
-from polylogue.operations import OperationKind, build_runtime_operation_specs
+from polylogue.operations import OperationKind, build_runtime_operation_catalog
 
 
 def test_artifact_graph_contains_the_two_proven_vertical_paths() -> None:
@@ -40,12 +40,12 @@ def test_artifact_graph_contains_the_two_proven_vertical_paths() -> None:
     assert operations["plan-validation-backlog"].kind is OperationKind.PLANNING
 
 
-def test_artifact_graph_operations_come_from_runtime_operation_specs() -> None:
+def test_artifact_graph_operations_come_from_runtime_operation_catalog() -> None:
     graph = build_artifact_graph()
-    authored = build_runtime_operation_specs()
+    authored = build_runtime_operation_catalog()
 
-    assert tuple(operation.name for operation in graph.operations) == tuple(operation.name for operation in authored)
-    assert graph.operations == authored
+    assert tuple(operation.name for operation in graph.operations) == authored.names()
+    assert graph.operations == authored.specs
 
 
 def test_artifact_graph_paths_reference_only_declared_nodes() -> None:

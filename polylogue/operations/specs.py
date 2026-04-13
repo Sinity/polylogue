@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 from enum import Enum
+from functools import lru_cache
 from typing import Any
 
 
@@ -39,6 +40,26 @@ class OperationSpec:
         data = asdict(self)
         data["kind"] = self.kind.value
         return data
+
+
+@dataclass(frozen=True, slots=True)
+class OperationCatalog:
+    """Canonical operation registry with stable lookup and resolution helpers."""
+
+    specs: tuple[OperationSpec, ...]
+
+    def by_name(self) -> dict[str, OperationSpec]:
+        return {spec.name: spec for spec in self.specs}
+
+    def names(self) -> tuple[str, ...]:
+        return tuple(spec.name for spec in self.specs)
+
+    def resolve(self, names: tuple[str, ...]) -> tuple[OperationSpec, ...]:
+        by_name = self.by_name()
+        return tuple(by_name[name] for name in names if name in by_name)
+
+    def to_dict(self) -> list[dict[str, Any]]:
+        return [spec.to_dict() for spec in self.specs]
 
 
 RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
@@ -203,24 +224,27 @@ DECLARED_OPERATION_SPECS: tuple[OperationSpec, ...] = (
 )
 
 
-def build_runtime_operation_specs() -> tuple[OperationSpec, ...]:
-    """Return the authored runtime operation metadata."""
+@lru_cache(maxsize=1)
+def build_runtime_operation_catalog() -> OperationCatalog:
+    """Return the authored runtime operation catalog."""
 
-    return RUNTIME_OPERATION_SPECS
+    return OperationCatalog(specs=RUNTIME_OPERATION_SPECS)
 
 
-def build_declared_operation_specs() -> tuple[OperationSpec, ...]:
+@lru_cache(maxsize=1)
+def build_declared_operation_catalog() -> OperationCatalog:
     """Return every authored operation target referenced across verification surfaces."""
 
-    return DECLARED_OPERATION_SPECS
+    return OperationCatalog(specs=DECLARED_OPERATION_SPECS)
 
 
 __all__ = [
     "DECLARED_CONTROL_PLANE_OPERATION_SPECS",
     "DECLARED_OPERATION_SPECS",
+    "build_declared_operation_catalog",
+    "build_runtime_operation_catalog",
+    "OperationCatalog",
     "OperationKind",
     "OperationSpec",
-    "build_declared_operation_specs",
     "RUNTIME_OPERATION_SPECS",
-    "build_runtime_operation_specs",
 ]
