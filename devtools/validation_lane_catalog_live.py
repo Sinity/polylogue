@@ -7,7 +7,7 @@ from functools import partial
 from devtools.validation_lane_base import memory_budget_lane as _memory_budget_lane
 from devtools.validation_lane_base import pipeline_probe_lane as _pipeline_probe_lane
 from devtools.validation_lane_base import polylogue_lane as _polylogue_lane
-from polylogue.scenarios import PipelineProbeInputMode
+from polylogue.scenarios import PipelineProbeInputMode, polylogue_execution
 
 memory_budget_lane = partial(_memory_budget_lane, category="live")
 pipeline_probe_lane = partial(_pipeline_probe_lane, category="live")
@@ -220,9 +220,7 @@ LIVE_LANES = {
         "Live archive grouped retrieval command under an explicit RSS budget",
         240,
         max_rss_mb=1536,
-        command=[
-            "polylogue",
-            "--plain",
+        execution=polylogue_execution(
             "--provider",
             "claude-code",
             "--since",
@@ -233,22 +231,20 @@ LIVE_LANES = {
             "json",
             "--limit",
             "50",
-        ],
+        ),
     ),
     "maintenance-memory-budget": memory_budget_lane(
         "maintenance-memory-budget",
         "Live archive maintenance preview under an explicit RSS budget",
         240,
         max_rss_mb=1024,
-        command=[
-            "polylogue",
-            "--plain",
+        execution=polylogue_execution(
             "doctor",
             "--json",
             "--repair",
             "--cleanup",
             "--preview",
-        ],
+        ),
     ),
 }
 
