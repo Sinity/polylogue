@@ -120,3 +120,56 @@ def test_collect_derived_statuses_skips_retrieval_band_recomputation(
 
     assert calls == [False]
     assert verify_calls == [("fts", False), ("action", False), ("session", False)]
+
+
+def test_build_retrieval_statuses_counts_stale_action_event_fts_rows() -> None:
+    from polylogue.storage.derived_status import build_retrieval_statuses
+
+    statuses = build_retrieval_statuses(
+        {
+            "transcript_embeddings_ready": True,
+            "embedded_conversations": 0,
+            "embedded_messages": 0,
+            "pending_conversations": 0,
+            "stale_messages": 0,
+            "missing_provenance": 0,
+            "total_conversations": 0,
+            "evidence_retrieval_ready": False,
+            "evidence_retrieval_rows": 13,
+            "expected_evidence_retrieval_rows": 10,
+            "profile_evidence_fts_rows": 0,
+            "profile_evidence_fts_duplicates": 0,
+            "profile_rows": 0,
+            "action_fts_rows": 13,
+            "action_rows": 10,
+            "action_source_documents": 4,
+            "action_documents": 4,
+            "action_stale_rows": 0,
+            "action_fts_stale_rows": 3,
+            "action_orphan_rows": 0,
+            "orphan_profile_rows": 0,
+            "inference_retrieval_ready": True,
+            "inference_retrieval_rows": 0,
+            "expected_inference_retrieval_rows": 0,
+            "profile_inference_fts_rows": 0,
+            "profile_inference_fts_duplicates": 0,
+            "work_event_fts_rows": 0,
+            "work_event_fts_duplicates": 0,
+            "work_event_rows": 0,
+            "phase_rows": 0,
+            "stale_work_event_rows": 0,
+            "stale_phase_rows": 0,
+            "orphan_work_event_rows": 0,
+            "orphan_phase_rows": 0,
+            "enrichment_retrieval_ready": True,
+            "enrichment_retrieval_rows": 0,
+            "expected_enrichment_retrieval_rows": 0,
+            "profile_enrichment_fts_rows": 0,
+            "profile_enrichment_fts_duplicates": 0,
+        }
+    )
+
+    evidence = statuses["retrieval_evidence"]
+    assert evidence.ready is False
+    assert evidence.pending_rows == 0
+    assert evidence.stale_rows == 3
