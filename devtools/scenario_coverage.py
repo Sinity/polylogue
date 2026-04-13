@@ -68,10 +68,10 @@ def build_runtime_scenario_coverage() -> RuntimeScenarioCoverage:
 
     for source_kind, name, metadata in scenario_like_items:
         ref = ScenarioCoverageRef(source=source_kind, name=name, origin=metadata.origin)
-        for artifact_name in metadata.runtime_artifact_targets():
-            artifact_refs[artifact_name].append(ref)
-        for operation_name in metadata.runtime_operation_targets():
-            operation_refs[operation_name].append(ref)
+        for artifact in metadata.resolve_runtime_artifacts():
+            artifact_refs[artifact.name].append(ref)
+        for operation in metadata.resolve_runtime_operations():
+            operation_refs[operation.name].append(ref)
 
     covered_artifacts = {
         name: tuple(refs)

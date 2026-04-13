@@ -5,7 +5,11 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 from functools import lru_cache
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from polylogue.artifacts import ArtifactNode
+    from polylogue.operations import OperationSpec
 
 
 def _coerce_string(value: object, default: str) -> str:
@@ -21,17 +25,46 @@ def _coerce_string_tuple(value: object) -> tuple[str, ...]:
 
 
 @lru_cache(maxsize=1)
-def runtime_artifact_target_names() -> tuple[str, ...]:
+def runtime_target_catalog() -> RuntimeTargetCatalog:
     from polylogue.artifacts import build_runtime_artifact_nodes
+    from polylogue.operations import build_runtime_operation_specs
 
-    return tuple(node.name for node in build_runtime_artifact_nodes())
+    return RuntimeTargetCatalog(
+        artifacts=build_runtime_artifact_nodes(),
+        operations=build_runtime_operation_specs(),
+    )
+
+
+@lru_cache(maxsize=1)
+def runtime_artifact_target_names() -> tuple[str, ...]:
+    return runtime_target_catalog().artifact_names()
 
 
 @lru_cache(maxsize=1)
 def runtime_operation_target_names() -> tuple[str, ...]:
-    from polylogue.operations import build_runtime_operation_specs
+    return runtime_target_catalog().operation_names()
 
-    return tuple(operation.name for operation in build_runtime_operation_specs())
+
+@dataclass(frozen=True, slots=True)
+class RuntimeTargetCatalog:
+    """Resolved runtime artifact and operation targets shared across projections."""
+
+    artifacts: tuple[ArtifactNode, ...]
+    operations: tuple[OperationSpec, ...]
+
+    def artifact_names(self) -> tuple[str, ...]:
+        return tuple(artifact.name for artifact in self.artifacts)
+
+    def operation_names(self) -> tuple[str, ...]:
+        return tuple(operation.name for operation in self.operations)
+
+    def resolve_artifacts(self, names: tuple[str, ...]) -> tuple[ArtifactNode, ...]:
+        by_name = {artifact.name: artifact for artifact in self.artifacts}
+        return tuple(by_name[name] for name in names if name in by_name)
+
+    def resolve_operations(self, names: tuple[str, ...]) -> tuple[OperationSpec, ...]:
+        by_name = {operation.name: operation for operation in self.operations}
+        return tuple(by_name[name] for name in names if name in by_name)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -72,16 +105,22 @@ class ScenarioMetadata:
         return payload
 
     def runtime_artifact_targets(self) -> tuple[str, ...]:
-        known = set(runtime_artifact_target_names())
-        return tuple(target for target in self.artifact_targets if target in known)
+        return tuple(artifact.name for artifact in self.resolve_runtime_artifacts())
 
     def runtime_operation_targets(self) -> tuple[str, ...]:
-        known = set(runtime_operation_target_names())
-        return tuple(target for target in self.operation_targets if target in known)
+        return tuple(operation.name for operation in self.resolve_runtime_operations())
+
+    def resolve_runtime_artifacts(self) -> tuple[ArtifactNode, ...]:
+        return runtime_target_catalog().resolve_artifacts(self.artifact_targets)
+
+    def resolve_runtime_operations(self) -> tuple[OperationSpec, ...]:
+        return runtime_target_catalog().resolve_operations(self.operation_targets)
 
 
 __all__ = [
     "ScenarioMetadata",
+    "RuntimeTargetCatalog",
     "runtime_artifact_target_names",
     "runtime_operation_target_names",
+    "runtime_target_catalog",
 ]

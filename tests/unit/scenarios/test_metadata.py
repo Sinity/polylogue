@@ -2,7 +2,12 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-from polylogue.scenarios import ScenarioMetadata, runtime_artifact_target_names, runtime_operation_target_names
+from polylogue.scenarios import (
+    ScenarioMetadata,
+    runtime_artifact_target_names,
+    runtime_operation_target_names,
+    runtime_target_catalog,
+)
 
 
 def test_scenario_metadata_from_payload_normalizes_strings_and_targets() -> None:
@@ -61,3 +66,23 @@ def test_scenario_metadata_resolves_only_runtime_declared_targets() -> None:
 
     assert metadata.runtime_artifact_targets() == ("action_event_rows",)
     assert metadata.runtime_operation_targets() == ("project-action-event-health",)
+
+
+def test_runtime_target_catalog_exposes_resolved_specs() -> None:
+    catalog = runtime_target_catalog()
+
+    assert "action_event_rows" in catalog.artifact_names()
+    assert "materialize-session-products" in catalog.operation_names()
+
+
+def test_scenario_metadata_resolves_runtime_specs() -> None:
+    metadata = ScenarioMetadata(
+        origin="generated.contract",
+        artifact_targets=("action_event_rows", "message_fts"),
+        operation_targets=("project-action-event-health", "benchmark.storage.crud"),
+    )
+
+    assert tuple(artifact.name for artifact in metadata.resolve_runtime_artifacts()) == ("action_event_rows",)
+    assert tuple(operation.name for operation in metadata.resolve_runtime_operations()) == (
+        "project-action-event-health",
+    )
