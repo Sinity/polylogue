@@ -22,4 +22,4 @@ def test_build_runtime_scenario_coverage_tracks_the_current_authored_map() -> No
     assert "benchmark.query.search-filters" in coverage.declared_operations
     assert coverage.uncovered_artifacts == ()
     assert coverage.uncovered_operations == ()
-    assert coverage.uncovered_declared_operations == ("benchmark.repair.action-events",)
+    assert coverage.uncovered_declared_operations == ()
