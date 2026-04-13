@@ -12,9 +12,9 @@ from polylogue.cli.helpers import complete_configured_source_names, load_effecti
 from polylogue.cli.qa_capture import run_vhs_capture as _run_vhs_capture
 from polylogue.cli.qa_snapshot import snapshot_results
 from polylogue.cli.types import AppEnv
-from polylogue.showcase.qa_runner_request import build_qa_session_request
+from polylogue.showcase.qa_runner_request import QAStage, build_qa_session_request
 
-_STAGE_CHOICES = click.Choice(["audit", "exercises", "invariants"])
+_STAGE_CHOICES = click.Choice([stage.value for stage in QAStage])
 
 
 @click.group("audit", invoke_without_command=True)
@@ -130,8 +130,8 @@ def qa_command(
             fresh=fresh,
             ingest=ingest,
             regenerate_schemas=regenerate_schemas,
-            only_stage=only_stage,
-            skip_stages=skip_stages,
+            only_stage=QAStage(only_stage) if only_stage else None,
+            skip_stages=tuple(QAStage(stage) for stage in skip_stages),
             workspace=workspace,
             report_dir=report_dir,
             verbose=verbose,
