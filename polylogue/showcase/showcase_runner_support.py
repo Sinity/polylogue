@@ -9,6 +9,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from polylogue.scenarios import CorpusRequest, CorpusSpec
+from polylogue.showcase.corpus_requests import showcase_corpus_request
 from polylogue.showcase.exercises import EXERCISES, Exercise, topological_order
 from polylogue.showcase.showcase_runner_models import ExerciseResult
 from polylogue.showcase.workspace import (
@@ -42,19 +43,18 @@ def select_exercises(
     return topological_order(selected)
 
 
-def seed_workspace(workspace_dir: Path, *, synthetic_count: int) -> dict[str, str]:
+def seed_workspace(
+    workspace_dir: Path,
+    *,
+    corpus_request: CorpusRequest | None = None,
+) -> dict[str, str]:
     """Populate an isolated verification workspace and ingest its fixtures."""
     workspace = create_verification_workspace(workspace_dir)
+    request = corpus_request or showcase_corpus_request()
     seed_workspace_from_scenarios(
         workspace,
         corpus_scenarios=build_synthetic_corpus_scenarios(
-            request=CorpusRequest(
-                count=synthetic_count,
-                style="showcase",
-                messages_min=6,
-                messages_max=19,
-                seed=42,
-            ),
+            request=request,
         ),
     )
     return dict(workspace.env_vars)
@@ -63,24 +63,29 @@ def seed_workspace(workspace_dir: Path, *, synthetic_count: int) -> dict[str, st
 def seed_workspace_with(
     workspace_dir: Path,
     *,
-    synthetic_count: int,
+    corpus_request: CorpusRequest | None = None,
     exercises: tuple[Exercise, ...] = (),
-    generate_fixtures: Callable[[Path], None],
+    generate_fixtures: Callable[[Path, CorpusRequest], None],
 ) -> dict[str, str]:
     """Populate a workspace using an injected fixture-generation callback."""
     workspace = create_verification_workspace(workspace_dir)
+    request = corpus_request or showcase_corpus_request()
     corpus_specs = _merge_exercise_corpus_specs(exercises)
     if corpus_specs:
         seed_workspace_from_specs(workspace, corpus_specs=corpus_specs)
         return dict(workspace.env_vars)
-    generate_fixtures(workspace.fixture_dir)
+    generate_fixtures(workspace.fixture_dir, request)
     run_pipeline_for_fixture_workspace(workspace)
     return dict(workspace.env_vars)
 
 
-def generate_showcase_fixtures(fixture_dir: Path, *, count: int) -> None:
+def generate_showcase_fixtures(
+    fixture_dir: Path,
+    *,
+    request: CorpusRequest | None = None,
+) -> None:
     """Generate schema-driven synthetic fixtures for all providers."""
-    generate_synthetic_fixtures(fixture_dir, count=count, style="showcase")
+    generate_synthetic_fixtures(fixture_dir, request=request or showcase_corpus_request())
 
 
 def _merge_exercise_corpus_specs(exercises: tuple[Exercise, ...]) -> tuple[CorpusSpec, ...]:

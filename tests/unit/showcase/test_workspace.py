@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, patch
 from polylogue.config import Config
 from polylogue.paths import Source
 from polylogue.scenarios import CorpusRequest, CorpusSpec
+from polylogue.showcase.corpus_requests import showcase_corpus_request
 from polylogue.showcase.showcase_runner_support import seed_workspace_with
 from polylogue.showcase.workspace import (
     build_synthetic_corpus_scenarios,
@@ -240,7 +241,7 @@ def test_seed_workspace_with_uses_compiled_corpus_specs(tmp_path):
     with patch("polylogue.showcase.showcase_runner_support.seed_workspace_from_specs") as mock_seed_from_specs:
         seed_workspace_with(
             workspace_dir,
-            synthetic_count=3,
+            corpus_request=showcase_corpus_request(count=3),
             exercises=(
                 type(
                     "ExerciseStub",
@@ -248,7 +249,9 @@ def test_seed_workspace_with_uses_compiled_corpus_specs(tmp_path):
                     {"corpus_specs": (corpus_spec,)},
                 )(),
             ),
-            generate_fixtures=lambda _fixture_dir: (_ for _ in ()).throw(AssertionError("should not generate fixtures")),
+            generate_fixtures=lambda _fixture_dir, _request: (_ for _ in ()).throw(
+                AssertionError("should not generate fixtures")
+            ),
         )
 
     mock_seed_from_specs.assert_called_once()
