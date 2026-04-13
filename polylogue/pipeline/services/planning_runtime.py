@@ -9,6 +9,7 @@ from polylogue.config import Source
 from polylogue.pipeline.run_support import expand_requested_stage, normalize_stage_sequence
 from polylogue.pipeline.stage_models import ValidateResult
 from polylogue.protocols import ProgressCallback
+from polylogue.storage.raw_ingest_artifacts import RawIngestArtifactState
 from polylogue.storage.state_views import PlanResult
 from polylogue.storage.store import RawConversationRecord
 from polylogue.types import PlanStage
@@ -162,14 +163,19 @@ async def build_ingest_plan(
             state = scanned_states.get(record.raw_id)
             if state is None:
                 details["new_raw"] += 1
+                if has_parse:
+                    validate_raw_ids.append(record.raw_id)
+                    if (
+                        preview
+                        and preview_validation is not None
+                        and len(preview_records) < max_preview_validation_records
+                    ):
+                        preview_records.append(record)
             else:
                 details["existing_raw"] += 1
-
-            if has_parse:
-                current_status = state.validation_status if state is not None else None
-                parsed_at = None if force_reparse else (state.parsed_at if state is not None else None)
-                if parsed_at is None:
-                    if current_status is None:
+                if has_parse:
+                    artifact_state = RawIngestArtifactState.from_state(state)
+                    if artifact_state.needs_validation_backlog(force_reparse=force_reparse):
                         validate_raw_ids.append(record.raw_id)
                         # Only accumulate a limited sample for preview validation
                         # to bound memory. Full validation happens during actual runs.
@@ -179,7 +185,7 @@ async def build_ingest_plan(
                             and len(preview_records) < max_preview_validation_records
                         ):
                             preview_records.append(record)
-                    elif current_status in {"passed", "skipped"}:
+                    if artifact_state.needs_parse_backlog(force_reparse=force_reparse):
                         parse_ready_raw_ids.append(record.raw_id)
 
         if preview_records and preview_validation is not None:
