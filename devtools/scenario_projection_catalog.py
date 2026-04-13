@@ -13,7 +13,23 @@ from polylogue.scenarios import (
     ScenarioProjectionEntry,
     ScenarioProjectionSourceKind,
 )
+from polylogue.schemas.operator_inference import list_inferred_corpus_specs
 from polylogue.showcase.exercises import EXERCISE_SCENARIOS, QA_EXTRA_SCENARIOS
+
+
+def _inferred_corpus_projection_name(spec) -> str:
+    scope = spec.profile_family_ids[0] if spec.profile_family_ids else (spec.element_kind or spec.artifact_kind or "default")
+    return f"{spec.provider}:{spec.package_version}:{scope}"
+
+
+def _inferred_corpus_projection_description(spec) -> str:
+    target = spec.element_kind or spec.artifact_kind or "default"
+    observed = (
+        f" from {spec.observed_sample_count} observed sample(s)"
+        if spec.observed_sample_count is not None
+        else ""
+    )
+    return f"Inferred synthetic corpus spec for {spec.provider} {target}{observed}."
 
 
 def build_scenario_projection_entries(
@@ -22,11 +38,13 @@ def build_scenario_projection_entries(
     mutation_campaigns: tuple[MutationCampaignEntry, ...] | None = None,
     benchmark_campaigns: tuple[BenchmarkCampaignEntry, ...] | None = None,
     synthetic_benchmark_campaigns: tuple[BenchmarkCampaignEntry, ...] | None = None,
+    inferred_corpus_specs: tuple[object, ...] | None = None,
 ) -> tuple[ScenarioProjectionEntry, ...]:
     lane_entries = validation_lanes or build_validation_lane_entries()
     mutation_entries = mutation_campaigns or build_mutation_entries()
     benchmark_entries = benchmark_campaigns or build_benchmark_entries()
     synthetic_benchmark_entries = synthetic_benchmark_campaigns or build_synthetic_benchmark_entries()
+    inferred_specs = inferred_corpus_specs or list_inferred_corpus_specs()
     entries = [
         ScenarioProjectionEntry.from_object(
             source_kind=ScenarioProjectionSourceKind.EXERCISE,
@@ -80,6 +98,15 @@ def build_scenario_projection_entries(
             obj=entry,
         )
         for entry in synthetic_benchmark_entries
+    )
+    entries.extend(
+        ScenarioProjectionEntry.from_object(
+            source_kind=ScenarioProjectionSourceKind.INFERRED_CORPUS,
+            name=_inferred_corpus_projection_name(spec),
+            description=_inferred_corpus_projection_description(spec),
+            obj=spec,
+        )
+        for spec in inferred_specs
     )
     return tuple(sorted(entries, key=lambda item: (item.source_kind.value, item.name)))
 

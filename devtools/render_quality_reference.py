@@ -12,7 +12,7 @@ from devtools.mutation_catalog import MutationCampaignEntry
 from devtools.quality_registry import QualityRegistry, build_quality_registry
 from devtools.scenario_coverage import RuntimeScenarioCoverage, build_runtime_scenario_coverage
 from devtools.validation_catalog import ValidationLaneEntry
-from polylogue.scenarios import ScenarioProjectionEntry
+from polylogue.scenarios import CorpusSpec, ScenarioProjectionEntry
 
 
 def _format_code_list(items: tuple[str, ...]) -> str:
@@ -68,6 +68,21 @@ def _render_benchmark_table(entries: tuple[BenchmarkCampaignEntry, ...]) -> list
     return lines
 
 
+def _render_inferred_corpus_table(entries: tuple[CorpusSpec, ...]) -> list[str]:
+    lines = [
+        "| Provider | Package | Target | Count | Messages | Tags |",
+        "| --- | --- | --- | ---: | --- | --- |",
+    ]
+    for entry in entries:
+        target = entry.profile_family_ids[0] if entry.profile_family_ids else (entry.element_kind or entry.artifact_kind or "default")
+        lines.append(
+            f"| `{entry.provider}` | `{entry.package_version}` | `{target}` | "
+            f"{entry.count} | `{entry.messages_min}-{entry.messages_max}` | "
+            f"{_format_code_list(entry.tags)} |"
+        )
+    return lines
+
+
 def _render_scenario_projection_table(entries: tuple[ScenarioProjectionEntry, ...]) -> list[str]:
     lines = [
         "| Source | Projection | Path Targets | Artifact Targets | Operation Targets | Tags | Description |",
@@ -93,12 +108,9 @@ def _render_runtime_coverage_section(coverage: RuntimeScenarioCoverage) -> list[
         f"- covered runtime artifacts: `{len(coverage.artifacts)}`",
         f"- covered runtime operations: `{len(coverage.operations)}`",
         f"- covered declared operation targets: `{len(coverage.declared_operations)}`",
-        "- uncovered runtime paths: "
-        + ("—" if not uncovered_paths else ", ".join(f"`{name}`" for name in uncovered_paths)),
+        "- uncovered runtime paths: " + ("—" if not uncovered_paths else ", ".join(f"`{name}`" for name in uncovered_paths)),
         "- uncovered runtime artifacts: "
-        + (
-            "—" if not coverage.uncovered_artifacts else ", ".join(f"`{name}`" for name in coverage.uncovered_artifacts)
-        ),
+        + ("—" if not coverage.uncovered_artifacts else ", ".join(f"`{name}`" for name in coverage.uncovered_artifacts)),
         "- uncovered runtime operations: "
         + (
             "—"
@@ -129,7 +141,11 @@ def _render_scenario_projection_snapshot(registry: QualityRegistry) -> list[str]
         projection_counts[source_kind] = projection_counts.get(source_kind, 0) + 1
     return [
         f"- scenario projections: `{len(registry.scenario_projections)}`",
-        *(f"  - {source_kind}: `{count}`" for source_kind, count in sorted(projection_counts.items())),
+        f"- inferred corpus specs: `{len(registry.inferred_corpus_specs)}`",
+        *(
+            f"  - {source_kind}: `{count}`"
+            for source_kind, count in sorted(projection_counts.items())
+        ),
     ]
 
 
@@ -284,6 +300,12 @@ def build_document(registry: QualityRegistry, *, runtime_coverage: RuntimeScenar
         "These campaigns generate synthetic archives and run long-haul benchmark workloads through `devtools run-benchmark-campaigns`.",
         "",
         *_render_benchmark_table(registry.synthetic_benchmark_campaigns),
+        "",
+        "## Inferred Corpus Catalog",
+        "",
+        "These inferred corpus specs come from the live schema registry and participate in the shared scenario projection map.",
+        "",
+        *_render_inferred_corpus_table(registry.inferred_corpus_specs),
         "",
         "## Scenario Projection Catalog",
         "",
