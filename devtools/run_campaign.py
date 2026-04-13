@@ -55,11 +55,8 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 async def _run(args: argparse.Namespace) -> int:
     from devtools.benchmark_campaigns import (
         CAMPAIGN_REGISTRY,
-        run_filter_scan_campaign,
-        run_fts_rebuild_campaign,
         run_full_campaign,
-        run_incremental_index_campaign,
-        run_startup_health_campaign,
+        run_synthetic_benchmark_campaign,
     )
     from devtools.campaign_report import save_campaign_reports
     from devtools.large_archive_generator import (
@@ -98,20 +95,7 @@ async def _run(args: argparse.Namespace) -> int:
         await generate_archive(spec, archive_dir)
         db_path = archive_dir / "benchmark.db"
 
-        # Run the specific campaign
-        match args.campaign:
-            case "fts-rebuild":
-                result = run_fts_rebuild_campaign(db_path)
-            case "incremental-index":
-                result = await run_incremental_index_campaign(db_path)
-            case "filter-scan":
-                result = await run_filter_scan_campaign(db_path)
-            case "startup-health":
-                result = await run_startup_health_campaign(db_path)
-            case _:
-                print(f"Unknown campaign: {args.campaign}")
-                return 1
-
+        result = await run_synthetic_benchmark_campaign(args.campaign, db_path)
         result.scale_level = args.scale
         results = [result]
 
