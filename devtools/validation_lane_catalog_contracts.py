@@ -5,9 +5,12 @@ from __future__ import annotations
 from functools import partial
 
 from devtools.validation_lane_base import devtools_lane as _devtools_lane
+from devtools.validation_lane_base import pipeline_probe_lane as _pipeline_probe_lane
 from devtools.validation_lane_base import pytest_lane as _pytest_lane
+from polylogue.scenarios import CorpusRequest
 
 devtools_lane = partial(_devtools_lane, category="contract")
+pipeline_probe_lane = partial(_pipeline_probe_lane, category="contract")
 pytest_lane = partial(_pytest_lane, category="contract")
 
 CONTRACT_LANES = {
@@ -41,21 +44,14 @@ CONTRACT_LANES = {
         operation_targets=("cli.help",),
         tags=("contract", "showcase", "help"),
     ),
-    "pipeline-probe-chatgpt": devtools_lane(
+    "pipeline-probe-chatgpt": pipeline_probe_lane(
         "pipeline-probe-chatgpt",
         "Synthetic ChatGPT parse-stage pipeline probe under explicit runtime and RSS budgets",
         180,
-        "pipeline-probe",
-        "--provider",
-        "chatgpt",
-        "--count",
-        "5",
-        "--stage",
-        "parse",
-        "--max-total-ms",
-        "10000",
-        "--max-peak-rss-mb",
-        "512",
+        stage="parse",
+        corpus_request=CorpusRequest(providers=("chatgpt",), count=5, messages_min=4, messages_max=12, seed=42),
+        max_total_ms=10000,
+        max_peak_rss_mb=512,
     ),
     "semantic-stack": pytest_lane(
         "semantic-stack",

@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 from polylogue.scenarios import (
+    CorpusRequest,
     ExecutionKind,
+    PipelineProbeInputMode,
+    PipelineProbeRequest,
     command_execution,
     composite_execution,
-    devtools_execution,
     memory_budget_execution,
+    pipeline_probe_execution,
     polylogue_execution,
     pytest_execution,
     runner_execution,
@@ -45,10 +48,15 @@ def test_polylogue_execution_renders_runtime_and_display_forms() -> None:
     assert execution.polylogue_invoke_args == ("--plain", "doctor", "--json")
 
 
-def test_devtools_execution_renders_control_plane_command() -> None:
-    execution = devtools_execution("pipeline-probe", "--provider", "chatgpt", "--stage", "parse")
+def test_pipeline_probe_execution_renders_control_plane_command() -> None:
+    execution = pipeline_probe_execution(
+        PipelineProbeRequest(
+            stage="parse",
+            corpus_request=CorpusRequest(providers=("chatgpt",), count=5, messages_min=4, messages_max=12, seed=42),
+        )
+    )
 
-    assert execution.kind is ExecutionKind.DEVTOOLS
+    assert execution.kind is ExecutionKind.PIPELINE_PROBE
     assert execution.command == (
         "devtools",
         "pipeline-probe",
@@ -99,12 +107,39 @@ def test_execution_spec_round_trips_payload() -> None:
 def test_nested_execution_spec_round_trips_payload() -> None:
     execution = memory_budget_execution(
         1536,
-        devtools_execution("pipeline-probe", "--provider", "chatgpt", "--stage", "parse"),
+        pipeline_probe_execution(
+            PipelineProbeRequest(
+                stage="parse",
+                corpus_request=CorpusRequest(
+                    providers=("chatgpt",),
+                    count=5,
+                    messages_min=4,
+                    messages_max=12,
+                    seed=42,
+                ),
+            )
+        ),
     )
 
     restored = type(execution).from_payload(execution.to_payload())
 
     assert restored == execution
+
+
+def test_pipeline_probe_request_round_trips_archive_subset_payload() -> None:
+    request = PipelineProbeRequest(
+        input_mode=PipelineProbeInputMode.ARCHIVE_SUBSET,
+        stage="parse",
+        sample_per_provider=50,
+        workdir="/tmp/probe",
+        json_out="/tmp/probe.json",
+        max_total_ms=10000,
+        max_peak_rss_mb=512,
+    )
+
+    restored = PipelineProbeRequest.from_payload(request.to_payload())
+
+    assert restored == request
 
 
 def test_composite_execution_has_members_only() -> None:
