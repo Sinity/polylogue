@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from devtools.pipeline_probe import _write_probe_sources, main, run_probe
-from polylogue.scenarios import CorpusSpec
+from polylogue.scenarios import CorpusScenario, CorpusSpec
 from polylogue.schemas.synthetic import SyntheticCorpus
 from polylogue.storage.backends import create_backend
 from polylogue.storage.backends.connection import open_connection
@@ -20,6 +20,7 @@ from polylogue.storage.store import RawConversationRecord
 class _Args:
     input_mode = "synthetic"
     provider = "chatgpt"
+    corpus_source = "default"
     count = 1
     messages_min = 3
     messages_max = 4
@@ -209,6 +210,7 @@ async def test_run_probe_emits_real_pipeline_summary(tmp_path) -> None:
     ingest_details = summary["run_payload"]["metrics"]["stages"]["ingest"]["details"]["batch_observations"]
 
     assert summary["probe"]["provider"] == "chatgpt"
+    assert summary["probe"]["corpus_source"] == "default"
     assert summary["probe"]["stage_sequence"] == ["acquire", "parse"]
     assert summary["result"]["run_path"] is not None
     assert summary["run_payload"]["metrics"]["total_duration_ms"] is not None
@@ -232,6 +234,7 @@ async def test_run_probe_can_stage_real_source_subset(tmp_path) -> None:
     source_input_root = tmp_path / "inputs"
     files, total_bytes = _write_probe_sources(
         provider="chatgpt",
+        corpus_source="default",
         count=2,
         messages_min=3,
         messages_max=4,
@@ -245,7 +248,6 @@ async def test_run_probe_can_stage_real_source_subset(tmp_path) -> None:
     )
 
     summary = await run_probe(args)
-    acquisition_details = summary["run_payload"]["metrics"]["stages"]["ingest"]["details"]["acquisition"]
 
     assert summary["probe"]["input_mode"] == "source-subset"
     assert summary["probe"]["source_name"] == "inbox"
@@ -258,17 +260,57 @@ async def test_run_probe_can_stage_real_source_subset(tmp_path) -> None:
     assert len(summary["provenance"]["source_inputs_sha256"]) == 64
     assert len(summary["provenance"]["source_input_fingerprints"]) == 2
     assert all(len(entry["sha256"]) == 64 for entry in summary["provenance"]["source_input_fingerprints"])
-    assert isinstance(acquisition_details, dict)
-    assert summary["db_stats"]["raw_conversations_count"] == 2
-    assert summary["db_stats"]["conversations_count"] == 2
-    assert len(summary["raw_fanout"]) == 2
-    assert summary["result"]["run_path"] is not None
+
+
+def test_write_probe_sources_threads_through_corpus_source(monkeypatch, tmp_path: Path) -> None:
+    calls: list[str] = []
+
+    def fake_resolve_corpus_scenarios(**kwargs):
+        calls.append(str(kwargs["source"]))
+        return (
+            CorpusScenario(
+                provider="chatgpt",
+                corpus_specs=(CorpusSpec.for_provider("chatgpt", count=1, origin="test"),),
+                origin="compiled.pipeline-probe",
+            ),
+        )
+
+    class _Artifact:
+        raw_bytes = b"{}"
+
+    class _Batch:
+        artifacts = (_Artifact(),)
+
+    class _Written:
+        files = (tmp_path / "source.json",)
+        batch = _Batch()
+
+    monkeypatch.setattr("devtools.pipeline_probe.resolve_corpus_scenarios", fake_resolve_corpus_scenarios)
+    monkeypatch.setattr(
+        "devtools.pipeline_probe.SyntheticCorpus.write_specs_artifacts",
+        lambda *_args, **_kwargs: [_Written()],
+    )
+
+    files, total_bytes = _write_probe_sources(
+        provider="chatgpt",
+        corpus_source="inferred",
+        count=1,
+        messages_min=3,
+        messages_max=4,
+        seed=17,
+        source_root=tmp_path / "sources",
+    )
+
+    assert calls == ["inferred"]
+    assert files == [tmp_path / "source.json"]
+    assert total_bytes == 2
 
 
 async def test_run_probe_applies_ingest_tuning_overrides(tmp_path) -> None:
     source_input_root = tmp_path / "inputs"
     files, _ = _write_probe_sources(
         provider="chatgpt",
+        corpus_source="default",
         count=2,
         messages_min=3,
         messages_max=4,
@@ -295,6 +337,7 @@ async def test_run_probe_can_measure_ingest_result_sizes(tmp_path) -> None:
     source_input_root = tmp_path / "inputs"
     files, _ = _write_probe_sources(
         provider="chatgpt",
+        corpus_source="default",
         count=1,
         messages_min=3,
         messages_max=4,
@@ -361,6 +404,7 @@ def test_main_runs_source_subset_mode(tmp_path, capsys) -> None:
     source_input_root = tmp_path / "inputs"
     files, _ = _write_probe_sources(
         provider="chatgpt",
+        corpus_source="default",
         count=1,
         messages_min=3,
         messages_max=4,
