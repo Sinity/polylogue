@@ -13,9 +13,10 @@ from __future__ import annotations
 import subprocess
 import sys
 
-from devtools.validation_lane_base import LaneConfig, cli_lane
+from devtools.lane_models import LaneEntry
+from devtools.validation_lane_base import cli_lane
 
-LANES: dict[str, LaneConfig] = {
+LANES: dict[str, LaneEntry] = {
     "fast": cli_lane(
         "fast",
         "Unit-level scale tests (200 conversations)",
@@ -25,6 +26,7 @@ LANES: dict[str, LaneConfig] = {
         "tests/unit/storage/test_scale.py",
         "-x",
         "--timeout=30",
+        category="scale",
         origin="authored.scale-lane",
         tags=("scale", "fast"),
     ),
@@ -38,6 +40,7 @@ LANES: dict[str, LaneConfig] = {
         "slow",
         "tests/unit/storage/",
         "--timeout=120",
+        category="scale",
         origin="authored.scale-lane",
         tags=("scale", "slow"),
     ),
@@ -52,6 +55,7 @@ LANES: dict[str, LaneConfig] = {
         "slow or not slow",
         "tests/unit/storage/",
         "--timeout=120",
+        category="scale",
         origin="authored.scale-lane",
         tags=("scale", "stretch"),
     ),
@@ -60,21 +64,21 @@ LANES: dict[str, LaneConfig] = {
 VALID_LANES = frozenset(LANES.keys())
 
 
-def build_pytest_command(lane: LaneConfig) -> list[str]:
+def build_pytest_command(lane: LaneEntry) -> list[str]:
     """Build the full pytest command for a lane."""
     if lane.command is None:
         raise ValueError(f"Lane {lane.name!r} is composite and has no direct command")
     return lane.command
 
 
-def parse_lane(lane_name: str) -> LaneConfig:
+def parse_lane(lane_name: str) -> LaneEntry:
     """Parse and validate a lane name."""
     if lane_name not in LANES:
         raise ValueError(f"Invalid lane: {lane_name!r}. Valid lanes: {', '.join(sorted(VALID_LANES))}")
     return LANES[lane_name]
 
 
-def run_lane(lane: LaneConfig) -> int:
+def run_lane(lane: LaneEntry) -> int:
     """Execute a scale test lane via subprocess."""
     cmd = build_pytest_command(lane)
     print(f"Scale lane: {lane.name} — {lane.description}")

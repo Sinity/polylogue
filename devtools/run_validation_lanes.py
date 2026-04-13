@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import sys
 
-from devtools.validation_catalog import ValidationLaneEntry as LaneConfig
+from devtools.lane_models import LaneEntry
 from devtools.validation_lane_runtime import (
     LANES,
     VALID_LANES,
@@ -69,7 +69,7 @@ def main(argv: list[str] | None = None) -> int:
 __all__ = [
     "LANES",
     "VALID_LANES",
-    "LaneConfig",
+    "LaneEntry",
     "build_lane_command",
     "main",
     "parse_lane",
