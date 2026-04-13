@@ -16,6 +16,7 @@ class ScenarioProjectionSourceKind(str, Enum):
     BENCHMARK_CAMPAIGN = "benchmark-campaign"
     SYNTHETIC_BENCHMARK = "synthetic-benchmark"
     INFERRED_CORPUS = "inferred-corpus"
+    INFERRED_CORPUS_SCENARIO = "inferred-corpus-scenario"
 
 
 class ScenarioProjectionSource:

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from polylogue.scenarios import CorpusSpec, build_inferred_corpus_specs
+from polylogue.scenarios import CorpusScenario, CorpusSpec, build_corpus_scenarios, build_inferred_corpus_specs
 from polylogue.schemas.operator_models import (
     SchemaCompareRequest,
     SchemaCompareResult,
@@ -17,6 +17,27 @@ from polylogue.schemas.operator_models import (
     SchemaProviderSnapshot,
 )
 from polylogue.schemas.operator_registry import schema_registry
+
+
+def _build_inferred_outputs(
+    *,
+    provider: str,
+    package_version: str,
+    manifest=None,
+    sample_count: int = 0,
+) -> tuple[tuple[CorpusSpec, ...], tuple[CorpusScenario, ...]]:
+    corpus_specs = build_inferred_corpus_specs(
+        provider=provider,
+        package_version=package_version,
+        manifest=manifest,
+        sample_count=sample_count,
+    )
+    corpus_scenarios = build_corpus_scenarios(
+        corpus_specs,
+        origin="compiled.inferred-corpus-scenario",
+        tags=("inferred", "schema", "synthetic", "scenario"),
+    )
+    return corpus_specs, corpus_scenarios
 
 
 def infer_schema(request: SchemaInferRequest) -> SchemaInferResult:
@@ -33,26 +54,28 @@ def infer_schema(request: SchemaInferRequest) -> SchemaInferResult:
     )
     package_version = result.default_version or "default"
     if not request.cluster or not result.success:
+        corpus_specs, corpus_scenarios = _build_inferred_outputs(
+            provider=request.provider,
+            package_version=package_version,
+            sample_count=result.sample_count,
+        )
         return SchemaInferResult(
             generation=result,
-            corpus_specs=build_inferred_corpus_specs(
-                provider=request.provider,
-                package_version=package_version,
-                sample_count=result.sample_count,
-            )
-            if result.success
-            else (),
+            corpus_specs=corpus_specs,
+            corpus_scenarios=corpus_scenarios if result.success else (),
         )
 
     config = PROVIDERS.get(request.provider)
     if config is None or not config.db_provider_name:
+        corpus_specs, corpus_scenarios = _build_inferred_outputs(
+            provider=request.provider,
+            package_version=package_version,
+            sample_count=result.sample_count,
+        )
         return SchemaInferResult(
             generation=result,
-            corpus_specs=build_inferred_corpus_specs(
-                provider=request.provider,
-                package_version=package_version,
-                sample_count=result.sample_count,
-            ),
+            corpus_specs=corpus_specs,
+            corpus_scenarios=corpus_scenarios,
         )
 
     samples = load_samples_from_db(
@@ -61,28 +84,32 @@ def infer_schema(request: SchemaInferRequest) -> SchemaInferResult:
         max_samples=request.max_samples or request.cluster_sample_limit,
     )
     if not samples:
+        corpus_specs, corpus_scenarios = _build_inferred_outputs(
+            provider=request.provider,
+            package_version=package_version,
+            sample_count=result.sample_count,
+        )
         return SchemaInferResult(
             generation=result,
-            corpus_specs=build_inferred_corpus_specs(
-                provider=request.provider,
-                package_version=package_version,
-                sample_count=result.sample_count,
-            ),
+            corpus_specs=corpus_specs,
+            corpus_scenarios=corpus_scenarios,
         )
 
     registry = schema_registry()
     manifest = registry.cluster_samples(request.provider, samples)
     manifest_path = registry.save_cluster_manifest(manifest)
+    corpus_specs, corpus_scenarios = _build_inferred_outputs(
+        provider=request.provider,
+        package_version=package_version,
+        manifest=manifest,
+        sample_count=result.sample_count,
+    )
     return SchemaInferResult(
         generation=result,
         manifest=manifest,
         manifest_path=manifest_path,
-        corpus_specs=build_inferred_corpus_specs(
-            provider=request.provider,
-            package_version=package_version,
-            manifest=manifest,
-            sample_count=result.sample_count,
-        ),
+        corpus_specs=corpus_specs,
+        corpus_scenarios=corpus_scenarios,
     )
 
 
@@ -122,6 +149,18 @@ def list_inferred_corpus_specs(
     return tuple(specs)
 
 
+def list_inferred_corpus_scenarios(
+    *,
+    provider: str | None = None,
+    registry: Any | None = None,
+) -> tuple[CorpusScenario, ...]:
+    return build_corpus_scenarios(
+        list_inferred_corpus_specs(provider=provider, registry=registry),
+        origin="compiled.inferred-corpus-scenario",
+        tags=("inferred", "schema", "synthetic", "scenario"),
+    )
+
+
 def list_schemas(request: SchemaListRequest) -> SchemaListResult:
     registry = schema_registry()
     if request.provider is not None:
@@ -135,6 +174,7 @@ def list_schemas(request: SchemaListRequest) -> SchemaListResult:
                 manifest=registry.load_cluster_manifest(provider),
                 latest_age_days=registry.get_schema_age_days(provider),
                 corpus_specs=list_inferred_corpus_specs(provider=provider, registry=registry),
+                corpus_scenarios=list_inferred_corpus_scenarios(provider=provider, registry=registry),
             ),
         )
 
@@ -150,6 +190,7 @@ def list_schemas(request: SchemaListRequest) -> SchemaListResult:
             manifest=registry.load_cluster_manifest(provider),
             latest_age_days=registry.get_schema_age_days(provider),
             corpus_specs=tuple(corpus_specs_by_provider.get(provider, ())),
+            corpus_scenarios=list_inferred_corpus_scenarios(provider=provider, registry=registry),
         )
         for provider in registry.list_providers()
     ]
@@ -219,6 +260,7 @@ __all__ = [
     "audit_schemas",
     "compare_schema_versions",
     "infer_schema",
+    "list_inferred_corpus_scenarios",
     "list_inferred_corpus_specs",
     "list_schemas",
     "promote_schema_cluster",

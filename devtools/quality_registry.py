@@ -13,8 +13,8 @@ from devtools.lane_models import LaneEntry
 from devtools.mutation_catalog import MutationCampaignEntry, build_mutation_entries
 from devtools.scenario_projection_catalog import build_scenario_projection_entries
 from devtools.validation_catalog import build_validation_lane_entries
-from polylogue.scenarios import ScenarioProjectionEntry
-from polylogue.schemas.operator_inference import list_inferred_corpus_specs
+from polylogue.scenarios import CorpusScenario, ScenarioProjectionEntry
+from polylogue.schemas.operator_inference import list_inferred_corpus_scenarios
 
 
 @dataclass(frozen=True)
@@ -25,6 +25,7 @@ class QualityRegistry:
     mutation_campaigns: tuple[MutationCampaignEntry, ...]
     benchmark_campaigns: tuple[BenchmarkCampaignEntry, ...]
     synthetic_benchmark_campaigns: tuple[BenchmarkCampaignEntry, ...]
+    inferred_corpus_scenarios: tuple[CorpusScenario, ...]
     scenario_projections: tuple[ScenarioProjectionEntry, ...]
 
 
@@ -36,7 +37,7 @@ def build_quality_registry() -> QualityRegistry:
     mutation_campaigns = build_mutation_entries()
     benchmark_campaigns = build_benchmark_entries()
     synthetic_benchmark_campaigns = build_synthetic_benchmark_entries()
-    inferred_corpus_specs = list_inferred_corpus_specs()
+    inferred_corpus_scenarios = list_inferred_corpus_scenarios()
     return QualityRegistry(
         contract_lanes=contract_lanes,
         live_lanes=live_lanes,
@@ -44,12 +45,13 @@ def build_quality_registry() -> QualityRegistry:
         mutation_campaigns=mutation_campaigns,
         benchmark_campaigns=benchmark_campaigns,
         synthetic_benchmark_campaigns=synthetic_benchmark_campaigns,
+        inferred_corpus_scenarios=inferred_corpus_scenarios,
         scenario_projections=build_scenario_projection_entries(
             validation_lanes=validation_lanes,
             mutation_campaigns=mutation_campaigns,
             benchmark_campaigns=benchmark_campaigns,
             synthetic_benchmark_campaigns=synthetic_benchmark_campaigns,
-            inferred_corpus_specs=inferred_corpus_specs,
+            inferred_corpus_scenarios=inferred_corpus_scenarios,
         ),
     )
 
