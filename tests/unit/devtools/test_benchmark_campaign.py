@@ -11,11 +11,11 @@ from devtools.benchmark_campaign import (
     compare_artifacts,
     render_index,
 )
+from devtools.benchmark_catalog import BenchmarkCampaignEntry
 from devtools.benchmark_scenario_catalog import (
     BENCHMARK_SCENARIO_INDEX,
     BENCHMARK_SCENARIOS,
-    BenchmarkScenario,
-    compile_benchmark_scenarios,
+    compile_benchmark_campaigns,
 )
 from devtools.execution_specs import pytest_execution
 
@@ -175,9 +175,9 @@ def test_campaign_result_round_trips_path_targets_from_artifact(tmp_path: Path) 
     assert loaded.origin == "generated.search-filters"
 
 
-def test_benchmark_scenario_exposes_tests_from_execution() -> None:
-    scenario = BenchmarkScenario(
-        scenario_id="action-events",
+def test_benchmark_entry_exposes_tests_from_execution() -> None:
+    scenario = BenchmarkCampaignEntry(
+        name="action-events",
         description="action-event repair benchmark",
         execution=pytest_execution("tests/benchmarks/test_action_events.py"),
         notes=("Tracks action-event repair throughput.",),
@@ -194,8 +194,8 @@ def test_benchmark_scenario_exposes_tests_from_execution() -> None:
     assert scenario.tags == ("benchmark", "action-events")
 
 
-def test_compile_benchmark_scenarios_indexes_by_id() -> None:
-    campaigns = compile_benchmark_scenarios(BENCHMARK_SCENARIOS)
+def test_compile_benchmark_campaigns_indexes_by_name() -> None:
+    campaigns = compile_benchmark_campaigns(BENCHMARK_SCENARIOS)
 
     assert set(campaigns) == {"search-filters", "storage", "pipeline"}
     assert campaigns["search-filters"].tests == ("tests/benchmarks/test_search_filters.py",)
