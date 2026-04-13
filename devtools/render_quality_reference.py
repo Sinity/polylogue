@@ -130,7 +130,7 @@ def _render_scenario_projection_snapshot(registry: QualityRegistry) -> list[str]
 
 
 def build_document(registry: QualityRegistry, *, runtime_coverage: RuntimeScenarioCoverage | None = None) -> str:
-    coverage = runtime_coverage or build_runtime_scenario_coverage(registry=registry)
+    coverage = runtime_coverage or build_runtime_scenario_coverage(projections=registry.scenario_projections)
     parts = [
         "[← Back to README](../README.md)",
         "",
