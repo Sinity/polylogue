@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from polylogue.showcase.catalog_loader import load_exercise_catalog
-from polylogue.showcase.exercise_models import Exercise, Validation
+from polylogue.showcase.exercise_models import AssertionSpec, Exercise
 from polylogue.showcase.generators import (
     generate_command_help_scenarios,
     generate_json_contract_scenarios,
@@ -74,7 +74,7 @@ __all__ = [
     "QA_EXTRA_EXERCISES",
     "QA_EXTRA_SCENARIOS",
     "Exercise",
-    "Validation",
+    "AssertionSpec",
     "exercises_by_group",
     "topological_order",
     "vhs_exercises",

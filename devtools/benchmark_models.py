@@ -10,8 +10,6 @@ from polylogue.scenarios import ExecutableScenario, ScenarioProjectionSourceKind
 @dataclass(frozen=True, kw_only=True)
 class BenchmarkCampaignEntry(ExecutableScenario):
     notes: tuple[str, ...] = ()
-    warn_pct: float = 0.0
-    fail_pct: float = 0.0
     summary_metric: str = ""
     summary_label: str = ""
     scale_targets: tuple[str, ...] = ()
@@ -20,6 +18,14 @@ class BenchmarkCampaignEntry(ExecutableScenario):
     @property
     def projection_source_kind(self) -> ScenarioProjectionSourceKind:
         return self.projection_kind
+
+    @property
+    def warn_pct(self) -> float:
+        return self.assertion.resolved_benchmark_warn_pct()
+
+    @property
+    def fail_pct(self) -> float:
+        return self.assertion.resolved_benchmark_fail_pct()
 
 
 def compile_benchmark_campaigns(

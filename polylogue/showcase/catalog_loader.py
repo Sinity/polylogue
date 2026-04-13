@@ -6,8 +6,8 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
-from polylogue.scenarios import CorpusSpec, ExecutionSpec, ScenarioMetadata
-from polylogue.showcase.exercise_models import Exercise, Validation
+from polylogue.scenarios import AssertionSpec, CorpusSpec, ExecutionSpec, ScenarioMetadata
+from polylogue.showcase.exercise_models import Exercise
 
 _CATALOG_PATH = Path(__file__).with_name("exercise_catalog.json")
 
@@ -102,14 +102,14 @@ def _load_custom_validator(payload: dict[str, object]):
     return validator
 
 
-def _load_validation(payload: dict[str, object] | None) -> Validation:
+def _load_assertion(payload: dict[str, object] | None) -> AssertionSpec:
     if payload is None:
-        return Validation()
+        return AssertionSpec()
     custom_payload = payload.get("custom")
     custom = None
     if isinstance(custom_payload, dict):
         custom = _load_custom_validator(custom_payload)
-    return Validation(
+    return AssertionSpec(
         exit_code=payload.get("exit_code", 0),  # type: ignore[arg-type]
         stdout_contains=tuple(str(item) for item in payload.get("stdout_contains", ())),
         stdout_not_contains=tuple(str(item) for item in payload.get("stdout_not_contains", ())),
@@ -138,7 +138,7 @@ def _load_exercise(payload: dict[str, object]) -> Exercise:
         description=str(payload["description"]),
         execution=ExecutionSpec.from_payload(execution_payload),
         corpus_specs=corpus_specs,
-        validation=_load_validation(payload.get("validation") if isinstance(payload.get("validation"), dict) else None),
+        assertion=_load_assertion(payload.get("assertion") if isinstance(payload.get("assertion"), dict) else None),
         needs_data=bool(payload.get("needs_data", False)),
         writes=bool(payload.get("writes", False)),
         depends_on=str(payload["depends_on"]) if payload.get("depends_on") is not None else None,

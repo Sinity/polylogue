@@ -17,7 +17,7 @@ from polylogue.cli.click_app import cli as root_cli
 from polylogue.cli.command_inventory import CommandPath, iter_command_paths
 from polylogue.scenarios import polylogue_execution
 from polylogue.showcase.dimensions import query_read, schema_exercise
-from polylogue.showcase.exercise_models import Exercise, Validation
+from polylogue.showcase.exercise_models import AssertionSpec, Exercise
 
 
 def discover_filter_flags(cli_group: click.Group) -> list[dict[str, Any]]:
@@ -159,7 +159,7 @@ def generate_command_help_scenarios() -> tuple[Exercise, ...]:
                 group="structural",
                 description=f"{display_name} help",
                 execution=polylogue_execution(*command_path.path, "--help"),
-                validation=Validation(stdout_contains=(f"polylogue {display_name}",)),
+                assertion=AssertionSpec(stdout_contains=(f"polylogue {display_name}",)),
                 tier=0,
                 origin="generated.command-help",
                 operation_targets=("cli.help",),
@@ -196,7 +196,7 @@ def _json_contract_scenario(
         group="subcommands",
         description=description,
         execution=polylogue_execution(*args),
-        validation=Validation(stdout_is_valid_json=True),
+        assertion=AssertionSpec(stdout_is_valid_json=True),
         needs_data=needs_data,
         tier=tier,
         env=env,
@@ -362,7 +362,7 @@ def generate_format_scenarios() -> tuple[Exercise, ...]:
                     group="generated-formats",
                     description=f"Generated: {fmt} format in {mode_name} mode",
                     execution=polylogue_execution(*args),
-                    validation=Validation(**validation_kwargs),
+                    assertion=AssertionSpec(**validation_kwargs),
                     needs_data=True,
                     tier=dims.derived_tier,
                     env="any",
@@ -398,7 +398,7 @@ def generate_schema_scenarios() -> tuple[Exercise, ...]:
             group="generated-schema",
             description="Generated: schema list --json returns valid JSON",
             execution=polylogue_execution("schema", "list", "--json"),
-            validation=Validation(stdout_is_valid_json=True),
+            assertion=AssertionSpec(stdout_is_valid_json=True),
             tier=dims_smoke.derived_tier,
             env="any",
             output_ext=".json",

@@ -151,35 +151,8 @@ def run_exercise(
 
 
 def validate_exercise_output(exercise: Exercise, output: str, exit_code: int) -> str | None:
-    """Validate exercise output against its validation spec."""
-    validation = exercise.validation
-
-    if validation.exit_code is not None and exit_code != validation.exit_code:
-        return f"exit code {exit_code}, expected {validation.exit_code}"
-
-    for needle in validation.stdout_contains:
-        if needle not in output:
-            return f"output missing {needle!r}"
-
-    for needle in validation.stdout_not_contains:
-        if needle in output:
-            return f"output unexpectedly contains {needle!r}"
-
-    if validation.stdout_is_valid_json:
-        try:
-            json.loads(output)
-        except json.JSONDecodeError as exc:
-            return f"invalid JSON: {exc}"
-
-    if validation.stdout_min_lines is not None:
-        line_count = len(output.strip().splitlines())
-        if line_count < validation.stdout_min_lines:
-            return f"only {line_count} lines, expected >= {validation.stdout_min_lines}"
-
-    if validation.custom:
-        return validation.custom(output, exit_code)
-
-    return None
+    """Validate exercise output against its assertion spec."""
+    return exercise.assertion.validate_process(output, exit_code)
 
 
 __all__ = [

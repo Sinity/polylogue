@@ -1,5 +1,6 @@
 """Shared scenario models used across verification projections."""
 
+from .assertions import AssertionSpec
 from .corpus import (
     CorpusRequest,
     CorpusScenario,
@@ -51,6 +52,7 @@ from .sources import NamedScenarioSource
 from .specs import ScenarioSpec
 
 __all__ = [
+    "AssertionSpec",
     "build_default_corpus_specs",
     "build_corpus_scenarios",
     "build_inferred_corpus_specs",

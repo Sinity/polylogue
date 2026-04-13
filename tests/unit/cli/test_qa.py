@@ -8,8 +8,8 @@ from __future__ import annotations
 
 import json
 
-from polylogue.scenarios import polylogue_execution
-from polylogue.showcase.exercises import Exercise, Validation
+from polylogue.scenarios import AssertionSpec, polylogue_execution
+from polylogue.showcase.exercises import Exercise
 from polylogue.showcase.report_files import save_reports
 from polylogue.showcase.runner import ExerciseResult, ShowcaseResult
 from polylogue.showcase.showcase_report_payloads import generate_json_report
@@ -25,7 +25,7 @@ def _make_result(exercises: list[Exercise] | None = None) -> ShowcaseResult:
                 group="structural",
                 description="Test one",
                 execution=polylogue_execution("--help"),
-                validation=Validation(stdout_contains=("polylogue",)),
+                assertion=AssertionSpec(stdout_contains=("polylogue",)),
             ),
             Exercise(
                 name="test-2",

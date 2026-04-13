@@ -11,6 +11,7 @@ from devtools.quality_registry import QualityRegistry
 from devtools.scenario_coverage import RuntimePathCoverage, RuntimeScenarioCoverage, ScenarioCoverageRef
 from devtools.validation_family_models import ValidationLaneCompositeSpec, ValidationLaneFamily
 from polylogue.scenarios import (
+    AssertionSpec,
     CorpusScenario,
     CorpusSpec,
     ScenarioProjectionEntry,
@@ -76,8 +77,7 @@ def test_build_document_includes_live_registry_sections() -> None:
                     name="search-filters",
                     description="Search latency domain.",
                     execution=pytest_execution("tests/benchmarks/test_search_filters.py"),
-                    warn_pct=10.0,
-                    fail_pct=20.0,
+                    assertion=AssertionSpec(benchmark_warn_pct=10.0, benchmark_fail_pct=20.0),
                 ),
             ),
             synthetic_benchmark_campaigns=(

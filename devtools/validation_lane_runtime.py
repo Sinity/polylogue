@@ -50,7 +50,15 @@ def run_lane(lane: LaneEntry) -> int:
     print()
 
     try:
-        result = run_execution(lane.execution, timeout=lane.timeout_s)
+        result = run_execution(lane.execution, timeout=lane.timeout_s, capture_output=True)
+        if result.stdout:
+            print(result.stdout, end="" if result.stdout.endswith("\n") else "\n")
+        if result.stderr:
+            print(result.stderr, end="" if result.stderr.endswith("\n") else "\n")
+        error = lane.assertion.validate_process(result.output, result.exit_code)
+        if error is not None:
+            print(f"\nLane {lane.name!r} failed assertion: {error}")
+            return result.exit_code if result.exit_code != 0 else 1
         return result.exit_code
     except subprocess.TimeoutExpired:
         print(f"\nLane {lane.name!r} timed out after {lane.timeout_s}s")

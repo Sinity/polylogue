@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
+from .assertions import AssertionSpec
 from .execution import ExecutionSpec
 from .metadata import ScenarioMetadata
 from .sources import NamedScenarioSource
@@ -14,6 +15,7 @@ class ExecutableScenario(NamedScenarioSource):
     """One authored scenario source with an attached execution workload."""
 
     execution: ExecutionSpec | None = None
+    assertion: AssertionSpec = field(default_factory=AssertionSpec)
 
     def __post_init__(self) -> None:
         if self.execution is None:
@@ -61,6 +63,9 @@ class ExecutableScenario(NamedScenarioSource):
         payload = self.scenario_payload()
         if self.execution is not None:
             payload["execution"] = self.execution.to_payload()
+        assertion_payload = self.assertion.to_payload()
+        if assertion_payload:
+            payload["assertion"] = assertion_payload
         return payload
 
 
