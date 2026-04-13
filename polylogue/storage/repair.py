@@ -9,6 +9,7 @@ from typing import Any
 
 from polylogue.logging import get_logger
 from polylogue.maintenance_models import DerivedModelStatus, MaintenanceCategory
+from polylogue.storage.action_event_artifacts import ActionEventArtifactState
 
 logger = get_logger(__name__)
 
@@ -176,38 +177,46 @@ def session_product_repair_count(derived_statuses: dict[str, DerivedModelStatus]
 
 
 def action_event_repair_count(derived_statuses: dict[str, DerivedModelStatus]) -> int:
-    missing_conversations, stale_rows, fts_pending_rows = _action_event_repair_components(derived_statuses)
-    return missing_conversations + stale_rows + fts_pending_rows
+    return _action_event_state_from_statuses(derived_statuses).repair_item_count
 
 
 def _action_event_repair_components(
     derived_statuses: dict[str, DerivedModelStatus],
-) -> tuple[int, int, int]:
+) -> tuple[int, int, int, int]:
+    state = _action_event_state_from_statuses(derived_statuses)
+    return (
+        state.missing_conversations,
+        state.stale_rows,
+        state.pending_fts_rows,
+        state.excess_fts_rows,
+    )
+
+
+def _action_event_state_from_statuses(
+    derived_statuses: dict[str, DerivedModelStatus],
+) -> ActionEventArtifactState:
     action_events = derived_statuses.get("action_events")
     action_events_fts = derived_statuses.get("action_events_fts")
     if action_events is None or action_events_fts is None:
-        return (0, 0, 0)
-    return (
-        max(0, int(action_events.pending_documents or 0)),
-        max(0, int(action_events.stale_rows or 0)),
-        max(0, int(action_events_fts.pending_rows or 0)),
+        return ActionEventArtifactState(
+            source_conversations=0,
+            materialized_conversations=0,
+            materialized_rows=0,
+            fts_rows=0,
+        )
+    return ActionEventArtifactState(
+        source_conversations=int(action_events.source_documents or 0),
+        materialized_conversations=int(action_events.materialized_documents or 0),
+        materialized_rows=int(action_events.materialized_rows or 0),
+        fts_rows=int(action_events_fts.materialized_rows or 0),
+        stale_rows=int(action_events.stale_rows or 0),
+        orphan_rows=int(action_events.orphan_rows or 0),
+        matches_version=bool(action_events.matches_version if action_events.matches_version is not None else True),
     )
 
 
 def _action_event_repair_detail(derived_statuses: dict[str, DerivedModelStatus]) -> str:
-    missing_conversations, stale_rows, fts_pending_rows = _action_event_repair_components(derived_statuses)
-    if missing_conversations == 0 and stale_rows == 0 and fts_pending_rows == 0:
-        return "Action-event read model ready"
-
-    detail_parts: list[str] = []
-    if missing_conversations:
-        detail_parts.append(f"{missing_conversations:,} missing conversations")
-    if stale_rows:
-        detail_parts.append(f"{stale_rows:,} stale action-event rows")
-    if fts_pending_rows:
-        detail_parts.append(f"{fts_pending_rows:,} pending action-event FTS rows")
-    joined = ", ".join(detail_parts)
-    return f"Action-event read model pending ({joined})"
+    return _action_event_state_from_statuses(derived_statuses).repair_detail()
 
 
 def dangling_fts_repair_count(derived_statuses: dict[str, DerivedModelStatus]) -> int:
@@ -755,13 +764,9 @@ def repair_action_event_read_model(config: Any, dry_run: bool = False) -> Repair
     try:
         with connection_context(None) as conn:
             status = action_event_read_model_status_sync(conn)
+            state = ActionEventArtifactState.from_status_snapshot(status)
             candidate_ids = action_event_repair_candidates_sync(conn)
-            missing_conversations = max(
-                0, int(status["valid_source_conversation_count"]) - int(status["materialized_conversation_count"])
-            )
-            stale_conversations = int(status["stale_count"])
-            action_fts_pending = max(0, int(status["count"]) - int(status["action_fts_count"]))
-            pending = max(len(candidate_ids), missing_conversations + stale_conversations) + action_fts_pending
+            pending = state.repair_item_count
 
             if dry_run:
                 return RepairResult(
@@ -772,13 +777,13 @@ def repair_action_event_read_model(config: Any, dry_run: bool = False) -> Repair
                     success=True,
                     detail="Would: action-event read model already ready"
                     if pending == 0
-                    else f"Would: repair action-event rows for {len(candidate_ids):,} conversations; action FTS pending {action_fts_pending:,}",
+                    else f"Would: {state.repair_detail()[0].lower() + state.repair_detail()[1:]}",
                 )
 
             repaired = 0
             if candidate_ids:
                 repaired = rebuild_action_event_read_model_sync(conn, conversation_ids=candidate_ids)
-            if not bool(status["action_fts_ready"]):
+            if not state.fts_ready:
                 repair_targets = candidate_ids or valid_action_event_source_ids_sync(conn)
                 if repair_targets:
                     repair_fts_index_sync(conn, repair_targets)
@@ -788,7 +793,7 @@ def repair_action_event_read_model(config: Any, dry_run: bool = False) -> Repair
                 name="action_event_read_model",
                 category=_CAT_DERIVED,
                 destructive=False,
-                repaired_count=repaired + action_fts_pending,
+                repaired_count=repaired + state.pending_fts_rows + state.excess_fts_rows,
                 success=bool(refreshed["ready"]),
                 detail="Action-event read model ready"
                 if refreshed["ready"]
