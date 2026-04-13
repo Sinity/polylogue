@@ -279,21 +279,24 @@ CONTRACT_LANES = {
         "-m",
         "chaos",
     ),
-    "scale-fast": devtools_lane(
+    "scale-fast": pytest_lane(
         "scale-fast",
         "Fast storage scale budgets",
         120,
-        "run-scale-lanes",
-        "--lane",
-        "fast",
+        "-v",
+        "tests/unit/storage/test_scale.py",
+        "-x",
+        "--timeout=30",
     ),
-    "scale-slow": devtools_lane(
+    "scale-slow": pytest_lane(
         "scale-slow",
         "Slow local storage scale budgets",
         360,
-        "run-scale-lanes",
-        "--lane",
+        "-v",
+        "-m",
         "slow",
+        "tests/unit/storage/",
+        "--timeout=120",
     ),
     "long-haul-small": devtools_lane(
         "long-haul-small",

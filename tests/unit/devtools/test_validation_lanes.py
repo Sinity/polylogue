@@ -195,6 +195,29 @@ class TestCommandConstruction:
         assert "--cleanup" in cmd
         assert "--preview" in cmd
 
+    def test_scale_fast_lane_uses_direct_pytest_execution(self):
+        cmd = build_lane_command(LANES["scale-fast"])
+        assert cmd[:2] == ["pytest", "-v"]
+        assert "tests/unit/storage/test_scale.py" in cmd
+        assert "--timeout=30" in cmd
+
+    def test_scale_slow_lane_uses_direct_pytest_marker_filter(self):
+        cmd = build_lane_command(LANES["scale-slow"])
+        assert cmd[:2] == ["pytest", "-v"]
+        assert "tests/unit/storage/" in cmd
+        assert "--timeout=120" in cmd
+        found = False
+        for i, arg in enumerate(cmd[:-1]):
+            if arg == "-m" and cmd[i + 1] == "slow":
+                found = True
+                break
+        assert found, f"-m slow not found in command: {cmd}"
+
+    def test_scale_stretch_lane_is_composite(self):
+        lane = LANES["scale-stretch"]
+        assert lane.is_composite
+        assert lane.sub_lanes == ("scale-fast", "scale-slow")
+
     def test_long_haul_lane_uses_campaign_runner(self):
         cmd = build_lane_command(LANES["long-haul-small"])
         assert cmd[:2] == ["devtools", "run-benchmark-campaigns"]

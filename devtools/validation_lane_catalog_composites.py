@@ -186,6 +186,13 @@ COMPOSITE_LANES = {
         "probabilistic-enrichment-live",
         "cleanup-live",
     ),
+    "scale-stretch": composite_lane(
+        "scale-stretch",
+        "Combined fast and slow storage scale budgets",
+        600,
+        "scale-fast",
+        "scale-slow",
+    ),
     "frontier-local": composite_lane(
         "frontier-local",
         "Non-live local closure lane for machine/query/semantic/TUI/chaos validation",

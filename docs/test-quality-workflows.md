@@ -10,16 +10,18 @@ Current registry snapshot:
 
 - contract lanes: `23`
 - live lanes: `20`
-- composite lanes: `23`
+- composite lanes: `24`
 - mutation campaigns: `19`
 - benchmark campaigns: `3`
 - synthetic benchmark campaigns: `6`
-- scenario projections: `231`
+- scenario projections: `237`
+- inferred corpus specs: `5`
   - benchmark-campaign: `3`
   - exercise: `137`
+  - inferred-corpus: `5`
   - mutation-campaign: `19`
   - synthetic-benchmark: `6`
-  - validation-lane: `66`
+  - validation-lane: `67`
 
 ## Runtime Coverage
 
@@ -182,6 +184,7 @@ Use the named lanes through the runner.
 | `runtime-substrate-contracts` | 2400 | `query-routing`<br>`semantic-stack`<br>`maintenance-workflows`<br>`archive-data-products` | Local runtime-substrate lane across query, semantic checks, archive products, and maintenance workflows |
 | `runtime-substrate-hardening` | 3600 | `runtime-substrate-contracts`<br>`runtime-substrate-live` | Full runtime-substrate validation lane covering local contracts plus bounded live archive checks |
 | `runtime-substrate-live` | 1800 | `live-archive-small`<br>`live-maintenance-small`<br>`memory-budget` | Bounded live archive lane for runtime-substrate checks, maintenance checks, and memory budgets |
+| `scale-stretch` | 600 | `scale-fast`<br>`scale-slow` | Combined fast and slow storage scale budgets |
 | `semantic-product-hardening` | 3600 | `semantic-product-normalization`<br>`semantic-product-live` | Full semantic-product normalization and toolchain convergence lane |
 | `semantic-product-live` | 1800 | `live-products-status`<br>`live-products-tags`<br>`live-products-day-summaries`<br>`live-products-debt`<br>`live-maintenance-small` | Bounded live archive lane for normalized products, maintenance preview, and memory budgets |
 | `source-runtime-alignment` | 1800 | `source-provider-fidelity`<br>`maintenance-workflows` | Local source/provider fidelity plus runtime maintenance alignment |
@@ -218,9 +221,9 @@ Benchmark comparisons are manual.
 
 | Campaign | Tests | Warn | Fail | Description |
 | --- | --- | ---: | ---: | --- |
-| `pipeline` | `tests/benchmarks/test_pipeline.py` | 10.0% | 20.0% | Index rebuild/update, action-event repair, plus hashing/semantic helper benchmark domain |
-| `search-filters` | `tests/benchmarks/test_search_filters.py` | 10.0% | 20.0% | FTS and ConversationFilter benchmark domain |
-| `storage` | `tests/benchmarks/test_storage.py` | 10.0% | 20.0% | Repository/backend list/get-many/save benchmark domain |
+| `pipeline` | `tests/benchmarks/test_pipeline.py` | 0.0% | 0.0% | Index rebuild/update, action-event repair, plus hashing/semantic helper benchmark domain |
+| `search-filters` | `tests/benchmarks/test_search_filters.py` | 0.0% | 0.0% | FTS and ConversationFilter benchmark domain |
+| `storage` | `tests/benchmarks/test_storage.py` | 0.0% | 0.0% | Repository/backend list/get-many/save benchmark domain |
 
 ## Synthetic Benchmark Campaign Catalog
 
@@ -234,6 +237,18 @@ These campaigns generate synthetic archives and run long-haul benchmark workload
 | `incremental-index` | — | 0.0% | 0.0% | Benchmark incremental FTS index updates |
 | `session-product-materialization` | — | 0.0% | 0.0% | Benchmark durable session-product rebuild over synthetic archive conversations |
 | `startup-health` | — | 0.0% | 0.0% | Benchmark check --runtime startup speed |
+
+## Inferred Corpus Catalog
+
+These inferred corpus specs come from the live schema registry and participate in the shared scenario projection map.
+
+| Provider | Package | Target | Count | Messages | Tags |
+| --- | --- | --- | ---: | --- | --- |
+| `chatgpt` | `v1` | `default` | 5 | `4-16` | `inferred`<br>`schema`<br>`synthetic` |
+| `claude-ai` | `v1` | `default` | 5 | `4-16` | `inferred`<br>`schema`<br>`synthetic` |
+| `claude-code` | `v1` | `default` | 5 | `4-16` | `inferred`<br>`schema`<br>`synthetic` |
+| `codex` | `v1` | `default` | 5 | `4-16` | `inferred`<br>`schema`<br>`synthetic` |
+| `gemini` | `v1` | `default` | 5 | `4-16` | `inferred`<br>`schema`<br>`synthetic` |
 
 ## Scenario Projection Catalog
 
@@ -381,6 +396,11 @@ These are the authored scenario-bearing projections currently feeding runtime co
 | `exercise` | `tags-json` | — | — | — | — | Tags as JSON |
 | `exercise` | `transform-strip` | — | — | — | — | Strip tool calls from output |
 | `exercise` | `version` | — | — | — | — | Version output |
+| `inferred-corpus` | `chatgpt:v1:default` | — | — | — | `inferred`<br>`schema`<br>`synthetic` | Inferred synthetic corpus spec for chatgpt default from 2122 observed sample(s). |
+| `inferred-corpus` | `claude-ai:v1:default` | — | — | — | `inferred`<br>`schema`<br>`synthetic` | Inferred synthetic corpus spec for claude-ai default from 904 observed sample(s). |
+| `inferred-corpus` | `claude-code:v1:default` | — | — | — | `inferred`<br>`schema`<br>`synthetic` | Inferred synthetic corpus spec for claude-code default from 2171910 observed sample(s). |
+| `inferred-corpus` | `codex:v1:default` | — | — | — | `inferred`<br>`schema`<br>`synthetic` | Inferred synthetic corpus spec for codex default from 151159 observed sample(s). |
+| `inferred-corpus` | `gemini:v1:default` | — | — | — | `inferred`<br>`schema`<br>`synthetic` | Inferred synthetic corpus spec for gemini default from 226 observed sample(s). |
 | `mutation-campaign` | `cli-query` | — | — | — | `mutation` | Query command planning, action routing, and summary output contracts |
 | `mutation-campaign` | `cli-run` | — | — | — | `mutation` | Run command execution, display, and watch contracts |
 | `mutation-campaign` | `drive-client` | — | — | — | `mutation` | Drive auth, transport, JSON payload parsing, and ingest attachment contracts |
@@ -464,6 +484,7 @@ These are the authored scenario-bearing projections currently feeding runtime co
 | `validation-lane` | `runtime-substrate-live` | `action-event-repair-loop`<br>`session-product-repair-loop` | `action_event_health`<br>`session_product_health` | `cli.json-contract`<br>`project-action-event-health`<br>`project-session-product-health` | `live`<br>`health`<br>`maintenance`<br>`preview` | Bounded live archive lane for runtime-substrate checks, maintenance checks, and memory budgets |
 | `validation-lane` | `scale-fast` | — | — | — | — | Fast storage scale budgets |
 | `validation-lane` | `scale-slow` | — | — | — | — | Slow local storage scale budgets |
+| `validation-lane` | `scale-stretch` | — | — | — | — | Combined fast and slow storage scale budgets |
 | `validation-lane` | `semantic-product-hardening` | `action-event-repair-loop`<br>`session-product-repair-loop` | `action_event_health`<br>`session_product_health` | `cli.json-contract`<br>`project-action-event-health`<br>`project-session-product-health` | `live`<br>`health`<br>`maintenance`<br>`preview` | Full semantic-product normalization and toolchain convergence lane |
 | `validation-lane` | `semantic-product-live` | `action-event-repair-loop`<br>`session-product-repair-loop` | `action_event_health`<br>`session_product_health` | `cli.json-contract`<br>`project-action-event-health`<br>`project-session-product-health` | `live`<br>`health`<br>`maintenance`<br>`preview` | Bounded live archive lane for normalized products, maintenance preview, and memory budgets |
 | `validation-lane` | `semantic-product-normalization` | — | — | — | — | Semantic/session product normalization, operator/toolchain narrowing, schema contracts, and provider parser cleanup |
