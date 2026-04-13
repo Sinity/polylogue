@@ -138,6 +138,25 @@ class SyntheticCorpus:
             written_files.append(file_path)
         return SyntheticWrittenBatch(batch=batch, files=tuple(written_files))
 
+    @classmethod
+    def write_specs_artifacts(
+        cls,
+        corpus_specs: tuple[CorpusSpec, ...],
+        output_root: Path,
+        *,
+        prefix: str,
+        index_width: int = 2,
+    ) -> tuple[SyntheticWrittenBatch, ...]:
+        return tuple(
+            cls.write_spec_artifacts(
+                spec,
+                output_root / spec.provider,
+                prefix=prefix,
+                index_width=index_width,
+            )
+            for spec in corpus_specs
+        )
+
     def generate_batch(
         self,
         count: int = 5,
