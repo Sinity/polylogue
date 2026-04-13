@@ -26,6 +26,33 @@ class ArtifactGraph:
     def by_name(self) -> dict[str, ArtifactNode]:
         return {node.name: node for node in self.nodes}
 
+    def operation_by_name(self) -> dict[str, OperationSpec]:
+        return {operation.name: operation for operation in self.operations}
+
+    def artifact_names(self) -> tuple[str, ...]:
+        return tuple(node.name for node in self.nodes)
+
+    def operation_names(self) -> tuple[str, ...]:
+        return tuple(operation.name for operation in self.operations)
+
+    def resolve_artifacts(self, names: tuple[str, ...]) -> tuple[ArtifactNode, ...]:
+        by_name = self.by_name()
+        return tuple(by_name[name] for name in names if name in by_name)
+
+    def resolve_operations(self, names: tuple[str, ...]) -> tuple[OperationSpec, ...]:
+        by_name = self.operation_by_name()
+        return tuple(by_name[name] for name in names if name in by_name)
+
+    def operations_for_path(self, path: ArtifactPath | str) -> tuple[OperationSpec, ...]:
+        path_name = path if isinstance(path, str) else path.name
+        selected_path = next(candidate for candidate in self.paths if candidate.name == path_name)
+        path_nodes = set(selected_path.nodes)
+        return tuple(
+            operation
+            for operation in self.operations
+            if set(operation.consumes).union(operation.produces).intersection(path_nodes)
+        )
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "nodes": [node.to_dict() for node in self.nodes],
