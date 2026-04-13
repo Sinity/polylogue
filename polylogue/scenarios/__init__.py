@@ -2,6 +2,7 @@
 
 from .metadata import (
     ScenarioMetadata,
+    declared_operation_target_names,
     runtime_artifact_graph,
     runtime_artifact_target_names,
     runtime_operation_target_names,
@@ -13,6 +14,7 @@ from .projections import (
 )
 
 __all__ = [
+    "declared_operation_target_names",
     "ScenarioMetadata",
     "ScenarioProjectionEntry",
     "ScenarioProjectionSourceKind",

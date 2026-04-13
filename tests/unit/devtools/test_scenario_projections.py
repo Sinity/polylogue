@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 
 from devtools import scenario_projections
+from devtools.scenario_projection_catalog import build_scenario_projection_entries
+from polylogue.scenarios import declared_operation_target_names
 
 
 def test_render_scenario_projections_text_lists_authored_sources() -> None:
@@ -41,3 +43,10 @@ def test_render_scenario_projections_supports_targeted_filters() -> None:
     assert "synthetic-benchmark:action-event-materialization" not in rendered
     assert "exercise:json-doctor-session-products-preview" not in rendered
     assert "path targets: action-event-repair-loop" in rendered
+
+
+def test_all_projection_operation_targets_are_declared() -> None:
+    declared = set(declared_operation_target_names())
+
+    for entry in build_scenario_projection_entries():
+        assert set(entry.operation_targets).issubset(declared)
