@@ -393,10 +393,127 @@ async def test_async_backend_extends_legacy_v1_raw_table(tmp_path: Path) -> None
             "SELECT blob_size FROM raw_conversations WHERE raw_id = ?",
             ("raw-legacy",),
         ).fetchone()
+        index_row = verify_conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='index' AND name='idx_raw_conv_source_mtime'"
+        ).fetchone()
 
     assert "blob_size" in columns
     assert row is not None
     assert row[0] == 123
+    assert index_row is not None
+    assert index_row[0] is not None
+    assert "WHERE file_mtime IS NOT NULL" in index_row[0]
+    await backend.close()
+
+
+async def test_async_backend_applies_current_session_profile_extensions(tmp_path: Path) -> None:
+    """Async schema ensure should apply the same current-version profile extensions as the sync backend."""
+    db_path = tmp_path / "legacy-profile-current.db"
+    conn = sqlite3.connect(db_path)
+    conn.executescript(
+        f"""
+        CREATE TABLE session_profiles (
+            conversation_id TEXT PRIMARY KEY,
+            materializer_version INTEGER NOT NULL DEFAULT 5,
+            materialized_at TEXT NOT NULL,
+            source_updated_at TEXT,
+            source_sort_key REAL,
+            provider_name TEXT NOT NULL,
+            title TEXT,
+            first_message_at TEXT,
+            repo_paths_json TEXT,
+            repo_names_json TEXT,
+            tags_json TEXT,
+            auto_tags_json TEXT,
+            message_count INTEGER NOT NULL DEFAULT 0,
+            work_event_count INTEGER NOT NULL DEFAULT 0,
+            word_count INTEGER NOT NULL DEFAULT 0,
+            tool_use_count INTEGER NOT NULL DEFAULT 0,
+            thinking_count INTEGER NOT NULL DEFAULT 0,
+            total_cost_usd REAL NOT NULL DEFAULT 0,
+            total_duration_ms INTEGER NOT NULL DEFAULT 0,
+            wall_duration_ms INTEGER NOT NULL DEFAULT 0,
+            search_text TEXT NOT NULL,
+            inference_search_text TEXT NOT NULL DEFAULT ''
+        );
+
+        INSERT INTO session_profiles (
+            conversation_id,
+            materializer_version,
+            materialized_at,
+            source_updated_at,
+            source_sort_key,
+            provider_name,
+            title,
+            first_message_at,
+            repo_paths_json,
+            repo_names_json,
+            tags_json,
+            auto_tags_json,
+            message_count,
+            work_event_count,
+            word_count,
+            tool_use_count,
+            thinking_count,
+            total_cost_usd,
+            total_duration_ms,
+            wall_duration_ms,
+            search_text,
+            inference_search_text
+        ) VALUES (
+            'conv-1',
+            5,
+            '2026-04-01T00:00:00Z',
+            '2026-04-01T00:00:00Z',
+            1.0,
+            'chatgpt',
+            'Legacy profile',
+            '2026-04-01T00:00:00Z',
+            '[]',
+            '[]',
+            '[]',
+            '[]',
+            1,
+            0,
+            2,
+            0,
+            0,
+            0.0,
+            0,
+            0,
+            'search baseline',
+            ''
+        );
+
+        PRAGMA user_version = {SCHEMA_VERSION};
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    backend = SQLiteBackend(db_path=db_path)
+    async with backend.connection():
+        pass
+
+    with sqlite3.connect(db_path) as verify_conn:
+        columns = {row[1] for row in verify_conn.execute("PRAGMA table_info(session_profiles)").fetchall()}
+        row = verify_conn.execute(
+            """
+            SELECT evidence_search_text, inference_search_text, enrichment_search_text, enrichment_family
+            FROM session_profiles
+            WHERE conversation_id = ?
+            """,
+            ("conv-1",),
+        ).fetchone()
+
+    assert {"evidence_search_text", "enrichment_payload_json", "enrichment_search_text", "enrichment_family"}.issubset(
+        columns
+    )
+    assert row is not None
+    assert row[0] == "search baseline"
+    assert row[1] == "search baseline"
+    assert row[2] == "search baseline"
+    assert row[3] == "scored_session_enrichment"
     await backend.close()
 
 
