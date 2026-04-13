@@ -38,6 +38,12 @@ def test_runtime_artifact_specs_expose_the_curated_vertical_paths() -> None:
         "day_session_summary_results",
         "week_session_summary_results",
         "provider_analytics_results",
+        "schema_packages",
+        "schema_cluster_manifests",
+        "inferred_corpus_specs",
+        "inferred_corpus_scenarios",
+        "schema_list_results",
+        "schema_explanation_results",
     }
     assert {path.name for path in paths} == {
         "raw-reparse-loop",
@@ -57,6 +63,9 @@ def test_runtime_artifact_specs_expose_the_curated_vertical_paths() -> None:
         "provider-analytics-query-loop",
         "session-product-status-query-loop",
         "archive-debt-query-loop",
+        "inferred-corpus-compilation-loop",
+        "schema-list-query-loop",
+        "schema-explain-query-loop",
     }
 
 

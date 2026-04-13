@@ -16,6 +16,7 @@ def test_build_quality_registry_exposes_live_catalogs() -> None:
     assert any(entry.name == "frontier-local" for entry in registry.composite_lanes)
     assert any(entry.name == "machine-contract" for entry in registry.contract_lanes)
     assert any(entry.name == "live-exercises" for entry in registry.live_lanes)
+    assert any(entry.name == "runtime-substrate" for entry in registry.validation_families)
     assert any(entry.name == "filters" for entry in registry.mutation_campaigns)
     assert any(entry.name == "search-filters" for entry in registry.benchmark_campaigns)
     assert any(entry.name == "pipeline" for entry in registry.benchmark_campaigns)
@@ -24,6 +25,7 @@ def test_build_quality_registry_exposes_live_catalogs() -> None:
     assert any(entry.name == "startup-health" for entry in registry.synthetic_benchmark_campaigns)
     assert any(scenario.provider == "chatgpt" and scenario.package_version == "v1" for scenario in registry.inferred_corpus_scenarios)
     assert any(entry.name == "json-doctor-action-event-preview" for entry in registry.scenario_projections)
+    assert any(entry.name == "runtime-substrate" and entry.source_kind.value == "validation-family" for entry in registry.scenario_projections)
     assert any(entry.name == "machine-contract" for entry in registry.scenario_projections)
     assert any(
         entry.name == "filters" and entry.source_kind.value == "mutation-campaign"
@@ -41,6 +43,11 @@ def test_build_quality_registry_exposes_live_catalogs() -> None:
     assert inferred_chatgpt.source_payload["provider"] == "chatgpt"
     assert inferred_chatgpt.source_payload["package_version"] == "v1"
     assert inferred_chatgpt.source_payload["variant_count"] == 1
+    assert inferred_chatgpt.path_targets == ("inferred-corpus-compilation-loop",)
+    assert inferred_chatgpt.operation_targets == (
+        "compile-inferred-corpus-specs",
+        "compile-inferred-corpus-scenarios",
+    )
     machine_contract = next(entry for entry in registry.contract_lanes if entry.name == "machine-contract")
     assert machine_contract.origin == "authored.validation-lane"
     assert machine_contract.operation_targets == ("cli.json-contract",)
@@ -125,10 +132,16 @@ def test_build_quality_registry_exposes_live_catalogs() -> None:
     assert action_event_preview.tags == ("generated", "json-contract", "maintenance", "action-events")
     frontier_local = next(entry for entry in registry.composite_lanes if entry.name == "frontier-local")
     archive_intelligence = next(entry for entry in registry.composite_lanes if entry.name == "archive-intelligence")
+    runtime_substrate = next(entry for entry in registry.composite_lanes if entry.name == "runtime-substrate-hardening")
     assert "cli.json-contract" in frontier_local.operation_targets
     assert "cli.help" in frontier_local.operation_targets
     assert "query-conversations" in archive_intelligence.operation_targets
     assert "project-archive-health" in archive_intelligence.operation_targets
+    assert runtime_substrate.family == "runtime-substrate"
+    runtime_projection = next(
+        entry for entry in registry.scenario_projections if entry.name == "runtime-substrate-hardening"
+    )
+    assert runtime_projection.source_payload["family"] == "runtime-substrate"
 
 
 def test_quality_registry_references_existing_files() -> None:

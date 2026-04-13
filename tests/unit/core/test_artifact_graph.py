@@ -49,6 +49,12 @@ def test_artifact_graph_contains_the_current_runtime_paths() -> None:
         "provider_analytics_results",
         "session_product_status_results",
         "archive_debt_results",
+        "schema_packages",
+        "schema_cluster_manifests",
+        "inferred_corpus_specs",
+        "inferred_corpus_scenarios",
+        "schema_list_results",
+        "schema_explanation_results",
         "conversation_query_results",
         "archive_health",
     }
@@ -74,6 +80,15 @@ def test_artifact_graph_contains_the_current_runtime_paths() -> None:
     assert nodes["session_profile_results"].depends_on == ("session_profile_rows", "session_profile_merged_fts")
     assert nodes["week_session_summary_results"].depends_on == ("day_session_summary_rows",)
     assert nodes["provider_analytics_results"].depends_on == ("session_product_rows",)
+    assert nodes["inferred_corpus_specs"].depends_on == ("schema_packages", "schema_cluster_manifests")
+    assert nodes["inferred_corpus_scenarios"].depends_on == ("inferred_corpus_specs",)
+    assert nodes["schema_list_results"].depends_on == (
+        "schema_packages",
+        "schema_cluster_manifests",
+        "inferred_corpus_specs",
+        "inferred_corpus_scenarios",
+    )
+    assert nodes["schema_explanation_results"].depends_on == ("schema_packages",)
     assert nodes["archive_health"].depends_on == ("message_fts", "action_event_health", "session_product_health")
     assert operations["plan-validation-backlog"].produces == ("validation_backlog",)
     assert operations["plan-parse-backlog"].produces == ("parse_backlog", "parse_quarantine")
@@ -97,6 +112,10 @@ def test_artifact_graph_contains_the_current_runtime_paths() -> None:
     assert operations["query-provider-analytics"].produces == ("provider_analytics_results",)
     assert operations["query-session-product-status"].produces == ("session_product_status_results",)
     assert operations["query-archive-debt"].produces == ("archive_debt_results",)
+    assert operations["compile-inferred-corpus-specs"].produces == ("inferred_corpus_specs",)
+    assert operations["compile-inferred-corpus-scenarios"].produces == ("inferred_corpus_scenarios",)
+    assert operations["query-schema-catalog"].produces == ("schema_list_results",)
+    assert operations["query-schema-explanations"].produces == ("schema_explanation_results",)
     assert operations["project-archive-health"].consumes == (
         "message_fts",
         "action_event_health",
@@ -135,6 +154,9 @@ def test_artifact_graph_paths_reference_only_declared_nodes() -> None:
         "provider-analytics-query-loop",
         "session-product-status-query-loop",
         "archive-debt-query-loop",
+        "inferred-corpus-compilation-loop",
+        "schema-list-query-loop",
+        "schema-explain-query-loop",
     }
     for path in graph.paths:
         assert path.nodes
@@ -229,4 +251,14 @@ def test_artifact_graph_lists_operations_for_each_runtime_path() -> None:
     )
     assert tuple(operation.name for operation in graph.operations_for_path("archive-debt-query-loop")) == (
         "query-archive-debt",
+    )
+    assert tuple(operation.name for operation in graph.operations_for_path("inferred-corpus-compilation-loop")) == (
+        "compile-inferred-corpus-specs",
+        "compile-inferred-corpus-scenarios",
+    )
+    assert tuple(operation.name for operation in graph.operations_for_path("schema-list-query-loop")) == (
+        "query-schema-catalog",
+    )
+    assert tuple(operation.name for operation in graph.operations_for_path("schema-explain-query-loop")) == (
+        "query-schema-explanations",
     )

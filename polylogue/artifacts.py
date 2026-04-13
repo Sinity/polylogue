@@ -503,6 +503,71 @@ RUNTIME_ARTIFACT_NODES: tuple[ArtifactNode, ...] = (
         health_surfaces=("query", "mcp", "facade"),
     ),
     ArtifactNode(
+        name="schema_packages",
+        layer=ArtifactLayer.DURABLE,
+        description="Versioned provider schema packages stored in the schema registry.",
+        code_refs=(
+            "polylogue.schemas.registry.SchemaRegistry",
+            "polylogue.schemas.operator_inference.list_schemas",
+            "polylogue.schemas.operator_resolution.explain_schema",
+        ),
+        health_surfaces=("schema", "qa"),
+    ),
+    ArtifactNode(
+        name="schema_cluster_manifests",
+        layer=ArtifactLayer.DURABLE,
+        description="Persisted schema-cluster manifests describing observed structural families per provider.",
+        code_refs=(
+            "polylogue.schemas.registry.SchemaRegistry",
+            "polylogue.schemas.operator_inference.list_schemas",
+        ),
+        health_surfaces=("schema", "qa"),
+    ),
+    ArtifactNode(
+        name="inferred_corpus_specs",
+        layer=ArtifactLayer.PROJECTION,
+        description="Synthetic corpus specs distilled from schema packages and cluster manifests.",
+        depends_on=("schema_packages", "schema_cluster_manifests"),
+        code_refs=(
+            "polylogue.scenarios.corpus.build_inferred_corpus_specs",
+            "polylogue.schemas.operator_inference.list_inferred_corpus_specs",
+        ),
+        health_surfaces=("schema", "qa", "synthetic"),
+    ),
+    ArtifactNode(
+        name="inferred_corpus_scenarios",
+        layer=ArtifactLayer.PROJECTION,
+        description="Compiled inferred corpus scenarios grouped from inferred corpus specs.",
+        depends_on=("inferred_corpus_specs",),
+        code_refs=(
+            "polylogue.scenarios.corpus.build_corpus_scenarios",
+            "polylogue.schemas.operator_inference.list_inferred_corpus_scenarios",
+        ),
+        health_surfaces=("schema", "qa", "synthetic"),
+    ),
+    ArtifactNode(
+        name="schema_list_results",
+        layer=ArtifactLayer.PROJECTION,
+        description="Schema list/read results combining package catalogs, manifests, and inferred corpus projections.",
+        depends_on=("schema_packages", "schema_cluster_manifests", "inferred_corpus_specs", "inferred_corpus_scenarios"),
+        code_refs=(
+            "polylogue.schemas.operator_inference.list_schemas",
+            "polylogue.cli.commands.schema.schema_list",
+        ),
+        health_surfaces=("schema", "cli"),
+    ),
+    ArtifactNode(
+        name="schema_explanation_results",
+        layer=ArtifactLayer.PROJECTION,
+        description="Schema explain/read results for provider package elements and annotations.",
+        depends_on=("schema_packages",),
+        code_refs=(
+            "polylogue.schemas.operator_resolution.explain_schema",
+            "polylogue.cli.commands.schema.schema_explain",
+        ),
+        health_surfaces=("schema", "cli"),
+    ),
+    ArtifactNode(
         name="archive_health",
         layer=ArtifactLayer.PROJECTION,
         description="Projected archive-wide health and maintenance view over message FTS and durable derived-model readiness.",
@@ -685,6 +750,35 @@ RUNTIME_ARTIFACT_PATHS: tuple[ArtifactPath, ...] = (
         nodes=(
             "message_fts",
             "conversation_query_results",
+        ),
+    ),
+    ArtifactPath(
+        name="inferred-corpus-compilation-loop",
+        description="Schema packages and cluster manifests through inferred corpus specs and compiled inferred corpus scenarios.",
+        nodes=(
+            "schema_packages",
+            "schema_cluster_manifests",
+            "inferred_corpus_specs",
+            "inferred_corpus_scenarios",
+        ),
+    ),
+    ArtifactPath(
+        name="schema-list-query-loop",
+        description="Schema registry packages and manifests through inferred corpus projections and schema list results.",
+        nodes=(
+            "schema_packages",
+            "schema_cluster_manifests",
+            "inferred_corpus_specs",
+            "inferred_corpus_scenarios",
+            "schema_list_results",
+        ),
+    ),
+    ArtifactPath(
+        name="schema-explain-query-loop",
+        description="Schema registry packages through schema explanation results.",
+        nodes=(
+            "schema_packages",
+            "schema_explanation_results",
         ),
     ),
 )

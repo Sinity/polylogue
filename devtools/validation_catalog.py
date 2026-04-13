@@ -5,7 +5,8 @@ from __future__ import annotations
 from dataclasses import replace
 
 from .lane_models import LaneEntry
-from .validation_lane_catalog_composites import COMPOSITE_LANES
+from .validation_family_models import ValidationLaneFamily
+from .validation_lane_catalog_composites import COMPOSITE_LANES, VALIDATION_FAMILIES
 from .validation_lane_catalog_contracts import CONTRACT_LANES
 from .validation_lane_catalog_live import LIVE_LANES
 
@@ -79,9 +80,14 @@ def build_composite_lane_entries() -> tuple[LaneEntry, ...]:
     return _category_entries("composite")
 
 
+def build_validation_family_entries() -> tuple[ValidationLaneFamily, ...]:
+    return tuple(sorted(VALIDATION_FAMILIES, key=lambda item: item.name))
+
+
 __all__ = [
     "build_validation_lane_entries",
     "LaneEntry",
+    "build_validation_family_entries",
     "build_composite_lane_entries",
     "build_contract_lane_entries",
     "build_live_lane_entries",
