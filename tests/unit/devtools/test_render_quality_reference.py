@@ -9,6 +9,7 @@ from devtools.quality_registry import QualityRegistry
 from devtools.scenario_coverage import RuntimePathCoverage, RuntimeScenarioCoverage, ScenarioCoverageRef
 from devtools.validation_catalog import ValidationLaneEntry
 from polylogue.scenarios import (
+    CorpusSpec,
     ScenarioProjectionEntry,
     ScenarioProjectionSourceKind,
 )
@@ -65,6 +66,17 @@ def test_build_document_includes_live_registry_sections() -> None:
                 tests=(),
             ),
         ),
+        inferred_corpus_specs=(
+            CorpusSpec.for_provider(
+                "chatgpt",
+                package_version="v1",
+                count=3,
+                messages_min=4,
+                messages_max=16,
+                origin="inferred.schema",
+                tags=("inferred", "schema", "synthetic"),
+            ),
+        ),
         scenario_projections=(
             ScenarioProjectionEntry(
                 source_kind=ScenarioProjectionSourceKind.EXERCISE,
@@ -85,6 +97,13 @@ def test_build_document_includes_live_registry_sections() -> None:
                 operation_targets=("benchmark.query.search-filters",),
                 tags=("benchmark", "search"),
             ),
+            ScenarioProjectionEntry(
+                source_kind=ScenarioProjectionSourceKind.INFERRED_CORPUS,
+                name="chatgpt:v1:default",
+                description="Inferred synthetic corpus spec for chatgpt default.",
+                origin="inferred.schema",
+                tags=("inferred", "schema", "synthetic"),
+            ),
         ),
     )
 
@@ -97,12 +116,17 @@ def test_build_document_includes_live_registry_sections() -> None:
     assert "`filters`" in rendered
     assert "`search-filters`" in rendered
     assert "`startup-health`" in rendered
+    assert "## Inferred Corpus Catalog" in rendered
+    assert "`chatgpt`" in rendered
     assert "## Synthetic Benchmark Campaign Catalog" in rendered
-    assert "- scenario projections: `2`" in rendered
+    assert "- inferred corpus specs: `1`" in rendered
+    assert "- scenario projections: `3`" in rendered
     assert "  - benchmark-campaign: `1`" in rendered
     assert "  - exercise: `1`" in rendered
+    assert "  - inferred-corpus: `1`" in rendered
     assert "## Scenario Projection Catalog" in rendered
     assert "| `exercise` | `json-doctor-action-event-preview` |" in rendered
+    assert "| `inferred-corpus` | `chatgpt:v1:default` |" in rendered
     assert "`action-event-repair-loop`" in rendered
 
 
@@ -114,6 +138,7 @@ def test_build_document_includes_runtime_coverage_section() -> None:
         mutation_campaigns=(),
         benchmark_campaigns=(),
         synthetic_benchmark_campaigns=(),
+        inferred_corpus_specs=(),
         scenario_projections=(),
     )
     coverage = RuntimeScenarioCoverage(

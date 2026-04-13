@@ -14,6 +14,7 @@ class ScenarioProjectionSourceKind(str, Enum):
     MUTATION_CAMPAIGN = "mutation-campaign"
     BENCHMARK_CAMPAIGN = "benchmark-campaign"
     SYNTHETIC_BENCHMARK = "synthetic-benchmark"
+    INFERRED_CORPUS = "inferred-corpus"
 
 
 @dataclass(frozen=True)

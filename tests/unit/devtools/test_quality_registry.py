@@ -20,11 +20,13 @@ def test_build_quality_registry_exposes_live_catalogs() -> None:
     assert any(entry.name == "action-event-materialization" for entry in registry.synthetic_benchmark_campaigns)
     assert any(entry.name == "session-product-materialization" for entry in registry.synthetic_benchmark_campaigns)
     assert any(entry.name == "startup-health" for entry in registry.synthetic_benchmark_campaigns)
+    assert any(spec.provider == "chatgpt" for spec in registry.inferred_corpus_specs)
     assert any(entry.name == "json-doctor-action-event-preview" for entry in registry.scenario_projections)
     assert any(entry.name == "machine-contract" for entry in registry.scenario_projections)
     assert any(entry.name == "filters" and entry.source_kind.value == "mutation-campaign" for entry in registry.scenario_projections)
     assert any(entry.name == "search-filters" for entry in registry.scenario_projections)
     assert any(entry.name == "session-product-materialization" for entry in registry.scenario_projections)
+    assert any(entry.source_kind.value == "inferred-corpus" for entry in registry.scenario_projections)
     machine_contract = next(entry for entry in registry.contract_lanes if entry.name == "machine-contract")
     assert machine_contract.origin == "authored.validation-lane"
     assert machine_contract.operation_targets == ("cli.json-contract",)
