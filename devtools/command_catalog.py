@@ -110,6 +110,14 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         examples=("devtools artifact-graph", "devtools artifact-graph --json"),
     ),
     CommandSpec(
+        "scenario-projections",
+        "verification",
+        "Render the authored scenario-bearing verification projections.",
+        "devtools.scenario_projections",
+        use_when="Inspect the unified projection inventory that feeds runtime coverage, generated docs, and control-plane maps.",
+        examples=("devtools scenario-projections", "devtools scenario-projections --json"),
+    ),
+    CommandSpec(
         "verify-showcase",
         "verification",
         "Verify committed showcase/demo surfaces.",
