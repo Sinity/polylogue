@@ -157,6 +157,34 @@ class TestExercisesByGroup:
             "session-products",
         )
 
+        profiles = observed["json-products-profiles"]
+        assert profiles.path_targets == ("session-profile-query-loop",)
+        assert profiles.artifact_targets == ("session_profile_results",)
+        assert profiles.operation_targets == (
+            "cli.json-contract",
+            "query-session-profiles",
+        )
+        assert profiles.tags == (
+            "generated",
+            "json-contract",
+            "products",
+            "session-profiles",
+        )
+
+        threads = observed["json-products-threads"]
+        assert threads.path_targets == ("work-thread-query-loop",)
+        assert threads.artifact_targets == ("work_thread_results",)
+        assert threads.operation_targets == (
+            "cli.json-contract",
+            "query-work-threads",
+        )
+        assert threads.tags == (
+            "generated",
+            "json-contract",
+            "products",
+            "threads",
+        )
+
     def test_static_reparse_preview_exercise_preserves_declared_targets(self):
         observed = {exercise.name: exercise for exercise in EXERCISES}
 
