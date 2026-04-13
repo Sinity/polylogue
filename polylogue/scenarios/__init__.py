@@ -37,6 +37,14 @@ from .metadata import (
     runtime_operation_target_names,
     runtime_path_target_names,
 )
+from .product_surfaces import (
+    PRODUCT_SURFACE_FAMILIES,
+    CompiledProductSurface,
+    ProductSurfaceFamily,
+    ProductSurfaceVariant,
+    build_live_product_surface_lanes,
+    build_product_contract_surfaces,
+)
 from .projections import (
     ScenarioProjectionEntry,
     ScenarioProjectionSource,
@@ -70,6 +78,7 @@ __all__ = [
     "CorpusSourceKind",
     "CorpusScenario",
     "CorpusSpec",
+    "CompiledProductSurface",
     "compile_projection_entries",
     "dispatch_execution",
     "declared_operation_target_names",
@@ -78,6 +87,9 @@ __all__ = [
     "ExecutionSpec",
     "PipelineProbeInputMode",
     "PipelineProbeRequest",
+    "ProductSurfaceFamily",
+    "ProductSurfaceVariant",
+    "PRODUCT_SURFACE_FAMILIES",
     "ScenarioMetadata",
     "ScenarioProjectionEntry",
     "ScenarioProjectionSource",
@@ -91,6 +103,8 @@ __all__ = [
     "resolve_execution_runner",
     "runner_execution",
     "run_execution",
+    "build_live_product_surface_lanes",
+    "build_product_contract_surfaces",
     "runtime_artifact_graph",
     "runtime_artifact_target_names",
     "runtime_maintenance_target_names",

@@ -7,11 +7,24 @@ from functools import partial
 from devtools.validation_lane_base import memory_budget_lane as _memory_budget_lane
 from devtools.validation_lane_base import pipeline_probe_lane as _pipeline_probe_lane
 from devtools.validation_lane_base import polylogue_lane as _polylogue_lane
-from polylogue.scenarios import PipelineProbeInputMode, polylogue_execution
+from polylogue.scenarios import PipelineProbeInputMode, build_live_product_surface_lanes, polylogue_execution
 
 memory_budget_lane = partial(_memory_budget_lane, category="live")
 pipeline_probe_lane = partial(_pipeline_probe_lane, category="live")
 polylogue_lane = partial(_polylogue_lane, category="live")
+
+
+def _live_product_lanes() -> dict[str, object]:
+    return {
+        spec.name: polylogue_lane(
+            spec.name,
+            spec.description,
+            spec.timeout_s,
+            *spec.args,
+            tags=spec.tags,
+        )
+        for spec in build_live_product_surface_lanes()
+    }
 
 LIVE_LANES = {
     "live-archive-subset-parse-probe": pipeline_probe_lane(
@@ -64,112 +77,7 @@ LIVE_LANES = {
         operation_targets=("query-conversations", "project-archive-health"),
         tags=("live", "retrieval", "health"),
     ),
-    "live-products-status": polylogue_lane(
-        "live-products-status",
-        "Live archive product status view",
-        180,
-        "products",
-        "status",
-        "--json",
-    ),
-    "live-products-tags": polylogue_lane(
-        "live-products-tags",
-        "Live archive tag-rollup product view",
-        180,
-        "products",
-        "tags",
-        "--limit",
-        "20",
-        "--json",
-    ),
-    "live-products-profiles-evidence": polylogue_lane(
-        "live-products-profiles-evidence",
-        "Live archive evidence-tier session-profile product surface",
-        180,
-        "products",
-        "profiles",
-        "--tier",
-        "evidence",
-        "--limit",
-        "3",
-        "--json",
-    ),
-    "live-products-profiles-inference": polylogue_lane(
-        "live-products-profiles-inference",
-        "Live archive inference-tier session-profile product surface",
-        180,
-        "products",
-        "profiles",
-        "--tier",
-        "inference",
-        "--limit",
-        "3",
-        "--json",
-    ),
-    "live-products-enrichments": polylogue_lane(
-        "live-products-enrichments",
-        "Live archive probabilistic session-enrichment product surface",
-        180,
-        "products",
-        "enrichments",
-        "--limit",
-        "5",
-        "--json",
-    ),
-    "live-products-work-events": polylogue_lane(
-        "live-products-work-events",
-        "Live archive inferred work-event product surface",
-        180,
-        "products",
-        "work-events",
-        "--limit",
-        "3",
-        "--json",
-    ),
-    "live-products-phases": polylogue_lane(
-        "live-products-phases",
-        "Live archive inferred phase product surface",
-        180,
-        "products",
-        "phases",
-        "--limit",
-        "3",
-        "--json",
-    ),
-    "live-products-day-summaries": polylogue_lane(
-        "live-products-day-summaries",
-        "Live archive day-summary product surface over the recent semantic slice",
-        180,
-        "--provider",
-        "claude-code",
-        "--since",
-        "2026-03-01",
-        "products",
-        "day-summaries",
-        "--limit",
-        "14",
-        "--json",
-    ),
-    "live-products-analytics": polylogue_lane(
-        "live-products-analytics",
-        "Live archive provider-analytics product surface",
-        180,
-        "products",
-        "analytics",
-        "--limit",
-        "20",
-        "--json",
-    ),
-    "live-products-debt": polylogue_lane(
-        "live-products-debt",
-        "Live archive debt and cleanup product view",
-        180,
-        "products",
-        "debt",
-        "--limit",
-        "20",
-        "--json",
-    ),
+    **_live_product_lanes(),
     "live-session-product-repair": polylogue_lane(
         "live-session-product-repair",
         "Live archive evidence/inference session-product rebuild and migration surface",
