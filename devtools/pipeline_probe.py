@@ -113,6 +113,16 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Synthetic corpus seed (default: 42)",
     )
     parser.add_argument(
+        "--style",
+        default="default",
+        help="Synthetic corpus style (default: default)",
+    )
+    parser.add_argument(
+        "--package-version",
+        default="default",
+        help="Synthetic package version selector (default: default)",
+    )
+    parser.add_argument(
         "--sample-per-provider",
         type=int,
         default=50,
@@ -890,7 +900,8 @@ async def run_probe(args: argparse.Namespace) -> dict[str, Any]:
                     messages_min=args.messages_min,
                     messages_max=args.messages_max,
                     seed=args.seed,
-                    style="default",
+                    style=getattr(args, "style", "default"),
+                    package_version=getattr(args, "package_version", "default"),
                 ),
                 source_root=source_root,
             )
@@ -921,6 +932,8 @@ async def run_probe(args: argparse.Namespace) -> dict[str, Any]:
                 "messages_min": args.messages_min,
                 "messages_max": args.messages_max,
                 "seed": args.seed,
+                "style": getattr(args, "style", "default"),
+                "package_version": getattr(args, "package_version", "default"),
                 "raw_batch_size": args.raw_batch_size,
                 "ingest_workers": args.ingest_workers,
                 "measure_ingest_result_size": args.measure_ingest_result_size,

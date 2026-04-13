@@ -117,6 +117,7 @@ class TestLaneParsing:
     def test_pipeline_probe_chatgpt_lane_infers_parse_stage_runtime_metadata(self):
         lane = LANES["pipeline-probe-chatgpt"]
 
+        assert lane.execution.kind is ExecutionKind.PIPELINE_PROBE
         assert lane.path_targets == (
             "source-acquisition-loop",
             "raw-reparse-loop",
@@ -171,6 +172,7 @@ class TestCommandConstruction:
 
     def test_live_archive_subset_parse_probe_lane_uses_medium_archive_subset_probe(self):
         cmd = build_lane_command(LANES["live-archive-subset-parse-probe"])
+        assert LANES["live-archive-subset-parse-probe"].execution.kind is ExecutionKind.PIPELINE_PROBE
         assert cmd[:2] == ["devtools", "pipeline-probe"]
         assert "--input-mode" in cmd
         assert "archive-subset" in cmd
