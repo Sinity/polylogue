@@ -92,6 +92,7 @@ def _render_runtime_coverage_section(coverage: RuntimeScenarioCoverage) -> list[
         f"- covered runtime paths: `{sum(1 for path in coverage.paths.values() if path.complete)}`",
         f"- covered runtime artifacts: `{len(coverage.artifacts)}`",
         f"- covered runtime operations: `{len(coverage.operations)}`",
+        f"- covered declared operation targets: `{len(coverage.declared_operations)}`",
         "- uncovered runtime paths: " + ("—" if not uncovered_paths else ", ".join(f"`{name}`" for name in uncovered_paths)),
         "- uncovered runtime artifacts: "
         + ("—" if not coverage.uncovered_artifacts else ", ".join(f"`{name}`" for name in coverage.uncovered_artifacts)),
@@ -100,6 +101,12 @@ def _render_runtime_coverage_section(coverage: RuntimeScenarioCoverage) -> list[
             "—"
             if not coverage.uncovered_operations
             else ", ".join(f"`{name}`" for name in coverage.uncovered_operations)
+        ),
+        "- uncovered declared operation targets: "
+        + (
+            "—"
+            if not coverage.uncovered_declared_operations
+            else ", ".join(f"`{name}`" for name in coverage.uncovered_declared_operations)
         ),
         "",
         "Inspect the full authored map with:",
