@@ -10,7 +10,13 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from polylogue.config import Config, Source, get_config
-from polylogue.scenarios import CorpusSourceKind, CorpusSpec, resolve_corpus_specs
+from polylogue.scenarios import (
+    CorpusScenario,
+    CorpusSourceKind,
+    CorpusSpec,
+    build_corpus_scenarios,
+    resolve_corpus_scenarios,
+)
 from polylogue.sync_bridge import run_coroutine_sync
 
 
@@ -105,12 +111,38 @@ def build_synthetic_corpus_specs(
     seed: int = 42,
 ) -> tuple[CorpusSpec, ...]:
     """Resolve synthetic corpus specs for showcase and demo workflows."""
+    return tuple(
+        spec
+        for scenario in build_synthetic_corpus_scenarios(
+            providers=providers,
+            count=count,
+            style=style,
+            corpus_source=corpus_source,
+            messages_min=messages_min,
+            messages_max=messages_max,
+            seed=seed,
+        )
+        for spec in scenario.corpus_specs
+    )
+
+
+def build_synthetic_corpus_scenarios(
+    *,
+    providers: tuple[str, ...] | None = None,
+    count: int = 3,
+    style: str = "showcase",
+    corpus_source: CorpusSourceKind | str = CorpusSourceKind.DEFAULT,
+    messages_min: int = 6,
+    messages_max: int = 19,
+    seed: int = 42,
+) -> tuple[CorpusScenario, ...]:
+    """Resolve named synthetic corpus scenarios for showcase and demo workflows."""
     from polylogue.schemas.synthetic import SyntheticCorpus
 
     provider_names = providers
     if provider_names is None and CorpusSourceKind(corpus_source) is CorpusSourceKind.DEFAULT:
         provider_names = tuple(SyntheticCorpus.available_providers())
-    return resolve_corpus_specs(
+    return resolve_corpus_scenarios(
         providers=provider_names,
         source=corpus_source,
         count=count,
@@ -130,13 +162,13 @@ def generate_synthetic_fixtures(
     corpus_source: CorpusSourceKind | str = CorpusSourceKind.DEFAULT,
 ) -> None:
     """Generate schema-driven synthetic fixtures for all providers."""
-    specs = build_synthetic_corpus_specs(
+    scenarios = build_synthetic_corpus_scenarios(
         providers=providers,
         count=count,
         style=style,
         corpus_source=corpus_source,
     )
-    generate_synthetic_fixtures_from_specs(fixture_dir, corpus_specs=specs)
+    generate_synthetic_fixtures_from_scenarios(fixture_dir, corpus_scenarios=scenarios)
 
 
 def generate_synthetic_fixtures_from_specs(
@@ -146,9 +178,28 @@ def generate_synthetic_fixtures_from_specs(
     prefix: str = "showcase",
 ) -> object:
     """Generate schema-driven synthetic fixtures for explicit corpus specs."""
+    return generate_synthetic_fixtures_from_scenarios(
+        fixture_dir,
+        corpus_scenarios=build_corpus_scenarios(
+            corpus_specs,
+            origin="compiled.synthetic-corpus-scenario",
+            tags=("synthetic", "scenario"),
+        ),
+        prefix=prefix,
+    )
+
+
+def generate_synthetic_fixtures_from_scenarios(
+    fixture_dir: Path,
+    *,
+    corpus_scenarios: tuple[CorpusScenario, ...],
+    prefix: str = "showcase",
+) -> object:
+    """Generate schema-driven synthetic fixtures for explicit corpus scenarios."""
     from polylogue.schemas.synthetic import SyntheticCorpus
 
     fixture_dir.mkdir(parents=True, exist_ok=True)
+    corpus_specs = tuple(spec for scenario in corpus_scenarios for spec in scenario.corpus_specs)
     return SyntheticCorpus.write_specs_artifacts(corpus_specs, fixture_dir, prefix=prefix)
 
 
@@ -160,9 +211,29 @@ def seed_workspace_from_specs(
     prefix: str = "showcase",
 ):
     """Generate fixtures from explicit specs and ingest them into the workspace."""
-    generate_synthetic_fixtures_from_specs(
+    return seed_workspace_from_scenarios(
+        workspace,
+        corpus_scenarios=build_corpus_scenarios(
+            corpus_specs,
+            origin="compiled.synthetic-corpus-scenario",
+            tags=("synthetic", "scenario"),
+        ),
+        regenerate_schemas=regenerate_schemas,
+        prefix=prefix,
+    )
+
+
+def seed_workspace_from_scenarios(
+    workspace: VerificationWorkspace,
+    *,
+    corpus_scenarios: tuple[CorpusScenario, ...],
+    regenerate_schemas: bool = False,
+    prefix: str = "showcase",
+):
+    """Generate fixtures from explicit corpus scenarios and ingest them into the workspace."""
+    generate_synthetic_fixtures_from_scenarios(
         workspace.fixture_dir,
-        corpus_specs=corpus_specs,
+        corpus_scenarios=corpus_scenarios,
         prefix=prefix,
     )
     return run_pipeline_for_fixture_workspace(
@@ -185,7 +256,7 @@ def seed_workspace_from_corpus_options(
     prefix: str = "showcase",
 ):
     """Resolve corpus specs, generate fixtures, and ingest them into the workspace."""
-    specs = build_synthetic_corpus_specs(
+    scenarios = build_synthetic_corpus_scenarios(
         providers=providers,
         count=count,
         style=style,
@@ -194,9 +265,9 @@ def seed_workspace_from_corpus_options(
         messages_max=messages_max,
         seed=seed,
     )
-    return seed_workspace_from_specs(
+    return seed_workspace_from_scenarios(
         workspace,
-        corpus_specs=specs,
+        corpus_scenarios=scenarios,
         regenerate_schemas=regenerate_schemas,
         prefix=prefix,
     )
@@ -305,14 +376,17 @@ def _run_pipeline_with_sources(
 
 __all__ = [
     "VerificationWorkspace",
+    "build_synthetic_corpus_scenarios",
     "build_synthetic_corpus_specs",
     "create_verification_workspace",
     "ensure_report_dir",
     "generate_synthetic_fixtures",
+    "generate_synthetic_fixtures_from_scenarios",
     "generate_synthetic_fixtures_from_specs",
     "mirror_fixtures_to_inbox",
     "override_workspace_env",
     "seed_workspace_from_corpus_options",
+    "seed_workspace_from_scenarios",
     "seed_workspace_from_specs",
     "run_pipeline_for_configured_sources",
     "run_pipeline_for_fixture_workspace",
