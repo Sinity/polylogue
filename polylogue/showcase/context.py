@@ -17,6 +17,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from polylogue.scenarios import CorpusRequest
+
 
 @dataclass(frozen=True, slots=True)
 class ShowcaseContext:
@@ -37,11 +39,14 @@ class ShowcaseContext:
         """Create a fresh temp workspace with synthetic generated data."""
         from polylogue.showcase.workspace import (
             create_verification_workspace,
-            seed_workspace_from_corpus_options,
+            seed_workspace_from_corpus_request,
         )
 
         workspace = create_verification_workspace(workspace_dir)
-        seed_workspace_from_corpus_options(workspace, count=count, style=style)
+        seed_workspace_from_corpus_request(
+            workspace,
+            request=CorpusRequest(count=count, style=style, messages_min=6, messages_max=19, seed=42),
+        )
         return cls(
             db_path=workspace.db_path,
             archive_root=workspace.archive_root,

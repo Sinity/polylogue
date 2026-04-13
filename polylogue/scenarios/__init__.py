@@ -1,6 +1,7 @@
 """Shared scenario models used across verification projections."""
 
 from .corpus import (
+    CorpusRequest,
     CorpusScenario,
     CorpusSourceKind,
     CorpusSpec,
@@ -51,6 +52,7 @@ __all__ = [
     "memory_budget_execution",
     "resolve_corpus_scenarios",
     "resolve_corpus_specs",
+    "CorpusRequest",
     "CorpusSourceKind",
     "CorpusScenario",
     "CorpusSpec",
