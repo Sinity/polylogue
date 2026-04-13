@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
+from polylogue.scenarios import CorpusSpec
 from polylogue.schemas.runtime_registry import SchemaRegistry, canonical_schema_provider
 from polylogue.schemas.synthetic import selection as _selection
 from polylogue.schemas.synthetic.builders import (
@@ -24,6 +26,7 @@ from polylogue.schemas.synthetic.models import (
     SyntheticGenerationBatch,
     SyntheticGenerationReport,
     SyntheticSchemaSelection,
+    SyntheticWrittenBatch,
 )
 from polylogue.schemas.synthetic.relations import RelationConstraintSolver
 from polylogue.schemas.synthetic.runtime import (
@@ -89,9 +92,51 @@ class SyntheticCorpus:
         )
 
     @classmethod
+    def from_spec(cls, spec: CorpusSpec) -> SyntheticCorpus:
+        return cls.for_provider(
+            spec.provider,
+            version=spec.package_version,
+            element_kind=spec.element_kind,
+        )
+
+    @classmethod
     def available_providers(cls) -> list[str]:
         _sync_selection_patch_surfaces()
         return available_synthetic_providers()
+
+    @classmethod
+    def generate_batch_for_spec(cls, spec: CorpusSpec) -> SyntheticGenerationBatch:
+        corpus = cls.from_spec(spec)
+        return corpus.generate_batch(
+            count=spec.count,
+            messages_per_conversation=spec.messages_per_conversation,
+            seed=spec.seed,
+            style=spec.style,
+        )
+
+    @classmethod
+    def generate_for_spec(cls, spec: CorpusSpec) -> list[bytes]:
+        return cls.generate_batch_for_spec(spec).raw_items
+
+    @classmethod
+    def write_spec_artifacts(
+        cls,
+        spec: CorpusSpec,
+        output_dir: Path,
+        *,
+        prefix: str,
+        index_width: int = 2,
+    ) -> SyntheticWrittenBatch:
+        corpus = cls.from_spec(spec)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        ext = ".json" if corpus.wire_format.encoding == "json" else ".jsonl"
+        batch = cls.generate_batch_for_spec(spec)
+        written_files: list[Path] = []
+        for idx, artifact in enumerate(batch.artifacts):
+            file_path = output_dir / f"{prefix}-{idx:0{index_width}d}{ext}"
+            file_path.write_bytes(artifact.raw_bytes)
+            written_files.append(file_path)
+        return SyntheticWrittenBatch(batch=batch, files=tuple(written_files))
 
     def generate_batch(
         self,
