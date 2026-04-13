@@ -100,7 +100,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         "devtools.render_quality_reference",
     ),
     CommandSpec("run-validation-lanes", "verification", "Run named validation lanes.", "devtools.run_validation_lanes"),
-    CommandSpec("run-scale-lanes", "verification", "Run scale-validation lanes.", "devtools.run_scale_lanes"),
     CommandSpec(
         "artifact-graph",
         "verification",
