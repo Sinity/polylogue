@@ -10,7 +10,7 @@ from devtools.lane_models import LaneEntry
 from devtools.mutation_catalog import MutationCampaignEntry
 from devtools.scenario_projection_catalog import build_scenario_projection_entries
 from polylogue.scenarios import CorpusScenario, ScenarioProjectionEntry
-from polylogue.showcase.scenario_models import ExerciseScenario
+from polylogue.showcase.exercise_models import Exercise
 
 
 @dataclass(frozen=True)
@@ -19,11 +19,11 @@ class QualityRegistry:
     scenario_projections: tuple[ScenarioProjectionEntry, ...]
 
     @property
-    def exercise_scenarios(self) -> tuple[ExerciseScenario, ...]:
+    def exercise_scenarios(self) -> tuple[Exercise, ...]:
         return self.catalog.exercise_scenarios
 
     @property
-    def qa_extra_scenarios(self) -> tuple[ExerciseScenario, ...]:
+    def qa_extra_scenarios(self) -> tuple[Exercise, ...]:
         return self.catalog.qa_extra_scenarios
 
     @property
