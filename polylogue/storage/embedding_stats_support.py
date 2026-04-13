@@ -77,7 +77,8 @@ def build_retrieval_bands_from_status(
             "materialized_rows": evidence_materialized_rows,
             "pending_rows": max(0, evidence_source_rows - evidence_materialized_rows),
             "stale_rows": int(session_status["profile_evidence_fts_duplicate_count"])
-            + int(action_status["stale_count"]),
+            + int(action_status["stale_count"])
+            + int(action_status.get("action_fts_stale_rows", 0)),
             "detail": (
                 f"Evidence retrieval ready ({evidence_materialized_rows:,}/{evidence_source_rows:,} supporting rows)"
                 if evidence_ready

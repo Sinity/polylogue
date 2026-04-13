@@ -6,6 +6,7 @@ import sqlite3
 
 import aiosqlite
 
+from polylogue.storage.action_event_artifacts import ActionEventArtifactState
 from polylogue.storage.store import ACTION_EVENT_MATERIALIZER_VERSION
 
 _ACTION_EVENTS_EXISTS_SQL = "SELECT name FROM sqlite_master WHERE type='table' AND name='action_events'"
@@ -78,27 +79,32 @@ def action_event_read_model_status_sync(
         orphan_tool_block_count = 0
         source_conversation_count = materialized_conversation_count
     fts_status = fts_index_status_sync(conn)
-    action_fts_count = int(fts_status.get("action_count", 0))
-    action_fts_ready = count == action_fts_count
-    rows_ready = valid_source_conversation_count == 0 or (
-        valid_source_conversation_count == materialized_conversation_count and stale_count == 0
+    state = ActionEventArtifactState(
+        source_conversations=valid_source_conversation_count,
+        materialized_conversations=materialized_conversation_count,
+        materialized_rows=count,
+        fts_rows=int(fts_status.get("action_count", 0)),
+        stale_rows=stale_count,
+        orphan_rows=orphan_tool_block_count,
+        matches_version=stale_count == 0,
     )
-    ready = rows_ready and action_fts_ready
     return {
         "exists": exists,
         "count": count,
         "stale_count": stale_count,
-        "matches_version": stale_count == 0,
+        "matches_version": state.matches_version,
         "source_conversation_count": source_conversation_count,
         "valid_source_conversation_count": valid_source_conversation_count,
         "orphan_source_conversation_count": orphan_source_conversation_count,
         "orphan_tool_block_count": orphan_tool_block_count,
         "materialized_conversation_count": materialized_conversation_count,
-        "rows_ready": rows_ready,
+        "rows_ready": state.rows_ready,
         "action_fts_exists": bool(fts_status.get("exists", False)),
-        "action_fts_count": action_fts_count,
-        "action_fts_ready": action_fts_ready,
-        "ready": ready,
+        "action_fts_count": state.fts_rows,
+        "action_fts_pending_rows": state.pending_fts_rows,
+        "action_fts_stale_rows": state.excess_fts_rows,
+        "action_fts_ready": state.fts_ready,
+        "ready": state.ready,
     }
 
 
@@ -140,27 +146,32 @@ async def action_event_read_model_status_async(
         orphan_tool_block_count = 0
         source_conversation_count = materialized_conversation_count
     fts_status = await fts_index_status_async(conn)
-    action_fts_count = int(fts_status.get("action_count", 0))
-    action_fts_ready = count == action_fts_count
-    rows_ready = valid_source_conversation_count == 0 or (
-        valid_source_conversation_count == materialized_conversation_count and stale_count == 0
+    state = ActionEventArtifactState(
+        source_conversations=valid_source_conversation_count,
+        materialized_conversations=materialized_conversation_count,
+        materialized_rows=count,
+        fts_rows=int(fts_status.get("action_count", 0)),
+        stale_rows=stale_count,
+        orphan_rows=orphan_tool_block_count,
+        matches_version=stale_count == 0,
     )
-    ready = rows_ready and action_fts_ready
     return {
         "exists": exists,
         "count": count,
         "stale_count": stale_count,
-        "matches_version": stale_count == 0,
+        "matches_version": state.matches_version,
         "source_conversation_count": source_conversation_count,
         "valid_source_conversation_count": valid_source_conversation_count,
         "orphan_source_conversation_count": orphan_source_conversation_count,
         "orphan_tool_block_count": orphan_tool_block_count,
         "materialized_conversation_count": materialized_conversation_count,
-        "rows_ready": rows_ready,
+        "rows_ready": state.rows_ready,
         "action_fts_exists": bool(fts_status.get("exists", False)),
-        "action_fts_count": action_fts_count,
-        "action_fts_ready": action_fts_ready,
-        "ready": ready,
+        "action_fts_count": state.fts_rows,
+        "action_fts_pending_rows": state.pending_fts_rows,
+        "action_fts_stale_rows": state.excess_fts_rows,
+        "action_fts_ready": state.fts_ready,
+        "ready": state.ready,
     }
 
 
