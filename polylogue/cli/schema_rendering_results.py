@@ -43,6 +43,8 @@ def render_schema_generate_result(
         if result.manifest is not None:
             payload["manifest"] = result.manifest.to_dict()
             payload["manifest_path"] = str(result.manifest_path) if result.manifest_path else None
+        if result.corpus_specs:
+            payload["corpus_specs"] = [spec.to_payload() for spec in result.corpus_specs]
         emit_success(payload)
         return
 
@@ -58,6 +60,16 @@ def render_schema_generate_result(
         click.echo(f"  Default package: {generation.default_version}")
     if result.manifest_path is not None:
         click.echo(f"  Evidence manifest: {result.manifest_path}")
+    if result.corpus_specs:
+        click.echo("  Suggested synthetic corpus specs:")
+        for spec in result.corpus_specs[:3]:
+            target = spec.element_kind or spec.artifact_kind or "default"
+            click.echo(
+                f"    - {spec.provider}:{spec.package_version}:{target} "
+                f"x{spec.count} messages={spec.messages_min}-{spec.messages_max}"
+            )
+        if len(result.corpus_specs) > 3:
+            click.echo(f"    … {len(result.corpus_specs) - 3} more")
 
 
 def render_schema_list_result(

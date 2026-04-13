@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from polylogue.scenarios import build_inferred_corpus_specs
 from polylogue.schemas.operator_models import (
     SchemaCompareRequest,
     SchemaCompareResult,
@@ -30,12 +31,29 @@ def infer_schema(request: SchemaInferRequest) -> SchemaInferResult:
         privacy_config=request.privacy_config,
         full_corpus=request.full_corpus,
     )
+    package_version = result.default_version or "default"
     if not request.cluster or not result.success:
-        return SchemaInferResult(generation=result)
+        return SchemaInferResult(
+            generation=result,
+            corpus_specs=build_inferred_corpus_specs(
+                provider=request.provider,
+                package_version=package_version,
+                sample_count=result.sample_count,
+            )
+            if result.success
+            else (),
+        )
 
     config = PROVIDERS.get(request.provider)
     if config is None or not config.db_provider_name:
-        return SchemaInferResult(generation=result)
+        return SchemaInferResult(
+            generation=result,
+            corpus_specs=build_inferred_corpus_specs(
+                provider=request.provider,
+                package_version=package_version,
+                sample_count=result.sample_count,
+            ),
+        )
 
     samples = load_samples_from_db(
         config.db_provider_name,
@@ -43,7 +61,14 @@ def infer_schema(request: SchemaInferRequest) -> SchemaInferResult:
         max_samples=request.max_samples or request.cluster_sample_limit,
     )
     if not samples:
-        return SchemaInferResult(generation=result)
+        return SchemaInferResult(
+            generation=result,
+            corpus_specs=build_inferred_corpus_specs(
+                provider=request.provider,
+                package_version=package_version,
+                sample_count=result.sample_count,
+            ),
+        )
 
     registry = schema_registry()
     manifest = registry.cluster_samples(request.provider, samples)
@@ -52,6 +77,12 @@ def infer_schema(request: SchemaInferRequest) -> SchemaInferResult:
         generation=result,
         manifest=manifest,
         manifest_path=manifest_path,
+        corpus_specs=build_inferred_corpus_specs(
+            provider=request.provider,
+            package_version=package_version,
+            manifest=manifest,
+            sample_count=result.sample_count,
+        ),
     )
 
 

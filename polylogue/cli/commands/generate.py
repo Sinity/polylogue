@@ -11,6 +11,7 @@ from pathlib import Path
 import click
 
 from polylogue.cli.types import AppEnv
+from polylogue.scenarios import build_default_corpus_specs
 
 
 @contextmanager
@@ -90,26 +91,21 @@ def _do_corpus(
     from polylogue.schemas.synthetic import SyntheticCorpus
 
     out = output_dir or Path(tempfile.mkdtemp(prefix="polylogue-corpus-"))
+    specs = build_default_corpus_specs(
+        providers=providers,
+        count=count,
+        messages_min=4,
+        messages_max=15,
+        seed=42,
+    )
 
-    for provider in providers:
-        corpus = SyntheticCorpus.for_provider(provider)
-        ext = ".json" if corpus.wire_format.encoding == "json" else ".jsonl"
-        provider_dir = out / provider
-        provider_dir.mkdir(parents=True, exist_ok=True)
-
-        batch = corpus.generate_batch(
-            count=count,
-            messages_per_conversation=range(4, 16),
-            seed=42,
-        )
-
-        for idx, artifact in enumerate(batch.artifacts):
-            dest = provider_dir / f"sample-{idx:02d}{ext}"
-            dest.write_bytes(artifact.raw_bytes)
+    for spec in specs:
+        provider_dir = out / spec.provider
+        written = SyntheticCorpus.write_spec_artifacts(spec, provider_dir, prefix="sample")
 
         env.ui.console.print(
-            f"  {provider}: {batch.report.generated_count} files "
-            f"({batch.report.element_kind or 'default'}) → {provider_dir}"
+            f"  {spec.provider}: {written.batch.report.generated_count} files "
+            f"({written.batch.report.element_kind or 'default'}) → {provider_dir}"
         )
 
     env.ui.console.print(f"\nCorpus written to: {out}")
@@ -154,22 +150,19 @@ def _do_seed(
     }
 
     sources: list[Source] = []
-    for provider in providers:
-        corpus = SyntheticCorpus.for_provider(provider)
-        ext = ".json" if corpus.wire_format.encoding == "json" else ".jsonl"
-        provider_dir = fixture_dir / provider
-        provider_dir.mkdir(parents=True, exist_ok=True)
+    specs = build_default_corpus_specs(
+        providers=providers,
+        count=count,
+        messages_min=6,
+        messages_max=19,
+        seed=42,
+    )
+    for spec in specs:
+        provider_dir = fixture_dir / spec.provider
+        SyntheticCorpus.write_spec_artifacts(spec, provider_dir, prefix="demo")
 
-        batch = corpus.generate_batch(
-            count=count,
-            messages_per_conversation=range(6, 20),
-            seed=42,
-        )
-        for idx, artifact in enumerate(batch.artifacts):
-            (provider_dir / f"demo-{idx:02d}{ext}").write_bytes(artifact.raw_bytes)
-
-        sources.append(Source(name=provider, path=provider_dir))
-        inbox_provider_dir = inbox_dir / provider
+        sources.append(Source(name=spec.provider, path=provider_dir))
+        inbox_provider_dir = inbox_dir / spec.provider
         inbox_provider_dir.mkdir(parents=True, exist_ok=True)
         for fixture in provider_dir.iterdir():
             if fixture.is_file():

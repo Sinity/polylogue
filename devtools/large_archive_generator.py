@@ -14,6 +14,8 @@ from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from polylogue.scenarios import CorpusSpec
+
 if TYPE_CHECKING:
     pass
 
@@ -183,14 +185,6 @@ async def generate_archive(spec: ArchiveSpec, output_dir: Path) -> ArchiveMetric
     backend = SQLiteBackend(db_path=db_path)
     repository = ConversationRepository(backend=backend)
 
-    ext_map = {
-        "chatgpt": ".json",
-        "claude-ai": ".json",
-        "gemini": ".json",
-        "claude-code": ".jsonl",
-        "codex": ".jsonl",
-    }
-
     conversation_count = 0
     message_count = 0
 
@@ -200,22 +194,26 @@ async def generate_archive(spec: ArchiveSpec, output_dir: Path) -> ArchiveMetric
                 if conv_count <= 0:
                     continue
 
-                corpus = SyntheticCorpus.for_provider(provider)
-                ext = ext_map.get(provider, ".json")
                 provider_dir = corpus_dir / provider
-                provider_dir.mkdir(parents=True, exist_ok=True)
-
-                raw_items = corpus.generate(
+                corpus_spec = CorpusSpec.for_provider(
+                    provider,
                     count=conv_count,
-                    messages_per_conversation=spec.messages_per_conversation_range,
+                    messages_min=spec.messages_per_conversation_range.start,
+                    messages_max=spec.messages_per_conversation_range.stop - 1,
                     seed=spec.seed,
+                    origin="generated.large-archive",
+                    tags=("synthetic", "benchmark", "scale"),
+                )
+                written = SyntheticCorpus.write_spec_artifacts(
+                    corpus_spec,
+                    provider_dir,
+                    prefix="synth",
+                    index_width=5,
                 )
 
                 provider_conv_count = 0
-                for idx, raw_bytes in enumerate(raw_items):
-                    file_path = provider_dir / f"synth-{idx:05d}{ext}"
-                    file_path.write_bytes(raw_bytes)
-
+                for file_path, artifact in zip(written.files, written.batch.artifacts, strict=True):
+                    raw_bytes = artifact.raw_bytes
                     # Store raw record
                     raw_id = hashlib.sha256(raw_bytes).hexdigest()
                     raw_record = RawConversationRecord(
@@ -243,7 +241,7 @@ async def generate_archive(spec: ArchiveSpec, output_dir: Path) -> ArchiveMetric
                         message_count += len(convo.messages)
 
                     # Periodic flush every 100 files
-                    if idx > 0 and idx % 100 == 0:
+                    if provider_conv_count > 0 and provider_conv_count % 100 == 0:
                         await backend.bulk_flush()
 
                 provider_breakdown[provider] = provider_conv_count

@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from polylogue.scenarios import CorpusSpec
 from polylogue.schemas.generation_models import GenerationResult
 from polylogue.schemas.packages import SchemaPackageCatalog, SchemaResolution, SchemaVersionPackage
 from polylogue.schemas.tooling_registry import ClusterManifest, SchemaDiff
@@ -30,6 +31,7 @@ class SchemaInferResult:
     generation: GenerationResult
     manifest: ClusterManifest | None = None
     manifest_path: Path | None = None
+    corpus_specs: tuple[CorpusSpec, ...] = ()
 
 
 @dataclass(frozen=True)
