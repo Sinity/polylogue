@@ -4,15 +4,21 @@ from pathlib import Path
 
 import pytest
 
+from devtools import synthetic_benchmark_runtime as synthetic_runtime
 from devtools.benchmark_campaigns import (
     SYNTHETIC_CAMPAIGNS,
-    _resolve_synthetic_benchmark_runner,
     run_full_campaign,
     run_synthetic_benchmark_campaign,
 )
 from devtools.synthetic_benchmark_catalog import (
     SYNTHETIC_BENCHMARK_REGISTRY,
     SYNTHETIC_BENCHMARK_SCENARIOS,
+)
+from devtools.synthetic_benchmark_runtime import (
+    CampaignResult,
+    resolve_synthetic_benchmark_runner,
+    run_action_event_materialization_campaign,
+    run_session_product_materialization_campaign,
 )
 from polylogue.scenarios import ExecutionKind
 
@@ -37,14 +43,14 @@ def test_synthetic_benchmark_registry_is_compiled_from_authored_scenarios() -> N
 
 def test_all_authored_synthetic_benchmark_runners_resolve() -> None:
     for campaign in SYNTHETIC_CAMPAIGNS.values():
-        assert callable(_resolve_synthetic_benchmark_runner(campaign))
+        assert campaign.execution is not None
+        assert campaign.execution.runner
+        assert callable(resolve_synthetic_benchmark_runner(campaign.execution.runner))
 
 
 @pytest.mark.asyncio
 async def test_run_synthetic_benchmark_campaign_preserves_scenario_metadata(monkeypatch, tmp_path: Path) -> None:
     async def fake_incremental(_db_path: Path):
-        from devtools.benchmark_campaigns import CampaignResult
-
         return CampaignResult(
             campaign_name="incremental-index",
             scale_level="",
@@ -53,7 +59,11 @@ async def test_run_synthetic_benchmark_campaign_preserves_scenario_metadata(monk
             timestamp="2026-04-13T00:00:00+00:00",
         )
 
-    monkeypatch.setattr("devtools.benchmark_campaigns.run_incremental_index_campaign", fake_incremental)
+    monkeypatch.setitem(
+        synthetic_runtime.SYNTHETIC_BENCHMARK_RUNNERS,
+        "incremental-index",
+        fake_incremental,
+    )
 
     result = await run_synthetic_benchmark_campaign("incremental-index", tmp_path / "benchmark.db")
 
@@ -79,8 +89,6 @@ async def test_run_full_campaign_skips_scenarios_outside_scale_targets(monkeypat
         )
 
     async def fake_run_campaign(name: str, _db_path: Path):
-        from devtools.benchmark_campaigns import CampaignResult
-
         return CampaignResult(
             campaign_name=name,
             scale_level="",
@@ -110,8 +118,6 @@ async def test_run_full_campaign_skips_scenarios_outside_scale_targets(monkeypat
 
 
 def test_action_event_materialization_campaign_reports_action_row_counts(monkeypatch, tmp_path: Path) -> None:
-    from devtools.benchmark_campaigns import run_action_event_materialization_campaign
-
     before = {
         "action_events_count": 2,
         "action_fts_rows": 2,
@@ -140,11 +146,9 @@ def test_action_event_materialization_campaign_reports_action_row_counts(monkeyp
         def __exit__(self, exc_type, exc, tb) -> bool:
             return False
 
-    monkeypatch.setattr("devtools.benchmark_campaigns._db_row_counts", lambda _db_path: next(row_counts))
+    monkeypatch.setattr("devtools.synthetic_benchmark_runtime._db_row_counts", lambda _db_path: next(row_counts))
     monkeypatch.setattr("polylogue.storage.backends.connection.open_connection", lambda _db_path: FakeContext())
-    monkeypatch.setattr(
-        "polylogue.storage.action_event_rebuild_runtime.rebuild_action_event_read_model_sync", lambda conn: 7
-    )
+    monkeypatch.setattr("polylogue.storage.action_event_rebuild_runtime.rebuild_action_event_read_model_sync", lambda conn: 7)
 
     result = run_action_event_materialization_campaign(tmp_path / "benchmark.db")
 
@@ -161,8 +165,6 @@ def test_action_event_materialization_campaign_reports_action_row_counts(monkeyp
 
 
 def test_session_product_materialization_campaign_reports_rebuild_counts(monkeypatch, tmp_path: Path) -> None:
-    from devtools.benchmark_campaigns import run_session_product_materialization_campaign
-
     before = {
         "session_profiles_count": 1,
         "session_profiles_fts_count": 1,
@@ -193,9 +195,7 @@ def test_session_product_materialization_campaign_reports_rebuild_counts(monkeyp
         def __exit__(self, exc_type, exc, tb) -> bool:
             return False
 
-    monkeypatch.setattr(
-        "devtools.benchmark_campaigns._session_product_table_counts", lambda _db_path: next(table_counts)
-    )
+    monkeypatch.setattr("devtools.synthetic_benchmark_runtime._session_product_table_counts", lambda _db_path: next(table_counts))
     monkeypatch.setattr("polylogue.storage.backends.connection.open_connection", lambda _db_path: FakeContext())
     monkeypatch.setattr(
         "polylogue.storage.session_product_rebuild.rebuild_session_products_sync",

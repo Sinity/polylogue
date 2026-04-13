@@ -3,12 +3,12 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from devtools.benchmark_campaigns import CampaignResult
 from devtools.campaign_report import (
     generate_campaign_json,
     generate_campaign_markdown,
     save_campaign_reports,
 )
+from devtools.synthetic_benchmark_runtime import CampaignResult
 
 
 def _sample_result(name: str) -> CampaignResult:
