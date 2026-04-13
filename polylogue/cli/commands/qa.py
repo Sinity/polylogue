@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import click
 
 from polylogue.cli.commands.generate import generate_command
 from polylogue.cli.helpers import complete_configured_source_names, load_effective_config, resolve_sources
-from polylogue.cli.qa_capture import run_vhs_capture as _run_vhs_capture
-from polylogue.cli.qa_requests import QACaptureMode, build_qa_snapshot_plan
+from polylogue.cli.qa_finalization import finalize_qa_run
+from polylogue.cli.qa_requests import (
+    QACaptureMode,
+    build_qa_finalization_plan,
+    build_qa_snapshot_plan,
+)
 from polylogue.cli.qa_snapshot import execute_snapshot_plan
 from polylogue.cli.types import AppEnv
 from polylogue.showcase.qa_runner_request import QAStage, build_qa_session_request
@@ -112,6 +115,11 @@ def qa_command(
         return
     capture_mode = QACaptureMode(capture.lower())
     snapshot_plan = build_qa_snapshot_plan(snapshot_label=snapshot_label, snapshot_from=snapshot_from)
+    finalization_plan = build_qa_finalization_plan(
+        capture_mode=capture_mode,
+        json_output=json_output,
+        snapshot_plan=snapshot_plan,
+    )
 
     # --- Snapshot-from: archive only, no QA ---
     if snapshot_plan and snapshot_plan.skips_qa and snapshot_plan.source_dir is not None:
@@ -147,34 +155,16 @@ def qa_command(
         raise click.UsageError(str(exc)) from exc
 
     # --- Execute QA session ---
-    from polylogue.showcase.qa_report import generate_qa_session
-    from polylogue.showcase.qa_runner import (
-        format_qa_summary,
-        run_qa_session,
-    )
+    from polylogue.showcase.qa_runner import run_qa_session
 
     result = run_qa_session(request)
 
-    # --- VHS capture ---
-    if capture_mode is QACaptureMode.VHS and result.showcase_result and result.showcase_result.output_dir:
-        _run_vhs_capture(env, result.showcase_result, json_output)
-
-    # --- Output ---
-    if json_output:
-        click.echo(json.dumps(generate_qa_session(result), indent=2))
-    else:
-        env.ui.console.print(format_qa_summary(result))
-
-    # --- Snapshot ---
-    if snapshot_plan and not snapshot_plan.skips_qa and result.report_dir:
-        root = config.archive_root / "qa" / "snapshots"
-        execute_snapshot_plan(
-            snapshot_plan,
-            fallback_source_dir=result.report_dir,
-            output_root=root,
-            json_output=json_output,
-            env=env,
-        )
+    finalize_qa_run(
+        result,
+        plan=finalization_plan,
+        archive_root=config.archive_root,
+        env=env,
+    )
 
     if not result.all_passed:
         raise SystemExit(1)
