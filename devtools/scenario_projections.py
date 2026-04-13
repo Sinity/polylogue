@@ -6,7 +6,6 @@ import argparse
 import json
 import sys
 from collections.abc import Iterable
-from dataclasses import asdict
 
 from devtools.quality_registry import ScenarioProjectionEntry, build_quality_registry
 
@@ -21,7 +20,7 @@ def _select_projections(
 ) -> tuple[ScenarioProjectionEntry, ...]:
     selected: list[ScenarioProjectionEntry] = []
     for entry in projections:
-        if source_kinds and entry.source_kind not in source_kinds:
+        if source_kinds and entry.source_kind.value not in source_kinds:
             continue
         if artifact_target and artifact_target not in entry.artifact_targets:
             continue
@@ -49,14 +48,14 @@ def render_scenario_projections(
         tag=tag,
     )
     if as_json:
-        return json.dumps([asdict(entry) for entry in projections], indent=2)
+        return json.dumps([entry.to_dict() for entry in projections], indent=2)
 
     lines = [f"Scenario Projections ({len(projections)}):"]
     if not projections:
         lines.append("- none")
         return "\n".join(lines)
     for entry in projections:
-        lines.append(f"- {entry.source_kind}:{entry.name} [{entry.origin}]")
+        lines.append(f"- {entry.source_kind.value}:{entry.name} [{entry.origin}]")
         lines.append(f"  - description: {entry.description}")
         lines.append(f"  - artifact targets: {', '.join(entry.artifact_targets) if entry.artifact_targets else '—'}")
         lines.append(f"  - operation targets: {', '.join(entry.operation_targets) if entry.operation_targets else '—'}")
