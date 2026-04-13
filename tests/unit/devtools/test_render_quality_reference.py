@@ -10,6 +10,7 @@ from devtools.mutation_catalog import MutationCampaignEntry
 from devtools.quality_registry import QualityRegistry
 from devtools.scenario_coverage import RuntimePathCoverage, RuntimeScenarioCoverage, ScenarioCoverageRef
 from polylogue.scenarios import (
+    CorpusScenario,
     CorpusSpec,
     ScenarioProjectionEntry,
     ScenarioProjectionSourceKind,
@@ -68,6 +69,25 @@ def test_build_document_includes_live_registry_sections() -> None:
                 description="Synthetic startup-health benchmark.",
             ),
         ),
+        inferred_corpus_scenarios=(
+            CorpusScenario(
+                provider="chatgpt",
+                package_version="v1",
+                corpus_specs=(
+                    CorpusSpec.for_provider(
+                        "chatgpt",
+                        package_version="v1",
+                        count=3,
+                        messages_min=4,
+                        messages_max=16,
+                        origin="inferred.schema",
+                        tags=("inferred", "schema", "synthetic"),
+                    ),
+                ),
+                origin="compiled.inferred-corpus-scenario",
+                tags=("inferred", "schema", "synthetic", "scenario"),
+            ),
+        ),
         scenario_projections=(
             ScenarioProjectionEntry(
                 source_kind=ScenarioProjectionSourceKind.EXERCISE,
@@ -89,11 +109,11 @@ def test_build_document_includes_live_registry_sections() -> None:
                 tags=("benchmark", "search"),
             ),
             ScenarioProjectionEntry(
-                source_kind=ScenarioProjectionSourceKind.INFERRED_CORPUS,
-                name="chatgpt:v1:default",
-                description="Inferred synthetic corpus spec for chatgpt default.",
-                origin="inferred.schema",
-                tags=("inferred", "schema", "synthetic"),
+                source_kind=ScenarioProjectionSourceKind.INFERRED_CORPUS_SCENARIO,
+                name="chatgpt:v1",
+                description="Compiled inferred corpus scenario for chatgpt v1 across 1 corpus variant(s).",
+                origin="compiled.inferred-corpus-scenario",
+                tags=("inferred", "schema", "synthetic", "scenario"),
                 source_payload=CorpusSpec.for_provider(
                     "chatgpt",
                     package_version="v1",
@@ -102,7 +122,7 @@ def test_build_document_includes_live_registry_sections() -> None:
                     messages_max=16,
                     origin="inferred.schema",
                     tags=("inferred", "schema", "synthetic"),
-                ).to_payload(),
+                ).to_projection_entry().source_payload | {"variant_count": 1, "target_labels": ["default"]},
             ),
         ),
     )
@@ -119,14 +139,14 @@ def test_build_document_includes_live_registry_sections() -> None:
     assert "## Inferred Corpus Catalog" in rendered
     assert "`chatgpt`" in rendered
     assert "## Synthetic Benchmark Campaign Catalog" in rendered
-    assert "- inferred corpus specs: `1`" in rendered
+    assert "- inferred corpus scenarios: `1`" in rendered
     assert "- scenario projections: `3`" in rendered
     assert "  - benchmark-campaign: `1`" in rendered
     assert "  - exercise: `1`" in rendered
-    assert "  - inferred-corpus: `1`" in rendered
+    assert "  - inferred-corpus-scenario: `1`" in rendered
     assert "## Scenario Projection Catalog" in rendered
     assert "| `exercise` | `json-doctor-action-event-preview` |" in rendered
-    assert "| `inferred-corpus` | `chatgpt:v1:default` |" in rendered
+    assert "| `inferred-corpus-scenario` | `chatgpt:v1` |" in rendered
     assert "`action-event-repair-loop`" in rendered
 
 
@@ -138,6 +158,7 @@ def test_build_document_includes_runtime_coverage_section() -> None:
         mutation_campaigns=(),
         benchmark_campaigns=(),
         synthetic_benchmark_campaigns=(),
+        inferred_corpus_scenarios=(),
         scenario_projections=(),
     )
     coverage = RuntimeScenarioCoverage(

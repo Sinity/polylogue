@@ -222,6 +222,104 @@ class CorpusSpec(ScenarioProjectionSource, ScenarioMetadata):
         return self.to_payload()
 
 
+def _merge_unique_string_tuples(*groups: tuple[str, ...]) -> tuple[str, ...]:
+    seen: set[str] = set()
+    merged: list[str] = []
+    for group in groups:
+        for item in group:
+            if item not in seen:
+                seen.add(item)
+                merged.append(item)
+    return tuple(merged)
+
+
+@dataclass(frozen=True, kw_only=True)
+class CorpusScenario(ScenarioProjectionSource, ScenarioMetadata):
+    """Named scenario compiled from one or more corpus specs."""
+
+    provider: str
+    package_version: str = "default"
+    corpus_specs: tuple[CorpusSpec, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not self.provider:
+            raise ValueError("CorpusScenario.provider must be non-empty")
+        if not self.corpus_specs:
+            raise ValueError("CorpusScenario.corpus_specs must be non-empty")
+        providers = {spec.provider for spec in self.corpus_specs}
+        if providers != {self.provider}:
+            raise ValueError(f"CorpusScenario.provider mismatch: expected only {self.provider!r}, got {sorted(providers)!r}")
+        versions = {spec.package_version for spec in self.corpus_specs}
+        if versions != {self.package_version}:
+            raise ValueError(
+                f"CorpusScenario.package_version mismatch: expected only {self.package_version!r}, got {sorted(versions)!r}"
+            )
+
+    @property
+    def projection_source_kind(self) -> ScenarioProjectionSourceKind:
+        return ScenarioProjectionSourceKind.INFERRED_CORPUS_SCENARIO
+
+    @property
+    def projection_name(self) -> str:
+        return f"{self.provider}:{self.package_version}"
+
+    @property
+    def projection_description(self) -> str:
+        return (
+            f"Compiled inferred corpus scenario for {self.provider} {self.package_version} "
+            f"across {len(self.corpus_specs)} corpus variant(s)."
+        )
+
+    @property
+    def target_labels(self) -> tuple[str, ...]:
+        return tuple(spec.projection_scope for spec in self.corpus_specs)
+
+    def projection_source_payload(self) -> Mapping[str, object]:
+        return {
+            "provider": self.provider,
+            "package_version": self.package_version,
+            "variant_count": len(self.corpus_specs),
+            "target_labels": list(self.target_labels),
+            "corpus_specs": [spec.to_payload() for spec in self.corpus_specs],
+        }
+
+
+def build_corpus_scenarios(
+    corpus_specs: Iterable[CorpusSpec],
+    *,
+    origin: str = "compiled.corpus-scenario",
+    tags: tuple[str, ...] = ("synthetic", "scenario"),
+) -> tuple[CorpusScenario, ...]:
+    grouped: dict[tuple[str, str], list[CorpusSpec]] = {}
+    for spec in corpus_specs:
+        grouped.setdefault((spec.provider, spec.package_version), []).append(spec)
+    scenarios: list[CorpusScenario] = []
+    for (provider, package_version), specs in sorted(grouped.items()):
+        ordered_specs = tuple(
+            sorted(
+                specs,
+                key=lambda spec: (
+                    spec.profile_family_ids[0] if spec.profile_family_ids else "",
+                    spec.element_kind or "",
+                    spec.artifact_kind or "",
+                ),
+            )
+        )
+        scenarios.append(
+            CorpusScenario(
+                provider=provider,
+                package_version=package_version,
+                corpus_specs=ordered_specs,
+                origin=origin,
+                path_targets=_merge_unique_string_tuples(*(spec.path_targets for spec in ordered_specs)),
+                artifact_targets=_merge_unique_string_tuples(*(spec.artifact_targets for spec in ordered_specs)),
+                operation_targets=_merge_unique_string_tuples(*(spec.operation_targets for spec in ordered_specs)),
+                tags=_merge_unique_string_tuples(tags, *(spec.tags for spec in ordered_specs)),
+            )
+        )
+    return tuple(scenarios)
+
+
 def build_default_corpus_specs(
     *,
     providers: Iterable[str],
@@ -359,7 +457,9 @@ def build_inferred_corpus_specs(
 
 
 __all__ = [
+    "build_corpus_scenarios",
     "CorpusSourceKind",
+    "CorpusScenario",
     "CorpusSpec",
     "build_default_corpus_specs",
     "build_inferred_corpus_specs",

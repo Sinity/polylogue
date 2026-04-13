@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from polylogue.scenarios import CorpusSpec
+from polylogue.scenarios import CorpusScenario, CorpusSpec
 from polylogue.schemas.generation_models import GenerationResult
 from polylogue.schemas.packages import SchemaPackageCatalog, SchemaResolution, SchemaVersionPackage
 from polylogue.schemas.tooling_registry import ClusterManifest, SchemaDiff
@@ -32,6 +32,7 @@ class SchemaInferResult:
     manifest: ClusterManifest | None = None
     manifest_path: Path | None = None
     corpus_specs: tuple[CorpusSpec, ...] = ()
+    corpus_scenarios: tuple[CorpusScenario, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -47,6 +48,7 @@ class SchemaProviderSnapshot:
     manifest: ClusterManifest | None = None
     latest_age_days: int | None = None
     corpus_specs: tuple[CorpusSpec, ...] = ()
+    corpus_scenarios: tuple[CorpusScenario, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         payload = {"provider": self.provider, "versions": list(self.versions)}
@@ -56,6 +58,15 @@ class SchemaProviderSnapshot:
             payload["manifest"] = self.manifest.to_dict()
         if self.corpus_specs:
             payload["corpus_specs"] = [spec.to_payload() for spec in self.corpus_specs]
+        if self.corpus_scenarios:
+            payload["corpus_scenarios"] = [
+                {
+                    "provider": scenario.provider,
+                    "package_version": scenario.package_version,
+                    "corpus_specs": [spec.to_payload() for spec in scenario.corpus_specs],
+                }
+                for scenario in self.corpus_scenarios
+            ]
         return payload
 
     def to_list_item_dict(self) -> dict[str, Any]:
@@ -67,6 +78,7 @@ class SchemaProviderSnapshot:
             "latest_version": self.catalog.latest_version if self.catalog is not None else None,
             "cluster_count": len(self.manifest.clusters) if self.manifest is not None else 0,
             "corpus_spec_count": len(self.corpus_specs),
+            "corpus_scenario_count": len(self.corpus_scenarios),
         }
 
 
