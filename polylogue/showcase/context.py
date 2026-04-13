@@ -17,7 +17,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from polylogue.scenarios import CorpusRequest
+from polylogue.showcase.corpus_requests import showcase_corpus_request
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,7 +45,7 @@ class ShowcaseContext:
         workspace = create_verification_workspace(workspace_dir)
         seed_workspace_from_corpus_request(
             workspace,
-            request=CorpusRequest(count=count, style=style, messages_min=6, messages_max=19, seed=42),
+            request=showcase_corpus_request(count=count, style=style),
         )
         return cls(
             db_path=workspace.db_path,

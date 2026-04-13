@@ -28,6 +28,8 @@ def test_build_qa_session_request_defaults_to_fresh_synthetic_full_run() -> None
     assert request.skip_proof is False
     assert request.skip_exercises is False
     assert request.skip_invariants is False
+    assert request.corpus_request.count == 3
+    assert request.corpus_request.style == "showcase"
 
 
 def test_build_qa_session_request_respects_live_source_fresh_workspace() -> None:
