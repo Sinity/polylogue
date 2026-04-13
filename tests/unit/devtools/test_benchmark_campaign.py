@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 from devtools.benchmark_campaign import (
     BenchmarkStat,
@@ -10,6 +11,7 @@ from devtools.benchmark_campaign import (
     _compare_results,
     compare_artifacts,
     render_index,
+    run_campaign,
 )
 from devtools.benchmark_catalog import BenchmarkCampaignEntry
 from devtools.benchmark_scenario_catalog import (
@@ -17,7 +19,7 @@ from devtools.benchmark_scenario_catalog import (
     BENCHMARK_SCENARIOS,
     compile_benchmark_campaigns,
 )
-from polylogue.scenarios import ScenarioProjectionSourceKind, pytest_execution
+from polylogue.scenarios import ExecutionKind, ScenarioProjectionSourceKind, pytest_execution
 
 
 def test_compare_results_orders_regressions_by_worst_delta() -> None:
@@ -223,3 +225,87 @@ def test_benchmark_entry_compiles_its_own_projection_entry() -> None:
     assert projection.description == "startup health benchmark"
     assert projection.artifact_targets == ("message_fts", "archive_health")
     assert projection.operation_targets == ("project-archive-health", "health.startup.synthetic")
+
+
+def test_run_campaign_executes_authored_pytest_through_shared_runtime(tmp_path: Path, monkeypatch) -> None:
+    class _TmpDir:
+        def __init__(self, path: Path) -> None:
+            self.path = path
+
+        def __enter__(self) -> str:
+            self.path.mkdir(parents=True, exist_ok=True)
+            return str(self.path)
+
+        def __exit__(self, exc_type, exc, tb) -> bool:
+            return False
+
+    captured: dict[str, object] = {}
+    artifact_json = tmp_path / "candidate.json"
+    artifact_md = tmp_path / "candidate.md"
+    benchmark_dir = tmp_path / "bench-tmp"
+
+    monkeypatch.setattr("devtools.benchmark_campaign.ROOT", tmp_path)
+    monkeypatch.setattr("devtools.benchmark_campaign._git_output", lambda *_args: "a" * 40)
+    monkeypatch.setattr("devtools.benchmark_campaign._worktree_dirty", lambda: False)
+    monkeypatch.setattr(
+        "devtools.benchmark_campaign.tempfile.TemporaryDirectory",
+        lambda prefix: _TmpDir(benchmark_dir),
+    )
+
+    def fake_run_execution(execution, *, cwd):
+        captured["execution"] = execution
+        captured["cwd"] = cwd
+        benchmark_json_flag = next(
+            target for target in execution.pytest_targets if target.startswith("--benchmark-json=")
+        )
+        Path(benchmark_json_flag.split("=", 1)[1]).write_text(
+            json.dumps(
+                {
+                    "machine_info": {},
+                    "benchmarks": [
+                        {
+                            "name": "bench.a",
+                            "fullname": "bench.a",
+                            "group": "group",
+                            "stats": {
+                                "mean": 1.0,
+                                "median": 1.0,
+                                "min": 0.9,
+                                "max": 1.1,
+                                "stddev": 0.05,
+                                "rounds": 5,
+                            },
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        return SimpleNamespace(command=("pytest", *execution.pytest_targets), exit_code=0)
+
+    monkeypatch.setattr("devtools.benchmark_campaign.run_execution", fake_run_execution)
+
+    campaign = BenchmarkCampaignEntry(
+        name="search-filters",
+        description="FTS benchmark",
+        execution=pytest_execution("tests/benchmarks/test_search_filters.py"),
+        notes=("Canonical domain.",),
+    )
+
+    result = run_campaign(
+        campaign,
+        json_out=artifact_json,
+        markdown_out=artifact_md,
+        compare_to=None,
+        warn_pct=None,
+        fail_pct=None,
+    )
+
+    assert captured["cwd"] == tmp_path
+    assert captured["execution"].kind is ExecutionKind.PYTEST
+    assert "--benchmark-enable" in captured["execution"].pytest_targets
+    assert "tests/benchmarks/test_search_filters.py" in captured["execution"].pytest_targets
+    assert result.exit_code == 0
+    assert result.command[0] == "pytest"
+    assert artifact_json.exists()
+    assert artifact_md.exists()

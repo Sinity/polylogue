@@ -12,7 +12,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from polylogue.scenarios import ExecutionKind
+from polylogue.scenarios import ExecutionKind, pytest_execution, run_execution
 
 from .authored_scenario_catalog import build_authored_scenario_catalog
 from .benchmark_catalog import BenchmarkCampaignEntry
@@ -224,23 +224,23 @@ def run_campaign(
 
     with tempfile.TemporaryDirectory(prefix=f"benchmark-{campaign.name}-") as tmpdir:
         raw_json = Path(tmpdir) / "pytest-benchmark.json"
-        command = list(
-            campaign.execution.pytest_command(
-                "-q",
-                "--override-ini=addopts=-ra",
-                "-n",
-                "0",
-                "-p",
-                "no:randomly",
-                "--benchmark-enable",
-                f"--benchmark-json={raw_json}",
-            )
+        benchmark_execution = pytest_execution(
+            "-q",
+            "--override-ini=addopts=-ra",
+            "-n",
+            "0",
+            "-p",
+            "no:randomly",
+            "--benchmark-enable",
+            f"--benchmark-json={raw_json}",
+            *campaign.execution.pytest_targets,
         )
         start = time.monotonic()
-        completed = subprocess.run(command, cwd=ROOT)
+        completed = run_execution(benchmark_execution, cwd=ROOT)
         runtime_seconds = time.monotonic() - start
-        if completed.returncode != 0 and (not raw_json.exists() or raw_json.stat().st_size == 0):
-            raise SystemExit(completed.returncode)
+        command = list(completed.command)
+        if completed.exit_code != 0 and (not raw_json.exists() or raw_json.stat().st_size == 0):
+            raise SystemExit(completed.exit_code)
         if not raw_json.exists():
             raise SystemExit(f"Benchmark run for {campaign.name} produced no JSON artifact")
         payload = json.loads(raw_json.read_text())
@@ -265,7 +265,7 @@ def run_campaign(
         notes=list(campaign.notes),
         benchmark_count=len(benchmarks),
         runtime_seconds=runtime_seconds,
-        exit_code=completed.returncode,
+        exit_code=completed.exit_code,
         machine_info=dict(payload.get("machine_info", {})),
         benchmarks=[asdict(bench) for bench in benchmarks],
         slowest=[asdict(bench) for bench in benchmarks[:10]],
@@ -280,8 +280,8 @@ def run_campaign(
     artifact_json.write_text(json.dumps(asdict(result), indent=2, sort_keys=True) + "\n")
     artifact_md.write_text(_render_markdown(result))
 
-    if completed.returncode != 0:
-        raise SystemExit(completed.returncode)
+    if completed.exit_code != 0:
+        raise SystemExit(completed.exit_code)
     if worst_regression is not None and worst_regression > fail_threshold:
         raise SystemExit(
             f"Benchmark regression exceeded fail threshold: {worst_regression:.2f}% > {fail_threshold:.2f}%"

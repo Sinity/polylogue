@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-import os
 import shutil
-import subprocess
 from dataclasses import dataclass
 from pathlib import Path
+
+from polylogue.scenarios import ExecutionSpec, run_execution
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
@@ -23,7 +23,7 @@ class ShowcaseCliResult:
 
 
 def invoke_showcase_cli(
-    args: list[str],
+    execution: ExecutionSpec,
     *,
     env: dict[str, str] | None = None,
     cwd: Path | None = None,
@@ -33,20 +33,16 @@ def invoke_showcase_cli(
     cli_path = shutil.which("polylogue")
     if cli_path is None:
         raise RuntimeError("showcase verification requires `polylogue` on PATH")
-    command = [cli_path, *args]
-    command_env = dict(os.environ)
-    if env:
-        command_env.update(env)
-    process = subprocess.run(
-        command,
+    process = run_execution(
+        execution,
+        binary_overrides={"polylogue": cli_path},
         capture_output=True,
         cwd=cwd or _PROJECT_ROOT,
-        env=command_env,
-        text=True,
+        env=env,
         timeout=timeout,
     )
     return ShowcaseCliResult(
-        exit_code=process.returncode,
+        exit_code=process.exit_code,
         stdout=process.stdout,
         stderr=process.stderr,
     )

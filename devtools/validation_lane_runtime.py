@@ -6,6 +6,7 @@ import subprocess
 
 from devtools.authored_scenario_catalog import build_authored_scenario_catalog
 from devtools.lane_models import LaneEntry
+from polylogue.scenarios import resolve_execution_command, run_execution
 
 LANES: dict[str, LaneEntry] = build_authored_scenario_catalog().validation_lane_index()
 VALID_LANES = frozenset(LANES)
@@ -18,9 +19,9 @@ def parse_lane(lane_name: str) -> LaneEntry:
 
 
 def build_lane_command(lane: LaneEntry) -> list[str]:
-    if lane.command is None:
+    if lane.execution is None:
         raise ValueError(f"Lane {lane.name!r} is composite and has no direct command")
-    return lane.command
+    return list(resolve_execution_command(lane.execution))
 
 
 def print_lane(lane: LaneEntry, *, indent: str = "") -> None:
@@ -49,8 +50,8 @@ def run_lane(lane: LaneEntry) -> int:
     print()
 
     try:
-        result = subprocess.run(cmd, timeout=lane.timeout_s)
-        return result.returncode
+        result = run_execution(lane.execution, timeout=lane.timeout_s)
+        return result.exit_code
     except subprocess.TimeoutExpired:
         print(f"\nLane {lane.name!r} timed out after {lane.timeout_s}s")
         return 2

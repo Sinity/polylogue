@@ -112,10 +112,9 @@ def run_exercise(
     started = time.monotonic()
     env = dict(env_vars)
     env["POLYLOGUE_FORCE_PLAIN"] = "1"
-    args = exercise.invoke_args
 
     try:
-        cli_result = invoke_showcase_cli_fn(args, env=env, timeout=exercise.timeout_s)
+        cli_result = invoke_showcase_cli_fn(exercise.execution, env=env, timeout=exercise.timeout_s)
         output = cli_result.output
         exit_code = cli_result.exit_code
     except subprocess.TimeoutExpired:
