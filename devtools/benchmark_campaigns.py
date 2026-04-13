@@ -469,14 +469,7 @@ async def run_full_campaign(scale_level: str, output_dir: Path) -> list[Campaign
 
     return results
 
-
-CAMPAIGN_REGISTRY: dict[str, str] = {
-    campaign.name: campaign.description for campaign in SYNTHETIC_CAMPAIGNS.values()
-}
-
-
 __all__ = [
-    "CAMPAIGN_REGISTRY",
     "CampaignResult",
     "SYNTHETIC_CAMPAIGNS",
     "run_filter_scan_campaign",

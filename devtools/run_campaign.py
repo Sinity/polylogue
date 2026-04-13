@@ -54,7 +54,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 async def _run(args: argparse.Namespace) -> int:
     from devtools.benchmark_campaigns import (
-        CAMPAIGN_REGISTRY,
+        SYNTHETIC_CAMPAIGNS,
         run_full_campaign,
         run_synthetic_benchmark_campaign,
     )
@@ -67,8 +67,8 @@ async def _run(args: argparse.Namespace) -> int:
 
     if args.list_campaigns:
         print("Available campaigns:")
-        for name, desc in CAMPAIGN_REGISTRY.items():
-            print(f"  {name}: {desc}")
+        for campaign in SYNTHETIC_CAMPAIGNS.values():
+            print(f"  {campaign.name}: {campaign.description}")
         print("\nScale levels: small, medium, large, stretch")
         return 0
 
@@ -76,9 +76,9 @@ async def _run(args: argparse.Namespace) -> int:
         results = await run_full_campaign(args.scale, args.output)
     else:
         # Generate archive first
-        if args.campaign not in CAMPAIGN_REGISTRY:
+        if args.campaign not in SYNTHETIC_CAMPAIGNS:
             print(f"Unknown campaign: {args.campaign}")
-            print(f"Available: {', '.join(CAMPAIGN_REGISTRY)}")
+            print(f"Available: {', '.join(SYNTHETIC_CAMPAIGNS)}")
             return 1
 
         level = ScaleLevel(args.scale)
