@@ -15,6 +15,7 @@ import click
 
 from polylogue.cli.click_app import cli as root_cli
 from polylogue.cli.command_inventory import CommandPath, iter_command_paths
+from polylogue.scenarios import polylogue_execution
 from polylogue.showcase.dimensions import query_read, schema_exercise
 from polylogue.showcase.exercise_models import Exercise, Validation
 from polylogue.showcase.scenario_models import ExerciseScenario, compile_exercise_scenarios
@@ -94,7 +95,7 @@ def generate_filter_scenarios(cli_group: click.Group | None = None) -> tuple[Exe
                 name=f"gen-filter-{flag['name']}",
                 group="generated-filters",
                 description=f"Generated: filter with {flag['cli_name']}",
-                args=tuple(args),
+                execution=polylogue_execution(*args),
                 needs_data=True,
                 tier=dims.derived_tier,
                 env="any",
@@ -121,7 +122,7 @@ def generate_filter_scenarios(cli_group: click.Group | None = None) -> tuple[Exe
                 name=pair_name,
                 group="generated-filters",
                 description=f"Generated: {a['cli_name']} + {b['cli_name']}",
-                args=tuple(args),
+                execution=polylogue_execution(*args),
                 needs_data=True,
                 tier=dims.derived_tier,
                 env="any",
@@ -158,7 +159,7 @@ def generate_command_help_scenarios() -> tuple[ExerciseScenario, ...]:
                 name=command_path.help_exercise_name,
                 group="structural",
                 description=f"{display_name} help",
-                args=(*command_path.path, "--help"),
+                execution=polylogue_execution(*command_path.path, "--help"),
                 validation=Validation(stdout_contains=(f"polylogue {display_name}",)),
                 tier=0,
                 origin="generated.command-help",
@@ -351,7 +352,7 @@ def generate_json_contract_scenarios() -> tuple[ExerciseScenario, ...]:
                     name=str(spec.get("name", f"json-{'-'.join(cp.path)}")),
                     group="subcommands",
                     description=f"{cp.display_name} JSON contract",
-                    args=tuple(spec["args"]),
+                    execution=polylogue_execution(*spec["args"]),
                     validation=Validation(stdout_is_valid_json=True),
                     needs_data=bool(spec["needs_data"]),
                     tier=int(spec["tier"]),
@@ -432,7 +433,7 @@ def generate_format_scenarios() -> tuple[ExerciseScenario, ...]:
                     name=f"gen-fmt-{fmt}-{mode_name}",
                     group="generated-formats",
                     description=f"Generated: {fmt} format in {mode_name} mode",
-                    args=tuple(args),
+                    execution=polylogue_execution(*args),
                     validation=Validation(**validation_kwargs),
                     needs_data=True,
                     tier=dims.derived_tier,
@@ -468,7 +469,7 @@ def generate_schema_scenarios() -> tuple[ExerciseScenario, ...]:
             name="gen-schema-list",
             group="generated-schema",
             description="Generated: schema list --json returns valid JSON",
-            args=("schema", "list", "--json"),
+            execution=polylogue_execution("schema", "list", "--json"),
             validation=Validation(stdout_is_valid_json=True),
             tier=dims_smoke.derived_tier,
             env="any",
@@ -487,7 +488,7 @@ def generate_schema_scenarios() -> tuple[ExerciseScenario, ...]:
                 name=f"gen-schema-explain-{provider}",
                 group="generated-schema",
                 description=f"Generated: schema explain --provider {provider}",
-                args=("schema", "explain", "--provider", provider),
+                execution=polylogue_execution("schema", "explain", "--provider", provider),
                 tier=dims_explain.derived_tier,
                 env="any",
                 origin="generated.schema",
@@ -523,7 +524,7 @@ def generate_provider_feature_scenarios() -> tuple[ExerciseScenario, ...]:
                     name=f"gen-provider-{provider}-has-{feature}",
                     group="generated-filters",
                     description=f"Generated: {provider} has {feature}",
-                    args=("--provider", provider, flag, "count"),
+                    execution=polylogue_execution("--provider", provider, flag, "count"),
                     tier=1,
                     env="seeded",
                     needs_data=True,

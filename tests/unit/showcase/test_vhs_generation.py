@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from polylogue.scenarios import polylogue_execution
 from polylogue.showcase.exercises import Exercise, vhs_exercises
 from polylogue.showcase.vhs import generate_all_tapes, generate_tape
 
@@ -14,7 +15,7 @@ class TestGenerateTape:
             name="test-ex",
             group="structural",
             description="Test exercise",
-            args=["--help"],
+            execution=polylogue_execution("--help"),
             vhs_capture=True,
         )
         tape = generate_tape(ex)
@@ -25,7 +26,7 @@ class TestGenerateTape:
             name="test-ex",
             group="structural",
             description="Test exercise",
-            args=["--help"],
+            execution=polylogue_execution("--help"),
             vhs_capture=True,
         )
         tape = generate_tape(ex)
@@ -39,7 +40,7 @@ class TestGenerateTape:
             name="test-cmd",
             group="structural",
             description="Test",
-            args=["run", "--preview"],
+            execution=polylogue_execution("run", "--preview"),
             vhs_capture=True,
         )
         tape = generate_tape(ex)
@@ -51,7 +52,6 @@ class TestGenerateTape:
             name="default",
             group="structural",
             description="Default",
-            args=[],
             vhs_capture=True,
         )
         tape = generate_tape(ex)
@@ -62,7 +62,7 @@ class TestGenerateTape:
             name="custom",
             group="structural",
             description="Custom steps",
-            args=["--help"],
+            execution=polylogue_execution("--help"),
             vhs_capture=True,
             capture_steps=(
                 'Type "polylogue --help"',
@@ -86,7 +86,7 @@ class TestGenerateTape:
             name="dim",
             group="structural",
             description="Dimensions",
-            args=["--help"],
+            execution=polylogue_execution("--help"),
             vhs_capture=True,
         )
         tape = generate_tape(ex, font_size=22, padding=30)
@@ -98,7 +98,7 @@ class TestGenerateTape:
             name="desc",
             group="structural",
             description="My cool exercise",
-            args=["--help"],
+            execution=polylogue_execution("--help"),
             vhs_capture=True,
         )
         tape = generate_tape(ex)
@@ -133,7 +133,13 @@ class TestGenerateAllTapes:
 
     def test_writes_to_output_dir(self, tmp_path):
         exs = [
-            Exercise(name="write-test", group="g", description="W", vhs_capture=True, args=["--help"]),
+            Exercise(
+                name="write-test",
+                group="g",
+                description="W",
+                vhs_capture=True,
+                execution=polylogue_execution("--help"),
+            ),
         ]
         tapes = generate_all_tapes(exs, output_dir=tmp_path / "tapes")
         assert (tmp_path / "tapes" / "write-test.tape").exists()
