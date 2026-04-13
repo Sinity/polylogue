@@ -10,11 +10,13 @@ import click
 from polylogue.cli.commands.generate import generate_command
 from polylogue.cli.helpers import complete_configured_source_names, load_effective_config, resolve_sources
 from polylogue.cli.qa_capture import run_vhs_capture as _run_vhs_capture
+from polylogue.cli.qa_requests import QACaptureMode, build_qa_snapshot_plan
 from polylogue.cli.qa_snapshot import snapshot_results
 from polylogue.cli.types import AppEnv
 from polylogue.showcase.qa_runner_request import QAStage, build_qa_session_request
 
 _STAGE_CHOICES = click.Choice([stage.value for stage in QAStage])
+_CAPTURE_CHOICES = click.Choice([mode.value for mode in QACaptureMode])
 
 
 @click.group("audit", invoke_without_command=True)
@@ -38,7 +40,7 @@ _STAGE_CHOICES = click.Choice([stage.value for stage in QAStage])
 @click.option("--fail-fast", is_flag=True, help="Stop on first exercise failure")
 @click.option(
     "--capture",
-    type=click.Choice(["none", "vhs"], case_sensitive=False),
+    type=_CAPTURE_CHOICES,
     default="none",
     show_default=True,
     help="Capture mode for exercises",
@@ -108,13 +110,16 @@ def qa_command(
     ctx = click.get_current_context()
     if ctx.invoked_subcommand is not None:
         return
+    capture_mode = QACaptureMode(capture.lower())
+    snapshot_plan = build_qa_snapshot_plan(snapshot_label=snapshot_label, snapshot_from=snapshot_from)
+
     # --- Snapshot-from: archive only, no QA ---
-    if snapshot_from is not None:
+    if snapshot_plan and snapshot_plan.skips_qa and snapshot_plan.source_dir is not None:
         config = load_effective_config(env)
         root = report_dir or (config.archive_root / "qa" / "snapshots")
         snapshot_results(
-            snapshot_from,
-            label=snapshot_label or "snapshot",
+            snapshot_plan.source_dir,
+            label=snapshot_plan.label,
             output_root=root,
             json_output=json_output,
             env=env,
@@ -151,7 +156,7 @@ def qa_command(
     result = run_qa_session(request)
 
     # --- VHS capture ---
-    if capture.lower() == "vhs" and result.showcase_result and result.showcase_result.output_dir:
+    if capture_mode is QACaptureMode.VHS and result.showcase_result and result.showcase_result.output_dir:
         _run_vhs_capture(env, result.showcase_result, json_output)
 
     # --- Output ---
@@ -161,11 +166,11 @@ def qa_command(
         env.ui.console.print(format_qa_summary(result))
 
     # --- Snapshot ---
-    if snapshot_label is not None and result.report_dir:
+    if snapshot_plan and not snapshot_plan.skips_qa and result.report_dir:
         root = config.archive_root / "qa" / "snapshots"
         snapshot_results(
             result.report_dir,
-            label=snapshot_label,
+            label=snapshot_plan.label,
             output_root=root,
             json_output=json_output,
             env=env,
