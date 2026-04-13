@@ -14,6 +14,7 @@ from devtools.quality_registry import (
     ValidationLaneEntry,
     build_quality_registry,
 )
+from devtools.scenario_coverage import RuntimeScenarioCoverage, build_runtime_scenario_coverage
 
 
 def _format_code_list(items: tuple[str, ...]) -> str:
@@ -69,7 +70,33 @@ def _render_benchmark_table(entries: tuple[BenchmarkCampaignEntry, ...]) -> list
     return lines
 
 
-def build_document(registry: QualityRegistry) -> str:
+def _render_runtime_coverage_section(coverage: RuntimeScenarioCoverage) -> list[str]:
+    return [
+        "## Runtime Coverage",
+        "",
+        f"- covered runtime artifacts: `{len(coverage.artifacts)}`",
+        f"- covered runtime operations: `{len(coverage.operations)}`",
+        "- uncovered runtime artifacts: "
+        + ("—" if not coverage.uncovered_artifacts else ", ".join(f"`{name}`" for name in coverage.uncovered_artifacts)),
+        "- uncovered runtime operations: "
+        + (
+            "—"
+            if not coverage.uncovered_operations
+            else ", ".join(f"`{name}`" for name in coverage.uncovered_operations)
+        ),
+        "",
+        "Inspect the full authored map with:",
+        "",
+        "```bash",
+        control_plane_command("artifact-graph"),
+        control_plane_command("artifact-graph", "--json"),
+        "```",
+        "",
+    ]
+
+
+def build_document(registry: QualityRegistry, *, runtime_coverage: RuntimeScenarioCoverage | None = None) -> str:
+    coverage = runtime_coverage or build_runtime_scenario_coverage()
     parts = [
         "[← Back to README](../README.md)",
         "",
@@ -88,6 +115,7 @@ def build_document(registry: QualityRegistry) -> str:
         f"- benchmark campaigns: `{len(registry.benchmark_campaigns)}`",
         f"- synthetic benchmark campaigns: `{len(registry.synthetic_benchmark_campaigns)}`",
         "",
+        *_render_runtime_coverage_section(coverage),
         "## Common Commands",
         "",
         "Commands below assume the project devshell is already active. If not, prefix them with `nix develop -c`.",
