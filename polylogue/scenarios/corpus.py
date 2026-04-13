@@ -12,6 +12,7 @@ from .projections import ScenarioProjectionSource, ScenarioProjectionSourceKind
 from .specs import ScenarioSpec
 
 if TYPE_CHECKING:
+    from polylogue.schemas.packages import SchemaElementManifest, SchemaPackageCatalog, SchemaVersionPackage
     from polylogue.schemas.tooling_models import ClusterManifest, SchemaCluster
 
 
@@ -56,10 +57,16 @@ class CorpusProfile:
     """Observed or inferred corpus-profile metadata separate from generation controls."""
 
     family_ids: tuple[str, ...] = ()
+    profile_tokens: tuple[str, ...] = ()
     artifact_kind: str | None = None
+    anchor_kind: str | None = None
     observed_sample_count: int | None = None
+    observed_artifact_count: int | None = None
     observed_confidence: float | None = None
+    bundle_scope_count: int | None = None
     representative_paths: tuple[str, ...] = ()
+    first_seen: str | None = None
+    last_seen: str | None = None
 
     @property
     def primary_family_id(self) -> str | None:
@@ -69,10 +76,16 @@ class CorpusProfile:
     def is_empty(self) -> bool:
         return (
             not self.family_ids
+            and not self.profile_tokens
             and self.artifact_kind is None
+            and self.anchor_kind is None
             and self.observed_sample_count is None
+            and self.observed_artifact_count is None
             and self.observed_confidence is None
+            and self.bundle_scope_count is None
             and not self.representative_paths
+            and self.first_seen is None
+            and self.last_seen is None
         )
 
     def scope_token(self, *, element_kind: str | None = None) -> str:
@@ -85,24 +98,42 @@ class CorpusProfile:
     def from_payload(cls, payload: Mapping[str, object]) -> CorpusProfile:
         return cls(
             family_ids=_coerce_string_tuple(payload.get("family_ids")),
+            profile_tokens=_coerce_string_tuple(payload.get("profile_tokens")),
             artifact_kind=_coerce_optional_string(payload.get("artifact_kind")),
+            anchor_kind=_coerce_optional_string(payload.get("anchor_kind")),
             observed_sample_count=_coerce_optional_int(payload.get("observed_sample_count")),
+            observed_artifact_count=_coerce_optional_int(payload.get("observed_artifact_count")),
             observed_confidence=_coerce_optional_float(payload.get("observed_confidence")),
+            bundle_scope_count=_coerce_optional_int(payload.get("bundle_scope_count")),
             representative_paths=_coerce_string_tuple(payload.get("representative_paths")),
+            first_seen=_coerce_optional_string(payload.get("first_seen")),
+            last_seen=_coerce_optional_string(payload.get("last_seen")),
         )
 
     def to_payload(self) -> dict[str, Any]:
         payload: dict[str, Any] = {}
         if self.family_ids:
             payload["family_ids"] = list(self.family_ids)
+        if self.profile_tokens:
+            payload["profile_tokens"] = list(self.profile_tokens)
         if self.artifact_kind is not None:
             payload["artifact_kind"] = self.artifact_kind
+        if self.anchor_kind is not None:
+            payload["anchor_kind"] = self.anchor_kind
         if self.observed_sample_count is not None:
             payload["observed_sample_count"] = self.observed_sample_count
+        if self.observed_artifact_count is not None:
+            payload["observed_artifact_count"] = self.observed_artifact_count
         if self.observed_confidence is not None:
             payload["observed_confidence"] = self.observed_confidence
+        if self.bundle_scope_count is not None:
+            payload["bundle_scope_count"] = self.bundle_scope_count
         if self.representative_paths:
             payload["representative_paths"] = list(self.representative_paths)
+        if self.first_seen is not None:
+            payload["first_seen"] = self.first_seen
+        if self.last_seen is not None:
+            payload["last_seen"] = self.last_seen
         return payload
 
 
@@ -236,7 +267,10 @@ class CorpusSpec(ScenarioProjectionSource, ScenarioMetadata):
             if self.profile.observed_sample_count is not None
             else ""
         )
-        return f"Inferred synthetic corpus spec for {self.provider} {target}{observed}."
+        window = ""
+        if self.profile.first_seen is not None or self.profile.last_seen is not None:
+            window = f" window={self.profile.first_seen or '?'} -> {self.profile.last_seen or '?'}"
+        return f"Inferred synthetic corpus spec for {self.provider} {target}{observed}{window}."
 
     def with_generation_overrides(
         self,
@@ -574,25 +608,124 @@ def resolve_corpus_scenarios(
     return build_corpus_scenarios(specs, origin=origin, tags=tags)
 
 
+def _merge_string_tuples(*groups: tuple[str, ...]) -> tuple[str, ...]:
+    seen: set[str] = set()
+    merged: list[str] = []
+    for group in groups:
+        for item in group:
+            if not item or item in seen:
+                continue
+            seen.add(item)
+            merged.append(item)
+    return tuple(merged)
+
+
+def _catalog_package_for_version(
+    catalog: SchemaPackageCatalog | None,
+    package_version: str,
+) -> SchemaVersionPackage | None:
+    if catalog is None:
+        return None
+    return catalog.package(package_version)
+
+
+def _package_element(
+    package: SchemaVersionPackage | None,
+    element_kind: str | None,
+) -> SchemaElementManifest | None:
+    if package is None:
+        return None
+    return package.element(element_kind)
+
+
+def _profile_from_package(
+    package: SchemaVersionPackage | None,
+    *,
+    element_kind: str | None,
+) -> CorpusProfile:
+    element = _package_element(package, element_kind)
+    inferred_kind = (
+        element_kind
+        or (element.element_kind if element is not None else None)
+        or (package.default_element_kind if package is not None else None)
+    )
+    return CorpusProfile(
+        family_ids=tuple(element.profile_family_ids) if element is not None else tuple(package.profile_family_ids) if package else (),
+        profile_tokens=tuple(element.profile_tokens) if element is not None else (),
+        artifact_kind=inferred_kind,
+        anchor_kind=package.anchor_kind if package is not None else None,
+        observed_sample_count=element.sample_count if element is not None else package.sample_count if package is not None else None,
+        observed_artifact_count=(
+            (element.observed_artifact_count or element.artifact_count)
+            if element is not None
+            else None
+        ),
+        bundle_scope_count=element.bundle_scope_count if element is not None else package.bundle_scope_count if package else None,
+        representative_paths=(
+            tuple(element.representative_paths)
+            if element is not None
+            else tuple(package.representative_paths)
+            if package is not None
+            else ()
+        ),
+        first_seen=element.first_seen if element is not None else package.first_seen if package is not None else None,
+        last_seen=element.last_seen if element is not None else package.last_seen if package is not None else None,
+    )
+
+
+def _merge_corpus_profiles(*profiles: CorpusProfile) -> CorpusProfile:
+    merged = CorpusProfile()
+    for profile in profiles:
+        if profile.is_empty:
+            continue
+        merged = CorpusProfile(
+            family_ids=_merge_string_tuples(merged.family_ids, profile.family_ids),
+            profile_tokens=_merge_string_tuples(merged.profile_tokens, profile.profile_tokens),
+            artifact_kind=merged.artifact_kind or profile.artifact_kind,
+            anchor_kind=merged.anchor_kind or profile.anchor_kind,
+            observed_sample_count=merged.observed_sample_count or profile.observed_sample_count,
+            observed_artifact_count=merged.observed_artifact_count or profile.observed_artifact_count,
+            observed_confidence=merged.observed_confidence or profile.observed_confidence,
+            bundle_scope_count=merged.bundle_scope_count or profile.bundle_scope_count,
+            representative_paths=_merge_string_tuples(merged.representative_paths, profile.representative_paths),
+            first_seen=merged.first_seen or profile.first_seen,
+            last_seen=merged.last_seen or profile.last_seen,
+        )
+    return merged
+
+
 def _cluster_to_corpus_spec(
     cluster: SchemaCluster,
     *,
     provider: str,
     package_version: str,
     default_count: int,
+    catalog: SchemaPackageCatalog | None = None,
 ) -> CorpusSpec:
     observed_artifact_kind = cluster.artifact_kind if cluster.artifact_kind != "unspecified" else None
     metadata = _inferred_schema_metadata()
+    resolved_package_version = cluster.promoted_package_version or package_version
+    package_profile = _profile_from_package(
+        _catalog_package_for_version(catalog, resolved_package_version),
+        element_kind=observed_artifact_kind,
+    )
     return CorpusSpec(
         provider=provider,
-        package_version=package_version,
+        package_version=resolved_package_version,
         element_kind=observed_artifact_kind,
-        profile=CorpusProfile(
-            family_ids=(cluster.cluster_id,),
-            artifact_kind=observed_artifact_kind,
-            observed_sample_count=cluster.sample_count,
-            observed_confidence=cluster.confidence,
-            representative_paths=tuple(cluster.representative_paths),
+        profile=_merge_corpus_profiles(
+            package_profile,
+            CorpusProfile(
+                family_ids=(cluster.cluster_id,),
+                profile_tokens=tuple(cluster.profile_tokens),
+                artifact_kind=observed_artifact_kind,
+                observed_sample_count=cluster.sample_count,
+                observed_confidence=cluster.confidence,
+                bundle_scope_count=cluster.bundle_scope_count or None,
+                representative_paths=tuple(cluster.representative_paths),
+                first_seen=cluster.first_seen or None,
+                last_seen=cluster.last_seen or None,
+            ),
         ),
         count=max(1, min(cluster.sample_count, default_count)),
         messages_min=4,
@@ -613,6 +746,7 @@ def build_inferred_corpus_specs(
     manifest: ClusterManifest | None = None,
     sample_count: int = 0,
     default_count: int = 5,
+    catalog: SchemaPackageCatalog | None = None,
 ) -> tuple[CorpusSpec, ...]:
     metadata = _inferred_schema_metadata()
     if manifest is not None and manifest.clusters:
@@ -620,16 +754,25 @@ def build_inferred_corpus_specs(
             _cluster_to_corpus_spec(
                 cluster,
                 provider=provider,
-                package_version=cluster.promoted_package_version or package_version,
+                package_version=package_version,
                 default_count=default_count,
+                catalog=catalog,
             )
             for cluster in manifest.clusters
         )
+    package_profile = _profile_from_package(
+        _catalog_package_for_version(catalog, package_version),
+        element_kind=None,
+    )
     return (
         CorpusSpec(
             provider=provider,
             package_version=package_version,
-            profile=CorpusProfile(observed_sample_count=sample_count or None),
+            element_kind=package_profile.artifact_kind,
+            profile=_merge_corpus_profiles(
+                package_profile,
+                CorpusProfile(observed_sample_count=sample_count or None),
+            ),
             count=max(1, min(sample_count or 1, default_count)),
             messages_min=4,
             messages_max=16,

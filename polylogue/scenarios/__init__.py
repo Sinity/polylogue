@@ -1,6 +1,14 @@
 """Shared scenario models used across verification projections."""
 
 from .assertions import AssertionSpec
+from .cli_surfaces import (
+    CliSurfaceFamily,
+    CliSurfaceVariant,
+    CompiledCliSurface,
+    build_cli_surface_exercises,
+    build_cli_surface_live_variants,
+    build_cli_surface_memory_budget_variants,
+)
 from .corpus import (
     CorpusProfile,
     CorpusRequest,
@@ -37,11 +45,14 @@ from .metadata import (
     runtime_operation_target_names,
     runtime_path_target_names,
 )
+from .operational_surfaces import (
+    OPERATIONAL_SURFACE_FAMILIES,
+    build_live_operational_surface_lanes,
+    build_memory_budget_operational_surface_lanes,
+    build_operational_contract_surfaces,
+)
 from .product_surfaces import (
     PRODUCT_SURFACE_FAMILIES,
-    CompiledProductSurface,
-    ProductSurfaceFamily,
-    ProductSurfaceVariant,
     build_live_product_surface_lanes,
     build_product_contract_surfaces,
 )
@@ -66,7 +77,13 @@ __all__ = [
     "build_default_corpus_specs",
     "build_corpus_scenarios",
     "build_inferred_corpus_specs",
+    "build_cli_surface_exercises",
+    "build_cli_surface_live_variants",
+    "build_cli_surface_memory_budget_variants",
     "composite_execution",
+    "CliSurfaceFamily",
+    "CliSurfaceVariant",
+    "CompiledCliSurface",
     "devtools_execution",
     "flatten_corpus_specs",
     "memory_budget_execution",
@@ -78,17 +95,18 @@ __all__ = [
     "CorpusSourceKind",
     "CorpusScenario",
     "CorpusSpec",
-    "CompiledProductSurface",
     "compile_projection_entries",
     "dispatch_execution",
     "declared_operation_target_names",
     "ExecutableScenario",
     "ExecutionKind",
     "ExecutionSpec",
+    "build_operational_contract_surfaces",
+    "build_live_operational_surface_lanes",
+    "build_memory_budget_operational_surface_lanes",
+    "OPERATIONAL_SURFACE_FAMILIES",
     "PipelineProbeInputMode",
     "PipelineProbeRequest",
-    "ProductSurfaceFamily",
-    "ProductSurfaceVariant",
     "PRODUCT_SURFACE_FAMILIES",
     "ScenarioMetadata",
     "ScenarioProjectionEntry",
