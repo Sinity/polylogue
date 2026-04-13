@@ -46,6 +46,7 @@ async def test_run_synthetic_benchmark_campaign_preserves_scenario_metadata(monk
     result = await run_synthetic_benchmark_campaign("incremental-index", tmp_path / "benchmark.db")
 
     assert result.origin == "authored.synthetic-benchmark"
+    assert result.path_targets == []
     assert result.artifact_targets == ["message_fts"]
     assert result.operation_targets == ["index.message-fts-incremental"]
     assert result.tags == ["benchmark", "synthetic", "fts"]
