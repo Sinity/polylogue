@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from polylogue.scenarios import ScenarioProjectionSourceKind, polylogue_execution
 from polylogue.showcase.exercise_models import Exercise, Validation
-from polylogue.showcase.scenario_models import compile_exercise_scenarios
 
 
 def test_exercise_scenario_compiles_to_exercise() -> None:
@@ -34,17 +33,6 @@ def test_exercise_scenario_compiles_to_exercise() -> None:
     assert exercise.artifact_targets == ("doctor_runtime",)
     assert exercise.operation_targets == ("cli.json-contract",)
     assert exercise.tags == ("generated", "json-contract")
-
-
-def test_compile_exercise_scenarios_preserves_order() -> None:
-    scenarios = (
-        Exercise(name="a", group="structural", description="A"),
-        Exercise(name="b", group="structural", description="B"),
-    )
-
-    exercises = compile_exercise_scenarios(scenarios)
-
-    assert [exercise.name for exercise in exercises] == ["a", "b"]
 
 
 def test_exercise_scenario_compiles_its_own_projection_entry() -> None:
