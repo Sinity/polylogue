@@ -6,6 +6,7 @@ import json
 
 import pytest
 
+from polylogue.scenarios import CorpusSpec
 from polylogue.sources.parsers.chatgpt import _coerce_float, extract_messages_from_mapping
 from polylogue.sources.parsers.chatgpt import looks_like as chatgpt_looks_like
 from polylogue.sources.parsers.chatgpt import parse as chatgpt_parse
@@ -296,8 +297,17 @@ def test_chatgpt_parse_synthetic_simple():
     """Parse synthetic ChatGPT export."""
     from polylogue.schemas.synthetic import SyntheticCorpus
 
-    corpus = SyntheticCorpus.for_provider("chatgpt")
-    raw = corpus.generate(count=1, messages_per_conversation=range(3, 6), seed=42)[0]
+    raw = SyntheticCorpus.generate_for_spec(
+        CorpusSpec.for_provider(
+            "chatgpt",
+            count=1,
+            messages_min=3,
+            messages_max=5,
+            seed=42,
+            origin="generated.test-chatgpt-parser",
+            tags=("synthetic", "test", "chatgpt-parser"),
+        )
+    )[0]
     data = json.loads(raw) if isinstance(raw, bytes) else raw
 
     result = chatgpt_parse(data, "simple-test")
@@ -311,8 +321,17 @@ def test_chatgpt_parse_synthetic_branching():
     """Parse synthetic ChatGPT conversation with many messages (branching structure)."""
     from polylogue.schemas.synthetic import SyntheticCorpus
 
-    corpus = SyntheticCorpus.for_provider("chatgpt")
-    raw = corpus.generate(count=1, messages_per_conversation=range(12, 20), seed=99)[0]
+    raw = SyntheticCorpus.generate_for_spec(
+        CorpusSpec.for_provider(
+            "chatgpt",
+            count=1,
+            messages_min=12,
+            messages_max=19,
+            seed=99,
+            origin="generated.test-chatgpt-parser",
+            tags=("synthetic", "test", "chatgpt-parser"),
+        )
+    )[0]
     data = json.loads(raw) if isinstance(raw, bytes) else raw
 
     result = chatgpt_parse(data, "branching-test")

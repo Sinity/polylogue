@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 import pytest
 
+from polylogue.scenarios import CorpusSpec
 from polylogue.schemas import ValidationResult
 from polylogue.schemas.registry import SchemaRegistry
 from polylogue.schemas.synthetic import SyntheticCorpus
@@ -578,8 +579,15 @@ def test_verify_raw_corpus_reports_valid_synthetic_chatgpt(db_path, monkeypatch)
         lambda *args, **kwargs: _AlwaysValidValidator(),
     )
 
-    corpus = SyntheticCorpus.for_provider("chatgpt")
-    raw = corpus.generate(count=1, seed=42)[0]
+    raw = SyntheticCorpus.generate_for_spec(
+        CorpusSpec.for_provider(
+            "chatgpt",
+            count=1,
+            seed=42,
+            origin="generated.test-schema-validation",
+            tags=("synthetic", "test", "schema-validation"),
+        )
+    )[0]
     _insert_raw_record(
         db_path=db_path,
         raw_id="raw-chatgpt-1",
