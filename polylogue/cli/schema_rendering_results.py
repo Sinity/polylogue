@@ -15,7 +15,7 @@ def _render_corpus_spec_preview(*, corpus_specs, header: str) -> None:
         return
     click.echo(header)
     for spec in corpus_specs[:3]:
-        target = spec.profile_family_ids[0] if spec.profile_family_ids else (spec.element_kind or spec.artifact_kind or "default")
+        target = spec.profile.scope_token(element_kind=spec.element_kind)
         click.echo(
             f"    - {spec.provider}:{spec.package_version}:{target} "
             f"x{spec.count} messages={spec.messages_min}-{spec.messages_max}"
