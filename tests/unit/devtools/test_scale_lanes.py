@@ -43,11 +43,12 @@ class TestLaneParsing:
             parse_lane("nonexistent")
 
     def test_all_lanes_have_required_fields(self):
-        """Every lane config has non-empty description and pytest_args."""
+        """Every lane config has non-empty description and command."""
         for name, lane in LANES.items():
             assert lane.description, f"Lane {name!r} has empty description"
-            assert lane.pytest_args, f"Lane {name!r} has empty pytest_args"
+            assert lane.command, f"Lane {name!r} has empty command"
             assert lane.timeout_s > 0, f"Lane {name!r} has non-positive timeout"
+            assert lane.origin == "authored.scale-lane"
 
 
 class TestCommandConstruction:
