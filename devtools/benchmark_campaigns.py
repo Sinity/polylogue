@@ -10,12 +10,12 @@ from pathlib import Path
 
 from polylogue.scenarios import CorpusSourceKind, dispatch_execution
 
-from .authored_scenario_catalog import build_authored_scenario_catalog
+from .authored_scenario_catalog import get_authored_scenario_catalog
 from .benchmark_catalog import BenchmarkCampaignEntry
 from .synthetic_benchmark_runtime import CampaignResult, resolve_synthetic_benchmark_runner
 
 SYNTHETIC_CAMPAIGNS: dict[str, BenchmarkCampaignEntry] = (
-    build_authored_scenario_catalog().synthetic_benchmark_campaign_index()
+    get_authored_scenario_catalog().synthetic_benchmark_campaign_index()
 )
 
 async def run_synthetic_benchmark_campaign(name: str, db_path: Path) -> CampaignResult:

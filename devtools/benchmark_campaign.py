@@ -14,7 +14,7 @@ from typing import Any
 
 from polylogue.scenarios import ExecutionKind, pytest_execution, run_execution
 
-from .authored_scenario_catalog import build_authored_scenario_catalog
+from .authored_scenario_catalog import get_authored_scenario_catalog
 from .benchmark_catalog import BenchmarkCampaignEntry
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -22,7 +22,7 @@ ARTIFACT_DIR = Path(".local/benchmark-campaigns")
 STATUS_IGNORE_PREFIXES = (f"{ARTIFACT_DIR.as_posix()}/",)
 DEFAULT_WARN_PCT = 10.0
 DEFAULT_FAIL_PCT = 20.0
-CAMPAIGNS = build_authored_scenario_catalog().benchmark_campaign_index()
+CAMPAIGNS = get_authored_scenario_catalog().benchmark_campaign_index()
 
 
 @dataclass(frozen=True)
