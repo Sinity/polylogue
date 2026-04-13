@@ -18,7 +18,6 @@ from polylogue.cli.command_inventory import CommandPath, iter_command_paths
 from polylogue.scenarios import polylogue_execution
 from polylogue.showcase.dimensions import query_read, schema_exercise
 from polylogue.showcase.exercise_models import Exercise, Validation
-from polylogue.showcase.scenario_models import compile_exercise_scenarios
 
 
 def discover_filter_flags(cli_group: click.Group) -> list[dict[str, Any]]:
@@ -136,7 +135,7 @@ def generate_filter_scenarios(cli_group: click.Group | None = None) -> tuple[Exe
 
 def generate_filter_exercises(cli_group: click.Group | None = None) -> list[Exercise]:
     """Generate smoke and pairwise filter exercises from CLI flags."""
-    return list(compile_exercise_scenarios(generate_filter_scenarios(cli_group)))
+    return list(generate_filter_scenarios(cli_group))
 
 
 def inventory_command_paths() -> tuple[CommandPath, ...]:
@@ -172,7 +171,7 @@ def generate_command_help_scenarios() -> tuple[Exercise, ...]:
 
 def generate_command_help_exercises() -> list[Exercise]:
     """Generate tier-0 help exercises from the recursive Click command tree."""
-    return list(compile_exercise_scenarios(generate_command_help_scenarios()))
+    return list(generate_command_help_scenarios())
 
 
 def _has_json_flag(cmd: click.Command) -> bool:
@@ -180,179 +179,106 @@ def _has_json_flag(cmd: click.Command) -> bool:
     return any(isinstance(param, click.Option) and "--json" in param.opts for param in cmd.params)
 
 
-_JSON_CONTRACT_SPECS: tuple[dict[str, Any], ...] = (
-    {
-        "name": "json-doctor",
-        "path": ("doctor",),
-        "execution": polylogue_execution("doctor", "--json"),
-        "needs_data": False,
-        "tier": 0,
-        "env": "any",
-    },
-    {
-        "name": "json-doctor-action-event-preview",
-        "path": ("doctor",),
-        "execution": polylogue_execution(
-            "doctor",
-            "--json",
-            "--repair",
-            "--preview",
-            "--target",
-            "action_event_read_model",
-        ),
-        "needs_data": False,
-        "tier": 0,
-        "env": "any",
-        "path_targets": ["action-event-repair-loop"],
-        "artifact_targets": ["action_event_rows", "action_event_fts", "action_event_health"],
-        "operation_targets": ["project-action-event-health"],
-        "tags": ["maintenance", "action-events"],
-    },
-    {
-        "name": "json-doctor-session-products-preview",
-        "path": ("doctor",),
-        "execution": polylogue_execution(
-            "doctor",
-            "--json",
-            "--repair",
-            "--preview",
-            "--target",
-            "session_products",
-        ),
-        "needs_data": False,
-        "tier": 0,
-        "env": "any",
-        "path_targets": ["session-product-repair-loop"],
-        "artifact_targets": ["session_product_rows", "session_product_fts", "session_product_health"],
-        "operation_targets": ["project-session-product-health"],
-        "tags": ["maintenance", "session-products"],
-    },
-    {
-        "name": "json-tags",
-        "path": ("tags",),
-        "execution": polylogue_execution("tags", "--json"),
-        "needs_data": False,
-        "tier": 0,
-        "env": "any",
-    },
-    {
-        "name": "json-audit",
-        "path": ("audit",),
-        "execution": polylogue_execution("audit", "--only", "audit", "--json"),
-        "needs_data": False,
-        "tier": 0,
-        "env": "any",
-    },
-    {
-        "name": "json-schema-list",
-        "path": ("schema", "list"),
-        "execution": polylogue_execution("schema", "list", "--json"),
-        "needs_data": False,
-        "tier": 0,
-        "env": "any",
-    },
-    {
-        "name": "json-schema-audit",
-        "path": ("schema", "audit"),
-        "execution": polylogue_execution("schema", "audit", "--json"),
-        "needs_data": False,
-        "tier": 0,
-        "env": "any",
-    },
-    {
-        "name": "json-products-profiles",
-        "path": ("products", "profiles"),
-        "execution": polylogue_execution("products", "profiles", "--json"),
-        "needs_data": True,
-        "tier": 1,
-        "env": "seeded",
-        "tags": ["products", "session-profiles"],
-    },
-    {
-        "name": "json-products-work-events",
-        "path": ("products", "work-events"),
-        "execution": polylogue_execution("products", "work-events", "--json"),
-        "needs_data": True,
-        "tier": 1,
-        "env": "seeded",
-        "tags": ["products", "work-events"],
-    },
-    {
-        "name": "json-products-phases",
-        "path": ("products", "phases"),
-        "execution": polylogue_execution("products", "phases", "--json"),
-        "needs_data": True,
-        "tier": 1,
-        "env": "seeded",
-        "tags": ["products", "phases"],
-    },
-    {
-        "name": "json-products-threads",
-        "path": ("products", "threads"),
-        "execution": polylogue_execution("products", "threads", "--json"),
-        "needs_data": True,
-        "tier": 1,
-        "env": "seeded",
-        "tags": ["products", "threads"],
-    },
-    {
-        "name": "json-products-tags",
-        "path": ("products", "tags"),
-        "execution": polylogue_execution("products", "tags", "--json"),
-        "needs_data": True,
-        "tier": 1,
-        "env": "seeded",
-        "tags": ["products", "tags"],
-    },
-    {
-        "name": "json-products-day-summaries",
-        "path": ("products", "day-summaries"),
-        "execution": polylogue_execution("products", "day-summaries", "--json"),
-        "needs_data": True,
-        "tier": 1,
-        "env": "seeded",
-        "tags": ["products", "day-summaries"],
-    },
-    {
-        "name": "json-products-week-summaries",
-        "path": ("products", "week-summaries"),
-        "execution": polylogue_execution("products", "week-summaries", "--json"),
-        "needs_data": True,
-        "tier": 1,
-        "env": "seeded",
-        "tags": ["products", "week-summaries"],
-    },
-    {
-        "name": "json-products-analytics",
-        "path": ("products", "analytics"),
-        "execution": polylogue_execution("products", "analytics", "--json"),
-        "needs_data": True,
-        "tier": 1,
-        "env": "seeded",
-        "tags": ["products", "analytics"],
-    },
-    {
-        "name": "json-run-embed",
-        "path": ("run", "embed"),
-        "execution": polylogue_execution("run", "embed", "--stats", "--json"),
-        "needs_data": True,
-        "tier": 1,
-        "env": "seeded",
-    },
+def _json_contract_scenario(
+    name: str,
+    description: str,
+    *args: str,
+    needs_data: bool,
+    tier: int,
+    env: str,
+    path_targets: tuple[str, ...] = (),
+    artifact_targets: tuple[str, ...] = (),
+    operation_targets: tuple[str, ...] = (),
+    tags: tuple[str, ...] = (),
+) -> Exercise:
+    return Exercise(
+        name=name,
+        group="subcommands",
+        description=description,
+        execution=polylogue_execution(*args),
+        validation=Validation(stdout_is_valid_json=True),
+        needs_data=needs_data,
+        tier=tier,
+        env=env,
+        output_ext=".json",
+        artifact_class="json",
+        origin="generated.json-contract",
+        path_targets=path_targets,
+        artifact_targets=artifact_targets,
+        operation_targets=("cli.json-contract", *operation_targets),
+        tags=("generated", "json-contract", *tags),
+    )
+
+
+JSON_CONTRACT_SCENARIOS: tuple[Exercise, ...] = (
+    _json_contract_scenario("json-doctor", "doctor JSON contract", "doctor", "--json", needs_data=False, tier=0, env="any"),
+    _json_contract_scenario(
+        "json-doctor-action-event-preview",
+        "doctor JSON contract",
+        "doctor",
+        "--json",
+        "--repair",
+        "--preview",
+        "--target",
+        "action_event_read_model",
+        needs_data=False,
+        tier=0,
+        env="any",
+        path_targets=("action-event-repair-loop",),
+        artifact_targets=("action_event_rows", "action_event_fts", "action_event_health"),
+        operation_targets=("project-action-event-health",),
+        tags=("maintenance", "action-events"),
+    ),
+    _json_contract_scenario(
+        "json-doctor-session-products-preview",
+        "doctor JSON contract",
+        "doctor",
+        "--json",
+        "--repair",
+        "--preview",
+        "--target",
+        "session_products",
+        needs_data=False,
+        tier=0,
+        env="any",
+        path_targets=("session-product-repair-loop",),
+        artifact_targets=("session_product_rows", "session_product_fts", "session_product_health"),
+        operation_targets=("project-session-product-health",),
+        tags=("maintenance", "session-products"),
+    ),
+    _json_contract_scenario("json-tags", "tags JSON contract", "tags", "--json", needs_data=False, tier=0, env="any"),
+    _json_contract_scenario(
+        "json-audit",
+        "audit JSON contract",
+        "audit",
+        "--only",
+        "audit",
+        "--json",
+        needs_data=False,
+        tier=0,
+        env="any",
+    ),
+    _json_contract_scenario("json-schema-list", "schema list JSON contract", "schema", "list", "--json", needs_data=False, tier=0, env="any"),
+    _json_contract_scenario("json-schema-audit", "schema audit JSON contract", "schema", "audit", "--json", needs_data=False, tier=0, env="any"),
+    _json_contract_scenario("json-products-profiles", "products profiles JSON contract", "products", "profiles", "--json", needs_data=True, tier=1, env="seeded", tags=("products", "session-profiles")),
+    _json_contract_scenario("json-products-work-events", "products work-events JSON contract", "products", "work-events", "--json", needs_data=True, tier=1, env="seeded", tags=("products", "work-events")),
+    _json_contract_scenario("json-products-phases", "products phases JSON contract", "products", "phases", "--json", needs_data=True, tier=1, env="seeded", tags=("products", "phases")),
+    _json_contract_scenario("json-products-threads", "products threads JSON contract", "products", "threads", "--json", needs_data=True, tier=1, env="seeded", tags=("products", "threads")),
+    _json_contract_scenario("json-products-tags", "products tags JSON contract", "products", "tags", "--json", needs_data=True, tier=1, env="seeded", tags=("products", "tags")),
+    _json_contract_scenario("json-products-day-summaries", "products day-summaries JSON contract", "products", "day-summaries", "--json", needs_data=True, tier=1, env="seeded", tags=("products", "day-summaries")),
+    _json_contract_scenario("json-products-week-summaries", "products week-summaries JSON contract", "products", "week-summaries", "--json", needs_data=True, tier=1, env="seeded", tags=("products", "week-summaries")),
+    _json_contract_scenario("json-products-analytics", "products analytics JSON contract", "products", "analytics", "--json", needs_data=True, tier=1, env="seeded", tags=("products", "analytics")),
+    _json_contract_scenario("json-run-embed", "run embed JSON contract", "run", "embed", "--stats", "--json", needs_data=True, tier=1, env="seeded"),
 )
 
 
-def _coerce_optional_string_tuple(value: object) -> tuple[str, ...]:
-    if isinstance(value, (list, tuple)) and all(isinstance(item, str) for item in value):
-        return tuple(value)
-    return ()
-
-
-def _json_contract_specs_by_path() -> dict[tuple[str, ...], tuple[dict[str, Any], ...]]:
-    specs_by_path: dict[tuple[str, ...], list[dict[str, Any]]] = {}
-    for spec in _JSON_CONTRACT_SPECS:
-        specs_by_path.setdefault(tuple(spec["path"]), []).append(spec)
-    return {path: tuple(specs) for path, specs in specs_by_path.items()}
+def _command_path_from_polylogue_args(args: tuple[str, ...]) -> tuple[str, ...]:
+    path: list[str] = []
+    for item in args:
+        if item.startswith("-"):
+            break
+        path.append(item)
+    return tuple(path)
 
 
 def json_contract_exercise_names() -> set[str]:
@@ -362,41 +288,21 @@ def json_contract_exercise_names() -> set[str]:
 
 def generate_json_contract_scenarios() -> tuple[Exercise, ...]:
     """Generate JSON contract scenarios for curated runnable commands."""
-    scenarios: list[Exercise] = []
-    by_path = _json_contract_specs_by_path()
-    for cp in inventory_command_paths():
-        specs = by_path.get(tuple(cp.path))
-        if specs is None or not _has_json_flag(cp.command):
-            continue
-        for spec in specs:
-            scenarios.append(
-                Exercise(
-                    name=str(spec.get("name", f"json-{'-'.join(cp.path)}")),
-                    group="subcommands",
-                    description=f"{cp.display_name} JSON contract",
-                    execution=spec["execution"],
-                    validation=Validation(stdout_is_valid_json=True),
-                    needs_data=bool(spec["needs_data"]),
-                    tier=int(spec["tier"]),
-                    env=str(spec["env"]),
-                    output_ext=".json",
-                    artifact_class="json",
-                    origin="generated.json-contract",
-                    path_targets=_coerce_optional_string_tuple(spec.get("path_targets")),
-                    artifact_targets=_coerce_optional_string_tuple(spec.get("artifact_targets")),
-                    operation_targets=(
-                        "cli.json-contract",
-                        *_coerce_optional_string_tuple(spec.get("operation_targets")),
-                    ),
-                    tags=("generated", "json-contract", *_coerce_optional_string_tuple(spec.get("tags"))),
-                )
-            )
-    return tuple(scenarios)
+    available_paths = {
+        tuple(command_path.path)
+        for command_path in inventory_command_paths()
+        if _has_json_flag(command_path.command)
+    }
+    return tuple(
+        scenario
+        for scenario in JSON_CONTRACT_SCENARIOS
+        if _command_path_from_polylogue_args(scenario.execution.polylogue_args) in available_paths
+    )
 
 
 def generate_json_contract_exercises() -> list[Exercise]:
     """Generate JSON contract exercises for curated runnable commands."""
-    return list(compile_exercise_scenarios(generate_json_contract_scenarios()))
+    return list(generate_json_contract_scenarios())
 
 
 # ---------------------------------------------------------------------------
@@ -470,7 +376,7 @@ def generate_format_scenarios() -> tuple[Exercise, ...]:
 
 def generate_format_exercises() -> list[Exercise]:
     """Generate format × mode exercises from the format registry."""
-    return list(compile_exercise_scenarios(generate_format_scenarios()))
+    return list(generate_format_scenarios())
 
 
 # ---------------------------------------------------------------------------
@@ -523,7 +429,7 @@ def generate_schema_scenarios() -> tuple[Exercise, ...]:
 
 def generate_schema_exercises() -> list[Exercise]:
     """Generate schema verification exercises."""
-    return list(compile_exercise_scenarios(generate_schema_scenarios()))
+    return list(generate_schema_scenarios())
 
 
 _PROVIDER_FEATURES: dict[str, set[str]] = {
@@ -559,7 +465,7 @@ def generate_provider_feature_scenarios() -> tuple[Exercise, ...]:
 
 def generate_provider_feature_exercises() -> list[Exercise]:
     """Generate provider × content-type cross-product exercises."""
-    return list(compile_exercise_scenarios(generate_provider_feature_scenarios()))
+    return list(generate_provider_feature_scenarios())
 
 
 def generate_qa_extra_scenarios() -> tuple[Exercise, ...]:
@@ -585,7 +491,7 @@ def generate_all_scenarios(cli_group: click.Group | None = None) -> tuple[Exerci
 
 def generate_all_exercises(cli_group: click.Group | None = None) -> list[Exercise]:
     """Generate all exercise categories."""
-    return list(compile_exercise_scenarios(generate_all_scenarios(cli_group)))
+    return list(generate_all_scenarios(cli_group))
 
 
 __all__ = [
