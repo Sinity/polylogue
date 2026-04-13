@@ -98,10 +98,10 @@ def _do_corpus(
         messages_max=15,
         seed=42,
     )
+    written_batches = SyntheticCorpus.write_specs_artifacts(specs, out, prefix="sample")
 
-    for spec in specs:
+    for spec, written in zip(specs, written_batches, strict=True):
         provider_dir = out / spec.provider
-        written = SyntheticCorpus.write_spec_artifacts(spec, provider_dir, prefix="sample")
 
         env.ui.console.print(
             f"  {spec.provider}: {written.batch.report.generated_count} files "
@@ -157,10 +157,9 @@ def _do_seed(
         messages_max=19,
         seed=42,
     )
+    SyntheticCorpus.write_specs_artifacts(specs, fixture_dir, prefix="demo")
     for spec in specs:
         provider_dir = fixture_dir / spec.provider
-        SyntheticCorpus.write_spec_artifacts(spec, provider_dir, prefix="demo")
-
         sources.append(Source(name=spec.provider, path=provider_dir))
         inbox_provider_dir = inbox_dir / spec.provider
         inbox_provider_dir.mkdir(parents=True, exist_ok=True)

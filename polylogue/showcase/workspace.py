@@ -112,9 +112,7 @@ def generate_synthetic_fixtures_from_specs(
     from polylogue.schemas.synthetic import SyntheticCorpus
 
     fixture_dir.mkdir(parents=True, exist_ok=True)
-    for spec in corpus_specs:
-        provider_dir = fixture_dir / spec.provider
-        SyntheticCorpus.write_spec_artifacts(spec, provider_dir, prefix="showcase")
+    SyntheticCorpus.write_specs_artifacts(corpus_specs, fixture_dir, prefix="showcase")
 
 
 def mirror_fixtures_to_inbox(fixture_dir: Path, inbox_dir: Path) -> None:
