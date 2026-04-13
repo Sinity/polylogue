@@ -9,14 +9,13 @@ from polylogue.showcase.workspace import override_workspace_env
 def generate_extra_exercises() -> list:
     """Generate dynamic exercises from CLI introspection and schema catalog."""
     from polylogue.showcase.generators import (
-        generate_format_exercises,
-        generate_schema_exercises,
+        generate_format_scenarios,
+        generate_schema_scenarios,
     )
+    from polylogue.showcase.scenario_models import compile_exercise_scenarios
 
-    exercises = []
-    exercises.extend(generate_schema_exercises())
-    exercises.extend(generate_format_exercises())
-    return exercises
+    scenarios = generate_schema_scenarios() + generate_format_scenarios()
+    return list(compile_exercise_scenarios(scenarios))
 
 
 def populate_proof(result: QAResult, *, workspace_env: dict[str, str] | None) -> None:

@@ -7,6 +7,10 @@ from polylogue.scenarios import (
     ScenarioProjectionSourceKind,
 )
 from polylogue.showcase.exercises import EXERCISE_SCENARIOS
+from polylogue.showcase.generators import (
+    generate_format_scenarios,
+    generate_schema_scenarios,
+)
 
 from .benchmark_scenario_catalog import BENCHMARK_CAMPAIGNS
 from .synthetic_benchmark_catalog import SYNTHETIC_BENCHMARK_SCENARIOS
@@ -22,6 +26,18 @@ def build_scenario_projection_entries() -> tuple[ScenarioProjectionEntry, ...]:
         )
         for scenario in EXERCISE_SCENARIOS
     ]
+    entries.extend(
+        ScenarioProjectionEntry.from_object(
+            source_kind=ScenarioProjectionSourceKind.EXERCISE,
+            name=scenario.scenario_id,
+            description=scenario.description,
+            obj=scenario,
+        )
+        for scenario in (
+            *generate_schema_scenarios(),
+            *generate_format_scenarios(),
+        )
+    )
     entries.extend(
         ScenarioProjectionEntry.from_object(
             source_kind=ScenarioProjectionSourceKind.BENCHMARK_CAMPAIGN,

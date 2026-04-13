@@ -80,24 +80,26 @@ def _make_flag_args(flag: dict[str, Any]) -> list[str]:
     return [cli_name]
 
 
-def generate_filter_exercises(cli_group: click.Group) -> list[Exercise]:
-    """Generate smoke and pairwise filter exercises from CLI flags."""
-    flags = discover_filter_flags(cli_group)
-    exercises: list[Exercise] = []
+def generate_filter_scenarios(cli_group: click.Group | None = None) -> tuple[ExerciseScenario, ...]:
+    """Generate smoke and pairwise filter scenarios from CLI flags."""
+    flags = discover_filter_flags(cli_group or root_cli)
+    scenarios: list[ExerciseScenario] = []
 
     # Individual smoke: each flag alone
     for flag in flags:
         dims = query_read(complexity="basic")
         args = _make_flag_args(flag) + ["list", "-n", "3"]
-        exercises.append(
-            Exercise(
-                name=f"gen-filter-{flag['name']}",
+        scenarios.append(
+            ExerciseScenario(
+                scenario_id=f"gen-filter-{flag['name']}",
                 group="generated-filters",
                 description=f"Generated: filter with {flag['cli_name']}",
-                args=args,
+                args=tuple(args),
                 needs_data=True,
                 tier=dims.derived_tier,
                 env="any",
+                origin="generated.filters",
+                tags=("generated", "filters"),
             )
         )
 
@@ -114,19 +116,26 @@ def generate_filter_exercises(cli_group: click.Group) -> list[Exercise]:
         dims = query_read(complexity="combinatorial")
         args = _make_flag_args(a) + _make_flag_args(b) + ["list", "-n", "3"]
         pair_name = f"gen-filter-{a['name']}+{b['name']}"
-        exercises.append(
-            Exercise(
-                name=pair_name,
+        scenarios.append(
+            ExerciseScenario(
+                scenario_id=pair_name,
                 group="generated-filters",
                 description=f"Generated: {a['cli_name']} + {b['cli_name']}",
-                args=args,
+                args=tuple(args),
                 needs_data=True,
                 tier=dims.derived_tier,
                 env="any",
+                origin="generated.filters",
+                tags=("generated", "filters", "pairwise"),
             )
         )
 
-    return exercises
+    return tuple(scenarios)
+
+
+def generate_filter_exercises(cli_group: click.Group | None = None) -> list[Exercise]:
+    """Generate smoke and pairwise filter exercises from CLI flags."""
+    return list(compile_exercise_scenarios(generate_filter_scenarios(cli_group)))
 
 
 def inventory_command_paths() -> tuple[CommandPath, ...]:
@@ -388,9 +397,9 @@ def _is_valid_json_check(output: str, _exit_code: int) -> str | None:
     return None
 
 
-def generate_format_exercises() -> list[Exercise]:
-    """Generate format × mode exercises from the format registry."""
-    exercises: list[Exercise] = []
+def generate_format_scenarios() -> tuple[ExerciseScenario, ...]:
+    """Generate format × mode scenarios from the format registry."""
+    scenarios: list[ExerciseScenario] = []
 
     modes = [
         ("latest", ["--latest"]),
@@ -415,20 +424,27 @@ def generate_format_exercises() -> list[Exercise]:
             if spec["contains"] and mode_name == "latest":
                 validation_kwargs["stdout_contains"] = tuple(spec["contains"])
 
-            exercises.append(
-                Exercise(
-                    name=f"gen-fmt-{fmt}-{mode_name}",
+            scenarios.append(
+                ExerciseScenario(
+                    scenario_id=f"gen-fmt-{fmt}-{mode_name}",
                     group="generated-formats",
                     description=f"Generated: {fmt} format in {mode_name} mode",
-                    args=args,
+                    args=tuple(args),
                     validation=Validation(**validation_kwargs),
                     needs_data=True,
                     tier=dims.derived_tier,
                     env="any",
+                    origin="generated.formats",
+                    tags=("generated", "formats", fmt, mode_name),
                 )
             )
 
-    return exercises
+    return tuple(scenarios)
+
+
+def generate_format_exercises() -> list[Exercise]:
+    """Generate format × mode exercises from the format registry."""
+    return list(compile_exercise_scenarios(generate_format_scenarios()))
 
 
 # ---------------------------------------------------------------------------
@@ -436,42 +452,52 @@ def generate_format_exercises() -> list[Exercise]:
 # ---------------------------------------------------------------------------
 
 
-def generate_schema_exercises() -> list[Exercise]:
-    """Generate schema verification exercises."""
+def generate_schema_scenarios() -> tuple[ExerciseScenario, ...]:
+    """Generate schema verification scenarios."""
     from polylogue.schemas.observation import PROVIDERS
 
-    exercises: list[Exercise] = []
+    scenarios: list[ExerciseScenario] = []
 
     # Tier 0: schema list returns valid JSON
     dims_smoke = schema_exercise(complexity="smoke", io_mode="read")
-    exercises.append(
-        Exercise(
-            name="gen-schema-list",
+    scenarios.append(
+        ExerciseScenario(
+            scenario_id="gen-schema-list",
             group="generated-schema",
             description="Generated: schema list --json returns valid JSON",
-            args=["schema", "list", "--json"],
+            args=("schema", "list", "--json"),
             validation=Validation(stdout_is_valid_json=True),
             tier=dims_smoke.derived_tier,
             env="any",
             output_ext=".json",
+            artifact_class="json",
+            origin="generated.schema",
+            tags=("generated", "schema", "list"),
         )
     )
 
     # Tier 1: schema explain for each provider
     dims_explain = schema_exercise(complexity="basic", io_mode="read")
     for provider in PROVIDERS:
-        exercises.append(
-            Exercise(
-                name=f"gen-schema-explain-{provider}",
+        scenarios.append(
+            ExerciseScenario(
+                scenario_id=f"gen-schema-explain-{provider}",
                 group="generated-schema",
                 description=f"Generated: schema explain --provider {provider}",
-                args=["schema", "explain", "--provider", provider],
+                args=("schema", "explain", "--provider", provider),
                 tier=dims_explain.derived_tier,
                 env="any",
+                origin="generated.schema",
+                tags=("generated", "schema", provider),
             )
         )
 
-    return exercises
+    return tuple(scenarios)
+
+
+def generate_schema_exercises() -> list[Exercise]:
+    """Generate schema verification exercises."""
+    return list(compile_exercise_scenarios(generate_schema_scenarios()))
 
 
 _PROVIDER_FEATURES: dict[str, set[str]] = {
@@ -483,51 +509,68 @@ _PROVIDER_FEATURES: dict[str, set[str]] = {
 }
 
 
-def generate_provider_feature_exercises() -> list[Exercise]:
-    """Generate provider × content-type cross-product exercises."""
-    exercises: list[Exercise] = []
+def generate_provider_feature_scenarios() -> tuple[ExerciseScenario, ...]:
+    """Generate provider × content-type cross-product scenarios."""
+    scenarios: list[ExerciseScenario] = []
     for provider, features in _PROVIDER_FEATURES.items():
         for feature in sorted(features):
             flag = f"--has-{feature}"
-            exercises.append(
-                Exercise(
-                    name=f"gen-provider-{provider}-has-{feature}",
+            scenarios.append(
+                ExerciseScenario(
+                    scenario_id=f"gen-provider-{provider}-has-{feature}",
                     group="generated-filters",
                     description=f"Generated: {provider} has {feature}",
-                    args=["--provider", provider, flag, "count"],
+                    args=("--provider", provider, flag, "count"),
                     tier=1,
                     env="seeded",
                     needs_data=True,
+                    origin="generated.provider-features",
+                    tags=("generated", "filters", "provider-features", provider, feature),
                 )
             )
-    return exercises
+    return tuple(scenarios)
+
+
+def generate_provider_feature_exercises() -> list[Exercise]:
+    """Generate provider × content-type cross-product exercises."""
+    return list(compile_exercise_scenarios(generate_provider_feature_scenarios()))
+
+
+def generate_all_scenarios(cli_group: click.Group | None = None) -> tuple[ExerciseScenario, ...]:
+    """Generate all scenario categories."""
+    scenarios: list[ExerciseScenario] = []
+    if cli_group is not None:
+        scenarios.extend(generate_filter_scenarios(cli_group))
+    scenarios.extend(generate_command_help_scenarios())
+    scenarios.extend(generate_json_contract_scenarios())
+    scenarios.extend(generate_format_scenarios())
+    scenarios.extend(generate_schema_scenarios())
+    scenarios.extend(generate_provider_feature_scenarios())
+    return tuple(scenarios)
 
 
 def generate_all_exercises(cli_group: click.Group | None = None) -> list[Exercise]:
     """Generate all exercise categories."""
-    exercises: list[Exercise] = []
-    if cli_group is not None:
-        exercises.extend(generate_filter_exercises(cli_group))
-    exercises.extend(generate_command_help_exercises())
-    exercises.extend(generate_json_contract_exercises())
-    exercises.extend(generate_format_exercises())
-    exercises.extend(generate_schema_exercises())
-    exercises.extend(generate_provider_feature_exercises())
-    return exercises
+    return list(compile_exercise_scenarios(generate_all_scenarios(cli_group)))
 
 
 __all__ = [
     "discover_filter_flags",
     "generate_all_exercises",
+    "generate_all_scenarios",
     "generate_filter_exercises",
+    "generate_filter_scenarios",
     "generate_format_exercises",
+    "generate_format_scenarios",
     "generate_provider_feature_exercises",
+    "generate_provider_feature_scenarios",
     "command_help_exercise_names",
     "generate_command_help_exercises",
     "generate_command_help_scenarios",
     "generate_json_contract_exercises",
     "generate_json_contract_scenarios",
     "generate_schema_exercises",
+    "generate_schema_scenarios",
     "inventory_command_paths",
     "json_contract_exercise_names",
 ]
