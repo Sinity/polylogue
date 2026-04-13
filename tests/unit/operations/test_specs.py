@@ -13,10 +13,21 @@ def test_runtime_operation_catalog_covers_the_two_proven_paths() -> None:
     assert set(specs) == {
         "plan-validation-backlog",
         "plan-parse-backlog",
+        "index-message-fts",
         "materialize-action-events",
+        "query-conversations",
         "project-action-event-health",
         "materialize-session-products",
         "project-session-product-health",
+        "project-archive-health",
+        "query-session-profiles",
+        "query-session-work-events",
+        "query-session-phases",
+        "query-work-threads",
+        "query-session-tag-rollups",
+        "query-day-session-summaries",
+        "query-week-session-summaries",
+        "query-provider-analytics",
     }
     assert specs["plan-validation-backlog"].kind is OperationKind.PLANNING
     assert specs["plan-validation-backlog"].path_targets == ("raw-reparse-loop",)
@@ -26,10 +37,16 @@ def test_runtime_operation_catalog_covers_the_two_proven_paths() -> None:
     assert specs["materialize-action-events"].path_targets == ("action-event-repair-loop",)
     assert specs["materialize-session-products"].kind is OperationKind.MATERIALIZATION
     assert specs["materialize-session-products"].mutates_state is True
-    assert specs["materialize-session-products"].produces == ("session_product_rows", "session_product_fts")
+    assert "session_product_rows" in specs["materialize-session-products"].produces
+    assert "session_product_fts" in specs["materialize-session-products"].produces
+    assert "session_profile_rows" in specs["materialize-session-products"].produces
+    assert "work_thread_fts" in specs["materialize-session-products"].produces
     assert specs["materialize-session-products"].path_targets == ("session-product-repair-loop",)
     assert specs["project-action-event-health"].previewable is True
     assert specs["project-session-product-health"].previewable is True
+    assert specs["query-session-profiles"].path_targets == ("session-profile-query-loop",)
+    assert specs["query-session-work-events"].path_targets == ("session-work-event-query-loop",)
+    assert specs["query-provider-analytics"].path_targets == ("provider-analytics-query-loop",)
 
 
 def test_runtime_operation_catalog_has_declared_surfaces_and_code_refs() -> None:

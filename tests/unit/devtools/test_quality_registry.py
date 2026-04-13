@@ -84,13 +84,23 @@ def test_build_quality_registry_exposes_live_catalogs() -> None:
         entry for entry in registry.synthetic_benchmark_campaigns if entry.name == "session-product-materialization"
     )
     assert session_products.origin == "authored.synthetic-benchmark"
-    assert session_products.artifact_targets == (
-        "session_product_source_conversations",
-        "session_product_rows",
-        "session_product_fts",
-    )
+    assert "session_product_source_conversations" in session_products.artifact_targets
+    assert "session_profile_rows" in session_products.artifact_targets
+    assert "session_profile_merged_fts" in session_products.artifact_targets
+    assert "session_work_event_rows" in session_products.artifact_targets
+    assert "work_thread_fts" in session_products.artifact_targets
+    assert "session_product_rows" in session_products.artifact_targets
+    assert "session_product_fts" in session_products.artifact_targets
     assert session_products.operation_targets == ("materialize-session-products",)
     assert session_products.tags == ("benchmark", "synthetic", "session-products")
+    product_profiles = next(entry for entry in registry.catalog.exercise_scenarios if entry.name == "json-products-profiles")
+    assert product_profiles.path_targets == ("session-profile-query-loop",)
+    assert product_profiles.artifact_targets == ("session_profile_results",)
+    assert product_profiles.operation_targets == ("cli.json-contract", "query-session-profiles")
+    product_threads = next(entry for entry in registry.catalog.exercise_scenarios if entry.name == "json-products-threads")
+    assert product_threads.path_targets == ("work-thread-query-loop",)
+    assert product_threads.artifact_targets == ("work_thread_results",)
+    assert product_threads.operation_targets == ("cli.json-contract", "query-work-threads")
     action_event_preview = next(
         entry for entry in registry.scenario_projections if entry.name == "json-doctor-action-event-preview"
     )
