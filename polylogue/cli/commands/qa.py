@@ -12,6 +12,7 @@ from polylogue.cli.helpers import complete_configured_source_names, load_effecti
 from polylogue.cli.qa_capture import run_vhs_capture as _run_vhs_capture
 from polylogue.cli.qa_snapshot import snapshot_results
 from polylogue.cli.types import AppEnv
+from polylogue.showcase.qa_runner_request import build_qa_session_request
 
 _STAGE_CHOICES = click.Choice(["audit", "exercises", "invariants"])
 
@@ -120,72 +121,34 @@ def qa_command(
         )
         return
 
-    # --- Validate flag combinations ---
-    if only_stage and skip_stages:
-        raise click.UsageError("--only and --skip are mutually exclusive")
-
-    live = not synthetic
     config = load_effective_config(env)
     selected_source_names = resolve_sources(config, source_names, "audit") if source_names else None
-
-    # --source implies fresh + live
-    if selected_source_names:
-        live = True
-        if fresh is None:
-            fresh = True
-
-    # Determine freshness
-    if fresh is None:
-        fresh = not live  # synthetic → fresh, live → existing DB
-
-    # Determine ingestion
-    if ingest is None:
-        ingest = fresh  # fresh workspaces need ingestion
-
-    # Resolve which stages to run
-    run_audit = True
-    run_exercises = True
-    run_invariants = True
-
-    if only_stage:
-        run_audit = only_stage == "audit"
-        run_exercises = only_stage == "exercises"
-        run_invariants = only_stage == "invariants"
-    else:
-        if "audit" in skip_stages:
-            run_audit = False
-        if "exercises" in skip_stages:
-            run_exercises = False
-        if "invariants" in skip_stages:
-            run_invariants = False
-    run_proof = only_stage is None and run_audit
-
-    # --- Execute QA session ---
-    from polylogue.showcase.qa_report import generate_qa_session
-    from polylogue.showcase.qa_runner import (
-        QASessionRequest,
-        format_qa_summary,
-        run_qa_session,
-    )
-
-    result = run_qa_session(
-        QASessionRequest(
-            live=live,
+    try:
+        request = build_qa_session_request(
+            synthetic=synthetic,
+            source_names=tuple(selected_source_names) if selected_source_names else None,
             fresh=fresh,
             ingest=ingest,
-            source_names=tuple(selected_source_names) if selected_source_names else None,
             regenerate_schemas=regenerate_schemas,
-            skip_audit=not run_audit,
-            skip_proof=not run_proof,
-            skip_exercises=not run_exercises,
-            skip_invariants=not run_invariants,
-            workspace_dir=workspace,
+            only_stage=only_stage,
+            skip_stages=skip_stages,
+            workspace=workspace,
             report_dir=report_dir,
             verbose=verbose,
             fail_fast=fail_fast,
             tier_filter=tier_filter,
         )
+    except ValueError as exc:
+        raise click.UsageError(str(exc)) from exc
+
+    # --- Execute QA session ---
+    from polylogue.showcase.qa_report import generate_qa_session
+    from polylogue.showcase.qa_runner import (
+        format_qa_summary,
+        run_qa_session,
     )
+
+    result = run_qa_session(request)
 
     # --- VHS capture ---
     if capture.lower() == "vhs" and result.showcase_result and result.showcase_result.output_dir:

@@ -5,8 +5,9 @@ from __future__ import annotations
 import sys
 
 from polylogue.showcase.invariants import check_invariants
-from polylogue.showcase.qa_runner_models import QAResult, QASessionRequest
+from polylogue.showcase.qa_runner_models import QAResult
 from polylogue.showcase.qa_runner_reporting import save_qa_reports
+from polylogue.showcase.qa_runner_request import QASessionRequest
 from polylogue.showcase.qa_runner_stages import (
     generate_extra_exercises,
     populate_proof,
