@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
-from devtools.validation_lane_base import composite_lane
+from functools import partial
+
+from devtools.validation_lane_base import composite_lane as _composite_lane
+
+composite_lane = partial(_composite_lane, category="composite")
 
 COMPOSITE_LANES = {
     "source-runtime-alignment": composite_lane(

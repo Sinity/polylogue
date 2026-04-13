@@ -2,7 +2,13 @@
 
 from __future__ import annotations
 
-from devtools.validation_lane_base import devtools_lane, pytest_lane
+from functools import partial
+
+from devtools.validation_lane_base import devtools_lane as _devtools_lane
+from devtools.validation_lane_base import pytest_lane as _pytest_lane
+
+devtools_lane = partial(_devtools_lane, category="contract")
+pytest_lane = partial(_pytest_lane, category="contract")
 
 CONTRACT_LANES = {
     "machine-contract": pytest_lane(
