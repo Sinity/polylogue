@@ -17,6 +17,7 @@ from .execution import (
     ExecutionSpec,
     command_execution,
     composite_execution,
+    polylogue_execution,
     pytest_execution,
     runner_execution,
 )
@@ -60,6 +61,7 @@ __all__ = [
     "ScenarioProjectionSourceKind",
     "ScenarioSpec",
     "NamedScenarioSource",
+    "polylogue_execution",
     "pytest_execution",
     "runner_execution",
     "runtime_artifact_graph",
