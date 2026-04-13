@@ -10,6 +10,7 @@ class ExecutionKind(str, Enum):
     """Authored execution substrate for scenario-bearing catalogs."""
 
     COMMAND = "command"
+    POLYLOGUE = "polylogue"
     PYTEST = "pytest"
     COMPOSITE = "composite"
     RUNNER = "runner"
@@ -36,15 +37,38 @@ class ExecutionSpec:
     def command(self) -> tuple[str, ...] | None:
         if self.is_composite or self.is_runner:
             return None
+        if self.kind is ExecutionKind.POLYLOGUE:
+            return ("polylogue", "--plain", *self.argv)
         if self.kind is ExecutionKind.PYTEST:
             return ("pytest", *self.argv)
         return self.argv
+
+    @property
+    def display_command(self) -> tuple[str, ...] | None:
+        command = self.command
+        if command is None:
+            return None
+        if self.kind is ExecutionKind.POLYLOGUE:
+            return ("polylogue", *self.argv)
+        return command
 
     @property
     def pytest_targets(self) -> tuple[str, ...]:
         if self.kind is not ExecutionKind.PYTEST:
             return ()
         return self.argv
+
+    @property
+    def polylogue_args(self) -> tuple[str, ...]:
+        if self.kind is not ExecutionKind.POLYLOGUE:
+            return ()
+        return self.argv
+
+    @property
+    def polylogue_invoke_args(self) -> tuple[str, ...]:
+        if self.kind is not ExecutionKind.POLYLOGUE:
+            return ()
+        return ("--plain", *self.argv)
 
     def pytest_command(self, *prefix_args: str) -> tuple[str, ...]:
         if self.kind is not ExecutionKind.PYTEST:
@@ -54,6 +78,14 @@ class ExecutionSpec:
 
 def command_execution(*argv: str) -> ExecutionSpec:
     return ExecutionSpec(kind=ExecutionKind.COMMAND, argv=tuple(argv))
+
+
+def polylogue_execution(*argv: str) -> ExecutionSpec:
+    if argv[:2] == ("polylogue", "--plain"):
+        argv = argv[2:]
+    elif argv[:1] == ("polylogue",):
+        argv = argv[1:]
+    return ExecutionSpec(kind=ExecutionKind.POLYLOGUE, argv=tuple(argv))
 
 
 def pytest_execution(*argv: str) -> ExecutionSpec:
@@ -75,6 +107,7 @@ __all__ = [
     "composite_execution",
     "ExecutionKind",
     "ExecutionSpec",
+    "polylogue_execution",
     "pytest_execution",
     "runner_execution",
 ]

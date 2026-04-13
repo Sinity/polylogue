@@ -70,11 +70,10 @@ def generate_cookbook(result: ShowcaseResult) -> str:
             lines.append(f"## {title}")
             lines.append("")
 
-        args_str = " ".join(result_entry.exercise.args) if result_entry.exercise.args else "(default stats)"
         lines.append(f"### {result_entry.exercise.description}")
         lines.append("")
         lines.append("```console")
-        lines.append(f"$ polylogue {args_str}")
+        lines.append(f"$ {result_entry.exercise.display_command_text}")
 
         output = result_entry.output.rstrip()
         output_lines = output.splitlines()
