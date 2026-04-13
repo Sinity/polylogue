@@ -3,8 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 
 from devtools import render_quality_reference
+from devtools.benchmark_catalog import BenchmarkCampaignEntry
 from devtools.quality_registry import (
-    BenchmarkCampaignEntry,
     MutationCampaignEntry,
     QualityRegistry,
     ValidationLaneEntry,

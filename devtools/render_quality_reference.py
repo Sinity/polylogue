@@ -6,9 +6,9 @@ import argparse
 import sys
 from pathlib import Path
 
+from devtools.benchmark_catalog import BenchmarkCampaignEntry
 from devtools.command_catalog import control_plane_command
 from devtools.quality_registry import (
-    BenchmarkCampaignEntry,
     MutationCampaignEntry,
     QualityRegistry,
     ValidationLaneEntry,
