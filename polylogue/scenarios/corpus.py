@@ -8,6 +8,7 @@ from enum import Enum
 from typing import TYPE_CHECKING, Any
 
 from .metadata import ScenarioMetadata
+from .projections import ScenarioProjectionEntry, ScenarioProjectionSourceKind
 
 if TYPE_CHECKING:
     from polylogue.schemas.tooling_models import ClusterManifest, SchemaCluster
@@ -89,6 +90,24 @@ class CorpusSpec(ScenarioMetadata):
             parts.append(self.package_version)
         parts.append(scope)
         return "-".join(_slugify_corpus_token(part) for part in parts)
+
+    @property
+    def projection_scope(self) -> str:
+        return self.profile_family_ids[0] if self.profile_family_ids else (self.element_kind or self.artifact_kind or "default")
+
+    @property
+    def projection_name(self) -> str:
+        return f"{self.provider}:{self.package_version}:{self.projection_scope}"
+
+    @property
+    def projection_description(self) -> str:
+        target = self.element_kind or self.artifact_kind or "default"
+        observed = (
+            f" from {self.observed_sample_count} observed sample(s)"
+            if self.observed_sample_count is not None
+            else ""
+        )
+        return f"Inferred synthetic corpus spec for {self.provider} {target}{observed}."
 
     def with_generation_overrides(
         self,
@@ -194,6 +213,15 @@ class CorpusSpec(ScenarioMetadata):
         if self.representative_paths:
             payload["representative_paths"] = list(self.representative_paths)
         return payload
+
+    def to_projection_entry(self) -> ScenarioProjectionEntry:
+        return ScenarioProjectionEntry.from_object(
+            source_kind=ScenarioProjectionSourceKind.INFERRED_CORPUS,
+            name=self.projection_name,
+            description=self.projection_description,
+            obj=self,
+            source_payload=self.to_payload(),
+        )
 
 
 def build_default_corpus_specs(
