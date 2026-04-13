@@ -6,7 +6,7 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
-from polylogue.scenarios import ExecutionSpec, ScenarioMetadata
+from polylogue.scenarios import CorpusSpec, ExecutionSpec, ScenarioMetadata
 from polylogue.showcase.exercise_models import Exercise, Validation
 from polylogue.showcase.scenario_models import ExerciseScenario
 
@@ -135,11 +135,20 @@ def _load_exercise_scenario(payload: dict[str, object]) -> ExerciseScenario:
     execution_payload = payload.get("execution")
     if not isinstance(execution_payload, dict):
         raise ValueError("Serialized showcase exercises must declare execution payloads")
+    corpus_payloads = payload.get("corpus_specs")
+    corpus_specs = ()
+    if isinstance(corpus_payloads, list):
+        corpus_specs = tuple(
+            CorpusSpec.from_payload(spec_payload)
+            for spec_payload in corpus_payloads
+            if isinstance(spec_payload, dict)
+        )
     return ExerciseScenario(
         name=str(payload["name"]),
         group=str(payload["group"]),
         description=str(payload["description"]),
         execution=ExecutionSpec.from_payload(execution_payload),
+        corpus_specs=corpus_specs,
         validation=_load_validation(payload.get("validation") if isinstance(payload.get("validation"), dict) else None),
         needs_data=bool(payload.get("needs_data", False)),
         writes=bool(payload.get("writes", False)),

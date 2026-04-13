@@ -8,6 +8,7 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
+from polylogue.scenarios import CorpusSpec
 from polylogue.showcase.exercises import EXERCISES, Exercise, topological_order
 from polylogue.showcase.showcase_runner_models import ExerciseResult
 from polylogue.showcase.workspace import (
@@ -16,6 +17,7 @@ from polylogue.showcase.workspace import (
     generate_synthetic_fixtures,
     run_pipeline_for_fixture_workspace,
     seed_workspace_from_scenarios,
+    seed_workspace_from_specs,
 )
 
 
@@ -57,10 +59,15 @@ def seed_workspace_with(
     workspace_dir: Path,
     *,
     synthetic_count: int,
+    exercises: tuple[Exercise, ...] = (),
     generate_fixtures: Callable[[Path], None],
 ) -> dict[str, str]:
     """Populate a workspace using an injected fixture-generation callback."""
     workspace = create_verification_workspace(workspace_dir)
+    corpus_specs = _merge_exercise_corpus_specs(exercises)
+    if corpus_specs:
+        seed_workspace_from_specs(workspace, corpus_specs=corpus_specs)
+        return dict(workspace.env_vars)
     generate_fixtures(workspace.fixture_dir)
     run_pipeline_for_fixture_workspace(workspace)
     return dict(workspace.env_vars)
@@ -69,6 +76,20 @@ def seed_workspace_with(
 def generate_showcase_fixtures(fixture_dir: Path, *, count: int) -> None:
     """Generate schema-driven synthetic fixtures for all providers."""
     generate_synthetic_fixtures(fixture_dir, count=count, style="showcase")
+
+
+def _merge_exercise_corpus_specs(exercises: tuple[Exercise, ...]) -> tuple[CorpusSpec, ...]:
+    """Return ordered unique corpus specs referenced by the selected exercises."""
+    seen: set[str] = set()
+    merged: list[CorpusSpec] = []
+    for exercise in exercises:
+        for corpus_spec in exercise.corpus_specs:
+            key = json.dumps(corpus_spec.to_payload(), sort_keys=True)
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(corpus_spec)
+    return tuple(merged)
 
 
 def run_exercise(
@@ -153,6 +174,7 @@ def validate_exercise_output(exercise: Exercise, output: str, exit_code: int) ->
 
 
 __all__ = [
+    "_merge_exercise_corpus_specs",
     "generate_showcase_fixtures",
     "run_exercise",
     "seed_workspace",

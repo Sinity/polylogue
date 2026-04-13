@@ -46,6 +46,7 @@ class ExerciseScenario(ExecutableScenario):
             group=self.group,
             description=self.description,
             execution=self.execution or polylogue_execution(),
+            corpus_specs=self.corpus_specs,
             validation=self.validation,
             needs_data=self.needs_data,
             writes=self.writes,
