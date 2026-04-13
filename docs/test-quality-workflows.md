@@ -14,9 +14,10 @@ Current registry snapshot:
 - mutation campaigns: `19`
 - benchmark campaigns: `3`
 - synthetic benchmark campaigns: `6`
-- scenario projections: `212`
+- scenario projections: `231`
   - benchmark-campaign: `3`
   - exercise: `137`
+  - mutation-campaign: `19`
   - synthetic-benchmark: `6`
   - validation-lane: `66`
 
@@ -380,6 +381,25 @@ These are the authored scenario-bearing projections currently feeding runtime co
 | `exercise` | `tags-json` | — | — | — | — | Tags as JSON |
 | `exercise` | `transform-strip` | — | — | — | — | Strip tool calls from output |
 | `exercise` | `version` | — | — | — | — | Version output |
+| `mutation-campaign` | `cli-query` | — | — | — | `mutation` | Query command planning, action routing, and summary output contracts |
+| `mutation-campaign` | `cli-run` | — | — | — | `mutation` | Run command execution, display, and watch contracts |
+| `mutation-campaign` | `drive-client` | — | — | — | `mutation` | Drive auth, transport, JSON payload parsing, and ingest attachment contracts |
+| `mutation-campaign` | `filters` | — | — | — | `mutation` | ConversationFilter semantics and summary/picker contracts |
+| `mutation-campaign` | `fts5` | — | — | — | `mutation` | FTS5 query escaping and conversation search semantics |
+| `mutation-campaign` | `hybrid` | — | — | — | `mutation` | Hybrid search fusion and ranked-conversation resolution |
+| `mutation-campaign` | `json` | — | — | — | `mutation` | JSON serialization and parser laws |
+| `mutation-campaign` | `models` | — | — | — | `mutation` | Message/Conversation semantic helpers and pairing logic |
+| `mutation-campaign` | `pipeline-services` | — | — | — | `mutation` | Acquire/validate/parse planning and stage contracts |
+| `mutation-campaign` | `provider-parsers` | — | — | — | `mutation` | Provider parser semantic correctness — where message extraction and compaction detection live |
+| `mutation-campaign` | `providers-semantics` | — | — | — | `mutation` | Provider semantic extraction, harmonization, and viewport contracts |
+| `mutation-campaign` | `repository` | — | — | — | `mutation` | Repository query, projection, and CRUD contracts |
+| `mutation-campaign` | `schema-core` | — | — | — | `mutation` | Schema generation, privacy, verification, and safety contracts |
+| `mutation-campaign` | `schema-inference` | — | — | — | `mutation` | Schema inference and privacy heuristics |
+| `mutation-campaign` | `schema-validation` | — | — | — | `mutation` | Schema validator and verification contracts |
+| `mutation-campaign` | `site-builder` | — | — | — | `mutation` | Static-site builder and CLI archive contracts |
+| `mutation-campaign` | `source-detection` | — | — | — | `mutation` | Source detection, sniffing, and parser dispatch |
+| `mutation-campaign` | `sources-parse` | — | — | — | `mutation` | Provider detection, parsing, harmonization, and parser laws |
+| `mutation-campaign` | `ui-core` | — | — | — | `mutation` | UI prompt, progress, and facade interaction contracts |
 | `synthetic-benchmark` | `action-event-materialization` | — | `tool_use_source_blocks`<br>`action_event_rows`<br>`action_event_fts` | `materialize-action-events` | `benchmark`<br>`synthetic`<br>`action-events` | Benchmark action-event read-model rebuild over synthetic tool-use transcripts |
 | `synthetic-benchmark` | `filter-scan` | — | `conversation_query_results` | `query.filters.synthetic-scan` | `benchmark`<br>`synthetic`<br>`filters` | Benchmark common filter query patterns |
 | `synthetic-benchmark` | `fts-rebuild` | — | `message_fts` | `index.message-fts-rebuild` | `benchmark`<br>`synthetic`<br>`fts` | Benchmark full FTS5 index rebuild |

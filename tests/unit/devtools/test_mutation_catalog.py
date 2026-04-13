@@ -9,9 +9,11 @@ def test_build_mutation_entries_tracks_authored_catalog() -> None:
 
     assert {entry.name for entry in entries} == set(MUTATION_CAMPAIGNS)
     filters = next(entry for entry in entries if entry.name == "filters")
+    assert filters.origin == "authored.mutation-campaign"
     assert filters.description == "ConversationFilter semantics and summary/picker contracts"
     assert filters.paths_to_mutate == ("polylogue/lib/filters.py",)
     assert filters.tests == (
         "tests/unit/core/test_filters_schemas.py",
         "tests/unit/core/test_filters_props.py",
     )
+    assert filters.tags == ("mutation",)

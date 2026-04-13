@@ -12,6 +12,7 @@ from polylogue.showcase.generators import (
 )
 
 from .benchmark_scenario_catalog import BENCHMARK_CAMPAIGNS
+from .mutation_catalog import build_mutation_entries
 from .synthetic_benchmark_catalog import SYNTHETIC_BENCHMARK_SCENARIOS
 from .validation_catalog import build_validation_lane_entries
 
@@ -43,6 +44,15 @@ def build_scenario_projection_entries() -> tuple[ScenarioProjectionEntry, ...]:
             obj=lane,
         )
         for lane in build_validation_lane_entries()
+    )
+    entries.extend(
+        ScenarioProjectionEntry.from_object(
+            source_kind=ScenarioProjectionSourceKind.MUTATION_CAMPAIGN,
+            name=campaign.name,
+            description=campaign.description,
+            obj=campaign,
+        )
+        for campaign in build_mutation_entries()
     )
     entries.extend(
         ScenarioProjectionEntry.from_object(

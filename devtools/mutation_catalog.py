@@ -4,11 +4,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from polylogue.scenarios import ScenarioMetadata
+
 from .mutation_scenario_catalog import MUTATION_CAMPAIGNS
 
 
 @dataclass(frozen=True)
-class MutationCampaignEntry:
+class MutationCampaignEntry(ScenarioMetadata):
     name: str
     description: str
     paths_to_mutate: tuple[str, ...]
@@ -24,6 +26,11 @@ def build_mutation_entries() -> tuple[MutationCampaignEntry, ...]:
             paths_to_mutate=tuple(campaign.paths_to_mutate),
             tests=tuple(campaign.tests),
             notes=tuple(campaign.notes),
+            origin="authored.mutation-campaign" if campaign.origin == "authored" else campaign.origin,
+            path_targets=campaign.path_targets,
+            artifact_targets=campaign.artifact_targets,
+            operation_targets=campaign.operation_targets,
+            tags=campaign.tags or ("mutation",),
         )
         for campaign in MUTATION_CAMPAIGNS.values()
     ]

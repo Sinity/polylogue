@@ -4,9 +4,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from polylogue.scenarios import ScenarioMetadata
+
 
 @dataclass(frozen=True)
-class MutationCampaign:
+class MutationCampaign(ScenarioMetadata):
     name: str
     description: str
     paths_to_mutate: tuple[str, ...]
