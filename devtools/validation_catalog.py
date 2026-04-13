@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from devtools.execution_specs import ExecutionSpec
 from polylogue.scenarios import ScenarioMetadata
 
 from .validation_lane_base import LaneConfig
@@ -18,7 +19,20 @@ class ValidationLaneEntry(ScenarioMetadata):
     description: str
     timeout_s: int
     category: str
-    sub_lanes: tuple[str, ...] = ()
+    execution: ExecutionSpec
+
+    @property
+    def is_composite(self) -> bool:
+        return self.execution.is_composite
+
+    @property
+    def command(self) -> list[str] | None:
+        command = self.execution.command
+        return list(command) if command is not None else None
+
+    @property
+    def sub_lanes(self) -> tuple[str, ...]:
+        return self.execution.members
 
 
 ALL_VALIDATION_LANES: dict[str, LaneConfig] = {
@@ -64,7 +78,7 @@ def _build_lane_entry(
         description=lane.description,
         timeout_s=lane.timeout_s,
         category=LANE_CATEGORIES[lane_name],
-        sub_lanes=tuple(lane.sub_lanes),
+        execution=lane.execution,
         origin=lane.origin,
         path_targets=_merge_unique(lane.path_targets, *(child.path_targets for child in child_entries)),
         artifact_targets=_merge_unique(lane.artifact_targets, *(child.artifact_targets for child in child_entries)),

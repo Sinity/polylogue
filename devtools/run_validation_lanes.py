@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import sys
 
-from devtools.validation_lane_base import LaneConfig
+from devtools.validation_catalog import ValidationLaneEntry as LaneConfig
 from devtools.validation_lane_runtime import (
     LANES,
     VALID_LANES,
