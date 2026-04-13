@@ -11,6 +11,7 @@ def test_build_command_catalog_includes_discovery_and_commands() -> None:
     assert "## Core Loop" in rendered
     assert "devtools --list-commands --json" in rendered
     assert "devtools status --json" in rendered
+    assert "| `devtools artifact-graph` | Render the runtime artifact, operation, and scenario-coverage map. |" in rendered
     assert "| `devtools render-all` |" in rendered
     assert "Common forms: `devtools status`" in rendered
 
