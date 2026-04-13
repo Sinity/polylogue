@@ -6,7 +6,13 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from polylogue.scenarios import ExecutionKind, ExecutionSpec, ScenarioMetadata, polylogue_execution
+from polylogue.scenarios import (
+    ExecutionKind,
+    ExecutionSpec,
+    ScenarioMetadata,
+    polylogue_execution,
+)
+from polylogue.scenarios.execution_inference import infer_metadata_from_execution
 
 if TYPE_CHECKING:
     from polylogue.scenarios import CorpusSpec
@@ -52,6 +58,13 @@ class Exercise(ScenarioMetadata):
     def __post_init__(self) -> None:
         if self.execution.kind is not ExecutionKind.POLYLOGUE:
             raise ValueError("showcase exercises require polylogue execution")
+        merged = ScenarioMetadata.from_object(self).with_inferred_defaults(
+            infer_metadata_from_execution(self.execution)
+        )
+        object.__setattr__(self, "path_targets", merged.path_targets)
+        object.__setattr__(self, "artifact_targets", merged.artifact_targets)
+        object.__setattr__(self, "operation_targets", merged.operation_targets)
+        object.__setattr__(self, "tags", merged.tags)
 
     @property
     def invoke_args(self) -> list[str]:

@@ -266,9 +266,6 @@ _JSON_CONTRACT_SPECS: tuple[dict[str, Any], ...] = (
         "needs_data": True,
         "tier": 1,
         "env": "seeded",
-        "path_targets": ["session-profile-query-loop"],
-        "artifact_targets": ["session_profile_results"],
-        "operation_targets": ["query-session-profiles"],
         "tags": ["products", "session-profiles"],
     },
     {
@@ -278,9 +275,6 @@ _JSON_CONTRACT_SPECS: tuple[dict[str, Any], ...] = (
         "needs_data": True,
         "tier": 1,
         "env": "seeded",
-        "path_targets": ["session-work-event-query-loop"],
-        "artifact_targets": ["session_work_event_results"],
-        "operation_targets": ["query-session-work-events"],
         "tags": ["products", "work-events"],
     },
     {
@@ -290,9 +284,6 @@ _JSON_CONTRACT_SPECS: tuple[dict[str, Any], ...] = (
         "needs_data": True,
         "tier": 1,
         "env": "seeded",
-        "path_targets": ["session-phase-query-loop"],
-        "artifact_targets": ["session_phase_results"],
-        "operation_targets": ["query-session-phases"],
         "tags": ["products", "phases"],
     },
     {
@@ -302,9 +293,6 @@ _JSON_CONTRACT_SPECS: tuple[dict[str, Any], ...] = (
         "needs_data": True,
         "tier": 1,
         "env": "seeded",
-        "path_targets": ["work-thread-query-loop"],
-        "artifact_targets": ["work_thread_results"],
-        "operation_targets": ["query-work-threads"],
         "tags": ["products", "threads"],
     },
     {
@@ -314,9 +302,6 @@ _JSON_CONTRACT_SPECS: tuple[dict[str, Any], ...] = (
         "needs_data": True,
         "tier": 1,
         "env": "seeded",
-        "path_targets": ["session-tag-rollup-query-loop"],
-        "artifact_targets": ["session_tag_rollup_results"],
-        "operation_targets": ["query-session-tag-rollups"],
         "tags": ["products", "tags"],
     },
     {
@@ -326,9 +311,6 @@ _JSON_CONTRACT_SPECS: tuple[dict[str, Any], ...] = (
         "needs_data": True,
         "tier": 1,
         "env": "seeded",
-        "path_targets": ["day-summary-query-loop"],
-        "artifact_targets": ["day_session_summary_results"],
-        "operation_targets": ["query-day-session-summaries"],
         "tags": ["products", "day-summaries"],
     },
     {
@@ -338,9 +320,6 @@ _JSON_CONTRACT_SPECS: tuple[dict[str, Any], ...] = (
         "needs_data": True,
         "tier": 1,
         "env": "seeded",
-        "path_targets": ["week-summary-query-loop"],
-        "artifact_targets": ["week_session_summary_results"],
-        "operation_targets": ["query-week-session-summaries"],
         "tags": ["products", "week-summaries"],
     },
     {
@@ -350,9 +329,6 @@ _JSON_CONTRACT_SPECS: tuple[dict[str, Any], ...] = (
         "needs_data": True,
         "tier": 1,
         "env": "seeded",
-        "path_targets": ["provider-analytics-query-loop"],
-        "artifact_targets": ["provider_analytics_results"],
-        "operation_targets": ["query-provider-analytics"],
         "tags": ["products", "analytics"],
     },
     {
