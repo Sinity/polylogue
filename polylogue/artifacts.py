@@ -151,7 +151,7 @@ RUNTIME_ARTIFACT_NODES: tuple[ArtifactNode, ...] = (
             "polylogue.storage.fts_lifecycle.rebuild_fts_index_sync",
             "polylogue.storage.fts_lifecycle.repair_fts_index_sync",
         ),
-        repair_targets=("fts",),
+        repair_targets=("dangling_fts",),
         health_surfaces=("doctor", "archive_debt", "query"),
     ),
     ArtifactNode(
@@ -742,7 +742,7 @@ RUNTIME_ARTIFACT_NODES: tuple[ArtifactNode, ...] = (
             "polylogue.storage.derived_status.collect_derived_model_statuses_sync",
             "polylogue.storage.repair.collect_archive_debt_statuses_sync",
         ),
-        repair_targets=("fts", "action_event_read_model", "session_products"),
+        repair_targets=("dangling_fts", "action_event_read_model", "session_products"),
         health_surfaces=("doctor", "archive_debt", "maintenance"),
     ),
 )

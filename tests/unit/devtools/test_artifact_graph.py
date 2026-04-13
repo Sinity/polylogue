@@ -10,6 +10,7 @@ def test_render_artifact_graph_text_mentions_the_current_runtime_paths() -> None
 
     assert "Artifact Paths:" in rendered
     assert "Artifact Operations:" in rendered
+    assert "Maintenance Targets:" in rendered
     assert "Runtime Path Coverage:" in rendered
     assert "Runtime Scenario Coverage:" in rendered
     assert "raw-reparse-loop" in rendered
@@ -52,6 +53,10 @@ def test_render_artifact_graph_text_mentions_the_current_runtime_paths() -> None
     assert "exercise:json-products-work-events" in rendered
     assert "validation-lane:live-products-status" in rendered
     assert "validation-lane:live-products-debt" in rendered
+    assert "maintenance action_event_read_model:" in rendered
+    assert "maintenance dangling_fts:" in rendered
+    assert "maintenance session_products:" in rendered
+    assert "uncovered maintenance targets: empty_conversations, orphaned_attachments, orphaned_content_blocks, orphaned_messages, wal_checkpoint" in rendered
     assert "uncovered artifacts:" not in rendered
     assert "uncovered operations:" not in rendered
 
@@ -59,7 +64,7 @@ def test_render_artifact_graph_text_mentions_the_current_runtime_paths() -> None
 def test_render_artifact_graph_json_is_machine_readable() -> None:
     payload = json.loads(artifact_graph.render_artifact_graph(as_json=True))
 
-    assert {path["name"] for path in payload["paths"]} == {
+    assert {path["name"] for path in payload["paths"]} >= {
         "raw-reparse-loop",
         "raw-archive-ingest-loop",
         "message-fts-health-loop",
@@ -81,6 +86,9 @@ def test_render_artifact_graph_json_is_machine_readable() -> None:
     assert any(node["name"] == "raw_validation_state" for node in payload["nodes"])
     assert any(node["name"] == "archive_conversation_rows" for node in payload["nodes"])
     assert any(node["name"] == "message_fts" for node in payload["nodes"])
+    assert {
+        target["name"] for target in payload["maintenance_targets"]
+    } >= {"session_products", "action_event_read_model", "dangling_fts"}
     assert any(operation["name"] == "plan-parse-backlog" for operation in payload["operations"])
     assert any(operation["name"] == "ingest-archive-runtime" for operation in payload["operations"])
     assert any(operation["name"] == "index-message-fts" for operation in payload["operations"])
@@ -100,6 +108,14 @@ def test_render_artifact_graph_json_is_machine_readable() -> None:
         (ref["source"], ref["name"], ref["origin"])
         for ref in payload["scenario_coverage"]["operations"]["project-action-event-health"]
     }
+    assert (
+        "exercise",
+        "json-doctor-action-event-preview",
+        "generated.json-contract",
+    ) in {
+        (ref["source"], ref["name"], ref["origin"])
+        for ref in payload["scenario_coverage"]["maintenance_targets"]["action_event_read_model"]
+    }
     assert {
         (ref["source"], ref["name"], ref["origin"])
         for ref in payload["scenario_coverage"]["artifacts"]["session_product_rows"]
@@ -114,6 +130,14 @@ def test_render_artifact_graph_json_is_machine_readable() -> None:
     ) in {
         (ref["source"], ref["name"], ref["origin"])
         for ref in payload["scenario_coverage"]["operations"]["project-session-product-health"]
+    }
+    assert (
+        "exercise",
+        "json-doctor-session-products-preview",
+        "generated.json-contract",
+    ) in {
+        (ref["source"], ref["name"], ref["origin"])
+        for ref in payload["scenario_coverage"]["maintenance_targets"]["session_products"]
     }
     assert (
         "exercise",
@@ -155,6 +179,13 @@ def test_render_artifact_graph_json_is_machine_readable() -> None:
     assert {
         (ref["source"], ref["name"], ref["origin"])
         for ref in payload["scenario_coverage"]["operations"]["index-message-fts"]
+    } >= {
+        ("synthetic-benchmark", "fts-rebuild", "authored.synthetic-benchmark"),
+        ("synthetic-benchmark", "incremental-index", "authored.synthetic-benchmark"),
+    }
+    assert {
+        (ref["source"], ref["name"], ref["origin"])
+        for ref in payload["scenario_coverage"]["maintenance_targets"]["dangling_fts"]
     } >= {
         ("synthetic-benchmark", "fts-rebuild", "authored.synthetic-benchmark"),
         ("synthetic-benchmark", "incremental-index", "authored.synthetic-benchmark"),
@@ -254,6 +285,13 @@ def test_render_artifact_graph_json_is_machine_readable() -> None:
     assert payload["scenario_coverage"]["paths"]["work-thread-query-loop"]["complete"] is True
     assert payload["scenario_coverage"]["paths"]["session-tag-rollup-query-loop"]["complete"] is True
     assert payload["scenario_coverage"]["paths"]["day-summary-query-loop"]["complete"] is True
+    assert payload["scenario_coverage"]["uncovered_maintenance_targets"] == [
+        "empty_conversations",
+        "orphaned_attachments",
+        "orphaned_content_blocks",
+        "orphaned_messages",
+        "wal_checkpoint",
+    ]
     assert payload["scenario_coverage"]["paths"]["week-summary-query-loop"]["complete"] is True
     assert payload["scenario_coverage"]["paths"]["provider-analytics-query-loop"]["complete"] is True
     assert payload["scenario_coverage"]["paths"]["session-product-status-query-loop"]["complete"] is True

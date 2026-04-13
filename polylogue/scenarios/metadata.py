@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from polylogue.artifact_graph import ArtifactGraph
     from polylogue.artifacts import ArtifactNode, ArtifactPath
+    from polylogue.maintenance_targets import MaintenanceTargetSpec
     from polylogue.operations import OperationSpec
 
 
@@ -85,6 +86,11 @@ def runtime_path_target_names() -> tuple[str, ...]:
     return runtime_artifact_graph().path_names()
 
 
+@lru_cache(maxsize=1)
+def runtime_maintenance_target_names() -> tuple[str, ...]:
+    return runtime_artifact_graph().maintenance_target_names()
+
+
 @dataclass(frozen=True, kw_only=True)
 class ScenarioMetadata:
     """Portable scenario metadata shared by exercises, campaigns, and reports."""
@@ -93,6 +99,7 @@ class ScenarioMetadata:
     path_targets: tuple[str, ...] = ()
     artifact_targets: tuple[str, ...] = ()
     operation_targets: tuple[str, ...] = ()
+    maintenance_targets: tuple[str, ...] = ()
     tags: tuple[str, ...] = ()
 
     @classmethod
@@ -102,6 +109,7 @@ class ScenarioMetadata:
             path_targets=_coerce_string_tuple(payload.get("path_targets")),
             artifact_targets=_coerce_string_tuple(payload.get("artifact_targets")),
             operation_targets=_coerce_string_tuple(payload.get("operation_targets")),
+            maintenance_targets=_coerce_string_tuple(payload.get("maintenance_targets")),
             tags=_coerce_string_tuple(payload.get("tags")),
         )
 
@@ -112,6 +120,7 @@ class ScenarioMetadata:
             path_targets=_coerce_string_tuple(getattr(obj, "path_targets", None)),
             artifact_targets=_coerce_string_tuple(getattr(obj, "artifact_targets", None)),
             operation_targets=_coerce_string_tuple(getattr(obj, "operation_targets", None)),
+            maintenance_targets=_coerce_string_tuple(getattr(obj, "maintenance_targets", None)),
             tags=_coerce_string_tuple(getattr(obj, "tags", None)),
         )
 
@@ -123,6 +132,8 @@ class ScenarioMetadata:
             payload["artifact_targets"] = list(self.artifact_targets)
         if self.operation_targets:
             payload["operation_targets"] = list(self.operation_targets)
+        if self.maintenance_targets:
+            payload["maintenance_targets"] = list(self.maintenance_targets)
         if self.tags:
             payload["tags"] = list(self.tags)
         return payload
@@ -138,6 +149,9 @@ class ScenarioMetadata:
             ),
             operation_targets=_merge_unique_string_tuples(
                 self.operation_targets, *(other.operation_targets for other in others)
+            ),
+            maintenance_targets=_merge_unique_string_tuples(
+                self.maintenance_targets, *(other.maintenance_targets for other in others)
             ),
             tags=_merge_unique_string_tuples(self.tags, *(other.tags for other in others)),
         )
@@ -161,6 +175,7 @@ class ScenarioMetadata:
                     explicit_runtime_operations or defaults.operation_targets,
                 )
             ),
+            maintenance_targets=self.maintenance_targets or defaults.maintenance_targets,
             tags=_merge_unique_string_tuples(self.tags, defaults.tags),
         )
 
@@ -172,6 +187,9 @@ class ScenarioMetadata:
 
     def runtime_operation_targets(self) -> tuple[str, ...]:
         return tuple(operation.name for operation in self.resolve_runtime_operations())
+
+    def runtime_maintenance_targets(self) -> tuple[str, ...]:
+        return tuple(target.name for target in self.resolve_runtime_maintenance_targets())
 
     def declared_operation_targets(self) -> tuple[str, ...]:
         return tuple(operation.name for operation in self.resolve_declared_operations())
@@ -185,6 +203,9 @@ class ScenarioMetadata:
     def resolve_runtime_operations(self) -> tuple[OperationSpec, ...]:
         return runtime_artifact_graph().resolve_operations(self.operation_targets)
 
+    def resolve_runtime_maintenance_targets(self) -> tuple[MaintenanceTargetSpec, ...]:
+        return runtime_artifact_graph().resolve_maintenance_targets(self.maintenance_targets)
+
     def resolve_declared_operations(self) -> tuple[OperationSpec, ...]:
         from polylogue.operations import build_declared_operation_catalog
 
@@ -196,6 +217,7 @@ __all__ = [
     "ScenarioMetadata",
     "runtime_artifact_graph",
     "runtime_artifact_target_names",
+    "runtime_maintenance_target_names",
     "runtime_operation_target_names",
     "runtime_path_target_names",
 ]
