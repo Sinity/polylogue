@@ -15,7 +15,7 @@ from devtools.validation_catalog import (
     ValidationLaneEntry,
     build_validation_lane_entries,
 )
-from polylogue.scenarios import CorpusSpec, ScenarioProjectionEntry
+from polylogue.scenarios import ScenarioProjectionEntry
 from polylogue.schemas.operator_inference import list_inferred_corpus_specs
 
 
@@ -27,7 +27,6 @@ class QualityRegistry:
     mutation_campaigns: tuple[MutationCampaignEntry, ...]
     benchmark_campaigns: tuple[BenchmarkCampaignEntry, ...]
     synthetic_benchmark_campaigns: tuple[BenchmarkCampaignEntry, ...]
-    inferred_corpus_specs: tuple[CorpusSpec, ...]
     scenario_projections: tuple[ScenarioProjectionEntry, ...]
 
 
@@ -47,7 +46,6 @@ def build_quality_registry() -> QualityRegistry:
         mutation_campaigns=mutation_campaigns,
         benchmark_campaigns=benchmark_campaigns,
         synthetic_benchmark_campaigns=synthetic_benchmark_campaigns,
-        inferred_corpus_specs=inferred_corpus_specs,
         scenario_projections=build_scenario_projection_entries(
             validation_lanes=validation_lanes,
             mutation_campaigns=mutation_campaigns,
