@@ -174,6 +174,19 @@ class TestCommandConstruction:
         assert "tests/unit/cli/test_check.py" in cmd
         assert "tests/integration/test_health.py" in cmd
 
+    def test_maintenance_workflows_lane_carries_publication_runtime_metadata(self):
+        lane = LANES["maintenance-workflows"]
+
+        assert lane.path_targets == ("site-publication-loop",)
+        assert lane.artifact_targets == (
+            "conversation_render_projection",
+            "site_conversation_pages",
+            "site_publication_manifest",
+            "publication_records",
+        )
+        assert lane.operation_targets == ("publish-site",)
+        assert lane.tags == ("contract", "maintenance", "publication")
+
     def test_archive_data_products_lane_uses_product_and_consumer_suite(self):
         cmd = build_lane_command(LANES["archive-data-products"])
         assert cmd[0] == "pytest"
