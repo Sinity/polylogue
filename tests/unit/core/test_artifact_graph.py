@@ -15,6 +15,7 @@ def test_artifact_graph_contains_the_current_runtime_paths() -> None:
         "validation_backlog",
         "parse_backlog",
         "parse_quarantine",
+        "archive_conversation_rows",
         "message_source_rows",
         "message_fts",
         "tool_use_source_blocks",
@@ -52,8 +53,12 @@ def test_artifact_graph_contains_the_current_runtime_paths() -> None:
         "archive_health",
     }
     assert nodes["raw_validation_state"].layer is ArtifactLayer.DURABLE
+    assert nodes["archive_conversation_rows"].layer is ArtifactLayer.DURABLE
+    assert nodes["archive_conversation_rows"].depends_on == ("raw_validation_state",)
     assert nodes["message_fts"].layer is ArtifactLayer.INDEX
+    assert nodes["message_source_rows"].depends_on == ("archive_conversation_rows",)
     assert nodes["message_fts"].depends_on == ("message_source_rows",)
+    assert nodes["tool_use_source_blocks"].depends_on == ("archive_conversation_rows",)
     assert nodes["action_event_fts"].layer is ArtifactLayer.INDEX
     assert nodes["action_event_fts"].depends_on == ("action_event_rows",)
     assert nodes["action_event_health"].depends_on == ("action_event_rows", "action_event_fts")
@@ -64,6 +69,7 @@ def test_artifact_graph_contains_the_current_runtime_paths() -> None:
     assert "session_profile_merged_fts" in nodes["session_product_fts"].depends_on
     assert nodes["session_product_health"].depends_on == ("session_product_rows", "session_product_fts")
     assert nodes["parse_quarantine"].depends_on == ("raw_validation_state",)
+    assert nodes["session_product_source_conversations"].depends_on == ("archive_conversation_rows",)
     assert nodes["conversation_query_results"].depends_on == ("message_fts",)
     assert nodes["session_profile_results"].depends_on == ("session_profile_rows", "session_profile_merged_fts")
     assert nodes["week_session_summary_results"].depends_on == ("day_session_summary_rows",)
@@ -71,6 +77,7 @@ def test_artifact_graph_contains_the_current_runtime_paths() -> None:
     assert nodes["archive_health"].depends_on == ("message_fts", "action_event_health", "session_product_health")
     assert operations["plan-validation-backlog"].produces == ("validation_backlog",)
     assert operations["plan-parse-backlog"].produces == ("parse_backlog", "parse_quarantine")
+    assert operations["ingest-archive-runtime"].produces == ("raw_validation_state", "archive_conversation_rows")
     assert operations["index-message-fts"].produces == ("message_fts",)
     assert operations["materialize-action-events"].produces == ("action_event_rows", "action_event_fts")
     assert operations["query-conversations"].produces == ("conversation_query_results",)
@@ -112,6 +119,7 @@ def test_artifact_graph_paths_reference_only_declared_nodes() -> None:
 
     assert {path.name for path in graph.paths} == {
         "raw-reparse-loop",
+        "raw-archive-ingest-loop",
         "message-fts-health-loop",
         "conversation-query-loop",
         "action-event-repair-loop",
@@ -179,6 +187,11 @@ def test_artifact_graph_lists_operations_for_each_runtime_path() -> None:
     assert tuple(operation.name for operation in graph.operations_for_path("raw-reparse-loop")) == (
         "plan-validation-backlog",
         "plan-parse-backlog",
+    )
+    assert tuple(operation.name for operation in graph.operations_for_path("raw-archive-ingest-loop")) == (
+        "plan-validation-backlog",
+        "plan-parse-backlog",
+        "ingest-archive-runtime",
     )
     assert tuple(operation.name for operation in graph.operations_for_path("message-fts-health-loop")) == (
         "index-message-fts",

@@ -13,6 +13,7 @@ def test_runtime_operation_catalog_covers_the_current_runtime_paths() -> None:
     assert set(specs) == {
         "plan-validation-backlog",
         "plan-parse-backlog",
+        "ingest-archive-runtime",
         "index-message-fts",
         "materialize-action-events",
         "query-conversations",
@@ -33,7 +34,11 @@ def test_runtime_operation_catalog_covers_the_current_runtime_paths() -> None:
         "query-archive-debt",
     }
     assert specs["plan-validation-backlog"].kind is OperationKind.PLANNING
-    assert specs["plan-validation-backlog"].path_targets == ("raw-reparse-loop",)
+    assert specs["plan-validation-backlog"].path_targets == ("raw-reparse-loop", "raw-archive-ingest-loop")
+    assert specs["ingest-archive-runtime"].kind is OperationKind.MATERIALIZATION
+    assert specs["ingest-archive-runtime"].mutates_state is True
+    assert specs["ingest-archive-runtime"].produces == ("raw_validation_state", "archive_conversation_rows")
+    assert specs["ingest-archive-runtime"].path_targets == ("raw-archive-ingest-loop",)
     assert specs["materialize-action-events"].kind is OperationKind.MATERIALIZATION
     assert specs["materialize-action-events"].mutates_state is True
     assert specs["materialize-action-events"].produces == ("action_event_rows", "action_event_fts")
