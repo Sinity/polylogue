@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from devtools.pipeline_probe import _write_probe_sources, main, run_probe
+from polylogue.scenarios import CorpusSpec
 from polylogue.schemas.synthetic import SyntheticCorpus
 from polylogue.storage.backends import create_backend
 from polylogue.storage.backends.connection import open_connection
@@ -115,22 +116,67 @@ async def _seed_archive_source(tmp_path: Path) -> tuple[Path, Path]:
     blob_store = BlobStore(source_blob_root)
     backend = create_backend(db_path=source_db)
     repository = ConversationRepository(backend=backend)
-    corpus = SyntheticCorpus.for_provider("chatgpt")
-    codex_corpus = SyntheticCorpus.for_provider("codex")
-
     try:
         raw_payloads = [
-            ("chatgpt", "chatgpt-main", corpus.generate(count=1, seed=100, messages_per_conversation=range(3, 4))[0]),
+            (
+                "chatgpt",
+                "chatgpt-main",
+                SyntheticCorpus.generate_for_spec(
+                    CorpusSpec.for_provider(
+                        "chatgpt",
+                        count=1,
+                        messages_min=3,
+                        messages_max=3,
+                        seed=100,
+                        origin="generated.test-pipeline-probe",
+                        tags=("synthetic", "test", "pipeline-probe"),
+                    )
+                )[0],
+            ),
             (
                 "chatgpt",
                 "chatgpt-sidecar",
-                corpus.generate(count=1, seed=101, messages_per_conversation=range(3, 4))[0],
+                SyntheticCorpus.generate_for_spec(
+                    CorpusSpec.for_provider(
+                        "chatgpt",
+                        count=1,
+                        messages_min=3,
+                        messages_max=3,
+                        seed=101,
+                        origin="generated.test-pipeline-probe",
+                        tags=("synthetic", "test", "pipeline-probe"),
+                    )
+                )[0],
             ),
-            ("codex", "codex-main", codex_corpus.generate(count=1, seed=200, messages_per_conversation=range(3, 4))[0]),
+            (
+                "codex",
+                "codex-main",
+                SyntheticCorpus.generate_for_spec(
+                    CorpusSpec.for_provider(
+                        "codex",
+                        count=1,
+                        messages_min=3,
+                        messages_max=3,
+                        seed=200,
+                        origin="generated.test-pipeline-probe",
+                        tags=("synthetic", "test", "pipeline-probe"),
+                    )
+                )[0],
+            ),
             (
                 "codex",
                 "codex-sidecar",
-                codex_corpus.generate(count=1, seed=201, messages_per_conversation=range(3, 4))[0],
+                SyntheticCorpus.generate_for_spec(
+                    CorpusSpec.for_provider(
+                        "codex",
+                        count=1,
+                        messages_min=3,
+                        messages_max=3,
+                        seed=201,
+                        origin="generated.test-pipeline-probe",
+                        tags=("synthetic", "test", "pipeline-probe"),
+                    )
+                )[0],
             ),
         ]
         for index, (provider_name, source_name, raw_bytes) in enumerate(raw_payloads):
