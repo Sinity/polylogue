@@ -5,10 +5,10 @@ from __future__ import annotations
 import pytest
 
 from devtools.execution_specs import ExecutionKind
+from devtools.lane_models import LaneEntry
 from devtools.run_validation_lanes import (
     LANES,
     VALID_LANES,
-    LaneConfig,
     build_lane_command,
     main,
     parse_lane,
@@ -27,7 +27,7 @@ class TestLaneParsing:
     @pytest.mark.parametrize("lane_name", sorted(VALID_LANES))
     def test_valid_lane_returns_config(self, lane_name):
         lane = parse_lane(lane_name)
-        assert isinstance(lane, LaneConfig)
+        assert isinstance(lane, LaneEntry)
         assert lane.name == lane_name
 
     def test_invalid_lane_raises_value_error(self):

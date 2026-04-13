@@ -4,28 +4,29 @@ from __future__ import annotations
 
 import subprocess
 
-from devtools.validation_catalog import ValidationLaneEntry, build_validation_lane_entries
+from devtools.lane_models import LaneEntry
+from devtools.validation_catalog import build_validation_lane_entries
 
-LANES: dict[str, ValidationLaneEntry] = {
+LANES: dict[str, LaneEntry] = {
     entry.name: entry
     for entry in build_validation_lane_entries()
 }
 VALID_LANES = frozenset(LANES)
 
 
-def parse_lane(lane_name: str) -> ValidationLaneEntry:
+def parse_lane(lane_name: str) -> LaneEntry:
     if lane_name not in LANES:
         raise ValueError(f"Invalid lane: {lane_name!r}. Valid lanes: {', '.join(sorted(VALID_LANES))}")
     return LANES[lane_name]
 
 
-def build_lane_command(lane: ValidationLaneEntry) -> list[str]:
+def build_lane_command(lane: LaneEntry) -> list[str]:
     if lane.command is None:
         raise ValueError(f"Lane {lane.name!r} is composite and has no direct command")
     return lane.command
 
 
-def print_lane(lane: ValidationLaneEntry, *, indent: str = "") -> None:
+def print_lane(lane: LaneEntry, *, indent: str = "") -> None:
     print(f"{indent}{lane.name}: {lane.description}")
     if lane.is_composite:
         for child_name in lane.sub_lanes:
@@ -35,7 +36,7 @@ def print_lane(lane: ValidationLaneEntry, *, indent: str = "") -> None:
         print(f"{indent}  timeout: {lane.timeout_s}s")
 
 
-def run_lane(lane: ValidationLaneEntry) -> int:
+def run_lane(lane: LaneEntry) -> int:
     if lane.is_composite:
         print(f"Validation lane: {lane.name} — {lane.description}")
         for child_name in lane.sub_lanes:

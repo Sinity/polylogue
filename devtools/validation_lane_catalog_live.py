@@ -2,7 +2,15 @@
 
 from __future__ import annotations
 
-from devtools.validation_lane_base import devtools_lane, memory_budget_lane, polylogue_lane
+from functools import partial
+
+from devtools.validation_lane_base import devtools_lane as _devtools_lane
+from devtools.validation_lane_base import memory_budget_lane as _memory_budget_lane
+from devtools.validation_lane_base import polylogue_lane as _polylogue_lane
+
+devtools_lane = partial(_devtools_lane, category="live")
+memory_budget_lane = partial(_memory_budget_lane, category="live")
+polylogue_lane = partial(_polylogue_lane, category="live")
 
 LIVE_LANES = {
     "live-archive-subset-parse-probe": devtools_lane(

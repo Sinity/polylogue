@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import pytest
 
+from devtools.lane_models import LaneEntry
 from devtools.run_scale_lanes import (
     LANES,
     VALID_LANES,
-    LaneConfig,
     build_pytest_command,
     parse_lane,
 )
@@ -32,9 +32,9 @@ class TestLaneParsing:
 
     @pytest.mark.parametrize("lane_name", sorted(VALID_LANES))
     def test_valid_lane_returns_config(self, lane_name):
-        """Each valid lane name returns a LaneConfig."""
+        """Each valid lane name returns a LaneEntry."""
         config = parse_lane(lane_name)
-        assert isinstance(config, LaneConfig)
+        assert isinstance(config, LaneEntry)
         assert config.name == lane_name
 
     def test_invalid_lane_raises_value_error(self):
