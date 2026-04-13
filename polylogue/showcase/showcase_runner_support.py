@@ -81,7 +81,7 @@ def run_exercise(
     started = time.monotonic()
     env = dict(env_vars)
     env["POLYLOGUE_FORCE_PLAIN"] = "1"
-    args = ["--plain", *exercise.args]
+    args = exercise.invoke_args
 
     try:
         cli_result = invoke_showcase_cli_fn(args, env=env, timeout=exercise.timeout_s)

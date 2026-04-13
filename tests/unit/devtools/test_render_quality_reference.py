@@ -14,8 +14,8 @@ from polylogue.scenarios import (
     CorpusSpec,
     ScenarioProjectionEntry,
     ScenarioProjectionSourceKind,
-    command_execution,
     composite_execution,
+    polylogue_execution,
     pytest_execution,
 )
 
@@ -38,7 +38,7 @@ def test_build_document_includes_live_registry_sections() -> None:
                     description="Read-only live archive exercises.",
                     timeout_s=300,
                     category="live",
-                    execution=command_execution("polylogue", "--plain", "audit", "--only", "exercises"),
+                    execution=polylogue_execution("audit", "--only", "exercises"),
                 ),
                 LaneEntry(
                     name="frontier-local",

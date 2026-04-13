@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
-from polylogue.scenarios import ScenarioMetadata
+from polylogue.scenarios import ScenarioMetadata, polylogue_execution
 
 
 @dataclass(frozen=True)
@@ -39,6 +39,27 @@ class Exercise(ScenarioMetadata):
     vhs_capture: bool = False  # Whether this exercise should be captured as VHS recording
     artifact_class: str = "text"  # "text" | "json" | "visual" | "bundle"
     capture_steps: tuple[str, ...] = ()  # Optional VHS interaction steps for complex scenarios
+
+    @property
+    def execution(self):
+        return polylogue_execution(*self.args)
+
+    @property
+    def invoke_args(self) -> list[str]:
+        return list(self.execution.polylogue_invoke_args)
+
+    @property
+    def display_command(self) -> list[str]:
+        command = self.execution.display_command
+        return list(command) if command is not None else ["polylogue"]
+
+    @property
+    def display_command_text(self) -> str:
+        return " ".join(self.display_command)
+
+    @property
+    def args_text(self) -> str:
+        return " ".join(self.args) if self.args else "(default stats)"
 
 
 __all__ = ["Exercise", "Validation"]
