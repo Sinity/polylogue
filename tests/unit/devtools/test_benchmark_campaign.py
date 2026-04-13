@@ -16,6 +16,7 @@ from devtools.benchmark_scenario_catalog import (
     BenchmarkScenario,
     compile_benchmark_scenarios,
 )
+from devtools.execution_specs import pytest_execution
 
 
 def test_compare_results_orders_regressions_by_worst_delta() -> None:
@@ -177,7 +178,7 @@ def test_benchmark_scenario_compiles_to_campaign() -> None:
     scenario = BenchmarkScenario(
         scenario_id="action-events",
         description="action-event repair benchmark",
-        tests=("tests/benchmarks/test_action_events.py",),
+        execution=pytest_execution("tests/benchmarks/test_action_events.py"),
         notes=("Tracks action-event repair throughput.",),
         origin="generated.action-events",
         artifact_targets=("action_event_rows", "action_event_fts"),
