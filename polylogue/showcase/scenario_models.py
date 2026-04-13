@@ -49,6 +49,10 @@ class ExerciseScenario:
             vhs_capture=self.vhs_capture,
             artifact_class=self.artifact_class,
             capture_steps=self.capture_steps,
+            origin=self.origin,
+            artifact_targets=self.artifact_targets,
+            operation_targets=self.operation_targets,
+            tags=self.tags,
         )
 
 

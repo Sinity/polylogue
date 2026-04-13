@@ -10,6 +10,18 @@ from typing import Any
 from polylogue.showcase.runner import ExerciseResult, ShowcaseResult
 
 
+def _optional_string(value: object, default: str) -> str:
+    if isinstance(value, str) and value:
+        return value
+    return default
+
+
+def _optional_string_list(value: object) -> list[str]:
+    if isinstance(value, (list, tuple)) and all(isinstance(item, str) for item in value):
+        return list(value)
+    return []
+
+
 def serialize_showcase_exercise(
     result: ExerciseResult,
     *,
@@ -27,6 +39,16 @@ def serialize_showcase_exercise(
         entry["description"] = result.exercise.description
     if include_tier:
         entry["tier"] = result.exercise.tier
+    entry["origin"] = _optional_string(getattr(result.exercise, "origin", "authored"), "authored")
+    artifact_targets = _optional_string_list(getattr(result.exercise, "artifact_targets", ()))
+    if artifact_targets:
+        entry["artifact_targets"] = artifact_targets
+    operation_targets = _optional_string_list(getattr(result.exercise, "operation_targets", ()))
+    if operation_targets:
+        entry["operation_targets"] = operation_targets
+    tags = _optional_string_list(getattr(result.exercise, "tags", ()))
+    if tags:
+        entry["tags"] = tags
     if result.skipped:
         entry["skipped"] = True
         entry["skip_reason"] = result.skip_reason

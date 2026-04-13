@@ -135,6 +135,10 @@ def _load_exercise(payload: dict[str, object]) -> Exercise:
         vhs_capture=bool(payload.get("vhs_capture", False)),
         artifact_class=str(payload.get("artifact_class", "text")),
         capture_steps=tuple(str(item) for item in payload.get("capture_steps", ())),
+        origin=str(payload.get("origin", "authored")),
+        artifact_targets=tuple(str(item) for item in payload.get("artifact_targets", ())),
+        operation_targets=tuple(str(item) for item in payload.get("operation_targets", ())),
+        tags=tuple(str(item) for item in payload.get("tags", ())),
     )
 
 
