@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import pytest
 
-from devtools.execution_specs import ExecutionKind
 from devtools.lane_models import LaneEntry
 from devtools.run_validation_lanes import (
     LANES,
@@ -13,6 +12,7 @@ from devtools.run_validation_lanes import (
     main,
     parse_lane,
 )
+from polylogue.scenarios import ExecutionKind
 
 
 class TestValidationLanesImportable:

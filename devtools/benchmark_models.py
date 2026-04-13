@@ -4,8 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from devtools.executable_scenarios import ExecutableScenario
-from polylogue.scenarios import ScenarioProjectionSourceKind
+from polylogue.scenarios import ExecutableScenario, ScenarioProjectionSourceKind
 
 
 @dataclass(frozen=True, kw_only=True)
