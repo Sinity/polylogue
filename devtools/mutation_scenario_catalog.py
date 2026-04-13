@@ -15,6 +15,12 @@ class MutationCampaign(ScenarioMetadata):
     tests: tuple[str, ...]
     notes: tuple[str, ...] = ()
 
+    def __post_init__(self) -> None:
+        if self.origin == "authored":
+            object.__setattr__(self, "origin", "authored.mutation-campaign")
+        if not self.tags:
+            object.__setattr__(self, "tags", ("mutation",))
+
 
 MUTATION_CAMPAIGNS: dict[str, MutationCampaign] = {
     "filters": MutationCampaign(
