@@ -102,6 +102,14 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
     CommandSpec("run-validation-lanes", "verification", "Run named validation lanes.", "devtools.run_validation_lanes"),
     CommandSpec("run-scale-lanes", "verification", "Run scale-validation lanes.", "devtools.run_scale_lanes"),
     CommandSpec(
+        "artifact-graph",
+        "verification",
+        "Render the runtime artifact, operation, and scenario-coverage map.",
+        "devtools.artifact_graph",
+        use_when="Inspect the authored runtime graph and see which scenarios currently cover declared artifacts and operations.",
+        examples=("devtools artifact-graph", "devtools artifact-graph --json"),
+    ),
+    CommandSpec(
         "verify-showcase",
         "verification",
         "Verify committed showcase/demo surfaces.",
