@@ -55,6 +55,8 @@ def test_build_quality_registry_exposes_live_catalogs() -> None:
     assert pipeline.tags == ("benchmark", "pipeline")
     startup_health = next(entry for entry in registry.synthetic_benchmark_campaigns if entry.name == "startup-health")
     assert startup_health.origin == "authored.synthetic-benchmark"
+    assert startup_health.summary_metric == "total_health_s"
+    assert startup_health.summary_label == "s"
     assert startup_health.artifact_targets == ("archive_health",)
     assert startup_health.operation_targets == ("health.startup.synthetic",)
     assert startup_health.tags == ("benchmark", "synthetic", "health")
