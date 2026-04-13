@@ -12,6 +12,7 @@ from devtools.benchmark_campaign import (
     render_index,
 )
 from devtools.benchmark_scenario_catalog import (
+    BENCHMARK_SCENARIO_INDEX,
     BENCHMARK_SCENARIOS,
     BenchmarkScenario,
     compile_benchmark_scenarios,
@@ -174,7 +175,7 @@ def test_campaign_result_round_trips_path_targets_from_artifact(tmp_path: Path) 
     assert loaded.origin == "generated.search-filters"
 
 
-def test_benchmark_scenario_compiles_to_campaign() -> None:
+def test_benchmark_scenario_exposes_tests_from_execution() -> None:
     scenario = BenchmarkScenario(
         scenario_id="action-events",
         description="action-event repair benchmark",
@@ -186,16 +187,11 @@ def test_benchmark_scenario_compiles_to_campaign() -> None:
         tags=("benchmark", "action-events"),
     )
 
-    campaign = scenario.compile()
-
-    assert campaign.name == "action-events"
-    assert campaign.description == "action-event repair benchmark"
-    assert campaign.tests == ("tests/benchmarks/test_action_events.py",)
-    assert campaign.notes == ("Tracks action-event repair throughput.",)
-    assert campaign.origin == "generated.action-events"
-    assert campaign.artifact_targets == ("action_event_rows", "action_event_fts")
-    assert campaign.operation_targets == ("benchmark.repair.action-events",)
-    assert campaign.tags == ("benchmark", "action-events")
+    assert scenario.tests == ("tests/benchmarks/test_action_events.py",)
+    assert scenario.origin == "generated.action-events"
+    assert scenario.artifact_targets == ("action_event_rows", "action_event_fts")
+    assert scenario.operation_targets == ("benchmark.repair.action-events",)
+    assert scenario.tags == ("benchmark", "action-events")
 
 
 def test_compile_benchmark_scenarios_indexes_by_id() -> None:
@@ -203,3 +199,7 @@ def test_compile_benchmark_scenarios_indexes_by_id() -> None:
 
     assert set(campaigns) == {"search-filters", "storage", "pipeline"}
     assert campaigns["search-filters"].tests == ("tests/benchmarks/test_search_filters.py",)
+
+
+def test_benchmark_scenario_index_tracks_authored_catalog() -> None:
+    assert set(BENCHMARK_SCENARIO_INDEX) == {"search-filters", "storage", "pipeline"}

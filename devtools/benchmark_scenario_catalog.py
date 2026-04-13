@@ -9,8 +9,10 @@ from polylogue.scenarios import ScenarioMetadata
 
 
 @dataclass(frozen=True)
-class Campaign(ScenarioMetadata):
-    name: str
+class BenchmarkScenario(ScenarioMetadata):
+    """Authored scenario metadata for one durable benchmark campaign."""
+
+    scenario_id: str
     description: str
     execution: ExecutionSpec
     notes: tuple[str, ...] = ()
@@ -22,35 +24,8 @@ class Campaign(ScenarioMetadata):
         return self.execution.pytest_targets
 
 
-@dataclass(frozen=True)
-class BenchmarkScenario(ScenarioMetadata):
-    """Authored scenario metadata for one durable benchmark campaign."""
-
-    scenario_id: str
-    description: str
-    execution: ExecutionSpec
-    notes: tuple[str, ...] = ()
-    warn_pct: float = 10.0
-    fail_pct: float = 20.0
-
-    def compile(self) -> Campaign:
-        return Campaign(
-            name=self.scenario_id,
-            description=self.description,
-            execution=self.execution,
-            notes=self.notes,
-            warn_pct=self.warn_pct,
-            fail_pct=self.fail_pct,
-            origin=self.origin,
-            path_targets=self.path_targets,
-            artifact_targets=self.artifact_targets,
-            operation_targets=self.operation_targets,
-            tags=self.tags,
-        )
-
-
-def compile_benchmark_scenarios(scenarios: tuple[BenchmarkScenario, ...]) -> dict[str, Campaign]:
-    return {scenario.scenario_id: scenario.compile() for scenario in scenarios}
+def compile_benchmark_scenarios(scenarios: tuple[BenchmarkScenario, ...]) -> dict[str, BenchmarkScenario]:
+    return {scenario.scenario_id: scenario for scenario in scenarios}
 
 
 BENCHMARK_SCENARIOS: tuple[BenchmarkScenario, ...] = (
@@ -92,13 +67,12 @@ BENCHMARK_SCENARIOS: tuple[BenchmarkScenario, ...] = (
     ),
 )
 
-BENCHMARK_CAMPAIGNS: dict[str, Campaign] = compile_benchmark_scenarios(BENCHMARK_SCENARIOS)
+BENCHMARK_SCENARIO_INDEX: dict[str, BenchmarkScenario] = compile_benchmark_scenarios(BENCHMARK_SCENARIOS)
 
 
 __all__ = [
-    "BENCHMARK_CAMPAIGNS",
+    "BENCHMARK_SCENARIO_INDEX",
     "BENCHMARK_SCENARIOS",
     "BenchmarkScenario",
-    "Campaign",
     "compile_benchmark_scenarios",
 ]
