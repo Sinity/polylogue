@@ -37,6 +37,10 @@ class Exercise:
     vhs_capture: bool = False  # Whether this exercise should be captured as VHS recording
     artifact_class: str = "text"  # "text" | "json" | "visual" | "bundle"
     capture_steps: tuple[str, ...] = ()  # Optional VHS interaction steps for complex scenarios
+    origin: str = "authored"
+    artifact_targets: tuple[str, ...] = ()
+    operation_targets: tuple[str, ...] = ()
+    tags: tuple[str, ...] = ()
 
 
 __all__ = ["Exercise", "Validation"]
