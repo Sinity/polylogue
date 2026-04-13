@@ -41,7 +41,13 @@ from .projections import (
     ScenarioProjectionSourceKind,
     compile_projection_entries,
 )
-from .runtime import ExecutionResult, resolve_execution_command, run_execution
+from .runtime import (
+    ExecutionResult,
+    dispatch_execution,
+    resolve_execution_command,
+    resolve_execution_runner,
+    run_execution,
+)
 from .sources import NamedScenarioSource
 from .specs import ScenarioSpec
 
@@ -62,6 +68,7 @@ __all__ = [
     "CorpusScenario",
     "CorpusSpec",
     "compile_projection_entries",
+    "dispatch_execution",
     "declared_operation_target_names",
     "ExecutableScenario",
     "ExecutionKind",
@@ -78,6 +85,7 @@ __all__ = [
     "polylogue_execution",
     "pytest_execution",
     "resolve_execution_command",
+    "resolve_execution_runner",
     "runner_execution",
     "run_execution",
     "runtime_artifact_graph",

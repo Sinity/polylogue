@@ -5,7 +5,13 @@ from types import SimpleNamespace
 
 import pytest
 
-from polylogue.scenarios import polylogue_execution, resolve_execution_command, run_execution
+from polylogue.scenarios import (
+    dispatch_execution,
+    polylogue_execution,
+    resolve_execution_command,
+    run_execution,
+    runner_execution,
+)
 
 
 def test_resolve_execution_command_applies_binary_overrides() -> None:
@@ -50,3 +56,27 @@ def test_run_execution_rejects_composite_execution() -> None:
 
     with pytest.raises(ValueError, match="has no direct command"):
         run_execution(composite_execution("lane-a", "lane-b"))
+
+
+@pytest.mark.asyncio
+async def test_dispatch_execution_routes_runner_executions_through_resolver() -> None:
+    captured: dict[str, object] = {}
+
+    async def fake_runner(db_path: Path):
+        captured["db_path"] = db_path
+        return {"ok": True}
+
+    result = await dispatch_execution(
+        runner_execution("startup-health"),
+        runner_resolver=lambda name: fake_runner if name == "startup-health" else None,  # type: ignore[return-value]
+        runner_args=(Path("/tmp/benchmark.db"),),
+    )
+
+    assert result == {"ok": True}
+    assert captured["db_path"] == Path("/tmp/benchmark.db")
+
+
+@pytest.mark.asyncio
+async def test_dispatch_execution_rejects_runner_without_resolver() -> None:
+    with pytest.raises(ValueError, match="runner_resolver"):
+        await dispatch_execution(runner_execution("startup-health"))
