@@ -51,7 +51,7 @@ def pytest_lane(
         description=description,
         timeout_s=timeout_s,
         category=category,
-        execution=pytest_execution("pytest", *args),
+        execution=pytest_execution(*args),
         origin=origin,
         path_targets=path_targets,
         artifact_targets=artifact_targets,

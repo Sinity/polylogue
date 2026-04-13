@@ -29,7 +29,7 @@ def test_build_document_includes_live_registry_sections() -> None:
                     description="Machine-readable CLI surface.",
                     timeout_s=120,
                     category="contract",
-                    execution=pytest_execution("pytest", "-m", "machine_contract"),
+                    execution=pytest_execution("-m", "machine_contract"),
                 ),
                 LaneEntry(
                     name="live-exercises",
