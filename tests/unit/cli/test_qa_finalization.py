@@ -5,22 +5,8 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 from polylogue.cli.qa_finalization import finalize_qa_run
-from polylogue.cli.qa_requests import QACaptureMode, QAFinalizationPlan, QASnapshotPlan, build_qa_finalization_plan
+from polylogue.cli.qa_requests import QACaptureMode, QAFinalizationPlan, QASnapshotPlan
 from polylogue.showcase.qa_runner import QAResult
-
-
-def test_build_qa_finalization_plan_preserves_typed_intent(tmp_path: Path) -> None:
-    snapshot_plan = QASnapshotPlan(label="release-v3", source_dir=tmp_path / "report")
-
-    plan = build_qa_finalization_plan(
-        capture_mode=QACaptureMode.VHS,
-        json_output=True,
-        snapshot_plan=snapshot_plan,
-    )
-
-    assert plan.capture_mode is QACaptureMode.VHS
-    assert plan.json_output is True
-    assert plan.snapshot_plan is snapshot_plan
 
 
 def test_finalize_qa_run_emits_json_and_executes_snapshot(monkeypatch, tmp_path: Path) -> None:
