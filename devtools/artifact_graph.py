@@ -7,12 +7,58 @@ import json
 import sys
 
 from polylogue.artifact_graph import build_artifact_graph
+from polylogue.scenarios import ScenarioMetadata
+from polylogue.showcase.exercises import EXERCISES
+
+
+def _runtime_scenario_coverage() -> dict[str, dict[str, list[dict[str, str]]]]:
+    from devtools.quality_registry import build_quality_registry
+
+    registry = build_quality_registry()
+    scenario_like_items = [
+        ("exercise", exercise.name, ScenarioMetadata.from_object(exercise))
+        for exercise in EXERCISES
+    ]
+    scenario_like_items.extend(
+        ("benchmark-campaign", campaign.name, ScenarioMetadata.from_object(campaign))
+        for campaign in registry.benchmark_campaigns
+    )
+    scenario_like_items.extend(
+        ("synthetic-benchmark", campaign.name, ScenarioMetadata.from_object(campaign))
+        for campaign in registry.synthetic_benchmark_campaigns
+    )
+
+    graph = build_artifact_graph()
+    known_artifacts = set(graph.by_name())
+    known_operations = {operation.name for operation in graph.operations}
+    artifact_refs: dict[str, list[dict[str, str]]] = {name: [] for name in known_artifacts}
+    operation_refs: dict[str, list[dict[str, str]]] = {name: [] for name in known_operations}
+
+    for source_kind, name, metadata in scenario_like_items:
+        for artifact_name in metadata.artifact_targets:
+            if artifact_name in artifact_refs:
+                artifact_refs[artifact_name].append(
+                    {"source": source_kind, "name": name, "origin": metadata.origin}
+                )
+        for operation_name in metadata.operation_targets:
+            if operation_name in operation_refs:
+                operation_refs[operation_name].append(
+                    {"source": source_kind, "name": name, "origin": metadata.origin}
+                )
+
+    return {
+        "artifacts": {name: refs for name, refs in artifact_refs.items() if refs},
+        "operations": {name: refs for name, refs in operation_refs.items() if refs},
+    }
 
 
 def render_artifact_graph(*, as_json: bool) -> str:
     graph = build_artifact_graph()
+    coverage = _runtime_scenario_coverage()
     if as_json:
-        return json.dumps(graph.to_dict(), indent=2)
+        payload = graph.to_dict()
+        payload["scenario_coverage"] = coverage
+        return json.dumps(payload, indent=2)
 
     lines: list[str] = ["Artifact Paths:"]
     for path in graph.paths:
@@ -29,6 +75,17 @@ def render_artifact_graph(*, as_json: bool) -> str:
         lines.append(f"- {operation.name} [{operation.kind.value}]: {operation.description}")
         lines.append(f"  - consumes: {consumes}")
         lines.append(f"  - produces: {produces}")
+    lines.append("")
+    lines.append("Runtime Scenario Coverage:")
+    if not coverage["artifacts"] and not coverage["operations"]:
+        lines.append("- none")
+        return "\n".join(lines)
+    for artifact_name, refs in sorted(coverage["artifacts"].items()):
+        rendered_refs = ", ".join(f"{ref['source']}:{ref['name']}" for ref in refs)
+        lines.append(f"- artifact {artifact_name}: {rendered_refs}")
+    for operation_name, refs in sorted(coverage["operations"].items()):
+        rendered_refs = ", ".join(f"{ref['source']}:{ref['name']}" for ref in refs)
+        lines.append(f"- operation {operation_name}: {rendered_refs}")
     return "\n".join(lines)
 
 
