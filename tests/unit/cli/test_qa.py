@@ -21,13 +21,18 @@ def _make_result(exercises: list[Exercise] | None = None) -> ShowcaseResult:
     if exercises is None:
         exercises = [
             Exercise(
-                "test-1",
-                "structural",
-                "Test one",
-                polylogue_execution("--help"),
-                Validation(stdout_contains=("polylogue",)),
+                name="test-1",
+                group="structural",
+                description="Test one",
+                execution=polylogue_execution("--help"),
+                validation=Validation(stdout_contains=("polylogue",)),
             ),
-            Exercise("test-2", "sources", "Test two", polylogue_execution("sources")),
+            Exercise(
+                name="test-2",
+                group="sources",
+                description="Test two",
+                execution=polylogue_execution("sources"),
+            ),
         ]
 
     result = ShowcaseResult()

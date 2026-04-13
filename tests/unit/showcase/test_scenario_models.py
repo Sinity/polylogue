@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 from polylogue.scenarios import ScenarioProjectionSourceKind, polylogue_execution
-from polylogue.showcase.exercise_models import Validation
-from polylogue.showcase.scenario_models import ExerciseScenario, compile_exercise_scenarios
+from polylogue.showcase.exercise_models import Exercise, Validation
+from polylogue.showcase.scenario_models import compile_exercise_scenarios
 
 
 def test_exercise_scenario_compiles_to_exercise() -> None:
-    scenario = ExerciseScenario(
+    scenario = Exercise(
         name="json-doctor",
         group="subcommands",
         description="doctor JSON contract",
@@ -38,8 +38,8 @@ def test_exercise_scenario_compiles_to_exercise() -> None:
 
 def test_compile_exercise_scenarios_preserves_order() -> None:
     scenarios = (
-        ExerciseScenario(name="a", group="structural", description="A"),
-        ExerciseScenario(name="b", group="structural", description="B"),
+        Exercise(name="a", group="structural", description="A"),
+        Exercise(name="b", group="structural", description="B"),
     )
 
     exercises = compile_exercise_scenarios(scenarios)
@@ -48,7 +48,7 @@ def test_compile_exercise_scenarios_preserves_order() -> None:
 
 
 def test_exercise_scenario_compiles_its_own_projection_entry() -> None:
-    scenario = ExerciseScenario(
+    scenario = Exercise(
         name="json-doctor",
         group="subcommands",
         description="doctor JSON contract",

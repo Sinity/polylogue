@@ -4,18 +4,14 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
 
 from polylogue.scenarios import (
+    ExecutableScenario,
     ExecutionKind,
     ExecutionSpec,
-    ScenarioMetadata,
+    ScenarioProjectionSourceKind,
     polylogue_execution,
 )
-from polylogue.scenarios.execution_inference import infer_metadata_from_execution
-
-if TYPE_CHECKING:
-    from polylogue.scenarios import CorpusSpec
 
 
 @dataclass(frozen=True)
@@ -30,15 +26,12 @@ class Validation:
     custom: Callable[[str, int], str | None] | None = None  # (output, exit_code) -> error|None
 
 
-@dataclass(frozen=True)
-class Exercise(ScenarioMetadata):
+@dataclass(frozen=True, kw_only=True)
+class Exercise(ExecutableScenario):
     """A single showcase exercise — one CLI invocation with validation."""
 
-    name: str  # Unique ID e.g. "query.list-json"
     group: str  # structural | sources | pipeline | query-read | query-write | subcommands | advanced
-    description: str  # Human-readable, used in cookbook headings
     execution: ExecutionSpec = field(default_factory=polylogue_execution)
-    corpus_specs: tuple[CorpusSpec, ...] = ()
     validation: Validation = field(default_factory=Validation)
     needs_data: bool = False  # Requires populated database
     writes: bool = False  # Mutates state — skip in --live mode
@@ -56,15 +49,18 @@ class Exercise(ScenarioMetadata):
         return list(self.execution.polylogue_args)
 
     def __post_init__(self) -> None:
+        if self.execution is None:
+            object.__setattr__(self, "execution", polylogue_execution())
         if self.execution.kind is not ExecutionKind.POLYLOGUE:
             raise ValueError("showcase exercises require polylogue execution")
-        merged = ScenarioMetadata.from_object(self).with_inferred_defaults(
-            infer_metadata_from_execution(self.execution)
-        )
-        object.__setattr__(self, "path_targets", merged.path_targets)
-        object.__setattr__(self, "artifact_targets", merged.artifact_targets)
-        object.__setattr__(self, "operation_targets", merged.operation_targets)
-        object.__setattr__(self, "tags", merged.tags)
+        super().__post_init__()
+
+    @property
+    def projection_source_kind(self) -> ScenarioProjectionSourceKind:
+        return ScenarioProjectionSourceKind.EXERCISE
+
+    def compile(self) -> Exercise:
+        return self
 
     @property
     def invoke_args(self) -> list[str]:

@@ -1,17 +1,16 @@
-"""Typed showcase exercise facade over the serialized catalog."""
+"""Typed showcase exercise catalog over the single exercise source model."""
 
 from __future__ import annotations
 
-from polylogue.showcase.catalog_loader import load_exercise_scenario_catalog
+from polylogue.showcase.catalog_loader import load_exercise_catalog
 from polylogue.showcase.exercise_models import Exercise, Validation
 from polylogue.showcase.generators import (
     generate_command_help_scenarios,
     generate_json_contract_scenarios,
     generate_qa_extra_scenarios,
 )
-from polylogue.showcase.scenario_models import ExerciseScenario, compile_exercise_scenarios
 
-_CATALOG = load_exercise_scenario_catalog()
+_CATALOG = load_exercise_catalog()
 _GENERATED_COMMAND_HELP_SCENARIOS = generate_command_help_scenarios()
 _GENERATED_COMMAND_HELP_NAMES = {scenario.name for scenario in _GENERATED_COMMAND_HELP_SCENARIOS}
 _GENERATED_JSON_CONTRACT_SCENARIOS = generate_json_contract_scenarios()
@@ -19,13 +18,13 @@ _GENERATED_JSON_CONTRACT_NAMES = {scenario.name for scenario in _GENERATED_JSON_
 _GENERATED_EXERCISE_NAMES = _GENERATED_COMMAND_HELP_NAMES | _GENERATED_JSON_CONTRACT_NAMES
 _GENERATED_EXERCISE_SCENARIOS = _GENERATED_COMMAND_HELP_SCENARIOS + _GENERATED_JSON_CONTRACT_SCENARIOS
 
-EXERCISE_SCENARIOS: tuple[ExerciseScenario, ...] = (
-    tuple(scenario for scenario in _CATALOG.scenarios if scenario.name not in _GENERATED_EXERCISE_NAMES)
+EXERCISE_SCENARIOS: tuple[Exercise, ...] = (
+    tuple(exercise for exercise in _CATALOG.exercises if exercise.name not in _GENERATED_EXERCISE_NAMES)
     + _GENERATED_EXERCISE_SCENARIOS
 )
-EXERCISES: tuple[Exercise, ...] = compile_exercise_scenarios(EXERCISE_SCENARIOS)
-QA_EXTRA_SCENARIOS: tuple[ExerciseScenario, ...] = generate_qa_extra_scenarios()
-QA_EXTRA_EXERCISES: tuple[Exercise, ...] = compile_exercise_scenarios(QA_EXTRA_SCENARIOS)
+EXERCISES: tuple[Exercise, ...] = EXERCISE_SCENARIOS
+QA_EXTRA_SCENARIOS: tuple[Exercise, ...] = generate_qa_extra_scenarios()
+QA_EXTRA_EXERCISES: tuple[Exercise, ...] = QA_EXTRA_SCENARIOS
 
 EXERCISE_INDEX: dict[str, Exercise] = {e.name: e for e in EXERCISES}
 

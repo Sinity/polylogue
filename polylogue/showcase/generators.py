@@ -18,7 +18,7 @@ from polylogue.cli.command_inventory import CommandPath, iter_command_paths
 from polylogue.scenarios import polylogue_execution
 from polylogue.showcase.dimensions import query_read, schema_exercise
 from polylogue.showcase.exercise_models import Exercise, Validation
-from polylogue.showcase.scenario_models import ExerciseScenario, compile_exercise_scenarios
+from polylogue.showcase.scenario_models import compile_exercise_scenarios
 
 
 def discover_filter_flags(cli_group: click.Group) -> list[dict[str, Any]]:
@@ -81,17 +81,17 @@ def _make_flag_args(flag: dict[str, Any]) -> list[str]:
     return [cli_name]
 
 
-def generate_filter_scenarios(cli_group: click.Group | None = None) -> tuple[ExerciseScenario, ...]:
+def generate_filter_scenarios(cli_group: click.Group | None = None) -> tuple[Exercise, ...]:
     """Generate smoke and pairwise filter scenarios from CLI flags."""
     flags = discover_filter_flags(cli_group or root_cli)
-    scenarios: list[ExerciseScenario] = []
+    scenarios: list[Exercise] = []
 
     # Individual smoke: each flag alone
     for flag in flags:
         dims = query_read(complexity="basic")
         args = _make_flag_args(flag) + ["list", "-n", "3"]
         scenarios.append(
-            ExerciseScenario(
+            Exercise(
                 name=f"gen-filter-{flag['name']}",
                 group="generated-filters",
                 description=f"Generated: filter with {flag['cli_name']}",
@@ -118,7 +118,7 @@ def generate_filter_scenarios(cli_group: click.Group | None = None) -> tuple[Exe
         args = _make_flag_args(a) + _make_flag_args(b) + ["list", "-n", "3"]
         pair_name = f"gen-filter-{a['name']}+{b['name']}"
         scenarios.append(
-            ExerciseScenario(
+            Exercise(
                 name=pair_name,
                 group="generated-filters",
                 description=f"Generated: {a['cli_name']} + {b['cli_name']}",
@@ -149,13 +149,13 @@ def command_help_exercise_names() -> set[str]:
     return {scenario.name for scenario in generate_command_help_scenarios()}
 
 
-def generate_command_help_scenarios() -> tuple[ExerciseScenario, ...]:
+def generate_command_help_scenarios() -> tuple[Exercise, ...]:
     """Generate tier-0 help scenarios from the recursive Click command tree."""
-    scenarios: list[ExerciseScenario] = []
+    scenarios: list[Exercise] = []
     for command_path in inventory_command_paths():
         display_name = command_path.display_name
         scenarios.append(
-            ExerciseScenario(
+            Exercise(
                 name=command_path.help_exercise_name,
                 group="structural",
                 description=f"{display_name} help",
@@ -360,9 +360,9 @@ def json_contract_exercise_names() -> set[str]:
     return {scenario.name for scenario in generate_json_contract_scenarios()}
 
 
-def generate_json_contract_scenarios() -> tuple[ExerciseScenario, ...]:
+def generate_json_contract_scenarios() -> tuple[Exercise, ...]:
     """Generate JSON contract scenarios for curated runnable commands."""
-    scenarios: list[ExerciseScenario] = []
+    scenarios: list[Exercise] = []
     by_path = _json_contract_specs_by_path()
     for cp in inventory_command_paths():
         specs = by_path.get(tuple(cp.path))
@@ -370,7 +370,7 @@ def generate_json_contract_scenarios() -> tuple[ExerciseScenario, ...]:
             continue
         for spec in specs:
             scenarios.append(
-                ExerciseScenario(
+                Exercise(
                     name=str(spec.get("name", f"json-{'-'.join(cp.path)}")),
                     group="subcommands",
                     description=f"{cp.display_name} JSON contract",
@@ -420,9 +420,9 @@ def _is_valid_json_check(output: str, _exit_code: int) -> str | None:
     return None
 
 
-def generate_format_scenarios() -> tuple[ExerciseScenario, ...]:
+def generate_format_scenarios() -> tuple[Exercise, ...]:
     """Generate format × mode scenarios from the format registry."""
-    scenarios: list[ExerciseScenario] = []
+    scenarios: list[Exercise] = []
 
     modes = [
         ("latest", ["--latest"]),
@@ -448,7 +448,7 @@ def generate_format_scenarios() -> tuple[ExerciseScenario, ...]:
                 validation_kwargs["stdout_contains"] = tuple(spec["contains"])
 
             scenarios.append(
-                ExerciseScenario(
+                Exercise(
                     name=f"gen-fmt-{fmt}-{mode_name}",
                     group="generated-formats",
                     description=f"Generated: {fmt} format in {mode_name} mode",
@@ -475,16 +475,16 @@ def generate_format_exercises() -> list[Exercise]:
 # ---------------------------------------------------------------------------
 
 
-def generate_schema_scenarios() -> tuple[ExerciseScenario, ...]:
+def generate_schema_scenarios() -> tuple[Exercise, ...]:
     """Generate schema verification scenarios."""
     from polylogue.schemas.observation import PROVIDERS
 
-    scenarios: list[ExerciseScenario] = []
+    scenarios: list[Exercise] = []
 
     # Tier 0: schema list returns valid JSON
     dims_smoke = schema_exercise(complexity="smoke", io_mode="read")
     scenarios.append(
-        ExerciseScenario(
+        Exercise(
             name="gen-schema-list",
             group="generated-schema",
             description="Generated: schema list --json returns valid JSON",
@@ -503,7 +503,7 @@ def generate_schema_scenarios() -> tuple[ExerciseScenario, ...]:
     dims_explain = schema_exercise(complexity="basic", io_mode="read")
     for provider in PROVIDERS:
         scenarios.append(
-            ExerciseScenario(
+            Exercise(
                 name=f"gen-schema-explain-{provider}",
                 group="generated-schema",
                 description=f"Generated: schema explain --provider {provider}",
@@ -532,14 +532,14 @@ _PROVIDER_FEATURES: dict[str, set[str]] = {
 }
 
 
-def generate_provider_feature_scenarios() -> tuple[ExerciseScenario, ...]:
+def generate_provider_feature_scenarios() -> tuple[Exercise, ...]:
     """Generate provider × content-type cross-product scenarios."""
-    scenarios: list[ExerciseScenario] = []
+    scenarios: list[Exercise] = []
     for provider, features in _PROVIDER_FEATURES.items():
         for feature in sorted(features):
             flag = f"--has-{feature}"
             scenarios.append(
-                ExerciseScenario(
+                Exercise(
                     name=f"gen-provider-{provider}-has-{feature}",
                     group="generated-filters",
                     description=f"Generated: {provider} has {feature}",
@@ -559,7 +559,7 @@ def generate_provider_feature_exercises() -> list[Exercise]:
     return list(compile_exercise_scenarios(generate_provider_feature_scenarios()))
 
 
-def generate_qa_extra_scenarios() -> tuple[ExerciseScenario, ...]:
+def generate_qa_extra_scenarios() -> tuple[Exercise, ...]:
     """Generate the extra scenario families exercised by the QA workflow."""
     return (
         *generate_schema_scenarios(),
@@ -567,9 +567,9 @@ def generate_qa_extra_scenarios() -> tuple[ExerciseScenario, ...]:
     )
 
 
-def generate_all_scenarios(cli_group: click.Group | None = None) -> tuple[ExerciseScenario, ...]:
+def generate_all_scenarios(cli_group: click.Group | None = None) -> tuple[Exercise, ...]:
     """Generate all scenario categories."""
-    scenarios: list[ExerciseScenario] = []
+    scenarios: list[Exercise] = []
     if cli_group is not None:
         scenarios.extend(generate_filter_scenarios(cli_group))
     scenarios.extend(generate_command_help_scenarios())

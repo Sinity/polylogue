@@ -688,11 +688,11 @@ class TestQaCommand:
                 results=[
                     ExerciseResult(
                         exercise=Exercise(
-                            "smoke",
-                            "structural",
-                            "smoke",
-                            polylogue_execution("--help"),
-                            Validation(),
+                            name="smoke",
+                            group="structural",
+                            description="smoke",
+                            execution=polylogue_execution("--help"),
+                            validation=Validation(),
                         ),
                         passed=True,
                         exit_code=0,
