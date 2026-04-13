@@ -13,7 +13,7 @@ Current registry snapshot:
 - composite lanes: `23`
 - mutation campaigns: `19`
 - benchmark campaigns: `3`
-- synthetic benchmark campaigns: `4`
+- synthetic benchmark campaigns: `5`
 
 ## Common Commands
 
@@ -204,6 +204,7 @@ These campaigns generate synthetic archives and run long-haul benchmark workload
 
 | Campaign | Tests | Warn | Fail | Description |
 | --- | --- | ---: | ---: | --- |
+| `action-event-materialization` | — | 0.0% | 0.0% | Benchmark action-event read-model rebuild over synthetic tool-use transcripts |
 | `filter-scan` | — | 0.0% | 0.0% | Benchmark common filter query patterns |
 | `fts-rebuild` | — | 0.0% | 0.0% | Benchmark full FTS5 index rebuild |
 | `incremental-index` | — | 0.0% | 0.0% | Benchmark incremental FTS index updates |
