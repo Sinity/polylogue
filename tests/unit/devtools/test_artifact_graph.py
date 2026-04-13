@@ -17,10 +17,10 @@ def test_render_artifact_graph_text_mentions_both_vertical_paths() -> None:
     assert "plan-validation-backlog [planning]" in rendered
     assert "project-action-event-health" in rendered
     assert "json-doctor-action-event-preview" in rendered
-    assert "uncovered artifacts:" in rendered
-    assert "raw_validation_state" in rendered
-    assert "uncovered operations:" in rendered
-    assert "plan-validation-backlog" in rendered
+    assert "run-preview-reparse" in rendered
+    assert "synthetic-benchmark:action-event-materialization" in rendered
+    assert "uncovered artifacts:" not in rendered
+    assert "uncovered operations:" not in rendered
 
 
 def test_render_artifact_graph_json_is_machine_readable() -> None:
@@ -38,6 +38,11 @@ def test_render_artifact_graph_json_is_machine_readable() -> None:
             "source": "exercise",
             "name": "json-doctor-action-event-preview",
             "origin": "generated.json-contract",
+        },
+        {
+            "source": "synthetic-benchmark",
+            "name": "action-event-materialization",
+            "origin": "authored.synthetic-benchmark",
         }
     ]
     assert payload["scenario_coverage"]["operations"]["project-action-event-health"] == [
@@ -47,5 +52,33 @@ def test_render_artifact_graph_json_is_machine_readable() -> None:
             "origin": "generated.json-contract",
         }
     ]
-    assert "raw_validation_state" in payload["scenario_coverage"]["uncovered_artifacts"]
-    assert "plan-validation-backlog" in payload["scenario_coverage"]["uncovered_operations"]
+    assert payload["scenario_coverage"]["artifacts"]["raw_validation_state"] == [
+        {
+            "source": "exercise",
+            "name": "run-preview-reparse",
+            "origin": "authored.showcase-catalog",
+        }
+    ]
+    assert payload["scenario_coverage"]["operations"]["plan-validation-backlog"] == [
+        {
+            "source": "exercise",
+            "name": "run-preview-reparse",
+            "origin": "authored.showcase-catalog",
+        }
+    ]
+    assert payload["scenario_coverage"]["artifacts"]["tool_use_source_blocks"] == [
+        {
+            "source": "synthetic-benchmark",
+            "name": "action-event-materialization",
+            "origin": "authored.synthetic-benchmark",
+        }
+    ]
+    assert payload["scenario_coverage"]["operations"]["materialize-action-events"] == [
+        {
+            "source": "synthetic-benchmark",
+            "name": "action-event-materialization",
+            "origin": "authored.synthetic-benchmark",
+        }
+    ]
+    assert payload["scenario_coverage"]["uncovered_artifacts"] == []
+    assert payload["scenario_coverage"]["uncovered_operations"] == []

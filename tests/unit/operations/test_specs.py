@@ -10,12 +10,12 @@ def test_runtime_operation_specs_cover_the_two_proven_paths() -> None:
         "plan-validation-backlog",
         "plan-parse-backlog",
         "materialize-action-events",
-        "index-action-events",
         "project-action-event-health",
     }
     assert specs["plan-validation-backlog"].kind is OperationKind.PLANNING
     assert specs["materialize-action-events"].kind is OperationKind.MATERIALIZATION
-    assert specs["index-action-events"].mutates_state is True
+    assert specs["materialize-action-events"].mutates_state is True
+    assert specs["materialize-action-events"].produces == ("action_event_rows", "action_event_fts")
     assert specs["project-action-event-health"].previewable is True
 
 

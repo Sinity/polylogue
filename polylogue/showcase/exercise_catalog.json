@@ -176,6 +176,41 @@
       "vhs_capture": true
     },
     {
+      "name": "run-preview-reparse",
+      "group": "pipeline",
+      "description": "Preview force-reparse planning (seeded fixtures)",
+      "args": [
+        "run",
+        "--preview",
+        "--reparse",
+        "--source",
+        "inbox",
+        "parse"
+      ],
+      "validation": {
+        "stdout_contains": [
+          "Reparse requested."
+        ]
+      },
+      "env": "seeded",
+      "origin": "authored.showcase-catalog",
+      "artifact_targets": [
+        "raw_validation_state",
+        "validation_backlog",
+        "parse_backlog",
+        "parse_quarantine"
+      ],
+      "operation_targets": [
+        "plan-validation-backlog",
+        "plan-parse-backlog"
+      ],
+      "tags": [
+        "pipeline",
+        "reparse",
+        "maintenance"
+      ]
+    },
+    {
       "name": "run-preview-live",
       "group": "pipeline",
       "description": "Preview pipeline against live sources",

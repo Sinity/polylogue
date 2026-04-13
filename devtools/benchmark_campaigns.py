@@ -80,6 +80,16 @@ SYNTHETIC_BENCHMARK_SCENARIOS: tuple[SyntheticBenchmarkScenario, ...] = (
         operation_targets=("health.startup.synthetic",),
         tags=("benchmark", "synthetic", "health"),
     ),
+    SyntheticBenchmarkScenario(
+        scenario_id="action-event-materialization",
+        description="Benchmark action-event read-model rebuild over synthetic tool-use transcripts",
+        summary_metric="rebuild_wall_s",
+        summary_label="s",
+        origin="authored.synthetic-benchmark",
+        artifact_targets=("tool_use_source_blocks", "action_event_rows", "action_event_fts"),
+        operation_targets=("materialize-action-events",),
+        tags=("benchmark", "synthetic", "action-events"),
+    ),
 )
 
 SYNTHETIC_BENCHMARK_REGISTRY: dict[str, SyntheticBenchmarkScenario] = {
@@ -96,7 +106,7 @@ def _db_row_counts(db_path: Path) -> dict[str, int]:
         return stats
     stats["db_size_bytes"] = db_path.stat().st_size
     with open_connection(db_path) as conn:
-        for table in ("conversations", "messages", "content_blocks", "raw_conversations"):
+        for table in ("conversations", "messages", "content_blocks", "raw_conversations", "action_events"):
             try:
                 row = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()
                 stats[f"{table}_count"] = row[0] if row else 0
@@ -108,6 +118,11 @@ def _db_row_counts(db_path: Path) -> dict[str, int]:
             stats["fts_rows"] = row[0] if row else 0
         except Exception:
             stats["fts_rows"] = 0
+        try:
+            row = conn.execute("SELECT COUNT(*) FROM action_events_fts").fetchone()
+            stats["action_fts_rows"] = row[0] if row else 0
+        except Exception:
+            stats["action_fts_rows"] = 0
     return stats
 
 
@@ -330,6 +345,46 @@ async def run_startup_health_campaign(db_path: Path) -> CampaignResult:
         await backend.close()
 
 
+def run_action_event_materialization_campaign(db_path: Path) -> CampaignResult:
+    """Benchmark full action-event read-model rebuild.
+
+    Clears the durable action-event rows, then rebuilds them from persisted
+    tool-use source blocks. The action-event FTS projection is trigger-maintained
+    during rebuild and measured as part of the same operation.
+    """
+    from polylogue.storage.action_event_rebuild_runtime import rebuild_action_event_read_model_sync
+    from polylogue.storage.backends.connection import open_connection
+
+    stats_before = _db_row_counts(db_path)
+
+    with open_connection(db_path) as conn:
+        try:
+            conn.execute("DELETE FROM action_events")
+            conn.commit()
+        except Exception:
+            pass
+
+        elapsed, rebuilt_rows = _measure(rebuild_action_event_read_model_sync, conn)
+        conn.commit()
+
+    stats_after = _db_row_counts(db_path)
+
+    return CampaignResult(
+        campaign_name="action-event-materialization",
+        scale_level="",
+        metrics={
+            "rebuild_wall_s": round(elapsed, 3),
+            "action_event_rows_rebuilt": int(rebuilt_rows),
+        },
+        db_stats={
+            "action_events_before": stats_before.get("action_events_count", 0),
+            "action_events_after": stats_after.get("action_events_count", 0),
+            "action_fts_rows_after": stats_after.get("action_fts_rows", 0),
+            "db_size_bytes": stats_after.get("db_size_bytes", 0),
+        },
+    )
+
+
 async def run_synthetic_benchmark_campaign(name: str, db_path: Path) -> CampaignResult:
     """Dispatch one synthetic benchmark campaign by authored scenario id."""
 
@@ -343,6 +398,8 @@ async def run_synthetic_benchmark_campaign(name: str, db_path: Path) -> Campaign
             result = await run_filter_scan_campaign(db_path)
         case "startup-health":
             result = await run_startup_health_campaign(db_path)
+        case "action-event-materialization":
+            result = run_action_event_materialization_campaign(db_path)
         case _:
             raise KeyError(name)
     result.origin = scenario.origin
@@ -411,6 +468,7 @@ __all__ = [
     "SyntheticBenchmarkScenario",
     "run_filter_scan_campaign",
     "run_fts_rebuild_campaign",
+    "run_action_event_materialization_campaign",
     "run_full_campaign",
     "run_incremental_index_campaign",
     "run_synthetic_benchmark_campaign",

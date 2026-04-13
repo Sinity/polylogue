@@ -15,6 +15,7 @@ def test_build_quality_registry_exposes_live_catalogs() -> None:
     assert any(entry.name == "live-exercises" for entry in registry.live_lanes)
     assert any(entry.name == "filters" for entry in registry.mutation_campaigns)
     assert any(entry.name == "search-filters" for entry in registry.benchmark_campaigns)
+    assert any(entry.name == "action-event-materialization" for entry in registry.synthetic_benchmark_campaigns)
     assert any(entry.name == "startup-health" for entry in registry.synthetic_benchmark_campaigns)
     search_filters = next(entry for entry in registry.benchmark_campaigns if entry.name == "search-filters")
     assert search_filters.origin == "authored.benchmark-domain"
@@ -26,6 +27,13 @@ def test_build_quality_registry_exposes_live_catalogs() -> None:
     assert startup_health.artifact_targets == ("archive_health",)
     assert startup_health.operation_targets == ("health.startup.synthetic",)
     assert startup_health.tags == ("benchmark", "synthetic", "health")
+    action_events = next(
+        entry for entry in registry.synthetic_benchmark_campaigns if entry.name == "action-event-materialization"
+    )
+    assert action_events.origin == "authored.synthetic-benchmark"
+    assert action_events.artifact_targets == ("tool_use_source_blocks", "action_event_rows", "action_event_fts")
+    assert action_events.operation_targets == ("materialize-action-events",)
+    assert action_events.tags == ("benchmark", "synthetic", "action-events")
 
 
 def test_quality_registry_references_existing_files() -> None:
