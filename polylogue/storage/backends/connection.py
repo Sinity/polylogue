@@ -21,7 +21,32 @@ DB_TIMEOUT = 30
 READ_DB_TIMEOUT = 1
 WRITE_CACHE_SIZE_KIB = 131072  # 128 MiB
 READ_CACHE_SIZE_KIB = 32768  # 32 MiB
+WRITE_MMAP_SIZE_BYTES = 1073741824  # 1 GiB
 READ_MMAP_SIZE_BYTES = 134217728  # 128 MiB
+WAL_AUTOCHECKPOINT_PAGES = 10000
+
+WRITE_CONNECTION_PRAGMA_STATEMENTS: tuple[str, ...] = (
+    "PRAGMA foreign_keys = ON",
+    "PRAGMA journal_mode=WAL",
+    f"PRAGMA busy_timeout = {DB_TIMEOUT * 1000}",
+    f"PRAGMA cache_size = -{WRITE_CACHE_SIZE_KIB}",
+    "PRAGMA synchronous = NORMAL",
+    f"PRAGMA mmap_size = {WRITE_MMAP_SIZE_BYTES}",
+    "PRAGMA temp_store = MEMORY",
+    f"PRAGMA wal_autocheckpoint = {WAL_AUTOCHECKPOINT_PAGES}",
+)
+
+READ_CONNECTION_PRAGMA_STATEMENTS: tuple[str, ...] = (
+    f"PRAGMA busy_timeout = {READ_DB_TIMEOUT * 1000}",
+    f"PRAGMA cache_size = -{READ_CACHE_SIZE_KIB}",
+    f"PRAGMA mmap_size = {READ_MMAP_SIZE_BYTES}",
+    "PRAGMA temp_store = MEMORY",
+)
+
+
+def _apply_pragma_statements(conn: sqlite3.Connection, statements: Sequence[str]) -> None:
+    for statement in statements:
+        conn.execute(statement)
 
 
 def _load_sqlite_vec(conn: sqlite3.Connection) -> bool:
@@ -54,10 +79,7 @@ def _load_sqlite_vec(conn: sqlite3.Connection) -> bool:
 def _configure_read_connection(conn: sqlite3.Connection) -> None:
     """Apply read-safe settings without taking write-oriented locks."""
     conn.row_factory = sqlite3.Row
-    conn.execute(f"PRAGMA busy_timeout = {READ_DB_TIMEOUT * 1000}")
-    conn.execute(f"PRAGMA cache_size = -{READ_CACHE_SIZE_KIB}")
-    conn.execute(f"PRAGMA mmap_size = {READ_MMAP_SIZE_BYTES}")
-    conn.execute("PRAGMA temp_store = MEMORY")
+    _apply_pragma_statements(conn, READ_CONNECTION_PRAGMA_STATEMENTS)
 
 
 # ---------------------------------------------------------------------------
@@ -85,14 +107,7 @@ def _get_cached_connection(path: Path) -> sqlite3.Connection:
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path, timeout=DB_TIMEOUT)
     conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute(f"PRAGMA busy_timeout = {DB_TIMEOUT * 1000}")
-    conn.execute(f"PRAGMA cache_size = -{WRITE_CACHE_SIZE_KIB}")
-    conn.execute("PRAGMA synchronous = NORMAL")  # safe with WAL
-    conn.execute("PRAGMA mmap_size = 1073741824")  # 1 GB
-    conn.execute("PRAGMA temp_store = MEMORY")
-    conn.execute("PRAGMA wal_autocheckpoint = 10000")
+    _apply_pragma_statements(conn, WRITE_CONNECTION_PRAGMA_STATEMENTS)
     _load_sqlite_vec(conn)
     _ensure_schema(conn)
 
@@ -218,8 +233,11 @@ def _build_provider_scope_filter(
 
 __all__ = [
     "DB_TIMEOUT",
+    "READ_CONNECTION_PRAGMA_STATEMENTS",
     "READ_MMAP_SIZE_BYTES",
     "READ_DB_TIMEOUT",
+    "WAL_AUTOCHECKPOINT_PAGES",
+    "WRITE_CONNECTION_PRAGMA_STATEMENTS",
     "_build_provider_scope_filter",
     "_build_scope_filter",
     "_build_source_scope_filter",

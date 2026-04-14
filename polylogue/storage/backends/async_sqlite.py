@@ -24,10 +24,9 @@ from polylogue.storage.backends.async_sqlite_archive import SQLiteArchiveMixin
 from polylogue.storage.backends.async_sqlite_raw import SQLiteRawMixin
 from polylogue.storage.backends.connection import (
     DB_TIMEOUT,
-    READ_CACHE_SIZE_KIB,
+    READ_CONNECTION_PRAGMA_STATEMENTS,
     READ_DB_TIMEOUT,
-    READ_MMAP_SIZE_BYTES,
-    WRITE_CACHE_SIZE_KIB,
+    WRITE_CONNECTION_PRAGMA_STATEMENTS,
 )
 from polylogue.storage.backends.queries import action_events as action_events_q
 from polylogue.storage.backends.queries import (
@@ -52,6 +51,11 @@ from polylogue.storage.store import (
 )
 
 
+async def _apply_pragma_statements_async(conn: aiosqlite.Connection, statements: tuple[str, ...]) -> None:
+    for statement in statements:
+        await conn.execute(statement)
+
+
 async def configure_connection(conn: aiosqlite.Connection) -> None:
     """Apply canonical connection settings.
 
@@ -61,30 +65,13 @@ async def configure_connection(conn: aiosqlite.Connection) -> None:
     to expected levels.
     """
     conn.row_factory = aiosqlite.Row
-    await conn.execute("PRAGMA foreign_keys = ON")
-    await conn.execute("PRAGMA journal_mode=WAL")
-    await conn.execute(f"PRAGMA busy_timeout = {DB_TIMEOUT * 1000}")
-    # Keep write-path cache large enough for bulk work without multiplying
-    # per-connection RSS into server-scale memory use on a local CLI utility.
-    await conn.execute(f"PRAGMA cache_size = -{WRITE_CACHE_SIZE_KIB}")
-    # Performance: NORMAL sync is safe with WAL and avoids fsync per write
-    await conn.execute("PRAGMA synchronous = NORMAL")
-    # Performance: 1 GB memory-mapped I/O for faster reads on large DBs
-    await conn.execute("PRAGMA mmap_size = 1073741824")
-    # Performance: keep temp tables in memory
-    await conn.execute("PRAGMA temp_store = MEMORY")
-    # Performance: increase WAL autocheckpoint from 1000 to 10000 pages
-    # to reduce checkpoint frequency during bulk writes
-    await conn.execute("PRAGMA wal_autocheckpoint = 10000")
+    await _apply_pragma_statements_async(conn, WRITE_CONNECTION_PRAGMA_STATEMENTS)
 
 
 async def configure_read_connection(conn: aiosqlite.Connection) -> None:
     """Apply read-safe settings without mutating database-wide state."""
     conn.row_factory = aiosqlite.Row
-    await conn.execute(f"PRAGMA busy_timeout = {READ_DB_TIMEOUT * 1000}")
-    await conn.execute(f"PRAGMA cache_size = -{READ_CACHE_SIZE_KIB}")
-    await conn.execute(f"PRAGMA mmap_size = {READ_MMAP_SIZE_BYTES}")
-    await conn.execute("PRAGMA temp_store = MEMORY")
+    await _apply_pragma_statements_async(conn, READ_CONNECTION_PRAGMA_STATEMENTS)
 
 
 async def _read_schema_ready(backend: SQLiteBackend) -> bool:
