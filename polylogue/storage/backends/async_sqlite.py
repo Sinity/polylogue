@@ -22,7 +22,6 @@ import polylogue.paths as _paths
 from polylogue.errors import DatabaseError
 from polylogue.storage.backends.async_sqlite_archive import SQLiteArchiveMixin
 from polylogue.storage.backends.async_sqlite_raw import SQLiteRawMixin
-from polylogue.storage.backends.async_sqlite_schema import ensure_schema as ensure_current_schema
 from polylogue.storage.backends.connection import (
     DB_TIMEOUT,
     READ_CACHE_SIZE_KIB,
@@ -42,7 +41,7 @@ from polylogue.storage.backends.queries import (
 )
 from polylogue.storage.backends.queries import stats as stats_q
 from polylogue.storage.backends.query_store import SQLiteQueryStore
-from polylogue.storage.backends.schema import SCHEMA_DDL
+from polylogue.storage.backends.schema import SCHEMA_DDL, ensure_schema_async
 from polylogue.storage.store import (
     ActionEventRecord,
     MessageRecord,
@@ -51,15 +50,6 @@ from polylogue.storage.store import (
     SessionWorkEventRecord,
     WorkThreadRecord,
 )
-
-# ---------------------------------------------------------------------------
-# Shared connection helpers (formerly async_sqlite_support.py)
-# ---------------------------------------------------------------------------
-
-
-def default_db_path() -> Path:
-    """Return the default database path (same as sync backend)."""
-    return _paths.data_home() / "polylogue.db"
 
 
 async def configure_connection(conn: aiosqlite.Connection) -> None:
@@ -120,7 +110,7 @@ async def _read_schema_ready(backend: SQLiteBackend) -> bool:
 
 def initialize_backend_state(backend: SQLiteBackend, db_path: Path | None) -> None:
     """Initialize backend state and shared query accessors."""
-    backend._db_path = Path(db_path) if db_path is not None else default_db_path()
+    backend._db_path = Path(db_path) if db_path is not None else _paths.db_path()
     backend._db_path.parent.mkdir(parents=True, exist_ok=True)
 
     backend._write_lock = asyncio.Lock()
@@ -441,7 +431,7 @@ class SQLiteBackend(
 
     async def _ensure_schema(self, conn) -> None:
         """Ensure database schema exists and is at the current schema version."""
-        await ensure_current_schema(conn)
+        await ensure_schema_async(conn)
 
     # -- Transaction management ---------------------------------------------
 
@@ -571,5 +561,4 @@ __all__ = [
     "SCHEMA_DDL",
     "SQLiteBackend",
     "configure_connection",
-    "default_db_path",
 ]

@@ -8,7 +8,8 @@ from typing import Final
 import click
 from click.shell_completion import CompletionItem
 
-from polylogue.storage.backends.connection import default_db_path, open_read_connection
+from polylogue.paths import db_path
+from polylogue.storage.backends.connection import open_read_connection
 
 _PROVIDER_DESCRIPTIONS: Final[dict[str, str]] = {
     "chatgpt": "OpenAI ChatGPT exports",
@@ -40,7 +41,7 @@ def _with_csv_prefix(items: list[CompletionItem], prefix: str) -> list[Completio
 
 
 def _db_exists() -> bool:
-    return default_db_path().exists()
+    return db_path().exists()
 
 
 def _fetch_rows(sql: str, params: tuple[object, ...]) -> list[sqlite3.Row]:

@@ -13,7 +13,7 @@ from polylogue.lib.provider_identity import (
 )
 from polylogue.lib.raw_payload import extract_record_samples_from_raw_content
 from polylogue.logging import get_logger
-from polylogue.paths import db_path as default_db_path
+from polylogue.paths import db_path as archive_db_path
 from polylogue.schemas.observation import (
     ProviderConfig,
     extract_schema_units_from_payload,
@@ -165,7 +165,7 @@ def get_sample_count_from_db(
     """Get total message count for a provider in the database."""
     provider_name = Provider.from_string(provider_name)
     if db_path is None:
-        db_path = default_db_path()
+        db_path = archive_db_path()
     if not db_path.exists():
         return 0
 

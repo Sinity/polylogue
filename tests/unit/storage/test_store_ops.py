@@ -843,7 +843,7 @@ def test_store_records_without_connection_creates_own(test_db, tmp_path, monkeyp
     importlib.reload(polylogue.paths)
     importlib.reload(connection_module)
 
-    default_path = connection_module.default_db_path()
+    default_path = polylogue.paths.db_path()
     default_path.parent.mkdir(parents=True, exist_ok=True)
     shutil.move(str(test_db), str(default_path))
 

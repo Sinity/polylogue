@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from polylogue.paths import db_path as archive_db_path
 from polylogue.storage.search_providers.sqlite_vec_embeddings import SqliteVecEmbeddingMixin
 from polylogue.storage.search_providers.sqlite_vec_queries import SqliteVecQueryMixin
 from polylogue.storage.search_providers.sqlite_vec_runtime import SqliteVecRuntimeMixin
@@ -30,9 +31,7 @@ class SqliteVecProvider(
         model: str = DEFAULT_MODEL,
         dimension: int = DEFAULT_DIMENSION,
     ) -> None:
-        from polylogue.storage.backends.connection import default_db_path
-
-        self.db_path = db_path or default_db_path()
+        self.db_path = db_path or archive_db_path()
         self.voyage_key = voyage_key
         self.model = model
         self.dimension = dimension

@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from polylogue.paths import db_path as default_db_path
+from polylogue.paths import db_path as archive_db_path
 from polylogue.schemas.generation_cluster_collection import (
     _collect_cluster_accumulators,
 )
@@ -67,7 +67,7 @@ def _build_provider_bundle(
             error=f"Unknown provider: {provider}. Known: {[str(item) for item in PROVIDERS]}",
         )
     if db_path is None:
-        db_path = default_db_path()
+        db_path = archive_db_path()
     if not GENSON_AVAILABLE:
         return build_provider_error_bundle(
             str(provider_token),

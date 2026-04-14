@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from polylogue.paths import db_path as default_db_path
+from polylogue.paths import db_path as archive_db_path
 from polylogue.schemas.generation_models import _ProviderBundle
 from polylogue.schemas.generation_provider_bundle import _build_provider_bundle
 from polylogue.schemas.generation_schema_builder import generate_schema_from_samples
@@ -55,7 +55,7 @@ def generate_all_schemas(
 ):
     """Generate versioned schemas for all providers."""
     if db_path is None:
-        db_path = default_db_path()
+        db_path = archive_db_path()
     output_dir.mkdir(parents=True, exist_ok=True)
 
     provider_list = providers or list(PROVIDERS.keys())

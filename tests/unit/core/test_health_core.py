@@ -272,16 +272,14 @@ def test_run_archive_health_reports_busy_archive_with_operator_message(tmp_path:
 
 def test_run_archive_health_reports_legacy_inline_raw_layout(tmp_path: Path, monkeypatch) -> None:
     import polylogue.paths
-    import polylogue.storage.backends.connection as connection_module
     from polylogue.config import get_config
     from polylogue.health import VerifyStatus, run_archive_health
 
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     importlib.reload(polylogue.paths)
-    importlib.reload(connection_module)
 
-    db_path = connection_module.default_db_path()
+    db_path = polylogue.paths.db_path()
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(db_path)
     conn.executescript(
