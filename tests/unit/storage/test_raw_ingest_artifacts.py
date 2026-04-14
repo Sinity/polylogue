@@ -18,16 +18,24 @@ from polylogue.types import ValidationStatus
 
 def test_raw_ingest_artifact_state_classifies_quarantine_and_backlogs() -> None:
     passed_unparsed = RawIngestArtifactState(validation_status=ValidationStatus.PASSED)
-    failed_unparsed = RawIngestArtifactState(validation_status=ValidationStatus.FAILED)
+    failed_schema_unparsed = RawIngestArtifactState(validation_status=ValidationStatus.FAILED)
+    failed_parse_unparsed = RawIngestArtifactState(
+        validation_status=ValidationStatus.FAILED,
+        parse_error="Malformed JSONL lines: 1",
+    )
     unvalidated_parsed = RawIngestArtifactState(parsed_at="2026-04-13T00:00:00Z")
 
     assert passed_unparsed.needs_validation_backlog() is False
     assert passed_unparsed.needs_parse_backlog() is True
     assert passed_unparsed.quarantined is False
 
-    assert failed_unparsed.needs_validation_backlog() is False
-    assert failed_unparsed.needs_parse_backlog() is False
-    assert failed_unparsed.quarantined is True
+    assert failed_schema_unparsed.needs_validation_backlog() is False
+    assert failed_schema_unparsed.needs_parse_backlog() is False
+    assert failed_schema_unparsed.quarantined is False
+
+    assert failed_parse_unparsed.needs_validation_backlog() is False
+    assert failed_parse_unparsed.needs_parse_backlog() is False
+    assert failed_parse_unparsed.quarantined is True
 
     assert unvalidated_parsed.needs_validation_backlog() is False
     assert unvalidated_parsed.needs_parse_backlog() is False
