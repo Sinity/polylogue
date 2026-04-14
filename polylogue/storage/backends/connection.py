@@ -1,9 +1,4 @@
-"""SQLite connection management and database utilities.
-
-Provides thread-local connection caching for ``connection_context()``,
-the ``_load_sqlite_vec()`` helper, and factory functions for the
-default backend.
-"""
+"""SQLite connection management and database utilities."""
 
 from __future__ import annotations
 
@@ -143,7 +138,7 @@ def connection_context(db_path: Path | str | sqlite3.Connection | None = None) -
         yield db_path
         return
 
-    path = Path(db_path) if db_path else default_db_path()
+    path = Path(db_path) if db_path else _paths.db_path()
     yield _get_cached_connection(path)
 
 
@@ -159,7 +154,7 @@ def open_read_connection(db_path: Path | str | None = None) -> Iterator[sqlite3.
     If the database does not exist yet, fall back to the normal connection path
     so first-run callers still get a usable empty archive.
     """
-    path = Path(db_path) if db_path else default_db_path()
+    path = Path(db_path) if db_path else _paths.db_path()
     if not path.exists():
         with open_connection(path) as conn:
             yield conn
@@ -171,16 +166,6 @@ def open_read_connection(db_path: Path | str | None = None) -> Iterator[sqlite3.
         yield conn
     finally:
         conn.close()
-
-
-def default_db_path() -> Path:
-    """Return the default database path.
-
-    Uses XDG_DATA_HOME/polylogue/polylogue.db (semantic data, not ephemeral state).
-    Reads from polylogue.paths at call time (not import time) so that
-    tests can reload the paths module with monkeypatched XDG_DATA_HOME.
-    """
-    return _paths.data_home() / "polylogue.db"
 
 
 def create_default_backend() -> object:
@@ -240,7 +225,6 @@ __all__ = [
     "_build_source_scope_filter",
     "connection_context",
     "create_default_backend",
-    "default_db_path",
     "open_connection",
     "open_read_connection",
 ]

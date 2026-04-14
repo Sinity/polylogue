@@ -175,7 +175,7 @@ def cli_workspace(tmp_path, monkeypatch):
         path.mkdir(parents=True, exist_ok=True)
 
     # Set environment variables
-    # default_db_path() returns: DATA_HOME / "polylogue" / "polylogue.db"
+    # polylogue.paths.db_path() returns: DATA_HOME / "polylogue" / "polylogue.db"
     db_path = data_dir / "polylogue" / "polylogue.db"
     db_path.parent.mkdir(parents=True, exist_ok=True)
 

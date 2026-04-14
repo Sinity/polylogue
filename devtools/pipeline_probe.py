@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from polylogue.config import Config, Source
-from polylogue.paths import blob_store_root
+from polylogue.paths import blob_store_root, db_path
 from polylogue.pipeline.runner import RUN_STAGE_CHOICES, run_sources
 from polylogue.scenarios import CorpusRequest, CorpusSourceKind
 from polylogue.schemas.synthetic import SyntheticCorpus
@@ -26,7 +26,6 @@ from polylogue.storage.backends import create_backend
 from polylogue.storage.backends.connection import (
     _build_provider_scope_filter,
     _build_source_scope_filter,
-    default_db_path,
     open_connection,
 )
 from polylogue.storage.backends.queries.raw_state import EFFECTIVE_RAW_PROVIDER_SQL
@@ -703,7 +702,7 @@ def _resolve_archive_manifest(
             manifest["source_db"] = str(source_db.resolve())
         return manifest
 
-    resolved_source_db = (source_db or default_db_path()).resolve()
+    resolved_source_db = (source_db or db_path()).resolve()
     resolved_source_blob_root = (source_blob_root or blob_store_root()).resolve()
     return _build_archive_manifest(
         source_db=resolved_source_db,

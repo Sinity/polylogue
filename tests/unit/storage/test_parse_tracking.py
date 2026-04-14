@@ -20,9 +20,9 @@ import pytest
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.backends.schema import (
     SCHEMA_VERSION,
+    _ensure_raw_source_mtime_index,
     _ensure_schema,
 )
-from polylogue.storage.backends.schema_upgrade import _ensure_raw_source_mtime_index
 from polylogue.storage.state_views import RawConversationStateUpdate
 from polylogue.storage.store import RawConversationRecord
 
