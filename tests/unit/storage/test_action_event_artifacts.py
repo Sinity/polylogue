@@ -49,6 +49,28 @@ def test_action_event_artifact_state_reports_missing_and_stale_rows() -> None:
     assert "4 pending rows" in fts_status.detail
 
 
+def test_action_event_artifact_state_treats_orphan_rows_as_unready_and_repairable() -> None:
+    state = ActionEventArtifactState(
+        source_conversations=4,
+        materialized_conversations=4,
+        materialized_rows=10,
+        fts_rows=10,
+        orphan_rows=2,
+    )
+
+    row_status = state.row_status()
+
+    assert state.rows_ready is False
+    assert state.fts_ready is True
+    assert state.repair_item_count == 2
+    assert state.repair_detail() == (
+        "Action-event read model pending (2 orphan action-event rows)"
+    )
+    assert row_status.ready is False
+    assert row_status.orphan_rows == 2
+    assert "orphan rows 2" in row_status.detail
+
+
 def test_build_action_statuses_marks_extra_fts_rows_as_stale() -> None:
     statuses = build_action_statuses(
         {
