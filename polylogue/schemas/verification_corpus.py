@@ -202,7 +202,7 @@ def verify_raw_corpus(
                 provider_stats.decode_errors += 1
                 if request.quarantine_malformed:
                     raw_id = str(row["raw_id"])
-                    reason = f"Unable to decode payload: {type(exc).__name__}"
+                    reason = f"Unable to decode payload: {exc}"
                     quarantine_updates.append((raw_id, reason, candidate_provider, stored_payload_provider))
                     provider_stats.quarantined_records += 1
                 if request.progress_callback is not None:
