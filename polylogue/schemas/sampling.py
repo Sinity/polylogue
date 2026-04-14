@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from polylogue.lib.raw_payload import build_raw_payload_envelope, collect_limited_samples
-from polylogue.paths import db_path as default_db_path
+from polylogue.paths import db_path as archive_db_path
 from polylogue.schemas.observation import resolve_provider_config
 from polylogue.schemas.sampling_db import (
     _iter_samples_from_db,
@@ -31,7 +31,7 @@ def iter_schema_units(
     """Yield schema units for a provider from DB, with session fallback."""
     provider_name = Provider.from_string(provider_name)
     if db_path is None:
-        db_path = default_db_path()
+        db_path = archive_db_path()
 
     config = resolve_provider_config(provider_name)
     yielded_any = False
@@ -67,7 +67,7 @@ def load_samples_from_db(
     """Load raw samples from the polylogue database."""
     provider_name = Provider.from_string(provider_name)
     if db_path is None:
-        db_path = default_db_path()
+        db_path = archive_db_path()
     if not db_path.exists():
         return []
 

@@ -847,12 +847,12 @@ def preview_dangling_fts(*, count: int) -> RepairResult:
 
 
 def repair_wal_checkpoint(config: Any, dry_run: bool = False) -> RepairResult:
-    from polylogue.storage.backends.connection import connection_context, default_db_path
+    from polylogue.paths import db_path
+    from polylogue.storage.backends.connection import connection_context
 
     try:
         if dry_run:
-            db_path = default_db_path()
-            wal_path = Path(str(db_path) + "-wal")
+            wal_path = Path(str(db_path()) + "-wal")
             if wal_path.exists():
                 wal_size = wal_path.stat().st_size
                 pages_estimate = wal_size // 4096

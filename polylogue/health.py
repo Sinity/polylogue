@@ -88,7 +88,7 @@ def _open_health_probe_connection(db_path: Path) -> Any:
 
 
 def run_archive_health(config: Any, *, deep: bool = False, probe_only: bool = False) -> HealthReport:
-    from polylogue.storage.backends.schema_upgrade import assert_supported_archive_layout
+    from polylogue.storage.backends.schema import assert_supported_archive_layout
     from polylogue.storage.derived_status import collect_derived_model_statuses_sync
     from polylogue.storage.fts_lifecycle import message_fts_readiness_sync
     from polylogue.storage.repair import collect_archive_debt_statuses_sync
@@ -329,8 +329,7 @@ def run_runtime_health(config: Any) -> HealthReport:
             checks.append(HealthCheck("db_writable", VerifyStatus.WARNING, summary=f"Parent missing: {parent}"))
 
     try:
-        from polylogue.storage.backends.schema import SCHEMA_VERSION
-        from polylogue.storage.backends.schema_upgrade import assert_supported_archive_layout
+        from polylogue.storage.backends.schema import SCHEMA_VERSION, assert_supported_archive_layout
 
         with _open_health_probe_connection(config.db_path) as conn:
             assert_supported_archive_layout(conn)

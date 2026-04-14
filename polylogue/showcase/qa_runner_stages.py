@@ -15,7 +15,7 @@ def generate_extra_exercises() -> list:
 
 def populate_proof(result: QAResult, *, workspace_env: dict[str, str] | None) -> None:
     """Populate the artifact proof stage against the active archive."""
-    from polylogue.paths import db_path as default_db_path
+    from polylogue.paths import db_path
     from polylogue.schemas.verification_artifacts import prove_raw_artifact_coverage
     from polylogue.schemas.verification_requests import ArtifactProofRequest
 
@@ -23,12 +23,12 @@ def populate_proof(result: QAResult, *, workspace_env: dict[str, str] | None) ->
         if workspace_env:
             with override_workspace_env(workspace_env):
                 result.proof_report = prove_raw_artifact_coverage(
-                    db_path=default_db_path(),
+                    db_path=db_path(),
                     request=ArtifactProofRequest(),
                 )
         else:
             result.proof_report = prove_raw_artifact_coverage(
-                db_path=default_db_path(),
+                db_path=db_path(),
                 request=ArtifactProofRequest(),
             )
     except Exception as exc:

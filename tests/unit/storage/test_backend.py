@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 
+import polylogue.paths
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.backends.connection import (
     READ_CACHE_SIZE_KIB,
@@ -268,7 +269,7 @@ def test_connection_context_contract(tmp_path: Path, monkeypatch) -> None:
 
 
 def test_default_db_path_respects_xdg_data_home(tmp_path: Path, monkeypatch) -> None:
-    """default_db_path() must honor XDG_DATA_HOME."""
+    """polylogue.paths.db_path() must honor XDG_DATA_HOME."""
     xdg_data = tmp_path / "data"
     xdg_data.mkdir()
     monkeypatch.setenv("XDG_DATA_HOME", str(xdg_data))
@@ -276,7 +277,7 @@ def test_default_db_path_respects_xdg_data_home(tmp_path: Path, monkeypatch) -> 
     import polylogue.storage.backends.connection as connection_module
 
     importlib.reload(connection_module)
-    assert str(xdg_data) in str(connection_module.default_db_path())
+    assert str(xdg_data) in str(polylogue.paths.db_path())
 
 
 async def test_sqlite_backend_init_contract(tmp_path: Path, monkeypatch) -> None:
