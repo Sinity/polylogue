@@ -27,6 +27,7 @@ class RawIngestArtifactState:
     """Canonical persisted raw-state semantics for validation and parse planning."""
 
     parsed_at: str | None = None
+    parse_error: str | None = None
     validation_status: ValidationStatus | None = None
 
     @classmethod
@@ -35,6 +36,7 @@ class RawIngestArtifactState:
             return cls()
         return cls(
             parsed_at=state.parsed_at,
+            parse_error=state.parse_error,
             validation_status=state.validation_status,
         )
 
@@ -48,7 +50,7 @@ class RawIngestArtifactState:
 
     @property
     def quarantined(self) -> bool:
-        return not self.parsed and self.validation_status is ValidationStatus.FAILED
+        return not self.parsed and self.parse_error is not None
 
     def needs_validation_backlog(self, *, force_reparse: bool = False) -> bool:
         return self.validation_status is None and (force_reparse or not self.parsed)

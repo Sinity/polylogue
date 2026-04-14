@@ -28,6 +28,7 @@ class _ValidationOutcome:
 
     validation_status: ValidationStatus
     validation_error: str | None
+    parse_error: str | None
     parseable: bool
     canonical_provider: Provider
     payload_provider: Provider | None
@@ -79,6 +80,7 @@ def _validate_record_sync(
         return _ValidationOutcome(
             validation_status=ValidationStatus.FAILED,
             validation_error=f"Unable to decode payload: {exc}",
+            parse_error=f"Unable to decode payload: {exc}",
             parseable=False,
             canonical_provider=canonical_provider,
             payload_provider=payload_provider,
@@ -95,6 +97,7 @@ def _validate_record_sync(
         return _ValidationOutcome(
             validation_status=ValidationStatus.SKIPPED,
             validation_error=f"Artifact excluded from conversation schema inference: {envelope.artifact.kind.value}",
+            parse_error=None,
             parseable=False,
             canonical_provider=canonical_provider,
             payload_provider=payload_provider,
@@ -112,6 +115,7 @@ def _validate_record_sync(
             return _ValidationOutcome(
                 validation_status=ValidationStatus.FAILED,
                 validation_error=malformed_error,
+                parse_error=malformed_error,
                 parseable=False,
                 canonical_provider=canonical_provider,
                 payload_provider=payload_provider,
@@ -197,6 +201,7 @@ def _validate_record_sync(
     return _ValidationOutcome(
         validation_status=validation_status,
         validation_error=validation_error,
+        parse_error=None,
         parseable=parseable,
         canonical_provider=canonical_provider,
         payload_provider=payload_provider,

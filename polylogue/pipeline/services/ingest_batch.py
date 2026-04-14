@@ -65,6 +65,7 @@ class _RawIngestOutcome:
     payload_provider: str | None
     validation_status: str
     validation_error: str | None
+    parse_error: str | None
     error: str | None
     had_conversations: bool
 
@@ -437,6 +438,7 @@ def _record_outcome(summary: _IngestBatchSummary, ir: IngestRecordResult) -> Non
         payload_provider=ir.payload_provider,
         validation_status=ir.validation_status,
         validation_error=ir.validation_error,
+        parse_error=ir.parse_error,
         error=ir.error,
         had_conversations=bool(ir.conversations),
     )
@@ -945,7 +947,7 @@ def _failed_raw_state_update(
             parse_error=error,
         )
     return RawConversationStateUpdate(
-        parse_error=error,
+        parse_error=outcome.parse_error,
         payload_provider=outcome.payload_provider,
         validation_status=outcome.validation_status,
         validation_error=outcome.validation_error or error,
