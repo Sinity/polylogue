@@ -38,6 +38,7 @@ class ValidatedRawRecord:
     parseable: bool
     validation_status: ValidationStatus
     validation_error: str | None
+    parse_error: str | None
     canonical_provider: Provider
     payload_provider: Provider | None
     drift_count: int = 0

@@ -90,6 +90,7 @@ class IngestRecordResult:
     payload_provider: str | None = None
     validation_status: str = "skipped"  # ValidationStatus value
     validation_error: str | None = None
+    parse_error: str | None = None
     error: str | None = None
     conversations: list[ConversationData] = field(default_factory=list)
     source_name: str | None = None
@@ -236,6 +237,7 @@ def _stream_grouped_jsonl_record(
                     payload_provider=str(detected_provider),
                     validation_status=ValidationStatus.FAILED.value,
                     validation_error=malformed_error,
+                    parse_error=malformed_error,
                     error=malformed_error,
                 ),
                 measure_serialized_size=measure_serialized_size,
@@ -293,14 +295,15 @@ def _stream_grouped_jsonl_record(
             )
     except Exception as exc:
         return _finalize_result(
-            IngestRecordResult(
-                raw_id=raw_record.raw_id,
-                payload_provider=str(detected_provider),
-                validation_status=v_status.value,
-                error=f"parse: {exc}",
-            ),
-            measure_serialized_size=measure_serialized_size,
-        )
+                IngestRecordResult(
+                    raw_id=raw_record.raw_id,
+                    payload_provider=str(detected_provider),
+                    validation_status=v_status.value,
+                    parse_error=f"parse: {exc}",
+                    error=f"parse: {exc}",
+                ),
+                measure_serialized_size=measure_serialized_size,
+            )
 
     fallback_timestamp = raw_record.file_mtime
     source_name = raw_record.source_name or raw_record.source_path or ""
@@ -327,6 +330,7 @@ def _stream_grouped_jsonl_record(
                     raw_id=raw_record.raw_id,
                     payload_provider=str(detected_provider),
                     validation_status=v_status.value,
+                    parse_error=f"transform: {exc}",
                     error=f"transform: {exc}",
                 ),
                 measure_serialized_size=measure_serialized_size,
@@ -402,15 +406,16 @@ def ingest_record(
         )
     except Exception as exc:
         return _finalize_result(
-            IngestRecordResult(
-                raw_id=raw_record.raw_id,
-                payload_provider=stored_payload_provider,
-                validation_status=ValidationStatus.FAILED.value,
-                validation_error=f"decode: {exc}",
-                error=f"decode: {exc}",
-            ),
-            measure_serialized_size=measure_serialized_size,
-        )
+                IngestRecordResult(
+                    raw_id=raw_record.raw_id,
+                    payload_provider=stored_payload_provider,
+                    validation_status=ValidationStatus.FAILED.value,
+                    validation_error=f"decode: {exc}",
+                    parse_error=f"decode: {exc}",
+                    error=f"decode: {exc}",
+                ),
+                measure_serialized_size=measure_serialized_size,
+            )
 
     payload_provider = str(envelope.provider)
 
@@ -443,6 +448,7 @@ def ingest_record(
                     payload_provider=payload_provider,
                     validation_status=ValidationStatus.FAILED.value,
                     validation_error=malformed_error,
+                    parse_error=malformed_error,
                     error=malformed_error,
                 ),
                 measure_serialized_size=measure_serialized_size,
@@ -506,14 +512,15 @@ def ingest_record(
         )
     except Exception as exc:
         return _finalize_result(
-            IngestRecordResult(
-                raw_id=raw_record.raw_id,
-                payload_provider=payload_provider,
-                validation_status=v_status.value,
-                error=f"parse: {exc}",
-            ),
-            measure_serialized_size=measure_serialized_size,
-        )
+                IngestRecordResult(
+                    raw_id=raw_record.raw_id,
+                    payload_provider=payload_provider,
+                    validation_status=v_status.value,
+                    parse_error=f"parse: {exc}",
+                    error=f"parse: {exc}",
+                ),
+                measure_serialized_size=measure_serialized_size,
+            )
 
     # The decoded payload can be much larger than the normalized conversation
     # objects; drop it before tuple transformation to avoid overlapping heaps.
@@ -546,6 +553,7 @@ def ingest_record(
                     raw_id=raw_record.raw_id,
                     payload_provider=payload_provider,
                     validation_status=v_status.value,
+                    parse_error=f"transform: {exc}",
                     error=f"transform: {exc}",
                 ),
                 measure_serialized_size=measure_serialized_size,

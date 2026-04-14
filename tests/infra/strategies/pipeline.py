@@ -143,7 +143,7 @@ def expected_validation_contract(case: ValidationCase) -> dict[str, Any]:
         "parseable": not blocked,
         "status": "failed" if blocked else "passed",
         "invalid_count": invalid_count,
-        "mark_raw_parsed": blocked,
+        "mark_raw_parsed": malformed_blocks,
         "validation_samples_called": not malformed_blocks,
     }
 
