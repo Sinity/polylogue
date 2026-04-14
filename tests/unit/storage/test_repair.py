@@ -12,10 +12,11 @@ def _status(
     pending_documents: int = 0,
     pending_rows: int = 0,
     stale_rows: int = 0,
+    orphan_rows: int = 0,
 ) -> DerivedModelStatus:
     return DerivedModelStatus(
         name="test",
-        ready=pending_documents == 0 and pending_rows == 0 and stale_rows == 0,
+        ready=pending_documents == 0 and pending_rows == 0 and stale_rows == 0 and orphan_rows == 0,
         detail="",
         source_documents=source_documents,
         materialized_documents=materialized_documents,
@@ -23,6 +24,7 @@ def _status(
         pending_documents=pending_documents,
         pending_rows=pending_rows,
         stale_rows=stale_rows,
+        orphan_rows=orphan_rows,
     )
 
 
@@ -53,6 +55,23 @@ def test_action_event_repair_detail_reports_missing_and_stale_rows() -> None:
     assert repair_mod.action_event_repair_count(statuses) == 26
     assert repair_mod._action_event_repair_detail(statuses) == (
         "Action-event read model pending (12 missing conversations, 5 stale action-event rows, 9 pending action-event FTS rows)"
+    )
+
+
+def test_action_event_repair_detail_reports_orphan_rows() -> None:
+    statuses = {
+        "action_events": _status(
+            source_documents=4,
+            materialized_documents=4,
+            materialized_rows=10,
+            orphan_rows=2,
+        ),
+        "action_events_fts": _status(materialized_rows=10),
+    }
+
+    assert repair_mod.action_event_repair_count(statuses) == 2
+    assert repair_mod._action_event_repair_detail(statuses) == (
+        "Action-event read model pending (2 orphan action-event rows)"
     )
 
 

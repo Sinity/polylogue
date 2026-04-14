@@ -65,7 +65,7 @@ class ActionEventArtifactState:
     @property
     def rows_ready(self) -> bool:
         return self.source_conversations == 0 or (
-            self.missing_conversations == 0 and self.stale_rows == 0
+            self.missing_conversations == 0 and self.stale_rows == 0 and self.orphan_rows == 0
         )
 
     @property
@@ -78,7 +78,13 @@ class ActionEventArtifactState:
 
     @property
     def repair_item_count(self) -> int:
-        return self.missing_conversations + self.stale_rows + self.pending_fts_rows + self.excess_fts_rows
+        return (
+            self.missing_conversations
+            + self.stale_rows
+            + self.orphan_rows
+            + self.pending_fts_rows
+            + self.excess_fts_rows
+        )
 
     def repair_detail(self) -> str:
         if self.repair_item_count == 0:
@@ -89,6 +95,8 @@ class ActionEventArtifactState:
             parts.append(f"{self.missing_conversations:,} missing conversations")
         if self.stale_rows:
             parts.append(f"{self.stale_rows:,} stale action-event rows")
+        if self.orphan_rows:
+            parts.append(f"{self.orphan_rows:,} orphan action-event rows")
         if self.pending_fts_rows:
             parts.append(f"{self.pending_fts_rows:,} pending action-event FTS rows")
         if self.excess_fts_rows:
