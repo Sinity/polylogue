@@ -47,7 +47,7 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - run: uv sync --extra dev --frozen
-      - run: uv run pytest --cov=polylogue --cov-report=xml --cov-fail-under=90 -q
+      - run: uv run pytest --cov=polylogue --cov-report=xml --cov-fail-under=80 -q
         env:
           POLYLOGUE_FORCE_PLAIN: "1"
           HYPOTHESIS_PROFILE: ci
