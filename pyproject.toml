@@ -16,12 +16,12 @@ classifiers = [
   "Intended Audience :: Developers",
   "License :: OSI Approved :: MIT License",
   "Programming Language :: Python :: 3",
-  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
   "Topic :: Software Development :: Libraries",
 ]
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 dependencies = [
   "google-auth-oauthlib",
   "google-api-python-client",
@@ -143,7 +143,7 @@ show_missing = true
 fail_under = 90
 
 [tool.mypy]
-python_version = "3.10"
+python_version = "3.11"
 strict = true
 warn_unused_configs = true
 warn_redundant_casts = true
