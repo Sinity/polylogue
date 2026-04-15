@@ -175,6 +175,7 @@ def ingest_record(
     from polylogue.paths import blob_store_root
     from polylogue.schemas.validator import SchemaValidator
     from polylogue.sources.dispatch import parse_payload
+
     archive_root = Path(archive_root_str)
     validation_mode = ValidationMode.from_string(validation_mode_value)
 
