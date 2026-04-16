@@ -73,6 +73,10 @@ def test_runtime_artifact_specs_expose_the_curated_vertical_paths() -> None:
         "inferred-corpus-compilation-loop",
         "schema-list-query-loop",
         "schema-explain-query-loop",
+        "embedding-materialization-loop",
+        "embedding-status-query-loop",
+        "retrieval-band-health-loop",
+        "source-acquisition-loop",
     }
 
 

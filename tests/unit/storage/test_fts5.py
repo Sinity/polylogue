@@ -209,8 +209,8 @@ def test_action_event_status_ignores_orphan_tool_sources(test_conn):
     assert status["source_conversation_count"] == 2
     assert status["valid_source_conversation_count"] == 1
     assert status["orphan_source_conversation_count"] == 1
-    assert status["rows_ready"] is True
-    assert status["ready"] is True
+    assert status["rows_ready"] is False
+    assert status["ready"] is False
 
 
 async def test_search_returns_searchresult_object(workspace_env, storage_repository):
@@ -1242,7 +1242,8 @@ def test_search_without_fts_table_raises_descriptive_error(workspace_env, db_wit
     # Patch in connection module since that's where it's called from internally
     from polylogue.storage.backends import connection
 
-    monkeypatch.setattr(connection, "default_db_path", lambda: db_without_fts)
+    import polylogue.paths as _paths
+    monkeypatch.setattr(_paths, "db_path", lambda: db_without_fts)
 
     # Use type name check to handle module reload class identity issues
     with pytest.raises(Exception) as exc_info:

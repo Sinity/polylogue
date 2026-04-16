@@ -112,7 +112,7 @@ class TestLoadSamplesFromDb:
         from unittest.mock import patch
 
         fake_path = Path("/nonexistent/fake/db.db")
-        with patch("polylogue.schemas.sampling.default_db_path", return_value=fake_path):
+        with patch("polylogue.schemas.sampling.archive_db_path", return_value=fake_path):
             result = load_samples_from_db("chatgpt")
             assert result == []
 

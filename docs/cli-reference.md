@@ -360,12 +360,18 @@ Usage: polylogue audit generate [OPTIONS]
     eval "$(polylogue audit generate --seed --env-only)"  # Shell-friendly
 
 Options:
-  -p, --provider TEXT    Providers to include (default: all). Can be repeated.
-  -n, --count INTEGER    Conversations per provider  [default: 3]
-  -o, --output-dir PATH  Output directory
-  --seed                 Run pipeline to produce a usable demo environment
-  --env-only             Print shell export statements only (requires --seed)
-  -h, --help             Show this message and exit.
+  -p, --provider TEXT             Providers to include (default: all). Can be
+                                  repeated.
+  -n, --count INTEGER             Conversations per provider  [default: 3]
+  --corpus-source [default|inferred]
+                                  Corpus spec source to execute.  [default:
+                                  default]
+  -o, --output-dir PATH           Output directory
+  --seed                          Run pipeline to produce a usable demo
+                                  environment
+  --env-only                      Print shell export statements only (requires
+                                  --seed)
+  -h, --help                      Show this message and exit.
 ```
 
 ## Doctor
