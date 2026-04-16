@@ -1593,52 +1593,6 @@ async def test_output_stats_sql_json_contract() -> None:
     assert "total_attachments" not in payload["summary"]["embeddings"]
 
 
-@pytest.mark.asyncio
-async def test_output_stats_sql_json_contract() -> None:
-    env = _make_env()
-    repo = MagicMock()
-    repo.queries.aggregate_message_stats = AsyncMock(
-        return_value={
-            "total": 9,
-            "user": 4,
-            "assistant": 5,
-            "words_approx": 42,
-            "attachments": 2,
-            "min_sort_key": 1704067200,
-            "max_sort_key": 1704153600,
-            "providers": {"claude-ai": 2, "chatgpt": 1},
-        }
-    )
-    repo.get_archive_stats = AsyncMock(
-        return_value=SimpleNamespace(
-            total_conversations=2,
-            embedded_conversations=1,
-            embedded_messages=5,
-            pending_embedding_conversations=1,
-            stale_embedding_messages=0,
-            embedding_coverage=50.0,
-        )
-    )
-
-    filter_chain = MagicMock()
-    filter_chain.describe.return_value = []
-    filter_chain.can_use_summaries.return_value = False
-    filter_chain.count = AsyncMock(return_value=2)
-
-    with patch("click.echo") as mock_echo:
-        await output_stats_sql(env, filter_chain, repo, output_format="json")
-
-    env.ui.console.print.assert_not_called()
-    payload = json.loads(mock_echo.call_args.args[0])
-    assert payload["dimension"] == "archive"
-    assert payload["rows"] == []
-    assert payload["summary"]["conversations"] == 2
-    assert payload["summary"]["messages_total"] == 9
-    assert payload["summary"]["providers"] == {"claude-ai": 2, "chatgpt": 1}
-    assert payload["summary"]["date_range"] == "2024-01-01 to 2024-01-02"
-    assert payload["summary"]["embeddings"]["embedded_conversations"] == 1
-
-
 # ---------------------------------------------------------------------------
 # Merged from test_search.py (2026-03-15)
 # ---------------------------------------------------------------------------

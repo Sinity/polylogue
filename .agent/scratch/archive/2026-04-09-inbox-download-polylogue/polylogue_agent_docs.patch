@@ -1,0 +1,1179 @@
+diff --git a/.claude/includes/basics.md b/.claude/includes/basics.md
+new file mode 100644
+index 00000000..f449b926
+--- /dev/null
++++ b/.claude/includes/basics.md
+@@ -0,0 +1,46 @@
++## Development basics
++
++### Environment
++
++Preferred dev shell:
++
++```bash
++nix develop
++```
++
++Typical one-shot commands:
++
++```bash
++nix develop -c polylogue --help
++nix develop -c pytest -q --ignore=tests/integration
++POLYLOGUE_FORCE_PLAIN=1 nix develop -c polylogue run
++```
++
++If running outside Nix, use the project virtualenv / toolchain rather than ad-hoc global installs.
++
++### Command surface
++
++Treat these as the main root commands:
++
++- `polylogue run` — acquisition / ingest / index / publication pipeline
++- `polylogue doctor` — health, maintenance, proof, and repair checks
++- `polylogue audit` — synthetic/live QA, exercises, invariants, snapshots
++- `polylogue schema` — schema generation and registry tooling
++- `polylogue products` — derived product inspection and status
++- `polylogue dashboard` — interactive TUI
++- `polylogue mcp` — MCP server
++
++### Proof shortcuts
++
++When making changes, prefer the smallest convincing proof set first.
++Examples:
++
++```bash
++nix develop -c pytest -q tests/unit/core
++nix develop -c pytest -q tests/unit/storage
++nix develop -c pytest -q tests/unit/showcase
++POLYLOGUE_FORCE_PLAIN=1 nix develop -c polylogue doctor --runtime
++POLYLOGUE_FORCE_PLAIN=1 nix develop -c polylogue audit --only audit --json
++```
++
++If you change surface contracts, prefer a targeted CLI or snapshot-style proof in addition to unit tests.
+diff --git a/.claude/includes/constitution.md b/.claude/includes/constitution.md
+new file mode 100644
+index 00000000..3f15a2f8
+--- /dev/null
++++ b/.claude/includes/constitution.md
+@@ -0,0 +1,64 @@
++## Identity
++
++Act like an archivist, a steward, a surveyor, and a historian.
++
++- **Archivist**: preserve canonical meaning and provenance.
++- **Steward**: make the system easier to trust, not only easier to modify.
++- **Surveyor**: map the real boundary of the change before editing code.
++- **Historian**: leave a branch, PR, and squash commit that explain what happened.
++
++## Priorities
++
++1. Preserve archive integrity and semantic correctness.
++2. Prefer one canonical meaning per concept.
++3. Prefer shared read models and operations over parallel surface-specific logic.
++4. Leave evidence: tests, reports, contracts, proofs, or explicit limitations.
++5. Keep public history narratively clean even when exploratory work is messy.
++6. Do not optimize for novelty when consolidation would make the system clearer.
++
++## Project worldview
++
++Polylogue is best understood as:
++
++- an **archive substrate** for heterogeneous AI conversation exports,
++- plus **derived read models** over that archive,
++- plus multiple **surfaces** that expose those models,
++- plus a **stewardship layer** that tries to prove the archive remains trustworthy.
++
++The archive substrate is the center of gravity.
++The derived read models are integral, not fluff.
++Most surfaces are leaves.
++Stewardship is a first-class concern, but it should increasingly be expressed as architectural contracts rather than ad-hoc side machinery.
++
++## What is core versus optional
++
++Treat these as **core**:
++
++- source acquisition and parsing
++- normalization and storage
++- query/runtime operations
++- durable derived products (profiles, work events, phases, threads, summaries, debt)
++- schema generation / verification / audit paths that preserve trust
++
++Treat these as **leaf surfaces** unless proven otherwise:
++
++- site publication
++- TUI/dashboard
++- MCP server
++- presentation-specific rendering
++
++Treat `showcase` as an **acceptance harness**, not a marketing demo subsystem.
++
++## Architectural instincts
++
++- New semantics should land in the archive substrate or read models, not only in one surface.
++- New surface capabilities should prefer existing operations and read models.
++- If a concept does not yet have an obvious home, stop and name the concept before adding code.
++- If a module exists mostly to compensate for another module being unclear, consider moving the boundary instead.
++- Prefer explicit inventories and typed registries over hidden conventions.
++
++## Rigor instincts
++
++- Synthetic corpora are useful for closure and regression, but they are not the whole truth surface.
++- External provider data and raw-corpus verification remain important anchors.
++- Proof should be explainable: what was checked, against what data, using which versioned assumptions.
+diff --git a/.claude/includes/history.md b/.claude/includes/history.md
+new file mode 100644
+index 00000000..6787da42
+--- /dev/null
++++ b/.claude/includes/history.md
+@@ -0,0 +1,39 @@
++## History quality
++
++Public history is part of the product.
++A future reader — human or model — should be able to infer what happened and why.
++
++### Every landed branch should answer
++
++- What concept changed?
++- Why did it change?
++- Which boundary moved?
++- What proof exists?
++- What remains intentionally deferred?
++
++### Narrative standards
++
++Prefer commit and PR language like:
++
++- `feat: add provider events for compaction records`
++- `refactor: inherit root query filters in product commands`
++- `test: add schema-driven semantic parser properties`
++
++Avoid language like:
++
++- `wip`
++- `misc cleanup`
++- `final fixes`
++- `address feedback`
++
++### Documentation discipline
++
++Keep the public map honest.
++If commands, boundaries, or names change, update the docs that a newcomer or agent will read first.
++Outdated repo maps are worse than missing repo maps.
++
++### Product storytelling
++
++Lead with the plumbing, not the stained glass.
++For strangers, Polylogue is first a local archive substrate and read-model system.
++Only then is it a playground for verification, publication, or agent-oriented experiments.
+diff --git a/.claude/includes/repo-map.md b/.claude/includes/repo-map.md
+new file mode 100644
+index 00000000..a6a0c2b5
+--- /dev/null
++++ b/.claude/includes/repo-map.md
+@@ -0,0 +1,73 @@
++## Repository map
++
++### Ring 1 — archive substrate
++
++Own the raw archive and canonical runtime meaning.
++
++- `config.py`, `paths*.py`, `types.py`, `protocols.py`
++- `lib/`
++- `storage/`
++- `sources/`
++- `pipeline/`
++- `services.py`
++
++### Ring 2 — derived read models
++
++Own stable secondary views over the archive.
++
++- `archive_products.py`
++- `archive_product_rollups.py`
++- `archive_product_summaries.py`
++- `operations/`
++- `facade_products.py`, `facade_archive.py`
++- `storage/session_product_*`
++- `products/` (currently mostly transport/presentation metadata)
++
++### Ring 3 — surfaces
++
++Expose the archive and read models to humans or agents.
++
++- `cli/`
++- `rendering/`
++- `site/`
++- `mcp/`
++- `ui/`
++- `facade.py`, `sync*.py`
++
++### Ring 4 — stewardship
++
++Own proof, verification, generated corpora, audits, and acceptance workflows.
++
++- `schemas/`
++- `showcase/`
++- `tests/`
++- `devtools/`
++
++## Important current tensions
++
++### Products are real, but concept ownership is split
++
++Right now `products/registry.py` mainly owns transport and presentation.
++The semantics of products are scattered across root files, storage tables, operations, and facade mixins.
++Treat this as a candidate future `readmodels/` or `products/` consolidation.
++
++### Site is a publication surface, but it still reaches into storage directly
++
++Prefer future work that routes site generation through operations/read models instead of direct repository/backend imports.
++The site should not become a second archive core.
++
++### Showcase is misnamed
++
++It behaves like acceptance / verification infrastructure.
++Write code with that role in mind even if the package name has not been changed yet.
++
++### Schemas contain several different schema kinds
++
++Keep these mentally distinct:
++
++- wire/provider schemas
++- canonical archive schemas
++- derived-product schemas
++- surface/output schemas
++
++Avoid adding more features under `schemas/` without first deciding which schema kind they belong to.
+diff --git a/.claude/includes/verification.md b/.claude/includes/verification.md
+new file mode 100644
+index 00000000..bc8de594
+--- /dev/null
++++ b/.claude/includes/verification.md
+@@ -0,0 +1,46 @@
++## Verification and trust
++
++Polylogue aims to be rigorous, non-ad-hoc, and inspectable.
++Treat verification as layered, not monolithic.
++
++### Proof ladder
++
++1. **Externally anchored provider data**
++   - provider catalogs and real/raw corpora
++   - schema generation and raw-corpus verification
++2. **Synthetic corpora and generated exercises**
++   - closure, combinatorics, regression, failure-shape coverage
++3. **Acceptance harness / QA**
++   - showcase exercises, audit reports, invariant checks, artifact proof
++4. **Ordinary engineering proofs**
++   - typing, unit tests, property tests, integration tests, mutation, benchmarks
++
++### What different proofs mean
++
++- A synthetic proof shows internal consistency and regression coverage.
++- A raw-corpus proof shows contact with real provider data.
++- A CLI or surface baseline shows contract stability.
++- A mutation or property proof shows resistance to accidental semantic weakening.
++
++Do not confuse one with another.
++
++### Change heuristics
++
++If you change...
++
++- **parsers / source detection** -> update schema or corpus verification expectations
++- **storage or read models** -> update product status, query behavior, and downstream surfaces
++- **CLI output or command shape** -> update help / contract / snapshot surfaces
++- **site publication** -> update manifest, publication semantics, and search assumptions
++- **stewardship code** -> make provenance and limitations more explicit, not less
++
++### Desired future direction
++
++The long-term goal is not merely to accumulate more verification machinery.
++It is to move rigor into stronger architectural contracts:
++
++- clearer ownership of concepts
++- fewer parallel semantics
++- better lineage/provenance on derived fields
++- generated public inventories from registries
++- semantic diffs when contracts change
+diff --git a/.claude/includes/workflows.md b/.claude/includes/workflows.md
+new file mode 100644
+index 00000000..b5d69abd
+--- /dev/null
++++ b/.claude/includes/workflows.md
+@@ -0,0 +1,96 @@
++## Working workflow
++
++### 1. Survey first
++
++Before editing, answer these questions for yourself:
++
++- Which ring does this change belong to?
++- Which concept is actually being changed?
++- Which proof surface should move with it?
++- Which public story should the eventual squash commit tell?
++
++### 2. Choose the right branch mode
++
++Use a **feature branch** when the work is already coherent.
++
++- `feature/<area>/<slug>`
++
++Use a **forge branch** when the work is exploratory or the final concept is not obvious yet.
++
++- `forge/<yyyy-mm-dd>-<topic>`
++
++The forge branch is the sanctioned place for uncertainty.
++Do exploratory work there instead of polluting `master` or guessing the wrong feature branch name too early.
++
++### 3. Forge-branch discipline
++
++Commits on forge branches should still carry lightweight structure.
++Include trailers when possible:
++
++```text
++Slice: session-products
++Intent: exploratory
++Proof: pytest -q tests/unit/core/test_products.py
++```
++
++Useful `Intent:` values:
++
++- `exploratory`
++- `structural`
++- `fix`
++- `docs`
++- `cleanup`
++
++A forge branch may contain several slices.
++That is acceptable as long as the slices are recoverable.
++
++### 4. Promotion workflow (exploration -> publication)
++
++When one slice stabilizes:
++
++1. Keep the forge branch as the exploration record.
++2. Create a fresh worktree from `origin/master`.
++3. Create `feature/<area>/<slug>` there.
++4. Cherry-pick the relevant slice commits into that feature branch.
++5. Reorder, split, fixup, and rewrite commit messages until the branch tells one story.
++6. Run the smallest convincing proof set, then the broader proof set if risk warrants it.
++7. Open a PR with a rich body, linked issue, and explicit proof notes.
++8. Squash-merge to `master`.
++
++Suggested command sketch:
++
++```bash
++git fetch origin
++git worktree add ../polylogue-promote origin/master
++cd ../polylogue-promote
++git switch -c feature/<area>/<slug>
++# cherry-pick the relevant forge commits in logical order
++```
++
++Prefer promotion over rebasing a messy exploratory branch into respectability.
++Exploration and publication have different jobs.
++
++### 5. Publication rules
++
++- One PR should have one dominant conceptual story.
++- Keep docs drift fixes close to the relevant code change if they unblock legibility.
++- Do not sneak unrelated cleanup into a branch unless it is required to make the change understandable.
++- Commit messages should name the concept, not just the files.
++- PR bodies should state: what changed, why, boundaries touched, proof run, and follow-on debt if any.
++
++### 6. Surface rules
++
++- If changing a surface, check whether the meaning belongs in a read model or operation instead.
++- Avoid direct storage reach-through from leaf surfaces when a shared boundary can exist.
++- Do not make the site, MCP, or TUI the only place where a capability exists.
++
++### 7. Direct feature-branch work
++
++If the task is already coherent, a forge branch is unnecessary.
++Work directly on a feature branch, but still preserve narrative quality and proof discipline.
++
++### 8. Hard rules
++
++- Never commit directly to `master`.
++- Never force-push shared branches.
++- Prefer squash merge onto `master`.
+diff --git a/.claude/skills/promote-slice/SKILL.md b/.claude/skills/promote-slice/SKILL.md
+new file mode 100644
+index 00000000..ed9fad56
+--- /dev/null
++++ b/.claude/skills/promote-slice/SKILL.md
+@@ -0,0 +1,33 @@
++---
++name: promote-slice
++description: Promote one coherent slice of exploratory git work into a clean feature branch and PR narrative. Use when work began on a forge branch or when the current branch contains more than one story.
++---
++
++You are in publication mode.
++
++Goal: turn one coherent slice of existing work into a narratively clean feature branch.
++
++Workflow:
++
++1. Identify the source branch and the target story.
++2. Inspect recent commits and cluster them by concept, touched paths, and any `Slice:` trailers.
++3. If the work is exploratory, preserve the source branch. Do not rewrite it in place.
++4. Create a fresh worktree from `origin/master`.
++5. Create `feature/<area>/<slug>` in that worktree.
++6. Cherry-pick only the commits for the chosen slice, in logical order.
++7. If needed, split or fixup commits so the branch tells one clear story.
++8. Run the smallest convincing proof set, then add broader proof if risk warrants it.
++9. Draft a PR body with:
++   - concept
++   - why
++   - boundaries touched
++   - proof run
++   - known follow-up debt
++10. Leave the original forge branch intact for any remaining slices.
++
++Rules:
++
++- Prefer worktree + cherry-pick over trying to sanitize a messy branch in place.
++- Do not push or merge directly to `master`.
++- Do not force-push shared branches.
++- Keep one dominant story per promoted feature branch.
+diff --git a/.claude/skills/query-archive/SKILL.md b/.claude/skills/query-archive/SKILL.md
+new file mode 100644
+index 00000000..91f00479
+--- /dev/null
++++ b/.claude/skills/query-archive/SKILL.md
+@@ -0,0 +1,29 @@
++---
++name: query-archive
++description: Query Polylogue's own archive surfaces from inside the repository without reaching directly into SQLite tables or inventing ad-hoc one-off scripts. Use when you need archive facts, product data, or example records while developing.
++---
++
++Use the highest-level stable surface that fits the task.
++
++Preference order:
++
++1. stable CLI JSON output
++2. `SyncPolylogue` or `Polylogue` library API
++3. repository/storage internals only when the task is specifically about those internals
++
++Suggested patterns:
++
++```python
++from polylogue.sync import SyncPolylogue
++
++with SyncPolylogue() as archive:
++    stats = archive.stats()
++    conversations = archive.list_summaries(provider="claude-ai", limit=5)
++    products = archive.list_session_profile_products()
++```
++
++Rules:
++
++- Prefer a canonical surface over direct SQL.
++- If the surface is awkward for agents, note the missing contract rather than bypassing it silently.
++- Treat MCP as an external integration surface, not the default way to inspect the local archive while coding inside this repo.
+diff --git a/.claude/skills/surface-audit/SKILL.md b/.claude/skills/surface-audit/SKILL.md
+new file mode 100644
+index 00000000..d457f244
+--- /dev/null
++++ b/.claude/skills/surface-audit/SKILL.md
+@@ -0,0 +1,14 @@
++---
++name: surface-audit
++description: Audit whether a change has introduced parallel semantics, direct storage reach-through from a leaf surface, or docs drift. Use after modifying CLI, site, MCP, UI, or rendering code.
++---
++
++Checklist:
++
++1. Did this change introduce a meaning that exists only in one surface?
++2. Did a leaf surface start importing storage or schema internals directly when an operation/read-model boundary should exist?
++3. Did command names, options, or docs drift?
++4. Did a new user-facing behavior land without a proof surface?
++5. Is there now a better shared boundary that should exist?
++
++If you find a boundary leak, name it explicitly in your notes or PR body.
+diff --git a/.gitignore b/.gitignore
+index 0a0f4599..2fd4d189 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -52,4 +52,5 @@ AGENTS.override.md
+ dist/
+ 
+ # Generated agent surface
+-AGENTS.md
++# AGENTS.md is generated from CLAUDE.md and committed so Codex-style agents
++# can consume the same project memory without Claude-specific transclusion.
+diff --git a/AGENTS.md b/AGENTS.md
+new file mode 100644
+index 00000000..bca31755
+--- /dev/null
++++ b/AGENTS.md
+@@ -0,0 +1,384 @@
++<!-- Generated from CLAUDE.md by devtools/generate_agents_md.py. Edit CLAUDE.md and imported files, then regenerate. -->
++
++# Polylogue Agent Constitution
++
++Polylogue is a trustworthy local archive platform for AI conversations.
++It is not merely an importer, not merely a search UI, and not merely a pile of agent tooling.
++The project has four rings:
++
++1. archive substrate
++2. derived read models
++3. surfaces
++4. stewardship
++
++The root file stays short on purpose. Durable project identity, workflows, and proof expectations live in the imported sections below.
++
++## Identity
++
++Act like an archivist, a steward, a surveyor, and a historian.
++
++- **Archivist**: preserve canonical meaning and provenance.
++- **Steward**: make the system easier to trust, not only easier to modify.
++- **Surveyor**: map the real boundary of the change before editing code.
++- **Historian**: leave a branch, PR, and squash commit that explain what happened.
++
++## Priorities
++
++1. Preserve archive integrity and semantic correctness.
++2. Prefer one canonical meaning per concept.
++3. Prefer shared read models and operations over parallel surface-specific logic.
++4. Leave evidence: tests, reports, contracts, proofs, or explicit limitations.
++5. Keep public history narratively clean even when exploratory work is messy.
++6. Do not optimize for novelty when consolidation would make the system clearer.
++
++## Project worldview
++
++Polylogue is best understood as:
++
++- an **archive substrate** for heterogeneous AI conversation exports,
++- plus **derived read models** over that archive,
++- plus multiple **surfaces** that expose those models,
++- plus a **stewardship layer** that tries to prove the archive remains trustworthy.
++
++The archive substrate is the center of gravity.
++The derived read models are integral, not fluff.
++Most surfaces are leaves.
++Stewardship is a first-class concern, but it should increasingly be expressed as architectural contracts rather than ad-hoc side machinery.
++
++## What is core versus optional
++
++Treat these as **core**:
++
++- source acquisition and parsing
++- normalization and storage
++- query/runtime operations
++- durable derived products (profiles, work events, phases, threads, summaries, debt)
++- schema generation / verification / audit paths that preserve trust
++
++Treat these as **leaf surfaces** unless proven otherwise:
++
++- site publication
++- TUI/dashboard
++- MCP server
++- presentation-specific rendering
++
++Treat `showcase` as an **acceptance harness**, not a marketing demo subsystem.
++
++## Architectural instincts
++
++- New semantics should land in the archive substrate or read models, not only in one surface.
++- New surface capabilities should prefer existing operations and read models.
++- If a concept does not yet have an obvious home, stop and name the concept before adding code.
++- If a module exists mostly to compensate for another module being unclear, consider moving the boundary instead.
++- Prefer explicit inventories and typed registries over hidden conventions.
++
++## Rigor instincts
++
++- Synthetic corpora are useful for closure and regression, but they are not the whole truth surface.
++- External provider data and raw-corpus verification remain important anchors.
++- Proof should be explainable: what was checked, against what data, using which versioned assumptions.
++
++## Development basics
++
++### Environment
++
++Preferred dev shell:
++
++```bash
++nix develop
++```
++
++Typical one-shot commands:
++
++```bash
++nix develop -c polylogue --help
++nix develop -c pytest -q --ignore=tests/integration
++POLYLOGUE_FORCE_PLAIN=1 nix develop -c polylogue run
++```
++
++If running outside Nix, use the project virtualenv / toolchain rather than ad-hoc global installs.
++
++### Command surface
++
++Treat these as the main root commands:
++
++- `polylogue run` — acquisition / ingest / index / publication pipeline
++- `polylogue doctor` — health, maintenance, proof, and repair checks
++- `polylogue audit` — synthetic/live QA, exercises, invariants, snapshots
++- `polylogue schema` — schema generation and registry tooling
++- `polylogue products` — derived product inspection and status
++- `polylogue dashboard` — interactive TUI
++- `polylogue mcp` — MCP server
++
++### Proof shortcuts
++
++When making changes, prefer the smallest convincing proof set first.
++Examples:
++
++```bash
++nix develop -c pytest -q tests/unit/core
++nix develop -c pytest -q tests/unit/storage
++nix develop -c pytest -q tests/unit/showcase
++POLYLOGUE_FORCE_PLAIN=1 nix develop -c polylogue doctor --runtime
++POLYLOGUE_FORCE_PLAIN=1 nix develop -c polylogue audit --only audit --json
++```
++
++If you change surface contracts, prefer a targeted CLI or snapshot-style proof in addition to unit tests.
++
++## Repository map
++
++### Ring 1 — archive substrate
++
++Own the raw archive and canonical runtime meaning.
++
++- `config.py`, `paths*.py`, `types.py`, `protocols.py`
++- `lib/`
++- `storage/`
++- `sources/`
++- `pipeline/`
++- `services.py`
++
++### Ring 2 — derived read models
++
++Own stable secondary views over the archive.
++
++- `archive_products.py`
++- `archive_product_rollups.py`
++- `archive_product_summaries.py`
++- `operations/`
++- `facade_products.py`, `facade_archive.py`
++- `storage/session_product_*`
++- `products/` (currently mostly transport/presentation metadata)
++
++### Ring 3 — surfaces
++
++Expose the archive and read models to humans or agents.
++
++- `cli/`
++- `rendering/`
++- `site/`
++- `mcp/`
++- `ui/`
++- `facade.py`, `sync*.py`
++
++### Ring 4 — stewardship
++
++Own proof, verification, generated corpora, audits, and acceptance workflows.
++
++- `schemas/`
++- `showcase/`
++- `tests/`
++- `devtools/`
++
++## Important current tensions
++
++### Products are real, but concept ownership is split
++
++Right now `products/registry.py` mainly owns transport and presentation.
++The semantics of products are scattered across root files, storage tables, operations, and facade mixins.
++Treat this as a candidate future `readmodels/` or `products/` consolidation.
++
++### Site is a publication surface, but it still reaches into storage directly
++
++Prefer future work that routes site generation through operations/read models instead of direct repository/backend imports.
++The site should not become a second archive core.
++
++### Showcase is misnamed
++
++It behaves like acceptance / verification infrastructure.
++Write code with that role in mind even if the package name has not been changed yet.
++
++### Schemas contain several different schema kinds
++
++Keep these mentally distinct:
++
++- wire/provider schemas
++- canonical archive schemas
++- derived-product schemas
++- surface/output schemas
++
++Avoid adding more features under `schemas/` without first deciding which schema kind they belong to.
++
++## Working workflow
++
++### 1. Survey first
++
++Before editing, answer these questions for yourself:
++
++- Which ring does this change belong to?
++- Which concept is actually being changed?
++- Which proof surface should move with it?
++- Which public story should the eventual squash commit tell?
++
++### 2. Choose the right branch mode
++
++Use a **feature branch** when the work is already coherent.
++
++- `feature/<area>/<slug>`
++
++Use a **forge branch** when the work is exploratory or the final concept is not obvious yet.
++
++- `forge/<yyyy-mm-dd>-<topic>`
++
++The forge branch is the sanctioned place for uncertainty.
++Do exploratory work there instead of polluting `master` or guessing the wrong feature branch name too early.
++
++### 3. Forge-branch discipline
++
++Commits on forge branches should still carry lightweight structure.
++Include trailers when possible:
++
++```text
++Slice: session-products
++Intent: exploratory
++Proof: pytest -q tests/unit/core/test_products.py
++```
++
++Useful `Intent:` values:
++
++- `exploratory`
++- `structural`
++- `fix`
++- `docs`
++- `cleanup`
++
++A forge branch may contain several slices.
++That is acceptable as long as the slices are recoverable.
++
++### 4. Promotion workflow (exploration -> publication)
++
++When one slice stabilizes:
++
++1. Keep the forge branch as the exploration record.
++2. Create a fresh worktree from `origin/master`.
++3. Create `feature/<area>/<slug>` there.
++4. Cherry-pick the relevant slice commits into that feature branch.
++5. Reorder, split, fixup, and rewrite commit messages until the branch tells one story.
++6. Run the smallest convincing proof set, then the broader proof set if risk warrants it.
++7. Open a PR with a rich body, linked issue, and explicit proof notes.
++8. Squash-merge to `master`.
++
++Suggested command sketch:
++
++```bash
++git fetch origin
++git worktree add ../polylogue-promote origin/master
++cd ../polylogue-promote
++git switch -c feature/<area>/<slug>
++# cherry-pick the relevant forge commits in logical order
++```
++
++Prefer promotion over rebasing a messy exploratory branch into respectability.
++Exploration and publication have different jobs.
++
++### 5. Publication rules
++
++- One PR should have one dominant conceptual story.
++- Keep docs drift fixes close to the relevant code change if they unblock legibility.
++- Do not sneak unrelated cleanup into a branch unless it is required to make the change understandable.
++- Commit messages should name the concept, not just the files.
++- PR bodies should state: what changed, why, boundaries touched, proof run, and follow-on debt if any.
++
++### 6. Surface rules
++
++- If changing a surface, check whether the meaning belongs in a read model or operation instead.
++- Avoid direct storage reach-through from leaf surfaces when a shared boundary can exist.
++- Do not make the site, MCP, or TUI the only place where a capability exists.
++
++### 7. Direct feature-branch work
++
++If the task is already coherent, a forge branch is unnecessary.
++Work directly on a feature branch, but still preserve narrative quality and proof discipline.
++
++### 8. Hard rules
++
++- Never commit directly to `master`.
++- Never force-push shared branches.
++- Prefer squash merge onto `master`.
++
++## Verification and trust
++
++Polylogue aims to be rigorous, non-ad-hoc, and inspectable.
++Treat verification as layered, not monolithic.
++
++### Proof ladder
++
++1. **Externally anchored provider data**
++   - provider catalogs and real/raw corpora
++   - schema generation and raw-corpus verification
++2. **Synthetic corpora and generated exercises**
++   - closure, combinatorics, regression, failure-shape coverage
++3. **Acceptance harness / QA**
++   - showcase exercises, audit reports, invariant checks, artifact proof
++4. **Ordinary engineering proofs**
++   - typing, unit tests, property tests, integration tests, mutation, benchmarks
++
++### What different proofs mean
++
++- A synthetic proof shows internal consistency and regression coverage.
++- A raw-corpus proof shows contact with real provider data.
++- A CLI or surface baseline shows contract stability.
++- A mutation or property proof shows resistance to accidental semantic weakening.
++
++Do not confuse one with another.
++
++### Change heuristics
++
++If you change...
++
++- **parsers / source detection** -> update schema or corpus verification expectations
++- **storage or read models** -> update product status, query behavior, and downstream surfaces
++- **CLI output or command shape** -> update help / contract / snapshot surfaces
++- **site publication** -> update manifest, publication semantics, and search assumptions
++- **stewardship code** -> make provenance and limitations more explicit, not less
++
++### Desired future direction
++
++The long-term goal is not merely to accumulate more verification machinery.
++It is to move rigor into stronger architectural contracts:
++
++- clearer ownership of concepts
++- fewer parallel semantics
++- better lineage/provenance on derived fields
++- generated public inventories from registries
++- semantic diffs when contracts change
++
++## History quality
++
++Public history is part of the product.
++A future reader — human or model — should be able to infer what happened and why.
++
++### Every landed branch should answer
++
++- What concept changed?
++- Why did it change?
++- Which boundary moved?
++- What proof exists?
++- What remains intentionally deferred?
++
++### Narrative standards
++
++Prefer commit and PR language like:
++
++- `feat: add provider events for compaction records`
++- `refactor: inherit root query filters in product commands`
++- `test: add schema-driven semantic parser properties`
++
++Avoid language like:
++
++- `wip`
++- `misc cleanup`
++- `final fixes`
++- `address feedback`
++
++### Documentation discipline
++
++Keep the public map honest.
++If commands, boundaries, or names change, update the docs that a newcomer or agent will read first.
++Outdated repo maps are worse than missing repo maps.
++
++### Product storytelling
++
++Lead with the plumbing, not the stained glass.
++For strangers, Polylogue is first a local archive substrate and read-model system.
++Only then is it a playground for verification, publication, or agent-oriented experiments.
+diff --git a/CLAUDE.md b/CLAUDE.md
+index ea77b220..f3ebb824 100644
+--- a/CLAUDE.md
++++ b/CLAUDE.md
+@@ -1,99 +1,19 @@
+-# Polylogue
++# Polylogue Agent Constitution
+ 
+-AI chat export archiver — ingests Claude, ChatGPT, Codex, Gemini exports into a SQLite archive with full-text search, session analytics, and derived products.
++Polylogue is a trustworthy local archive platform for AI conversations.
++It is not merely an importer, not merely a search UI, and not merely a pile of agent tooling.
++The project has four rings:
+ 
+-## Development
++1. archive substrate
++2. derived read models
++3. surfaces
++4. stewardship
+ 
+-```bash
+-nix develop                    # Enter devshell (or direnv allow)
+-nix develop -c pytest -q --ignore=tests/integration   # Run tests (~4300 tests, ~3 min)
+-nix develop -c polylogue --help                        # CLI
+-POLYLOGUE_FORCE_PLAIN=1 nix develop -c polylogue run   # Full pipeline run
+-```
++The root file stays short on purpose. Durable project identity, workflows, and proof expectations live in the imported sections below.
+ 
+-Flake-based: `pyproject.toml` is authoritative for deps. No imperative installs.
+-
+-## Git Workflow
+-
+-### Branch Model
+-
+-All work goes through **feature branches** that are **squash-merged** onto `master` via GitHub PRs.
+-
+-```
+-master                   <- linear history of squash commits
+-  |-- feature/X/Y       <- working branch (individual commits preserved)
+-        | squash-merge via PR
+-master                   <- gains one clean narrative commit
+-```
+-
+-### Rules
+-
+-- **Always work on a feature branch** — `feature/<category>/<description>`
+-- **Branch from `origin/master`**
+-- **Never commit directly to `master`** — enforced by pre-commit hook
+-- **Squash-merge via PR** targeting `master` — one narrative commit per branch
+-- **Link PRs to era issues** — `Ref #NNN` in PR body
+-- **No force pushes** — enforced by pre-push hook
+-- Conventional commits: `feat:`, `fix:`, `refactor:`, `test:`, `docs:`, `chore:`, `perf:`
+-
+-### Branch Naming
+-
+-`feature/<category>/<description>` where category is one of:
+-`feat`, `refactor`, `perf`, `bugfix`, `testing`, `schema`, `docs`
+-
+-### Era Issues
+-
+-Each major body of work gets a GitHub issue: `Era NN: Description`.
+-Chain: Era Issue -> PR -> Feature Branch -> Squash commit on `master`.
+-
+-## Code Rules
+-
+-- No backwards compatibility shims — delete and replace
+-- `extra="ignore"` on Pydantic models reading from DB (not `extra="forbid"`)
+-- SQLite performance pragmas are mandatory: `cache_size=-524288`, `synchronous=NORMAL`, `mmap_size=1073741824`, `temp_store=MEMORY`, `wal_autocheckpoint=10000`
+-- FTS5 tokenizer is `unicode61` — porter stemmer is NOT compiled in this SQLite build
+-- Schema v4: fresh-only, wipe-on-mismatch, no migration chain
+-- Run `pytest --ignore=tests/integration` before claiming work is done
+-
+-## Architecture
+-
+-```
+-polylogue/
+-+-- lib/               # Core domain (models, filters, query plans, hashing, dates)
+-+-- storage/           # SQLite backends (async + sync), session products, search
+-|   +-- backends/      # Connection management, schema DDL, upgrades
+-|   +-- session_product_*.py  # Derived data: profiles, work events, phases, threads
+-+-- sources/           # Provider detection, parsers, acquisition
+-+-- pipeline/          # Ingestion orchestration (acquisition, parsing, validation, indexing)
+-+-- schemas/           # Schema inference, pinning, verification
+-+-- showcase/          # QA exercise catalog and runner
+-+-- cli/               # 11 commands: run, doctor, audit, schema, products, tags, etc.
+-+-- mcp/               # Model Context Protocol server
+-+-- operations/        # High-level archive operations
+-+-- rendering/         # Markdown/HTML output
+-+-- site/              # Static site generation
+-+-- archive_products.py  # Pydantic models for session-derived products
+-+-- facade.py          # Top-level library API
+-+-- config.py          # Configuration
+-```
+-
+-### Database: 32.5 GB SQLite
+-
+-- 6,650 conversations, 2.1M messages, 5 providers
+-- Session products: 6,650 profiles, 17,888 work events, 13,936 phases
+-- WAL mode with deferred auto-checkpoint
+-
+-### Provider Detection
+-
+-ChatGPT (`mapping` field) -> Claude web (`chat_messages`) -> Claude Code (`parentUuid`) -> Codex (session envelope) -> Gemini (Drive API)
+-
+-## Testing
+-
+-4,300+ tests. Protected files (never delete): `tests/integration/`, `tests/unit/security/`, `test_parsers_props.py`, `test_null_guard_properties.py`, `test_properties.py`, `test_crud.py`.
+-
+-Mutation testing: `nix develop -c mutmut run` (8 modules).
+-QA exercises: `POLYLOGUE_FORCE_PLAIN=1 nix develop -c polylogue audit --only exercises --tier 0`
+-
+-@.claude/includes/git-workflow.md
+-@.claude/includes/architecture.md
+-@.claude/includes/testing.md
++@.claude/includes/constitution.md
++@.claude/includes/basics.md
++@.claude/includes/repo-map.md
++@.claude/includes/workflows.md
++@.claude/includes/verification.md
++@.claude/includes/history.md
+diff --git a/devtools/generate_agents_md.py b/devtools/generate_agents_md.py
+new file mode 100644
+index 00000000..ec5d5670
+--- /dev/null
++++ b/devtools/generate_agents_md.py
+@@ -0,0 +1,77 @@
++"""Generate AGENTS.md by resolving CLAUDE.md @imports.
++
++This lets Codex-style agents consume roughly the same project memory that
++Claude Code receives through native transclusion.
++"""
++
++from __future__ import annotations
++
++import argparse
++import os
++import re
++from pathlib import Path
++
++ROOT = Path(__file__).resolve().parents[1]
++DEFAULT_SOURCE = ROOT / "CLAUDE.md"
++DEFAULT_TARGET = ROOT / "AGENTS.md"
++IMPORT_RE = re.compile(r"^\s*@(.+?)\s*$")
++
++
++def _resolve_include(base_file: Path, include: str) -> Path:
++    include_path = Path(os.path.expanduser(include))
++    if not include_path.is_absolute():
++        include_path = (base_file.parent / include_path).resolve()
++    return include_path
++
++
++def expand_file(path: Path, *, stack: tuple[Path, ...] = ()) -> str:
++    path = path.resolve()
++    if path in stack:
++        chain = " -> ".join(p.name for p in (*stack, path))
++        return f"\n<!-- circular import skipped: {chain} -->\n"
++    try:
++        text = path.read_text(encoding="utf-8")
++    except OSError as exc:
++        return f"\n<!-- failed to read {path}: {exc} -->\n"
++
++    out: list[str] = []
++    in_fence = False
++    for raw_line in text.splitlines():
++        stripped = raw_line.strip()
++        if stripped.startswith("```"):
++            in_fence = not in_fence
++            out.append(raw_line)
++            continue
++        if not in_fence:
++            match = IMPORT_RE.match(raw_line)
++            if match:
++                include_path = _resolve_include(path, match.group(1))
++                out.append(expand_file(include_path, stack=(*stack, path)))
++                continue
++        out.append(raw_line)
++    return "\n".join(out).rstrip() + "\n"
++
++
++def main() -> int:
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--source", type=Path, default=DEFAULT_SOURCE)
++    parser.add_argument("--output", type=Path, default=DEFAULT_TARGET)
++    parser.add_argument("--stdout", action="store_true")
++    args = parser.parse_args()
++
++    expanded = expand_file(args.source)
++    banner = (
++        "<!-- Generated from CLAUDE.md by devtools/generate_agents_md.py. "
++        "Edit CLAUDE.md and imported files, then regenerate. -->\n\n"
++    )
++    payload = banner + expanded
++
++    if args.stdout:
++        print(payload, end="")
++    else:
++        args.output.write_text(payload, encoding="utf-8")
++    return 0
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/polylogue/operations/CLAUDE.md b/polylogue/operations/CLAUDE.md
+new file mode 100644
+index 00000000..e1f8a935
+--- /dev/null
++++ b/polylogue/operations/CLAUDE.md
+@@ -0,0 +1,7 @@
++# Operations guidance
++
++This package should be the shared read/service boundary that leaf surfaces lean on.
++
++- Prefer consolidating cross-surface meaning here instead of duplicating semantics in site, MCP, or UI code.
++- If a surface needs a new archive or derived-product capability, first ask whether `operations` should own it.
++- Keep operation outputs stable and explainable enough that CLI JSON, site generation, and agent integrations can share them.
+diff --git a/polylogue/products/CLAUDE.md b/polylogue/products/CLAUDE.md
+new file mode 100644
+index 00000000..30b05b48
+--- /dev/null
++++ b/polylogue/products/CLAUDE.md
+@@ -0,0 +1,7 @@
++# Products guidance
++
++This package should grow toward owning the derived read-model concept more completely.
++
++- Avoid leaving product semantics split across unrelated files when a real registry or materializer boundary would be clearer.
++- Product definitions should carry version, provenance, freshness, and repair expectations.
++- Prefer inventories and typed product contracts over ad-hoc product-specific command code.
+diff --git a/polylogue/schemas/CLAUDE.md b/polylogue/schemas/CLAUDE.md
+new file mode 100644
+index 00000000..b9f3d62a
+--- /dev/null
++++ b/polylogue/schemas/CLAUDE.md
+@@ -0,0 +1,8 @@
++# Schemas guidance
++
++This package is part of the stewardship layer.
++
++- Keep externally anchored provider data separate in your mind from synthetic closure/regression machinery.
++- Distinguish provider/wire schemas, canonical archive schemas, derived-product schemas, and surface/output schemas.
++- Do not let synthetic generation become the only evidence path.
++- Prefer provenance, versioning, and explicit limitations over silent inference.
+diff --git a/polylogue/showcase/CLAUDE.md b/polylogue/showcase/CLAUDE.md
+new file mode 100644
+index 00000000..68143335
+--- /dev/null
++++ b/polylogue/showcase/CLAUDE.md
+@@ -0,0 +1,8 @@
++# Showcase guidance
++
++This package behaves like an acceptance and verification harness.
++
++- Think exercises, contract checks, invariant checks, and report generation.
++- Generated exercises should come from command inventory or schema inventory where possible.
++- Avoid demo-only logic that does not strengthen trust in a real surface.
++- A future rename to `acceptance` or `verification_harness` would be directionally correct.
+diff --git a/polylogue/site/CLAUDE.md b/polylogue/site/CLAUDE.md
+new file mode 100644
+index 00000000..dc888609
+--- /dev/null
++++ b/polylogue/site/CLAUDE.md
+@@ -0,0 +1,8 @@
++# Site guidance
++
++The site is a publication surface.
++
++- Prefer consuming operations and durable read models rather than reaching directly into storage details.
++- Do not invent semantics that only exist in the site.
++- Favor shared theme tokens and generated manifests over duplicated constants and one-off page state.
++- Treat lexical search, semantic relatedness, lenses, and indices as different user needs.
+diff --git a/polylogue/storage/CLAUDE.md b/polylogue/storage/CLAUDE.md
+new file mode 100644
+index 00000000..c49d0783
+--- /dev/null
++++ b/polylogue/storage/CLAUDE.md
+@@ -0,0 +1,8 @@
++# Storage guidance
++
++This package owns canonical persisted meaning and durable read-side materialization.
++
++- Prefer schemas, repositories, and materializers that can be consumed by many surfaces.
++- Avoid adding surface-specific row shapes or ad-hoc queries when operations or read models can own them.
++- New derived tables should come with explicit status, provenance/version expectations, and a repair story.
++- Think in terms of storage contracts, not just helper functions.

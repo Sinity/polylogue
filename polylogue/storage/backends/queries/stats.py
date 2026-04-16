@@ -116,7 +116,8 @@ async def aggregate_message_stats(
 
     return {
         **message_stats,
-        "attachments": att_cnt,
+        "attachment_refs": att_row["attachment_ref_count"],
+        "distinct_attachments": att_row["distinct_attachment_count"],
         "min_sort_key": date_row["min_sk"],
         "max_sort_key": date_row["max_sk"],
         "providers": providers,
