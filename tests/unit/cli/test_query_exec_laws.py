@@ -1001,7 +1001,9 @@ def test_async_execute_query_action_routing_contract(case, expected_helper) -> N
         patch(
             "polylogue.cli.query_output.output_stats_by_semantic_summaries", new_callable=AsyncMock
         ) as mock_output_stats_by_semantic_summaries,
-        patch("polylogue.cli.query_output.output_stats_by_profile_summaries", new_callable=AsyncMock) as mock_output_stats_by_profile_summaries,
+        patch(
+            "polylogue.cli.query_output.output_stats_by_profile_summaries", new_callable=AsyncMock
+        ) as mock_output_stats_by_profile_summaries,
         patch("polylogue.cli.query_output._output_stats_by") as mock_output_stats_by,
         patch("polylogue.cli.query_actions.apply_modifiers", new_callable=AsyncMock) as mock_apply_modifiers,
         patch("polylogue.cli.query_actions.delete_conversations", new_callable=AsyncMock) as mock_delete_conversations,
@@ -1195,7 +1197,9 @@ def test_async_execute_query_profile_stats_by_uses_summary_batches_contract() ->
         patch("polylogue.cli.helpers.load_effective_config", return_value=MagicMock()),
         patch("polylogue.storage.search_providers.create_vector_provider", return_value=None),
         patch("polylogue.cli.query.build_query_execution_plan", return_value=plan),
-        patch("polylogue.cli.query_output.output_stats_by_profile_summaries", new_callable=AsyncMock) as mock_output_stats_by_profile_summaries,
+        patch(
+            "polylogue.cli.query_output.output_stats_by_profile_summaries", new_callable=AsyncMock
+        ) as mock_output_stats_by_profile_summaries,
         patch("polylogue.cli.query_output._output_stats_by") as mock_output_stats_by,
     ):
         asyncio.run(async_execute_query(env, {}))
@@ -1498,18 +1502,18 @@ async def test_output_stats_sql_archive_scope_includes_embedding_state() -> None
     with patch(
         "polylogue.cli.query_stats.stats_q.aggregate_message_stats",
         new=AsyncMock(
-                return_value={
-                    "total": 9,
-                    "user": 4,
-                    "assistant": 5,
-                    "words_approx": 42,
-                    "providers": {"claude-ai": 2, "chatgpt": 1},
-                    "attachment_refs": 2,
-                    "distinct_attachments": 1,
-                    "min_sort_key": 1704067200,
-                    "max_sort_key": 1704153600,
-                }
-            ),
+            return_value={
+                "total": 9,
+                "user": 4,
+                "assistant": 5,
+                "words_approx": 42,
+                "providers": {"claude-ai": 2, "chatgpt": 1},
+                "attachment_refs": 2,
+                "distinct_attachments": 1,
+                "min_sort_key": 1704067200,
+                "max_sort_key": 1704153600,
+            }
+        ),
     ) as mock_aggregate:
         await output_stats_sql(env, filter_chain, repo)
 

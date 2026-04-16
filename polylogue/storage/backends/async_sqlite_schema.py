@@ -61,7 +61,9 @@ async def ensure_schema(conn: aiosqlite.Connection) -> None:
         await conn.execute("ALTER TABLE raw_conversations ADD COLUMN blob_size INTEGER NOT NULL DEFAULT 0")
 
     content_blocks_exists = bool(
-        await (await conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='content_blocks'")).fetchone()
+        await (
+            await conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='content_blocks'")
+        ).fetchone()
     )
     if content_blocks_exists:
         await conn.execute(

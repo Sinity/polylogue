@@ -716,36 +716,47 @@ async def test_save_conversation_replaces_runtime_rows_on_content_change(tmp_pat
     messages = await backend.get_messages("conv-replace")
     assert [message.message_id for message in messages] == ["msg-1"]
     assert messages[0].text == "first updated"
-    assert [(block.block_index, block.text) for block in messages[0].content_blocks] == [
-        (0, "alpha updated")
-    ]
+    assert [(block.block_index, block.text) for block in messages[0].content_blocks] == [(0, "alpha updated")]
 
     attachments = sorted(await backend.get_attachments("conv-replace"), key=lambda record: record.attachment_id)
-    assert [(attachment.attachment_id, attachment.message_id) for attachment in attachments] == [
-        ("att-1", "msg-1")
-    ]
+    assert [(attachment.attachment_id, attachment.message_id) for attachment in attachments] == [("att-1", "msg-1")]
 
     with open_connection(backend.db_path) as conn:
-        assert conn.execute(
-            "SELECT COUNT(*) FROM messages WHERE conversation_id = ?",
-            ("conv-replace",),
-        ).fetchone()[0] == 1
-        assert conn.execute(
-            "SELECT COUNT(*) FROM content_blocks WHERE conversation_id = ?",
-            ("conv-replace",),
-        ).fetchone()[0] == 1
-        assert conn.execute(
-            "SELECT COUNT(*) FROM attachment_refs WHERE conversation_id = ?",
-            ("conv-replace",),
-        ).fetchone()[0] == 1
-        assert conn.execute(
-            "SELECT message_id FROM attachment_refs WHERE conversation_id = ? AND attachment_id = ?",
-            ("conv-replace", "att-1"),
-        ).fetchone()[0] == "msg-1"
-        assert conn.execute(
-            "SELECT COUNT(*) FROM attachments WHERE attachment_id = ?",
-            ("att-2",),
-        ).fetchone()[0] == 0
+        assert (
+            conn.execute(
+                "SELECT COUNT(*) FROM messages WHERE conversation_id = ?",
+                ("conv-replace",),
+            ).fetchone()[0]
+            == 1
+        )
+        assert (
+            conn.execute(
+                "SELECT COUNT(*) FROM content_blocks WHERE conversation_id = ?",
+                ("conv-replace",),
+            ).fetchone()[0]
+            == 1
+        )
+        assert (
+            conn.execute(
+                "SELECT COUNT(*) FROM attachment_refs WHERE conversation_id = ?",
+                ("conv-replace",),
+            ).fetchone()[0]
+            == 1
+        )
+        assert (
+            conn.execute(
+                "SELECT message_id FROM attachment_refs WHERE conversation_id = ? AND attachment_id = ?",
+                ("conv-replace", "att-1"),
+            ).fetchone()[0]
+            == "msg-1"
+        )
+        assert (
+            conn.execute(
+                "SELECT COUNT(*) FROM attachments WHERE attachment_id = ?",
+                ("att-2",),
+            ).fetchone()[0]
+            == 0
+        )
         stats_row = conn.execute(
             "SELECT message_count, word_count FROM conversation_stats WHERE conversation_id = ?",
             ("conv-replace",),

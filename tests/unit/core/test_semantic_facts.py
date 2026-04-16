@@ -518,6 +518,7 @@ def test_build_session_profile_does_not_infer_repos_from_dialogue_paths() -> Non
     assert profile.repo_paths == ()
     assert profile.file_paths_touched == ()
 
+
 def test_build_session_profile_ignores_persisted_output_paths_in_dialogue_text() -> None:
     conversation = Conversation(
         id="conv-user-path-noise",

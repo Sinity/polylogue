@@ -35,9 +35,7 @@ def _iter_raw_id_batches(
 
     for raw_id, blob_size in headers:
         record_blob_bytes = max(int(blob_size), 0)
-        if batch_ids and (
-            len(batch_ids) >= max_records or batch_blob_bytes + record_blob_bytes > max_blob_bytes
-        ):
+        if batch_ids and (len(batch_ids) >= max_records or batch_blob_bytes + record_blob_bytes > max_blob_bytes):
             yield batch_ids
             batch_ids = []
             batch_blob_bytes = 0
@@ -65,9 +63,7 @@ async def _iter_raw_id_batches_async(
 
     async for raw_id, blob_size in headers:
         record_blob_bytes = max(int(blob_size), 0)
-        if batch_ids and (
-            len(batch_ids) >= max_records or batch_blob_bytes + record_blob_bytes > max_blob_bytes
-        ):
+        if batch_ids and (len(batch_ids) >= max_records or batch_blob_bytes + record_blob_bytes > max_blob_bytes):
             yield batch_ids
             batch_ids = []
             batch_blob_bytes = 0

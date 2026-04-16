@@ -191,10 +191,7 @@ async def get_raw_blob_sizes(
         f"SELECT raw_id, blob_size FROM raw_conversations WHERE raw_id IN ({placeholders})",
         tuple(raw_ids),
     )
-    sizes = {
-        str(row["raw_id"]): int(row["blob_size"])
-        for row in await cursor.fetchall()
-    }
+    sizes = {str(row["raw_id"]): int(row["blob_size"]) for row in await cursor.fetchall()}
     return [(raw_id, sizes[raw_id]) for raw_id in raw_ids if raw_id in sizes]
 
 

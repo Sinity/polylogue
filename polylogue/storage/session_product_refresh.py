@@ -402,7 +402,9 @@ async def _apply_session_product_conversation_updates_async(
         write_elapsed_ms = round((time.perf_counter() - write_started) * 1000.0, 1)
         chunk_observation = {
             "conversation_count": len(chunk),
-            "estimated_message_count": sum(max(int(message_counts.get(conversation_id, 0) or 0), 1) for conversation_id in chunk),
+            "estimated_message_count": sum(
+                max(int(message_counts.get(conversation_id, 0) or 0), 1) for conversation_id in chunk
+            ),
             "max_estimated_conversation_messages": max(
                 max(int(message_counts.get(conversation_id, 0) or 0), 1) for conversation_id in chunk
             ),

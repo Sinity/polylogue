@@ -1955,9 +1955,7 @@ def test_iter_source_raw_data_skips_zero_byte_zip_entries_and_tracks_failure(tmp
 
     assert items == []
     assert cursor_state["failed_count"] == 1
-    assert cursor_state["failed_files"] == [
-        {"path": f"{archive_path}:nested/empty.jsonl", "error": "empty file"}
-    ]
+    assert cursor_state["failed_files"] == [{"path": f"{archive_path}:nested/empty.jsonl", "error": "empty file"}]
 
 
 def test_iter_source_raw_data_summarizes_zero_byte_zip_entries(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
