@@ -7,6 +7,7 @@ clearest specification.
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 from io import StringIO
 from pathlib import Path
@@ -180,6 +181,7 @@ async def test_async_execute_query_errors_for_similar_without_vector_support() -
     assert exc_info.value.code == 1
     mock_echo.assert_called_once()
     assert "requires vector search support" in mock_echo.call_args.args[0]
+    assert "polylogue run embed" in mock_echo.call_args.args[0]
 
 
 @pytest.mark.asyncio
@@ -201,6 +203,7 @@ async def test_async_execute_query_errors_for_similar_without_embeddings() -> No
     assert exc_info.value.code == 1
     mock_echo.assert_called_once()
     assert "requires existing embeddings" in mock_echo.call_args.args[0]
+    assert "polylogue run embed" in mock_echo.call_args.args[0]
 
 
 @pytest.mark.asyncio
@@ -818,22 +821,60 @@ def test_copy_to_clipboard_contract(side_effects, expect_console: bool, expect_e
 
 
 @pytest.mark.parametrize(
-    ("results", "render_root_exists", "html_exists", "latest_exists", "expected_exit", "expected_open_name"),
+    (
+        "results",
+        "params",
+        "render_root_exists",
+        "html_exists",
+        "latest_exists",
+        "expected_exit",
+        "expected_open_name",
+        "expected_stdout",
+    ),
     [
-        ([], True, False, False, 2, None),
-        ([_make_conv(id="conv-output-1234")], False, False, False, 1, None),
-        ([_make_conv(id="conv-output-1234")], True, True, False, None, "conversation.html"),
-        ([_make_conv(id="conv-output-1234")], True, False, True, None, "fallback.html"),
+        ([], {}, True, False, False, 2, None, None),
+        ([_make_conv(id="conv-output-1234")], {}, False, False, False, 1, None, None),
+        ([_make_conv(id="conv-output-1234")], {}, True, True, False, None, "conversation.html", None),
+        ([_make_conv(id="conv-output-1234")], {}, True, False, True, None, "fallback.html", None),
+        (
+            [_make_conv(id="conv-output-1234")],
+            {"print_path": True},
+            True,
+            True,
+            False,
+            None,
+            None,
+            "conversation.html",
+        ),
+        (
+            [_make_conv(id="conv-output-1234")],
+            {"print_path": True, "output_format": "json"},
+            True,
+            True,
+            False,
+            None,
+            None,
+            '"path":',
+        ),
     ],
-    ids=["no-results", "no-render-root", "specific-render", "latest-fallback"],
+    ids=[
+        "no-results",
+        "no-render-root",
+        "specific-render",
+        "latest-fallback",
+        "print-path",
+        "print-path-json",
+    ],
 )
 def test_open_result_contract(
     results,
+    params: dict[str, object],
     render_root_exists: bool,
     html_exists: bool,
     latest_exists: bool,
     expected_exit: int | None,
     expected_open_name: str | None,
+    expected_stdout: str | None,
     tmp_path: Path,
 ) -> None:
     from polylogue.cli.query_output import _open_result
@@ -858,15 +899,44 @@ def test_open_result_contract(
     ):
         if expected_exit is not None:
             with pytest.raises(SystemExit) as exc_info:
-                _open_result(env, results, {})
+                _open_result(env, results, params)
             assert exc_info.value.code == expected_exit
             mock_open.assert_not_called()
         else:
-            _open_result(env, results, {})
-            opened = mock_open.call_args.args[0]
-            assert expected_open_name in opened
-            env.ui.console.print.assert_called_once()
-            mock_echo.assert_not_called()
+            _open_result(env, results, params)
+            if expected_stdout is not None:
+                mock_open.assert_not_called()
+                env.ui.console.print.assert_not_called()
+                echoed = "\n".join(call.args[0] for call in mock_echo.call_args_list if call.args)
+                assert expected_stdout in echoed
+            else:
+                opened = mock_open.call_args.args[0]
+                assert expected_open_name in opened
+                env.ui.console.print.assert_called_once()
+                mock_echo.assert_not_called()
+
+
+def test_open_result_no_results_json_contract(capsys, tmp_path: Path) -> None:
+    from polylogue.cli.query_output import _open_result
+
+    render_root = tmp_path / "rendered"
+    render_root.mkdir()
+    env = _make_env(config=MagicMock(render_root=render_root))
+
+    with (
+        patch("polylogue.cli.helpers.load_effective_config", return_value=MagicMock(render_root=render_root)),
+        patch("polylogue.cli.helpers.latest_render_path", return_value=None),
+        patch("webbrowser.open") as mock_open,
+    ):
+        with pytest.raises(SystemExit) as exc_info:
+            _open_result(env, [], {"output_format": "json"})
+
+    assert exc_info.value.code == 2
+    mock_open.assert_not_called()
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "error"
+    assert payload["code"] == "no_results"
+    assert payload["message"] == "No conversations matched."
 
 
 # ---------------------------------------------------------------------------

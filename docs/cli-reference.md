@@ -34,7 +34,7 @@ Usage: polylogue [OPTIONS] COMMAND [ARGS]...
       polylogue --action-text "pytest -q" list
       polylogue "pytest -q tests/unit/core/test_semantic_facts.py" --retrieval-lane actions --limit 5
       polylogue --action other stats --by tool --format json
-      polylogue stats --by repo --provider claude-code --since 2026-01-01 --format json
+      polylogue --provider claude-code --since 2026-01-01 stats --by repo --format json
       polylogue --tool bash --exclude-tool read list
       polylogue --similar "sqlite locking bug in parser" --limit 5
 
@@ -179,7 +179,8 @@ Usage: polylogue open [OPTIONS]
   Open matched conversation in browser/editor.
 
 Options:
-  -h, --help  Show this message and exit.
+  --print-path  Print the matched render path instead of opening it
+  -h, --help    Show this message and exit.
 ```
 
 ## Delete Verb
@@ -355,7 +356,7 @@ Usage: polylogue audit generate [OPTIONS]
     polylogue audit generate -p chatgpt -n 5        # ChatGPT only, 5 conversations
     polylogue audit generate -o /tmp/corpus         # Custom output directory
     polylogue audit generate --seed                 # Full demo environment
-    polylogue audit generate --seed --env-only | eval  # Shell-friendly
+    eval "$(polylogue audit generate --seed --env-only)"  # Shell-friendly
 
 Options:
   -p, --provider TEXT    Providers to include (default: all). Can be repeated.
@@ -376,8 +377,6 @@ Usage: polylogue doctor [OPTIONS]
 Options:
   --json                          Output as JSON
   -v, --verbose                   Show breakdown by provider
-  --cached                        Use the recent cached archive-health report
-                                  when available
   --repair                        Run safe derived-data and database
                                   maintenance repairs
   --cleanup                       Run destructive archive cleanup for orphaned

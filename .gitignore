@@ -62,3 +62,4 @@ AGENTS.md
 
 # Build metadata embedded into release artifacts
 polylogue/_build_info.py
+.claude/scheduled_tasks.lock

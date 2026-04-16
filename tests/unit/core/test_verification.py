@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from pathlib import Path
 
+import orjson
 import pytest
 
 from polylogue.schemas.packages import SchemaElementManifest, SchemaResolution, SchemaVersionPackage
@@ -750,3 +751,88 @@ class TestProveRawArtifactCoverage:
         assert chatgpt_cohort.resolved_package_version == "v1"
         sidecar_cohort = next(row for row in cohorts if row.artifact_kind == "agent_sidecar_meta")
         assert sidecar_cohort.linked_sidecar_count == 1
+
+    def test_large_json_documents_use_bounded_full_read_fallback(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        db_path = tmp_path / "large-json-proof.db"
+        with open_connection(db_path):
+            pass
+
+        message_template = {
+            "uuid": "message-uuid",
+            "sender": "human",
+            "content": [{"type": "text", "text": "x" * 200}],
+            "attachments": [],
+        }
+        payload = {
+            "uuid": "claude-conversation",
+            "name": "Large Claude export",
+            "chat_messages": [message_template for _ in range(600)],
+        }
+        raw_content = orjson.dumps(payload, option=orjson.OPT_INDENT_2)
+
+        _insert_raw_record(
+            db_path=db_path,
+            provider_name="claude-ai",
+            source_name="claude-ai",
+            source_path="/tmp/claude-large.json",
+            raw_content=raw_content,
+        )
+
+        package = SchemaVersionPackage(
+            provider="claude-ai",
+            version="v1",
+            anchor_kind="conversation_document",
+            default_element_kind="conversation_document",
+            first_seen="2026-03-01T00:00:00+00:00",
+            last_seen="2026-03-01T00:00:00+00:00",
+            bundle_scope_count=1,
+            sample_count=1,
+            elements=[
+                SchemaElementManifest(
+                    element_kind="conversation_document",
+                    schema_file="claude-ai-v1.json",
+                    sample_count=1,
+                    artifact_count=1,
+                )
+            ],
+        )
+
+        def _resolve_payload(self, provider, payload, *, source_path=None):
+            if str(provider) == "claude-ai":
+                return SchemaResolution(
+                    provider="claude-ai",
+                    package_version="v1",
+                    element_kind="conversation_document",
+                    exact_structure_id=None,
+                    bundle_scope=None,
+                    reason="package_default",
+                )
+            return None
+
+        def _get_package(self, provider, version="default"):
+            if str(provider) == "claude-ai" and version == "v1":
+                return package
+            return None
+
+        monkeypatch.setattr("polylogue.storage.artifact_inspection.SchemaRegistry.resolve_payload", _resolve_payload)
+        monkeypatch.setattr("polylogue.storage.artifact_inspection.SchemaRegistry.get_package", _get_package)
+
+        report = prove_raw_artifact_coverage(
+            db_path=db_path,
+            request=ArtifactProofRequest(providers=["claude-ai"]),
+        )
+
+        assert report.total_records == 1
+        assert report.contract_backed_records == 1
+        assert report.decode_errors == 0
+        row = list_artifact_observation_rows(
+            db_path=db_path,
+            request=ArtifactObservationQuery(providers=["claude-ai"]),
+        )[0]
+        assert row.wire_format == "json"
+        assert row.artifact_kind == "conversation_document"
+        assert row.support_status.value == "supported_parseable"

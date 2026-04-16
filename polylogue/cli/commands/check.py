@@ -35,7 +35,6 @@ def check_command(
     env: AppEnv,
     json_output: bool,
     verbose: bool,
-    use_cached_health: bool,
     repair: bool,
     cleanup: bool,
     maintenance_targets: tuple[str, ...],
@@ -63,7 +62,6 @@ def check_command(
     options = CheckCommandOptions(
         json_output=json_output,
         verbose=verbose,
-        use_cached_health=use_cached_health,
         repair=repair,
         cleanup=cleanup,
         maintenance_targets=maintenance_targets,

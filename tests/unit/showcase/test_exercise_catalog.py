@@ -51,10 +51,6 @@ class TestExercisesByGroup:
         assert {
             "doctor-proof-json",
             "doctor-cohorts-json",
-            "doctor-semantic-proof",
-            "doctor-semantic-proof-json",
-            "doctor-semantic-proof-read-surfaces",
-            "doctor-semantic-proof-read-surfaces-json",
         } <= names
 
     def test_all_command_paths_have_generated_help_exercises(self):
@@ -85,6 +81,18 @@ class TestExercisesByGroup:
         for exercise in observed.values():
             assert exercise.validation.stdout_is_valid_json is True
             assert exercise.output_ext == ".json"
+
+    def test_json_contract_exercises_use_curated_runnable_args(self):
+        observed = {
+            exercise.name: exercise
+            for exercise in EXERCISES
+            if exercise.group == "subcommands" and exercise.name.startswith("json-")
+        }
+        assert observed["json-audit"].args == ["audit", "--only", "audit", "--json"]
+        assert observed["json-run-embed"].args == ["run", "embed", "--stats", "--json"]
+        assert "json-schema-compare" not in observed
+        assert "json-schema-generate" not in observed
+        assert "json-schema-promote" not in observed
 
 
 class TestVhsExercises:

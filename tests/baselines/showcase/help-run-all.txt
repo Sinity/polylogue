@@ -1,4 +1,4 @@
-Usage: python -m polylogue run all [OPTIONS]
+Usage: polylogue run all [OPTIONS]
 
   Run the full pipeline.
 

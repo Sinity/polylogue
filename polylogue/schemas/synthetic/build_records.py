@@ -53,6 +53,10 @@ def _generate_tree_json(self, n_messages: int, rng: random.Random, *, theme: Con
     top[tree_cfg.container_path] = {node[tree_cfg.key_field]: node for node in nodes}
     if "current_node" in self.schema.get("properties", {}):
         top["current_node"] = nodes[-1][tree_cfg.key_field]
+    if self.provider == "chatgpt":
+        top["id"] = str(uuid.UUID(int=rng.getrandbits(128), version=4))
+        top.setdefault("create_time", base_ts)
+        top.setdefault("update_time", base_ts + max(0, n_messages - 1) * 60)
     if theme is not None and "title" in self.schema.get("properties", {}):
         top["title"] = theme.title
     return top

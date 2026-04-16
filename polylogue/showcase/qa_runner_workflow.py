@@ -31,6 +31,7 @@ def run_qa_session(
     source_names: list[str] | None = None,
     regenerate_schemas: bool = False,
     skip_audit: bool = False,
+    skip_proof: bool = False,
     skip_exercises: bool = False,
     skip_invariants: bool = False,
     workspace_dir: Path | None = None,
@@ -44,6 +45,7 @@ def run_qa_session(
 ) -> QAResult:
     """Execute a composable QA session."""
     result = QAResult(report_dir=report_dir)
+    result.proof_skipped = skip_proof
     workspace_env_for_runner: dict[str, str] | None = workspace_env
     needs_workspace = not skip_exercises
 
@@ -100,7 +102,8 @@ def run_qa_session(
 
             result.audit_report = audit_provider(provider) if provider else audit_all_providers()
             if not result.audit_report.all_passed:
-                populate_proof(result, workspace_env=workspace_env_for_runner)
+                if not skip_proof:
+                    populate_proof(result, workspace_env=workspace_env_for_runner)
                 result.exercises_skipped = True
                 result.invariants_skipped = True
                 if verbose:
@@ -111,7 +114,8 @@ def run_qa_session(
                 return result
         except Exception as exc:
             result.audit_error = str(exc)
-            populate_proof(result, workspace_env=workspace_env_for_runner)
+            if not skip_proof:
+                populate_proof(result, workspace_env=workspace_env_for_runner)
             result.exercises_skipped = True
             result.invariants_skipped = True
             if report_dir:
@@ -119,7 +123,8 @@ def run_qa_session(
                 save_qa_reports(result, report_dir)
             return result
 
-    populate_proof(result, workspace_env=workspace_env_for_runner)
+    if not skip_proof:
+        populate_proof(result, workspace_env=workspace_env_for_runner)
 
     if skip_exercises:
         result.exercises_skipped = True

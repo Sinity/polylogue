@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import subprocess
+import sys
 from pathlib import Path
 
 from hatchling.builders.hooks.plugin.interface import BuildHookInterface
+
+sys.dont_write_bytecode = True
 
 
 def _git_metadata(repo_root: Path) -> tuple[str, bool]:

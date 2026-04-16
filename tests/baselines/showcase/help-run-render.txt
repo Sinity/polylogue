@@ -1,4 +1,4 @@
-Usage: python -m polylogue run render [OPTIONS]
+Usage: polylogue run render [OPTIONS]
 
   Render human-facing publication artifacts.
 

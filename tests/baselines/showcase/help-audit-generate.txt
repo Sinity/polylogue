@@ -1,4 +1,4 @@
-Usage: python -m polylogue audit generate [OPTIONS]
+Usage: polylogue audit generate [OPTIONS]
 
   Generate synthetic conversations for demos, testing, and inspection.
 
@@ -7,7 +7,7 @@ Usage: python -m polylogue audit generate [OPTIONS]
     polylogue audit generate -p chatgpt -n 5        # ChatGPT only, 5 conversations
     polylogue audit generate -o /tmp/corpus         # Custom output directory
     polylogue audit generate --seed                 # Full demo environment
-    polylogue audit generate --seed --env-only | eval  # Shell-friendly
+    eval "$(polylogue audit generate --seed --env-only)"  # Shell-friendly
 
 Options:
   -p, --provider TEXT    Providers to include (default: all). Can be repeated.

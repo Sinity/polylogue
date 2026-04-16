@@ -240,6 +240,26 @@ class TestQueryFirstGroupParseArgs:
         assert "--provider" in result.output
         assert "--latest" in result.output
         assert "Subcommands:" not in result.output
+        assert "polylogue --provider claude-code --since 2026-01-01 stats --by repo --format json" in result.output
+        assert "polylogue stats --by repo --provider claude-code --since 2026-01-01 --format json" not in result.output
+
+    def test_root_query_option_after_verb_gets_specific_usage_error(self, cli_runner):
+        from polylogue.cli.click_app import cli
+
+        result = cli_runner.invoke(cli, ["stats", "--by", "provider", "--limit", "20"], catch_exceptions=False)
+        assert result.exit_code == 2
+        assert "Query filters and root output flags must appear before the verb." in result.output
+        assert "Move --limit before `stats`." in result.output
+
+    def test_root_filter_after_verb_gets_specific_usage_error(self, cli_runner):
+        from polylogue.cli.click_app import cli
+
+        result = cli_runner.invoke(
+            cli, ["stats", "--by", "provider", "--provider", "claude-ai"], catch_exceptions=False
+        )
+        assert result.exit_code == 2
+        assert "Query filters and root output flags must appear before the verb." in result.output
+        assert "Move --provider before `stats`." in result.output
 
 
 class TestQueryFirstGroupInvoke:
@@ -255,6 +275,17 @@ class TestQueryFirstGroupInvoke:
         with patch("polylogue.cli.click_app._show_stats") as mock_stats:
             cli_runner.invoke(cli, ["--plain"], catch_exceptions=False)
         mock_stats.assert_called_once()
+
+    def test_stats_by_subcommand_preserves_grouped_stats_mode(self, cli_runner):
+        from polylogue.cli.click_app import cli
+
+        with patch("polylogue.cli.query.execute_query") as mock_execute:
+            result = cli_runner.invoke(cli, ["--plain", "stats", "--by", "provider"], catch_exceptions=False)
+
+        assert result.exit_code == 0
+        _, params = mock_execute.call_args[0]
+        assert params["stats_by"] == "provider"
+        assert params["stats_only"] is False
 
     def test_query_mode_with_positional_args(self, cli_runner):
         from polylogue.cli.click_app import cli
@@ -293,54 +324,61 @@ class TestCliSetup:
             cli_runner.invoke(cli, ["--plain"], catch_exceptions=False)
         mock_ui.assert_called_once_with(True)
 
-    def test_plain_mode_announcement_when_auto_detected(self, cli_runner):
+    def test_plain_mode_auto_detection_does_not_announce(self, cli_runner):
         from polylogue.cli.click_app import cli
 
         with (
             patch("polylogue.cli.click_app.should_use_plain", return_value=True),
-            patch("polylogue.cli.click_app.announce_plain_mode") as mock_announce,
             patch("polylogue.cli.click_app.create_ui", return_value=MagicMock()),
             patch("polylogue.cli.click_app._show_stats"),
         ):
-            cli_runner.invoke(cli, [], catch_exceptions=False, env={"POLYLOGUE_FORCE_PLAIN": ""})
-        mock_announce.assert_called_once()
+            result = cli_runner.invoke(cli, [], catch_exceptions=False, env={"POLYLOGUE_FORCE_PLAIN": ""})
+        assert "Plain output active" not in result.output
 
     def test_no_announcement_when_plain_flag_explicit(self, cli_runner):
         from polylogue.cli.click_app import cli
 
         with (
             patch("polylogue.cli.click_app.should_use_plain", return_value=True),
-            patch("polylogue.cli.click_app.announce_plain_mode") as mock_announce,
             patch("polylogue.cli.click_app.create_ui", return_value=MagicMock()),
             patch("polylogue.cli.click_app._show_stats"),
         ):
-            cli_runner.invoke(cli, ["--plain"], catch_exceptions=False)
-        mock_announce.assert_not_called()
+            result = cli_runner.invoke(cli, ["--plain"], catch_exceptions=False)
+        assert "Plain output active" not in result.output
 
     def test_no_announcement_when_env_force_plain(self, cli_runner):
         from polylogue.cli.click_app import cli
 
         with (
             patch("polylogue.cli.click_app.should_use_plain", return_value=True),
-            patch("polylogue.cli.click_app.announce_plain_mode") as mock_announce,
             patch("polylogue.cli.click_app.create_ui", return_value=MagicMock()),
             patch("polylogue.cli.click_app._show_stats"),
         ):
-            cli_runner.invoke(cli, [], catch_exceptions=False, env={"POLYLOGUE_FORCE_PLAIN": "1"})
-        mock_announce.assert_not_called()
+            result = cli_runner.invoke(cli, [], catch_exceptions=False, env={"POLYLOGUE_FORCE_PLAIN": "1"})
+        assert "Plain output active" not in result.output
 
-    def test_env_force_plain_false_values_dont_block_announcement(self, cli_runner):
+    def test_no_announcement_when_json_requested(self, cli_runner):
+        from polylogue.cli.click_app import cli
+
+        with (
+            patch("polylogue.cli.click_app.should_use_plain", return_value=True),
+            patch("polylogue.cli.click_app.create_ui", return_value=MagicMock()),
+            patch("polylogue.cli.click_app._show_stats"),
+        ):
+            result = cli_runner.invoke(cli, ["list", "--format", "json"], catch_exceptions=False)
+        assert "Plain output active" not in result.output
+
+    def test_env_force_plain_false_values_still_do_not_announce(self, cli_runner):
         from polylogue.cli.click_app import cli
 
         for value in ("0", "false", "no"):
             with (
                 patch("polylogue.cli.click_app.should_use_plain", return_value=True),
-                patch("polylogue.cli.click_app.announce_plain_mode") as mock_announce,
                 patch("polylogue.cli.click_app.create_ui", return_value=MagicMock()),
                 patch("polylogue.cli.click_app._show_stats"),
             ):
-                cli_runner.invoke(cli, [], catch_exceptions=False, env={"POLYLOGUE_FORCE_PLAIN": value})
-            mock_announce.assert_called_once()
+                result = cli_runner.invoke(cli, [], catch_exceptions=False, env={"POLYLOGUE_FORCE_PLAIN": value})
+            assert "Plain output active" not in result.output
 
     def test_ctx_obj_set_to_appenv(self, cli_runner):
         from polylogue.cli.click_app import cli
@@ -442,9 +480,12 @@ class TestGenerateSeed:
         assert result.exit_code == 0
         db_path = tmp_path / "data" / "polylogue" / "polylogue.db"
         assert db_path.exists()
+        assert (tmp_path / "home").exists()
+        assert (tmp_path / "data" / "polylogue" / "inbox" / "chatgpt").exists()
 
     def test_seed_restores_environment(self, cli_runner, monkeypatch, tmp_path):
         monkeypatch.setenv("XDG_DATA_HOME", "/tmp/original-data")
+        monkeypatch.setenv("HOME", "/tmp/original-home")
         monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", "/tmp/original-archive")
 
         with patch(
@@ -463,6 +504,7 @@ class TestGenerateSeed:
             )
 
         assert result.exit_code == 0
+        assert os.environ["HOME"] == "/tmp/original-home"
         assert os.environ["XDG_DATA_HOME"] == "/tmp/original-data"
         assert os.environ["POLYLOGUE_ARCHIVE_ROOT"] == "/tmp/original-archive"
 
@@ -470,6 +512,17 @@ class TestGenerateSeed:
         result = cli_runner.invoke(click_cli, ["audit", "generate", "--env-only"])
         assert result.exit_code != 0
         assert "requires --seed" in result.output.lower() or "error" in result.output.lower()
+
+    def test_seed_env_only_exports_isolated_workspace(self, cli_runner, tmp_path):
+        result = cli_runner.invoke(
+            click_cli,
+            ["audit", "generate", "--seed", "--env-only", "-o", str(tmp_path), "-n", "1", "-p", "chatgpt"],
+        )
+
+        assert result.exit_code == 0
+        assert f'export HOME="{tmp_path / "home"}"' in result.output
+        assert f'export XDG_CONFIG_HOME="{tmp_path / "config"}"' in result.output
+        assert f'export XDG_CACHE_HOME="{tmp_path / "cache"}"' in result.output
 
 
 # ---------------------------------------------------------------------------
@@ -541,10 +594,68 @@ class TestQaCommand:
             result = cli_runner.invoke(click_cli, ["audit", "--json"])
 
         assert result.exit_code == 0
-        payload = json.loads(result.output.split("\nPlain output active", 1)[0])
+        payload = json.loads(result.output)
         assert payload["audit"]["status"] == "ok"
         assert payload["showcase"]["status"] == "skip"
         assert payload["overall_status"] == "ok"
+
+    def test_audit_only_skips_artifact_proof(self, cli_runner):
+        from polylogue.lib.outcomes import OutcomeCheck, OutcomeStatus
+        from polylogue.schemas.audit_models import AuditReport
+        from polylogue.showcase.qa_runner import QAResult
+
+        qa_result = QAResult(
+            audit_report=AuditReport(
+                checks=[
+                    OutcomeCheck(name="privacy", status=OutcomeStatus.OK, summary="ok"),
+                ]
+            ),
+            proof_skipped=True,
+            exercises_skipped=True,
+            invariants_skipped=True,
+        )
+
+        with patch("polylogue.showcase.qa_runner.run_qa_session", return_value=qa_result) as mock_run:
+            result = cli_runner.invoke(click_cli, ["audit", "--only", "audit", "--json"])
+
+        assert result.exit_code == 0
+        assert mock_run.call_args.kwargs["skip_proof"] is True
+        payload = json.loads(result.output)
+        assert payload["proof"]["status"] == "skip"
+        assert payload["proof"]["skipped"] is True
+        assert payload["overall_status"] == "ok"
+
+    def test_exercises_only_skips_artifact_proof(self, cli_runner):
+        from polylogue.showcase.exercises import Exercise, Validation
+        from polylogue.showcase.qa_runner import QAResult
+        from polylogue.showcase.runner import ExerciseResult, ShowcaseResult
+
+        qa_result = QAResult(
+            proof_skipped=True,
+            audit_skipped=True,
+            showcase_result=ShowcaseResult(
+                results=[
+                    ExerciseResult(
+                        exercise=Exercise("smoke", "structural", "smoke", ["--help"], Validation()),
+                        passed=True,
+                        exit_code=0,
+                        output="ok",
+                        duration_ms=1.0,
+                    )
+                ],
+                total_duration_ms=1.0,
+            ),
+            invariants_skipped=True,
+        )
+
+        with patch("polylogue.showcase.qa_runner.run_qa_session", return_value=qa_result) as mock_run:
+            result = cli_runner.invoke(click_cli, ["audit", "--only", "exercises", "--json"])
+
+        assert result.exit_code == 0
+        assert mock_run.call_args.kwargs["skip_proof"] is True
+        payload = json.loads(result.output)
+        assert payload["proof"]["status"] == "skip"
+        assert payload["proof"]["skipped"] is True
 
 
 # ---------------------------------------------------------------------------

@@ -1,4 +1,4 @@
-Usage: python -m polylogue products enrichments [OPTIONS]
+Usage: polylogue products enrichments [OPTIONS]
 
   List durable probabilistic session-enrichment products.
 
@@ -15,4 +15,5 @@ Options:
   --limit INTEGER             Maximum rows  [default: 50]
   --offset INTEGER            Start offset  [default: 0]
   --json                      Output as JSON
+  --format [json]             Output format
   -h, --help                  Show this message and exit.

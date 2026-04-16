@@ -1077,7 +1077,7 @@ def test_async_execute_query_summary_list_no_results_contract() -> None:
         asyncio.run(async_execute_query(env, {}))
 
     assert exc_info.value.code == 2
-    mock_no_results.assert_called_once_with(env, plan.selection)
+    mock_no_results.assert_called_once_with(env, {})
 
 
 def test_async_execute_query_query_spec_error_contract() -> None:
@@ -1156,6 +1156,20 @@ def test_no_results_contract(params, expected_lines) -> None:
     observed_lines = [call.args[0] for call in mock_echo.call_args_list if call.args]
     assert observed_lines == expected_lines
     assert all(call.kwargs.get("err") is True for call in mock_echo.call_args_list)
+
+
+def test_no_results_contract_json_emits_machine_envelope(capsys) -> None:
+    env = _make_env()
+
+    with pytest.raises(SystemExit) as exc_info:
+        no_results(env, {"output_format": "json", "provider": "claude-ai"})
+
+    assert exc_info.value.code == 2
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "error"
+    assert payload["code"] == "no_results"
+    assert payload["message"] == "No conversations matched filters."
+    assert payload["details"]["filters"] == ["provider: claude-ai"]
 
 
 @pytest.mark.parametrize(
@@ -1267,6 +1281,45 @@ async def test_output_stats_sql_empty_paths_contract(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("described", "can_use_summaries", "expected_message", "expected_filters"),
+    [
+        (["provider=claude-ai"], True, "No conversations matched.", ["provider=claude-ai"]),
+        ([], False, "No conversations in archive.", None),
+    ],
+)
+async def test_output_stats_sql_empty_paths_json_contract(
+    described: list[str],
+    can_use_summaries: bool,
+    expected_message: str,
+    expected_filters: list[str] | None,
+    capsys,
+) -> None:
+    env = _make_env()
+    repo = MagicMock()
+    repo.queries.aggregate_message_stats = AsyncMock()
+
+    filter_chain = MagicMock()
+    filter_chain.describe.return_value = described
+    filter_chain.can_use_summaries.return_value = can_use_summaries
+    filter_chain.list_summaries = AsyncMock(return_value=[])
+    filter_chain.count = AsyncMock(return_value=0)
+
+    with pytest.raises(SystemExit) as exc_info:
+        await output_stats_sql(env, filter_chain, repo, output_format="json")
+
+    assert exc_info.value.code == 2
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "error"
+    assert payload["code"] == "no_results"
+    assert payload["message"] == expected_message
+    if expected_filters is None:
+        assert "details" not in payload
+    else:
+        assert payload["details"]["filters"] == expected_filters
+
+
+@pytest.mark.asyncio
 async def test_output_stats_sql_archive_scope_includes_embedding_state() -> None:
     env = _make_env()
     repo = MagicMock()
@@ -1311,6 +1364,52 @@ async def test_output_stats_sql_archive_scope_includes_embedding_state() -> None
         "Date range: 2024-01-01 to 2024-01-02",
     ]
     repo.queries.aggregate_message_stats.assert_awaited_once_with(None)
+
+
+@pytest.mark.asyncio
+async def test_output_stats_sql_json_contract() -> None:
+    env = _make_env()
+    repo = MagicMock()
+    repo.queries.aggregate_message_stats = AsyncMock(
+        return_value={
+            "total": 9,
+            "user": 4,
+            "assistant": 5,
+            "words_approx": 42,
+            "attachments": 2,
+            "min_sort_key": 1704067200,
+            "max_sort_key": 1704153600,
+            "providers": {"claude-ai": 2, "chatgpt": 1},
+        }
+    )
+    repo.get_archive_stats = AsyncMock(
+        return_value=SimpleNamespace(
+            total_conversations=2,
+            embedded_conversations=1,
+            embedded_messages=5,
+            pending_embedding_conversations=1,
+            stale_embedding_messages=0,
+            embedding_coverage=50.0,
+        )
+    )
+
+    filter_chain = MagicMock()
+    filter_chain.describe.return_value = []
+    filter_chain.can_use_summaries.return_value = False
+    filter_chain.count = AsyncMock(return_value=2)
+
+    with patch("click.echo") as mock_echo:
+        await output_stats_sql(env, filter_chain, repo, output_format="json")
+
+    env.ui.console.print.assert_not_called()
+    payload = json.loads(mock_echo.call_args.args[0])
+    assert payload["dimension"] == "archive"
+    assert payload["rows"] == []
+    assert payload["summary"]["conversations"] == 2
+    assert payload["summary"]["messages_total"] == 9
+    assert payload["summary"]["providers"] == {"claude-ai": 2, "chatgpt": 1}
+    assert payload["summary"]["date_range"] == "2024-01-01 to 2024-01-02"
+    assert payload["summary"]["embeddings"]["embedded_conversations"] == 1
 
 
 # ---------------------------------------------------------------------------

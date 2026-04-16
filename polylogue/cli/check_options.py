@@ -12,12 +12,6 @@ from polylogue.storage.repair import MAINTENANCE_TARGET_NAMES
 CHECK_COMMAND_OPTION_DECORATORS: tuple[Callable[[Callable[..., Any]], Callable[..., Any]], ...] = (
     click.option("--json", "json_output", is_flag=True, help="Output as JSON"),
     click.option("--verbose", "-v", is_flag=True, help="Show breakdown by provider"),
-    click.option(
-        "--cached",
-        "use_cached_health",
-        is_flag=True,
-        help="Use the recent cached archive-health report when available",
-    ),
     click.option("--repair", is_flag=True, help="Run safe derived-data and database maintenance repairs"),
     click.option(
         "--cleanup", is_flag=True, help="Run destructive archive cleanup for orphaned or empty persisted data"

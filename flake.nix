@@ -132,11 +132,15 @@
           shellHook = ''
             export LD_LIBRARY_PATH=${pkgs.stdenv.cc.cc.lib}/lib:$LD_LIBRARY_PATH
             export HYPOTHESIS_STORAGE_DIRECTORY="$PWD/.cache/hypothesis"
+            export PYTHONDONTWRITEBYTECODE=1
             export PYTHONPYCACHEPREFIX="$PWD/.cache/pycache"
             export POLYLOGUE_REPO_ROOT="$PWD"
-            export POLYLOGUE_NIX_OUT_LINK="$PWD/.local/result"
-
             mkdir -p .cache .local "$PYTHONPYCACHEPREFIX"
+
+            if [ -L result ]; then
+              rm result
+            fi
+            find polylogue tests devtools -type d -name __pycache__ -prune -exec rm -r {} + 2>/dev/null || true
 
             # Create venv if it doesn't exist
             if [ ! -d .venv ]; then
@@ -170,7 +174,8 @@
             fi
 
             if [[ $- == *i* ]]; then
-              devtools status || true
+              devtools status --stderr || true
+              export POLYLOGUE_MOTD_RENDERED=1
             fi
           '';
         };

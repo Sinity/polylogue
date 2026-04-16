@@ -8,6 +8,8 @@ from polylogue.paths_roots import (
     claude_code_path,
     codex_path,
     drive_cache_path,
+    drive_credentials_path,
+    drive_token_path,
     inbox_root,
 )
 
@@ -22,13 +24,15 @@ def get_sources() -> list[Source]:
     if codex_path().exists():
         sources.append(Source(name="codex", path=codex_path()))
 
-    sources.append(
-        Source(
-            name="gemini",
-            folder=GEMINI_DRIVE_FOLDER,
-            path=drive_cache_path() / "gemini",
+    gemini_cache = drive_cache_path() / "gemini"
+    if gemini_cache.exists() or drive_credentials_path().exists() or drive_token_path().exists():
+        sources.append(
+            Source(
+                name="gemini",
+                folder=GEMINI_DRIVE_FOLDER,
+                path=gemini_cache,
+            )
         )
-    )
     return sources
 
 
