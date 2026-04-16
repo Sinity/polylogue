@@ -114,7 +114,7 @@ class TestRawConversationStorage:
                 raw_id=f"raw-{i}",
                 provider_name="test" if i < 2 else "other",
                 source_path=f"/path/{i}.json",
-                blob_size=len(b'{}'),
+                blob_size=len(b"{}"),
                 acquired_at=datetime.now(timezone.utc).isoformat(),
             )
             for i in range(5)
@@ -137,7 +137,7 @@ class TestRawConversationStorage:
                 raw_id=f"raw-{i}",
                 provider_name="chatgpt" if i % 2 == 0 else "claude-ai",
                 source_path=f"/path/{i}.json",
-                blob_size=len(b'{}'),
+                blob_size=len(b"{}"),
                 acquired_at=datetime.now(timezone.utc).isoformat(),
             )
             for i in range(6)
@@ -163,7 +163,7 @@ class TestRawConversationStorage:
                 raw_id=f"raw-id-{i}",
                 provider_name="chatgpt" if i % 2 == 0 else "claude-ai",
                 source_path=f"/path/{i}.json",
-                blob_size=len(b'{}'),
+                blob_size=len(b"{}"),
                 acquired_at=datetime.now(timezone.utc).isoformat(),
             )
             for i in range(6)
@@ -192,7 +192,7 @@ class TestRawConversationStorage:
                 payload_provider="chatgpt",
                 source_name="inbox",
                 source_path="/path/raw.json",
-                blob_size=len(b'{}'),
+                blob_size=len(b"{}"),
                 acquired_at=datetime.now(timezone.utc).isoformat(),
             )
         )
@@ -217,7 +217,7 @@ class TestRawConversationStorage:
                     raw_id=f"raw-{i}",
                     provider_name="test",
                     source_path=f"/path/{i}.json",
-                    blob_size=len(b'{}'),
+                    blob_size=len(b"{}"),
                     acquired_at=datetime.now(timezone.utc).isoformat(),
                 )
             )
@@ -306,7 +306,7 @@ class TestRawConversationStorage:
                     raw_id=f"count-{i}",
                     provider_name="chatgpt" if i < 3 else "claude-ai",
                     source_path=f"/path/{i}.json",
-                    blob_size=len(b'{}'),
+                    blob_size=len(b"{}"),
                     acquired_at=datetime.now(timezone.utc).isoformat(),
                 )
             )
@@ -374,7 +374,7 @@ class TestRawConversationRecordValidation:
                 raw_id="",
                 provider_name="test",
                 source_path="/test.json",
-                blob_size=len(b'{}'),
+                blob_size=len(b"{}"),
                 acquired_at="2026-02-02T12:00:00Z",
             )
 
@@ -387,7 +387,7 @@ class TestRawConversationRecordValidation:
                 raw_id="test-id",
                 provider_name="",
                 source_path="/test.json",
-                blob_size=len(b'{}'),
+                blob_size=len(b"{}"),
                 acquired_at="2026-02-02T12:00:00Z",
             )
 

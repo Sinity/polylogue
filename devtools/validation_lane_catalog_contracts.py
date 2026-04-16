@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from devtools.validation_lane_base import module_lane, pytest_lane
+from devtools.validation_lane_base import devtools_lane, pytest_lane
 
 CONTRACT_LANES = {
     "machine-contract": pytest_lane(
@@ -17,7 +17,7 @@ CONTRACT_LANES = {
     ),
     "query-routing": pytest_lane(
         "query-routing",
-        "Query-first CLI route planning, integration, and streamed read-surface proofs",
+        "Query-first CLI route planning, integration, and streamed read checks",
         240,
         "-q",
         "-n",
@@ -25,17 +25,17 @@ CONTRACT_LANES = {
         "-m",
         "query_routing",
     ),
-    "showcase-baselines": module_lane(
+    "showcase-baselines": devtools_lane(
         "showcase-baselines",
         "Registry-derived tier-0 CLI help/source showcase baselines",
         180,
-        "devtools.verify_showcase",
+        "verify-showcase",
     ),
-    "pipeline-probe-chatgpt": module_lane(
+    "pipeline-probe-chatgpt": devtools_lane(
         "pipeline-probe-chatgpt",
         "Synthetic ChatGPT parse-stage pipeline probe under explicit runtime and RSS budgets",
         180,
-        "devtools.pipeline_probe",
+        "pipeline-probe",
         "--provider",
         "chatgpt",
         "--count",
@@ -49,7 +49,7 @@ CONTRACT_LANES = {
     ),
     "semantic-stack": pytest_lane(
         "semantic-stack",
-        "Unified harmonization, semantic facts/profile convergence, proof, and contract inventory coverage",
+        "Unified harmonization, semantic facts/profile convergence, and contract inventory coverage",
         360,
         "-q",
         "-n",
@@ -78,9 +78,9 @@ CONTRACT_LANES = {
         "tests/unit/pipeline/test_ingestion_chaos.py",
         "tests/integration/test_security.py",
     ),
-    "maintenance-control-plane": pytest_lane(
-        "maintenance-control-plane",
-        "Health, maintenance selection, cache/live provenance, publication maintenance summaries, and machine output",
+    "maintenance-workflows": pytest_lane(
+        "maintenance-workflows",
+        "Health, maintenance selection, cache/live provenance, publication summaries, and machine output",
         480,
         "-q",
         "-n",
@@ -97,7 +97,7 @@ CONTRACT_LANES = {
     ),
     "archive-data-products": pytest_lane(
         "archive-data-products",
-        "Durable archive products, external consumer contracts, product-aware grouped stats, and health/governance surfaces",
+        "Archive products, consumer contracts, grouped stats, and health/debt surfaces",
         600,
         "-q",
         "-n",
@@ -118,7 +118,7 @@ CONTRACT_LANES = {
         "-q",
         "-n",
         "0",
-        "tests/unit/core/test_project_normalization.py",
+        "tests/unit/core/test_repo_identity.py",
         "tests/unit/cli/test_products.py",
         "tests/unit/core/test_facade_api.py",
         "tests/unit/mcp/test_tool_contracts.py",
@@ -132,8 +132,8 @@ CONTRACT_LANES = {
         "tests/unit/sources/test_parsers_drive.py",
         "tests/unit/devtools/test_validation_lanes.py",
     ),
-    "retrieval-dogfood": pytest_lane(
-        "retrieval-dogfood",
+    "retrieval-checks": pytest_lane(
+        "retrieval-checks",
         "Action-aware query truth, grouped retrieval stats, archive health, and MCP retrieval payload coverage",
         480,
         "-q",
@@ -162,7 +162,7 @@ CONTRACT_LANES = {
     ),
     "evidence-tier-contracts": pytest_lane(
         "evidence-tier-contracts",
-        "Explicit evidence-tier product contracts, chronology fields, and durable evidence payload/query surfaces",
+        "Explicit evidence-tier product contracts, chronology fields, and evidence payload/query surfaces",
         420,
         "-q",
         "-n",
@@ -212,7 +212,7 @@ CONTRACT_LANES = {
     ),
     "heuristic-inference-contracts": pytest_lane(
         "heuristic-inference-contracts",
-        "Heuristic session/work/phase contract hardening with explicit support metadata and consumer parity",
+        "Heuristic session/work/phase contract hardening with explicit supporting metadata and consumer parity",
         600,
         "-q",
         "-n",
@@ -225,7 +225,7 @@ CONTRACT_LANES = {
     ),
     "probabilistic-enrichment-contracts": pytest_lane(
         "probabilistic-enrichment-contracts",
-        "Durable session-enrichment product contracts across CLI, facade, MCP, storage, and retrieval-band status",
+        "Session-enrichment contracts across CLI, facade, MCP, storage, and retrieval-band status",
         720,
         "-q",
         "-n",
@@ -237,9 +237,9 @@ CONTRACT_LANES = {
         "tests/unit/storage/test_backend.py",
         "tests/unit/core/test_health_core.py",
     ),
-    "governed-cleanup-contracts": pytest_lane(
-        "governed-cleanup-contracts",
-        "Cleanup lineage, health/debt governance, and maintenance control-plane contract coverage",
+    "cleanup-contracts": pytest_lane(
+        "cleanup-contracts",
+        "Cleanup lineage, health/debt views, and maintenance workflow coverage",
         900,
         "-q",
         "-n",
@@ -251,7 +251,7 @@ CONTRACT_LANES = {
     ),
     "tui": pytest_lane(
         "tui",
-        "Textual Mission Control screens and interaction-state coverage",
+        "Textual dashboard screens and interaction-state coverage",
         240,
         "-q",
         "-n",
@@ -269,27 +269,27 @@ CONTRACT_LANES = {
         "-m",
         "chaos",
     ),
-    "scale-fast": module_lane(
+    "scale-fast": devtools_lane(
         "scale-fast",
         "Fast storage scale budgets",
         120,
-        "devtools.run_scale_lanes",
+        "run-scale-lanes",
         "--lane",
         "fast",
     ),
-    "scale-slow": module_lane(
+    "scale-slow": devtools_lane(
         "scale-slow",
         "Slow local storage scale budgets",
         360,
-        "devtools.run_scale_lanes",
+        "run-scale-lanes",
         "--lane",
         "slow",
     ),
-    "long-haul-small": module_lane(
+    "long-haul-small": devtools_lane(
         "long-haul-small",
         "Small reproducible benchmark/long-haul campaign",
         1800,
-        "devtools.run_campaign",
+        "run-benchmark-campaigns",
         "--scale",
         "small",
     ),

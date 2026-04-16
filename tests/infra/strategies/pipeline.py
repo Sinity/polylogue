@@ -117,11 +117,9 @@ def parse_merge_events_strategy(
     return events
 
 
-
 def build_acquisition_raw_bytes(spec: AcquisitionInputSpec) -> bytes:
     """Encode an acquisition input into the raw JSON bytes the stage hashes/stores."""
     return json.dumps({"id": spec.payload_id}).encode("utf-8")
-
 
 
 def build_validation_payload(case: ValidationCase) -> tuple[bytes, str, str]:
@@ -133,15 +131,14 @@ def build_validation_payload(case: ValidationCase) -> tuple[bytes, str, str]:
     return b'{"id":"doc-1","mapping":{}}', "chatgpt", "/tmp/conversations.json"
 
 
-
 def expected_validation_contract(case: ValidationCase) -> dict[str, Any]:
     """Return the expected persisted validation outcome for a generated case."""
     malformed_blocks = case.mode == "strict" and case.malformed_jsonl_lines > 0
     schema_invalid = case.invalid_sample_count > 0
     blocked = malformed_blocks or (case.mode == "strict" and schema_invalid)
-    invalid_count = 1 if case.invalid_sample_count > 0 or (
-        case.mode == "strict" and case.malformed_jsonl_lines > 0
-    ) else 0
+    invalid_count = (
+        1 if case.invalid_sample_count > 0 or (case.mode == "strict" and case.malformed_jsonl_lines > 0) else 0
+    )
     return {
         "parseable": not blocked,
         "status": "failed" if blocked else "passed",
@@ -149,7 +146,6 @@ def expected_validation_contract(case: ValidationCase) -> dict[str, Any]:
         "mark_raw_parsed": blocked,
         "validation_samples_called": not malformed_blocks,
     }
-
 
 
 def expected_parse_merge_totals(events: list[ParseMergeEvent]) -> dict[str, Any]:
@@ -171,9 +167,7 @@ def expected_parse_merge_totals(events: list[ParseMergeEvent]) -> dict[str, Any]
 
     for event in events:
         ingest_changed = (
-            event.result_counts["conversations"]
-            + event.result_counts["messages"]
-            + event.result_counts["attachments"]
+            event.result_counts["conversations"] + event.result_counts["messages"] + event.result_counts["attachments"]
         ) > 0
         if ingest_changed or event.content_changed:
             processed_ids.add(event.conversation_id)

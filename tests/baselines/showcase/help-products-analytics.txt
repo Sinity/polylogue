@@ -1,6 +1,6 @@
 Usage: python -m polylogue products analytics [OPTIONS]
 
-  List canonical provider-level analytics products.
+  List provider-level analytics products.
 
 Options:
   --limit INTEGER   Maximum rows  [default: 50]

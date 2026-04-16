@@ -23,6 +23,7 @@ def _decode_json_bytes(blob: bytes) -> str | None:
 def _iter_json_stream(handle, path_name: str, unpack_lists: bool = True):
     yield from iter_json_stream_with(logger, ijson, handle, path_name, unpack_lists)
 
+
 __all__ = [
     "_decode_json_bytes",
     "_iter_json_stream",

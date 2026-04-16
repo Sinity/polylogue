@@ -120,9 +120,7 @@ async def set_metadata(
         await conn.commit()
 
 
-async def list_tags(
-    conn: aiosqlite.Connection, *, provider: str | None = None
-) -> dict[str, int]:
+async def list_tags(conn: aiosqlite.Connection, *, provider: str | None = None) -> dict[str, int]:
     where = "WHERE metadata IS NOT NULL AND json_extract(metadata, '$.tags') IS NOT NULL"
     params: tuple[str, ...] = ()
     if provider:

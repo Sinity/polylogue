@@ -1,6 +1,6 @@
 Usage: python -m polylogue dashboard [OPTIONS]
 
-  Launch the Mission Control TUI dashboard.
+  Launch the dashboard TUI.
 
 Options:
   -h, --help  Show this message and exit.

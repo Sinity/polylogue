@@ -20,7 +20,7 @@
 |-----|------|-------------|
 | `title` | str | User-set title (overrides original) |
 | `summary` | str | User or LLM-generated summary |
-| `tags` | list[str] | Tags (`important`, `project:foo`) |
+| `tags` | list[str] | Tags (`important`, `repo:polylogue`) |
 | (custom) | str | Any user-defined key |
 
 Display title precedence: `metadata.title` > `original_title` > truncated ID.
@@ -102,7 +102,7 @@ Tags support `key:value` notation for namespacing:
 
 ```
 important              # Simple tag
-project:polylogue      # Namespaced
+repo:polylogue         # Namespaced
 status:wip             # Namespaced
 ```
 

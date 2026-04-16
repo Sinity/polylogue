@@ -95,9 +95,9 @@ def malformed_json_strategy(draw: st.DrawFn) -> str:
         '{"unicode": "\\uDEAD"}',  # Invalid surrogate
         '{"unicode": "\\x00"}',  # Invalid escape
         # Deep nesting
-        '{"a":' * 100 + '"deep"' + '}' * 100,
+        '{"a":' * 100 + '"deep"' + "}" * 100,
         # Large strings
-        '{"key": "' + 'x' * 10000 + '"}',
+        '{"key": "' + "x" * 10000 + '"}',
         # Empty/whitespace
         "",
         "   ",

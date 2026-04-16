@@ -304,7 +304,6 @@ def _split_query_mode_args(group: click.Group, args: list[str]) -> tuple[list[st
     option_arity = _option_arity(group)
     option_args: list[str] = []
     query_terms: list[str] = []
-    query_mode_locked = False
     index = 0
 
     while index < len(args):
@@ -315,8 +314,6 @@ def _split_query_mode_args(group: click.Group, args: list[str]) -> tuple[list[st
         if arg.startswith("-"):
             option_args.append(arg)
             nargs = option_arity.get(arg, 0)
-            if not _is_root_global_option(arg):
-                query_mode_locked = True
             option_args.extend(_iter_option_values(args, index, nargs))
             index += nargs + 1
             continue
@@ -539,9 +536,7 @@ async def async_execute_query(env: AppEnv, params: dict[str, Any]) -> None:
             )
             return
         if await _await_if_needed(query_plan.can_use_action_event_stats_with(repo)) is True:
-            records_result = repo.queries.list_conversations(
-                query_plan.record_query.with_limit(query_plan.limit)
-            )
+            records_result = repo.queries.list_conversations(query_plan.record_query.with_limit(query_plan.limit))
             if inspect.isawaitable(records_result):
                 records = await records_result
                 await _query_output.output_stats_by_semantic_query(
@@ -566,9 +561,7 @@ async def async_execute_query(env: AppEnv, params: dict[str, Any]) -> None:
             )
             return
         query_plan = filter_chain.build_query_plan()
-        records = await repo.queries.list_conversations(
-            query_plan.record_query.with_limit(query_plan.limit)
-        )
+        records = await repo.queries.list_conversations(query_plan.record_query.with_limit(query_plan.limit))
         await _query_output.output_stats_by_profile_query(
             env,
             [record.conversation_id for record in records],

@@ -77,9 +77,7 @@ def read_embedding_stats_sync(conn: sqlite3.Connection) -> EmbeddingStatsSnapsho
         newest_embedded_at=(bounds["newest_embedded_at"] if bounds is not None else None),
         model_counts={str(row["model"]): int(row["count"]) for row in model_rows if row["model"]},
         dimension_counts={
-            int(row["dimension"]): int(row["count"])
-            for row in dimension_rows
-            if row["dimension"] is not None
+            int(row["dimension"]): int(row["count"]) for row in dimension_rows if row["dimension"] is not None
         },
         retrieval_bands=retrieval_bands,
     )
@@ -125,9 +123,7 @@ async def read_embedding_stats_async(conn: aiosqlite.Connection) -> EmbeddingSta
         newest_embedded_at=(bounds["newest_embedded_at"] if bounds is not None else None),
         model_counts={str(row["model"]): int(row["count"]) for row in model_rows if row["model"]},
         dimension_counts={
-            int(row["dimension"]): int(row["count"])
-            for row in dimension_rows
-            if row["dimension"] is not None
+            int(row["dimension"]): int(row["count"]) for row in dimension_rows if row["dimension"] is not None
         },
         retrieval_bands=retrieval_bands,
     )

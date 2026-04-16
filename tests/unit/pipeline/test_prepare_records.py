@@ -49,13 +49,15 @@ async def test_prepare_records_new_conversation(async_backend, test_repository, 
         attachments=[],
     )
 
-    conversation_id, counts, changed = _prepare_fields(await prepare_records(
-        conversation,
-        "test-source",
-        archive_root=tmp_path / "archive",
-        backend=async_backend,
-        repository=test_repository,
-    ))
+    conversation_id, counts, changed = _prepare_fields(
+        await prepare_records(
+            conversation,
+            "test-source",
+            archive_root=tmp_path / "archive",
+            backend=async_backend,
+            repository=test_repository,
+        )
+    )
 
     assert counts["conversations"] == 1
     assert counts["messages"] == 1
@@ -85,20 +87,24 @@ async def test_prepare_records_unchanged_conversation_skips(async_backend, test_
     archive_root = tmp_path / "archive"
     archive_root.mkdir()
 
-    first_id, first_counts, _ = _prepare_fields(await prepare_records(
-        conversation,
-        "test-source",
-        archive_root=archive_root,
-        backend=async_backend,
-        repository=test_repository,
-    ))
-    second_id, second_counts, changed = _prepare_fields(await prepare_records(
-        conversation,
-        "test-source",
-        archive_root=archive_root,
-        backend=async_backend,
-        repository=test_repository,
-    ))
+    first_id, first_counts, _ = _prepare_fields(
+        await prepare_records(
+            conversation,
+            "test-source",
+            archive_root=archive_root,
+            backend=async_backend,
+            repository=test_repository,
+        )
+    )
+    second_id, second_counts, changed = _prepare_fields(
+        await prepare_records(
+            conversation,
+            "test-source",
+            archive_root=archive_root,
+            backend=async_backend,
+            repository=test_repository,
+        )
+    )
 
     assert first_counts["conversations"] == 1
     assert second_id == first_id
@@ -143,20 +149,24 @@ async def test_prepare_records_detects_changed_content(async_backend, test_repos
     archive_root = tmp_path / "archive"
     archive_root.mkdir()
 
-    first_id, _, _ = _prepare_fields(await prepare_records(
-        original,
-        "test-source",
-        archive_root=archive_root,
-        backend=async_backend,
-        repository=test_repository,
-    ))
-    second_id, _, changed = _prepare_fields(await prepare_records(
-        modified,
-        "test-source",
-        archive_root=archive_root,
-        backend=async_backend,
-        repository=test_repository,
-    ))
+    first_id, _, _ = _prepare_fields(
+        await prepare_records(
+            original,
+            "test-source",
+            archive_root=archive_root,
+            backend=async_backend,
+            repository=test_repository,
+        )
+    )
+    second_id, _, changed = _prepare_fields(
+        await prepare_records(
+            modified,
+            "test-source",
+            archive_root=archive_root,
+            backend=async_backend,
+            repository=test_repository,
+        )
+    )
 
     assert second_id == first_id
     assert changed is True
@@ -171,7 +181,9 @@ async def test_prepare_records_creates_message_records(async_backend, test_repos
         updated_at="2024-01-01T00:00:00Z",
         messages=[
             ParsedMessage(provider_message_id="msg-1", role="user", text="Hello", timestamp="2024-01-01T00:00:00Z"),
-            ParsedMessage(provider_message_id="msg-2", role="assistant", text="Hi there", timestamp="2024-01-01T00:00:01Z"),
+            ParsedMessage(
+                provider_message_id="msg-2", role="assistant", text="Hi there", timestamp="2024-01-01T00:00:01Z"
+            ),
         ],
         attachments=[],
     )
@@ -179,18 +191,22 @@ async def test_prepare_records_creates_message_records(async_backend, test_repos
     archive_root = tmp_path / "archive"
     archive_root.mkdir()
 
-    conversation_id, counts, _ = _prepare_fields(await prepare_records(
-        conversation,
-        "test-source",
-        archive_root=archive_root,
-        backend=async_backend,
-        repository=test_repository,
-    ))
+    conversation_id, counts, _ = _prepare_fields(
+        await prepare_records(
+            conversation,
+            "test-source",
+            archive_root=archive_root,
+            backend=async_backend,
+            repository=test_repository,
+        )
+    )
 
     assert counts["conversations"] == 1
     assert counts["messages"] == 2
     async with async_backend.connection() as conn:
-        rows = await (await conn.execute("SELECT message_id, role FROM messages WHERE conversation_id = ?", (conversation_id,))).fetchall()
+        rows = await (
+            await conn.execute("SELECT message_id, role FROM messages WHERE conversation_id = ?", (conversation_id,))
+        ).fetchall()
     assert len(rows) == 2
 
 
@@ -203,7 +219,9 @@ async def test_prepare_records_handles_empty_provider_message_ids(async_backend,
         updated_at="2024-01-01T00:00:00Z",
         messages=[
             ParsedMessage(provider_message_id="", role="user", text="Hello", timestamp="2024-01-01T00:00:00Z"),
-            ParsedMessage(provider_message_id="msg-explicit", role="assistant", text="Hi", timestamp="2024-01-01T00:00:01Z"),
+            ParsedMessage(
+                provider_message_id="msg-explicit", role="assistant", text="Hi", timestamp="2024-01-01T00:00:01Z"
+            ),
         ],
         attachments=[],
     )
@@ -211,20 +229,24 @@ async def test_prepare_records_handles_empty_provider_message_ids(async_backend,
     archive_root = tmp_path / "archive"
     archive_root.mkdir()
 
-    conversation_id, counts, _ = _prepare_fields(await prepare_records(
-        conversation,
-        "test-source",
-        archive_root=archive_root,
-        backend=async_backend,
-        repository=test_repository,
-    ))
+    conversation_id, counts, _ = _prepare_fields(
+        await prepare_records(
+            conversation,
+            "test-source",
+            archive_root=archive_root,
+            backend=async_backend,
+            repository=test_repository,
+        )
+    )
 
     assert counts["messages"] == 2
     async with async_backend.connection() as conn:
-        rows = await (await conn.execute(
-            "SELECT provider_message_id FROM messages WHERE conversation_id = ? ORDER BY rowid",
-            (conversation_id,),
-        )).fetchall()
+        rows = await (
+            await conn.execute(
+                "SELECT provider_message_id FROM messages WHERE conversation_id = ? ORDER BY rowid",
+                (conversation_id,),
+            )
+        ).fetchall()
     provider_ids = [row["provider_message_id"] for row in rows]
     assert "msg-1" in provider_ids
     assert "msg-explicit" in provider_ids
@@ -239,28 +261,30 @@ async def test_prepare_records_stores_source_metadata(async_backend, test_reposi
         title="Test",
         created_at="2024-01-01T00:00:00Z",
         updated_at="2024-01-01T00:00:00Z",
-        messages=[
-            ParsedMessage(provider_message_id="m1", role="user", text="Hi", timestamp="2024-01-01T00:00:00Z")
-        ],
+        messages=[ParsedMessage(provider_message_id="m1", role="user", text="Hi", timestamp="2024-01-01T00:00:00Z")],
         attachments=[],
     )
 
     archive_root = tmp_path / "archive"
     archive_root.mkdir()
 
-    conversation_id, _, _ = _prepare_fields(await prepare_records(
-        conversation,
-        "my-export",
-        archive_root=archive_root,
-        backend=async_backend,
-        repository=test_repository,
-    ))
+    conversation_id, _, _ = _prepare_fields(
+        await prepare_records(
+            conversation,
+            "my-export",
+            archive_root=archive_root,
+            backend=async_backend,
+            repository=test_repository,
+        )
+    )
 
     async with async_backend.connection() as conn:
-        row = await (await conn.execute(
-            "SELECT provider_meta FROM conversations WHERE conversation_id = ?",
-            (conversation_id,),
-        )).fetchone()
+        row = await (
+            await conn.execute(
+                "SELECT provider_meta FROM conversations WHERE conversation_id = ?",
+                (conversation_id,),
+            )
+        ).fetchone()
     assert row is not None
     meta = json.loads(row["provider_meta"]) if isinstance(row["provider_meta"], str) else row["provider_meta"]
     assert meta.get("source") == "my-export"
@@ -304,13 +328,15 @@ async def test_prepare_records_backfills_structured_blocks_from_provider_meta(as
     archive_root = tmp_path / "archive"
     archive_root.mkdir()
 
-    conversation_id, counts, _ = _prepare_fields(await prepare_records(
-        conversation,
-        "drive-export",
-        archive_root=archive_root,
-        backend=async_backend,
-        repository=test_repository,
-    ))
+    conversation_id, counts, _ = _prepare_fields(
+        await prepare_records(
+            conversation,
+            "drive-export",
+            archive_root=archive_root,
+            backend=async_backend,
+            repository=test_repository,
+        )
+    )
 
     assert counts["messages"] == 2
     async with async_backend.connection() as conn:
@@ -362,19 +388,23 @@ async def test_prepare_records_multiple_messages_get_unique_hashes(async_backend
     archive_root = tmp_path / "archive"
     archive_root.mkdir()
 
-    conversation_id, _, _ = _prepare_fields(await prepare_records(
-        conversation,
-        "test-source",
-        archive_root=archive_root,
-        backend=async_backend,
-        repository=test_repository,
-    ))
+    conversation_id, _, _ = _prepare_fields(
+        await prepare_records(
+            conversation,
+            "test-source",
+            archive_root=archive_root,
+            backend=async_backend,
+            repository=test_repository,
+        )
+    )
 
     async with async_backend.connection() as conn:
-        rows = await (await conn.execute(
-            "SELECT content_hash FROM messages WHERE conversation_id = ? ORDER BY provider_message_id",
-            (conversation_id,),
-        )).fetchall()
+        rows = await (
+            await conn.execute(
+                "SELECT content_hash FROM messages WHERE conversation_id = ? ORDER BY provider_message_id",
+                (conversation_id,),
+            )
+        ).fetchall()
     assert len(rows) == 2
     assert rows[0]["content_hash"] != rows[1]["content_hash"]
 
@@ -387,7 +417,9 @@ async def test_prepare_records_with_attachments(async_backend, test_repository, 
         created_at="2024-01-01T00:00:00Z",
         updated_at="2024-01-01T00:00:00Z",
         messages=[
-            ParsedMessage(provider_message_id="m1", role="user", text="See attachment", timestamp="2024-01-01T00:00:00Z")
+            ParsedMessage(
+                provider_message_id="m1", role="user", text="See attachment", timestamp="2024-01-01T00:00:00Z"
+            )
         ],
         attachments=[
             ParsedAttachment(
@@ -403,22 +435,26 @@ async def test_prepare_records_with_attachments(async_backend, test_repository, 
     archive_root = tmp_path / "archive"
     archive_root.mkdir()
 
-    conversation_id, counts, _ = _prepare_fields(await prepare_records(
-        conversation,
-        "test-source",
-        archive_root=archive_root,
-        backend=async_backend,
-        repository=test_repository,
-    ))
+    conversation_id, counts, _ = _prepare_fields(
+        await prepare_records(
+            conversation,
+            "test-source",
+            archive_root=archive_root,
+            backend=async_backend,
+            repository=test_repository,
+        )
+    )
 
     assert counts["attachments"] == 1
     async with async_backend.connection() as conn:
-        attachment_refs = await (await conn.execute(
-            "SELECT ar.*, a.mime_type FROM attachment_refs ar "
-            "JOIN attachments a ON ar.attachment_id = a.attachment_id "
-            "WHERE ar.conversation_id = ?",
-            (conversation_id,),
-        )).fetchall()
+        attachment_refs = await (
+            await conn.execute(
+                "SELECT ar.*, a.mime_type FROM attachment_refs ar "
+                "JOIN attachments a ON ar.attachment_id = a.attachment_id "
+                "WHERE ar.conversation_id = ?",
+                (conversation_id,),
+            )
+        ).fetchall()
     assert len(attachment_refs) == 1
     assert attachment_refs[0]["mime_type"] == "application/pdf"
 
@@ -436,7 +472,9 @@ async def test_prepare_records_rolls_back_attachment_move_on_save_failure(async_
         created_at="2024-01-01T00:00:00Z",
         updated_at="2024-01-01T00:00:00Z",
         messages=[
-            ParsedMessage(provider_message_id="m1", role="user", text="See attachment", timestamp="2024-01-01T00:00:00Z")
+            ParsedMessage(
+                provider_message_id="m1", role="user", text="See attachment", timestamp="2024-01-01T00:00:00Z"
+            )
         ],
         attachments=[
             ParsedAttachment(
@@ -474,9 +512,7 @@ async def test_prepare_records_returns_typed_result(async_backend, test_reposito
         title="Test",
         created_at="2024-01-01T00:00:00Z",
         updated_at="2024-01-01T00:00:00Z",
-        messages=[
-            ParsedMessage(provider_message_id="m1", role="user", text="Hi", timestamp="2024-01-01T00:00:00Z")
-        ],
+        messages=[ParsedMessage(provider_message_id="m1", role="user", text="Hi", timestamp="2024-01-01T00:00:00Z")],
         attachments=[],
     )
 
@@ -518,9 +554,7 @@ class TestValidationService:
         from polylogue.storage.blob_store import get_blob_store
 
         raw_content = (
-            b'{"type":"session_meta"}\n'
-            b'{"type":"response_item","payload":{"type":"message"}}\n'
-            b'{"record_type":"state"}'
+            b'{"type":"session_meta"}\n{"type":"response_item","payload":{"type":"message"}}\n{"record_type":"state"}'
         )
         blob_store = get_blob_store()
         raw_id, blob_size = blob_store.write_from_bytes(raw_content)
@@ -552,7 +586,9 @@ class TestValidationService:
                 return ValidationResult(is_valid=True)
 
         capturing = _CapturingValidator()
-        monkeypatch.setattr("polylogue.schemas.validator.SchemaValidator.for_payload", lambda *args, **kwargs: capturing)
+        monkeypatch.setattr(
+            "polylogue.schemas.validator.SchemaValidator.for_payload", lambda *args, **kwargs: capturing
+        )
 
         result = await service.validate_raw_ids(raw_ids=[raw_id])
 
@@ -590,7 +626,9 @@ class TestValidationService:
                 return ValidationResult(is_valid=True)
 
         monkeypatch.setenv("POLYLOGUE_SCHEMA_VALIDATION", "strict")
-        monkeypatch.setattr("polylogue.schemas.validator.SchemaValidator.for_payload", lambda *args, **kwargs: _AlwaysValidValidator())
+        monkeypatch.setattr(
+            "polylogue.schemas.validator.SchemaValidator.for_payload", lambda *args, **kwargs: _AlwaysValidValidator()
+        )
 
         result = await service.validate_raw_ids(raw_ids=[raw_id])
 
@@ -609,8 +647,20 @@ class TestValidationService:
         raw_id_2, blob_size_2 = blob_store.write_from_bytes(b'{"id":"2","mapping":{}}')
 
         raw_records = [
-            MagicMock(raw_id=raw_id_1, raw_content=b'{"id":"1","mapping":{}}', provider_name="chatgpt", source_path="/tmp/a.json", blob_size=blob_size_1),
-            MagicMock(raw_id=raw_id_2, raw_content=b'{"id":"2","mapping":{}}', provider_name="chatgpt", source_path="/tmp/b.json", blob_size=blob_size_2),
+            MagicMock(
+                raw_id=raw_id_1,
+                raw_content=b'{"id":"1","mapping":{}}',
+                provider_name="chatgpt",
+                source_path="/tmp/a.json",
+                blob_size=blob_size_1,
+            ),
+            MagicMock(
+                raw_id=raw_id_2,
+                raw_content=b'{"id":"2","mapping":{}}',
+                provider_name="chatgpt",
+                source_path="/tmp/b.json",
+                blob_size=blob_size_2,
+            ),
         ]
         service = ValidationService(backend=MagicMock())
         service.repository = MagicMock()
@@ -627,7 +677,9 @@ class TestValidationService:
             def validate(self, _sample):
                 return ValidationResult(is_valid=True)
 
-        monkeypatch.setattr("polylogue.schemas.validator.SchemaValidator.for_payload", lambda *args, **kwargs: _AlwaysValidValidator())
+        monkeypatch.setattr(
+            "polylogue.schemas.validator.SchemaValidator.for_payload", lambda *args, **kwargs: _AlwaysValidValidator()
+        )
         await service.validate_raw_ids(raw_ids=[raw_id_1, raw_id_2], progress_callback=callback)
 
         callback.assert_any_call(0, desc="Validating: 0/2 raw")
@@ -665,7 +717,9 @@ class TestValidationService:
             def validate(self, _sample):
                 return ValidationResult(is_valid=True)
 
-        monkeypatch.setattr("polylogue.schemas.validator.SchemaValidator.for_payload", lambda *args, **kwargs: _AlwaysValidValidator())
+        monkeypatch.setattr(
+            "polylogue.schemas.validator.SchemaValidator.for_payload", lambda *args, **kwargs: _AlwaysValidValidator()
+        )
         result = await service.validate_raw_ids(raw_ids=[raw_id])
 
         assert result.parseable_raw_ids == [raw_id]

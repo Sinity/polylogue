@@ -75,10 +75,7 @@ def register_query_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
             results = await ops.query_conversations(spec)
             return hooks.json_payload(
                 MCPConversationSummaryListPayload(
-                    root=[
-                        MCPConversationSummaryPayload.from_conversation(result)
-                        for result in results
-                    ]
+                    root=[MCPConversationSummaryPayload.from_conversation(result) for result in results]
                 )
             )
 
@@ -130,10 +127,7 @@ def register_query_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
             conversations = await ops.query_conversations(spec)
             return hooks.json_payload(
                 MCPConversationSummaryListPayload(
-                    root=[
-                        MCPConversationSummaryPayload.from_conversation(conv)
-                        for conv in conversations
-                    ]
+                    root=[MCPConversationSummaryPayload.from_conversation(conv) for conv in conversations]
                 )
             )
 
@@ -189,10 +183,7 @@ def register_read_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
             tree = await hooks.get_repo().get_session_tree(conversation_id)
             return hooks.json_payload(
                 MCPConversationSummaryListPayload(
-                    root=[
-                        MCPConversationSummaryPayload.from_conversation(conv)
-                        for conv in tree
-                    ]
+                    root=[MCPConversationSummaryPayload.from_conversation(conv) for conv in tree]
                 )
             )
 

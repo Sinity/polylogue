@@ -34,6 +34,7 @@ from polylogue.ui.facade import ConsoleLike, PlainConsole
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _fts5(tmp_path: Path) -> FTS5Provider:
     return FTS5Provider(db_path=tmp_path / "fts5.db")
 
@@ -48,6 +49,7 @@ def _hybrid(tmp_path: Path) -> HybridSearchProvider:
 # ---------------------------------------------------------------------------
 # SearchProvider (Finding 1)
 # ---------------------------------------------------------------------------
+
 
 class TestSearchProviderConformance:
     """FTS5Provider and HybridSearchProvider must satisfy the SearchProvider protocol."""
@@ -71,6 +73,7 @@ class TestSearchProviderConformance:
 # ---------------------------------------------------------------------------
 # VectorProvider (Finding 1 continued)
 # ---------------------------------------------------------------------------
+
 
 class TestVectorProviderConformance:
     """SqliteVecProvider must satisfy the VectorProvider protocol."""
@@ -107,6 +110,7 @@ class TestVectorProviderConformance:
 # ---------------------------------------------------------------------------
 # OutputRenderer (Finding 1)
 # ---------------------------------------------------------------------------
+
 
 class TestOutputRendererConformance:
     """MarkdownRenderer and HTMLRenderer must satisfy the OutputRenderer protocol."""
@@ -147,31 +151,41 @@ class TestOutputRendererConformance:
         conv_id = "smoke-conv-0001"
 
         with open_connection(db_path) as conn:
-            upsert_conversation(conn, ConversationRecord(
-                conversation_id=conv_id,
-                provider_name="chatgpt",
-                provider_conversation_id=conv_id,
-                title="Smoke Test Conversation",
-                content_hash="hash-smoke-001",
-            ))
-            upsert_message(conn, MessageRecord(
-                message_id="smoke-msg-001",
-                conversation_id=conv_id,
-                role="user",
-                text="Hello world",
-                content_hash="hash-smoke-msg-001",
-            ))
-            upsert_message(conn, MessageRecord(
-                message_id="smoke-msg-002",
-                conversation_id=conv_id,
-                role="assistant",
-                text="Hi there!",
-                content_hash="hash-smoke-msg-002",
-            ))
+            upsert_conversation(
+                conn,
+                ConversationRecord(
+                    conversation_id=conv_id,
+                    provider_name="chatgpt",
+                    provider_conversation_id=conv_id,
+                    title="Smoke Test Conversation",
+                    content_hash="hash-smoke-001",
+                ),
+            )
+            upsert_message(
+                conn,
+                MessageRecord(
+                    message_id="smoke-msg-001",
+                    conversation_id=conv_id,
+                    role="user",
+                    text="Hello world",
+                    content_hash="hash-smoke-msg-001",
+                ),
+            )
+            upsert_message(
+                conn,
+                MessageRecord(
+                    message_id="smoke-msg-002",
+                    conversation_id=conv_id,
+                    role="assistant",
+                    text="Hi there!",
+                    content_hash="hash-smoke-msg-002",
+                ),
+            )
             conn.commit()
 
         output_dir = tmp_path / "out"
         from polylogue.storage.backends.async_sqlite import SQLiteBackend
+
         backend = SQLiteBackend(db_path=db_path)
 
         if cls is HTMLRenderer:
@@ -190,6 +204,7 @@ class TestOutputRendererConformance:
 # ConsoleLike (Finding 3)
 # ---------------------------------------------------------------------------
 
+
 class TestConsoleLikeConformance:
     """PlainConsole must satisfy the ConsoleLike @runtime_checkable Protocol."""
 
@@ -204,6 +219,7 @@ class TestConsoleLikeConformance:
 # Parser module interface (Finding 2)
 # ---------------------------------------------------------------------------
 
+
 class TestParserModuleInterface:
     """Each parser module must export its expected public functions.
 
@@ -217,14 +233,17 @@ class TestParserModuleInterface:
 
     def test_chatgpt_exports_parse_and_looks_like(self) -> None:
         import polylogue.sources.parsers.chatgpt as m
+
         assert callable(m.parse) and callable(m.looks_like)
 
     def test_codex_exports_parse_and_looks_like(self) -> None:
         import polylogue.sources.parsers.codex as m
+
         assert callable(m.parse) and callable(m.looks_like)
 
     def test_claude_exports_both_parse_functions_and_detectors(self) -> None:
         import polylogue.sources.parsers.claude as m
+
         assert callable(m.parse_code) and callable(m.parse_ai)
         assert callable(m.looks_like_code) and callable(m.looks_like_ai)
         # Symmetric aliases for interface parity with chatgpt/codex
@@ -232,6 +251,7 @@ class TestParserModuleInterface:
 
     def test_drive_exports_parse_chunked_prompt_and_looks_like(self) -> None:
         import polylogue.sources.parsers.drive as m
+
         assert callable(m.parse_chunked_prompt)
         assert callable(m.looks_like)
 

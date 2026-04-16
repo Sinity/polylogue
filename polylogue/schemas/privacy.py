@@ -13,11 +13,31 @@ from typing import Any
 
 _SAFE_ENUM_MAX_LEN = 50  # structural enums are short tokens, not content
 
-_FILE_EXTENSIONS = frozenset({
-    ".pdf", ".txt", ".json", ".jpg", ".jpeg", ".png", ".gif",
-    ".md", ".html", ".csv", ".tsv", ".doc", ".docx",
-    ".xls", ".xlsx", ".zip", ".gz", ".tar", ".py", ".js", ".ts",
-})
+_FILE_EXTENSIONS = frozenset(
+    {
+        ".pdf",
+        ".txt",
+        ".json",
+        ".jpg",
+        ".jpeg",
+        ".png",
+        ".gif",
+        ".md",
+        ".html",
+        ".csv",
+        ".tsv",
+        ".doc",
+        ".docx",
+        ".xls",
+        ".xlsx",
+        ".zip",
+        ".gz",
+        ".tar",
+        ".py",
+        ".js",
+        ".ts",
+    }
+)
 
 _TIMESTAMP_RE = re.compile(r"\d{4}-\d{2}-\d{2}([T ]|$)")
 _HIGH_ENTROPY_TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{10,}$")
@@ -26,31 +46,85 @@ _HIGH_ENTROPY_TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{10,}$")
 # (e.g. "chatgpt_agent", "deep_research") — not random IDs.
 _STRUCTURAL_CONSTANT_RE = re.compile(r"^[a-z][a-z0-9_]{2,30}$")
 
-_IDENTIFIER_FIELD_TOKENS = frozenset({
-    "id", "ids", "uuid", "guid", "key", "keys", "token", "tokens",
-    "hash", "checksum", "digest",
-    "resourceid", "fileid", "messageid", "conversationid", "sessionid",
-    "promptid", "parentid", "childid", "attachmentid",
-    "requestid", "responseid", "traceid", "runid",
-    "userid", "threadid", "clientid",
-})
+_IDENTIFIER_FIELD_TOKENS = frozenset(
+    {
+        "id",
+        "ids",
+        "uuid",
+        "guid",
+        "key",
+        "keys",
+        "token",
+        "tokens",
+        "hash",
+        "checksum",
+        "digest",
+        "resourceid",
+        "fileid",
+        "messageid",
+        "conversationid",
+        "sessionid",
+        "promptid",
+        "parentid",
+        "childid",
+        "attachmentid",
+        "requestid",
+        "responseid",
+        "traceid",
+        "runid",
+        "userid",
+        "threadid",
+        "clientid",
+    }
+)
 
 # Field names whose values are always user content, never structural enums.
 # This complements the value-level filter to catch content that *looks* like
 # technical identifiers (e.g. snake_case user titles, domain-like page titles).
-_CONTENT_FIELD_NAMES = frozenset({
-    "title", "text", "url", "description", "address", "phone",
-    "location", "query", "prompt", "summary", "instructions",
-    # Free-form message/IO content — never structural
-    "body", "message", "input", "output",
-    "breadcrumbs", "display_title", "page_title", "leaf_description",
-    "clicked_from_title", "clicked_from_url", "content_url", "image_url",
-    "website_url", "provider_url", "request_query", "featured_tag",
-    "merchants", "price", "evidence_text", "attribution",
-    "async_task_title", "serialization_title",
-    "branching_from_conversation_title", "branching_from_conversation_owner",
-    "country", "owner", "state", "subtitles",
-})
+_CONTENT_FIELD_NAMES = frozenset(
+    {
+        "title",
+        "text",
+        "url",
+        "description",
+        "address",
+        "phone",
+        "location",
+        "query",
+        "prompt",
+        "summary",
+        "instructions",
+        # Free-form message/IO content — never structural
+        "body",
+        "message",
+        "input",
+        "output",
+        "breadcrumbs",
+        "display_title",
+        "page_title",
+        "leaf_description",
+        "clicked_from_title",
+        "clicked_from_url",
+        "content_url",
+        "image_url",
+        "website_url",
+        "provider_url",
+        "request_query",
+        "featured_tag",
+        "merchants",
+        "price",
+        "evidence_text",
+        "attribution",
+        "async_task_title",
+        "serialization_title",
+        "branching_from_conversation_title",
+        "branching_from_conversation_owner",
+        "country",
+        "owner",
+        "state",
+        "subtitles",
+    }
+)
 
 
 def _looks_high_entropy_token(value: str) -> bool:
@@ -163,9 +237,8 @@ def _is_safe_enum_value(
 
     # Identifier fields are normally blocked, but structural constants
     # (lowercase underscore-separated tokens like "chatgpt_agent") pass through.
-    if _is_identifier_field(path):
-        if not (isinstance(value, str) and _STRUCTURAL_CONSTANT_RE.match(value)):
-            return False
+    if _is_identifier_field(path) and not (isinstance(value, str) and _STRUCTURAL_CONSTANT_RE.match(value)):
+        return False
     if not value or len(value) > effective_max_len:
         return False
     if not value.isascii():

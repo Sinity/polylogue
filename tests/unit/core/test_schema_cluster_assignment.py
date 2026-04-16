@@ -169,8 +169,8 @@ class TestClusterAssignment:
     def test_type_mutation_causes_separate_cluster(self, registry: SchemaRegistry) -> None:
         """Samples where a field changes type get assigned to different clusters."""
         samples = [
-            {"id": "1", "count": 5},       # count is number
-            {"id": "2", "count": 10},      # count is number
+            {"id": "1", "count": 5},  # count is number
+            {"id": "2", "count": 10},  # count is number
             {"id": "3", "count": "many"},  # count is string
         ]
         manifest = registry.cluster_samples("type-prov", samples)

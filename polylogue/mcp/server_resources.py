@@ -41,10 +41,7 @@ def register_resources(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         convs = await build_query_spec().list(hooks.get_repo())
         return hooks.json_payload(
             MCPConversationSummaryListPayload(
-                root=[
-                    MCPConversationSummaryPayload.from_conversation(conv)
-                    for conv in convs
-                ]
+                root=[MCPConversationSummaryPayload.from_conversation(conv) for conv in convs]
             )
         )
 

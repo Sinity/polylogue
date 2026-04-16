@@ -116,9 +116,7 @@ def promote_schema_cluster(request: SchemaPromoteRequest) -> SchemaPromoteResult
             else []
         )
         samples = [
-            sample
-            for sample in all_samples
-            if fingerprint_hash(_structure_fingerprint(sample)) == request.cluster_id
+            sample for sample in all_samples if fingerprint_hash(_structure_fingerprint(sample)) == request.cluster_id
         ]
         if not samples:
             raise ValueError(f"No samples match cluster {request.cluster_id}")

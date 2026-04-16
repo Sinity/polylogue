@@ -179,6 +179,7 @@ class TestRunSourcesRenderFailures:
         config = Config(sources=[], archive_root=archive_root, render_root=archive_root / "render")
 
         with patch("polylogue.rendering.renderers.html.HTMLRenderer.render", new_callable=AsyncMock) as mock_render:
+
             def render_side_effect(conversation_id, output_path):
                 if "fail-conv" in conversation_id:
                     raise ValueError("Render failed for testing")
@@ -202,6 +203,7 @@ class TestRunSourcesRenderFailures:
         render_attempts: list[str] = []
 
         with patch("polylogue.rendering.renderers.html.HTMLRenderer.render", new_callable=AsyncMock) as mock_render:
+
             def render_side_effect(conversation_id, output_path):
                 render_attempts.append(conversation_id)
                 if "second" in conversation_id:
@@ -220,6 +222,7 @@ class TestRunSourcesRenderFailures:
         config = Config(sources=[], archive_root=archive_root, render_root=archive_root / "render")
 
         with patch("polylogue.rendering.renderers.html.HTMLRenderer.render", new_callable=AsyncMock) as mock_render:
+
             def render_side_effect(conversation_id, output_path):
                 if conversation_id in ["test:fail1", "test:fail2"]:
                     raise ValueError("Render failed")
@@ -245,7 +248,14 @@ class TestRunSourcesRenderFailures:
 class TestRunSourcesIntegration:
     @pytest.mark.parametrize(
         ("stage", "with_source_data"),
-        [("parse", True), ("materialize", True), ("render", False), ("index", False), ("reprocess", True), ("all", True)],
+        [
+            ("parse", True),
+            ("materialize", True),
+            ("render", False),
+            ("index", False),
+            ("reprocess", True),
+            ("all", True),
+        ],
     )
     def test_stage_matrix(self, workspace_env, tmp_path: Path, stage: str, with_source_data: bool, monkeypatch):
         monkeypatch.setenv("POLYLOGUE_SCHEMA_VALIDATION", "strict")
@@ -418,7 +428,9 @@ class TestRunSourcesIntegration:
             archive_root=workspace_env["archive_root"],
             render_root=workspace_env["archive_root"] / "render",
         )
-        with patch("polylogue.pipeline.services.indexing.IndexService.rebuild_index", new_callable=AsyncMock) as mock_rebuild:
+        with patch(
+            "polylogue.pipeline.services.indexing.IndexService.rebuild_index", new_callable=AsyncMock
+        ) as mock_rebuild:
             mock_rebuild.side_effect = Exception("Index rebuild failed")
             result = asyncio.run(run_sources(config=config, stage="index"))
 
@@ -500,7 +512,11 @@ class TestRunSourcesIntegration:
         )
 
         with (
-            patch("polylogue.pipeline.run_execution.execute_ingest_stage", new_callable=AsyncMock, return_value=ingest_result) as mock_ingest,
+            patch(
+                "polylogue.pipeline.run_execution.execute_ingest_stage",
+                new_callable=AsyncMock,
+                return_value=ingest_result,
+            ) as mock_ingest,
             patch(
                 "polylogue.pipeline.run_execution.execute_index_stage",
                 new_callable=AsyncMock,
@@ -604,15 +620,14 @@ class TestAcquisitionServiceIntegration:
         )
         backend = SQLiteBackend(db_path=tmp_path / "test.db")
 
-        result = await AcquisitionService(backend=backend).acquire_sources(
-            [Source(name="chatgpt-inbox", path=inbox)]
-        )
+        result = await AcquisitionService(backend=backend).acquire_sources([Source(name="chatgpt-inbox", path=inbox)])
 
         assert result.counts["acquired"] == 1
         assert result.counts["errors"] == 0
         assert len(result.raw_ids) == 1
         stored = await backend.get_raw_conversation(result.raw_ids[0])
         from polylogue.storage.blob_store import load_raw_content
+
         raw_bytes = load_raw_content(result.raw_ids[0])
         data = json.loads(raw_bytes)
         assert stored.provider_name == "chatgpt"

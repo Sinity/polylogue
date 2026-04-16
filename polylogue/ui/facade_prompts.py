@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 import sys
 from collections import deque
 from pathlib import Path
@@ -11,12 +10,15 @@ from pathlib import Path
 _NO_STUB_RESPONSE = object()
 
 
-def load_prompt_responses(ui_error_cls: type[Exception]) -> deque[dict[str, object]]:
-    prompt_file = os.environ.get("POLYLOGUE_TEST_PROMPT_FILE")
-    if not prompt_file:
+def load_prompt_responses(
+    ui_error_cls: type[Exception],
+    *,
+    prompt_stub_path: Path | None = None,
+) -> deque[dict[str, object]]:
+    if prompt_stub_path is None:
         return deque()
     entries: deque[dict[str, object]] = deque()
-    for line in Path(prompt_file).read_text(encoding="utf-8").splitlines():
+    for line in prompt_stub_path.read_text(encoding="utf-8").splitlines():
         line = line.strip()
         if not line:
             continue

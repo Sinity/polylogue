@@ -6,6 +6,7 @@ ConversationFilter execution at scale.
 Run with:
     pytest tests/benchmarks/test_search_filters.py --benchmark-enable -p no:xdist -v
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -93,7 +94,9 @@ def test_bench_filter_combined(benchmark, bench_db_10k: Path) -> None:
     benchmark_store_call(
         benchmark,
         bench_db_10k,
-        lambda store: ConversationFilter(store.repository).provider("claude-ai").has_tool_use().min_messages(2).list_summaries(),
+        lambda store: (
+            ConversationFilter(store.repository).provider("claude-ai").has_tool_use().min_messages(2).list_summaries()
+        ),
     )
 
 

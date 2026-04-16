@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
 
@@ -18,6 +19,11 @@ from polylogue.lib.semantic_facts import (
 from polylogue.lib.session_profile import build_session_profile
 from polylogue.storage.state_views import ConversationRenderProjection
 from polylogue.storage.store import AttachmentRecord, ConversationRecord, MessageRecord
+
+REPO_ROOT = Path(__file__).resolve().parents[3]
+README_PATH = REPO_ROOT / "README.md"
+LIB_PATH = REPO_ROOT / "polylogue" / "lib"
+SHOWCASE_REPORT_PATH = REPO_ROOT / "polylogue" / "showcase" / "report.py"
 
 
 def _semantic_conversation() -> Conversation:
@@ -54,7 +60,7 @@ def _semantic_conversation() -> Conversation:
                                         "type": "tool_use",
                                         "id": "tool-1",
                                         "name": "Read",
-                                        "input": {"file_path": "/realm/project/polylogue/README.md"},
+                                        "input": {"file_path": str(README_PATH)},
                                     },
                                 ],
                             },
@@ -98,11 +104,8 @@ def _protocol_summary_conversation() -> Conversation:
                     id="u1",
                     role="user",
                     provider="claude-code",
-                    text=(
-                        "<system-reminder>skip this</system-reminder>\n"
-                        "Please inspect /realm/project/polylogue/README.md and summarize the findings clearly. "
-                        * 3
-                    ),
+                    text="<system-reminder>skip this</system-reminder>\n"
+                    + (f"Please inspect {README_PATH} and summarize the findings clearly. " * 3),
                     timestamp=datetime(2026, 3, 23, 10, 0, tzinfo=timezone.utc),
                 ),
                 Message(
@@ -123,7 +126,7 @@ def _protocol_summary_conversation() -> Conversation:
                                         "type": "tool_use",
                                         "id": "tool-1",
                                         "name": "Read",
-                                        "input": {"file_path": "/realm/project/polylogue/README.md"},
+                                        "input": {"file_path": str(README_PATH)},
                                     },
                                 ],
                             },
@@ -230,10 +233,10 @@ def test_build_conversation_semantic_facts_collects_semantic_counts() -> None:
     assert facts.word_count == 13
     assert facts.tool_category_counts == {"file_read": 1}
     assert facts.message_facts[1].tool_category_counts == {"file_read": 1}
-    assert facts.message_facts[1].affected_paths == ("/realm/project/polylogue/README.md",)
+    assert facts.message_facts[1].affected_paths == (str(README_PATH),)
     assert len(facts.action_events) == 1
     assert facts.action_events[0].kind.value == "file_read"
-    assert facts.action_events[0].affected_paths == ("/realm/project/polylogue/README.md",)
+    assert facts.action_events[0].affected_paths == (str(README_PATH),)
     assert facts.action_events[0].message_id == "a1"
     assert facts.action_events[0].sequence_index == 0
     assert facts.first_message_at == datetime(2026, 3, 23, 9, 0, tzinfo=timezone.utc)
@@ -249,7 +252,7 @@ def test_build_session_profile_reuses_shared_semantic_facts() -> None:
     assert profile.tool_use_count == 1
     assert profile.thinking_count == 1
     assert profile.tool_categories == {"file_read": 1}
-    assert profile.canonical_projects == ("polylogue",)
+    assert profile.repo_names == ("polylogue",)
     assert profile.first_message_at == datetime(2026, 3, 23, 9, 0, tzinfo=timezone.utc)
     assert profile.last_message_at == datetime(2026, 3, 23, 9, 4, tzinfo=timezone.utc)
     assert profile.canonical_session_date.isoformat() == "2026-03-23"
@@ -291,7 +294,7 @@ def test_extract_work_events_strips_protocol_noise_and_respects_summary_cap() ->
     summary = events[0].summary
     assert "<system-reminder>" not in summary
     assert "skip this" not in summary
-    assert "Please inspect /realm/project/polylogue/README.md" in summary
+    assert f"Please inspect {README_PATH}" in summary
     assert "This trailing note should be truncated away" not in summary
     assert len(summary) <= 200
 
@@ -323,9 +326,9 @@ def test_build_conversation_semantic_facts_uses_canonical_db_content_blocks() ->
                             "type": "tool_use",
                             "tool_name": "Read",
                             "tool_id": "tool-1",
-                            "tool_input": {"file_path": "/realm/project/polylogue/README.md"},
+                            "tool_input": {"file_path": str(README_PATH)},
                             "semantic_type": "file_read",
-                            "metadata": {"path": "/realm/project/polylogue/README.md"},
+                            "metadata": {"path": str(README_PATH)},
                         },
                         {
                             "type": "tool_result",
@@ -343,10 +346,10 @@ def test_build_conversation_semantic_facts_uses_canonical_db_content_blocks() ->
 
     assert facts.tool_category_counts == {"file_read": 1}
     assert facts.message_facts[1].tool_category_counts == {"file_read": 1}
-    assert facts.message_facts[1].affected_paths == ("/realm/project/polylogue/README.md",)
+    assert facts.message_facts[1].affected_paths == (str(README_PATH),)
     assert facts.message_facts[1].tool_calls[0].output == "README contents"
     assert profile.tool_categories == {"file_read": 1}
-    assert profile.canonical_projects == ("polylogue",)
+    assert profile.repo_names == ("polylogue",)
 
 
 def test_build_conversation_semantic_facts_preserves_tool_results_before_tool_use() -> None:
@@ -370,7 +373,7 @@ def test_build_conversation_semantic_facts_preserves_tool_results_before_tool_us
                             "type": "tool_use",
                             "tool_name": "Read",
                             "tool_id": "tool-1",
-                            "tool_input": {"file_path": "/realm/project/polylogue/README.md"},
+                            "tool_input": {"file_path": str(README_PATH)},
                             "semantic_type": "file_read",
                         },
                     ],
@@ -407,9 +410,9 @@ def test_build_conversation_semantic_facts_upgrades_stale_other_semantic_type() 
                         {
                             "type": "tool_use",
                             "tool_name": "MultiEdit",
-                            "tool_input": {"file_path": "/realm/project/polylogue/README.md"},
+                            "tool_input": {"file_path": str(README_PATH)},
                             "semantic_type": "other",
-                            "metadata": {"path": "/realm/project/polylogue/README.md"},
+                            "metadata": {"path": str(README_PATH)},
                         },
                         {
                             "type": "tool_use",
@@ -426,7 +429,7 @@ def test_build_conversation_semantic_facts_upgrades_stale_other_semantic_type() 
     facts = build_conversation_semantic_facts(conversation)
 
     assert facts.tool_category_counts == {"agent": 1, "file_edit": 1}
-    assert facts.message_facts[1].affected_paths == ("/realm/project/polylogue/README.md",)
+    assert facts.message_facts[1].affected_paths == (str(README_PATH),)
 
 
 def test_action_events_capture_normalized_command_query_branch_and_cwd() -> None:
@@ -447,7 +450,7 @@ def test_action_events_capture_normalized_command_query_branch_and_cwd() -> None
                             "tool_name": "Bash",
                             "tool_input": {
                                 "command": "git checkout feature/action-facts",
-                                "cwd": "/realm/project/polylogue",
+                                "cwd": str(REPO_ROOT),
                             },
                             "semantic_type": "git",
                         },
@@ -456,7 +459,7 @@ def test_action_events_capture_normalized_command_query_branch_and_cwd() -> None
                             "tool_name": "Grep",
                             "tool_input": {
                                 "pattern": "build_session_profile",
-                                "path": "/realm/project/polylogue/polylogue/lib",
+                                "path": str(LIB_PATH),
                             },
                             "semantic_type": "search",
                         },
@@ -473,16 +476,16 @@ def test_action_events_capture_normalized_command_query_branch_and_cwd() -> None
     assert git_action.kind.value == "git"
     assert git_action.event_id.startswith("act-")
     assert git_action.command == "git checkout feature/action-facts"
-    assert git_action.cwd_path == "/realm/project/polylogue"
+    assert git_action.cwd_path == str(REPO_ROOT)
     assert git_action.branch_names == ("feature/action-facts",)
     assert "feature/action-facts" in git_action.search_text
     assert search_action.kind.value == "search"
     assert search_action.query == "build_session_profile"
-    assert search_action.affected_paths == ("/realm/project/polylogue/polylogue/lib",)
-    assert "/realm/project/polylogue/polylogue/lib" in search_action.search_text
+    assert search_action.affected_paths == (str(LIB_PATH),)
+    assert str(LIB_PATH) in search_action.search_text
 
     profile = build_session_profile(conversation)
-    assert profile.canonical_projects == ("polylogue",)
+    assert profile.repo_names == ("polylogue",)
 
 
 def test_build_session_profile_detects_project_paths_in_user_text() -> None:
@@ -495,7 +498,7 @@ def test_build_session_profile_detects_project_paths_in_user_text() -> None:
                     id="u1",
                     role="user",
                     provider="gemini",
-                    text="Please inspect /realm/project/polylogue/README.md and summarize it.",
+                    text=f"Please inspect {README_PATH} and summarize it.",
                     timestamp=datetime(2026, 3, 23, 9, 0, tzinfo=timezone.utc),
                 ),
                 Message(
@@ -511,7 +514,7 @@ def test_build_session_profile_detects_project_paths_in_user_text() -> None:
 
     profile = build_session_profile(conversation)
 
-    assert profile.canonical_projects == ("polylogue",)
+    assert profile.repo_names == ("polylogue",)
 
 
 def test_build_session_profile_discards_markdown_glob_paths_in_dialogue_text() -> None:
@@ -524,7 +527,7 @@ def test_build_session_profile_discards_markdown_glob_paths_in_dialogue_text() -
                     id="u1",
                     role="user",
                     provider="claude-code",
-                    text="Check `/realm/project/polylogue/polylogue/showcase/report.py` and ignore `/realm/project/polylogue/polylogue/showcase/*.py`.",
+                    text=f"Check `{SHOWCASE_REPORT_PATH}` and ignore `{SHOWCASE_REPORT_PATH.parent / '*.py'}`.",
                     timestamp=datetime(2026, 3, 23, 9, 0, tzinfo=timezone.utc),
                 ),
                 Message(
@@ -540,9 +543,9 @@ def test_build_session_profile_discards_markdown_glob_paths_in_dialogue_text() -
 
     profile = build_session_profile(conversation)
 
-    assert "/realm/project/polylogue/polylogue/showcase/report.py" in profile.file_paths_touched
-    assert "/realm/project/polylogue/polylogue/showcase/*.py" not in profile.file_paths_touched
-    assert "/realm/project/" not in profile.file_paths_touched
+    assert str(SHOWCASE_REPORT_PATH) in profile.file_paths_touched
+    assert str(SHOWCASE_REPORT_PATH.parent / "*.py") not in profile.file_paths_touched
+    assert not any("*" in path for path in profile.file_paths_touched)
 
 
 def test_build_session_profile_uses_conversation_level_git_context() -> None:
@@ -552,7 +555,7 @@ def test_build_session_profile_uses_conversation_level_git_context() -> None:
         provider_meta={
             "git": {
                 "branch": "feature/runtime-cleanup",
-                "repository_url": "/realm/project/polylogue",
+                "repository_url": str(REPO_ROOT),
             }
         },
         messages=MessageCollection(
@@ -578,7 +581,7 @@ def test_build_session_profile_uses_conversation_level_git_context() -> None:
     profile = build_session_profile(conversation)
 
     assert profile.branch_names == ("feature/runtime-cleanup",)
-    assert profile.canonical_projects == ("polylogue",)
+    assert profile.repo_names == ("polylogue",)
 
 
 def test_build_session_profile_ignores_context_dump_wrappers_for_work_event_intent() -> None:

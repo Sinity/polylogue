@@ -30,9 +30,19 @@ def diff_schemas(
     classified: list[PropertyChange] = []
 
     for prop in added:
-        classified.append(PropertyChange(path=prop, kind="added", detail=f"new property (type: {_type_label(schema_b['properties'][prop])})"))
+        classified.append(
+            PropertyChange(
+                path=prop, kind="added", detail=f"new property (type: {_type_label(schema_b['properties'][prop])})"
+            )
+        )
     for prop in removed:
-        classified.append(PropertyChange(path=prop, kind="removed", detail=f"removed property (was type: {_type_label(schema_a['properties'][prop])})"))
+        classified.append(
+            PropertyChange(
+                path=prop,
+                kind="removed",
+                detail=f"removed property (was type: {_type_label(schema_a['properties'][prop])})",
+            )
+        )
 
     req_a = set(schema_a.get("required", []))
     req_b = set(schema_b.get("required", []))
@@ -41,25 +51,37 @@ def diff_schemas(
         prop_b = schema_b["properties"][prop]
         if prop_a.get("type") != prop_b.get("type"):
             changed.append(prop)
-            classified.append(PropertyChange(path=prop, kind="type_mutation", detail=f"type changed: {prop_a.get('type')} -> {prop_b.get('type')}"))
+            classified.append(
+                PropertyChange(
+                    path=prop,
+                    kind="type_mutation",
+                    detail=f"type changed: {prop_a.get('type')} -> {prop_b.get('type')}",
+                )
+            )
         if (prop in req_a) != (prop in req_b):
-            classified.append(PropertyChange(
-                path=prop,
-                kind="requiredness",
-                detail=f"{'required' if prop in req_b else 'optional'} (was {'required' if prop in req_a else 'optional'})",
-            ))
+            classified.append(
+                PropertyChange(
+                    path=prop,
+                    kind="requiredness",
+                    detail=f"{'required' if prop in req_b else 'optional'} (was {'required' if prop in req_a else 'optional'})",
+                )
+            )
         if prop_a.get("x-polylogue-semantic-role") != prop_b.get("x-polylogue-semantic-role"):
-            classified.append(PropertyChange(
-                path=prop,
-                kind="semantic_role",
-                detail=f"semantic role changed: {prop_a.get('x-polylogue-semantic-role')!r} -> {prop_b.get('x-polylogue-semantic-role')!r}",
-            ))
+            classified.append(
+                PropertyChange(
+                    path=prop,
+                    kind="semantic_role",
+                    detail=f"semantic role changed: {prop_a.get('x-polylogue-semantic-role')!r} -> {prop_b.get('x-polylogue-semantic-role')!r}",
+                )
+            )
         if prop_a.get("x-polylogue-ref") != prop_b.get("x-polylogue-ref"):
-            classified.append(PropertyChange(
-                path=prop,
-                kind="relational",
-                detail=f"reference changed: {prop_a.get('x-polylogue-ref')!r} -> {prop_b.get('x-polylogue-ref')!r}",
-            ))
+            classified.append(
+                PropertyChange(
+                    path=prop,
+                    kind="relational",
+                    detail=f"reference changed: {prop_a.get('x-polylogue-ref')!r} -> {prop_b.get('x-polylogue-ref')!r}",
+                )
+            )
 
     for annotation_key in (
         "x-polylogue-foreign-keys",
@@ -75,11 +97,13 @@ def diff_schemas(
                 detail = f"{annotation_key} removed"
             else:
                 detail = f"{annotation_key} changed"
-            classified.append(PropertyChange(
-                path="$",
-                kind="relational",
-                detail=detail,
-            ))
+            classified.append(
+                PropertyChange(
+                    path="$",
+                    kind="relational",
+                    detail=detail,
+                )
+            )
 
     return SchemaDiff(
         provider=provider,

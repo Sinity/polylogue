@@ -60,10 +60,7 @@ def iter_verification_rows(
                 return
             last_rowid = row[0]
 
-        base_query = (
-            "SELECT rowid, raw_id, provider_name, payload_provider, source_path "
-            "FROM raw_conversations "
-        )
+        base_query = "SELECT rowid, raw_id, provider_name, payload_provider, source_path FROM raw_conversations "
         records_fetched = 0
         while True:
             if bounded_limit is not None:

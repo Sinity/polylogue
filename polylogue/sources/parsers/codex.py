@@ -10,7 +10,7 @@ from pydantic import ValidationError
 
 from polylogue.lib.branch_type import BranchType
 from polylogue.lib.roles import Role
-from polylogue.lib.timestamps import parse_timestamp
+from polylogue.lib.timestamps import format_timestamp, parse_timestamp
 from polylogue.logging import get_logger
 from polylogue.sources.providers.codex import CodexRecord
 from polylogue.types import Provider
@@ -18,6 +18,15 @@ from polylogue.types import Provider
 from .base import ParsedConversation, ParsedMessage, ParsedProviderEvent, content_blocks_from_segments
 
 logger = get_logger(__name__)
+
+
+def _normalize_timestamp(value: str | int | float | None) -> str | None:
+    if isinstance(value, str):
+        return value if parse_timestamp(value) is not None else None
+    parsed = parse_timestamp(value)
+    if parsed is None:
+        return None
+    return format_timestamp(parsed)
 
 
 def _latest_timestamp(*values: str | None) -> str | None:
@@ -103,30 +112,36 @@ def parse(payload: list[object], fallback_id: str) -> ParsedConversation:
 
         # Handle compaction events (before message check so they don't fall through)
         if record.is_compaction:
+            timestamp = _normalize_timestamp(record.timestamp)
             event_payload: dict[str, object] = {
                 "summary": record.compacted_message,
                 "has_replacement_history": record.has_replacement_history,
             }
             if record.payload:
                 event_payload["raw"] = record.payload
-            provider_events.append(ParsedProviderEvent(
-                event_type="compaction",
-                timestamp=record.timestamp,
-                payload=event_payload,
-            ))
+            provider_events.append(
+                ParsedProviderEvent(
+                    event_type="compaction",
+                    timestamp=timestamp,
+                    payload=event_payload,
+                )
+            )
             context_compactions.append(event_payload)
             continue
 
         # Handle turn-context events
         if record.is_turn_context:
+            timestamp = _normalize_timestamp(record.timestamp)
             tc_payload: dict[str, object] = {}
             if record.payload:
                 tc_payload["raw"] = record.payload
-            provider_events.append(ParsedProviderEvent(
-                event_type="turn_context",
-                timestamp=record.timestamp,
-                payload=tc_payload,
-            ))
+            provider_events.append(
+                ParsedProviderEvent(
+                    event_type="turn_context",
+                    timestamp=timestamp,
+                    payload=tc_payload,
+                )
+            )
             continue
 
         # Handle session metadata (envelope format)
@@ -137,7 +152,7 @@ def parse(payload: list[object], fallback_id: str) -> ParsedConversation:
                 # First session_meta sets the conversation ID and captures session-level data
                 if len(session_metas_seen) == 1:
                     session_id = str(meta_id)
-                    session_timestamp = record.payload.get("timestamp")
+                    session_timestamp = _normalize_timestamp(record.payload.get("timestamp"))
             # Capture git/instructions from envelope payload (may appear in inner record)
             inner = CodexRecord.model_validate(record.payload) if isinstance(record.payload, dict) else None
             if inner and inner.git and not session_git:
@@ -152,7 +167,7 @@ def parse(payload: list[object], fallback_id: str) -> ParsedConversation:
                 session_metas_seen.append(record.id)
                 if len(session_metas_seen) == 1:
                     session_id = record.id
-                    session_timestamp = record.timestamp
+                    session_timestamp = _normalize_timestamp(record.timestamp)
             # Capture git/instructions from top-level record
             if record.git and not session_git:
                 session_git = record.git.model_dump(exclude_none=True) or None
@@ -179,6 +194,7 @@ def parse(payload: list[object], fallback_id: str) -> ParsedConversation:
         if record.is_message:
             raw_role = record.effective_role
             text = record.text_content
+            timestamp = _normalize_timestamp(record.timestamp)
 
             if not raw_role or raw_role == "unknown" or not text:
                 continue
@@ -205,6 +221,7 @@ def parse(payload: list[object], fallback_id: str) -> ParsedConversation:
             content_blocks = content_blocks_from_segments(raw_content) if raw_content else []
             if not content_blocks and text:
                 from .base import ParsedContentBlock
+
                 content_blocks = [ParsedContentBlock(type="text", text=text)]
 
             messages.append(
@@ -212,12 +229,12 @@ def parse(payload: list[object], fallback_id: str) -> ParsedConversation:
                     provider_message_id=msg_id,
                     role=role,
                     text=text,
-                    timestamp=record.timestamp,
+                    timestamp=timestamp,
                     content_blocks=content_blocks,
                     provider_meta=msg_meta,
                 )
             )
-            latest_message_timestamp = _latest_timestamp(latest_message_timestamp, record.timestamp)
+            latest_message_timestamp = _latest_timestamp(latest_message_timestamp, timestamp)
 
     # Second session_meta ID (if present) is the parent session
     parent_id = session_metas_seen[1] if len(session_metas_seen) > 1 else None

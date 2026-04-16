@@ -58,8 +58,6 @@ def test_interrupted_pipeline_preserves_partial_progress(tmp_path):
         "run",
         "--source",
         "inbox",
-        "--stage",
-        "all",
     ]
 
     process = subprocess.Popen(
@@ -127,8 +125,6 @@ def test_rerun_after_interruption_completes_remaining(tmp_path):
         "run",
         "--source",
         "inbox",
-        "--stage",
-        "all",
     ]
 
     # First run: start and interrupt
@@ -151,9 +147,16 @@ def test_rerun_after_interruption_completes_remaining(tmp_path):
         process.communicate()
 
     db_path = workspace["paths"]["db_path"]
-    with sqlite3.connect(db_path) as conn:
-        cursor = conn.execute("SELECT COUNT(*) FROM messages")
-        first_count = cursor.fetchone()[0]
+    first_count = 0
+    if db_path.exists():
+        with sqlite3.connect(db_path) as conn:
+            has_messages_table = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='messages'"
+            ).fetchone()
+            if has_messages_table is not None:
+                cursor = conn.execute("SELECT COUNT(*) FROM messages")
+                first_count = cursor.fetchone()[0]
+    assert 0 <= first_count <= 50
 
     # Second run: complete the pipeline
     result = subprocess.run(
@@ -207,8 +210,6 @@ def test_concurrent_pipeline_runs_serialized(tmp_path):
         "run",
         "--source",
         "inbox",
-        "--stage",
-        "all",
     ]
 
     # Start both pipelines concurrently

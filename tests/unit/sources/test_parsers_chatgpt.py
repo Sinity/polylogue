@@ -52,6 +52,7 @@ COERCE_FLOAT_CASES = [
     (None, None, "None"),
 ]
 
+
 @pytest.mark.parametrize("input_val,expected,desc", COERCE_FLOAT_CASES)
 def test_coerce_float(input_val, expected, desc):
     """Test _coerce_float conversion."""
@@ -65,38 +66,35 @@ def test_coerce_float(input_val, expected, desc):
 CHATGPT_EXTRACT_MESSAGES_CASES = [
     # Basic extraction
     ({"node1": make_chatgpt_node("msg1", "user", ["Hello"])}, 1, "basic message"),
-
     # Timestamp handling
     ({"node1": make_chatgpt_node("msg1", "user", ["Hi"], timestamp=1704067200)}, 1, "with timestamp"),
     ({"node1": make_chatgpt_node("msg1", "user", ["Hi"], timestamp=None)}, 1, "null timestamp"),
     ({"node1": make_chatgpt_node("msg1", "user", ["Hi"], timestamp=0)}, 1, "zero timestamp"),
-
     # Mixed timestamps (should sort)
-    ({
-        "node1": make_chatgpt_node("msg1", "user", ["First"], timestamp=1000),
-        "node2": make_chatgpt_node("msg2", "assistant", ["Second"], timestamp=2000),
-        "node3": make_chatgpt_node("msg3", "user", ["Third"], timestamp=500),
-    }, 3, "mixed timestamps sorted"),
-
+    (
+        {
+            "node1": make_chatgpt_node("msg1", "user", ["First"], timestamp=1000),
+            "node2": make_chatgpt_node("msg2", "assistant", ["Second"], timestamp=2000),
+            "node3": make_chatgpt_node("msg3", "user", ["Third"], timestamp=500),
+        },
+        3,
+        "mixed timestamps sorted",
+    ),
     # Content variants
     ({"node1": make_chatgpt_node("msg1", "user", ["Part1", "Part2"])}, 1, "multiple parts"),
     ({"node1": make_chatgpt_node("msg1", "user", [None, "Valid"])}, 1, "parts with None"),
     ({"node1": {"message": {"id": "1", "author": {"role": "user"}, "content": {"parts": []}}}}, 0, "empty parts"),
-
     # Role normalization
     ({"node1": make_chatgpt_node("msg1", "human", ["Hi"])}, 1, "human role alias"),
     ({"node1": make_chatgpt_node("msg1", "model", ["Response"])}, 1, "model role alias"),
-
     # Missing fields
     ({"node1": {"id": "1", "message": None}}, 0, "missing message"),
     ({"node1": {"id": "1", "message": {"id": "1"}}}, 0, "missing author"),
     ({"node1": {"id": "1", "message": {"id": "1", "author": {}}}}, 0, "missing role"),
     ({"node1": {"id": "1", "message": {"id": "1", "author": {"role": "user"}}}}, 0, "missing content"),
-
     # Non-dict nodes
     ({"node1": "not a dict"}, 0, "non-dict node"),
     ({"node1": None}, 0, "None node"),
-
     # Empty mapping
     ({}, 0, "empty mapping"),
 ]
@@ -110,8 +108,7 @@ def test_chatgpt_extract_messages_comprehensive(mapping, expected_count, desc):
     """
     messages, attachments = extract_messages_from_mapping(mapping)
 
-    assert len(messages) == expected_count, \
-        f"Failed {desc}: expected {expected_count} messages, got {len(messages)}"
+    assert len(messages) == expected_count, f"Failed {desc}: expected {expected_count} messages, got {len(messages)}"
 
     # Verify all messages have required fields
     for msg in messages:
@@ -126,13 +123,7 @@ def test_chatgpt_extract_messages_comprehensive(mapping, expected_count, desc):
 
 CHATGPT_PARENT_BRANCH_CASES = [
     # No parent (root message)
-    (
-        {"node1": make_chatgpt_node("msg1", "user", ["Hello"])},
-        [None],
-        [0],
-        "root message no parent"
-    ),
-
+    ({"node1": make_chatgpt_node("msg1", "user", ["Hello"])}, [None], [0], "root message no parent"),
     # Simple linear chain
     (
         {
@@ -141,9 +132,8 @@ CHATGPT_PARENT_BRANCH_CASES = [
         },
         [None, "node1"],
         [0, 0],
-        "linear chain parent references"
+        "linear chain parent references",
     ),
-
     # Branching: one parent with multiple children
     (
         {
@@ -153,9 +143,8 @@ CHATGPT_PARENT_BRANCH_CASES = [
         },
         [None, "node1", "node1"],
         [0, 0, 1],
-        "branching with branch indexes"
+        "branching with branch indexes",
     ),
-
     # Three-way branch
     (
         {
@@ -166,25 +155,17 @@ CHATGPT_PARENT_BRANCH_CASES = [
         },
         [None, "node1", "node1", "node1"],
         [0, 0, 1, 2],
-        "three-way branch indexes"
+        "three-way branch indexes",
     ),
-
     # No parent field in node
-    (
-        {"node1": make_chatgpt_node("msg1", "user", ["Hello"])},
-        [None],
-        [0],
-        "missing parent field defaults to None"
-    ),
-
+    ({"node1": make_chatgpt_node("msg1", "user", ["Hello"])}, [None], [0], "missing parent field defaults to None"),
     # Parent node missing from mapping (orphaned node)
     (
         {"node2": make_chatgpt_node("msg2", "assistant", ["Hi"], parent="node1")},
         ["node1"],
         [0],
-        "orphaned node with missing parent"
+        "orphaned node with missing parent",
     ),
-
     # Mixed chain and branch
     (
         {
@@ -195,7 +176,7 @@ CHATGPT_PARENT_BRANCH_CASES = [
         },
         [None, "node1", "node2", "node2"],
         [0, 0, 0, 1],
-        "mixed chain and branch structure"
+        "mixed chain and branch structure",
     ),
 ]
 
@@ -208,16 +189,19 @@ def test_chatgpt_extract_parent_and_branch_index(mapping, expected_parents, expe
     """
     messages, _ = extract_messages_from_mapping(mapping)
 
-    assert len(messages) == len(expected_parents), \
+    assert len(messages) == len(expected_parents), (
         f"Failed {desc}: expected {len(expected_parents)} messages, got {len(messages)}"
+    )
 
     for msg, expected_parent, expected_index in zip(messages, expected_parents, expected_indexes, strict=False):
-        assert msg.parent_message_provider_id == expected_parent, \
-            f"Failed {desc}: message {msg.provider_message_id} expected parent {expected_parent}, " \
+        assert msg.parent_message_provider_id == expected_parent, (
+            f"Failed {desc}: message {msg.provider_message_id} expected parent {expected_parent}, "
             f"got {msg.parent_message_provider_id}"
-        assert msg.branch_index == expected_index, \
-            f"Failed {desc}: message {msg.provider_message_id} expected branch_index {expected_index}, " \
+        )
+        assert msg.branch_index == expected_index, (
+            f"Failed {desc}: message {msg.provider_message_id} expected branch_index {expected_index}, "
             f"got {msg.branch_index}"
+        )
 
 
 # -----------------------------------------------------------------------------
@@ -229,15 +213,12 @@ CHATGPT_METADATA_CASES = [
     # Attachments
     ({"attachments": [{"id": "att1", "name": "file.pdf"}]}, True, "attachments field"),
     ({"image_asset_pointer": "asset_123"}, True, "image asset pointer"),
-
     # Cost/duration
     ({"costUSD": 0.005}, "cost", "cost metadata"),
     ({"durationMs": 2500}, "duration", "duration metadata"),
-
     # Thinking markers
     ({"content_type": "thoughts"}, "thinking", "thoughts content type"),
     ({"content_type": "reasoning_recap"}, "thinking", "reasoning recap"),
-
     # Empty
     ({}, None, "no metadata"),
     (None, None, "None metadata"),

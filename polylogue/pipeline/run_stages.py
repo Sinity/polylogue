@@ -87,6 +87,9 @@ async def execute_ingest_stage(
     skip_acquire: bool = False,
     ui: object | None = None,
     progress_callback: ProgressCallback | None = None,
+    raw_batch_size: int = 50,
+    ingest_workers: int | None = None,
+    measure_ingest_result_size: bool = False,
 ) -> IngestResult:
     from polylogue.pipeline.services.parsing import ParsingService
 
@@ -94,6 +97,9 @@ async def execute_ingest_stage(
         repository=repository,
         archive_root=archive_root,
         config=config,
+        raw_batch_size=raw_batch_size,
+        ingest_workers=ingest_workers,
+        measure_ingest_result_size=measure_ingest_result_size,
     )
     return await parsing_service.ingest_sources(
         sources=sources,
@@ -149,16 +155,12 @@ async def execute_materialize_stage(
         return MaterializeStageOutcome(item_count=0, rebuilt=False)
 
     if source_names:
-        materialize_total = await backend.queries.count_conversation_ids(
-            source_names=list(source_names)
-        )
+        materialize_total = await backend.queries.count_conversation_ids(source_names=list(source_names))
         if not materialize_total:
             return MaterializeStageOutcome(item_count=0, rebuilt=False)
         conversation_ids = [
             conversation_id
-            async for conversation_id in backend.queries.iter_conversation_ids(
-                source_names=list(source_names)
-            )
+            async for conversation_id in backend.queries.iter_conversation_ids(source_names=list(source_names))
         ]
         if progress_callback is not None:
             progress_callback(0, desc=f"Materializing: 0/{materialize_total}")
@@ -250,11 +252,7 @@ async def execute_index_stage(
     try:
         if stage == "parse":
             if processed_ids:
-                index_kwargs = (
-                    {"progress_callback": progress_callback}
-                    if progress_callback is not None
-                    else {}
-                )
+                index_kwargs = {"progress_callback": progress_callback} if progress_callback is not None else {}
                 return IndexStageOutcome(
                     indexed=await index_service.update_index(processed_ids, **index_kwargs),
                     item_count=len(processed_ids),
@@ -263,27 +261,15 @@ async def execute_index_stage(
 
         if stage == "index":
             if source_names:
-                total = await backend.queries.count_conversation_ids(
-                    source_names=list(source_names)
-                )
-                index_kwargs = (
-                    {"progress_callback": progress_callback}
-                    if progress_callback is not None
-                    else {}
-                )
+                total = await backend.queries.count_conversation_ids(source_names=list(source_names))
+                index_kwargs = {"progress_callback": progress_callback} if progress_callback is not None else {}
                 success = await index_service.update_index(
-                    backend.queries.iter_conversation_ids(
-                        source_names=list(source_names)
-                    ),
+                    backend.queries.iter_conversation_ids(source_names=list(source_names)),
                     **index_kwargs,
                 )
                 return IndexStageOutcome(indexed=success, item_count=total)
             total = await backend.queries.count_conversation_ids()
-            rebuild_kwargs = (
-                {"progress_callback": progress_callback}
-                if progress_callback is not None
-                else {}
-            )
+            rebuild_kwargs = {"progress_callback": progress_callback} if progress_callback is not None else {}
             return IndexStageOutcome(
                 indexed=await index_service.rebuild_index(**rebuild_kwargs),
                 item_count=total,
@@ -292,21 +278,13 @@ async def execute_index_stage(
         if stage in {"all", "reprocess"}:
             idx = await index_service.get_index_status()
             if not idx["exists"]:
-                rebuild_kwargs = (
-                    {"progress_callback": progress_callback}
-                    if progress_callback is not None
-                    else {}
-                )
+                rebuild_kwargs = {"progress_callback": progress_callback} if progress_callback is not None else {}
                 return IndexStageOutcome(
                     indexed=await index_service.rebuild_index(**rebuild_kwargs),
                     item_count=len(processed_ids),
                 )
             if processed_ids:
-                index_kwargs = (
-                    {"progress_callback": progress_callback}
-                    if progress_callback is not None
-                    else {}
-                )
+                index_kwargs = {"progress_callback": progress_callback} if progress_callback is not None else {}
                 return IndexStageOutcome(
                     indexed=await index_service.update_index(processed_ids, **index_kwargs),
                     item_count=len(processed_ids),
@@ -398,10 +376,10 @@ async def execute_embed_stage(
         show_embedding_stats(_StatsEnv(config), json_output=json_output)
         return EmbedStageOutcome(embedded_count=0, error_count=0, stats_only=True)
 
-    voyage_key = os.environ.get("POLYLOGUE_VOYAGE_API_KEY") or os.environ.get("VOYAGE_API_KEY")
+    voyage_key = os.environ.get("VOYAGE_API_KEY")
     if not voyage_key:
         click.echo("Error: VOYAGE_API_KEY environment variable not set", err=True)
-        click.echo("Set it with: export VOYAGE_API_KEY=your-api-key  (or POLYLOGUE_VOYAGE_API_KEY)", err=True)
+        click.echo("Set it with: export VOYAGE_API_KEY=your-api-key", err=True)
         raise click.Abort()
 
     from polylogue.storage.search_providers import create_vector_provider
@@ -430,10 +408,12 @@ async def execute_embed_stage(
     class _PlainUI:
         plain = True
 
-        class console:
+        class _Console:
             @staticmethod
             def print(*args: object, **kwargs: object) -> None:
                 click.echo(" ".join(str(a) for a in args))
+
+        console = _Console()
 
         class _NullProgress:
             def update(self, **kwargs: object) -> None:

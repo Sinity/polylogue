@@ -87,7 +87,9 @@ class TestDriveOAuthFlow:
         token_path = tmp_path / "token.json"
 
         with patch("polylogue.cli.commands.auth._get_drive_paths", return_value=(creds_path, token_path)):
-            with patch("polylogue.cli.commands.auth.DriveAuthManager", side_effect=FileNotFoundError("creds not found")):
+            with patch(
+                "polylogue.cli.commands.auth.DriveAuthManager", side_effect=FileNotFoundError("creds not found")
+            ):
                 with pytest.raises(SystemExit):
                     _drive_oauth_flow(env)
 
@@ -120,7 +122,9 @@ class TestDriveOAuthFlow:
         token_path.write_text("{}")
 
         with patch("polylogue.cli.commands.auth._get_drive_paths", return_value=(creds_path, token_path)):
-            with patch("polylogue.cli.commands.auth.DriveAuthManager", side_effect=Exception("Auth failed permanently")):
+            with patch(
+                "polylogue.cli.commands.auth.DriveAuthManager", side_effect=Exception("Auth failed permanently")
+            ):
                 with pytest.raises(SystemExit):
                     _drive_oauth_flow(env, retry_on_failure=False)
 

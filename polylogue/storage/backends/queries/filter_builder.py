@@ -50,7 +50,9 @@ def _build_conversation_filters(
     """
     where_clauses: list[str] = []
     params: list[str | int | float] = []
-    needs_stats_join = has_tool_use or has_thinking or min_messages is not None or max_messages is not None or min_words is not None
+    needs_stats_join = (
+        has_tool_use or has_thinking or min_messages is not None or max_messages is not None or min_words is not None
+    )
 
     if source is not None:
         where_clauses.append("c.source_name = ?" if needs_stats_join else "source_name = ?")

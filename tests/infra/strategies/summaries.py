@@ -47,26 +47,20 @@ def conversation_summary_spec_strategy(draw: st.DrawFn) -> ConversationSummarySp
         updated_at = draw(
             st.one_of(
                 st.just(created_at),
-                st.integers(min_value=0, max_value=3600).map(
-                    lambda seconds: created_at + timedelta(seconds=seconds)
-                ),
+                st.integers(min_value=0, max_value=3600).map(lambda seconds: created_at + timedelta(seconds=seconds)),
             )
         )
 
     title = draw(
         st.one_of(
             st.none(),
-            st.text(alphabet=_TEXT_ALPHABET, min_size=1, max_size=48).filter(
-                lambda value: value.strip() != ""
-            ),
+            st.text(alphabet=_TEXT_ALPHABET, min_size=1, max_size=48).filter(lambda value: value.strip() != ""),
         )
     )
     summary = draw(
         st.one_of(
             st.none(),
-            st.text(alphabet=_TEXT_ALPHABET + "\n", min_size=1, max_size=120).filter(
-                lambda value: value.strip() != ""
-            ),
+            st.text(alphabet=_TEXT_ALPHABET + "\n", min_size=1, max_size=120).filter(lambda value: value.strip() != ""),
         )
     )
     tags = tuple(
@@ -131,4 +125,3 @@ def build_message_counts(
 ) -> dict[str, int]:
     """Build the message-count mapping used by summary and site contracts."""
     return {spec.conversation_id: spec.message_count for spec in specs}
-

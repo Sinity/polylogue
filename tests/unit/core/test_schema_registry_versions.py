@@ -153,6 +153,7 @@ class TestMetadataInjection:
         assert "x-polylogue-registered-at" in stored
         # Should be a valid ISO timestamp
         from datetime import datetime
+
         datetime.fromisoformat(stored["x-polylogue-registered-at"])
 
     def test_register_does_not_mutate_input(self, registry: SchemaRegistry) -> None:

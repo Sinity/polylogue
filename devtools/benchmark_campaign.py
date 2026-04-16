@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import json
 import subprocess
-import sys
 import tempfile
 import time
 from dataclasses import asdict, dataclass
@@ -14,7 +13,7 @@ from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parent.parent
-ARTIFACT_DIR = Path("docs/benchmark-campaigns")
+ARTIFACT_DIR = Path(".local/benchmark-campaigns")
 STATUS_IGNORE_PREFIXES = (f"{ARTIFACT_DIR.as_posix()}/",)
 DEFAULT_WARN_PCT = 10.0
 DEFAULT_FAIL_PCT = 20.0
@@ -90,17 +89,13 @@ CAMPAIGNS: dict[str, Campaign] = {
         name="storage",
         description="Repository/backend list/get-many/save benchmark domain",
         tests=("tests/benchmarks/test_storage.py",),
-        notes=(
-            "Canonical storage CRUD and batch-write latency domain.",
-        ),
+        notes=("Canonical storage CRUD and batch-write latency domain.",),
     ),
     "pipeline": Campaign(
         name="pipeline",
         description="Index rebuild/update plus hashing/semantic helper benchmark domain",
         tests=("tests/benchmarks/test_pipeline.py",),
-        notes=(
-            "Covers indexing plus hot helper throughput.",
-        ),
+        notes=("Covers indexing plus hot helper throughput.",),
     ),
 }
 
@@ -199,13 +194,15 @@ def _render_markdown(result: CampaignResult) -> str:
             f"| `{bench['fullname']}` | {bench['mean']:.6f} | {bench['median']:.6f} | {ops} | {bench['rounds']} |"
         )
     if result.regressions:
-        lines.extend([
-            "",
-            "## Largest Regressions vs Baseline",
-            "",
-            "| Benchmark | Delta % | Baseline Mean (s) | Current Mean (s) |",
-            "| --- | ---: | ---: | ---: |",
-        ])
+        lines.extend(
+            [
+                "",
+                "## Largest Regressions vs Baseline",
+                "",
+                "| Benchmark | Delta % | Baseline Mean (s) | Current Mean (s) |",
+                "| --- | ---: | ---: | ---: |",
+            ]
+        )
         for regression in result.regressions[:10]:
             lines.append(
                 f"| `{regression['fullname']}` | {regression['delta_pct']:.2f}% | {regression['baseline_mean']:.6f} | {regression['current_mean']:.6f} |"
@@ -233,8 +230,6 @@ def run_campaign(
     with tempfile.TemporaryDirectory(prefix=f"benchmark-{campaign.name}-") as tmpdir:
         raw_json = Path(tmpdir) / "pytest-benchmark.json"
         command = [
-            sys.executable,
-            "-m",
             "pytest",
             "-q",
             "--override-ini=addopts=-ra",
@@ -319,9 +314,9 @@ def render_index() -> str:
     lines = [
         "# Benchmark Campaign Artifacts",
         "",
-        "Use `nix develop -c python -m devtools.benchmark_campaign list` to see campaign definitions.",
-        "Use `nix develop -c python -m devtools.benchmark_campaign run <campaign>` to record a fresh artifact.",
-        "Use `nix develop -c python -m devtools.benchmark_campaign compare <baseline.json> <candidate.json>` to compare two artifacts.",
+        "Use `devtools benchmark-campaign list` to see campaign definitions.",
+        "Use `devtools benchmark-campaign run <campaign>` to record a fresh artifact.",
+        "Use `devtools benchmark-campaign compare <baseline.json> <candidate.json>` to compare two artifacts.",
         "",
         "| Date | Campaign | Commit | Benchmarks | Runtime | Worst Regression | Markdown |",
         "| --- | --- | --- | ---: | ---: | ---: | --- |",
@@ -356,7 +351,7 @@ def compare_artifacts(baseline: Path, candidate: Path, fail_pct: float) -> int:
     return 0
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -376,11 +371,11 @@ def parse_args() -> argparse.Namespace:
     compare_parser.add_argument("candidate", type=Path)
     compare_parser.add_argument("--fail-pct", type=float, default=DEFAULT_FAIL_PCT)
 
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
-def main() -> int:
-    args = parse_args()
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
     if args.command == "list":
         for campaign in CAMPAIGNS.values():
             print(f"{campaign.name}: {campaign.description}")

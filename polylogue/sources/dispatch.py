@@ -78,10 +78,7 @@ def _detect_provider_from_raw_bytes(
 
 
 def _looks_like_chunked_conversation(payload: Any) -> bool:
-    return isinstance(payload, dict) and (
-        drive.looks_like(payload)
-        or isinstance(payload.get("chunks"), list)
-    )
+    return isinstance(payload, dict) and (drive.looks_like(payload) or isinstance(payload.get("chunks"), list))
 
 
 def _looks_like_chunked_conversation_list(payload: list[Any]) -> bool:
@@ -202,7 +199,9 @@ def parse_payload(
     return []
 
 
-def parse_drive_payload(provider: str | Provider, payload: Any, fallback_id: str, _depth: int = 0) -> list[ParsedConversation]:
+def parse_drive_payload(
+    provider: str | Provider, payload: Any, fallback_id: str, _depth: int = 0
+) -> list[ParsedConversation]:
     runtime_provider = Provider.from_string(provider)
     if _depth > _MAX_PARSE_DEPTH:
         logger.warning("Recursion depth exceeded parsing drive payload %s", fallback_id)

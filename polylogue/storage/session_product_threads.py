@@ -93,7 +93,7 @@ def thread_search_text(thread: WorkThread) -> str:
     parts = [
         thread.thread_id,
         thread.root_id,
-        thread.dominant_project or "",
+        thread.dominant_repo or "",
         *thread.session_ids,
         *thread.work_event_breakdown.keys(),
     ]
@@ -114,7 +114,7 @@ def build_work_thread_record(
         materialized_at=built_at,
         start_time=thread.start_time.isoformat() if thread.start_time else None,
         end_time=thread.end_time.isoformat() if thread.end_time else None,
-        dominant_project=thread.dominant_project,
+        dominant_repo=thread.dominant_repo,
         session_ids=thread.session_ids,
         session_count=len(thread.session_ids),
         depth=thread.depth,
@@ -160,10 +160,7 @@ async def thread_root_ids_async(
             tuple(conversation_ids),
         )
     ).fetchall()
-    return {
-        str(row["target_id"]): str(row["conversation_id"])
-        for row in rows
-    }
+    return {str(row["target_id"]): str(row["conversation_id"]) for row in rows}
 
 
 def thread_conversation_ids_sync(conn: sqlite3.Connection, root_id: str) -> list[str]:
@@ -178,9 +175,9 @@ async def thread_conversation_ids_async(conn: aiosqlite.Connection, root_id: str
 
 def _chunk_root_ids(root_ids: Sequence[str], *, size: int = _ROOT_BATCH_SIZE) -> list[tuple[str, ...]]:
     return [
-        tuple(root_ids[index:index + size])
+        tuple(root_ids[index : index + size])
         for index in range(0, len(root_ids), size)
-        if root_ids[index:index + size]
+        if root_ids[index : index + size]
     ]
 
 
@@ -205,10 +202,7 @@ def _thread_records_from_profile_records(
     if not profile_records:
         return {}
     profiles = [hydrate_session_profile(record) for record in profile_records]
-    return {
-        thread.thread_id: build_work_thread_record(thread)
-        for thread in build_session_threads(profiles)
-    }
+    return {thread.thread_id: build_work_thread_record(thread) for thread in build_session_threads(profiles)}
 
 
 def _thread_record_for_root(
@@ -279,7 +273,8 @@ def build_thread_records_for_roots_sync(
                 str(root_id),
                 profile_records_by_root.get(str(root_id), []),
             )
-        ) is not None
+        )
+        is not None
     }
 
 
@@ -296,7 +291,8 @@ async def build_thread_records_for_roots_async(
                 str(root_id),
                 profile_records_by_root.get(str(root_id), []),
             )
-        ) is not None
+        )
+        is not None
     }
 
 
@@ -305,11 +301,7 @@ def build_all_thread_records_sync(conn: sqlite3.Connection) -> list[WorkThreadRe
     records: list[WorkThreadRecord] = []
     for root_chunk in _chunk_root_ids(root_ids):
         records_by_root = build_thread_records_for_roots_sync(conn, root_chunk)
-        records.extend(
-            records_by_root[root_id]
-            for root_id in root_chunk
-            if root_id in records_by_root
-        )
+        records.extend(records_by_root[root_id] for root_id in root_chunk if root_id in records_by_root)
     return records
 
 
@@ -319,11 +311,7 @@ async def build_all_thread_records_async(conn: aiosqlite.Connection) -> list[Wor
     records: list[WorkThreadRecord] = []
     for root_chunk in _chunk_root_ids(root_ids):
         records_by_root = await build_thread_records_for_roots_async(conn, root_chunk)
-        records.extend(
-            records_by_root[root_id]
-            for root_id in root_chunk
-            if root_id in records_by_root
-        )
+        records.extend(records_by_root[root_id] for root_id in root_chunk if root_id in records_by_root)
     return records
 
 

@@ -48,16 +48,12 @@ async def ensure_schema(conn: aiosqlite.Connection) -> None:
     cursor = await conn.execute("PRAGMA table_info(action_events)")
     action_event_columns = {row[1] for row in await cursor.fetchall()}
     if "materializer_version" not in action_event_columns:
-        await conn.execute(
-            "ALTER TABLE action_events ADD COLUMN materializer_version INTEGER NOT NULL DEFAULT 1"
-        )
+        await conn.execute("ALTER TABLE action_events ADD COLUMN materializer_version INTEGER NOT NULL DEFAULT 1")
     await conn.executescript(_ACTION_FTS_DDL)
 
     session_profiles_exists = bool(
         await (
-            await conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name='session_profiles'"
-            )
+            await conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='session_profiles'")
         ).fetchone()
     )
     if session_profiles_exists:
@@ -68,25 +64,15 @@ async def ensure_schema(conn: aiosqlite.Connection) -> None:
         if "last_message_at" not in session_profile_columns:
             await conn.execute("ALTER TABLE session_profiles ADD COLUMN last_message_at TEXT")
         if "substantive_count" not in session_profile_columns:
-            await conn.execute(
-                "ALTER TABLE session_profiles ADD COLUMN substantive_count INTEGER NOT NULL DEFAULT 0"
-            )
+            await conn.execute("ALTER TABLE session_profiles ADD COLUMN substantive_count INTEGER NOT NULL DEFAULT 0")
         if "attachment_count" not in session_profile_columns:
-            await conn.execute(
-                "ALTER TABLE session_profiles ADD COLUMN attachment_count INTEGER NOT NULL DEFAULT 0"
-            )
+            await conn.execute("ALTER TABLE session_profiles ADD COLUMN attachment_count INTEGER NOT NULL DEFAULT 0")
         if "phase_count" not in session_profile_columns:
-            await conn.execute(
-                "ALTER TABLE session_profiles ADD COLUMN phase_count INTEGER NOT NULL DEFAULT 0"
-            )
+            await conn.execute("ALTER TABLE session_profiles ADD COLUMN phase_count INTEGER NOT NULL DEFAULT 0")
         if "engaged_duration_ms" not in session_profile_columns:
-            await conn.execute(
-                "ALTER TABLE session_profiles ADD COLUMN engaged_duration_ms INTEGER NOT NULL DEFAULT 0"
-            )
+            await conn.execute("ALTER TABLE session_profiles ADD COLUMN engaged_duration_ms INTEGER NOT NULL DEFAULT 0")
         if "cost_is_estimated" not in session_profile_columns:
-            await conn.execute(
-                "ALTER TABLE session_profiles ADD COLUMN cost_is_estimated INTEGER NOT NULL DEFAULT 0"
-            )
+            await conn.execute("ALTER TABLE session_profiles ADD COLUMN cost_is_estimated INTEGER NOT NULL DEFAULT 0")
         if "evidence_payload_json" not in session_profile_columns:
             await conn.execute(
                 "ALTER TABLE session_profiles ADD COLUMN evidence_payload_json TEXT NOT NULL DEFAULT '{}'"
@@ -96,17 +82,11 @@ async def ensure_schema(conn: aiosqlite.Connection) -> None:
                 "ALTER TABLE session_profiles ADD COLUMN inference_payload_json TEXT NOT NULL DEFAULT '{}'"
             )
         if "evidence_search_text" not in session_profile_columns:
-            await conn.execute(
-                "ALTER TABLE session_profiles ADD COLUMN evidence_search_text TEXT NOT NULL DEFAULT ''"
-            )
+            await conn.execute("ALTER TABLE session_profiles ADD COLUMN evidence_search_text TEXT NOT NULL DEFAULT ''")
         if "inference_search_text" not in session_profile_columns:
-            await conn.execute(
-                "ALTER TABLE session_profiles ADD COLUMN inference_search_text TEXT NOT NULL DEFAULT ''"
-            )
+            await conn.execute("ALTER TABLE session_profiles ADD COLUMN inference_search_text TEXT NOT NULL DEFAULT ''")
         if "inference_version" not in session_profile_columns:
-            await conn.execute(
-                "ALTER TABLE session_profiles ADD COLUMN inference_version INTEGER NOT NULL DEFAULT 1"
-            )
+            await conn.execute("ALTER TABLE session_profiles ADD COLUMN inference_version INTEGER NOT NULL DEFAULT 1")
         if "inference_family" not in session_profile_columns:
             await conn.execute(
                 "ALTER TABLE session_profiles ADD COLUMN inference_family TEXT NOT NULL DEFAULT 'heuristic_session_semantics'"
@@ -114,9 +94,7 @@ async def ensure_schema(conn: aiosqlite.Connection) -> None:
 
     session_work_events_exists = bool(
         await (
-            await conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name='session_work_events'"
-            )
+            await conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='session_work_events'")
         ).fetchone()
     )
     if session_work_events_exists:
@@ -127,9 +105,7 @@ async def ensure_schema(conn: aiosqlite.Connection) -> None:
         if "end_time" not in session_work_event_columns:
             await conn.execute("ALTER TABLE session_work_events ADD COLUMN end_time TEXT")
         if "duration_ms" not in session_work_event_columns:
-            await conn.execute(
-                "ALTER TABLE session_work_events ADD COLUMN duration_ms INTEGER NOT NULL DEFAULT 0"
-            )
+            await conn.execute("ALTER TABLE session_work_events ADD COLUMN duration_ms INTEGER NOT NULL DEFAULT 0")
         if "canonical_session_date" not in session_work_event_columns:
             await conn.execute("ALTER TABLE session_work_events ADD COLUMN canonical_session_date TEXT")
         if "evidence_payload_json" not in session_work_event_columns:
@@ -151,34 +127,24 @@ async def ensure_schema(conn: aiosqlite.Connection) -> None:
 
     session_phases_exists = bool(
         await (
-            await conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name='session_phases'"
-            )
+            await conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='session_phases'")
         ).fetchone()
     )
     if session_phases_exists:
         cursor = await conn.execute("PRAGMA table_info(session_phases)")
         session_phase_columns = {row[1] for row in await cursor.fetchall()}
         if "confidence" not in session_phase_columns:
-            await conn.execute(
-                "ALTER TABLE session_phases ADD COLUMN confidence REAL NOT NULL DEFAULT 0"
-            )
+            await conn.execute("ALTER TABLE session_phases ADD COLUMN confidence REAL NOT NULL DEFAULT 0")
         if "evidence_reasons_json" not in session_phase_columns:
-            await conn.execute(
-                "ALTER TABLE session_phases ADD COLUMN evidence_reasons_json TEXT NOT NULL DEFAULT '[]'"
-            )
+            await conn.execute("ALTER TABLE session_phases ADD COLUMN evidence_reasons_json TEXT NOT NULL DEFAULT '[]'")
         if "evidence_payload_json" not in session_phase_columns:
-            await conn.execute(
-                "ALTER TABLE session_phases ADD COLUMN evidence_payload_json TEXT NOT NULL DEFAULT '{}'"
-            )
+            await conn.execute("ALTER TABLE session_phases ADD COLUMN evidence_payload_json TEXT NOT NULL DEFAULT '{}'")
         if "inference_payload_json" not in session_phase_columns:
             await conn.execute(
                 "ALTER TABLE session_phases ADD COLUMN inference_payload_json TEXT NOT NULL DEFAULT '{}'"
             )
         if "inference_version" not in session_phase_columns:
-            await conn.execute(
-                "ALTER TABLE session_phases ADD COLUMN inference_version INTEGER NOT NULL DEFAULT 1"
-            )
+            await conn.execute("ALTER TABLE session_phases ADD COLUMN inference_version INTEGER NOT NULL DEFAULT 1")
         if "inference_family" not in session_phase_columns:
             await conn.execute(
                 "ALTER TABLE session_phases ADD COLUMN inference_family TEXT NOT NULL DEFAULT 'heuristic_session_semantics'"

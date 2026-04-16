@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 
 import aiosqlite
@@ -139,10 +139,8 @@ async def _backend_transaction(backend: SQLiteBackend) -> AsyncIterator[None]:
             yield
             await backend._bulk_conn.execute(f"RELEASE SAVEPOINT {sp_name}")
         except BaseException:
-            try:
+            with suppress(Exception):
                 await backend._bulk_conn.execute(f"ROLLBACK TO SAVEPOINT {sp_name}")
-            except Exception:
-                pass
             raise
         finally:
             backend._transaction_depth -= 1

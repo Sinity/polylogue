@@ -36,12 +36,14 @@ def content_blocks_from_segments(content: object) -> list[ParsedContentBlock]:
             tool_id = seg.get("id")
             tool_input = seg.get("input") if isinstance(seg.get("input"), dict) else None
             if tool_name or tool_id or tool_input:
-                blocks.append(ParsedContentBlock(
-                    type="tool_use",
-                    tool_name=tool_name,
-                    tool_id=tool_id,
-                    tool_input=tool_input,
-                ))
+                blocks.append(
+                    ParsedContentBlock(
+                        type="tool_use",
+                        tool_name=tool_name,
+                        tool_id=tool_id,
+                        tool_input=tool_input,
+                    )
+                )
         elif seg_type == "tool_result":
             result_content = seg.get("content")
             result_text = None
@@ -54,17 +56,21 @@ def content_blocks_from_segments(content: object) -> list[ParsedContentBlock]:
                     if isinstance(block, dict) and block.get("type") == "text"
                 ]
                 result_text = "\n".join(part for part in text_parts if part) or None
-            blocks.append(ParsedContentBlock(
-                type="tool_result",
-                tool_id=seg.get("tool_use_id"),
-                text=result_text,
-            ))
+            blocks.append(
+                ParsedContentBlock(
+                    type="tool_result",
+                    tool_id=seg.get("tool_use_id"),
+                    text=result_text,
+                )
+            )
         elif seg_type in ("image", "document"):
-            blocks.append(ParsedContentBlock(
-                type=seg_type,
-                media_type=seg.get("media_type"),
-                metadata={k: v for k, v in seg.items() if k not in ("type", "media_type")},
-            ))
+            blocks.append(
+                ParsedContentBlock(
+                    type=seg_type,
+                    media_type=seg.get("media_type"),
+                    metadata={k: v for k, v in seg.items() if k not in ("type", "media_type")},
+                )
+            )
         elif seg_type == "code":
             text = seg.get("text") or seg.get("code") or ""
             if text:
@@ -181,13 +187,7 @@ def extract_messages_from_list(items: list[object]) -> list[ParsedMessage]:
                 text = "\n".join(block.text for block in content_blocks if block.text) or None
 
         if text:
-            msg_id = str(
-                payload.get("id")
-                or payload.get("uuid")
-                or item.get("uuid")
-                or item.get("id")
-                or f"msg-{idx}"
-            )
+            msg_id = str(payload.get("id") or payload.get("uuid") or item.get("uuid") or item.get("id") or f"msg-{idx}")
             messages.append(
                 ParsedMessage(
                     provider_message_id=msg_id,

@@ -12,7 +12,7 @@ from polylogue.archive_products import (
     profile_timestamp_values,
     records_provenance,
 )
-from polylogue.lib.project_normalization import normalize_project_breakdown, normalize_project_names
+from polylogue.lib.repo_identity import normalize_repo_names
 from polylogue.lib.session_profile import SessionProfile
 from polylogue.storage.store import SessionTagRollupRecord
 
@@ -42,7 +42,7 @@ def build_session_tag_rollup_records(
                     "conversation_count": 0,
                     "explicit_count": 0,
                     "auto_count": 0,
-                    "projects": Counter(),
+                    "repos": Counter(),
                     "source_updated_at": [],
                     "source_sort_key": [],
                 },
@@ -52,14 +52,9 @@ def build_session_tag_rollup_records(
                 bucket["explicit_count"] = int(bucket["explicit_count"]) + 1
             if tag in auto_tags:
                 bucket["auto_count"] = int(bucket["auto_count"]) + 1
-            cast_projects = bucket["projects"]
-            assert isinstance(cast_projects, Counter)
-            cast_projects.update(
-                normalize_project_names(
-                    profile.canonical_projects,
-                    repo_paths=profile.repo_paths,
-                )
-            )
+            cast_repos = bucket["repos"]
+            assert isinstance(cast_repos, Counter)
+            cast_repos.update(profile.repo_names or normalize_repo_names(repo_paths=profile.repo_paths))
             cast_updates = bucket["source_updated_at"]
             cast_sorts = bucket["source_sort_key"]
             assert isinstance(cast_updates, list)
@@ -69,15 +64,13 @@ def build_session_tag_rollup_records(
 
     rows: list[SessionTagRollupRecord] = []
     for (provider_name, bucket_day, tag), bucket in sorted(grouped.items()):
-        projects = bucket["projects"]
+        repos = bucket["repos"]
         source_updates = bucket["source_updated_at"]
         source_sorts = bucket["source_sort_key"]
-        assert isinstance(projects, Counter)
+        assert isinstance(repos, Counter)
         assert isinstance(source_updates, list)
         assert isinstance(source_sorts, list)
-        search_text = " \n".join(
-            part for part in (tag, provider_name, *sorted(projects.keys())) if part
-        )
+        search_text = " \n".join(part for part in (tag, provider_name, *sorted(repos.keys())) if part)
         rows.append(
             SessionTagRollupRecord(
                 tag=tag,
@@ -89,7 +82,7 @@ def build_session_tag_rollup_records(
                 conversation_count=int(bucket["conversation_count"]),
                 explicit_count=int(bucket["explicit_count"]),
                 auto_count=int(bucket["auto_count"]),
-                project_breakdown=dict(projects),
+                repo_breakdown=dict(repos),
                 search_text=search_text or tag,
             )
         )
@@ -108,7 +101,7 @@ def aggregate_session_tag_rollup_products(
                 "explicit_count": 0,
                 "auto_count": 0,
                 "provider_breakdown": Counter(),
-                "project_breakdown": Counter(),
+                "repo_breakdown": Counter(),
                 "rows": [],
             },
         )
@@ -116,22 +109,22 @@ def aggregate_session_tag_rollup_products(
         bucket["explicit_count"] = int(bucket["explicit_count"]) + row.explicit_count
         bucket["auto_count"] = int(bucket["auto_count"]) + row.auto_count
         provider_breakdown = bucket["provider_breakdown"]
-        project_breakdown = bucket["project_breakdown"]
+        repo_breakdown = bucket["repo_breakdown"]
         record_rows = bucket["rows"]
         assert isinstance(provider_breakdown, Counter)
-        assert isinstance(project_breakdown, Counter)
+        assert isinstance(repo_breakdown, Counter)
         assert isinstance(record_rows, list)
         provider_breakdown[row.provider_name] += row.conversation_count
-        project_breakdown.update(normalize_project_breakdown(row.project_breakdown))
+        repo_breakdown.update(row.repo_breakdown)
         record_rows.append(row)
 
     products: list[SessionTagRollupProduct] = []
     for tag, bucket in sorted(grouped.items(), key=lambda item: (-int(item[1]["conversation_count"]), item[0])):
         provider_breakdown = bucket["provider_breakdown"]
-        project_breakdown = bucket["project_breakdown"]
+        repo_breakdown = bucket["repo_breakdown"]
         record_rows = bucket["rows"]
         assert isinstance(provider_breakdown, Counter)
-        assert isinstance(project_breakdown, Counter)
+        assert isinstance(repo_breakdown, Counter)
         assert isinstance(record_rows, list)
         products.append(
             SessionTagRollupProduct(
@@ -140,7 +133,7 @@ def aggregate_session_tag_rollup_products(
                 explicit_count=int(bucket["explicit_count"]),
                 auto_count=int(bucket["auto_count"]),
                 provider_breakdown=dict(provider_breakdown),
-                project_breakdown=dict(project_breakdown),
+                repo_breakdown=dict(repo_breakdown),
                 provenance=records_provenance(record_rows),
             )
         )

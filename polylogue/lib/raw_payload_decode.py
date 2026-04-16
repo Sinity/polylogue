@@ -41,14 +41,21 @@ def _decode_jsonl_payload(
     malformed_lines = 0
     first_line = True
 
-    if isinstance(raw, Path):
-        fh = open(raw, "rb")  # noqa: SIM115 — caller-managed context
-    else:
-        fh = BytesIO(raw) if isinstance(raw, bytes) else StringIO(raw)
+    fh = (
+        open(raw, "rb")  # noqa: SIM115 — caller-managed context
+        if isinstance(raw, Path)
+        else BytesIO(raw)
+        if isinstance(raw, bytes)
+        else StringIO(raw)
+    )
 
     try:
         for raw_line in fh:
-            line = raw_line.decode("utf-8") if isinstance(raw_line, bytes) else raw_line
+            try:
+                line = raw_line.decode("utf-8") if isinstance(raw_line, bytes) else raw_line
+            except UnicodeDecodeError:
+                malformed_lines += 1
+                continue
             if first_line:
                 line = line.lstrip("\ufeff")
                 first_line = False
@@ -103,7 +110,7 @@ def _decode_raw_payload(
                     raw_bytes,
                     jsonl_dict_only=jsonl_dict_only,
                 )
-            except ValueError:
+            except (UnicodeDecodeError, ValueError):
                 raise exc from None
             return payload, "jsonl", malformed_lines
 
@@ -125,7 +132,7 @@ def _decode_raw_payload(
                 raw,
                 jsonl_dict_only=jsonl_dict_only,
             )
-        except ValueError:
+        except (UnicodeDecodeError, ValueError):
             raise exc from None
         return payload, "jsonl", malformed_lines
 

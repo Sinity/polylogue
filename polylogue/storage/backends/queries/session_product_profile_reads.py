@@ -71,9 +71,7 @@ async def list_session_profiles(
         """
         where = [f"{fts_table} MATCH ?"]
         params.append(query)
-        order_by = (
-            f"ORDER BY bm25({fts_table}), COALESCE(sp.source_sort_key, 0) DESC, sp.conversation_id"
-        )
+        order_by = f"ORDER BY bm25({fts_table}), COALESCE(sp.source_sort_key, 0) DESC, sp.conversation_id"
     else:
         from_clause = "FROM session_profiles sp"
         where = []
@@ -83,14 +81,10 @@ async def list_session_profiles(
         where.append("sp.provider_name = ?")
         params.append(provider)
     if since:
-        where.append(
-            "COALESCE(sp.last_message_at, sp.source_updated_at, sp.first_message_at) >= ?"
-        )
+        where.append("COALESCE(sp.last_message_at, sp.source_updated_at, sp.first_message_at) >= ?")
         params.append(since)
     if until:
-        where.append(
-            "COALESCE(sp.first_message_at, sp.source_updated_at, sp.last_message_at) <= ?"
-        )
+        where.append("COALESCE(sp.first_message_at, sp.source_updated_at, sp.last_message_at) <= ?")
         params.append(until)
     if first_message_since:
         where.append("sp.first_message_at >= ?")

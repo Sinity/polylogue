@@ -1,9 +1,14 @@
 name: Bug or Regression
-description: Report behavior that is wrong, misleading, broken, or has regressed.
+description: Use when broken behavior needs a durable repro, acceptance record, or follow-up chain.
 title: "[bug] "
 labels:
-  - bug
+  - type:fix
 body:
+  - type: markdown
+    attributes:
+      value: |
+        Prefer issues for bugs that need tracking beyond a single self-contained fix PR.
+        Keep the report concrete: actual behavior, expected behavior, trigger, and evidence.
   - type: textarea
     id: actual
     attributes:

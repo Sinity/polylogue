@@ -43,9 +43,7 @@ class SqliteVecRuntimeMixin:
                     conn.enable_load_extension(False)
             except (ImportError, OSError, sqlite3.OperationalError) as exc:
                 conn.close()
-                raise SqliteVecError(
-                    f"sqlite-vec extension failed to load on connection: {exc}"
-                ) from exc
+                raise SqliteVecError(f"sqlite-vec extension failed to load on connection: {exc}") from exc
 
         return conn
 
@@ -55,9 +53,7 @@ class SqliteVecRuntimeMixin:
             conn = self._get_connection()
             conn.close()
         if not self._vec_available:
-            raise SqliteVecError(
-                "sqlite-vec extension not available. Install with: pip install sqlite-vec"
-            )
+            raise SqliteVecError("sqlite-vec extension not available. Install with: pip install sqlite-vec")
 
     def _ensure_tables(self) -> None:
         """Create required vector and metadata tables if they don't exist."""

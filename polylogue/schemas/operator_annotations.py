@@ -109,43 +109,46 @@ def build_review_proof(schema: dict) -> SchemaReviewProof:
     proof_entries: list[SchemaRoleProofEntry] = []
     for role in SEMANTIC_ROLES:
         if role in ineligible_roles:
-            proof_entries.append(SchemaRoleProofEntry(
-                role=role,
-                chosen_path=None,
-                chosen_score=0.0,
-                competing=[],
-                evidence={},
-                abstained=True,
-                abstain_reason=f"artifact_kind={artifact_kind} excludes {role}",
-            ))
+            proof_entries.append(
+                SchemaRoleProofEntry(
+                    role=role,
+                    chosen_path=None,
+                    chosen_score=0.0,
+                    competing=[],
+                    evidence={},
+                    abstained=True,
+                    abstain_reason=f"artifact_kind={artifact_kind} excludes {role}",
+                )
+            )
             continue
 
         candidates = role_entries.get(role, [])
         if not candidates:
-            proof_entries.append(SchemaRoleProofEntry(
-                role=role,
-                chosen_path=None,
-                chosen_score=0.0,
-                competing=[],
-                evidence={},
-                abstained=True,
-                abstain_reason="no candidates scored above threshold",
-            ))
+            proof_entries.append(
+                SchemaRoleProofEntry(
+                    role=role,
+                    chosen_path=None,
+                    chosen_score=0.0,
+                    competing=[],
+                    evidence={},
+                    abstained=True,
+                    abstain_reason="no candidates scored above threshold",
+                )
+            )
             continue
 
         chosen = candidates[0]
-        competing = [
-            {"path": c["path"], "score": c["score"], "evidence": c["evidence"]}
-            for c in candidates[1:]
-        ]
-        proof_entries.append(SchemaRoleProofEntry(
-            role=role,
-            chosen_path=chosen["path"],
-            chosen_score=chosen["score"],
-            competing=competing,
-            evidence=chosen["evidence"],
-            abstained=False,
-        ))
+        competing = [{"path": c["path"], "score": c["score"], "evidence": c["evidence"]} for c in candidates[1:]]
+        proof_entries.append(
+            SchemaRoleProofEntry(
+                role=role,
+                chosen_path=chosen["path"],
+                chosen_score=chosen["score"],
+                competing=competing,
+                evidence=chosen["evidence"],
+                abstained=False,
+            )
+        )
 
     return SchemaReviewProof(
         roles=proof_entries,
@@ -167,11 +170,13 @@ def _collect_role_candidates_from_schema(
     if role:
         score = float(node.get("x-polylogue-score", 0.0) or 0.0)
         evidence = dict(node.get("x-polylogue-evidence", {}))
-        role_entries.setdefault(role, []).append({
-            "path": path,
-            "score": score,
-            "evidence": evidence,
-        })
+        role_entries.setdefault(role, []).append(
+            {
+                "path": path,
+                "score": score,
+                "evidence": evidence,
+            }
+        )
 
     for name, child in node.get("properties", {}).items():
         if isinstance(child, dict):
@@ -180,7 +185,9 @@ def _collect_role_candidates_from_schema(
         _collect_role_candidates_from_schema(node["items"], f"{path}[*]", role_entries)
     if isinstance(node.get("additionalProperties"), dict):
         _collect_role_candidates_from_schema(
-            node["additionalProperties"], f"{path}.*", role_entries,
+            node["additionalProperties"],
+            f"{path}.*",
+            role_entries,
         )
     for keyword in ("anyOf", "oneOf", "allOf"):
         for child in node.get(keyword, []):

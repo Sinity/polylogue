@@ -93,13 +93,9 @@ class TestFrozenClockCheckJson:
         runner = CliRunner()
 
         with patch("time.time", return_value=1700000000.0):
-            result_a = runner.invoke(
-                cli, ["--plain", "doctor", "--json"], catch_exceptions=False
-            )
+            result_a = runner.invoke(cli, ["--plain", "doctor", "--json"], catch_exceptions=False)
         with patch("time.time", return_value=1800000000.0):
-            result_b = runner.invoke(
-                cli, ["--plain", "doctor", "--json"], catch_exceptions=False
-            )
+            result_b = runner.invoke(cli, ["--plain", "doctor", "--json"], catch_exceptions=False)
 
         ts_a = _extract_json(result_a.output)["result"]["timestamp"]
         ts_b = _extract_json(result_b.output)["result"]["timestamp"]
@@ -138,9 +134,11 @@ class TestFrozenClockShowcaseReport:
             total_duration_ms=42.0,
         )
         return QAResult(
-            audit_report=AuditReport(checks=[
-                OutcomeCheck(name="privacy", status=OutcomeStatus.OK, summary="ok"),
-            ]),
+            audit_report=AuditReport(
+                checks=[
+                    OutcomeCheck(name="privacy", status=OutcomeStatus.OK, summary="ok"),
+                ]
+            ),
             proof_report=ArtifactProofReport(
                 providers={
                     "chatgpt": ProviderArtifactProof(
@@ -161,16 +159,12 @@ class TestFrozenClockShowcaseReport:
         """Two calls with same frozen clock produce identical timestamps."""
         result = self._make_qa_result()
 
-        with patch(
-            "polylogue.showcase.qa_report.datetime"
-        ) as mock_dt:
+        with patch("polylogue.showcase.qa_report.datetime") as mock_dt:
             mock_dt.now.return_value = self.FROZEN_DT
             mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
             session_a = generate_qa_session(result)
 
-        with patch(
-            "polylogue.showcase.qa_report.datetime"
-        ) as mock_dt:
+        with patch("polylogue.showcase.qa_report.datetime") as mock_dt:
             mock_dt.now.return_value = self.FROZEN_DT
             mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
             session_b = generate_qa_session(result)
@@ -224,9 +218,7 @@ class TestPlainModeNoAnsi:
         runner = CliRunner(env={"POLYLOGUE_FORCE_PLAIN": "1"})
         result = runner.invoke(cli, args, catch_exceptions=True)
         # Commands may fail (e.g., no workspace) but output must be ANSI-free
-        assert not _has_ansi(result.output), (
-            f"ANSI codes found in output for {args!r}:\n{result.output[:200]}"
-        )
+        assert not _has_ansi(result.output), f"ANSI codes found in output for {args!r}:\n{result.output[:200]}"
 
 
 # ---------------------------------------------------------------------------
@@ -240,9 +232,7 @@ class TestJsonOutputValidity:
     def test_check_json_is_valid(self, cli_workspace):
         """polylogue doctor --json produces parseable JSON."""
         runner = CliRunner()
-        result = runner.invoke(
-            cli, ["--plain", "doctor", "--json"], catch_exceptions=False
-        )
+        result = runner.invoke(cli, ["--plain", "doctor", "--json"], catch_exceptions=False)
         assert result.exit_code == 0
         parsed = _extract_json(result.output)
         assert isinstance(parsed, dict)
@@ -251,9 +241,7 @@ class TestJsonOutputValidity:
     def test_tags_json_is_valid(self, cli_workspace):
         """polylogue tags --json produces parseable JSON."""
         runner = CliRunner()
-        result = runner.invoke(
-            cli, ["--plain", "tags", "--json"], catch_exceptions=False
-        )
+        result = runner.invoke(cli, ["--plain", "tags", "--json"], catch_exceptions=False)
         assert result.exit_code == 0
         parsed = _extract_json(result.output)
         assert isinstance(parsed, dict)
@@ -272,8 +260,8 @@ class TestJsonEnvelopeParametrized:
     @pytest.mark.parametrize(
         "cmd_args,result_key",
         [
-            (["doctor", "--json"], None),          # result has checks, summary, timestamp
-            (["tags", "--json"], "tags"),          # result has tags
+            (["doctor", "--json"], None),  # result has checks, summary, timestamp
+            (["tags", "--json"], "tags"),  # result has tags
         ],
         ids=["doctor", "tags"],
     )
@@ -285,9 +273,7 @@ class TestJsonEnvelopeParametrized:
     ):
         """All --json commands wrap output in the standard envelope."""
         runner = CliRunner()
-        result = runner.invoke(
-            cli, ["--plain", *cmd_args], catch_exceptions=False
-        )
+        result = runner.invoke(cli, ["--plain", *cmd_args], catch_exceptions=False)
         assert result.exit_code == 0, f"exit={result.exit_code}\n{result.output}"
 
         parsed = _extract_json(result.output)
@@ -315,13 +301,9 @@ class TestJsonEnvelopeParametrized:
     ):
         """--json output must not contain ANSI escape codes."""
         runner = CliRunner()
-        result = runner.invoke(
-            cli, ["--plain", *cmd_args], catch_exceptions=False
-        )
+        result = runner.invoke(cli, ["--plain", *cmd_args], catch_exceptions=False)
         assert result.exit_code == 0
-        assert not _has_ansi(result.output), (
-            f"ANSI codes in --json output for {cmd_args!r}"
-        )
+        assert not _has_ansi(result.output), f"ANSI codes in --json output for {cmd_args!r}"
 
     @pytest.mark.parametrize(
         "cmd_args",
@@ -338,9 +320,7 @@ class TestJsonEnvelopeParametrized:
     ):
         """--json output can be serialized and deserialized without loss."""
         runner = CliRunner()
-        result = runner.invoke(
-            cli, ["--plain", *cmd_args], catch_exceptions=False
-        )
+        result = runner.invoke(cli, ["--plain", *cmd_args], catch_exceptions=False)
         assert result.exit_code == 0
 
         parsed = _extract_json(result.output)
@@ -427,6 +407,7 @@ def test_should_use_plain_contract(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from polylogue.cli.formatting import should_use_plain
+
     if env_value is None:
         monkeypatch.delenv("POLYLOGUE_FORCE_PLAIN", raising=False)
     else:
@@ -442,6 +423,7 @@ def test_should_use_plain_falsey_env_values_do_not_force_plain(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from polylogue.cli.formatting import should_use_plain
+
     monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", falsey)
     with patch("sys.stdout.isatty", return_value=True), patch("sys.stderr.isatty", return_value=True):
         assert should_use_plain(plain=False) is False
@@ -449,6 +431,7 @@ def test_should_use_plain_falsey_env_values_do_not_force_plain(
 
 def test_announce_plain_mode_writes_to_stderr() -> None:
     from polylogue.cli.formatting import announce_plain_mode
+
     captured = StringIO()
     with patch.object(sys, "stderr", captured):
         announce_plain_mode()
@@ -471,6 +454,7 @@ def test_announce_plain_mode_writes_to_stderr() -> None:
 )
 def test_format_cursors_contract(cursors: dict[str, object], expected_parts: tuple[str, ...] | None) -> None:
     from polylogue.cli.formatting import format_cursors
+
     result = format_cursors(cursors)
     if expected_parts is None:
         assert result is None
@@ -501,6 +485,7 @@ def test_format_cursors_contract(cursors: dict[str, object], expected_parts: tup
 )
 def test_format_counts_contract(counts: dict[str, object], expected_parts: tuple[str, ...]) -> None:
     from polylogue.cli.formatting import format_counts
+
     result = format_counts(counts)
     for part in expected_parts:
         assert part in result
@@ -519,6 +504,7 @@ def test_format_counts_contract(counts: dict[str, object], expected_parts: tuple
 )
 def test_format_index_status_contract(stage: str, indexed: bool, error: str | None, expected: str) -> None:
     from polylogue.cli.formatting import format_index_status
+
     assert format_index_status(stage, indexed, error) == expected
 
 
@@ -532,12 +518,14 @@ def test_format_index_status_contract(stage: str, indexed: bool, error: str | No
 )
 def test_format_source_label_contract(source_name: str | None, provider_name: str, expected: str) -> None:
     from polylogue.cli.formatting import format_source_label
+
     assert format_source_label(source_name, provider_name) == expected
 
 
 def test_format_sources_summary_contract() -> None:
     from polylogue.cli.formatting import format_sources_summary
     from polylogue.config import Source
+
     sources = [
         Source(name="inbox", path=Path("/inbox")),
         Source(name="gemini", folder="folder-id"),
@@ -549,6 +537,7 @@ def test_format_sources_summary_contract() -> None:
 
 def test_format_sources_summary_marks_missing() -> None:
     from polylogue.cli.formatting import format_sources_summary
+
     source = MagicMock()
     source.name = "broken"
     source.path = None
@@ -559,6 +548,7 @@ def test_format_sources_summary_marks_missing() -> None:
 def test_format_sources_summary_truncates_long_lists() -> None:
     from polylogue.cli.formatting import format_sources_summary
     from polylogue.config import Source
+
     sources = [Source(name=f"source{i}", path=Path(f"/src{i}")) for i in range(12)]
     result = format_sources_summary(sources)
     assert "+4 more" in result

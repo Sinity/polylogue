@@ -12,7 +12,6 @@ from polylogue.pipeline.run_finalization import persist_run_result
 from polylogue.pipeline.run_stages import (
     IndexStageOutcome,
     execute_acquire_stage,
-    execute_embed_stage,
     execute_index_stage,
     execute_ingest_stage,
     execute_materialize_stage,
@@ -50,6 +49,9 @@ async def run_sources(
     progress_callback: ProgressCallback | None = None,
     render_format: str = "html",
     site_options: dict[str, object] | None = None,
+    raw_batch_size: int = 50,
+    ingest_workers: int | None = None,
+    measure_ingest_result_size: bool = False,
     backend: SQLiteBackend | None = None,
     repository: ConversationRepository | None = None,
 ) -> RunResult:
@@ -111,10 +113,11 @@ async def run_sources(
                 skip_acquire=True,
                 ui=ui,
                 progress_callback=progress_callback,
+                raw_batch_size=raw_batch_size,
+                ingest_workers=ingest_workers,
+                measure_ingest_result_size=measure_ingest_result_size,
             )
-            sm.sub_timings.update({
-                f"{k}_s": v for k, v in ingest_result.timings.items()
-            })
+            sm.sub_timings.update({f"{k}_s": v for k, v in ingest_result.timings.items()})
             sm.details.update(ingest_result.diagnostics)
             sm.stop(items=len(ingest_result.parse_raw_ids))
             if "acquire" not in executed_stages:

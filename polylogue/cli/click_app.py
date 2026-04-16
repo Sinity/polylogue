@@ -21,6 +21,7 @@ from polylogue.cli.formatting import announce_plain_mode, plain_forced_by_env, s
 from polylogue.cli.machine_main import extract_option as _extract_option
 from polylogue.cli.machine_main import run_machine_entry
 from polylogue.cli.query import QueryFirstGroupBase, handle_query_mode
+from polylogue.cli.query_verbs import QUERY_VERBS
 from polylogue.cli.types import AppEnv
 from polylogue.logging import configure_logging
 from polylogue.ui import create_ui
@@ -44,6 +45,7 @@ def _show_stats(env: AppEnv, *, verbose: bool = False) -> None:
     from polylogue.cli.helpers import print_summary
 
     print_summary(env, verbose=verbose)
+
 
 # Main CLI group with query-mode options
 @click.group(
@@ -121,13 +123,13 @@ def cli(
 
     \b
     Combined filters:
-        polylogue --path /realm/project/polylogue/README.md --action file_read list
+        polylogue --path README.md --action file_read list
         polylogue --action search --action file_edit list
         polylogue --action-sequence file_read,file_edit,shell list
         polylogue --action-text "pytest -q" list
         polylogue "pytest -q tests/unit/core/test_semantic_facts.py" --retrieval-lane actions --limit 5
         polylogue --action other stats --by tool --format json
-        polylogue stats --by project --provider claude-code --since 2026-01-01 --format json
+        polylogue stats --by repo --provider claude-code --since 2026-01-01 --format json
         polylogue --tool bash --exclude-tool read list
         polylogue --similar "sqlite locking bug in parser" --limit 5
 
@@ -151,8 +153,6 @@ def cli(
 
 
 register_root_commands(cli)
-
-from polylogue.cli.query_verbs import QUERY_VERBS
 
 for _verb in QUERY_VERBS:
     cli.add_command(_verb)

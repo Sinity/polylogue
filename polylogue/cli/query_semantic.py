@@ -67,10 +67,7 @@ def path_matches_slice(action: ActionEvent, path_terms: tuple[str, ...]) -> bool
     affected_paths = tuple(path.lower().replace("\\", "/") for path in action.affected_paths)
     if not affected_paths:
         return False
-    return any(
-        any(term.lower().replace("\\", "/") in path for path in affected_paths)
-        for term in path_terms
-    )
+    return any(any(term.lower().replace("\\", "/") in path for path in affected_paths) for term in path_terms)
 
 
 def action_matches_slice(action: ActionEvent, semantic_slice: SemanticStatsSlice) -> bool:

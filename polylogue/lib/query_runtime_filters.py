@@ -38,11 +38,7 @@ def apply_common_filters(
             results = [item for item in results if item.updated_at and item.updated_at <= plan.until]
         if plan.title:
             lowered = plan.title.lower()
-            results = [
-                item
-                for item in results
-                if item.display_title and lowered in item.display_title.lower()
-            ]
+            results = [item for item in results if item.display_title and lowered in item.display_title.lower()]
         if plan.parent_id:
             results = [item for item in results if str(item.parent_id or "") == plan.parent_id]
 
@@ -112,19 +108,11 @@ def apply_full_filters(
     if plan.max_messages is not None:
         results = [c for c in results if len(c.messages) <= plan.max_messages]
     if plan.min_words is not None:
-        results = [
-            c
-            for c in results
-            if sum(len((m.text or "").split()) for m in c.messages) >= plan.min_words
-        ]
+        results = [c for c in results if sum(len((m.text or "").split()) for m in c.messages) >= plan.min_words]
 
     if plan.negative_terms:
         negative_terms = [term.lower() for term in plan.negative_terms]
-        results = [
-            conversation
-            for conversation in results
-            if not _has_negative_term(conversation, negative_terms)
-        ]
+        results = [conversation for conversation in results if not _has_negative_term(conversation, negative_terms)]
 
     if plan.has_branches is True:
         results = [item for item in results if conversation_has_branches(item)]

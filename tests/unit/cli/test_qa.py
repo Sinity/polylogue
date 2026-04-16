@@ -19,8 +19,7 @@ def _make_result(exercises: list[Exercise] | None = None) -> ShowcaseResult:
     """Build a ShowcaseResult with predictable test data."""
     if exercises is None:
         exercises = [
-            Exercise("test-1", "structural", "Test one", ["--help"],
-                     Validation(stdout_contains=("polylogue",))),
+            Exercise("test-1", "structural", "Test one", ["--help"], Validation(stdout_contains=("polylogue",))),
             Exercise("test-2", "sources", "Test two", ["sources"]),
         ]
 

@@ -11,6 +11,7 @@ from polylogue.pipeline.observers import RunObserver
 if TYPE_CHECKING:
     from polylogue.storage.state_views import RunResult
 
+
 class WatchRunner:
     """Continuous sync loop with configurable interval and observer notifications."""
 

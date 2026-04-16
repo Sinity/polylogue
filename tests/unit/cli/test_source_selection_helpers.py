@@ -310,6 +310,7 @@ def config() -> Config:
 
 def _make_env(config: Config, *, plain: bool) -> tuple[AppEnv, StringIO]:
     from rich.console import Console
+
     buffer = StringIO()
     ui = MagicMock()
     ui.plain = plain
@@ -369,6 +370,7 @@ def _run_summary(
     analytics_error: Exception | None = None,
 ):
     from polylogue.cli.helpers import print_summary
+
     env, buffer = _make_env(config, plain=plain)
     total_conversations = sum(count for _, count in counts or [])
     if archive_stats is None:
@@ -401,7 +403,9 @@ def _run_summary(
             "polylogue.cli.helpers.list_provider_analytics_products",
             analytics_patches["polylogue.cli.helpers.list_provider_analytics_products"],
         ),
-        patch("polylogue.cli.helpers.get_provider_counts", analytics_patches["polylogue.cli.helpers.get_provider_counts"]),
+        patch(
+            "polylogue.cli.helpers.get_provider_counts", analytics_patches["polylogue.cli.helpers.get_provider_counts"]
+        ),
     ):
         print_summary(env, verbose=verbose)
 
@@ -454,7 +458,9 @@ def test_print_summary_basic_contract(config: Config) -> None:
     ids=["rich-ok", "rich-warning", "rich-error", "plain-ok", "plain-warning", "plain-error"],
 )
 def test_print_summary_verbose_health_matrix(config: Config, plain: bool, status: str, expected_indicator: str) -> None:
-    report = _health_report(source="cache", cache_age_seconds=30, cache_ttl_seconds=600, checks=[_check("database", status, "detail")])
+    report = _health_report(
+        source="cache", cache_age_seconds=30, cache_ttl_seconds=600, checks=[_check("database", status, "detail")]
+    )
     result = _run_summary(config, verbose=True, plain=plain, health=report, counts=[])
 
     assert result["lines"][:4] == [

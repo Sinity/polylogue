@@ -52,11 +52,7 @@ def _chatgpt_message_node_count(export: dict[str, Any]) -> int:
 
 
 def _claude_ai_message_count(export: dict[str, Any]) -> int:
-    return sum(
-        1
-        for msg in export.get("chat_messages", [])
-        if isinstance(msg, dict) and msg.get("text")
-    )
+    return sum(1 for msg in export.get("chat_messages", []) if isinstance(msg, dict) and msg.get("text"))
 
 
 def _jsonl_record_count(records: list[dict[str, Any]]) -> int:
@@ -195,11 +191,7 @@ def test_provider_looks_like_accepts_generated_payloads(case: ParserCase, data: 
 @settings(max_examples=50)
 def test_extract_messages_from_list_never_invents_messages(messages: list[dict[str, Any]]) -> None:
     result = extract_messages_from_list(messages)
-    expected = sum(
-        1
-        for msg in messages
-        if isinstance(msg, dict) and (msg.get("text") or msg.get("content"))
-    )
+    expected = sum(1 for msg in messages if isinstance(msg, dict) and (msg.get("text") or msg.get("content")))
     assert len(result) <= expected
 
 
@@ -348,15 +340,14 @@ class TestTimestampParseability:
         provider, convos = provider_conversations
         for conv in convos:
             for msg in conv.messages:
-                if msg.timestamp is not None:
+                if msg.timestamp is not None and isinstance(msg.timestamp, str):
                     # Should be a datetime already (parsed by provider parser)
                     # or a string that parse_timestamp can handle
-                    if isinstance(msg.timestamp, str):
-                        parsed = parse_timestamp(msg.timestamp)
-                        assert parsed is not None, (
-                            f"{provider}: unparseable timestamp {msg.timestamp!r} "
-                            f"in conversation {conv.provider_conversation_id}"
-                        )
+                    parsed = parse_timestamp(msg.timestamp)
+                    assert parsed is not None, (
+                        f"{provider}: unparseable timestamp {msg.timestamp!r} "
+                        f"in conversation {conv.provider_conversation_id}"
+                    )
 
 
 class TestConversationIdUniqueness:
@@ -367,8 +358,7 @@ class TestConversationIdUniqueness:
         provider, convos = provider_conversations
         ids = [c.provider_conversation_id for c in convos]
         assert len(ids) == len(set(ids)), (
-            f"{provider}: duplicate conversation IDs: "
-            f"{[cid for cid in ids if ids.count(cid) > 1]}"
+            f"{provider}: duplicate conversation IDs: {[cid for cid in ids if ids.count(cid) > 1]}"
         )
 
 
@@ -389,8 +379,7 @@ class TestMessageOrderConsistency:
             has_user = bool(roles & user_roles)
             has_assistant = bool(roles & assistant_roles)
             assert has_user or has_assistant, (
-                f"{provider}: conversation has no user or assistant messages, "
-                f"roles: {roles}"
+                f"{provider}: conversation has no user or assistant messages, roles: {roles}"
             )
 
 
@@ -402,7 +391,4 @@ class TestNonEmptyContent:
         provider, convos = provider_conversations
         for conv in convos:
             texts = [m.text for m in conv.messages if m.text]
-            assert len(texts) > 0, (
-                f"{provider}: conversation {conv.provider_conversation_id} "
-                f"has no messages with text"
-            )
+            assert len(texts) > 0, f"{provider}: conversation {conv.provider_conversation_id} has no messages with text"

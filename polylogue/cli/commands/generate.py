@@ -30,7 +30,10 @@ def _temporary_env(updates: dict[str, str]) -> Iterator[None]:
 
 @click.command("generate")
 @click.option(
-    "--provider", "-p", "providers", multiple=True,
+    "--provider",
+    "-p",
+    "providers",
+    multiple=True,
     help="Providers to include (default: all). Can be repeated.",
 )
 @click.option("--count", "-n", default=3, show_default=True, help="Conversations per provider")
@@ -67,8 +70,7 @@ def generate_command(
     invalid = set(selected) - set(available)
     if invalid:
         raise click.BadParameter(
-            f"Unknown provider(s): {', '.join(sorted(invalid))}. "
-            f"Available: {', '.join(available)}",
+            f"Unknown provider(s): {', '.join(sorted(invalid))}. Available: {', '.join(available)}",
             param_hint="--provider",
         )
 
@@ -141,7 +143,6 @@ def _do_seed(
         "XDG_DATA_HOME": str(data_home),
         "XDG_STATE_HOME": str(state_home),
         "POLYLOGUE_ARCHIVE_ROOT": str(archive_root),
-        "POLYLOGUE_RENDER_ROOT": str(render_root),
         "POLYLOGUE_FORCE_PLAIN": "1",
     }
 
@@ -169,21 +170,22 @@ def _do_seed(
             sources=sources,
         )
 
-        result = run_coroutine_sync(run_sources(
-            config=config,
-            stage="all",
-            plan=None,
-            ui=None,
-            source_names=None,
-        ))
+        result = run_coroutine_sync(
+            run_sources(
+                config=config,
+                stage="all",
+                plan=None,
+                ui=None,
+                source_names=None,
+            )
+        )
 
     if env_only:
         for key, value in env_vars.items():
             click.echo(f'export {key}="{value}"')
     else:
         c = result.counts
-        env.ui.console.print(f"Seeded {c.get('conversations', 0)} conversations, "
-                             f"{c.get('messages', 0)} messages")
+        env.ui.console.print(f"Seeded {c.get('conversations', 0)} conversations, {c.get('messages', 0)} messages")
         env.ui.console.print(f"\nDemo environment: {out}")
         env.ui.console.print("\nTo use:")
         for key, value in env_vars.items():

@@ -17,10 +17,7 @@ if TYPE_CHECKING:
 
 def _has_structured_blocks(blocks: list[Any]) -> bool:
     """Check if a block list contains typed blocks worth rendering structurally."""
-    return any(
-        isinstance(b, dict) and b.get("type") in ("thinking", "tool_use", "tool_result", "code")
-        for b in blocks
-    )
+    return any(isinstance(b, dict) and b.get("type") in ("thinking", "tool_use", "tool_result", "code") for b in blocks)
 
 
 def format_message_text(text: str) -> str:
@@ -85,6 +82,7 @@ def render_markdown_document(
         # Structure-preserving: if we have typed content blocks, render them
         if content_blocks and _has_structured_blocks(content_blocks):
             from polylogue.rendering.blocks import render_blocks_markdown
+
             block_text = render_blocks_markdown(content_blocks)
             if block_text:
                 lines.append(block_text)
@@ -175,10 +173,7 @@ def format_conversation_markdown(conv: Conversation) -> str:
         # Carry content blocks through if the message has them
         raw_blocks = None
         if getattr(msg, "content_blocks", None):
-            raw_blocks = [
-                b.model_dump(mode="json") if hasattr(b, "model_dump") else b
-                for b in msg.content_blocks
-            ]
+            raw_blocks = [b.model_dump(mode="json") if hasattr(b, "model_dump") else b for b in msg.content_blocks]
         normalized_messages.append(
             _normalize_markdown_message(
                 message_id=message_id,

@@ -3,6 +3,7 @@
 Covers PrivacyConfig presets, threshold computation, field overrides,
 value allow/deny patterns, and TOML config loading.
 """
+
 from __future__ import annotations
 
 from polylogue.schemas.privacy_config import PrivacyConfig, load_privacy_config
@@ -98,18 +99,14 @@ class TestLoadPrivacyConfig:
 
     def test_toml_cascade(self, tmp_path) -> None:
         toml_path = tmp_path / "polylogue-schemas.toml"
-        toml_path.write_text(
-            '[schema.privacy]\nlevel = "permissive"\nsafe_enum_max_length = 99\n'
-        )
+        toml_path.write_text('[schema.privacy]\nlevel = "permissive"\nsafe_enum_max_length = 99\n')
         config = load_privacy_config(project_path=tmp_path)
         assert config.level == "permissive"
         assert config.safe_enum_max_length == 99
 
     def test_field_overrides_merge(self, tmp_path) -> None:
         toml_path = tmp_path / "polylogue-schemas.toml"
-        toml_path.write_text(
-            '[schema.privacy]\n[schema.privacy.field_overrides]\n"$.a" = "allow"\n'
-        )
+        toml_path.write_text('[schema.privacy]\n[schema.privacy.field_overrides]\n"$.a" = "allow"\n')
         config = load_privacy_config(
             project_path=tmp_path,
             cli_overrides={"field_overrides": {"$.b": "deny"}},

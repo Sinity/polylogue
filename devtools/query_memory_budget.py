@@ -1,7 +1,7 @@
 """Run a command under an explicit RSS budget and emit a machine-readable summary.
 
 Usage:
-    python -m devtools.query_memory_budget --max-rss-mb 1536 -- python -m polylogue --plain --stats
+    devtools query-memory-budget --max-rss-mb 1536 -- polylogue --plain stats
 """
 
 from __future__ import annotations

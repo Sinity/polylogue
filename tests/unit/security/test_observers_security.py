@@ -1,4 +1,5 @@
 """Security tests for pipeline run observers."""
+
 from __future__ import annotations
 
 from unittest.mock import MagicMock

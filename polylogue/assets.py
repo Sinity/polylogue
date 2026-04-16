@@ -46,9 +46,7 @@ def write_asset(archive_root: Path, asset_id: str, content: bytes) -> Path:
     fd = None
     temp_path = None
     try:
-        fd, temp_path = tempfile.mkstemp(
-            dir=final_path.parent, prefix=f".{asset_id}.", text=False
-        )
+        fd, temp_path = tempfile.mkstemp(dir=final_path.parent, prefix=f".{asset_id}.", text=False)
         os.write(fd, content)
         os.close(fd)
         fd = None

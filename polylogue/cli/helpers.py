@@ -50,6 +50,7 @@ def print_summary(env, *, verbose: bool = False) -> None:
         list_provider_analytics_products_fn=list_provider_analytics_products,
     )
 
+
 __all__ = [
     "cached_health_summary",
     "complete_configured_source_names",

@@ -119,9 +119,13 @@ def _expected_block_types(provider: str, raw: dict[str, object]) -> list[Content
             "tool_result": ContentType.TOOL_RESULT,
             "code": ContentType.CODE,
         }
-        return [mapping[block["type"]] for block in raw_blocks if isinstance(block, dict) and block.get("type") in mapping]
+        return [
+            mapping[block["type"]] for block in raw_blocks if isinstance(block, dict) and block.get("type") in mapping
+        ]
     if provider == "codex":
-        content = raw.get("payload", {}).get("content") if raw.get("type") == "response_item" else raw.get("content", [])
+        content = (
+            raw.get("payload", {}).get("content") if raw.get("type") == "response_item" else raw.get("content", [])
+        )
         mapping = {"input_text": ContentType.TEXT, "output_text": ContentType.TEXT, "text": ContentType.TEXT}
         types: list[ContentType] = []
         for block in content if isinstance(content, list) else []:
@@ -169,11 +173,7 @@ def _expected_reasoning_texts(content: list[object]) -> list[str]:
 
 
 def _expected_tool_blocks(content: list[object]) -> list[dict[str, object]]:
-    return [
-        block
-        for block in content
-        if isinstance(block, dict) and block.get("type") == "tool_use"
-    ]
+    return [block for block in content if isinstance(block, dict) and block.get("type") == "tool_use"]
 
 
 def _expected_content_types(content: list[object]) -> list[ContentType]:
@@ -187,8 +187,7 @@ def _expected_content_types(content: list[object]) -> list[ContentType]:
     return [
         mapping[block_type]
         for block in content
-        if isinstance(block, dict)
-        and (block_type := block.get("type", "text")) in mapping
+        if isinstance(block, dict) and (block_type := block.get("type", "text")) in mapping
     ]
 
 
@@ -257,7 +256,9 @@ def test_harmonize_parsed_message_matches_bulk_harmonize(case: tuple[str, dict[s
     assert bulk == [individual]
 
 
-@given(st.sampled_from(["user", "assistant", "system", "tool", "unknown", "human", "model", "ASSISTANT", "SYSTEM", "USER"]))
+@given(
+    st.sampled_from(["user", "assistant", "system", "tool", "unknown", "human", "model", "ASSISTANT", "SYSTEM", "USER"])
+)
 def test_harmonized_message_role_coercion_contract(role_str: str) -> None:
     msg = HarmonizedMessage(role=role_str, text="test", provider="claude-code")
     assert msg.role.value in _VALID_VIEWPORT_ROLES
@@ -335,8 +336,7 @@ def test_extract_tool_calls_preserve_tool_use_blocks_contract(
     assert [call.name for call in calls] == [str(block.get("name", "")) for block in expected]
     assert [call.id for call in calls] == [block.get("id") for block in expected]
     assert [call.input for call in calls] == [
-        block.get("input", {}) if isinstance(block.get("input"), dict) else {}
-        for block in expected
+        block.get("input", {}) if isinstance(block.get("input"), dict) else {} for block in expected
     ]
     assert all(str(call.provider) == provider for call in calls)
 
@@ -785,7 +785,11 @@ def test_generic_content_extraction_contract() -> None:
         {"type": "text", "text": "plain"},
         {"type": "thinking", "thinking": "reason"},
         {"type": "tool_use", "id": "tool-1", "name": "Read", "input": {"path": "README.md"}},
-        {"type": "tool_result", "tool_use_id": "tool-1", "content": [{"type": "text", "text": "done"}, {"text": "more"}]},
+        {
+            "type": "tool_result",
+            "tool_use_id": "tool-1",
+            "content": [{"type": "text", "text": "done"}, {"text": "more"}],
+        },
         {"type": "code", "code": "print('ok')", "language": "python"},
     ]
 
@@ -882,9 +886,30 @@ def test_extract_from_provider_meta_integration_contract() -> None:
     # --- Multi-provider overlay: DB fields fill in when provider_meta lacks them ---
     for provider, provider_meta, message_id, role, text, expected_provider in [
         ("claude-ai", {"sender": "human", "text": ""}, "db-message-id", "user", "DB fallback text", "claude-ai"),
-        ("gemini", {"role": "model", "text": "", "tokenCount": {"invalid": True}}, "db-gemini-id", "assistant", "DB Gemini fallback text", "gemini"),
-        ("codex", {"payload": "not-a-dict", "content": []}, "db-codex-id", "assistant", "DB Codex fallback text", "codex"),
-        ("codex", {"raw": {"payload": "not-a-dict", "content": []}}, "db-codex-raw-id", "assistant", "DB raw fallback text", "codex"),
+        (
+            "gemini",
+            {"role": "model", "text": "", "tokenCount": {"invalid": True}},
+            "db-gemini-id",
+            "assistant",
+            "DB Gemini fallback text",
+            "gemini",
+        ),
+        (
+            "codex",
+            {"payload": "not-a-dict", "content": []},
+            "db-codex-id",
+            "assistant",
+            "DB Codex fallback text",
+            "codex",
+        ),
+        (
+            "codex",
+            {"raw": {"payload": "not-a-dict", "content": []}},
+            "db-codex-raw-id",
+            "assistant",
+            "DB raw fallback text",
+            "codex",
+        ),
     ]:
         msg = extract_from_provider_meta(
             provider,
@@ -992,17 +1017,37 @@ def test_extract_harmonized_message_fallback_contract() -> None:
         (
             "claude-ai",
             {"sender": "human", "text": "Fallback Claude AI text", "created_at": "2024-01-15T10:30:00Z"},
-            "user", "Fallback Claude AI text", "claude-ai", None,
+            "user",
+            "Fallback Claude AI text",
+            "claude-ai",
+            None,
         ),
         (
             "gemini",
-            {"role": "model", "text": "Fallback Gemini text", "tokenCount": {"invalid": True}, "isThought": True, "thinkingBudget": 256},
-            "assistant", "Fallback Gemini text", "gemini", "Fallback Gemini text",
+            {
+                "role": "model",
+                "text": "Fallback Gemini text",
+                "tokenCount": {"invalid": True},
+                "isThought": True,
+                "thinkingBudget": 256,
+            },
+            "assistant",
+            "Fallback Gemini text",
+            "gemini",
+            "Fallback Gemini text",
         ),
         (
             "codex",
-            {"id": "codex-fallback", "timestamp": "2024-01-15T10:30:00Z", "payload": "not-a-dict", "content": [{"type": "input_text", "text": "Fallback Codex text"}]},
-            "unknown", "Fallback Codex text", "codex", None,
+            {
+                "id": "codex-fallback",
+                "timestamp": "2024-01-15T10:30:00Z",
+                "payload": "not-a-dict",
+                "content": [{"type": "input_text", "text": "Fallback Codex text"}],
+            },
+            "unknown",
+            "Fallback Codex text",
+            "codex",
+            None,
         ),
     ]:
         msg = extract_harmonized_message(provider, raw)

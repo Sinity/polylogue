@@ -50,18 +50,14 @@ def action_event_read_model_status_sync(conn: sqlite3.Connection) -> dict[str, i
     exists = bool(conn.execute(_ACTION_EVENTS_EXISTS_SQL).fetchone())
     count = 0
     stale_count = 0
-    source_conversation_count = int(
-        conn.execute(_ACTION_EVENT_SOURCE_CONVERSATION_COUNT_SQL).fetchone()[0] or 0
-    )
+    source_conversation_count = int(conn.execute(_ACTION_EVENT_SOURCE_CONVERSATION_COUNT_SQL).fetchone()[0] or 0)
     valid_source_conversation_count = int(
         conn.execute(_ACTION_EVENT_VALID_SOURCE_CONVERSATION_COUNT_SQL).fetchone()[0] or 0
     )
     orphan_source_conversation_count = int(
         conn.execute(_ACTION_EVENT_ORPHAN_SOURCE_CONVERSATION_COUNT_SQL).fetchone()[0] or 0
     )
-    orphan_tool_block_count = int(
-        conn.execute(_ACTION_EVENT_ORPHAN_TOOL_BLOCK_COUNT_SQL).fetchone()[0] or 0
-    )
+    orphan_tool_block_count = int(conn.execute(_ACTION_EVENT_ORPHAN_TOOL_BLOCK_COUNT_SQL).fetchone()[0] or 0)
     materialized_conversation_count = 0
     if exists:
         count = int(conn.execute(_ACTION_EVENT_DOC_COUNT_SQL).fetchone()[0] or 0)
@@ -78,12 +74,8 @@ def action_event_read_model_status_sync(conn: sqlite3.Connection) -> dict[str, i
     fts_status = fts_index_status_sync(conn)
     action_fts_count = int(fts_status.get("action_count", 0))
     action_fts_ready = count == action_fts_count
-    rows_ready = (
-        valid_source_conversation_count == 0
-        or (
-            valid_source_conversation_count == materialized_conversation_count
-            and stale_count == 0
-        )
+    rows_ready = valid_source_conversation_count == 0 or (
+        valid_source_conversation_count == materialized_conversation_count and stale_count == 0
     )
     ready = rows_ready and action_fts_ready
     return {
@@ -114,13 +106,9 @@ async def action_event_read_model_status_async(conn: aiosqlite.Connection) -> di
     source_conversation_count = int(source_row[0] or 0) if source_row else 0
     valid_source_row = await (await conn.execute(_ACTION_EVENT_VALID_SOURCE_CONVERSATION_COUNT_SQL)).fetchone()
     valid_source_conversation_count = int(valid_source_row[0] or 0) if valid_source_row else 0
-    orphan_source_row = await (
-        await conn.execute(_ACTION_EVENT_ORPHAN_SOURCE_CONVERSATION_COUNT_SQL)
-    ).fetchone()
+    orphan_source_row = await (await conn.execute(_ACTION_EVENT_ORPHAN_SOURCE_CONVERSATION_COUNT_SQL)).fetchone()
     orphan_source_conversation_count = int(orphan_source_row[0] or 0) if orphan_source_row else 0
-    orphan_block_row = await (
-        await conn.execute(_ACTION_EVENT_ORPHAN_TOOL_BLOCK_COUNT_SQL)
-    ).fetchone()
+    orphan_block_row = await (await conn.execute(_ACTION_EVENT_ORPHAN_TOOL_BLOCK_COUNT_SQL)).fetchone()
     orphan_tool_block_count = int(orphan_block_row[0] or 0) if orphan_block_row else 0
     materialized_conversation_count = 0
     if exists:
@@ -133,19 +121,13 @@ async def action_event_read_model_status_async(conn: aiosqlite.Connection) -> di
             )
         ).fetchone()
         stale_count = int(mismatch_row[0] or 0) if mismatch_row else 0
-        materialized_row = await (
-            await conn.execute(_ACTION_EVENT_MATERIALIZED_CONVERSATION_COUNT_SQL)
-        ).fetchone()
+        materialized_row = await (await conn.execute(_ACTION_EVENT_MATERIALIZED_CONVERSATION_COUNT_SQL)).fetchone()
         materialized_conversation_count = int(materialized_row[0] or 0) if materialized_row else 0
     fts_status = await fts_index_status_async(conn)
     action_fts_count = int(fts_status.get("action_count", 0))
     action_fts_ready = count == action_fts_count
-    rows_ready = (
-        valid_source_conversation_count == 0
-        or (
-            valid_source_conversation_count == materialized_conversation_count
-            and stale_count == 0
-        )
+    rows_ready = valid_source_conversation_count == 0 or (
+        valid_source_conversation_count == materialized_conversation_count and stale_count == 0
     )
     ready = rows_ready and action_fts_ready
     return {

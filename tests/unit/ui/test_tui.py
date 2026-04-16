@@ -18,6 +18,7 @@ _skip = pytest.mark.skipif(PolylogueApp is None, reason="Textual not installed")
 # Helper: create app with injected repository
 # ---------------------------------------------------------------------------
 
+
 def _make_app(repo):
     """Create PolylogueApp with an injected repository."""
     return PolylogueApp(repository=repo)

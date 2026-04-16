@@ -38,9 +38,7 @@ class SQLiteArchiveMixin:
     async def save_conversation_record(self, record: ConversationRecord) -> None:
         """Persist a conversation record with upsert semantics."""
         async with self._get_connection() as conn:
-            await conversations_q.save_conversation_record(
-                conn, record, self._transaction_depth
-            )
+            await conversations_q.save_conversation_record(conn, record, self._transaction_depth)
 
     async def get_messages(self, conversation_id: str) -> list[MessageRecord]:
         """Get all messages for a conversation, with content_blocks attached."""
@@ -73,9 +71,7 @@ class SQLiteArchiveMixin:
         """Get all attachments for a conversation."""
         return await self.queries.get_attachments(conversation_id)
 
-    async def get_attachments_batch(
-        self, conversation_ids: list[str]
-    ) -> dict[str, list[AttachmentRecord]]:
+    async def get_attachments_batch(self, conversation_ids: list[str]) -> dict[str, list[AttachmentRecord]]:
         """Get attachments for multiple conversations in a single query."""
         return await self.queries.get_attachments_batch(conversation_ids)
 
@@ -84,14 +80,10 @@ class SQLiteArchiveMixin:
         async with self._get_connection() as conn:
             await attachments_q.save_attachments(conn, records, self._transaction_depth)
 
-    async def prune_attachments(
-        self, conversation_id: str, keep_attachment_ids: set[str]
-    ) -> None:
+    async def prune_attachments(self, conversation_id: str, keep_attachment_ids: set[str]) -> None:
         """Remove attachment refs not in keep set and clean up orphaned attachments."""
         async with self._get_connection() as conn:
-            await attachments_q.prune_attachments(
-                conn, conversation_id, keep_attachment_ids, self._transaction_depth
-            )
+            await attachments_q.prune_attachments(conn, conversation_id, keep_attachment_ids, self._transaction_depth)
 
     async def list_conversations_by_parent(self, parent_id: str) -> list[ConversationRecord]:
         """List all conversations that have the given conversation as parent."""
@@ -129,14 +121,10 @@ class SQLiteArchiveMixin:
         page_size: int = 1000,
     ) -> AsyncIterator[str]:
         """Iterate conversation IDs in bounded fetch batches."""
-        async for cid in self.queries.iter_conversation_ids(
-            source_names=source_names, page_size=page_size
-        ):
+        async for cid in self.queries.iter_conversation_ids(source_names=source_names, page_size=page_size):
             yield cid
 
-    async def search_conversations(
-        self, query: str, limit: int = 100, providers: list[str] | None = None
-    ) -> list[str]:
+    async def search_conversations(self, query: str, limit: int = 100, providers: list[str] | None = None) -> list[str]:
         """Search conversations using the canonical ranked FTS conversation query."""
         return await self.queries.search_conversations(query, limit, providers)
 

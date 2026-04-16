@@ -48,6 +48,7 @@ def _extract_json(output: str) -> dict:
         return data["result"]
     return data
 
+
 class TestHealthReportConstruction:
     """Tests for proper HealthReport instantiation."""
 
@@ -519,7 +520,11 @@ class TestCheckCommandSupplementary:
         runner = CliRunner()
         result = runner.invoke(cli, ["doctor", "--repair"])
         assert result.exit_code == 0
-        assert "No selected maintenance work" in result.output or "Changed" in result.output or "maintenance" in result.output.lower()
+        assert (
+            "No selected maintenance work" in result.output
+            or "Changed" in result.output
+            or "maintenance" in result.output.lower()
+        )
 
     def test_vacuum_with_repair(self, cli_workspace):
         """--vacuum with --repair should attempt VACUUM."""

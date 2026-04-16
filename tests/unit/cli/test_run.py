@@ -166,18 +166,30 @@ def _invoke_run_direct(
         stack.enter_context(patch("polylogue.config.get_config", return_value=mock_config))
         mock_plan = stack.enter_context(patch("polylogue.cli.commands.run.plan_sources"))
         mock_run = stack.enter_context(patch("polylogue.cli.run_workflow.run_sources", new_callable=AsyncMock))
-        mock_resolve = stack.enter_context(patch("polylogue.cli.commands.run.resolve_sources", return_value=selected_sources))
+        mock_resolve = stack.enter_context(
+            patch("polylogue.cli.commands.run.resolve_sources", return_value=selected_sources)
+        )
         mock_stage_prompt = stack.enter_context(
             patch("polylogue.cli.commands.run.maybe_prompt_run_stage", return_value=prompted_stage)
         )
-        mock_prompt = stack.enter_context(patch("polylogue.cli.commands.run.maybe_prompt_sources", return_value=selected_sources))
-        stack.enter_context(patch("polylogue.cli.run_workflow.format_plan_counts", return_value="5 conversations, 50 messages"))
+        mock_prompt = stack.enter_context(
+            patch("polylogue.cli.commands.run.maybe_prompt_sources", return_value=selected_sources)
+        )
+        stack.enter_context(
+            patch("polylogue.cli.run_workflow.format_plan_counts", return_value="5 conversations, 50 messages")
+        )
         stack.enter_context(patch("polylogue.cli.run_workflow.format_plan_details", return_value="new=2, existing=3"))
         stack.enter_context(patch("polylogue.cli.run_workflow.format_cursors", return_value="cursor snapshot"))
-        stack.enter_context(patch("polylogue.cli.run_workflow.format_counts", return_value="3 conversations, 30 messages"))
+        stack.enter_context(
+            patch("polylogue.cli.run_workflow.format_counts", return_value="3 conversations, 30 messages")
+        )
         stack.enter_context(patch("polylogue.cli.run_workflow.format_run_details", return_value=["Indexed: yes"]))
-        mock_format_index = stack.enter_context(patch("polylogue.cli.run_workflow.format_index_status", return_value="Index status: indexed"))
-        mock_latest = stack.enter_context(patch("polylogue.cli.helpers.latest_render_path", return_value=Path("/render/latest/conversation.html")))
+        mock_format_index = stack.enter_context(
+            patch("polylogue.cli.run_workflow.format_index_status", return_value="Index status: indexed")
+        )
+        mock_latest = stack.enter_context(
+            patch("polylogue.cli.helpers.latest_render_path", return_value=Path("/render/latest/conversation.html"))
+        )
 
         mock_plan.return_value = plan_result
         mock_run.return_value = run_result
@@ -287,9 +299,52 @@ class TestRunCommand:
     @pytest.mark.parametrize(
         ("preview", "stage", "run_result", "expected_tokens", "expect_latest_render", "expect_format_index"),
         [
-            (False, "index", RunResult(run_id="run-idx", counts={"conversations": 0}, drift={}, indexed=True, index_error=None, duration_ms=800), ["Sync (index)", "Index status: indexed", "Duration: 800ms"], False, True),
-            (False, "render", RunResult(run_id="run-render", counts={"conversations": 3}, drift={}, indexed=True, index_error=None, duration_ms=1200), ["Sync (render)", "Latest render:"], True, False),
-            (False, "all", RunResult(run_id="run-all", counts={"conversations": 2}, drift={}, indexed=False, index_error="Vector database unavailable", duration_ms=900, render_failures=[{"conversation_id": "conv-1", "error": "boom"}]), ["Sync", "Render failures (1)", "Index error: Vector database unavailable"], True, True),
+            (
+                False,
+                "index",
+                RunResult(
+                    run_id="run-idx",
+                    counts={"conversations": 0},
+                    drift={},
+                    indexed=True,
+                    index_error=None,
+                    duration_ms=800,
+                ),
+                ["Sync (index)", "Index status: indexed", "Duration: 800ms"],
+                False,
+                True,
+            ),
+            (
+                False,
+                "render",
+                RunResult(
+                    run_id="run-render",
+                    counts={"conversations": 3},
+                    drift={},
+                    indexed=True,
+                    index_error=None,
+                    duration_ms=1200,
+                ),
+                ["Sync (render)", "Latest render:"],
+                True,
+                False,
+            ),
+            (
+                False,
+                "all",
+                RunResult(
+                    run_id="run-all",
+                    counts={"conversations": 2},
+                    drift={},
+                    indexed=False,
+                    index_error="Vector database unavailable",
+                    duration_ms=900,
+                    render_failures=[{"conversation_id": "conv-1", "error": "boom"}],
+                ),
+                ["Sync", "Render failures (1)", "Index error: Vector database unavailable"],
+                True,
+                True,
+            ),
         ],
         ids=["index_stage", "render_stage", "full_run_warnings"],
     )
@@ -355,18 +410,17 @@ class TestRunCommand:
             finally:
                 _close_coroutine(coro)
 
-        with patch("polylogue.cli.commands.run.run_coroutine_sync", side_effect=_run_async) as mock_reset_run, patch(
-            "polylogue.cli.run_workflow.run_coroutine_sync", side_effect=_run_async
-        ) as mock_pipeline_run, patch(
-            "polylogue.config.get_config", return_value=MagicMock(sources=[], render_root=Path("/render"))
-        ), patch("polylogue.cli.commands.run.resolve_sources", return_value=None), patch(
-            "polylogue.cli.commands.run.maybe_prompt_run_stage", return_value="all"
-        ), patch(
-            "polylogue.cli.commands.run.maybe_prompt_sources", return_value=None
-        ), patch("polylogue.cli.run_workflow.format_counts", return_value="3 conversations, 30 messages"), patch(
-            "polylogue.cli.run_workflow.format_run_details", return_value=["Indexed: yes"]
-        ), patch("polylogue.cli.run_workflow.format_index_status", return_value="Index status: indexed"), patch(
-            "polylogue.cli.run_workflow.run_sources", new_callable=AsyncMock, return_value=mock_run_result
+        with (
+            patch("polylogue.cli.commands.run.run_coroutine_sync", side_effect=_run_async) as mock_reset_run,
+            patch("polylogue.cli.run_workflow.run_coroutine_sync", side_effect=_run_async) as mock_pipeline_run,
+            patch("polylogue.config.get_config", return_value=MagicMock(sources=[], render_root=Path("/render"))),
+            patch("polylogue.cli.commands.run.resolve_sources", return_value=None),
+            patch("polylogue.cli.commands.run.maybe_prompt_run_stage", return_value="all"),
+            patch("polylogue.cli.commands.run.maybe_prompt_sources", return_value=None),
+            patch("polylogue.cli.run_workflow.format_counts", return_value="3 conversations, 30 messages"),
+            patch("polylogue.cli.run_workflow.format_run_details", return_value=["Indexed: yes"]),
+            patch("polylogue.cli.run_workflow.format_index_status", return_value="Index status: indexed"),
+            patch("polylogue.cli.run_workflow.run_sources", new_callable=AsyncMock, return_value=mock_run_result),
         ):
             result = runner.invoke(cli, ["run", "--reparse"])
 
@@ -411,7 +465,13 @@ class TestRunCommand:
 
 
 class TestTagsCommand:
-    @pytest.mark.parametrize(("tag_counts", "extra_args", "expected", "provider"), [({"important": 5, "review": 3, "draft": 1}, [], ["important", "5", "review", "3", "3 total"], "chatgpt"), ({"claude-tag": 3}, ["-p", "claude-ai"], ["claude-tag"], "claude-ai")])
+    @pytest.mark.parametrize(
+        ("tag_counts", "extra_args", "expected", "provider"),
+        [
+            ({"important": 5, "review": 3, "draft": 1}, [], ["important", "5", "review", "3", "3 total"], "chatgpt"),
+            ({"claude-tag": 3}, ["-p", "claude-ai"], ["claude-tag"], "claude-ai"),
+        ],
+    )
     def test_tags_plain_output_matrix(self, runner, cli_workspace, tag_counts, extra_args, expected, provider):
         _seed_tag_counts(cli_workspace["db_path"], tag_counts, provider=provider)
         if extra_args == ["-p", "claude-ai"]:
@@ -451,17 +511,20 @@ class TestTagsCommand:
 
 class TestEmbedCommand:
     def test_embed_requires_api_key_unless_stats(self, runner, cli_workspace):
-        with patch.dict("os.environ", {"VOYAGE_API_KEY": "", "POLYLOGUE_VOYAGE_API_KEY": ""}, clear=False):
+        with patch.dict("os.environ", {"VOYAGE_API_KEY": ""}, clear=False):
             result = runner.invoke(cli, ["run", "embed"])
         assert result.exit_code != 0
         assert "VOYAGE_API_KEY" in result.output
 
     @pytest.mark.parametrize("stats_rows", [[5, 3, 45, 2], [10, 7, 100, 3]])
     def test_embed_stats_contract(self, runner, cli_workspace, stats_rows):
-        with patch("polylogue.cli.embed_stats.embedding_status_payload") as mock_payload, patch.dict(
-            "os.environ",
-            {"VOYAGE_API_KEY": "", "POLYLOGUE_VOYAGE_API_KEY": ""},
-            clear=False,
+        with (
+            patch("polylogue.cli.embed_stats.embedding_status_payload") as mock_payload,
+            patch.dict(
+                "os.environ",
+                {"VOYAGE_API_KEY": ""},
+                clear=False,
+            ),
         ):
             total_conversations, embedded_conversations, embedded_messages, pending_conversations = stats_rows
             mock_payload.return_value = {
@@ -493,10 +556,13 @@ class TestEmbedCommand:
         assert str(stats_rows[3]) in result.output
 
     def test_embed_stats_json_contract(self, runner, cli_workspace):
-        with patch("polylogue.cli.embed_stats.embedding_status_payload") as mock_payload, patch.dict(
-            "os.environ",
-            {"VOYAGE_API_KEY": "", "POLYLOGUE_VOYAGE_API_KEY": ""},
-            clear=False,
+        with (
+            patch("polylogue.cli.embed_stats.embedding_status_payload") as mock_payload,
+            patch.dict(
+                "os.environ",
+                {"VOYAGE_API_KEY": ""},
+                clear=False,
+            ),
         ):
             mock_payload.return_value = {
                 "status": "partial",
@@ -515,13 +581,16 @@ class TestEmbedCommand:
 
     def test_embed_no_sqlite_vec_contract(self, runner, cli_workspace):
         with patch("polylogue.storage.search_providers.create_vector_provider", return_value=None):
-            result = runner.invoke(cli, ["run", "embed"], env={"VOYAGE_API_KEY": "test-key", "POLYLOGUE_FORCE_PLAIN": "1"})
+            result = runner.invoke(
+                cli, ["run", "embed"], env={"VOYAGE_API_KEY": "test-key", "POLYLOGUE_FORCE_PLAIN": "1"}
+            )
         assert result.exit_code != 0
         assert "sqlite-vec" in result.output.lower()
 
     def test_embed_single_not_found_contract(self, runner, cli_workspace):
         with patch("polylogue.cli.embed_runtime.embed_single") as mock_single:
             import click as _click
+
             mock_single.side_effect = _click.Abort()
 
             result = runner.invoke(
@@ -543,16 +612,17 @@ class TestEmbedCommand:
         if expected_model is not None:
             assert opts.model == expected_model
 
-    def test_embed_alt_api_key_env_contract(self, runner, cli_workspace):
-        with patch("polylogue.cli.commands.run._run_embed_standalone") as mock_standalone, patch(
-            "polylogue.storage.search_providers.create_vector_provider"
-        ) as mock_create:
+    def test_embed_api_key_env_contract(self, runner, cli_workspace):
+        with (
+            patch("polylogue.cli.commands.run._run_embed_standalone") as mock_standalone,
+            patch("polylogue.storage.search_providers.create_vector_provider") as mock_create,
+        ):
             mock_create.return_value = MagicMock()
 
             result = runner.invoke(
                 cli,
                 ["run", "embed"],
-                env={"POLYLOGUE_VOYAGE_API_KEY": "alt-test-key", "POLYLOGUE_FORCE_PLAIN": "1"},
+                env={"VOYAGE_API_KEY": "test-key", "POLYLOGUE_FORCE_PLAIN": "1"},
             )
 
         assert result.exit_code == 0

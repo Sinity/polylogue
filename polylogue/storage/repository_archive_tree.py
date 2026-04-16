@@ -16,9 +16,7 @@ class RepositoryArchiveTreeMixin:
         return None
 
     async def get_children(self, conversation_id: str):
-        child_records = await self.queries.list_conversations(
-            ConversationRecordQuery(parent_id=conversation_id)
-        )
+        child_records = await self.queries.list_conversations(ConversationRecordQuery(parent_id=conversation_id))
         if not child_records:
             return []
         return await self._hydrate_conversations(child_records)
@@ -51,9 +49,7 @@ class RepositoryArchiveTreeMixin:
         while queue:
             current = queue.pop(0)
             tree_records.append(current)
-            children = await self.queries.list_conversations(
-                ConversationRecordQuery(parent_id=current.conversation_id)
-            )
+            children = await self.queries.list_conversations(ConversationRecordQuery(parent_id=current.conversation_id))
             queue.extend(children)
 
         return await self._hydrate_conversations(

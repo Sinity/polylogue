@@ -1,0 +1,128 @@
+"""Repository-root and repo-name normalization helpers."""
+
+from __future__ import annotations
+
+import re
+from collections.abc import Iterable
+from functools import lru_cache
+from pathlib import Path
+from urllib.parse import urlparse
+
+_PATH_DELIMITERS = {"#", "`", '"', "\\", ":", "(", ")", "\n", "\r", "\t", " ", "<", ">", ",", ";", "'"}
+_REPO_SLUG_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:\.git)?$")
+
+
+def _extract_local_path_candidate(value: str) -> str | None:
+    raw = value.strip()
+    if raw.startswith("file://"):
+        parsed = urlparse(raw)
+        raw = parsed.path
+    if not raw.startswith(("/", "~/")):
+        return None
+    chars: list[str] = []
+    for char in raw:
+        if char in _PATH_DELIMITERS:
+            break
+        chars.append(char)
+    candidate = "".join(chars).strip()
+    return candidate or None
+
+
+def _iter_repo_root_candidates(path: Path) -> tuple[Path, ...]:
+    expanded = path.expanduser()
+    current = expanded if not expanded.suffix else expanded.parent
+    if current == Path("."):
+        return ()
+    return (current, *current.parents)
+
+
+def _find_git_root(path: Path) -> Path | None:
+    for candidate in _iter_repo_root_candidates(path):
+        if (candidate / ".git").exists():
+            return candidate
+    return None
+
+
+def _repo_name_from_slug(value: str) -> str | None:
+    slug = value.strip().lstrip("/").rstrip("/")
+    if not slug:
+        return None
+    name = slug.rsplit("/", 1)[-1]
+    if name.endswith(".git"):
+        name = name[:-4]
+    return name or None
+
+
+def _repo_name_from_remote(value: str) -> str | None:
+    raw = value.strip()
+    if not raw:
+        return None
+    if raw.startswith("git@") and ":" in raw:
+        return _repo_name_from_slug(raw.split(":", 1)[1])
+    parsed = urlparse(raw)
+    if parsed.scheme in {"http", "https", "ssh", "git"}:
+        return _repo_name_from_slug(parsed.path)
+    if _REPO_SLUG_RE.fullmatch(raw):
+        return _repo_name_from_slug(raw)
+    return None
+
+
+@lru_cache(maxsize=4096)
+def normalize_repo_path(value: object) -> str | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    path_candidate = _extract_local_path_candidate(raw)
+    if path_candidate is None:
+        return None
+    git_root = _find_git_root(Path(path_candidate))
+    return str(git_root) if git_root is not None else None
+
+
+@lru_cache(maxsize=4096)
+def normalize_repo_name(value: object) -> str | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    repo_path = normalize_repo_path(raw)
+    if repo_path is not None:
+        name = Path(repo_path).name.strip()
+        return name or None
+    return _repo_name_from_remote(raw)
+
+
+def normalize_repo_names(
+    values: Iterable[object] = (),
+    *,
+    repo_paths: Iterable[object] = (),
+) -> tuple[str, ...]:
+    normalized: set[str] = set()
+    for value in values:
+        repo_name = normalize_repo_name(value)
+        if repo_name is not None:
+            normalized.add(repo_name)
+    for repo_path in repo_paths:
+        repo_root = normalize_repo_path(repo_path)
+        if repo_root is None:
+            continue
+        repo_name = Path(repo_root).name
+        if repo_name:
+            normalized.add(repo_name)
+    return tuple(sorted(normalized))
+
+
+def normalize_repo_paths(values: Iterable[object]) -> tuple[str, ...]:
+    normalized: set[str] = set()
+    for value in values:
+        repo = normalize_repo_path(value)
+        if repo is not None:
+            normalized.add(repo)
+    return tuple(sorted(normalized))
+
+
+__all__ = [
+    "normalize_repo_name",
+    "normalize_repo_names",
+    "normalize_repo_path",
+    "normalize_repo_paths",
+]

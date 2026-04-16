@@ -49,7 +49,9 @@ def test_attachment_path_null_byte_rejected() -> None:
     assert "\x00" not in att.path
 
 
-@pytest.mark.parametrize("path", ["file with spaces.txt", "file:with:colons.txt", "file*with*wildcards.txt", "file|with|pipes.txt"])
+@pytest.mark.parametrize(
+    "path", ["file with spaces.txt", "file:with:colons.txt", "file*with*wildcards.txt", "file|with|pipes.txt"]
+)
 def test_attachment_path_special_characters(path: str) -> None:
     att = ParsedAttachment(
         provider_attachment_id="att-special",

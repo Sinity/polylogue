@@ -46,29 +46,35 @@ def filter_db(tmp_path):
     """Create database with test conversations for filter tests."""
     db_path = tmp_path / "filter_test.db"
 
-    (ConversationBuilder(db_path, "claude-1")
-     .provider("claude-ai")
-     .title("Python Error Handling")
-     .add_message("m1", role="user", text="How do I handle errors in Python?")
-     .add_message("m2", role="assistant", text="You can use try-except blocks.")
-     .metadata({"tags": ["python", "errors"]})
-     .save())
+    (
+        ConversationBuilder(db_path, "claude-1")
+        .provider("claude-ai")
+        .title("Python Error Handling")
+        .add_message("m1", role="user", text="How do I handle errors in Python?")
+        .add_message("m2", role="assistant", text="You can use try-except blocks.")
+        .metadata({"tags": ["python", "errors"]})
+        .save()
+    )
 
-    (ConversationBuilder(db_path, "chatgpt-1")
-     .provider("chatgpt")
-     .title("JavaScript Async")
-     .add_message("m3", role="user", text="How do async functions work?")
-     .add_message("m4", role="assistant", text="Async functions return promises.")
-     .metadata({"tags": ["javascript"]})
-     .save())
+    (
+        ConversationBuilder(db_path, "chatgpt-1")
+        .provider("chatgpt")
+        .title("JavaScript Async")
+        .add_message("m3", role="user", text="How do async functions work?")
+        .add_message("m4", role="assistant", text="Async functions return promises.")
+        .metadata({"tags": ["javascript"]})
+        .save()
+    )
 
-    (ConversationBuilder(db_path, "claude-2")
-     .provider("claude-ai")
-     .title("Database Design")
-     .add_message("m5", role="user", text="How to design a database schema?")
-     .add_message("m6", role="assistant", text="Start with identifying entities.")
-     .metadata({"tags": ["database", "design"]})
-     .save())
+    (
+        ConversationBuilder(db_path, "claude-2")
+        .provider("claude-ai")
+        .title("Database Design")
+        .add_message("m5", role="user", text="How to design a database schema?")
+        .add_message("m6", role="assistant", text="Start with identifying entities.")
+        .metadata({"tags": ["database", "design"]})
+        .save()
+    )
 
     with open_connection(db_path) as conn:
         rebuild_index(conn)
@@ -108,71 +114,99 @@ def filter_db_advanced(tmp_path):
     """
     db_path = tmp_path / "filter_advanced.db"
 
-    (ConversationBuilder(db_path, "conv-thinking")
-     .provider("claude-ai")
-     .title("Complex Problem Analysis")
-     .add_message("m1", role="user", text="Solve this complex math problem")
-     .add_message("m2", role="assistant", text="The answer is 42.",
-                  provider_meta={"content_blocks": [{"type": "thinking", "text": "Let me break this down step by step..."}]})
-     .add_message("m3", role="user", text="Can you explain further?")
-     .metadata({"tags": ["math", "complex"], "summary": "Math problem solving"})
-     .save())
+    (
+        ConversationBuilder(db_path, "conv-thinking")
+        .provider("claude-ai")
+        .title("Complex Problem Analysis")
+        .add_message("m1", role="user", text="Solve this complex math problem")
+        .add_message(
+            "m2",
+            role="assistant",
+            text="The answer is 42.",
+            provider_meta={"content_blocks": [{"type": "thinking", "text": "Let me break this down step by step..."}]},
+        )
+        .add_message("m3", role="user", text="Can you explain further?")
+        .metadata({"tags": ["math", "complex"], "summary": "Math problem solving"})
+        .save()
+    )
 
-    (ConversationBuilder(db_path, "conv-tools")
-     .provider("claude-ai")
-     .title("API Integration Help")
-     .add_message("m4", role="user", text="How do I call an API?")
-     .add_message("m5", role="assistant", text="I'll help you with that.",
-                  provider_meta={"content_blocks": [{"type": "tool_use", "tool_name": "bash", "input": {}}]})
-     .add_message("m6", role="user", text="Show me an example")
-     .add_message("m7", role="assistant", text="Here is a complete working example with error handling.")
-     .metadata({"tags": ["api", "integration"]})
-     .save())
+    (
+        ConversationBuilder(db_path, "conv-tools")
+        .provider("claude-ai")
+        .title("API Integration Help")
+        .add_message("m4", role="user", text="How do I call an API?")
+        .add_message(
+            "m5",
+            role="assistant",
+            text="I'll help you with that.",
+            provider_meta={"content_blocks": [{"type": "tool_use", "tool_name": "bash", "input": {}}]},
+        )
+        .add_message("m6", role="user", text="Show me an example")
+        .add_message("m7", role="assistant", text="Here is a complete working example with error handling.")
+        .metadata({"tags": ["api", "integration"]})
+        .save()
+    )
 
-    (ConversationBuilder(db_path, "conv-attachments")
-     .provider("chatgpt")
-     .title("Document Analysis")
-     .add_message("m8", role="user", text="Please analyze this document")
-     .add_message("m9", role="assistant", text="I see the file contains important data.")
-     .add_attachment("att1", message_id="m8", mime_type="application/pdf", size_bytes=5000)
-     .metadata({"tags": ["documents"]})
-     .save())
+    (
+        ConversationBuilder(db_path, "conv-attachments")
+        .provider("chatgpt")
+        .title("Document Analysis")
+        .add_message("m8", role="user", text="Please analyze this document")
+        .add_message("m9", role="assistant", text="I see the file contains important data.")
+        .add_attachment("att1", message_id="m8", mime_type="application/pdf", size_bytes=5000)
+        .metadata({"tags": ["documents"]})
+        .save()
+    )
 
-    (ConversationBuilder(db_path, "conv-summary-only")
-     .provider("claude-ai")
-     .title("Brief Chat")
-     .add_message("m10", role="user", text="Hello there")
-     .add_message("m11", role="assistant", text="Hi how are you")
-     .metadata({"summary": "Brief greeting exchange", "tags": ["greeting"]})
-     .save())
+    (
+        ConversationBuilder(db_path, "conv-summary-only")
+        .provider("claude-ai")
+        .title("Brief Chat")
+        .add_message("m10", role="user", text="Hello there")
+        .add_message("m11", role="assistant", text="Hi how are you")
+        .metadata({"summary": "Brief greeting exchange", "tags": ["greeting"]})
+        .save()
+    )
 
-    (ConversationBuilder(db_path, "conv-multi-attach")
-     .provider("chatgpt")
-     .title("Multiple File Analysis")
-     .add_message("m12", role="user", text="Analyze these files please")
-     .add_message("m13", role="assistant", text="I can see both files clearly.")
-     .add_message("m14", role="user", text="What are the main differences?")
-     .add_attachment("att2", message_id="m12", mime_type="image/png", size_bytes=2000)
-     .add_attachment("att3", message_id="m12", mime_type="application/pdf", size_bytes=3000)
-     .metadata({"tags": ["analysis"]})
-     .save())
+    (
+        ConversationBuilder(db_path, "conv-multi-attach")
+        .provider("chatgpt")
+        .title("Multiple File Analysis")
+        .add_message("m12", role="user", text="Analyze these files please")
+        .add_message("m13", role="assistant", text="I can see both files clearly.")
+        .add_message("m14", role="user", text="What are the main differences?")
+        .add_attachment("att2", message_id="m12", mime_type="image/png", size_bytes=2000)
+        .add_attachment("att3", message_id="m12", mime_type="application/pdf", size_bytes=3000)
+        .metadata({"tags": ["analysis"]})
+        .save()
+    )
 
-    (ConversationBuilder(db_path, "conv-long-messages")
-     .provider("claude-ai")
-     .title("Deep Discussion")
-     .add_message("m15", role="user",
-                  text="Tell me everything you know about quantum computing including the fundamentals principles and applications")
-     .add_message("m16", role="assistant",
-                  text="Quantum computing is a revolutionary field that leverages quantum mechanical phenomena like superposition and entanglement to perform computations exponentially faster than classical computers in certain domains such as cryptography and optimization.")
-     .metadata({"tags": ["quantum"]})
-     .save())
+    (
+        ConversationBuilder(db_path, "conv-long-messages")
+        .provider("claude-ai")
+        .title("Deep Discussion")
+        .add_message(
+            "m15",
+            role="user",
+            text="Tell me everything you know about quantum computing including the fundamentals principles and applications",
+        )
+        .add_message(
+            "m16",
+            role="assistant",
+            text="Quantum computing is a revolutionary field that leverages quantum mechanical phenomena like superposition and entanglement to perform computations exponentially faster than classical computers in certain domains such as cryptography and optimization.",
+        )
+        .metadata({"tags": ["quantum"]})
+        .save()
+    )
 
-    (ConversationBuilder(db_path, "conv-plain")
-     .provider("codex")
-     .title("Simple")
-     .add_message("m17", role="user", text="What is two plus two")
-     .metadata({"tags": ["simple"]})
-     .save())
+    (
+        ConversationBuilder(db_path, "conv-plain")
+        .provider("codex")
+        .title("Simple")
+        .add_message("m17", role="user", text="What is two plus two")
+        .metadata({"tags": ["simple"]})
+        .save()
+    )
 
     with open_connection(db_path) as conn:
         rebuild_index(conn)
@@ -230,6 +264,7 @@ def test_filter_chain_never_crashes_on_build(chain: list[dict]):
     """
     # Use a mock repo — we only test chain construction, not execution
     from unittest.mock import MagicMock
+
     mock_repo = MagicMock(spec=ConversationRepository)
     f = ConversationFilter(mock_repo)
     for spec in chain:
@@ -244,12 +279,22 @@ async def test_filter_chain_never_crashes_on_execution(make_filter_repo):
     Uses explicit examples rather than @given to avoid fixture-scope issues.
     """
 
-    repo = make_filter_repo([
-        {"id": "c1", "provider": "claude-ai", "title": "Test",
-         "messages": [{"id": "m1", "role": "user", "text": "hello"}]},
-        {"id": "c2", "provider": "chatgpt", "title": "Other",
-         "messages": [{"id": "m2", "role": "user", "text": "world"}]},
-    ])
+    repo = make_filter_repo(
+        [
+            {
+                "id": "c1",
+                "provider": "claude-ai",
+                "title": "Test",
+                "messages": [{"id": "m1", "role": "user", "text": "hello"}],
+            },
+            {
+                "id": "c2",
+                "provider": "chatgpt",
+                "title": "Other",
+                "messages": [{"id": "m2", "role": "user", "text": "world"}],
+            },
+        ]
+    )
 
     # Test a variety of filter chain combos
     chains = [
@@ -334,6 +379,7 @@ async def test_filter_idempotence_exclude(filter_repo):
 def test_sql_pushdown_provider():
     """SQL pushdown includes provider when set."""
     from unittest.mock import MagicMock
+
     f = ConversationFilter(MagicMock())
     f.provider("claude-ai")
     params = f._sql_pushdown_params()
@@ -343,6 +389,7 @@ def test_sql_pushdown_provider():
 def test_sql_pushdown_multi_provider():
     """SQL pushdown includes providers list when multiple set."""
     from unittest.mock import MagicMock
+
     f = ConversationFilter(MagicMock())
     f.provider("claude-ai", "chatgpt")
     params = f._sql_pushdown_params()
@@ -352,6 +399,7 @@ def test_sql_pushdown_multi_provider():
 def test_sql_pushdown_date_range():
     """SQL pushdown includes since/until when set."""
     from unittest.mock import MagicMock
+
     f = ConversationFilter(MagicMock())
     dt = datetime(2024, 6, 15, tzinfo=timezone.utc)
     f.since(dt).until(dt)
@@ -363,6 +411,7 @@ def test_sql_pushdown_date_range():
 def test_sql_pushdown_title():
     """SQL pushdown includes title_contains when set."""
     from unittest.mock import MagicMock
+
     f = ConversationFilter(MagicMock())
     f.title("Python")
     params = f._sql_pushdown_params()
@@ -372,6 +421,7 @@ def test_sql_pushdown_title():
 def test_sql_pushdown_empty():
     """SQL pushdown is empty dict when no filters set."""
     from unittest.mock import MagicMock
+
     f = ConversationFilter(MagicMock())
     assert f._sql_pushdown_params() == {}
 
@@ -491,7 +541,7 @@ class TestConversationFilterChaining:
             lambda f: f.tag("test"),
             lambda f: f.contains("hello"),
             lambda f: f.title("test"),
-            lambda f: f.path("/realm/project/polylogue/README.md"),
+            lambda f: f.path("/workspace/polylogue/README.md"),
             lambda f: f.action("search"),
             lambda f: f.exclude_action("git"),
             lambda f: f.tool("grep"),
@@ -505,13 +555,7 @@ class TestConversationFilterChaining:
     @pytest.mark.asyncio
     async def test_filter_chain_multiple_methods(self, filter_repo):
         """Chain must apply ALL filters — provider, limit both take effect."""
-        result = await (
-            ConversationFilter(filter_repo)
-            .provider("claude-ai")
-            .limit(1)
-            .sort("date")
-            .list()
-        )
+        result = await ConversationFilter(filter_repo).provider("claude-ai").limit(1).sort("date").list()
         assert isinstance(result, list)
         assert len(result) <= 1
         assert all(c.provider == "claude-ai" for c in result)
@@ -560,12 +604,15 @@ class TestFilterDateParsing:
         with pytest.raises(ValueError, match="Cannot parse date"):
             getattr(f, method_name)("not-a-date")
 
-    @pytest.mark.parametrize("method_name,date_str", [
-        ("since", "yesterday"),
-        ("since", "2025-01-15"),
-        ("since", "last week"),
-        ("until", "today"),
-    ])
+    @pytest.mark.parametrize(
+        "method_name,date_str",
+        [
+            ("since", "yesterday"),
+            ("since", "2025-01-15"),
+            ("since", "last week"),
+            ("until", "today"),
+        ],
+    )
     def test_date_method_accepts_string_formats(self, filter_repo, method_name, date_str):
         f = ConversationFilter(filter_repo)
         getattr(f, method_name)(date_str)
@@ -616,12 +663,7 @@ class TestConversationFilterHasTypes:
 
     @pytest.mark.asyncio
     async def test_has_thinking_with_provider(self, filter_repo_advanced):
-        result = await (
-            ConversationFilter(filter_repo_advanced)
-            .provider("claude-ai")
-            .has("thinking")
-            .list()
-        )
+        result = await ConversationFilter(filter_repo_advanced).provider("claude-ai").has("thinking").list()
         assert len(result) >= 1
         for conv in result:
             assert conv.provider == "claude-ai"
@@ -639,12 +681,7 @@ class TestConversationFilterSample:
 
     @pytest.mark.asyncio
     async def test_sample_with_filter_respects_filters(self, filter_repo_advanced):
-        result = await (
-            ConversationFilter(filter_repo_advanced)
-            .provider("claude-ai")
-            .sample(2)
-            .list()
-        )
+        result = await ConversationFilter(filter_repo_advanced).provider("claude-ai").sample(2).list()
         assert all(c.provider == "claude-ai" for c in result)
 
 
@@ -654,10 +691,7 @@ class TestConversationFilterCombinedFilters:
     @pytest.mark.asyncio
     async def test_exclude_provider_and_exclude_tag(self, filter_repo_advanced):
         result = await (
-            ConversationFilter(filter_repo_advanced)
-            .exclude_provider("claude-ai")
-            .exclude_tag("quantum")
-            .list()
+            ConversationFilter(filter_repo_advanced).exclude_provider("claude-ai").exclude_tag("quantum").list()
         )
         assert all(c.provider != "claude-ai" for c in result)
         for conv in result:
@@ -665,23 +699,14 @@ class TestConversationFilterCombinedFilters:
 
     @pytest.mark.asyncio
     async def test_provider_with_exclude_tag(self, filter_repo_advanced):
-        result = await (
-            ConversationFilter(filter_repo_advanced)
-            .provider("claude-ai")
-            .exclude_tag("simple")
-            .list()
-        )
+        result = await ConversationFilter(filter_repo_advanced).provider("claude-ai").exclude_tag("simple").list()
         assert all(c.provider == "claude-ai" for c in result)
         for conv in result:
             assert "simple" not in conv.tags
 
     @pytest.mark.asyncio
     async def test_multiple_exclude_providers(self, filter_repo_advanced):
-        result = await (
-            ConversationFilter(filter_repo_advanced)
-            .exclude_provider("claude-ai", "chatgpt")
-            .list()
-        )
+        result = await ConversationFilter(filter_repo_advanced).exclude_provider("claude-ai", "chatgpt").list()
         for conv in result:
             assert conv.provider not in ("claude-ai", "chatgpt")
 
@@ -716,13 +741,16 @@ class TestConversationFilterListSummaries:
 class TestConversationFilterEmptyRepository:
     """Terminal operations on empty repo."""
 
-    @pytest.mark.parametrize("terminal_method,expected_result", [
-        ("list", []),
-        ("first", None),
-        ("count", 0),
-        ("delete", 0),
-        ("pick", None),
-    ])
+    @pytest.mark.parametrize(
+        "terminal_method,expected_result",
+        [
+            ("list", []),
+            ("first", None),
+            ("count", 0),
+            ("delete", 0),
+            ("pick", None),
+        ],
+    )
     @pytest.mark.asyncio
     async def test_empty_repo_terminal_operations(self, filter_repo_empty, terminal_method, expected_result):
         filter_obj = ConversationFilter(filter_repo_empty)
@@ -748,28 +776,36 @@ class TestConversationFilterBranching:
         with open_connection(db_path) as conn:
             rebuild_index(conn)
 
-        (ConversationBuilder(db_path, "root")
-         .provider("claude-ai")
-         .save())
-        (ConversationBuilder(db_path, "cont")
-         .provider("claude-ai")
-         .parent_conversation("root")
-         .branch_type("continuation")
-         .save())
-        (ConversationBuilder(db_path, "side")
-         .provider("claude-ai")
-         .parent_conversation("root")
-         .branch_type("sidechain")
-         .save())
+        (ConversationBuilder(db_path, "root").provider("claude-ai").save())
+        (
+            ConversationBuilder(db_path, "cont")
+            .provider("claude-ai")
+            .parent_conversation("root")
+            .branch_type("continuation")
+            .save()
+        )
+        (
+            ConversationBuilder(db_path, "side")
+            .provider("claude-ai")
+            .parent_conversation("root")
+            .branch_type("sidechain")
+            .save()
+        )
 
         backend = SQLiteBackend(db_path)
         return ConversationRepository(backend)
 
-    @pytest.mark.parametrize("method,value", [
-        ("is_continuation", True), ("is_continuation", False),
-        ("is_sidechain", True), ("is_sidechain", False),
-        ("has_branches", True), ("has_branches", False),
-    ])
+    @pytest.mark.parametrize(
+        "method,value",
+        [
+            ("is_continuation", True),
+            ("is_continuation", False),
+            ("is_sidechain", True),
+            ("is_sidechain", False),
+            ("has_branches", True),
+            ("has_branches", False),
+        ],
+    )
     def test_branch_predicates(self, filter_repo_branches, method, value):
         filter_obj = ConversationFilter(filter_repo_branches)
         getattr(filter_obj, method)(value)
@@ -796,10 +832,7 @@ class TestFiltersPick:
         with open_connection(db_path) as conn:
             rebuild_index(conn)
         for i in range(5):
-            (ConversationBuilder(db_path, f"conv{i}")
-             .provider("claude-ai")
-             .title(f"Conversation {i}")
-             .save())
+            (ConversationBuilder(db_path, f"conv{i}").provider("claude-ai").title(f"Conversation {i}").save())
         backend = SQLiteBackend(db_path)
         return ConversationRepository(backend)
 
@@ -865,11 +898,14 @@ class TestDeleteCascade:
 class TestFilterLimitZeroEdgeCases:
     """limit(0) edge cases."""
 
-    @pytest.mark.parametrize("setup_fn", [
-        lambda f: f.limit(0).sample(5),
-        lambda f: f.sample(5).limit(0),
-        lambda f: f.sort("messages").limit(0),
-    ])
+    @pytest.mark.parametrize(
+        "setup_fn",
+        [
+            lambda f: f.limit(0).sample(5),
+            lambda f: f.sample(5).limit(0),
+            lambda f: f.sort("messages").limit(0),
+        ],
+    )
     @pytest.mark.asyncio
     async def test_limit_zero_returns_empty(self, filter_repo_advanced, setup_fn):
         result = await setup_fn(ConversationFilter(filter_repo_advanced)).list()
@@ -884,7 +920,8 @@ class TestFilterLimitZeroEdgeCases:
 @given(
     st.lists(
         st.tuples(st.uuids().map(str), st.floats(min_value=0, max_value=1)),
-        min_size=1, max_size=100,
+        min_size=1,
+        max_size=100,
     ),
     st.integers(min_value=1, max_value=200),
 )
@@ -1011,7 +1048,8 @@ def test_rrf_duplicate_items_same_list():
 @given(
     st.lists(
         st.tuples(st.text(min_size=1, max_size=20), st.floats(min_value=0, max_value=1)),
-        min_size=0, max_size=50,
+        min_size=0,
+        max_size=50,
     ),
 )
 def test_rrf_never_crashes(results: list[tuple[str, float]]):
@@ -1029,9 +1067,9 @@ def test_rrf_formula_correctness():
     results = [("a", 0.0), ("b", 0.0), ("c", 0.0)]
     fused = reciprocal_rank_fusion(results, k=k)
     scores = dict(fused)
-    assert abs(scores["a"] - 1/61) < 1e-10
-    assert abs(scores["b"] - 1/62) < 1e-10
-    assert abs(scores["c"] - 1/63) < 1e-10
+    assert abs(scores["a"] - 1 / 61) < 1e-10
+    assert abs(scores["b"] - 1 / 62) < 1e-10
+    assert abs(scores["c"] - 1 / 63) < 1e-10
 
 
 def test_rrf_combined_formula():
@@ -1040,8 +1078,8 @@ def test_rrf_combined_formula():
     list2 = [("b", 0.0), ("a", 0.0)]
     fused = reciprocal_rank_fusion(list1, list2, k=k)
     scores = dict(fused)
-    expected_a = 1/61 + 1/62
+    expected_a = 1 / 61 + 1 / 62
     assert abs(scores["a"] - expected_a) < 1e-10
-    expected_b = 1/62 + 1/61
+    expected_b = 1 / 62 + 1 / 61
     assert abs(scores["b"] - expected_b) < 1e-10
     assert abs(scores["a"] - scores["b"]) < 1e-10

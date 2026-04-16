@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from pathlib import Path
 
 from polylogue.lib.messages import MessageCollection
 from polylogue.lib.models import Conversation, Message
@@ -11,6 +12,9 @@ from polylogue.storage.session_product_profiles import (
     session_enrichment_payload,
     user_turn_texts,
 )
+
+REPO_ROOT = Path(__file__).resolve().parents[3]
+APP_PATH = REPO_ROOT / "polylogue" / "facade.py"
 
 
 def _enrichment_conversation() -> Conversation:
@@ -26,7 +30,7 @@ def _enrichment_conversation() -> Conversation:
                     id="u1",
                     role="user",
                     provider="claude-code",
-                    text="The tests failed with traceback in /realm/project/polylogue/app.py. Please fix it.",
+                    text=f"The tests failed with traceback in {APP_PATH}. Please fix it.",
                     timestamp=datetime(2026, 4, 2, 10, 0, tzinfo=timezone.utc),
                 ),
                 Message(
@@ -39,7 +43,7 @@ def _enrichment_conversation() -> Conversation:
                         {
                             "type": "tool_use",
                             "tool_name": "Read",
-                            "tool_input": {"file_path": "/realm/project/polylogue/app.py"},
+                            "tool_input": {"file_path": str(APP_PATH)},
                         }
                     ],
                 ),
@@ -60,15 +64,9 @@ def test_session_enrichment_payload_reuses_text_band_outputs() -> None:
     analysis = build_session_analysis(conversation)
     profile = build_session_profile(conversation, analysis=analysis)
 
-    assert user_turn_texts(analysis) == (
-        "The tests failed with traceback in /realm/project/polylogue/app.py. Please fix it.",
-    )
-    assert assistant_turn_texts(analysis) == (
-        "Patched it and reran pytest successfully.",
-    )
-    assert blocker_texts(analysis) == (
-        "The tests failed with traceback in /realm/project/polylogue/app.py. Please fix it.",
-    )
+    assert user_turn_texts(analysis) == (f"The tests failed with traceback in {APP_PATH}. Please fix it.",)
+    assert assistant_turn_texts(analysis) == ("Patched it and reran pytest successfully.",)
+    assert blocker_texts(analysis) == (f"The tests failed with traceback in {APP_PATH}. Please fix it.",)
 
     payload = session_enrichment_payload(profile, analysis)
 
@@ -80,13 +78,13 @@ def test_session_enrichment_payload_reuses_text_band_outputs() -> None:
         "assistant_turns": 1,
         "action_events": 1,
         "touched_paths": 1,
-        "canonical_projects": 1,
+        "repo_names": 1,
     }
     assert tuple(payload["support_signals"]) == (
         "user_turns",
         "action_events",
         "touched_paths",
-        "canonical_projects",
+        "repo_names",
         "heuristic_work_events",
         "assistant_outcome_text",
     )

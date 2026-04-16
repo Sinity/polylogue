@@ -30,9 +30,7 @@ class TestVerifyShowcaseImportable:
 
         exercises = get_tier_0_exercises()
         for ex in exercises:
-            assert ex.group in ("structural", "sources"), (
-                f"Exercise {ex.name!r} has unexpected group {ex.group!r}"
-            )
+            assert ex.group in ("structural", "sources"), f"Exercise {ex.name!r} has unexpected group {ex.group!r}"
 
     def test_tier_0_exercises_need_no_data(self):
         """Tier 0 exercises should not require database data."""
@@ -40,9 +38,7 @@ class TestVerifyShowcaseImportable:
 
         exercises = get_tier_0_exercises()
         for ex in exercises:
-            assert not ex.needs_data, (
-                f"Tier 0 exercise {ex.name!r} requires data"
-            )
+            assert not ex.needs_data, f"Tier 0 exercise {ex.name!r} requires data"
 
 
 class TestBaselineComparison:
@@ -128,5 +124,6 @@ class TestBaselinePersistence:
 def test_main_returns_1_when_no_baselines_and_no_update(tmp_path, monkeypatch):
     """main() exits 1 when baselines directory is empty and --update not passed."""
     import devtools.verify_showcase as mod
+
     monkeypatch.setattr(mod, "BASELINE_DIR", tmp_path / "nonexistent")
     assert mod.main([]) == 1

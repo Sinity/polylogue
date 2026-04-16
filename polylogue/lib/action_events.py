@@ -95,10 +95,7 @@ def build_action_event(message: Message, call: ToolCall, *, sequence_index: int)
 
 
 def build_action_events(message: Message, calls: tuple[ToolCall, ...]) -> tuple[ActionEvent, ...]:
-    return tuple(
-        build_action_event(message, call, sequence_index=index)
-        for index, call in enumerate(calls)
-    )
+    return tuple(build_action_event(message, call, sequence_index=index) for index, call in enumerate(calls))
 
 
 __all__ = [

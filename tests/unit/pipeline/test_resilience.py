@@ -4,6 +4,7 @@ Tests that the pipeline gracefully handles errors at each stage rather than
 crashing with unhandled exceptions. Each test injects a specific fault and
 verifies the pipeline recovers, logs, or surfaces the error cleanly.
 """
+
 from __future__ import annotations
 
 import json
@@ -87,6 +88,7 @@ def _make_parsing_service(tmp_path: Path):
 # Fault 1: Parsing service handles valid JSON with unknown chatgpt structure
 # ---------------------------------------------------------------------------
 
+
 def test_parse_unknown_chatgpt_structure_returns_empty(tmp_path):
     """Valid JSON but missing chatgpt mapping field returns empty, not an exception."""
     from polylogue.pipeline.services.ingest_worker import ingest_record
@@ -101,16 +103,19 @@ def test_parse_unknown_chatgpt_structure_returns_empty(tmp_path):
 # Fault 2: Parsing service handles JSON with completely missing required fields
 # ---------------------------------------------------------------------------
 
+
 def test_parse_chatgpt_no_messages_returns_empty(tmp_path):
     """ChatGPT payload with empty mapping returns empty list."""
     from polylogue.pipeline.services.ingest_worker import ingest_record
 
-    payload = json.dumps({
-        "title": "No Messages",
-        "mapping": {},
-        "create_time": 1700000000,
-        "update_time": 1700000001,
-    }).encode()
+    payload = json.dumps(
+        {
+            "title": "No Messages",
+            "mapping": {},
+            "create_time": 1700000000,
+            "update_time": 1700000001,
+        }
+    ).encode()
     record = _make_raw_record("no-messages", "chatgpt", payload)
     result = ingest_record(record, str(tmp_path / "archive"), "off")
     assert result.error is None or isinstance(result.conversations, list)
@@ -119,6 +124,7 @@ def test_parse_chatgpt_no_messages_returns_empty(tmp_path):
 # ---------------------------------------------------------------------------
 # Fault 3: Parsing surfaces error when all JSONL lines are invalid
 # ---------------------------------------------------------------------------
+
 
 def test_parse_jsonl_all_invalid_lines_surfaces_error(tmp_path):
     """JSONL where every line is invalid surfaces an error (by design).
@@ -129,9 +135,7 @@ def test_parse_jsonl_all_invalid_lines_surfaces_error(tmp_path):
     from polylogue.pipeline.services.ingest_worker import ingest_record
 
     content = b"NOT JSON\nALSO NOT JSON\nSTILL NOT JSON\n"
-    record = _make_raw_record(
-        "all-invalid-jsonl", "claude-code", content, "/exports/session.jsonl"
-    )
+    record = _make_raw_record("all-invalid-jsonl", "claude-code", content, "/exports/session.jsonl")
     result = ingest_record(record, str(tmp_path / "archive"), "off")
     assert result.error is not None
 
@@ -139,6 +143,7 @@ def test_parse_jsonl_all_invalid_lines_surfaces_error(tmp_path):
 # ---------------------------------------------------------------------------
 # Fault 4: Parsing handles JSONL with mixed valid and invalid lines
 # ---------------------------------------------------------------------------
+
 
 def test_parse_mixed_valid_invalid_jsonl_lines(tmp_path):
     """JSONL with some valid lines: valid lines parsed, invalid lines skipped."""
@@ -148,13 +153,11 @@ def test_parse_mixed_valid_invalid_jsonl_lines(tmp_path):
     content = (
         b'{"parentUuid":null,"type":"user","message":{"role":"user","content":"Hello"},'
         b'"uuid":"m1","timestamp":"2025-01-01T00:00:00Z"}\n'
-        b'INVALID JSON LINE\n'
+        b"INVALID JSON LINE\n"
         b'{"parentUuid":"m1","type":"assistant","message":{"role":"assistant",'
         b'"content":[{"type":"text","text":"Hi"}]},"uuid":"m2","timestamp":"2025-01-01T00:00:01Z"}\n'
     )
-    record = _make_raw_record(
-        "mixed-jsonl", "claude-code", content, "/exports/session.jsonl"
-    )
+    record = _make_raw_record("mixed-jsonl", "claude-code", content, "/exports/session.jsonl")
     result = ingest_record(record, str(tmp_path / "archive"), "off")
     assert result.conversations is not None
     if result.conversations:
@@ -164,6 +167,7 @@ def test_parse_mixed_valid_invalid_jsonl_lines(tmp_path):
 # ---------------------------------------------------------------------------
 # Fault 5: Parsing handles valid JSON for unknown provider gracefully
 # ---------------------------------------------------------------------------
+
 
 def test_parse_unknown_provider_name(tmp_path):
     """Unknown provider name falls back gracefully."""
@@ -182,6 +186,7 @@ def test_parse_unknown_provider_name(tmp_path):
 # Fault 6: Parsing handles claude-code JSONL with null fields
 # ---------------------------------------------------------------------------
 
+
 def test_parse_claude_code_jsonl_with_null_fields(tmp_path):
     """Claude-code JSONL with null fields in messages is handled gracefully."""
     from polylogue.pipeline.services.ingest_worker import ingest_record
@@ -190,9 +195,7 @@ def test_parse_claude_code_jsonl_with_null_fields(tmp_path):
         b'{"parentUuid":null,"type":"user","message":{"role":"user","content":null},'
         b'"uuid":"m1","timestamp":"2025-01-01T00:00:00Z"}\n'
     )
-    record = _make_raw_record(
-        "null-fields", "claude-code", content, "/exports/session.jsonl"
-    )
+    record = _make_raw_record("null-fields", "claude-code", content, "/exports/session.jsonl")
     result = ingest_record(record, str(tmp_path / "archive"), "off")
     assert result.conversations is not None or result.error is not None
 
@@ -200,6 +203,7 @@ def test_parse_claude_code_jsonl_with_null_fields(tmp_path):
 # ---------------------------------------------------------------------------
 # Fault 7: Parsing handles very large valid conversation
 # ---------------------------------------------------------------------------
+
 
 def test_parse_very_large_conversation_does_not_crash(tmp_path):
     """Very large valid chatgpt payload is handled without crashing."""
@@ -223,12 +227,14 @@ def test_parse_very_large_conversation_does_not_crash(tmp_path):
             messages[prev_id]["children"] = [node_id]
         prev_id = node_id
 
-    payload = json.dumps({
-        "title": "Large Conversation",
-        "mapping": messages,
-        "create_time": 1700000000,
-        "update_time": 1700000100,
-    }).encode()
+    payload = json.dumps(
+        {
+            "title": "Large Conversation",
+            "mapping": messages,
+            "create_time": 1700000000,
+            "update_time": 1700000100,
+        }
+    ).encode()
 
     record = _make_raw_record("large-content", "chatgpt", payload)
     result = ingest_record(record, str(tmp_path / "archive"), "off")
@@ -240,20 +246,23 @@ def test_parse_very_large_conversation_does_not_crash(tmp_path):
 # Fault 8: Parsing handles chatgpt with deeply nested but invalid mapping
 # ---------------------------------------------------------------------------
 
+
 def test_parse_chatgpt_deeply_nested_malformed_nodes(tmp_path):
     """ChatGPT payload with malformed node structure returns empty, not exception."""
     from polylogue.pipeline.services.ingest_worker import ingest_record
 
     # Mapping nodes missing 'message' key
-    payload = json.dumps({
-        "title": "Malformed Nodes",
-        "mapping": {
-            "node-1": {"parent": None, "children": ["node-2"]},
-            "node-2": {"parent": "node-1", "children": [], "no_message_key": True},
-        },
-        "create_time": 1700000000,
-        "update_time": 1700000001,
-    }).encode()
+    payload = json.dumps(
+        {
+            "title": "Malformed Nodes",
+            "mapping": {
+                "node-1": {"parent": None, "children": ["node-2"]},
+                "node-2": {"parent": "node-1", "children": [], "no_message_key": True},
+            },
+            "create_time": 1700000000,
+            "update_time": 1700000001,
+        }
+    ).encode()
     record = _make_raw_record("malformed-nodes", "chatgpt", payload)
     result = ingest_record(record, str(tmp_path / "archive"), "off")
     assert result.conversations is not None or result.error is not None
@@ -263,31 +272,34 @@ def test_parse_chatgpt_deeply_nested_malformed_nodes(tmp_path):
 # Fault 11: Parsing handles a chatgpt bundle (list) where one item is invalid
 # ---------------------------------------------------------------------------
 
+
 def test_parse_chatgpt_bundle_with_one_invalid_item(tmp_path):
     """ChatGPT bundle list with one invalid item: valid items parsed, invalid skipped."""
     from polylogue.pipeline.services.ingest_worker import ingest_record
 
-    payload = json.dumps([
-        {
-            "id": "conv-1",
-            "title": "Valid Conversation",
-            "mapping": {
-                "m1": {
-                    "message": {
-                        "id": "m1",
-                        "author": {"role": "user"},
-                        "content": {"content_type": "text", "parts": ["Hi"]},
-                        "create_time": 1700000000,
-                    },
-                    "parent": None,
-                    "children": [],
-                }
+    payload = json.dumps(
+        [
+            {
+                "id": "conv-1",
+                "title": "Valid Conversation",
+                "mapping": {
+                    "m1": {
+                        "message": {
+                            "id": "m1",
+                            "author": {"role": "user"},
+                            "content": {"content_type": "text", "parts": ["Hi"]},
+                            "create_time": 1700000000,
+                        },
+                        "parent": None,
+                        "children": [],
+                    }
+                },
+                "create_time": 1700000000,
+                "update_time": 1700000001,
             },
-            "create_time": 1700000000,
-            "update_time": 1700000001,
-        },
-        {"invalid": "no title or mapping"},  # Should be skipped
-    ]).encode()
+            {"invalid": "no title or mapping"},  # Should be skipped
+        ]
+    ).encode()
     record = _make_raw_record("bundle-one-invalid", "chatgpt", payload)
     result = ingest_record(record, str(tmp_path / "archive"), "off")
     assert result.conversations is not None or result.error is not None
@@ -297,20 +309,23 @@ def test_parse_chatgpt_bundle_with_one_invalid_item(tmp_path):
 # Fault 12: Parsing handles gemini with missing text fields
 # ---------------------------------------------------------------------------
 
+
 def test_parse_gemini_missing_text_fields(tmp_path):
     """Gemini payload with messages missing text fields is handled gracefully."""
     from polylogue.pipeline.services.ingest_worker import ingest_record
 
-    payload = json.dumps({
-        "conversations": [
-            {
-                "chunks": [
-                    {"role": "user"},   # no text field
-                    {"role": "model"},  # no text field
-                ]
-            }
-        ]
-    }).encode()
+    payload = json.dumps(
+        {
+            "conversations": [
+                {
+                    "chunks": [
+                        {"role": "user"},  # no text field
+                        {"role": "model"},  # no text field
+                    ]
+                }
+            ]
+        }
+    ).encode()
     record = _make_raw_record("gemini-no-text", "gemini", payload)
     result = ingest_record(record, str(tmp_path / "archive"), "off")
     assert result.conversations is not None or result.error is not None
@@ -358,6 +373,7 @@ async def test_acquisition_law_counts_unique_raws_and_normalizes_provider_hints(
                 stored = await backend.get_raw_conversation(raw_id)
                 assert stored is not None
                 from polylogue.storage.blob_store import load_raw_content
+
                 raw_bytes = load_raw_content(raw_id)
                 payload_id = json.loads(raw_bytes)["id"]
                 assert stored.provider_name == expected_first_provider[payload_id]
@@ -465,13 +481,15 @@ def test_ingest_worker_decodes_and_dispatches_provider(tmp_path: Path) -> None:
     from polylogue.pipeline.services.ingest_worker import ingest_record
 
     # Create a minimal valid ChatGPT payload that will be decoded and detected
-    payload = json.dumps({
-        "id": "conv-1",
-        "title": "Test Conversation",
-        "mapping": {},
-        "create_time": 1700000000,
-        "update_time": 1700000001,
-    }).encode()
+    payload = json.dumps(
+        {
+            "id": "conv-1",
+            "title": "Test Conversation",
+            "mapping": {},
+            "create_time": 1700000000,
+            "update_time": 1700000001,
+        }
+    ).encode()
 
     raw_record = _make_raw_record(
         raw_id="ignored",  # _make_raw_record uses actual content hash
@@ -498,13 +516,15 @@ def test_ingest_worker_reuses_schema_resolution_and_skips_drift_walk(tmp_path: P
     from polylogue.schemas import ValidationResult
     from polylogue.schemas.packages import SchemaResolution
 
-    payload = json.dumps({
-        "id": "conv-1",
-        "title": "Test Conversation",
-        "mapping": {},
-        "create_time": 1700000000,
-        "update_time": 1700000001,
-    }).encode()
+    payload = json.dumps(
+        {
+            "id": "conv-1",
+            "title": "Test Conversation",
+            "mapping": {},
+            "create_time": 1700000000,
+            "update_time": 1700000001,
+        }
+    ).encode()
     raw_record = _make_raw_record(
         raw_id="ignored",
         provider="chatgpt",

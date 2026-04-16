@@ -1,6 +1,12 @@
+> PR title becomes the final squash-merge commit subject on `master`. Write it as the history you want to preserve.
+
 ## Summary
 
-<!-- 1-2 sentences: what this arc accomplishes -->
+<!-- 1-3 sentences: what changed and why it matters. -->
+
+## Related Issue
+
+<!-- Optional. Use `Ref #NNN` or `Closes #NNN` only when an issue exists and should stay linked. -->
 
 ## Problem
 
@@ -8,36 +14,18 @@
 
 ## Solution
 
-<!-- What was done. Key code patterns, modules created/modified. -->
+<!-- What was done. Mention key modules, contracts, and boundaries touched. -->
 
-## Key Technical Decisions
+## Verification
 
-<!-- - **Decision**: Reasoning -->
+<!-- Exact commands run and any manual validation performed. -->
 
-## What Was Omitted From Rewrite
+## Risks and Follow-ups
 
-<!-- Files/commits excluded and why. -->
+<!-- Optional. Remaining risks, migrations, rollout concerns, or deferred work. -->
 
-## Dead Ends
+## Generated Surfaces
 
-<!-- Approaches tried and abandoned during original development. -->
-
-<details>
-<summary>Diff Statistics</summary>
-
-```
-<!-- paste diffstat from commits.txt -->
-```
-
-</details>
-
-## Attribution
-
-- **Primary tool**:
-- **Original commits**: N (YYYY-MM-DD → YYYY-MM-DD)
-- **Commits merged**: (fix chains folded)
-- **Commits deleted**: (mutation docs, etc.)
-
----
-
-<!-- Closes #NN  ← only on LAST PR of the era -->
+- [ ] `devtools render-all` run if generated surfaces or docs sources changed
+- [ ] `AGENTS.md` refreshed locally if `CLAUDE.md` or its includes changed
+- [ ] `docs/devtools.md` catalog refreshed if the `devtools` command registry changed

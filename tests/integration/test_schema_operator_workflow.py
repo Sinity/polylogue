@@ -78,7 +78,7 @@ def seeded_registry(schema_storage: Path) -> SchemaRegistry:
             "create_time": {"type": "number"},
             "mapping": {"type": "object"},
             "status": {"type": "string"},  # new field
-            "tags": {"type": "array"},     # new field
+            "tags": {"type": "array"},  # new field
         },
         "required": ["id"],  # title no longer required
     }
@@ -177,9 +177,7 @@ class TestSchemaCompareCommand:
         assert "status" in added_paths
         assert "tags" in added_paths
 
-    def test_compare_classifies_requiredness_changes(
-        self, runner: CliRunner, seeded_registry: SchemaRegistry
-    ) -> None:
+    def test_compare_classifies_requiredness_changes(self, runner: CliRunner, seeded_registry: SchemaRegistry) -> None:
         with _patch_registry(seeded_registry):
             result = runner.invoke(
                 cli,
@@ -208,9 +206,14 @@ class TestSchemaCompareCommand:
             result = runner.invoke(
                 cli,
                 [
-                    "schema", "compare",
-                    "--provider", "test-provider",
-                    "--from", "v1", "--to", "v2",
+                    "schema",
+                    "compare",
+                    "--provider",
+                    "test-provider",
+                    "--from",
+                    "v1",
+                    "--to",
+                    "v2",
                     "--markdown",
                 ],
             )
@@ -498,8 +501,8 @@ class TestFullOperatorWorkflow:
                 "id": {"type": "string"},
                 "message": {"type": "string"},
                 "timestamp": {"type": "number"},
-                "model": {"type": "string"},       # new
-                "tokens": {"type": "integer"},      # new
+                "model": {"type": "string"},  # new
+                "tokens": {"type": "integer"},  # new
             },
             "required": ["id", "model"],
         }
@@ -510,9 +513,14 @@ class TestFullOperatorWorkflow:
             result = runner.invoke(
                 cli,
                 [
-                    "schema", "compare",
-                    "--provider", "workflow-prov",
-                    "--from", "v1", "--to", "v2",
+                    "schema",
+                    "compare",
+                    "--provider",
+                    "workflow-prov",
+                    "--from",
+                    "v1",
+                    "--to",
+                    "v2",
                     "--json",
                 ],
             )

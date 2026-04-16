@@ -21,12 +21,7 @@ class RootModeRequest:
     @classmethod
     def from_context(cls, ctx: click.Context) -> RootModeRequest:
         query_terms = tuple(
-            str(term)
-            for term in (
-                ctx.meta.get("polylogue_query_terms")
-                or ctx.params.get("query_term")
-                or ()
-            )
+            str(term) for term in (ctx.meta.get("polylogue_query_terms") or ctx.params.get("query_term") or ())
         )
         return cls(params=dict(ctx.params), query_terms=query_terms)
 
@@ -59,7 +54,12 @@ class RootModeRequest:
 
     def should_show_stats(self) -> bool:
         query_spec = self.query_spec()
-        return not self.query_terms and not query_spec.has_filters() and not self.has_output_mode() and not self.has_modifiers()
+        return (
+            not self.query_terms
+            and not query_spec.has_filters()
+            and not self.has_output_mode()
+            and not self.has_modifiers()
+        )
 
 
 __all__ = ["RootModeRequest"]

@@ -51,18 +51,11 @@ def _build_folder_lookup_query(folder_ref: str) -> str:
 
 def _is_newline_delimited_json_name(name: str) -> bool:
     name_lower = name.lower()
-    return (
-        name_lower.endswith(".jsonl")
-        or name_lower.endswith(".jsonl.txt")
-        or name_lower.endswith(".ndjson")
-    )
+    return name_lower.endswith(".jsonl") or name_lower.endswith(".jsonl.txt") or name_lower.endswith(".ndjson")
 
 
 def _is_supported_drive_payload(name: str, mime_type: str) -> bool:
-    return (
-        name.lower().endswith((".json", ".jsonl", ".jsonl.txt", ".ndjson"))
-        or mime_type == GEMINI_PROMPT_MIME_TYPE
-    )
+    return name.lower().endswith((".json", ".jsonl", ".jsonl.txt", ".ndjson")) or mime_type == GEMINI_PROMPT_MIME_TYPE
 
 
 def _parse_downloaded_json_payload(raw: bytes, *, name: str) -> object:

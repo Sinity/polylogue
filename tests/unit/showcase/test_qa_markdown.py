@@ -83,22 +83,27 @@ class TestGenerateQaMarkdown:
         assert "Git SHA" not in md
 
     def test_no_timestamps_in_body(self):
-        sr = _make_showcase([
-            _make_result(passed=True),
-            _make_result(name="f", passed=False, error="boom"),
-        ])
+        sr = _make_showcase(
+            [
+                _make_result(passed=True),
+                _make_result(name="f", passed=False, error="boom"),
+            ]
+        )
         md = generate_showcase_markdown(sr)
         # No ISO timestamp patterns in the body
         import re
+
         # Match typical ISO timestamps like 2026-03-15T12:34:56
         timestamps = re.findall(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}", md)
         assert len(timestamps) == 0, f"Found timestamps in body: {timestamps}"
 
     def test_summary_table_present(self):
-        sr = _make_showcase([
-            _make_result(passed=True),
-            _make_result(name="f", passed=False, error="err"),
-        ])
+        sr = _make_showcase(
+            [
+                _make_result(passed=True),
+                _make_result(name="f", passed=False, error="err"),
+            ]
+        )
         md = generate_showcase_markdown(sr)
         assert "## Summary" in md
         assert "| Total | 2 |" in md
@@ -106,38 +111,46 @@ class TestGenerateQaMarkdown:
         assert "| Failed | 1 |" in md
 
     def test_pass_fail_skip_markers(self):
-        sr = _make_showcase([
-            _make_result(name="p", passed=True),
-            _make_result(name="f", passed=False, error="err"),
-            _make_result(name="s", skipped=True),
-        ])
+        sr = _make_showcase(
+            [
+                _make_result(name="p", passed=True),
+                _make_result(name="f", passed=False, error="err"),
+                _make_result(name="s", skipped=True),
+            ]
+        )
         md = generate_showcase_markdown(sr)
         assert "[PASS]" in md
         assert "[FAIL]" in md
         assert "[SKIP]" in md
 
     def test_failed_exercise_shows_error(self):
-        sr = _make_showcase([
-            _make_result(name="bad", passed=False, error="exit code 1, expected 0"),
-        ])
+        sr = _make_showcase(
+            [
+                _make_result(name="bad", passed=False, error="exit code 1, expected 0"),
+            ]
+        )
         md = generate_showcase_markdown(sr)
         assert "exit code 1, expected 0" in md
 
     def test_failed_exercise_shows_truncated_output(self):
         long_output = "\n".join(f"line {i}" for i in range(20))
-        sr = _make_showcase([
-            _make_result(name="verbose", passed=False, error="failed", output=long_output),
-        ])
+        sr = _make_showcase(
+            [
+                _make_result(name="verbose", passed=False, error="failed", output=long_output),
+            ]
+        )
         md = generate_showcase_markdown(sr)
         assert "line 0" in md
         assert "line 9" in md
         assert "10 more lines" in md
 
     def test_exercises_grouped_by_group(self):
-        sr = _make_showcase([
-            _make_result(name="a", group="structural"),
-            _make_result(name="b", group="query-read"),
-        ])
+        sr = _make_showcase(
+            [
+                _make_result(name="a", group="structural"),
+                _make_result(name="b", group="query-read"),
+            ]
+        )
         md = generate_showcase_markdown(sr)
         assert "### structural" in md
         assert "### query-read" in md

@@ -1,25 +1,41 @@
-## Testing
+# Testing
 
-### Running Tests
+Use the project devshell before running commands:
+
+```bash
+cd path/to/polylogue
+direnv allow   # one-time setup; afterward the devshell loads automatically on cd
+```
+
+If you are not using `direnv`, enter the same environment manually:
+
+```bash
+nix develop
+```
+
+## Running Tests
 
 ```bash
 # Fast unit run (primary workflow)
-nix develop -c pytest -q --ignore=tests/integration
+pytest -q --ignore=tests/integration
 
 # Stop on first failure
-nix develop -c pytest -x --ignore=tests/integration
+pytest -x --ignore=tests/integration
 
 # Specific file or test
-nix develop -c pytest tests/unit/storage/test_hybrid_laws.py
-nix develop -c pytest -k "test_name"
+pytest tests/unit/storage/test_hybrid_laws.py
+pytest -k "test_name"
 
 # Full CI parity
 nix flake check
 ```
 
-### Test Suite: 4,300+ tests, ~3 min
+For the generated validation-lane, mutation-campaign, and benchmark inventory,
+see [docs/test-quality-workflows.md](docs/test-quality-workflows.md).
 
-```
+## Test Suite Layout
+
+```text
 tests/
 ├── conftest.py              # Root fixtures
 ├── infra/                   # Shared infrastructure
@@ -43,27 +59,38 @@ tests/
 └── fuzz/                    # Atheris fuzz targets
 ```
 
-### QA Exercises
+## QA Exercises
 
 ```bash
 # Seeded (fast, no real data)
-POLYLOGUE_FORCE_PLAIN=1 nix develop -c polylogue qa --only exercises --tier 0
+POLYLOGUE_FORCE_PLAIN=1 polylogue audit --only exercises --tier 0
 
 # Schema audit (instant)
-POLYLOGUE_FORCE_PLAIN=1 nix develop -c polylogue qa --only audit
+POLYLOGUE_FORCE_PLAIN=1 polylogue audit --only audit
 
 # Live (against real DB)
-POLYLOGUE_FORCE_PLAIN=1 nix develop -c polylogue qa --live --only exercises --tier 0
+POLYLOGUE_FORCE_PLAIN=1 polylogue audit --live --only exercises --tier 0
 ```
 
-### Mutation Testing
+## Mutation Testing
 
 ```bash
-nix develop -c mutmut run        # 8 modules: models, filters, roles, timestamps, hashing, json, fts5, hybrid
-nix develop -c mutmut results    # View results
+devtools mutmut-campaign list
+devtools mutmut-campaign run <campaign>
+devtools mutmut-campaign index
 ```
 
-### Protected Files (never delete)
+Policy:
+
+- keep the committed mutmut configuration broad; narrow work happens through
+  focused campaigns
+- write durable local artifacts under `.local/mutation-campaigns/`
+- rebuild the local mutation index after a meaningful campaign wave
+
+Use the generated quality reference for the named campaign catalog and
+benchmark surfaces.
+
+## Protected Files
 
 - `tests/unit/sources/test_parsers_props.py`, `test_null_guard_properties.py`
 - `tests/unit/core/test_properties.py`

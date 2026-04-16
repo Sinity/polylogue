@@ -109,7 +109,9 @@ def _generate_linear_json(self, n_messages: int, rng: random.Random, *, theme: C
     return top
 
 
-def _generate_jsonl_records(self, n_messages: int, rng: random.Random, *, theme: ConversationTheme | None = None) -> list[dict]:
+def _generate_jsonl_records(
+    self, n_messages: int, rng: random.Random, *, theme: ConversationTheme | None = None
+) -> list[dict]:
     tree_cfg = self.wire_format.tree
     records: list[dict] = []
     roles = self._role_cycle()

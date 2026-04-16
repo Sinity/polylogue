@@ -4,6 +4,7 @@ Tests real OS error conditions: read-only directories, file descriptor
 pressure, and disk space exhaustion. Marked slow since they may involve
 OS-level resource manipulation.
 """
+
 from __future__ import annotations
 
 import errno

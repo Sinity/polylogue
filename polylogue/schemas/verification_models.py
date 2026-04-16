@@ -48,9 +48,7 @@ class SchemaVerificationReport:
             "record_limit": self.record_limit if self.record_limit is not None else "all",
             "record_offset": self.record_offset,
             "total_records": self.total_records,
-            "providers": {
-                provider: stats.to_dict() for provider, stats in sorted(self.providers.items())
-            },
+            "providers": {provider: stats.to_dict() for provider, stats in sorted(self.providers.items())},
         }
 
 
@@ -175,11 +173,7 @@ class ArtifactProofReport:
 
     @property
     def is_clean(self) -> bool:
-        return (
-            self.unsupported_parseable_records == 0
-            and self.unknown_records == 0
-            and self.decode_errors == 0
-        )
+        return self.unsupported_parseable_records == 0 and self.unknown_records == 0 and self.decode_errors == 0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -202,9 +196,7 @@ class ArtifactProofReport:
                 "resolution_reasons": self.resolution_reasons,
                 "clean": self.is_clean,
             },
-            "providers": {
-                provider: stats.to_dict() for provider, stats in sorted(self.providers.items())
-            },
+            "providers": {provider: stats.to_dict() for provider, stats in sorted(self.providers.items())},
         }
 
 

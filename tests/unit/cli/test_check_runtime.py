@@ -6,7 +6,7 @@ Validates health checks for the runtime environment, including:
 - FTS table availability
 - sqlite-vec availability
 - Archive/render paths
-- Configuration paths
+- Configuration home
 - Terminal capabilities
 - UI libraries
 - VHS availability
@@ -118,8 +118,8 @@ class TestRuntimeHealthCheckNames:
         check_names = [c.name for c in report.checks]
         assert "render_root_writable" in check_names
 
-    def test_runtime_health_includes_config_path_check(self, tmp_path):
-        """run_runtime_health includes config_path check."""
+    def test_runtime_health_includes_config_home_check(self, tmp_path):
+        """run_runtime_health includes config_home check."""
         config = Config(
             archive_root=tmp_path / "archive",
             render_root=tmp_path / "render",
@@ -131,7 +131,7 @@ class TestRuntimeHealthCheckNames:
         report = run_runtime_health(config)
 
         check_names = [c.name for c in report.checks]
-        assert "config_path" in check_names
+        assert "config_home" in check_names
 
     def test_runtime_health_includes_terminal_check(self, tmp_path):
         """run_runtime_health includes terminal check."""
@@ -336,9 +336,7 @@ class TestRuntimeHealthCheckResults:
 class TestRuntimeHealthReadOnlyPaths:
     """Tests for runtime health with read-only or inaccessible paths."""
 
-    @pytest.mark.skipif(
-        os.name == "nt", reason="Unix-specific permission testing"
-    )
+    @pytest.mark.skipif(os.name == "nt", reason="Unix-specific permission testing")
     def test_runtime_health_with_readonly_archive_root(self, tmp_path):
         """Runtime health detects read-only archive_root."""
         archive_root = tmp_path / "archive"

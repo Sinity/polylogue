@@ -2,6 +2,7 @@
 
 Covers SchemaReport accumulation, format methods, and serialization.
 """
+
 from __future__ import annotations
 
 import json
@@ -16,35 +17,53 @@ from polylogue.schemas.redaction_report import (
 class TestSchemaReportAccumulation:
     def test_add_rejected_decision(self) -> None:
         report = SchemaReport(provider="chatgpt")
-        report.add_decision(RedactionDecision(
-            path="$.type", value="secret", action="rejected", reason="high_entropy",
-        ))
+        report.add_decision(
+            RedactionDecision(
+                path="$.type",
+                value="secret",
+                action="rejected",
+                reason="high_entropy",
+            )
+        )
         assert report.total_rejected == 1
         assert report.total_included == 0
         assert report.rejection_reasons == {"high_entropy": 1}
 
     def test_add_included_decision(self) -> None:
         report = SchemaReport(provider="chatgpt")
-        report.add_decision(RedactionDecision(
-            path="$.type", value="user", action="included",
-        ))
+        report.add_decision(
+            RedactionDecision(
+                path="$.type",
+                value="user",
+                action="included",
+            )
+        )
         assert report.total_included == 1
         assert report.total_rejected == 0
 
     def test_multiple_rejections_accumulate(self) -> None:
         report = SchemaReport(provider="chatgpt")
         for reason in ["high_entropy", "high_entropy", "identifier_field"]:
-            report.add_decision(RedactionDecision(
-                path="$.x", value="v", action="rejected", reason=reason,
-            ))
+            report.add_decision(
+                RedactionDecision(
+                    path="$.x",
+                    value="v",
+                    action="rejected",
+                    reason=reason,
+                )
+            )
         assert report.total_rejected == 3
         assert report.rejection_reasons == {"high_entropy": 2, "identifier_field": 1}
 
     def test_overridden_decisions_not_counted(self) -> None:
         report = SchemaReport(provider="chatgpt")
-        report.add_decision(RedactionDecision(
-            path="$.x", value="v", action="overridden_allow",
-        ))
+        report.add_decision(
+            RedactionDecision(
+                path="$.x",
+                value="v",
+                action="overridden_allow",
+            )
+        )
         assert report.total_included == 0
         assert report.total_rejected == 0
 
@@ -52,9 +71,14 @@ class TestSchemaReportAccumulation:
 class TestFormatSummary:
     def test_summary_with_data(self) -> None:
         report = SchemaReport(provider="chatgpt", total_fields=10)
-        report.add_decision(RedactionDecision(
-            path="$.x", value="v", action="rejected", reason="pii",
-        ))
+        report.add_decision(
+            RedactionDecision(
+                path="$.x",
+                value="v",
+                action="rejected",
+                reason="pii",
+            )
+        )
         summary = report.format_summary()
         assert "chatgpt" in summary
         assert "pii" in summary
@@ -75,8 +99,7 @@ class TestFormatMarkdown:
     def test_markdown_includes_borderline(self) -> None:
         report = SchemaReport(provider="test")
         report.borderline_decisions = [
-            RedactionDecision(path="$.x", value="borderline_val", action="rejected",
-                            reason="high_entropy", count=150),
+            RedactionDecision(path="$.x", value="borderline_val", action="rejected", reason="high_entropy", count=150),
         ]
         md = report.format_markdown()
         assert "borderline_val" in md

@@ -36,9 +36,7 @@ async def _summary_pages(*pages):
 
 
 def _configure_summary_pages(repo: AsyncMock, summaries):
-    repo.iter_summary_pages = MagicMock(
-        side_effect=lambda *args, **kwargs: _summary_pages(summaries)
-    )
+    repo.iter_summary_pages = MagicMock(side_effect=lambda *args, **kwargs: _summary_pages(summaries))
     repo.iter_messages = _empty_messages
 
 
@@ -47,9 +45,6 @@ def _make_backend() -> AsyncMock:
     backend.queries = MagicMock()
     backend.queries.get_message_counts_batch = AsyncMock(return_value={})
     return backend
-
-
-
 
 
 @settings(max_examples=60, deadline=None)
@@ -64,8 +59,7 @@ def test_conversation_index_from_summary_contract(spec) -> None:
     assert index.message_count == spec.message_count
     assert index.preview == (spec.summary or "")
     assert index.path == (
-        f"{safe_path_component(spec.provider, fallback='provider')}/"
-        f"{spec.conversation_id[:12]}/conversation.html"
+        f"{safe_path_component(spec.provider, fallback='provider')}/{spec.conversation_id[:12]}/conversation.html"
     )
     if summary.created_at is not None:
         assert index.created_at == summary.created_at.strftime("%Y-%m-%d")
@@ -299,16 +293,19 @@ def test_site_builder_root_and_provider_index_contract() -> None:
         )
 
         asyncio.run(builder._generate_root_index(archive_stats, generated_at="2026-03-11 10:00"))
-        provider_pages = asyncio.run(
-            builder._generate_provider_indexes(archive_stats, generated_at="2026-03-11 10:00")
-        )
+        provider_pages = asyncio.run(builder._generate_provider_indexes(archive_stats, generated_at="2026-03-11 10:00"))
 
         assert provider_pages == 2
         calls = builder._write_template_stream.await_args_list
         assert calls[0].args[1] == builder.output_dir / "index.html"
         assert calls[0].kwargs["conversations"] == archive_stats.root_page_conversations
-        assert calls[1].args[1] == builder.output_dir / safe_path_component("claude-ai", fallback="provider") / "index.html"
-        assert calls[2].args[1] == builder.output_dir / safe_path_component("chatgpt", fallback="provider") / "index.html"
+        assert (
+            calls[1].args[1]
+            == builder.output_dir / safe_path_component("claude-ai", fallback="provider") / "index.html"
+        )
+        assert (
+            calls[2].args[1] == builder.output_dir / safe_path_component("chatgpt", fallback="provider") / "index.html"
+        )
 
 
 def test_site_builder_pagefind_config_contract() -> None:

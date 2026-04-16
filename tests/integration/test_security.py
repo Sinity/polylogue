@@ -66,7 +66,7 @@ def test_zip_bomb_compression_ratio_blocked(tmp_path) -> None:
     zip_path = tmp_path / "suspicious.zip"
     json_content = b'{"id": "test", "messages": []}'
     with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-        zf.writestr("bomb.json", b'\x00' * (1024 * 1024))
+        zf.writestr("bomb.json", b"\x00" * (1024 * 1024))
         zf.writestr("valid.json", json_content)
 
     source = Source(name="test", path=tmp_path)
@@ -76,8 +76,7 @@ def test_zip_bomb_compression_ratio_blocked(tmp_path) -> None:
     assert cursor_state.get("failed_count", 0) >= 1 or not failed
     if failed:
         has_expected_error = any(
-            "ratio" in str(f.get("error", "")).lower() or "json" in str(f.get("error", "")).lower()
-            for f in failed
+            "ratio" in str(f.get("error", "")).lower() or "json" in str(f.get("error", "")).lower() for f in failed
         )
         assert has_expected_error or len(failed) == 0
 

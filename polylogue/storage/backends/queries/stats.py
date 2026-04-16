@@ -28,31 +28,39 @@ async def aggregate_message_stats(
             [(cid,) for cid in conversation_ids],
         )
 
-        msg_row = await (await conn.execute("""
+        msg_row = await (
+            await conn.execute("""
             SELECT SUM(cnt) FROM (
                 SELECT COUNT(*) as cnt FROM messages
                 WHERE conversation_id IN (SELECT cid FROM _stat_ids)
                 GROUP BY conversation_id
             )
-        """)).fetchone()
+        """)
+        ).fetchone()
         msg_total = msg_row[0] or 0
 
-        date_row = await (await conn.execute("""
+        date_row = await (
+            await conn.execute("""
             SELECT MIN(sort_key) as min_sk, MAX(sort_key) as max_sk
             FROM conversations WHERE conversation_id IN (SELECT cid FROM _stat_ids)
-        """)).fetchone()
+        """)
+        ).fetchone()
 
-        prov_rows = await (await conn.execute("""
+        prov_rows = await (
+            await conn.execute("""
             SELECT provider_name, COUNT(*) as cnt
             FROM conversations WHERE conversation_id IN (SELECT cid FROM _stat_ids)
             GROUP BY provider_name ORDER BY cnt DESC
-        """)).fetchall()
+        """)
+        ).fetchall()
         providers = {r["provider_name"]: r["cnt"] for r in prov_rows}
 
-        att_row = await (await conn.execute("""
+        att_row = await (
+            await conn.execute("""
             SELECT COUNT(*) as cnt FROM attachment_refs
             WHERE conversation_id IN (SELECT cid FROM _stat_ids)
-        """)).fetchone()
+        """)
+        ).fetchone()
 
         await conn.execute("DROP TABLE IF EXISTS _stat_ids")
 
@@ -84,13 +92,15 @@ async def aggregate_message_stats(
     # Unfiltered path
     msg_total = (await (await conn.execute("SELECT COUNT(*) FROM messages")).fetchone())[0] or 0
 
-    date_row = await (await conn.execute(
-        "SELECT MIN(sort_key) as min_sk, MAX(sort_key) as max_sk FROM conversations"
-    )).fetchone()
+    date_row = await (
+        await conn.execute("SELECT MIN(sort_key) as min_sk, MAX(sort_key) as max_sk FROM conversations")
+    ).fetchone()
 
-    prov_rows = await (await conn.execute(
-        "SELECT provider_name, COUNT(*) as cnt FROM conversations GROUP BY provider_name ORDER BY cnt DESC"
-    )).fetchall()
+    prov_rows = await (
+        await conn.execute(
+            "SELECT provider_name, COUNT(*) as cnt FROM conversations GROUP BY provider_name ORDER BY cnt DESC"
+        )
+    ).fetchall()
     providers = {r["provider_name"]: r["cnt"] for r in prov_rows}
 
     att_cnt = (await (await conn.execute("SELECT COUNT(*) FROM attachment_refs")).fetchone())[0] or 0
@@ -101,11 +111,9 @@ async def aggregate_message_stats(
         "assistant": 0,
         "system": 0,
         "words_approx": (
-            (
-                await (
-                    await conn.execute("SELECT SUM(word_count) as words_approx FROM conversation_stats")
-                ).fetchone()
-            )["words_approx"]
+            (await (await conn.execute("SELECT SUM(word_count) as words_approx FROM conversation_stats")).fetchone())[
+                "words_approx"
+            ]
             or 0
         ),
         "attachments": att_cnt,
@@ -145,9 +153,7 @@ async def upsert_conversation_stats(
         await conn.commit()
 
 
-async def get_stats_by(
-    conn: aiosqlite.Connection, group_by: str = "provider"
-) -> dict[str, int]:
+async def get_stats_by(conn: aiosqlite.Connection, group_by: str = "provider") -> dict[str, int]:
     """Get conversation counts grouped by provider, month, or year."""
     if group_by == "month":
         cursor = await conn.execute(

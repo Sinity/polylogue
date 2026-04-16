@@ -71,9 +71,7 @@ def build_tool_calls_from_content_blocks(
         return ()
 
     normalized_provider = (
-        provider
-        if isinstance(provider, Provider)
-        else Provider.from_string(provider) if provider is not None else None
+        provider if isinstance(provider, Provider) else Provider.from_string(provider) if provider is not None else None
     )
     calls: list[ToolCall] = []
     for block in tool_use_blocks:

@@ -95,30 +95,38 @@ class ChatGPTMessage(BaseModel):
 
         content_type = self.content.content_type
         if content_type == "text":
-            blocks.append(ContentBlock(
-                type=ContentType.TEXT,
-                text=self.text_content,
-                raw=self.content.model_dump(),
-            ))
+            blocks.append(
+                ContentBlock(
+                    type=ContentType.TEXT,
+                    text=self.text_content,
+                    raw=self.content.model_dump(),
+                )
+            )
         elif content_type == "code":
-            blocks.append(ContentBlock(
-                type=ContentType.CODE,
-                text=self.text_content,
-                language=self.content.language,
-                raw=self.content.model_dump(),
-            ))
+            blocks.append(
+                ContentBlock(
+                    type=ContentType.CODE,
+                    text=self.text_content,
+                    language=self.content.language,
+                    raw=self.content.model_dump(),
+                )
+            )
         elif "tether" in content_type or "browse" in content_type:
-            blocks.append(ContentBlock(
-                type=ContentType.TOOL_RESULT,
-                text=self.text_content,
-                raw=self.content.model_dump(),
-            ))
+            blocks.append(
+                ContentBlock(
+                    type=ContentType.TOOL_RESULT,
+                    text=self.text_content,
+                    raw=self.content.model_dump(),
+                )
+            )
         else:
-            blocks.append(ContentBlock(
-                type=ContentType.UNKNOWN,
-                text=self.text_content,
-                raw=self.content.model_dump(),
-            ))
+            blocks.append(
+                ContentBlock(
+                    type=ContentType.UNKNOWN,
+                    text=self.text_content,
+                    raw=self.content.model_dump(),
+                )
+            )
 
         return blocks
 

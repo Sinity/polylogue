@@ -52,6 +52,7 @@ def _make_ref_id(attachment_id: AttachmentId, conversation_id: ConversationId, m
     digest = hashlib.sha256(seed.encode("utf-8")).hexdigest()[:16]
     return f"ref-{digest}"
 
+
 __all__ = [
     "ACTION_EVENT_MATERIALIZER_VERSION",
     "ActionEventRecord",

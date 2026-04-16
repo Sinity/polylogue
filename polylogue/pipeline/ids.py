@@ -212,12 +212,14 @@ def conversation_content_hash(convo: ParsedConversation) -> ContentHash:
             item.get("name") or "",
         ),
     )
-    return ContentHash(hash_payload(
-        {
-            "title": _normalize_for_hash(convo.title),
-            "created_at": _normalize_for_hash(convo.created_at),
-            "updated_at": _normalize_for_hash(convo.updated_at),
-            "messages": messages_payload,
-            "attachments": attachments_payload,
-        }
-    ))
+    return ContentHash(
+        hash_payload(
+            {
+                "title": _normalize_for_hash(convo.title),
+                "created_at": _normalize_for_hash(convo.created_at),
+                "updated_at": _normalize_for_hash(convo.updated_at),
+                "messages": messages_payload,
+                "attachments": attachments_payload,
+            }
+        )
+    )

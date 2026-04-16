@@ -43,31 +43,39 @@ def _build_click_params(pt: ProductType) -> list[click.Parameter]:
         if opt.is_flag:
             kwargs["is_flag"] = True
 
-        params.append(click.Option(
-            opt.flags,
-            **kwargs,
-        ))
+        params.append(
+            click.Option(
+                opt.flags,
+                **kwargs,
+            )
+        )
 
     # Standard options on every product command
-    params.append(click.Option(
-        ("--limit",),
-        type=int,
-        default=pt.mcp_default_limit,
-        show_default=True,
-        help="Maximum rows",
-    ))
-    params.append(click.Option(
-        ("--offset",),
-        type=int,
-        default=0,
-        show_default=True,
-        help="Start offset",
-    ))
-    params.append(click.Option(
-        ("--json", "json_mode"),
-        is_flag=True,
-        help="Output as JSON",
-    ))
+    params.append(
+        click.Option(
+            ("--limit",),
+            type=int,
+            default=pt.mcp_default_limit,
+            show_default=True,
+            help="Maximum rows",
+        )
+    )
+    params.append(
+        click.Option(
+            ("--offset",),
+            type=int,
+            default=0,
+            show_default=True,
+            help="Start offset",
+        )
+    )
+    params.append(
+        click.Option(
+            ("--json", "json_mode"),
+            is_flag=True,
+            help="Output as JSON",
+        )
+    )
 
     return params
 
@@ -88,9 +96,7 @@ def _make_callback(pt: ProductType):
     """
     # Pre-resolve accepted fields so we only inject keys the query class understands.
     query_cls = _resolve_query_class(pt.query_class_path)
-    accepted_root_keys = frozenset(
-        k for k in _ROOT_FILTER_KEYS if k in query_cls.model_fields
-    )
+    accepted_root_keys = frozenset(k for k in _ROOT_FILTER_KEYS if k in query_cls.model_fields)
 
     @click.pass_context
     def callback(ctx: click.Context, json_mode: bool = False, **kwargs: Any) -> None:

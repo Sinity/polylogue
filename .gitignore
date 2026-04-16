@@ -19,22 +19,32 @@ build/
 .venv/
 venv/
 
-# Tool caches
-.pytest_cache/
-.hypothesis/
-.mypy_cache/
-.ruff_cache/
+# Repo-local caches and generated working state
+/.cache/*
+!/.cache/README.md
+/.local/*
+!/.local/README.md
 .claude/scratch/
 .claude/worktrees/
 .claude/*.local.*
 
+# Legacy cache/output directories that may still appear at the repo root
+.pytest_cache/
+.hypothesis/
+.mypy_cache/
+.ruff_cache/
+.benchmarks/
+artifacts/
+
 # Coverage
 .coverage
+.coverage.*
 coverage.json
 htmlcov/
 
 # Nix build output
 result
+result-*
 
 .scratch
 
@@ -44,12 +54,11 @@ AGENTS.override.md
 .cclsp.json
 .mcp.json
 
-# Local generated artifacts (kept out of the repo root)
-/artifacts/*
-!/artifacts/README.md
-
 # Legacy build-tool defaults that may still appear at the repo root
 dist/
 
 # Generated agent surface
 AGENTS.md
+
+# Build metadata embedded into release artifacts
+polylogue/_build_info.py

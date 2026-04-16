@@ -172,7 +172,9 @@ def test_resolve_token_path_contract(
     env_path: str | None,
     expected: Path,
 ) -> None:
-    monkeypatch.setattr("polylogue.sources.drive_auth.default_token_path", lambda config: Path("/tmp/default-token.json"))
+    monkeypatch.setattr(
+        "polylogue.sources.drive_auth.default_token_path", lambda config: Path("/tmp/default-token.json")
+    )
     if env_path is None:
         monkeypatch.delenv("POLYLOGUE_TOKEN_PATH", raising=False)
     else:
@@ -334,9 +336,7 @@ AUTH_LOAD_CASES = [
 
 
 @pytest.mark.parametrize("case", AUTH_LOAD_CASES, ids=lambda case: case.name)
-def test_load_credentials_state_machine(
-    case: AuthLoadCase, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
+def test_load_credentials_state_machine(case: AuthLoadCase, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     token_path = tmp_path / "token.json"
     if case.token_file_value is not None:
         token_path.write_text(case.token_file_value, encoding="utf-8")
@@ -369,9 +369,11 @@ def test_load_credentials_state_machine(
     monkeypatch.setattr("polylogue.sources.drive_auth._import_auth_module", fake_import)
 
     if case.refreshes and creds is not None:
+
         def refresh(_request) -> None:
             creds.valid = True
             creds.expired = False
+
         creds.refresh.side_effect = refresh
 
     if case.expect_message is not None:
@@ -418,9 +420,11 @@ def test_refresh_credentials_if_needed_contract(tmp_path: Path, monkeypatch: pyt
     creds.refresh.side_effect = refresh
     monkeypatch.setattr(
         "polylogue.sources.drive_auth._import_auth_module",
-        lambda name: SimpleNamespace(Request=lambda: request)
-        if name == "google.auth.transport.requests"
-        else (_ for _ in ()).throw(AssertionError(name)),
+        lambda name: (
+            SimpleNamespace(Request=lambda: request)
+            if name == "google.auth.transport.requests"
+            else (_ for _ in ()).throw(AssertionError(name))
+        ),
     )
 
     result = mgr._refresh_credentials_if_needed(creds, token_path)
@@ -463,9 +467,7 @@ def test_load_credentials_uses_manual_flow_when_local_server_fails(
     mgr._token_store.save.assert_called_once_with("drive_token", '{"token":"manual"}')
 
 
-def test_load_credentials_returns_local_server_result(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
+def test_load_credentials_returns_local_server_result(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     credentials_path = tmp_path / "client.json"
     credentials_path.write_text('{"installed":{}}', encoding="utf-8")
     token_path = tmp_path / "token.json"

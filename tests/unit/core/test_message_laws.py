@@ -4,6 +4,7 @@ These laws encode structural guarantees that hold for any Message or
 Conversation. Example-heavy semantic projections live in
 ``test_conversation_semantics.py``.
 """
+
 from __future__ import annotations
 
 from hypothesis import given

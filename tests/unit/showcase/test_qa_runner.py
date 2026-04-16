@@ -40,9 +40,11 @@ def _make_showcase_result(output_dir) -> ShowcaseResult:
 def test_save_qa_reports_writes_composed_session_artifacts(tmp_path):
     report_dir = tmp_path / "qa"
     qa_result = QAResult(
-        audit_report=AuditReport(checks=[
-            OutcomeCheck(name="privacy", status=OutcomeStatus.OK, summary="ok"),
-        ]),
+        audit_report=AuditReport(
+            checks=[
+                OutcomeCheck(name="privacy", status=OutcomeStatus.OK, summary="ok"),
+            ]
+        ),
         proof_report=ArtifactProofReport(
             providers={
                 "chatgpt": ProviderArtifactProof(

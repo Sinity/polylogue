@@ -54,13 +54,12 @@ def _register_list_tool(
                 kwargs["offset"] = max(0, int(kwargs["offset"]))
             products = await fetch_products_async(pt, ops, **kwargs)
             return hooks.json_payload(
-                MCPRootPayload(root={
-                    "count": len(products),
-                    "items": [
-                        p.model_dump(mode="json") if hasattr(p, "model_dump") else p
-                        for p in products
-                    ],
-                })
+                MCPRootPayload(
+                    root={
+                        "count": len(products),
+                        "items": [p.model_dump(mode="json") if hasattr(p, "model_dump") else p for p in products],
+                    }
+                )
             )
 
         return await hooks.async_safe_call(pt.name, run)
@@ -76,7 +75,9 @@ def _register_list_tool(
         default = field_defaults.get(fname)
         # FastMCP reads annotations from __annotations__, so we build them
         if fname == "limit":
-            params.append(inspect.Parameter(fname, inspect.Parameter.KEYWORD_ONLY, default=pt.mcp_default_limit, annotation=int))
+            params.append(
+                inspect.Parameter(fname, inspect.Parameter.KEYWORD_ONLY, default=pt.mcp_default_limit, annotation=int)
+            )
         elif fname == "offset":
             params.append(inspect.Parameter(fname, inspect.Parameter.KEYWORD_ONLY, default=0, annotation=int))
         elif isinstance(default, str):
@@ -84,7 +85,9 @@ def _register_list_tool(
         elif isinstance(default, int):
             params.append(inspect.Parameter(fname, inspect.Parameter.KEYWORD_ONLY, default=default, annotation=int))
         else:
-            params.append(inspect.Parameter(fname, inspect.Parameter.KEYWORD_ONLY, default=None, annotation="str | None"))
+            params.append(
+                inspect.Parameter(fname, inspect.Parameter.KEYWORD_ONLY, default=None, annotation="str | None")
+            )
 
     # Remove the placeholder — FastMCP doesn't need it
     params = params[1:]
@@ -124,6 +127,7 @@ def register_product_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
     @mcp.tool()
     async def session_profile(conversation_id: str, tier: str = "merged") -> str:
         """Get a single session profile by conversation ID."""
+
         async def run() -> str:
             product = await hooks.get_archive_ops().get_session_profile_product(
                 conversation_id,
@@ -138,6 +142,7 @@ def register_product_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
     @mcp.tool()
     async def archive_coverage() -> str:
         """Show archive coverage statistics."""
+
         async def run() -> str:
             from polylogue.lib.coverage import analyze_coverage
 

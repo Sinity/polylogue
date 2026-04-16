@@ -2,7 +2,7 @@
 
 Only protocols with 2+ implementations earn their existence here:
 - SearchProvider: FTS5, Hybrid
-- VectorProvider: sqlite-vec (optional, requires VOYAGE_API_KEY)
+- VectorProvider: sqlite-vec (optional, requires `VOYAGE_API_KEY`)
 - OutputRenderer: Markdown, HTML
 """
 

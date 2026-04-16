@@ -138,14 +138,19 @@ def count_orphaned_attachments_sync(conn: sqlite3.Connection) -> int:
 
 def session_product_repair_count(derived_statuses: dict[str, DerivedModelStatus]) -> int:
     keys = [
-        "session_profile_rows", "session_profile_merged_fts",
-        "session_profile_evidence_fts", "session_profile_inference_fts",
+        "session_profile_rows",
+        "session_profile_merged_fts",
+        "session_profile_evidence_fts",
+        "session_profile_inference_fts",
         "session_profile_enrichment_fts",
-        "session_work_event_inference", "session_work_event_inference_fts",
+        "session_work_event_inference",
+        "session_work_event_inference_fts",
         "session_phase_inference",
-        "work_threads", "work_threads_fts",
+        "work_threads",
+        "work_threads_fts",
         "session_tag_rollups",
-        "day_session_summaries", "week_session_summaries",
+        "day_session_summaries",
+        "week_session_summaries",
     ]
     statuses = [derived_statuses.get(k) for k in keys]
     if not all(s is not None for s in statuses):
@@ -239,7 +244,9 @@ def collect_archive_debt_statuses_sync(
             category=_CAT_CLEANUP,
             destructive=True,
             issue_count=orphaned_content_blocks,
-            detail="No orphaned content blocks" if orphaned_content_blocks == 0 else f"{orphaned_content_blocks:,} orphaned content blocks",
+            detail="No orphaned content blocks"
+            if orphaned_content_blocks == 0
+            else f"{orphaned_content_blocks:,} orphaned content blocks",
             maintenance_target="orphaned_content_blocks",
         ),
         "empty_conversations": ArchiveDebtStatus(
@@ -247,7 +254,9 @@ def collect_archive_debt_statuses_sync(
             category=_CAT_CLEANUP,
             destructive=True,
             issue_count=empty_conversations,
-            detail="No empty conversations" if empty_conversations == 0 else f"{empty_conversations:,} empty conversations",
+            detail="No empty conversations"
+            if empty_conversations == 0
+            else f"{empty_conversations:,} empty conversations",
             maintenance_target="empty_conversations",
         ),
         "orphaned_attachments": ArchiveDebtStatus(
@@ -255,7 +264,9 @@ def collect_archive_debt_statuses_sync(
             category=_CAT_CLEANUP,
             destructive=True,
             issue_count=orphaned_attachments,
-            detail="No orphaned attachments" if orphaned_attachments == 0 else f"{orphaned_attachments:,} orphaned attachment rows",
+            detail="No orphaned attachments"
+            if orphaned_attachments == 0
+            else f"{orphaned_attachments:,} orphaned attachment rows",
             maintenance_target="orphaned_attachments",
         ),
         "session_products": ArchiveDebtStatus(
@@ -263,7 +274,9 @@ def collect_archive_debt_statuses_sync(
             category=_CAT_DERIVED,
             destructive=False,
             issue_count=session_products,
-            detail="Session-product read models ready" if session_products == 0 else f"{session_products:,} pending/stale/orphaned session-product rows",
+            detail="Session-product read models ready"
+            if session_products == 0
+            else f"{session_products:,} pending/stale/orphaned session-product rows",
             maintenance_target="session_products",
         ),
         "action_event_read_model": ArchiveDebtStatus(
@@ -271,7 +284,9 @@ def collect_archive_debt_statuses_sync(
             category=_CAT_DERIVED,
             destructive=False,
             issue_count=action_events,
-            detail="Action-event read model ready" if action_events == 0 else f"{action_events:,} pending/stale action-event rows",
+            detail="Action-event read model ready"
+            if action_events == 0
+            else f"{action_events:,} pending/stale action-event rows",
             maintenance_target="action_event_read_model",
         ),
         "dangling_fts": ArchiveDebtStatus(
@@ -291,7 +306,8 @@ def preview_counts_from_archive_debt(
     return {
         status.maintenance_target: status.issue_count
         for status in statuses.values()
-        if status.issue_count > 0 or status.maintenance_target in {"session_products", "action_event_read_model", "dangling_fts"}
+        if status.issue_count > 0
+        or status.maintenance_target in {"session_products", "action_event_read_model", "dangling_fts"}
     }
 
 
@@ -314,20 +330,41 @@ def _run_sql_repair(
         count = conn.execute(count_sql).fetchone()[0]
         if dry_run:
             return RepairResult(
-                name=name, category=category, destructive=destructive, repaired_count=count, success=True,
+                name=name,
+                category=category,
+                destructive=destructive,
+                repaired_count=count,
+                success=True,
                 detail=f"Would: {count} rows affected" if count else "Would: No issues found",
             )
         if action_sql:
             result = conn.execute(action_sql)
             conn.commit()
             return RepairResult(
-                name=name, category=category, destructive=destructive,
-                repaired_count=result.rowcount, success=True,
+                name=name,
+                category=category,
+                destructive=destructive,
+                repaired_count=result.rowcount,
+                success=True,
                 detail=f"Repaired {result.rowcount} rows" if result.rowcount else "No repairs needed",
             )
-        return RepairResult(name=name, category=category, destructive=destructive, repaired_count=0, success=True, detail="No action SQL provided")
+        return RepairResult(
+            name=name,
+            category=category,
+            destructive=destructive,
+            repaired_count=0,
+            success=True,
+            detail="No action SQL provided",
+        )
     except Exception as exc:
-        return RepairResult(name=name, category=category, destructive=destructive, repaired_count=0, success=False, detail=f"Repair failed: {exc}")
+        return RepairResult(
+            name=name,
+            category=category,
+            destructive=destructive,
+            repaired_count=0,
+            success=False,
+            detail=f"Repair failed: {exc}",
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -341,23 +378,60 @@ def repair_orphaned_messages(config: Any, dry_run: bool = False) -> RepairResult
     with connection_context(None) as conn:
         count = count_orphaned_messages_sync(conn)
         if count == 0:
-            return RepairResult(name="orphaned_messages", category=_CAT_CLEANUP, destructive=True, repaired_count=0, success=True, detail="No orphaned messages found")
+            return RepairResult(
+                name="orphaned_messages",
+                category=_CAT_CLEANUP,
+                destructive=True,
+                repaired_count=0,
+                success=True,
+                detail="No orphaned messages found",
+            )
         try:
             if dry_run:
-                return RepairResult(name="orphaned_messages", category=_CAT_CLEANUP, destructive=True, repaired_count=count, success=True, detail=f"Would: Delete {count} orphaned messages")
+                return RepairResult(
+                    name="orphaned_messages",
+                    category=_CAT_CLEANUP,
+                    destructive=True,
+                    repaired_count=count,
+                    success=True,
+                    detail=f"Would: Delete {count} orphaned messages",
+                )
             orphan_cids = conn.execute(
                 "SELECT DISTINCT conversation_id FROM messages WHERE NOT EXISTS (SELECT 1 FROM conversations c WHERE c.conversation_id = messages.conversation_id)"
             ).fetchall()
             placeholders = ",".join("?" for _ in orphan_cids)
-            result = conn.execute(f"DELETE FROM messages WHERE conversation_id IN ({placeholders})", [row[0] for row in orphan_cids])
+            result = conn.execute(
+                f"DELETE FROM messages WHERE conversation_id IN ({placeholders})", [row[0] for row in orphan_cids]
+            )
             conn.commit()
-            return RepairResult(name="orphaned_messages", category=_CAT_CLEANUP, destructive=True, repaired_count=result.rowcount, success=True, detail=f"Deleted {result.rowcount} orphaned messages")
+            return RepairResult(
+                name="orphaned_messages",
+                category=_CAT_CLEANUP,
+                destructive=True,
+                repaired_count=result.rowcount,
+                success=True,
+                detail=f"Deleted {result.rowcount} orphaned messages",
+            )
         except Exception as exc:
-            return RepairResult(name="orphaned_messages", category=_CAT_CLEANUP, destructive=True, repaired_count=0, success=False, detail=f"Failed to delete orphaned messages: {exc}")
+            return RepairResult(
+                name="orphaned_messages",
+                category=_CAT_CLEANUP,
+                destructive=True,
+                repaired_count=0,
+                success=False,
+                detail=f"Failed to delete orphaned messages: {exc}",
+            )
 
 
 def preview_orphaned_messages(*, count: int) -> RepairResult:
-    return RepairResult(name="orphaned_messages", category=_CAT_CLEANUP, destructive=True, repaired_count=count, success=True, detail=f"Would: Delete {count} orphaned messages" if count else "Would: No orphaned messages found")
+    return RepairResult(
+        name="orphaned_messages",
+        category=_CAT_CLEANUP,
+        destructive=True,
+        repaired_count=count,
+        success=True,
+        detail=f"Would: Delete {count} orphaned messages" if count else "Would: No orphaned messages found",
+    )
 
 
 def repair_empty_conversations(config: Any, dry_run: bool = False) -> RepairResult:
@@ -365,15 +439,25 @@ def repair_empty_conversations(config: Any, dry_run: bool = False) -> RepairResu
 
     with connection_context(None) as conn:
         return _run_sql_repair(
-            name="empty_conversations", category=_CAT_CLEANUP, destructive=True,
+            name="empty_conversations",
+            category=_CAT_CLEANUP,
+            destructive=True,
             count_sql="SELECT COUNT(*) FROM conversations c WHERE NOT EXISTS (SELECT 1 FROM messages m WHERE m.conversation_id = c.conversation_id)",
             action_sql="DELETE FROM conversations WHERE NOT EXISTS (SELECT 1 FROM messages m WHERE m.conversation_id = conversations.conversation_id)",
-            dry_run=dry_run, conn=conn,
+            dry_run=dry_run,
+            conn=conn,
         )
 
 
 def preview_empty_conversations(*, count: int) -> RepairResult:
-    return RepairResult(name="empty_conversations", category=_CAT_CLEANUP, destructive=True, repaired_count=count, success=True, detail=f"Would: {count} rows affected" if count else "Would: No issues found")
+    return RepairResult(
+        name="empty_conversations",
+        category=_CAT_CLEANUP,
+        destructive=True,
+        repaired_count=count,
+        success=True,
+        detail=f"Would: {count} rows affected" if count else "Would: No issues found",
+    )
 
 
 def repair_orphaned_content_blocks(config: Any, dry_run: bool = False) -> RepairResult:
@@ -384,7 +468,9 @@ def repair_orphaned_content_blocks(config: Any, dry_run: bool = False) -> Repair
             count = count_orphaned_content_blocks_sync(conn)
             return preview_orphaned_content_blocks(count=count)
         return _run_sql_repair(
-            name="orphaned_content_blocks", category=_CAT_CLEANUP, destructive=True,
+            name="orphaned_content_blocks",
+            category=_CAT_CLEANUP,
+            destructive=True,
             count_sql="""
                 SELECT COUNT(*) FROM content_blocks cb
                 WHERE NOT EXISTS (SELECT 1 FROM conversations c WHERE c.conversation_id = cb.conversation_id)
@@ -395,12 +481,20 @@ def repair_orphaned_content_blocks(config: Any, dry_run: bool = False) -> Repair
                 WHERE NOT EXISTS (SELECT 1 FROM conversations c WHERE c.conversation_id = content_blocks.conversation_id)
                    OR NOT EXISTS (SELECT 1 FROM messages m WHERE m.message_id = content_blocks.message_id)
             """,
-            dry_run=dry_run, conn=conn,
+            dry_run=dry_run,
+            conn=conn,
         )
 
 
 def preview_orphaned_content_blocks(*, count: int) -> RepairResult:
-    return RepairResult(name="orphaned_content_blocks", category=_CAT_CLEANUP, destructive=True, repaired_count=count, success=True, detail=f"Would: {count} rows affected" if count else "Would: No issues found")
+    return RepairResult(
+        name="orphaned_content_blocks",
+        category=_CAT_CLEANUP,
+        destructive=True,
+        repaired_count=count,
+        success=True,
+        detail=f"Would: {count} rows affected" if count else "Would: No issues found",
+    )
 
 
 def repair_orphaned_attachments(config: Any, dry_run: bool = False) -> RepairResult:
@@ -429,16 +523,33 @@ def repair_orphaned_attachments(config: Any, dry_run: bool = False) -> RepairRes
 
             total = refs_deleted + conv_refs_deleted + atts_deleted
             return RepairResult(
-                name="orphaned_attachments", category=_CAT_CLEANUP, destructive=True,
-                repaired_count=total, success=True,
+                name="orphaned_attachments",
+                category=_CAT_CLEANUP,
+                destructive=True,
+                repaired_count=total,
+                success=True,
                 detail=f"Cleaned {refs_deleted} orphaned refs, {conv_refs_deleted} conv refs, {atts_deleted} attachments",
             )
     except Exception as exc:
-        return RepairResult(name="orphaned_attachments", category=_CAT_CLEANUP, destructive=True, repaired_count=0, success=False, detail=f"Failed to clean orphaned attachments: {exc}")
+        return RepairResult(
+            name="orphaned_attachments",
+            category=_CAT_CLEANUP,
+            destructive=True,
+            repaired_count=0,
+            success=False,
+            detail=f"Failed to clean orphaned attachments: {exc}",
+        )
 
 
 def preview_orphaned_attachments(*, count: int) -> RepairResult:
-    return RepairResult(name="orphaned_attachments", category=_CAT_CLEANUP, destructive=True, repaired_count=count, success=True, detail=f"Would: Clean {count} orphaned attachment rows" if count else "Would: No orphaned attachments found")
+    return RepairResult(
+        name="orphaned_attachments",
+        category=_CAT_CLEANUP,
+        destructive=True,
+        repaired_count=count,
+        success=True,
+        detail=f"Would: Clean {count} orphaned attachment rows" if count else "Would: No orphaned attachments found",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -454,15 +565,25 @@ def repair_session_products(config: Any, dry_run: bool = False) -> RepairResult:
     try:
         with connection_context(None) as conn:
             status = session_product_status_sync(conn)
-            profile_merged_fts_pending = max(0, int(status["profile_row_count"]) - int(status["profile_merged_fts_count"]))
+            profile_merged_fts_pending = max(
+                0, int(status["profile_row_count"]) - int(status["profile_merged_fts_count"])
+            )
             profile_merged_fts_duplicates = max(0, int(status.get("profile_merged_fts_duplicate_count", 0)))
-            profile_evidence_fts_pending = max(0, int(status["profile_row_count"]) - int(status["profile_evidence_fts_count"]))
+            profile_evidence_fts_pending = max(
+                0, int(status["profile_row_count"]) - int(status["profile_evidence_fts_count"])
+            )
             profile_evidence_fts_duplicates = max(0, int(status.get("profile_evidence_fts_duplicate_count", 0)))
-            profile_inference_fts_pending = max(0, int(status["profile_row_count"]) - int(status["profile_inference_fts_count"]))
+            profile_inference_fts_pending = max(
+                0, int(status["profile_row_count"]) - int(status["profile_inference_fts_count"])
+            )
             profile_inference_fts_duplicates = max(0, int(status.get("profile_inference_fts_duplicate_count", 0)))
-            profile_enrichment_fts_pending = max(0, int(status["profile_row_count"]) - int(status["profile_enrichment_fts_count"]))
+            profile_enrichment_fts_pending = max(
+                0, int(status["profile_row_count"]) - int(status["profile_enrichment_fts_count"])
+            )
             profile_enrichment_fts_duplicates = max(0, int(status.get("profile_enrichment_fts_duplicate_count", 0)))
-            work_event_fts_pending = max(0, int(status["work_event_inference_count"]) - int(status["work_event_inference_fts_count"]))
+            work_event_fts_pending = max(
+                0, int(status["work_event_inference_count"]) - int(status["work_event_inference_fts_count"])
+            )
             work_event_fts_duplicates = max(0, int(status.get("work_event_inference_fts_duplicate_count", 0)))
             thread_fts_pending = max(0, int(status["thread_count"]) - int(status["thread_fts_count"]))
             thread_fts_duplicates = max(0, int(status.get("thread_fts_duplicate_count", 0)))
@@ -478,19 +599,30 @@ def repair_session_products(config: Any, dry_run: bool = False) -> RepairResult:
                 + int(status["orphan_thread_count"])
                 + int(status["stale_tag_rollup_count"])
                 + int(status["stale_day_summary_count"])
-                + profile_merged_fts_pending + profile_merged_fts_duplicates
-                + profile_evidence_fts_pending + profile_evidence_fts_duplicates
-                + profile_inference_fts_pending + profile_inference_fts_duplicates
-                + profile_enrichment_fts_pending + profile_enrichment_fts_duplicates
-                + work_event_fts_pending + work_event_fts_duplicates
-                + thread_fts_pending + thread_fts_duplicates
+                + profile_merged_fts_pending
+                + profile_merged_fts_duplicates
+                + profile_evidence_fts_pending
+                + profile_evidence_fts_duplicates
+                + profile_inference_fts_pending
+                + profile_inference_fts_duplicates
+                + profile_enrichment_fts_pending
+                + profile_enrichment_fts_duplicates
+                + work_event_fts_pending
+                + work_event_fts_duplicates
+                + thread_fts_pending
+                + thread_fts_duplicates
             )
 
             if dry_run:
                 return RepairResult(
-                    name="session_products", category=_CAT_DERIVED, destructive=False,
-                    repaired_count=pending, success=True,
-                    detail="Would: session products already ready" if pending == 0 else f"Would: rebuild session products ({pending:,} pending items)",
+                    name="session_products",
+                    category=_CAT_DERIVED,
+                    destructive=False,
+                    repaired_count=pending,
+                    success=True,
+                    detail="Would: session products already ready"
+                    if pending == 0
+                    else f"Would: rebuild session products ({pending:,} pending items)",
                 )
 
             rebuilt = rebuild_session_products_sync(conn)
@@ -512,21 +644,42 @@ def repair_session_products(config: Any, dry_run: bool = False) -> RepairResult:
                 and bool(refreshed["week_summaries_ready"])
             )
             return RepairResult(
-                name="session_products", category=_CAT_DERIVED, destructive=False,
+                name="session_products",
+                category=_CAT_DERIVED,
+                destructive=False,
                 repaired_count=(
-                    int(rebuilt["profiles"]) + int(rebuilt["work_events"])
-                    + int(rebuilt["phases"]) + int(rebuilt["threads"])
-                    + int(rebuilt["tag_rollups"]) + int(rebuilt["day_summaries"])
+                    int(rebuilt["profiles"])
+                    + int(rebuilt["work_events"])
+                    + int(rebuilt["phases"])
+                    + int(rebuilt["threads"])
+                    + int(rebuilt["tag_rollups"])
+                    + int(rebuilt["day_summaries"])
                 ),
                 success=success,
                 detail="Session products ready" if success else "Session products still incomplete",
             )
     except Exception as exc:
-        return RepairResult(name="session_products", category=_CAT_DERIVED, destructive=False, repaired_count=0, success=False, detail=f"Failed to repair session products: {exc}")
+        return RepairResult(
+            name="session_products",
+            category=_CAT_DERIVED,
+            destructive=False,
+            repaired_count=0,
+            success=False,
+            detail=f"Failed to repair session products: {exc}",
+        )
 
 
 def preview_session_products(*, count: int) -> RepairResult:
-    return RepairResult(name="session_products", category=_CAT_DERIVED, destructive=False, repaired_count=count, success=True, detail="Would: session products already ready" if count == 0 else f"Would: rebuild session-product rows/fts for {count:,} pending items")
+    return RepairResult(
+        name="session_products",
+        category=_CAT_DERIVED,
+        destructive=False,
+        repaired_count=count,
+        success=True,
+        detail="Would: session products already ready"
+        if count == 0
+        else f"Would: rebuild session-product rows/fts for {count:,} pending items",
+    )
 
 
 def repair_action_event_read_model(config: Any, dry_run: bool = False) -> RepairResult:
@@ -543,16 +696,23 @@ def repair_action_event_read_model(config: Any, dry_run: bool = False) -> Repair
         with connection_context(None) as conn:
             status = action_event_read_model_status_sync(conn)
             candidate_ids = action_event_repair_candidates_sync(conn)
-            missing_conversations = max(0, int(status["valid_source_conversation_count"]) - int(status["materialized_conversation_count"]))
+            missing_conversations = max(
+                0, int(status["valid_source_conversation_count"]) - int(status["materialized_conversation_count"])
+            )
             stale_conversations = int(status["stale_count"])
             action_fts_pending = max(0, int(status["count"]) - int(status["action_fts_count"]))
             pending = max(len(candidate_ids), missing_conversations + stale_conversations) + action_fts_pending
 
             if dry_run:
                 return RepairResult(
-                    name="action_event_read_model", category=_CAT_DERIVED, destructive=False,
-                    repaired_count=pending, success=True,
-                    detail="Would: action-event read model already ready" if pending == 0 else f"Would: repair action-event rows for {len(candidate_ids):,} conversations; action FTS pending {action_fts_pending:,}",
+                    name="action_event_read_model",
+                    category=_CAT_DERIVED,
+                    destructive=False,
+                    repaired_count=pending,
+                    success=True,
+                    detail="Would: action-event read model already ready"
+                    if pending == 0
+                    else f"Would: repair action-event rows for {len(candidate_ids):,} conversations; action FTS pending {action_fts_pending:,}",
                 )
 
             repaired = 0
@@ -565,16 +725,37 @@ def repair_action_event_read_model(config: Any, dry_run: bool = False) -> Repair
             conn.commit()
             refreshed = action_event_read_model_status_sync(conn)
             return RepairResult(
-                name="action_event_read_model", category=_CAT_DERIVED, destructive=False,
-                repaired_count=repaired + action_fts_pending, success=bool(refreshed["ready"]),
-                detail="Action-event read model ready" if refreshed["ready"] else "Action-event read model still incomplete",
+                name="action_event_read_model",
+                category=_CAT_DERIVED,
+                destructive=False,
+                repaired_count=repaired + action_fts_pending,
+                success=bool(refreshed["ready"]),
+                detail="Action-event read model ready"
+                if refreshed["ready"]
+                else "Action-event read model still incomplete",
             )
     except Exception as exc:
-        return RepairResult(name="action_event_read_model", category=_CAT_DERIVED, destructive=False, repaired_count=0, success=False, detail=f"Failed to repair action-event read model: {exc}")
+        return RepairResult(
+            name="action_event_read_model",
+            category=_CAT_DERIVED,
+            destructive=False,
+            repaired_count=0,
+            success=False,
+            detail=f"Failed to repair action-event read model: {exc}",
+        )
 
 
 def preview_action_event_read_model(*, count: int) -> RepairResult:
-    return RepairResult(name="action_event_read_model", category=_CAT_DERIVED, destructive=False, repaired_count=count, success=True, detail="Would: action-event read model already ready" if count == 0 else f"Would: repair action-event rows/fts for {count:,} pending items")
+    return RepairResult(
+        name="action_event_read_model",
+        category=_CAT_DERIVED,
+        destructive=False,
+        repaired_count=count,
+        success=True,
+        detail="Would: action-event read model already ready"
+        if count == 0
+        else f"Would: repair action-event rows/fts for {count:,} pending items",
+    )
 
 
 def repair_dangling_fts(config: Any, dry_run: bool = False) -> RepairResult:
@@ -582,17 +763,40 @@ def repair_dangling_fts(config: Any, dry_run: bool = False) -> RepairResult:
 
     try:
         with connection_context(None) as conn:
-            fts_exists = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='messages_fts'").fetchone()
+            fts_exists = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='messages_fts'"
+            ).fetchone()
             if not fts_exists:
-                return RepairResult(name="dangling_fts", category=_CAT_DERIVED, destructive=False, repaired_count=0, success=True, detail="FTS table does not exist, skipping")
+                return RepairResult(
+                    name="dangling_fts",
+                    category=_CAT_DERIVED,
+                    destructive=False,
+                    repaired_count=0,
+                    success=True,
+                    detail="FTS table does not exist, skipping",
+                )
 
             if dry_run:
                 msg_count = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
                 fts_count = conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0]
                 diff = abs(msg_count - fts_count)
                 if diff == 0:
-                    return RepairResult(name="dangling_fts", category=_CAT_DERIVED, destructive=False, repaired_count=0, success=True, detail="FTS index in sync")
-                return RepairResult(name="dangling_fts", category=_CAT_DERIVED, destructive=False, repaired_count=diff, success=True, detail=f"Would: FTS sync: {msg_count:,} messages vs {fts_count:,} indexed ({diff:,} difference)")
+                    return RepairResult(
+                        name="dangling_fts",
+                        category=_CAT_DERIVED,
+                        destructive=False,
+                        repaired_count=0,
+                        success=True,
+                        detail="FTS index in sync",
+                    )
+                return RepairResult(
+                    name="dangling_fts",
+                    category=_CAT_DERIVED,
+                    destructive=False,
+                    repaired_count=diff,
+                    success=True,
+                    detail=f"Would: FTS sync: {msg_count:,} messages vs {fts_count:,} indexed ({diff:,} difference)",
+                )
 
             deleted = conn.execute(
                 "DELETE FROM messages_fts WHERE rowid IN (SELECT f.rowid FROM messages_fts f WHERE NOT EXISTS (SELECT 1 FROM messages m WHERE m.rowid = f.rowid))"
@@ -602,13 +806,34 @@ def repair_dangling_fts(config: Any, dry_run: bool = False) -> RepairResult:
             ).rowcount
             conn.commit()
             total = deleted + inserted
-            return RepairResult(name="dangling_fts", category=_CAT_DERIVED, destructive=False, repaired_count=total, success=True, detail=f"FTS sync: deleted {deleted} orphaned, added {inserted} missing entries")
+            return RepairResult(
+                name="dangling_fts",
+                category=_CAT_DERIVED,
+                destructive=False,
+                repaired_count=total,
+                success=True,
+                detail=f"FTS sync: deleted {deleted} orphaned, added {inserted} missing entries",
+            )
     except Exception as exc:
-        return RepairResult(name="dangling_fts", category=_CAT_DERIVED, destructive=False, repaired_count=0, success=False, detail=f"Failed to repair FTS index: {exc}")
+        return RepairResult(
+            name="dangling_fts",
+            category=_CAT_DERIVED,
+            destructive=False,
+            repaired_count=0,
+            success=False,
+            detail=f"Failed to repair FTS index: {exc}",
+        )
 
 
 def preview_dangling_fts(*, count: int) -> RepairResult:
-    return RepairResult(name="dangling_fts", category=_CAT_DERIVED, destructive=False, repaired_count=count, success=True, detail=f"Would: FTS sync pending {count:,} rows" if count else "FTS index in sync")
+    return RepairResult(
+        name="dangling_fts",
+        category=_CAT_DERIVED,
+        destructive=False,
+        repaired_count=count,
+        success=True,
+        detail=f"Would: FTS sync pending {count:,} rows" if count else "FTS index in sync",
+    )
 
 
 def repair_wal_checkpoint(config: Any, dry_run: bool = False) -> RepairResult:
@@ -621,17 +846,52 @@ def repair_wal_checkpoint(config: Any, dry_run: bool = False) -> RepairResult:
             if wal_path.exists():
                 wal_size = wal_path.stat().st_size
                 pages_estimate = wal_size // 4096
-                return RepairResult(name="wal_checkpoint", category=_CAT_DB, destructive=False, repaired_count=pages_estimate, success=True, detail=f"Would: WAL checkpoint (~{pages_estimate} pages, {wal_size:,} bytes)")
-            return RepairResult(name="wal_checkpoint", category=_CAT_DB, destructive=False, repaired_count=0, success=True, detail="Would: No WAL file present, nothing to checkpoint")
+                return RepairResult(
+                    name="wal_checkpoint",
+                    category=_CAT_DB,
+                    destructive=False,
+                    repaired_count=pages_estimate,
+                    success=True,
+                    detail=f"Would: WAL checkpoint (~{pages_estimate} pages, {wal_size:,} bytes)",
+                )
+            return RepairResult(
+                name="wal_checkpoint",
+                category=_CAT_DB,
+                destructive=False,
+                repaired_count=0,
+                success=True,
+                detail="Would: No WAL file present, nothing to checkpoint",
+            )
 
         with connection_context(None) as conn:
             row = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
             busy, log, checkpointed = row[0], row[1], row[2]
             if busy:
-                return RepairResult(name="wal_checkpoint", category=_CAT_DB, destructive=False, repaired_count=0, success=False, detail=f"WAL checkpoint had busy pages: {busy} busy, {log} log, {checkpointed} checkpointed")
-            return RepairResult(name="wal_checkpoint", category=_CAT_DB, destructive=False, repaired_count=checkpointed if checkpointed > 0 else 0, success=True, detail=f"WAL checkpoint complete: {checkpointed} pages checkpointed")
+                return RepairResult(
+                    name="wal_checkpoint",
+                    category=_CAT_DB,
+                    destructive=False,
+                    repaired_count=0,
+                    success=False,
+                    detail=f"WAL checkpoint had busy pages: {busy} busy, {log} log, {checkpointed} checkpointed",
+                )
+            return RepairResult(
+                name="wal_checkpoint",
+                category=_CAT_DB,
+                destructive=False,
+                repaired_count=checkpointed if checkpointed > 0 else 0,
+                success=True,
+                detail=f"WAL checkpoint complete: {checkpointed} pages checkpointed",
+            )
     except Exception as exc:
-        return RepairResult(name="wal_checkpoint", category=_CAT_DB, destructive=False, repaired_count=0, success=False, detail=f"WAL checkpoint failed: {exc}")
+        return RepairResult(
+            name="wal_checkpoint",
+            category=_CAT_DB,
+            destructive=False,
+            repaired_count=0,
+            success=False,
+            detail=f"WAL checkpoint failed: {exc}",
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -724,7 +984,9 @@ def run_selected_maintenance(
     if repair:
         results.extend(run_safe_repairs(config, dry_run=dry_run, preview_counts=preview_counts, targets=repair_targets))
     if cleanup:
-        results.extend(run_archive_cleanup(config, dry_run=dry_run, preview_counts=preview_counts, targets=cleanup_targets))
+        results.extend(
+            run_archive_cleanup(config, dry_run=dry_run, preview_counts=preview_counts, targets=cleanup_targets)
+        )
     return results
 
 

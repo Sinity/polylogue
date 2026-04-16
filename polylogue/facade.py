@@ -28,14 +28,13 @@ class Polylogue(PolylogueArchiveMixin, PolylogueProductsMixin, PolylogueIngestMi
             db_path = Path(db_path).expanduser().resolve()
 
         from polylogue.paths import archive_root as _archive_root
-        from polylogue.paths import render_root
 
         if archive_root is None:
             archive_root = _archive_root()
 
         self._config = Config(
             archive_root=archive_root,
-            render_root=render_root(),
+            render_root=archive_root / "render",
             sources=[],
         )
         self._services = build_runtime_services(config=self._config, db_path=db_path)

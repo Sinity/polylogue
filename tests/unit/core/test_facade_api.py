@@ -58,6 +58,7 @@ class TestPolylogueInitialization:
         custom_root = tmp_path / "custom_archive"
         archive = Polylogue(archive_root=custom_root)
         assert archive.archive_root == custom_root
+        assert archive.config.render_root == custom_root / "render"
 
     def test_init_with_expanduser(self):
         archive = Polylogue(archive_root="~/test_polylogue")
@@ -118,7 +119,6 @@ class TestArchiveStatsCreation:
         )
         assert len(stats.recent) == 1
         assert stats.recent[0].id == "conv1"
-
 
 
 # ============================================================================
@@ -307,7 +307,7 @@ class TestPolylogueArchiveProducts:
                             "type": "tool_use",
                             "tool_name": "Edit",
                             "semantic_type": "file_edit",
-                            "input": {"path": "/realm/project/polylogue/polylogue/facade.py"},
+                            "input": {"path": "/workspace/polylogue/polylogue/facade.py"},
                         }
                     ]
                 },
@@ -349,9 +349,7 @@ class TestPolylogueArchiveProducts:
                 limit=10,
             )
         )
-        phases = await archive.list_session_phase_products(
-            SessionPhaseProductQuery(provider="claude-code", limit=10)
-        )
+        phases = await archive.list_session_phase_products(SessionPhaseProductQuery(provider="claude-code", limit=10))
         threads = await archive.list_work_thread_products(WorkThreadProductQuery(limit=10))
 
         assert profile is not None
@@ -380,9 +378,7 @@ class TestPolylogueArchiveProducts:
         assert len(threads) == 1
         assert threads[0].thread["session_count"] == 2
 
-        tag_rollups = await archive.list_session_tag_rollup_products(
-            SessionTagRollupQuery(provider="claude-code")
-        )
+        tag_rollups = await archive.list_session_tag_rollup_products(SessionTagRollupQuery(provider="claude-code"))
         day_summaries = await archive.list_day_session_summary_products(
             DaySessionSummaryProductQuery(provider="claude-code", limit=10)
         )
@@ -410,7 +406,9 @@ class TestPolylogueListConversations:
         LIST_CONV_FILTERS,
     )
     @pytest.mark.asyncio
-    async def test_list_conversations_with_filters(self, tmp_path, setup_count, provider_filter, source_filter, limit, expected_count):
+    async def test_list_conversations_with_filters(
+        self, tmp_path, setup_count, provider_filter, source_filter, limit, expected_count
+    ):
         """Test listing conversations with various filter combinations."""
         db_path = tmp_path / "test.db"
         archive = Polylogue(archive_root=tmp_path, db_path=db_path)

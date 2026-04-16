@@ -91,16 +91,22 @@ class TestTimeDeltaConstraint:
 
     def test_stddev_approx(self) -> None:
         td = TimeDeltaConstraint(
-            field_a="a", field_b="b",
-            min_delta=0.0, max_delta=100.0, avg_delta=50.0,
+            field_a="a",
+            field_b="b",
+            min_delta=0.0,
+            max_delta=100.0,
+            avg_delta=50.0,
         )
         # stddev_approx = (max - min) / 4
         assert td.stddev_approx == 25.0
 
     def test_zero_range_gives_zero_stddev(self) -> None:
         td = TimeDeltaConstraint(
-            field_a="a", field_b="b",
-            min_delta=10.0, max_delta=10.0, avg_delta=10.0,
+            field_a="a",
+            field_b="b",
+            min_delta=10.0,
+            max_delta=10.0,
+            avg_delta=10.0,
         )
         assert td.stddev_approx == 0.0
 
@@ -429,9 +435,7 @@ class TestRelationConstraintSolverStringLength:
         }
         solver = RelationConstraintSolver(schema)
         rng = random.Random(seed)
-        result = solver.generate_string_with_length(
-            "$.text", rng, "some example text for testing purposes"
-        )
+        result = solver.generate_string_with_length("$.text", rng, "some example text for testing purposes")
         assert len(result) >= 10
         assert len(result) <= 50
 
@@ -479,14 +483,18 @@ class TestRelationConstraintSolverIntegration:
 
         # Mutual exclusion
         filtered = solver.filter_mutually_exclusive(
-            "$.message", {"text", "parts", "metadata"}, rng,
+            "$.message",
+            {"text", "parts", "metadata"},
+            rng,
         )
         assert len(filtered & {"text", "parts"}) == 1
         assert "metadata" in filtered
 
         # String length
         result = solver.generate_string_with_length(
-            "$.message.body", rng, "short",
+            "$.message.body",
+            rng,
+            "short",
         )
         assert len(result) >= 20
 

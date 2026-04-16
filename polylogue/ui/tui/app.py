@@ -10,7 +10,7 @@ if TYPE_CHECKING:
 
 
 class PolylogueApp(App[None]):
-    """Polylogue Mission Control TUI."""
+    """Polylogue dashboard TUI."""
 
     CSS_PATH = "css/styles.tcss"
     BINDINGS = [
@@ -36,7 +36,7 @@ class PolylogueApp(App[None]):
         yield Header()
 
         with TabbedContent(initial="dashboard"):
-            with TabPane("Mission Control", id="dashboard"):
+            with TabPane("Dashboard", id="dashboard"):
                 yield Dashboard(repository=self._repository)
 
             with TabPane("Browser", id="browser"):

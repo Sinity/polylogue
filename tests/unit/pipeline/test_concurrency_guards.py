@@ -30,6 +30,7 @@ from polylogue.storage.repository import ConversationRepository
 # Filter state isolation (implicit in CLI routing bugs)
 # =============================================================================
 
+
 class TestFilterStateIsolation:
     """ConversationFilter must not leak state between uses.
 
@@ -156,6 +157,7 @@ class TestFilterStateIsolation:
 # Async backend: batch operations must not create N connections
 # =============================================================================
 
+
 class TestConnectionManagement:
     """Batch operations must use O(1) connections, not O(N)."""
 
@@ -239,6 +241,7 @@ class TestConnectionManagement:
 # =============================================================================
 # Async repository: concurrent save safety
 # =============================================================================
+
 
 class TestConcurrentSaveGuards:
     """Multiple concurrent saves must not corrupt data."""

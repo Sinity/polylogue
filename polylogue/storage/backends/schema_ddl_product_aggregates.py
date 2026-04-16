@@ -10,7 +10,7 @@ SESSION_PRODUCT_AGGREGATE_DDL = """
             materialized_at TEXT NOT NULL,
             start_time TEXT,
             end_time TEXT,
-            dominant_project TEXT,
+            dominant_repo TEXT,
             session_ids_json TEXT,
             session_count INTEGER NOT NULL DEFAULT 0,
             depth INTEGER NOT NULL DEFAULT 0,
@@ -65,7 +65,7 @@ SESSION_PRODUCT_AGGREGATE_DDL = """
             conversation_count INTEGER NOT NULL DEFAULT 0,
             explicit_count INTEGER NOT NULL DEFAULT 0,
             auto_count INTEGER NOT NULL DEFAULT 0,
-            project_breakdown_json TEXT NOT NULL DEFAULT '{}',
+            repo_breakdown_json TEXT NOT NULL DEFAULT '{}',
             search_text TEXT NOT NULL,
             PRIMARY KEY (tag, bucket_day, provider_name)
         );
@@ -90,7 +90,7 @@ SESSION_PRODUCT_AGGREGATE_DDL = """
             total_messages INTEGER NOT NULL DEFAULT 0,
             total_words INTEGER NOT NULL DEFAULT 0,
             work_event_breakdown_json TEXT NOT NULL DEFAULT '{}',
-            projects_active_json TEXT,
+            repos_active_json TEXT,
             payload_json TEXT NOT NULL,
             search_text TEXT NOT NULL,
             PRIMARY KEY (day, provider_name)

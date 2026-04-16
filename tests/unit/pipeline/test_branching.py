@@ -258,14 +258,21 @@ PARSER_CASES = (
         "chatgpt",
         "chatgpt_branched.json",
         lambda: [_chatgpt_branch_payload()],
-        lambda convo: ({message.provider_message_id: message.branch_index for message in convo.messages} == {"q1": 0, "a1": 0, "a2": 1}),
+        lambda convo: (
+            {message.provider_message_id: message.branch_index for message in convo.messages}
+            == {"q1": 0, "a1": 0, "a2": 1}
+        ),
     ),
 )
 
 
 class TestBranchParserContracts:
-    @pytest.mark.parametrize("source_name,filename,payload_factory,assertion", PARSER_CASES, ids=[case[0] for case in PARSER_CASES])
-    def test_source_parser_extracts_branch_metadata(self, tmp_path: Path, source_name: str, filename: str, payload_factory, assertion) -> None:
+    @pytest.mark.parametrize(
+        "source_name,filename,payload_factory,assertion", PARSER_CASES, ids=[case[0] for case in PARSER_CASES]
+    )
+    def test_source_parser_extracts_branch_metadata(
+        self, tmp_path: Path, source_name: str, filename: str, payload_factory, assertion
+    ) -> None:
         source_path = _write_payload(tmp_path, filename, payload_factory())
         parsed = _parse_single(source_name, source_path)
         assert assertion(parsed)
@@ -281,25 +288,41 @@ class TestBranchPipelinePersistence:
                 "codex_parent.json",
                 [
                     {"type": "session_meta", "payload": {"id": "parent-uuid", "timestamp": "2025-01-01T10:00:00Z"}},
-                    {"type": "response_item", "payload": {"type": "message", "id": "p-msg-1", "role": "user", "content": [{"type": "input_text", "text": "Parent question"}] }},
+                    {
+                        "type": "response_item",
+                        "payload": {
+                            "type": "message",
+                            "id": "p-msg-1",
+                            "role": "user",
+                            "content": [{"type": "input_text", "text": "Parent question"}],
+                        },
+                    },
                 ],
             )
-            parent_cid, _, _ = _prepare_fields(await prepare_records(
-                _parse_single("codex", parent_path),
-                source_name="codex",
-                archive_root=tmp_path,
-                backend=repo.backend,
-                repository=repo,
-            ))
+            parent_cid, _, _ = _prepare_fields(
+                await prepare_records(
+                    _parse_single("codex", parent_path),
+                    source_name="codex",
+                    archive_root=tmp_path,
+                    backend=repo.backend,
+                    repository=repo,
+                )
+            )
 
-            child_path = _write_payload(tmp_path, "codex_child.json", _codex_continuation_payload(child_id="child-uuid", parent_id="parent-uuid"))
-            child_cid, _, _ = _prepare_fields(await prepare_records(
-                _parse_single("codex", child_path),
-                source_name="codex",
-                archive_root=tmp_path,
-                backend=repo.backend,
-                repository=repo,
-            ))
+            child_path = _write_payload(
+                tmp_path,
+                "codex_child.json",
+                _codex_continuation_payload(child_id="child-uuid", parent_id="parent-uuid"),
+            )
+            child_cid, _, _ = _prepare_fields(
+                await prepare_records(
+                    _parse_single("codex", child_path),
+                    source_name="codex",
+                    archive_root=tmp_path,
+                    backend=repo.backend,
+                    repository=repo,
+                )
+            )
             child = await repo.get(child_cid)
 
         assert child is not None
@@ -312,13 +335,15 @@ class TestBranchPipelinePersistence:
         db_path = db_setup(workspace_env)
         async with _make_repository(db_path) as repo:
             source_path = _write_payload(tmp_path, "claude_code_sidechain.json", _claude_sidechain_payload())
-            conversation_id, _, _ = _prepare_fields(await prepare_records(
-                _parse_single("claude-code", source_path),
-                source_name="claude-code",
-                archive_root=tmp_path,
-                backend=repo.backend,
-                repository=repo,
-            ))
+            conversation_id, _, _ = _prepare_fields(
+                await prepare_records(
+                    _parse_single("claude-code", source_path),
+                    source_name="claude-code",
+                    archive_root=tmp_path,
+                    backend=repo.backend,
+                    repository=repo,
+                )
+            )
             conversation = await repo.get(conversation_id)
 
         assert conversation is not None
@@ -326,17 +351,23 @@ class TestBranchPipelinePersistence:
         assert conversation.is_sidechain is True
 
     @pytest.mark.asyncio
-    async def test_chatgpt_branch_pipeline_and_parent_resolution_contract(self, workspace_env: Path, tmp_path: Path) -> None:
+    async def test_chatgpt_branch_pipeline_and_parent_resolution_contract(
+        self, workspace_env: Path, tmp_path: Path
+    ) -> None:
         db_path = db_setup(workspace_env)
         async with _make_repository(db_path) as repo:
-            parsed = _parse_single("chatgpt", _write_payload(tmp_path, "chatgpt_branched.json", [_chatgpt_branch_payload()]))
-            conversation_id, _, _ = _prepare_fields(await prepare_records(
-                parsed,
-                source_name="chatgpt",
-                archive_root=tmp_path,
-                backend=repo.backend,
-                repository=repo,
-            ))
+            parsed = _parse_single(
+                "chatgpt", _write_payload(tmp_path, "chatgpt_branched.json", [_chatgpt_branch_payload()])
+            )
+            conversation_id, _, _ = _prepare_fields(
+                await prepare_records(
+                    parsed,
+                    source_name="chatgpt",
+                    archive_root=tmp_path,
+                    backend=repo.backend,
+                    repository=repo,
+                )
+            )
             conversation = await repo.get(conversation_id)
 
         assert conversation is not None
@@ -347,51 +378,71 @@ class TestBranchPipelinePersistence:
         assert [message.text for message in conversation.mainline_messages()] == ["Question", "Answer 1"]
 
     @pytest.mark.asyncio
-    async def test_prepare_records_resolves_parent_conversation_and_message_ids(self, workspace_env: Path, tmp_path: Path) -> None:
+    async def test_prepare_records_resolves_parent_conversation_and_message_ids(
+        self, workspace_env: Path, tmp_path: Path
+    ) -> None:
         db_path = db_setup(workspace_env)
         async with _make_repository(db_path) as repo:
-            parent_id, _, _ = _prepare_fields(await prepare_records(
-                ParsedConversation(
-                    provider_name="codex",
-                    provider_conversation_id="parent-id",
-                    title="Parent Session",
-                    messages=[ParsedMessage(provider_message_id="pm1", role="user", text="Parent message")],
-                ),
-                source_name="codex",
-                archive_root=tmp_path,
-                backend=repo.backend,
-                repository=repo,
-            ))
-            child_id, _, _ = _prepare_fields(await prepare_records(
-                ParsedConversation(
-                    provider_name="codex",
-                    provider_conversation_id="child-id",
-                    title="Child Session",
-                    messages=[ParsedMessage(provider_message_id="m1", role="user", text="Hello")],
-                    parent_conversation_provider_id="parent-id",
-                    branch_type="continuation",
-                ),
-                source_name="codex",
-                archive_root=tmp_path,
-                backend=repo.backend,
-                repository=repo,
-            ))
-            branch_id, _, _ = _prepare_fields(await prepare_records(
-                ParsedConversation(
-                    provider_name="chatgpt",
-                    provider_conversation_id="conv-1",
-                    title="Branched Session",
-                    messages=[
-                        ParsedMessage(provider_message_id="q1", role="user", text="Question"),
-                        ParsedMessage(provider_message_id="a1", role="assistant", text="Answer 1", parent_message_provider_id="q1", branch_index=0),
-                        ParsedMessage(provider_message_id="a2", role="assistant", text="Answer 2", parent_message_provider_id="q1", branch_index=1),
-                    ],
-                ),
-                source_name="chatgpt",
-                archive_root=tmp_path,
-                backend=repo.backend,
-                repository=repo,
-            ))
+            parent_id, _, _ = _prepare_fields(
+                await prepare_records(
+                    ParsedConversation(
+                        provider_name="codex",
+                        provider_conversation_id="parent-id",
+                        title="Parent Session",
+                        messages=[ParsedMessage(provider_message_id="pm1", role="user", text="Parent message")],
+                    ),
+                    source_name="codex",
+                    archive_root=tmp_path,
+                    backend=repo.backend,
+                    repository=repo,
+                )
+            )
+            child_id, _, _ = _prepare_fields(
+                await prepare_records(
+                    ParsedConversation(
+                        provider_name="codex",
+                        provider_conversation_id="child-id",
+                        title="Child Session",
+                        messages=[ParsedMessage(provider_message_id="m1", role="user", text="Hello")],
+                        parent_conversation_provider_id="parent-id",
+                        branch_type="continuation",
+                    ),
+                    source_name="codex",
+                    archive_root=tmp_path,
+                    backend=repo.backend,
+                    repository=repo,
+                )
+            )
+            branch_id, _, _ = _prepare_fields(
+                await prepare_records(
+                    ParsedConversation(
+                        provider_name="chatgpt",
+                        provider_conversation_id="conv-1",
+                        title="Branched Session",
+                        messages=[
+                            ParsedMessage(provider_message_id="q1", role="user", text="Question"),
+                            ParsedMessage(
+                                provider_message_id="a1",
+                                role="assistant",
+                                text="Answer 1",
+                                parent_message_provider_id="q1",
+                                branch_index=0,
+                            ),
+                            ParsedMessage(
+                                provider_message_id="a2",
+                                role="assistant",
+                                text="Answer 2",
+                                parent_message_provider_id="q1",
+                                branch_index=1,
+                            ),
+                        ],
+                    ),
+                    source_name="chatgpt",
+                    archive_root=tmp_path,
+                    backend=repo.backend,
+                    repository=repo,
+                )
+            )
 
         with open_connection(db_path) as conn:
             child_row = conn.execute(

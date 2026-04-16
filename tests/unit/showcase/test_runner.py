@@ -73,7 +73,6 @@ class TestShowcaseRunnerWorkspaceEnv:
             "HOME": str(tmp_path / "home"),
             "XDG_DATA_HOME": str(tmp_path / "data"),
             "POLYLOGUE_ARCHIVE_ROOT": str(tmp_path / "archive"),
-            "POLYLOGUE_RENDER_ROOT": str(tmp_path / "render"),
             "POLYLOGUE_FORCE_PLAIN": "1",
         }
         runner = ShowcaseRunner(

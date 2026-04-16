@@ -52,7 +52,7 @@ def count_verb(ctx: click.Context) -> None:
 @click.option(
     "--by",
     "stats_by",
-    type=click.Choice(["provider", "month", "year", "day", "action", "tool", "project", "work-kind"]),
+    type=click.Choice(["provider", "month", "year", "day", "action", "tool", "repo", "work-kind"]),
     help="Aggregate by dimension",
 )
 @click.option(

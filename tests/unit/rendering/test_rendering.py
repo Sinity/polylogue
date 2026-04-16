@@ -196,37 +196,45 @@ class TestFormatConversationMarkdownNoneGuards:
 
     def test_none_text_message_skipped(self):
         """Message with None text should be skipped, not crash."""
-        conv = self._make_conv([
-            Message(id="m1", role="user", text=None),
-            Message(id="m2", role="assistant", text="Hello!"),
-        ])
+        conv = self._make_conv(
+            [
+                Message(id="m1", role="user", text=None),
+                Message(id="m2", role="assistant", text="Hello!"),
+            ]
+        )
         md = format_conversation_markdown(conv)
         assert "Hello!" in md
         assert md.count("## ") == 1
 
     def test_empty_text_message_skipped(self):
         """Message with empty text should be skipped."""
-        conv = self._make_conv([
-            Message(id="m1", role="user", text=""),
-            Message(id="m2", role="assistant", text="Response"),
-        ])
+        conv = self._make_conv(
+            [
+                Message(id="m1", role="user", text=""),
+                Message(id="m2", role="assistant", text="Response"),
+            ]
+        )
         md = format_conversation_markdown(conv)
         assert "Response" in md
 
     def test_whitespace_only_text_skipped(self):
         """Message with whitespace-only text should be skipped."""
-        conv = self._make_conv([
-            Message(id="m1", role="user", text="   \n\t  "),
-            Message(id="m2", role="assistant", text="Answer"),
-        ])
+        conv = self._make_conv(
+            [
+                Message(id="m1", role="user", text="   \n\t  "),
+                Message(id="m2", role="assistant", text="Answer"),
+            ]
+        )
         md = format_conversation_markdown(conv)
         assert "Answer" in md
 
     def test_none_role_renders_as_unknown(self):
         """None role should render as 'unknown', not crash (45c8578)."""
-        conv = self._make_conv([
-            Message(id="m1", role="unknown", text="Message with unknown role"),
-        ])
+        conv = self._make_conv(
+            [
+                Message(id="m1", role="unknown", text="Message with unknown role"),
+            ]
+        )
         md = format_conversation_markdown(conv)
         assert "unknown" in md
         assert "Message with unknown role" in md
@@ -243,18 +251,22 @@ class TestFormatConversationMarkdownNoneGuards:
     def test_json_text_wrapped_in_code_block(self):
         """JSON text should be wrapped in code blocks."""
         json_text = json.dumps({"key": "value"})
-        conv = self._make_conv([
-            Message(id="m1", role="assistant", text=json_text),
-        ])
+        conv = self._make_conv(
+            [
+                Message(id="m1", role="assistant", text=json_text),
+            ]
+        )
         md = format_conversation_markdown(conv)
         assert "```json" in md
 
     def test_all_messages_none_text(self):
         """All messages with None text should produce header-only markdown."""
-        conv = self._make_conv([
-            Message(id="m1", role="user", text=None),
-            Message(id="m2", role="assistant", text=None),
-        ])
+        conv = self._make_conv(
+            [
+                Message(id="m1", role="user", text=None),
+                Message(id="m2", role="assistant", text=None),
+            ]
+        )
         md = format_conversation_markdown(conv)
         assert "# Test" in md
         assert "## " not in md
@@ -271,24 +283,30 @@ class TestConversationSummaryDisplayDate:
 
     def test_both_none_returns_none(self):
         summary = ConversationSummary(
-            id="test", provider="test",
-            created_at=None, updated_at=None,
+            id="test",
+            provider="test",
+            created_at=None,
+            updated_at=None,
         )
         assert summary.display_date is None
 
     def test_only_created_at(self):
         dt = datetime(2024, 6, 15, tzinfo=timezone.utc)
         summary = ConversationSummary(
-            id="test", provider="test",
-            created_at=dt, updated_at=None,
+            id="test",
+            provider="test",
+            created_at=dt,
+            updated_at=None,
         )
         assert summary.display_date == dt
 
     def test_only_updated_at(self):
         dt = datetime(2024, 6, 15, tzinfo=timezone.utc)
         summary = ConversationSummary(
-            id="test", provider="test",
-            created_at=None, updated_at=dt,
+            id="test",
+            provider="test",
+            created_at=None,
+            updated_at=dt,
         )
         assert summary.display_date == dt
 
@@ -296,8 +314,10 @@ class TestConversationSummaryDisplayDate:
         created = datetime(2024, 1, 1, tzinfo=timezone.utc)
         updated = datetime(2024, 6, 15, tzinfo=timezone.utc)
         summary = ConversationSummary(
-            id="test", provider="test",
-            created_at=created, updated_at=updated,
+            id="test",
+            provider="test",
+            created_at=created,
+            updated_at=updated,
         )
         assert summary.display_date == updated
 
@@ -311,7 +331,8 @@ class TestConversationSummaryDisplayDate:
 
     def test_display_title_from_metadata(self):
         summary = ConversationSummary(
-            id="test", provider="test",
+            id="test",
+            provider="test",
             title="Original",
             metadata={"title": "User Title"},
         )

@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from datetime import datetime, timezone
 
-_FTS5_SPECIAL = re.compile(r'''['":*^(){}\[\]|&!+\-\\;%=$,<>@#`~]''')
+_FTS5_SPECIAL = re.compile(r"""['":*^(){}\[\]|&!+\-\\;%=$,<>@#`~]""")
 _FTS5_OPERATORS = {"AND", "OR", "NOT", "NEAR"}
 _ASTERISK_ONLY = re.compile(r"^\*+$")
 
@@ -30,6 +30,7 @@ def normalize_fts5_query(query: str) -> str | None:
 
 def escape_fts5_query(query: str) -> str:
     """Escape a query string for safe use in FTS5 MATCH clauses."""
+
     def _quoted(value: str) -> str:
         escaped = value.replace('"', '""')
         return f'"{escaped}"'
@@ -37,7 +38,7 @@ def escape_fts5_query(query: str) -> str:
     if not query or not query.strip():
         return '""'
 
-    query = re.sub(r'[\x00-\x1f\x7f]', '', query.strip())
+    query = re.sub(r"[\x00-\x1f\x7f]", "", query.strip())
     if not query:
         return '""'
     if _ASTERISK_ONLY.match(query):

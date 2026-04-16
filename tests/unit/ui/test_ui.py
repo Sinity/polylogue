@@ -17,9 +17,8 @@ from polylogue.ui.facade import ConsoleFacade, PlainConsole, UIError, create_con
 
 
 @pytest.fixture
-def mock_prompt_file(tmp_path, monkeypatch):
+def mock_prompt_file(tmp_path):
     prompt_file = tmp_path / "prompts.jsonl"
-    monkeypatch.setenv("POLYLOGUE_TEST_PROMPT_FILE", str(prompt_file))
     return prompt_file
 
 
@@ -93,36 +92,42 @@ class TestPlainConsole:
 class TestConsoleFacadePromptStubs:
     @pytest.mark.parametrize(
         ("entries", "expected_count"),
-        [([], 0), ([{"type": "confirm", "value": True}], 1), ([{"type": "confirm", "value": True}, {"type": "choose", "value": "a"}, {"type": "input", "value": "x"}], 3)],
+        [
+            ([], 0),
+            ([{"type": "confirm", "value": True}], 1),
+            (
+                [{"type": "confirm", "value": True}, {"type": "choose", "value": "a"}, {"type": "input", "value": "x"}],
+                3,
+            ),
+        ],
     )
     def test_stub_loading_contract(self, tmp_path, monkeypatch, entries, expected_count):
         if entries:
             prompt_file = tmp_path / "stubs.jsonl"
             _write_stubs(prompt_file, *entries)
-            monkeypatch.setenv("POLYLOGUE_TEST_PROMPT_FILE", str(prompt_file))
+            facade = ConsoleFacade(plain=True, prompt_stub_path=prompt_file)
         else:
-            monkeypatch.delenv("POLYLOGUE_TEST_PROMPT_FILE", raising=False)
-        assert len(ConsoleFacade(plain=True)._prompt_responses) == expected_count
+            facade = ConsoleFacade(plain=True)
+        assert len(facade._prompt_responses) == expected_count
 
-    def test_invalid_json_raises_uierror(self, tmp_path, monkeypatch):
+    def test_invalid_json_raises_uierror(self, tmp_path):
         prompt_file = tmp_path / "bad.jsonl"
         prompt_file.write_text("not json\n")
-        monkeypatch.setenv("POLYLOGUE_TEST_PROMPT_FILE", str(prompt_file))
         with pytest.raises(UIError, match="Invalid prompt stub"):
-            ConsoleFacade(plain=True)
+            ConsoleFacade(plain=True, prompt_stub_path=prompt_file)
 
     def test_pop_prompt_response_contract(self, mock_prompt_file):
         _write_stubs(mock_prompt_file, {"type": "confirm", "value": True})
-        facade = ConsoleFacade(plain=True)
+        facade = ConsoleFacade(plain=True, prompt_stub_path=mock_prompt_file)
         with pytest.raises(UIError, match="expected 'confirm' but got 'choose'"):
             facade._pop_prompt_response("choose")
 
         _write_stubs(mock_prompt_file, {"value": True})
-        facade = ConsoleFacade(plain=True)
+        facade = ConsoleFacade(plain=True, prompt_stub_path=mock_prompt_file)
         assert facade._pop_prompt_response("anything") == {"value": True}
 
         mock_prompt_file.write_text("")
-        facade = ConsoleFacade(plain=True)
+        facade = ConsoleFacade(plain=True, prompt_stub_path=mock_prompt_file)
         assert facade._pop_prompt_response("confirm") is None
 
 
@@ -138,7 +143,15 @@ class TestConsoleFacadePrompts:
             ("input", "typed", None, "typed"),
             ("input", "", "fallback", "fallback"),
         ],
-        ids=["confirm_yes", "confirm_no", "confirm_default", "choose_second", "choose_empty", "input_typed", "input_default"],
+        ids=[
+            "confirm_yes",
+            "confirm_no",
+            "confirm_default",
+            "choose_second",
+            "choose_empty",
+            "input_typed",
+            "input_default",
+        ],
     )
     def test_plain_prompt_matrix(self, monkeypatch, kind, plain_value, default, expected):
         monkeypatch.setattr("sys.stdin.isatty", lambda: True)
@@ -173,7 +186,7 @@ class TestConsoleFacadePrompts:
     )
     def test_confirm_stub_contract(self, mock_prompt_file, entry, expected):
         _write_stubs(mock_prompt_file, entry)
-        facade = ConsoleFacade(plain=False)
+        facade = ConsoleFacade(plain=False, prompt_stub_path=mock_prompt_file)
         assert facade.confirm("Continue?", default=False) is expected
 
     @pytest.mark.parametrize(
@@ -187,7 +200,7 @@ class TestConsoleFacadePrompts:
     )
     def test_choose_stub_contract(self, mock_prompt_file, entry, options, expected):
         _write_stubs(mock_prompt_file, entry)
-        assert ConsoleFacade(plain=False).choose("Pick:", options) == expected
+        assert ConsoleFacade(plain=False, prompt_stub_path=mock_prompt_file).choose("Pick:", options) == expected
 
     @pytest.mark.parametrize(
         ("entry", "default", "expected"),
@@ -201,7 +214,9 @@ class TestConsoleFacadePrompts:
     )
     def test_input_stub_contract(self, mock_prompt_file, entry, default, expected):
         _write_stubs(mock_prompt_file, entry)
-        assert ConsoleFacade(plain=False).input("Prompt:", default=default) == expected
+        assert (
+            ConsoleFacade(plain=False, prompt_stub_path=mock_prompt_file).input("Prompt:", default=default) == expected
+        )
 
     def test_rich_choose_fallback_paths(self, monkeypatch):
         question = _questionary_stub(monkeypatch, "select", None)
@@ -250,7 +265,7 @@ class TestConsoleFacadeRendering:
             assert text in output
 
     def test_rich_rendering_surface_contract(self, rich_facade, capsys):
-        rich_facade.banner("Welcome", "Mission Control")
+        rich_facade.banner("Welcome", "Dashboard")
         rich_facade.summary("Checklist", ["Item 1", "[red]Item 2[/red]"])
         rich_facade.render_markdown("# Title\n\nBody")
         rich_facade.render_code("print('hi')", "python")
@@ -261,7 +276,7 @@ class TestConsoleFacadeRendering:
         rich_facade.info("FYI")
         output = capsys.readouterr().out
         assert "Welcome" in output
-        assert "Mission Control" in output
+        assert "Dashboard" in output
         assert "Checklist" in output
         assert "Item 2" in output
         assert "test.txt" in output
@@ -320,7 +335,9 @@ class TestUIWrapper:
     )
     def test_ui_prompt_delegation_contract(self, mock_facade, method, args, kwargs):
         ui = UI(plain=False)
-        getattr(mock_facade, method).return_value = True if method == "confirm" else "A" if method == "choose" else "val"
+        getattr(mock_facade, method).return_value = (
+            True if method == "confirm" else "A" if method == "choose" else "val"
+        )
         result = getattr(ui, method)(*args, **kwargs)
         assert result is not None
         getattr(mock_facade, method).assert_called_once_with(*args, **kwargs)
@@ -336,7 +353,9 @@ class TestUIWrapper:
     def test_ui_plain_prompt_abort_contract(self, mock_facade, method, call):
         mock_facade.plain = True
         mock_facade.console = MagicMock()
-        getattr(mock_facade, method).side_effect = UIError(f"Plain mode cannot prompt for {PROMPT_TOPICS[method]}", prompt_topic=PROMPT_TOPICS[method])
+        getattr(mock_facade, method).side_effect = UIError(
+            f"Plain mode cannot prompt for {PROMPT_TOPICS[method]}", prompt_topic=PROMPT_TOPICS[method]
+        )
         ui = UI(plain=True)
         with pytest.raises(SystemExit):
             call(ui)

@@ -4,6 +4,7 @@ Verifies that each pipeline stage can run independently, that running
 a stage twice produces the same result (no duplicates), and that empty
 input is handled cleanly.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -85,6 +86,7 @@ class TestAcquisitionStageIndependence:
         sources = [Source(name="test", path=files[0])]
 
         r1 = await service.acquire_sources(sources)
+        assert r1.counts["acquired"] == 1
         r2 = await service.acquire_sources(sources)
 
         # Second run should not acquire new records (mtime-based or hash-based dedup)

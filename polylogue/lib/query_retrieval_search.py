@@ -150,8 +150,7 @@ async def search_hybrid_results(
     action_ranked = [(str(conversation.id), float(rank)) for rank, conversation in enumerate(action_results, start=1)]
     vector_ranked = [(str(conversation.id), float(rank)) for rank, conversation in enumerate(vector_results, start=1)]
     fused_ids = [
-        conversation_id
-        for conversation_id, _score in reciprocal_rank_fusion(text_ranked, action_ranked, vector_ranked)
+        conversation_id for conversation_id, _score in reciprocal_rank_fusion(text_ranked, action_ranked, vector_ranked)
     ][:limit]
 
     text_by_id = {str(conversation.id): conversation for conversation in text_results}
@@ -160,9 +159,7 @@ async def search_hybrid_results(
     ordered: list[Conversation] = []
     for conversation_id in fused_ids:
         conversation = (
-            action_by_id.get(conversation_id)
-            or text_by_id.get(conversation_id)
-            or vector_by_id.get(conversation_id)
+            action_by_id.get(conversation_id) or text_by_id.get(conversation_id) or vector_by_id.get(conversation_id)
         )
         if conversation is not None:
             ordered.append(conversation)

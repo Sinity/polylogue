@@ -111,11 +111,7 @@ def format_run_details(counts: Mapping[str, object]) -> list[str]:
         (counts.get("skipped"), "skipped"),
         (counts.get("acquire_errors"), "errors"),
     ]
-    acquire_line = ", ".join(
-        f"{value} {label}"
-        for value, label in acquire_parts
-        if isinstance(value, int) and value
-    )
+    acquire_line = ", ".join(f"{value} {label}" for value, label in acquire_parts if isinstance(value, int) and value)
     if acquire_line:
         lines.append(f"Acquire: {acquire_line}")
 
@@ -126,11 +122,7 @@ def format_run_details(counts: Mapping[str, object]) -> list[str]:
         (counts.get("validation_skipped_no_schema"), "no-schema"),
         (counts.get("validation_errors"), "errors"),
     ]
-    validate_line = ", ".join(
-        f"{value} {label}"
-        for value, label in validate_parts
-        if isinstance(value, int) and value
-    )
+    validate_line = ", ".join(f"{value} {label}" for value, label in validate_parts if isinstance(value, int) and value)
     if validate_line:
         lines.append(f"Validate: {validate_line}")
 
@@ -156,11 +148,7 @@ def format_run_details(counts: Mapping[str, object]) -> list[str]:
         (counts.get("rendered"), "rendered"),
         (counts.get("render_failures"), "failures"),
     ]
-    render_line = ", ".join(
-        f"{value} {label}"
-        for value, label in render_parts
-        if isinstance(value, int) and value
-    )
+    render_line = ", ".join(f"{value} {label}" for value, label in render_parts if isinstance(value, int) and value)
     if render_line:
         lines.append(f"Render: {render_line}")
 
@@ -168,11 +156,7 @@ def format_run_details(counts: Mapping[str, object]) -> list[str]:
         (counts.get("schemas_generated"), "generated"),
         (counts.get("schemas_failed"), "failed"),
     ]
-    schema_line = ", ".join(
-        f"{value} {label}"
-        for value, label in schema_parts
-        if isinstance(value, int) and value
-    )
+    schema_line = ", ".join(f"{value} {label}" for value, label in schema_parts if isinstance(value, int) and value)
     if schema_line:
         lines.append(f"Schemas: {schema_line}")
 

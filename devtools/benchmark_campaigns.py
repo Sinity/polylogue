@@ -1,7 +1,7 @@
 """Long-haul benchmark campaign runner.
 
 Executes reproducible benchmark campaigns against synthetic archives
-and produces durable JSON + Markdown reports under docs/benchmark-campaigns/.
+and produces durable JSON + Markdown reports under .local/benchmark-campaigns/.
 """
 
 from __future__ import annotations
@@ -98,9 +98,7 @@ def run_fts_rebuild_campaign(db_path: Path) -> CampaignResult:
     )
 
 
-async def run_incremental_index_campaign(
-    db_path: Path, batch_size: int = 100
-) -> CampaignResult:
+async def run_incremental_index_campaign(db_path: Path, batch_size: int = 100) -> CampaignResult:
     """Benchmark incremental FTS index updates.
 
     Indexes conversations in batches, measuring per-batch and total time.
@@ -121,17 +119,13 @@ async def run_incremental_index_campaign(
         # Process in batches
         offset = 0
         while offset < total_convs:
-            convs = await backend.queries.list_conversations(
-                ConversationRecordQuery(limit=batch_size, offset=offset)
-            )
+            convs = await backend.queries.list_conversations(ConversationRecordQuery(limit=batch_size, offset=offset))
             if not convs:
                 break
 
             conv_ids = [c.conversation_id for c in convs]
             messages_by_conv = await backend.get_messages_batch(conv_ids)
-            all_messages = [
-                msg for msgs in messages_by_conv.values() for msg in msgs
-            ]
+            all_messages = [msg for msgs in messages_by_conv.values() for msg in msgs]
 
             t0 = time.monotonic()
             fts.index(all_messages)
@@ -171,9 +165,7 @@ async def run_filter_scan_campaign(db_path: Path) -> CampaignResult:
 
     try:
         # 1. List all (no filter)
-        elapsed, results = await _ameasure(
-            backend.queries.list_conversations(ConversationRecordQuery(limit=50))
-        )
+        elapsed, results = await _ameasure(backend.queries.list_conversations(ConversationRecordQuery(limit=50)))
         metrics["list_50_wall_s"] = round(elapsed, 4)
         metrics["list_50_count"] = len(results)
 
@@ -205,9 +197,7 @@ async def run_filter_scan_campaign(db_path: Path) -> CampaignResult:
 
         # 6. Title search
         elapsed, results = await _ameasure(
-            backend.queries.list_conversations(
-                ConversationRecordQuery(title_contains="synthetic", limit=50)
-            )
+            backend.queries.list_conversations(ConversationRecordQuery(title_contains="synthetic", limit=50))
         )
         metrics["filter_title_wall_s"] = round(elapsed, 4)
 
@@ -276,9 +266,7 @@ async def run_startup_health_campaign(db_path: Path) -> CampaignResult:
         await backend.close()
 
 
-async def run_full_campaign(
-    scale_level: str, output_dir: Path
-) -> list[CampaignResult]:
+async def run_full_campaign(scale_level: str, output_dir: Path) -> list[CampaignResult]:
     """Run all benchmark campaigns at a given scale level.
 
     Generates a synthetic archive at the specified scale, then runs

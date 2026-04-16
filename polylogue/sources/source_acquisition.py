@@ -46,17 +46,19 @@ def _observe_acquisition(
     peak_rss_self_mb = read_peak_rss_self_mb()
     if current_rss_mb is None and peak_rss_self_mb is None:
         return
-    observation_callback({
-        "phase": phase,
-        "source_path": source_path,
-        "provider_hint": str(provider_hint),
-        "blob_size": blob_size,
-        "blob_mb": round(blob_size / (1024 * 1024), 3),
-        "source_index": source_index,
-        "current_rss_mb": current_rss_mb,
-        "peak_rss_self_mb": peak_rss_self_mb,
-        **extra,
-    })
+    observation_callback(
+        {
+            "phase": phase,
+            "source_path": source_path,
+            "provider_hint": str(provider_hint),
+            "blob_size": blob_size,
+            "blob_mb": round(blob_size / (1024 * 1024), 3),
+            "source_index": source_index,
+            "current_rss_mb": current_rss_mb,
+            "peak_rss_self_mb": peak_rss_self_mb,
+            **extra,
+        }
+    )
 
 
 def _iter_entry_payloads(

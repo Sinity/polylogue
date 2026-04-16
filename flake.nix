@@ -19,6 +19,13 @@
           inherit system;
         };
         python = pkgs.python313;
+        devtoolsCli = pkgs.writeShellScriptBin "devtools" ''
+          if [ -z "''${POLYLOGUE_REPO_ROOT:-}" ]; then
+            echo "devtools: POLYLOGUE_REPO_ROOT is not set; enter the project devshell first" >&2
+            exit 1
+          fi
+          exec python "$POLYLOGUE_REPO_ROOT/devtools/__main__.py" "$@"
+        '';
 
         # Build polylogue package as an importable library that also exposes the
         # project console script from pyproject entry points.
@@ -71,7 +78,10 @@
 
           # Skip tests in build (run in checks instead)
           doCheck = false;
-          pythonImportsCheck = [ "polylogue" ];
+          pythonImportsCheck = [
+            "polylogue"
+            "devtools"
+          ];
           dontCheckRuntimeDeps = true;
 
           postFixup = ''
@@ -91,6 +101,7 @@
         polylogueApiPython = python.withPackages (_: [ polylogue ]);
       in
       {
+        packages.polylogue = polylogue;
         packages.default = polylogue;
         packages.api-python = polylogueApiPython;
 
@@ -99,6 +110,7 @@
             # Python + uv for dependency management
             python
             uv
+            devtoolsCli
 
             # Development tools
             git
@@ -119,6 +131,12 @@
 
           shellHook = ''
             export LD_LIBRARY_PATH=${pkgs.stdenv.cc.cc.lib}/lib:$LD_LIBRARY_PATH
+            export HYPOTHESIS_STORAGE_DIRECTORY="$PWD/.cache/hypothesis"
+            export PYTHONPYCACHEPREFIX="$PWD/.cache/pycache"
+            export POLYLOGUE_REPO_ROOT="$PWD"
+            export POLYLOGUE_NIX_OUT_LINK="$PWD/.local/result"
+
+            mkdir -p .cache .local "$PYTHONPYCACHEPREFIX"
 
             # Create venv if it doesn't exist
             if [ ! -d .venv ]; then
@@ -129,35 +147,46 @@
             # Activate venv
             source .venv/bin/activate
 
-            # Install dependencies if needed
-            if [ ! -f .venv/.synced ]; then
-              echo "Installing dependencies..." >&2
-              uv pip install -e ".[dev]"
-              touch .venv/.synced
+            sync_fingerprint_file=".venv/.uv-sync-fingerprint"
+            sync_fingerprint="$(
+              cat pyproject.toml uv.lock 2>/dev/null | sha256sum | cut -d' ' -f1
+            )"
+            current_fingerprint=""
+            if [ -f "$sync_fingerprint_file" ]; then
+              current_fingerprint="$(cat "$sync_fingerprint_file")"
             fi
 
-            echo "Polylogue development environment ready" >&2
-            echo "Run: polylogue --help" >&2
+            # Sync dependencies whenever pyproject or uv.lock changes.
+            if [ "$sync_fingerprint" != "$current_fingerprint" ]; then
+              if [[ $- == *i* ]]; then
+                echo "devshell: syncing Python dependencies" >&2
+              fi
+              uv sync --extra dev --frozen --quiet
+              printf '%s' "$sync_fingerprint" > "$sync_fingerprint_file"
+            fi
+
+            if [ -f CLAUDE.md ]; then
+              devtools render-agents >/dev/null
+            fi
+
+            if [[ $- == *i* ]]; then
+              devtools status || true
+            fi
           '';
         };
 
-        # Simple check: run tests
+        # Smoke check the packaged CLI inside a Nix sandbox. Full test coverage
+        # lives in GitHub Actions and local dev workflows.
         checks.default =
-          pkgs.runCommand "polylogue-tests"
+          pkgs.runCommand "polylogue-smoke"
             {
-              buildInputs = [
-                python
-                pkgs.uv
+              nativeBuildInputs = [
+                polylogue
               ];
             }
             ''
-              cp -r ${./.} source
-              cd source
               export HOME=$TMPDIR
-              ${pkgs.uv}/bin/uv venv
-              source .venv/bin/activate
-              ${pkgs.uv}/bin/uv pip install -e ".[dev]"
-              pytest -q
+              polylogue --help >/dev/null
               touch $out
             '';
       }

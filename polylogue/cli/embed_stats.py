@@ -13,9 +13,7 @@ def embedding_status_payload(env) -> dict[str, object]:
     from polylogue.storage.embedding_stats import read_embedding_stats_sync
 
     with open_connection(env.config.db_path) as conn:
-        total_convs = conn.execute(
-            "SELECT COUNT(*) FROM conversations"
-        ).fetchone()[0]
+        total_convs = conn.execute("SELECT COUNT(*) FROM conversations").fetchone()[0]
         embedding_stats = read_embedding_stats_sync(conn)
 
     embedded_convs = embedding_stats.embedded_conversations

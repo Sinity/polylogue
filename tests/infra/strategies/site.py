@@ -37,9 +37,7 @@ def site_archive_spec_strategy(draw: st.DrawFn) -> SiteArchiveSpec:
         custom_title=draw(
             st.one_of(
                 st.none(),
-                st.text(alphabet=_TITLE_ALPHABET, min_size=1, max_size=36).filter(
-                    lambda value: value.strip() != ""
-                ),
+                st.text(alphabet=_TITLE_ALPHABET, min_size=1, max_size=36).filter(lambda value: value.strip() != ""),
             )
         ),
         precreate_output_dir=draw(st.booleans()),

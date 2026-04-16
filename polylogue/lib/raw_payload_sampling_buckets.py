@@ -5,19 +5,21 @@ from __future__ import annotations
 from collections import Counter
 from typing import Any
 
-RECORD_CANDIDATE_KEYS = frozenset({
-    "type",
-    "record_type",
-    "role",
-    "content",
-    "message",
-    "uuid",
-    "id",
-    "timestamp",
-    "parentUuid",
-    "sessionId",
-    "payload",
-})
+RECORD_CANDIDATE_KEYS = frozenset(
+    {
+        "type",
+        "record_type",
+        "role",
+        "content",
+        "message",
+        "uuid",
+        "id",
+        "timestamp",
+        "parentUuid",
+        "sessionId",
+        "payload",
+    }
+)
 
 
 def is_record_candidate(item: dict[str, Any]) -> bool:
