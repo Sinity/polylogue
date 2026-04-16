@@ -22,6 +22,7 @@ SYNTHETIC_CAMPAIGNS: dict[str, BenchmarkCampaignEntry] = (
     build_authored_scenario_catalog().synthetic_benchmark_campaign_index()
 )
 
+
 @dataclass
 class CampaignResult:
     """Result of a single benchmark campaign run."""
@@ -482,6 +483,7 @@ async def run_full_campaign(
         print(f"  -> {metric_value:.4f}{campaign.summary_label}")
 
     return results
+
 
 __all__ = [
     "CampaignResult",

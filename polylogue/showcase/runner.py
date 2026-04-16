@@ -114,7 +114,9 @@ class ShowcaseRunner:
             workspace_dir,
             corpus_request=self.corpus_request,
             exercises=tuple(exercises),
-            generate_fixtures=lambda fixture_dir, request: self._generate_synthetic_fixtures(fixture_dir, request=request),
+            generate_fixtures=lambda fixture_dir, request: self._generate_synthetic_fixtures(
+                fixture_dir, request=request
+            ),
         )
 
     def _generate_synthetic_fixtures(self, fixture_dir: Path, *, request: CorpusRequest) -> None:

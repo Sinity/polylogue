@@ -162,7 +162,11 @@ class CorpusSpec(ScenarioProjectionSource, ScenarioMetadata):
 
     @property
     def scope_label(self) -> str:
-        scope = self.profile_family_ids[0] if self.profile_family_ids else (self.element_kind or self.artifact_kind or "default")
+        scope = (
+            self.profile_family_ids[0]
+            if self.profile_family_ids
+            else (self.element_kind or self.artifact_kind or "default")
+        )
         parts: list[str] = []
         if self.package_version != "default":
             parts.append(self.package_version)
@@ -171,7 +175,11 @@ class CorpusSpec(ScenarioProjectionSource, ScenarioMetadata):
 
     @property
     def projection_scope(self) -> str:
-        return self.profile_family_ids[0] if self.profile_family_ids else (self.element_kind or self.artifact_kind or "default")
+        return (
+            self.profile_family_ids[0]
+            if self.profile_family_ids
+            else (self.element_kind or self.artifact_kind or "default")
+        )
 
     @property
     def projection_name(self) -> str:
@@ -181,9 +189,7 @@ class CorpusSpec(ScenarioProjectionSource, ScenarioMetadata):
     def projection_description(self) -> str:
         target = self.element_kind or self.artifact_kind or "default"
         observed = (
-            f" from {self.observed_sample_count} observed sample(s)"
-            if self.observed_sample_count is not None
-            else ""
+            f" from {self.observed_sample_count} observed sample(s)" if self.observed_sample_count is not None else ""
         )
         return f"Inferred synthetic corpus spec for {self.provider} {target}{observed}."
 
@@ -341,7 +347,9 @@ class CorpusScenario(ScenarioSpec):
             raise ValueError("CorpusScenario.corpus_specs must be non-empty")
         providers = {spec.provider for spec in self.corpus_specs}
         if providers != {self.provider}:
-            raise ValueError(f"CorpusScenario.provider mismatch: expected only {self.provider!r}, got {sorted(providers)!r}")
+            raise ValueError(
+                f"CorpusScenario.provider mismatch: expected only {self.provider!r}, got {sorted(providers)!r}"
+            )
         versions = {spec.package_version for spec in self.corpus_specs}
         if versions != {self.package_version}:
             raise ValueError(

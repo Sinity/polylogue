@@ -77,7 +77,9 @@ class ArchiveSpec:
     ) -> tuple[CorpusScenario, ...]:
         """Compile the archive spec into named per-provider synthetic corpus scenarios."""
         source_kind = CorpusSourceKind(corpus_source)
-        filtered_mix = {provider: weight for provider, weight in self.provider_mix.items() if provider in available_providers}
+        filtered_mix = {
+            provider: weight for provider, weight in self.provider_mix.items() if provider in available_providers
+        }
         if not filtered_mix:
             raise ValueError(
                 f"No providers from spec are available. "
@@ -106,14 +108,10 @@ class ArchiveSpec:
             )
 
         base_scenarios = tuple(
-            scenario
-            for scenario in list_inferred_corpus_scenarios()
-            if scenario.provider in filtered_mix
+            scenario for scenario in list_inferred_corpus_scenarios() if scenario.provider in filtered_mix
         )
         if not base_scenarios:
-            raise ValueError(
-                f"No inferred corpus scenarios available for providers: {sorted(filtered_mix)}"
-            )
+            raise ValueError(f"No inferred corpus scenarios available for providers: {sorted(filtered_mix)}")
 
         total_weight = sum(filtered_mix.values())
         normalized_mix = {provider: weight / total_weight for provider, weight in filtered_mix.items()}

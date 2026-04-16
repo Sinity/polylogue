@@ -67,11 +67,7 @@ def _metadata_for_operations(*operation_names: str) -> ScenarioMetadata:
     return ScenarioMetadata(
         path_targets=_unique(tuple(path for operation in operations for path in operation.path_targets)),
         artifact_targets=_unique(
-            tuple(
-                artifact
-                for operation in operations
-                for artifact in (*operation.consumes, *operation.produces)
-            )
+            tuple(artifact for operation in operations for artifact in (*operation.consumes, *operation.produces))
         ),
         operation_targets=target_names,
     )
@@ -107,7 +103,8 @@ def _infer_polylogue_product_metadata(argv: tuple[str, ...]) -> ScenarioMetadata
         (
             _PRODUCT_OPERATION_BY_METHOD[product.operations_method]
             for product in PRODUCT_REGISTRY.values()
-            if product.resolved_cli_command_name == subcommand and product.operations_method in _PRODUCT_OPERATION_BY_METHOD
+            if product.resolved_cli_command_name == subcommand
+            and product.operations_method in _PRODUCT_OPERATION_BY_METHOD
         ),
         "",
     )

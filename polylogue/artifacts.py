@@ -709,7 +709,12 @@ RUNTIME_ARTIFACT_NODES: tuple[ArtifactNode, ...] = (
         name="schema_list_results",
         layer=ArtifactLayer.PROJECTION,
         description="Schema list/read results combining package catalogs, manifests, and inferred corpus projections.",
-        depends_on=("schema_packages", "schema_cluster_manifests", "inferred_corpus_specs", "inferred_corpus_scenarios"),
+        depends_on=(
+            "schema_packages",
+            "schema_cluster_manifests",
+            "inferred_corpus_specs",
+            "inferred_corpus_scenarios",
+        ),
         code_refs=(
             "polylogue.schemas.operator_inference.list_schemas",
             "polylogue.cli.commands.schema.schema_list",

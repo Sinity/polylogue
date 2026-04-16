@@ -160,13 +160,9 @@ def test_render_artifact_graph_json_is_machine_readable() -> None:
         ("synthetic-benchmark", "incremental-index", "authored.synthetic-benchmark"),
     }
     assert any(
-        ref["name"] == "retrieval-checks"
-        for ref in payload["scenario_coverage"]["operations"]["query-conversations"]
+        ref["name"] == "retrieval-checks" for ref in payload["scenario_coverage"]["operations"]["query-conversations"]
     )
-    assert any(
-        ref["name"] == "startup-health"
-        for ref in payload["scenario_coverage"]["artifacts"]["archive_health"]
-    )
+    assert any(ref["name"] == "startup-health" for ref in payload["scenario_coverage"]["artifacts"]["archive_health"])
     assert any(
         ref["name"] == "live-health-json"
         for ref in payload["scenario_coverage"]["operations"]["project-archive-health"]

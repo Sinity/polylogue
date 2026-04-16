@@ -128,10 +128,7 @@ def list_inferred_corpus_specs(
         sample_count = 0
         if catalog is not None:
             package_version = (
-                catalog.default_version
-                or catalog.latest_version
-                or catalog.recommended_version
-                or package_version
+                catalog.default_version or catalog.latest_version or catalog.recommended_version or package_version
             )
             package = catalog.package(package_version)
             if package is not None:

@@ -119,9 +119,12 @@ def _render_runtime_coverage_section(coverage: RuntimeScenarioCoverage) -> list[
         f"- covered runtime artifacts: `{len(coverage.artifacts)}`",
         f"- covered runtime operations: `{len(coverage.operations)}`",
         f"- covered declared operation targets: `{len(coverage.declared_operations)}`",
-        "- uncovered runtime paths: " + ("—" if not uncovered_paths else ", ".join(f"`{name}`" for name in uncovered_paths)),
+        "- uncovered runtime paths: "
+        + ("—" if not uncovered_paths else ", ".join(f"`{name}`" for name in uncovered_paths)),
         "- uncovered runtime artifacts: "
-        + ("—" if not coverage.uncovered_artifacts else ", ".join(f"`{name}`" for name in coverage.uncovered_artifacts)),
+        + (
+            "—" if not coverage.uncovered_artifacts else ", ".join(f"`{name}`" for name in coverage.uncovered_artifacts)
+        ),
         "- uncovered runtime operations: "
         + (
             "—"
@@ -153,10 +156,7 @@ def _render_scenario_projection_snapshot(registry: QualityRegistry) -> list[str]
     return [
         f"- scenario projections: `{len(registry.scenario_projections)}`",
         f"- inferred corpus scenarios: `{len(registry.inferred_corpus_scenarios)}`",
-        *(
-            f"  - {source_kind}: `{count}`"
-            for source_kind, count in sorted(projection_counts.items())
-        ),
+        *(f"  - {source_kind}: `{count}`" for source_kind, count in sorted(projection_counts.items())),
     ]
 
 

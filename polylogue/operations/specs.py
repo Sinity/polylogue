@@ -287,7 +287,12 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         name="query-embedding-status",
         kind=OperationKind.QUERY,
         description="Resolve operator-facing embedding coverage, freshness, and retrieval-band readiness status views.",
-        consumes=("embedding_metadata_rows", "embedding_status_rows", "message_embedding_vectors", "retrieval_band_health"),
+        consumes=(
+            "embedding_metadata_rows",
+            "embedding_status_rows",
+            "message_embedding_vectors",
+            "retrieval_band_health",
+        ),
         produces=("embedding_status_results",),
         path_targets=("embedding-status-query-loop",),
         code_refs=(
