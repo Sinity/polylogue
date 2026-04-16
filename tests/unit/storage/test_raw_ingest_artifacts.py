@@ -151,10 +151,14 @@ async def test_collect_backlogs_match_shared_raw_ingest_state(tmp_path: Path) ->
 
         assert ordinary_validation == expected_ordinary_validation == {"raw-unvalidated-unparsed"}
         assert ordinary_parse == expected_ordinary_parse == {"raw-passed-unparsed", "raw-skipped-unparsed"}
-        assert forced_validation == expected_forced_validation == {
-            "raw-unvalidated-parsed",
-            "raw-unvalidated-unparsed",
-        }
+        assert (
+            forced_validation
+            == expected_forced_validation
+            == {
+                "raw-unvalidated-parsed",
+                "raw-unvalidated-unparsed",
+            }
+        )
         assert forced_parse == expected_forced_parse == set(raw_ids)
     finally:
         await backend.close()

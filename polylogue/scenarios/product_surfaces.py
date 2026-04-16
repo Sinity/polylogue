@@ -186,6 +186,7 @@ def build_product_contract_surfaces() -> tuple[CompiledCliSurface, ...]:
 def build_live_product_surface_lanes() -> tuple[CompiledCliSurface, ...]:
     return build_cli_surface_live_variants(PRODUCT_SURFACE_FAMILIES)
 
+
 __all__ = [
     "PRODUCT_SURFACE_FAMILIES",
     "build_live_product_surface_lanes",

@@ -17,9 +17,7 @@ def test_action_event_artifact_state_reports_pending_and_extra_fts_rows() -> Non
     assert state.pending_fts_rows == 0
     assert state.excess_fts_rows == 3
     assert state.repair_item_count == 3
-    assert state.repair_detail() == (
-        "Action-event read model pending (3 stale extra action-event FTS rows)"
-    )
+    assert state.repair_detail() == ("Action-event read model pending (3 stale extra action-event FTS rows)")
 
 
 def test_action_event_artifact_state_reports_missing_and_stale_rows() -> None:
@@ -63,9 +61,7 @@ def test_action_event_artifact_state_treats_orphan_rows_as_unready_and_repairabl
     assert state.rows_ready is False
     assert state.fts_ready is True
     assert state.repair_item_count == 2
-    assert state.repair_detail() == (
-        "Action-event read model pending (2 orphan action-event rows)"
-    )
+    assert state.repair_detail() == ("Action-event read model pending (2 orphan action-event rows)")
     assert row_status.ready is False
     assert row_status.orphan_rows == 2
     assert "orphan rows 2" in row_status.detail

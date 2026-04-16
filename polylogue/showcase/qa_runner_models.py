@@ -14,6 +14,7 @@ if TYPE_CHECKING:
     from polylogue.schemas.audit_models import AuditReport
     from polylogue.schemas.verification_models import ArtifactProofReport
 
+
 @dataclass
 class QAResult:
     """Complete QA session result."""
@@ -83,5 +84,6 @@ class QAResult:
     @property
     def all_passed(self) -> bool:
         return self.overall_status is OutcomeStatus.OK
+
 
 __all__ = ["QAResult"]

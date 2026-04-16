@@ -67,11 +67,7 @@ class ArtifactGraph:
 
     def operations_for_path(self, path: ArtifactPath | str) -> tuple[OperationSpec, ...]:
         path_name = path if isinstance(path, str) else path.name
-        return tuple(
-            operation
-            for operation in self.operations
-            if path_name in operation.path_targets
-        )
+        return tuple(operation for operation in self.operations if path_name in operation.path_targets)
 
     def artifacts_for_maintenance_target(self, target: MaintenanceTargetSpec | str) -> tuple[ArtifactNode, ...]:
         target_name = target if isinstance(target, str) else target.name

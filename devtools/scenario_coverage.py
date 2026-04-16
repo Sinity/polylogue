@@ -59,26 +59,15 @@ class RuntimeScenarioCoverage:
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "artifacts": {
-                name: [ref.to_dict() for ref in refs]
-                for name, refs in self.artifacts.items()
-            },
-            "operations": {
-                name: [ref.to_dict() for ref in refs]
-                for name, refs in self.operations.items()
-            },
+            "artifacts": {name: [ref.to_dict() for ref in refs] for name, refs in self.artifacts.items()},
+            "operations": {name: [ref.to_dict() for ref in refs] for name, refs in self.operations.items()},
             "maintenance_targets": {
-                name: [ref.to_dict() for ref in refs]
-                for name, refs in self.maintenance_targets.items()
+                name: [ref.to_dict() for ref in refs] for name, refs in self.maintenance_targets.items()
             },
             "declared_operations": {
-                name: [ref.to_dict() for ref in refs]
-                for name, refs in self.declared_operations.items()
+                name: [ref.to_dict() for ref in refs] for name, refs in self.declared_operations.items()
             },
-            "paths": {
-                name: path.to_dict()
-                for name, path in self.paths.items()
-            },
+            "paths": {name: path.to_dict() for name, path in self.paths.items()},
             "uncovered_artifacts": list(self.uncovered_artifacts),
             "uncovered_operations": list(self.uncovered_operations),
             "uncovered_maintenance_targets": list(self.uncovered_maintenance_targets),
@@ -117,40 +106,16 @@ def build_runtime_scenario_coverage(
         for operation in projection.resolve_declared_operations():
             declared_operation_refs[operation.name].append(ref)
 
-    covered_artifacts = {
-        name: tuple(refs)
-        for name, refs in artifact_refs.items()
-        if refs
-    }
-    covered_operations = {
-        name: tuple(refs)
-        for name, refs in operation_refs.items()
-        if refs
-    }
-    covered_maintenance_targets = {
-        name: tuple(refs)
-        for name, refs in maintenance_target_refs.items()
-        if refs
-    }
-    covered_declared_operations = {
-        name: tuple(refs)
-        for name, refs in declared_operation_refs.items()
-        if refs
-    }
+    covered_artifacts = {name: tuple(refs) for name, refs in artifact_refs.items() if refs}
+    covered_operations = {name: tuple(refs) for name, refs in operation_refs.items() if refs}
+    covered_maintenance_targets = {name: tuple(refs) for name, refs in maintenance_target_refs.items() if refs}
+    covered_declared_operations = {name: tuple(refs) for name, refs in declared_operation_refs.items() if refs}
     path_coverage: dict[str, RuntimePathCoverage] = {}
     for path in graph.paths:
         relevant_operations = tuple(operation.name for operation in graph.operations_for_path(path))
         refs = {
-            *(
-                ref
-                for node_name in path.nodes
-                for ref in artifact_refs[node_name]
-            ),
-            *(
-                ref
-                for operation_name in relevant_operations
-                for ref in operation_refs[operation_name]
-            ),
+            *(ref for node_name in path.nodes for ref in artifact_refs[node_name]),
+            *(ref for operation_name in relevant_operations for ref in operation_refs[operation_name]),
         }
         path_coverage[path.name] = RuntimePathCoverage(
             name=path.name,
@@ -169,12 +134,8 @@ def build_runtime_scenario_coverage(
         paths=path_coverage,
         uncovered_artifacts=tuple(sorted(name for name, refs in artifact_refs.items() if not refs)),
         uncovered_operations=tuple(sorted(name for name, refs in operation_refs.items() if not refs)),
-        uncovered_maintenance_targets=tuple(
-            sorted(name for name, refs in maintenance_target_refs.items() if not refs)
-        ),
-        uncovered_declared_operations=tuple(
-            sorted(name for name, refs in declared_operation_refs.items() if not refs)
-        ),
+        uncovered_maintenance_targets=tuple(sorted(name for name, refs in maintenance_target_refs.items() if not refs)),
+        uncovered_declared_operations=tuple(sorted(name for name, refs in declared_operation_refs.items() if not refs)),
     )
 
 

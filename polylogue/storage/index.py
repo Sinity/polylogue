@@ -61,6 +61,8 @@ def index_status(conn: sqlite3.Connection | None = None) -> dict[str, object]:
         return fts_index_status_sync(conn)
     with open_read_connection(None) as fallback_conn:
         return fts_index_status_sync(fallback_conn)
+
+
 __all__ = [
     "_chunked",
     "rebuild_index",

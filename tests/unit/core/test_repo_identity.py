@@ -103,9 +103,7 @@ def test_repo_identity_normalization_ignores_transcript_and_state_git_repos(tmp_
     assert normalize_repo_name(str(config_transcript_repo)) is None
     assert normalize_repo_path(str(state_repo)) is None
     assert normalize_repo_name(str(state_repo)) is None
-    assert normalize_repo_names(
-        repo_paths=[str(transcript_repo), str(config_transcript_repo), str(state_repo)]
-    ) == ()
+    assert normalize_repo_names(repo_paths=[str(transcript_repo), str(config_transcript_repo), str(state_repo)]) == ()
 
 
 def test_session_profile_from_dict_preserves_explicit_repo_names_and_normalizes_repo_paths(tmp_path: Path) -> None:

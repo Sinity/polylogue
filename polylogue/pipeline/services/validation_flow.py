@@ -216,17 +216,17 @@ async def evaluate_raw_records(
             result.drift_counts[prov] = result.drift_counts.get(prov, 0) + cnt
 
         result.records.append(
-                ValidatedRawRecord(
-                    raw_id=raw_record.raw_id,
-                    parseable=outcome.parseable,
-                    validation_status=outcome.validation_status,
-                    validation_error=outcome.validation_error,
-                    parse_error=outcome.parse_error,
-                    canonical_provider=outcome.canonical_provider,
-                    payload_provider=outcome.payload_provider,
-                    drift_count=outcome.drift_count,
-                )
+            ValidatedRawRecord(
+                raw_id=raw_record.raw_id,
+                parseable=outcome.parseable,
+                validation_status=outcome.validation_status,
+                validation_error=outcome.validation_error,
+                parse_error=outcome.parse_error,
+                canonical_provider=outcome.canonical_provider,
+                payload_provider=outcome.payload_provider,
+                drift_count=outcome.drift_count,
             )
+        )
 
         if persist:
             await repository.mark_raw_validated(

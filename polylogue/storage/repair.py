@@ -294,7 +294,9 @@ def collect_archive_debt_statuses_sync(
     statuses = derived_statuses or collect_derived_model_statuses_sync(conn, verify_full=include_expensive)
 
     orphaned_messages = (
-        1 if has_orphaned_messages_sync(conn) else 0
+        1
+        if has_orphaned_messages_sync(conn)
+        else 0
         if probe_only and not include_expensive
         else count_orphaned_messages_sync(conn)
     )
@@ -369,8 +371,7 @@ def preview_counts_from_archive_debt(
     return {
         status.maintenance_target: status.issue_count
         for status in statuses.values()
-        if status.issue_count > 0
-        or status.maintenance_target in preview_targets
+        if status.issue_count > 0 or status.maintenance_target in preview_targets
     }
 
 

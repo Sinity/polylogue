@@ -128,9 +128,7 @@ def _load_exercise(payload: dict[str, object]) -> Exercise:
     corpus_specs = ()
     if isinstance(corpus_payloads, list):
         corpus_specs = tuple(
-            CorpusSpec.from_payload(spec_payload)
-            for spec_payload in corpus_payloads
-            if isinstance(spec_payload, dict)
+            CorpusSpec.from_payload(spec_payload) for spec_payload in corpus_payloads if isinstance(spec_payload, dict)
         )
     return Exercise(
         name=str(payload["name"]),

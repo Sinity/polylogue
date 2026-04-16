@@ -516,7 +516,7 @@ def test_action_events_do_not_treat_checkout_pathspec_as_branch_or_commit_messag
                                     "&&",
                                     "git",
                                     "commit",
-                                    "\"$(cat",
+                                    '"$(cat',
                                     "<<'EOF'",
                                     "fix(sinex):",
                                     "(1M",

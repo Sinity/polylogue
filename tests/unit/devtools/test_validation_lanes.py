@@ -59,7 +59,9 @@ class TestLaneParsing:
         from devtools.validation_catalog import build_composite_lane_entries
 
         frontier_local = next(entry for entry in build_composite_lane_entries() if entry.name == "frontier-local")
-        archive_intelligence = next(entry for entry in build_composite_lane_entries() if entry.name == "archive-intelligence")
+        archive_intelligence = next(
+            entry for entry in build_composite_lane_entries() if entry.name == "archive-intelligence"
+        )
         runtime_substrate = next(
             entry for entry in build_composite_lane_entries() if entry.name == "runtime-substrate-hardening"
         )

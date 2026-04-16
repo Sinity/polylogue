@@ -58,10 +58,7 @@ def build_validation_lane_entries() -> tuple[LaneEntry, ...]:
     cache: dict[str, LaneEntry] = {}
     return tuple(
         sorted(
-            (
-                _build_lane_entry(name, cache=cache, visiting=set())
-                for name in ALL_VALIDATION_LANES
-            ),
+            (_build_lane_entry(name, cache=cache, visiting=set()) for name in ALL_VALIDATION_LANES),
             key=lambda item: item.name,
         )
     )

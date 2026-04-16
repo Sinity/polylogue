@@ -56,7 +56,10 @@ def test_render_artifact_graph_text_mentions_the_current_runtime_paths() -> None
     assert "maintenance action_event_read_model:" in rendered
     assert "maintenance dangling_fts:" in rendered
     assert "maintenance session_products:" in rendered
-    assert "uncovered maintenance targets: empty_conversations, orphaned_attachments, orphaned_content_blocks, orphaned_messages, wal_checkpoint" in rendered
+    assert (
+        "uncovered maintenance targets: empty_conversations, orphaned_attachments, orphaned_content_blocks, orphaned_messages, wal_checkpoint"
+        in rendered
+    )
     assert "uncovered artifacts:" not in rendered
     assert "uncovered operations:" not in rendered
 
@@ -86,9 +89,11 @@ def test_render_artifact_graph_json_is_machine_readable() -> None:
     assert any(node["name"] == "raw_validation_state" for node in payload["nodes"])
     assert any(node["name"] == "archive_conversation_rows" for node in payload["nodes"])
     assert any(node["name"] == "message_fts" for node in payload["nodes"])
-    assert {
-        target["name"] for target in payload["maintenance_targets"]
-    } >= {"session_products", "action_event_read_model", "dangling_fts"}
+    assert {target["name"] for target in payload["maintenance_targets"]} >= {
+        "session_products",
+        "action_event_read_model",
+        "dangling_fts",
+    }
     assert any(operation["name"] == "plan-parse-backlog" for operation in payload["operations"])
     assert any(operation["name"] == "ingest-archive-runtime" for operation in payload["operations"])
     assert any(operation["name"] == "index-message-fts" for operation in payload["operations"])
@@ -191,13 +196,9 @@ def test_render_artifact_graph_json_is_machine_readable() -> None:
         ("synthetic-benchmark", "incremental-index", "authored.synthetic-benchmark"),
     }
     assert any(
-        ref["name"] == "retrieval-checks"
-        for ref in payload["scenario_coverage"]["operations"]["query-conversations"]
+        ref["name"] == "retrieval-checks" for ref in payload["scenario_coverage"]["operations"]["query-conversations"]
     )
-    assert any(
-        ref["name"] == "startup-health"
-        for ref in payload["scenario_coverage"]["artifacts"]["archive_health"]
-    )
+    assert any(ref["name"] == "startup-health" for ref in payload["scenario_coverage"]["artifacts"]["archive_health"])
     assert any(
         ref["name"] == "live-health-json"
         for ref in payload["scenario_coverage"]["operations"]["project-archive-health"]

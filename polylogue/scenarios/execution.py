@@ -64,6 +64,8 @@ _PRODUCT_SUBCOMMAND_OPERATION_NAMES = {
     "status": "query-session-product-status",
     "debt": "query-archive-debt",
 }
+
+
 def _unique(items: tuple[str, ...]) -> tuple[str, ...]:
     seen: set[str] = set()
     merged: list[str] = []
@@ -121,7 +123,8 @@ def _metadata_for_polylogue_products(argv: tuple[str, ...]) -> ScenarioMetadata:
         (
             _PRODUCT_OPERATION_BY_METHOD[product.operations_method]
             for product in PRODUCT_REGISTRY.values()
-            if product.resolved_cli_command_name == subcommand and product.operations_method in _PRODUCT_OPERATION_BY_METHOD
+            if product.resolved_cli_command_name == subcommand
+            and product.operations_method in _PRODUCT_OPERATION_BY_METHOD
         ),
         "",
     )
@@ -373,7 +376,9 @@ class PipelineProbeRequest:
                     corpus_payload.get("messages_max", _PIPELINE_PROBE_DEFAULT_MESSAGES_MAX)
                     or _PIPELINE_PROBE_DEFAULT_MESSAGES_MAX
                 ),
-                seed=int(corpus_payload["seed"]) if corpus_payload.get("seed") is not None else _PIPELINE_PROBE_DEFAULT_SEED,
+                seed=int(corpus_payload["seed"])
+                if corpus_payload.get("seed") is not None
+                else _PIPELINE_PROBE_DEFAULT_SEED,
                 style=str(corpus_payload.get("style", "default") or "default"),
                 package_version=str(corpus_payload.get("package_version", "default") or "default"),
             )
@@ -386,7 +391,9 @@ class PipelineProbeRequest:
             sample_per_provider=int(payload["sample_per_provider"])
             if payload.get("sample_per_provider") is not None
             else None,
-            source_filters=tuple(str(item) for item in source_filters) if isinstance(source_filters, list | tuple) else (),
+            source_filters=tuple(str(item) for item in source_filters)
+            if isinstance(source_filters, list | tuple)
+            else (),
             source_paths=tuple(str(item) for item in source_paths) if isinstance(source_paths, list | tuple) else (),
             source_name=str(payload.get("source_name", "inbox") or "inbox"),
             source_db=str(payload["source_db"]) if payload.get("source_db") is not None else None,
@@ -549,12 +556,14 @@ class ExecutionSpec:
         wrapped = cls.from_payload(wrapped_payload) if isinstance(wrapped_payload, Mapping) else None
         probe_payload = payload.get("pipeline_probe")
         pipeline_probe = (
-            PipelineProbeRequest.from_payload(probe_payload)
-            if isinstance(probe_payload, Mapping)
-            else None
+            PipelineProbeRequest.from_payload(probe_payload) if isinstance(probe_payload, Mapping) else None
         )
         metadata_payload = payload.get("metadata")
-        metadata = ScenarioMetadata.from_payload(metadata_payload) if isinstance(metadata_payload, Mapping) else ScenarioMetadata()
+        metadata = (
+            ScenarioMetadata.from_payload(metadata_payload)
+            if isinstance(metadata_payload, Mapping)
+            else ScenarioMetadata()
+        )
         return cls(
             kind=kind,
             argv=argv,

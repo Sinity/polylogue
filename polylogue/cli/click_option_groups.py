@@ -75,7 +75,9 @@ FILTER_OPTION_DECORATORS: tuple[Callable[[ClickCallable], ClickCallable], ...] =
         callback=_validate_provider_tokens,
         shell_complete=_complete_providers,
     ),
-    click.option("--tag", "-t", help="Include tags (comma = OR, supports key:value)", shell_complete=complete_tag_values),
+    click.option(
+        "--tag", "-t", help="Include tags (comma = OR, supports key:value)", shell_complete=complete_tag_values
+    ),
     click.option("--exclude-tag", help="Exclude tags", shell_complete=complete_tag_values),
     click.option("--title", help="Title contains"),
     click.option(
@@ -105,7 +107,12 @@ FILTER_OPTION_DECORATORS: tuple[Callable[[ClickCallable], ClickCallable], ...] =
         multiple=True,
         help="Require text within normalized action evidence (repeatable = AND)",
     ),
-    click.option("--tool", multiple=True, help="Require normalized tool name (repeatable = AND)", shell_complete=complete_tool_values),
+    click.option(
+        "--tool",
+        multiple=True,
+        help="Require normalized tool name (repeatable = AND)",
+        shell_complete=complete_tool_values,
+    ),
     click.option(
         "--exclude-tool",
         multiple=True,

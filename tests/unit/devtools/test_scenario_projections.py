@@ -24,8 +24,7 @@ def test_render_scenario_projections_json_is_machine_readable() -> None:
     payload = json.loads(scenario_projections.render_scenario_projections(as_json=True))
 
     assert any(
-        entry["source_kind"] == "exercise" and entry["name"] == "json-doctor-action-event-preview"
-        for entry in payload
+        entry["source_kind"] == "exercise" and entry["name"] == "json-doctor-action-event-preview" for entry in payload
     )
     assert any(entry["source_kind"] == "validation-lane" and entry["name"] == "machine-contract" for entry in payload)
     assert any(entry["source_kind"] == "mutation-campaign" and entry["name"] == "filters" for entry in payload)
@@ -34,9 +33,13 @@ def test_render_scenario_projections_json_is_machine_readable() -> None:
         entry["source_kind"] == "synthetic-benchmark" and entry["name"] == "session-product-materialization"
         for entry in payload
     )
-    assert any(entry["source_kind"] == "inferred-corpus-scenario" and entry["name"] == "chatgpt:v1" for entry in payload)
+    assert any(
+        entry["source_kind"] == "inferred-corpus-scenario" and entry["name"] == "chatgpt:v1" for entry in payload
+    )
     inferred = next(
-        entry for entry in payload if entry["source_kind"] == "inferred-corpus-scenario" and entry["name"] == "chatgpt:v1"
+        entry
+        for entry in payload
+        if entry["source_kind"] == "inferred-corpus-scenario" and entry["name"] == "chatgpt:v1"
     )
     assert inferred["source_payload"]["provider"] == "chatgpt"
     assert inferred["source_payload"]["package_version"] == "v1"

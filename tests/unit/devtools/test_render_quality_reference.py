@@ -148,7 +148,10 @@ def test_build_document_includes_live_registry_sections() -> None:
                     messages_max=16,
                     origin="inferred.schema",
                     tags=("inferred", "schema", "synthetic"),
-                ).to_projection_entry().source_payload | {"variant_count": 1, "target_labels": ["default"]},
+                )
+                .to_projection_entry()
+                .source_payload
+                | {"variant_count": 1, "target_labels": ["default"]},
             ),
         ),
     )

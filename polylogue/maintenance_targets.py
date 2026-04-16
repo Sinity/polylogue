@@ -96,7 +96,9 @@ class MaintenanceTargetCatalog:
             if spec.include_in_archive_health and (deep or not spec.archive_health_requires_deep)
         )
 
-    def maintenance_targets_for_operation_names(self, operation_names: tuple[str, ...]) -> tuple[MaintenanceTargetSpec, ...]:
+    def maintenance_targets_for_operation_names(
+        self, operation_names: tuple[str, ...]
+    ) -> tuple[MaintenanceTargetSpec, ...]:
         operations = set(operation_names)
         return tuple(
             spec
@@ -116,20 +118,12 @@ class MaintenanceTargetCatalog:
 
     def doctor_health_operations_for_names(self, names: tuple[str, ...]) -> tuple[str, ...]:
         return _unique(
-            tuple(
-                spec.doctor_health_operation
-                for spec in self.resolve(names)
-                if spec.doctor_health_operation
-            )
+            tuple(spec.doctor_health_operation for spec in self.resolve(names) if spec.doctor_health_operation)
         )
 
     def doctor_repair_operations_for_names(self, names: tuple[str, ...]) -> tuple[str, ...]:
         return _unique(
-            tuple(
-                spec.doctor_repair_operation
-                for spec in self.resolve(names)
-                if spec.doctor_repair_operation
-            )
+            tuple(spec.doctor_repair_operation for spec in self.resolve(names) if spec.doctor_repair_operation)
         )
 
     def help_text(self) -> str:

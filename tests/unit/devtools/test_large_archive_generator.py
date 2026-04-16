@@ -81,5 +81,7 @@ def test_archive_spec_can_scale_inferred_corpus_scenarios(monkeypatch) -> None:
 
     assert tuple(scenario.provider for scenario in corpus_scenarios) == ("chatgpt", "codex")
     assert sum(spec.count for scenario in corpus_scenarios for spec in scenario.corpus_specs) == spec.conversations
-    assert all(spec.origin == "generated.large-archive" for scenario in corpus_scenarios for spec in scenario.corpus_specs)
+    assert all(
+        spec.origin == "generated.large-archive" for scenario in corpus_scenarios for spec in scenario.corpus_specs
+    )
     assert all("inferred" in spec.tags for scenario in corpus_scenarios for spec in scenario.corpus_specs)

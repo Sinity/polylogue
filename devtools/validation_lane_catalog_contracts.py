@@ -84,7 +84,12 @@ CONTRACT_LANES = {
         "tests/unit/pipeline/test_ingestion_chaos.py",
         "tests/integration/test_security.py",
         path_targets=("source-acquisition-loop",),
-        artifact_targets=("configured_sources", "source_payload_stream", "raw_validation_state", "artifact_observation_rows"),
+        artifact_targets=(
+            "configured_sources",
+            "source_payload_stream",
+            "raw_validation_state",
+            "artifact_observation_rows",
+        ),
         operation_targets=("acquire-raw-conversations",),
         tags=("contract", "sources", "acquisition"),
     ),

@@ -418,11 +418,7 @@ def _write_probe_sources(
     provider = request.providers[0] if request.providers else "probe"
     written_batches = SyntheticCorpus.write_specs_artifacts(corpus_specs, source_root, prefix=provider, index_width=3)
     files = [path for written in written_batches for path in written.files]
-    total_bytes = sum(
-        len(artifact.raw_bytes)
-        for written in written_batches
-        for artifact in written.batch.artifacts
-    )
+    total_bytes = sum(len(artifact.raw_bytes) for written in written_batches for artifact in written.batch.artifacts)
     return files, total_bytes
 
 

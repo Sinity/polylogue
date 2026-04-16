@@ -15,11 +15,7 @@ def _serialize_exercise_corpus_specs(exercise: object) -> list[dict[str, Any]] |
     corpus_specs = getattr(exercise, "corpus_specs", ())
     if not isinstance(corpus_specs, (list, tuple)):
         return None
-    payloads = [
-        spec.to_payload()
-        for spec in corpus_specs
-        if hasattr(spec, "to_payload")
-    ]
+    payloads = [spec.to_payload() for spec in corpus_specs if hasattr(spec, "to_payload")]
     return payloads or None
 
 

@@ -54,6 +54,7 @@ def generate_command(
         raise click.UsageError("--env-only requires --seed")
 
     from polylogue.schemas.synthetic import SyntheticCorpus
+
     source_kind = CorpusSourceKind(corpus_source)
 
     if source_kind is CorpusSourceKind.DEFAULT:

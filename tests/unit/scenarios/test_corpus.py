@@ -474,7 +474,10 @@ def test_inferred_corpus_spec_compiles_its_own_projection_entry() -> None:
 
     assert projection.source_kind is ScenarioProjectionSourceKind.INFERRED_CORPUS
     assert projection.name == "chatgpt:v7:cluster/a"
-    assert projection.description == "Inferred synthetic corpus spec for chatgpt conversation_document from 12 observed sample(s)."
+    assert (
+        projection.description
+        == "Inferred synthetic corpus spec for chatgpt conversation_document from 12 observed sample(s)."
+    )
     assert projection.origin == "inferred.schema"
     assert projection.tags == ("inferred", "schema", "synthetic")
     assert projection.source_payload["provider"] == "chatgpt"

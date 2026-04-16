@@ -23,11 +23,20 @@ def test_build_quality_registry_exposes_live_catalogs() -> None:
     assert any(entry.name == "action-event-materialization" for entry in registry.synthetic_benchmark_campaigns)
     assert any(entry.name == "session-product-materialization" for entry in registry.synthetic_benchmark_campaigns)
     assert any(entry.name == "startup-health" for entry in registry.synthetic_benchmark_campaigns)
-    assert any(scenario.provider == "chatgpt" and scenario.package_version == "v1" for scenario in registry.inferred_corpus_scenarios)
+    assert any(
+        scenario.provider == "chatgpt" and scenario.package_version == "v1"
+        for scenario in registry.inferred_corpus_scenarios
+    )
     assert any(entry.name == "json-doctor-action-event-preview" for entry in registry.scenario_projections)
-    assert any(entry.name == "runtime-substrate" and entry.source_kind.value == "validation-family" for entry in registry.scenario_projections)
+    assert any(
+        entry.name == "runtime-substrate" and entry.source_kind.value == "validation-family"
+        for entry in registry.scenario_projections
+    )
     assert any(entry.name == "machine-contract" for entry in registry.scenario_projections)
-    assert any(entry.name == "filters" and entry.source_kind.value == "mutation-campaign" for entry in registry.scenario_projections)
+    assert any(
+        entry.name == "filters" and entry.source_kind.value == "mutation-campaign"
+        for entry in registry.scenario_projections
+    )
     assert any(entry.name == "search-filters" for entry in registry.scenario_projections)
     assert any(entry.name == "session-product-materialization" for entry in registry.scenario_projections)
     assert any(entry.source_kind.value == "inferred-corpus-scenario" for entry in registry.scenario_projections)
@@ -49,7 +58,9 @@ def test_build_quality_registry_exposes_live_catalogs() -> None:
     assert machine_contract.origin == "authored.validation-lane"
     assert machine_contract.operation_targets == ("cli.json-contract",)
     assert machine_contract.tags == ("contract", "json", "cli")
-    live_session_product_repair = next(entry for entry in registry.live_lanes if entry.name == "live-session-product-repair")
+    live_session_product_repair = next(
+        entry for entry in registry.live_lanes if entry.name == "live-session-product-repair"
+    )
     assert live_session_product_repair.path_targets == ("session-product-repair-loop",)
     assert live_session_product_repair.operation_targets == (
         "cli.json-contract",
@@ -100,7 +111,9 @@ def test_build_quality_registry_exposes_live_catalogs() -> None:
     assert "session_product_fts" in session_products.artifact_targets
     assert session_products.operation_targets == ("materialize-session-products",)
     assert session_products.tags == ("benchmark", "synthetic", "session-products")
-    product_profiles = next(entry for entry in registry.catalog.exercise_scenarios if entry.name == "json-products-profiles")
+    product_profiles = next(
+        entry for entry in registry.catalog.exercise_scenarios if entry.name == "json-products-profiles"
+    )
     assert product_profiles.path_targets == ("session-profile-query-loop",)
     assert product_profiles.artifact_targets == (
         "session_profile_rows",
@@ -108,7 +121,9 @@ def test_build_quality_registry_exposes_live_catalogs() -> None:
         "session_profile_results",
     )
     assert product_profiles.operation_targets == ("cli.json-contract", "query-session-profiles")
-    product_threads = next(entry for entry in registry.catalog.exercise_scenarios if entry.name == "json-products-threads")
+    product_threads = next(
+        entry for entry in registry.catalog.exercise_scenarios if entry.name == "json-products-threads"
+    )
     assert product_threads.path_targets == ("work-thread-query-loop",)
     assert product_threads.artifact_targets == ("work_thread_rows", "work_thread_fts", "work_thread_results")
     assert product_threads.operation_targets == ("cli.json-contract", "query-work-threads")

@@ -18,6 +18,7 @@ SYNTHETIC_CAMPAIGNS: dict[str, BenchmarkCampaignEntry] = (
     get_authored_scenario_catalog().synthetic_benchmark_campaign_index()
 )
 
+
 async def run_synthetic_benchmark_campaign(name: str, db_path: Path) -> CampaignResult:
     """Dispatch one synthetic benchmark campaign by authored scenario id."""
 
@@ -96,6 +97,7 @@ async def run_full_campaign(
         print(f"  -> {metric_value:.4f}{campaign.summary_label}")
 
     return results
+
 
 __all__ = [
     "CampaignResult",

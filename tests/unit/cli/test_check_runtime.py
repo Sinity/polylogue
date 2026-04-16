@@ -378,6 +378,7 @@ class TestRuntimeHealthLegacySchema:
 
     def test_runtime_health_reports_legacy_inline_raw_layout(self, tmp_path, monkeypatch):
         import polylogue.paths
+
         monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
         monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
         importlib.reload(polylogue.paths)

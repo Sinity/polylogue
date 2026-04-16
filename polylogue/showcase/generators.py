@@ -258,10 +258,31 @@ JSON_CONTRACT_SCENARIOS: tuple[Exercise, ...] = (
         tier=0,
         env="any",
     ),
-    _json_contract_scenario("json-schema-list", "schema list JSON contract", "schema", "list", "--json", needs_data=False, tier=0, env="any"),
-    _json_contract_scenario("json-schema-audit", "schema audit JSON contract", "schema", "audit", "--json", needs_data=False, tier=0, env="any"),
+    _json_contract_scenario(
+        "json-schema-list", "schema list JSON contract", "schema", "list", "--json", needs_data=False, tier=0, env="any"
+    ),
+    _json_contract_scenario(
+        "json-schema-audit",
+        "schema audit JSON contract",
+        "schema",
+        "audit",
+        "--json",
+        needs_data=False,
+        tier=0,
+        env="any",
+    ),
     *_product_json_contract_scenarios(),
-    _json_contract_scenario("json-run-embed", "run embed JSON contract", "run", "embed", "--stats", "--json", needs_data=True, tier=1, env="seeded"),
+    _json_contract_scenario(
+        "json-run-embed",
+        "run embed JSON contract",
+        "run",
+        "embed",
+        "--stats",
+        "--json",
+        needs_data=True,
+        tier=1,
+        env="seeded",
+    ),
 )
 
 
@@ -282,9 +303,7 @@ def json_contract_exercise_names() -> set[str]:
 def generate_json_contract_scenarios() -> tuple[Exercise, ...]:
     """Generate JSON contract scenarios for curated runnable commands."""
     available_paths = {
-        tuple(command_path.path)
-        for command_path in inventory_command_paths()
-        if _has_json_flag(command_path.command)
+        tuple(command_path.path) for command_path in inventory_command_paths() if _has_json_flag(command_path.command)
     }
     return tuple(
         scenario

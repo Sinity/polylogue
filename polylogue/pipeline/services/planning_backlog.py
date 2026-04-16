@@ -31,7 +31,9 @@ async def collect_validation_backlog(
         source_names=source_names,
         require_unparsed=query_spec.require_unparsed,
         require_unvalidated=query_spec.require_unvalidated,
-        validation_statuses=list(query_spec.validation_statuses) if query_spec.validation_statuses is not None else None,
+        validation_statuses=list(query_spec.validation_statuses)
+        if query_spec.validation_statuses is not None
+        else None,
     ):
         if raw_id not in exclude:
             backlog_validate_ids.append(raw_id)
@@ -51,7 +53,9 @@ async def collect_parse_backlog(
     async for raw_id in backend.queries.iter_raw_ids(
         source_names=source_names,
         require_unparsed=query_spec.require_unparsed,
-        validation_statuses=list(query_spec.validation_statuses) if query_spec.validation_statuses is not None else None,
+        validation_statuses=list(query_spec.validation_statuses)
+        if query_spec.validation_statuses is not None
+        else None,
     ):
         if raw_id not in exclude:
             backlog_parse_ids.append(raw_id)

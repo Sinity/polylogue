@@ -332,9 +332,7 @@ class CorpusSpec(ScenarioProjectionSource, ScenarioMetadata):
             raise ValueError("CorpusSpec payload must include provider")
         profile_payload = payload.get("profile")
         profile = (
-            CorpusProfile.from_payload(profile_payload)
-            if isinstance(profile_payload, Mapping)
-            else CorpusProfile()
+            CorpusProfile.from_payload(profile_payload) if isinstance(profile_payload, Mapping) else CorpusProfile()
         )
         return cls(
             provider=provider,
@@ -422,7 +420,9 @@ class CorpusScenario(ScenarioSpec):
             raise ValueError("CorpusScenario.corpus_specs must be non-empty")
         providers = {spec.provider for spec in self.corpus_specs}
         if providers != {self.provider}:
-            raise ValueError(f"CorpusScenario.provider mismatch: expected only {self.provider!r}, got {sorted(providers)!r}")
+            raise ValueError(
+                f"CorpusScenario.provider mismatch: expected only {self.provider!r}, got {sorted(providers)!r}"
+            )
         versions = {spec.package_version for spec in self.corpus_specs}
         if versions != {self.package_version}:
             raise ValueError(
@@ -650,17 +650,27 @@ def _profile_from_package(
         or (package.default_element_kind if package is not None else None)
     )
     return CorpusProfile(
-        family_ids=tuple(element.profile_family_ids) if element is not None else tuple(package.profile_family_ids) if package else (),
+        family_ids=tuple(element.profile_family_ids)
+        if element is not None
+        else tuple(package.profile_family_ids)
+        if package
+        else (),
         profile_tokens=tuple(element.profile_tokens) if element is not None else (),
         artifact_kind=inferred_kind,
         anchor_kind=package.anchor_kind if package is not None else None,
-        observed_sample_count=element.sample_count if element is not None else package.sample_count if package is not None else None,
+        observed_sample_count=element.sample_count
+        if element is not None
+        else package.sample_count
+        if package is not None
+        else None,
         observed_artifact_count=(
-            (element.observed_artifact_count or element.artifact_count)
-            if element is not None
-            else None
+            (element.observed_artifact_count or element.artifact_count) if element is not None else None
         ),
-        bundle_scope_count=element.bundle_scope_count if element is not None else package.bundle_scope_count if package else None,
+        bundle_scope_count=element.bundle_scope_count
+        if element is not None
+        else package.bundle_scope_count
+        if package
+        else None,
         representative_paths=(
             tuple(element.representative_paths)
             if element is not None
