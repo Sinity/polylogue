@@ -27,7 +27,7 @@ These are the commands worth remembering during normal repo work:
   Common forms: `devtools status`, `devtools status --json`, `devtools status --verify-generated`.
 - `devtools render-all`: Refresh or verify every generated repo surface together after changing docs, CLI help, or agent memory.
   Common forms: `devtools render-all`, `devtools render-all --check`.
-- `devtools verify`: Run format, lint, render-all, and test checks locally before pushing.
+- `devtools verify`: Run format, lint, mypy, render-all, and test checks locally before pushing.
   Common forms: `devtools verify`, `devtools verify --quick`.
 - `devtools mutmut-campaign`: Run or inspect focused mutation-testing work without shrinking the committed mutmut scope.
   Common forms: `devtools mutmut-campaign list`, `devtools mutmut-campaign run filters`.
