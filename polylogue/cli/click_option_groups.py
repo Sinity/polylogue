@@ -7,6 +7,12 @@ from typing import Any
 
 import click
 
+from polylogue.cli.shell_completion_values import (
+    complete_conversation_ids,
+    complete_provider_values,
+    complete_tag_values,
+    complete_tool_values,
+)
 from polylogue.lib.provider_identity import CORE_SCHEMA_PROVIDERS
 from polylogue.lib.query_spec import QUERY_ACTION_TYPES, QUERY_RETRIEVAL_LANES
 
@@ -19,9 +25,9 @@ _CLI_PROVIDER_CHOICES: tuple[str, ...] = CORE_SCHEMA_PROVIDERS
 def _complete_providers(
     ctx: click.Context,
     param: click.Parameter,
-    incomplete: str,  # noqa: ARG001
+    incomplete: str,
 ) -> list[click.shell_completion.CompletionItem]:
-    return [click.shell_completion.CompletionItem(p) for p in _CLI_PROVIDER_CHOICES if p.startswith(incomplete)]
+    return complete_provider_values(ctx, param, incomplete)
 
 
 def _validate_provider_tokens(
@@ -42,7 +48,13 @@ def _validate_provider_tokens(
 
 
 FILTER_OPTION_DECORATORS: tuple[Callable[[ClickCallable], ClickCallable], ...] = (
-    click.option("--id", "-i", "conv_id", help="Conversation ID (exact or prefix match)"),
+    click.option(
+        "--id",
+        "-i",
+        "conv_id",
+        help="Conversation ID (exact or prefix match)",
+        shell_complete=complete_conversation_ids,
+    ),
     click.option("--contains", "-c", multiple=True, help="FTS term (repeatable = AND)"),
     click.option("--exclude-text", multiple=True, help="Exclude FTS term"),
     click.option(
@@ -63,8 +75,10 @@ FILTER_OPTION_DECORATORS: tuple[Callable[[ClickCallable], ClickCallable], ...] =
         callback=_validate_provider_tokens,
         shell_complete=_complete_providers,
     ),
-    click.option("--tag", "-t", help="Include tags (comma = OR, supports key:value)"),
-    click.option("--exclude-tag", help="Exclude tags"),
+    click.option(
+        "--tag", "-t", help="Include tags (comma = OR, supports key:value)", shell_complete=complete_tag_values
+    ),
+    click.option("--exclude-tag", help="Exclude tags", shell_complete=complete_tag_values),
     click.option("--title", help="Title contains"),
     click.option(
         "--path",
@@ -93,8 +107,18 @@ FILTER_OPTION_DECORATORS: tuple[Callable[[ClickCallable], ClickCallable], ...] =
         multiple=True,
         help="Require text within normalized action evidence (repeatable = AND)",
     ),
-    click.option("--tool", multiple=True, help="Require normalized tool name (repeatable = AND)"),
-    click.option("--exclude-tool", multiple=True, help="Exclude normalized tool name (repeatable = AND)"),
+    click.option(
+        "--tool",
+        multiple=True,
+        help="Require normalized tool name (repeatable = AND)",
+        shell_complete=complete_tool_values,
+    ),
+    click.option(
+        "--exclude-tool",
+        multiple=True,
+        help="Exclude normalized tool name (repeatable = AND)",
+        shell_complete=complete_tool_values,
+    ),
     click.option("--similar", "similar_text", help="Semantic similarity query (requires embeddings)"),
     click.option(
         "--has",

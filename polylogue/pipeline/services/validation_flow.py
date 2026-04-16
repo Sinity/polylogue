@@ -73,6 +73,7 @@ async def validate_raw_ids(
                     parseable=True,
                     validation_status=ValidationStatus.SKIPPED,
                     validation_error=None,
+                    parse_error=None,
                     canonical_provider=Provider.UNKNOWN,
                     payload_provider=None,
                 )
@@ -106,6 +107,7 @@ async def validate_raw_ids(
                     parseable=False,
                     validation_status=ValidationStatus.FAILED,
                     validation_error="Missing raw conversation record",
+                    parse_error="Missing raw conversation record",
                     canonical_provider=Provider.UNKNOWN,
                     payload_provider=None,
                 )
@@ -150,6 +152,7 @@ async def evaluate_raw_records(
                     parseable=True,
                     validation_status=ValidationStatus.SKIPPED,
                     validation_error=None,
+                    parse_error=None,
                     canonical_provider=Provider.from_string(raw_record.provider_name),
                     payload_provider=raw_record.payload_provider,
                 )
@@ -218,6 +221,7 @@ async def evaluate_raw_records(
                 parseable=outcome.parseable,
                 validation_status=outcome.validation_status,
                 validation_error=outcome.validation_error,
+                parse_error=outcome.parse_error,
                 canonical_provider=outcome.canonical_provider,
                 payload_provider=outcome.payload_provider,
                 drift_count=outcome.drift_count,
@@ -234,10 +238,10 @@ async def evaluate_raw_records(
                 mode=mode,
                 payload_provider=outcome.payload_provider,
             )
-            if not outcome.parseable and outcome.validation_error is not None:
+            if outcome.parse_error is not None:
                 await repository.mark_raw_parsed(
                     raw_record.raw_id,
-                    error=outcome.validation_error,
+                    error=outcome.parse_error,
                     payload_provider=outcome.payload_provider,
                 )
 

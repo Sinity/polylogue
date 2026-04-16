@@ -93,19 +93,31 @@ class RepositoryRawMixin:
     async def get_known_source_mtimes(self) -> dict[str, str]:
         return await self._backend.queries.get_known_source_mtimes()
 
-    async def reset_parse_status(self, *, provider: str | None = None) -> int:
+    async def reset_parse_status(
+        self,
+        *,
+        provider: str | None = None,
+        source_names: list[str] | None = None,
+    ) -> int:
         async with self._backend.connection() as conn:
             return await raw_queries.reset_parse_status(
                 conn,
                 provider=provider,
+                source_names=source_names,
                 transaction_depth=self._backend.transaction_depth,
             )
 
-    async def reset_validation_status(self, *, provider: str | None = None) -> int:
+    async def reset_validation_status(
+        self,
+        *,
+        provider: str | None = None,
+        source_names: list[str] | None = None,
+    ) -> int:
         async with self._backend.connection() as conn:
             return await raw_queries.reset_validation_status(
                 conn,
                 provider=provider,
+                source_names=source_names,
                 transaction_depth=self._backend.transaction_depth,
             )
 

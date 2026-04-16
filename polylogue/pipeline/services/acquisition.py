@@ -87,6 +87,7 @@ class AcquisitionService:
                     cursor_state=cursor_state,
                     drive_config=drive_config,
                     observation_callback=observation_callback,
+                    progress_callback=progress_callback,
                 ):
                     await _consume(record)
                     if progress_callback:
@@ -191,7 +192,7 @@ class AcquisitionService:
                 progress_callback=progress_callback,
                 ui=ui,
                 drive_config=drive_config,
-                progress_label="Acquiring",
+                progress_label="Scanning",
                 on_record=_store,
                 observation_callback=_observe,
             )

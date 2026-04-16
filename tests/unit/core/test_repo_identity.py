@@ -8,7 +8,8 @@ from pathlib import Path
 import pytest
 
 from polylogue.archive_product_summaries import aggregate_day_session_summary_products
-from polylogue.lib.attribution import extract_attribution
+from polylogue.lib.action_events import ActionEvent
+from polylogue.lib.attribution import extract_attribution, extract_attribution_from_action_events
 from polylogue.lib.messages import MessageCollection
 from polylogue.lib.models import Conversation, Message
 from polylogue.lib.repo_identity import (
@@ -19,6 +20,7 @@ from polylogue.lib.repo_identity import (
 )
 from polylogue.lib.session_profile import SessionProfile, build_session_profile
 from polylogue.lib.session_summaries import summarize_day
+from polylogue.lib.viewports import ToolCategory
 from polylogue.storage.store import DaySessionSummaryRecord
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -38,8 +40,10 @@ def test_repo_identity_normalization_filters_noise(tmp_path: Path) -> None:
     assert normalize_repo_name(f"{sinnix_repo}#switch") == "sinnix"
     assert normalize_repo_name(f"{polylogue_repo}/README.md`\\n\\nPass") == "polylogue"
     assert normalize_repo_name("https://github.com/Sinity/sinex.git") == "sinex"
+    assert normalize_repo_names(["sinex"]) == ("sinex",)
     assert normalize_repo_name("\\S+") is None
     assert normalize_repo_name("README.md") is None
+    assert normalize_repo_name(".snapshots/root") is None
     assert normalize_repo_names(
         [
             "https://github.com/Sinity/polylogue.git",
@@ -88,14 +92,18 @@ def test_repo_identity_normalization_ignores_unreadable_git_admin_paths(monkeypa
 def test_repo_identity_normalization_ignores_transcript_and_state_git_repos(tmp_path: Path) -> None:
     transcript_repo = tmp_path / ".claude" / "projects"
     (transcript_repo / ".git").mkdir(parents=True)
+    config_transcript_repo = tmp_path / ".config" / "claude" / "projects"
+    (config_transcript_repo / ".git").mkdir(parents=True)
     state_repo = tmp_path / ".local" / "state" / "sinex" / "blob-repository"
     (state_repo / ".git").mkdir(parents=True)
 
     assert normalize_repo_path(str(transcript_repo)) is None
     assert normalize_repo_name(str(transcript_repo)) is None
+    assert normalize_repo_path(str(config_transcript_repo)) is None
+    assert normalize_repo_name(str(config_transcript_repo)) is None
     assert normalize_repo_path(str(state_repo)) is None
     assert normalize_repo_name(str(state_repo)) is None
-    assert normalize_repo_names(repo_paths=[str(transcript_repo), str(state_repo)]) == ()
+    assert normalize_repo_names(repo_paths=[str(transcript_repo), str(config_transcript_repo), str(state_repo)]) == ()
 
 
 def test_session_profile_from_dict_preserves_explicit_repo_names_and_normalizes_repo_paths(tmp_path: Path) -> None:
@@ -193,6 +201,96 @@ def test_extract_attribution_preserves_repo_name_from_provider_git_remote() -> N
     assert attribution.repo_names == ("sinex",)
     assert attribution.branch_names == ("master",)
     assert attribution.languages_detected == ()
+
+
+def test_extract_attribution_ignores_configured_claude_transcript_repo(tmp_path: Path) -> None:
+    transcript_repo = tmp_path / ".config" / "claude" / "projects"
+    (transcript_repo / ".git").mkdir(parents=True)
+    work_repo = _make_repo(tmp_path, "sinnix")
+
+    conversation = Conversation(
+        id="conv-ignore-transcript-repo",
+        provider="claude-code",
+        title="Transcript repo noise",
+        created_at=datetime(2026, 3, 24, 10, 0, tzinfo=timezone.utc),
+        updated_at=datetime(2026, 3, 24, 10, 5, tzinfo=timezone.utc),
+        provider_meta={"working_directories": [str(transcript_repo)]},
+        messages=MessageCollection(
+            messages=[
+                Message(
+                    id="u1",
+                    role="user",
+                    provider="claude-code",
+                    text="Inspect the live repo state.",
+                    timestamp=datetime(2026, 3, 24, 10, 0, tzinfo=timezone.utc),
+                ),
+                Message(
+                    id="a1",
+                    role="assistant",
+                    provider="claude-code",
+                    text="Inspecting.",
+                    timestamp=datetime(2026, 3, 24, 10, 1, tzinfo=timezone.utc),
+                    content_blocks=[
+                        {
+                            "type": "tool_use",
+                            "tool_name": "Read",
+                            "tool_input": {"file_path": f"{work_repo}/README.md"},
+                        }
+                    ],
+                ),
+            ]
+        ),
+    )
+
+    attribution = extract_attribution(conversation)
+
+    assert attribution.repo_paths == (str(work_repo),)
+    assert attribution.repo_names == ("sinnix",)
+
+
+def test_extract_attribution_filters_transcript_temp_and_snapshot_paths(tmp_path: Path) -> None:
+    work_repo = _make_repo(tmp_path, "sinnix")
+    system_file = Path("/etc/systemd/system/sinex-gateway.service")
+    action = ActionEvent(
+        event_id="evt-noise-filter",
+        message_id="msg-noise-filter",
+        timestamp=datetime(2026, 4, 12, 15, 0, tzinfo=timezone.utc),
+        sequence_index=0,
+        kind=ToolCategory.FILE_READ,
+        tool_name="Read",
+        tool_id=None,
+        provider="claude-code",
+        affected_paths=(
+            str(work_repo / "README.md"),
+            str(work_repo / ".claude" / "settings.json"),
+            ".snapshot/",
+            ".snapshots/root",
+            ".btrfs/snapshot",
+            str(Path.home() / ".claude" / "settings.local.json"),
+            str(Path.home() / ".config" / "claude" / "projects" / "foo" / "tool-results" / "out.txt"),
+            "/tmp/claude-1000/foo/tasks/bar.output",
+            "/realm/.snapshot/realm.latest",
+            "/nix/store/abcd1234-unit-script-sinex-gateway/bin/sinex-gateway",
+            str(system_file),
+        ),
+        cwd_path=None,
+        branch_names=(),
+        command=None,
+        query=None,
+        url=None,
+        output_text=None,
+        search_text="noise filter",
+        raw={},
+    )
+
+    attribution = extract_attribution_from_action_events([action])
+
+    assert attribution.file_paths_touched == (
+        str(system_file),
+        str(work_repo / "README.md"),
+    )
+    assert attribution.repo_paths == (str(work_repo),)
+    assert attribution.repo_names == ("sinnix",)
 
 
 def test_extract_attribution_does_not_infer_r_from_dialogue_text() -> None:

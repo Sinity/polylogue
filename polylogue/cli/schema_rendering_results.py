@@ -10,6 +10,34 @@ import click
 from polylogue.cli.machine_errors import emit_success
 
 
+def _render_corpus_spec_preview(*, corpus_specs, header: str) -> None:
+    if not corpus_specs:
+        return
+    click.echo(header)
+    for spec in corpus_specs[:3]:
+        target = spec.profile.scope_token(element_kind=spec.element_kind)
+        click.echo(
+            f"    - {spec.provider}:{spec.package_version}:{target} "
+            f"x{spec.count} messages={spec.messages_min}-{spec.messages_max}"
+        )
+    if len(corpus_specs) > 3:
+        click.echo(f"    … {len(corpus_specs) - 3} more")
+
+
+def _render_corpus_scenario_preview(*, corpus_scenarios, header: str) -> None:
+    if not corpus_scenarios:
+        return
+    click.echo(header)
+    for scenario in corpus_scenarios[:3]:
+        click.echo(
+            f"    - {scenario.provider}:{scenario.package_version} "
+            f"variants={len(scenario.corpus_specs)} "
+            f"targets={', '.join(scenario.target_labels)}"
+        )
+    if len(corpus_scenarios) > 3:
+        click.echo(f"    … {len(corpus_scenarios) - 3} more")
+
+
 def render_schema_generate_result(
     *,
     provider: str,
@@ -43,6 +71,17 @@ def render_schema_generate_result(
         if result.manifest is not None:
             payload["manifest"] = result.manifest.to_dict()
             payload["manifest_path"] = str(result.manifest_path) if result.manifest_path else None
+        if result.corpus_specs:
+            payload["corpus_specs"] = [spec.to_payload() for spec in result.corpus_specs]
+        if result.corpus_scenarios:
+            payload["corpus_scenarios"] = [
+                {
+                    "provider": scenario.provider,
+                    "package_version": scenario.package_version,
+                    "corpus_specs": [spec.to_payload() for spec in scenario.corpus_specs],
+                }
+                for scenario in result.corpus_scenarios
+            ]
         emit_success(payload)
         return
 
@@ -58,6 +97,11 @@ def render_schema_generate_result(
         click.echo(f"  Default package: {generation.default_version}")
     if result.manifest_path is not None:
         click.echo(f"  Evidence manifest: {result.manifest_path}")
+    _render_corpus_scenario_preview(
+        corpus_scenarios=result.corpus_scenarios,
+        header="  Suggested synthetic scenarios:",
+    )
+    _render_corpus_spec_preview(corpus_specs=result.corpus_specs, header="  Suggested synthetic corpus specs:")
 
 
 def render_schema_list_result(
@@ -115,6 +159,18 @@ def render_schema_list_result(
                 click.echo(
                     f"  {cluster.cluster_id}: {cluster.sample_count:,} samples, confidence={cluster.confidence}{status}"
                 )
+        if selected.corpus_specs:
+            click.echo()
+            _render_corpus_spec_preview(
+                corpus_specs=selected.corpus_specs,
+                header="Suggested synthetic corpus specs:",
+            )
+        if selected.corpus_scenarios:
+            click.echo()
+            _render_corpus_scenario_preview(
+                corpus_scenarios=selected.corpus_scenarios,
+                header="Suggested synthetic scenarios:",
+            )
         return
 
     if json_output:
@@ -132,7 +188,14 @@ def render_schema_list_result(
         ) or "none"
         age_str = f" ({snapshot.latest_age_days}d old)" if snapshot.latest_age_days is not None else ""
         package_str = f", packages={len(snapshot.catalog.packages)}" if snapshot.catalog else ""
-        click.echo(f"  {snapshot.provider}: {len(snapshot.versions)} version(s){package_str}, latest={latest}{age_str}")
+        corpus_spec_str = f", corpus-specs={len(snapshot.corpus_specs)}" if snapshot.corpus_specs else ""
+        corpus_scenario_str = (
+            f", corpus-scenarios={len(snapshot.corpus_scenarios)}" if snapshot.corpus_scenarios else ""
+        )
+        click.echo(
+            f"  {snapshot.provider}: {len(snapshot.versions)} version(s){package_str}{corpus_spec_str}{corpus_scenario_str}, "
+            f"latest={latest}{age_str}"
+        )
 
 
 def render_schema_compare_result(*, result, json_output: bool, md_output: bool) -> None:

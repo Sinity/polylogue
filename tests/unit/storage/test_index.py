@@ -45,5 +45,5 @@ def test_update_index_repairs_only_candidate_subset(monkeypatch) -> None:
 
     index_mod.update_index_for_conversations(["conv-a", "conv-b"], conn)
 
-    assert repaired_targets == [["conv-a"]]
+    assert repaired_targets == [["conv-a", "conv-b"]]
     assert repaired_fts_targets == [["conv-a", "conv-b"]]

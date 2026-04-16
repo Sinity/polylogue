@@ -10,12 +10,14 @@ from typing import Any, cast
 
 from polylogue.lib.outcomes import OutcomeCheck, OutcomeReport, OutcomeStatus
 from polylogue.maintenance_models import DerivedModelStatus
+from polylogue.maintenance_targets import build_maintenance_target_catalog
 
 # Re-export canonical types for downstream consumers.
 HealthCheck = OutcomeCheck
 VerifyStatus = OutcomeStatus
 
 HEALTH_TTL_SECONDS = 600
+_MAINTENANCE_TARGET_CATALOG = build_maintenance_target_catalog()
 
 
 @dataclass
@@ -85,10 +87,10 @@ def _open_health_probe_connection(db_path: Path) -> Any:
 # ---------------------------------------------------------------------------
 
 
-def run_archive_health(config: Any, *, deep: bool = False) -> HealthReport:
-    from polylogue.storage.backends.schema_upgrade import assert_supported_archive_layout
+def run_archive_health(config: Any, *, deep: bool = False, probe_only: bool = False) -> HealthReport:
+    from polylogue.storage.backends.schema import assert_supported_archive_layout
     from polylogue.storage.derived_status import collect_derived_model_statuses_sync
-    from polylogue.storage.index import index_status
+    from polylogue.storage.fts_lifecycle import message_fts_readiness_sync
     from polylogue.storage.repair import collect_archive_debt_statuses_sync
 
     checks: list[HealthCheck] = []
@@ -135,41 +137,51 @@ def run_archive_health(config: Any, *, deep: bool = False) -> HealthReport:
     derived_statuses: dict[str, DerivedModelStatus] = {}
     archive_debt: dict[str, Any] = {}
     with _open_health_probe_connection(config.db_path) as conn:
-        idx = index_status(conn)
-        if idx["exists"]:
-            checks.append(
-                HealthCheck(
-                    "index",
-                    VerifyStatus.OK,
-                    count=int(cast(Any, idx["count"])),
-                    summary=f"messages indexed: {idx['count']}",
-                )
-            )
-        else:
+        exact_index_counts = deep or not probe_only
+        index_readiness = message_fts_readiness_sync(conn, verify_total_rows=exact_index_counts)
+        if not index_readiness["exists"]:
             checks.append(HealthCheck("index", VerifyStatus.WARNING, summary="index not built"))
+        else:
+            indexed_rows = int(cast(Any, index_readiness["indexed_rows"]))
+            total_rows = int(cast(Any, index_readiness["total_rows"]))
+            if bool(index_readiness["ready"]):
+                checks.append(
+                    HealthCheck(
+                        "index",
+                        VerifyStatus.OK,
+                        count=indexed_rows if exact_index_counts else 0,
+                        summary=(f"messages indexed: {indexed_rows}" if exact_index_counts else "messages FTS present"),
+                    )
+                )
+            else:
+                checks.append(
+                    HealthCheck(
+                        "index",
+                        VerifyStatus.WARNING,
+                        count=indexed_rows if exact_index_counts else 0,
+                        summary=(
+                            f"messages indexed: {indexed_rows:,}/{total_rows:,}"
+                            if exact_index_counts
+                            else "messages FTS missing or empty; use --deep to verify full coverage"
+                        ),
+                    )
+                )
 
-        derived_statuses = collect_derived_model_statuses_sync(conn)
+        derived_statuses = collect_derived_model_statuses_sync(conn, verify_full=deep)
         archive_debt = collect_archive_debt_statuses_sync(
             conn,
             derived_statuses=derived_statuses,
             include_expensive=deep,
+            probe_only=probe_only,
         )
-        for debt_name in ("orphaned_messages", "orphaned_attachments"):
-            debt = archive_debt[debt_name]
+        for spec in _MAINTENANCE_TARGET_CATALOG.archive_health_specs(deep=deep):
+            debt = archive_debt.get(spec.name)
+            if debt is None:
+                continue
             checks.append(
                 HealthCheck(
                     debt.name,
-                    VerifyStatus.OK if debt.healthy else VerifyStatus.ERROR,
-                    count=debt.issue_count,
-                    summary=debt.detail,
-                )
-            )
-        if deep and "orphaned_content_blocks" in archive_debt:
-            debt = archive_debt["orphaned_content_blocks"]
-            checks.append(
-                HealthCheck(
-                    debt.name,
-                    VerifyStatus.OK if debt.healthy else VerifyStatus.ERROR,
+                    VerifyStatus.OK if debt.healthy else cast(VerifyStatus, spec.archive_health_unhealthy_status),
                     count=debt.issue_count,
                     summary=debt.detail,
                 )
@@ -188,16 +200,6 @@ def run_archive_health(config: Any, *, deep: bool = False) -> HealthReport:
                 VerifyStatus.OK if dup_conv == 0 else VerifyStatus.ERROR,
                 count=dup_conv,
                 summary="No duplicates" if dup_conv == 0 else f"{dup_conv} duplicate conversation IDs",
-            )
-        )
-
-        empty_debt = archive_debt["empty_conversations"]
-        checks.append(
-            HealthCheck(
-                "empty_conversations",
-                VerifyStatus.OK if empty_debt.healthy else VerifyStatus.WARNING,
-                count=empty_debt.issue_count,
-                summary=empty_debt.detail,
             )
         )
 
@@ -292,9 +294,9 @@ def run_archive_health(config: Any, *, deep: bool = False) -> HealthReport:
     return HealthReport(checks=checks, derived_models=derived_statuses, archive_debt=archive_debt)
 
 
-def get_health(config: Any, *, deep: bool = False) -> HealthReport:
+def get_health(config: Any, *, deep: bool = False, probe_only: bool = False) -> HealthReport:
     """Get a live archive health report."""
-    return run_archive_health(config, deep=deep)
+    return run_archive_health(config, deep=deep, probe_only=probe_only)
 
 
 # ---------------------------------------------------------------------------
@@ -327,8 +329,7 @@ def run_runtime_health(config: Any) -> HealthReport:
             checks.append(HealthCheck("db_writable", VerifyStatus.WARNING, summary=f"Parent missing: {parent}"))
 
     try:
-        from polylogue.storage.backends.schema import SCHEMA_VERSION
-        from polylogue.storage.backends.schema_upgrade import assert_supported_archive_layout
+        from polylogue.storage.backends.schema import SCHEMA_VERSION, assert_supported_archive_layout
 
         with _open_health_probe_connection(config.db_path) as conn:
             assert_supported_archive_layout(conn)

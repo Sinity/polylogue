@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
+from polylogue.storage.raw_ingest_artifacts import parse_backlog_query_spec, validation_backlog_query_spec
 
 
 def dedupe_ids(raw_ids: list[str]) -> list[str]:
@@ -21,13 +22,18 @@ async def collect_validation_backlog(
     *,
     source_names: list[str] | None,
     exclude_raw_ids: list[str] | None = None,
+    force_reparse: bool = False,
 ) -> list[str]:
     exclude = set(exclude_raw_ids or [])
     backlog_validate_ids: list[str] = []
+    query_spec = validation_backlog_query_spec(force_reparse=force_reparse)
     async for raw_id in backend.queries.iter_raw_ids(
         source_names=source_names,
-        require_unparsed=True,
-        require_unvalidated=True,
+        require_unparsed=query_spec.require_unparsed,
+        require_unvalidated=query_spec.require_unvalidated,
+        validation_statuses=list(query_spec.validation_statuses)
+        if query_spec.validation_statuses is not None
+        else None,
     ):
         if raw_id not in exclude:
             backlog_validate_ids.append(raw_id)
@@ -39,13 +45,17 @@ async def collect_parse_backlog(
     *,
     source_names: list[str] | None,
     exclude_raw_ids: list[str] | None = None,
+    force_reparse: bool = False,
 ) -> list[str]:
     exclude = set(exclude_raw_ids or [])
     backlog_parse_ids: list[str] = []
+    query_spec = parse_backlog_query_spec(force_reparse=force_reparse)
     async for raw_id in backend.queries.iter_raw_ids(
         source_names=source_names,
-        require_unparsed=True,
-        validation_statuses=["passed", "skipped"],
+        require_unparsed=query_spec.require_unparsed,
+        validation_statuses=list(query_spec.validation_statuses)
+        if query_spec.validation_statuses is not None
+        else None,
     ):
         if raw_id not in exclude:
             backlog_parse_ids.append(raw_id)

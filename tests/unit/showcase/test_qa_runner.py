@@ -5,9 +5,10 @@ from __future__ import annotations
 import json
 
 from polylogue.lib.outcomes import OutcomeCheck, OutcomeStatus
+from polylogue.scenarios import AssertionSpec, polylogue_execution
 from polylogue.schemas.audit_models import AuditReport
 from polylogue.schemas.verification_models import ArtifactProofReport, ProviderArtifactProof
-from polylogue.showcase.exercises import Exercise, Validation
+from polylogue.showcase.exercises import Exercise
 from polylogue.showcase.invariants import InvariantResult
 from polylogue.showcase.qa_runner import QAResult, _save_qa_reports
 from polylogue.showcase.runner import ExerciseResult, ShowcaseResult
@@ -15,11 +16,11 @@ from polylogue.showcase.runner import ExerciseResult, ShowcaseResult
 
 def _make_showcase_result(output_dir) -> ShowcaseResult:
     exercise = Exercise(
-        "test-help",
-        "structural",
-        "Help output",
-        ["--help"],
-        Validation(stdout_contains=("polylogue",)),
+        name="test-help",
+        group="structural",
+        description="Help output",
+        execution=polylogue_execution("--help"),
+        assertion=AssertionSpec(stdout_contains=("polylogue",)),
     )
     result = ShowcaseResult(
         results=[

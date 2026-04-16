@@ -7,6 +7,7 @@ from polylogue.showcase.qa_runner_reporting import (
 from polylogue.showcase.qa_runner_reporting import (
     save_qa_reports as _save_qa_reports,
 )
+from polylogue.showcase.qa_runner_request import QASessionRequest
 from polylogue.showcase.qa_runner_workflow import run_qa_session
 
-__all__ = ["QAResult", "_save_qa_reports", "format_qa_summary", "run_qa_session"]
+__all__ = ["QAResult", "QASessionRequest", "_save_qa_reports", "format_qa_summary", "run_qa_session"]

@@ -17,6 +17,7 @@ from polylogue.pipeline.services.ingest_batch import (
     _iter_ingest_results_sync,
     _persist_batch_raw_state_updates,
     _RawIngestOutcome,
+    _select_ingest_worker_count,
     _successful_raw_state_update,
     _topo_sort_conversation_entries,
     _unattributed_batch_elapsed_s,
@@ -378,6 +379,26 @@ def test_iter_ingest_results_sync_runs_inline_for_single_worker(
     assert [result.raw_id for result in results] == ["raw-1", "raw-2"]
 
 
+def test_select_ingest_worker_count_throttles_large_batches(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("polylogue.pipeline.services.ingest_batch.os.cpu_count", lambda: 16)
+    raw_records = [SimpleNamespace(blob_size=60 * 1024 * 1024) for _ in range(2)]
+
+    worker_count = _select_ingest_worker_count(raw_records, None)
+
+    assert worker_count == 2
+
+
+def test_select_ingest_worker_count_keeps_parallelism_for_small_batches(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("polylogue.pipeline.services.ingest_batch.os.cpu_count", lambda: 16)
+    raw_records = [SimpleNamespace(blob_size=4 * 1024 * 1024) for _ in range(6)]
+
+    worker_count = _select_ingest_worker_count(raw_records, None)
+
+    assert worker_count == 6
+
+
 def test_drain_ready_conversation_entries_preserves_late_parent_fk(tmp_path: Path) -> None:
     with open_connection(tmp_path / "ingest.db") as conn:
         parent = _conversation_data("codex:parent", content_hash="hash-parent")
@@ -520,6 +541,7 @@ def test_successful_raw_state_update_combines_parse_and_validation_fields() -> N
         payload_provider="chatgpt",
         validation_status="passed",
         validation_error=None,
+        parse_error=None,
         error=None,
         had_conversations=True,
     )
@@ -546,6 +568,7 @@ def test_failed_raw_state_update_combines_parse_and_validation_fields() -> None:
         payload_provider="chatgpt",
         validation_status="failed",
         validation_error="schema mismatch",
+        parse_error="parse failed",
         error="parse failed",
         had_conversations=False,
     )
@@ -558,6 +581,32 @@ def test_failed_raw_state_update_combines_parse_and_validation_fields() -> None:
 
     assert state == RawConversationStateUpdate(
         parse_error="parse failed",
+        payload_provider="chatgpt",
+        validation_status="failed",
+        validation_error="schema mismatch",
+        validation_mode="strict",
+    )
+
+
+def test_failed_raw_state_update_keeps_validation_only_failure_out_of_parse_error() -> None:
+    outcome = _RawIngestOutcome(
+        raw_id="raw-1",
+        payload_provider="chatgpt",
+        validation_status="failed",
+        validation_error="schema mismatch",
+        parse_error=None,
+        error="schema mismatch",
+        had_conversations=False,
+    )
+
+    state = _failed_raw_state_update(
+        outcome=outcome,
+        error="schema mismatch",
+        validation_mode="strict",
+    )
+
+    assert state == RawConversationStateUpdate(
+        parse_error=None,
         payload_provider="chatgpt",
         validation_status="failed",
         validation_error="schema mismatch",
@@ -622,6 +671,7 @@ async def test_persist_batch_raw_state_updates_uses_one_typed_update_per_raw() -
             payload_provider="chatgpt",
             validation_status="passed",
             validation_error=None,
+            parse_error=None,
             error=None,
             had_conversations=True,
         ),
@@ -630,6 +680,7 @@ async def test_persist_batch_raw_state_updates_uses_one_typed_update_per_raw() -
             payload_provider="codex",
             validation_status="failed",
             validation_error="bad schema",
+            parse_error="parse failed",
             error="parse failed",
             had_conversations=False,
         ),
@@ -654,3 +705,44 @@ async def test_persist_batch_raw_state_updates_uses_one_typed_update_per_raw() -
     assert failed_call.args == ("raw-failed",)
     assert failed_call.kwargs["state"].parse_error == "parse failed"
     assert failed_call.kwargs["state"].validation_error == "bad schema"
+
+
+@pytest.mark.asyncio
+async def test_persist_batch_raw_state_updates_preserves_validation_only_failure_without_quarantine() -> None:
+    update_raw_state = AsyncMock()
+    repository = SimpleNamespace(update_raw_state=update_raw_state)
+    service = SimpleNamespace(repository=repository)
+
+    @asynccontextmanager
+    async def _bulk_connection():
+        yield
+
+    backend = SimpleNamespace(bulk_connection=_bulk_connection)
+    outcomes = {
+        "raw-schema-invalid": _RawIngestOutcome(
+            raw_id="raw-schema-invalid",
+            payload_provider="chatgpt",
+            validation_status="failed",
+            validation_error="bad schema",
+            parse_error=None,
+            error="bad schema",
+            had_conversations=False,
+        ),
+    }
+
+    elapsed_s = await _persist_batch_raw_state_updates(
+        service,
+        backend,
+        outcomes=outcomes,
+        succeeded_raw_ids=set(),
+        skipped_raw_ids=set(),
+        failed_raw_ids={"raw-schema-invalid": "bad schema"},
+        validation_mode="strict",
+    )
+
+    assert elapsed_s >= 0.0
+    update_raw_state.assert_awaited_once()
+    state = update_raw_state.await_args.kwargs["state"]
+    assert state.parse_error is None
+    assert state.validation_error == "bad schema"
+    assert state.validation_status == "failed"

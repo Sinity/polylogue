@@ -13,6 +13,8 @@ import asyncio
 import sys
 from pathlib import Path
 
+from polylogue.scenarios import CorpusSourceKind
+
 ROOT = Path(__file__).resolve().parent.parent
 
 
@@ -49,17 +51,20 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=42,
         help="Random seed for reproducibility (default: 42)",
     )
+    parser.add_argument(
+        "--corpus-source",
+        choices=[kind.value for kind in CorpusSourceKind],
+        default=CorpusSourceKind.DEFAULT.value,
+        help="Synthetic corpus source to use for archive generation (default: default)",
+    )
     return parser.parse_args(argv)
 
 
 async def _run(args: argparse.Namespace) -> int:
     from devtools.benchmark_campaigns import (
-        CAMPAIGN_REGISTRY,
-        run_filter_scan_campaign,
-        run_fts_rebuild_campaign,
+        SYNTHETIC_CAMPAIGNS,
         run_full_campaign,
-        run_incremental_index_campaign,
-        run_startup_health_campaign,
+        run_synthetic_benchmark_campaign,
     )
     from devtools.campaign_report import save_campaign_reports
     from devtools.large_archive_generator import (
@@ -70,18 +75,22 @@ async def _run(args: argparse.Namespace) -> int:
 
     if args.list_campaigns:
         print("Available campaigns:")
-        for name, desc in CAMPAIGN_REGISTRY.items():
-            print(f"  {name}: {desc}")
+        for campaign in SYNTHETIC_CAMPAIGNS.values():
+            print(f"  {campaign.name}: {campaign.description}")
         print("\nScale levels: small, medium, large, stretch")
         return 0
 
     if args.campaign == "all":
-        results = await run_full_campaign(args.scale, args.output)
+        results = await run_full_campaign(
+            args.scale,
+            args.output,
+            corpus_source=CorpusSourceKind(args.corpus_source),
+        )
     else:
         # Generate archive first
-        if args.campaign not in CAMPAIGN_REGISTRY:
+        if args.campaign not in SYNTHETIC_CAMPAIGNS:
             print(f"Unknown campaign: {args.campaign}")
-            print(f"Available: {', '.join(CAMPAIGN_REGISTRY)}")
+            print(f"Available: {', '.join(SYNTHETIC_CAMPAIGNS)}")
             return 1
 
         level = ScaleLevel(args.scale)
@@ -94,24 +103,15 @@ async def _run(args: argparse.Namespace) -> int:
             spec = replace(spec, seed=args.seed)
 
         archive_dir = args.output / f"archive-{args.scale}"
-        print(f"Generating {args.scale} archive...")
-        await generate_archive(spec, archive_dir)
+        print(f"Generating {args.scale} archive from {args.corpus_source} corpus source...")
+        await generate_archive(
+            spec,
+            archive_dir,
+            corpus_source=CorpusSourceKind(args.corpus_source),
+        )
         db_path = archive_dir / "benchmark.db"
 
-        # Run the specific campaign
-        match args.campaign:
-            case "fts-rebuild":
-                result = run_fts_rebuild_campaign(db_path)
-            case "incremental-index":
-                result = await run_incremental_index_campaign(db_path)
-            case "filter-scan":
-                result = await run_filter_scan_campaign(db_path)
-            case "startup-health":
-                result = await run_startup_health_campaign(db_path)
-            case _:
-                print(f"Unknown campaign: {args.campaign}")
-                return 1
-
+        result = await run_synthetic_benchmark_campaign(args.campaign, db_path)
         result.scale_level = args.scale
         results = [result]
 

@@ -23,6 +23,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from polylogue.scenarios import CorpusProfile, CorpusSpec
 from polylogue.schemas.synthetic import (
     PROVIDER_WIRE_FORMATS,
     SyntheticCorpus,
@@ -130,6 +131,68 @@ class TestSyntheticConversationEnvelope:
         assert isinstance(conversation_id, str)
         assert conversation_id
         assert " " not in conversation_id
+
+    def test_synthetic_corpus_from_spec_reuses_schema_selection(self) -> None:
+        spec = CorpusSpec.for_provider(
+            "chatgpt",
+            package_version="default",
+            count=2,
+            messages_min=4,
+            messages_max=4,
+            seed=7,
+        )
+
+        corpus = SyntheticCorpus.from_spec(spec)
+        batch = SyntheticCorpus.generate_batch_for_spec(spec)
+
+        assert corpus.provider == "chatgpt"
+        assert batch.report.provider == "chatgpt"
+        assert batch.report.generated_count == 2
+
+    def test_write_spec_artifacts_returns_written_paths(self, tmp_path) -> None:
+        spec = CorpusSpec.for_provider(
+            "chatgpt",
+            count=1,
+            messages_min=4,
+            messages_max=4,
+            seed=9,
+        )
+
+        written = SyntheticCorpus.write_spec_artifacts(spec, tmp_path, prefix="sample")
+
+        assert len(written.files) == 1
+        assert written.files[0].exists()
+        assert written.batch.report.generated_count == 1
+
+    def test_write_specs_artifacts_avoids_same_provider_name_collisions(self, tmp_path) -> None:
+        specs = (
+            CorpusSpec(
+                provider="chatgpt",
+                package_version="v1",
+                count=1,
+                messages_min=4,
+                messages_max=4,
+                seed=9,
+                profile=CorpusProfile(family_ids=("cluster-a",)),
+            ),
+            CorpusSpec(
+                provider="chatgpt",
+                package_version="v1",
+                count=1,
+                messages_min=4,
+                messages_max=4,
+                seed=10,
+                profile=CorpusProfile(family_ids=("cluster-b",)),
+            ),
+        )
+
+        written_batches = SyntheticCorpus.write_specs_artifacts(specs, tmp_path, prefix="sample")
+
+        assert len(written_batches) == 2
+        assert {path.name for batch in written_batches for path in batch.files} == {
+            "sample-v1-cluster-a-00.json",
+            "sample-v1-cluster-b-00.json",
+        }
 
 
 # ---------------------------------------------------------------------------

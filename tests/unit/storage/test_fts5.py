@@ -209,8 +209,8 @@ def test_action_event_status_ignores_orphan_tool_sources(test_conn):
     assert status["source_conversation_count"] == 2
     assert status["valid_source_conversation_count"] == 1
     assert status["orphan_source_conversation_count"] == 1
-    assert status["rows_ready"] is True
-    assert status["ready"] is True
+    assert status["rows_ready"] is False
+    assert status["ready"] is False
 
 
 async def test_search_returns_searchresult_object(workspace_env, storage_repository):
@@ -340,7 +340,6 @@ async def test_rebuild_index_populates_action_search_rows(workspace_env, storage
     assert count == 1
 
 
-@pytest.mark.xfail(reason="fix lands in the next PR arc (refresh action events for changed conversations)")
 def test_update_index_refreshes_action_entries_for_updated_tool_blocks(test_conn):
     """update_index_for_conversations() refreshes action-search rows from content blocks."""
     conv = make_conversation("conv-action-refresh", title="Action refresh")
@@ -407,6 +406,55 @@ def test_update_index_refreshes_action_entries_for_updated_tool_blocks(test_conn
     ).fetchone()[0]
     assert pytest_hits == 0
     assert ruff_hits == 1
+
+
+def test_update_index_removes_action_entries_when_tool_blocks_disappear(test_conn):
+    """update_index_for_conversations() drops stale action rows when tool blocks are removed."""
+    conv = make_conversation("conv-action-remove", title="Action removal")
+    msg = make_message(
+        "msg-action-remove",
+        "conv-action-remove",
+        role="assistant",
+        text="Ran commands",
+        content_blocks=[
+            ContentBlockRecord(
+                block_id="blk-remove-0",
+                message_id="msg-action-remove",
+                conversation_id="conv-action-remove",
+                block_index=0,
+                type="tool_use",
+                tool_name="Bash",
+                tool_id="tool-remove",
+                tool_input=json.dumps({"command": "pytest -q"}),
+                semantic_type="shell",
+            )
+        ],
+    )
+    store_records(conversation=conv, messages=[msg], attachments=[], conn=test_conn)
+    rebuild_index(test_conn)
+
+    assert (
+        test_conn.execute(
+            "SELECT COUNT(*) FROM action_events WHERE conversation_id = ?",
+            ("conv-action-remove",),
+        ).fetchone()[0]
+        == 1
+    )
+
+    test_conn.execute("DELETE FROM content_blocks WHERE message_id = ?", ("msg-action-remove",))
+
+    update_index_for_conversations(["conv-action-remove"], test_conn)
+
+    action_rows = test_conn.execute(
+        "SELECT COUNT(*) FROM action_events WHERE conversation_id = ?",
+        ("conv-action-remove",),
+    ).fetchone()[0]
+    fts_rows = test_conn.execute(
+        "SELECT COUNT(*) FROM action_events_fts WHERE conversation_id = ?",
+        ("conv-action-remove",),
+    ).fetchone()[0]
+    assert action_rows == 0
+    assert fts_rows == 0
 
 
 def test_batch_index_10k_messages(test_conn):
@@ -1005,8 +1053,16 @@ def test_search_invalid_query_reports_error(monkeypatch, workspace_env):
 
     class StubConn:
         def execute(self, sql, params=()):
+            if "action_events_fts_docsize" in sql:
+                return StubCursor(row=(0,))
+            if "action_events_fts" in sql and "sqlite_master" in sql:
+                return StubCursor(row=None)
             if "sqlite_master" in sql:
                 return StubCursor(row={"name": "messages_fts"})
+            if "messages_fts_docsize" in sql:
+                return StubCursor(row=(1,))
+            if "COUNT(*) FROM messages" in sql:
+                return StubCursor(row=(1,))
             if "MATCH" in sql:
                 raise sqlite3.OperationalError("fts5: syntax error")
             return StubCursor()
@@ -1182,17 +1238,40 @@ def test_search_without_fts_table_raises_descriptive_error(workspace_env, db_wit
     """search() raises DatabaseError mentioning 'polylogue run' when FTS missing."""
     archive_root = workspace_env["archive_root"]
 
-    # Monkey-patch to use the db without FTS
-    # Patch in connection module since that's where it's called from internally
-    from polylogue.storage.backends import connection
+    import polylogue.paths as _paths
 
-    monkeypatch.setattr(connection, "default_db_path", lambda: db_without_fts)
+    monkeypatch.setattr(_paths, "db_path", lambda: db_without_fts)
 
     # Use type name check to handle module reload class identity issues
     with pytest.raises(Exception) as exc_info:
         search_messages("hello", archive_root=archive_root, limit=5)
     assert exc_info.type.__name__ == "DatabaseError"
     assert "Search index not built" in str(exc_info.value)
+
+
+def test_search_with_empty_fts_rows_raises_descriptive_error(workspace_env, db_path):
+    """search() rejects archives whose FTS table exists but is not populated."""
+    from polylogue.storage.backends.connection import open_connection
+
+    archive_root = workspace_env["archive_root"]
+    factory = DbFactory(db_path)
+    factory.create_conversation(
+        id="conv-incomplete-fts",
+        provider="chatgpt",
+        title="Incomplete FTS",
+        messages=[
+            {"id": "m-incomplete-1", "role": "user", "text": "search me"},
+            {"id": "m-incomplete-2", "role": "assistant", "text": "still not indexed"},
+        ],
+    )
+    with open_connection(db_path) as conn:
+        conn.execute("DELETE FROM messages_fts")
+        conn.commit()
+
+    with pytest.raises(Exception) as exc_info:
+        search_messages("search", archive_root=archive_root, db_path=db_path, limit=5)
+    assert exc_info.type.__name__ == "DatabaseError"
+    assert "Search index is incomplete" in str(exc_info.value)
 
 
 # ============================================================================

@@ -2,18 +2,22 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import click
 
 from polylogue.cli.commands.generate import generate_command
 from polylogue.cli.helpers import complete_configured_source_names, load_effective_config, resolve_sources
-from polylogue.cli.qa_capture import run_vhs_capture as _run_vhs_capture
-from polylogue.cli.qa_snapshot import snapshot_results
+from polylogue.cli.qa_finalization import finalize_qa_run
+from polylogue.cli.qa_requests import (
+    build_qa_invocation_plan,
+)
+from polylogue.cli.qa_snapshot import execute_snapshot_plan
 from polylogue.cli.types import AppEnv
+from polylogue.showcase.qa_runner_request import QAStage
 
-_STAGE_CHOICES = click.Choice(["audit", "exercises", "invariants"])
+_STAGE_CHOICES = click.Choice([stage.value for stage in QAStage])
+_CAPTURE_CHOICES = click.Choice(["none", "vhs"])
 
 
 @click.group("audit", invoke_without_command=True)
@@ -37,7 +41,7 @@ _STAGE_CHOICES = click.Choice(["audit", "exercises", "invariants"])
 @click.option("--fail-fast", is_flag=True, help="Stop on first exercise failure")
 @click.option(
     "--capture",
-    type=click.Choice(["none", "vhs"], case_sensitive=False),
+    type=_CAPTURE_CHOICES,
     default="none",
     show_default=True,
     help="Capture mode for exercises",
@@ -107,103 +111,59 @@ def qa_command(
     ctx = click.get_current_context()
     if ctx.invoked_subcommand is not None:
         return
+    config = load_effective_config(env)
+    selected_source_names = resolve_sources(config, source_names, "audit") if source_names else None
+    try:
+        invocation_plan = build_qa_invocation_plan(
+            synthetic=synthetic,
+            source_names=tuple(selected_source_names) if selected_source_names else None,
+            fresh=fresh,
+            ingest=ingest,
+            regenerate_schemas=regenerate_schemas,
+            only_stage=only_stage,
+            skip_stages=skip_stages,
+            workspace=workspace,
+            report_dir=report_dir,
+            verbose=verbose,
+            fail_fast=fail_fast,
+            tier_filter=tier_filter,
+            capture=capture,
+            json_output=json_output,
+            snapshot_label=snapshot_label,
+            snapshot_from=snapshot_from,
+        )
+    except ValueError as exc:
+        raise click.UsageError(str(exc)) from exc
+
+    snapshot_plan = invocation_plan.snapshot_plan
+
     # --- Snapshot-from: archive only, no QA ---
-    if snapshot_from is not None:
-        config = load_effective_config(env)
+    if invocation_plan.snapshot_only and snapshot_plan and snapshot_plan.source_dir is not None:
         root = report_dir or (config.archive_root / "qa" / "snapshots")
-        snapshot_results(
-            snapshot_from,
-            label=snapshot_label or "snapshot",
+        execute_snapshot_plan(
+            snapshot_plan,
+            fallback_source_dir=None,
             output_root=root,
             json_output=json_output,
             env=env,
         )
         return
 
-    # --- Validate flag combinations ---
-    if only_stage and skip_stages:
-        raise click.UsageError("--only and --skip are mutually exclusive")
-
-    live = not synthetic
-    config = load_effective_config(env)
-    selected_source_names = resolve_sources(config, source_names, "audit") if source_names else None
-
-    # --source implies fresh + live
-    if selected_source_names:
-        live = True
-        if fresh is None:
-            fresh = True
-
-    # Determine freshness
-    if fresh is None:
-        fresh = not live  # synthetic → fresh, live → existing DB
-
-    # Determine ingestion
-    if ingest is None:
-        ingest = fresh  # fresh workspaces need ingestion
-
-    # Resolve which stages to run
-    run_audit = True
-    run_exercises = True
-    run_invariants = True
-
-    if only_stage:
-        run_audit = only_stage == "audit"
-        run_exercises = only_stage == "exercises"
-        run_invariants = only_stage == "invariants"
-    else:
-        if "audit" in skip_stages:
-            run_audit = False
-        if "exercises" in skip_stages:
-            run_exercises = False
-        if "invariants" in skip_stages:
-            run_invariants = False
-    run_proof = only_stage is None and run_audit
-
     # --- Execute QA session ---
-    from polylogue.showcase.qa_report import generate_qa_session
-    from polylogue.showcase.qa_runner import (
-        format_qa_summary,
-        run_qa_session,
+    from polylogue.showcase.qa_runner import run_qa_session
+
+    request = invocation_plan.session_request
+    if request is None:
+        raise click.UsageError("QA invocation plan did not produce an executable session request.")
+
+    result = run_qa_session(request)
+
+    finalize_qa_run(
+        result,
+        plan=invocation_plan.finalization_plan,
+        archive_root=config.archive_root,
+        env=env,
     )
-
-    result = run_qa_session(
-        live=live,
-        fresh=fresh,
-        ingest=ingest,
-        source_names=selected_source_names,
-        regenerate_schemas=regenerate_schemas,
-        skip_audit=not run_audit,
-        skip_proof=not run_proof,
-        skip_exercises=not run_exercises,
-        skip_invariants=not run_invariants,
-        workspace_dir=workspace,
-        report_dir=report_dir,
-        verbose=verbose,
-        fail_fast=fail_fast,
-        tier_filter=tier_filter,
-    )
-
-    # --- VHS capture ---
-    if capture.lower() == "vhs" and result.showcase_result and result.showcase_result.output_dir:
-        _run_vhs_capture(env, result.showcase_result, json_output)
-
-    # --- Output ---
-    if json_output:
-        click.echo(json.dumps(generate_qa_session(result), indent=2))
-    else:
-        env.ui.console.print(format_qa_summary(result))
-
-    # --- Snapshot ---
-    if snapshot_label is not None and result.report_dir:
-        root = config.archive_root / "qa" / "snapshots"
-        snapshot_results(
-            result.report_dir,
-            label=snapshot_label,
-            output_root=root,
-            json_output=json_output,
-            env=env,
-        )
 
     if not result.all_passed:
         raise SystemExit(1)

@@ -7,26 +7,22 @@ import json
 import subprocess
 import tempfile
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+
+from polylogue.scenarios import ExecutionKind, pytest_execution, run_execution
+
+from .authored_scenario_catalog import get_authored_scenario_catalog
+from .benchmark_catalog import BenchmarkCampaignEntry
 
 ROOT = Path(__file__).resolve().parent.parent
 ARTIFACT_DIR = Path(".local/benchmark-campaigns")
 STATUS_IGNORE_PREFIXES = (f"{ARTIFACT_DIR.as_posix()}/",)
 DEFAULT_WARN_PCT = 10.0
 DEFAULT_FAIL_PCT = 20.0
-
-
-@dataclass(frozen=True)
-class Campaign:
-    name: str
-    description: str
-    tests: tuple[str, ...]
-    notes: tuple[str, ...] = ()
-    warn_pct: float = DEFAULT_WARN_PCT
-    fail_pct: float = DEFAULT_FAIL_PCT
+CAMPAIGNS = get_authored_scenario_catalog().benchmark_campaign_index()
 
 
 @dataclass(frozen=True)
@@ -73,31 +69,11 @@ class CampaignResult:
     fail_pct: float
     regressions: list[dict[str, Any]]
     worst_regression_pct: float | None
-
-
-CAMPAIGNS: dict[str, Campaign] = {
-    "search-filters": Campaign(
-        name="search-filters",
-        description="FTS and ConversationFilter benchmark domain",
-        tests=("tests/benchmarks/test_search_filters.py",),
-        notes=(
-            "Canonical search/filter latency domain.",
-            "Keep on session-seeded DB fixtures for comparability.",
-        ),
-    ),
-    "storage": Campaign(
-        name="storage",
-        description="Repository/backend list/get-many/save benchmark domain",
-        tests=("tests/benchmarks/test_storage.py",),
-        notes=("Canonical storage CRUD and batch-write latency domain.",),
-    ),
-    "pipeline": Campaign(
-        name="pipeline",
-        description="Index rebuild/update plus hashing/semantic helper benchmark domain",
-        tests=("tests/benchmarks/test_pipeline.py",),
-        notes=("Covers indexing plus hot helper throughput.",),
-    ),
-}
+    origin: str = "authored"
+    path_targets: list[str] = field(default_factory=list)
+    artifact_targets: list[str] = field(default_factory=list)
+    operation_targets: list[str] = field(default_factory=list)
+    tags: list[str] = field(default_factory=list)
 
 
 def _git_output(*args: str) -> str:
@@ -183,11 +159,27 @@ def _render_markdown(result: CampaignResult) -> str:
         f"- Warn threshold: `{result.warn_pct:.1f}%`",
         f"- Fail threshold: `{result.fail_pct:.1f}%`",
         "",
-        "## Slowest Benchmarks",
-        "",
-        "| Benchmark | Mean (s) | Median (s) | Ops/s | Rounds |",
-        "| --- | ---: | ---: | ---: | ---: |",
     ]
+    if result.path_targets or result.artifact_targets or result.operation_targets or result.tags:
+        lines.extend(["## Scenario Metadata", ""])
+        lines.append(f"- Origin: `{result.origin}`")
+        if result.path_targets:
+            lines.append(f"- Path targets: `{', '.join(result.path_targets)}`")
+        if result.artifact_targets:
+            lines.append(f"- Artifact targets: `{', '.join(result.artifact_targets)}`")
+        if result.operation_targets:
+            lines.append(f"- Operation targets: `{', '.join(result.operation_targets)}`")
+        if result.tags:
+            lines.append(f"- Tags: `{', '.join(result.tags)}`")
+        lines.append("")
+    lines.extend(
+        [
+            "## Slowest Benchmarks",
+            "",
+            "| Benchmark | Mean (s) | Median (s) | Ops/s | Rounds |",
+            "| --- | ---: | ---: | ---: | ---: |",
+        ]
+    )
     for bench in result.slowest:
         ops = "-" if bench["ops"] is None else f"{bench['ops']:.2f}"
         lines.append(
@@ -214,7 +206,7 @@ def _render_markdown(result: CampaignResult) -> str:
 
 
 def run_campaign(
-    campaign: Campaign,
+    campaign: BenchmarkCampaignEntry,
     *,
     json_out: Path | None,
     markdown_out: Path | None,
@@ -222,6 +214,9 @@ def run_campaign(
     warn_pct: float | None,
     fail_pct: float | None,
 ) -> CampaignResult:
+    if campaign.execution is None or campaign.execution.kind is not ExecutionKind.PYTEST:
+        raise ValueError(f"Benchmark campaign {campaign.name!r} must use pytest execution")
+
     artifact_json = json_out or _default_artifact_path(campaign.name, "json")
     artifact_md = markdown_out or _default_artifact_path(campaign.name, "md")
     artifact_json.parent.mkdir(parents=True, exist_ok=True)
@@ -229,8 +224,7 @@ def run_campaign(
 
     with tempfile.TemporaryDirectory(prefix=f"benchmark-{campaign.name}-") as tmpdir:
         raw_json = Path(tmpdir) / "pytest-benchmark.json"
-        command = [
-            "pytest",
+        benchmark_execution = pytest_execution(
             "-q",
             "--override-ini=addopts=-ra",
             "-n",
@@ -239,13 +233,14 @@ def run_campaign(
             "no:randomly",
             "--benchmark-enable",
             f"--benchmark-json={raw_json}",
-            *campaign.tests,
-        ]
+            *campaign.execution.pytest_targets,
+        )
         start = time.monotonic()
-        completed = subprocess.run(command, cwd=ROOT)
+        completed = run_execution(benchmark_execution, cwd=ROOT)
         runtime_seconds = time.monotonic() - start
-        if completed.returncode != 0 and (not raw_json.exists() or raw_json.stat().st_size == 0):
-            raise SystemExit(completed.returncode)
+        command = list(completed.command)
+        if completed.exit_code != 0 and (not raw_json.exists() or raw_json.stat().st_size == 0):
+            raise SystemExit(completed.exit_code)
         if not raw_json.exists():
             raise SystemExit(f"Benchmark run for {campaign.name} produced no JSON artifact")
         payload = json.loads(raw_json.read_text())
@@ -270,7 +265,7 @@ def run_campaign(
         notes=list(campaign.notes),
         benchmark_count=len(benchmarks),
         runtime_seconds=runtime_seconds,
-        exit_code=completed.returncode,
+        exit_code=completed.exit_code,
         machine_info=dict(payload.get("machine_info", {})),
         benchmarks=[asdict(bench) for bench in benchmarks],
         slowest=[asdict(bench) for bench in benchmarks[:10]],
@@ -279,13 +274,14 @@ def run_campaign(
         fail_pct=fail_threshold,
         regressions=[asdict(item) for item in regressions],
         worst_regression_pct=worst_regression,
+        **campaign.to_payload(),
     )
 
     artifact_json.write_text(json.dumps(asdict(result), indent=2, sort_keys=True) + "\n")
     artifact_md.write_text(_render_markdown(result))
 
-    if completed.returncode != 0:
-        raise SystemExit(completed.returncode)
+    if completed.exit_code != 0:
+        raise SystemExit(completed.exit_code)
     if worst_regression is not None and worst_regression > fail_threshold:
         raise SystemExit(
             f"Benchmark regression exceeded fail threshold: {worst_regression:.2f}% > {fail_threshold:.2f}%"

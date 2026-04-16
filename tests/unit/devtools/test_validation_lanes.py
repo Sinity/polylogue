@@ -4,14 +4,16 @@ from __future__ import annotations
 
 import pytest
 
+from devtools.lane_models import LaneEntry
 from devtools.run_validation_lanes import (
     LANES,
     VALID_LANES,
-    LaneConfig,
     build_lane_command,
     main,
     parse_lane,
+    run_lane,
 )
+from polylogue.scenarios import AssertionSpec, ExecutionKind, polylogue_execution
 
 
 class TestValidationLanesImportable:
@@ -26,7 +28,7 @@ class TestLaneParsing:
     @pytest.mark.parametrize("lane_name", sorted(VALID_LANES))
     def test_valid_lane_returns_config(self, lane_name):
         lane = parse_lane(lane_name)
-        assert isinstance(lane, LaneConfig)
+        assert isinstance(lane, LaneEntry)
         assert lane.name == lane_name
 
     def test_invalid_lane_raises_value_error(self):
@@ -37,6 +39,116 @@ class TestLaneParsing:
         for lane in LANES.values():
             assert lane.description
             assert lane.timeout_s > 0
+
+    def test_machine_contract_lane_carries_shared_operation_metadata(self):
+        lane = LANES["machine-contract"]
+
+        assert lane.execution.kind is ExecutionKind.PYTEST
+        assert lane.operation_targets == ("cli.json-contract",)
+        assert lane.tags == ("contract", "json", "cli")
+
+    def test_retrieval_checks_lane_carries_runtime_query_and_health_metadata(self):
+        lane = LANES["retrieval-checks"]
+
+        assert lane.path_targets == ("conversation-query-loop", "message-fts-health-loop")
+        assert lane.artifact_targets == ("message_fts", "conversation_query_results", "archive_health")
+        assert lane.operation_targets == ("query-conversations", "project-archive-health")
+        assert lane.tags == ("contract", "retrieval", "health")
+
+    def test_composite_lane_inherits_metadata_through_catalog_entries(self):
+        from devtools.validation_catalog import build_composite_lane_entries
+
+        frontier_local = next(entry for entry in build_composite_lane_entries() if entry.name == "frontier-local")
+        archive_intelligence = next(
+            entry for entry in build_composite_lane_entries() if entry.name == "archive-intelligence"
+        )
+        runtime_substrate = next(
+            entry for entry in build_composite_lane_entries() if entry.name == "runtime-substrate-hardening"
+        )
+
+        assert "cli.json-contract" in frontier_local.operation_targets
+        assert "cli.help" in frontier_local.operation_targets
+        assert "query-conversations" in archive_intelligence.operation_targets
+        assert "project-archive-health" in archive_intelligence.operation_targets
+        assert runtime_substrate.family == "runtime-substrate"
+
+    def test_live_health_json_lane_carries_archive_health_metadata(self):
+        lane = LANES["live-health-json"]
+
+        assert "message-fts-health-loop" in lane.path_targets
+        assert "archive_health" in lane.artifact_targets
+        assert "project-archive-health" in lane.operation_targets
+
+    def test_live_products_status_lane_infers_status_query_metadata(self):
+        lane = LANES["live-products-status"]
+
+        assert lane.path_targets == ("session-product-status-query-loop",)
+        assert lane.artifact_targets == ("session_product_health", "session_product_status_results")
+        assert lane.operation_targets == ("query-session-product-status",)
+
+    def test_live_products_debt_lane_infers_archive_debt_metadata(self):
+        lane = LANES["live-products-debt"]
+
+        assert lane.path_targets == ("archive-debt-query-loop",)
+        assert lane.artifact_targets == (
+            "action_event_health",
+            "session_product_health",
+            "archive_health",
+            "archive_debt_results",
+        )
+        assert lane.operation_targets == ("query-archive-debt",)
+
+    def test_live_embed_stats_lane_infers_embedding_status_metadata(self):
+        lane = LANES["live-embed-stats"]
+
+        assert lane.path_targets == ("retrieval-band-health-loop", "embedding-status-query-loop")
+        assert lane.artifact_targets == (
+            "embedding_metadata_rows",
+            "embedding_status_rows",
+            "message_embedding_vectors",
+            "action_event_health",
+            "session_product_health",
+            "retrieval_band_health",
+            "embedding_status_results",
+        )
+        assert lane.operation_targets == (
+            "project-retrieval-band-health",
+            "query-embedding-status",
+            "cli.json-contract",
+        )
+
+    def test_pipeline_probe_chatgpt_lane_infers_parse_stage_runtime_metadata(self):
+        lane = LANES["pipeline-probe-chatgpt"]
+
+        assert lane.execution.kind is ExecutionKind.PIPELINE_PROBE
+        assert lane.path_targets == (
+            "source-acquisition-loop",
+            "raw-reparse-loop",
+            "raw-archive-ingest-loop",
+        )
+        assert lane.artifact_targets == (
+            "configured_sources",
+            "source_payload_stream",
+            "raw_validation_state",
+            "artifact_observation_rows",
+            "validation_backlog",
+            "parse_backlog",
+            "parse_quarantine",
+            "archive_conversation_rows",
+        )
+        assert lane.operation_targets == (
+            "acquire-raw-conversations",
+            "plan-validation-backlog",
+            "plan-parse-backlog",
+            "ingest-archive-runtime",
+        )
+
+    def test_memory_budget_lane_preserves_wrapped_runtime_metadata(self):
+        lane = LANES["memory-budget"]
+
+        assert lane.path_targets == ("conversation-query-loop",)
+        assert lane.artifact_targets == ("message_fts", "conversation_query_results")
+        assert lane.operation_targets == ("query-conversations",)
 
 
 class TestCommandConstruction:
@@ -63,6 +175,7 @@ class TestCommandConstruction:
 
     def test_live_archive_subset_parse_probe_lane_uses_medium_archive_subset_probe(self):
         cmd = build_lane_command(LANES["live-archive-subset-parse-probe"])
+        assert LANES["live-archive-subset-parse-probe"].execution.kind is ExecutionKind.PIPELINE_PROBE
         assert cmd[:2] == ["devtools", "pipeline-probe"]
         assert "--input-mode" in cmd
         assert "archive-subset" in cmd
@@ -86,12 +199,38 @@ class TestCommandConstruction:
         assert "tests/unit/sources/test_drive_ops.py" in cmd
         assert "tests/integration/test_security.py" in cmd
 
+    def test_source_provider_fidelity_lane_carries_source_acquisition_metadata(self):
+        lane = LANES["source-provider-fidelity"]
+
+        assert lane.path_targets == ("source-acquisition-loop",)
+        assert lane.artifact_targets == (
+            "configured_sources",
+            "source_payload_stream",
+            "raw_validation_state",
+            "artifact_observation_rows",
+        )
+        assert lane.operation_targets == ("acquire-raw-conversations",)
+        assert lane.tags == ("contract", "sources", "acquisition")
+
     def test_maintenance_workflows_lane_uses_health_and_check_suite(self):
         cmd = build_lane_command(LANES["maintenance-workflows"])
         assert cmd[0] == "pytest"
         assert "tests/unit/core/test_health_core.py" in cmd
         assert "tests/unit/cli/test_check.py" in cmd
         assert "tests/integration/test_health.py" in cmd
+
+    def test_maintenance_workflows_lane_carries_publication_runtime_metadata(self):
+        lane = LANES["maintenance-workflows"]
+
+        assert lane.path_targets == ("site-publication-loop",)
+        assert lane.artifact_targets == (
+            "conversation_render_projection",
+            "site_conversation_pages",
+            "site_publication_manifest",
+            "publication_records",
+        )
+        assert lane.operation_targets == ("publish-site",)
+        assert lane.tags == ("contract", "maintenance", "publication")
 
     def test_archive_data_products_lane_uses_product_and_consumer_suite(self):
         cmd = build_lane_command(LANES["archive-data-products"])
@@ -121,6 +260,29 @@ class TestCommandConstruction:
         assert "tests/unit/cli/test_embed.py" in cmd
         assert "tests/unit/storage/test_embedding_stats.py" in cmd
 
+    def test_embeddings_coverage_lane_carries_embedding_runtime_metadata(self):
+        lane = LANES["embeddings-coverage"]
+
+        assert lane.path_targets == (
+            "embedding-materialization-loop",
+            "embedding-status-query-loop",
+            "retrieval-band-health-loop",
+        )
+        assert lane.artifact_targets == (
+            "archive_conversation_rows",
+            "embedding_metadata_rows",
+            "embedding_status_rows",
+            "message_embedding_vectors",
+            "retrieval_band_health",
+            "embedding_status_results",
+        )
+        assert lane.operation_targets == (
+            "materialize-transcript-embeddings",
+            "project-retrieval-band-health",
+            "query-embedding-status",
+        )
+        assert lane.tags == ("contract", "embeddings", "retrieval")
+
     def test_evidence_tier_contracts_lane_uses_evidence_suite(self):
         cmd = build_lane_command(LANES["evidence-tier-contracts"])
         assert cmd[0] == "pytest"
@@ -147,6 +309,29 @@ class TestCommandConstruction:
         assert "tests/unit/cli/test_embed.py" in cmd
         assert "tests/unit/storage/test_embedding_stats.py" in cmd
         assert "tests/unit/core/test_health_core.py" in cmd
+
+    def test_retrieval_band_readiness_lane_carries_retrieval_health_metadata(self):
+        lane = LANES["retrieval-band-readiness"]
+
+        assert lane.path_targets == (
+            "embedding-status-query-loop",
+            "retrieval-band-health-loop",
+            "message-fts-health-loop",
+        )
+        assert lane.artifact_targets == (
+            "embedding_metadata_rows",
+            "embedding_status_rows",
+            "message_embedding_vectors",
+            "retrieval_band_health",
+            "embedding_status_results",
+            "archive_health",
+        )
+        assert lane.operation_targets == (
+            "project-retrieval-band-health",
+            "query-embedding-status",
+            "project-archive-health",
+        )
+        assert lane.tags == ("contract", "retrieval", "embeddings", "health")
 
     def test_heuristic_inference_contracts_lane_uses_semantic_product_suite(self):
         cmd = build_lane_command(LANES["heuristic-inference-contracts"])
@@ -178,6 +363,29 @@ class TestCommandConstruction:
         assert "--repair" in cmd
         assert "--cleanup" in cmd
         assert "--preview" in cmd
+
+    def test_scale_fast_lane_uses_direct_pytest_execution(self):
+        cmd = build_lane_command(LANES["scale-fast"])
+        assert cmd[:2] == ["pytest", "-v"]
+        assert "tests/unit/storage/test_scale.py" in cmd
+        assert "--timeout=30" in cmd
+
+    def test_scale_slow_lane_uses_direct_pytest_marker_filter(self):
+        cmd = build_lane_command(LANES["scale-slow"])
+        assert cmd[:2] == ["pytest", "-v"]
+        assert "tests/unit/storage/" in cmd
+        assert "--timeout=120" in cmd
+        found = False
+        for i, arg in enumerate(cmd[:-1]):
+            if arg == "-m" and cmd[i + 1] == "slow":
+                found = True
+                break
+        assert found, f"-m slow not found in command: {cmd}"
+
+    def test_scale_stretch_lane_is_composite(self):
+        lane = LANES["scale-stretch"]
+        assert lane.is_composite
+        assert lane.sub_lanes == ("scale-fast", "scale-slow")
 
     def test_long_haul_lane_uses_campaign_runner(self):
         cmd = build_lane_command(LANES["long-haul-small"])
@@ -212,6 +420,32 @@ class TestCommandConstruction:
         assert "products" in cmd
         assert "day-summaries" in cmd
         assert "--json" in cmd
+
+
+class TestLaneAssertions:
+    def test_run_lane_enforces_shared_assertion_spec(self, monkeypatch, capsys) -> None:
+        lane = LaneEntry(
+            name="json-contract",
+            description="JSON contract lane",
+            timeout_s=30,
+            category="contract",
+            execution=polylogue_execution("doctor", "--json"),
+            assertion=AssertionSpec(stdout_is_valid_json=True),
+        )
+
+        class _Result:
+            exit_code = 0
+            stdout = "not-json"
+            stderr = ""
+            output = "not-json"
+
+        monkeypatch.setattr("devtools.validation_lane_runtime.run_execution", lambda *_args, **_kwargs: _Result())
+
+        exit_code = run_lane(lane)
+
+        captured = capsys.readouterr()
+        assert exit_code == 1
+        assert "failed assertion" in captured.out
 
     def test_live_products_analytics_lane_uses_products_entrypoint(self):
         cmd = build_lane_command(LANES["live-products-analytics"])

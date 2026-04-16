@@ -428,6 +428,32 @@ class TestRunCommand:
         assert "Reset parse status for 7 raw records." in result.output
         assert mock_reset_run.call_count + mock_pipeline_run.call_count == 2
 
+    def test_run_preview_reparse_does_not_reset_state_before_planning(
+        self,
+        runner,
+        cli_workspace,
+        mock_plan_result,
+        mock_run_result,
+    ):
+        with (
+            patch("polylogue.cli.commands.run.run_coroutine_sync") as mock_run_coroutine_sync,
+            patch("polylogue.config.get_config", return_value=MagicMock(sources=[], render_root=Path("/render"))),
+            patch("polylogue.cli.commands.run.resolve_sources", return_value=["test-inbox"]),
+            patch("polylogue.cli.commands.run.maybe_prompt_sources", return_value=["test-inbox"]),
+            patch("polylogue.cli.run_workflow.format_plan_counts", return_value="5 conversations, 50 messages"),
+            patch("polylogue.cli.run_workflow.format_plan_details", return_value="new=2, existing=3"),
+            patch("polylogue.cli.run_workflow.format_cursors", return_value="cursor snapshot"),
+            patch("polylogue.cli.commands.run.plan_sources", return_value=mock_plan_result) as mock_plan_sources,
+            patch("polylogue.cli.run_workflow.run_sources", new_callable=AsyncMock, return_value=mock_run_result),
+        ):
+            result = runner.invoke(cli, ["run", "--preview", "--reparse", "--source", "test-inbox", "parse"])
+
+        assert result.exit_code == 0
+        assert "Reparse requested." in result.output
+        mock_run_coroutine_sync.assert_not_called()
+        mock_plan_sources.assert_called_once()
+        assert mock_plan_sources.call_args.kwargs["force_reparse"] is True
+
     def test_maybe_prompt_run_stage_skips_prompt_when_not_requested(self):
         env = SimpleNamespace(ui=MagicMock(plain=False))
 

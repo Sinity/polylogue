@@ -1,0 +1,131 @@
+"""Shared scenario models used across verification projections."""
+
+from .assertions import AssertionSpec
+from .cli_surfaces import (
+    CliSurfaceFamily,
+    CliSurfaceVariant,
+    CompiledCliSurface,
+    build_cli_surface_exercises,
+    build_cli_surface_live_variants,
+    build_cli_surface_memory_budget_variants,
+)
+from .corpus import (
+    CorpusProfile,
+    CorpusRequest,
+    CorpusScenario,
+    CorpusSourceKind,
+    CorpusSpec,
+    build_corpus_scenarios,
+    build_default_corpus_specs,
+    build_inferred_corpus_specs,
+    flatten_corpus_specs,
+    resolve_corpus_scenarios,
+    resolve_corpus_specs,
+)
+from .executable import ExecutableScenario
+from .execution import (
+    ExecutionKind,
+    ExecutionSpec,
+    PipelineProbeInputMode,
+    PipelineProbeRequest,
+    composite_execution,
+    devtools_execution,
+    memory_budget_execution,
+    pipeline_probe_execution,
+    polylogue_execution,
+    pytest_execution,
+    runner_execution,
+)
+from .metadata import (
+    ScenarioMetadata,
+    declared_operation_target_names,
+    runtime_artifact_graph,
+    runtime_artifact_target_names,
+    runtime_maintenance_target_names,
+    runtime_operation_target_names,
+    runtime_path_target_names,
+)
+from .operational_surfaces import (
+    OPERATIONAL_SURFACE_FAMILIES,
+    build_live_operational_surface_lanes,
+    build_memory_budget_operational_surface_lanes,
+    build_operational_contract_surfaces,
+)
+from .product_surfaces import (
+    PRODUCT_SURFACE_FAMILIES,
+    build_live_product_surface_lanes,
+    build_product_contract_surfaces,
+)
+from .projections import (
+    ScenarioProjectionEntry,
+    ScenarioProjectionSource,
+    ScenarioProjectionSourceKind,
+    compile_projection_entries,
+)
+from .runtime import (
+    ExecutionResult,
+    dispatch_execution,
+    resolve_execution_command,
+    resolve_execution_runner,
+    run_execution,
+)
+from .sources import NamedScenarioSource
+from .specs import ScenarioSpec
+
+__all__ = [
+    "AssertionSpec",
+    "build_default_corpus_specs",
+    "build_corpus_scenarios",
+    "build_inferred_corpus_specs",
+    "build_cli_surface_exercises",
+    "build_cli_surface_live_variants",
+    "build_cli_surface_memory_budget_variants",
+    "composite_execution",
+    "CliSurfaceFamily",
+    "CliSurfaceVariant",
+    "CompiledCliSurface",
+    "devtools_execution",
+    "flatten_corpus_specs",
+    "memory_budget_execution",
+    "pipeline_probe_execution",
+    "resolve_corpus_scenarios",
+    "resolve_corpus_specs",
+    "CorpusRequest",
+    "CorpusProfile",
+    "CorpusSourceKind",
+    "CorpusScenario",
+    "CorpusSpec",
+    "compile_projection_entries",
+    "dispatch_execution",
+    "declared_operation_target_names",
+    "ExecutableScenario",
+    "ExecutionKind",
+    "ExecutionSpec",
+    "build_operational_contract_surfaces",
+    "build_live_operational_surface_lanes",
+    "build_memory_budget_operational_surface_lanes",
+    "OPERATIONAL_SURFACE_FAMILIES",
+    "PipelineProbeInputMode",
+    "PipelineProbeRequest",
+    "PRODUCT_SURFACE_FAMILIES",
+    "ScenarioMetadata",
+    "ScenarioProjectionEntry",
+    "ScenarioProjectionSource",
+    "ScenarioProjectionSourceKind",
+    "ScenarioSpec",
+    "NamedScenarioSource",
+    "ExecutionResult",
+    "polylogue_execution",
+    "pytest_execution",
+    "resolve_execution_command",
+    "resolve_execution_runner",
+    "runner_execution",
+    "run_execution",
+    "build_live_product_surface_lanes",
+    "build_product_contract_surfaces",
+    "runtime_artifact_graph",
+    "runtime_artifact_target_names",
+    "runtime_maintenance_target_names",
+    "runtime_operation_target_names",
+    "runtime_path_target_names",
+]

@@ -17,6 +17,7 @@ from polylogue.storage.action_event_rebuild_runtime import rebuild_action_event_
 from polylogue.storage.backends.connection import open_connection
 from polylogue.storage.session_product_rebuild import rebuild_session_products_sync
 from polylogue.storage.session_product_status import session_product_status_sync
+from polylogue.storage.store_constants import SESSION_PRODUCT_MATERIALIZER_VERSION
 from tests.infra.storage_records import ConversationBuilder
 
 
@@ -25,6 +26,10 @@ def _extract_json(output: str) -> dict[str, object]:
     if isinstance(data, dict) and data.get("status") == "ok":
         return data["result"]
     return data
+
+
+def _exception_message(result) -> str:
+    return str(result.exception) if result.exception is not None else result.output.strip()
 
 
 def _seed_products(cli_workspace) -> None:
@@ -353,6 +358,25 @@ def test_session_product_rebuild_pages_full_rebuild(cli_workspace):
     assert status["phase_inference_rows_ready"] is True
 
 
+def test_session_product_rebuild_sync_reports_progress(cli_workspace):
+    _seed_products(cli_workspace)
+
+    observed: list[tuple[int, str | None]] = []
+
+    with open_connection(cli_workspace["db_path"]) as conn:
+        rebuild_session_products_sync(
+            conn,
+            page_size=1,
+            progress_callback=lambda amount, desc=None: observed.append((amount, desc)),
+            progress_total=2,
+        )
+
+    assert observed == [
+        (1, "Materializing: 1/2"),
+        (1, "Materializing: 2/2"),
+    ]
+
+
 def test_session_product_rebuild_preserves_profile_semantics_without_loading_full_provider_meta(cli_workspace):
     db_path = cli_workspace["db_path"]
     (
@@ -510,3 +534,96 @@ def test_targeted_session_product_rebuild_does_not_duplicate_profile_fts(cli_wor
     assert status["profile_merged_fts_count"] == 2
     assert status["profile_merged_fts_duplicate_count"] == 0
     assert status["profile_merged_fts_ready"] is True
+
+
+def test_session_product_status_marks_older_materializer_versions_stale(cli_workspace):
+    _seed_products(cli_workspace)
+
+    with open_connection(cli_workspace["db_path"]) as conn:
+        rebuild_session_products_sync(conn)
+        conn.execute(
+            "UPDATE session_profiles SET materializer_version = ?",
+            (SESSION_PRODUCT_MATERIALIZER_VERSION - 1,),
+        )
+        conn.commit()
+        status = session_product_status_sync(conn)
+
+    assert status["profile_row_count"] == 2
+    assert status["stale_profile_row_count"] == 2
+    assert status["profile_rows_ready"] is False
+
+
+@pytest.mark.parametrize(
+    ("argv", "sql", "expected"),
+    [
+        (
+            ["products", "profiles", "--json"],
+            "UPDATE session_profiles SET materializer_version = ?",
+            "Session-profile rows are incomplete.",
+        ),
+        (
+            ["products", "work-events", "--json"],
+            "UPDATE session_work_events SET materializer_version = ?",
+            "Session work-event rows are incomplete.",
+        ),
+        (
+            ["products", "phases", "--json"],
+            "UPDATE session_phases SET materializer_version = ?",
+            "Session phase rows are incomplete.",
+        ),
+        (
+            ["products", "threads", "--json"],
+            "UPDATE work_threads SET materializer_version = ?",
+            "Work-thread rows are incomplete.",
+        ),
+        (
+            ["products", "tags", "--json"],
+            "UPDATE session_tag_rollups SET materializer_version = ?",
+            "Session tag rollups are incomplete.",
+        ),
+        (
+            ["products", "day-summaries", "--json"],
+            "UPDATE day_session_summaries SET materializer_version = ?",
+            "Day session summaries are incomplete.",
+        ),
+        (
+            ["products", "week-summaries", "--json"],
+            "UPDATE day_session_summaries SET materializer_version = ?",
+            "Week session summaries are incomplete.",
+        ),
+    ],
+)
+def test_products_reject_stale_session_product_surfaces(cli_workspace, argv, sql, expected):
+    _seed_products(cli_workspace)
+
+    with open_connection(cli_workspace["db_path"]) as conn:
+        conn.execute(sql, (SESSION_PRODUCT_MATERIALIZER_VERSION - 1,))
+        conn.commit()
+
+    runner = CliRunner()
+    result = runner.invoke(cli, argv, catch_exceptions=False)
+
+    assert result.exit_code == 1
+    message = _exception_message(result)
+    assert expected in message
+    assert "polylogue doctor --repair --target session_products" in message
+
+
+def test_products_profiles_reject_incomplete_profile_search_index(cli_workspace):
+    _seed_products(cli_workspace)
+
+    with open_connection(cli_workspace["db_path"]) as conn:
+        conn.execute("DELETE FROM session_profiles_fts")
+        conn.commit()
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        ["products", "profiles", "--query", "refactor", "--json"],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 1
+    message = _exception_message(result)
+    assert "Session-profile merged search index is incomplete." in message
+    assert "polylogue doctor --repair --target session_products" in message

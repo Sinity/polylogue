@@ -12,6 +12,7 @@ import pytest
 
 from polylogue.cli.click_app import cli as click_cli
 from polylogue.cli.click_app import mcp_command
+from polylogue.scenarios import CorpusProfile, CorpusSpec
 from tests.infra.cli_subprocess import run_cli
 
 
@@ -246,10 +247,10 @@ class TestQueryFirstGroupParseArgs:
     def test_root_query_option_after_verb_gets_specific_usage_error(self, cli_runner):
         from polylogue.cli.click_app import cli
 
-        result = cli_runner.invoke(cli, ["stats", "--by", "provider", "--limit", "20"], catch_exceptions=False)
+        result = cli_runner.invoke(cli, ["stats", "--by", "provider", "--since", "2026-01-01"], catch_exceptions=False)
         assert result.exit_code == 2
         assert "Query filters and root output flags must appear before the verb." in result.output
-        assert "Move --limit before `stats`." in result.output
+        assert "Move --since before `stats`." in result.output
 
     def test_root_filter_after_verb_gets_specific_usage_error(self, cli_runner):
         from polylogue.cli.click_app import cli
@@ -524,6 +525,55 @@ class TestGenerateSeed:
         assert f'export XDG_CONFIG_HOME="{tmp_path / "config"}"' in result.output
         assert f'export XDG_CACHE_HOME="{tmp_path / "cache"}"' in result.output
 
+    def test_inferred_corpus_generation_uses_unique_prefixes_per_same_provider_spec(self, cli_runner, tmp_path):
+        inferred_specs = (
+            CorpusSpec(
+                provider="chatgpt",
+                package_version="v1",
+                count=1,
+                messages_min=4,
+                messages_max=4,
+                seed=7,
+                profile=CorpusProfile(family_ids=("cluster-a",)),
+            ),
+            CorpusSpec(
+                provider="chatgpt",
+                package_version="v1",
+                count=1,
+                messages_min=4,
+                messages_max=4,
+                seed=8,
+                profile=CorpusProfile(family_ids=("cluster-b",)),
+            ),
+        )
+
+        with patch(
+            "polylogue.schemas.operator_inference.list_inferred_corpus_specs",
+            return_value=inferred_specs,
+        ):
+            result = cli_runner.invoke(
+                click_cli,
+                ["audit", "generate", "--corpus-source", "inferred", "-o", str(tmp_path), "-n", "1", "-p", "chatgpt"],
+            )
+
+        assert result.exit_code == 0
+        provider_dir = tmp_path / "chatgpt"
+        assert (provider_dir / "sample-v1-cluster-a-00.json").exists()
+        assert (provider_dir / "sample-v1-cluster-b-00.json").exists()
+
+    def test_inferred_corpus_generation_fails_when_no_specs_match(self, cli_runner, tmp_path):
+        with patch(
+            "polylogue.schemas.operator_inference.list_inferred_corpus_specs",
+            return_value=(),
+        ):
+            result = cli_runner.invoke(
+                click_cli,
+                ["audit", "generate", "--corpus-source", "inferred", "-o", str(tmp_path), "-p", "chatgpt"],
+            )
+
+        assert result.exit_code != 0
+        assert "No corpus scenarios matched" in result.output
+
 
 # ---------------------------------------------------------------------------
 # QA command tests
@@ -619,14 +669,15 @@ class TestQaCommand:
             result = cli_runner.invoke(click_cli, ["audit", "--only", "audit", "--json"])
 
         assert result.exit_code == 0
-        assert mock_run.call_args.kwargs["skip_proof"] is True
+        assert mock_run.call_args.args[0].skip_proof is True
         payload = json.loads(result.output)
         assert payload["proof"]["status"] == "skip"
         assert payload["proof"]["skipped"] is True
         assert payload["overall_status"] == "ok"
 
     def test_exercises_only_skips_artifact_proof(self, cli_runner):
-        from polylogue.showcase.exercises import Exercise, Validation
+        from polylogue.scenarios import AssertionSpec, polylogue_execution
+        from polylogue.showcase.exercises import Exercise
         from polylogue.showcase.qa_runner import QAResult
         from polylogue.showcase.runner import ExerciseResult, ShowcaseResult
 
@@ -636,7 +687,13 @@ class TestQaCommand:
             showcase_result=ShowcaseResult(
                 results=[
                     ExerciseResult(
-                        exercise=Exercise("smoke", "structural", "smoke", ["--help"], Validation()),
+                        exercise=Exercise(
+                            name="smoke",
+                            group="structural",
+                            description="smoke",
+                            execution=polylogue_execution("--help"),
+                            assertion=AssertionSpec(),
+                        ),
                         passed=True,
                         exit_code=0,
                         output="ok",
@@ -652,7 +709,7 @@ class TestQaCommand:
             result = cli_runner.invoke(click_cli, ["audit", "--only", "exercises", "--json"])
 
         assert result.exit_code == 0
-        assert mock_run.call_args.kwargs["skip_proof"] is True
+        assert mock_run.call_args.args[0].skip_proof is True
         payload = json.loads(result.output)
         assert payload["proof"]["status"] == "skip"
         assert payload["proof"]["skipped"] is True

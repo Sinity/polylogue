@@ -22,13 +22,11 @@ import polylogue.paths as _paths
 from polylogue.errors import DatabaseError
 from polylogue.storage.backends.async_sqlite_archive import SQLiteArchiveMixin
 from polylogue.storage.backends.async_sqlite_raw import SQLiteRawMixin
-from polylogue.storage.backends.async_sqlite_schema import ensure_schema as ensure_current_schema
 from polylogue.storage.backends.connection import (
     DB_TIMEOUT,
-    READ_CACHE_SIZE_KIB,
+    READ_CONNECTION_PRAGMA_STATEMENTS,
     READ_DB_TIMEOUT,
-    READ_MMAP_SIZE_BYTES,
-    WRITE_CACHE_SIZE_KIB,
+    WRITE_CONNECTION_PRAGMA_STATEMENTS,
 )
 from polylogue.storage.backends.queries import action_events as action_events_q
 from polylogue.storage.backends.queries import (
@@ -42,7 +40,7 @@ from polylogue.storage.backends.queries import (
 )
 from polylogue.storage.backends.queries import stats as stats_q
 from polylogue.storage.backends.query_store import SQLiteQueryStore
-from polylogue.storage.backends.schema import SCHEMA_DDL
+from polylogue.storage.backends.schema import SCHEMA_DDL, ensure_schema_async
 from polylogue.storage.store import (
     ActionEventRecord,
     MessageRecord,
@@ -52,14 +50,10 @@ from polylogue.storage.store import (
     WorkThreadRecord,
 )
 
-# ---------------------------------------------------------------------------
-# Shared connection helpers (formerly async_sqlite_support.py)
-# ---------------------------------------------------------------------------
 
-
-def default_db_path() -> Path:
-    """Return the default database path (same as sync backend)."""
-    return _paths.data_home() / "polylogue.db"
+async def _apply_pragma_statements_async(conn: aiosqlite.Connection, statements: tuple[str, ...]) -> None:
+    for statement in statements:
+        await conn.execute(statement)
 
 
 async def configure_connection(conn: aiosqlite.Connection) -> None:
@@ -71,30 +65,13 @@ async def configure_connection(conn: aiosqlite.Connection) -> None:
     to expected levels.
     """
     conn.row_factory = aiosqlite.Row
-    await conn.execute("PRAGMA foreign_keys = ON")
-    await conn.execute("PRAGMA journal_mode=WAL")
-    await conn.execute(f"PRAGMA busy_timeout = {DB_TIMEOUT * 1000}")
-    # Keep write-path cache large enough for bulk work without multiplying
-    # per-connection RSS into server-scale memory use on a local CLI utility.
-    await conn.execute(f"PRAGMA cache_size = -{WRITE_CACHE_SIZE_KIB}")
-    # Performance: NORMAL sync is safe with WAL and avoids fsync per write
-    await conn.execute("PRAGMA synchronous = NORMAL")
-    # Performance: 1 GB memory-mapped I/O for faster reads on large DBs
-    await conn.execute("PRAGMA mmap_size = 1073741824")
-    # Performance: keep temp tables in memory
-    await conn.execute("PRAGMA temp_store = MEMORY")
-    # Performance: increase WAL autocheckpoint from 1000 to 10000 pages
-    # to reduce checkpoint frequency during bulk writes
-    await conn.execute("PRAGMA wal_autocheckpoint = 10000")
+    await _apply_pragma_statements_async(conn, WRITE_CONNECTION_PRAGMA_STATEMENTS)
 
 
 async def configure_read_connection(conn: aiosqlite.Connection) -> None:
     """Apply read-safe settings without mutating database-wide state."""
     conn.row_factory = aiosqlite.Row
-    await conn.execute(f"PRAGMA busy_timeout = {READ_DB_TIMEOUT * 1000}")
-    await conn.execute(f"PRAGMA cache_size = -{READ_CACHE_SIZE_KIB}")
-    await conn.execute(f"PRAGMA mmap_size = {READ_MMAP_SIZE_BYTES}")
-    await conn.execute("PRAGMA temp_store = MEMORY")
+    await _apply_pragma_statements_async(conn, READ_CONNECTION_PRAGMA_STATEMENTS)
 
 
 async def _read_schema_ready(backend: SQLiteBackend) -> bool:
@@ -120,7 +97,7 @@ async def _read_schema_ready(backend: SQLiteBackend) -> bool:
 
 def initialize_backend_state(backend: SQLiteBackend, db_path: Path | None) -> None:
     """Initialize backend state and shared query accessors."""
-    backend._db_path = Path(db_path) if db_path is not None else default_db_path()
+    backend._db_path = Path(db_path) if db_path is not None else _paths.db_path()
     backend._db_path.parent.mkdir(parents=True, exist_ok=True)
 
     backend._write_lock = asyncio.Lock()
@@ -441,7 +418,7 @@ class SQLiteBackend(
 
     async def _ensure_schema(self, conn) -> None:
         """Ensure database schema exists and is at the current schema version."""
-        await ensure_current_schema(conn)
+        await ensure_schema_async(conn)
 
     # -- Transaction management ---------------------------------------------
 
@@ -571,5 +548,4 @@ __all__ = [
     "SCHEMA_DDL",
     "SQLiteBackend",
     "configure_connection",
-    "default_db_path",
 ]

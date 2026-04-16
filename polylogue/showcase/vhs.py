@@ -49,10 +49,7 @@ def generate_tape(
             lines.append(step)
     else:
         # Auto-generate from CLI args
-        cmd = "polylogue"
-        if exercise.args:
-            cmd += " " + " ".join(exercise.args)
-        lines.append(f'Type "{cmd}"')
+        lines.append(f'Type "{exercise.display_command_text}"')
         lines.append("Enter")
         lines.append("Sleep 2s")
 

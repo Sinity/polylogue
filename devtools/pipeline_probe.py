@@ -18,14 +18,14 @@ from pathlib import Path
 from typing import Any
 
 from polylogue.config import Config, Source
-from polylogue.paths import blob_store_root
+from polylogue.paths import blob_store_root, db_path
 from polylogue.pipeline.runner import RUN_STAGE_CHOICES, run_sources
+from polylogue.scenarios import CorpusRequest, CorpusSourceKind
 from polylogue.schemas.synthetic import SyntheticCorpus
 from polylogue.storage.backends import create_backend
 from polylogue.storage.backends.connection import (
     _build_provider_scope_filter,
     _build_source_scope_filter,
-    default_db_path,
     open_connection,
 )
 from polylogue.storage.backends.queries.raw_state import EFFECTIVE_RAW_PROVIDER_SQL
@@ -82,6 +82,12 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--corpus-source",
+        choices=[kind.value for kind in CorpusSourceKind],
+        default=CorpusSourceKind.DEFAULT.value,
+        help="Synthetic corpus source to use in synthetic mode (default: default)",
+    )
+    parser.add_argument(
         "--count",
         type=int,
         default=5,
@@ -104,6 +110,16 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=int,
         default=42,
         help="Synthetic corpus seed (default: 42)",
+    )
+    parser.add_argument(
+        "--style",
+        default="default",
+        help="Synthetic corpus style (default: default)",
+    )
+    parser.add_argument(
+        "--package-version",
+        default="default",
+        help="Synthetic package version selector (default: default)",
     )
     parser.add_argument(
         "--sample-per-provider",
@@ -390,28 +406,19 @@ def _build_probe_provenance(
 
 def _write_probe_sources(
     *,
-    provider: str,
-    count: int,
-    messages_min: int,
-    messages_max: int,
-    seed: int,
+    request: CorpusRequest,
     source_root: Path,
 ) -> tuple[list[Path], int]:
-    corpus = SyntheticCorpus.for_provider(provider)
-    source_root.mkdir(parents=True, exist_ok=True)
-    raw_items = corpus.generate(
-        count=count,
-        messages_per_conversation=range(messages_min, messages_max + 1),
-        seed=seed,
+    scenarios = request.resolve_scenarios(
+        origin="compiled.pipeline-probe",
+        tags=("synthetic", "probe", "scenario"),
     )
-    total_bytes = 0
-    files: list[Path] = []
-    extension = _EXT_MAP.get(provider, ".json")
-    for index, raw_bytes in enumerate(raw_items):
-        file_path = source_root / f"{provider}-{index:03d}{extension}"
-        file_path.write_bytes(raw_bytes)
-        files.append(file_path)
-        total_bytes += len(raw_bytes)
+    corpus_specs = tuple(spec for scenario in scenarios for spec in scenario.corpus_specs)
+    source_root.mkdir(parents=True, exist_ok=True)
+    provider = request.providers[0] if request.providers else "probe"
+    written_batches = SyntheticCorpus.write_specs_artifacts(corpus_specs, source_root, prefix=provider, index_width=3)
+    files = [path for written in written_batches for path in written.files]
+    total_bytes = sum(len(artifact.raw_bytes) for written in written_batches for artifact in written.batch.artifacts)
     return files, total_bytes
 
 
@@ -691,7 +698,7 @@ def _resolve_archive_manifest(
             manifest["source_db"] = str(source_db.resolve())
         return manifest
 
-    resolved_source_db = (source_db or default_db_path()).resolve()
+    resolved_source_db = (source_db or db_path()).resolve()
     resolved_source_blob_root = (source_blob_root or blob_store_root()).resolve()
     return _build_archive_manifest(
         source_db=resolved_source_db,
@@ -881,11 +888,16 @@ async def run_probe(args: argparse.Namespace) -> dict[str, Any]:
         stage_sequence = _probe_stage_sequence(probe_mode, args.stage)
         with _isolated_env(workdir):
             files, total_bytes = _write_probe_sources(
-                provider=provider_name,
-                count=args.count,
-                messages_min=args.messages_min,
-                messages_max=args.messages_max,
-                seed=args.seed,
+                request=CorpusRequest(
+                    providers=(provider_name,),
+                    source=CorpusSourceKind(args.corpus_source),
+                    count=args.count,
+                    messages_min=args.messages_min,
+                    messages_max=args.messages_max,
+                    seed=args.seed,
+                    style=getattr(args, "style", "default"),
+                    package_version=getattr(args, "package_version", "default"),
+                ),
                 source_root=source_root,
             )
             config = Config(
@@ -908,12 +920,15 @@ async def run_probe(args: argparse.Namespace) -> dict[str, Any]:
             "probe": {
                 "input_mode": "synthetic",
                 "provider": provider_name,
+                "corpus_source": args.corpus_source,
                 "stage": args.stage,
                 "stage_sequence": stage_sequence,
                 "count": args.count,
                 "messages_min": args.messages_min,
                 "messages_max": args.messages_max,
                 "seed": args.seed,
+                "style": getattr(args, "style", "default"),
+                "package_version": getattr(args, "package_version", "default"),
                 "raw_batch_size": args.raw_batch_size,
                 "ingest_workers": args.ingest_workers,
                 "measure_ingest_result_size": args.measure_ingest_result_size,

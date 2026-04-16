@@ -8,12 +8,17 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
+from polylogue.scenarios import CorpusRequest, CorpusSpec
+from polylogue.showcase.corpus_requests import showcase_corpus_request
 from polylogue.showcase.exercises import EXERCISES, Exercise, topological_order
 from polylogue.showcase.showcase_runner_models import ExerciseResult
 from polylogue.showcase.workspace import (
+    build_synthetic_corpus_scenarios,
     create_verification_workspace,
     generate_synthetic_fixtures,
     run_pipeline_for_fixture_workspace,
+    seed_workspace_from_scenarios,
+    seed_workspace_from_specs,
 )
 
 
@@ -38,30 +43,63 @@ def select_exercises(
     return topological_order(selected)
 
 
-def seed_workspace(workspace_dir: Path, *, synthetic_count: int) -> dict[str, str]:
+def seed_workspace(
+    workspace_dir: Path,
+    *,
+    corpus_request: CorpusRequest | None = None,
+) -> dict[str, str]:
     """Populate an isolated verification workspace and ingest its fixtures."""
     workspace = create_verification_workspace(workspace_dir)
-    generate_showcase_fixtures(workspace.fixture_dir, count=synthetic_count)
-    run_pipeline_for_fixture_workspace(workspace)
+    request = corpus_request or showcase_corpus_request()
+    seed_workspace_from_scenarios(
+        workspace,
+        corpus_scenarios=build_synthetic_corpus_scenarios(
+            request=request,
+        ),
+    )
     return dict(workspace.env_vars)
 
 
 def seed_workspace_with(
     workspace_dir: Path,
     *,
-    synthetic_count: int,
-    generate_fixtures: Callable[[Path], None],
+    corpus_request: CorpusRequest | None = None,
+    exercises: tuple[Exercise, ...] = (),
+    generate_fixtures: Callable[[Path, CorpusRequest], None],
 ) -> dict[str, str]:
     """Populate a workspace using an injected fixture-generation callback."""
     workspace = create_verification_workspace(workspace_dir)
-    generate_fixtures(workspace.fixture_dir)
+    request = corpus_request or showcase_corpus_request()
+    corpus_specs = _merge_exercise_corpus_specs(exercises)
+    if corpus_specs:
+        seed_workspace_from_specs(workspace, corpus_specs=corpus_specs)
+        return dict(workspace.env_vars)
+    generate_fixtures(workspace.fixture_dir, request)
     run_pipeline_for_fixture_workspace(workspace)
     return dict(workspace.env_vars)
 
 
-def generate_showcase_fixtures(fixture_dir: Path, *, count: int) -> None:
+def generate_showcase_fixtures(
+    fixture_dir: Path,
+    *,
+    request: CorpusRequest | None = None,
+) -> None:
     """Generate schema-driven synthetic fixtures for all providers."""
-    generate_synthetic_fixtures(fixture_dir, count=count, style="showcase")
+    generate_synthetic_fixtures(fixture_dir, request=request or showcase_corpus_request())
+
+
+def _merge_exercise_corpus_specs(exercises: tuple[Exercise, ...]) -> tuple[CorpusSpec, ...]:
+    """Return ordered unique corpus specs referenced by the selected exercises."""
+    seen: set[str] = set()
+    merged: list[CorpusSpec] = []
+    for exercise in exercises:
+        for corpus_spec in exercise.corpus_specs:
+            key = json.dumps(corpus_spec.to_payload(), sort_keys=True)
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(corpus_spec)
+    return tuple(merged)
 
 
 def run_exercise(
@@ -74,10 +112,9 @@ def run_exercise(
     started = time.monotonic()
     env = dict(env_vars)
     env["POLYLOGUE_FORCE_PLAIN"] = "1"
-    args = ["--plain", *exercise.args]
 
     try:
-        cli_result = invoke_showcase_cli_fn(args, env=env, timeout=exercise.timeout_s)
+        cli_result = invoke_showcase_cli_fn(exercise.execution, env=env, timeout=exercise.timeout_s)
         output = cli_result.output
         exit_code = cli_result.exit_code
     except subprocess.TimeoutExpired:
@@ -114,38 +151,12 @@ def run_exercise(
 
 
 def validate_exercise_output(exercise: Exercise, output: str, exit_code: int) -> str | None:
-    """Validate exercise output against its validation spec."""
-    validation = exercise.validation
-
-    if validation.exit_code is not None and exit_code != validation.exit_code:
-        return f"exit code {exit_code}, expected {validation.exit_code}"
-
-    for needle in validation.stdout_contains:
-        if needle not in output:
-            return f"output missing {needle!r}"
-
-    for needle in validation.stdout_not_contains:
-        if needle in output:
-            return f"output unexpectedly contains {needle!r}"
-
-    if validation.stdout_is_valid_json:
-        try:
-            json.loads(output)
-        except json.JSONDecodeError as exc:
-            return f"invalid JSON: {exc}"
-
-    if validation.stdout_min_lines is not None:
-        line_count = len(output.strip().splitlines())
-        if line_count < validation.stdout_min_lines:
-            return f"only {line_count} lines, expected >= {validation.stdout_min_lines}"
-
-    if validation.custom:
-        return validation.custom(output, exit_code)
-
-    return None
+    """Validate exercise output against its assertion spec."""
+    return exercise.assertion.validate_process(output, exit_code)
 
 
 __all__ = [
+    "_merge_exercise_corpus_specs",
     "generate_showcase_fixtures",
     "run_exercise",
     "seed_workspace",

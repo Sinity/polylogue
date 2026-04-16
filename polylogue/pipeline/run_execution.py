@@ -38,6 +38,29 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 
+def _compact_log_details(value: object) -> object:
+    if isinstance(value, dict):
+        compact: dict[str, object] = {}
+        for key, nested in value.items():
+            if isinstance(nested, list):
+                count_key = f"{key}_count"
+                if count_key not in value:
+                    compact[count_key] = len(nested)
+                continue
+            compact[key] = _compact_log_details(nested)
+        return compact
+    return value
+
+
+def _compact_stage_log_payload(payload: dict[str, object]) -> dict[str, object]:
+    """Trim oversized telemetry from normal stage-complete log lines."""
+    compact = dict(payload)
+    details = compact.get("details")
+    if isinstance(details, dict):
+        compact["details"] = _compact_log_details(details)
+    return compact
+
+
 async def run_sources(
     *,
     config: Config,
@@ -122,9 +145,10 @@ async def run_sources(
             sm.stop(items=len(ingest_result.parse_raw_ids))
             if "acquire" not in executed_stages:
                 state.record_acquire(ingest_result.acquire_result)
+            ingest_log_payload = _compact_stage_log_payload(sm.to_dict())
             logger.info(
                 "Ingest complete",
-                **sm.to_dict(),
+                **ingest_log_payload,
                 **ingest_result.acquire_result.counts,
             )
 
@@ -153,9 +177,10 @@ async def run_sources(
                 sm.details.update(materialize_outcome.observation)
             state.record_materialize(materialized=materialize_outcome.item_count)
             sm.stop(items=materialize_outcome.item_count)
+            materialize_log_payload = _compact_stage_log_payload(sm.to_dict())
             logger.info(
                 "Materialize stage complete",
-                **sm.to_dict(),
+                **materialize_log_payload,
                 rebuilt=materialize_outcome.rebuilt,
             )
             executed_stages.add("materialize")
@@ -175,6 +200,8 @@ async def run_sources(
                 rendered=render_outcome.rendered_count,
                 failures=render_outcome.failures,
             )
+            if render_outcome.observation:
+                sm.details.update(render_outcome.observation)
             sm.stop(items=state.counts.get("rendered", 0))
             logger.info(
                 "Render stage complete",

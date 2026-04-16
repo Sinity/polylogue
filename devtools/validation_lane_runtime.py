@@ -4,32 +4,27 @@ from __future__ import annotations
 
 import subprocess
 
-from devtools.validation_lane_base import LaneConfig
-from devtools.validation_lane_catalog_composites import COMPOSITE_LANES
-from devtools.validation_lane_catalog_contracts import CONTRACT_LANES
-from devtools.validation_lane_catalog_live import LIVE_LANES
+from devtools.authored_scenario_catalog import get_authored_scenario_catalog
+from devtools.lane_models import LaneEntry
+from polylogue.scenarios import resolve_execution_command, run_execution
 
-LANES: dict[str, LaneConfig] = {
-    **CONTRACT_LANES,
-    **LIVE_LANES,
-    **COMPOSITE_LANES,
-}
+LANES: dict[str, LaneEntry] = get_authored_scenario_catalog().validation_lane_index()
 VALID_LANES = frozenset(LANES)
 
 
-def parse_lane(lane_name: str) -> LaneConfig:
+def parse_lane(lane_name: str) -> LaneEntry:
     if lane_name not in LANES:
         raise ValueError(f"Invalid lane: {lane_name!r}. Valid lanes: {', '.join(sorted(VALID_LANES))}")
     return LANES[lane_name]
 
 
-def build_lane_command(lane: LaneConfig) -> list[str]:
-    if lane.command is None:
+def build_lane_command(lane: LaneEntry) -> list[str]:
+    if lane.execution is None:
         raise ValueError(f"Lane {lane.name!r} is composite and has no direct command")
-    return lane.command
+    return list(resolve_execution_command(lane.execution))
 
 
-def print_lane(lane: LaneConfig, *, indent: str = "") -> None:
+def print_lane(lane: LaneEntry, *, indent: str = "") -> None:
     print(f"{indent}{lane.name}: {lane.description}")
     if lane.is_composite:
         for child_name in lane.sub_lanes:
@@ -39,7 +34,7 @@ def print_lane(lane: LaneConfig, *, indent: str = "") -> None:
         print(f"{indent}  timeout: {lane.timeout_s}s")
 
 
-def run_lane(lane: LaneConfig) -> int:
+def run_lane(lane: LaneEntry) -> int:
     if lane.is_composite:
         print(f"Validation lane: {lane.name} — {lane.description}")
         for child_name in lane.sub_lanes:
@@ -55,8 +50,16 @@ def run_lane(lane: LaneConfig) -> int:
     print()
 
     try:
-        result = subprocess.run(cmd, timeout=lane.timeout_s)
-        return result.returncode
+        result = run_execution(lane.execution, timeout=lane.timeout_s, capture_output=True)
+        if result.stdout:
+            print(result.stdout, end="" if result.stdout.endswith("\n") else "\n")
+        if result.stderr:
+            print(result.stderr, end="" if result.stderr.endswith("\n") else "\n")
+        error = lane.assertion.validate_process(result.output, result.exit_code)
+        if error is not None:
+            print(f"\nLane {lane.name!r} failed assertion: {error}")
+            return result.exit_code if result.exit_code != 0 else 1
+        return result.exit_code
     except subprocess.TimeoutExpired:
         print(f"\nLane {lane.name!r} timed out after {lane.timeout_s}s")
         return 2

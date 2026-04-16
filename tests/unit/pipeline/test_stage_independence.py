@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 
+from polylogue.scenarios import CorpusSpec
 from polylogue.schemas.synthetic import SyntheticCorpus
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.backends.connection import open_connection
@@ -32,21 +33,18 @@ def _write_synthetic_files(
     seed: int = 42,
 ) -> list[Path]:
     """Write synthetic corpus files and return their paths."""
-    corpus = SyntheticCorpus.for_provider(provider)
-    ext = ".json" if corpus.wire_format.encoding == "json" else ".jsonl"
-    raw_items = corpus.generate(
+    spec = CorpusSpec.for_provider(
+        provider,
         count=count,
-        messages_per_conversation=range(4, 8),
+        messages_min=4,
+        messages_max=7,
         seed=seed,
+        origin="generated.test-stage-independence",
+        tags=("synthetic", "test", "stage-independence"),
     )
     out_dir = tmp_path / "sources" / provider
-    out_dir.mkdir(parents=True, exist_ok=True)
-    paths = []
-    for idx, raw_bytes in enumerate(raw_items):
-        p = out_dir / f"synth-{idx:02d}{ext}"
-        p.write_bytes(raw_bytes)
-        paths.append(p)
-    return paths
+    written = SyntheticCorpus.write_spec_artifacts(spec, out_dir, prefix="synth")
+    return list(written.files)
 
 
 # =============================================================================

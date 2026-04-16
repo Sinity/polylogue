@@ -1,28 +1,30 @@
-"""Typed showcase exercise facade over the serialized catalog."""
+"""Typed showcase exercise catalog over the single exercise source model."""
 
 from __future__ import annotations
 
 from polylogue.showcase.catalog_loader import load_exercise_catalog
-from polylogue.showcase.exercise_models import Exercise, Validation
+from polylogue.showcase.exercise_models import AssertionSpec, Exercise
 from polylogue.showcase.generators import (
-    command_help_exercise_names,
-    generate_command_help_exercises,
-    generate_json_contract_exercises,
-    json_contract_exercise_names,
+    generate_command_help_scenarios,
+    generate_json_contract_scenarios,
+    generate_qa_extra_scenarios,
 )
 
 _CATALOG = load_exercise_catalog()
-_GENERATED_COMMAND_HELP_EXERCISES = tuple(generate_command_help_exercises())
-_GENERATED_COMMAND_HELP_NAMES = command_help_exercise_names()
-_GENERATED_JSON_CONTRACT_EXERCISES = tuple(generate_json_contract_exercises())
-_GENERATED_JSON_CONTRACT_NAMES = json_contract_exercise_names()
+_GENERATED_COMMAND_HELP_SCENARIOS = generate_command_help_scenarios()
+_GENERATED_COMMAND_HELP_NAMES = {scenario.name for scenario in _GENERATED_COMMAND_HELP_SCENARIOS}
+_GENERATED_JSON_CONTRACT_SCENARIOS = generate_json_contract_scenarios()
+_GENERATED_JSON_CONTRACT_NAMES = {scenario.name for scenario in _GENERATED_JSON_CONTRACT_SCENARIOS}
 _GENERATED_EXERCISE_NAMES = _GENERATED_COMMAND_HELP_NAMES | _GENERATED_JSON_CONTRACT_NAMES
-_GENERATED_EXERCISES = _GENERATED_COMMAND_HELP_EXERCISES + _GENERATED_JSON_CONTRACT_EXERCISES
+_GENERATED_EXERCISE_SCENARIOS = _GENERATED_COMMAND_HELP_SCENARIOS + _GENERATED_JSON_CONTRACT_SCENARIOS
 
-EXERCISES: tuple[Exercise, ...] = (
+EXERCISE_SCENARIOS: tuple[Exercise, ...] = (
     tuple(exercise for exercise in _CATALOG.exercises if exercise.name not in _GENERATED_EXERCISE_NAMES)
-    + _GENERATED_EXERCISES
+    + _GENERATED_EXERCISE_SCENARIOS
 )
+EXERCISES: tuple[Exercise, ...] = EXERCISE_SCENARIOS
+QA_EXTRA_SCENARIOS: tuple[Exercise, ...] = generate_qa_extra_scenarios()
+QA_EXTRA_EXERCISES: tuple[Exercise, ...] = QA_EXTRA_SCENARIOS
 
 EXERCISE_INDEX: dict[str, Exercise] = {e.name: e for e in EXERCISES}
 
@@ -66,10 +68,13 @@ def topological_order(exercises: list[Exercise]) -> list[Exercise]:
 
 __all__ = [
     "EXERCISES",
+    "EXERCISE_SCENARIOS",
     "EXERCISE_INDEX",
     "GROUPS",
+    "QA_EXTRA_EXERCISES",
+    "QA_EXTRA_SCENARIOS",
     "Exercise",
-    "Validation",
+    "AssertionSpec",
     "exercises_by_group",
     "topological_order",
     "vhs_exercises",

@@ -175,6 +175,93 @@ def test_check_records_scoped_maintenance_apply(cli_workspace, cli_runner):
     assert payload["maintenance"]["items"][0]["success"] is True
 
 
+def test_check_plain_preview_summarizes_changes_not_issues(cli_workspace, cli_runner):
+    from polylogue.storage.session_product_rebuild import rebuild_session_products_sync
+
+    db_path = cli_workspace["db_path"]
+    (
+        ConversationBuilder(db_path, "conv-check-products-preview-plain")
+        .provider("claude-code")
+        .title("Scoped Check Repair Preview Plain")
+        .add_message("u1", role="user", text="Preview the repair output")
+        .save()
+    )
+    with open_connection(db_path) as conn:
+        rebuild_session_products_sync(conn)
+        conn.execute("DELETE FROM session_profiles")
+        conn.commit()
+
+    result = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "doctor",
+            "--repair",
+            "--preview",
+            "--target",
+            "session_products",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0
+    assert "Would apply" in result.output
+    assert "change(s)" in result.output
+    assert "issue(s)" not in result.output
+
+
+def test_check_warns_when_message_index_is_incomplete(cli_workspace, cli_runner):
+    db_path = cli_workspace["db_path"]
+    factory = DbFactory(db_path)
+    factory.create_conversation(
+        id="conv-incomplete-index",
+        provider="chatgpt",
+        messages=[
+            {"id": "m-incomplete-index-1", "role": "user", "text": "index me"},
+            {"id": "m-incomplete-index-2", "role": "assistant", "text": "still pending"},
+        ],
+    )
+    with open_connection(db_path) as conn:
+        conn.execute("DELETE FROM messages_fts")
+        conn.commit()
+
+    result = cli_runner.invoke(cli, ["--plain", "doctor", "--json"], catch_exceptions=False)
+
+    assert result.exit_code == 0
+    payload = _extract_json(result.output)
+    index_check = next(check for check in payload["checks"] if check["name"] == "index")
+    assert index_check["status"] == "warning"
+    assert index_check["detail"] == "messages FTS missing or empty; use --deep to verify full coverage"
+
+
+def test_check_ignores_null_text_messages_in_fts_readiness(cli_workspace, cli_runner):
+    db_path = cli_workspace["db_path"]
+    factory = DbFactory(db_path)
+    factory.create_conversation(
+        id="conv-null-text",
+        provider="chatgpt",
+        messages=[
+            {"id": "m-null-text-1", "role": "user", "text": "indexed"},
+            {"id": "m-null-text-2", "role": "assistant", "text": "to be nulled"},
+        ],
+    )
+    with open_connection(db_path) as conn:
+        conn.execute("UPDATE messages SET text = NULL WHERE message_id = ?", ("m-null-text-2",))
+        conn.commit()
+
+    result = cli_runner.invoke(cli, ["--plain", "doctor", "--json"])
+    assert result.exit_code == 0
+
+    data = _extract_json(result.output)
+    index_check = next(c for c in data["checks"] if c["name"] == "index")
+    fts_check = next(c for c in data["checks"] if c["name"] == "fts_sync")
+
+    assert index_check["status"] == "ok"
+    assert index_check["detail"] == "messages FTS present"
+    assert fts_check["status"] == "ok"
+    assert fts_check["detail"] == "Messages FTS present"
+
+
 class TestCheckCommand:
     """Tests for polylogue check command."""
 

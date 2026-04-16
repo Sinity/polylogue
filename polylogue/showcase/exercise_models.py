@@ -2,31 +2,25 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from dataclasses import dataclass, field
 
-
-@dataclass(frozen=True)
-class Validation:
-    """Expected outcome for an exercise."""
-
-    exit_code: int | None = 0  # None = delegated to custom validator
-    stdout_contains: tuple[str, ...] = ()
-    stdout_not_contains: tuple[str, ...] = ()
-    stdout_is_valid_json: bool = False
-    stdout_min_lines: int | None = None
-    custom: Callable[[str, int], str | None] | None = None  # (output, exit_code) -> error|None
+from polylogue.scenarios import (
+    AssertionSpec,
+    ExecutableScenario,
+    ExecutionKind,
+    ExecutionSpec,
+    ScenarioProjectionSourceKind,
+    polylogue_execution,
+)
 
 
-@dataclass(frozen=True)
-class Exercise:
+@dataclass(frozen=True, kw_only=True)
+class Exercise(ExecutableScenario):
     """A single showcase exercise — one CLI invocation with validation."""
 
-    name: str  # Unique ID e.g. "query.list-json"
     group: str  # structural | sources | pipeline | query-read | query-write | subcommands | advanced
-    description: str  # Human-readable, used in cookbook headings
-    args: list[str] = field(default_factory=list)  # CLI args (without 'polylogue' prefix)
-    validation: Validation = field(default_factory=Validation)
+    execution: ExecutionSpec = field(default_factory=polylogue_execution)
+    assertion: AssertionSpec = field(default_factory=AssertionSpec)
     needs_data: bool = False  # Requires populated database
     writes: bool = False  # Mutates state — skip in --live mode
     depends_on: str | None = None  # Exercise that must complete first
@@ -38,5 +32,40 @@ class Exercise:
     artifact_class: str = "text"  # "text" | "json" | "visual" | "bundle"
     capture_steps: tuple[str, ...] = ()  # Optional VHS interaction steps for complex scenarios
 
+    @property
+    def args(self) -> list[str]:
+        return list(self.execution.polylogue_args)
 
-__all__ = ["Exercise", "Validation"]
+    def __post_init__(self) -> None:
+        if self.execution is None:
+            object.__setattr__(self, "execution", polylogue_execution())
+        if self.execution.kind is not ExecutionKind.POLYLOGUE:
+            raise ValueError("showcase exercises require polylogue execution")
+        super().__post_init__()
+
+    @property
+    def projection_source_kind(self) -> ScenarioProjectionSourceKind:
+        return ScenarioProjectionSourceKind.EXERCISE
+
+    def compile(self) -> Exercise:
+        return self
+
+    @property
+    def invoke_args(self) -> list[str]:
+        return list(self.execution.polylogue_invoke_args)
+
+    @property
+    def display_command(self) -> list[str]:
+        command = self.execution.display_command
+        return list(command) if command is not None else ["polylogue"]
+
+    @property
+    def display_command_text(self) -> str:
+        return " ".join(self.display_command)
+
+    @property
+    def args_text(self) -> str:
+        return " ".join(self.execution.polylogue_args) if self.execution.polylogue_args else "(default stats)"
+
+
+__all__ = ["AssertionSpec", "Exercise"]

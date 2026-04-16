@@ -21,6 +21,7 @@ class RenderStageOutcome:
     rendered_count: int
     failures: list[dict[str, str]]
     total: int
+    observation: dict[str, object] | None = None
 
 
 @dataclass(slots=True)
@@ -142,8 +143,27 @@ async def execute_materialize_stage(
         conversation_ids = sorted(processed_ids)
         if not conversation_ids:
             return MaterializeStageOutcome(item_count=0, rebuilt=False)
+        status = await backend.queries.get_session_product_status()
+        total_conversations = int(status.get("total_conversations", 0) or 0)
+        profile_row_count = int(status.get("profile_row_count", 0) or 0)
+        use_bounded_rebuild = profile_row_count == 0 and total_conversations == len(conversation_ids)
         if progress_callback is not None:
             progress_callback(0, desc=f"Materializing: 0/{len(conversation_ids)}")
+        if use_bounded_rebuild:
+            async with backend.connection() as conn:
+                counts = await rebuild_session_products_async(
+                    conn,
+                    conversation_ids=conversation_ids,
+                    progress_callback=progress_callback,
+                    progress_total=len(conversation_ids),
+                )
+                await conn.commit()
+            observation = {"mode": "rebuild-from-empty", **counts}
+            return MaterializeStageOutcome(
+                item_count=len(conversation_ids),
+                rebuilt=True,
+                observation=observation,
+            )
         observation = await refresh_session_products_bulk(backend, conversation_ids)
         return MaterializeStageOutcome(
             item_count=len(conversation_ids),
@@ -171,10 +191,15 @@ async def execute_materialize_stage(
             observation=observation,
         )
 
-    if progress_callback is not None:
-        progress_callback(0, desc="Materializing: rebuilding all session products")
     async with backend.connection() as conn:
-        counts = await rebuild_session_products_async(conn)
+        total_conversations = int((await (await conn.execute("SELECT COUNT(*) FROM conversations")).fetchone())[0] or 0)
+        if progress_callback is not None:
+            progress_callback(0, desc=f"Materializing: 0/{total_conversations}")
+        counts = await rebuild_session_products_async(
+            conn,
+            progress_callback=progress_callback,
+            progress_total=total_conversations,
+        )
         await conn.commit()
     observation = {"mode": "rebuild", **counts}
     return MaterializeStageOutcome(
@@ -230,10 +255,20 @@ async def execute_render_stage(
         total=render_total,
         progress_callback=progress_callback,
     )
+    observation: dict[str, object] = {"workers": render_result.worker_count}
+    if render_result.rss_start_mb is not None:
+        observation["rss_start_mb"] = render_result.rss_start_mb
+    if render_result.rss_end_mb is not None:
+        observation["rss_end_mb"] = render_result.rss_end_mb
+    if render_result.rss_start_mb is not None and render_result.rss_end_mb is not None:
+        observation["rss_delta_mb"] = round(render_result.rss_end_mb - render_result.rss_start_mb, 1)
+    if render_result.max_current_rss_mb is not None:
+        observation["max_current_rss_mb"] = render_result.max_current_rss_mb
     return RenderStageOutcome(
         rendered_count=render_result.rendered_count,
         failures=render_result.failures,
         total=render_total,
+        observation=observation,
     )
 
 
@@ -325,10 +360,8 @@ async def execute_site_stage(
         config=config,
         backend=backend,
         repository=repository,
+        progress_callback=progress_callback,
     )
-
-    if progress_callback is not None:
-        progress_callback(0, desc="Building site...")
 
     try:
         import asyncio

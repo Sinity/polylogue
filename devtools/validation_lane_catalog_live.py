@@ -2,24 +2,75 @@
 
 from __future__ import annotations
 
-from devtools.validation_lane_base import devtools_lane, memory_budget_lane, polylogue_lane
+from functools import partial
+
+from devtools.validation_lane_base import memory_budget_lane as _memory_budget_lane
+from devtools.validation_lane_base import pipeline_probe_lane as _pipeline_probe_lane
+from devtools.validation_lane_base import polylogue_lane as _polylogue_lane
+from polylogue.scenarios import (
+    PipelineProbeInputMode,
+    build_live_operational_surface_lanes,
+    build_live_product_surface_lanes,
+    build_memory_budget_operational_surface_lanes,
+    polylogue_execution,
+)
+
+memory_budget_lane = partial(_memory_budget_lane, category="live")
+pipeline_probe_lane = partial(_pipeline_probe_lane, category="live")
+polylogue_lane = partial(_polylogue_lane, category="live")
+
+
+def _live_product_lanes() -> dict[str, object]:
+    return {
+        spec.name: polylogue_lane(
+            spec.name,
+            spec.description,
+            spec.timeout_s,
+            *spec.args,
+            tags=spec.tags,
+        )
+        for spec in build_live_product_surface_lanes()
+    }
+
+
+def _live_operational_lanes() -> dict[str, object]:
+    return {
+        spec.name: polylogue_lane(
+            spec.name,
+            spec.description,
+            spec.timeout_s,
+            *spec.args,
+            tags=spec.tags,
+        )
+        for spec in build_live_operational_surface_lanes()
+    }
+
+
+def _memory_budget_operational_lanes() -> dict[str, object]:
+    return {
+        spec.name: memory_budget_lane(
+            spec.name,
+            spec.description,
+            spec.timeout_s,
+            max_rss_mb=spec.max_rss_mb or 1024,
+            execution=polylogue_execution(*spec.args),
+            tags=spec.tags,
+        )
+        for spec in build_memory_budget_operational_surface_lanes()
+    }
+
 
 LIVE_LANES = {
-    "live-archive-subset-parse-probe": devtools_lane(
+    "live-archive-subset-parse-probe": pipeline_probe_lane(
         "live-archive-subset-parse-probe",
         "Live archive medium archive-subset parse probe with persisted manifest/workdir artifacts",
         1800,
-        "pipeline-probe",
-        "--input-mode",
-        "archive-subset",
-        "--stage",
-        "parse",
-        "--sample-per-provider",
-        "50",
-        "--workdir",
-        "/tmp/polylogue-live-archive-subset-parse-probe",
-        "--json-out",
-        "/tmp/polylogue-live-archive-subset-parse-probe.json",
+        input_mode=PipelineProbeInputMode.ARCHIVE_SUBSET,
+        stage="parse",
+        sample_per_provider=50,
+        workdir="/tmp/polylogue-live-archive-subset-parse-probe",
+        json_out="/tmp/polylogue-live-archive-subset-parse-probe.json",
+        tags=("live", "probe", "parse"),
     ),
     "live-exercises": polylogue_lane(
         "live-exercises",
@@ -33,212 +84,9 @@ LIVE_LANES = {
         "0",
         "--json",
     ),
-    "live-embed-stats": polylogue_lane(
-        "live-embed-stats",
-        "Live archive embedding status JSON view",
-        120,
-        "embed",
-        "--stats",
-        "--json",
-    ),
-    "live-retrieval-checks": polylogue_lane(
-        "live-retrieval-checks",
-        "Live archive action-aware grouped retrieval stats on a bounded semantic slice",
-        180,
-        "--provider",
-        "claude-code",
-        "--since",
-        "2026-01-01",
-        "--stats-by",
-        "action",
-        "--format",
-        "json",
-        "--limit",
-        "50",
-    ),
-    "live-products-status": polylogue_lane(
-        "live-products-status",
-        "Live archive product status view",
-        180,
-        "products",
-        "status",
-        "--json",
-    ),
-    "live-products-tags": polylogue_lane(
-        "live-products-tags",
-        "Live archive tag-rollup product view",
-        180,
-        "products",
-        "tags",
-        "--limit",
-        "20",
-        "--json",
-    ),
-    "live-products-profiles-evidence": polylogue_lane(
-        "live-products-profiles-evidence",
-        "Live archive evidence-tier session-profile product surface",
-        180,
-        "products",
-        "profiles",
-        "--tier",
-        "evidence",
-        "--limit",
-        "3",
-        "--json",
-    ),
-    "live-products-profiles-inference": polylogue_lane(
-        "live-products-profiles-inference",
-        "Live archive inference-tier session-profile product surface",
-        180,
-        "products",
-        "profiles",
-        "--tier",
-        "inference",
-        "--limit",
-        "3",
-        "--json",
-    ),
-    "live-products-enrichments": polylogue_lane(
-        "live-products-enrichments",
-        "Live archive probabilistic session-enrichment product surface",
-        180,
-        "products",
-        "enrichments",
-        "--limit",
-        "5",
-        "--json",
-    ),
-    "live-products-work-events": polylogue_lane(
-        "live-products-work-events",
-        "Live archive inferred work-event product surface",
-        180,
-        "products",
-        "work-events",
-        "--limit",
-        "3",
-        "--json",
-    ),
-    "live-products-phases": polylogue_lane(
-        "live-products-phases",
-        "Live archive inferred phase product surface",
-        180,
-        "products",
-        "phases",
-        "--limit",
-        "3",
-        "--json",
-    ),
-    "live-products-day-summaries": polylogue_lane(
-        "live-products-day-summaries",
-        "Live archive day-summary product surface over the recent semantic slice",
-        180,
-        "--provider",
-        "claude-code",
-        "--since",
-        "2026-03-01",
-        "products",
-        "day-summaries",
-        "--limit",
-        "14",
-        "--json",
-    ),
-    "live-products-analytics": polylogue_lane(
-        "live-products-analytics",
-        "Live archive provider-analytics product surface",
-        180,
-        "products",
-        "analytics",
-        "--limit",
-        "20",
-        "--json",
-    ),
-    "live-products-debt": polylogue_lane(
-        "live-products-debt",
-        "Live archive debt and cleanup product view",
-        180,
-        "products",
-        "debt",
-        "--limit",
-        "20",
-        "--json",
-    ),
-    "live-session-product-repair": polylogue_lane(
-        "live-session-product-repair",
-        "Live archive evidence/inference session-product rebuild and migration surface",
-        600,
-        "doctor",
-        "--json",
-        "--repair",
-        "--target",
-        "session_products",
-    ),
-    "live-project-stats": polylogue_lane(
-        "live-project-stats",
-        "Live archive project-grouped stats over session products",
-        180,
-        "--provider",
-        "claude-code",
-        "--since",
-        "2026-01-01",
-        "--stats-by",
-        "project",
-        "--format",
-        "json",
-        "--limit",
-        "50",
-    ),
-    "live-health-json": polylogue_lane(
-        "live-health-json",
-        "Live archive machine-readable health report",
-        180,
-        "doctor",
-        "--json",
-    ),
-    "live-maintenance-preview": polylogue_lane(
-        "live-maintenance-preview",
-        "Live archive machine-readable maintenance preview for safe repairs and destructive cleanup",
-        240,
-        "doctor",
-        "--json",
-        "--repair",
-        "--cleanup",
-        "--preview",
-    ),
-    "memory-budget": memory_budget_lane(
-        "memory-budget",
-        "Live archive grouped retrieval command under an explicit RSS budget",
-        240,
-        max_rss_mb=1536,
-        command=[
-            "polylogue",
-            "--plain",
-            "--provider",
-            "claude-code",
-            "--since",
-            "2026-01-01",
-            "--stats-by",
-            "action",
-            "--format",
-            "json",
-            "--limit",
-            "50",
-        ],
-    ),
-    "maintenance-memory-budget": memory_budget_lane(
-        "maintenance-memory-budget",
-        "Live archive maintenance preview under an explicit RSS budget",
-        240,
-        max_rss_mb=1024,
-        command=[
-            "polylogue",
-            "--plain",
-            "doctor",
-            "--json",
-            "--repair",
-            "--cleanup",
-            "--preview",
-        ],
-    ),
+    **_live_operational_lanes(),
+    **_live_product_lanes(),
+    **_memory_budget_operational_lanes(),
 }
 
 

@@ -15,6 +15,7 @@ from polylogue.lib.repo_identity import (
     normalize_repo_paths,
 )
 from polylogue.lib.semantic_facts import ConversationSemanticFacts, build_conversation_semantic_facts
+from polylogue.lib.viewport_tools import looks_like_path_candidate
 
 if TYPE_CHECKING:
     from polylogue.lib.models import Conversation
@@ -50,11 +51,48 @@ _DIALOGUE_LANGUAGE_HINT_PATTERNS = {
     lang_name: re.compile(rf"\b{re.escape(lang_name)}\b")
     for lang_name in ("python", "rust", "typescript", "javascript", "nix", "go", "java", "ruby", "sql")
 }
+_IGNORED_ABSOLUTE_PATH_PARTS = frozenset({".snapshot", ".snapshots", "tool-results"})
+_IGNORED_RELATIVE_PATH_PREFIXES = (
+    ".btrfs/snapshot",
+    ".claude",
+    ".codex",
+    ".snapshot",
+    ".snapshots",
+)
+
+
+def _is_ignored_absolute_path(path: PurePosixPath) -> bool:
+    parts = tuple(part for part in path.parts if part != "/")
+    if not parts:
+        return True
+    if any(part in _IGNORED_ABSOLUTE_PATH_PARTS for part in parts):
+        return True
+    if parts[:2] == ("nix", "store"):
+        return True
+    if parts[0] == "tmp" and any(part.startswith("claude-") or part.startswith("codex-") for part in parts[1:]):
+        return True
+    if parts[:2] == ("home", Path.home().name):
+        if parts[2:3] in ((".claude",), (".codex",)):
+            return True
+        if parts[2:5] == (".config", "claude", "projects"):
+            return True
+        if parts[2:4] in ((".config", "claude"), (".config", "codex")):
+            return True
+        if parts[2:4] == (".claude", "projects"):
+            return True
+        if parts[2:4] == (".codex", "sessions"):
+            return True
+    return False
 
 
 def _repo_root_from_path(path: str) -> str | None:
     """Derive a likely repository root from a file path."""
     return normalize_repo_path(path)
+
+
+def _is_ignored_repo_relative_path(path: PurePosixPath) -> bool:
+    candidate = path.as_posix()
+    return any(candidate == prefix or candidate.startswith(f"{prefix}/") for prefix in _IGNORED_RELATIVE_PATH_PREFIXES)
 
 
 def _language_from_path(path: str) -> str | None:
@@ -74,22 +112,37 @@ def _clean_attributed_path(path: str) -> str | None:
     if set(candidate) <= {".", "/"}:
         return None
     if not candidate.startswith(("/", "~/")):
+        if not looks_like_path_candidate(candidate):
+            return None
+        if _is_ignored_repo_relative_path(PurePosixPath(candidate)):
+            return None
         return candidate
-    canonical = str(Path(candidate).expanduser().resolve(strict=False))
-    if _repo_root_from_path(canonical) is not None:
-        return canonical
+    expanded_path = Path(candidate).expanduser()
+    expanded = str(expanded_path)
+    resolved = str(expanded_path.resolve(strict=False))
+    repo_root = _repo_root_from_path(resolved)
+    if repo_root is not None:
+        try:
+            repo_relative = PurePosixPath(Path(resolved).relative_to(repo_root).as_posix())
+        except ValueError:
+            repo_relative = None
+        if repo_relative is not None and _is_ignored_repo_relative_path(repo_relative):
+            return None
+        return resolved
 
-    parts = [part for part in PurePosixPath(canonical).parts if part != "/"]
+    pure_path = PurePosixPath(expanded)
+    if _is_ignored_absolute_path(pure_path):
+        return None
+
+    parts = [part for part in pure_path.parts if part != "/"]
     if len(parts) < 2:
         return None
-    if PurePosixPath(canonical).suffix:
-        return canonical
-    if any(part.startswith(".") for part in parts):
-        return canonical
+    if pure_path.suffix:
+        return expanded
     return None
 
 
-def _add_repo_candidate(value: str, *, repo_paths: set[str], repo_names: set[str]) -> None:
+def _add_repo_candidate_from_path(value: str, *, repo_paths: set[str], repo_names: set[str]) -> None:
     repo = _repo_root_from_path(value)
     if repo is not None:
         repo_paths.add(repo)
@@ -97,9 +150,13 @@ def _add_repo_candidate(value: str, *, repo_paths: set[str], repo_names: set[str
         if repo_name:
             repo_names.add(repo_name)
         return
+
+
+def _add_repo_candidate_from_hint(value: str, *, repo_paths: set[str], repo_names: set[str]) -> None:
+    _add_repo_candidate_from_path(value, repo_paths=repo_paths, repo_names=repo_names)
     repo_name = normalize_repo_name(value)
     if repo_name:
-        repo_names.add(str(value).strip())
+        repo_names.add(repo_name)
 
 
 @dataclass(frozen=True)
@@ -131,11 +188,11 @@ def extract_attribution_from_action_events(
     cwd_value = provider_meta.get("cwd")
     if isinstance(cwd_value, str) and cwd_value:
         cwd_paths.add(cwd_value)
-        _add_repo_candidate(cwd_value, repo_paths=repo_paths, repo_names=repo_names)
+        _add_repo_candidate_from_path(cwd_value, repo_paths=repo_paths, repo_names=repo_names)
     for working_directory in provider_meta.get("working_directories", []) or []:
         if isinstance(working_directory, str) and working_directory:
             cwd_paths.add(working_directory)
-            _add_repo_candidate(working_directory, repo_paths=repo_paths, repo_names=repo_names)
+            _add_repo_candidate_from_path(working_directory, repo_paths=repo_paths, repo_names=repo_names)
 
     git_branch = provider_meta.get("gitBranch")
     if isinstance(git_branch, str) and git_branch:
@@ -148,12 +205,12 @@ def extract_attribution_from_action_events(
             branch_names.add(branch)
         repository_url = git_meta.get("repository_url")
         if isinstance(repository_url, str) and repository_url:
-            _add_repo_candidate(repository_url, repo_paths=repo_paths, repo_names=repo_names)
+            _add_repo_candidate_from_hint(repository_url, repo_paths=repo_paths, repo_names=repo_names)
 
     for action in actions:
         if action.cwd_path:
             cwd_paths.add(action.cwd_path)
-            _add_repo_candidate(action.cwd_path, repo_paths=repo_paths, repo_names=repo_names)
+            _add_repo_candidate_from_path(action.cwd_path, repo_paths=repo_paths, repo_names=repo_names)
         for branch in action.branch_names:
             branch_names.add(branch)
         for path in action.affected_paths:
@@ -164,7 +221,7 @@ def extract_attribution_from_action_events(
             lang = _language_from_path(clean_path)
             if lang:
                 languages.add(lang)
-            _add_repo_candidate(clean_path, repo_paths=repo_paths, repo_names=repo_names)
+            _add_repo_candidate_from_path(clean_path, repo_paths=repo_paths, repo_names=repo_names)
 
     normalized_repo_paths = normalize_repo_paths(repo_paths)
 
@@ -207,7 +264,7 @@ def extract_attribution(
                 languages.add(lang_name)
 
     normalized_repo_paths = normalize_repo_paths(repo_paths)
-    normalized_repo_names = {name.strip() for name in repo_names if name and str(name).strip()}
+    normalized_repo_names = {str(name).strip() for name in repo_names if isinstance(name, str) and name.strip()}
     normalized_repo_names.update(normalize_repo_names(repo_paths=normalized_repo_paths))
     return ConversationAttribution(
         repo_paths=normalized_repo_paths,
