@@ -1,4 +1,4 @@
-Usage: python -m polylogue mcp [OPTIONS]
+Usage: polylogue mcp [OPTIONS]
 
   Start the MCP server for AI assistant integration.
 

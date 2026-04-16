@@ -1,4 +1,4 @@
-Usage: python -m polylogue reset [OPTIONS]
+Usage: polylogue reset [OPTIONS]
 
   Reset database, blob store, assets, rendered outputs, or auth state.
 

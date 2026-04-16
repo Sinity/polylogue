@@ -1,4 +1,4 @@
-Usage: python -m polylogue products day-summaries [OPTIONS]
+Usage: polylogue products day-summaries [OPTIONS]
 
   List durable day-level session summary products.
 
@@ -6,4 +6,5 @@ Options:
   --limit INTEGER   Maximum rows  [default: 90]
   --offset INTEGER  Start offset  [default: 0]
   --json            Output as JSON
+  --format [json]   Output format
   -h, --help        Show this message and exit.

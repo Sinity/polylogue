@@ -98,7 +98,6 @@ Polylogue writes run metadata to disk and keeps a SQLite history so automation c
 ### Health Checks
 
 - `polylogue doctor` validates config, archive root, DB reachability, index status, and Drive credential/token presence.
-- `polylogue doctor --cached` uses the recent cached health report when available.
 - `polylogue doctor --repair` runs safe derived-data and database maintenance.
 - `polylogue doctor --cleanup` runs destructive archive cleanup; preview it first.
 - `polylogue doctor --repair --vacuum` compacts the database after maintenance.

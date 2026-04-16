@@ -1,4 +1,4 @@
-Usage: python -m polylogue products phases [OPTIONS]
+Usage: polylogue products phases [OPTIONS]
 
   List durable session-phase products.
 
@@ -8,4 +8,5 @@ Options:
   --limit INTEGER         Maximum rows  [default: 50]
   --offset INTEGER        Start offset  [default: 0]
   --json                  Output as JSON
+  --format [json]         Output format
   -h, --help              Show this message and exit.

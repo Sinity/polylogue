@@ -77,6 +77,52 @@ def _record_query(**kwargs) -> ConversationRecordQuery:
 
 
 @pytest.mark.asyncio
+async def test_aggregate_message_stats_reports_role_counts_and_words(tmp_path: Path) -> None:
+    from tests.infra.storage_records import ConversationBuilder
+
+    db_path = tmp_path / "stats.db"
+
+    (
+        ConversationBuilder(db_path, "conv-stats-a")
+        .provider("chatgpt")
+        .add_message("m-user-a", role="user", text="hello world")
+        .add_message("m-assistant-a", role="assistant", text="answer words here")
+        .add_attachment(message_id="m-assistant-a", path="spec.pdf")
+        .save()
+    )
+    (
+        ConversationBuilder(db_path, "conv-stats-b")
+        .provider("codex")
+        .add_message("m-system-b", role="system", text="system note")
+        .add_message("m-user-b", role="user", text="follow up")
+        .save()
+    )
+
+    backend = SQLiteBackend(db_path=db_path)
+    try:
+        unfiltered = await backend.queries.aggregate_message_stats()
+        filtered = await backend.queries.aggregate_message_stats(["conv-stats-a"])
+    finally:
+        await backend.close()
+
+    assert unfiltered["total"] == 4
+    assert unfiltered["user"] == 2
+    assert unfiltered["assistant"] == 1
+    assert unfiltered["system"] == 1
+    assert unfiltered["words_approx"] > 0
+    assert unfiltered["attachments"] == 1
+    assert unfiltered["providers"] == {"chatgpt": 1, "codex": 1}
+
+    assert filtered["total"] == 2
+    assert filtered["user"] == 1
+    assert filtered["assistant"] == 1
+    assert filtered["system"] == 0
+    assert filtered["words_approx"] > 0
+    assert filtered["attachments"] == 1
+    assert filtered["providers"] == {"chatgpt": 1}
+
+
+@pytest.mark.asyncio
 async def test_backend_path_terms_filter_contract(tmp_path: Path) -> None:
     """Low-level list/count filters must honor persisted semantic paths."""
     from polylogue.storage.action_event_rebuild_runtime import rebuild_action_event_read_model_sync

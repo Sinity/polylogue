@@ -9,6 +9,8 @@ from typing import TYPE_CHECKING
 
 import click
 
+from polylogue.cli.machine_errors import error_no_results
+
 if TYPE_CHECKING:
     from polylogue.cli.types import AppEnv
     from polylogue.lib.filters import ConversationFilter
@@ -86,14 +88,19 @@ async def output_stats_sql(
     env: AppEnv,
     filter_chain: ConversationFilter,
     repo: ConversationRepository,
+    *,
+    output_format: str = "markdown",
 ) -> None:
     """Output statistics using SQL aggregation without full message loading."""
-    has_filters = bool(filter_chain.describe())
+    described_filters = filter_chain.describe()
+    has_filters = bool(described_filters)
 
     if has_filters:
         summaries = await filter_chain.list_summaries() if filter_chain.can_use_summaries() else None
         if summaries is not None:
             if not summaries:
+                if output_format == "json":
+                    error_no_results("No conversations matched.", filters=described_filters).emit(exit_code=2)
                 env.ui.console.print("No conversations matched.")
                 return
             conv_ids = [str(summary.id) for summary in summaries]
@@ -101,6 +108,8 @@ async def output_stats_sql(
         else:
             conv_count = await filter_chain.count()
             if conv_count == 0:
+                if output_format == "json":
+                    error_no_results("No conversations matched.", filters=described_filters).emit(exit_code=2)
                 env.ui.console.print("No conversations matched.")
                 return
             conv_ids = None
@@ -108,6 +117,8 @@ async def output_stats_sql(
         conv_ids = None
         conv_count = await filter_chain.count()
         if conv_count == 0:
+            if output_format == "json":
+                error_no_results("No conversations in archive.").emit(exit_code=2)
             env.ui.console.print("No conversations in archive.")
             return
 
@@ -118,6 +129,44 @@ async def output_stats_sql(
         min_date = datetime.fromtimestamp(stats["min_sort_key"], tz=timezone.utc).strftime("%Y-%m-%d")
         max_date = datetime.fromtimestamp(stats["max_sort_key"], tz=timezone.utc).strftime("%Y-%m-%d")
         date_range = f"{min_date} to {max_date}"
+
+    structured_summary: dict[str, object] = {
+        "conversations": conv_count,
+        "messages_total": stats["total"],
+        "messages_user": stats["user"],
+        "messages_assistant": stats["assistant"],
+        "words_approx": stats["words_approx"],
+        "attachments": stats["attachments"],
+        "providers": stats.get("providers") or {},
+        "date_range": None,
+        "filtered": has_filters,
+    }
+    if not has_filters:
+        archive_stats = await repo.get_archive_stats()
+        pending_embedding_conversations = getattr(archive_stats, "pending_embedding_conversations", 0)
+        stale_embedding_messages = getattr(archive_stats, "stale_embedding_messages", 0)
+        if hasattr(archive_stats, "to_dict"):
+            embeddings_payload = archive_stats.to_dict()
+        else:
+            embeddings_payload = {
+                "total_conversations": getattr(archive_stats, "total_conversations", 0),
+                "embedded_conversations": getattr(archive_stats, "embedded_conversations", 0),
+                "embedded_messages": getattr(archive_stats, "embedded_messages", 0),
+                "pending_embedding_conversations": pending_embedding_conversations,
+                "stale_embedding_messages": stale_embedding_messages,
+                "embedding_coverage_percent": round(getattr(archive_stats, "embedding_coverage", 0.0), 1),
+            }
+        structured_summary["embeddings"] = embeddings_payload
+    if date_range:
+        structured_summary["date_range"] = date_range
+
+    if emit_structured_stats(
+        output_format=output_format,
+        dimension="archive",
+        rows=[],
+        summary=structured_summary,
+    ):
+        return
 
     out = env.ui.console.print
     out(f"\nConversations: {conv_count:,}\n")
@@ -135,9 +184,6 @@ async def output_stats_sql(
 
     out(f"Attachments: {stats['attachments']:,}")
     if not has_filters:
-        archive_stats = await repo.get_archive_stats()
-        pending_embedding_conversations = getattr(archive_stats, "pending_embedding_conversations", 0)
-        stale_embedding_messages = getattr(archive_stats, "stale_embedding_messages", 0)
         embedding_line = (
             f"Embeddings: {archive_stats.embedded_conversations:,}/{archive_stats.total_conversations:,} convs, "
             f"{archive_stats.embedded_messages:,} msgs ({archive_stats.embedding_coverage:.1f}%)"

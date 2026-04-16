@@ -344,6 +344,8 @@ def test_get_embedding_stats_contract(mock_provider, msg_count, pending, operati
     def execute(sql, params=None):
         if operational_error:
             raise sqlite3.OperationalError("Table not found")
+        if "sqlite_master" in sql and "conversations" in sql:
+            return MagicMock(fetchone=MagicMock(return_value=None))
         if "message_embeddings" in sql:
             return MagicMock(fetchone=MagicMock(return_value=[msg_count]))
         if "embedding_status" in sql:

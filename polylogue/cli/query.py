@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any, NoReturn
 
 import click
 
+from polylogue.cli.machine_errors import error_no_results
 from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.types import AppEnv
 from polylogue.lib.query_spec import ConversationQuerySpec, QuerySpecError
@@ -47,6 +48,10 @@ def no_results(
 ) -> NoReturn:
     """Print a helpful no-results message and exit."""
     filters = describe_query_filters(params)
+    output_format = params.get("output_format") if isinstance(params, Mapping) else None
+    if output_format == "json":
+        message = "No conversations matched filters." if filters else "No conversations matched."
+        error_no_results(message, filters=filters).emit(exit_code=exit_code)
     if filters:
         click.echo("No conversations matched filters:", err=True)
         for item in filters:
@@ -298,6 +303,35 @@ def _iter_option_values(args: list[str], start: int, nargs: int) -> Iterable[str
             yield args[start + offset]
 
 
+def _command_option_names(command: click.Command) -> frozenset[str]:
+    options: set[str] = set()
+    for param in command.params:
+        if isinstance(param, click.Option):
+            options.update(param.opts)
+            options.update(param.secondary_opts)
+    return frozenset(options)
+
+
+def _find_root_option_after_verb(
+    group: click.Group,
+    verb: str,
+    trailing_args: list[str],
+) -> str | None:
+    root_option_names = frozenset(_option_arity(group)) | _ROOT_GLOBAL_OPTIONS
+    command = group.commands.get(verb)
+    command_option_names = _command_option_names(command) if command is not None else frozenset()
+    for token in trailing_args:
+        if not token.startswith("-"):
+            continue
+        for option in root_option_names:
+            if not _matches_option(option, token):
+                continue
+            if option in command_option_names:
+                break
+            return option
+    return None
+
+
 def _split_query_mode_args(group: click.Group, args: list[str]) -> tuple[list[str], tuple[str, ...], bool]:
     from polylogue.cli.query_verbs import VERB_NAMES
 
@@ -325,6 +359,11 @@ def _split_query_mode_args(group: click.Group, args: list[str]) -> tuple[list[st
             return args, (), True
         # Verb commands recognized at any position (even after filters/query terms)
         if arg in VERB_NAMES:
+            misplaced_option = _find_root_option_after_verb(group, arg, list(args[index + 1 :]))
+            if misplaced_option is not None:
+                raise click.UsageError(
+                    f"Query filters and root output flags must appear before the verb. Move {misplaced_option} before `{arg}`."
+                )
             verb_args = option_args + [arg] + list(args[index + 1 :])
             return verb_args, tuple(query_terms), True
         query_terms.append(arg)
@@ -441,7 +480,7 @@ async def async_execute_query(env: AppEnv, params: dict[str, Any]) -> None:
 
     if plan.selection.similar_text and vector_provider is None:
         click.echo(
-            "Error: --similar requires vector search support. Configure VOYAGE_API_KEY and build embeddings with `polylogue embed` first.",
+            "Error: --similar requires vector search support. Configure VOYAGE_API_KEY and build embeddings with `polylogue run embed` first.",
             err=True,
         )
         raise SystemExit(1)
@@ -449,7 +488,7 @@ async def async_execute_query(env: AppEnv, params: dict[str, Any]) -> None:
         archive_stats = await repo.get_archive_stats()
         if archive_stats.embedded_messages <= 0:
             click.echo(
-                "Error: --similar requires existing embeddings. Run `polylogue embed` first.",
+                "Error: --similar requires existing embeddings. Run `polylogue run embed` first.",
                 err=True,
             )
             raise SystemExit(1)
@@ -479,7 +518,7 @@ async def async_execute_query(env: AppEnv, params: dict[str, Any]) -> None:
     if route == QueryRoute.SUMMARY_LIST:
         summary_results = await filter_chain.list_summaries()
         if not summary_results:
-            no_results(env, plan.selection)
+            no_results(env, params)
         await _query_output._output_summary_list(env, summary_results, params, repo)
         return
 
@@ -507,7 +546,7 @@ async def async_execute_query(env: AppEnv, params: dict[str, Any]) -> None:
         return
 
     if route == QueryRoute.STATS_SQL:
-        await _query_output.output_stats_sql(env, filter_chain, repo)
+        await _query_output.output_stats_sql(env, filter_chain, repo, output_format=plan.output.output_format)
         return
 
     if route == QueryRoute.SUMMARY_STATS:
