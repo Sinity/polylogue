@@ -447,7 +447,9 @@ async def rebuild_session_products_async(
             for conversation in hydrate_conversations(conversations, messages, attachments, blocks):
                 profile_record, event_records, phase_records = build_session_product_records(conversation)
                 await replace_session_profile(conn, profile_record, transaction_depth)
-                await replace_session_work_events(conn, profile_record.conversation_id, event_records, transaction_depth)
+                await replace_session_work_events(
+                    conn, profile_record.conversation_id, event_records, transaction_depth
+                )
                 await replace_session_phases(conn, profile_record.conversation_id, phase_records, transaction_depth)
                 profile_count += 1
                 work_event_count += len(event_records)
@@ -458,7 +460,9 @@ async def rebuild_session_products_async(
             for conversation in hydrate_conversations(conversations, messages, attachments, blocks):
                 profile_record, event_records, phase_records = build_session_product_records(conversation)
                 await replace_session_profile(conn, profile_record, transaction_depth)
-                await replace_session_work_events(conn, profile_record.conversation_id, event_records, transaction_depth)
+                await replace_session_work_events(
+                    conn, profile_record.conversation_id, event_records, transaction_depth
+                )
                 await replace_session_phases(conn, profile_record.conversation_id, phase_records, transaction_depth)
                 profile_count += 1
                 work_event_count += len(event_records)

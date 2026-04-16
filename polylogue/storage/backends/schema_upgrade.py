@@ -244,4 +244,5 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
         "Delete the database and re-import: `polylogue reset --database && polylogue run`."
     )
 
+
 __all__ = ["apply_current_schema_extensions", "assert_supported_archive_layout", "ensure_schema", "ensure_vec0_table"]

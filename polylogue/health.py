@@ -346,7 +346,9 @@ def run_runtime_health(config: Any) -> HealthReport:
                     )
                 )
     except Exception as exc:
-        checks.append(HealthCheck("schema_version", VerifyStatus.ERROR, summary=f"Cannot check: {_summarize_db_error(exc)}"))
+        checks.append(
+            HealthCheck("schema_version", VerifyStatus.ERROR, summary=f"Cannot check: {_summarize_db_error(exc)}")
+        )
 
     try:
         with _open_health_probe_connection(config.db_path) as conn:
@@ -357,7 +359,9 @@ def run_runtime_health(config: Any) -> HealthReport:
             else:
                 checks.append(HealthCheck("fts_tables", VerifyStatus.WARNING, summary="FTS5 table not found"))
     except Exception as exc:
-        checks.append(HealthCheck("fts_tables", VerifyStatus.ERROR, summary=f"FTS check failed: {_summarize_db_error(exc)}"))
+        checks.append(
+            HealthCheck("fts_tables", VerifyStatus.ERROR, summary=f"FTS check failed: {_summarize_db_error(exc)}")
+        )
 
     try:
         import sqlite_vec  # noqa: F401

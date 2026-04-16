@@ -290,26 +290,41 @@ def test_write_conversation_replaces_runtime_rows_on_content_change(tmp_path: Pa
         assert counts["messages"] == 1
         conn.commit()
 
-        assert conn.execute(
-            "SELECT COUNT(*) FROM messages WHERE conversation_id = ?",
-            ("codex:replace",),
-        ).fetchone()[0] == 1
-        assert conn.execute(
-            "SELECT COUNT(*) FROM content_blocks WHERE conversation_id = ?",
-            ("codex:replace",),
-        ).fetchone()[0] == 1
-        assert conn.execute(
-            "SELECT COUNT(*) FROM attachment_refs WHERE conversation_id = ?",
-            ("codex:replace",),
-        ).fetchone()[0] == 1
-        assert conn.execute(
-            "SELECT message_id FROM attachment_refs WHERE conversation_id = ? AND attachment_id = ?",
-            ("codex:replace", "att-1"),
-        ).fetchone()[0] == "msg-1"
-        assert conn.execute(
-            "SELECT COUNT(*) FROM attachments WHERE attachment_id = ?",
-            ("att-2",),
-        ).fetchone()[0] == 0
+        assert (
+            conn.execute(
+                "SELECT COUNT(*) FROM messages WHERE conversation_id = ?",
+                ("codex:replace",),
+            ).fetchone()[0]
+            == 1
+        )
+        assert (
+            conn.execute(
+                "SELECT COUNT(*) FROM content_blocks WHERE conversation_id = ?",
+                ("codex:replace",),
+            ).fetchone()[0]
+            == 1
+        )
+        assert (
+            conn.execute(
+                "SELECT COUNT(*) FROM attachment_refs WHERE conversation_id = ?",
+                ("codex:replace",),
+            ).fetchone()[0]
+            == 1
+        )
+        assert (
+            conn.execute(
+                "SELECT message_id FROM attachment_refs WHERE conversation_id = ? AND attachment_id = ?",
+                ("codex:replace", "att-1"),
+            ).fetchone()[0]
+            == "msg-1"
+        )
+        assert (
+            conn.execute(
+                "SELECT COUNT(*) FROM attachments WHERE attachment_id = ?",
+                ("att-2",),
+            ).fetchone()[0]
+            == 0
+        )
         stats_row = conn.execute(
             "SELECT message_count FROM conversation_stats WHERE conversation_id = ?",
             ("codex:replace",),

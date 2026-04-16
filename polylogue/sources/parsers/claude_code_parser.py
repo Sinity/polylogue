@@ -214,6 +214,7 @@ def _parse_code_records(records: Iterable[object], fallback_id: str) -> ParsedCo
         branch_type=branch_type,
     )
 
+
 def parse_code(payload: list[object], fallback_id: str) -> ParsedConversation:
     return _parse_code_records(payload, fallback_id)
 

@@ -60,11 +60,7 @@ async def rebuild_index(
                 conn,
                 conversation_ids=action_targets,
                 progress_callback=progress_callback,
-                progress_desc=(
-                    _action_progress_desc_factory(phase_total)
-                    if progress_callback is not None
-                    else None
-                ),
+                progress_desc=(_action_progress_desc_factory(phase_total) if progress_callback is not None else None),
             )
         if progress_callback is not None and conversation_id_list:
             progress_callback(
@@ -107,11 +103,7 @@ async def update_index_for_conversations(
                 conn,
                 conversation_ids=action_targets,
                 progress_callback=progress_callback,
-                progress_desc=(
-                    _action_progress_desc_factory(phase_total)
-                    if progress_callback is not None
-                    else None
-                ),
+                progress_desc=(_action_progress_desc_factory(phase_total) if progress_callback is not None else None),
             )
         if progress_callback is not None and conversation_id_list:
             progress_callback(
