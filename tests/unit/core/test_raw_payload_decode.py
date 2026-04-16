@@ -7,11 +7,7 @@ from polylogue.lib.raw_payload_decode import build_raw_payload_envelope, sample_
 
 def test_sample_jsonl_payload_accepts_lone_surrogates_via_stdlib_fallback(tmp_path: Path) -> None:
     path = tmp_path / "surrogate.jsonl"
-    path.write_bytes(
-        b'{"ok": 1}\n'
-        b'{"text":"broken \\udce2 surrogate"}\n'
-        b'{"ok": 2}\n'
-    )
+    path.write_bytes(b'{"ok": 1}\n{"text":"broken \\udce2 surrogate"}\n{"ok": 2}\n')
 
     samples, malformed = sample_jsonl_payload(path, max_samples=8, jsonl_dict_only=True)
 

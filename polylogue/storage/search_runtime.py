@@ -55,9 +55,7 @@ def search_messages_impl(
         if not bool(readiness["exists"]):
             raise DatabaseError("Search index not built. Run `polylogue doctor --repair` or `polylogue run all`.")
         if not bool(readiness["ready"]):
-            raise DatabaseError(
-                "Search index is incomplete. Run `polylogue doctor --repair` or `polylogue run all`."
-            )
+            raise DatabaseError("Search index is incomplete. Run `polylogue doctor --repair` or `polylogue run all`.")
         try:
             rows = conn.execute(sql, tuple(params)).fetchall()
         except sqlite3.Error as exc:

@@ -321,7 +321,9 @@ async def message_fts_readiness_async(
     else:
         exists = bool(await (await conn.execute(FTS_INDEX_EXISTS_SQL)).fetchone())
         has_indexed_rows = exists and bool(await (await conn.execute("SELECT 1 FROM messages_fts LIMIT 1")).fetchone())
-        has_indexable_messages = bool(await (await conn.execute("SELECT 1 FROM messages WHERE text IS NOT NULL LIMIT 1")).fetchone())
+        has_indexable_messages = bool(
+            await (await conn.execute("SELECT 1 FROM messages WHERE text IS NOT NULL LIMIT 1")).fetchone()
+        )
         indexed_rows = 0
         total_messages = 0
         ready = exists and (has_indexed_rows or not has_indexable_messages)

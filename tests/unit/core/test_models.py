@@ -135,7 +135,7 @@ class TestToolCallProperties:
                         "&&",
                         "git",
                         "commit",
-                        "\"$(cat",
+                        '"$(cat',
                         "<<'EOF'",
                         "fix(sinex):",
                         "(1M",

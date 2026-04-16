@@ -213,7 +213,9 @@ def test_cli_query_stats_by_provider_accepts_limit_after_verb(tmp_path):
     ).write_to(inbox / "conversation.json")
     _run_inbox(workspace, cwd=tmp_path)
 
-    result = run_cli(["--plain", "stats", "--by", "provider", "--limit", "1", "-f", "json"], env=workspace["env"], cwd=tmp_path)
+    result = run_cli(
+        ["--plain", "stats", "--by", "provider", "--limit", "1", "-f", "json"], env=workspace["env"], cwd=tmp_path
+    )
 
     assert result.exit_code == 0, result.output
     payload = json.loads(result.stdout)

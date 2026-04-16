@@ -182,8 +182,7 @@ async def reset_parse_status(
         where_clauses.append(predicate)
         params.extend(scope_params)
     cursor = await conn.execute(
-        "UPDATE raw_conversations SET parsed_at = NULL, parse_error = NULL "
-        f"WHERE {' AND '.join(where_clauses)}",
+        f"UPDATE raw_conversations SET parsed_at = NULL, parse_error = NULL WHERE {' AND '.join(where_clauses)}",
         tuple(params),
     )
     if transaction_depth == 0:
@@ -198,9 +197,7 @@ async def reset_validation_status(
     source_names: list[str] | None = None,
     transaction_depth: int,
 ) -> int:
-    where_clauses = [
-        "(validated_at IS NOT NULL OR validation_status IS NOT NULL OR validation_error IS NOT NULL)"
-    ]
+    where_clauses = ["(validated_at IS NOT NULL OR validation_status IS NOT NULL OR validation_error IS NOT NULL)"]
     params: list[str] = []
     if provider is not None:
         where_clauses.append(f"{EFFECTIVE_RAW_PROVIDER_SQL} = ?")

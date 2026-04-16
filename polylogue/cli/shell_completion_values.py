@@ -185,10 +185,7 @@ def complete_tool_values(
             _MAX_VALUE_COMPLETIONS,
         ),
     )
-    return [
-        CompletionItem(str(row["normalized_tool_name"]), help=f"{int(row['cnt'])} actions")
-        for row in rows
-    ]
+    return [CompletionItem(str(row["normalized_tool_name"]), help=f"{int(row['cnt'])} actions") for row in rows]
 
 
 __all__ = [
