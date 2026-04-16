@@ -1238,11 +1238,8 @@ def test_search_without_fts_table_raises_descriptive_error(workspace_env, db_wit
     """search() raises DatabaseError mentioning 'polylogue run' when FTS missing."""
     archive_root = workspace_env["archive_root"]
 
-    # Monkey-patch to use the db without FTS
-    # Patch in connection module since that's where it's called from internally
-    from polylogue.storage.backends import connection
-
     import polylogue.paths as _paths
+
     monkeypatch.setattr(_paths, "db_path", lambda: db_without_fts)
 
     # Use type name check to handle module reload class identity issues
