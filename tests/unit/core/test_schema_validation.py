@@ -300,6 +300,188 @@ def test_missing_provider_raises():
         SchemaValidator.for_provider("nonexistent-provider")
 
 
+@pytest.mark.parametrize(
+    ("source_path", "sample"),
+    [
+        (
+            "/tmp/codex-session.jsonl",
+            {
+                "timestamp": "2026-04-03T17:33:23.644Z",
+                "type": "event_msg",
+                "payload": {
+                    "type": "collab_close_end",
+                    "status": {"completed": "done"},
+                },
+            },
+        ),
+        (
+            "/tmp/codex-session.jsonl",
+            {
+                "timestamp": "2026-03-12T18:37:50.573Z",
+                "type": "response_item",
+                "payload": {
+                    "type": "function_call_output",
+                    "call_id": "call_GM8XncLg7VVQt5ylQrka6TNy",
+                    "output": [{"type": "input_image", "image_url": "data:image/jpeg;base64,abc"}],
+                },
+            },
+        ),
+        (
+            "/tmp/codex-session.jsonl",
+            {
+                "timestamp": "2026-03-05T05:33:13.392Z",
+                "type": "event_msg",
+                "payload": {
+                    "type": "token_count",
+                    "rate_limits": {
+                        "limit_id": "codex",
+                        "limit_name": None,
+                        "primary": None,
+                        "secondary": None,
+                        "credits": {"has_credits": False, "unlimited": False, "balance": None},
+                        "plan_type": None,
+                    },
+                },
+            },
+        ),
+        (
+            "/tmp/codex-session.jsonl",
+            {
+                "timestamp": "2026-03-13T12:02:43.171Z",
+                "type": "session_meta",
+                "payload": {
+                    "id": "019ce713-cf30-7aa1-832b-cd953aa7c7ec",
+                    "source": {"subagent": "review"},
+                },
+            },
+        ),
+        (
+            "/tmp/codex-session.jsonl",
+            {
+                "timestamp": "2026-03-13T12:02:43.171Z",
+                "type": "session_meta",
+                "payload": {
+                    "id": "019ce713-cf30-7aa1-832b-cd953aa7c7ec",
+                    "source": {
+                        "subagent": {
+                            "thread_spawn": {
+                                "parent_thread_id": "019ce441-45ad-7df2-8d64-fcf9db69002f",
+                                "depth": 1,
+                                "agent_nickname": "Cicero",
+                                "agent_role": None,
+                            }
+                        }
+                    },
+                },
+            },
+        ),
+        (
+            "/tmp/codex-session.jsonl",
+            {
+                "timestamp": "2026-03-17T17:47:30.487Z",
+                "type": "event_msg",
+                "payload": {
+                    "type": "agent_message",
+                    "message": "Could not fetch the URL.",
+                    "phase": None,
+                },
+            },
+        ),
+    ],
+)
+def test_live_observed_codex_records_validate(source_path: str, sample: dict) -> None:
+    """Bundled Codex schema should accept live record shapes already seen in the archive."""
+    SchemaValidator._cache.clear()
+    validator = SchemaValidator.for_payload("codex", [sample], source_path=source_path)
+
+    result = validator.validate(sample, include_drift=False)
+
+    assert result.is_valid, result.errors
+
+
+@pytest.mark.parametrize(
+    ("source_path", "sample"),
+    [
+        (
+            "/tmp/claude-code-session.jsonl",
+            {
+                "type": "assistant",
+                "message": {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "id": "toolu_01BYSXJLmQyWsjPU1MQyUiLr",
+                            "name": "SendMessage",
+                            "input": {
+                                "to": "task3-exports-daily",
+                                "message": {
+                                    "type": "shutdown_request",
+                                    "reason": "Task complete, no further work needed",
+                                },
+                                "type": "shutdown_request",
+                                "recipient": "task3-exports-daily",
+                                "content": "Task complete, no further work needed",
+                            },
+                            "caller": {"type": "direct"},
+                        }
+                    ],
+                },
+            },
+        ),
+        (
+            "/tmp/claude-code-session.jsonl",
+            {
+                "type": "progress",
+                "data": {
+                    "message": {
+                        "type": "assistant",
+                        "timestamp": "2026-03-27T09:52:50.461Z",
+                        "message": {
+                            "model": "claude-opus-4-6",
+                            "id": "msg_019P6avx5DTbMwX9JkUoxWuJ",
+                            "type": "message",
+                            "role": "assistant",
+                            "content": [
+                                {
+                                    "type": "tool_use",
+                                    "id": "toolu_015is5FD3Gr43kLnSX2XptrN",
+                                    "name": "Edit",
+                                    "input": {
+                                        "replace_all": False,
+                                        "file_path": "/realm/project/polylogue/polylogue/storage/backends/schema_ddl.py",
+                                        "old_string": "old",
+                                        "new_string": "new",
+                                    },
+                                    "caller": {"type": "direct"},
+                                }
+                            ],
+                            "stop_reason": "tool_use",
+                            "stop_sequence": None,
+                            "context_management": {"applied_edits": []},
+                        },
+                        "requestId": "req_011CZTNyrgNf3M3mS3JoGxXZ",
+                        "uuid": "13a14d24-56fc-4655-931a-000000000001",
+                    },
+                    "type": "agent_progress",
+                    "prompt": "",
+                    "agentId": "aed179a8ea9073c55",
+                },
+            },
+        ),
+    ],
+)
+def test_live_observed_claude_code_records_validate(source_path: str, sample: dict) -> None:
+    """Bundled Claude Code schema should accept live record shapes already seen in the archive."""
+    SchemaValidator._cache.clear()
+    validator = SchemaValidator.for_payload("claude-code", [sample], source_path=source_path)
+
+    result = validator.validate(sample, include_drift=False)
+
+    assert result.is_valid, result.errors
+
+
 class TestSyntheticRoundTrip:
     """Synthetic data should remain parser-compatible for supported providers."""
 

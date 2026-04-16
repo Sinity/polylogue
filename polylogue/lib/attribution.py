@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 
 from polylogue.lib.action_events import ActionEvent
@@ -46,6 +46,10 @@ _LANGUAGE_EXTENSIONS = {
     ".html": "html",
     ".css": "css",
 }
+_DIALOGUE_LANGUAGE_HINT_PATTERNS = {
+    lang_name: re.compile(rf"\b{re.escape(lang_name)}\b")
+    for lang_name in ("python", "rust", "typescript", "javascript", "nix", "go", "java", "ruby", "sql")
+}
 
 
 def _repo_root_from_path(path: str) -> str | None:
@@ -59,7 +63,7 @@ def _language_from_path(path: str) -> str | None:
     return _LANGUAGE_EXTENSIONS.get(suffix)
 
 
-def _clean_dialogue_path(path: str) -> str | None:
+def _clean_attributed_path(path: str) -> str | None:
     candidate = path.rstrip(".,;:)'\">`*_")
     if not candidate:
         return None
@@ -69,7 +73,33 @@ def _clean_dialogue_path(path: str) -> str | None:
         return None
     if set(candidate) <= {".", "/"}:
         return None
-    return candidate
+    if not candidate.startswith(("/", "~/")):
+        return candidate
+    canonical = str(Path(candidate).expanduser().resolve(strict=False))
+    if _repo_root_from_path(canonical) is not None:
+        return canonical
+
+    parts = [part for part in PurePosixPath(canonical).parts if part != "/"]
+    if len(parts) < 2:
+        return None
+    if PurePosixPath(canonical).suffix:
+        return canonical
+    if any(part.startswith(".") for part in parts):
+        return canonical
+    return None
+
+
+def _add_repo_candidate(value: str, *, repo_paths: set[str], repo_names: set[str]) -> None:
+    repo = _repo_root_from_path(value)
+    if repo is not None:
+        repo_paths.add(repo)
+        repo_name = normalize_repo_name(repo)
+        if repo_name:
+            repo_names.add(repo_name)
+        return
+    repo_name = normalize_repo_name(value)
+    if repo_name:
+        repo_names.add(str(value).strip())
 
 
 @dataclass(frozen=True)
@@ -101,12 +131,11 @@ def extract_attribution_from_action_events(
     cwd_value = provider_meta.get("cwd")
     if isinstance(cwd_value, str) and cwd_value:
         cwd_paths.add(cwd_value)
-        repo = _repo_root_from_path(cwd_value)
-        if repo:
-            repo_paths.add(repo)
-            repo_name = normalize_repo_name(repo)
-            if repo_name:
-                repo_names.add(repo_name)
+        _add_repo_candidate(cwd_value, repo_paths=repo_paths, repo_names=repo_names)
+    for working_directory in provider_meta.get("working_directories", []) or []:
+        if isinstance(working_directory, str) and working_directory:
+            cwd_paths.add(working_directory)
+            _add_repo_candidate(working_directory, repo_paths=repo_paths, repo_names=repo_names)
 
     git_branch = provider_meta.get("gitBranch")
     if isinstance(git_branch, str) and git_branch:
@@ -119,35 +148,23 @@ def extract_attribution_from_action_events(
             branch_names.add(branch)
         repository_url = git_meta.get("repository_url")
         if isinstance(repository_url, str) and repository_url:
-            repo = _repo_root_from_path(repository_url)
-            if repo:
-                repo_paths.add(repo)
-            repo_name = normalize_repo_name(repository_url)
-            if repo_name:
-                repo_names.add(repo_name)
+            _add_repo_candidate(repository_url, repo_paths=repo_paths, repo_names=repo_names)
 
     for action in actions:
         if action.cwd_path:
             cwd_paths.add(action.cwd_path)
-            repo = _repo_root_from_path(action.cwd_path)
-            if repo:
-                repo_paths.add(repo)
-                repo_name = normalize_repo_name(repo)
-                if repo_name:
-                    repo_names.add(repo_name)
+            _add_repo_candidate(action.cwd_path, repo_paths=repo_paths, repo_names=repo_names)
         for branch in action.branch_names:
             branch_names.add(branch)
         for path in action.affected_paths:
-            file_paths.add(path)
-            lang = _language_from_path(path)
+            clean_path = _clean_attributed_path(path)
+            if clean_path is None:
+                continue
+            file_paths.add(clean_path)
+            lang = _language_from_path(clean_path)
             if lang:
                 languages.add(lang)
-            repo = _repo_root_from_path(path)
-            if repo:
-                repo_paths.add(repo)
-            repo_name = normalize_repo_name(path)
-            if repo_name:
-                repo_names.add(repo_name)
+            _add_repo_candidate(clean_path, repo_paths=repo_paths, repo_names=repo_names)
 
     normalized_repo_paths = normalize_repo_paths(repo_paths)
 
@@ -179,35 +196,22 @@ def extract_attribution(
     file_paths = set(base.file_paths_touched)
     languages = set(base.languages_detected)
 
-    # Scan dialogue text for file paths and language mentions (catches pure-conversation sessions)
-    absolute_path_pattern = re.compile(r"/[^\s,;:)\]]+")
-    language_names = {"python", "rust", "typescript", "javascript", "nix", "go", "java", "ruby", "sql", "r"}
+    # Dialogue text can mention transcript-store or persisted-output paths that are not
+    # evidence of the repos actually worked on. Keep only low-risk language hints here.
     for message in semantic_facts.message_facts:
         if not message.is_dialogue or not message.text:
             continue
-        for match in absolute_path_pattern.finditer(message.text):
-            path = _clean_dialogue_path(match.group())
-            if path is None:
-                continue
-            file_paths.add(path)
-            lang = _language_from_path(path)
-            if lang:
-                languages.add(lang)
-            repo = _repo_root_from_path(path)
-            if repo:
-                repo_paths.add(repo)
-            repo_name = normalize_repo_name(path)
-            if repo_name:
-                repo_names.add(repo_name)
         text_lower = message.text.lower()
-        for lang_name in language_names:
-            if lang_name in text_lower:
+        for lang_name, pattern in _DIALOGUE_LANGUAGE_HINT_PATTERNS.items():
+            if pattern.search(text_lower):
                 languages.add(lang_name)
 
     normalized_repo_paths = normalize_repo_paths(repo_paths)
+    normalized_repo_names = {name.strip() for name in repo_names if name and str(name).strip()}
+    normalized_repo_names.update(normalize_repo_names(repo_paths=normalized_repo_paths))
     return ConversationAttribution(
         repo_paths=normalized_repo_paths,
-        repo_names=normalize_repo_names(repo_names, repo_paths=normalized_repo_paths),
+        repo_names=tuple(sorted(normalized_repo_names)),
         cwd_paths=tuple(sorted(cwd_paths)),
         branch_names=tuple(sorted(branch_names)),
         file_paths_touched=tuple(sorted(file_paths)),

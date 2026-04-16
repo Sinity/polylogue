@@ -20,6 +20,7 @@ from polylogue.cli.query import QueryAction, QueryRoute
 from polylogue.cli.types import AppEnv
 from polylogue.lib.messages import MessageCollection
 from polylogue.lib.models import Conversation, ConversationSummary, Message
+from polylogue.paths import conversation_render_root
 from polylogue.services import build_runtime_services
 
 pytestmark = pytest.mark.query_routing
@@ -663,7 +664,7 @@ async def test_async_execute_query_uses_action_event_stats_lane_for_semantic_sta
 
 
 @pytest.mark.asyncio
-async def test_async_execute_query_uses_session_product_stats_lane_for_project_stats() -> None:
+async def test_async_execute_query_uses_session_product_stats_lane_for_repo_stats() -> None:
     from polylogue.cli.query import async_execute_query
 
     repo = MagicMock()
@@ -683,7 +684,7 @@ async def test_async_execute_query_uses_session_product_stats_lane_for_project_s
         await async_execute_query(
             env,
             _make_params(
-                stats_by="project",
+                stats_by="repo",
                 provider="claude-code",
                 since="2026-01-01",
                 limit=20,
@@ -835,6 +836,7 @@ def test_copy_to_clipboard_contract(side_effects, expect_console: bool, expect_e
         ([], {}, True, False, False, 2, None, None),
         ([_make_conv(id="conv-output-1234")], {}, False, False, False, 1, None, None),
         ([_make_conv(id="conv-output-1234")], {}, True, True, False, None, "conversation.html", None),
+        ([_make_summary(id="conv-output-1234")], {}, True, True, False, None, "conversation.html", None),
         ([_make_conv(id="conv-output-1234")], {}, True, False, True, None, "fallback.html", None),
         (
             [_make_conv(id="conv-output-1234")],
@@ -861,6 +863,7 @@ def test_copy_to_clipboard_contract(side_effects, expect_console: bool, expect_e
         "no-results",
         "no-render-root",
         "specific-render",
+        "specific-render-summary",
         "latest-fallback",
         "print-path",
         "print-path-json",
@@ -882,7 +885,12 @@ def test_open_result_contract(
     render_root = tmp_path / "rendered"
     if render_root_exists:
         render_root.mkdir()
-    specific_dir = render_root / "conv-outp"
+    result = results[0] if results else None
+    specific_dir = (
+        conversation_render_root(render_root, str(result.provider), str(result.id))
+        if result is not None
+        else render_root / "conv-outp"
+    )
     if html_exists:
         specific_dir.mkdir(parents=True, exist_ok=True)
         (specific_dir / "conversation.html").write_text("<html></html>", encoding="utf-8")
@@ -970,7 +978,7 @@ class TestBuildQueryExecutionPlan:
             ({"stats_by": "provider", "query": ()}, QueryAction.STATS_BY),
             ({"stats_by": "action", "query": ()}, QueryAction.STATS_BY),
             ({"stats_by": "tool", "query": ()}, QueryAction.STATS_BY),
-            ({"stats_by": "project", "query": ()}, QueryAction.STATS_BY),
+            ({"stats_by": "repo", "query": ()}, QueryAction.STATS_BY),
             ({"stats_by": "work-kind", "query": ()}, QueryAction.STATS_BY),
             ({"add_tag": ["x"], "query": ()}, QueryAction.MODIFY),
             ({"delete_matched": True, "provider": "claude-ai", "query": ()}, QueryAction.DELETE),
@@ -1031,7 +1039,7 @@ class TestBuildQueryExecutionPlan:
             ({"stats_by": "action", "query": ()}, False, QueryRoute.STATS_BY),
             ({"stats_by": "tool", "query": ()}, True, QueryRoute.STATS_BY),
             ({"stats_by": "tool", "query": ()}, False, QueryRoute.STATS_BY),
-            ({"stats_by": "project", "query": ()}, True, QueryRoute.STATS_BY),
+            ({"stats_by": "repo", "query": ()}, True, QueryRoute.STATS_BY),
             ({"stats_by": "work-kind", "query": ()}, True, QueryRoute.STATS_BY),
             (
                 {"set_meta": [("priority", "1")], "query": ("abc",)},

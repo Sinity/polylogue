@@ -391,8 +391,8 @@ Options:
                                   (requires --repair or --cleanup)
   --vacuum                        Reclaim unused space after maintenance
                                   (requires --repair or --cleanup)
-  --deep                          Run SQLite integrity check (slow on large
-                                  databases)
+  --deep                          Run SQLite integrity and expensive orphan
+                                  scans (slow on large databases)
   --runtime                       Run environment and runtime verification
                                   checks
   --blob                          Verify blob store integrity

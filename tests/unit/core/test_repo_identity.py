@@ -5,7 +5,10 @@ from __future__ import annotations
 from datetime import date, datetime, timezone
 from pathlib import Path
 
+import pytest
+
 from polylogue.archive_product_summaries import aggregate_day_session_summary_products
+from polylogue.lib.attribution import extract_attribution
 from polylogue.lib.messages import MessageCollection
 from polylogue.lib.models import Conversation, Message
 from polylogue.lib.repo_identity import (
@@ -56,6 +59,45 @@ def test_repo_identity_normalization_filters_noise(tmp_path: Path) -> None:
     ) == (str(polylogue_repo), str(sinnix_repo))
 
 
+def test_repo_identity_normalization_canonicalizes_absolute_parent_traversal(tmp_path: Path) -> None:
+    sinnix_repo = _make_repo(tmp_path, "sinnix")
+    noisy_repo_path = f"/../../{sinnix_repo.relative_to(Path('/'))}"
+    noisy_file_path = f"{noisy_repo_path}/README.md"
+
+    assert normalize_repo_path(noisy_repo_path) == str(sinnix_repo)
+    assert normalize_repo_path(noisy_file_path) == str(sinnix_repo)
+    assert normalize_repo_name(noisy_file_path) == "sinnix"
+
+
+def test_repo_identity_normalization_ignores_unreadable_git_admin_paths(monkeypatch: pytest.MonkeyPatch) -> None:
+    unreadable_git_dir = Path("/boot/.git")
+    original_exists = Path.exists
+
+    def fake_exists(self: Path) -> bool:
+        if self in {unreadable_git_dir, unreadable_git_dir / ".git"}:
+            raise PermissionError("denied")
+        return original_exists(self)
+
+    monkeypatch.setattr(Path, "exists", fake_exists)
+
+    assert normalize_repo_path(str(unreadable_git_dir)) is None
+    assert normalize_repo_name(str(unreadable_git_dir)) is None
+    assert normalize_repo_paths([str(unreadable_git_dir)]) == ()
+
+
+def test_repo_identity_normalization_ignores_transcript_and_state_git_repos(tmp_path: Path) -> None:
+    transcript_repo = tmp_path / ".claude" / "projects"
+    (transcript_repo / ".git").mkdir(parents=True)
+    state_repo = tmp_path / ".local" / "state" / "sinex" / "blob-repository"
+    (state_repo / ".git").mkdir(parents=True)
+
+    assert normalize_repo_path(str(transcript_repo)) is None
+    assert normalize_repo_name(str(transcript_repo)) is None
+    assert normalize_repo_path(str(state_repo)) is None
+    assert normalize_repo_name(str(state_repo)) is None
+    assert normalize_repo_names(repo_paths=[str(transcript_repo), str(state_repo)]) == ()
+
+
 def test_session_profile_from_dict_preserves_explicit_repo_names_and_normalizes_repo_paths(tmp_path: Path) -> None:
     polylogue_repo = _make_repo(tmp_path, "polylogue")
     sinnix_repo = _make_repo(tmp_path, "sinnix")
@@ -82,9 +124,8 @@ def test_session_profile_from_dict_preserves_explicit_repo_names_and_normalizes_
     assert profile.repo_names == ("polylogue", "sinnix")
 
 
-def test_build_session_profile_normalizes_repo_roots_from_dialogue_and_tool_paths(tmp_path: Path) -> None:
+def test_build_session_profile_normalizes_repo_roots_from_workdirs_and_tool_paths(tmp_path: Path) -> None:
     sinnix_repo = _make_repo(tmp_path, "sinnix")
-    ignored_path = tmp_path / "README.md"
 
     conversation = Conversation(
         id="conv-normalize-build",
@@ -92,13 +133,14 @@ def test_build_session_profile_normalizes_repo_roots_from_dialogue_and_tool_path
         title="Normalization",
         created_at=datetime(2026, 3, 24, 10, 0, tzinfo=timezone.utc),
         updated_at=datetime(2026, 3, 24, 10, 5, tzinfo=timezone.utc),
+        provider_meta={"working_directories": [str(REPO_ROOT)]},
         messages=MessageCollection(
             messages=[
                 Message(
                     id="u1",
                     role="user",
                     provider="claude-code",
-                    text=f"Compare {README_PATH} with {sinnix_repo}#switch and ignore {ignored_path}.",
+                    text="Compare the current repo with the system repo.",
                     timestamp=datetime(2026, 3, 24, 10, 0, tzinfo=timezone.utc),
                 ),
                 Message(
@@ -123,6 +165,59 @@ def test_build_session_profile_normalizes_repo_roots_from_dialogue_and_tool_path
 
     assert profile.repo_paths == (str(REPO_ROOT), str(sinnix_repo))
     assert profile.repo_names == ("polylogue", "sinnix")
+
+
+def test_extract_attribution_preserves_repo_name_from_provider_git_remote() -> None:
+    conversation = Conversation(
+        id="conv-provider-git-remote",
+        provider="codex",
+        title="Provider Git Remote",
+        created_at=datetime(2026, 3, 24, 10, 0, tzinfo=timezone.utc),
+        updated_at=datetime(2026, 3, 24, 10, 5, tzinfo=timezone.utc),
+        provider_meta={"git": {"branch": "master", "repository_url": "git@github.com:Sinity/sinex.git"}},
+        messages=MessageCollection(
+            messages=[
+                Message(
+                    id="u1",
+                    role="user",
+                    provider="codex",
+                    text="Continue work on the branch and summarize the status.",
+                    timestamp=datetime(2026, 3, 24, 10, 0, tzinfo=timezone.utc),
+                )
+            ]
+        ),
+    )
+
+    attribution = extract_attribution(conversation)
+
+    assert attribution.repo_names == ("sinex",)
+    assert attribution.branch_names == ("master",)
+    assert attribution.languages_detected == ()
+
+
+def test_extract_attribution_does_not_infer_r_from_dialogue_text() -> None:
+    conversation = Conversation(
+        id="conv-dialogue-r-noise",
+        provider="codex",
+        title="Dialogue R Noise",
+        created_at=datetime(2026, 3, 24, 10, 0, tzinfo=timezone.utc),
+        updated_at=datetime(2026, 3, 24, 10, 5, tzinfo=timezone.utc),
+        messages=MessageCollection(
+            messages=[
+                Message(
+                    id="u1",
+                    role="user",
+                    provider="codex",
+                    text="Keep the variable r untouched and summarize the branch status.",
+                    timestamp=datetime(2026, 3, 24, 10, 0, tzinfo=timezone.utc),
+                )
+            ]
+        ),
+    )
+
+    attribution = extract_attribution(conversation)
+
+    assert attribution.languages_detected == ()
 
 
 def test_day_summary_and_aggregate_products_preserve_repo_names() -> None:

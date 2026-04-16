@@ -4,10 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import builtins
+from typing import TYPE_CHECKING
 
 from polylogue.logging import get_logger
 from polylogue.protocols import VectorProvider
 from polylogue.storage.embedding_stats import read_embedding_stats_async
+
+if TYPE_CHECKING:
+    import aiosqlite
 
 
 def resolve_optional_vector_provider(
@@ -66,7 +70,7 @@ class RepositoryVectorMixin:
         placeholders = ",".join("?" * len(message_ids))
         query = f"SELECT message_id, conversation_id FROM messages WHERE message_id IN ({placeholders})"
 
-        async with self._backend.connection() as conn:
+        async with self._backend.read_connection() as conn:
             cursor = await conn.execute(query, message_ids)
             rows = await cursor.fetchall()
 
@@ -117,10 +121,19 @@ class RepositoryVectorMixin:
 
         return [(msg_to_conv[msg_id], msg_id, distance) for msg_id, distance in results if msg_id in msg_to_conv]
 
-    async def get_archive_stats(self):
+    async def get_archive_stats(self, *, conn: aiosqlite.Connection | None = None):
         from polylogue.lib.stats import ArchiveStats
 
-        async with self._backend.connection() as conn:
+        if conn is None:
+            async with self._backend.read_connection() as active_conn:
+                return await self.get_archive_stats(conn=active_conn)
+
+        started_snapshot = False
+        if not conn.in_transaction:
+            await conn.execute("BEGIN")
+            started_snapshot = True
+
+        try:
             cursor = await conn.execute("SELECT COUNT(*) FROM conversations")
             conv_count = (await cursor.fetchone())[0]
 
@@ -140,7 +153,10 @@ class RepositoryVectorMixin:
             provider_rows = await cursor.fetchall()
             providers = {row["provider_name"]: row["count"] for row in provider_rows}
 
-            embedding_stats = await read_embedding_stats_async(conn)
+            embedding_stats = await read_embedding_stats_async(conn, include_retrieval_bands=False)
+        finally:
+            if started_snapshot and conn.in_transaction:
+                await conn.rollback()
 
         db_size = 0
         try:

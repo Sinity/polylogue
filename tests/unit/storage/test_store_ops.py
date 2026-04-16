@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import json
 import shutil
 import tempfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -110,7 +111,8 @@ async def test_aggregate_message_stats_reports_role_counts_and_words(tmp_path: P
     assert unfiltered["assistant"] == 1
     assert unfiltered["system"] == 1
     assert unfiltered["words_approx"] > 0
-    assert unfiltered["attachments"] == 1
+    assert unfiltered["attachment_refs"] == 1
+    assert unfiltered["distinct_attachments"] == 1
     assert unfiltered["providers"] == {"chatgpt": 1, "codex": 1}
 
     assert filtered["total"] == 2
@@ -118,7 +120,8 @@ async def test_aggregate_message_stats_reports_role_counts_and_words(tmp_path: P
     assert filtered["assistant"] == 1
     assert filtered["system"] == 0
     assert filtered["words_approx"] > 0
-    assert filtered["attachments"] == 1
+    assert filtered["attachment_refs"] == 1
+    assert filtered["distinct_attachments"] == 1
     assert filtered["providers"] == {"chatgpt": 1}
 
 
@@ -192,6 +195,95 @@ async def test_backend_path_terms_filter_contract(tmp_path: Path) -> None:
         assert await backend.queries.count_conversations(_record_query(path_terms=(target_path,))) == 1
     finally:
         await backend.close()
+
+
+@pytest.mark.asyncio
+async def test_list_summaries_by_query_omits_large_provider_meta_payloads(tmp_path: Path) -> None:
+    db_path = tmp_path / "summary-provider-meta.db"
+    large_meta = {"raw": "x" * 100_000, "source": "codex"}
+
+    with open_connection(db_path) as conn:
+        upsert_conversation(
+            conn,
+            make_conversation(
+                "conv-large-meta",
+                provider_name="codex",
+                title="Large Meta Conversation",
+                provider_meta=large_meta,
+                metadata={"tag": "kept"},
+            ),
+        )
+        conn.commit()
+
+    backend = SQLiteBackend(db_path=db_path)
+    repo = ConversationRepository(backend=backend)
+    try:
+        summaries = await repo.list_summaries_by_query(_record_query(provider="codex", limit=1))
+        assert len(summaries) == 1
+        summary = summaries[0]
+        assert str(summary.id) == "conv-large-meta"
+        assert summary.title == "Large Meta Conversation"
+        assert summary.metadata == {"tag": "kept"}
+        assert summary.provider_meta is None
+    finally:
+        await repo.close()
+
+
+def test_action_event_rebuild_omits_large_provider_meta_payloads(tmp_path: Path) -> None:
+    from polylogue.storage.action_event_rebuild_runtime import rebuild_action_event_read_model_sync
+    from polylogue.storage.store import ContentBlockRecord
+    from tests.infra.storage_records import ConversationBuilder
+
+    db_path = tmp_path / "action-event-provider-meta.db"
+
+    (
+        ConversationBuilder(db_path, "conv-heavy-action")
+        .provider("codex")
+        .title("Heavy Action Event Source")
+        .add_message(
+            "m-heavy-action",
+            role="assistant",
+            text="Searching the repo for provider-meta handling.",
+            content_blocks=[
+                ContentBlockRecord(
+                    block_id="blk-heavy-action-0",
+                    message_id="m-heavy-action",
+                    conversation_id="conv-heavy-action",
+                    block_index=0,
+                    type="tool_use",
+                    tool_name="Grep",
+                    semantic_type="search",
+                )
+            ],
+        )
+        .save()
+    )
+
+    huge_provider_meta = {
+        "cwd": "/realm/project/sinex",
+        "raw": {"payload": "x" * 200_000},
+        "git": {"branch": "master", "repository_url": "git@github.com:Sinity/sinex.git"},
+    }
+
+    with open_connection(db_path) as conn:
+        conn.execute(
+            "UPDATE conversations SET provider_meta = ? WHERE conversation_id = ?",
+            (json.dumps(huge_provider_meta), "conv-heavy-action"),
+        )
+        replaced = rebuild_action_event_read_model_sync(conn, page_size=1)
+        row = conn.execute(
+            """
+            SELECT action_kind, normalized_tool_name
+            FROM action_events
+            WHERE conversation_id = ?
+            """,
+            ("conv-heavy-action",),
+        ).fetchone()
+
+    assert replaced == 1
+    assert row is not None
+    assert row["action_kind"] == "search"
+    assert row["normalized_tool_name"] == "grep"
 
 
 @pytest.mark.asyncio

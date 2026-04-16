@@ -6,6 +6,8 @@ with automatic validation and normalization.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
+
 from pydantic import ValidationError
 
 from polylogue.lib.branch_type import BranchType
@@ -77,7 +79,7 @@ def looks_like(payload: list[object]) -> bool:
     return False
 
 
-def parse(payload: list[object], fallback_id: str) -> ParsedConversation:
+def _parse_records(records: Iterable[object], fallback_id: str) -> ParsedConversation:
     """Parse Codex JSONL session file using typed CodexRecord model.
 
     Supports two format generations via CodexRecord.format_type:
@@ -100,7 +102,7 @@ def parse(payload: list[object], fallback_id: str) -> ParsedConversation:
     session_git: dict[str, object] | None = None  # Git context from session metadata
     session_instructions: str | None = None  # System instructions from session metadata
 
-    for idx, item in enumerate(payload, start=1):
+    for idx, item in enumerate(records, start=1):
         if not isinstance(item, dict):
             continue
 
@@ -203,15 +205,6 @@ def parse(payload: list[object], fallback_id: str) -> ParsedConversation:
             # Get message ID from the record
             msg_id = record.id or f"msg-{idx}"
 
-            # Build provider_meta with raw data and structured metadata
-            msg_meta: dict[str, object] = {"raw": item}
-            if record.git:
-                git_info = record.git.model_dump(exclude_none=True)
-                if git_info:
-                    msg_meta["git"] = git_info
-            if record.instructions:
-                msg_meta["instructions"] = record.instructions
-
             # Build content blocks from the raw content field
             raw_content = None
             if record.content:
@@ -231,7 +224,6 @@ def parse(payload: list[object], fallback_id: str) -> ParsedConversation:
                     text=text,
                     timestamp=timestamp,
                     content_blocks=content_blocks,
-                    provider_meta=msg_meta,
                 )
             )
             latest_message_timestamp = _latest_timestamp(latest_message_timestamp, timestamp)
@@ -263,3 +255,11 @@ def parse(payload: list[object], fallback_id: str) -> ParsedConversation:
         parent_conversation_provider_id=parent_id,
         branch_type=branch_type,
     )
+
+
+def parse(payload: list[object], fallback_id: str) -> ParsedConversation:
+    return _parse_records(payload, fallback_id)
+
+
+def parse_stream(records: Iterable[object], fallback_id: str) -> ParsedConversation:
+    return _parse_records(records, fallback_id)
