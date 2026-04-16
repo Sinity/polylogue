@@ -88,8 +88,9 @@
 # ---
 # name: TestErrorOutput.test_invalid_option_error_output
   '''
-  Error: Database schema version 1 is incompatible with expected version 2. Delete
-   the database file and re-run polylogue to create a fresh v2 schema.
+  Usage: polylogue [OPTIONS] COMMAND [ARGS]...
+  Try 'polylogue -h' for help.
+  Error: No such option: --bogus Did you mean --verbose?
   '''
 # ---
 # name: TestHelpOutput.test_help_output_snapshot

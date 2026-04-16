@@ -254,7 +254,9 @@ class TestQueryFirstGroupParseArgs:
     def test_root_filter_after_verb_gets_specific_usage_error(self, cli_runner):
         from polylogue.cli.click_app import cli
 
-        result = cli_runner.invoke(cli, ["stats", "--by", "provider", "--provider", "claude-ai"], catch_exceptions=False)
+        result = cli_runner.invoke(
+            cli, ["stats", "--by", "provider", "--provider", "claude-ai"], catch_exceptions=False
+        )
         assert result.exit_code == 2
         assert "Query filters and root output flags must appear before the verb." in result.output
         assert "Move --provider before `stats`." in result.output

@@ -20,6 +20,7 @@ async def aggregate_message_stats(
     conversation_ids: list[str] | None = None,
 ) -> dict[str, int]:
     """Compute aggregate message statistics via SQL."""
+
     async def _message_aggregate(where_clause: str = "", params: tuple[object, ...] = ()) -> dict[str, int]:
         row = await (
             await conn.execute(
