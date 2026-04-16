@@ -34,9 +34,16 @@ devtools render-all
 All code changes land through feature branches and squash-merged pull requests
 targeting `master`.
 
-1. Create a branch from `origin/master`.
-2. Push the branch and open a pull request.
-3. Squash-merge the pull request into `master`.
+1. Open an issue first when the work is non-trivial, spans multiple PRs,
+   or introduces architectural decisions. Skip for self-contained fixes.
+2. Create a branch from `origin/master`.
+3. Work on the branch. Git hooks enforce format and lint on commit, and
+   run `devtools verify --quick` on push.
+4. Run `devtools verify` (full, with pytest) before creating the PR.
+5. Open a pull request. The template has required sections — fill them
+   all in. The PR title becomes the squash-merge subject on `master`.
+6. CI must pass. Fix failures on the branch, do not merge with red CI.
+7. Squash-merge the pull request into `master`.
 
 ## Branch Naming
 
@@ -160,12 +167,24 @@ The repository should stay aligned with the workflow above:
 
 ## Verification Baseline
 
-For most code changes:
+The devshell installs git hooks automatically (`core.hooksPath .githooks`):
+
+- **pre-commit**: `ruff format --check` + `ruff check` on staged files.
+- **pre-push**: `devtools verify --quick` (format + lint + render-all --check).
+
+Before creating a PR, run the full baseline:
 
 ```bash
-pytest -q --ignore=tests/integration
-ruff check polylogue tests devtools
+devtools verify            # format + lint + render-all --check + pytest
+```
+
+Or manually:
+
+```bash
+ruff format --check polylogue/ tests/ devtools/
+ruff check polylogue/ tests/ devtools/
 devtools render-all --check
+pytest -q --ignore=tests/integration
 ```
 
 Add `devtools build-package` or `nix flake check` when touching packaging or
