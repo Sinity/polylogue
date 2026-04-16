@@ -139,9 +139,9 @@ class TestPlainModeConsistency:
         assert "Usage:" in pty_text or "usage:" in pty_text
 
     def test_error_consistency_across_modes(self):
-        """Verify error output is consistent."""
-        result = run_in_pty(["invalid-xyz"])
+        """Verify Click's unknown-subcommand error is rendered in the PTY."""
+        result = run_in_pty(["run", "invalid-xyz"])
         assert result.exit_code != 0
 
         error_text = grid_to_text(result.grid)
-        assert len(error_text) > 0
+        assert "No such command 'invalid-xyz'" in error_text
