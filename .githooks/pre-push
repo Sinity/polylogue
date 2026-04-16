@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# Pre-push gate: full verification baseline (quick mode).
+# Runs format + lint + render-all --check. Tests run in CI.
+# Installed automatically by the devshell (shellHook in flake.nix).
+
+set -euo pipefail
+
+echo "pre-push: running quick verification baseline" >&2
+devtools verify --quick
