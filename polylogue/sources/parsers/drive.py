@@ -127,19 +127,14 @@ def parse_chunked_prompt(provider: Provider | str, payload: dict[str, object], f
             ]
             if not content_blocks:
                 # Fallback: basic block from text
-                content_blocks = (
-                    [{"type": "thinking" if gem.isThought else "text", "text": text}]
-                    if text
-                    else []
-                )
+                content_blocks = [{"type": "thinking" if gem.isThought else "text", "text": text}] if text else []
             meta["content_blocks"] = content_blocks
 
             # Extract reasoning traces if present
             traces = gem.extract_reasoning_traces()
             if traces:
                 meta["reasoning_traces"] = [
-                    {"text": t.text, "token_count": t.token_count, "provider": t.provider}
-                    for t in traces
+                    {"text": t.text, "token_count": t.token_count, "provider": t.provider} for t in traces
                 ]
         except (ValidationError, Exception):
             # Fallback: basic extraction for non-conforming chunks

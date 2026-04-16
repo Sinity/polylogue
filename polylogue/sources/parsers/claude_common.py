@@ -64,7 +64,9 @@ def normalize_timestamp(ts: int | float | str | None) -> str | None:
     return None
 
 
-def extract_messages_from_chat_messages(chat_messages: list[object]) -> tuple[list[ParsedMessage], list[ParsedAttachment]]:
+def extract_messages_from_chat_messages(
+    chat_messages: list[object],
+) -> tuple[list[ParsedMessage], list[ParsedAttachment]]:
     messages: list[ParsedMessage] = []
     attachments: list[ParsedAttachment] = []
     for idx, item in enumerate(chat_messages, start=1):

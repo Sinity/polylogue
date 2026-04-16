@@ -8,7 +8,7 @@ Polylogue includes a built-in synthetic data generator for exploring features wi
 
 ```bash
 # Create a full demo environment
-eval $(polylogue generate --seed --env-only)
+eval "$(polylogue audit generate --seed --env-only)"
 
 # Now all commands work against synthetic data
 polylogue                          # Archive stats
@@ -29,10 +29,10 @@ Writes raw provider-format files (JSON, JSONL) to disk without processing them. 
 
 ```bash
 # All providers, 3 conversations each
-polylogue generate
+polylogue audit generate
 
 # ChatGPT only, 5 conversations, custom output
-polylogue generate -p chatgpt -n 5 -o /tmp/corpus
+polylogue audit generate -p chatgpt -n 5 -o /tmp/corpus
 ```
 
 ### `--seed` Mode
@@ -41,13 +41,13 @@ Creates a complete demo environment: a temporary database seeded with synthetic 
 
 ```bash
 # Interactive — prints env vars and instructions
-polylogue generate --seed
+polylogue audit generate --seed
 
 # Shell integration — eval sets env vars in current shell
-eval $(polylogue generate --seed --env-only)
+eval "$(polylogue audit generate --seed --env-only)"
 
 # Custom options
-polylogue generate --seed -p chatgpt,claude-ai -n 10
+polylogue audit generate --seed -p chatgpt,claude-ai -n 10
 ```
 
 The seeded environment uses `run_sources` — the same pipeline as `polylogue run` — so the generate command exercises the full acquire → parse → render → index flow, with validation performed inline during parse.
@@ -64,7 +64,7 @@ The seeded environment uses `run_sources` — the same pipeline as `polylogue ru
 
 ## How It Works
 
-`polylogue generate` uses `SyntheticCorpus` from `polylogue.schemas.synthetic`, which generates realistic conversation structures for each supported provider:
+`polylogue audit generate` uses `SyntheticCorpus` from `polylogue.schemas.synthetic`, which generates realistic conversation structures for each supported provider:
 
 - **ChatGPT**: JSON documents with UUID-based message graphs (`mapping`)
 - **Claude AI**: JSON documents with `chat_messages` arrays
@@ -82,7 +82,7 @@ The test suite uses the same `SyntheticCorpus` infrastructure through shared fix
 - `synthetic_source` — A temporary source directory with generated files
 - `raw_synthetic_samples` — Raw conversation data for unit tests
 
-This means `polylogue generate` exercises the same schema-driven generation paths as the test suite fixtures.
+This means `polylogue audit generate` exercises the same schema-driven generation paths as the test suite fixtures.
 
 ---
 

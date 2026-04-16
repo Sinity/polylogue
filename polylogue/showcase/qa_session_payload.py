@@ -18,11 +18,7 @@ def generate_qa_session(result: QAResult) -> dict[str, Any]:
     """Generate a structured full QA session record."""
     from polylogue.showcase.showcase_report_payloads import generate_showcase_session
 
-    showcase_session = (
-        generate_showcase_session(result.showcase_result)
-        if result.showcase_result is not None
-        else None
-    )
+    showcase_session = generate_showcase_session(result.showcase_result) if result.showcase_result is not None else None
     return build_qa_session_payload(
         result,
         timestamp=datetime.now(timezone.utc).isoformat(),
@@ -45,10 +41,7 @@ def build_qa_session_payload(
     if result.audit_error is not None:
         audit_payload["error"] = result.audit_error
 
-    invariant_checks = [
-        serialize_invariant_result(invariant_result)
-        for invariant_result in result.invariant_results
-    ]
+    invariant_checks = [serialize_invariant_result(invariant_result) for invariant_result in result.invariant_results]
     invariant_summary = summarize_invariants(result.invariant_results)
 
     proof_payload: dict[str, Any] = {"status": result.proof_status.value}

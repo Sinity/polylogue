@@ -126,4 +126,3 @@ def generate_pagefind_config(output_dir: Path) -> str:
         except FileNotFoundError:
             return "pending"
     return "pending"
-

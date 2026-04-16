@@ -90,15 +90,8 @@ class HTMLMessageRenderer:
 
     @classmethod
     def _render_plain_text_fast(cls, text: str) -> str:
-        parts = [
-            paragraph.strip()
-            for paragraph in re.split(r"\n\s*\n+", text.strip())
-            if paragraph.strip()
-        ]
-        return "".join(
-            f"<p>{cls._escape_like_markdown_it(paragraph)}</p>\n"
-            for paragraph in parts
-        )
+        parts = [paragraph.strip() for paragraph in re.split(r"\n\s*\n+", text.strip()) if paragraph.strip()]
+        return "".join(f"<p>{cls._escape_like_markdown_it(paragraph)}</p>\n" for paragraph in parts)
 
     def _enhance_code_blocks(self, html: str) -> str:
         pattern = r'<pre><code class="language-(\w+)">(.*?)</code></pre>'
@@ -111,7 +104,7 @@ class HTMLMessageRenderer:
 
         html = re.sub(pattern, replace_code, html, flags=re.DOTALL)
 
-        pattern_plain = r'<pre><code>([^<]*)</code></pre>'
+        pattern_plain = r"<pre><code>([^<]*)</code></pre>"
 
         def replace_plain_code(match: re.Match[str]) -> str:
             code = match.group(1)

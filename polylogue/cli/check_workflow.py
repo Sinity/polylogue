@@ -82,6 +82,7 @@ class CheckCommandResult:
     maintenance_results: list[Any] | None = None
     vacuum_result: dict[str, Any] | None = None
 
+
 def validate_check_options(options: CheckCommandOptions) -> None:
     _validate_check_options(
         options,

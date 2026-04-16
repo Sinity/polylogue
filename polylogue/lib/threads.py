@@ -7,7 +7,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime
 
-from polylogue.lib.project_normalization import normalize_project_names
+from polylogue.lib.repo_identity import normalize_repo_names
 from polylogue.lib.session_profile import SessionProfile
 
 
@@ -23,7 +23,7 @@ class WorkThread:
     wall_duration_ms: int
     total_messages: int
     total_cost_usd: float
-    dominant_project: str | None
+    dominant_repo: str | None
     provider_breakdown: dict[str, int]
     work_event_breakdown: dict[str, int]
 
@@ -40,7 +40,7 @@ class WorkThread:
             "wall_duration_ms": self.wall_duration_ms,
             "total_messages": self.total_messages,
             "total_cost_usd": self.total_cost_usd,
-            "dominant_project": self.dominant_project,
+            "dominant_repo": self.dominant_repo,
             "provider_breakdown": self.provider_breakdown,
             "work_event_breakdown": self.work_event_breakdown,
         }
@@ -58,14 +58,12 @@ class WorkThread:
             wall_duration_ms=int(payload.get("wall_duration_ms", 0) or 0),
             total_messages=int(payload.get("total_messages", 0) or 0),
             total_cost_usd=float(payload.get("total_cost_usd", 0.0) or 0.0),
-            dominant_project=str(payload["dominant_project"]) if payload.get("dominant_project") is not None else None,
+            dominant_repo=str(payload["dominant_repo"]) if payload.get("dominant_repo") is not None else None,
             provider_breakdown={
-                str(key): int(value or 0)
-                for key, value in (payload.get("provider_breakdown", {}) or {}).items()
+                str(key): int(value or 0) for key, value in (payload.get("provider_breakdown", {}) or {}).items()
             },
             work_event_breakdown={
-                str(key): int(value or 0)
-                for key, value in (payload.get("work_event_breakdown", {}) or {}).items()
+                str(key): int(value or 0) for key, value in (payload.get("work_event_breakdown", {}) or {}).items()
             },
         )
 
@@ -118,20 +116,14 @@ def build_session_threads(profiles: Iterable[SessionProfile]) -> list[WorkThread
         if start_time and end_time:
             wall_ms = max(int((end_time - start_time).total_seconds() * 1000), 0)
 
-        project_counter: Counter[str] = Counter()
+        repo_counter: Counter[str] = Counter()
         provider_counter: Counter[str] = Counter()
         work_event_counter: Counter[str] = Counter()
         for profile in thread_profiles:
-            project_counter.update(
-                normalize_project_names(
-                    profile.canonical_projects,
-                    repo_paths=profile.repo_paths,
-                )
-            )
+            repo_counter.update(profile.repo_names or normalize_repo_names(repo_paths=profile.repo_paths))
             provider_counter.update((profile.provider,))
             work_event_counter.update(
-                event.kind.value if hasattr(event.kind, "value") else str(event.kind)
-                for event in profile.work_events
+                event.kind.value if hasattr(event.kind, "value") else str(event.kind) for event in profile.work_events
             )
 
         threads.append(
@@ -146,7 +138,7 @@ def build_session_threads(profiles: Iterable[SessionProfile]) -> list[WorkThread
                 wall_duration_ms=wall_ms,
                 total_messages=sum(profile.message_count for profile in thread_profiles),
                 total_cost_usd=sum(profile.total_cost_usd for profile in thread_profiles),
-                dominant_project=project_counter.most_common(1)[0][0] if project_counter else None,
+                dominant_repo=repo_counter.most_common(1)[0][0] if repo_counter else None,
                 provider_breakdown=dict(provider_counter),
                 work_event_breakdown=dict(work_event_counter),
             )

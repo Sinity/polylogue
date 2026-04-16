@@ -101,13 +101,9 @@ class StageMetrics:
         if items is not None:
             self.items_processed = items
         self.rss_end_mb = read_current_rss_mb() if rss_end_mb is None else rss_end_mb
-        self.peak_rss_self_mb = (
-            read_peak_rss_self_mb() if peak_rss_self_mb is None else peak_rss_self_mb
-        )
+        self.peak_rss_self_mb = read_peak_rss_self_mb() if peak_rss_self_mb is None else peak_rss_self_mb
         self.peak_rss_children_mb = (
-            read_peak_rss_children_mb()
-            if peak_rss_children_mb is None
-            else peak_rss_children_mb
+            read_peak_rss_children_mb() if peak_rss_children_mb is None else peak_rss_children_mb
         )
         return self
 
@@ -117,7 +113,11 @@ class StageMetrics:
             "items": self.items_processed,
             "elapsed_ms": round(self.elapsed_ms, 1),
             "throughput_per_sec": round(self.throughput, 1),
-            **({"sub_timings_ms": {k: round(v * 1000, 1) for k, v in self.sub_timings.items()}} if self.sub_timings else {}),
+            **(
+                {"sub_timings_ms": {k: round(v * 1000, 1) for k, v in self.sub_timings.items()}}
+                if self.sub_timings
+                else {}
+            ),
         }
         if self.details:
             result["details"] = self.details
@@ -144,12 +144,14 @@ class SlowItemTracker:
 
     def record(self, item_id: str, stage: str, elapsed_s: float, **extra: Any) -> None:
         if elapsed_s >= self.threshold_s and len(self.items) < self.max_items:
-            self.items.append({
-                "id": item_id,
-                "stage": stage,
-                "elapsed_s": round(elapsed_s, 2),
-                **extra,
-            })
+            self.items.append(
+                {
+                    "id": item_id,
+                    "stage": stage,
+                    "elapsed_s": round(elapsed_s, 2),
+                    **extra,
+                }
+            )
 
     def to_list(self) -> list[dict[str, Any]]:
         return sorted(self.items, key=lambda x: x["elapsed_s"], reverse=True)

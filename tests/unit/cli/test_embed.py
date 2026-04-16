@@ -98,12 +98,15 @@ class TestShowEmbeddingStats:
         mock_conn = MagicMock()
         mock_conn.execute.return_value.fetchone.return_value = query_results[0]
 
-        with patch("polylogue.storage.backends.connection.open_connection") as mock_open, patch(
-            "polylogue.storage.embedding_stats.read_embedding_stats_sync",
-            return_value=EmbeddingStatsSnapshot(
-                embedded_conversations=int(query_results[1][0]),
-                embedded_messages=int(query_results[2][0]),
-                pending_conversations=int(query_results[3][0]),
+        with (
+            patch("polylogue.storage.backends.connection.open_connection") as mock_open,
+            patch(
+                "polylogue.storage.embedding_stats.read_embedding_stats_sync",
+                return_value=EmbeddingStatsSnapshot(
+                    embedded_conversations=int(query_results[1][0]),
+                    embedded_messages=int(query_results[2][0]),
+                    pending_conversations=int(query_results[3][0]),
+                ),
             ),
         ):
             mock_open.return_value.__enter__ = MagicMock(return_value=mock_conn)
@@ -120,9 +123,12 @@ class TestShowEmbeddingStats:
         mock_conn = MagicMock()
         mock_conn.execute.return_value.fetchone.return_value = (100,)
 
-        with patch("polylogue.storage.backends.connection.open_connection") as mock_open, patch(
-            "polylogue.storage.embedding_stats.read_embedding_stats_sync",
-            return_value=EmbeddingStatsSnapshot(),
+        with (
+            patch("polylogue.storage.backends.connection.open_connection") as mock_open,
+            patch(
+                "polylogue.storage.embedding_stats.read_embedding_stats_sync",
+                return_value=EmbeddingStatsSnapshot(),
+            ),
         ):
             mock_open.return_value.__enter__ = MagicMock(return_value=mock_conn)
             mock_open.return_value.__exit__ = MagicMock(return_value=False)
@@ -137,16 +143,19 @@ class TestShowEmbeddingStats:
             MagicMock(fetchone=MagicMock(return_value=(100,))),
         ]
 
-        with patch("polylogue.storage.backends.connection.open_connection") as mock_open, patch(
-            "polylogue.storage.embedding_stats.read_embedding_stats_sync",
-            return_value=EmbeddingStatsSnapshot(
-                embedded_conversations=40,
-                embedded_messages=200,
-                pending_conversations=60,
-                retrieval_bands={
-                    "transcript_embeddings": {"ready": False, "status": "partial"},
-                    "evidence_retrieval": {"ready": True, "status": "ready"},
-                },
+        with (
+            patch("polylogue.storage.backends.connection.open_connection") as mock_open,
+            patch(
+                "polylogue.storage.embedding_stats.read_embedding_stats_sync",
+                return_value=EmbeddingStatsSnapshot(
+                    embedded_conversations=40,
+                    embedded_messages=200,
+                    pending_conversations=60,
+                    retrieval_bands={
+                        "transcript_embeddings": {"ready": False, "status": "partial"},
+                        "evidence_retrieval": {"ready": True, "status": "ready"},
+                    },
+                ),
             ),
         ):
             mock_open.return_value.__enter__ = MagicMock(return_value=mock_conn)
@@ -319,11 +328,17 @@ class TestEmbedBatchRichMode:
             (1, [{"message_id": "m1"}], RuntimeError),
         ],
     )
-    def test_embed_batch_rich_mode_variants(self, mock_env_rich, mock_repository, capsys, num_convs, messages_side_effect, exception_type):
+    def test_embed_batch_rich_mode_variants(
+        self, mock_env_rich, mock_repository, capsys, num_convs, messages_side_effect, exception_type
+    ):
         mock_vec_provider = MagicMock()
         if exception_type:
             mock_vec_provider.upsert.side_effect = exception_type("API timeout")
-        elif isinstance(messages_side_effect, list) and messages_side_effect and not isinstance(messages_side_effect[0], dict):
+        elif (
+            isinstance(messages_side_effect, list)
+            and messages_side_effect
+            and not isinstance(messages_side_effect[0], dict)
+        ):
             mock_repository.backend.queries.get_messages = AsyncMock(side_effect=messages_side_effect)
         else:
             mock_repository.backend.queries.get_messages = AsyncMock(return_value=messages_side_effect)

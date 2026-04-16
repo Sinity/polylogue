@@ -28,13 +28,15 @@ from polylogue.types import Provider
 logger = logging.getLogger(__name__)
 
 # Semantic roles that can be pinned
-PINNABLE_ROLES = frozenset({
-    "message_role",
-    "message_body",
-    "message_timestamp",
-    "message_container",
-    "conversation_title",
-})
+PINNABLE_ROLES = frozenset(
+    {
+        "message_role",
+        "message_body",
+        "message_timestamp",
+        "message_container",
+        "conversation_title",
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -69,10 +71,7 @@ class PinSet:
 
     def is_rejected(self, path: str, role: str) -> bool:
         """Check if a specific path+role combination was rejected."""
-        return any(
-            pin.path == path and pin.role == role and pin.action == "reject"
-            for pin in self.pins
-        )
+        return any(pin.path == path and pin.role == role and pin.action == "reject" for pin in self.pins)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -97,6 +96,7 @@ class PinSet:
 # -------------------------------------------------------------------
 # Storage
 # -------------------------------------------------------------------
+
 
 def _pins_path(provider: Provider | str) -> Path:
     """Path to the pins.json for a provider package."""
@@ -131,6 +131,7 @@ def save_pins(provider: Provider | str, pin_set: PinSet) -> None:
 # -------------------------------------------------------------------
 # Schema integration
 # -------------------------------------------------------------------
+
 
 def resolve_pinned_paths(
     schema: dict[str, Any],

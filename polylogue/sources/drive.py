@@ -215,9 +215,7 @@ def iter_drive_raw_data(
 
         # Check if a local cache file exists (drive-cache or legacy path).
         # If so, use it instead of re-downloading from Drive.
-        cache_path = drive_cache_file_path(
-            source.path or Path(source.name), file_meta.name
-        )
+        cache_path = drive_cache_file_path(source.path or Path(source.name), file_meta.name)
         blob_hash: str | None = None
         blob_size: int = 0
 

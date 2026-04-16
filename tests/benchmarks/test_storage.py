@@ -6,6 +6,7 @@ semantic filter), batch get operations.
 Run with:
     pytest tests/benchmarks/test_storage.py --benchmark-enable -p no:xdist -v
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -38,9 +39,7 @@ def test_bench_list_conversations_provider_filter(benchmark, bench_db_5k: Path) 
     benchmark_store_call(
         benchmark,
         bench_db_5k,
-        lambda store: store.backend.queries.list_conversations(
-            ConversationRecordQuery(provider="chatgpt", limit=50)
-        ),
+        lambda store: store.backend.queries.list_conversations(ConversationRecordQuery(provider="chatgpt", limit=50)),
     )
 
 
@@ -50,9 +49,7 @@ def test_bench_list_conversations_has_tool_use(benchmark, bench_db_5k: Path) -> 
     benchmark_store_call(
         benchmark,
         bench_db_5k,
-        lambda store: store.backend.queries.list_conversations(
-            ConversationRecordQuery(has_tool_use=True, limit=50)
-        ),
+        lambda store: store.backend.queries.list_conversations(ConversationRecordQuery(has_tool_use=True, limit=50)),
     )
 
 

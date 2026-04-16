@@ -197,11 +197,11 @@ def inspect_raw_artifact(record: RawConversationRecord) -> ArtifactObservationRe
         )
     except Exception as exc:
         path_classification = classify_artifact_path(record.source_path, provider=provider_hint)
-        artifact_kind = path_classification.kind.value if path_classification is not None else ArtifactKind.UNKNOWN.value
+        artifact_kind = (
+            path_classification.kind.value if path_classification is not None else ArtifactKind.UNKNOWN.value
+        )
         classification_reason = (
-            path_classification.reason
-            if path_classification is not None
-            else f"decode failure: {type(exc).__name__}"
+            path_classification.reason if path_classification is not None else f"decode failure: {type(exc).__name__}"
         )
         return ArtifactObservationRecord(
             observation_id=observation_id,

@@ -46,11 +46,13 @@ def tool_use_block_strategy(draw: st.DrawFn) -> dict[str, Any]:
         "type": "tool_use",
         "name": draw(st.sampled_from(tool_names)),
         "id": draw(st.uuids()).hex[:24],
-        "input": draw(st.dictionaries(
-            keys=st.text(min_size=1, max_size=20, alphabet=st.characters(whitelist_categories=("L", "N"))),
-            values=st.one_of(st.text(max_size=100), st.integers(), st.booleans()),
-            max_size=5,
-        )),
+        "input": draw(
+            st.dictionaries(
+                keys=st.text(min_size=1, max_size=20, alphabet=st.characters(whitelist_categories=("L", "N"))),
+                values=st.one_of(st.text(max_size=100), st.integers(), st.booleans()),
+                max_size=5,
+            )
+        ),
     }
 
 
@@ -77,13 +79,15 @@ def code_block_strategy(draw: st.DrawFn) -> dict[str, Any]:
 @st.composite
 def content_block_strategy(draw: st.DrawFn) -> dict[str, Any]:
     """Generate any type of content block."""
-    return draw(st.one_of(
-        text_content_strategy(),
-        thinking_block_strategy(),
-        tool_use_block_strategy(),
-        tool_result_block_strategy(),
-        code_block_strategy(),
-    ))
+    return draw(
+        st.one_of(
+            text_content_strategy(),
+            thinking_block_strategy(),
+            tool_use_block_strategy(),
+            tool_result_block_strategy(),
+            code_block_strategy(),
+        )
+    )
 
 
 # =============================================================================
@@ -118,24 +122,30 @@ def message_strategy(
         # Generate timestamp as ISO string or epoch
         ts_format = draw(st.sampled_from(["iso", "epoch"]))
         if ts_format == "iso":
-            dt = draw(st.datetimes(
-                min_value=datetime(2020, 1, 1),
-                max_value=datetime(2030, 1, 1),
-                timezones=st.just(timezone.utc),
-            ))
+            dt = draw(
+                st.datetimes(
+                    min_value=datetime(2020, 1, 1),
+                    max_value=datetime(2030, 1, 1),
+                    timezones=st.just(timezone.utc),
+                )
+            )
             msg["timestamp"] = dt.isoformat()
         else:
-            msg["timestamp"] = draw(st.floats(
-                min_value=1577836800,  # 2020-01-01
-                max_value=1893456000,  # 2030-01-01
-            ))
+            msg["timestamp"] = draw(
+                st.floats(
+                    min_value=1577836800,  # 2020-01-01
+                    max_value=1893456000,  # 2030-01-01
+                )
+            )
 
     if with_content_blocks:
-        msg["content_blocks"] = draw(st.lists(
-            content_block_strategy(),
-            min_size=1,
-            max_size=5,
-        ))
+        msg["content_blocks"] = draw(
+            st.lists(
+                content_block_strategy(),
+                min_size=1,
+                max_size=5,
+            )
+        )
 
     return msg
 
@@ -162,11 +172,13 @@ def conversation_strategy(
     if providers is None:
         providers = ["chatgpt", "claude-ai", "claude-code", "codex"]
 
-    messages = draw(st.lists(
-        message_strategy(),
-        min_size=min_messages,
-        max_size=max_messages,
-    ))
+    messages = draw(
+        st.lists(
+            message_strategy(),
+            min_size=min_messages,
+            max_size=max_messages,
+        )
+    )
 
     # Ensure alternating user/assistant for realism
     for i, msg in enumerate(messages):
@@ -177,11 +189,13 @@ def conversation_strategy(
         "title": draw(st.text(min_size=1, max_size=100)),
         "provider": draw(st.sampled_from(providers)),
         "messages": messages,
-        "created_at": draw(st.datetimes(
-            min_value=datetime(2020, 1, 1),
-            max_value=datetime(2030, 1, 1),
-            timezones=st.just(timezone.utc),
-        )).isoformat(),
+        "created_at": draw(
+            st.datetimes(
+                min_value=datetime(2020, 1, 1),
+                max_value=datetime(2030, 1, 1),
+                timezones=st.just(timezone.utc),
+            )
+        ).isoformat(),
     }
 
 
@@ -208,7 +222,9 @@ def message_model_strategy(draw: st.DrawFn, *, role: str | None = None) -> Messa
         provider_meta = {"content_blocks": [{"type": block_type, "text": block_text}]}
 
     # Optionally add cost/duration via raw in provider_meta
-    cost = draw(st.one_of(st.none(), st.floats(min_value=0.001, max_value=100.0, allow_nan=False, allow_infinity=False)))
+    cost = draw(
+        st.one_of(st.none(), st.floats(min_value=0.001, max_value=100.0, allow_nan=False, allow_infinity=False))
+    )
     duration = draw(st.one_of(st.none(), st.integers(min_value=1, max_value=60000)))
     if cost is not None or duration is not None:
         raw: dict[str, Any] = {}
@@ -237,16 +253,20 @@ def parsed_attachment_model_strategy(draw: st.DrawFn):
         provider_attachment_id=draw(st.uuids()).hex[:12],
         message_provider_id=draw(st.one_of(st.none(), st.uuids().map(lambda u: u.hex[:12]))),
         name=draw(st.one_of(st.none(), st.text(min_size=1, max_size=50))),
-        mime_type=draw(st.one_of(
-            st.none(),
-            st.sampled_from([
-                "text/plain",
-                "application/pdf",
-                "image/png",
-                "image/jpeg",
-                "application/json",
-            ]),
-        )),
+        mime_type=draw(
+            st.one_of(
+                st.none(),
+                st.sampled_from(
+                    [
+                        "text/plain",
+                        "application/pdf",
+                        "image/png",
+                        "image/jpeg",
+                        "application/json",
+                    ]
+                ),
+            )
+        ),
         size_bytes=draw(st.one_of(st.none(), st.integers(min_value=0, max_value=100_000_000))),
         path=draw(st.one_of(st.none(), st.text(min_size=1, max_size=100))),
     )

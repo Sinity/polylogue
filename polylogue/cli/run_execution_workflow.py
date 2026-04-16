@@ -46,9 +46,7 @@ def run_with_progress(
 ) -> RunResult:
     with _progress_observer(env) as progress_observer:
         progress_bridge = (
-            CompositeObserver([progress_observer, observer])
-            if observer is not None
-            else progress_observer
+            CompositeObserver([progress_observer, observer]) if observer is not None else progress_observer
         )
         result = execute_sync_once(
             cfg,

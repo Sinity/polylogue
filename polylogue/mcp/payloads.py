@@ -157,7 +157,9 @@ class MCPArchiveStatsPayload(MCPPayload):
             db_size_mb=(
                 round(archive_stats.db_size_bytes / 1_048_576, 1)
                 if include_db_size and archive_stats.db_size_bytes
-                else 0 if include_db_size else None
+                else 0
+                if include_db_size
+                else None
             ),
         )
 
@@ -236,6 +238,7 @@ class MCPHealthReportPayload(MCPPayload):
             summary=report.summary,
             source=_extract_health_source(report) if include_cached else None,
         )
+
 
 __all__ = [
     "MCPArchiveStatsPayload",

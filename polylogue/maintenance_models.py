@@ -48,4 +48,5 @@ class DerivedModelStatus:
             "matches_version": self.matches_version,
         }
 
+
 __all__ = ["DerivedModelStatus", "MaintenanceCategory"]

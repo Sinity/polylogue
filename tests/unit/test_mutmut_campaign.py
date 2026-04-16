@@ -97,7 +97,7 @@ def test_format_markdown_records_dirty_worktree_status() -> None:
         description="JSON serialization and parser laws",
         commit="deadbeef",
         worktree_dirty=True,
-        status_summary=[" M tests/unit/core/test_json.py", "?? docs/mutation-campaigns/foo.json"],
+        status_summary=[" M tests/unit/core/test_json.py", "?? .local/mutation-campaigns/foo.json"],
         created_at="2026-03-11T00:00:00+00:00",
         workspace="/tmp/example/repo",
         command=["mutmut", "run"],
@@ -124,7 +124,7 @@ def test_format_markdown_records_dirty_worktree_status() -> None:
 def test_git_status_summary_ignores_campaign_artifacts(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
-    (repo / "docs" / "mutation-campaigns").mkdir(parents=True)
+    (repo / ".local" / "mutation-campaigns").mkdir(parents=True)
     (repo / "tracked.txt").write_text("base\n")
 
     import subprocess
@@ -135,16 +135,16 @@ def test_git_status_summary_ignores_campaign_artifacts(tmp_path: Path) -> None:
     subprocess.run(["git", "add", "tracked.txt"], cwd=repo, check=True)
     subprocess.run(["git", "commit", "-m", "init"], cwd=repo, check=True, capture_output=True)
 
-    (repo / "docs" / "mutation-campaigns" / "run.json").write_text("{}\n")
+    (repo / ".local" / "mutation-campaigns" / "run.json").write_text("{}\n")
     (repo / "tracked.txt").write_text("changed\n")
 
     summary = git_status_summary(repo)
     assert " M tracked.txt" in summary
-    assert all("docs/mutation-campaigns/" not in line for line in summary)
+    assert all(".local/mutation-campaigns/" not in line for line in summary)
 
 
 def test_load_results_and_index_use_latest_campaign_entry(tmp_path: Path) -> None:
-    campaign_dir = tmp_path / "docs" / "mutation-campaigns"
+    campaign_dir = tmp_path / ".local" / "mutation-campaigns"
     campaign_dir.mkdir(parents=True)
     old = {
         "campaign": "json",

@@ -3,7 +3,7 @@
 One-shot script. Run once to annotate, commit the updated schemas, then
 this script can remain as a re-annotation utility.
 
-Usage: python -m devtools.inject_semantic_annotations [--dry-run]
+Usage: devtools inject-semantic-annotations [--dry-run]
 """
 
 from __future__ import annotations
@@ -146,7 +146,7 @@ def _navigate(schema: dict[str, Any], path_segments: list[str]) -> dict[str, Any
             return None
 
         if segment.startswith("properties."):
-            key = segment[len("properties."):]
+            key = segment[len("properties.") :]
             node = node.get("properties", {}).get(key)
         elif segment == "items":
             node = node.get("items")
@@ -220,14 +220,7 @@ def main(argv: list[str] | None = None) -> int:
         if element is None or element.schema_file is None:
             print(f"SKIP: no default element schema found for {provider}")
             continue
-        schema_path = (
-            SCHEMAS_DIR
-            / provider
-            / "versions"
-            / package.version
-            / "elements"
-            / element.schema_file
-        )
+        schema_path = SCHEMAS_DIR / provider / "versions" / package.version / "elements" / element.schema_file
         if not schema_path.exists():
             print(f"SKIP: {schema_path} not found")
             continue

@@ -19,9 +19,7 @@ VALID_LANES = frozenset(LANES)
 
 def parse_lane(lane_name: str) -> LaneConfig:
     if lane_name not in LANES:
-        raise ValueError(
-            f"Invalid lane: {lane_name!r}. Valid lanes: {', '.join(sorted(VALID_LANES))}"
-        )
+        raise ValueError(f"Invalid lane: {lane_name!r}. Valid lanes: {', '.join(sorted(VALID_LANES))}")
     return LANES[lane_name]
 
 

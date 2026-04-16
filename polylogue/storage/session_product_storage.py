@@ -26,9 +26,7 @@ def table_has_column(conn: sqlite3.Connection, table: str, column: str) -> bool:
     cached = _SYNC_COLUMN_CACHE.get(key)
     if cached is not None:
         return cached
-    found = any(
-        str(row[1]) == column for row in conn.execute(f"PRAGMA table_info({table})").fetchall()
-    )
+    found = any(str(row[1]) == column for row in conn.execute(f"PRAGMA table_info({table})").fetchall())
     _SYNC_COLUMN_CACHE[key] = found
     return found
 
@@ -60,9 +58,8 @@ def replace_session_profile_sync(conn: sqlite3.Connection, record: SessionProfil
         "first_message_at",
         "last_message_at",
         "canonical_session_date",
-
         "repo_paths_json",
-        "canonical_projects_json",
+        "repo_names_json",
         "tags_json",
         "auto_tags_json",
         "message_count",
@@ -90,9 +87,8 @@ def replace_session_profile_sync(conn: sqlite3.Connection, record: SessionProfil
         record.first_message_at,
         record.last_message_at,
         record.canonical_session_date,
-
         _json_array_or_none(record.repo_paths),
-        _json_array_or_none(record.canonical_projects),
+        _json_array_or_none(record.repo_names),
         _json_array_or_none(record.tags),
         _json_array_or_none(record.auto_tags),
         record.message_count,
@@ -365,7 +361,7 @@ def replace_work_thread_sync(conn: sqlite3.Connection, thread_id: str, record: o
                 materialized_at,
                 start_time,
                 end_time,
-                dominant_project,
+                dominant_repo,
                 session_ids_json,
                 session_count,
                 depth,
@@ -385,7 +381,7 @@ def replace_work_thread_sync(conn: sqlite3.Connection, thread_id: str, record: o
                 record.materialized_at,
                 record.start_time,
                 record.end_time,
-                record.dominant_project,
+                record.dominant_repo,
                 _json_array_or_none(record.session_ids),
                 record.session_count,
                 record.depth,
@@ -425,7 +421,7 @@ def replace_session_tag_rollup_rows_sync(
                 conversation_count,
                 explicit_count,
                 auto_count,
-                project_breakdown_json,
+                repo_breakdown_json,
                 search_text
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
@@ -441,7 +437,7 @@ def replace_session_tag_rollup_rows_sync(
                     record.conversation_count,
                     record.explicit_count,
                     record.auto_count,
-                    _json_or_none(record.project_breakdown),
+                    _json_or_none(record.repo_breakdown),
                     record.search_text,
                 )
                 for record in records
@@ -477,7 +473,7 @@ def replace_day_session_summaries_sync(
                 total_messages,
                 total_words,
                 work_event_breakdown_json,
-                projects_active_json,
+                repos_active_json,
                 payload_json,
                 search_text
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -497,7 +493,7 @@ def replace_day_session_summaries_sync(
                     record.total_messages,
                     record.total_words,
                     _json_or_none(record.work_event_breakdown),
-                    _json_array_or_none(record.projects_active),
+                    _json_array_or_none(record.repos_active),
                     _json_or_none(record.payload),
                     record.search_text,
                 )

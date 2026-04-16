@@ -218,7 +218,9 @@ class SchemaRegistry:
                 continue
             schema = copy.deepcopy(element_schemas[element.element_kind])
             schema["$id"] = f"polylogue://schemas/{provider_token}/{package.version}/{element.element_kind}"
-            schema["x-polylogue-version"] = int(package.version[1:]) if package.version.startswith("v") else package.version
+            schema["x-polylogue-version"] = (
+                int(package.version[1:]) if package.version.startswith("v") else package.version
+            )
             schema["x-polylogue-package-version"] = package.version
             schema["x-polylogue-element-kind"] = element.element_kind
             schema["x-polylogue-registered-at"] = datetime.now(tz=timezone.utc).isoformat()
@@ -276,9 +278,7 @@ class SchemaRegistry:
         ]
         if not profile_family_ids:
             profile_family_ids = [
-                str(item)
-                for item in schema.get("x-polylogue-profile-family-ids", [])
-                if isinstance(item, str)
+                str(item) for item in schema.get("x-polylogue-profile-family-ids", []) if isinstance(item, str)
             ]
         element_profile_family_ids = [
             str(item)
@@ -313,9 +313,7 @@ class SchemaRegistry:
                     exact_structure_ids=[str(item) for item in schema.get("x-polylogue-exact-structure-ids", [])],
                     profile_family_ids=element_profile_family_ids,
                     profile_tokens=[
-                        str(item)
-                        for item in schema.get("x-polylogue-profile-tokens", [])
-                        if isinstance(item, str)
+                        str(item) for item in schema.get("x-polylogue-profile-tokens", []) if isinstance(item, str)
                     ],
                     representative_paths=[
                         str(item)
@@ -348,7 +346,9 @@ class SchemaRegistry:
         catalog.recommended_version = catalog.latest_version
         self.write_package(package, element_schemas=schemas)
         self.save_package_catalog(catalog)
-        return self._package_dir(provider_token, version) / "elements" / f"{package.default_element_kind}.schema.json.gz"
+        return (
+            self._package_dir(provider_token, version) / "elements" / f"{package.default_element_kind}.schema.json.gz"
+        )
 
     def resolve_payload(
         self,

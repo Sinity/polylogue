@@ -83,9 +83,7 @@ class ArchiveIndexStats:
         self.total_messages += conversation.message_count
         if conversation.provider not in self.provider_counts:
             self.provider_order.append(conversation.provider)
-        self.provider_counts[conversation.provider] = (
-            self.provider_counts.get(conversation.provider, 0) + 1
-        )
+        self.provider_counts[conversation.provider] = self.provider_counts.get(conversation.provider, 0) + 1
         self.provider_messages[conversation.provider] = (
             self.provider_messages.get(conversation.provider, 0) + conversation.message_count
         )
@@ -108,4 +106,3 @@ class ConversationPageBuildStats:
             self.reused += 1
         elif status == "failed":
             self.failed += 1
-

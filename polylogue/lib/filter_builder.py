@@ -44,20 +44,14 @@ class ConversationFilterBuilderMixin:
         )
 
     def provider(self, *names: Provider | str) -> ConversationFilter:
-        providers = tuple(
-            name if isinstance(name, Provider) else Provider.from_string(name)
-            for name in names
-        )
+        providers = tuple(name if isinstance(name, Provider) else Provider.from_string(name) for name in names)
         return _replace_plan(
             self,
             providers=_extend_tuple(self._plan.providers, providers),
         )
 
     def exclude_provider(self, *names: Provider | str) -> ConversationFilter:
-        providers = tuple(
-            name if isinstance(name, Provider) else Provider.from_string(name)
-            for name in names
-        )
+        providers = tuple(name if isinstance(name, Provider) else Provider.from_string(name) for name in names)
         return _replace_plan(
             self,
             excluded_providers=_extend_tuple(self._plan.excluded_providers, providers),

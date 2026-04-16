@@ -14,12 +14,12 @@ from polylogue.lib.provider_identity import (
 from polylogue.lib.raw_payload import extract_record_samples_from_raw_content
 from polylogue.logging import get_logger
 from polylogue.paths import db_path as default_db_path
-from polylogue.storage.blob_store import get_blob_store
 from polylogue.schemas.observation import (
     ProviderConfig,
     extract_schema_units_from_payload,
     resolve_provider_config,
 )
+from polylogue.storage.blob_store import get_blob_store
 from polylogue.types import Provider
 
 logger = get_logger(__name__)
@@ -113,7 +113,7 @@ def _iter_schema_units_from_db(
                             max_samples=max_samples,
                         )
                         continue
-                
+
                 try:
                     from polylogue.schemas import sampling as sampling_root
 

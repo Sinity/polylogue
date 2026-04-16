@@ -9,7 +9,6 @@ from polylogue.storage.action_event_rows import attach_blocks_to_messages, build
 from polylogue.storage.search_cache import invalidate_search_cache
 from polylogue.storage.session_product_refresh import (
     delete_session_products_for_conversation_async,
-    refresh_session_products_for_conversation_async,
     refresh_thread_after_conversation_delete_async,
 )
 from polylogue.storage.session_product_threads import thread_root_id_async
@@ -138,6 +137,7 @@ async def save_via_backend(
     total = _time.perf_counter() - t_start
     if total > 2.0:
         from polylogue.logging import get_logger
+
         get_logger(__name__).info(
             "slow_save",
             total_s=round(total, 2),

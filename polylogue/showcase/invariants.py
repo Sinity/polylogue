@@ -142,11 +142,13 @@ def check_invariants(results: list[ExerciseResult]) -> list[InvariantResult]:
             continue
         for invariant in SHOWCASE_INVARIANTS:
             if not invariant.applies_to(result.exercise):
-                invariant_results.append(InvariantResult(
-                    invariant_name=invariant.name,
-                    exercise_name=result.exercise.name,
-                    status=OutcomeStatus.SKIP,
-                ))
+                invariant_results.append(
+                    InvariantResult(
+                        invariant_name=invariant.name,
+                        exercise_name=result.exercise.name,
+                        status=OutcomeStatus.SKIP,
+                    )
+                )
                 continue
 
             try:
@@ -155,24 +157,30 @@ def check_invariants(results: list[ExerciseResult]) -> list[InvariantResult]:
                 error = f"invariant check crashed: {e}"
 
             if error == SKIP:
-                invariant_results.append(InvariantResult(
-                    invariant_name=invariant.name,
-                    exercise_name=result.exercise.name,
-                    status=OutcomeStatus.SKIP,
-                ))
+                invariant_results.append(
+                    InvariantResult(
+                        invariant_name=invariant.name,
+                        exercise_name=result.exercise.name,
+                        status=OutcomeStatus.SKIP,
+                    )
+                )
             elif error is None:
-                invariant_results.append(InvariantResult(
-                    invariant_name=invariant.name,
-                    exercise_name=result.exercise.name,
-                    status=OutcomeStatus.OK,
-                ))
+                invariant_results.append(
+                    InvariantResult(
+                        invariant_name=invariant.name,
+                        exercise_name=result.exercise.name,
+                        status=OutcomeStatus.OK,
+                    )
+                )
             else:
-                invariant_results.append(InvariantResult(
-                    invariant_name=invariant.name,
-                    exercise_name=result.exercise.name,
-                    status=OutcomeStatus.ERROR,
-                    error=error,
-                ))
+                invariant_results.append(
+                    InvariantResult(
+                        invariant_name=invariant.name,
+                        exercise_name=result.exercise.name,
+                        status=OutcomeStatus.ERROR,
+                        error=error,
+                    )
+                )
 
     return invariant_results
 

@@ -6,7 +6,7 @@ Options:
   -h, --help  Show this message and exit.
 
 Commands:
-  analytics       List canonical provider-level analytics products.
+  analytics       List provider-level analytics products.
   day-summaries   List durable day-level session summary products.
   enrichments     List durable probabilistic session-enrichment products.
   phases          List durable session-phase products.

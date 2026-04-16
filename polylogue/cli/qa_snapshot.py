@@ -36,9 +36,7 @@ def write_snapshot_index(snapshot_dir: Path, entries: list[dict[str, object]]) -
         "| --- | ---: | --- |",
     ]
     for entry in entries:
-        lines.append(
-            f"| `{entry['relative_path']}` | {entry['size_bytes']} | `{entry['sha256']}` |"
-        )
+        lines.append(f"| `{entry['relative_path']}` | {entry['size_bytes']} | `{entry['sha256']}` |")
     (snapshot_dir / "INDEX.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
@@ -96,11 +94,13 @@ def snapshot_results(
     update_latest_symlink(output_root, snapshot_dir)
 
     if json_output:
-        emit_success({
-            "snapshot_dir": str(snapshot_dir),
-            "entry_count": len(entries),
-            "sources": [str(source_dir)],
-        })
+        emit_success(
+            {
+                "snapshot_dir": str(snapshot_dir),
+                "entry_count": len(entries),
+                "sources": [str(source_dir)],
+            }
+        )
     else:
         env.ui.console.print(f"QA snapshot created: {snapshot_dir}")
         env.ui.console.print(f"Files captured: {len(entries)}")

@@ -3,6 +3,7 @@
 Covers is_dynamic_key(), _detect_string_format(), FieldStats computed
 properties, and _collect_field_stats() sample collection.
 """
+
 from __future__ import annotations
 
 from collections import Counter
@@ -22,42 +23,55 @@ from polylogue.schemas.field_stats import (
 # is_dynamic_key
 # =============================================================================
 
+
 class TestIsDynamicKey:
-    @pytest.mark.parametrize("key", [
-        "550e8400-e29b-41d4-a716-446655440000",
-        "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
-    ])
+    @pytest.mark.parametrize(
+        "key",
+        [
+            "550e8400-e29b-41d4-a716-446655440000",
+            "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+        ],
+    )
     def test_uuid_detected(self, key: str) -> None:
         assert is_dynamic_key(key)
 
-    @pytest.mark.parametrize("key", [
-        "a" * 24,
-        "abcdef1234567890abcdef12",
-        "0" * 32,
-    ])
+    @pytest.mark.parametrize(
+        "key",
+        [
+            "a" * 24,
+            "abcdef1234567890abcdef12",
+            "0" * 32,
+        ],
+    )
     def test_hex_id_detected(self, key: str) -> None:
         assert is_dynamic_key(key)
 
-    @pytest.mark.parametrize("key", [
-        "msg-abc123",
-        "node-550e8400",
-        "conv-def456",
-        "item-789abc",
-        "att-abc-def",
-    ])
+    @pytest.mark.parametrize(
+        "key",
+        [
+            "msg-abc123",
+            "node-550e8400",
+            "conv-def456",
+            "item-789abc",
+            "att-abc-def",
+        ],
+    )
     def test_prefixed_id_detected(self, key: str) -> None:
         assert is_dynamic_key(key)
 
-    @pytest.mark.parametrize("key", [
-        "mapping",
-        "title",
-        "content",
-        "type",
-        "role",
-        "abc",
-        "my-field",
-        "status_code",
-    ])
+    @pytest.mark.parametrize(
+        "key",
+        [
+            "mapping",
+            "title",
+            "content",
+            "type",
+            "role",
+            "abc",
+            "my-field",
+            "status_code",
+        ],
+    )
     def test_static_keys_not_dynamic(self, key: str) -> None:
         assert not is_dynamic_key(key)
 
@@ -66,22 +80,26 @@ class TestIsDynamicKey:
 # _detect_string_format
 # =============================================================================
 
+
 class TestDetectStringFormat:
-    @pytest.mark.parametrize(("value", "expected"), [
-        ("550e8400-e29b-41d4-a716-446655440000", "uuid4"),
-        ("550e8400-e29b-0000-0000-446655440000", "uuid"),
-        ("abcdef1234567890abcdef12", "hex-id"),
-        ("2024-01-15T10:30:00Z", "iso8601"),
-        ("2024-01-15 10:30:00", "iso8601"),
-        ("1705312200", "unix-epoch-str"),
-        ("1705312200.123", "unix-epoch-str"),
-        ("https://example.com/path", "url"),
-        ("http://api.test.io", "url"),
-        ("application/json", "mime-type"),
-        ("text/plain", "mime-type"),
-        ("image/png", "mime-type"),
-        ("user@example.com", "email"),
-    ])
+    @pytest.mark.parametrize(
+        ("value", "expected"),
+        [
+            ("550e8400-e29b-41d4-a716-446655440000", "uuid4"),
+            ("550e8400-e29b-0000-0000-446655440000", "uuid"),
+            ("abcdef1234567890abcdef12", "hex-id"),
+            ("2024-01-15T10:30:00Z", "iso8601"),
+            ("2024-01-15 10:30:00", "iso8601"),
+            ("1705312200", "unix-epoch-str"),
+            ("1705312200.123", "unix-epoch-str"),
+            ("https://example.com/path", "url"),
+            ("http://api.test.io", "url"),
+            ("application/json", "mime-type"),
+            ("text/plain", "mime-type"),
+            ("image/png", "mime-type"),
+            ("user@example.com", "email"),
+        ],
+    )
     def test_format_detection(self, value: str, expected: str) -> None:
         assert _detect_string_format(value) == expected
 
@@ -108,6 +126,7 @@ class TestDetectStringFormat:
 # =============================================================================
 # FieldStats computed properties
 # =============================================================================
+
 
 class TestFieldStatsProperties:
     def test_frequency_with_data(self) -> None:
@@ -227,6 +246,7 @@ class TestFieldStatsProperties:
 # _collect_field_stats
 # =============================================================================
 
+
 class TestCollectFieldStats:
     def test_discovers_all_top_level_keys(self) -> None:
         samples = [
@@ -236,11 +256,7 @@ class TestCollectFieldStats:
         ]
         stats = _collect_field_stats(samples)
         # Root + all top-level keys should be present
-        discovered_keys = {
-            s.path.split(".")[-1]
-            for s in stats.values()
-            if "." in s.path
-        }
+        discovered_keys = {s.path.split(".")[-1] for s in stats.values() if "." in s.path}
         assert {"a", "b", "c", "d"} <= discovered_keys
 
     def test_total_samples_consistent(self) -> None:
@@ -278,10 +294,13 @@ class TestCollectFieldStats:
         assert status_stats.value_conversation_ids["active"] == {"conv1"}
         assert status_stats.value_conversation_ids["pending"] == {"conv2"}
 
-    @given(st.lists(
-        st.fixed_dictionaries({"key": st.text(min_size=1, max_size=20)}),
-        min_size=1, max_size=10,
-    ))
+    @given(
+        st.lists(
+            st.fixed_dictionaries({"key": st.text(min_size=1, max_size=20)}),
+            min_size=1,
+            max_size=10,
+        )
+    )
     @settings(max_examples=50)
     def test_collect_discovers_all_keys_property(self, samples: list[dict]) -> None:
         stats = _collect_field_stats(samples)

@@ -27,9 +27,7 @@ def validate_check_options(
         fail("doctor", "--schema-record-offset requires --schemas")
     if options.schema_quarantine_malformed and not options.check_schemas:
         fail("doctor", "--schema-quarantine-malformed requires --schemas")
-    if options.artifact_providers and not (
-        options.check_proof or options.check_artifacts or options.check_cohorts
-    ):
+    if options.artifact_providers and not (options.check_proof or options.check_artifacts or options.check_cohorts):
         fail("doctor", "--artifact-provider requires --proof, --artifacts, or --cohorts")
     if options.artifact_statuses and not (options.check_artifacts or options.check_cohorts):
         fail("doctor", "--artifact-status requires --artifacts or --cohorts")
@@ -39,9 +37,7 @@ def validate_check_options(
         options.check_proof or options.check_artifacts or options.check_cohorts
     ):
         fail("doctor", "--artifact-limit requires --proof, --artifacts, or --cohorts")
-    if options.artifact_offset != 0 and not (
-        options.check_proof or options.check_artifacts or options.check_cohorts
-    ):
+    if options.artifact_offset != 0 and not (options.check_proof or options.check_artifacts or options.check_cohorts):
         fail("doctor", "--artifact-offset requires --proof, --artifacts, or --cohorts")
     if options.schema_record_limit is not None and options.schema_record_limit <= 0:
         fail("doctor", "--schema-record-limit must be a positive integer")
@@ -52,9 +48,17 @@ def validate_check_options(
     if options.artifact_offset < 0:
         fail("doctor", "--artifact-offset must be >= 0")
     if options.maintenance_targets:
-        if options.repair and not options.cleanup and not any(name in safe_repair_targets for name in options.maintenance_targets):
+        if (
+            options.repair
+            and not options.cleanup
+            and not any(name in safe_repair_targets for name in options.maintenance_targets)
+        ):
             fail("doctor", "--target only selected cleanup targets while running --repair")
-        if options.cleanup and not options.repair and not any(name in cleanup_targets for name in options.maintenance_targets):
+        if (
+            options.cleanup
+            and not options.repair
+            and not any(name in cleanup_targets for name in options.maintenance_targets)
+        ):
             fail("doctor", "--target only selected repair targets while running --cleanup")
 
 

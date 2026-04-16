@@ -55,7 +55,6 @@ def create_verification_workspace(
         "XDG_DATA_HOME": str(data_home),
         "XDG_STATE_HOME": str(state_home),
         "POLYLOGUE_ARCHIVE_ROOT": str(archive_root),
-        "POLYLOGUE_RENDER_ROOT": str(render_root),
         "POLYLOGUE_FORCE_PLAIN": "1",
     }
 
@@ -198,13 +197,15 @@ def _run_pipeline_with_sources(
     )
 
     with override_workspace_env(workspace.env_vars):
-        run_coroutine_sync(run_sources(
-            config=config,
-            stage="all",
-            plan=None,
-            ui=None,
-            source_names=None,
-        ))
+        run_coroutine_sync(
+            run_sources(
+                config=config,
+                stage="all",
+                plan=None,
+                ui=None,
+                source_names=None,
+            )
+        )
 
 
 __all__ = [

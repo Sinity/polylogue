@@ -73,7 +73,7 @@ class PrivacyConfig:
     def __post_init__(self) -> None:
         # Apply preset values as defaults (explicit overrides take precedence)
         preset = _PRESETS.get(self.level, _PRESETS["standard"])
-        for attr, default_val in preset.items():
+        for attr, _default_val in preset.items():
             # Only apply preset if attribute is still at the dataclass default
             # (i.e. caller didn't override it explicitly)
             # We detect this by checking if the value matches the standard preset
@@ -132,8 +132,7 @@ def load_privacy_config(
     xdg_path = _xdg_config_home() / "polylogue" / "schemas.toml"
     if xdg_path.exists():
         section = _load_toml_section(xdg_path)
-        _merge_into(section, merged, merged_field_overrides,
-                    merged_allow_patterns, merged_deny_patterns)
+        _merge_into(section, merged, merged_field_overrides, merged_allow_patterns, merged_deny_patterns)
 
     # 2. Project-level config
     if project_path is None:
@@ -141,13 +140,11 @@ def load_privacy_config(
     project_file = project_path / "polylogue-schemas.toml"
     if project_file.exists():
         section = _load_toml_section(project_file)
-        _merge_into(section, merged, merged_field_overrides,
-                    merged_allow_patterns, merged_deny_patterns)
+        _merge_into(section, merged, merged_field_overrides, merged_allow_patterns, merged_deny_patterns)
 
     # 3. CLI overrides
     if cli_overrides:
-        _merge_into(cli_overrides, merged, merged_field_overrides,
-                    merged_allow_patterns, merged_deny_patterns)
+        _merge_into(cli_overrides, merged, merged_field_overrides, merged_allow_patterns, merged_deny_patterns)
 
     # Build final config
     if merged_field_overrides:

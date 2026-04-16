@@ -14,7 +14,9 @@ from polylogue.cli.click_app import main
 pytestmark = pytest.mark.machine_contract
 
 
-def _run_main_with_error(monkeypatch: pytest.MonkeyPatch, argv: list[str], exc: BaseException, capsys) -> tuple[int, dict[str, object]]:
+def _run_main_with_error(
+    monkeypatch: pytest.MonkeyPatch, argv: list[str], exc: BaseException, capsys
+) -> tuple[int, dict[str, object]]:
     monkeypatch.setattr(sys, "argv", ["polylogue", *argv])
     with patch("polylogue.cli.click_app.cli", side_effect=exc):
         with pytest.raises(SystemExit) as exit_info:

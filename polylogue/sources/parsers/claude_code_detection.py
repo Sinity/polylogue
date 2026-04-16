@@ -2,16 +2,18 @@
 
 from __future__ import annotations
 
-_CODE_ONLY_TYPES = frozenset({
-    "file-history-snapshot",
-    "queue-operation",
-    "custom-title",
-    "user",
-    "assistant",
-    "summary",
-    "progress",
-    "result",
-})
+_CODE_ONLY_TYPES = frozenset(
+    {
+        "file-history-snapshot",
+        "queue-operation",
+        "custom-title",
+        "user",
+        "assistant",
+        "summary",
+        "progress",
+        "result",
+    }
+)
 
 
 def looks_like_code(payload: list[object]) -> bool:

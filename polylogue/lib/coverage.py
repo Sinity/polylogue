@@ -86,12 +86,14 @@ def analyze_coverage(summaries: Sequence[ConversationSummary]) -> ArchiveCoverag
     ranges: list[ProviderRange] = []
     for provider, dates in sorted(provider_dates.items()):
         if dates:
-            ranges.append(ProviderRange(
-                provider=provider,
-                first_date=min(dates),
-                last_date=max(dates),
-                count=len(dates),
-            ))
+            ranges.append(
+                ProviderRange(
+                    provider=provider,
+                    first_date=min(dates),
+                    last_date=max(dates),
+                    count=len(dates),
+                )
+            )
 
     # Find gaps (>1 day without any conversation)
     gaps: list[CoverageGap] = []
@@ -100,11 +102,13 @@ def analyze_coverage(summaries: Sequence[ConversationSummary]) -> ArchiveCoverag
         for i in range(len(sorted_dates) - 1):
             gap_days = (sorted_dates[i + 1] - sorted_dates[i]).days
             if gap_days > 1:
-                gaps.append(CoverageGap(
-                    start_date=sorted_dates[i] + timedelta(days=1),
-                    end_date=sorted_dates[i + 1] - timedelta(days=1),
-                    days=gap_days - 1,
-                ))
+                gaps.append(
+                    CoverageGap(
+                        start_date=sorted_dates[i] + timedelta(days=1),
+                        end_date=sorted_dates[i + 1] - timedelta(days=1),
+                        days=gap_days - 1,
+                    )
+                )
 
     date_range: tuple[date | None, date | None] = (None, None)
     if all_dates:

@@ -51,21 +51,23 @@ def generate_qa_markdown(
     proof_report = session["proof"].get("report")
     if proof_report is not None:
         proof_summary = proof_report["summary"]
-        lines.extend([
-            "## Artifact Proof",
-            "",
-            "| Metric | Value |",
-            "| --- | ---: |",
-            f"| Total raw records | {proof_report['total_records']} |",
-            f"| Contract-backed | {proof_summary['contract_backed_records']} |",
-            f"| Unsupported parseable | {proof_summary['unsupported_parseable_records']} |",
-            f"| Recognized non-parseable | {proof_summary['recognized_non_parseable_records']} |",
-            f"| Unknown | {proof_summary['unknown_records']} |",
-            f"| Decode errors | {proof_summary['decode_errors']} |",
-            f"| Linked sidecars | {proof_summary['linked_sidecars']} |",
-            f"| Orphan sidecars | {proof_summary['orphan_sidecars']} |",
-            "",
-        ])
+        lines.extend(
+            [
+                "## Artifact Proof",
+                "",
+                "| Metric | Value |",
+                "| --- | ---: |",
+                f"| Total raw records | {proof_report['total_records']} |",
+                f"| Contract-backed | {proof_summary['contract_backed_records']} |",
+                f"| Unsupported parseable | {proof_summary['unsupported_parseable_records']} |",
+                f"| Recognized non-parseable | {proof_summary['recognized_non_parseable_records']} |",
+                f"| Unknown | {proof_summary['unknown_records']} |",
+                f"| Decode errors | {proof_summary['decode_errors']} |",
+                f"| Linked sidecars | {proof_summary['linked_sidecars']} |",
+                f"| Orphan sidecars | {proof_summary['orphan_sidecars']} |",
+                "",
+            ]
+        )
         if proof_summary["package_versions"]:
             lines.extend(["### Resolved Packages", "", "| Package | Count |", "| --- | ---: |"])
             for version, count in proof_summary["package_versions"].items():
@@ -82,12 +84,14 @@ def generate_qa_markdown(
                 lines.append(f"| {reason} | {count} |")
             lines.append("")
         if proof_report["providers"]:
-            lines.extend([
-                "### Providers",
-                "",
-                "| Provider | Total | Contract-backed | Unsupported | Non-parseable | Unknown | Decode errors |",
-                "| --- | ---: | ---: | ---: | ---: | ---: | ---: |",
-            ])
+            lines.extend(
+                [
+                    "### Providers",
+                    "",
+                    "| Provider | Total | Contract-backed | Unsupported | Non-parseable | Unknown | Decode errors |",
+                    "| --- | ---: | ---: | ---: | ---: | ---: | ---: |",
+                ]
+            )
             for provider, stats in proof_report["providers"].items():
                 lines.append(
                     f"| {provider} | {stats['total_records']} | {stats['contract_backed_records']} | "
@@ -100,50 +104,44 @@ def generate_qa_markdown(
 
     showcase_summary = session["showcase"]["summary"]
     if showcase_summary is not None:
-        lines.extend([
-            "## Exercises",
-            "",
-            "| Metric | Value |",
-            "| --- | ---: |",
-            f"| Total | {showcase_summary['total']} |",
-            f"| Passed | {showcase_summary['passed']} |",
-            f"| Failed | {showcase_summary['failed']} |",
-            f"| Skipped | {showcase_summary['skipped']} |",
-            "",
-            "### Results by Group",
-            "",
-            "| Group | Pass | Fail | Skip |",
-            "| --- | ---: | ---: | ---: |",
-        ])
+        lines.extend(
+            [
+                "## Exercises",
+                "",
+                "| Metric | Value |",
+                "| --- | ---: |",
+                f"| Total | {showcase_summary['total']} |",
+                f"| Passed | {showcase_summary['passed']} |",
+                f"| Failed | {showcase_summary['failed']} |",
+                f"| Skipped | {showcase_summary['skipped']} |",
+                "",
+                "### Results by Group",
+                "",
+                "| Group | Pass | Fail | Skip |",
+                "| --- | ---: | ---: | ---: |",
+            ]
+        )
         for group in GROUPS:
-            counts = session["showcase"]["group_counts"].get(
-                group, {"pass": 0, "fail": 0, "skip": 0}
-            )
-            lines.append(
-                f"| {group} | {counts['pass']} | {counts['fail']} | {counts['skip']} |"
-            )
+            counts = session["showcase"]["group_counts"].get(group, {"pass": 0, "fail": 0, "skip": 0})
+            lines.append(f"| {group} | {counts['pass']} | {counts['fail']} | {counts['skip']} |")
         lines.append("")
 
     invariant_summary = session["invariants"]["summary"]
     if not session["invariants"]["skipped"]:
-        lines.extend([
-            "## Invariants",
-            "",
-            f"- Passed: {invariant_summary['passed']}",
-            f"- Failed: {invariant_summary['failed']}",
-            f"- Skipped: {invariant_summary['skipped']}",
-        ])
-        failures = [
-            check
-            for check in session["invariants"]["checks"]
-            if check["status"] == OutcomeStatus.ERROR.value
-        ]
+        lines.extend(
+            [
+                "## Invariants",
+                "",
+                f"- Passed: {invariant_summary['passed']}",
+                f"- Failed: {invariant_summary['failed']}",
+                f"- Skipped: {invariant_summary['skipped']}",
+            ]
+        )
+        failures = [check for check in session["invariants"]["checks"] if check["status"] == OutcomeStatus.ERROR.value]
         if failures:
             lines.extend(["", "### Failures", ""])
             for failure in failures:
-                lines.append(
-                    f"- `{failure['invariant']}` @ `{failure['exercise']}`: {failure.get('error', '')}"
-                )
+                lines.append(f"- `{failure['invariant']}` @ `{failure['exercise']}`: {failure.get('error', '')}")
         lines.append("")
 
     return "\n".join(lines)

@@ -77,9 +77,7 @@ async def iter_raw_ids(
             yield str(row["raw_id"])
 
 
-async def get_raw_conversation(
-    conn: aiosqlite.Connection, raw_id: str
-) -> RawConversationRecord | None:
+async def get_raw_conversation(conn: aiosqlite.Connection, raw_id: str) -> RawConversationRecord | None:
     cursor = await conn.execute(
         "SELECT * FROM raw_conversations WHERE raw_id = ?",
         (raw_id,),
@@ -92,9 +90,7 @@ async def get_raw_conversation(
 
 async def get_known_source_mtimes(conn: aiosqlite.Connection) -> dict[str, str]:
     result: dict[str, str] = {}
-    cursor = await conn.execute(
-        "SELECT source_path, file_mtime FROM raw_conversations WHERE file_mtime IS NOT NULL"
-    )
+    cursor = await conn.execute("SELECT source_path, file_mtime FROM raw_conversations WHERE file_mtime IS NOT NULL")
     while True:
         rows = await cursor.fetchmany(1000)
         if not rows:
@@ -104,9 +100,7 @@ async def get_known_source_mtimes(conn: aiosqlite.Connection) -> dict[str, str]:
     return result
 
 
-async def get_raw_conversations_batch(
-    conn: aiosqlite.Connection, raw_ids: list[str]
-) -> list[RawConversationRecord]:
+async def get_raw_conversations_batch(conn: aiosqlite.Connection, raw_ids: list[str]) -> list[RawConversationRecord]:
     if not raw_ids:
         return []
     placeholders = ",".join("?" * len(raw_ids))
@@ -194,9 +188,7 @@ async def iter_raw_conversations(
             break
 
 
-async def get_raw_conversation_count(
-    conn: aiosqlite.Connection, provider: str | None = None
-) -> int:
+async def get_raw_conversation_count(conn: aiosqlite.Connection, provider: str | None = None) -> int:
     query = "SELECT COUNT(*) as cnt FROM raw_conversations"
     params: tuple[str, ...] = ()
     if provider is not None:

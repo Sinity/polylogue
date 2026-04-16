@@ -42,9 +42,7 @@ def make_row(columns: dict) -> sqlite3.Row:
         "block_index": "INTEGER",
         "validation_drift_count": "INTEGER",
     }
-    col_defs = ", ".join(
-        f'"{c}" {type_map.get(c, "TEXT")}' for c in cols
-    )
+    col_defs = ", ".join(f'"{c}" {type_map.get(c, "TEXT")}' for c in cols)
     placeholders = ", ".join("?" * len(cols))
     conn.execute(f"CREATE TABLE t ({col_defs})")
     conn.execute(f"INSERT INTO t VALUES ({placeholders})", vals)
@@ -128,22 +126,24 @@ class TestRowToConversation:
 
     def test_maps_required_fields(self):
         """All required fields are mapped from row to ConversationRecord."""
-        row = make_row({
-            "conversation_id": "conv-1",
-            "provider_name": "claude-ai",
-            "provider_conversation_id": "ext-conv-1",
-            "title": "Test Chat",
-            "created_at": "2024-01-01T00:00:00Z",
-            "updated_at": "2024-01-02T00:00:00Z",
-            "sort_key": None,
-            "content_hash": "abcdef1234567890",
-            "provider_meta": None,
-            "metadata": None,
-            "version": 1,
-            "parent_conversation_id": None,
-            "branch_type": None,
-            "raw_id": None,
-        })
+        row = make_row(
+            {
+                "conversation_id": "conv-1",
+                "provider_name": "claude-ai",
+                "provider_conversation_id": "ext-conv-1",
+                "title": "Test Chat",
+                "created_at": "2024-01-01T00:00:00Z",
+                "updated_at": "2024-01-02T00:00:00Z",
+                "sort_key": None,
+                "content_hash": "abcdef1234567890",
+                "provider_meta": None,
+                "metadata": None,
+                "version": 1,
+                "parent_conversation_id": None,
+                "branch_type": None,
+                "raw_id": None,
+            }
+        )
         result = _row_to_conversation(row)
         assert isinstance(result, ConversationRecord)
         assert result.conversation_id == "conv-1"
@@ -156,22 +156,24 @@ class TestRowToConversation:
         import json
 
         meta = {"model": "claude-3"}
-        row = make_row({
-            "conversation_id": "conv-2",
-            "provider_name": "claude-ai",
-            "provider_conversation_id": "ext-2",
-            "title": "With Meta",
-            "created_at": None,
-            "updated_at": None,
-            "sort_key": None,
-            "content_hash": "hash123456789abc",
-            "provider_meta": json.dumps(meta),
-            "metadata": None,
-            "version": 1,
-            "parent_conversation_id": None,
-            "branch_type": None,
-            "raw_id": None,
-        })
+        row = make_row(
+            {
+                "conversation_id": "conv-2",
+                "provider_name": "claude-ai",
+                "provider_conversation_id": "ext-2",
+                "title": "With Meta",
+                "created_at": None,
+                "updated_at": None,
+                "sort_key": None,
+                "content_hash": "hash123456789abc",
+                "provider_meta": json.dumps(meta),
+                "metadata": None,
+                "version": 1,
+                "parent_conversation_id": None,
+                "branch_type": None,
+                "raw_id": None,
+            }
+        )
         result = _row_to_conversation(row)
         assert result.provider_meta == {"model": "claude-3"}
 
@@ -186,22 +188,24 @@ class TestRowToMessage:
 
     def test_maps_required_fields(self):
         """All required fields are mapped from row to MessageRecord."""
-        row = make_row({
-            "message_id": "m-1",
-            "conversation_id": "conv-1",
-            "provider_message_id": "ext-m-1",
-            "role": "user",
-            "text": "Hello world",
-            "sort_key": 1704106200.0,
-            "content_hash": "msghash123456789",
-            "version": 1,
-            "parent_message_id": None,
-            "branch_index": 0,
-            "provider_name": "claude-ai",
-            "word_count": 2,
-            "has_tool_use": 0,
-            "has_thinking": 0,
-        })
+        row = make_row(
+            {
+                "message_id": "m-1",
+                "conversation_id": "conv-1",
+                "provider_message_id": "ext-m-1",
+                "role": "user",
+                "text": "Hello world",
+                "sort_key": 1704106200.0,
+                "content_hash": "msghash123456789",
+                "version": 1,
+                "parent_message_id": None,
+                "branch_index": 0,
+                "provider_name": "claude-ai",
+                "word_count": 2,
+                "has_tool_use": 0,
+                "has_thinking": 0,
+            }
+        )
         result = _row_to_message(row)
         assert isinstance(result, MessageRecord)
         assert result.message_id == "m-1"
@@ -212,22 +216,24 @@ class TestRowToMessage:
 
     def test_null_branch_index_defaults_to_zero(self):
         """Null branch_index from DB maps to 0."""
-        row = make_row({
-            "message_id": "m-2",
-            "conversation_id": "conv-1",
-            "provider_message_id": None,
-            "role": "assistant",
-            "text": "Reply",
-            "sort_key": None,
-            "content_hash": "msghash987654321",
-            "version": 1,
-            "parent_message_id": None,
-            "branch_index": None,
-            "provider_name": "",
-            "word_count": 0,
-            "has_tool_use": 0,
-            "has_thinking": 0,
-        })
+        row = make_row(
+            {
+                "message_id": "m-2",
+                "conversation_id": "conv-1",
+                "provider_message_id": None,
+                "role": "assistant",
+                "text": "Reply",
+                "sort_key": None,
+                "content_hash": "msghash987654321",
+                "version": 1,
+                "parent_message_id": None,
+                "branch_index": None,
+                "provider_name": "",
+                "word_count": 0,
+                "has_tool_use": 0,
+                "has_thinking": 0,
+            }
+        )
         result = _row_to_message(row)
         assert result.branch_index == 0
 
@@ -242,25 +248,27 @@ class TestRowToRawConversation:
 
     def test_maps_all_fields(self):
         """All fields are mapped from row to RawConversationRecord."""
-        row = make_row({
-            "raw_id": "sha256hash",
-            "provider_name": "chatgpt",
-            "payload_provider": None,
-            "source_name": "inbox",
-            "source_path": "/tmp/data.json",
-            "source_index": "0",
-            "blob_size": 14,
-            "acquired_at": "2024-01-01T00:00:00Z",
-            "file_mtime": "2024-01-01T00:00:00Z",
-            "parsed_at": None,
-            "parse_error": None,
-            "validated_at": None,
-            "validation_status": None,
-            "validation_error": None,
-            "validation_drift_count": None,
-            "validation_provider": None,
-            "validation_mode": None,
-        })
+        row = make_row(
+            {
+                "raw_id": "sha256hash",
+                "provider_name": "chatgpt",
+                "payload_provider": None,
+                "source_name": "inbox",
+                "source_path": "/tmp/data.json",
+                "source_index": "0",
+                "blob_size": 14,
+                "acquired_at": "2024-01-01T00:00:00Z",
+                "file_mtime": "2024-01-01T00:00:00Z",
+                "parsed_at": None,
+                "parse_error": None,
+                "validated_at": None,
+                "validation_status": None,
+                "validation_error": None,
+                "validation_drift_count": None,
+                "validation_provider": None,
+                "validation_mode": None,
+            }
+        )
         result = _row_to_raw_conversation(row)
         assert isinstance(result, RawConversationRecord)
         assert result.raw_id == "sha256hash"

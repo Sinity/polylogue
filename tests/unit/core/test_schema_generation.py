@@ -146,7 +146,7 @@ class TestGetSampleCountFromDb:
                     None,
                     "hash1",
                     '{"source":"test"}',
-                    '{}',
+                    "{}",
                     1,
                     None,
                     None,
@@ -177,7 +177,7 @@ class TestGetSampleCountFromDb:
                     provider_meta, metadata, version,
                     parent_conversation_id, branch_type, raw_id)
                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                ("c1", "chatgpt", "p1", "Test", None, None, "hash1", None, '{}', 1, None, None, None),
+                ("c1", "chatgpt", "p1", "Test", None, None, "hash1", None, "{}", 1, None, None, None),
             )
             conn.execute(
                 """INSERT INTO messages
@@ -285,23 +285,26 @@ class TestGenerateAllSchemas:
                 recommended_version="v1",
             ),
             package_schemas={
-                "v1": {
-                    "conversation_document": {"type": "object", "properties": {"id": {"type": "string"}}}
-                }
+                "v1": {"conversation_document": {"type": "object", "properties": {"id": {"type": "string"}}}}
             },
             manifest=SimpleNamespace(to_dict=lambda: {"provider": "chatgpt", "clusters": []}),
         )
 
         with (
             patch("polylogue.schemas.generation_workflow._build_provider_bundle", return_value=fake_bundle),
-            patch("polylogue.schemas.registry.SchemaRegistry.save_cluster_manifest", return_value=output_dir / "chatgpt" / "manifest.json"),
+            patch(
+                "polylogue.schemas.registry.SchemaRegistry.save_cluster_manifest",
+                return_value=output_dir / "chatgpt" / "manifest.json",
+            ),
         ):
             results = generate_all_schemas(output_dir, providers=["chatgpt"])
 
         assert output_dir.exists()
         assert len(results) == 1
         assert (output_dir / "chatgpt" / "catalog.json").exists()
-        assert (output_dir / "chatgpt" / "versions" / "v1" / "elements" / "conversation_document.schema.json.gz").exists()
+        assert (
+            output_dir / "chatgpt" / "versions" / "v1" / "elements" / "conversation_document.schema.json.gz"
+        ).exists()
 
     def test_skips_failed_schemas(self, tmp_path):
         failed_result = GenerationResult(provider="broken", sample_count=0, schema=None, error="No samples")

@@ -2,9 +2,7 @@
 # name: TestCommandOutputs.test_check_output_snapshot
   '''
   Usage: polylogue doctor [OPTIONS]
-  
     Health check with optional maintenance and cleanup previews.
-  
   Options:
     --json                          Output as JSON
     -v, --verbose                   Show breakdown by provider
@@ -64,9 +62,7 @@
 # name: TestCommandOutputs.test_run_help_output_snapshot
   '''
   Usage: polylogue run [OPTIONS] COMMAND1 [ARGS]... [COMMAND2 [ARGS]...]...
-  
     Run pipeline stages on configured sources.
-  
   Options:
     --preview       Preview work without writing
     --source TEXT   Configured source name (repeatable). Accepts 'last' for the
@@ -79,7 +75,6 @@
     --reparse       Force re-parsing of all raw conversations (clears parse
                     tracking)
     -h, --help      Show this message and exit.
-  
   Commands:
     acquire      Capture raw payloads only.
     all          Run the full pipeline.
@@ -93,24 +88,21 @@
     site         Generate a static HTML site from the archive.
   '''
 # ---
-# name: TestErrorOutput.test_invalid_command_error_output
+# name: TestErrorOutput.test_invalid_option_error_output
   '''
-  No conversations matched filters:
-    search: invalid-command-xyz
-  Hint: try broadening your filters or use `list` to browse
+  Usage: polylogue [OPTIONS] COMMAND [ARGS]...
+  Try 'polylogue -h' for help.
+  Error: No such option: --bogus Did you mean --verbose?
   '''
 # ---
 # name: TestHelpOutput.test_help_output_snapshot
   '''
   Usage: polylogue [OPTIONS] COMMAND [ARGS]...
-  
     Polylogue - AI conversation archive.
-  
     Query mode (default):
         polylogue "search terms"
         polylogue -p claude-ai --since "last week"
         polylogue --latest --output browser
-  
     Verbs (actions on matched conversations):
         polylogue "error" -p claude-ai --since 2025-01 list
         polylogue --has thinking --sort tokens list --limit 10
@@ -119,26 +111,21 @@
         polylogue --latest open
         polylogue "urgent" --tag review delete --dry-run
         polylogue list --format json
-  
     Combined filters:
-        polylogue --path <PATH> --action file_read lis
-  t
+        polylogue --path README.md --action file_read list
         polylogue --action search --action file_edit list
         polylogue --action-sequence file_read,file_edit,shell list
         polylogue --action-text "pytest -q" list
         polylogue "pytest -q tests<PATH>" --retrieval-l
   ane actions --limit 5
         polylogue --action other stats --by tool --format json
-        polylogue stats --by project --provider claude-code --since 2026-01-01 --f
-  ormat json
+        polylogue stats --by repo --provider claude-code --since 2026-01-01 --form
+  at json
         polylogue --tool bash --exclude-tool read list
         polylogue --similar "sqlite locking bug in parser" --limit 5
-  
     Modifiers (write operations):
         polylogue "urgent" --add-tag review
-  
     Run `polylogue <command> --help` for subcommand details.
-  
   Options:
     -i, --id TEXT                   Conversation ID (exact or prefix match)
     -c, --contains TEXT             FTS term (repeatable = AND)
@@ -207,13 +194,12 @@
     -v, --verbose                   Verbose output
     --version                       Show the version and exit.
     -h, --help                      Show this message and exit.
-  
   Commands:
     audit        Run composable QA: schema audit, exercises, and invariant...
     auth         Authenticate with external services (Google Drive for...
     completions  Generate shell completion scripts.
     count        Print count of matched conversations.
-    dashboard    Launch the Mission Control TUI dashboard.
+    dashboard    Launch the dashboard TUI.
     delete       Delete matched conversations.
     doctor       Health check with optional maintenance and cleanup previews.
     list         List matched conversations.
@@ -230,14 +216,11 @@
 # name: TestTerminalDimensions.test_help_at_narrow_width
   '''
   Usage: polylogue [OPTIONS] COMMAND [ARGS]...
-  
     Polylogue - AI conversation archive.
-  
     Query mode (default):
         polylogue "search terms"
         polylogue -p claude-ai --since "last week"
         polylogue --latest --output browser
-  
     Verbs (actions on matched conversations):
         polylogue "error" -p claude-ai --since 2025-01 list
         polylogue --has thinking --sort tokens list --limit 10
@@ -246,10 +229,8 @@
         polylogue --latest open
         polylogue "urgent" --tag review delete --dry-run
         polylogue list --format json
-  
     Combined filters:
-        polylogue --path <PATH> --
-  action file_read list
+        polylogue --path README.md --action file_read list
         polylogue --action search --action file_edit list
         polylogue --action-sequence file_read,file_edit,shell
   list
@@ -257,17 +238,14 @@
         polylogue "pytest -q tests<PATH>
   ts.py" --retrieval-lane actions --limit 5
         polylogue --action other stats --by tool --format json
-        polylogue stats --by project --provider claude-code --
-  since 2026-01-01 --format json
+        polylogue stats --by repo --provider claude-code --sin
+  ce 2026-01-01 --format json
         polylogue --tool bash --exclude-tool read list
         polylogue --similar "sqlite locking bug in parser" --l
   imit 5
-  
     Modifiers (write operations):
         polylogue "urgent" --add-tag review
-  
     Run `polylogue <command> --help` for subcommand details.
-  
   Options:
     -i, --id TEXT                   Conversation ID (exact or
   prefix match)
@@ -367,7 +345,6 @@
     --version                       Show the version and exit.
     -h, --help                      Show this message and exit
   .
-  
   Commands:
     audit        Run composable QA: schema audit, exercises, a
   nd invariant...
@@ -375,7 +352,7 @@
   rive for...
     completions  Generate shell completion scripts.
     count        Print count of matched conversations.
-    dashboard    Launch the Mission Control TUI dashboard.
+    dashboard    Launch the dashboard TUI.
     delete       Delete matched conversations.
     doctor       Health check with optional maintenance and cl
   eanup previews.
@@ -396,14 +373,11 @@
 # name: TestTerminalDimensions.test_help_at_wide_width
   '''
   Usage: polylogue [OPTIONS] COMMAND [ARGS]...
-  
     Polylogue - AI conversation archive.
-  
     Query mode (default):
         polylogue "search terms"
         polylogue -p claude-ai --since "last week"
         polylogue --latest --output browser
-  
     Verbs (actions on matched conversations):
         polylogue "error" -p claude-ai --since 2025-01 list
         polylogue --has thinking --sort tokens list --limit 10
@@ -412,23 +386,19 @@
         polylogue --latest open
         polylogue "urgent" --tag review delete --dry-run
         polylogue list --format json
-  
     Combined filters:
-        polylogue --path <PATH> --action file_read list
+        polylogue --path README.md --action file_read list
         polylogue --action search --action file_edit list
         polylogue --action-sequence file_read,file_edit,shell list
         polylogue --action-text "pytest -q" list
         polylogue "pytest -q tests<PATH>" --retrieval-lane actions --limit 5
         polylogue --action other stats --by tool --format json
-        polylogue stats --by project --provider claude-code --since 2026-01-01 --format json
+        polylogue stats --by repo --provider claude-code --since 2026-01-01 --format json
         polylogue --tool bash --exclude-tool read list
         polylogue --similar "sqlite locking bug in parser" --limit 5
-  
     Modifiers (write operations):
         polylogue "urgent" --add-tag review
-  
     Run `polylogue <command> --help` for subcommand details.
-  
   Options:
     -i, --id TEXT                   Conversation ID (exact or prefix match)
     -c, --contains TEXT             FTS term (repeatable = AND)
@@ -495,13 +465,12 @@
     -v, --verbose                   Verbose output
     --version                       Show the version and exit.
     -h, --help                      Show this message and exit.
-  
   Commands:
     audit        Run composable QA: schema audit, exercises, and invariant...
     auth         Authenticate with external services (Google Drive for...
     completions  Generate shell completion scripts.
     count        Print count of matched conversations.
-    dashboard    Launch the Mission Control TUI dashboard.
+    dashboard    Launch the dashboard TUI.
     delete       Delete matched conversations.
     doctor       Health check with optional maintenance and cleanup previews.
     list         List matched conversations.

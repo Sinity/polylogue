@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from polylogue.lib.raw_payload import build_raw_payload_envelope
 from polylogue.logging import get_logger
-from polylogue.storage.blob_store import get_blob_store
+from polylogue.schemas.validator import SchemaValidator
+from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.store import RawConversationRecord
 from polylogue.types import Provider, ValidationMode, ValidationStatus
 
@@ -27,19 +29,15 @@ class _ValidationOutcome:
     drift_counts_delta: dict[str, int] = field(default_factory=dict)
 
 
-from polylogue.schemas.validator import SchemaValidator as _SchemaValidator
-
-
 def _validate_record_sync(
     raw_record: RawConversationRecord,
     validation_mode: ValidationMode,
+    blob_root_str: str,
 ) -> _ValidationOutcome:
     """Run CPU-bound validation for a single raw record."""
     import time as _time
 
     t_start = _time.perf_counter()
-    SchemaValidator = _SchemaValidator
-
     counts_delta: dict[str, int] = {
         "validated": 0,
         "invalid": 0,
@@ -55,10 +53,9 @@ def _validate_record_sync(
     canonical_provider = Provider.from_string(stored_payload_provider or raw_record.provider_name)
     payload_provider = stored_payload_provider
 
-    blob_store = get_blob_store()
+    blob_store = BlobStore(Path(blob_root_str))
     raw_source = blob_store.blob_path(raw_record.raw_id)
 
-    t_decode = _time.perf_counter()
     try:
         envelope = build_raw_payload_envelope(
             raw_source,
@@ -176,7 +173,6 @@ def _validate_record_sync(
         validation_status = ValidationStatus.SKIPPED
 
     total_elapsed = _time.perf_counter() - t_start
-    decode_elapsed = _time.perf_counter() - t_decode  # approximate — includes validation too
     if total_elapsed > 1.0:
         logger.info(
             "slow_validate",

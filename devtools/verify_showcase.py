@@ -1,6 +1,6 @@
 """Verify showcase tier 0 output matches committed baselines.
 
-Usage: python -m devtools.verify_showcase
+Usage: devtools verify-showcase
 Exit code: 0 if baselines match, 1 if drift detected.
 
 Tier 0 exercises are structural tests (help screens, version output)
@@ -16,7 +16,6 @@ from pathlib import Path
 
 from polylogue.showcase.exercises import EXERCISES, Exercise
 from polylogue.showcase.runner import ShowcaseRunner
-
 
 BASELINE_DIR = Path(__file__).resolve().parent.parent / "tests" / "baselines" / "showcase"
 
@@ -34,12 +33,7 @@ def get_tier_0_exercises() -> list[Exercise]:
     Excludes exercises whose output depends on the runtime environment
     (machine-specific paths, git SHAs) — they cannot have stable baselines.
     """
-    return [
-        ex for ex in EXERCISES
-        if ex.group in TIER_0_GROUPS
-        and not ex.needs_data
-        and ex.name not in _ENV_DEPENDENT
-    ]
+    return [ex for ex in EXERCISES if ex.group in TIER_0_GROUPS and not ex.needs_data and ex.name not in _ENV_DEPENDENT]
 
 
 def run_tier_0() -> dict[str, str]:
@@ -132,7 +126,8 @@ def main(argv: list[str] | None = None) -> int:
 
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--update", action="store_true",
+        "--update",
+        action="store_true",
         help="Update baselines to current output instead of comparing",
     )
     args = parser.parse_args(argv)

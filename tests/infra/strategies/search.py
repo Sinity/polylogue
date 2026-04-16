@@ -29,37 +29,47 @@ def search_query_strategy(draw: st.DrawFn) -> str:
     - SQL injection payloads
     - Empty/whitespace
     """
-    return draw(st.one_of(
-        # Simple terms
-        st.text(
-            min_size=1,
-            max_size=50,
-            alphabet=st.characters(whitelist_categories=("L", "N")),
-        ),
-        # FTS5 operators as literals
-        st.sampled_from(FTS5_OPERATORS),
-        # SQL injection payloads
-        st.sampled_from(SQL_INJECTION_PAYLOADS),
-        # Unicode text
-        st.text(min_size=1, max_size=30),
-        # Quoted strings with internal quotes
-        st.builds(
-            lambda t: f'"{t}"',
-            st.text(min_size=1, max_size=20, alphabet=st.characters(
-                whitelist_categories=("L", "N", "P", "Z"),
-            )),
-        ),
-        # Operator-prefix patterns (e.g. "NOT foo", "NEAR bar")
-        st.builds(
-            lambda op, term: f"{op} {term}",
-            st.sampled_from(["NOT", "NEAR", "AND", "OR"]),
-            st.text(min_size=1, max_size=20, alphabet=st.characters(
-                whitelist_categories=("L", "N"),
-            )),
-        ),
-        # Empty and whitespace
-        st.sampled_from(["", " ", "  \t  ", "\n"]),
-    ))
+    return draw(
+        st.one_of(
+            # Simple terms
+            st.text(
+                min_size=1,
+                max_size=50,
+                alphabet=st.characters(whitelist_categories=("L", "N")),
+            ),
+            # FTS5 operators as literals
+            st.sampled_from(FTS5_OPERATORS),
+            # SQL injection payloads
+            st.sampled_from(SQL_INJECTION_PAYLOADS),
+            # Unicode text
+            st.text(min_size=1, max_size=30),
+            # Quoted strings with internal quotes
+            st.builds(
+                lambda t: f'"{t}"',
+                st.text(
+                    min_size=1,
+                    max_size=20,
+                    alphabet=st.characters(
+                        whitelist_categories=("L", "N", "P", "Z"),
+                    ),
+                ),
+            ),
+            # Operator-prefix patterns (e.g. "NOT foo", "NEAR bar")
+            st.builds(
+                lambda op, term: f"{op} {term}",
+                st.sampled_from(["NOT", "NEAR", "AND", "OR"]),
+                st.text(
+                    min_size=1,
+                    max_size=20,
+                    alphabet=st.characters(
+                        whitelist_categories=("L", "N"),
+                    ),
+                ),
+            ),
+            # Empty and whitespace
+            st.sampled_from(["", " ", "  \t  ", "\n"]),
+        )
+    )
 
 
 @st.composite
@@ -69,15 +79,17 @@ def fts5_match_text_strategy(draw: st.DrawFn) -> str:
     Returns text that contains searchable terms — useful for creating
     test data that can be found via FTS5 queries.
     """
-    words = draw(st.lists(
-        st.text(
-            min_size=2,
-            max_size=15,
-            alphabet=st.characters(whitelist_categories=("L",)),
-        ),
-        min_size=1,
-        max_size=20,
-    ))
+    words = draw(
+        st.lists(
+            st.text(
+                min_size=2,
+                max_size=15,
+                alphabet=st.characters(whitelist_categories=("L",)),
+            ),
+            min_size=1,
+            max_size=20,
+        )
+    )
     return " ".join(words)
 
 
@@ -89,13 +101,17 @@ def search_with_since_strategy(
 
     Returns a tuple of (search_term, optional_iso_date).
     """
-    query = draw(st.text(
-        min_size=1,
-        max_size=30,
-        alphabet=st.characters(whitelist_categories=("L", "N")),
-    ))
-    since = draw(st.one_of(
-        st.none(),
-        st.dates().map(lambda d: d.isoformat()),
-    ))
+    query = draw(
+        st.text(
+            min_size=1,
+            max_size=30,
+            alphabet=st.characters(whitelist_categories=("L", "N")),
+        )
+    )
+    since = draw(
+        st.one_of(
+            st.none(),
+            st.dates().map(lambda d: d.isoformat()),
+        )
+    )
     return query, since

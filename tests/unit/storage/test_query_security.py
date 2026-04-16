@@ -53,7 +53,12 @@ async def test_conversation_title_sql_injection(temp_repo) -> None:
 
 
 async def test_multiple_injection_attempts_in_sequence(temp_repo) -> None:
-    for malicious_id in ["' OR '1'='1", "'; DROP TABLE conversations--", "1 UNION SELECT * FROM sqlite_master--", "admin'--"]:
+    for malicious_id in [
+        "' OR '1'='1",
+        "'; DROP TABLE conversations--",
+        "1 UNION SELECT * FROM sqlite_master--",
+        "admin'--",
+    ]:
         assert await temp_repo.view(malicious_id) is None
     assert isinstance(await temp_repo.list(), list)
 

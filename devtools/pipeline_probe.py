@@ -164,13 +164,13 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--raw-batch-size",
         type=int,
         default=None,
-        help="Override POLYLOGUE_PARSE_RAW_BATCH_SIZE for this probe.",
+        help="Use this raw-record batch size for the probe.",
     )
     parser.add_argument(
         "--ingest-workers",
         type=int,
         default=None,
-        help="Override POLYLOGUE_INGEST_WORKERS for this probe.",
+        help="Use this worker count for the probe ingest stage.",
     )
     parser.add_argument(
         "--measure-ingest-result-size",
@@ -206,26 +206,22 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 @contextmanager
-def _isolated_env(workdir: Path, *, extra_env: dict[str, str] | None = None) -> Iterator[None]:
-    previous = {key: os.environ.get(key) for key in (
-        "XDG_DATA_HOME",
-        "XDG_STATE_HOME",
-        "XDG_CONFIG_HOME",
-        "POLYLOGUE_ARCHIVE_ROOT",
-        "POLYLOGUE_RENDER_ROOT",
-        "POLYLOGUE_PARSE_RAW_BATCH_SIZE",
-        "POLYLOGUE_INGEST_WORKERS",
-        "POLYLOGUE_MEASURE_INGEST_RESULT_SIZE",
-    )}
+def _isolated_env(workdir: Path) -> Iterator[None]:
+    previous = {
+        key: os.environ.get(key)
+        for key in (
+            "XDG_DATA_HOME",
+            "XDG_STATE_HOME",
+            "XDG_CONFIG_HOME",
+            "POLYLOGUE_ARCHIVE_ROOT",
+        )
+    }
     env_updates = {
         "XDG_DATA_HOME": str(workdir / "xdg-data"),
         "XDG_STATE_HOME": str(workdir / "xdg-state"),
         "XDG_CONFIG_HOME": str(workdir / "xdg-config"),
         "POLYLOGUE_ARCHIVE_ROOT": str(workdir / "archive"),
-        "POLYLOGUE_RENDER_ROOT": str(workdir / "render"),
     }
-    if extra_env:
-        env_updates.update(extra_env)
     for key, value in env_updates.items():
         os.environ[key] = value
     reset_blob_store()
@@ -377,8 +373,7 @@ def _build_probe_provenance(
         provenance["manifest_sha256"] = _sha256_file(manifest_path)
     if source_inputs is not None:
         fingerprints = [
-            _fingerprint_path(Path(str(entry["staged_path"])))
-            for entry in source_inputs.get("entries", [])
+            _fingerprint_path(Path(str(entry["staged_path"]))) for entry in source_inputs.get("entries", [])
         ]
         provenance["source_input_fingerprints"] = fingerprints
         digest = hashlib.sha256()
@@ -503,10 +498,7 @@ def _fetch_archive_candidates(
 
     with open_connection(db_path) as conn:
         cursor = conn.execute(sql, tuple(params))
-        return [
-            RawConversationRecord.model_validate(dict(row))
-            for row in cursor.fetchall()
-        ]
+        return [RawConversationRecord.model_validate(dict(row)) for row in cursor.fetchall()]
 
 
 def _raw_conversation_count(db_path: Path) -> int:
@@ -622,9 +614,7 @@ def _build_archive_manifest(
         provider_filters=provider_filters,
         source_filters=source_filters,
     )
-    candidates_with_blobs = [
-        record for record in candidate_records if source_blob_store.exists(record.raw_id)
-    ]
+    candidates_with_blobs = [record for record in candidate_records if source_blob_store.exists(record.raw_id)]
     missing_blob_count = len(candidate_records) - len(candidates_with_blobs)
 
     by_provider: dict[str, list[RawConversationRecord]] = {}
@@ -658,12 +648,14 @@ def _build_archive_manifest(
             )
         )
 
-    sampled_records.sort(key=lambda record: (
-        _effective_provider_name(record),
-        _source_bucket_name(record),
-        record.acquired_at,
-        record.raw_id,
-    ))
+    sampled_records.sort(
+        key=lambda record: (
+            _effective_provider_name(record),
+            _source_bucket_name(record),
+            record.acquired_at,
+            record.raw_id,
+        )
+    )
 
     return {
         "input_mode": "archive-subset",
@@ -717,10 +709,7 @@ async def _seed_archive_subset(
     repository: ConversationRepository,
     target_blob_store: BlobStore,
 ) -> dict[str, Any]:
-    records = [
-        RawConversationRecord.model_validate(record_payload)
-        for record_payload in manifest.get("records", [])
-    ]
+    records = [RawConversationRecord.model_validate(record_payload) for record_payload in manifest.get("records", [])]
     source_blob_root = Path(str(manifest["source_blob_root"])).resolve()
     source_blob_store = BlobStore(source_blob_root)
     copied_records = 0
@@ -729,9 +718,7 @@ async def _seed_archive_subset(
     for record in records:
         source_blob_path = source_blob_store.blob_path(record.raw_id)
         if not source_blob_path.exists():
-            raise FileNotFoundError(
-                f"archive-subset probe is missing blob {record.raw_id} under {source_blob_root}"
-            )
+            raise FileNotFoundError(f"archive-subset probe is missing blob {record.raw_id} under {source_blob_root}")
         destination_blob_path = target_blob_store.blob_path(record.raw_id)
         if not destination_blob_path.exists():
             destination_blob_path.parent.mkdir(parents=True, exist_ok=True)
@@ -759,9 +746,7 @@ def _resolve_synthetic_provider(args: argparse.Namespace) -> str:
     provider_name = provider_names[0] if provider_names else "chatgpt"
     available = set(SyntheticCorpus.available_providers())
     if provider_name not in available:
-        raise ValueError(
-            f"--provider must be one of {sorted(available)} in synthetic mode"
-        )
+        raise ValueError(f"--provider must be one of {sorted(available)} in synthetic mode")
     if len(provider_names) > 1:
         raise ValueError("synthetic mode accepts exactly one --provider")
     return provider_name
@@ -769,23 +754,6 @@ def _resolve_synthetic_provider(args: argparse.Namespace) -> str:
 
 def _probe_mode(args: argparse.Namespace) -> str:
     return str(getattr(args, "input_mode", "synthetic"))
-
-
-def _probe_env_overrides(args: argparse.Namespace) -> dict[str, str]:
-    overrides: dict[str, str] = {}
-    raw_batch_size = getattr(args, "raw_batch_size", None)
-    if raw_batch_size is not None:
-        if raw_batch_size <= 0:
-            raise ValueError("--raw-batch-size must be positive")
-        overrides["POLYLOGUE_PARSE_RAW_BATCH_SIZE"] = str(raw_batch_size)
-    ingest_workers = getattr(args, "ingest_workers", None)
-    if ingest_workers is not None:
-        if ingest_workers <= 0:
-            raise ValueError("--ingest-workers must be positive")
-        overrides["POLYLOGUE_INGEST_WORKERS"] = str(ingest_workers)
-    if getattr(args, "measure_ingest_result_size", False):
-        overrides["POLYLOGUE_MEASURE_INGEST_RESULT_SIZE"] = "1"
-    return overrides
 
 
 def _load_run_payload(run_path: str | None) -> dict[str, Any]:
@@ -834,13 +802,15 @@ def _stage_source_subset(
         )
         staged_file_count += entry_file_count
         total_bytes += entry_bytes
-        entries.append({
-            "input_path": str(source_path),
-            "staged_path": str(destination_path),
-            "kind": entry_kind,
-            "file_count": entry_file_count,
-            "bytes": entry_bytes,
-        })
+        entries.append(
+            {
+                "input_path": str(source_path),
+                "staged_path": str(destination_path),
+                "kind": entry_kind,
+                "file_count": entry_file_count,
+                "bytes": entry_bytes,
+            }
+        )
 
     return {
         "input_count": len(source_paths),
@@ -857,6 +827,9 @@ async def _run_probe_pipeline(
     stage: str,
     stage_sequence: list[str] | None,
     source_names: list[str] | None,
+    raw_batch_size: int | None,
+    ingest_workers: int | None,
+    measure_ingest_result_size: bool,
     backend=None,
     repository=None,
 ) -> tuple[Any, dict[str, Any]]:
@@ -865,6 +838,9 @@ async def _run_probe_pipeline(
         stage=stage,
         stage_sequence=stage_sequence,
         source_names=source_names,
+        raw_batch_size=raw_batch_size or 50,
+        ingest_workers=ingest_workers,
+        measure_ingest_result_size=measure_ingest_result_size,
         backend=backend,
         repository=repository,
     )
@@ -883,7 +859,12 @@ async def run_probe(args: argparse.Namespace) -> dict[str, Any]:
         raise ValueError(f"--input-mode must be one of {_INPUT_MODES}")
 
     workdir = args.workdir.resolve()
-    env_overrides = _probe_env_overrides(args)
+    raw_batch_size = getattr(args, "raw_batch_size", None)
+    if raw_batch_size is not None and raw_batch_size <= 0:
+        raise ValueError("--raw-batch-size must be positive")
+    ingest_workers = getattr(args, "ingest_workers", None)
+    if ingest_workers is not None and ingest_workers <= 0:
+        raise ValueError("--ingest-workers must be positive")
     archive_root = workdir / "archive"
     render_root = workdir / "render"
     db_path: Path | None = None
@@ -898,7 +879,7 @@ async def run_probe(args: argparse.Namespace) -> dict[str, Any]:
         source_root = workdir / "sources" / provider_name
 
         stage_sequence = _probe_stage_sequence(probe_mode, args.stage)
-        with _isolated_env(workdir, extra_env=env_overrides):
+        with _isolated_env(workdir):
             files, total_bytes = _write_probe_sources(
                 provider=provider_name,
                 count=args.count,
@@ -918,6 +899,9 @@ async def run_probe(args: argparse.Namespace) -> dict[str, Any]:
                 stage=args.stage,
                 stage_sequence=stage_sequence,
                 source_names=[provider_name],
+                raw_batch_size=raw_batch_size,
+                ingest_workers=ingest_workers,
+                measure_ingest_result_size=args.measure_ingest_result_size,
             )
 
         summary = {
@@ -961,7 +945,7 @@ async def run_probe(args: argparse.Namespace) -> dict[str, Any]:
         source_root = workdir / "sources" / source_name
         stage_sequence = _probe_stage_sequence(probe_mode, args.stage)
 
-        with _isolated_env(workdir, extra_env=env_overrides):
+        with _isolated_env(workdir):
             source_inputs = _stage_source_subset(
                 source_paths=source_paths,
                 source_root=source_root,
@@ -977,6 +961,9 @@ async def run_probe(args: argparse.Namespace) -> dict[str, Any]:
                 stage=args.stage,
                 stage_sequence=stage_sequence,
                 source_names=[source_name],
+                raw_batch_size=raw_batch_size,
+                ingest_workers=ingest_workers,
+                measure_ingest_result_size=args.measure_ingest_result_size,
             )
 
         summary = {
@@ -1028,7 +1015,7 @@ async def run_probe(args: argparse.Namespace) -> dict[str, Any]:
             archive_root=archive_root,
             render_root=render_root,
         )
-        with _isolated_env(workdir, extra_env=env_overrides):
+        with _isolated_env(workdir):
             db_path = config.db_path
             backend = create_backend(db_path=db_path)
             repository = ConversationRepository(backend=backend)
@@ -1044,6 +1031,9 @@ async def run_probe(args: argparse.Namespace) -> dict[str, Any]:
                     stage=args.stage,
                     stage_sequence=None,
                     source_names=None,
+                    raw_batch_size=raw_batch_size,
+                    ingest_workers=ingest_workers,
+                    measure_ingest_result_size=args.measure_ingest_result_size,
                     backend=backend,
                     repository=repository,
                 )

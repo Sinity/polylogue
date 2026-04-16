@@ -239,8 +239,6 @@ def test_unicode_normalization_comprehensive(text, test_type, desc):
         assert hash_normal != hash_zwj, f"Failed {desc}"
 
 
-
-
 @given(st.text())
 def test_hash_text_deterministic_property(text: str) -> None:
     assert hash_text(text) == hash_text(text)

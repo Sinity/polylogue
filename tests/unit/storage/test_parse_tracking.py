@@ -98,14 +98,16 @@ class TestUpdateRawState:
         return SQLiteBackend(db_path=tmp_path / "test.db")
 
     async def _save_raw(self, backend: SQLiteBackend, raw_id: str = "update-raw") -> None:
-        await backend.save_raw_conversation(RawConversationRecord(
-            raw_id=raw_id,
-            provider_name="test",
-            source_path="/test.json",
-            blob_size=len(b'{"test": true}'),
-            acquired_at="2026-01-01T00:00:00Z",
-            file_mtime="2026-01-01T00:00:00Z",
-        ))
+        await backend.save_raw_conversation(
+            RawConversationRecord(
+                raw_id=raw_id,
+                provider_name="test",
+                source_path="/test.json",
+                blob_size=len(b'{"test": true}'),
+                acquired_at="2026-01-01T00:00:00Z",
+                file_mtime="2026-01-01T00:00:00Z",
+            )
+        )
 
     async def test_update_raw_state_applies_only_requested_fields(self, backend: SQLiteBackend) -> None:
         await self._save_raw(backend)
@@ -238,14 +240,16 @@ class TestGetKnownSourceMtimes:
     async def test_returns_mtime_mapping(self, backend: SQLiteBackend) -> None:
         """Returns {source_path: file_mtime} for records with mtimes."""
         for i in range(3):
-            await backend.save_raw_conversation(RawConversationRecord(
-                raw_id=f"raw-{i}",
-                provider_name="test",
-                source_path=f"/path/file{i}.json",
-                blob_size=len(f'{{"i": {i}}}'.encode()),
-                acquired_at="2026-01-01T00:00:00Z",
-                file_mtime=f"2026-01-0{i+1}T00:00:00Z",
-            ))
+            await backend.save_raw_conversation(
+                RawConversationRecord(
+                    raw_id=f"raw-{i}",
+                    provider_name="test",
+                    source_path=f"/path/file{i}.json",
+                    blob_size=len(f'{{"i": {i}}}'.encode()),
+                    acquired_at="2026-01-01T00:00:00Z",
+                    file_mtime=f"2026-01-0{i + 1}T00:00:00Z",
+                )
+            )
 
         mtimes = await backend.get_known_source_mtimes()
         assert len(mtimes) == 3
@@ -254,22 +258,26 @@ class TestGetKnownSourceMtimes:
 
     async def test_excludes_null_mtimes(self, backend: SQLiteBackend) -> None:
         """Records without file_mtime are excluded from the mapping."""
-        await backend.save_raw_conversation(RawConversationRecord(
-            raw_id="with-mtime",
-            provider_name="test",
-            source_path="/path/a.json",
-            blob_size=len(b'{}'),
-            acquired_at="2026-01-01T00:00:00Z",
-            file_mtime="2026-01-01T00:00:00Z",
-        ))
-        await backend.save_raw_conversation(RawConversationRecord(
-            raw_id="no-mtime",
-            provider_name="test",
-            source_path="/path/b.json",
-            blob_size=len(b'{"b": 1}'),
-            acquired_at="2026-01-01T00:00:00Z",
-            file_mtime=None,
-        ))
+        await backend.save_raw_conversation(
+            RawConversationRecord(
+                raw_id="with-mtime",
+                provider_name="test",
+                source_path="/path/a.json",
+                blob_size=len(b"{}"),
+                acquired_at="2026-01-01T00:00:00Z",
+                file_mtime="2026-01-01T00:00:00Z",
+            )
+        )
+        await backend.save_raw_conversation(
+            RawConversationRecord(
+                raw_id="no-mtime",
+                provider_name="test",
+                source_path="/path/b.json",
+                blob_size=len(b'{"b": 1}'),
+                acquired_at="2026-01-01T00:00:00Z",
+                file_mtime=None,
+            )
+        )
 
         mtimes = await backend.get_known_source_mtimes()
         assert len(mtimes) == 1
@@ -292,13 +300,15 @@ class TestResetParseStatus:
     async def _populate(self, backend: SQLiteBackend) -> None:
         """Create 3 raw records, mark 2 as parsed."""
         for i, provider in enumerate(["chatgpt", "chatgpt", "claude-ai"]):
-            await backend.save_raw_conversation(RawConversationRecord(
-                raw_id=f"raw-{i}",
-                provider_name=provider,
-                source_path=f"/path/{i}.json",
-                blob_size=len(f'{{"i": {i}}}'.encode()),
-                acquired_at="2026-01-01T00:00:00Z",
-            ))
+            await backend.save_raw_conversation(
+                RawConversationRecord(
+                    raw_id=f"raw-{i}",
+                    provider_name=provider,
+                    source_path=f"/path/{i}.json",
+                    blob_size=len(f'{{"i": {i}}}'.encode()),
+                    acquired_at="2026-01-01T00:00:00Z",
+                )
+            )
         await backend.mark_raw_parsed("raw-0")
         await backend.mark_raw_parsed("raw-2")
 
@@ -332,13 +342,15 @@ class TestResetParseStatus:
 
     async def test_reset_returns_zero_when_nothing_to_reset(self, backend: SQLiteBackend) -> None:
         """Reset returns 0 when no records have parsed_at set."""
-        await backend.save_raw_conversation(RawConversationRecord(
-            raw_id="unparsed",
-            provider_name="test",
-            source_path="/test.json",
-            blob_size=len(b'{}'),
-            acquired_at="2026-01-01T00:00:00Z",
-        ))
+        await backend.save_raw_conversation(
+            RawConversationRecord(
+                raw_id="unparsed",
+                provider_name="test",
+                source_path="/test.json",
+                blob_size=len(b"{}"),
+                acquired_at="2026-01-01T00:00:00Z",
+            )
+        )
         count = await backend.reset_parse_status()
         assert count == 0
 
@@ -352,13 +364,15 @@ class TestResetValidationStatus:
 
     async def _populate(self, backend: SQLiteBackend) -> None:
         for i, provider in enumerate(["chatgpt", "chatgpt", "claude-ai"]):
-            await backend.save_raw_conversation(RawConversationRecord(
-                raw_id=f"raw-{i}",
-                provider_name=provider,
-                source_path=f"/path/{i}.json",
-                blob_size=len(f'{{"i": {i}}}'.encode()),
-                acquired_at="2026-01-01T00:00:00Z",
-            ))
+            await backend.save_raw_conversation(
+                RawConversationRecord(
+                    raw_id=f"raw-{i}",
+                    provider_name=provider,
+                    source_path=f"/path/{i}.json",
+                    blob_size=len(f'{{"i": {i}}}'.encode()),
+                    acquired_at="2026-01-01T00:00:00Z",
+                )
+            )
         await backend.mark_raw_validated(
             "raw-0",
             status="passed",
@@ -420,7 +434,9 @@ class TestMtimeSkip:
 
         # Create a test JSON file
         test_file = tmp_path / "test.json"
-        test_file.write_text('{"title": "test", "mapping": {"1": {"id": "1", "message": {"author": {"role": "user"}, "content": {"parts": ["hello"]}, "create_time": 1000000}}}}')
+        test_file.write_text(
+            '{"title": "test", "mapping": {"1": {"id": "1", "message": {"author": {"role": "user"}, "content": {"parts": ["hello"]}, "create_time": 1000000}}}}'
+        )
 
         source = Source(name="test", path=tmp_path)
 
@@ -433,9 +449,13 @@ class TestMtimeSkip:
         known_mtimes = {str(test_file): file_mtime}
 
         # Second pass with known_mtimes: file should be skipped
-        results_second = list(iter_source_conversations_with_raw(
-            source, capture_raw=True, known_mtimes=known_mtimes,
-        ))
+        results_second = list(
+            iter_source_conversations_with_raw(
+                source,
+                capture_raw=True,
+                known_mtimes=known_mtimes,
+            )
+        )
         assert len(results_second) == 0
 
     def test_modified_file_not_skipped(self, tmp_path: Path) -> None:
@@ -444,16 +464,22 @@ class TestMtimeSkip:
         from polylogue.sources.source_parsing import iter_source_conversations_with_raw
 
         test_file = tmp_path / "test.json"
-        test_file.write_text('{"title": "test", "mapping": {"1": {"id": "1", "message": {"author": {"role": "user"}, "content": {"parts": ["hello"]}, "create_time": 1000000}}}}')
+        test_file.write_text(
+            '{"title": "test", "mapping": {"1": {"id": "1", "message": {"author": {"role": "user"}, "content": {"parts": ["hello"]}, "create_time": 1000000}}}}'
+        )
 
         source = Source(name="test", path=tmp_path)
 
         # Known mtimes with a DIFFERENT mtime than the actual file
         known_mtimes = {str(test_file): "1999-01-01T00:00:00Z"}
 
-        results = list(iter_source_conversations_with_raw(
-            source, capture_raw=True, known_mtimes=known_mtimes,
-        ))
+        results = list(
+            iter_source_conversations_with_raw(
+                source,
+                capture_raw=True,
+                known_mtimes=known_mtimes,
+            )
+        )
         assert len(results) > 0
 
     def test_no_known_mtimes_processes_all(self, tmp_path: Path) -> None:
@@ -462,13 +488,19 @@ class TestMtimeSkip:
         from polylogue.sources.source_parsing import iter_source_conversations_with_raw
 
         test_file = tmp_path / "test.json"
-        test_file.write_text('{"title": "test", "mapping": {"1": {"id": "1", "message": {"author": {"role": "user"}, "content": {"parts": ["hello"]}, "create_time": 1000000}}}}')
+        test_file.write_text(
+            '{"title": "test", "mapping": {"1": {"id": "1", "message": {"author": {"role": "user"}, "content": {"parts": ["hello"]}, "create_time": 1000000}}}}'
+        )
 
         source = Source(name="test", path=tmp_path)
 
-        results = list(iter_source_conversations_with_raw(
-            source, capture_raw=True, known_mtimes=None,
-        ))
+        results = list(
+            iter_source_conversations_with_raw(
+                source,
+                capture_raw=True,
+                known_mtimes=None,
+            )
+        )
         assert len(results) > 0
 
 
@@ -555,9 +587,7 @@ class TestFreshSchema:
         """Equivalent DDL formatting should not trigger drop/recreate churn."""
         db_path = tmp_path / "fresh.db"
         conn = sqlite3.connect(str(db_path))
-        conn.execute(
-            "CREATE TABLE raw_conversations (raw_id TEXT PRIMARY KEY, source_path TEXT, file_mtime TEXT)"
-        )
+        conn.execute("CREATE TABLE raw_conversations (raw_id TEXT PRIMARY KEY, source_path TEXT, file_mtime TEXT)")
         conn.executescript(ddl)
 
         _ensure_raw_source_mtime_index(conn)

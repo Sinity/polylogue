@@ -121,9 +121,17 @@ async def _seed_archive_source(tmp_path: Path) -> tuple[Path, Path]:
     try:
         raw_payloads = [
             ("chatgpt", "chatgpt-main", corpus.generate(count=1, seed=100, messages_per_conversation=range(3, 4))[0]),
-            ("chatgpt", "chatgpt-sidecar", corpus.generate(count=1, seed=101, messages_per_conversation=range(3, 4))[0]),
+            (
+                "chatgpt",
+                "chatgpt-sidecar",
+                corpus.generate(count=1, seed=101, messages_per_conversation=range(3, 4))[0],
+            ),
             ("codex", "codex-main", codex_corpus.generate(count=1, seed=200, messages_per_conversation=range(3, 4))[0]),
-            ("codex", "codex-sidecar", codex_corpus.generate(count=1, seed=201, messages_per_conversation=range(3, 4))[0]),
+            (
+                "codex",
+                "codex-sidecar",
+                codex_corpus.generate(count=1, seed=201, messages_per_conversation=range(3, 4))[0],
+            ),
         ]
         for index, (provider_name, source_name, raw_bytes) in enumerate(raw_payloads):
             raw_id, blob_size = blob_store.write_from_bytes(raw_bytes)
@@ -276,22 +284,24 @@ def test_main_writes_json_summary(tmp_path, capsys) -> None:
     workdir = tmp_path / "probe-main"
     json_out = tmp_path / "probe-summary.json"
 
-    exit_code = main([
-        "--provider",
-        "chatgpt",
-        "--count",
-        "1",
-        "--messages-min",
-        "3",
-        "--messages-max",
-        "4",
-        "--stage",
-        "parse",
-        "--workdir",
-        str(workdir),
-        "--json-out",
-        str(json_out),
-    ])
+    exit_code = main(
+        [
+            "--provider",
+            "chatgpt",
+            "--count",
+            "1",
+            "--messages-min",
+            "3",
+            "--messages-max",
+            "4",
+            "--stage",
+            "parse",
+            "--workdir",
+            str(workdir),
+            "--json-out",
+            str(json_out),
+        ]
+    )
 
     printed = json.loads(capsys.readouterr().out)
     written = json.loads(json_out.read_text())
@@ -312,16 +322,18 @@ def test_main_runs_source_subset_mode(tmp_path, capsys) -> None:
         source_root=source_input_root,
     )
 
-    exit_code = main([
-        "--input-mode",
-        "source-subset",
-        "--source-path",
-        str(files[0]),
-        "--stage",
-        "parse",
-        "--workdir",
-        str(tmp_path / "probe-main-source-subset"),
-    ])
+    exit_code = main(
+        [
+            "--input-mode",
+            "source-subset",
+            "--source-path",
+            str(files[0]),
+            "--stage",
+            "parse",
+            "--workdir",
+            str(tmp_path / "probe-main-source-subset"),
+        ]
+    )
 
     printed = json.loads(capsys.readouterr().out)
 
@@ -331,18 +343,20 @@ def test_main_runs_source_subset_mode(tmp_path, capsys) -> None:
 
 
 def test_main_uses_ephemeral_workdir_when_omitted(capsys) -> None:
-    exit_code = main([
-        "--provider",
-        "chatgpt",
-        "--count",
-        "1",
-        "--messages-min",
-        "3",
-        "--messages-max",
-        "4",
-        "--stage",
-        "parse",
-    ])
+    exit_code = main(
+        [
+            "--provider",
+            "chatgpt",
+            "--count",
+            "1",
+            "--messages-min",
+            "3",
+            "--messages-max",
+            "4",
+            "--stage",
+            "parse",
+        ]
+    )
 
     printed = json.loads(capsys.readouterr().out)
 
@@ -352,22 +366,24 @@ def test_main_uses_ephemeral_workdir_when_omitted(capsys) -> None:
 
 
 def test_main_returns_nonzero_when_budget_is_exceeded(capsys) -> None:
-    exit_code = main([
-        "--provider",
-        "chatgpt",
-        "--count",
-        "1",
-        "--messages-min",
-        "3",
-        "--messages-max",
-        "4",
-        "--stage",
-        "parse",
-        "--max-total-ms",
-        "0.0",
-        "--max-peak-rss-mb",
-        "0.0",
-    ])
+    exit_code = main(
+        [
+            "--provider",
+            "chatgpt",
+            "--count",
+            "1",
+            "--messages-min",
+            "3",
+            "--messages-max",
+            "4",
+            "--stage",
+            "parse",
+            "--max-total-ms",
+            "0.0",
+            "--max-peak-rss-mb",
+            "0.0",
+        ]
+    )
 
     printed = json.loads(capsys.readouterr().out)
 

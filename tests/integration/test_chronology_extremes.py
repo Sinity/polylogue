@@ -37,7 +37,7 @@ def test_epoch_near_zero_timestamps_ingested(tmp_path):
 
     # Run ingestion
     result = run_cli(
-        ["run", "--source", "inbox", "--stage", "all"],
+        ["run", "--source", "inbox"],
         env=workspace["env"],
         timeout=120.0,
     )
@@ -66,7 +66,7 @@ def test_y2038_adjacent_timestamps_ingested(tmp_path):
     write_jsonl_file(jsonl_path, lines)
 
     result = run_cli(
-        ["run", "--source", "inbox", "--stage", "all"],
+        ["run", "--source", "inbox"],
         env=workspace["env"],
         timeout=120.0,
     )
@@ -94,7 +94,7 @@ def test_far_future_timestamps_ingested(tmp_path):
     write_jsonl_file(jsonl_path, lines)
 
     result = run_cli(
-        ["run", "--source", "inbox", "--stage", "all"],
+        ["run", "--source", "inbox"],
         env=workspace["env"],
         timeout=120.0,
     )
@@ -133,7 +133,7 @@ def test_mixed_timestamp_formats_coexist(tmp_path):
     write_jsonl_file(jsonl_path, lines)
 
     result = run_cli(
-        ["run", "--source", "inbox", "--stage", "all"],
+        ["run", "--source", "inbox"],
         env=workspace["env"],
         timeout=120.0,
     )
@@ -171,7 +171,7 @@ def test_missing_timestamps_handled(tmp_path):
     write_jsonl_file(jsonl_path, lines)
 
     result = run_cli(
-        ["run", "--source", "inbox", "--stage", "all"],
+        ["run", "--source", "inbox"],
         env=workspace["env"],
         timeout=120.0,
     )
@@ -202,27 +202,32 @@ def test_chronological_ordering_preserved(tmp_path):
 
     # Create records with known timestamps (1 hour apart)
     import time
+
     base_time = time.time()
 
     records = []
     for i in range(10):
-        records.append({
-            "type": "message",
-            "role": "user" if i % 2 == 0 else "assistant",
-            "id": f"msg_{i:02d}",
-            "timestamp": (base_time + i * 3600),  # Epoch floats, 1 hour apart
-            "content": [{
-                "type": "input_text" if i % 2 == 0 else "output_text",
-                "text": f"Message {i}",
-            }],
-        })
+        records.append(
+            {
+                "type": "message",
+                "role": "user" if i % 2 == 0 else "assistant",
+                "id": f"msg_{i:02d}",
+                "timestamp": (base_time + i * 3600),  # Epoch floats, 1 hour apart
+                "content": [
+                    {
+                        "type": "input_text" if i % 2 == 0 else "output_text",
+                        "text": f"Message {i}",
+                    }
+                ],
+            }
+        )
 
     jsonl_path = inbox / "chronological.jsonl"
     lines = [json.dumps(record) for record in records]
     write_jsonl_file(jsonl_path, lines)
 
     result = run_cli(
-        ["run", "--source", "inbox", "--stage", "all"],
+        ["run", "--source", "inbox"],
         env=workspace["env"],
         timeout=120.0,
     )
@@ -233,7 +238,7 @@ def test_chronological_ordering_preserved(tmp_path):
     with sqlite3.connect(db_path) as conn:
         # Query messages in order
         cursor = conn.execute(
-            "SELECT id FROM messages ORDER BY timestamp ASC",
+            "SELECT provider_message_id FROM messages ORDER BY sort_key ASC",
         )
         ids = [row[0] for row in cursor.fetchall()]
 
@@ -259,7 +264,7 @@ def test_tomorrow_timestamps_ingested(tmp_path):
     write_jsonl_file(jsonl_path, lines)
 
     result = run_cli(
-        ["run", "--source", "inbox", "--stage", "all"],
+        ["run", "--source", "inbox"],
         env=workspace["env"],
         timeout=120.0,
     )
@@ -292,7 +297,7 @@ def test_all_timestamp_patterns_in_single_inbox(tmp_path):
         write_jsonl_file(jsonl_path, lines)
 
     result = run_cli(
-        ["run", "--source", "inbox", "--stage", "all"],
+        ["run", "--source", "inbox"],
         env=workspace["env"],
         timeout=120.0,
     )

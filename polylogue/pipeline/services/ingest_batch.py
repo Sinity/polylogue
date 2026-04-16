@@ -15,7 +15,7 @@ import pickle
 import sqlite3
 import time
 from collections.abc import Iterable
-from concurrent.futures import Future, ProcessPoolExecutor, as_completed
+from concurrent.futures import Future, as_completed
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -27,11 +27,13 @@ from polylogue.lib.metrics import (
     read_peak_rss_self_mb,
 )
 from polylogue.logging import get_logger
+from polylogue.paths import blob_store_root
 from polylogue.pipeline.services.ingest_worker import (
     ConversationData,
     IngestRecordResult,
     ingest_record,
 )
+from polylogue.pipeline.services.process_pool import process_pool_executor
 from polylogue.storage.backends.connection import DB_TIMEOUT
 from polylogue.storage.state_views import RawConversationStateUpdate
 
@@ -42,7 +44,6 @@ if TYPE_CHECKING:
     from polylogue.storage.backends.async_sqlite import SQLiteBackend
 
 logger = get_logger(__name__)
-INGEST_WORKERS_ENV = "POLYLOGUE_INGEST_WORKERS"
 
 
 @dataclass(slots=True)
@@ -62,19 +63,23 @@ class _IngestBatchSummary:
     skipped_raw_ids: set[str] = field(default_factory=set)
     processed_ids: set[str] = field(default_factory=set)
     changed_conversation_ids: list[str] = field(default_factory=list)
-    counts: dict[str, int] = field(default_factory=lambda: {
-        "conversations": 0,
-        "messages": 0,
-        "attachments": 0,
-        "skipped_conversations": 0,
-        "skipped_messages": 0,
-        "skipped_attachments": 0,
-    })
-    changed_counts: dict[str, int] = field(default_factory=lambda: {
-        "conversations": 0,
-        "messages": 0,
-        "attachments": 0,
-    })
+    counts: dict[str, int] = field(
+        default_factory=lambda: {
+            "conversations": 0,
+            "messages": 0,
+            "attachments": 0,
+            "skipped_conversations": 0,
+            "skipped_messages": 0,
+            "skipped_attachments": 0,
+        }
+    )
+    changed_counts: dict[str, int] = field(
+        default_factory=lambda: {
+            "conversations": 0,
+            "messages": 0,
+            "attachments": 0,
+        }
+    )
     parse_failures: int = 0
     total_msgs: int = 0
     total_convos: int = 0
@@ -460,11 +465,7 @@ def _record_write_result(
     summary.total_convos += 1
     summary.total_msgs += len(cdata.message_tuples)
 
-    ingest_changed = (
-        counts["conversations"]
-        + counts["messages"]
-        + counts["attachments"]
-    ) > 0
+    ingest_changed = (counts["conversations"] + counts["messages"] + counts["attachments"]) > 0
 
     if ingest_changed or content_changed:
         summary.processed_ids.add(cdata.conversation_id)
@@ -546,11 +547,7 @@ def _flush_pending_conversation_entries(
     summary: _IngestBatchSummary,
     materialized_ids: set[str],
 ) -> None:
-    remaining = [
-        entry
-        for entries in pending_by_parent.values()
-        for entry in entries
-    ]
+    remaining = [entry for entries in pending_by_parent.values() for entry in entries]
     if not remaining:
         return
     pending_by_parent.clear()
@@ -563,14 +560,23 @@ def _iter_ingest_results_sync(
     raw_records: list,
     *,
     archive_root_str: str,
+    blob_root_str: str,
     validation_mode: str,
     worker_count: int,
+    measure_ingest_result_size: bool,
 ) -> Iterable[IngestRecordResult]:
     try:
-        with ProcessPoolExecutor(max_workers=worker_count) as executor:
+        with process_pool_executor(max_workers=worker_count) as executor:
             futures: dict[Future, str] = {}
             for raw_record in raw_records:
-                future = executor.submit(ingest_record, raw_record, archive_root_str, validation_mode)
+                future = executor.submit(
+                    ingest_record,
+                    raw_record,
+                    archive_root_str,
+                    validation_mode,
+                    measure_ingest_result_size,
+                    blob_root_str=blob_root_str,
+                )
                 futures[future] = raw_record.raw_id
 
             for future in as_completed(futures):
@@ -584,20 +590,17 @@ def _iter_ingest_results_sync(
                     )
     except (TypeError, pickle.PicklingError):
         for raw_record in raw_records:
-            yield ingest_record(raw_record, archive_root_str, validation_mode)
+            yield ingest_record(
+                raw_record,
+                archive_root_str,
+                validation_mode,
+                measure_ingest_result_size,
+                blob_root_str=blob_root_str,
+            )
 
 
-def _configured_ingest_worker_limit() -> int:
-    raw_value = os.environ.get(INGEST_WORKERS_ENV)
-    if raw_value is None:
-        return 8
-    try:
-        parsed = int(raw_value)
-    except ValueError as exc:
-        raise ValueError(f"{INGEST_WORKERS_ENV} must be a positive integer") from exc
-    if parsed <= 0:
-        raise ValueError(f"{INGEST_WORKERS_ENV} must be a positive integer")
-    return parsed
+def _resolved_ingest_worker_limit(value: int | None) -> int:
+    return value if value is not None else 8
 
 
 def _process_ingest_batch_sync(
@@ -605,13 +608,16 @@ def _process_ingest_batch_sync(
     *,
     db_path: Path,
     archive_root_str: str,
+    blob_root_str: str,
     validation_mode: str,
+    ingest_workers: int | None,
+    measure_ingest_result_size: bool,
 ) -> _IngestBatchSummary:
     from polylogue.storage.fts_lifecycle import suspend_fts_triggers_sync
 
     summary = _IngestBatchSummary()
     summary.raw_record_count = len(raw_records)
-    summary.worker_count = min(len(raw_records), os.cpu_count() or 4, _configured_ingest_worker_limit())
+    summary.worker_count = min(len(raw_records), os.cpu_count() or 4, _resolved_ingest_worker_limit(ingest_workers))
     summary.total_blob_mb = sum(r.blob_size for r in raw_records) / (1024 * 1024)
 
     t_start = time.perf_counter()
@@ -628,10 +634,12 @@ def _process_ingest_batch_sync(
     try:
         result_iterator = iter(
             _iter_ingest_results_sync(
-            raw_records,
-            archive_root_str=archive_root_str,
-            validation_mode=validation_mode,
-            worker_count=summary.worker_count,
+                raw_records,
+                archive_root_str=archive_root_str,
+                blob_root_str=blob_root_str,
+                validation_mode=validation_mode,
+                worker_count=summary.worker_count,
+                measure_ingest_result_size=measure_ingest_result_size,
             )
         )
         while True:
@@ -732,6 +740,7 @@ async def process_ingest_batch(
         return None
 
     archive_root_str = str(service.archive_root)
+    blob_root_str = str(blob_store_root())
     batch_started = time.perf_counter()
     rss_start_mb = read_current_rss_mb()
 
@@ -743,7 +752,10 @@ async def process_ingest_batch(
         raw_records,
         db_path=backend.db_path,
         archive_root_str=archive_root_str,
+        blob_root_str=blob_root_str,
         validation_mode=validation_mode,
+        ingest_workers=service.ingest_workers,
+        measure_ingest_result_size=service.measure_ingest_result_size,
     )
 
     result.parse_failures += batch_summary.parse_failures
@@ -757,9 +769,7 @@ async def process_ingest_batch(
             result.changed_counts[key] += value
 
     progressed_raw_count = sum(
-        1
-        for outcome in batch_summary.outcomes.values()
-        if outcome.had_conversations and outcome.error is None
+        1 for outcome in batch_summary.outcomes.values() if outcome.had_conversations and outcome.error is None
     )
     if progress_callback and progressed_raw_count:
         progress_callback(progressed_raw_count)
@@ -991,11 +1001,7 @@ async def refresh_session_products_bulk(
             "thread_refresh_ms": round(thread_elapsed * 1000.0, 1),
             "aggregate_refresh_ms": round(aggregate_elapsed * 1000.0, 1),
             "update_chunk_count": len(chunk_observations),
-            "update_slow_chunk_count": sum(
-                1
-                for chunk in chunk_observations
-                if bool(chunk.get("slow"))
-            ),
+            "update_slow_chunk_count": sum(1 for chunk in chunk_observations if bool(chunk.get("slow"))),
         }
         if chunk_total_values:
             observation["update_max_chunk_ms"] = round(max(chunk_total_values), 1)

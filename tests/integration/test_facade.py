@@ -41,7 +41,9 @@ def sample_chatgpt_file(tmp_path):
                     "create_time": 1234567891.0,
                     "content": {
                         "content_type": "text",
-                        "parts": ["Python is a high-level programming language. You can start by installing Python and running simple scripts."],
+                        "parts": [
+                            "Python is a high-level programming language. You can start by installing Python and running simple scripts."
+                        ],
                     },
                 },
                 "parent": "msg_1",
@@ -170,6 +172,7 @@ class TestPolylogueParsing:
 
         # Initialize database with WAL mode before concurrent ingestion
         from polylogue.storage.backends.connection import open_connection
+
         with open_connection(db_path) as conn:
             conn.execute("SELECT 1").fetchone()
 

@@ -88,10 +88,12 @@ def extract_thinking_traces(content_blocks: list[dict[str, Any]]) -> list[dict[s
         if block.get("type") == "thinking":
             text = block.get("thinking") or block.get("text") or ""
             if text:
-                traces.append({
-                    "text": text,
-                    "token_count": len(text.split()),
-                })
+                traces.append(
+                    {
+                        "text": text,
+                        "token_count": len(text.split()),
+                    }
+                )
     return traces
 
 
@@ -141,22 +143,26 @@ def extract_file_changes(tool_invocations: list[dict[str, Any]]) -> list[dict[st
             path = input_data.get("file_path") or input_data.get("path")
             content = input_data.get("content")
             if path:
-                changes.append({
-                    "path": path,
-                    "operation": "write",
-                    "new_content": content[:500] if isinstance(content, str) else None,
-                })
+                changes.append(
+                    {
+                        "path": path,
+                        "operation": "write",
+                        "new_content": content[:500] if isinstance(content, str) else None,
+                    }
+                )
         elif tool_name == "Edit":
             path = input_data.get("file_path") or input_data.get("path")
             old_string = input_data.get("old_string")
             new_string = input_data.get("new_string")
             if path:
-                changes.append({
-                    "path": path,
-                    "operation": "edit",
-                    "old_content": old_string[:200] if isinstance(old_string, str) else None,
-                    "new_content": new_string[:200] if isinstance(new_string, str) else None,
-                })
+                changes.append(
+                    {
+                        "path": path,
+                        "operation": "edit",
+                        "old_content": old_string[:200] if isinstance(old_string, str) else None,
+                        "new_content": new_string[:200] if isinstance(new_string, str) else None,
+                    }
+                )
     return changes
 
 
@@ -167,12 +173,14 @@ def extract_subagent_spawns(tool_invocations: list[dict[str, Any]]) -> list[dict
             continue
         input_data = invocation.get("input", {})
         parsed = _parse_subagent_spawn(input_data)
-        spawns.append({
-            "agent_type": parsed["agent_type"],
-            "prompt": input_data.get("prompt", ""),
-            "description": parsed["description"],
-            "run_in_background": parsed["run_in_background"],
-        })
+        spawns.append(
+            {
+                "agent_type": parsed["agent_type"],
+                "prompt": input_data.get("prompt", ""),
+                "description": parsed["description"],
+                "run_in_background": parsed["run_in_background"],
+            }
+        )
     return spawns
 
 

@@ -31,25 +31,17 @@ def generate_qa_summary(result, *, session: dict | None = None) -> str:
             f"decode_errors={proof_summary['decode_errors']}"
         )
         if proof_summary["package_versions"]:
-            lines.append(
-                f"  Packages: {format_count_mapping(proof_summary['package_versions'])}"
-            )
+            lines.append(f"  Packages: {format_count_mapping(proof_summary['package_versions'])}")
         if proof_summary["element_kinds"]:
-            lines.append(
-                f"  Elements: {format_count_mapping(proof_summary['element_kinds'])}"
-            )
+            lines.append(f"  Elements: {format_count_mapping(proof_summary['element_kinds'])}")
         if proof_summary["resolution_reasons"]:
-            lines.append(
-                f"  Reasons: {format_count_mapping(proof_summary['resolution_reasons'])}"
-            )
+            lines.append(f"  Reasons: {format_count_mapping(proof_summary['resolution_reasons'])}")
     if result.audit_status is OutcomeStatus.ERROR:
         if result.audit_error:
             lines.append(f"  Error: {result.audit_error}")
         elif result.audit_report is not None:
             summary = result.audit_report.to_json()["summary"]
-            lines.append(
-                f"  Checks: {summary['passed']} pass, {summary['warned']} warn, {summary['failed']} fail"
-            )
+            lines.append(f"  Checks: {summary['passed']} pass, {summary['warned']} warn, {summary['failed']} fail")
         lines.append("Overall: FAIL")
         if result.report_dir:
             lines.append(f"Reports: {result.report_dir}")

@@ -172,13 +172,9 @@ async def build_site_publication_manifest(
             rendered_conversation_pages=conversation_pages.rendered,
             reused_conversation_pages=conversation_pages.reused,
             failed_conversation_pages=conversation_pages.failed,
-            search_documents=(
-                archive_stats.total_conversations if config.enable_search else 0
-            ),
+            search_documents=(archive_stats.total_conversations if config.enable_search else 0),
             search_enabled=config.enable_search,
-            search_provider=(
-                str(config.search_provider) if config.enable_search else None
-            ),
+            search_provider=(str(config.search_provider) if config.enable_search else None),
             search_status=search_status,
             incremental=incremental,
         ),

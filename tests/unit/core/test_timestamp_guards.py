@@ -52,11 +52,13 @@ def test_parse_timestamp_never_crashes_on_mixed_types(value):
 # =============================================================================
 
 
-@given(st.one_of(
-    st.integers(min_value=86400, max_value=2_000_000_000),
-    st.floats(min_value=86400, max_value=2_000_000_000, allow_nan=False),
-    st.from_regex(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", fullmatch=True),
-))
+@given(
+    st.one_of(
+        st.integers(min_value=86400, max_value=2_000_000_000),
+        st.floats(min_value=86400, max_value=2_000_000_000, allow_nan=False),
+        st.from_regex(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", fullmatch=True),
+    )
+)
 def test_parse_timestamp_result_always_utc_aware(value):
     """When parse_timestamp returns a datetime, it is always UTC-aware."""
     result = parse_timestamp(value)
@@ -294,12 +296,15 @@ def test_parse_date_accepts_relative_dates() -> None:
     assert result.utcoffset() == timezone.utc.utcoffset(result)
 
 
-@pytest.mark.parametrize("invalid_input", [
-    "xyzzy qqq rrr !!!!",
-    "🎭🎭🎭",
-    "aaaa bbbb cccc dddd",
-    "---",
-])
+@pytest.mark.parametrize(
+    "invalid_input",
+    [
+        "xyzzy qqq rrr !!!!",
+        "🎭🎭🎭",
+        "aaaa bbbb cccc dddd",
+        "---",
+    ],
+)
 def test_parse_date_returns_none_for_invalid_input(invalid_input: str) -> None:
     assert parse_date(invalid_input) is None
 

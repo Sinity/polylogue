@@ -296,9 +296,7 @@ class TestParsingServiceCorruption:
         corrupted = corrupt_line_malformed_json(lines, 25)
         content = _jsonl_bytes(corrupted)
 
-        record = _make_raw_record(
-            "codex-corrupt-1", "codex", content, "/exports/codex.jsonl"
-        )
+        record = _make_raw_record("codex-corrupt-1", "codex", content, "/exports/codex.jsonl")
         result = ingest_record(record, str(tmp_path / "archive"), "off")
         assert result.error is None
         if result.conversations:
@@ -312,9 +310,7 @@ class TestParsingServiceCorruption:
         corrupted = corrupt_line_truncated(lines, 10)
         content = _jsonl_bytes(corrupted)
 
-        record = _make_raw_record(
-            "codex-truncated-1", "codex", content, "/exports/codex.jsonl"
-        )
+        record = _make_raw_record("codex-truncated-1", "codex", content, "/exports/codex.jsonl")
         result = ingest_record(record, str(tmp_path / "archive"), "off")
         assert result.error is None
 
@@ -326,9 +322,7 @@ class TestParsingServiceCorruption:
         corrupted = corrupt_line_wrong_envelope(lines, 30)
         content = _jsonl_bytes(corrupted)
 
-        record = _make_raw_record(
-            "codex-wrong-env-1", "codex", content, "/exports/codex.jsonl"
-        )
+        record = _make_raw_record("codex-wrong-env-1", "codex", content, "/exports/codex.jsonl")
         result = ingest_record(record, str(tmp_path / "archive"), "off")
         assert result.error is None
 
@@ -376,6 +370,28 @@ class TestDecodeRawPayloadCorruption:
         )
         assert envelope.malformed_jsonl_lines == 5
         assert len(envelope.payload) == 95
+
+    def test_bad_utf8_lines_are_counted_and_salvaged(self, tmp_path):
+        """Invalid UTF-8 lines count as malformed JSONL but do not poison the whole file."""
+        from polylogue.lib.raw_payload import build_raw_payload_envelope
+
+        lines = generate_large_jsonl(20, provider="codex")
+        corrupted = corrupt_line_bad_utf8(lines, 4)
+        corrupted = corrupt_line_bad_utf8(corrupted, 12)
+
+        path = tmp_path / "bad_utf8.jsonl"
+        write_jsonl_with_bad_utf8(path, corrupted)
+
+        envelope = build_raw_payload_envelope(
+            path.read_bytes(),
+            source_path=str(path),
+            fallback_provider="codex",
+        )
+
+        assert envelope.wire_format == "jsonl"
+        assert envelope.malformed_jsonl_lines == 2
+        assert isinstance(envelope.payload, list)
+        assert len(envelope.payload) == 18
 
 
 # ===========================================================================
@@ -677,9 +693,7 @@ class TestRerunIdempotency:
         lines = generate_large_jsonl(20, provider="codex")
         content = _jsonl_bytes(lines)
 
-        record = _make_raw_record(
-            "idempotency-test", "codex", content, "/exports/codex.jsonl"
-        )
+        record = _make_raw_record("idempotency-test", "codex", content, "/exports/codex.jsonl")
 
         result_1 = ingest_record(record, str(tmp_path / "archive"), "off")
         result_2 = ingest_record(record, str(tmp_path / "archive"), "off")
@@ -699,18 +713,14 @@ class TestRerunIdempotency:
         lines_corrupt = corrupt_line_malformed_json(lines_corrupt, 10)
         content_corrupt = _jsonl_bytes(lines_corrupt)
 
-        record_corrupt = _make_raw_record(
-            "idempotency-corrupt", "codex", content_corrupt, "/exports/codex.jsonl"
-        )
+        record_corrupt = _make_raw_record("idempotency-corrupt", "codex", content_corrupt, "/exports/codex.jsonl")
         result_corrupt = ingest_record(record_corrupt, str(tmp_path / "archive"), "off")
 
         # Second: clean (same data without corruption)
         lines_clean = generate_large_jsonl(20, provider="codex")
         content_clean = _jsonl_bytes(lines_clean)
 
-        record_clean = _make_raw_record(
-            "idempotency-clean", "codex", content_clean, "/exports/codex.jsonl"
-        )
+        record_clean = _make_raw_record("idempotency-clean", "codex", content_clean, "/exports/codex.jsonl")
         result_clean = ingest_record(record_clean, str(tmp_path / "archive"), "off")
 
         assert result_corrupt.error is None
@@ -740,9 +750,7 @@ class TestRerunIdempotency:
             parsed_1 = _iter_jsonl_stream(data)
             parsed_2 = _iter_jsonl_stream(data)
 
-            assert parsed_1 == parsed_2, (
-                f"Idempotency violated for pattern '{pattern_name}'"
-            )
+            assert parsed_1 == parsed_2, f"Idempotency violated for pattern '{pattern_name}'"
 
 
 # ===========================================================================

@@ -19,6 +19,7 @@ import sys
 # Check if atheris is available
 try:
     import atheris
+
     HAS_ATHERIS = True
 except ImportError:
     HAS_ATHERIS = False
@@ -290,9 +291,9 @@ MALFORMED_CORPUS = [
     b"42",
     b'"just a string"',
     # Deep nesting
-    b'{"a":' * 50 + b'"deep"' + b'}' * 50,
+    b'{"a":' * 50 + b'"deep"' + b"}" * 50,
     # Large strings
-    b'{"key": "' + b'x' * 10000 + b'"}',
+    b'{"key": "' + b"x" * 10000 + b'"}',
     # Unicode edge cases
     b'{"text": "\\u0000\\u001f\\u007f"}',
     b'{"text": "\\uD800"}',  # Invalid surrogate

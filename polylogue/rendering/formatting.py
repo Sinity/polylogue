@@ -142,13 +142,15 @@ def _conv_to_csv_messages(conv: Conversation) -> str:
     for msg in conv.messages:
         if not msg.text:
             continue
-        writer.writerow([
-            str(conv.id),
-            str(msg.id),
-            msg.role or "",
-            msg.timestamp.isoformat() if msg.timestamp else "",
-            msg.text,
-        ])
+        writer.writerow(
+            [
+                str(conv.id),
+                str(msg.id),
+                msg.role or "",
+                msg.timestamp.isoformat() if msg.timestamp else "",
+                msg.text,
+            ]
+        )
     return buf.getvalue().rstrip()
 
 

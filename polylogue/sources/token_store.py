@@ -80,6 +80,7 @@ class KeyringTokenStore:
     def _try_import_keyring() -> object | None:
         try:
             import keyring  # type: ignore[import]
+
             # Test that keyring backend is functional
             keyring.get_keyring()
             return keyring  # type: ignore[no-any-return]

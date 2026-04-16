@@ -168,7 +168,9 @@ class TestMCPRealRepositoryPaths:
             with patch("polylogue.mcp.server._get_repo", return_value=repo):
                 server = build_server()
 
-                initial_tags = json.loads(invoke_surface(server._tool_manager._tools["list_tags"].fn, provider="chatgpt"))
+                initial_tags = json.loads(
+                    invoke_surface(server._tool_manager._tools["list_tags"].fn, provider="chatgpt")
+                )
                 assert initial_tags.get("important", 0) == 0
 
                 add_payload = json.loads(
@@ -180,7 +182,9 @@ class TestMCPRealRepositoryPaths:
                 )
                 assert add_payload["status"] == "ok"
 
-                list_payload = json.loads(invoke_surface(server._tool_manager._tools["list_tags"].fn, provider="chatgpt"))
+                list_payload = json.loads(
+                    invoke_surface(server._tool_manager._tools["list_tags"].fn, provider="chatgpt")
+                )
                 assert list_payload.get("important", 0) == 1
 
                 remove_payload = json.loads(

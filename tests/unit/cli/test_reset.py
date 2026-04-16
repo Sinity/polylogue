@@ -63,9 +63,7 @@ class TestResetCommandSubprocess:
         inbox = workspace["paths"]["inbox"]
 
         # Create some data first
-        (GenericConversationBuilder("to-delete")
-         .add_user("will be deleted")
-         .write_to(inbox / "test.json"))
+        (GenericConversationBuilder("to-delete").add_user("will be deleted").write_to(inbox / "test.json"))
         run_cli(["--plain", "run", "parse"], env=env)
 
         # Now reset
@@ -108,11 +106,13 @@ class TestResetCommandValidation:
         monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
 
         # Create mock path constants for the test
-        with patch("polylogue.cli.commands.reset.db_path", return_value=tmp_path / "nonexistent.db"), \
-             patch("polylogue.cli.commands.reset.data_home", return_value=tmp_path / "data"), \
-             patch("polylogue.cli.commands.reset.render_root", return_value=tmp_path / "render"), \
-             patch("polylogue.cli.commands.reset.cache_home", return_value=tmp_path / "cache"), \
-             patch("polylogue.cli.commands.reset.drive_token_path", return_value=tmp_path / "token.json"):
+        with (
+            patch("polylogue.cli.commands.reset.db_path", return_value=tmp_path / "nonexistent.db"),
+            patch("polylogue.cli.commands.reset.data_home", return_value=tmp_path / "data"),
+            patch("polylogue.cli.commands.reset.render_root", return_value=tmp_path / "render"),
+            patch("polylogue.cli.commands.reset.cache_home", return_value=tmp_path / "cache"),
+            patch("polylogue.cli.commands.reset.drive_token_path", return_value=tmp_path / "token.json"),
+        ):
             runner = CliRunner()
             result = runner.invoke(cli, ["reset", "--all", "--yes"])
 
@@ -132,38 +132,48 @@ class TestResetCommandDeletion:
         if path_attr == "db_path":
             target_path = tmp_path / "polylogue.db"
             target_path.write_text("test database", encoding="utf-8")
-            patches = [patch("polylogue.cli.commands.reset.db_path", return_value=target_path),
-                      patch("polylogue.cli.commands.reset.data_home", return_value=tmp_path)]
+            patches = [
+                patch("polylogue.cli.commands.reset.db_path", return_value=target_path),
+                patch("polylogue.cli.commands.reset.data_home", return_value=tmp_path),
+            ]
         elif path_attr == "assets_dir":
             data_home = tmp_path / "data"
             target_path = data_home / "assets"
             target_path.mkdir(parents=True)
             (target_path / "test.png").write_bytes(b"test")
-            patches = [patch("polylogue.cli.commands.reset.db_path", return_value=tmp_path / "nonexistent.db"),
-                      patch("polylogue.cli.commands.reset.data_home", return_value=data_home)]
+            patches = [
+                patch("polylogue.cli.commands.reset.db_path", return_value=tmp_path / "nonexistent.db"),
+                patch("polylogue.cli.commands.reset.data_home", return_value=data_home),
+            ]
         elif path_attr == "render_dir":
             target_path = tmp_path / "render"
             target_path.mkdir(parents=True)
             (target_path / "test.html").write_text("<html>test</html>", encoding="utf-8")
-            patches = [patch("polylogue.cli.commands.reset.db_path", return_value=tmp_path / "nonexistent.db"),
-                      patch("polylogue.cli.commands.reset.data_home", return_value=tmp_path),
-                      patch("polylogue.cli.commands.reset.render_root", return_value=target_path)]
+            patches = [
+                patch("polylogue.cli.commands.reset.db_path", return_value=tmp_path / "nonexistent.db"),
+                patch("polylogue.cli.commands.reset.data_home", return_value=tmp_path),
+                patch("polylogue.cli.commands.reset.render_root", return_value=target_path),
+            ]
         elif path_attr == "cache_dir":
             target_path = tmp_path / "cache"
             target_path.mkdir(parents=True)
             (target_path / "index").write_text("index data", encoding="utf-8")
-            patches = [patch("polylogue.cli.commands.reset.db_path", return_value=tmp_path / "nonexistent.db"),
-                      patch("polylogue.cli.commands.reset.data_home", return_value=tmp_path),
-                      patch("polylogue.cli.commands.reset.render_root", return_value=tmp_path / "nonexistent"),
-                      patch("polylogue.cli.commands.reset.cache_home", return_value=target_path)]
+            patches = [
+                patch("polylogue.cli.commands.reset.db_path", return_value=tmp_path / "nonexistent.db"),
+                patch("polylogue.cli.commands.reset.data_home", return_value=tmp_path),
+                patch("polylogue.cli.commands.reset.render_root", return_value=tmp_path / "nonexistent"),
+                patch("polylogue.cli.commands.reset.cache_home", return_value=target_path),
+            ]
         elif path_attr == "token_path":
             target_path = tmp_path / "token.json"
             target_path.write_text(json.dumps({"token": "test"}), encoding="utf-8")
-            patches = [patch("polylogue.cli.commands.reset.db_path", return_value=tmp_path / "nonexistent.db"),
-                      patch("polylogue.cli.commands.reset.data_home", return_value=tmp_path),
-                      patch("polylogue.cli.commands.reset.render_root", return_value=tmp_path / "nonexistent"),
-                      patch("polylogue.cli.commands.reset.cache_home", return_value=tmp_path / "nonexistent"),
-                      patch("polylogue.cli.commands.reset.drive_token_path", return_value=target_path)]
+            patches = [
+                patch("polylogue.cli.commands.reset.db_path", return_value=tmp_path / "nonexistent.db"),
+                patch("polylogue.cli.commands.reset.data_home", return_value=tmp_path),
+                patch("polylogue.cli.commands.reset.render_root", return_value=tmp_path / "nonexistent"),
+                patch("polylogue.cli.commands.reset.cache_home", return_value=tmp_path / "nonexistent"),
+                patch("polylogue.cli.commands.reset.drive_token_path", return_value=target_path),
+            ]
 
         assert target_path.exists()
 
@@ -192,9 +202,11 @@ class TestResetCommandDeletion:
         assets_dir.mkdir(parents=True)
         (assets_dir / "keep.png").write_bytes(b"keep")
 
-        with patch("polylogue.cli.commands.reset.db_path", return_value=db_path), \
-             patch("polylogue.cli.commands.reset.data_home", return_value=data_home), \
-             patch("polylogue.cli.commands.reset.render_root", return_value=render_dir):
+        with (
+            patch("polylogue.cli.commands.reset.db_path", return_value=db_path),
+            patch("polylogue.cli.commands.reset.data_home", return_value=data_home),
+            patch("polylogue.cli.commands.reset.render_root", return_value=render_dir),
+        ):
             runner = CliRunner()
             result = runner.invoke(cli, ["reset", "--database", "--render", "--yes"])
 
@@ -215,8 +227,10 @@ class TestResetConfirmation:
         db_path = tmp_path / "polylogue.db"
         db_path.write_text("test database", encoding="utf-8")
 
-        with patch("polylogue.cli.commands.reset.db_path", return_value=db_path), \
-             patch("polylogue.cli.commands.reset.data_home", return_value=tmp_path):
+        with (
+            patch("polylogue.cli.commands.reset.db_path", return_value=db_path),
+            patch("polylogue.cli.commands.reset.data_home", return_value=tmp_path),
+        ):
             runner = CliRunner()
             result = runner.invoke(cli, ["reset", "--database"])
 
@@ -232,8 +246,10 @@ class TestResetConfirmation:
         db_path = tmp_path / "polylogue.db"
         db_path.write_text("test database", encoding="utf-8")
 
-        with patch("polylogue.cli.commands.reset.db_path", return_value=db_path), \
-             patch("polylogue.cli.commands.reset.data_home", return_value=tmp_path):
+        with (
+            patch("polylogue.cli.commands.reset.db_path", return_value=db_path),
+            patch("polylogue.cli.commands.reset.data_home", return_value=tmp_path),
+        ):
             runner = CliRunner()
             result = runner.invoke(cli, ["reset", "--database", "--yes"])
 
@@ -248,11 +264,13 @@ class TestResetEmptyTargets:
         """When no files exist, shows 'nothing to reset'."""
         monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
 
-        with patch("polylogue.cli.commands.reset.db_path", return_value=tmp_path / "nonexistent.db"), \
-             patch("polylogue.cli.commands.reset.data_home", return_value=tmp_path / "nonexistent"), \
-             patch("polylogue.cli.commands.reset.render_root", return_value=tmp_path / "nonexistent"), \
-             patch("polylogue.cli.commands.reset.cache_home", return_value=tmp_path / "nonexistent"), \
-             patch("polylogue.cli.commands.reset.drive_token_path", return_value=tmp_path / "nonexistent.json"):
+        with (
+            patch("polylogue.cli.commands.reset.db_path", return_value=tmp_path / "nonexistent.db"),
+            patch("polylogue.cli.commands.reset.data_home", return_value=tmp_path / "nonexistent"),
+            patch("polylogue.cli.commands.reset.render_root", return_value=tmp_path / "nonexistent"),
+            patch("polylogue.cli.commands.reset.cache_home", return_value=tmp_path / "nonexistent"),
+            patch("polylogue.cli.commands.reset.drive_token_path", return_value=tmp_path / "nonexistent.json"),
+        ):
             runner = CliRunner()
             result = runner.invoke(cli, ["reset", "--all", "--yes"])
 
@@ -266,8 +284,10 @@ class TestResetEmptyTargets:
         db_path = tmp_path / "polylogue.db"
         db_path.write_text("test database", encoding="utf-8")
 
-        with patch("polylogue.cli.commands.reset.db_path", return_value=db_path), \
-             patch("polylogue.cli.commands.reset.data_home", return_value=tmp_path / "nonexistent"):
+        with (
+            patch("polylogue.cli.commands.reset.db_path", return_value=db_path),
+            patch("polylogue.cli.commands.reset.data_home", return_value=tmp_path / "nonexistent"),
+        ):
             runner = CliRunner()
             result = runner.invoke(cli, ["reset", "--database", "--assets", "--yes"])
 
@@ -286,9 +306,11 @@ class TestResetErrorHandling:
         db_path = tmp_path / "polylogue.db"
         db_path.write_text("test", encoding="utf-8")
 
-        with patch("polylogue.cli.commands.reset.db_path", return_value=db_path), \
-             patch("polylogue.cli.commands.reset.data_home", return_value=tmp_path), \
-             patch("pathlib.Path.unlink") as mock_unlink:
+        with (
+            patch("polylogue.cli.commands.reset.db_path", return_value=db_path),
+            patch("polylogue.cli.commands.reset.data_home", return_value=tmp_path),
+            patch("pathlib.Path.unlink") as mock_unlink,
+        ):
             mock_unlink.side_effect = OSError("Permission denied")
 
             runner = CliRunner()
@@ -309,8 +331,10 @@ class TestResetErrorHandling:
         assets_dir.mkdir(parents=True)
         (assets_dir / "test.png").write_bytes(b"test")
 
-        with patch("polylogue.cli.commands.reset.db_path", return_value=db_path), \
-             patch("polylogue.cli.commands.reset.data_home", return_value=data_home):
+        with (
+            patch("polylogue.cli.commands.reset.db_path", return_value=db_path),
+            patch("polylogue.cli.commands.reset.data_home", return_value=data_home),
+        ):
             runner = CliRunner()
             result = runner.invoke(cli, ["reset", "--database", "--assets"])
 

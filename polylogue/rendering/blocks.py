@@ -20,6 +20,7 @@ from typing import Any
 # Markdown rendering
 # -------------------------------------------------------------------
 
+
 def render_blocks_markdown(blocks: list[dict[str, Any]]) -> str:
     """Render a list of content block dicts to structure-preserving markdown.
 
@@ -49,11 +50,7 @@ def _render_block_markdown(block: dict[str, Any]) -> str:
         text = block.get("thinking") or block.get("text") or ""
         if not text.strip():
             return ""
-        return (
-            "<details><summary>Thinking</summary>\n\n"
-            f"{text.strip()}\n\n"
-            "</details>"
-        )
+        return f"<details><summary>Thinking</summary>\n\n{text.strip()}\n\n</details>"
 
     if block_type == "tool_use":
         name = block.get("name", "unknown")
@@ -137,6 +134,7 @@ def _tool_input_summary(name: str, tool_input: Any) -> str:
 # HTML rendering
 # -------------------------------------------------------------------
 
+
 def render_blocks_html(blocks: list[dict[str, Any]]) -> str:
     """Render content blocks to semantic HTML."""
     parts: list[str] = []
@@ -158,26 +156,27 @@ def _render_block_html(block: dict[str, Any]) -> str:
         if not text.strip():
             return ""
         from html import escape
+
         return (
             '<details class="thinking-block">\n'
             '  <summary class="thinking-label">Thinking</summary>\n'
             f'  <div class="thinking-content">{escape(text.strip())}</div>\n'
-            '</details>'
+            "</details>"
         )
 
     if block_type == "tool_use":
         from html import escape
+
         name = escape(block.get("name", "unknown"))
         summary = _tool_input_summary(block.get("name", ""), block.get("input", {}))
-        return (
-            f'<div class="tool-use-block">'
-            f'<span class="tool-name">{name}</span>'
-            f'{" <code>" + escape(summary.strip("`\"")) + "</code>" if summary else ""}'
-            f'</div>'
-        )
+        summary_html = ""
+        if summary:
+            summary_html = " <code>" + escape(summary.strip('`"')) + "</code>"
+        return f'<div class="tool-use-block"><span class="tool-name">{name}</span>{summary_html}</div>'
 
     if block_type == "tool_result":
         from html import escape
+
         text = _extract_block_text(block)
         if not text.strip():
             return ""
@@ -185,6 +184,7 @@ def _render_block_html(block: dict[str, Any]) -> str:
 
     if block_type == "code":
         from html import escape
+
         text = block.get("text") or block.get("code") or ""
         lang = block.get("language") or ""
         if not text.strip():
@@ -197,6 +197,7 @@ def _render_block_html(block: dict[str, Any]) -> str:
     if not text.strip():
         return ""
     from html import escape
+
     # Simple paragraph wrapping for plain text
     paragraphs = text.strip().split("\n\n")
     return "\n".join(f"<p>{escape(p.strip())}</p>" for p in paragraphs if p.strip())
@@ -205,6 +206,7 @@ def _render_block_html(block: dict[str, Any]) -> str:
 # -------------------------------------------------------------------
 # Plaintext rendering
 # -------------------------------------------------------------------
+
 
 def render_blocks_plaintext(blocks: list[dict[str, Any]]) -> str:
     """Render content blocks to plain text (no formatting)."""
@@ -241,6 +243,7 @@ def render_blocks_plaintext(blocks: list[dict[str, Any]]) -> str:
 # Helpers
 # -------------------------------------------------------------------
 
+
 def _extract_block_text(block: dict[str, Any]) -> str:
     """Extract displayable text from a content block."""
     text = block.get("text")
@@ -266,10 +269,7 @@ def has_structured_blocks(blocks: list[dict[str, Any]] | None) -> bool:
     """Check if a block list contains non-text typed blocks worth rendering structurally."""
     if not blocks:
         return False
-    return any(
-        isinstance(b, dict) and b.get("type") in ("thinking", "tool_use", "tool_result", "code")
-        for b in blocks
-    )
+    return any(isinstance(b, dict) and b.get("type") in ("thinking", "tool_use", "tool_result", "code") for b in blocks)
 
 
 __all__ = [

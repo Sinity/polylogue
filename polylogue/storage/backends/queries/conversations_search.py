@@ -13,9 +13,7 @@ async def search_conversations(
 ) -> list[str]:
     from polylogue.storage.search import build_ranked_conversation_search_query
 
-    cursor = await conn.execute(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name='messages_fts'"
-    )
+    cursor = await conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='messages_fts'")
     exists = await cursor.fetchone()
     if not exists:
         from polylogue.errors import DatabaseError
@@ -44,9 +42,7 @@ async def search_action_conversations(
 ) -> list[str]:
     from polylogue.storage.search import build_ranked_action_search_query
 
-    cursor = await conn.execute(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name='action_events_fts'"
-    )
+    cursor = await conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='action_events_fts'")
     exists = await cursor.fetchone()
     if not exists:
         from polylogue.errors import DatabaseError

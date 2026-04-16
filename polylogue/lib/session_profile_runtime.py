@@ -33,14 +33,14 @@ def build_session_analysis(
 
 def infer_auto_tags(profile: SessionProfile) -> tuple[str, ...]:
     tags: list[str] = [f"provider:{profile.provider}"]
-    for project in list(profile.canonical_projects)[:3]:
-        tags.append(f"project:{project}")
+    for repo_name in list(profile.repo_names)[:3]:
+        tags.append(f"repo:{repo_name}")
     if profile.is_continuation:
         tags.append("continuation")
     if profile.continuation_depth >= 3:
         tags.append("deep-thread")
-    if len(profile.canonical_projects) > 1:
-        tags.append("multi-project")
+    if len(profile.repo_names) > 1:
+        tags.append("multi-repo")
     if profile.total_cost_usd >= 1.0:
         tags.append("costly")
     return tuple(sorted(set(tags)))
@@ -66,10 +66,7 @@ def build_session_profile(
     if engaged_duration_ms <= 0:
         engaged_duration_ms = max(int(conversation.total_duration_ms or 0), 0)
     canonical_session_at = (
-        facts.first_message_at
-        or conversation.created_at
-        or conversation.updated_at
-        or facts.last_message_at
+        facts.first_message_at or conversation.created_at or conversation.updated_at or facts.last_message_at
     )
     partial = SessionProfile(
         conversation_id=str(conversation.id),
@@ -91,7 +88,7 @@ def build_session_profile(
         branch_names=attribution.branch_names,
         file_paths_touched=attribution.file_paths_touched,
         languages_detected=attribution.languages_detected,
-        canonical_projects=attribution.canonical_projects,
+        repo_names=attribution.repo_names,
         work_events=session_analysis.work_events,
         phases=session_analysis.phases,
         first_message_at=facts.first_message_at,

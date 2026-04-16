@@ -78,11 +78,7 @@ def _conversation_search_hit(
     """Adapt a canonical conversation result into the SearchResult surface."""
     terms = [term.lower() for term in query.split() if term.strip()]
     matching_message = next(
-        (
-            msg
-            for msg in conversation.messages
-            if msg.text and any(term in msg.text.lower() for term in terms)
-        ),
+        (msg for msg in conversation.messages if msg.text and any(term in msg.text.lower() for term in terms)),
         next((msg for msg in conversation.messages if msg.text), None),
     )
     message_id = str(matching_message.id) if matching_message else ""
@@ -110,14 +106,10 @@ def provider_analytics_product(row) -> ProviderAnalyticsProduct:
     user_word_sum = row["user_word_sum"] or 0
     assistant_word_sum = row["assistant_word_sum"] or 0
     tool_use_percentage = (
-        (row["conversations_with_tools"] / conversation_count) * 100
-        if conversation_count > 0
-        else 0.0
+        (row["conversations_with_tools"] / conversation_count) * 100 if conversation_count > 0 else 0.0
     )
     thinking_percentage = (
-        (row["conversations_with_thinking"] / conversation_count) * 100
-        if conversation_count > 0
-        else 0.0
+        (row["conversations_with_thinking"] / conversation_count) * 100 if conversation_count > 0 else 0.0
     )
     return ProviderAnalyticsProduct(
         provider_name=row["provider_name"] or "unknown",
@@ -125,13 +117,9 @@ def provider_analytics_product(row) -> ProviderAnalyticsProduct:
         message_count=row["message_count"],
         user_message_count=user_message_count,
         assistant_message_count=assistant_message_count,
-        avg_messages_per_conversation=(
-            row["message_count"] / conversation_count if conversation_count > 0 else 0.0
-        ),
+        avg_messages_per_conversation=(row["message_count"] / conversation_count if conversation_count > 0 else 0.0),
         avg_user_words=(user_word_sum / user_message_count if user_message_count > 0 else 0.0),
-        avg_assistant_words=(
-            assistant_word_sum / assistant_message_count if assistant_message_count > 0 else 0.0
-        ),
+        avg_assistant_words=(assistant_word_sum / assistant_message_count if assistant_message_count > 0 else 0.0),
         tool_use_count=row["tool_use_count"],
         thinking_count=row["thinking_count"],
         total_conversations_with_tools=row["conversations_with_tools"],
@@ -451,19 +439,16 @@ class ArchiveProductDebtMixin:
         request = query or ArchiveDebtProductQuery()
         with connection_context(self.config.db_path) as conn:
             statuses = collect_archive_debt_statuses_sync(conn)
-        products = [
-            ArchiveDebtProduct.from_status(status)
-            for status in statuses.values()
-        ]
+        products = [ArchiveDebtProduct.from_status(status) for status in statuses.values()]
         products.sort(key=lambda product: (product.category, product.debt_name))
         if request.category:
             products = [product for product in products if product.category == request.category]
         if request.only_actionable:
             products = [product for product in products if not product.healthy]
         if request.offset:
-            products = products[request.offset:]
+            products = products[request.offset :]
         if request.limit is not None:
-            products = products[:request.limit]
+            products = products[: request.limit]
         return products
 
 

@@ -7,6 +7,7 @@ parsing. The goal: parsers never crash on schema-conformant input.
 Acceptable rejection: ValueError, TypeError, KeyError (parse rejection).
 Unacceptable: AttributeError, IndexError, RecursionError (bugs).
 """
+
 from __future__ import annotations
 
 import pytest

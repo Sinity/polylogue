@@ -13,7 +13,7 @@ pytestmark = [pytest.mark.integration, pytest.mark.query_routing]
 
 
 def _run_inbox(workspace, *, cwd) -> None:
-    result = run_cli(["--plain", "run", "--source", "inbox", "--stage", "all"], env=workspace["env"], cwd=cwd)
+    result = run_cli(["--plain", "run", "--source", "inbox"], env=workspace["env"], cwd=cwd)
     assert result.exit_code == 0, result.output
 
 
@@ -21,9 +21,9 @@ def test_cli_query_count_route_returns_exact_count(tmp_path):
     workspace = setup_isolated_workspace(tmp_path)
     inbox = workspace["paths"]["inbox"]
 
-    GenericConversationBuilder("conv-count").title("Count Route").add_user("alpha route").add_assistant("beta").write_to(
-        inbox / "conversation.json"
-    )
+    GenericConversationBuilder("conv-count").title("Count Route").add_user("alpha route").add_assistant(
+        "beta"
+    ).write_to(inbox / "conversation.json")
     _run_inbox(workspace, cwd=tmp_path)
 
     result = run_cli(["--plain", "alpha", "count"], env=workspace["env"], cwd=tmp_path)
@@ -36,9 +36,9 @@ def test_cli_query_summary_list_json_route_returns_structured_rows(tmp_path):
     workspace = setup_isolated_workspace(tmp_path)
     inbox = workspace["paths"]["inbox"]
 
-    GenericConversationBuilder("conv-list").title("List Route").add_user("searchable alpha").add_assistant("response").write_to(
-        inbox / "conversation.json"
-    )
+    GenericConversationBuilder("conv-list").title("List Route").add_user("searchable alpha").add_assistant(
+        "response"
+    ).write_to(inbox / "conversation.json")
     _run_inbox(workspace, cwd=tmp_path)
 
     result = run_cli(["--plain", "searchable", "list", "-f", "json"], env=workspace["env"], cwd=tmp_path)
@@ -54,9 +54,9 @@ def test_cli_query_stream_route_emits_json_lines_header_messages_footer(tmp_path
     workspace = setup_isolated_workspace(tmp_path)
     inbox = workspace["paths"]["inbox"]
 
-    GenericConversationBuilder("conv-stream").title("Stream Route").add_user("stream alpha").add_assistant("stream beta").write_to(
-        inbox / "conversation.json"
-    )
+    GenericConversationBuilder("conv-stream").title("Stream Route").add_user("stream alpha").add_assistant(
+        "stream beta"
+    ).write_to(inbox / "conversation.json")
     _run_inbox(workspace, cwd=tmp_path)
 
     result = run_cli(["--plain", "--latest", "--stream", "-f", "json"], env=workspace["env"], cwd=tmp_path)
@@ -85,7 +85,7 @@ def test_cli_query_stats_by_provider_reports_provider_groups(tmp_path):
 
     assert result.exit_code == 0, result.output
     output = result.output.lower()
-    assert "matched: 2 conversations" in output
+    assert "conversations: 2" in output
     assert "chatgpt" in output
     assert "unknown" in output
 

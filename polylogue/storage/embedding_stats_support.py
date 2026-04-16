@@ -18,24 +18,17 @@ def build_retrieval_bands_from_status(
     action_status: dict[str, object],
     session_status: dict[str, int | bool],
 ) -> dict[str, dict[str, object]]:
-    transcript_ready = (
-        total_conversations == 0
-        or (
-            embedded_conversations == total_conversations
-            and pending_conversations == 0
-            and stale_messages == 0
-            and missing_provenance == 0
-        )
+    transcript_ready = total_conversations == 0 or (
+        embedded_conversations == total_conversations
+        and pending_conversations == 0
+        and stale_messages == 0
+        and missing_provenance == 0
     )
     transcript_status = "empty" if total_conversations == 0 else ("ready" if transcript_ready else "pending")
 
-    evidence_source_rows = (
-        int(action_status["count"])
-        + int(session_status["profile_row_count"])
-    )
-    evidence_materialized_rows = (
-        int(action_status["action_fts_count"])
-        + int(session_status["profile_evidence_fts_count"])
+    evidence_source_rows = int(action_status["count"]) + int(session_status["profile_row_count"])
+    evidence_materialized_rows = int(action_status["action_fts_count"]) + int(
+        session_status["profile_evidence_fts_count"]
     )
     evidence_ready = bool(action_status["action_fts_ready"]) and bool(session_status["profile_evidence_fts_ready"])
 
@@ -83,7 +76,8 @@ def build_retrieval_bands_from_status(
             "source_rows": evidence_source_rows,
             "materialized_rows": evidence_materialized_rows,
             "pending_rows": max(0, evidence_source_rows - evidence_materialized_rows),
-            "stale_rows": int(session_status["profile_evidence_fts_duplicate_count"]) + int(action_status["stale_count"]),
+            "stale_rows": int(session_status["profile_evidence_fts_duplicate_count"])
+            + int(action_status["stale_count"]),
             "detail": (
                 f"Evidence retrieval ready ({evidence_materialized_rows:,}/{evidence_source_rows:,} supporting rows)"
                 if evidence_ready

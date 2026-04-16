@@ -13,7 +13,9 @@ from polylogue.storage.store import AttachmentRecord, ContentBlockRecord, Conver
 from polylogue.types import MessageId
 
 
-def enrich_bundle_from_db(convo, source_name: str, transform, cache: PrepareCache, *, raw_id: str | None = None) -> PreparedBundle:
+def enrich_bundle_from_db(
+    convo, source_name: str, transform, cache: PrepareCache, *, raw_id: str | None = None
+) -> PreparedBundle:
     candidate_cid = transform.candidate_cid
     content_hash = transform.content_hash
 
@@ -170,9 +172,7 @@ async def _build_single_cache(backend, convo, candidate_cid, _unused) -> Prepare
             )
             rows = await cursor.fetchall()
         cache.message_ids[existing_cid] = {
-            str(row["provider_message_id"]): MessageId(row["message_id"])
-            for row in rows
-            if row["provider_message_id"]
+            str(row["provider_message_id"]): MessageId(row["message_id"]) for row in rows if row["provider_message_id"]
         }
 
     return cache

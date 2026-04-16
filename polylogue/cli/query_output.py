@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 import subprocess
 import sys
 import tempfile
@@ -223,13 +222,13 @@ def open_result(
         logger.warning("Config load failed, falling back to defaults: %s", exc)
         config = None
 
+    from polylogue.paths import render_root as default_render_root
+
     render_root = None
     if config and hasattr(config, "render_root") and config.render_root:
         render_root = Path(config.render_root)
     else:
-        render_root_env = os.environ.get("POLYLOGUE_RENDER_ROOT")
-        if render_root_env:
-            render_root = Path(render_root_env)
+        render_root = default_render_root()
 
     if not render_root or not render_root.exists():
         click.echo("No rendered outputs found.", err=True)
@@ -306,15 +305,17 @@ def format_summary_list(
         for summary in summaries:
             date = summary.display_date.strftime("%Y-%m-%d") if summary.display_date else ""
             tags_str = ",".join(summary.tags) if summary.tags else ""
-            writer.writerow([
-                str(summary.id),
-                date,
-                summary.provider,
-                summary.display_title or "",
-                message_counts.get(str(summary.id), 0),
-                tags_str,
-                summary.summary or "",
-            ])
+            writer.writerow(
+                [
+                    str(summary.id),
+                    date,
+                    summary.provider,
+                    summary.display_title or "",
+                    message_counts.get(str(summary.id), 0),
+                    tags_str,
+                    summary.summary or "",
+                ]
+            )
         return buf.getvalue().rstrip("\r\n")
 
     lines = []
@@ -388,16 +389,18 @@ def conversations_to_csv(results: list[Conversation]) -> str:
     for conv in results:
         date = conv.display_date.strftime("%Y-%m-%d") if conv.display_date else ""
         tags_str = ",".join(conv.tags) if conv.tags else ""
-        writer.writerow([
-            str(conv.id),
-            date,
-            conv.provider,
-            conv.display_title or "",
-            len(conv.messages),
-            sum(message.word_count for message in conv.messages),
-            tags_str,
-            conv.summary or "",
-        ])
+        writer.writerow(
+            [
+                str(conv.id),
+                date,
+                conv.provider,
+                conv.display_title or "",
+                len(conv.messages),
+                sum(message.word_count for message in conv.messages),
+                tags_str,
+                conv.summary or "",
+            ]
+        )
 
     return output.getvalue()
 

@@ -5,15 +5,36 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-KNOWN_ROLE_VALUES = frozenset({
-    "user", "assistant", "system", "model", "tool", "human",
-    "developer", "function", "admin",
-})
+KNOWN_ROLE_VALUES = frozenset(
+    {
+        "user",
+        "assistant",
+        "system",
+        "model",
+        "tool",
+        "human",
+        "developer",
+        "function",
+        "admin",
+    }
+)
 
-ANTI_TITLE_NAME_TOKENS = frozenset({
-    "uuid", "model", "version", "hash", "key", "token",
-    "ref", "parent", "slug", "path", "config", "setting",
-})
+ANTI_TITLE_NAME_TOKENS = frozenset(
+    {
+        "uuid",
+        "model",
+        "version",
+        "hash",
+        "key",
+        "token",
+        "ref",
+        "parent",
+        "slug",
+        "path",
+        "config",
+        "setting",
+    }
+)
 
 SEMANTIC_ROLES = (
     "message_container",

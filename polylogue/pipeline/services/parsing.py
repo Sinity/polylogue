@@ -1,14 +1,7 @@
-"""Async parsing service for pipeline operations.
-
-Entry point for the unified ingest pipeline. Delegates to:
-- parsing_workflow.py for orchestration (acquire → ingest)
-- ingest_batch.py for batch processing (ProcessPool + sync writes)
-- ingest_worker.py for per-record work (decode + validate + parse + transform)
-"""
+"""Async parsing service for pipeline operations."""
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -30,7 +23,6 @@ if TYPE_CHECKING:
 class ParsingService:
     """Service for parsing conversations from sources asynchronously."""
 
-    RAW_BATCH_SIZE_ENV = "POLYLOGUE_PARSE_RAW_BATCH_SIZE"
     DEFAULT_RAW_BATCH_SIZE = 50
 
     def __init__(
@@ -38,10 +30,21 @@ class ParsingService:
         repository: ConversationRepository,
         archive_root: Path,
         config: Config,
-    ):
+        *,
+        raw_batch_size: int = DEFAULT_RAW_BATCH_SIZE,
+        ingest_workers: int | None = None,
+        measure_ingest_result_size: bool = False,
+    ) -> None:
+        if raw_batch_size <= 0:
+            raise ValueError("raw_batch_size must be a positive integer")
+        if ingest_workers is not None and ingest_workers <= 0:
+            raise ValueError("ingest_workers must be a positive integer")
         self.repository = repository
         self.archive_root = archive_root
         self.config = config
+        self._raw_batch_size = raw_batch_size
+        self._ingest_workers = ingest_workers
+        self._measure_ingest_result_size = measure_ingest_result_size
 
     def _require_backend(self) -> SQLiteBackend:
         """Return the repository backend or fail explicitly."""
@@ -87,16 +90,15 @@ class ParsingService:
 
     @property
     def raw_batch_size(self) -> int:
-        raw_value = os.environ.get(self.RAW_BATCH_SIZE_ENV)
-        if raw_value is None:
-            return self.DEFAULT_RAW_BATCH_SIZE
-        try:
-            parsed = int(raw_value)
-        except ValueError as exc:
-            raise ValueError(f"{self.RAW_BATCH_SIZE_ENV} must be a positive integer") from exc
-        if parsed <= 0:
-            raise ValueError(f"{self.RAW_BATCH_SIZE_ENV} must be a positive integer")
-        return parsed
+        return self._raw_batch_size
+
+    @property
+    def ingest_workers(self) -> int | None:
+        return self._ingest_workers
+
+    @property
+    def measure_ingest_result_size(self) -> bool:
+        return self._measure_ingest_result_size
 
     async def parse_from_raw(
         self,

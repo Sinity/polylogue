@@ -19,7 +19,9 @@ CHECK_COMMAND_OPTION_DECORATORS: tuple[Callable[[Callable[..., Any]], Callable[.
         help="Use the recent cached archive-health report when available",
     ),
     click.option("--repair", is_flag=True, help="Run safe derived-data and database maintenance repairs"),
-    click.option("--cleanup", is_flag=True, help="Run destructive archive cleanup for orphaned or empty persisted data"),
+    click.option(
+        "--cleanup", is_flag=True, help="Run destructive archive cleanup for orphaned or empty persisted data"
+    ),
     click.option(
         "--target",
         "maintenance_targets",
@@ -27,8 +29,12 @@ CHECK_COMMAND_OPTION_DECORATORS: tuple[Callable[[Callable[..., Any]], Callable[.
         type=click.Choice(MAINTENANCE_TARGET_NAMES),
         help="Limit maintenance to named targets such as session_products, action_event_read_model, dangling_fts, wal_checkpoint, orphaned_messages, orphaned_content_blocks, empty_conversations, or orphaned_attachments",
     ),
-    click.option("--preview", is_flag=True, help="Preview maintenance without executing (requires --repair or --cleanup)"),
-    click.option("--vacuum", is_flag=True, help="Reclaim unused space after maintenance (requires --repair or --cleanup)"),
+    click.option(
+        "--preview", is_flag=True, help="Preview maintenance without executing (requires --repair or --cleanup)"
+    ),
+    click.option(
+        "--vacuum", is_flag=True, help="Reclaim unused space after maintenance (requires --repair or --cleanup)"
+    ),
     click.option("--deep", is_flag=True, help="Run SQLite integrity check (slow on large databases)"),
     click.option("--runtime", is_flag=True, help="Run environment and runtime verification checks"),
     click.option("--blob", "check_blob", is_flag=True, help="Verify blob store integrity (missing/orphaned blobs)"),
@@ -36,7 +42,12 @@ CHECK_COMMAND_OPTION_DECORATORS: tuple[Callable[[Callable[..., Any]], Callable[.
     click.option("--proof", "check_proof", is_flag=True, help="Run durable artifact support proof"),
     click.option("--artifacts", "check_artifacts", is_flag=True, help="List durable artifact observations"),
     click.option("--cohorts", "check_cohorts", is_flag=True, help="Summarize durable artifact cohorts"),
-    click.option("--schema-provider", "schema_providers", multiple=True, help="Limit schema verification to DB provider name (repeatable)"),
+    click.option(
+        "--schema-provider",
+        "schema_providers",
+        multiple=True,
+        help="Limit schema verification to DB provider name (repeatable)",
+    ),
     click.option(
         "--artifact-provider",
         "artifact_providers",
@@ -55,7 +66,9 @@ CHECK_COMMAND_OPTION_DECORATORS: tuple[Callable[[Callable[..., Any]], Callable[.
         multiple=True,
         help="Limit artifact listing/cohorting to artifact kind (repeatable)",
     ),
-    click.option("--artifact-limit", type=int, default=None, help="Limit artifact proof/listing/cohorting to N observation rows"),
+    click.option(
+        "--artifact-limit", type=int, default=None, help="Limit artifact proof/listing/cohorting to N observation rows"
+    ),
     click.option(
         "--artifact-offset",
         type=int,

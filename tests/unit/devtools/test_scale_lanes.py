@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import sys
-
 import pytest
 
 from devtools.run_scale_lanes import (
@@ -56,12 +54,11 @@ class TestCommandConstruction:
     """Test pytest command building."""
 
     @pytest.mark.parametrize("lane_name", sorted(VALID_LANES))
-    def test_command_starts_with_python_pytest(self, lane_name):
-        """Built command starts with python -m pytest -v."""
+    def test_command_starts_with_pytest(self, lane_name):
+        """Built command starts with pytest -v."""
         lane = LANES[lane_name]
         cmd = build_pytest_command(lane)
-        assert cmd[0] == sys.executable
-        assert cmd[1:3] == ["-m", "pytest"]
+        assert cmd[:2] == ["pytest", "-v"]
         assert "-v" in cmd
 
     def test_fast_lane_targets_scale_tests(self):

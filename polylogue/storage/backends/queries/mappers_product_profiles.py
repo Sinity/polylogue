@@ -14,11 +14,14 @@ def _row_to_session_profile_record(row: sqlite3.Row) -> SessionProfileRecord:
     evidence_search_text = (_row_get(row, "evidence_search_text", "") or "").strip() or search_text
     inference_search_text = (_row_get(row, "inference_search_text", "") or "").strip() or search_text
     enrichment_search_text = (_row_get(row, "enrichment_search_text", "") or "").strip() or inference_search_text
-    legacy_payload = _parse_json(
-        _row_get(row, "payload_json"),
-        field="payload_json",
-        record_id=row["conversation_id"],
-    ) or {}
+    legacy_payload = (
+        _parse_json(
+            _row_get(row, "payload_json"),
+            field="payload_json",
+            record_id=row["conversation_id"],
+        )
+        or {}
+    )
     evidence_payload = (
         _parse_json(
             _row_get(row, "evidence_payload_json"),
@@ -33,19 +36,34 @@ def _row_to_session_profile_record(row: sqlite3.Row) -> SessionProfileRecord:
             "updated_at": legacy_payload.get("updated_at") or _row_get(row, "source_updated_at"),
             "first_message_at": _row_get(row, "first_message_at") or legacy_payload.get("first_message_at"),
             "last_message_at": _row_get(row, "last_message_at") or legacy_payload.get("last_message_at"),
-            "canonical_session_date": _row_get(row, "canonical_session_date") or legacy_payload.get("canonical_session_date"),
+            "canonical_session_date": _row_get(row, "canonical_session_date")
+            or legacy_payload.get("canonical_session_date"),
             "message_count": int(_row_get(row, "message_count", 0) or legacy_payload.get("message_count") or 0),
-            "substantive_count": int(_row_get(row, "substantive_count", 0) or legacy_payload.get("substantive_count") or 0),
-            "attachment_count": int(_row_get(row, "attachment_count", 0) or legacy_payload.get("attachment_count") or 0),
+            "substantive_count": int(
+                _row_get(row, "substantive_count", 0) or legacy_payload.get("substantive_count") or 0
+            ),
+            "attachment_count": int(
+                _row_get(row, "attachment_count", 0) or legacy_payload.get("attachment_count") or 0
+            ),
             "tool_use_count": int(_row_get(row, "tool_use_count", 0) or legacy_payload.get("tool_use_count") or 0),
             "thinking_count": int(_row_get(row, "thinking_count", 0) or legacy_payload.get("thinking_count") or 0),
             "word_count": int(_row_get(row, "word_count", 0) or legacy_payload.get("word_count") or 0),
-            "total_cost_usd": float(_row_get(row, "total_cost_usd", 0.0) or legacy_payload.get("total_cost_usd") or 0.0),
-            "total_duration_ms": int(_row_get(row, "total_duration_ms", 0) or legacy_payload.get("total_duration_ms") or 0),
-            "wall_duration_ms": int(_row_get(row, "wall_duration_ms", 0) or legacy_payload.get("wall_duration_ms") or 0),
-            "cost_is_estimated": bool(int(_row_get(row, "cost_is_estimated", 0) or 0) or legacy_payload.get("cost_is_estimated")),
+            "total_cost_usd": float(
+                _row_get(row, "total_cost_usd", 0.0) or legacy_payload.get("total_cost_usd") or 0.0
+            ),
+            "total_duration_ms": int(
+                _row_get(row, "total_duration_ms", 0) or legacy_payload.get("total_duration_ms") or 0
+            ),
+            "wall_duration_ms": int(
+                _row_get(row, "wall_duration_ms", 0) or legacy_payload.get("wall_duration_ms") or 0
+            ),
+            "cost_is_estimated": bool(
+                int(_row_get(row, "cost_is_estimated", 0) or 0) or legacy_payload.get("cost_is_estimated")
+            ),
             "tool_categories": legacy_payload.get("tool_categories") or {},
-            "repo_paths": tuple(_parse_json(_row_get(row, "repo_paths_json")) or legacy_payload.get("repo_paths") or []),
+            "repo_paths": tuple(
+                _parse_json(_row_get(row, "repo_paths_json")) or legacy_payload.get("repo_paths") or []
+            ),
             "cwd_paths": tuple(legacy_payload.get("cwd_paths") or ()),
             "branch_names": tuple(legacy_payload.get("branch_names") or ()),
             "file_paths_touched": tuple(legacy_payload.get("file_paths_touched") or ()),
@@ -64,15 +82,21 @@ def _row_to_session_profile_record(row: sqlite3.Row) -> SessionProfileRecord:
     )
     if not inference_payload:
         inference_payload = {
-            "canonical_projects": tuple(_parse_json(_row_get(row, "canonical_projects_json")) or legacy_payload.get("canonical_projects") or []),
-            "work_event_count": int(_row_get(row, "work_event_count", 0) or legacy_payload.get("work_event_count") or 0),
+            "repo_names": tuple(
+                _parse_json(_row_get(row, "repo_names_json")) or legacy_payload.get("repo_names") or []
+            ),
+            "work_event_count": int(
+                _row_get(row, "work_event_count", 0) or legacy_payload.get("work_event_count") or 0
+            ),
             "phase_count": int(_row_get(row, "phase_count", 0) or legacy_payload.get("phase_count") or 0),
-            "engaged_duration_ms": int(_row_get(row, "engaged_duration_ms", 0) or legacy_payload.get("engaged_duration_ms") or 0),
+            "engaged_duration_ms": int(
+                _row_get(row, "engaged_duration_ms", 0) or legacy_payload.get("engaged_duration_ms") or 0
+            ),
             "engaged_minutes": float(legacy_payload.get("engaged_minutes") or 0.0),
             "support_level": str(legacy_payload.get("support_level") or "weak"),
             "support_signals": tuple(legacy_payload.get("support_signals") or ()),
             "engaged_duration_source": str(legacy_payload.get("engaged_duration_source") or "session_total_fallback"),
-            "project_inference_strength": str(legacy_payload.get("project_inference_strength") or "weak"),
+            "repo_inference_strength": str(legacy_payload.get("repo_inference_strength") or "weak"),
             "auto_tags": tuple(_parse_json(_row_get(row, "auto_tags_json")) or legacy_payload.get("auto_tags") or []),
             "work_events": tuple(legacy_payload.get("work_events") or ()),
             "phases": tuple(legacy_payload.get("phases") or ()),
@@ -98,7 +122,7 @@ def _row_to_session_profile_record(row: sqlite3.Row) -> SessionProfileRecord:
                 "assistant_turns": 0,
                 "action_events": 0,
                 "touched_paths": len(_parse_json(_row_get(row, "repo_paths_json")) or []),
-                "canonical_projects": len(_parse_json(_row_get(row, "canonical_projects_json")) or []),
+                "repo_names": len(_parse_json(_row_get(row, "repo_names_json")) or []),
             },
         }
     return SessionProfileRecord(
@@ -113,7 +137,7 @@ def _row_to_session_profile_record(row: sqlite3.Row) -> SessionProfileRecord:
         last_message_at=_row_get(row, "last_message_at"),
         canonical_session_date=_row_get(row, "canonical_session_date"),
         repo_paths=tuple(_parse_json(_row_get(row, "repo_paths_json")) or []),
-        canonical_projects=tuple(_parse_json(_row_get(row, "canonical_projects_json")) or []),
+        repo_names=tuple(_parse_json(_row_get(row, "repo_names_json")) or []),
         tags=tuple(_parse_json(_row_get(row, "tags_json")) or []),
         auto_tags=tuple(_parse_json(_row_get(row, "auto_tags_json")) or []),
         message_count=int(_row_get(row, "message_count", 0) or 0),

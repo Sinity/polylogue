@@ -29,7 +29,7 @@ class SessionProfileRecord(BaseModel):
     last_message_at: str | None = None
     canonical_session_date: str | None = None
     repo_paths: tuple[str, ...] = ()
-    canonical_projects: tuple[str, ...] = ()
+    repo_names: tuple[str, ...] = ()
     tags: tuple[str, ...] = ()
     auto_tags: tuple[str, ...] = ()
     message_count: int = 0
@@ -82,7 +82,7 @@ class WorkThreadRecord(BaseModel):
     materialized_at: str
     start_time: str | None = None
     end_time: str | None = None
-    dominant_project: str | None = None
+    dominant_repo: str | None = None
     session_ids: tuple[str, ...] = ()
     session_count: int = 0
     depth: int = 0

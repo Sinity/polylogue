@@ -12,8 +12,18 @@ import pytest
     ("name", "status_name", "detail", "expected"),
     [
         ("test", "OK", "All good", {"name": "test", "status": "ok", "count": 0, "detail": "All good", "breakdown": {}}),
-        ("database", "ERROR", "Connection failed", {"name": "database", "status": "error", "count": 0, "detail": "Connection failed", "breakdown": {}}),
-        ("archive", "WARNING", "Directory missing", {"name": "archive", "status": "warning", "count": 0, "detail": "Directory missing", "breakdown": {}}),
+        (
+            "database",
+            "ERROR",
+            "Connection failed",
+            {"name": "database", "status": "error", "count": 0, "detail": "Connection failed", "breakdown": {}},
+        ),
+        (
+            "archive",
+            "WARNING",
+            "Directory missing",
+            {"name": "archive", "status": "warning", "count": 0, "detail": "Directory missing", "breakdown": {}},
+        ),
     ],
 )
 def test_health_check_dataclass_contract(name: str, status_name: str, detail: str, expected: dict[str, object]) -> None:
@@ -117,9 +127,7 @@ def test_run_health_embedding_status_contract(
     ConversationBuilder(cli_workspace["db_path"], "health-embed-2").add_message(text="hello").save()
     ConversationBuilder(cli_workspace["db_path"], "health-embed-3").add_message(text="hello").save()
 
-    embeddings_ready = (
-        embedded_conversations == 3 and pending_conversations == 0
-    )
+    embeddings_ready = embedded_conversations == 3 and pending_conversations == 0
     expected_detail = (
         f"Transcript embeddings ready ({embedded_conversations:,}/3 conversations, {embedded_messages:,} messages)"
         if embeddings_ready

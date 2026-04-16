@@ -58,9 +58,7 @@ def embed_batch(
     conv_ids: list[tuple[str, str | None]] = []
     with open_connection(backend.db_path) as conn:
         if rebuild:
-            cursor = conn.execute(
-                "SELECT conversation_id, title FROM conversations ORDER BY updated_at DESC"
-            )
+            cursor = conn.execute("SELECT conversation_id, title FROM conversations ORDER BY updated_at DESC")
         else:
             cursor = conn.execute(
                 """
@@ -111,7 +109,4 @@ def embed_batch(
                 env.ui.console.print(f"Warning: [{i}/{len(conv_ids)}] {label}: {exc}")
             progress.advance()
 
-    click.echo(
-        f"\n✓ Embedded {embedded_count} conversations"
-        + (f" ({error_count} errors)" if error_count else "")
-    )
+    click.echo(f"\n✓ Embedded {embedded_count} conversations" + (f" ({error_count} errors)" if error_count else ""))

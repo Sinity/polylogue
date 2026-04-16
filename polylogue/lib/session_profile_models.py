@@ -7,7 +7,7 @@ from datetime import date, datetime
 
 from polylogue.lib.attribution import ConversationAttribution
 from polylogue.lib.phase_extraction import SessionPhase
-from polylogue.lib.project_normalization import normalize_project_names, normalize_repo_paths
+from polylogue.lib.repo_identity import normalize_repo_names, normalize_repo_paths
 from polylogue.lib.semantic_facts import ConversationSemanticFacts
 from polylogue.lib.work_event_extraction import WorkEvent
 
@@ -35,7 +35,7 @@ class SessionProfile:
     branch_names: tuple[str, ...]
     file_paths_touched: tuple[str, ...]
     languages_detected: tuple[str, ...]
-    canonical_projects: tuple[str, ...]
+    repo_names: tuple[str, ...]
     work_events: tuple[WorkEvent, ...]
     phases: tuple[SessionPhase, ...]
     first_message_at: datetime | None = None
@@ -73,16 +73,14 @@ class SessionProfile:
             "branch_names": list(self.branch_names),
             "file_paths_touched": list(self.file_paths_touched),
             "languages_detected": list(self.languages_detected),
-            "canonical_projects": list(self.canonical_projects),
+            "repo_names": list(self.repo_names),
             "work_events": [event.to_dict() for event in self.work_events],
             "phases": [
                 {
                     "start_time": phase.start_time.isoformat() if phase.start_time else None,
                     "end_time": phase.end_time.isoformat() if phase.end_time else None,
                     "canonical_session_date": (
-                        phase.canonical_session_date.isoformat()
-                        if phase.canonical_session_date
-                        else None
+                        phase.canonical_session_date.isoformat() if phase.canonical_session_date else None
                     ),
                     "message_range": list(phase.message_range),
                     "duration_ms": phase.duration_ms,
@@ -96,9 +94,7 @@ class SessionProfile:
             "first_message_at": self.first_message_at.isoformat() if self.first_message_at else None,
             "last_message_at": self.last_message_at.isoformat() if self.last_message_at else None,
             "canonical_session_date": (
-                self.canonical_session_date.isoformat()
-                if self.canonical_session_date
-                else None
+                self.canonical_session_date.isoformat() if self.canonical_session_date else None
             ),
             "engaged_duration_ms": self.engaged_duration_ms,
             "engaged_minutes": round(self.engaged_duration_ms / 60_000.0, 4),
@@ -116,10 +112,9 @@ class SessionProfile:
     @classmethod
     def from_dict(cls, payload: dict[str, object]) -> SessionProfile:
         repo_paths = normalize_repo_paths(payload.get("repo_paths", []) or [])
-        canonical_projects = normalize_project_names(
-            payload.get("canonical_projects", []) or [],
-            repo_paths=repo_paths,
-        )
+        repo_names = tuple(
+            sorted({str(item).strip() for item in (payload.get("repo_names", []) or []) if str(item).strip()})
+        ) or normalize_repo_names(repo_paths=repo_paths)
         return cls(
             conversation_id=str(payload["conversation_id"]),
             provider=str(payload["provider"]),
@@ -135,19 +130,16 @@ class SessionProfile:
             total_cost_usd=float(payload.get("total_cost_usd", 0.0) or 0.0),
             total_duration_ms=int(payload.get("total_duration_ms", 0) or 0),
             tool_categories={
-                str(key): int(value or 0)
-                for key, value in (payload.get("tool_categories", {}) or {}).items()
+                str(key): int(value or 0) for key, value in (payload.get("tool_categories", {}) or {}).items()
             },
             repo_paths=repo_paths,
             cwd_paths=tuple(str(item) for item in payload.get("cwd_paths", []) or []),
             branch_names=tuple(str(item) for item in payload.get("branch_names", []) or []),
             file_paths_touched=tuple(str(item) for item in payload.get("file_paths_touched", []) or []),
             languages_detected=tuple(str(item) for item in payload.get("languages_detected", []) or []),
-            canonical_projects=canonical_projects,
+            repo_names=repo_names,
             work_events=tuple(
-                WorkEvent.from_dict(item)
-                for item in payload.get("work_events", []) or []
-                if isinstance(item, dict)
+                WorkEvent.from_dict(item) for item in payload.get("work_events", []) or [] if isinstance(item, dict)
             ),
             phases=tuple(
                 SessionPhase(
@@ -160,7 +152,9 @@ class SessionProfile:
                     ),
                     message_range=tuple(int(value) for value in item.get("message_range", [0, 0])),
                     duration_ms=int(item.get("duration_ms", 0) or 0),
-                    tool_counts={str(key): int(value or 0) for key, value in (item.get("tool_counts", {}) or {}).items()},
+                    tool_counts={
+                        str(key): int(value or 0) for key, value in (item.get("tool_counts", {}) or {}).items()
+                    },
                     word_count=int(item.get("word_count", 0) or 0),
                     confidence=float(item.get("confidence", 0.0) or 0.0),
                     evidence=tuple(str(value) for value in item.get("evidence", []) or []),
@@ -169,14 +163,10 @@ class SessionProfile:
                 if isinstance(item, dict)
             ),
             first_message_at=(
-                datetime.fromisoformat(str(payload["first_message_at"]))
-                if payload.get("first_message_at")
-                else None
+                datetime.fromisoformat(str(payload["first_message_at"])) if payload.get("first_message_at") else None
             ),
             last_message_at=(
-                datetime.fromisoformat(str(payload["last_message_at"]))
-                if payload.get("last_message_at")
-                else None
+                datetime.fromisoformat(str(payload["last_message_at"])) if payload.get("last_message_at") else None
             ),
             canonical_session_date=(
                 date.fromisoformat(str(payload["canonical_session_date"]))

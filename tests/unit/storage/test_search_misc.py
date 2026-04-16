@@ -61,38 +61,41 @@ class TestEnsureVec0Table:
 class TestAssetPath:
     """Tests for asset_path function."""
 
-    @pytest.mark.parametrize("asset_id,verify_fn,description", [
-        (
-            "att-id/with@special#chars",
-            lambda path: "att-" in path.name,
-            "sanitizes_special_characters",
-        ),
-        (
-            "id with / spaces",
-            lambda path: "/" not in path.name and "att-" in path.name,
-            "sanitizes_spaces_and_slashes",
-        ),
-        (
-            "a",
-            lambda path: "assets" in path.parts,
-            "handles_short_id",
-        ),
-        (
-            "attachment-123",
-            lambda path: "attachment-123" in str(path),
-            "preserves_clean_id",
-        ),
-        (
-            "test-asset-001",
-            lambda path: "assets" in path.parts and path.parent.parent.name == "assets",
-            "creates_correct_structure",
-        ),
-        (
-            "",
-            lambda path: "att-" in path.name,
-            "handles_empty_string",
-        ),
-    ])
+    @pytest.mark.parametrize(
+        "asset_id,verify_fn,description",
+        [
+            (
+                "att-id/with@special#chars",
+                lambda path: "att-" in path.name,
+                "sanitizes_special_characters",
+            ),
+            (
+                "id with / spaces",
+                lambda path: "/" not in path.name and "att-" in path.name,
+                "sanitizes_spaces_and_slashes",
+            ),
+            (
+                "a",
+                lambda path: "assets" in path.parts,
+                "handles_short_id",
+            ),
+            (
+                "attachment-123",
+                lambda path: "attachment-123" in str(path),
+                "preserves_clean_id",
+            ),
+            (
+                "test-asset-001",
+                lambda path: "assets" in path.parts and path.parent.parent.name == "assets",
+                "creates_correct_structure",
+            ),
+            (
+                "",
+                lambda path: "att-" in path.name,
+                "handles_empty_string",
+            ),
+        ],
+    )
     def test_asset_path_behavior(self, tmp_path, asset_id, verify_fn, description):
         """Parametrized test for asset_path with various inputs and expectations."""
         path = asset_path(tmp_path, asset_id)
@@ -114,6 +117,7 @@ class TestWriteAsset:
 
     def test_write_asset_error_cleans_up_on_failures(self, tmp_path):
         """write_asset cleans up temp files on replace or write errors."""
+
         def mock_replace(src, dst):
             if os.path.exists(src):
                 os.unlink(src)
@@ -161,6 +165,7 @@ class TestRawConversationEdgeCases:
 
         # First, create a raw_conversations record
         from polylogue.storage.blob_store import get_blob_store
+
         blob_store = get_blob_store()
         _, blob_size = blob_store.write_from_bytes(b"content")
 

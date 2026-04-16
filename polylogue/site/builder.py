@@ -154,7 +154,9 @@ class SiteBuilder:
     async def _scan_archive(self, *, incremental: bool) -> tuple[ArchiveIndexStats, ConversationPageBuildStats]:
         return await scan_archive_for_builder(self, incremental=incremental)
 
-    async def _generate_conversation_page(self, repository, conversation: ConversationIndex, *, incremental: bool = True) -> str:
+    async def _generate_conversation_page(
+        self, repository, conversation: ConversationIndex, *, incremental: bool = True
+    ) -> str:
         return await generate_conversation_page_for_builder(
             self,
             repository,

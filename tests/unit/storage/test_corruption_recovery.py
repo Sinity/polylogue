@@ -3,6 +3,7 @@
 Proves SQLite corruption produces clean errors, never crashes
 the application or leaks raw sqlite3.DatabaseError to callers.
 """
+
 from __future__ import annotations
 
 import os
@@ -39,9 +40,7 @@ class TestCorruptionRecovery:
 
         # polylogue auto-recovers: schema is re-initialized, DB is usable.
         with open_connection(db) as conn:
-            result = conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table'"
-            ).fetchall()
+            result = conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
             table_names = {row[0] for row in result}
             assert "conversations" in table_names
 
@@ -56,7 +55,7 @@ class TestCorruptionRecovery:
 
         # Truncate to ~50%
         data = db.read_bytes()
-        db.write_bytes(data[:original_size // 2])
+        db.write_bytes(data[: original_size // 2])
 
         # Should either raise a clean error or create a fresh DB
         try:
@@ -95,9 +94,7 @@ class TestCorruptionRecovery:
         db.parent.mkdir(parents=True, exist_ok=True)
         with open_connection(db) as conn:
             # Should have schema tables
-            result = conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table'"
-            ).fetchall()
+            result = conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
             table_names = {row[0] for row in result}
             assert "conversations" in table_names
 

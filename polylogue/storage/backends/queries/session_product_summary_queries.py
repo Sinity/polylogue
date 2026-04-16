@@ -117,7 +117,7 @@ async def replace_session_tag_rollup_rows(
                 conversation_count,
                 explicit_count,
                 auto_count,
-                project_breakdown_json,
+                repo_breakdown_json,
                 search_text
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
@@ -133,7 +133,7 @@ async def replace_session_tag_rollup_rows(
                     record.conversation_count,
                     record.explicit_count,
                     record.auto_count,
-                    _json_or_none(record.project_breakdown),
+                    _json_or_none(record.repo_breakdown),
                     record.search_text,
                 )
                 for record in records
@@ -172,7 +172,7 @@ async def replace_day_session_summaries(
                 total_messages,
                 total_words,
                 work_event_breakdown_json,
-                projects_active_json,
+                repos_active_json,
                 payload_json,
                 search_text
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -192,7 +192,7 @@ async def replace_day_session_summaries(
                     record.total_messages,
                     record.total_words,
                     _json_or_none(record.work_event_breakdown),
-                    _json_array_or_none(record.projects_active),
+                    _json_array_or_none(record.repos_active),
                     _json_or_none(record.payload),
                     record.search_text,
                 )

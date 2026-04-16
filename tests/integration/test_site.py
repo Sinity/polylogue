@@ -36,9 +36,7 @@ async def _summary_pages(*pages):
 
 
 def _configure_summary_pages(repo: AsyncMock, *pages) -> None:
-    repo.iter_summary_pages = MagicMock(
-        side_effect=lambda *args, **kwargs: _summary_pages(*pages)
-    )
+    repo.iter_summary_pages = MagicMock(side_effect=lambda *args, **kwargs: _summary_pages(*pages))
     repo.iter_messages = _empty_messages
 
 

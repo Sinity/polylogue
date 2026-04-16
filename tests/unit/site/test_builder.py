@@ -71,9 +71,7 @@ def test_site_builder_returns_typed_manifest_and_persists_it(db_path, tmp_path) 
     assert manifest.maintenance is not None
     assert "messages_fts" in manifest.maintenance.derived_models
     assert (tmp_path / "site" / "site-manifest.json").exists()
-    assert "site-manifest.json" not in {
-        entry.relative_path for entry in manifest.artifacts.entries
-    }
+    assert "site-manifest.json" not in {entry.relative_path for entry in manifest.artifacts.entries}
     assert persisted is not None
     assert persisted.publication_id == manifest.publication_id
     assert persisted.manifest["outputs"]["rendered_conversation_pages"] == 1

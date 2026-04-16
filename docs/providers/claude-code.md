@@ -1,11 +1,15 @@
 # Claude Code Sessions
 
-Polylogue ingests Claude Code JSONL sessions via typed validation using ClaudeCodeRecord model with semantic content block extraction.
+Polylogue ingests Claude Code JSONL sessions via typed validation using
+`ClaudeCodeRecord` with semantic content-block extraction.
 
 ## Supported Inputs
 
 - JSONL files with per-event records (messages, summaries, metadata snapshots).
 - Optional `sessions-index.json` for enriched metadata (summary, git branch, project path).
+
+The parser reads exported session records. It does not depend on any specific
+local workstation layout, shell workflow, or agent-side `/history` tooling.
 
 ## Semantic Content Extraction
 
@@ -32,6 +36,17 @@ The parser extracts structured semantic data from content_blocks:
 - Captures working directories and models used across the session.
 - Enriches conversation metadata from sessions-index.json when available.
 
+## Operational Notes
+
+- Import Claude Code exports through the normal source configuration and
+  ingestion flow.
+- `sessions-index.json` is optional metadata enrichment, not a required sidecar.
+- Querying, analytics, and MCP access happen after ingestion through the normal
+  Polylogue archive surfaces rather than through provider-specific shell
+  commands.
+
 ## Limitations
 
 - Workspace file history snapshots are not reconstructed; only captured as metadata.
+- Raw session transcripts can still be large because tool traffic and structured
+  event payloads are preserved as source evidence.

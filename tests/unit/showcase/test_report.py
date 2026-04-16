@@ -66,6 +66,8 @@ def _make_showcase(results: list[ExerciseResult]) -> ShowcaseResult:
     sr.results = results
     sr.total_duration_ms = sum(r.duration_ms for r in results)
     return sr
+
+
 # ---------------------------------------------------------------------------
 # Law 1: generate_showcase_session always has required top-level keys
 # ---------------------------------------------------------------------------
@@ -220,9 +222,11 @@ def test_qa_session_exercise_tier_preserved():
 def test_full_qa_session_contains_composed_stage_payloads():
     """generate_qa_session preserves audit/showcase/invariant truth in one payload."""
     showcase = _make_showcase([_make_result(passed=True), _make_result(passed=False, error="boom")])
-    audit = AuditReport(checks=[
-        OutcomeCheck(name="privacy", status=OutcomeStatus.OK, summary="ok"),
-    ])
+    audit = AuditReport(
+        checks=[
+            OutcomeCheck(name="privacy", status=OutcomeStatus.OK, summary="ok"),
+        ]
+    )
     qa_result = QAResult(
         audit_report=audit,
         proof_report=ArtifactProofReport(
@@ -269,9 +273,11 @@ def test_full_qa_session_contains_composed_stage_payloads():
 def test_generate_qa_summary_reports_stage_statuses():
     """generate_qa_summary renders the composed session instead of hand-built counts."""
     qa_result = QAResult(
-        audit_report=AuditReport(checks=[
-            OutcomeCheck(name="privacy", status=OutcomeStatus.OK, summary="ok"),
-        ]),
+        audit_report=AuditReport(
+            checks=[
+                OutcomeCheck(name="privacy", status=OutcomeStatus.OK, summary="ok"),
+            ]
+        ),
         proof_report=ArtifactProofReport(
             providers={
                 "chatgpt": ProviderArtifactProof(
@@ -301,9 +307,11 @@ def test_generate_qa_summary_reports_stage_statuses():
 
 def test_generate_qa_markdown_includes_artifact_proof_section():
     qa_result = QAResult(
-        audit_report=AuditReport(checks=[
-            OutcomeCheck(name="privacy", status=OutcomeStatus.OK, summary="ok"),
-        ]),
+        audit_report=AuditReport(
+            checks=[
+                OutcomeCheck(name="privacy", status=OutcomeStatus.OK, summary="ok"),
+            ]
+        ),
         proof_report=ArtifactProofReport(
             providers={
                 "claude-code": ProviderArtifactProof(

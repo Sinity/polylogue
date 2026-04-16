@@ -18,6 +18,7 @@ Example usage:
     # Count without materialization
     error_count = conv.project().contains("error").count()
 """
+
 from __future__ import annotations
 
 from collections.abc import Callable
@@ -46,5 +47,6 @@ class ConversationProjection(ProjectionFilterMixin, ProjectionTransformMixin, Pr
         self._limit: int | None = None
         self._offset: int = 0
         self._reverse: bool = False
+
 
 __all__ = ["ConversationProjection"]

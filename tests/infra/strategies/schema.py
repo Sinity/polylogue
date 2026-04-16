@@ -125,9 +125,7 @@ def record_payload_strategy(
         count = draw(st.integers(min_value=min_records_per_variant, max_value=max_records_per_variant))
         for index in range(count):
             record: dict[str, Any] = (
-                {"payload": {"type": value}, "idx": index}
-                if key == "payload.type"
-                else {key: value, "idx": index}
+                {"payload": {"type": value}, "idx": index} if key == "payload.type" else {key: value, "idx": index}
             )
             payload.append(record)
     return payload
@@ -146,9 +144,7 @@ def session_jsonl_tree_strategy(
     files: list[SessionJsonlFileSpec] = []
 
     for index in range(file_count):
-        documents = tuple(
-            draw(st.lists(json_document_strategy(), min_size=1, max_size=max_documents_per_file))
-        )
+        documents = tuple(draw(st.lists(json_document_strategy(), min_size=1, max_size=max_documents_per_file)))
         gap_counts = draw(
             st.lists(
                 st.integers(min_value=0, max_value=2),
@@ -198,7 +194,6 @@ def record_variant_signature(record: dict[str, Any]) -> str:
         if isinstance(value, str) and value:
             return f"payload.type:{value}"
     return "unknown"
-
 
 
 def expected_session_documents(files: tuple[SessionJsonlFileSpec, ...]) -> list[dict[str, Any]]:

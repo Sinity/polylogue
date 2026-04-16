@@ -6,6 +6,7 @@ MERGED: test_rendering.py (renderer implementations, core formatting) +
 To regenerate golden files after intentional rendering changes:
     UPDATE_GOLDEN=1 pytest tests/unit/ui/test_ui_visual.py
 """
+
 from __future__ import annotations
 
 import json
@@ -58,7 +59,13 @@ def sample_conversation_id():
 
     messages = [
         make_message("msg1", "test-conv-1", text="Hello, can you help me?", timestamp="2024-01-01T10:00:00Z"),
-        make_message("msg2", "test-conv-1", role="assistant", text="Of course! How can I help you today?", timestamp="2024-01-01T10:00:05Z"),
+        make_message(
+            "msg2",
+            "test-conv-1",
+            role="assistant",
+            text="Of course! How can I help you today?",
+            timestamp="2024-01-01T10:00:05Z",
+        ),
         make_message("msg3", "test-conv-1", text="I need help with Python testing", timestamp="2024-01-01T10:00:10Z"),
     ]
 
@@ -82,7 +89,13 @@ def sample_conversation_with_json():
 
     messages = [
         make_message("msg1", "test-conv-json", text="Search for Python testing", timestamp="2024-01-01T10:00:00Z"),
-        make_message("msg2", "test-conv-json", role="assistant", text='{"query": "Python testing", "results": ["pytest", "unittest"]}', timestamp="2024-01-01T10:00:05Z"),
+        make_message(
+            "msg2",
+            "test-conv-json",
+            role="assistant",
+            text='{"query": "Python testing", "results": ["pytest", "unittest"]}',
+            timestamp="2024-01-01T10:00:05Z",
+        ),
     ]
 
     with open_connection(None) as conn:
@@ -257,6 +270,7 @@ class TestRendererIntegration:
 
     def test_protocol_compliance(self, workspace_env):
         from polylogue.protocols import OutputRenderer
+
         md_renderer = MarkdownRenderer(archive_root=workspace_env["archive_root"])
         html_renderer = HTMLRenderer(archive_root=workspace_env["archive_root"])
         assert isinstance(md_renderer, OutputRenderer)
@@ -332,9 +346,7 @@ async def test_formatter_format_comprehensive(workspace_env, label, conv_id, des
         with pytest.raises(ValueError, match="Conversation not found"):
             await formatter.format(conv_id)
     elif label == "basic conversation":
-        (ConversationBuilder(db_path, conv_id)
-         .add_message("m1", role="user", text="Hello!")
-         .save())
+        (ConversationBuilder(db_path, conv_id).add_message("m1", role="user", text="Hello!").save())
         result = await formatter.format(conv_id)
         assert isinstance(result, FormattedConversation)
         assert result.title == "Test Conversation"
@@ -343,28 +355,41 @@ async def test_formatter_format_comprehensive(workspace_env, label, conv_id, des
         assert "Hello!" in result.markdown_text
         assert result.metadata["message_count"] == 1
     elif label == "null title":
-        (ConversationBuilder(db_path, conv_id)
-         .title(None)
-         .save())
+        (ConversationBuilder(db_path, conv_id).title(None).save())
         result = await formatter.format(conv_id)
         assert result.title == conv_id
         assert f"# {conv_id}" in result.markdown_text
 
 
 MESSAGE_ORDERING_CASES = [
-    ("timestamp order", "ordered-conv", [
-        ("m3", "Third", "2024-01-01T12:00:30Z"),
-        ("m1", "First", "2024-01-01T12:00:10Z"),
-        ("m2", "Second", "2024-01-01T12:00:20Z"),
-    ], "timestamp ascending"),
-    ("null timestamps", "null-ts-conv", [
-        ("m1", "Timestamped", "2024-01-01T12:00:00Z"),
-        ("m2", "NoTimestamp", None),
-    ], "null timestamps sort last"),
-    ("epoch timestamps", "epoch-conv", [
-        ("m1", "LaterEpoch", "1704110400.5"),
-        ("m2", "EarlierEpoch", "1704106800"),
-    ], "numeric epoch timestamps"),
+    (
+        "timestamp order",
+        "ordered-conv",
+        [
+            ("m3", "Third", "2024-01-01T12:00:30Z"),
+            ("m1", "First", "2024-01-01T12:00:10Z"),
+            ("m2", "Second", "2024-01-01T12:00:20Z"),
+        ],
+        "timestamp ascending",
+    ),
+    (
+        "null timestamps",
+        "null-ts-conv",
+        [
+            ("m1", "Timestamped", "2024-01-01T12:00:00Z"),
+            ("m2", "NoTimestamp", None),
+        ],
+        "null timestamps sort last",
+    ),
+    (
+        "epoch timestamps",
+        "epoch-conv",
+        [
+            ("m1", "LaterEpoch", "1704110400.5"),
+            ("m2", "EarlierEpoch", "1704106800"),
+        ],
+        "numeric epoch timestamps",
+    ),
 ]
 
 
@@ -390,7 +415,7 @@ async def test_message_ordering_comprehensive(workspace_env, label, conv_id, mes
 JSON_WRAPPING_CASES = [
     ('{"key": "value", "count": 42}', True, "JSON object wrapped"),
     ('[1, 2, 3, "four"]', True, "JSON array wrapped"),
-    ('{malformed json without closing', False, "invalid JSON not wrapped"),
+    ("{malformed json without closing", False, "invalid JSON not wrapped"),
     ("{this is not json}", False, "JSON-like but not JSON"),
     ("This is just regular text.", False, "plain text not wrapped"),
 ]
@@ -401,10 +426,7 @@ JSON_WRAPPING_CASES = [
 async def test_json_text_wrapping_comprehensive(workspace_env, text, wrapped, desc):
     db_path = db_setup(workspace_env)
     conv_id = f"json-{hash(text) % 10000}-conv"
-    (ConversationBuilder(db_path, conv_id)
-     .title("Test")
-     .add_message("m1", role="tool", text=text)
-     .save())
+    (ConversationBuilder(db_path, conv_id).title("Test").add_message("m1", role="tool", text=text).save())
     formatter = ConversationFormatter(workspace_env["archive_root"], db_path=db_path)
     result = await formatter.format(conv_id)
     if wrapped:
@@ -414,7 +436,9 @@ async def test_json_text_wrapping_comprehensive(workspace_env, text, wrapped, de
         if isinstance(parsed, dict):
             assert any(key in result.markdown_text for key in parsed), f"Failed {desc}: JSON keys not found"
         elif isinstance(parsed, list):
-            assert "[" in result.markdown_text and "]" in result.markdown_text, f"Failed {desc}: JSON array markers not found"
+            assert "[" in result.markdown_text and "]" in result.markdown_text, (
+                f"Failed {desc}: JSON array markers not found"
+            )
     else:
         assert "```json" not in result.markdown_text, f"Failed {desc}"
         assert text in result.markdown_text, f"Failed {desc}: text not found"
@@ -431,10 +455,12 @@ TIMESTAMP_RENDERING_CASES = [
 async def test_timestamp_rendering_comprehensive(workspace_env, timestamp, rendered, desc):
     db_path = db_setup(workspace_env)
     conv_id = f"ts-{hash(str(timestamp)) % 10000}-conv"
-    (ConversationBuilder(db_path, conv_id)
-     .title("Test")
-     .add_message("m1", role="user", text="Hello", timestamp=timestamp)
-     .save())
+    (
+        ConversationBuilder(db_path, conv_id)
+        .title("Test")
+        .add_message("m1", role="user", text="Hello", timestamp=timestamp)
+        .save()
+    )
     formatter = ConversationFormatter(workspace_env["archive_root"], db_path=db_path)
     result = await formatter.format(conv_id)
     if rendered:
@@ -449,11 +475,16 @@ ATTACHMENT_CASES = [
     ("meta.drive_id", {"drive_id": "1ABC123XYZ"}, "1ABC123XYZ", "name from drive_id"),
     ("fallback ID", None, "att-fallback-123", "fallback to attachment_id"),
     ("empty meta", {}, "att-empty-meta", "fallback when meta empty"),
-    ("multiple", [
-        {"id": "att1", "meta": {"name": "File1.png"}},
-        {"id": "att2", "meta": {"name": "File2.jpg"}},
-        {"id": "att3", "meta": {"name": "File3.txt"}},
-    ], ["File1.png", "File2.jpg", "File3.txt"], "multiple attachments"),
+    (
+        "multiple",
+        [
+            {"id": "att1", "meta": {"name": "File1.png"}},
+            {"id": "att2", "meta": {"name": "File2.jpg"}},
+            {"id": "att3", "meta": {"name": "File3.txt"}},
+        ],
+        ["File1.png", "File2.jpg", "File3.txt"],
+        "multiple attachments",
+    ),
     ("path", {"name": "Doc.pdf"}, "/custom/path/to/file.pdf", "uses explicit path"),
 ]
 
@@ -463,9 +494,7 @@ ATTACHMENT_CASES = [
 async def test_attachment_handling_comprehensive(workspace_env, label, meta, expected, desc):
     db_path = db_setup(workspace_env)
     conv_id = f"att-{label}-conv"
-    builder = (ConversationBuilder(db_path, conv_id)
-               .title("Test")
-               .add_message("m1", role="user", text="See attachment"))
+    builder = ConversationBuilder(db_path, conv_id).title("Test").add_message("m1", role="user", text="See attachment")
     if label == "multiple":
         for att in meta:
             builder.add_attachment(
@@ -501,17 +530,19 @@ async def test_attachment_handling_comprehensive(workspace_env, label, meta, exp
 async def test_orphaned_attachments_section(workspace_env):
     db_path = db_setup(workspace_env)
     conv_id = "orphan-att-conv"
-    (ConversationBuilder(db_path, conv_id)
-     .title("Test")
-     .add_message("m1", role="user", text="Hello")
-     .add_attachment(
-         attachment_id="orphan-att",
-         message_id=None,
-         mime_type="image/png",
-         size_bytes=2048,
-         provider_meta={"name": "OrphanFile.png"},
-     )
-     .save())
+    (
+        ConversationBuilder(db_path, conv_id)
+        .title("Test")
+        .add_message("m1", role="user", text="Hello")
+        .add_attachment(
+            attachment_id="orphan-att",
+            message_id=None,
+            mime_type="image/png",
+            size_bytes=2048,
+            provider_meta={"name": "OrphanFile.png"},
+        )
+        .save()
+    )
     formatter = ConversationFormatter(workspace_env["archive_root"], db_path=db_path)
     result = await formatter.format(conv_id)
     assert "## attachments" in result.markdown_text
@@ -547,11 +578,13 @@ async def test_metadata_comprehensive(workspace_env, label, data, desc):
         assert result.metadata["message_count"] == data["messages"], f"Failed {desc}"
         assert result.metadata["attachment_count"] == data["attachments"], f"Failed {desc}"
     elif label == "timestamps":
-        (ConversationBuilder(db_path, conv_id)
-         .title("Test")
-         .created_at(data["created"])
-         .updated_at(data["updated"])
-         .save())
+        (
+            ConversationBuilder(db_path, conv_id)
+            .title("Test")
+            .created_at(data["created"])
+            .updated_at(data["updated"])
+            .save()
+        )
         formatter = ConversationFormatter(workspace_env["archive_root"], db_path=db_path)
         result = await formatter.format(conv_id)
         assert result.metadata["created_at"] == data["created"], f"Failed {desc}"
@@ -560,16 +593,24 @@ async def test_metadata_comprehensive(workspace_env, label, data, desc):
 
 MARKDOWN_STRUCTURE_CASES = [
     ("header", [], "header structure"),
-    ("roles", [
-        {"role": "user", "text": "User message"},
-        {"role": "assistant", "text": "Assistant message"},
-        {"role": "system", "text": "System message"},
-    ], "role sections"),
-    ("empty messages", [
-        {"role": "user", "text": "Real content"},
-        {"role": "tool", "text": ""},
-        {"role": "system", "text": "   "},
-    ], "empty messages skipped"),
+    (
+        "roles",
+        [
+            {"role": "user", "text": "User message"},
+            {"role": "assistant", "text": "Assistant message"},
+            {"role": "system", "text": "System message"},
+        ],
+        "role sections",
+    ),
+    (
+        "empty messages",
+        [
+            {"role": "user", "text": "Real content"},
+            {"role": "tool", "text": ""},
+            {"role": "system", "text": "   "},
+        ],
+        "empty messages skipped",
+    ),
     ("null role", [{"role": None, "text": "No role"}], "null role defaults to 'message'"),
 ]
 
@@ -579,9 +620,7 @@ MARKDOWN_STRUCTURE_CASES = [
 async def test_markdown_structure_comprehensive(workspace_env, label, messages_data, desc):
     db_path = db_setup(workspace_env)
     conv_id = f"md-{label}-conv"
-    builder = (ConversationBuilder(db_path, conv_id)
-               .provider("chatgpt")
-               .title("My Chat Title"))
+    builder = ConversationBuilder(db_path, conv_id).provider("chatgpt").title("My Chat Title")
     for i, msg in enumerate(messages_data):
         builder.add_message(
             f"m{i}",
@@ -632,10 +671,7 @@ def assert_golden(name: str, actual: str) -> None:
         return
 
     if not golden_path.exists():
-        pytest.fail(
-            f"Golden file not found: {golden_path}\n"
-            "Run with UPDATE_GOLDEN=1 to generate golden files."
-        )
+        pytest.fail(f"Golden file not found: {golden_path}\nRun with UPDATE_GOLDEN=1 to generate golden files.")
 
     expected = normalize_markdown(golden_path.read_text())
     assert normalized == expected, (
@@ -652,12 +688,29 @@ class TestGoldenMarkdownRendering:
         factory = DbFactory(db_path)
         conv_id = "golden-chatgpt-simple"
         factory.create_conversation(
-            id=conv_id, provider="chatgpt", title="Simple ChatGPT Conversation",
+            id=conv_id,
+            provider="chatgpt",
+            title="Simple ChatGPT Conversation",
             messages=[
                 {"id": "msg1", "role": "user", "text": "Hello, how are you?", "timestamp": "2024-01-01T12:00:00Z"},
-                {"id": "msg2", "role": "assistant", "text": "I'm doing well, thank you for asking! How can I help you today?", "timestamp": "2024-01-01T12:00:05Z"},
-                {"id": "msg3", "role": "user", "text": "Can you explain what markdown is?", "timestamp": "2024-01-01T12:00:15Z"},
-                {"id": "msg4", "role": "assistant", "text": "Markdown is a lightweight markup language for creating formatted text using a plain-text editor.", "timestamp": "2024-01-01T12:00:20Z"},
+                {
+                    "id": "msg2",
+                    "role": "assistant",
+                    "text": "I'm doing well, thank you for asking! How can I help you today?",
+                    "timestamp": "2024-01-01T12:00:05Z",
+                },
+                {
+                    "id": "msg3",
+                    "role": "user",
+                    "text": "Can you explain what markdown is?",
+                    "timestamp": "2024-01-01T12:00:15Z",
+                },
+                {
+                    "id": "msg4",
+                    "role": "assistant",
+                    "text": "Markdown is a lightweight markup language for creating formatted text using a plain-text editor.",
+                    "timestamp": "2024-01-01T12:00:20Z",
+                },
             ],
         )
         formatter = ConversationFormatter(workspace_env["archive_root"])
@@ -676,10 +729,17 @@ class TestGoldenMarkdownRendering:
         factory = DbFactory(db_path)
         conv_id = "golden-claude-thinking"
         factory.create_conversation(
-            id=conv_id, provider="claude-ai", title="Claude with Thinking",
+            id=conv_id,
+            provider="claude-ai",
+            title="Claude with Thinking",
             messages=[
                 {"id": "msg1", "role": "user", "text": "What is 2+2?", "timestamp": "2024-01-15T10:00:00Z"},
-                {"id": "msg2", "role": "assistant", "text": "<thinking>\nThis is a simple arithmetic question. 2+2 equals 4.\n</thinking>\n\nThe answer is 4.", "timestamp": "2024-01-15T10:00:05Z"},
+                {
+                    "id": "msg2",
+                    "role": "assistant",
+                    "text": "<thinking>\nThis is a simple arithmetic question. 2+2 equals 4.\n</thinking>\n\nThe answer is 4.",
+                    "timestamp": "2024-01-15T10:00:05Z",
+                },
             ],
         )
         formatter = ConversationFormatter(workspace_env["archive_root"])
@@ -695,10 +755,22 @@ class TestGoldenMarkdownRendering:
         factory = DbFactory(db_path)
         conv_id = "golden-tool-use"
         factory.create_conversation(
-            id=conv_id, provider="claude-code", title="Tool Use Example",
+            id=conv_id,
+            provider="claude-code",
+            title="Tool Use Example",
             messages=[
-                {"id": "msg1", "role": "user", "text": "List files in current directory", "timestamp": "2024-02-01T09:00:00Z"},
-                {"id": "msg2", "role": "assistant", "text": '{"tool": "bash", "command": "ls -la"}', "timestamp": "2024-02-01T09:00:03Z"},
+                {
+                    "id": "msg1",
+                    "role": "user",
+                    "text": "List files in current directory",
+                    "timestamp": "2024-02-01T09:00:00Z",
+                },
+                {
+                    "id": "msg2",
+                    "role": "assistant",
+                    "text": '{"tool": "bash", "command": "ls -la"}',
+                    "timestamp": "2024-02-01T09:00:03Z",
+                },
             ],
         )
         formatter = ConversationFormatter(workspace_env["archive_root"])
@@ -713,7 +785,9 @@ class TestGoldenMarkdownRendering:
         factory = DbFactory(db_path)
         conv_id = "golden-empty-messages"
         factory.create_conversation(
-            id=conv_id, provider="chatgpt", title="Conversation with Empty Messages",
+            id=conv_id,
+            provider="chatgpt",
+            title="Conversation with Empty Messages",
             messages=[
                 {"id": "msg1", "role": "user", "text": "Hello", "timestamp": "2024-03-01T14:00:00Z"},
                 {"id": "msg2", "role": "assistant", "text": "", "timestamp": "2024-03-01T14:00:01Z"},
@@ -732,11 +806,28 @@ class TestGoldenMarkdownRendering:
         factory = DbFactory(db_path)
         conv_id = "golden-unicode"
         factory.create_conversation(
-            id=conv_id, provider="chatgpt", title="Unicode Test: \u4f60\u597d\u4e16\u754c \U0001f30d",
+            id=conv_id,
+            provider="chatgpt",
+            title="Unicode Test: \u4f60\u597d\u4e16\u754c \U0001f30d",
             messages=[
-                {"id": "msg1", "role": "user", "text": "Hello in Chinese: \u4f60\u597d", "timestamp": "2024-04-01T08:00:00Z"},
-                {"id": "msg2", "role": "assistant", "text": "\u4f60\u597d! That means 'hello' in Chinese. \U0001f1e8\U0001f1f3", "timestamp": "2024-04-01T08:00:05Z"},
-                {"id": "msg3", "role": "user", "text": "Math symbols: \u2211, \u222b, \u221a, \u03c0, \u221e", "timestamp": "2024-04-01T08:00:15Z"},
+                {
+                    "id": "msg1",
+                    "role": "user",
+                    "text": "Hello in Chinese: \u4f60\u597d",
+                    "timestamp": "2024-04-01T08:00:00Z",
+                },
+                {
+                    "id": "msg2",
+                    "role": "assistant",
+                    "text": "\u4f60\u597d! That means 'hello' in Chinese. \U0001f1e8\U0001f1f3",
+                    "timestamp": "2024-04-01T08:00:05Z",
+                },
+                {
+                    "id": "msg3",
+                    "role": "user",
+                    "text": "Math symbols: \u2211, \u222b, \u221a, \u03c0, \u221e",
+                    "timestamp": "2024-04-01T08:00:15Z",
+                },
             ],
         )
         formatter = ConversationFormatter(workspace_env["archive_root"])
@@ -752,13 +843,22 @@ class TestGoldenMarkdownRendering:
         factory = DbFactory(db_path)
         conv_id = "golden-attachments"
         factory.create_conversation(
-            id=conv_id, provider="chatgpt", title="Conversation with Attachments",
+            id=conv_id,
+            provider="chatgpt",
+            title="Conversation with Attachments",
             messages=[
                 {
-                    "id": "msg1", "role": "user", "text": "Here's a screenshot",
+                    "id": "msg1",
+                    "role": "user",
+                    "text": "Here's a screenshot",
                     "timestamp": "2024-05-01T11:00:00Z",
                     "attachments": [
-                        {"id": "att1", "mime_type": "image/png", "size_bytes": 12345, "meta": {"name": "screenshot.png"}},
+                        {
+                            "id": "att1",
+                            "mime_type": "image/png",
+                            "size_bytes": 12345,
+                            "meta": {"name": "screenshot.png"},
+                        },
                     ],
                 },
             ],
@@ -775,7 +875,9 @@ class TestGoldenMarkdownRendering:
         factory = DbFactory(db_path)
         conv_id = "golden-ordering"
         factory.create_conversation(
-            id=conv_id, provider="chatgpt", title="Message Ordering Test",
+            id=conv_id,
+            provider="chatgpt",
+            title="Message Ordering Test",
             messages=[
                 {"id": "msg3", "role": "user", "text": "Third message", "timestamp": "2024-01-01T12:00:30Z"},
                 {"id": "msg1", "role": "user", "text": "First message", "timestamp": "2024-01-01T12:00:00Z"},
@@ -799,7 +901,9 @@ class TestGoldenFileStructure:
         factory = DbFactory(db_path)
         conv_id = "test-file-structure"
         factory.create_conversation(
-            id=conv_id, provider="chatgpt", title="File Structure Test",
+            id=conv_id,
+            provider="chatgpt",
+            title="File Structure Test",
             messages=[{"id": "msg1", "role": "user", "text": "Test message"}],
         )
         renderer = MarkdownRendererDirect(workspace_env["archive_root"])
@@ -814,11 +918,15 @@ class TestGoldenFileStructure:
         conv1_id = "test-conv-1"
         conv2_id = "test-conv-2"
         factory.create_conversation(
-            id=conv1_id, provider="chatgpt", title="Conversation 1",
+            id=conv1_id,
+            provider="chatgpt",
+            title="Conversation 1",
             messages=[{"id": "msg1", "role": "user", "text": "Message 1"}],
         )
         factory.create_conversation(
-            id=conv2_id, provider="claude-ai", title="Conversation 2",
+            id=conv2_id,
+            provider="claude-ai",
+            title="Conversation 2",
             messages=[{"id": "msg2", "role": "user", "text": "Message 2"}],
         )
         renderer = MarkdownRendererDirect(workspace_env["archive_root"])
@@ -837,7 +945,9 @@ class TestGoldenEdgeCases:
         long_text = "This is a very long message. " * 1000
         conv_id = "golden-long-text"
         factory.create_conversation(
-            id=conv_id, provider="chatgpt", title="Long Text Test",
+            id=conv_id,
+            provider="chatgpt",
+            title="Long Text Test",
             messages=[{"id": "msg1", "role": "user", "text": long_text}],
         )
         formatter = ConversationFormatter(workspace_env["archive_root"])
@@ -854,7 +964,9 @@ class TestGoldenEdgeCases:
         conv_id = "golden-markdown-chars"
         text_with_markdown = "This has **bold**, *italic*, `code`, [links](url), and # headers"
         factory.create_conversation(
-            id=conv_id, provider="chatgpt", title="Markdown Chars Test",
+            id=conv_id,
+            provider="chatgpt",
+            title="Markdown Chars Test",
             messages=[{"id": "msg1", "role": "user", "text": text_with_markdown, "timestamp": "2024-06-01T16:00:00Z"}],
         )
         formatter = ConversationFormatter(workspace_env["archive_root"])
@@ -871,8 +983,12 @@ class TestGoldenEdgeCases:
         factory = DbFactory(db_path)
         conv_id = "golden-with-timestamp"
         factory.create_conversation(
-            id=conv_id, provider="chatgpt", title="Timestamp Test",
-            messages=[{"id": "msg1", "role": "user", "text": "Message with timestamp", "timestamp": "2024-01-01T12:00:00Z"}],
+            id=conv_id,
+            provider="chatgpt",
+            title="Timestamp Test",
+            messages=[
+                {"id": "msg1", "role": "user", "text": "Message with timestamp", "timestamp": "2024-01-01T12:00:00Z"}
+            ],
         )
         formatter = ConversationFormatter(workspace_env["archive_root"])
         formatted = await formatter.format(conv_id)

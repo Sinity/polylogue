@@ -5,7 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from polylogue.version import VersionInfo, _get_git_info, _resolve_version
+import polylogue.version as version_module
+from polylogue.version import VersionInfo, _get_embedded_build_info, _get_git_info, _resolve_version
 
 # =============================================================================
 # Merged from test_lazy_exports.py (2024-03-15)
@@ -124,7 +125,9 @@ class TestVersionInfo:
         assert info.short == "1.0.0"
         assert "1.0.0" in repr(info)
 
-    @pytest.mark.parametrize("commit,dirty,has_dirty_suffix", [("abc123def456", False, False), ("abc123def456", True, True)])
+    @pytest.mark.parametrize(
+        "commit,dirty,has_dirty_suffix", [("abc123def456", False, False), ("abc123def456", True, True)]
+    )
     def test_version_with_commit(self, commit: str, dirty: bool, has_dirty_suffix: bool) -> None:
         info = VersionInfo(version="1.0.0", commit=commit, dirty=dirty)
         rendered = str(info)
@@ -183,7 +186,7 @@ class TestResolveVersion:
         result = _resolve_version()
         assert isinstance(result, VersionInfo)
         assert result.version not in {"", "unknown"}
-        assert result.commit is None or isinstance(result.commit, str)
+        assert isinstance(result.commit, str)
         assert isinstance(result.dirty, bool)
 
     def test_resolve_version_consistency_and_fallback(self, monkeypatch) -> None:
@@ -194,8 +197,6 @@ class TestResolveVersion:
         assert result1.version == result2.version
 
         from importlib.metadata import PackageNotFoundError
-
-        import polylogue.version as version_module
 
         def mock_metadata_version(name):
             raise PackageNotFoundError(name)
@@ -209,6 +210,44 @@ class TestResolveVersion:
 
         assert result.version is not None
         assert len(result.version) > 0
+
+    def test_source_checkout_requires_git_metadata(self, tmp_path, monkeypatch) -> None:
+        (tmp_path / ".git").mkdir()
+        (tmp_path / "pyproject.toml").write_text('[project]\nversion = "1.2.3"\n', encoding="utf-8")
+        monkeypatch.setattr(version_module, "_get_git_info", lambda _: (None, False))
+        with pytest.raises(RuntimeError, match="source checkout is missing git commit metadata"):
+            _resolve_version(tmp_path)
+
+    def test_built_artifact_uses_embedded_metadata(self, tmp_path, monkeypatch) -> None:
+        (tmp_path / "pyproject.toml").write_text('[project]\nversion = "1.2.3"\n', encoding="utf-8")
+        monkeypatch.setattr(version_module, "_get_embedded_build_info", lambda: ("deadbeefdeadbeef", True))
+        result = _resolve_version(tmp_path)
+        assert result.version == "1.2.3"
+        assert result.commit == "deadbeefdeadbeef"
+        assert result.dirty is True
+
+    def test_built_artifact_requires_embedded_metadata(self, tmp_path, monkeypatch) -> None:
+        (tmp_path / "pyproject.toml").write_text('[project]\nversion = "1.2.3"\n', encoding="utf-8")
+
+        def raise_missing_metadata() -> tuple[str, bool]:
+            raise RuntimeError("built package is missing embedded git metadata")
+
+        monkeypatch.setattr(version_module, "_get_embedded_build_info", raise_missing_metadata)
+        with pytest.raises(RuntimeError, match="built package is missing embedded git metadata"):
+            _resolve_version(tmp_path)
+
+
+class TestEmbeddedBuildInfo:
+    def test_unknown_build_commit_is_rejected(self, monkeypatch) -> None:
+        monkeypatch.delitem(__import__("sys").modules, "polylogue._build_info", raising=False)
+
+        class BuildInfo:
+            BUILD_COMMIT = "unknown"
+            BUILD_DIRTY = False
+
+        monkeypatch.setitem(__import__("sys").modules, "polylogue._build_info", BuildInfo())
+        with pytest.raises(RuntimeError, match="embedded build metadata is incomplete"):
+            _get_embedded_build_info()
 
 
 class TestVersionConstants:

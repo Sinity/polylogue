@@ -20,7 +20,7 @@ class SessionTagRollupRecord(BaseModel):
     conversation_count: int = 0
     explicit_count: int = 0
     auto_count: int = 0
-    project_breakdown: dict[str, int]
+    repo_breakdown: dict[str, int]
     search_text: str
 
     @field_validator("tag", "bucket_day", "provider_name", "materialized_at", "search_text")
@@ -45,7 +45,7 @@ class DaySessionSummaryRecord(BaseModel):
     total_messages: int = 0
     total_words: int = 0
     work_event_breakdown: dict[str, int]
-    projects_active: tuple[str, ...] = ()
+    repos_active: tuple[str, ...] = ()
     payload: dict[str, Any]
     search_text: str
 

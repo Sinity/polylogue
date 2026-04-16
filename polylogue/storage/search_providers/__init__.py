@@ -27,10 +27,7 @@ logger = get_logger(__name__)
 _sqlite_vec_missing_warned = False
 
 
-def create_search_provider(
-    config: Config | None = None,
-    db_path: Path | None = None
-) -> SearchProvider:
+def create_search_provider(config: Config | None = None, db_path: Path | None = None) -> SearchProvider:
     """Create a search provider instance.
 
     Currently returns FTS5Provider as the default implementation.
@@ -56,9 +53,6 @@ def create_vector_provider(
     Uses sqlite-vec for self-contained vector search with Voyage AI embeddings.
     Returns None if Voyage API key is not configured or sqlite-vec is unavailable.
 
-    Environment variable precedence (checked in order):
-    - POLYLOGUE_VOYAGE_API_KEY > VOYAGE_API_KEY
-
     Args:
         config: Application configuration with optional index_config
         voyage_api_key: Voyage AI API key (overrides config and env var)
@@ -74,7 +68,7 @@ def create_vector_provider(
     if voyage_key is None and config and config.index_config:
         voyage_key = config.index_config.voyage_api_key
     if voyage_key is None:
-        voyage_key = os.environ.get("POLYLOGUE_VOYAGE_API_KEY") or os.environ.get("VOYAGE_API_KEY")
+        voyage_key = os.environ.get("VOYAGE_API_KEY")
 
     if not voyage_key:
         return None

@@ -15,6 +15,7 @@ from polylogue.lib.roles import Role
 # Provider brand colors
 # =============================================================================
 
+
 @dataclass(frozen=True)
 class ProviderColor:
     """A provider's brand color in multiple formats."""
@@ -69,6 +70,7 @@ def provider_color(name: str) -> ProviderColor:
 # =============================================================================
 # Role colors
 # =============================================================================
+
 
 @dataclass(frozen=True)
 class RoleColor:
@@ -178,6 +180,7 @@ THINKING_STYLE = {
 # =============================================================================
 # Rich theme dict (for ConsoleFacade)
 # =============================================================================
+
 
 def rich_theme_styles() -> dict[str, str]:
     """Build Rich Theme style dict incorporating role and provider colors."""

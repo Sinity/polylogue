@@ -145,7 +145,9 @@ class TestResourceSurfaces:
             with patch("polylogue.lib.filters.ConversationFilter") as mock_filter_cls:
                 mock_filter_cls.return_value = make_mock_filter(results=[simple_conversation])
 
-                result = await invoke_surface_async(mcp_server._resource_manager._resources["polylogue://conversations"].fn)
+                result = await invoke_surface_async(
+                    mcp_server._resource_manager._resources["polylogue://conversations"].fn
+                )
 
         convs = json.loads(result)
         assert len(convs) == 1
@@ -200,9 +202,10 @@ class TestResourceSurfaces:
         mock_report.checks = [mock_check]
         mock_report.summary = "All systems operational"
 
-        with patch("polylogue.mcp.server._get_config") as mock_get_config, patch(
-            "polylogue.health.get_health"
-        ) as mock_get_health:
+        with (
+            patch("polylogue.mcp.server._get_config") as mock_get_config,
+            patch("polylogue.health.get_health") as mock_get_health,
+        ):
             mock_get_config.return_value = MagicMock()
             mock_get_health.return_value = mock_report
 
@@ -372,9 +375,10 @@ class TestPromptSurfaces:
 
     @pytest.mark.asyncio
     async def test_extract_patterns_prompt(self, simple_conversation, mcp_server):
-        with patch("polylogue.mcp.server._get_repo") as mock_get_repo, patch(
-            "polylogue.lib.filters.ConversationFilter"
-        ) as mock_filter_cls:
+        with (
+            patch("polylogue.mcp.server._get_repo") as mock_get_repo,
+            patch("polylogue.lib.filters.ConversationFilter") as mock_filter_cls,
+        ):
             mock_repo = make_repo_mock()
             mock_get_repo.return_value = mock_repo
             mock_filter_cls.return_value = make_mock_filter(results=[simple_conversation])
@@ -387,9 +391,10 @@ class TestPromptSurfaces:
 
 class TestExportConversationTool:
     def test_export_markdown(self, simple_conversation, mcp_server):
-        with patch("polylogue.mcp.server._get_repo") as mock_get_repo, patch(
-            "polylogue.rendering.formatting.format_conversation"
-        ) as mock_format:
+        with (
+            patch("polylogue.mcp.server._get_repo") as mock_get_repo,
+            patch("polylogue.rendering.formatting.format_conversation") as mock_format,
+        ):
             mock_repo = make_repo_mock()
             mock_repo.view.return_value = simple_conversation
             mock_get_repo.return_value = mock_repo
@@ -420,9 +425,10 @@ class TestExportConversationTool:
         assert "not found" in parsed["error"].lower()
 
     def test_export_invalid_format_falls_back_to_markdown(self, simple_conversation, mcp_server):
-        with patch("polylogue.mcp.server._get_repo") as mock_get_repo, patch(
-            "polylogue.rendering.formatting.format_conversation"
-        ) as mock_format:
+        with (
+            patch("polylogue.mcp.server._get_repo") as mock_get_repo,
+            patch("polylogue.rendering.formatting.format_conversation") as mock_format,
+        ):
             mock_repo = make_repo_mock()
             mock_repo.view.return_value = simple_conversation
             mock_get_repo.return_value = mock_repo

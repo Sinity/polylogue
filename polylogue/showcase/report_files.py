@@ -42,6 +42,4 @@ def save_reports(result: ShowcaseResult) -> None:
     (out / "showcase-cookbook.md").write_text(generate_cookbook(result))
     (out / "showcase-session.md").write_text(generate_showcase_markdown(result))
     manifest = generate_manifest(result, include_hashes=True)
-    (out / "showcase-manifest.json").write_text(
-        json.dumps(manifest, indent=2, sort_keys=True)
-    )
+    (out / "showcase-manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True))

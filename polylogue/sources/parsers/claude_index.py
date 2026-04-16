@@ -68,15 +68,34 @@ def find_sessions_index(session_path: Path) -> Path | None:
     return index_path if index_path.exists() else None
 
 
-_GIT_BRANCH_PREFIXES = frozenset({
-    "feature/", "fix/", "bugfix/", "hotfix/", "release/",
-    "chore/", "refactor/", "test/", "docs/", "ci/", "perf/",
-})
+_GIT_BRANCH_PREFIXES = frozenset(
+    {
+        "feature/",
+        "fix/",
+        "bugfix/",
+        "hotfix/",
+        "release/",
+        "chore/",
+        "refactor/",
+        "test/",
+        "docs/",
+        "ci/",
+        "perf/",
+    }
+)
 
-_GIT_BRANCH_EXACT = frozenset({
-    "main", "master", "develop", "dev", "staging", "production",
-    "HEAD", "head",
-})
+_GIT_BRANCH_EXACT = frozenset(
+    {
+        "main",
+        "master",
+        "develop",
+        "dev",
+        "staging",
+        "production",
+        "HEAD",
+        "head",
+    }
+)
 
 
 def _looks_like_git_branch(value: str) -> bool:
@@ -84,10 +103,7 @@ def _looks_like_git_branch(value: str) -> bool:
     stripped = value.strip()
     if stripped in _GIT_BRANCH_EXACT:
         return True
-    for prefix in _GIT_BRANCH_PREFIXES:
-        if stripped.startswith(prefix):
-            return True
-    return False
+    return any(stripped.startswith(prefix) for prefix in _GIT_BRANCH_PREFIXES)
 
 
 def enrich_conversation_from_index(
@@ -110,14 +126,16 @@ def enrich_conversation_from_index(
         title_source = "session-index:first-prompt"
 
     provider_meta = dict(conv.provider_meta) if conv.provider_meta else {}
-    provider_meta.update({
-        "gitBranch": index_entry.git_branch,
-        "projectPath": index_entry.project_path,
-        "isSidechain": index_entry.is_sidechain,
-        "summary": index_entry.summary,
-        "firstPrompt": index_entry.first_prompt,
-        "title_source": title_source,
-    })
+    provider_meta.update(
+        {
+            "gitBranch": index_entry.git_branch,
+            "projectPath": index_entry.project_path,
+            "isSidechain": index_entry.is_sidechain,
+            "summary": index_entry.summary,
+            "firstPrompt": index_entry.first_prompt,
+            "title_source": title_source,
+        }
+    )
 
     return ParsedConversation(
         provider_name=conv.provider_name,

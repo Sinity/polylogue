@@ -6,6 +6,7 @@ import os
 import tempfile
 import time
 from contextlib import contextmanager
+from io import StringIO
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -13,6 +14,7 @@ import pytest
 from click.testing import CliRunner
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
+from rich.console import Console
 
 from polylogue.cli.commands.run import (
     _display_result,
@@ -36,7 +38,13 @@ def _make_env(*, plain: bool) -> MagicMock:
     env = MagicMock()
     env.ui = MagicMock()
     env.ui.plain = plain
-    env.ui.console = MagicMock()
+    env.ui.console_buffer = StringIO()
+    env.ui.console = Console(
+        file=env.ui.console_buffer,
+        force_terminal=False,
+        color_system=None,
+        legacy_windows=False,
+    )
     env.ui.summary = MagicMock()
     env.config = Config(
         archive_root=Path("/tmp/archive"),
@@ -66,11 +74,9 @@ def _workspace_paths() -> tuple[Config, Path]:
         root = Path(tmp)
         archive_root = root / "archive"
         env = {
-            "POLYLOGUE_CONFIG": str(root / "config" / "config.json"),
             "XDG_DATA_HOME": str(root / "data"),
             "XDG_STATE_HOME": str(root / "state"),
             "POLYLOGUE_ARCHIVE_ROOT": str(archive_root),
-            "POLYLOGUE_RENDER_ROOT": str(archive_root / "render"),
             "POLYLOGUE_SCHEMA_VALIDATION": "off",
         }
         with patch.dict(os.environ, env, clear=False):
@@ -194,7 +200,7 @@ def test_display_result_title_and_render_lookup_contract(
         if stage in {"render", "all"}:
             mock_latest.assert_called_once_with(cfg.render_root)
             if latest_exists:
-                env.ui.console.print.assert_any_call(f"Latest render: {latest_path}")
+                assert f"Latest render: {latest_path}" in env.ui.console_buffer.getvalue()
         else:
             mock_latest.assert_not_called()
 
@@ -216,9 +222,11 @@ def test_run_command_watch_flag_contract(notify: bool, exec_cmd: bool, webhook: 
     if webhook:
         args.extend(["--webhook", "https://example.com"])
 
-    with patch("polylogue.cli.commands.run.resolve_sources", return_value=None), patch(
-        "polylogue.cli.commands.run.maybe_prompt_sources", return_value=None
-    ), patch("polylogue.cli.commands.run._run_sync_once", return_value=_run_result()):
+    with (
+        patch("polylogue.cli.commands.run.resolve_sources", return_value=None),
+        patch("polylogue.cli.commands.run.maybe_prompt_sources", return_value=None),
+        patch("polylogue.cli.commands.run._run_sync_once", return_value=_run_result()),
+    ):
         result = runner.invoke(run_command, args, obj=env)
 
     if notify or exec_cmd or webhook:
@@ -254,7 +262,7 @@ async def test_run_rerenders_when_title_or_content_changes_contract(
         config.sources = [Source(name="inbox", path=source_file)]
 
         await run_sources(config=config, stage="all")
-        conversation_path = next(config.render_root.rglob("conversation.md"))
+        conversation_path = next(config.render_root.rglob("*.md"))
         first_mtime = conversation_path.stat().st_mtime_ns
 
         updated_title = "Updated title" if title_changed else initial_title
@@ -287,9 +295,12 @@ def test_format_elapsed_contract(seconds: float, expected: str) -> None:
 
 
 def test_plain_progress_observer_stage_switch_contract() -> None:
-    with patch("builtins.print") as mock_print, patch(
-        "polylogue.cli.run_observers.time.time",
-        side_effect=[100.0, 101.2, 101.2, 102.8, 102.8],
+    with (
+        patch("builtins.print") as mock_print,
+        patch(
+            "polylogue.cli.run_observers.time.time",
+            side_effect=[100.0, 101.2, 101.2, 102.8, 102.8],
+        ),
     ):
         observer = _PlainProgressObserver(banner="Running...")
         observer.on_progress(2, "Scanning: 2")
@@ -308,9 +319,12 @@ def test_plain_progress_observer_stage_switch_contract() -> None:
 def test_plain_progress_observer_completion_contract() -> None:
     result = _run_result(conversations=3)
 
-    with patch("builtins.print") as mock_print, patch(
-        "polylogue.cli.run_observers.time.time",
-        side_effect=[200.0, 205.0],
+    with (
+        patch("builtins.print") as mock_print,
+        patch(
+            "polylogue.cli.run_observers.time.time",
+            side_effect=[200.0, 205.0],
+        ),
     ):
         observer = _PlainProgressObserver(banner="Syncing...")
         observer.on_completed(result)

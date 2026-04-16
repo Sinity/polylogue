@@ -35,6 +35,7 @@ class ConversationSummary(ConversationSummaryRuntimeMixin, BaseModel):
             return v
         return Provider.from_string(str(v) if v is not None else "unknown")
 
+
 class Conversation(ConversationRuntimeMixin, BaseModel):
     """Conversation with eagerly or lazily materialized message collection."""
 
@@ -57,5 +58,6 @@ class Conversation(ConversationRuntimeMixin, BaseModel):
         return Provider.from_string(str(v) if v is not None else "unknown")
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
+
 
 __all__ = ["Conversation", "ConversationSummary"]

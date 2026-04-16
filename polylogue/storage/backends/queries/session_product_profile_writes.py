@@ -22,6 +22,7 @@ async def _table_has_column(conn: aiosqlite.Connection, table: str, column: str)
     _ASYNC_COLUMN_CACHE[key] = found
     return found
 
+
 def _session_profile_insert_columns(
     *,
     has_legacy_payload: bool,
@@ -38,7 +39,7 @@ def _session_profile_insert_columns(
         "last_message_at",
         "canonical_session_date",
         "repo_paths_json",
-        "canonical_projects_json",
+        "repo_names_json",
         "tags_json",
         "auto_tags_json",
         "message_count",
@@ -101,7 +102,7 @@ def _session_profile_insert_values(
         record.last_message_at,
         record.canonical_session_date,
         _json_array_or_none(record.repo_paths),
-        _json_array_or_none(record.canonical_projects),
+        _json_array_or_none(record.repo_names),
         _json_array_or_none(record.tags),
         _json_array_or_none(record.auto_tags),
         record.message_count,

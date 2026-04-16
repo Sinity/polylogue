@@ -37,9 +37,7 @@ def _record_query(**kwargs) -> ConversationRecordQuery:
     return ConversationRecordQuery(**kwargs)
 
 
-async def _seed_conversations(
-    backend: SQLiteBackend, count: int, msgs_per_conv: int = 3
-) -> list[str]:
+async def _seed_conversations(backend: SQLiteBackend, count: int, msgs_per_conv: int = 3) -> list[str]:
     """Seed the database with conversations and messages.
 
     Saves conversations concurrently, then all messages in one batch.
@@ -92,9 +90,7 @@ class TestGetManyScale:
         assert len(convos) == SCALE_COUNT
         # Verify each conversation has its messages
         for convo in convos:
-            assert (
-                len(convo.messages) == 3
-            ), f"Conv {convo.id} has {len(convo.messages)} messages, expected 3"
+            assert len(convo.messages) == 3, f"Conv {convo.id} has {len(convo.messages)} messages, expected 3"
 
     async def test_get_many_preserves_order(self, tmp_path):
         """get_many returns conversations in input order."""
@@ -124,9 +120,7 @@ class TestGetManyScale:
 
         for convo in convos:
             for msg in convo.messages:
-                assert msg.id.startswith(convo.id + "-"), (
-                    f"Message {msg.id} doesn't belong to conversation {convo.id}"
-                )
+                assert msg.id.startswith(convo.id + "-"), f"Message {msg.id} doesn't belong to conversation {convo.id}"
 
     async def test_get_many_varying_message_counts(self, tmp_path):
         """Conversations with different message counts are handled correctly."""
@@ -258,9 +252,7 @@ class TestBatchQueryScale:
 
         assert len(result) == SCALE_COUNT
         for cid in ids:
-            assert (
-                len(result[cid]) == 5
-            ), f"Conv {cid} has {len(result[cid])} messages, expected 5"
+            assert len(result[cid]) == 5, f"Conv {cid} has {len(result[cid])} messages, expected 5"
 
     async def test_conversations_batch_200_ids(self, tmp_path):
         """get_conversations_batch with 200 IDs returns all."""
@@ -329,9 +321,7 @@ class TestPerformanceBudget:
         """
         backend, _ = await _seed_budget_db(tmp_path)
         t0 = time.monotonic()
-        results = await backend.queries.list_conversations(
-            _record_query(has_tool_use=True, limit=50)
-        )
+        results = await backend.queries.list_conversations(_record_query(has_tool_use=True, limit=50))
         elapsed_ms = (time.monotonic() - t0) * 1000
         assert elapsed_ms < 100, f"has_tool_use filter took {elapsed_ms:.0f}ms (budget: 100ms)"
         _ = results  # exercised
@@ -349,15 +339,17 @@ class TestPerformanceBudget:
         for i, cid in enumerate(ids):
             if i % 5 == 0:  # 20% of conversations
                 mid = f"{cid}-m0"
-                blocks.append(ContentBlockRecord(
-                    block_id=ContentBlockRecord.make_id(mid, 0),
-                    message_id=mid,
-                    conversation_id=cid,
-                    block_index=0,
-                    type='tool_use',
-                    tool_name='Read',
-                    semantic_type='file_read',
-                ))
+                blocks.append(
+                    ContentBlockRecord(
+                        block_id=ContentBlockRecord.make_id(mid, 0),
+                        message_id=mid,
+                        conversation_id=cid,
+                        block_index=0,
+                        type="tool_use",
+                        tool_name="Read",
+                        semantic_type="file_read",
+                    )
+                )
         await backend.save_content_blocks(blocks)
         from polylogue.storage.action_event_rebuild_runtime import rebuild_action_event_read_model_sync
 
@@ -366,9 +358,7 @@ class TestPerformanceBudget:
             conn.commit()
 
         t0 = time.monotonic()
-        results = await backend.queries.list_conversations(
-            _record_query(action_terms=("file_read",), limit=50)
-        )
+        results = await backend.queries.list_conversations(_record_query(action_terms=("file_read",), limit=50))
         elapsed_ms = (time.monotonic() - t0) * 1000
         assert len(results) > 0, "Semantic filter should find results with seeded content_blocks"
         assert elapsed_ms < 200, f"action_terms filter took {elapsed_ms:.0f}ms (budget: 200ms)"
@@ -438,9 +428,7 @@ BUDGET_CONV_COUNT = 1000
 BUDGET_MSGS_PER_CONV = 5
 
 
-async def _seed_budget_conversations(
-    backend: SQLiteBackend, count: int, msgs_per_conv: int = 5
-) -> list[str]:
+async def _seed_budget_conversations(backend: SQLiteBackend, count: int, msgs_per_conv: int = 5) -> list[str]:
     """Seed a database with conversations and messages for budget tests.
 
     Uses bulk_connection for efficient inserts at scale.
@@ -493,9 +481,7 @@ def budget_db(tmp_path_factory):
     backend = SQLiteBackend(db_path=db_path)
 
     async def _setup():
-        ids = await _seed_budget_conversations(
-            backend, BUDGET_CONV_COUNT, BUDGET_MSGS_PER_CONV
-        )
+        ids = await _seed_budget_conversations(backend, BUDGET_CONV_COUNT, BUDGET_MSGS_PER_CONV)
         await backend.close()
         return ids
 
@@ -528,9 +514,7 @@ class TestScaleBudgets:
             elapsed = time.monotonic() - t0
 
             assert len(results) == 100
-            assert elapsed < 2.0, (
-                f"list_conversations(limit=100) took {elapsed:.3f}s (budget: 2.0s)"
-            )
+            assert elapsed < 2.0, f"list_conversations(limit=100) took {elapsed:.3f}s (budget: 2.0s)"
         finally:
             await backend.close()
 
@@ -544,9 +528,7 @@ class TestScaleBudgets:
             _ = await repo.search_summaries("Message", limit=50)
             elapsed = time.monotonic() - t0
 
-            assert elapsed < 1.0, (
-                f"FTS search took {elapsed:.3f}s (budget: 1.0s)"
-            )
+            assert elapsed < 1.0, f"FTS search took {elapsed:.3f}s (budget: 1.0s)"
         finally:
             await backend.close()
 
@@ -557,9 +539,7 @@ class TestScaleBudgets:
         try:
             # Provider filter
             t0 = time.monotonic()
-            _ = await backend.queries.list_conversations(
-                _record_query(provider="chatgpt", limit=100)
-            )
+            _ = await backend.queries.list_conversations(_record_query(provider="chatgpt", limit=100))
             elapsed_provider = time.monotonic() - t0
 
             # Date range filter
@@ -603,8 +583,6 @@ class TestScaleBudgets:
             elapsed = time.monotonic() - t0
 
             assert len(ids) == 100
-            assert elapsed < 10.0, (
-                f"Batch insert of 100 conversations took {elapsed:.3f}s (budget: 10.0s)"
-            )
+            assert elapsed < 10.0, f"Batch insert of 100 conversations took {elapsed:.3f}s (budget: 10.0s)"
         finally:
             await backend.close()

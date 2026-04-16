@@ -66,9 +66,10 @@ class ConversationFormatter:
                 timestamp=message.sort_key,
                 default_role="message",
                 content_blocks=[
-                    b.model_dump(mode="json") if hasattr(b, "model_dump") else b
-                    for b in message.content_blocks
-                ] if message.content_blocks else None,
+                    b.model_dump(mode="json") if hasattr(b, "model_dump") else b for b in message.content_blocks
+                ]
+                if message.content_blocks
+                else None,
             )
             for message in projection.messages
         ]

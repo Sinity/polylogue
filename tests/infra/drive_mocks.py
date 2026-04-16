@@ -33,14 +33,16 @@ class MockCredentials:
 
     def to_json(self) -> str:
         """Serialize to JSON."""
-        return json.dumps({
-            "token": self.token,
-            "refresh_token": self.refresh_token,
-            "token_uri": self.token_uri,
-            "client_id": self.client_id,
-            "client_secret": self.client_secret,
-            "scopes": self.scopes,
-        })
+        return json.dumps(
+            {
+                "token": self.token,
+                "refresh_token": self.refresh_token,
+                "token_uri": self.token_uri,
+                "client_id": self.client_id,
+                "client_secret": self.client_secret,
+                "scopes": self.scopes,
+            }
+        )
 
 
 @dataclass
@@ -175,7 +177,9 @@ class MockDownloadStatus:
 class MockFilesResource:
     """Mock Google Drive files() resource."""
 
-    def __init__(self, files: dict[str, MockDriveFile] | None = None, file_content: dict[str, bytes | str] | None = None):
+    def __init__(
+        self, files: dict[str, MockDriveFile] | None = None, file_content: dict[str, bytes | str] | None = None
+    ):
         """Initialize with file metadata and content.
 
         Args:
@@ -270,7 +274,9 @@ class MockFilesResource:
 class MockDriveService:
     """Mock Google Drive service."""
 
-    def __init__(self, files_data: dict[str, MockDriveFile] | None = None, file_content: dict[str, bytes | str] | None = None):
+    def __init__(
+        self, files_data: dict[str, MockDriveFile] | None = None, file_content: dict[str, bytes | str] | None = None
+    ):
         """Initialize mock Drive service.
 
         Args:
@@ -318,9 +324,7 @@ class FakeDriveServiceGateway:
         page_token: str | None,
         page_size: int,
     ) -> dict[str, Any]:
-        return self._mock_service.files().list(
-            q=q, fields=fields, pageToken=page_token, pageSize=page_size
-        ).execute()
+        return self._mock_service.files().list(q=q, fields=fields, pageToken=page_token, pageSize=page_size).execute()
 
     def download_file(self, file_id: str, handle: Any) -> None:
         if self._download_error is not None:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from pathlib import Path
 
 from polylogue.lib.messages import MessageCollection
 from polylogue.lib.models import Conversation, Message
@@ -11,6 +12,9 @@ from polylogue.storage.session_product_timeline_rows import (
     hydrate_session_phase,
     hydrate_work_event,
 )
+
+REPO_ROOT = Path(__file__).resolve().parents[3]
+APP_PATH = REPO_ROOT / "polylogue" / "facade.py"
 
 
 def _timeline_conversation() -> Conversation:
@@ -26,7 +30,7 @@ def _timeline_conversation() -> Conversation:
                     id="u1",
                     role="user",
                     provider="claude-code",
-                    text="Please inspect /realm/project/polylogue/app.py and fix the failing tests.",
+                    text=f"Please inspect {APP_PATH} and fix the failing tests.",
                     timestamp=datetime(2026, 4, 2, 12, 0, tzinfo=timezone.utc),
                 ),
                 Message(
@@ -39,7 +43,7 @@ def _timeline_conversation() -> Conversation:
                         {
                             "type": "tool_use",
                             "tool_name": "Read",
-                            "tool_input": {"file_path": "/realm/project/polylogue/app.py"},
+                            "tool_input": {"file_path": str(APP_PATH)},
                         }
                     ],
                 ),

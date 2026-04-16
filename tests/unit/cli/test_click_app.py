@@ -69,9 +69,10 @@ class TestHandleQueryMode:
         mock_ctx.obj = MagicMock()
         mock_ctx.meta = {}
 
-        with patch("polylogue.cli.query.execute_query") as mock_execute, patch(
-            "polylogue.cli.click_app._show_stats"
-        ) as mock_stats:
+        with (
+            patch("polylogue.cli.query.execute_query") as mock_execute,
+            patch("polylogue.cli.click_app._show_stats") as mock_stats,
+        ):
             _handle_query_mode(mock_ctx)
             return mock_execute, mock_stats
 
@@ -91,9 +92,10 @@ class TestHandleQueryMode:
         mock_ctx.obj = MagicMock()
         mock_ctx.meta = {"polylogue_query_terms": ("error", "handling")}
 
-        with patch("polylogue.cli.query.execute_query") as mock_execute, patch(
-            "polylogue.cli.click_app._show_stats"
-        ) as mock_stats:
+        with (
+            patch("polylogue.cli.query.execute_query") as mock_execute,
+            patch("polylogue.cli.click_app._show_stats") as mock_stats,
+        ):
             from polylogue.cli.click_app import _handle_query_mode
 
             _handle_query_mode(mock_ctx)
@@ -112,7 +114,7 @@ class TestHandleQueryMode:
             self._make_params(until="2025-12-31"),
             self._make_params(latest=True),
             self._make_params(title="test"),
-            self._make_params(path_terms=("/realm/project/polylogue/README.md",)),
+            self._make_params(path_terms=("/workspace/polylogue/README.md",)),
             self._make_params(action=("search",)),
             self._make_params(exclude_action=("git",)),
             self._make_params(action_sequence="file_read,file_edit,shell"),
@@ -155,9 +157,7 @@ class TestHandleQueryMode:
         mock_ctx.obj = MagicMock()
         mock_ctx.meta = {"polylogue_query_terms": ("python", "error")}
 
-        with patch("polylogue.cli.query.execute_query") as mock_execute, patch(
-            "polylogue.cli.click_app._show_stats"
-        ):
+        with patch("polylogue.cli.query.execute_query") as mock_execute, patch("polylogue.cli.click_app._show_stats"):
             from polylogue.cli.click_app import _handle_query_mode
 
             _handle_query_mode(mock_ctx)
@@ -268,8 +268,9 @@ class TestCliSetup:
     def test_verbose_configures_debug_logging(self, cli_runner):
         from polylogue.cli.click_app import cli
 
-        with patch("polylogue.cli.click_app.configure_logging") as mock_log, patch(
-            "polylogue.cli.click_app._show_stats"
+        with (
+            patch("polylogue.cli.click_app.configure_logging") as mock_log,
+            patch("polylogue.cli.click_app._show_stats"),
         ):
             cli_runner.invoke(cli, ["--verbose", "--plain"], catch_exceptions=False)
         mock_log.assert_called_once_with(verbose=True)
@@ -277,8 +278,9 @@ class TestCliSetup:
     def test_no_verbose_configures_info_logging(self, cli_runner):
         from polylogue.cli.click_app import cli
 
-        with patch("polylogue.cli.click_app.configure_logging") as mock_log, patch(
-            "polylogue.cli.click_app._show_stats"
+        with (
+            patch("polylogue.cli.click_app.configure_logging") as mock_log,
+            patch("polylogue.cli.click_app._show_stats"),
         ):
             cli_runner.invoke(cli, ["--plain"], catch_exceptions=False)
         mock_log.assert_called_once_with(verbose=False)
@@ -286,9 +288,7 @@ class TestCliSetup:
     def test_plain_flag_creates_plain_ui(self, cli_runner):
         from polylogue.cli.click_app import cli
 
-        with patch("polylogue.cli.click_app.create_ui") as mock_ui, patch(
-            "polylogue.cli.click_app._show_stats"
-        ):
+        with patch("polylogue.cli.click_app.create_ui") as mock_ui, patch("polylogue.cli.click_app._show_stats"):
             mock_ui.return_value = MagicMock()
             cli_runner.invoke(cli, ["--plain"], catch_exceptions=False)
         mock_ui.assert_called_once_with(True)
@@ -296,33 +296,36 @@ class TestCliSetup:
     def test_plain_mode_announcement_when_auto_detected(self, cli_runner):
         from polylogue.cli.click_app import cli
 
-        with patch("polylogue.cli.click_app.should_use_plain", return_value=True), patch(
-            "polylogue.cli.click_app.announce_plain_mode"
-        ) as mock_announce, patch(
-            "polylogue.cli.click_app.create_ui", return_value=MagicMock()
-        ), patch("polylogue.cli.click_app._show_stats"):
+        with (
+            patch("polylogue.cli.click_app.should_use_plain", return_value=True),
+            patch("polylogue.cli.click_app.announce_plain_mode") as mock_announce,
+            patch("polylogue.cli.click_app.create_ui", return_value=MagicMock()),
+            patch("polylogue.cli.click_app._show_stats"),
+        ):
             cli_runner.invoke(cli, [], catch_exceptions=False, env={"POLYLOGUE_FORCE_PLAIN": ""})
         mock_announce.assert_called_once()
 
     def test_no_announcement_when_plain_flag_explicit(self, cli_runner):
         from polylogue.cli.click_app import cli
 
-        with patch("polylogue.cli.click_app.should_use_plain", return_value=True), patch(
-            "polylogue.cli.click_app.announce_plain_mode"
-        ) as mock_announce, patch(
-            "polylogue.cli.click_app.create_ui", return_value=MagicMock()
-        ), patch("polylogue.cli.click_app._show_stats"):
+        with (
+            patch("polylogue.cli.click_app.should_use_plain", return_value=True),
+            patch("polylogue.cli.click_app.announce_plain_mode") as mock_announce,
+            patch("polylogue.cli.click_app.create_ui", return_value=MagicMock()),
+            patch("polylogue.cli.click_app._show_stats"),
+        ):
             cli_runner.invoke(cli, ["--plain"], catch_exceptions=False)
         mock_announce.assert_not_called()
 
     def test_no_announcement_when_env_force_plain(self, cli_runner):
         from polylogue.cli.click_app import cli
 
-        with patch("polylogue.cli.click_app.should_use_plain", return_value=True), patch(
-            "polylogue.cli.click_app.announce_plain_mode"
-        ) as mock_announce, patch(
-            "polylogue.cli.click_app.create_ui", return_value=MagicMock()
-        ), patch("polylogue.cli.click_app._show_stats"):
+        with (
+            patch("polylogue.cli.click_app.should_use_plain", return_value=True),
+            patch("polylogue.cli.click_app.announce_plain_mode") as mock_announce,
+            patch("polylogue.cli.click_app.create_ui", return_value=MagicMock()),
+            patch("polylogue.cli.click_app._show_stats"),
+        ):
             cli_runner.invoke(cli, [], catch_exceptions=False, env={"POLYLOGUE_FORCE_PLAIN": "1"})
         mock_announce.assert_not_called()
 
@@ -330,11 +333,12 @@ class TestCliSetup:
         from polylogue.cli.click_app import cli
 
         for value in ("0", "false", "no"):
-            with patch("polylogue.cli.click_app.should_use_plain", return_value=True), patch(
-                "polylogue.cli.click_app.announce_plain_mode"
-            ) as mock_announce, patch(
-                "polylogue.cli.click_app.create_ui", return_value=MagicMock()
-            ), patch("polylogue.cli.click_app._show_stats"):
+            with (
+                patch("polylogue.cli.click_app.should_use_plain", return_value=True),
+                patch("polylogue.cli.click_app.announce_plain_mode") as mock_announce,
+                patch("polylogue.cli.click_app.create_ui", return_value=MagicMock()),
+                patch("polylogue.cli.click_app._show_stats"),
+            ):
                 cli_runner.invoke(cli, [], catch_exceptions=False, env={"POLYLOGUE_FORCE_PLAIN": value})
             mock_announce.assert_called_once()
 
@@ -421,10 +425,20 @@ class TestGenerateSeed:
     """``polylogue generate --seed`` creates a full demo environment."""
 
     def test_seed_creates_database(self, cli_runner, tmp_path):
-        result = cli_runner.invoke(click_cli, [
-            "audit", "generate", "--seed", "-o", str(tmp_path),
-            "-n", "1", "-p", "chatgpt",
-        ])
+        result = cli_runner.invoke(
+            click_cli,
+            [
+                "audit",
+                "generate",
+                "--seed",
+                "-o",
+                str(tmp_path),
+                "-n",
+                "1",
+                "-p",
+                "chatgpt",
+            ],
+        )
         assert result.exit_code == 0
         db_path = tmp_path / "data" / "polylogue" / "polylogue.db"
         assert db_path.exists()
@@ -433,11 +447,16 @@ class TestGenerateSeed:
         monkeypatch.setenv("XDG_DATA_HOME", "/tmp/original-data")
         monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", "/tmp/original-archive")
 
-        with patch("polylogue.pipeline.runner.run_sources", new=AsyncMock(return_value=type(
-            "_Result",
-            (),
-            {"counts": {"conversations": 0, "messages": 0}},
-        )())):
+        with patch(
+            "polylogue.pipeline.runner.run_sources",
+            new=AsyncMock(
+                return_value=type(
+                    "_Result",
+                    (),
+                    {"counts": {"conversations": 0, "messages": 0}},
+                )()
+            ),
+        ):
             result = cli_runner.invoke(
                 click_cli,
                 ["audit", "generate", "--seed", "-o", str(tmp_path), "-n", "1", "-p", "chatgpt"],
@@ -499,9 +518,11 @@ class TestQaCommand:
         from polylogue.showcase.qa_runner import QAResult
 
         qa_result = QAResult(
-            audit_report=AuditReport(checks=[
-                OutcomeCheck(name="privacy", status=OutcomeStatus.OK, summary="ok"),
-            ]),
+            audit_report=AuditReport(
+                checks=[
+                    OutcomeCheck(name="privacy", status=OutcomeStatus.OK, summary="ok"),
+                ]
+            ),
             proof_report=ArtifactProofReport(
                 providers={
                     "chatgpt": ProviderArtifactProof(
@@ -524,7 +545,6 @@ class TestQaCommand:
         assert payload["audit"]["status"] == "ok"
         assert payload["showcase"]["status"] == "skip"
         assert payload["overall_status"] == "ok"
-
 
 
 # ---------------------------------------------------------------------------
@@ -646,6 +666,7 @@ class TestMcpCommandUnit:
 
     def test_missing_mcp_dependencies_error(self, cli_runner, mock_env) -> None:
         with patch.dict(sys.modules, {"polylogue.mcp.server": None}):
+
             def mock_import(*args, **kwargs):
                 raise ImportError("No module named 'mcp'")
 
@@ -668,6 +689,7 @@ class TestMcpServerImport:
     def test_serve_stdio_can_be_imported(self) -> None:
         try:
             from polylogue.mcp.server import serve_stdio
+
             assert callable(serve_stdio)
         except ImportError:
             pytest.skip("MCP dependencies not installed")

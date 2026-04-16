@@ -27,6 +27,8 @@ def _dominant_keys(sample: Any) -> list[str]:
         if first_dict is not None:
             return sorted(first_dict.keys())
     return []
+
+
 class SchemaRegistryToolingMixin:
     """Tooling mixin layered on top of the runtime registry base."""
 
@@ -48,8 +50,12 @@ class SchemaRegistryToolingMixin:
             provider=provider_token,
             packages=sorted(packages, key=lambda item: int(item.version[1:])),
             latest_version=packages[-1].version if packages else None,
-            default_version=(manifest.default_version if manifest is not None else (packages[-1].version if packages else None)),
-            recommended_version=(manifest.default_version if manifest is not None else (packages[-1].version if packages else None)),
+            default_version=(
+                manifest.default_version if manifest is not None else (packages[-1].version if packages else None)
+            ),
+            recommended_version=(
+                manifest.default_version if manifest is not None else (packages[-1].version if packages else None)
+            ),
         )
         self.replace_provider_packages(provider_token, catalog, package_schemas)
         if manifest is not None:
@@ -87,7 +93,9 @@ class SchemaRegistryToolingMixin:
         groups: dict[str, list[int]] = {}
         artifact_by_cluster: dict[str, str] = {}
         for index, sample in enumerate(samples):
-            artifact_kind = artifact_kinds[index] if artifact_kinds is not None and index < len(artifact_kinds) else "unspecified"
+            artifact_kind = (
+                artifact_kinds[index] if artifact_kinds is not None and index < len(artifact_kinds) else "unspecified"
+            )
             cluster_id = schema_cluster_id(sample, artifact_kind)
             groups.setdefault(cluster_id, []).append(index)
             artifact_by_cluster[cluster_id] = artifact_kind
@@ -116,8 +124,12 @@ class SchemaRegistryToolingMixin:
             )
         artifact_counts: dict[str, int] = {}
         for cluster in clusters:
-            artifact_counts[cluster.artifact_kind] = artifact_counts.get(cluster.artifact_kind, 0) + cluster.sample_count
-        return ClusterManifest(provider=provider_token, clusters=clusters, generated_at=now, artifact_counts=artifact_counts)
+            artifact_counts[cluster.artifact_kind] = (
+                artifact_counts.get(cluster.artifact_kind, 0) + cluster.sample_count
+            )
+        return ClusterManifest(
+            provider=provider_token, clusters=clusters, generated_at=now, artifact_counts=artifact_counts
+        )
 
     def save_cluster_manifest(self, manifest: ClusterManifest):
         provider_dir = self.storage_root / str(canonical_schema_provider(manifest.provider))
@@ -177,6 +189,7 @@ class SchemaRegistryToolingMixin:
             manifest.default_version = new_version
         self.save_cluster_manifest(manifest)
         return new_version
+
 
 __all__ = [
     "ClusterManifest",

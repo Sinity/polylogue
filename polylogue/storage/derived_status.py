@@ -27,7 +27,8 @@ def collect_derived_model_statuses_sync(
         "total_conversations": total_conversations,
         "total_messages": total_messages,
         "message_fts_rows": int(fts_status.get("count", 0)),
-        "message_fts_ready": bool(fts_status.get("exists", False)) and int(fts_status.get("count", 0)) == total_messages,
+        "message_fts_ready": bool(fts_status.get("exists", False))
+        and int(fts_status.get("count", 0)) == total_messages,
         "action_rows": int(action_status["count"]),
         "action_documents": int(action_status["materialized_conversation_count"]),
         "action_source_documents": int(action_status["valid_source_conversation_count"]),
@@ -90,20 +91,23 @@ def collect_derived_model_statuses_sync(
         "stale_messages": embedding_stats.stale_messages,
         "missing_provenance": embedding_stats.messages_missing_provenance,
     }
-    metrics["transcript_embeddings_ready"] = (
-        total_conversations == 0
-        or (
-            int(metrics["embedded_conversations"]) == total_conversations
-            and int(metrics["pending_conversations"]) == 0
-            and int(metrics["stale_messages"]) == 0
-            and int(metrics["missing_provenance"]) == 0
-        )
+    metrics["transcript_embeddings_ready"] = total_conversations == 0 or (
+        int(metrics["embedded_conversations"]) == total_conversations
+        and int(metrics["pending_conversations"]) == 0
+        and int(metrics["stale_messages"]) == 0
+        and int(metrics["missing_provenance"]) == 0
     )
     metrics["evidence_retrieval_rows"] = int(metrics["profile_evidence_fts_rows"]) + int(metrics["action_fts_rows"])
     metrics["expected_evidence_retrieval_rows"] = int(metrics["profile_rows"]) + int(metrics["action_rows"])
-    metrics["evidence_retrieval_ready"] = bool(session_status["profile_evidence_fts_ready"]) and bool(action_status["action_fts_ready"])
-    metrics["inference_retrieval_rows"] = int(metrics["profile_inference_fts_rows"]) + int(metrics["work_event_fts_rows"]) + int(metrics["phase_rows"])
-    metrics["expected_inference_retrieval_rows"] = int(metrics["profile_rows"]) + int(metrics["work_event_rows"]) + int(metrics["phase_rows"])
+    metrics["evidence_retrieval_ready"] = bool(session_status["profile_evidence_fts_ready"]) and bool(
+        action_status["action_fts_ready"]
+    )
+    metrics["inference_retrieval_rows"] = (
+        int(metrics["profile_inference_fts_rows"]) + int(metrics["work_event_fts_rows"]) + int(metrics["phase_rows"])
+    )
+    metrics["expected_inference_retrieval_rows"] = (
+        int(metrics["profile_rows"]) + int(metrics["work_event_rows"]) + int(metrics["phase_rows"])
+    )
     metrics["inference_retrieval_ready"] = (
         bool(session_status["profile_inference_fts_ready"])
         and bool(session_status["work_event_inference_fts_ready"])
@@ -164,7 +168,9 @@ def build_retrieval_statuses(metrics: dict[str, int | bool]) -> dict[str, Derive
                 pending_docs(int(metrics["action_source_documents"]), int(metrics["action_documents"]))
                 + pending_docs(int(metrics["total_conversations"]), int(metrics["profile_rows"]))
             ),
-            pending_rows=pending_rows(int(metrics["expected_evidence_retrieval_rows"]), int(metrics["evidence_retrieval_rows"])),
+            pending_rows=pending_rows(
+                int(metrics["expected_evidence_retrieval_rows"]), int(metrics["evidence_retrieval_rows"])
+            ),
             stale_rows=int(metrics["profile_evidence_fts_duplicates"]) + int(metrics["action_stale_rows"]),
             orphan_rows=int(metrics["action_orphan_rows"]) + int(metrics["orphan_profile_rows"]),
         ),
@@ -185,7 +191,9 @@ def build_retrieval_statuses(metrics: dict[str, int | bool]) -> dict[str, Derive
             materialized_documents=int(metrics["profile_rows"]),
             source_rows=int(metrics["expected_inference_retrieval_rows"]),
             materialized_rows=int(metrics["inference_retrieval_rows"]),
-            pending_rows=pending_rows(int(metrics["expected_inference_retrieval_rows"]), int(metrics["inference_retrieval_rows"])),
+            pending_rows=pending_rows(
+                int(metrics["expected_inference_retrieval_rows"]), int(metrics["inference_retrieval_rows"])
+            ),
             stale_rows=(
                 int(metrics["profile_inference_fts_duplicates"])
                 + int(metrics["work_event_fts_duplicates"])
@@ -211,7 +219,9 @@ def build_retrieval_statuses(metrics: dict[str, int | bool]) -> dict[str, Derive
             ),
             source_rows=int(metrics["expected_enrichment_retrieval_rows"]),
             materialized_rows=int(metrics["enrichment_retrieval_rows"]),
-            pending_rows=pending_rows(int(metrics["expected_enrichment_retrieval_rows"]), int(metrics["enrichment_retrieval_rows"])),
+            pending_rows=pending_rows(
+                int(metrics["expected_enrichment_retrieval_rows"]), int(metrics["enrichment_retrieval_rows"])
+            ),
             stale_rows=int(metrics["profile_enrichment_fts_duplicates"]),
         ),
     }

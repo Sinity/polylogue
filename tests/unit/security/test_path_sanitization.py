@@ -21,6 +21,7 @@ from polylogue.sources.token_store import FileTokenStore
 # sanitize_path: traversal prevention (3796914)
 # =============================================================================
 
+
 class TestSanitizePathTraversal:
     """Path traversal attacks must be blocked."""
 
@@ -77,6 +78,7 @@ class TestSanitizePathTraversal:
 # =============================================================================
 # FileTokenStore: key sanitization and permissions
 # =============================================================================
+
 
 class TestFileTokenStoreSecurity:
     """Token store must prevent path traversal via key and set secure permissions."""
@@ -140,6 +142,7 @@ class TestFileTokenStoreSecurity:
 # =============================================================================
 # ReDoS safety: regex patterns must not exhibit catastrophic backtracking
 # =============================================================================
+
 
 class TestRegexReDoSSafety:
     """Regex patterns in production code must complete in bounded time.

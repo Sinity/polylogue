@@ -81,14 +81,18 @@ def extract_messages_from_mapping(mapping: dict[str, object]) -> tuple[list[Pars
             if isinstance(msg_attachments, list):
                 for attach in msg_attachments:
                     if isinstance(attach, dict) and attach.get("id"):
-                        attachments.append(ParsedAttachment(
-                            provider_attachment_id=str(attach["id"]),
-                            message_provider_id=str(msg_id),
-                            name=str(attach["name"]) if attach.get("name") else None,
-                            mime_type=str(attach["mime_type"]) if attach.get("mime_type") else None,
-                            size_bytes=int(attach["size"]) if isinstance(attach.get("size"), (int, float)) else None,
-                            provider_meta={"raw": attach},
-                        ))
+                        attachments.append(
+                            ParsedAttachment(
+                                provider_attachment_id=str(attach["id"]),
+                                message_provider_id=str(msg_id),
+                                name=str(attach["name"]) if attach.get("name") else None,
+                                mime_type=str(attach["mime_type"]) if attach.get("mime_type") else None,
+                                size_bytes=int(attach["size"])
+                                if isinstance(attach.get("size"), (int, float))
+                                else None,
+                                provider_meta={"raw": attach},
+                            )
+                        )
 
         # Build provider_meta with structured content_blocks
         meta: dict[str, object] = {"raw": msg}
@@ -133,20 +137,24 @@ def extract_messages_from_mapping(mapping: dict[str, object]) -> tuple[list[Pars
         content_type = content.get("content_type", "text")
         if content_type in ("thoughts", "reasoning_recap"):
             # ChatGPT thinking/reasoning blocks
-            content_blocks.append(ParsedContentBlock(
-                type="thinking",
-                text=text,
-                metadata={"content_type": content_type},
-            ))
+            content_blocks.append(
+                ParsedContentBlock(
+                    type="thinking",
+                    text=text,
+                    metadata={"content_type": content_type},
+                )
+            )
         elif parts:
             for part in parts:
                 if isinstance(part, str) and part:
                     content_blocks.append(ParsedContentBlock(type="text", text=part))
                 elif isinstance(part, dict) and part.get("content_type") == "image_asset_pointer":
-                    content_blocks.append(ParsedContentBlock(
-                        type="image",
-                        metadata={"asset_pointer": str(part.get("asset_pointer", ""))},
-                    ))
+                    content_blocks.append(
+                        ParsedContentBlock(
+                            type="image",
+                            metadata={"asset_pointer": str(part.get("asset_pointer", ""))},
+                        )
+                    )
 
         parsed = ParsedMessage(
             provider_message_id=str(msg_id),

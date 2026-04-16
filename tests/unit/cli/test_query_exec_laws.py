@@ -82,10 +82,7 @@ def _fields_arg(fields: tuple[str, ...] | None) -> str | None:
 
 
 def _structured_rows(case) -> list[dict[str, object]]:
-    rows = [
-        summary_to_dict(build_conversation_summary(spec), spec.message_count)
-        for spec in case.summaries
-    ]
+    rows = [summary_to_dict(build_conversation_summary(spec), spec.message_count) for spec in case.summaries]
     if case.selected_fields:
         selected = set(case.selected_fields)
         rows = [{key: value for key, value in row.items() if key in selected} for row in rows]
@@ -211,7 +208,7 @@ def _sample_semantic_conversation() -> Conversation:
                         "type": "tool_use",
                         "tool_name": "Mystery",
                         "tool_id": "tool-other",
-                        "tool_input": {"path": "/realm/project/polylogue/README.md"},
+                        "tool_input": {"path": "/workspace/polylogue/README.md"},
                     }
                 ],
             ),
@@ -224,7 +221,7 @@ def _sample_semantic_conversation() -> Conversation:
                         "type": "tool_use",
                         "tool_name": "Edit",
                         "tool_id": "tool-edit",
-                        "tool_input": {"file_path": "/realm/project/polylogue/polylogue/lib/models.py"},
+                        "tool_input": {"file_path": "/workspace/polylogue/polylogue/lib/models.py"},
                     }
                 ],
             ),
@@ -300,9 +297,7 @@ def test_apply_modifiers_contract(case) -> None:
     assert repo.add_tag.await_count == expected_tag_calls
 
     if case.dry_run:
-        printed = " ".join(
-            call.args[0] for call in env.ui.console.print.call_args_list if call.args
-        )
+        printed = " ".join(call.args[0] for call in env.ui.console.print.call_args_list if call.args)
         assert "Sample of affected conversations" in printed
         assert any(spec.conversation_id[:24] in printed for spec in case.summaries[:5])
     elif should_apply:
@@ -729,7 +724,7 @@ def test_output_stats_by_conversations_action_slice_respects_selected_tool() -> 
 def test_output_stats_by_conversations_action_slice_respects_selected_path() -> None:
     env = _make_env()
     conversation = _sample_semantic_conversation()
-    selection = ConversationQuerySpec(path_terms=("/realm/project/polylogue/README.md",))
+    selection = ConversationQuerySpec(path_terms=("/workspace/polylogue/README.md",))
 
     with patch("click.echo") as mock_echo:
         output_stats_by_conversations(
@@ -796,7 +791,9 @@ def test_output_results_no_results_contract() -> None:
         ),
     ],
 )
-def test_output_results_projection_contract(label: str, plain: bool, conversations: list[Conversation], params: dict[str, object], expected: str) -> None:
+def test_output_results_projection_contract(
+    label: str, plain: bool, conversations: list[Conversation], params: dict[str, object], expected: str
+) -> None:
     env = _make_env()
     env.ui.plain = plain
 
@@ -909,13 +906,17 @@ def test_async_execute_query_action_routing_contract(case, expected_helper) -> N
         patch("polylogue.cli.query_output._output_summary_list", new_callable=AsyncMock) as mock_output_summary_list,
         patch("polylogue.cli.query_output.output_stats_sql", new_callable=AsyncMock) as mock_output_stats_sql,
         patch("polylogue.cli.query_output.output_stats_by_summaries") as mock_output_stats_by_summaries,
-        patch("polylogue.cli.query_output.output_stats_by_semantic_summaries", new_callable=AsyncMock) as mock_output_stats_by_semantic_summaries,
+        patch(
+            "polylogue.cli.query_output.output_stats_by_semantic_summaries", new_callable=AsyncMock
+        ) as mock_output_stats_by_semantic_summaries,
         patch("polylogue.cli.query_output._output_stats_by") as mock_output_stats_by,
         patch("polylogue.cli.query_actions.apply_modifiers", new_callable=AsyncMock) as mock_apply_modifiers,
         patch("polylogue.cli.query_actions.delete_conversations", new_callable=AsyncMock) as mock_delete_conversations,
         patch("polylogue.cli.query_output._open_result") as mock_open_result,
         patch("polylogue.cli.query_output.output_results") as mock_output_results,
-        patch("polylogue.cli.query_actions.resolve_stream_target", new_callable=AsyncMock, return_value="conv-stream") as mock_stream_target,
+        patch(
+            "polylogue.cli.query_actions.resolve_stream_target", new_callable=AsyncMock, return_value="conv-stream"
+        ) as mock_stream_target,
         patch("polylogue.cli.query_output.stream_conversation", new_callable=AsyncMock) as mock_stream_conversation,
     ):
         repo.queries.get_message_counts_batch = AsyncMock(return_value={str(summary.id): 2})
@@ -1019,7 +1020,9 @@ def test_async_execute_query_semantic_stats_by_uses_summary_batches_contract() -
         patch("polylogue.cli.helpers.load_effective_config", return_value=MagicMock()),
         patch("polylogue.storage.search_providers.create_vector_provider", return_value=None),
         patch("polylogue.cli.query.build_query_execution_plan", return_value=plan),
-        patch("polylogue.cli.query_output.output_stats_by_semantic_summaries", new_callable=AsyncMock) as mock_output_stats_by_semantic_summaries,
+        patch(
+            "polylogue.cli.query_output.output_stats_by_semantic_summaries", new_callable=AsyncMock
+        ) as mock_output_stats_by_semantic_summaries,
         patch("polylogue.cli.query_output._output_stats_by") as mock_output_stats_by,
     ):
         asyncio.run(async_execute_query(env, {}))
@@ -1043,7 +1046,9 @@ def test_async_execute_query_semantic_stats_by_falls_back_without_summaries_cont
         patch("polylogue.cli.helpers.load_effective_config", return_value=MagicMock()),
         patch("polylogue.storage.search_providers.create_vector_provider", return_value=None),
         patch("polylogue.cli.query.build_query_execution_plan", return_value=plan),
-        patch("polylogue.cli.query_output.output_stats_by_semantic_summaries", new_callable=AsyncMock) as mock_output_stats_by_semantic_summaries,
+        patch(
+            "polylogue.cli.query_output.output_stats_by_semantic_summaries", new_callable=AsyncMock
+        ) as mock_output_stats_by_semantic_summaries,
         patch("polylogue.cli.query_output._output_stats_by") as mock_output_stats_by,
     ):
         asyncio.run(async_execute_query(env, {}))
@@ -1127,14 +1132,14 @@ def test_async_execute_query_show_projects_results_before_output_contract() -> N
 @pytest.mark.parametrize(
     ("params", "expected_lines"),
     [
-            (
-                {"provider": "claude-ai", "limit": 5},
-                [
-                    "No conversations matched filters:",
-                    "  provider: claude-ai",
-                    "Hint: try broadening your filters or use `list` to browse",
-                ],
-            ),
+        (
+            {"provider": "claude-ai", "limit": 5},
+            [
+                "No conversations matched filters:",
+                "  provider: claude-ai",
+                "Hint: try broadening your filters or use `list` to browse",
+            ],
+        ),
         (
             ConversationQuerySpec(),
             ["No conversations matched."],
@@ -1243,7 +1248,9 @@ async def test_output_stats_sql_uses_summary_pushdown_contract() -> None:
         ([], False, "No conversations in archive."),
     ],
 )
-async def test_output_stats_sql_empty_paths_contract(described: list[str], can_use_summaries: bool, expected_message: str) -> None:
+async def test_output_stats_sql_empty_paths_contract(
+    described: list[str], can_use_summaries: bool, expected_message: str
+) -> None:
     env = _make_env()
     repo = MagicMock()
     repo.queries.aggregate_message_stats = AsyncMock()
@@ -1360,6 +1367,7 @@ class TestSearchQueryContracts:
     def test_output_contract(self, search_workspace, case_id, args, expectation):
         """Output format combinations produce parseable and mode-consistent output."""
         from polylogue.cli import cli
+
         runner = CliRunner()
         result = runner.invoke(cli, ["--plain", *args])
         assert result.exit_code == 0, case_id
@@ -1383,6 +1391,7 @@ class TestSearchEdgeCases:
     def test_search_no_results(self, search_workspace):
         """Handle query with no matching results."""
         from polylogue.cli import cli
+
         runner = CliRunner()
         # Query mode with non-matching term
         result = runner.invoke(cli, ["--plain", "nonexistent_term_xyz"])
@@ -1393,7 +1402,7 @@ class TestSearchEdgeCases:
     def test_stats_mode_no_filters(self, cli_workspace, monkeypatch):
         """Stats mode when no query terms or filters provided."""
         from polylogue.cli import cli
-        monkeypatch.setenv("POLYLOGUE_CONFIG", str(cli_workspace["config_path"]))
+
         monkeypatch.setenv("XDG_STATE_HOME", str(cli_workspace["state_dir"]))
         monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
         runner = CliRunner()
@@ -1405,6 +1414,7 @@ class TestSearchEdgeCases:
     def test_search_case_insensitive(self, search_workspace):
         """Search is case-insensitive."""
         from polylogue.cli import cli
+
         runner = CliRunner()
         # Query mode with --list to ensure consistent output
         result_lower = runner.invoke(cli, ["--plain", "python", "list", "-f", "json"])
@@ -1423,6 +1433,7 @@ class TestSearchEdgeCases:
     def test_search_multiple_terms(self, search_workspace):
         """Search with multiple query terms."""
         from polylogue.cli import cli
+
         runner = CliRunner()
         # Query mode: multiple positional args = multiple query terms
         result = runner.invoke(cli, ["--plain", "Python", "exception", "list", "-f", "json"])
@@ -1439,7 +1450,7 @@ class TestSearchIndexRebuild:
         """Search handles missing index gracefully."""
         from polylogue.cli import cli
         from tests.infra.storage_records import DbFactory
-        monkeypatch.setenv("POLYLOGUE_CONFIG", str(cli_workspace["config_path"]))
+
         monkeypatch.setenv("XDG_STATE_HOME", str(cli_workspace["state_dir"]))
         monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
 

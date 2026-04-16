@@ -26,12 +26,8 @@ from polylogue.schemas.generation_schema_builder import (
 from polylogue.schemas.generation_semantic_relations import (
     annotate_semantic_and_relational,
 )
-from polylogue.schemas.operator_annotations import build_review_proof
-from polylogue.schemas.operator_models import (
-    SchemaReviewProof,
-    SchemaRoleProofEntry,
-)
 from polylogue.schemas.observation_models import ProviderConfig
+from polylogue.schemas.operator_annotations import build_review_proof
 from polylogue.schemas.semantic_inference_models import SEMANTIC_ROLES
 from polylogue.schemas.semantic_inference_runtime import (
     RECORD_STREAM_ELIGIBLE_ROLES,
@@ -39,7 +35,6 @@ from polylogue.schemas.semantic_inference_runtime import (
     infer_semantic_roles,
 )
 from polylogue.types import Provider
-
 
 # ---------------------------------------------------------------------------
 # 1. Full-corpus mode bypasses sample caps
@@ -96,11 +91,19 @@ class TestFullCorpusMode:
 
         # Normal mode — should be capped
         schema_normal, _ = _generate_cluster_schema(
-            "test-provider", config, samples, conv_ids, privacy_config=None,
+            "test-provider",
+            config,
+            samples,
+            conv_ids,
+            privacy_config=None,
         )
         # Full-corpus mode — all exemplars used
         schema_full, _ = _generate_cluster_schema(
-            "test-provider", config, samples, conv_ids, privacy_config=None,
+            "test-provider",
+            config,
+            samples,
+            conv_ids,
+            privacy_config=None,
             full_corpus=True,
         )
         # Both should produce valid schemas
@@ -149,9 +152,7 @@ class TestRecordStreamTitleAbstention:
         """Record-stream artifacts produce no conversation_title candidates."""
         candidates = infer_semantic_roles(title_eligible_stats, artifact_kind=kind)
         title_candidates = [c for c in candidates if c.role == "conversation_title"]
-        assert not title_candidates, (
-            f"artifact_kind={kind} should abstain from title; got {title_candidates}"
-        )
+        assert not title_candidates, f"artifact_kind={kind} should abstain from title; got {title_candidates}"
 
     @pytest.mark.parametrize("kind", sorted(RECORD_STREAM_KINDS))
     def test_record_stream_still_infers_message_roles(
@@ -170,7 +171,8 @@ class TestRecordStreamTitleAbstention:
     ) -> None:
         """conversation_document artifacts should still infer title."""
         candidates = infer_semantic_roles(
-            title_eligible_stats, artifact_kind="conversation_document",
+            title_eligible_stats,
+            artifact_kind="conversation_document",
         )
         title_candidates = [c for c in candidates if c.role == "conversation_title"]
         assert title_candidates, "conversation_document should infer title"
@@ -206,7 +208,9 @@ class TestRecordStreamTitleAbstention:
             ),
         }
         result = annotate_semantic_and_relational(
-            schema, field_stats, artifact_kind="conversation_record_stream",
+            schema,
+            field_stats,
+            artifact_kind="conversation_record_stream",
         )
         # Title should NOT be annotated for record streams
         title_prop = result.get("properties", {}).get("title", {})
@@ -214,7 +218,7 @@ class TestRecordStreamTitleAbstention:
 
     def test_record_stream_eligible_roles_are_subset_of_semantic_roles(self) -> None:
         """All eligible roles are valid semantic roles."""
-        assert RECORD_STREAM_ELIGIBLE_ROLES <= frozenset(SEMANTIC_ROLES)
+        assert frozenset(SEMANTIC_ROLES) >= RECORD_STREAM_ELIGIBLE_ROLES
 
 
 # ---------------------------------------------------------------------------
@@ -374,10 +378,7 @@ class TestConfidenceToScoreRename:
 
         samples = [
             {
-                "messages": [
-                    {"role": "user", "text": f"msg {i}"}
-                    for i in range(5)
-                ],
+                "messages": [{"role": "user", "text": f"msg {i}"} for i in range(5)],
                 "title": f"Conversation {j}",
             }
             for j in range(3)

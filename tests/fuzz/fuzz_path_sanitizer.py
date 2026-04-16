@@ -19,6 +19,7 @@ import sys
 # Check if atheris is available
 try:
     import atheris
+
     HAS_ATHERIS = True
 except ImportError:
     HAS_ATHERIS = False

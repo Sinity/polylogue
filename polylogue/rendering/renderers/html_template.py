@@ -6,9 +6,7 @@ from pathlib import Path
 
 from jinja2 import DictLoader, Environment, select_autoescape
 
-DEFAULT_HTML_TEMPLATE = (
-    Path(__file__).parent.parent / "templates" / "conversation.html"
-).read_text()
+DEFAULT_HTML_TEMPLATE = (Path(__file__).parent.parent / "templates" / "conversation.html").read_text()
 
 _CACHED_TEMPLATE_ENV: Environment | None = None
 

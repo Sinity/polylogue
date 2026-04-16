@@ -1,15 +1,16 @@
-"""Tests for canonical workspace project normalization."""
+"""Tests for repository-root and repo-name normalization."""
 
 from __future__ import annotations
 
 from datetime import date, datetime, timezone
+from pathlib import Path
 
 from polylogue.archive_product_summaries import aggregate_day_session_summary_products
 from polylogue.lib.messages import MessageCollection
 from polylogue.lib.models import Conversation, Message
-from polylogue.lib.project_normalization import (
-    normalize_project_name,
-    normalize_project_names,
+from polylogue.lib.repo_identity import (
+    normalize_repo_name,
+    normalize_repo_names,
     normalize_repo_path,
     normalize_repo_paths,
 )
@@ -17,43 +18,58 @@ from polylogue.lib.session_profile import SessionProfile, build_session_profile
 from polylogue.lib.session_summaries import summarize_day
 from polylogue.storage.store import DaySessionSummaryRecord
 
+REPO_ROOT = Path(__file__).resolve().parents[3]
+README_PATH = REPO_ROOT / "README.md"
 
-def test_workspace_project_normalization_filters_noise() -> None:
-    assert normalize_project_name("/realm/project/sinnix#switch") == "sinnix"
-    assert normalize_project_name("/realm/project/polylogue`\\n\\nPass") == "polylogue"
-    assert normalize_project_name("sinex)") == "sinex"
-    assert normalize_project_name("\\S+") is None
-    assert normalize_project_name("README.md") is None
-    assert normalize_project_names(
-        ["polylogue`\\n\\nPass", "\\S+", "README.md", "sinex)"],
-        repo_paths=["/realm/project/sinnix#switch"],
+
+def _make_repo(tmp_path: Path, name: str) -> Path:
+    repo_root = tmp_path / name
+    (repo_root / ".git").mkdir(parents=True)
+    return repo_root
+
+
+def test_repo_identity_normalization_filters_noise(tmp_path: Path) -> None:
+    sinnix_repo = _make_repo(tmp_path, "sinnix")
+    polylogue_repo = _make_repo(tmp_path, "polylogue")
+
+    assert normalize_repo_name(f"{sinnix_repo}#switch") == "sinnix"
+    assert normalize_repo_name(f"{polylogue_repo}/README.md`\\n\\nPass") == "polylogue"
+    assert normalize_repo_name("https://github.com/Sinity/sinex.git") == "sinex"
+    assert normalize_repo_name("\\S+") is None
+    assert normalize_repo_name("README.md") is None
+    assert normalize_repo_names(
+        [
+            "https://github.com/Sinity/polylogue.git",
+            "git@github.com:Sinity/sinex.git",
+            "\\S+",
+            "README.md",
+        ],
+        repo_paths=[f"{sinnix_repo}#switch"],
     ) == ("polylogue", "sinex", "sinnix")
-    assert normalize_repo_path("/realm/project/sinnix#nixosConfigurations.sinnix-prime") == "/realm/project/sinnix"
+    assert normalize_repo_path(f"{sinnix_repo}#nixosConfigurations.sinnix-prime") == str(sinnix_repo)
     assert normalize_repo_paths(
         [
-            "/realm/project/polylogue`\\n\\nPass",
-            "/realm/project/sinnix#switch",
-            "/realm/project/README.md",
+            f"{polylogue_repo}/README.md`\\n\\nPass",
+            f"{sinnix_repo}#switch",
+            str(tmp_path / "README.md"),
         ]
-    ) == ("/realm/project/polylogue", "/realm/project/sinnix")
+    ) == (str(polylogue_repo), str(sinnix_repo))
 
 
-def test_session_profile_from_dict_normalizes_stale_projects_and_repo_paths() -> None:
+def test_session_profile_from_dict_preserves_explicit_repo_names_and_normalizes_repo_paths(tmp_path: Path) -> None:
+    polylogue_repo = _make_repo(tmp_path, "polylogue")
+    sinnix_repo = _make_repo(tmp_path, "sinnix")
+
     profile = SessionProfile.from_dict(
         {
             "conversation_id": "conv-normalize-profile",
             "provider": "claude-code",
             "repo_paths": [
-                "/realm/project/polylogue`\\n\\nPass",
-                "/realm/project/sinnix#switch",
-                "/realm/project/README.md",
+                f"{polylogue_repo}/README.md`\\n\\nPass",
+                f"{sinnix_repo}#switch",
+                str(tmp_path / "README.md"),
             ],
-            "canonical_projects": [
-                "polylogue`\\n\\nPass",
-                "sinnix#switch",
-                "\\S+",
-                "README.md",
-            ],
+            "repo_names": ["polylogue", "sinnix"],
             "work_events": [],
             "phases": [],
             "tool_categories": {},
@@ -62,11 +78,14 @@ def test_session_profile_from_dict_normalizes_stale_projects_and_repo_paths() ->
         }
     )
 
-    assert profile.repo_paths == ("/realm/project/polylogue", "/realm/project/sinnix")
-    assert profile.canonical_projects == ("polylogue", "sinnix")
+    assert profile.repo_paths == (str(polylogue_repo), str(sinnix_repo))
+    assert profile.repo_names == ("polylogue", "sinnix")
 
 
-def test_build_session_profile_normalizes_workspace_path_noise() -> None:
+def test_build_session_profile_normalizes_repo_roots_from_dialogue_and_tool_paths(tmp_path: Path) -> None:
+    sinnix_repo = _make_repo(tmp_path, "sinnix")
+    ignored_path = tmp_path / "README.md"
+
     conversation = Conversation(
         id="conv-normalize-build",
         provider="claude-code",
@@ -79,10 +98,7 @@ def test_build_session_profile_normalizes_workspace_path_noise() -> None:
                     id="u1",
                     role="user",
                     provider="claude-code",
-                    text=(
-                        "Compare /realm/project/polylogue`\\n\\nPass "
-                        "with /realm/project/sinnix#switch and ignore /realm/project/README.md."
-                    ),
+                    text=f"Compare {README_PATH} with {sinnix_repo}#switch and ignore {ignored_path}.",
                     timestamp=datetime(2026, 3, 24, 10, 0, tzinfo=timezone.utc),
                 ),
                 Message(
@@ -95,7 +111,7 @@ def test_build_session_profile_normalizes_workspace_path_noise() -> None:
                         {
                             "type": "tool_use",
                             "tool_name": "Read",
-                            "tool_input": {"file_path": "/realm/project/sinnix#nixosConfigurations.sinnix-prime"},
+                            "tool_input": {"file_path": f"{sinnix_repo}#nixosConfigurations.sinnix-prime"},
                         }
                     ],
                 ),
@@ -105,11 +121,11 @@ def test_build_session_profile_normalizes_workspace_path_noise() -> None:
 
     profile = build_session_profile(conversation)
 
-    assert profile.repo_paths == ("/realm/project/polylogue", "/realm/project/sinnix")
-    assert profile.canonical_projects == ("polylogue", "sinnix")
+    assert profile.repo_paths == (str(REPO_ROOT), str(sinnix_repo))
+    assert profile.repo_names == ("polylogue", "sinnix")
 
 
-def test_day_summary_and_aggregate_products_normalize_stale_project_payloads() -> None:
+def test_day_summary_and_aggregate_products_preserve_repo_names() -> None:
     profile = SessionProfile.from_dict(
         {
             "conversation_id": "conv-day-normalize",
@@ -117,8 +133,8 @@ def test_day_summary_and_aggregate_products_normalize_stale_project_payloads() -
             "created_at": "2026-03-24T10:00:00+00:00",
             "updated_at": "2026-03-24T10:05:00+00:00",
             "canonical_session_date": "2026-03-24",
-            "repo_paths": ["/realm/project/polylogue`\\n\\nPass"],
-            "canonical_projects": ["polylogue`\\n\\nPass", "\\S+", "README.md"],
+            "repo_paths": [str(README_PATH)],
+            "repo_names": ["polylogue"],
             "work_events": [],
             "phases": [],
             "tool_categories": {},
@@ -128,7 +144,7 @@ def test_day_summary_and_aggregate_products_normalize_stale_project_payloads() -
     )
 
     summary = summarize_day([profile], date(2026, 3, 24))
-    assert summary.projects_active == ("polylogue",)
+    assert summary.repos_active == ("polylogue",)
 
     product = aggregate_day_session_summary_products(
         [
@@ -137,11 +153,11 @@ def test_day_summary_and_aggregate_products_normalize_stale_project_payloads() -
                 provider_name="claude-code",
                 materialized_at="2026-03-24T10:10:00+00:00",
                 work_event_breakdown={},
-                projects_active=("polylogue`\\n\\nPass", "\\S+", "README.md"),
+                repos_active=("polylogue",),
                 payload=summary.to_dict(),
                 search_text="claude-code",
             )
         ]
     )[0]
 
-    assert product.summary["projects_active"] == ["polylogue"]
+    assert product.summary["repos_active"] == ["polylogue"]

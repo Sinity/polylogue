@@ -167,7 +167,9 @@ def build_timeline_statuses(metrics: dict[str, int | bool]) -> dict[str, Derived
             stale_rows=int(metrics["stale_work_event_rows"]),
             orphan_rows=int(metrics["orphan_work_event_rows"]),
             materializer_version=SESSION_PRODUCT_MATERIALIZER_VERSION,
-            matches_version=bool(int(metrics["stale_work_event_rows"]) == 0 and int(metrics["orphan_work_event_rows"]) == 0),
+            matches_version=bool(
+                int(metrics["stale_work_event_rows"]) == 0 and int(metrics["orphan_work_event_rows"]) == 0
+            ),
         ),
         "session_work_event_inference_fts": DerivedModelStatus(
             name="session_work_event_inference_fts",

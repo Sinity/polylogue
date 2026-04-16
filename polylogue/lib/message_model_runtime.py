@@ -228,7 +228,9 @@ class MessageRuntimeMixin:
                 thinking_texts = [
                     block["text"]
                     for block in blocks
-                    if isinstance(block, dict) and block.get("type") == "thinking" and isinstance(block.get("text"), str)
+                    if isinstance(block, dict)
+                    and block.get("type") == "thinking"
+                    and isinstance(block.get("text"), str)
                 ]
                 if thinking_texts:
                     return "\n\n".join(thinking_texts).strip() or None

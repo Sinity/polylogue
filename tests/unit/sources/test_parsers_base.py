@@ -170,8 +170,8 @@ def test_extract_messages_from_chat_messages_preserves_structured_segments_and_a
     assert [message.role.value for message in messages] == ["assistant", "user"]
     assert messages[0].text == (
         "<thinking>reason</thinking>\n"
-        "{\"content\": [{\"text\": \"done\", \"type\": \"text\"}], "
-        "\"tool_use_id\": \"tool-1\", \"type\": \"tool_result\"}"
+        '{"content": [{"text": "done", "type": "text"}], '
+        '"tool_use_id": "tool-1", "type": "tool_result"}'
     )
     assert [block.type for block in messages[0].content_blocks] == ["thinking", "tool_result", "code"]
     assert messages[0].content_blocks[2].metadata == {"language": "python"}
@@ -179,7 +179,6 @@ def test_extract_messages_from_chat_messages_preserves_structured_segments_and_a
     assert attachments[0].provider_attachment_id == "att-1"
     assert attachments[0].mime_type == "application/pdf"
     assert attachments[0].size_bytes == 12
-
 
 
 # PARSE AI - CONSOLIDATED
@@ -192,6 +191,7 @@ CLAUDE_PARSE_AI_CASES = [
     ({"chat_messages": [{"uuid": "u1", "sender": "human", "content": {"text": "nested"}}]}, 1, "content dict"),
 ]
 
+
 @pytest.mark.parametrize("conv_data,expected,desc", CLAUDE_PARSE_AI_CASES)
 def test_parse_ai_variants(conv_data, expected, desc):
     """Test parse_ai with variants."""
@@ -203,6 +203,7 @@ def test_parse_ai_variants(conv_data, expected, desc):
 
 
 # PARSE CODE - CONSOLIDATED
+
 
 def make_code_message(msg_type, text, **kwargs):
     """Helper to create Code format message."""
@@ -220,6 +221,7 @@ CLAUDE_PARSE_CODE_CASES = [
     ([make_code_message("user", "Q")], "user", "user type"),
     ([], 0, "empty messages"),
 ]
+
 
 @pytest.mark.parametrize("messages,expected,desc", CLAUDE_PARSE_CODE_CASES)
 def test_parse_code_variants(messages, expected, desc):
@@ -308,7 +310,11 @@ def test_parse_code_tool_result_content_preserved():
     tool_results = [b for b in blocks if b.type == "tool_result"]
     assert tool_results, "Expected tool_result content block"
     tr = tool_results[0]
-    assert tr.text == "file contents here\nline 2" or (tr.tool_input or {}).get("content") == "file contents here\nline 2" or True  # content stored per-block
+    assert (
+        tr.text == "file contents here\nline 2"
+        or (tr.tool_input or {}).get("content") == "file contents here\nline 2"
+        or True
+    )  # content stored per-block
 
 
 def test_parse_code_tool_result_error_preserved():
@@ -375,7 +381,6 @@ def test_parse_code_mixed_content_blocks_all_preserved():
 # -----------------------------------------------------------------------------
 # NORMALIZE_ROLE - PARAMETRIZED
 # -----------------------------------------------------------------------------
-
 
 
 # -----------------------------------------------------------------------------
@@ -652,7 +657,9 @@ def test_seeded_claude_code_tool_use_blocks_have_names(seeded_db) -> None:
     if not rows:
         return
     assert all(block_type == "tool_use" and tool_name for block_type, tool_name, _semantic_type in rows)
-    assert all(semantic_type is None or isinstance(semantic_type, str) for _block_type, _tool_name, semantic_type in rows)
+    assert all(
+        semantic_type is None or isinstance(semantic_type, str) for _block_type, _tool_name, semantic_type in rows
+    )
 
 
 def test_seeded_content_blocks_use_only_known_semantic_types(seeded_db) -> None:
@@ -890,7 +897,10 @@ def test_parse_payload_recursion_depth_limit():
                                                                                 "conversations": [
                                                                                     {
                                                                                         "conversations": [
-                                                                                            {"id": "nested", "mapping": {}}
+                                                                                            {
+                                                                                                "id": "nested",
+                                                                                                "mapping": {},
+                                                                                            }
                                                                                         ]
                                                                                     }
                                                                                 ]
@@ -1011,8 +1021,18 @@ from polylogue.pipeline.semantic_capture import (
 @pytest.mark.parametrize(
     ("blocks", "expected_texts"),
     [
-        ([{"type": "thinking", "thinking": "I need to analyze this carefully."}], ["I need to analyze this carefully."]),
-        ([{"type": "thinking", "thinking": "First thought"}, {"type": "text", "text": "Response"}, {"type": "thinking", "thinking": "Second thought"}], ["First thought", "Second thought"]),
+        (
+            [{"type": "thinking", "thinking": "I need to analyze this carefully."}],
+            ["I need to analyze this carefully."],
+        ),
+        (
+            [
+                {"type": "thinking", "thinking": "First thought"},
+                {"type": "text", "text": "Response"},
+                {"type": "thinking", "thinking": "Second thought"},
+            ],
+            ["First thought", "Second thought"],
+        ),
         ([{"type": "thinking", "thinking": ""}, {"type": "thinking", "thinking": None}], []),
         ([{"type": "text", "text": "Hello"}], []),
     ],
@@ -1026,11 +1046,26 @@ def test_extract_thinking_traces_contract(blocks: list[dict[str, object]], expec
 @pytest.mark.parametrize(
     ("blocks", "expected"),
     [
-        ([{"type": "tool_use", "name": "Read", "id": "tool-1", "input": {"file_path": "/test.py"}}], {"file": True, "search": False, "git": False, "subagent": False}),
-        ([{"type": "tool_use", "name": "Glob", "id": "tool-1", "input": {}}], {"file": False, "search": True, "git": False, "subagent": False}),
-        ([{"type": "tool_use", "name": "Bash", "id": "tool-1", "input": {"command": "git status"}}], {"file": False, "search": False, "git": True, "subagent": False}),
-        ([{"type": "tool_use", "name": "Task", "id": "tool-1", "input": {"subagent_type": "Explore"}}], {"file": False, "search": False, "git": False, "subagent": True}),
-        ([{"type": "tool_use", "name": "Bash", "id": "tool-1", "input": {"command": "ls -la"}}], {"file": False, "search": False, "git": False, "subagent": False}),
+        (
+            [{"type": "tool_use", "name": "Read", "id": "tool-1", "input": {"file_path": "/test.py"}}],
+            {"file": True, "search": False, "git": False, "subagent": False},
+        ),
+        (
+            [{"type": "tool_use", "name": "Glob", "id": "tool-1", "input": {}}],
+            {"file": False, "search": True, "git": False, "subagent": False},
+        ),
+        (
+            [{"type": "tool_use", "name": "Bash", "id": "tool-1", "input": {"command": "git status"}}],
+            {"file": False, "search": False, "git": True, "subagent": False},
+        ),
+        (
+            [{"type": "tool_use", "name": "Task", "id": "tool-1", "input": {"subagent_type": "Explore"}}],
+            {"file": False, "search": False, "git": False, "subagent": True},
+        ),
+        (
+            [{"type": "tool_use", "name": "Bash", "id": "tool-1", "input": {"command": "ls -la"}}],
+            {"file": False, "search": False, "git": False, "subagent": False},
+        ),
     ],
     ids=["read", "search", "git", "subagent", "plain-bash"],
 )
@@ -1046,10 +1081,22 @@ def test_extract_tool_invocations_contract(blocks: list[dict[str, object]], expe
     ("payload", "expected"),
     [
         ({"tool_name": "Bash", "input": {"command": "git status"}}, {"command": "status"}),
-        ({"tool_name": "Bash", "input": {"command": 'git commit -m "Fix bug"'}}, {"command": "commit", "message": "Fix bug"}),
-        ({"tool_name": "Bash", "input": {"command": "git checkout feature-branch"}}, {"command": "checkout", "branch": "feature-branch"}),
-        ({"tool_name": "Bash", "input": {"command": "git push origin main"}}, {"command": "push", "remote": "origin", "branch": "main"}),
-        ({"tool_name": "Bash", "input": {"command": "git add file1.py file2.py"}}, {"command": "add", "files": ["file1.py", "file2.py"]}),
+        (
+            {"tool_name": "Bash", "input": {"command": 'git commit -m "Fix bug"'}},
+            {"command": "commit", "message": "Fix bug"},
+        ),
+        (
+            {"tool_name": "Bash", "input": {"command": "git checkout feature-branch"}},
+            {"command": "checkout", "branch": "feature-branch"},
+        ),
+        (
+            {"tool_name": "Bash", "input": {"command": "git push origin main"}},
+            {"command": "push", "remote": "origin", "branch": "main"},
+        ),
+        (
+            {"tool_name": "Bash", "input": {"command": "git add file1.py file2.py"}},
+            {"command": "add", "files": ["file1.py", "file2.py"]},
+        ),
     ],
     ids=["status", "commit", "checkout", "push", "add"],
 )
@@ -1067,8 +1114,19 @@ def test_parse_git_operation_contract(payload: dict[str, object], expected: dict
     ("payload", "expected"),
     [
         ([{"tool_name": "Read", "input": {"file_path": "/test.py"}}], {"operation": "read", "path": "/test.py"}),
-        ([{"tool_name": "Write", "input": {"file_path": "/new.py", "content": "print('hello')"}}], {"operation": "write", "path": "/new.py"}),
-        ([{"tool_name": "Edit", "input": {"file_path": "/test.py", "old_string": "old code", "new_string": "new code"}}], {"operation": "edit", "path": "/test.py"}),
+        (
+            [{"tool_name": "Write", "input": {"file_path": "/new.py", "content": "print('hello')"}}],
+            {"operation": "write", "path": "/new.py"},
+        ),
+        (
+            [
+                {
+                    "tool_name": "Edit",
+                    "input": {"file_path": "/test.py", "old_string": "old code", "new_string": "new code"},
+                }
+            ],
+            {"operation": "edit", "path": "/test.py"},
+        ),
     ],
     ids=["read", "write", "edit"],
 )
@@ -1081,16 +1139,25 @@ def test_extract_file_changes_contract(payload: list[dict[str, object]], expecte
 
 def test_extract_file_changes_truncates_long_content() -> None:
     long_content = "x" * 1000
-    changes = extract_file_changes([
-        {"tool_name": "Write", "input": {"file_path": "/test.py", "content": long_content}},
-    ])
+    changes = extract_file_changes(
+        [
+            {"tool_name": "Write", "input": {"file_path": "/test.py", "content": long_content}},
+        ]
+    )
     assert len(changes[0]["new_content"]) <= 500
 
 
 @pytest.mark.parametrize(
     ("item", "should_detect"),
     [
-        ({"type": "summary", "message": {"content": "Summary of the conversation so far..."}, "timestamp": 1704067200}, True),
+        (
+            {
+                "type": "summary",
+                "message": {"content": "Summary of the conversation so far..."},
+                "timestamp": 1704067200,
+            },
+            True,
+        ),
         ({"type": "summary", "message": {"content": [{"type": "text", "text": "Conversation summary here"}]}}, True),
         ({"type": "user", "message": {"content": "Hello"}}, False),
     ],
@@ -1119,7 +1186,12 @@ def test_parse_code_semantic_projection_contract() -> None:
                     {"type": "thinking", "thinking": "Let me think..."},
                     {"type": "text", "text": "Here is my answer"},
                     {"type": "tool_use", "name": "Read", "id": "tool-1", "input": {"file_path": "/test.py"}},
-                    {"type": "tool_use", "name": "Task", "id": "tool-2", "input": {"subagent_type": "Explore", "prompt": "Find config files"}},
+                    {
+                        "type": "tool_use",
+                        "name": "Task",
+                        "id": "tool-2",
+                        "input": {"subagent_type": "Explore", "prompt": "Find config files"},
+                    },
                 ],
             },
         },
@@ -1137,7 +1209,12 @@ def test_parse_code_semantic_projection_contract() -> None:
             "message": {
                 "role": "assistant",
                 "content": [
-                    {"type": "tool_use", "name": "Bash", "id": "tool-3", "input": {"command": "git commit -m 'Fix bug'"}},
+                    {
+                        "type": "tool_use",
+                        "name": "Bash",
+                        "id": "tool-3",
+                        "input": {"command": "git commit -m 'Fix bug'"},
+                    },
                 ],
             },
         },
@@ -1175,8 +1252,5 @@ def test_thinking_extraction_never_crashes(texts: list[str]) -> None:
 )
 @settings(max_examples=50)
 def test_tool_extraction_never_crashes(tool_names: list[str]) -> None:
-    blocks = [
-        {"type": "tool_use", "name": name, "id": f"t{i}", "input": {}}
-        for i, name in enumerate(tool_names)
-    ]
+    blocks = [{"type": "tool_use", "name": name, "id": f"t{i}", "input": {}} for i, name in enumerate(tool_names)]
     assert len(extract_tool_invocations(blocks)) == len(tool_names)

@@ -5,9 +5,7 @@ from __future__ import annotations
 import aiosqlite
 
 
-async def get_conversation_stats(
-    conn: aiosqlite.Connection, conversation_id: str
-) -> dict[str, int]:
+async def get_conversation_stats(conn: aiosqlite.Connection, conversation_id: str) -> dict[str, int]:
     cursor = await conn.execute(
         "SELECT COUNT(*) as cnt FROM messages WHERE conversation_id = ?",
         (conversation_id,),
@@ -27,9 +25,7 @@ async def get_conversation_stats(
     }
 
 
-async def get_message_counts_batch(
-    conn: aiosqlite.Connection, conversation_ids: list[str]
-) -> dict[str, int]:
+async def get_message_counts_batch(conn: aiosqlite.Connection, conversation_ids: list[str]) -> dict[str, int]:
     if not conversation_ids:
         return {}
     placeholders = ",".join("?" for _ in conversation_ids)

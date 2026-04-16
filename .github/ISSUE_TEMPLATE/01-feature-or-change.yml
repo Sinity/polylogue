@@ -1,9 +1,14 @@
 name: Feature or Change
-description: Track a concrete feature, improvement, or meaningful implementation slice.
+description: Use when a feature or meaningful implementation slice needs upfront planning or a durable follow-up anchor.
 title: "[feature] "
 labels:
-  - enhancement
+  - type:feat
 body:
+  - type: markdown
+    attributes:
+      value: |
+        Use an issue when it improves planning, scope control, or follow-up tracking.
+        Skip it for self-contained PRs that do not need a separate planning artifact.
   - type: textarea
     id: outcome
     attributes:

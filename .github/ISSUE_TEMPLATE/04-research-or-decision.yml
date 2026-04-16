@@ -1,9 +1,11 @@
 name: Research or Decision
-description: Investigate a question, compare approaches, or drive an architectural decision.
+description: Use when a recommendation or decision needs explicit scope, options, and closure criteria before implementation.
 title: "[research] "
-labels:
-  - question
 body:
+  - type: markdown
+    attributes:
+      value: |
+        Prefer this template for upfront decision-making, not as a retroactive note after the work is already done.
   - type: textarea
     id: question
     attributes:

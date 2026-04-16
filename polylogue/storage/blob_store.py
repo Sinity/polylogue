@@ -240,10 +240,11 @@ _DEFAULT_STORE: BlobStore | None = None
 def get_blob_store() -> BlobStore:
     """Return the default blob store instance."""
     global _DEFAULT_STORE
-    if _DEFAULT_STORE is None:
-        from polylogue.paths import blob_store_root
+    from polylogue.paths import blob_store_root
 
-        _DEFAULT_STORE = BlobStore(blob_store_root())
+    root = blob_store_root()
+    if _DEFAULT_STORE is None or _DEFAULT_STORE.root != root:
+        _DEFAULT_STORE = BlobStore(root)
     return _DEFAULT_STORE
 
 

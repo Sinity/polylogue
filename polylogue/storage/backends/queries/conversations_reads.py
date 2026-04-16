@@ -12,9 +12,7 @@ from polylogue.storage.backends.queries.mappers import _row_to_conversation
 from polylogue.storage.store import ConversationRecord
 
 
-async def get_conversation(
-    conn: aiosqlite.Connection, conversation_id: str
-) -> ConversationRecord | None:
+async def get_conversation(conn: aiosqlite.Connection, conversation_id: str) -> ConversationRecord | None:
     cursor = await conn.execute(
         "SELECT * FROM conversations WHERE conversation_id = ?",
         (conversation_id,),
@@ -23,9 +21,7 @@ async def get_conversation(
     return _row_to_conversation(row) if row is not None else None
 
 
-async def get_conversations_batch(
-    conn: aiosqlite.Connection, ids: list[str]
-) -> list[ConversationRecord]:
+async def get_conversations_batch(conn: aiosqlite.Connection, ids: list[str]) -> list[ConversationRecord]:
     if not ids:
         return []
     placeholders = ",".join("?" for _ in ids)
@@ -171,9 +167,7 @@ async def count_conversations(
     return int(row["cnt"])
 
 
-async def list_conversations_by_parent(
-    conn: aiosqlite.Connection, parent_id: str
-) -> list[ConversationRecord]:
+async def list_conversations_by_parent(conn: aiosqlite.Connection, parent_id: str) -> list[ConversationRecord]:
     cursor = await conn.execute(
         """
         SELECT * FROM conversations

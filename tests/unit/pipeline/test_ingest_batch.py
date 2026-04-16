@@ -64,10 +64,12 @@ def test_topo_sort_conversation_entries_orders_parent_before_child() -> None:
         parent_conversation_id="codex:parent",
     )
 
-    ordered = _topo_sort_conversation_entries([
-        ("raw-child", child),
-        ("raw-parent", parent),
-    ])
+    ordered = _topo_sort_conversation_entries(
+        [
+            ("raw-child", child),
+            ("raw-parent", parent),
+        ]
+    )
 
     assert [entry[1].conversation_id for entry in ordered] == [
         "codex:parent",

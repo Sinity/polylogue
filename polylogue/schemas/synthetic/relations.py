@@ -105,13 +105,7 @@ class RelationConstraintSolver(RelationConstraintSolverRuntimeMixin):
     @property
     def has_constraints(self) -> bool:
         """Whether any relational constraints were parsed."""
-        return bool(
-            self.fk_graph.references
-            or self.time_deltas
-            or self.mutual_exclusions
-            or self.string_lengths
-        )
-
+        return bool(self.fk_graph.references or self.time_deltas or self.mutual_exclusions or self.string_lengths)
 
 
 __all__ = [

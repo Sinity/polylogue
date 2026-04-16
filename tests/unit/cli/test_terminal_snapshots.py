@@ -77,9 +77,9 @@ class TestCommandOutputs:
 class TestErrorOutput:
     """Test error message rendering."""
 
-    def test_invalid_command_error_output(self, snapshot):
-        """Verify invalid command error message."""
-        result = run_in_pty(["invalid-command-xyz"])
+    def test_invalid_option_error_output(self, snapshot):
+        """Verify invalid option error message."""
+        result = run_in_pty(["--bogus"])
         assert result.exit_code != 0
 
         grid = sanitize_grid(result.grid, strip_timestamps=True, strip_paths=True)

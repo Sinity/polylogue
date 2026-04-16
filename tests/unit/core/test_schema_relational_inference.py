@@ -178,8 +178,7 @@ class TestDetectForeignKeys:
         }
         result = infer_relations(stats)
         # Overlap is 50/100 = 0.5, below threshold
-        fks = [fk for fk in result.foreign_keys
-               if fk.source_path == "$.user_ref"]
+        fks = [fk for fk in result.foreign_keys if fk.source_path == "$.user_ref"]
         # Should not detect due to low overlap
         assert len(fks) == 0
 
@@ -263,6 +262,7 @@ class TestDetectTimeDeltas:
         result = infer_relations(stats)
         # ISO8601 without numeric ranges won't produce time_deltas
         # (since we need num_min/max for calculation)
+        assert result.time_deltas == []
 
     def test_non_timestamp_fields_excluded(self) -> None:
         """Non-timestamp numeric fields not flagged as time deltas."""
@@ -393,9 +393,7 @@ class TestDetectMutualExclusions:
             ),
         }
         result = infer_relations(stats)
-        exclusions_at_config = [
-            me for me in result.mutual_exclusions if me.parent_path == "$.config"
-        ]
+        exclusions_at_config = [me for me in result.mutual_exclusions if me.parent_path == "$.config"]
         assert len(exclusions_at_config) == 0
 
     def test_ignores_dynamic_key_children(self) -> None:
@@ -554,11 +552,14 @@ class TestDetectStringLengths:
             assert slp.avg_length == 20.0
             assert slp.stddev > 0
 
-    @pytest.mark.parametrize("min_len,max_len,avg,stddev", [
-        (5, 5, 5.0, 0.0),  # all same, low variance → excluded
-        (5, 50, 27.5, 15.0),  # moderate variance, avg > 5 → included
-        (50, 500, 275, 125.0),  # high variance, long strings → included
-    ])
+    @pytest.mark.parametrize(
+        "min_len,max_len,avg,stddev",
+        [
+            (5, 5, 5.0, 0.0),  # all same, low variance → excluded
+            (5, 50, 27.5, 15.0),  # moderate variance, avg > 5 → included
+            (50, 500, 275, 125.0),  # high variance, long strings → included
+        ],
+    )
     def test_variance_thresholds(self, min_len: int, max_len: int, avg: float, stddev: float) -> None:
         """Different variance levels handled correctly."""
         stats = {

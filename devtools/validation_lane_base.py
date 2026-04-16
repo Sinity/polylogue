@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-import sys
 from dataclasses import dataclass
+
+from devtools.command_catalog import control_plane_argv
 
 
 @dataclass(frozen=True)
@@ -21,26 +22,30 @@ class LaneConfig:
         return bool(self.sub_lanes)
 
 
-def pytest_lane(name: str, description: str, timeout_s: int, *args: str) -> LaneConfig:
+def cli_lane(name: str, description: str, timeout_s: int, executable: str, *args: str) -> LaneConfig:
     return LaneConfig(
         name=name,
         description=description,
         timeout_s=timeout_s,
-        command=[sys.executable, "-m", "pytest", *args],
+        command=[executable, *args],
     )
 
 
-def module_lane(name: str, description: str, timeout_s: int, module: str, *args: str) -> LaneConfig:
+def pytest_lane(name: str, description: str, timeout_s: int, *args: str) -> LaneConfig:
+    return cli_lane(name, description, timeout_s, "pytest", *args)
+
+
+def devtools_lane(name: str, description: str, timeout_s: int, subcommand: str, *args: str) -> LaneConfig:
     return LaneConfig(
         name=name,
         description=description,
         timeout_s=timeout_s,
-        command=[sys.executable, "-m", module, *args],
+        command=list(control_plane_argv(subcommand, *args)),
     )
 
 
 def polylogue_lane(name: str, description: str, timeout_s: int, *args: str) -> LaneConfig:
-    return module_lane(name, description, timeout_s, "polylogue", "--plain", *args)
+    return cli_lane(name, description, timeout_s, "polylogue", "--plain", *args)
 
 
 def memory_budget_lane(
@@ -51,11 +56,11 @@ def memory_budget_lane(
     max_rss_mb: int,
     command: list[str],
 ) -> LaneConfig:
-    return module_lane(
+    return devtools_lane(
         name,
         description,
         timeout_s,
-        "devtools.query_memory_budget",
+        "query-memory-budget",
         "--max-rss-mb",
         str(max_rss_mb),
         "--",
@@ -74,9 +79,10 @@ def composite_lane(name: str, description: str, timeout_s: int, *sub_lanes: str)
 
 __all__ = [
     "LaneConfig",
+    "cli_lane",
     "composite_lane",
+    "devtools_lane",
     "memory_budget_lane",
-    "module_lane",
     "polylogue_lane",
     "pytest_lane",
 ]

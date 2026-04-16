@@ -134,7 +134,9 @@ class HTMLRenderer:
 
         # Phase 2: CPU work in thread pool (Pygments, MarkdownIt, Jinja2)
         md_text, html_content = await asyncio.to_thread(
-            self._render_content_sync, formatted, projection,
+            self._render_content_sync,
+            formatted,
+            projection,
         )
 
         # Phase 3: File writes in thread pool
@@ -187,6 +189,7 @@ def render_conversation_html(conv: Conversation, theme: str = "dark") -> str:
         highlight_css=highlighter.get_css(),
         theme=theme,
     )
+
 
 __all__ = [
     "HTMLMessageRenderer",

@@ -128,6 +128,7 @@ class TestAcquisitionRawPreservation:
         # Content should be in blob store with BOM preserved
         assert results[0].blob_hash is not None
         from polylogue.storage.blob_store import get_blob_store
+
         blob_bytes = get_blob_store().read_all(results[0].blob_hash)
         assert blob_bytes.startswith(b"\xef\xbb\xbf"), "BOM should be preserved in raw acquisition"
 

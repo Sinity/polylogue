@@ -48,9 +48,16 @@ def substantive_pair() -> list[Message]:
 def conversation_with_metadata() -> Conversation:
     messages = [
         Message(id="u1", role="user", text="Can you help with this?", provider_meta={"costUSD": 0.001}),
-        Message(id="a1", role="assistant", text="Yes, I can help.", provider_meta={"costUSD": 0.005, "durationMs": 2500}),
+        Message(
+            id="a1", role="assistant", text="Yes, I can help.", provider_meta={"costUSD": 0.005, "durationMs": 2500}
+        ),
         Message(id="u2", role="user", text="Great, now what?", provider_meta={"costUSD": 0.001}),
-        Message(id="a2", role="assistant", text="Let me explain further.", provider_meta={"costUSD": 0.008, "durationMs": 3000}),
+        Message(
+            id="a2",
+            role="assistant",
+            text="Let me explain further.",
+            provider_meta={"costUSD": 0.008, "durationMs": 3000},
+        ),
     ]
     return Conversation(
         id="complex-conv",
@@ -142,7 +149,11 @@ class TestMessageSemanticProjection:
         ("provider_meta", "text", "expected"),
         [
             ({"content_blocks": [{"type": "thinking", "text": "step one"}]}, "visible", "step one"),
-            ({"content_blocks": [{"type": "thinking", "text": "first"}, {"type": "thinking", "text": "second"}]}, "visible", "first\n\nsecond"),
+            (
+                {"content_blocks": [{"type": "thinking", "text": "first"}, {"type": "thinking", "text": "second"}]},
+                "visible",
+                "first\n\nsecond",
+            ),
             ({"isThought": True}, "gemini thinking text", "gemini thinking text"),
             ({"raw": {"content": {"content_type": "thoughts"}}}, "chatgpt thinking text", "chatgpt thinking text"),
             (None, "plain response", None),
@@ -198,7 +209,7 @@ class TestMessageSemanticProjection:
         msg = Message(
             id="m1",
             role="user",
-            text="<environment_context>\n<cwd>/realm/project/polylogue</cwd>\n</environment_context>",
+            text="<environment_context>\n<cwd>/workspace/polylogue</cwd>\n</environment_context>",
         )
         assert msg.is_context_dump is True
 
@@ -206,12 +217,12 @@ class TestMessageSemanticProjection:
         contents_dump = Message(
             id="m2",
             role="user",
-            text="Please inspect this.\nContents of /realm/project/polylogue/README.md:\nhello",
+            text="Please inspect this.\nContents of /workspace/polylogue/README.md:\nhello",
         )
         file_path_dump = Message(
             id="m3",
             role="user",
-            text="Captured payload:\n<file path=/realm/project/polylogue/README.md>\nhello",
+            text="Captured payload:\n<file path=/workspace/polylogue/README.md>\nhello",
         )
 
         assert contents_dump.is_context_dump is True
@@ -225,7 +236,9 @@ class TestConversationMetadataAndAggregation:
         assert conversation_with_metadata.summary == "A test conversation"
         assert conversation_with_metadata.tags == ["test", "comprehensive"]
 
-        titled = conversation_with_metadata.model_copy(update={"metadata": {"title": "User Override", "summary": "A test conversation", "tags": ["test"]}})
+        titled = conversation_with_metadata.model_copy(
+            update={"metadata": {"title": "User Override", "summary": "A test conversation", "tags": ["test"]}}
+        )
         assert titled.user_title == "User Override"
         assert titled.display_title == "User Override"
 
@@ -311,7 +324,12 @@ VIEW_CASES = [
         messages=[
             Message(id="u1", role="user", text="Question one with enough detail"),
             Message(id="a1", role="assistant", text="Answer one with enough detail"),
-            Message(id="a2", role="assistant", text="<thinking>Reasoning</thinking>", provider_meta={"content_blocks": [{"type": "thinking", "text": "Reasoning"}]}),
+            Message(
+                id="a2",
+                role="assistant",
+                text="<thinking>Reasoning</thinking>",
+                provider_meta={"content_blocks": [{"type": "thinking", "text": "Reasoning"}]},
+            ),
             Message(id="t1", role="tool", text="Tool result"),
         ],
         view="substantive_only",
@@ -427,7 +445,12 @@ class TestConversationRendering:
             provider="test",
             messages=MessageCollection(
                 messages=[
-                    Message(id="u1", role="user", text="Here's the document", attachments=[Attachment(id="att1", name="doc.pdf")]),
+                    Message(
+                        id="u1",
+                        role="user",
+                        text="Here's the document",
+                        attachments=[Attachment(id="att1", name="doc.pdf")],
+                    ),
                     Message(id="a1", role="assistant", text="I'll review it"),
                 ]
             ),
@@ -484,7 +507,12 @@ class TestConversationRendering:
                 excluded=("System instructions", "Tool output"),
             ),
             RenderCase(name="unicode", conversation=unicode_conv, method="to_text", expected=("🎯", "目的")),
-            RenderCase(name="attachments", conversation=attachment_conv, method="to_text", expected=("Here's the document", "I'll review it")),
+            RenderCase(
+                name="attachments",
+                conversation=attachment_conv,
+                method="to_text",
+                expected=("Here's the document", "I'll review it"),
+            ),
         ]
 
     @pytest.mark.parametrize("include_empty", [True, False])

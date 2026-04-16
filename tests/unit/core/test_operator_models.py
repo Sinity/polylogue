@@ -96,9 +96,7 @@ def test_schema_compare_result_to_dict() -> None:
         "added_properties": ["status"],
         "removed_properties": [],
         "changed_properties": [],
-        "classified_changes": [
-            {"path": "status", "kind": "added", "detail": "new field"}
-        ],
+        "classified_changes": [{"path": "status", "kind": "added", "detail": "new field"}],
     }
 
 

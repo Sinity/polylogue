@@ -60,9 +60,7 @@ class RelationConstraintSolverRuntimeMixin:
         rng,
     ) -> float | None:
         for td in self.time_deltas:
-            if (td.field_a == field_a and td.field_b == field_b) or (
-                td.field_a == field_b and td.field_b == field_a
-            ):
+            if (td.field_a == field_a and td.field_b == field_b) or (td.field_a == field_b and td.field_b == field_a):
                 if td.stddev_approx > 0:
                     val = rng.gauss(td.avg_delta, td.stddev_approx)
                 else:

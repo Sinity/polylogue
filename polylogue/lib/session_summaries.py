@@ -7,7 +7,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
 
-from polylogue.lib.project_normalization import normalize_project_names
+from polylogue.lib.repo_identity import normalize_repo_names
 from polylogue.lib.session_profile import SessionProfile
 
 
@@ -21,7 +21,7 @@ class DaySessionSummary:
     total_messages: int
     total_words: int
     work_event_breakdown: dict[str, int]
-    projects_active: tuple[str, ...]
+    repos_active: tuple[str, ...]
     providers: dict[str, int]
 
     def to_dict(self) -> dict[str, object]:
@@ -34,7 +34,7 @@ class DaySessionSummary:
             "total_messages": self.total_messages,
             "total_words": self.total_words,
             "work_event_breakdown": self.work_event_breakdown,
-            "projects_active": list(self.projects_active),
+            "repos_active": list(self.repos_active),
             "providers": self.providers,
         }
 
@@ -73,7 +73,7 @@ def summarize_day(
     target_date: date,
 ) -> DaySessionSummary:
     work_events: Counter[str] = Counter()
-    projects: set[str] = set()
+    repos: set[str] = set()
     providers: Counter[str] = Counter()
     total_cost = 0.0
     total_duration = 0
@@ -88,15 +88,9 @@ def summarize_day(
         total_words += profile.word_count
         providers[profile.provider] += 1
         work_events.update(
-            event.kind.value if hasattr(event.kind, "value") else str(event.kind)
-            for event in profile.work_events
+            event.kind.value if hasattr(event.kind, "value") else str(event.kind) for event in profile.work_events
         )
-        projects.update(
-            normalize_project_names(
-                profile.canonical_projects,
-                repo_paths=profile.repo_paths,
-            )
-        )
+        repos.update(profile.repo_names or normalize_repo_names(repo_paths=profile.repo_paths))
     return DaySessionSummary(
         date=target_date,
         session_count=len(profiles),
@@ -106,7 +100,7 @@ def summarize_day(
         total_messages=total_messages,
         total_words=total_words,
         work_event_breakdown=dict(work_events),
-        projects_active=tuple(sorted(projects)),
+        repos_active=tuple(sorted(repos)),
         providers=dict(providers),
     )
 
@@ -142,10 +136,7 @@ def summarize_days(
         if profile_day is None:
             continue
         by_day.setdefault(profile_day, []).append(profile)
-    return tuple(
-        summarize_day(by_day[target_day], target_day)
-        for target_day in sorted(by_day.keys(), reverse=True)
-    )
+    return tuple(summarize_day(by_day[target_day], target_day) for target_day in sorted(by_day.keys(), reverse=True))
 
 
 def summarize_weeks(

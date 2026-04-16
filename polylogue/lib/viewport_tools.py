@@ -20,7 +20,11 @@ def classify_tool(name: str, input_data: dict[str, Any]) -> ToolCategory:
         return ToolCategory.FILE_READ
     if name_lower in ("write", "create"):
         return ToolCategory.FILE_WRITE
-    if name_lower in ("edit", "patch", "sed", "notebookedit", "multiedit") or "__edit_file" in name_lower or "__create_or_update_file" in name_lower:
+    if (
+        name_lower in ("edit", "patch", "sed", "notebookedit", "multiedit")
+        or "__edit_file" in name_lower
+        or "__create_or_update_file" in name_lower
+    ):
         return ToolCategory.FILE_EDIT
     if name_lower in ("glob", "grep", "search", "find", "file_search", "ls", "toolsearch") or any(
         marker in name_lower
@@ -51,14 +55,19 @@ def classify_tool(name: str, input_data: dict[str, Any]) -> ToolCategory:
         return ToolCategory.SHELL
     if name_lower in ("task", "subagent"):
         return ToolCategory.SUBAGENT
-    if name_lower == "agent" or name_lower.startswith(("todo", "task")) or name_lower in (
-        "askuserquestion",
-        "enterplanmode",
-        "exitplanmode",
-        "skill",
-        "batch",
-        "mcp__sequential-thinking__sequentialthinking",
-        "mcp__cclsp__restart_server",
+    if (
+        name_lower == "agent"
+        or name_lower.startswith(("todo", "task"))
+        or name_lower
+        in (
+            "askuserquestion",
+            "enterplanmode",
+            "exitplanmode",
+            "skill",
+            "batch",
+            "mcp__sequential-thinking__sequentialthinking",
+            "mcp__cclsp__restart_server",
+        )
     ):
         return ToolCategory.AGENT
     if "tabs_context" in name_lower:
@@ -73,7 +82,7 @@ def classify_tool(name: str, input_data: dict[str, Any]) -> ToolCategory:
 def clean_path_candidate(value: object) -> str | None:
     if not isinstance(value, str):
         return None
-    candidate = value.strip().strip('"\'`')
+    candidate = value.strip().strip("\"'`")
     candidate = candidate.rstrip(",;:")
     if not candidate:
         return None

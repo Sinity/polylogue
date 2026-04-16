@@ -51,8 +51,7 @@ class IngestState:
         unexpected = [raw_id for raw_id in parseable if raw_id not in allowed]
         if unexpected:
             raise ValueError(
-                "Validation result contains raw IDs outside validation candidates: "
-                + ", ".join(unexpected[:5])
+                "Validation result contains raw IDs outside validation candidates: " + ", ".join(unexpected[:5])
             )
         self.parseable_raw_ids = parseable
         self.phase = IngestPhase.VALIDATED
@@ -69,8 +68,7 @@ class IngestState:
         unexpected = [raw_id for raw_id in parse_ids if raw_id not in allowed]
         if unexpected:
             raise ValueError(
-                "Parse candidates contain raw IDs outside validation candidates: "
-                + ", ".join(unexpected[:5])
+                "Parse candidates contain raw IDs outside validation candidates: " + ", ".join(unexpected[:5])
             )
         self.parse_raw_ids = parse_ids
 
@@ -80,9 +78,7 @@ class IngestState:
 
     def _expect_phase(self, expected: IngestPhase, action: str) -> None:
         if self.phase != expected:
-            raise RuntimeError(
-                f"Cannot {action}: expected phase {expected.value}, got {self.phase.value}"
-            )
+            raise RuntimeError(f"Cannot {action}: expected phase {expected.value}, got {self.phase.value}")
 
 
 class ParseResult:
@@ -117,11 +113,7 @@ class ParseResult:
         content_changed: bool,
     ) -> None:
         """Merge a single conversation's result into the aggregate."""
-        ingest_changed = (
-            result_counts["conversations"]
-            + result_counts["messages"]
-            + result_counts["attachments"]
-        ) > 0
+        ingest_changed = (result_counts["conversations"] + result_counts["messages"] + result_counts["attachments"]) > 0
 
         async with self._lock:
             if ingest_changed or content_changed:

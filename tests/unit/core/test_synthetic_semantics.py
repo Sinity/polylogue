@@ -350,9 +350,7 @@ class TestWireFormatShape:
         for name, wf in PROVIDER_WIRE_FORMATS.items():
             if wf.encoding == "json":
                 has_structure = wf.tree is not None or wf.messages_path is not None
-                assert has_structure, (
-                    f"{name}: JSON provider needs tree or messages_path"
-                )
+                assert has_structure, f"{name}: JSON provider needs tree or messages_path"
 
     def test_chatgpt_has_tree_with_container(self):
         """ChatGPT wire format uses tree structure with container_path."""
@@ -458,9 +456,7 @@ class TestMessageCountContract:
 
         for count in (1, 3, 5):
             items = corpus.generate(count=count, seed=0)
-            assert len(items) == count, (
-                f"{provider}: requested {count}, got {len(items)}"
-            )
+            assert len(items) == count, f"{provider}: requested {count}, got {len(items)}"
 
     def test_generate_zero_returns_empty(self):
         """generate(count=0) returns an empty list."""
@@ -506,9 +502,7 @@ class TestParseRoundtrip:
         for conv in convos:
             assert len(conv.messages) > 0, f"Empty conversation for {provider}"
             # At least one message should have non-empty text
-            assert any(m.text for m in conv.messages), (
-                f"No message text for {provider}"
-            )
+            assert any(m.text for m in conv.messages), f"No message text for {provider}"
 
 
 # =============================================================================
@@ -565,13 +559,10 @@ class TestSyntheticRoundtrip:
             payload = _deserialize_for_parser(provider, raw)
             conversations = parse_payload(runtime_provider, payload, f"synth-{provider}-{i}")
             assert len(conversations) >= 1, (
-                f"Provider {provider}: parse_payload returned no conversations "
-                f"for synthetic data (index {i})"
+                f"Provider {provider}: parse_payload returned no conversations for synthetic data (index {i})"
             )
             conv = conversations[0]
-            assert len(conv.messages) > 0, (
-                f"Provider {provider}: parsed conversation has no messages (index {i})"
-            )
+            assert len(conv.messages) > 0, f"Provider {provider}: parsed conversation has no messages (index {i})"
 
     @pytest.mark.parametrize("provider", _available_providers())
     def test_parsed_messages_have_roles(self, provider: str) -> None:
@@ -598,9 +589,7 @@ class TestSyntheticRoundtrip:
         assert conversations
 
         messages_with_text = [m for m in conversations[0].messages if m.text]
-        assert len(messages_with_text) > 0, (
-            f"Provider {provider}: no messages have text content"
-        )
+        assert len(messages_with_text) > 0, f"Provider {provider}: no messages have text content"
 
 
 # ---------------------------------------------------------------------------
@@ -677,10 +666,8 @@ class TestProviderAvailability:
             version="v2",
             default_element_kind="conversation_record_stream",
         )
-        fake_package.element.side_effect = (
-            lambda element_kind: {"element_kind": element_kind}
-            if element_kind == "conversation_record_stream"
-            else None
+        fake_package.element.side_effect = lambda element_kind: (
+            {"element_kind": element_kind} if element_kind == "conversation_record_stream" else None
         )
         fake_schema = {"type": "object"}
         fake_registry.get_package.return_value = fake_package

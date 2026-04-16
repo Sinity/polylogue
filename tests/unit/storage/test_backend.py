@@ -21,10 +21,7 @@ from tests.infra.storage_records import make_attachment, make_conversation, make
 
 
 def _table_names(conn: sqlite3.Connection) -> set[str]:
-    return {
-        row[0]
-        for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
-    }
+    return {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
 
 
 def _build_record(conversation_id: str = "conv-1") -> ConversationRecord:
@@ -50,9 +47,15 @@ def test_ensure_schema_contract(tmp_path: Path) -> None:
     _ensure_schema(conn)
 
     assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
-    assert {"artifact_observations", "conversations", "messages", "attachments", "attachment_refs", "runs", "publications"}.issubset(
-        _table_names(conn)
-    )
+    assert {
+        "artifact_observations",
+        "conversations",
+        "messages",
+        "attachments",
+        "attachment_refs",
+        "runs",
+        "publications",
+    }.issubset(_table_names(conn))
     assert "message_meta" not in _table_names(conn)
     conn.close()
 
@@ -81,9 +84,14 @@ def test_open_connection_contract(tmp_path: Path) -> None:
         assert conn.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"
         assert conn.execute("PRAGMA busy_timeout").fetchone()[0] == 30000
         assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
-        assert {"artifact_observations", "conversations", "messages", "attachments", "attachment_refs", "publications"}.issubset(
-            _table_names(conn)
-        )
+        assert {
+            "artifact_observations",
+            "conversations",
+            "messages",
+            "attachments",
+            "attachment_refs",
+            "publications",
+        }.issubset(_table_names(conn))
 
     assert db_path.exists()
     assert db_path.parent.exists()
@@ -125,9 +133,14 @@ def test_connection_context_contract(tmp_path: Path, monkeypatch) -> None:
     explicit_path = tmp_path / "explicit.db"
     with connection_context(explicit_path) as explicit_conn:
         assert isinstance(explicit_conn, sqlite3.Connection)
-        assert {"artifact_observations", "conversations", "messages", "attachments", "attachment_refs", "publications"}.issubset(
-            _table_names(explicit_conn)
-        )
+        assert {
+            "artifact_observations",
+            "conversations",
+            "messages",
+            "attachments",
+            "attachment_refs",
+            "publications",
+        }.issubset(_table_names(explicit_conn))
 
     data_home = tmp_path / "data"
     data_home.mkdir()
@@ -351,22 +364,34 @@ async def test_backend_delete_contracts(tmp_path: Path) -> None:
         update_index_for_conversations(["conv-delete"], conn)
         rebuild_session_products_sync(conn)
         conn.commit()
-        assert conn.execute(
-            "SELECT COUNT(*) FROM messages_fts WHERE conversation_id = ?",
-            ("conv-delete",),
-        ).fetchone()[0] > 0
-        assert conn.execute(
-            "SELECT COUNT(*) FROM session_profiles WHERE conversation_id = ?",
-            ("conv-delete",),
-        ).fetchone()[0] == 1
-        assert conn.execute(
-            "SELECT COUNT(*) FROM session_work_events WHERE conversation_id = ?",
-            ("conv-delete",),
-        ).fetchone()[0] > 0
-        assert conn.execute(
-            "SELECT COUNT(*) FROM session_phases WHERE conversation_id = ?",
-            ("conv-delete",),
-        ).fetchone()[0] > 0
+        assert (
+            conn.execute(
+                "SELECT COUNT(*) FROM messages_fts WHERE conversation_id = ?",
+                ("conv-delete",),
+            ).fetchone()[0]
+            > 0
+        )
+        assert (
+            conn.execute(
+                "SELECT COUNT(*) FROM session_profiles WHERE conversation_id = ?",
+                ("conv-delete",),
+            ).fetchone()[0]
+            == 1
+        )
+        assert (
+            conn.execute(
+                "SELECT COUNT(*) FROM session_work_events WHERE conversation_id = ?",
+                ("conv-delete",),
+            ).fetchone()[0]
+            > 0
+        )
+        assert (
+            conn.execute(
+                "SELECT COUNT(*) FROM session_phases WHERE conversation_id = ?",
+                ("conv-delete",),
+            ).fetchone()[0]
+            > 0
+        )
         assert conn.execute("SELECT COUNT(*) FROM day_session_summaries").fetchone()[0] == 1
         assert conn.execute("SELECT COUNT(*) FROM session_tag_rollups").fetchone()[0] >= 1
 
@@ -377,22 +402,34 @@ async def test_backend_delete_contracts(tmp_path: Path) -> None:
     assert await repo.delete_conversation("conv-delete") is False
 
     with open_connection(backend.db_path) as conn:
-        assert conn.execute(
-            "SELECT COUNT(*) FROM messages_fts WHERE conversation_id = ?",
-            ("conv-delete",),
-        ).fetchone()[0] == 0
-        assert conn.execute(
-            "SELECT COUNT(*) FROM session_profiles WHERE conversation_id = ?",
-            ("conv-delete",),
-        ).fetchone()[0] == 0
-        assert conn.execute(
-            "SELECT COUNT(*) FROM session_work_events WHERE conversation_id = ?",
-            ("conv-delete",),
-        ).fetchone()[0] == 0
-        assert conn.execute(
-            "SELECT COUNT(*) FROM session_phases WHERE conversation_id = ?",
-            ("conv-delete",),
-        ).fetchone()[0] == 0
+        assert (
+            conn.execute(
+                "SELECT COUNT(*) FROM messages_fts WHERE conversation_id = ?",
+                ("conv-delete",),
+            ).fetchone()[0]
+            == 0
+        )
+        assert (
+            conn.execute(
+                "SELECT COUNT(*) FROM session_profiles WHERE conversation_id = ?",
+                ("conv-delete",),
+            ).fetchone()[0]
+            == 0
+        )
+        assert (
+            conn.execute(
+                "SELECT COUNT(*) FROM session_work_events WHERE conversation_id = ?",
+                ("conv-delete",),
+            ).fetchone()[0]
+            == 0
+        )
+        assert (
+            conn.execute(
+                "SELECT COUNT(*) FROM session_phases WHERE conversation_id = ?",
+                ("conv-delete",),
+            ).fetchone()[0]
+            == 0
+        )
         assert conn.execute("SELECT COUNT(*) FROM day_session_summaries").fetchone()[0] == 0
         assert conn.execute("SELECT COUNT(*) FROM session_tag_rollups").fetchone()[0] == 0
     await backend.close()

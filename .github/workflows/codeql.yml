@@ -1,8 +1,14 @@
 name: CodeQL
 
 on:
+  workflow_dispatch:
   pull_request:
     branches: [master]
+    types:
+      - opened
+      - reopened
+      - synchronize
+      - ready_for_review
   schedule:
     - cron: '0 6 * * 1'
 
@@ -11,15 +17,16 @@ jobs:
     name: Analyze
     runs-on: ubuntu-latest
     permissions:
+      contents: read
       security-events: write
     strategy:
       fail-fast: false
       matrix:
         language: [python]
     steps:
-      - uses: actions/checkout@v4
-      - uses: github/codeql-action/init@v3
+      - uses: actions/checkout@v6
+      - uses: github/codeql-action/init@v4
         with:
           languages: ${{ matrix.language }}
-      - uses: github/codeql-action/autobuild@v3
-      - uses: github/codeql-action/analyze@v3
+      - uses: github/codeql-action/autobuild@v4
+      - uses: github/codeql-action/analyze@v4

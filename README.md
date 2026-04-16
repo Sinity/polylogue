@@ -1,497 +1,207 @@
-
-
-<p align="center">
-  <strong>Preserve, index, and expose your AI conversation history as a queryable, programmable archive.</strong>
-</p>
+# Polylogue
 
 <p align="center">
   <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.10+-4584b6?logo=python&logoColor=white" alt="Python 3.10+"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-22c55e" alt="MIT License"></a>
-  <a href="https://github.com/sinity/polylogue/releases"><img src="https://img.shields.io/badge/version-0.1.0-f97316" alt="Version 0.1.0"></a>
+  <a href="https://github.com/sinity/polylogue/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/sinity/polylogue/ci.yml?branch=master&label=ci" alt="CI status"></a>
 </p>
 
----
+Polylogue is a local archive for AI conversation exports. It ingests provider
+exports into a SQLite archive with lexical search, optional semantic retrieval,
+derived products, and rendered outputs.
 
-## What It Does
+## What It Covers
 
-Polylogue archives AI conversations from **ChatGPT, Claude, Claude Code, Gemini, and Codex** into a unified, searchable local database. Drop your exports in a folder, run one command, and get instant full-text search across every conversation you've ever had.
+- archive substrate: acquire, parse, normalize, store, query
+- derived products: profiles, work events, phases, threads, day and week summaries
+- surfaces: CLI, Python API, MCP server, static site, dashboard
+- verification and maintenance: schema verification, synthetic corpora, showcase baselines,
+  validation lanes, mutation campaigns, benchmark campaigns
 
-- **Zero-config**: Drop exports in `~/.local/share/polylogue/inbox/`, run `polylogue run`, done
-- **Sub-second search**: FTS5-powered full-text search with smartcase matching
-- **Semantic search**: Vector similarity via sqlite-vec embeddings (optional, Voyage AI)
-- **Library-first**: Async Python API with composable filter chains — the CLI is a thin wrapper
-- **Local-first**: All data stays on your machine. SQLite database, no external services
+Supported providers:
 
-## Try It Now
+- ChatGPT
+- Claude web
+- Claude Code
+- Codex
+- Gemini via Google Drive
 
-No data needed. Generate a synthetic archive and explore:
+## Quickstart
+
+### From Source
 
 ```bash
-eval $(polylogue generate --seed --env-only)
-
-polylogue                              # Archive stats
-polylogue "error handling"             # Full-text search
-polylogue -p claude --latest           # Latest Claude conversation
-polylogue dashboard                    # Interactive TUI
+git clone https://github.com/sinity/polylogue
+cd polylogue
+direnv allow   # or: nix develop
 ```
 
-## Quick Start
-
-### 1. Install
+### Try It With Synthetic Data
 
 ```bash
-# With uv (recommended)
-uv tool install polylogue
+eval "$(polylogue audit generate --seed --env-only)"
 
-# With pip
-pip install polylogue
-
-# From source (Nix)
-git clone https://github.com/sinity/polylogue && cd polylogue
-nix develop   # or: uv sync
+polylogue "error handling" list --limit 5
+polylogue products profiles --limit 5
+polylogue run site -o ./site-preview
 ```
 
-### 2. Export Your Conversations
+The seeded environment exercises the real archive pipeline and keeps demo data
+isolated from your normal archive.
 
-| Provider | How to Export |
-|----------|--------------|
-| **ChatGPT** | Settings → Data Controls → Export → Download `conversations.json` |
-| **Claude** | Download from claude.ai conversation history |
-| **Claude Code** | Auto-discovered from `~/.claude/projects/` |
-| **Codex** | Auto-discovered from `~/.codex/sessions/` |
-| **Gemini** | Google Drive sync — run `polylogue auth` for OAuth setup |
+### Ingest Real Exports
 
-### 3. Drop in Inbox & Run
+Polylogue follows the XDG layout by default:
+
+- `~/.local/share/polylogue/polylogue.db` for the archive database
+- `~/.local/share/polylogue/inbox/` for dropped exports
+- `~/.local/share/polylogue/render/` for rendered outputs
+- `~/.local/share/polylogue/site/` for generated publication sites
+
+Typical flow:
 
 ```bash
-# Copy or symlink your exports
 cp ~/Downloads/conversations.json ~/.local/share/polylogue/inbox/
-ln -s ~/.claude/projects ~/.local/share/polylogue/inbox/claude-code
-
-# Run the pipeline
-polylogue run
-
-# Search
-polylogue "error handling"
+polylogue run all
+polylogue -p chatgpt --latest open
 ```
 
-No config file needed. That's it.
+## CLI Shape
 
-## Feature Highlights
-
-<table>
-<tr>
-<td width="50%">
-
-### Ingest From Anywhere
+The root command is query-first:
 
 ```bash
-polylogue run
+polylogue "error handling" list --limit 10
+polylogue --provider claude-ai --since "last week" stats --by provider
+polylogue --latest open
+polylogue "urgent" --tag review delete --dry-run
 ```
 
-Auto-detects provider format from file content. Handles JSON, JSONL, ZIP archives (with bomb protection), and Google Drive sync.
-
-Local screencast output lives under `artifacts/demos/` when generated.
-
-</td>
-<td width="50%">
-
-### Search Across Providers
+The pipeline and archive-maintenance surfaces are explicit verbs:
 
 ```bash
-polylogue "error handling" -p claude
-polylogue --has thinking --since "last week"
+polylogue run all
+polylogue run materialize
+polylogue doctor --repair --preview
+polylogue audit --only exercises --tier 0
+polylogue mcp
 ```
 
-Filter by provider, date, content type, tags — combine any filters freely.
+See [docs/cli-reference.md](docs/cli-reference.md) for the generated command
+reference from live help output.
 
-Durable documentation visuals live under `docs/assets/`.
+## Core Surfaces
 
-</td>
-</tr>
-<tr>
-<td width="50%">
+### Archive and Query
 
-### Interactive Dashboard
+- provider detection from file content, not filename conventions alone
+- FTS-backed lexical search with composable filters
+- optional vector search for semantic similarity
+- local-first storage and rendering
+
+### Durable Products
 
 ```bash
-polylogue dashboard
+polylogue products profiles --limit 10
+polylogue products phases --limit 10
+polylogue products threads --limit 10
 ```
 
-Textual-based TUI for browsing, searching, and reading conversations interactively.
+These products are materialized read models over the archive, not one-off
+reports.
 
-The dashboard surface is exercised through the showcase and demo workflow rather than committed runtime GIF output.
-
-</td>
-<td width="50%">
-
-### Generate Static Sites
+### Publication and MCP
 
 ```bash
-polylogue site -o ./public
+polylogue run site -o ./site-preview
+polylogue mcp
 ```
 
-Browsable HTML archive with per-provider views, statistics dashboard, and client-side search.
-
-The site surface now publishes a typed `site-manifest.json` and durable publication record in addition to local demo captures.
-
-</td>
-</tr>
-<tr>
-<td width="50%">
-
-### MCP Integration
-
-```json
-{
-  "mcpServers": {
-    "polylogue": {
-      "command": "polylogue",
-      "args": ["mcp"]
-    }
-  }
-}
-```
-
-Search your archive from Claude Desktop or Claude Code via the Model Context Protocol.
-
-</td>
-<td width="50%">
+- the site surface publishes a browsable HTML archive with search
+- the MCP surface exposes archive retrieval to AI assistants
 
 ### Library API
-
-```python
-async with Polylogue() as archive:
-    stats = await archive.stats()
-    convs = await (archive.filter()
-        .provider("claude")
-        .contains("error")
-        .limit(10)
-        .list())
-```
-
-Async-first Python API with composable filters, projections, and batch operations.
-
-</td>
-</tr>
-</table>
-
-## Query Language
-
-Polylogue's CLI treats positional arguments as search terms. No subcommand prefix — just type what you're looking for:
-
-```bash
-# Basic search
-polylogue "error handling"             # Full-text search (FTS5)
-polylogue "Error"                      # Case-sensitive (has uppercase)
-polylogue "auth" "token"               # AND: both terms must appear
-
-# Semantic search (requires VOYAGE_API_KEY)
-polylogue --similar "how to debug memory leaks"
-
-# Filters (all composable)
-polylogue "error" -p claude,chatgpt    # By provider (comma = OR)
-polylogue --since "last week"          # Natural language dates
-polylogue --until 2025-01-01           # ISO dates
-polylogue --has thinking               # Has reasoning traces
-polylogue --has tools                  # Has tool use
-polylogue -t project:backend           # By tag (supports key:value)
-polylogue --title "API design"         # Title contains
-
-# Sort & limit
-polylogue --latest                     # Most recent conversation
-polylogue --sort tokens --reverse      # Most expensive first
-polylogue --sort longest -n 10         # 10 longest conversations
-polylogue --sample 5                   # Random sample
-
-# Output
-polylogue "error" -f json              # JSON format
-polylogue "error" -f csv               # CSV format
-polylogue "error" -o browser           # Open in browser
-polylogue "error" -o clipboard         # Copy to clipboard
-polylogue "error" --fields id,title,date  # Select columns
-polylogue "error" --count              # Just the count
-polylogue "error" --stats-by provider  # Aggregate by provider
-
-# Content transforms
-polylogue -i abc123 --transform strip-tools     # Hide tool calls
-polylogue -i abc123 --transform strip-thinking  # Hide reasoning
-polylogue -i abc123 -d                          # Dialogue only (user + assistant)
-
-# Metadata modification
-polylogue -i abc123 --set title "My Title"
-polylogue -i abc123 --set summary "Brief description"
-polylogue -i abc123 --add-tag important,project:backend
-polylogue "old stuff" --delete --dry-run        # Preview bulk delete
-```
-
-## Supported Providers
-
-| Provider | Format | Auto-detected By | ID |
-|----------|--------|------------------|----|
-| ChatGPT | `conversations.json` | `mapping` field with UUID graph | `chatgpt` |
-| Claude (web) | `.jsonl` | `chat_messages` array | `claude` |
-| Claude Code | `.json` array | `parentUuid`/`sessionId` markers | `claude-code` |
-| Codex | `.jsonl` | Session envelope structure | `codex` |
-| Gemini | Google Drive API | `chunkedPrompt.chunks` structure | `gemini` |
-
-ZIP archives are supported (nested ZIPs too, with bomb protection). Provider detection is automatic from file content — no configuration needed.
-
-## Output Formats
-
-| Format | Flag | Description |
-|--------|------|-------------|
-| Markdown | `-f markdown` | Default. Syntax-highlighted, human-readable |
-| JSON | `-f json` | Machine-readable, with all metadata |
-| HTML | `-f html` | Styled for browser viewing |
-| CSV | `-f csv` | Tabular, for spreadsheets |
-| Obsidian | `-f obsidian` | Markdown with YAML frontmatter and `[[wikilinks]]` |
-| Org | `-f org` | Emacs org-mode format |
-| YAML | `-f yaml` | Structured, human-readable |
-| Plaintext | `-f plaintext` | Stripped of all markup |
-
-Output can be sent to stdout (default), `--output browser`, or `--output clipboard`.
-
-## Pipeline
-
-```bash
-polylogue run                          # Full pipeline: acquire → parse → render → index
-polylogue run --source claude          # Single source
-polylogue run --preview                # Preview counts, confirm before writing
-polylogue run --stage parse            # Single stage only
-
-# Watch mode — continuous sync
-polylogue run --watch                  # Watch sources for changes
-polylogue run --watch --notify         # Desktop notifications on new conversations
-polylogue run --watch --webhook URL    # Webhook on new conversations
-```
-
-**Stages**: `acquire` → `parse` → `render` → `index`
-
-The pipeline is idempotent — re-running imports is always safe. Content hashing (SHA-256 + NFC normalization) ensures unchanged conversations are skipped.
-
-## Subcommands
-
-```bash
-polylogue check                        # Health check: DB integrity, index status, stats
-polylogue check --repair               # Auto-fix issues (orphaned refs, stale FTS entries)
-polylogue check --deep                 # Full SQLite integrity check
-
-polylogue embed                        # Generate vector embeddings for semantic search
-polylogue embed --stats                # Show embedding coverage
-polylogue embed --model voyage-4-large # Use larger model
-
-polylogue tags                         # List all tags with counts
-polylogue tags -p claude --json        # Tags for a provider, as JSON
-
-polylogue site -o ./public             # Build static HTML archive
-polylogue site --title "My Archive"    # Custom title
-polylogue site --search-provider lunr  # Client-side search engine
-
-polylogue dashboard                    # Interactive Textual TUI
-
-polylogue auth                         # Google OAuth flow (for Gemini/Drive)
-polylogue auth --revoke                # Revoke stored credentials
-
-polylogue reset --database             # Delete SQLite database
-polylogue reset --all                  # Reset everything
-
-polylogue completions --shell fish     # Generate shell completions
-polylogue mcp                          # Start MCP server (stdio)
-```
-
-## MCP Integration
-
-Polylogue provides a [Model Context Protocol](https://modelcontextprotocol.io/) server, giving AI assistants direct access to your conversation archive.
-
-**Claude Code** (`~/.claude/settings.json`):
-```json
-{
-  "mcpServers": {
-    "polylogue": {
-      "command": "polylogue",
-      "args": ["mcp"]
-    }
-  }
-}
-```
-
-**Claude Desktop** (`~/.config/claude/claude_desktop_config.json`): same format.
-
-| Capability | Available |
-|------------|-----------|
-| **Tools** | `search`, `list_conversations`, `get_conversation`, `stats` |
-| **Resources** | `polylogue://stats`, `polylogue://conversations`, `polylogue://conversation/{id}` |
-| **Prompts** | `analyze-errors`, `summarize-week`, `extract-code` |
-
-Resources support query parameters for filtering: `polylogue://conversations?provider=claude&since=2024-01-01&limit=50`
-
-[Full MCP documentation →](docs/mcp-integration.md)
-
-## Library API
-
-Polylogue is library-first — the CLI is a thin wrapper around the Python API.
 
 ```python
 from polylogue import Polylogue
 
 async with Polylogue() as archive:
-    # Archive-wide stats
     stats = await archive.stats()
-
-    # Search with composable filters
-    convs = await (archive.filter()
-        .provider("claude")
+    convs = await (
+        archive.filter()
+        .provider("claude-ai")
         .contains("error handling")
-        .since("2024-06-01")
         .limit(10)
-        .list())
-
-    # Retrieve a single conversation
-    conv = await archive.get("chatgpt:abc123")
-
-    # Message-level projections
-    for msg in conv.project().substantive().min_words(50).iter():
-        print(f"{msg.role}: {msg.text[:80]}...")
-
-    # Semantic search (requires embeddings)
-    similar = await archive.filter().similar("debugging memory leaks").limit(5).list()
-
-    # Metadata
-    await archive.set_metadata("chatgpt:abc123", title="Auth Bug Investigation")
-    await archive.add_tags("chatgpt:abc123", ["important", "project:backend"])
+        .list()
+    )
 ```
 
-**Filter chain methods** (all chainable):
+The Python API is async-first and shares the same archive semantics as the CLI.
 
-| Method | Purpose |
-|--------|---------|
-| `.contains(text)` / `.exclude_text(text)` | FTS search |
-| `.provider(*names)` / `.exclude_provider(*names)` | Filter by provider |
-| `.tag(*tags)` / `.exclude_tag(*tags)` | Filter by tag |
-| `.has(*types)` | Content type: `thinking`, `tools`, `summary`, `attachments` |
-| `.since(date)` / `.until(date)` | Date range (strings or datetime) |
-| `.title(pattern)` / `.id(prefix)` | Text matching |
-| `.similar(text)` | Semantic similarity (vector search) |
-| `.sort(field)` | `date`, `tokens`, `messages`, `words`, `longest`, `random` |
-| `.reverse()` / `.limit(n)` / `.sample(n)` | Order and limit |
+## Developer Tools
 
-**Terminal methods** (async): `.list()`, `.first()`, `.count()`, `.delete()`
-
-[Full library API documentation →](docs/library-api.md)
-
-## Generate & QA
-
-Polylogue includes synthetic data generation for safe feature exploration and QA.
-
-### Seed Mode
-
-Create a full demo environment — synthetic database with realistic conversations from all providers:
+Repository maintenance work is centralized under `devtools`:
 
 ```bash
-# Interactive — prints env vars and instructions
-polylogue generate --seed
-
-# Shell integration — eval sets env vars in current shell
-eval $(polylogue generate --seed --env-only)
-
-# Customize
-polylogue generate --seed -p chatgpt,claude-ai -n 10
+devtools --help
+devtools --list-commands --json
+devtools status
+devtools render-all
+devtools run-validation-lanes --lane frontier-local
 ```
 
-The seeded environment runs through the real pipeline (`acquire → parse → render → index`), so the demo exercises the exact same code paths as production.
+Use it for generated surfaces, validation lanes, mutation campaigns, benchmark
+campaigns, showcase verification, and repository hygiene. See
+[docs/devtools.md](docs/devtools.md). JSON forms are available for scripts and
+other tooling.
 
-### Corpus Mode
-
-Write raw provider-format files (JSON, JSONL) to disk for inspection:
-
-```bash
-polylogue generate                           # All providers, 3 each
-polylogue generate -p chatgpt -n 5            # ChatGPT only, 5 files
-polylogue generate -o /tmp/corpus             # Custom output directory
-```
-
-Useful for inspecting wire formats, testing parser changes, or generating fixture data.
-
-### QA Mode
-
-Run synthetic QA checks, including deterministic command exercises:
-
-```bash
-polylogue qa                                # Full synthetic QA
-polylogue qa --only exercises --tier 0       # Quick exercise smoke
-polylogue qa --only exercises --json         # Machine-readable exercise output
-```
-
-The QA command seeds a disposable synthetic workspace, runs exercise catalogs, and writes structured reports.
-
-[Synthetic generation docs →](docs/generate.md)
-
-## Configuration
-
-**Zero-config by default.** Polylogue follows the [XDG Base Directory](https://specifications.freedesktop.org/basedir-spec/latest/) specification:
-
-| Path | Purpose |
-|------|---------|
-| `~/.local/share/polylogue/polylogue.db` | SQLite database |
-| `~/.local/share/polylogue/inbox/` | Drop exports here |
-| `~/.local/share/polylogue/render/` | Rendered output |
-| `~/.config/polylogue/` | OAuth credentials |
-
-**Environment variables:**
-
-| Variable | Purpose |
-|----------|---------|
-| `POLYLOGUE_ARCHIVE_ROOT` | Custom database location |
-| `POLYLOGUE_RENDER_ROOT` | Custom render output |
-| `VOYAGE_API_KEY` | Voyage AI key for semantic search |
-| `POLYLOGUE_FORCE_PLAIN` | Force non-interactive output |
-| `POLYLOGUE_LOG` | Log level: `error`, `warn`, `info`, `debug` |
-
-[Full configuration documentation →](docs/configuration.md)
-
+<!-- BEGIN GENERATED: docs-surface -->
 ## Documentation
+
+For the full docs map, see [docs/README.md](docs/README.md).
 
 | Document | Description |
 |----------|-------------|
-| [CLI Reference](docs/cli-reference.md) | Complete command reference with tips and examples |
-| [Library API](docs/library-api.md) | Python API — filter chains, projections, async patterns |
-| [Data Model](docs/data-model.md) | Conversation / Message / Attachment schemas |
-| [Configuration](docs/configuration.md) | XDG paths, environment variables, observability |
-| [Architecture](docs/architecture.md) | System design, layers, data flow, thread safety |
-| [MCP Integration](docs/mcp-integration.md) | Model Context Protocol server for Claude Desktop/Code |
-| [Generate](docs/generate.md) | Synthetic data generation, fixture output, and seed mode |
-| [Providers](docs/providers/) | Provider formats, detection, session integration |
-| [Internals](docs/internals.md) | Developer reference — invariants, schemas, debugging |
+| [CLI Reference](docs/cli-reference.md) | Generated command reference from live help output. |
+| [Configuration](docs/configuration.md) | XDG paths, environment variables, and runtime configuration. |
+| [Library API](docs/library-api.md) | Async archive API, filters, and query patterns. |
+| [Developer Tools](docs/devtools.md) | `devtools` guide for generated surfaces, validation, and repo hygiene. |
+| [Architecture](docs/architecture.md) | System rings, ownership boundaries, and data flow. |
+| [Providers](docs/providers/README.md) | Provider-specific parsing and export-format notes. |
+
+## Contributor Guides
+
+| Document | Description |
+|----------|-------------|
+| [Contributing](CONTRIBUTING.md) | Branching, issues, PRs, squash-merge history, and repo policy. |
+| [Testing](TESTING.md) | Baseline test matrix, protected surfaces, and QA entrypoints. |
+| [Agent Guide](CLAUDE.md) | Repository-specific agent memory, workflow rules, and included references. |
+
+<!-- END GENERATED: docs-surface -->
 
 ## Development
 
 ```bash
-git clone https://github.com/sinity/polylogue && cd polylogue
-
-# Enter dev environment
-nix develop              # Nix (recommended)
-# or
-uv sync                  # uv
-
-# Run tests
-pytest -q                # Quick run (4200+ tests)
-pytest --cov=polylogue   # With coverage (90% minimum enforced)
-
-# Lint & type check
-ruff check polylogue/ tests/
-mypy polylogue/
+pytest -q --ignore=tests/integration
+ruff check polylogue tests devtools
+devtools render-all --check
+devtools build-package
+nix flake check
 ```
 
-See [CLAUDE.md](CLAUDE.md) for development guidelines, [docs/internals.md](docs/internals.md) for implementation details, and [demos/](demos/) for screencast generation.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for workflow and PR rules,
+[TESTING.md](TESTING.md) for the testing guide, and
+[docs/internals.md](docs/internals.md) for debugging landmarks and invariants.
+
+## Versioning
+
+`pyproject.toml` records the last tagged release. Development builds are
+identified by git metadata, and `polylogue --version` includes the current
+commit hash so day-to-day builds stay identifiable without fake release churn.
+
+Routine merges do not bump the package version. Only release-tagging slices
+change `version = "X.Y.Z"`.
 
 ## License
 
 [MIT](LICENSE)
-
----
-
-<p align="center">
-  <strong>Project Status</strong>: Active development (v0.1.0)<br>
-  <a href="https://github.com/sinity/polylogue/issues">Issues</a> · <a href="https://github.com/sinity/polylogue">Source</a>
-</p>

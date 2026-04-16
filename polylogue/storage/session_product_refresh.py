@@ -202,9 +202,7 @@ async def _apply_session_product_conversation_update_async(
         await replace_session_work_events(conn, conversation_id, [], transaction_depth)
         await replace_session_phases(conn, conversation_id, [], transaction_depth)
         old_group = (
-            profile_provider_day(_row_to_session_profile_record(old_profile_record))
-            if old_profile_record
-            else None
+            profile_provider_day(_row_to_session_profile_record(old_profile_record)) if old_profile_record else None
         )
         return _SessionProductRefreshUpdate(
             counts=_empty_refresh_counts(),
@@ -220,9 +218,7 @@ async def _apply_session_product_conversation_update_async(
     affected_groups = {
         group
         for group in (
-            profile_provider_day(_row_to_session_profile_record(old_profile_record))
-            if old_profile_record
-            else None,
+            profile_provider_day(_row_to_session_profile_record(old_profile_record)) if old_profile_record else None,
             profile_provider_day(profile_record),
         )
         if group is not None
@@ -254,10 +250,7 @@ async def _load_existing_session_profile_records_async(
             tuple(conversation_ids),
         )
     ).fetchall()
-    return {
-        str(row["conversation_id"]): _row_to_session_profile_record(row)
-        for row in rows
-    }
+    return {str(row["conversation_id"]): _row_to_session_profile_record(row) for row in rows}
 
 
 async def _apply_session_product_conversation_updates_async(
@@ -308,9 +301,7 @@ async def _apply_session_product_conversation_updates_async(
                     affected_groups.add(old_group)
                 continue
 
-            profile_record, event_records, phase_records = build_session_product_records(
-                hydrated_conversation
-            )
+            profile_record, event_records, phase_records = build_session_product_records(hydrated_conversation)
             profile_records_to_write.append(profile_record)
             work_event_records_to_write.extend(event_records)
             phase_records_to_write.extend(phase_records)
