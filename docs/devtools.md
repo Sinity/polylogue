@@ -27,6 +27,8 @@ These are the commands worth remembering during normal repo work:
   Common forms: `devtools status`, `devtools status --json`, `devtools status --verify-generated`.
 - `devtools render-all`: Refresh or verify every generated repo surface together after changing docs, CLI help, or agent memory.
   Common forms: `devtools render-all`, `devtools render-all --check`.
+- `devtools verify`: Run format, lint, render-all, and test checks locally before pushing.
+  Common forms: `devtools verify`, `devtools verify --quick`.
 - `devtools mutmut-campaign`: Run or inspect focused mutation-testing work without shrinking the committed mutmut scope.
   Common forms: `devtools mutmut-campaign list`, `devtools mutmut-campaign run filters`.
 - `devtools benchmark-campaign`: Record durable benchmark artifacts or compare a candidate run against a baseline artifact.
@@ -59,6 +61,7 @@ These are the commands worth remembering during normal repo work:
 | `devtools query-memory-budget` | Measure query-memory envelopes on generated fixtures. |
 | `devtools run-validation-lanes` | Run named validation lanes. |
 | `devtools scenario-projections` | Render the authored scenario-bearing verification projections. |
+| `devtools verify` | Run the local verification baseline before pushing or creating a PR. |
 | `devtools verify-showcase` | Verify committed showcase/demo surfaces. |
 
 ### Campaigns

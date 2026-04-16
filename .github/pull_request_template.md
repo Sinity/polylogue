@@ -1,31 +1,19 @@
-> PR title becomes the final squash-merge commit subject on `master`. Write it as the history you want to preserve.
-
 ## Summary
 
-<!-- 1-3 sentences: what changed and why it matters. -->
-
-## Related Issue
-
-<!-- Optional. Use `Ref #NNN` or `Closes #NNN` only when an issue exists and should stay linked. -->
+_What changed and why it matters (1-3 sentences)._
 
 ## Problem
 
-<!-- What the codebase needed. Why this work was necessary. -->
+_What the codebase needed. Why this work was necessary._
 
 ## Solution
 
-<!-- What was done. Mention key modules, contracts, and boundaries touched. -->
+_What was done. Key modules, contracts, and boundaries touched._
 
 ## Verification
 
-<!-- Exact commands run and any manual validation performed. -->
+_Exact commands run and any manual validation performed._
 
 ## Risks and Follow-ups
 
-<!-- Optional. Remaining risks, migrations, rollout concerns, or deferred work. -->
-
-## Generated Surfaces
-
-- [ ] `devtools render-all` run if generated surfaces or docs sources changed
-- [ ] `AGENTS.md` refreshed locally if `CLAUDE.md` or its includes changed
-- [ ] `docs/devtools.md` catalog refreshed if the `devtools` command registry changed
+_Remaining risks, migrations, rollout concerns, or deferred work. Delete this section if none._
