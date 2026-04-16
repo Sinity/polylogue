@@ -29,8 +29,13 @@ class TestDecoderConvergence:
         return records, malformed_count
 
     @staticmethod
-    def _stream_decode(raw_bytes: bytes) -> tuple[list, int]:
-        """Run the streaming decoder path, return (valid_records, malformed_count)."""
+    def _stream_decode(raw_bytes: bytes) -> list:
+        """Run the streaming decoder path, return valid records.
+
+        The streaming decoder (ijson) operates on token streams, not lines,
+        so it cannot report per-line malformed counts the way the sample
+        decoder does. Only record-level agreement is comparable.
+        """
         import logging
 
         from polylogue.sources.decoder_json import iter_json_stream_with
@@ -38,7 +43,6 @@ class TestDecoderConvergence:
         logger = logging.getLogger("test_differential")
         handle = io.BytesIO(raw_bytes)
 
-        malformed = 0
         records = []
         try:
             import ijson
@@ -48,14 +52,14 @@ class TestDecoderConvergence:
         except Exception:
             pass
 
-        return records, malformed
+        return records
 
     def test_well_formed_jsonl_same_record_count(self):
         lines = [json.dumps({"id": i, "text": f"message {i}"}) for i in range(10)]
         raw = ("\n".join(lines) + "\n").encode("utf-8")
 
         sample_records, sample_malformed = self._sample_decode(raw)
-        stream_records, _ = self._stream_decode(raw)
+        stream_records = self._stream_decode(raw)
 
         assert len(sample_records) == len(stream_records) == 10
         assert sample_malformed == 0
@@ -70,8 +74,8 @@ class TestDecoderConvergence:
         ]
         raw = ("\n".join(lines) + "\n").encode("utf-8")
 
-        sample_records, sample_malformed = self._sample_decode(raw)
-        stream_records, _ = self._stream_decode(raw)
+        sample_records, _sample_malformed = self._sample_decode(raw)
+        stream_records = self._stream_decode(raw)
 
         assert len(sample_records) >= 3, "Sample should find at least 3 valid records"
         assert len(stream_records) >= 3, "Stream should find at least 3 valid records"
@@ -84,7 +88,7 @@ class TestDecoderConvergence:
         raw = ("\ufeff" + line + "\n").encode("utf-8")
 
         sample_records, _ = self._sample_decode(raw)
-        stream_records, _ = self._stream_decode(raw)
+        stream_records = self._stream_decode(raw)
 
         assert len(sample_records) >= 1, "Sample should handle BOM"
         assert len(stream_records) >= 1, "Stream should handle BOM"
@@ -99,9 +103,10 @@ class TestDecoderConvergence:
         raw = ("\n".join(lines) + "\n").encode("utf-8")
 
         sample_records, sample_malformed = self._sample_decode(raw)
-        stream_records, _ = self._stream_decode(raw)
+        stream_records = self._stream_decode(raw)
 
         assert len(sample_records) == 2
+        assert len(stream_records) == len(sample_records), "Decoders must agree on empty-line skipping"
         assert sample_malformed == 0
 
 
