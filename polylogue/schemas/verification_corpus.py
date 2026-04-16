@@ -23,6 +23,7 @@ def _format_malformed_jsonl_error(*, malformed_lines: int, malformed_detail: str
         return f"{message} (first bad {malformed_detail})"
     return message
 
+
 # ---------------------------------------------------------------------------
 # Row iteration helpers
 # ---------------------------------------------------------------------------

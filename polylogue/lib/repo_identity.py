@@ -46,13 +46,9 @@ def _path_exists(path: Path) -> bool:
 
 def _is_non_work_repo_root(path: Path) -> bool:
     parts = path.parts
-    if path.name == "projects" and (
-        ".claude" in parts or (".config" in parts and "claude" in parts)
-    ):
+    if path.name == "projects" and (".claude" in parts or (".config" in parts and "claude" in parts)):
         return True
-    if path.name in {"projects", "sessions"} and (
-        ".codex" in parts or (".config" in parts and "codex" in parts)
-    ):
+    if path.name in {"projects", "sessions"} and (".codex" in parts or (".config" in parts and "codex" in parts)):
         return True
     return path.name == "blob-repository" and ".local" in parts and "state" in parts
 

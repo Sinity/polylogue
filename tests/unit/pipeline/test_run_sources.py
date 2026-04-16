@@ -228,9 +228,7 @@ def test_ingest_stage_log_omits_full_batch_telemetry(workspace_env, tmp_path: Pa
         asyncio.run(run_sources(config=config, stage="parse"))
 
     ingest_complete_calls = [
-        call
-        for call in mock_logger_info.call_args_list
-        if call.args and call.args[0] == "Ingest complete"
+        call for call in mock_logger_info.call_args_list if call.args and call.args[0] == "Ingest complete"
     ]
     assert len(ingest_complete_calls) == 1
     details = ingest_complete_calls[0].kwargs["details"]
@@ -287,9 +285,7 @@ def test_materialize_stage_log_omits_full_chunk_telemetry(workspace_env, tmp_pat
         asyncio.run(run_sources(config=config, stage="materialize"))
 
     materialize_calls = [
-        call
-        for call in mock_logger_info.call_args_list
-        if call.args and call.args[0] == "Materialize stage complete"
+        call for call in mock_logger_info.call_args_list if call.args and call.args[0] == "Materialize stage complete"
     ]
     assert len(materialize_calls) == 1
     details = materialize_calls[0].kwargs["details"]

@@ -148,11 +148,7 @@ def run_archive_health(config: Any, *, deep: bool = False, probe_only: bool = Fa
                         "index",
                         VerifyStatus.OK,
                         count=indexed_rows if exact_index_counts else 0,
-                        summary=(
-                            f"messages indexed: {indexed_rows}"
-                            if exact_index_counts
-                            else "messages FTS present"
-                        ),
+                        summary=(f"messages indexed: {indexed_rows}" if exact_index_counts else "messages FTS present"),
                     )
                 )
             else:
