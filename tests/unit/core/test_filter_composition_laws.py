@@ -67,9 +67,9 @@ class TestFilterMonotonicity:
 
             chatgpt_with_stats = set()
             for cid in chatgpt_ids:
-                msg_count = conn.execute(
-                    "SELECT COUNT(*) FROM messages WHERE conversation_id = ?", (cid,)
-                ).fetchone()[0]
+                msg_count = conn.execute("SELECT COUNT(*) FROM messages WHERE conversation_id = ?", (cid,)).fetchone()[
+                    0
+                ]
                 if msg_count >= 2:
                     chatgpt_with_stats.add(cid)
 

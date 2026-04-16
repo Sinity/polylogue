@@ -39,9 +39,7 @@ def assert_supported_archive_layout(conn: sqlite3.Connection) -> None:
     assert_supported_archive_layout_snapshot(capture_schema_snapshot(conn))
 
 
-def _apply_extensions_for_snapshot(
-    conn: sqlite3.Connection, snapshot: SchemaSnapshot
-) -> None:
+def _apply_extensions_for_snapshot(conn: sqlite3.Connection, snapshot: SchemaSnapshot) -> None:
     """Apply schema extensions for a current-version database.
 
     Shared logic used by both the sync ensure path and the public

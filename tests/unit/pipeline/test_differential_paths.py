@@ -51,10 +51,7 @@ class TestDecoderConvergence:
         return records, malformed
 
     def test_well_formed_jsonl_same_record_count(self):
-        lines = [
-            json.dumps({"id": i, "text": f"message {i}"})
-            for i in range(10)
-        ]
+        lines = [json.dumps({"id": i, "text": f"message {i}"}) for i in range(10)]
         raw = ("\n".join(lines) + "\n").encode("utf-8")
 
         sample_records, sample_malformed = self._sample_decode(raw)
@@ -240,6 +237,4 @@ class TestRepairPreviewConvergence:
             after = count_orphaned_messages_sync(conn)
 
         assert after == 0, "Repair should remove all orphaned messages"
-        assert result.repaired_count == before, (
-            f"Repair should report removing {before}, got {result.repaired_count}"
-        )
+        assert result.repaired_count == before, f"Repair should report removing {before}, got {result.repaired_count}"

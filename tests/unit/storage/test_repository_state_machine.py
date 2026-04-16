@@ -106,12 +106,9 @@ class ArchiveLifecycleStateMachine(RuleBasedStateMachine):
         )
 
         actual_ids = {
-            r["conversation_id"]
-            for r in self._conn.execute("SELECT conversation_id FROM conversations").fetchall()
+            r["conversation_id"] for r in self._conn.execute("SELECT conversation_id FROM conversations").fetchall()
         }
-        assert actual_ids == self._expected_ids, (
-            f"Conversation IDs: expected {self._expected_ids}, got {actual_ids}"
-        )
+        assert actual_ids == self._expected_ids, f"Conversation IDs: expected {self._expected_ids}, got {actual_ids}"
 
         orphan_count = self._conn.execute(
             "SELECT COUNT(*) FROM messages m "

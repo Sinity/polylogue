@@ -29,9 +29,7 @@ def materialized_db(workspace_env):
 
     ConversationBuilder(db_path, "mat-codex-1").provider("codex").title("Codex session").add_message(
         role="user", text="Generate tests"
-    ).add_message(role="assistant", text="Here are the tests").add_message(
-        role="user", text="Add edge cases"
-    ).save()
+    ).add_message(role="assistant", text="Here are the tests").add_message(role="user", text="Add edge cases").save()
 
     from polylogue.storage.backends.connection import open_connection
     from polylogue.storage.session_product_rebuild import rebuild_session_products_sync
@@ -57,9 +55,7 @@ class TestProfileConversationAgreement:
             if has_profiles is None:
                 pytest.skip("session_profiles table not present")
             profile_count = conn.execute("SELECT COUNT(*) FROM session_profiles").fetchone()[0]
-            assert profile_count == conv_count, (
-                f"Profile count ({profile_count}) != conversation count ({conv_count})"
-            )
+            assert profile_count == conv_count, f"Profile count ({profile_count}) != conversation count ({conv_count})"
 
     def test_no_phantom_profiles(self, materialized_db):
         """No profile should reference a non-existent conversation."""
@@ -113,16 +109,14 @@ class TestProductMaterializationIdempotence:
                 pytest.skip("session_profiles table not present")
 
             ids_before = {
-                r["conversation_id"]
-                for r in conn.execute("SELECT conversation_id FROM session_profiles").fetchall()
+                r["conversation_id"] for r in conn.execute("SELECT conversation_id FROM session_profiles").fetchall()
             }
 
             rebuild_session_products_sync(conn)
             conn.commit()
 
             ids_after = {
-                r["conversation_id"]
-                for r in conn.execute("SELECT conversation_id FROM session_profiles").fetchall()
+                r["conversation_id"] for r in conn.execute("SELECT conversation_id FROM session_profiles").fetchall()
             }
 
             assert ids_before == ids_after, "Rebuild changed profile set"

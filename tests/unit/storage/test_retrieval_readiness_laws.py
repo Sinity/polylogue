@@ -63,8 +63,7 @@ class TestProviderFilterSubset:
 
         with open_connection(populated_db) as conn:
             all_ids = {
-                r["conversation_id"]
-                for r in conn.execute("SELECT conversation_id FROM conversations").fetchall()
+                r["conversation_id"] for r in conn.execute("SELECT conversation_id FROM conversations").fetchall()
             }
             claude_ids = {
                 r["conversation_id"]
@@ -84,13 +83,11 @@ class TestProviderFilterSubset:
 
         with open_connection(populated_db) as conn:
             all_ids = {
-                r["conversation_id"]
-                for r in conn.execute("SELECT conversation_id FROM conversations").fetchall()
+                r["conversation_id"] for r in conn.execute("SELECT conversation_id FROM conversations").fetchall()
             }
 
             providers = [
-                r["provider_name"]
-                for r in conn.execute("SELECT DISTINCT provider_name FROM conversations").fetchall()
+                r["provider_name"] for r in conn.execute("SELECT DISTINCT provider_name FROM conversations").fetchall()
             ]
 
             union = set()
@@ -126,9 +123,7 @@ class TestFTSIndexCompleteness:
 
             fts_count = conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0]
 
-            assert fts_count == msg_count, (
-                f"FTS row count ({fts_count}) != messages table count ({msg_count})"
-            )
+            assert fts_count == msg_count, f"FTS row count ({fts_count}) != messages table count ({msg_count})"
 
     def test_fts_search_returns_subset_of_messages(self, populated_db):
         from polylogue.storage.backends.connection import open_connection
@@ -140,19 +135,12 @@ class TestFTSIndexCompleteness:
             if fts_exists is None:
                 pytest.skip("FTS table not present")
 
-            all_msg_ids = {
-                r["message_id"]
-                for r in conn.execute("SELECT message_id FROM messages").fetchall()
-            }
+            all_msg_ids = {r["message_id"] for r in conn.execute("SELECT message_id FROM messages").fetchall()}
 
-            fts_hits = conn.execute(
-                "SELECT rowid FROM messages_fts WHERE messages_fts MATCH 'property'"
-            ).fetchall()
+            fts_hits = conn.execute("SELECT rowid FROM messages_fts WHERE messages_fts MATCH 'property'").fetchall()
             fts_msg_ids = set()
             for hit in fts_hits:
-                row = conn.execute(
-                    "SELECT message_id FROM messages WHERE rowid = ?", (hit[0],)
-                ).fetchone()
+                row = conn.execute("SELECT message_id FROM messages WHERE rowid = ?", (hit[0],)).fetchone()
                 if row:
                     fts_msg_ids.add(row["message_id"])
 
@@ -186,9 +174,7 @@ class TestCountListAgreement:
                     "SELECT conversation_id FROM conversations WHERE provider_name = ?", (provider,)
                 ).fetchall()
 
-                assert count == len(rows), (
-                    f"Provider {provider}: COUNT={count}, len(rows)={len(rows)}"
-                )
+                assert count == len(rows), f"Provider {provider}: COUNT={count}, len(rows)={len(rows)}"
 
 
 # ---------------------------------------------------------------------------

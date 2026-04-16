@@ -110,9 +110,7 @@ class TestOrphanMessageConvergence:
                 "WHERE EXISTS (SELECT 1 FROM conversations c WHERE c.conversation_id = m.conversation_id)"
             ).fetchone()[0]
 
-        assert healthy_after == healthy_before, (
-            f"Repair damaged healthy messages: {healthy_before} → {healthy_after}"
-        )
+        assert healthy_after == healthy_before, f"Repair damaged healthy messages: {healthy_before} → {healthy_after}"
 
     def test_repair_is_idempotent(self, archive_with_orphans):
         """Second repair after convergence is a no-op."""

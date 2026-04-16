@@ -57,13 +57,9 @@ class ConversationFacts:
         messages = payload.get("messages", [])
         roles = Counter(m.get("role", "unknown") for m in messages)
         has_tool_use = any(
-            any(b.get("type") in ("tool_use", "tool_result") for b in m.get("content_blocks", []))
-            for m in messages
+            any(b.get("type") in ("tool_use", "tool_result") for b in m.get("content_blocks", [])) for m in messages
         )
-        has_thinking = any(
-            any(b.get("type") == "thinking" for b in m.get("content_blocks", []))
-            for m in messages
-        )
+        has_thinking = any(any(b.get("type") == "thinking" for b in m.get("content_blocks", [])) for m in messages)
         has_attachments = any(m.get("attachments") for m in messages)
         return cls(
             conversation_id=payload.get("id", payload.get("conversation_id", "")),

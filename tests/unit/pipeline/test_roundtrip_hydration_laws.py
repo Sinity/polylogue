@@ -95,15 +95,11 @@ def _save_and_hydrate(result, db_conn):
     )
 
     cid = bundle.conversation.conversation_id
-    conv_row = db_conn.execute(
-        "SELECT * FROM conversations WHERE conversation_id = ?", (cid,)
-    ).fetchone()
+    conv_row = db_conn.execute("SELECT * FROM conversations WHERE conversation_id = ?", (cid,)).fetchone()
     assert conv_row is not None, f"Conversation {cid} not found in DB"
     conv_record = _row_to_conversation(conv_row)
 
-    msg_rows = db_conn.execute(
-        "SELECT * FROM messages WHERE conversation_id = ? ORDER BY sort_key", (cid,)
-    ).fetchall()
+    msg_rows = db_conn.execute("SELECT * FROM messages WHERE conversation_id = ? ORDER BY sort_key", (cid,)).fetchall()
     msg_records = [_row_to_message(r) for r in msg_rows]
 
     att_records: list[AttachmentRecord] = []
@@ -119,7 +115,11 @@ def _save_and_hydrate(result, db_conn):
 
 class TestMessageCountPreservation:
     @given(data=synthetic_payload())
-    @settings(max_examples=30, suppress_health_check=[HealthCheck.too_slow, HealthCheck.function_scoped_fixture], deadline=None)
+    @settings(
+        max_examples=30,
+        suppress_health_check=[HealthCheck.too_slow, HealthCheck.function_scoped_fixture],
+        deadline=None,
+    )
     def test_message_count_preserved(self, data, workspace_env):
         provider_name, raw_bytes, unique_id = data
         parsed, result = _parse_and_transform(provider_name, raw_bytes, workspace_env["archive_root"], unique_id)
@@ -129,7 +129,11 @@ class TestMessageCountPreservation:
         )
 
     @given(data=synthetic_payload())
-    @settings(max_examples=20, suppress_health_check=[HealthCheck.too_slow, HealthCheck.function_scoped_fixture], deadline=None)
+    @settings(
+        max_examples=20,
+        suppress_health_check=[HealthCheck.too_slow, HealthCheck.function_scoped_fixture],
+        deadline=None,
+    )
     def test_message_count_survives_save_hydrate(self, data, workspace_env):
         provider_name, raw_bytes, unique_id = data
         db_path = db_setup(workspace_env)
@@ -152,7 +156,11 @@ class TestMessageCountPreservation:
 
 class TestRolePreservation:
     @given(data=synthetic_payload())
-    @settings(max_examples=20, suppress_health_check=[HealthCheck.too_slow, HealthCheck.function_scoped_fixture], deadline=None)
+    @settings(
+        max_examples=20,
+        suppress_health_check=[HealthCheck.too_slow, HealthCheck.function_scoped_fixture],
+        deadline=None,
+    )
     def test_role_multiset_preserved(self, data, workspace_env):
         provider_name, raw_bytes, unique_id = data
         db_path = db_setup(workspace_env)
@@ -165,9 +173,7 @@ class TestRolePreservation:
 
             parsed_roles = Counter(str(m.role) for m in parsed.messages)
             hydrated_roles = Counter(str(m.role) for m in hydrated.messages)
-            assert parsed_roles == hydrated_roles, (
-                f"Role multiset changed: {parsed_roles} → {hydrated_roles}"
-            )
+            assert parsed_roles == hydrated_roles, f"Role multiset changed: {parsed_roles} → {hydrated_roles}"
 
 
 # ---------------------------------------------------------------------------
@@ -177,7 +183,11 @@ class TestRolePreservation:
 
 class TestTitleStability:
     @given(data=synthetic_payload())
-    @settings(max_examples=20, suppress_health_check=[HealthCheck.too_slow, HealthCheck.function_scoped_fixture], deadline=None)
+    @settings(
+        max_examples=20,
+        suppress_health_check=[HealthCheck.too_slow, HealthCheck.function_scoped_fixture],
+        deadline=None,
+    )
     def test_title_preserved(self, data, workspace_env):
         provider_name, raw_bytes, unique_id = data
         db_path = db_setup(workspace_env)
@@ -188,9 +198,7 @@ class TestTitleStability:
             parsed, result = _parse_and_transform(provider_name, raw_bytes, workspace_env["archive_root"], unique_id)
             hydrated = _save_and_hydrate(result, conn)
 
-            assert hydrated.title == parsed.title, (
-                f"Title changed: {parsed.title!r} → {hydrated.title!r}"
-            )
+            assert hydrated.title == parsed.title, f"Title changed: {parsed.title!r} → {hydrated.title!r}"
 
 
 # ---------------------------------------------------------------------------
@@ -200,15 +208,17 @@ class TestTitleStability:
 
 class TestContentHashDeterminism:
     @given(data=synthetic_payload())
-    @settings(max_examples=20, suppress_health_check=[HealthCheck.too_slow, HealthCheck.function_scoped_fixture], deadline=None)
+    @settings(
+        max_examples=20,
+        suppress_health_check=[HealthCheck.too_slow, HealthCheck.function_scoped_fixture],
+        deadline=None,
+    )
     def test_same_payload_same_hash(self, data, tmp_path):
         provider_name, raw_bytes, unique_id = data
         _, result1 = _parse_and_transform(provider_name, raw_bytes, tmp_path, unique_id)
         _, result2 = _parse_and_transform(provider_name, raw_bytes, tmp_path, unique_id)
 
-        assert result1.content_hash == result2.content_hash, (
-            "Same payload produced different content hashes"
-        )
+        assert result1.content_hash == result2.content_hash, "Same payload produced different content hashes"
 
 
 # ---------------------------------------------------------------------------
@@ -218,7 +228,11 @@ class TestContentHashDeterminism:
 
 class TestIdempotentReimport:
     @given(data=synthetic_payload())
-    @settings(max_examples=15, suppress_health_check=[HealthCheck.too_slow, HealthCheck.function_scoped_fixture], deadline=None)
+    @settings(
+        max_examples=15,
+        suppress_health_check=[HealthCheck.too_slow, HealthCheck.function_scoped_fixture],
+        deadline=None,
+    )
     def test_second_import_is_noop(self, data, workspace_env):
         provider_name, raw_bytes, unique_id = data
         db_path = db_setup(workspace_env)
@@ -255,7 +269,11 @@ class TestIdempotentReimport:
 
 class TestProviderIdentity:
     @given(data=synthetic_payload())
-    @settings(max_examples=20, suppress_health_check=[HealthCheck.too_slow, HealthCheck.function_scoped_fixture], deadline=None)
+    @settings(
+        max_examples=20,
+        suppress_health_check=[HealthCheck.too_slow, HealthCheck.function_scoped_fixture],
+        deadline=None,
+    )
     def test_provider_preserved(self, data, workspace_env):
         provider_name, raw_bytes, unique_id = data
         db_path = db_setup(workspace_env)
@@ -278,15 +296,17 @@ class TestProviderIdentity:
 
 class TestConversationIdDeterminism:
     @given(data=synthetic_payload())
-    @settings(max_examples=20, suppress_health_check=[HealthCheck.too_slow, HealthCheck.function_scoped_fixture], deadline=None)
+    @settings(
+        max_examples=20,
+        suppress_health_check=[HealthCheck.too_slow, HealthCheck.function_scoped_fixture],
+        deadline=None,
+    )
     def test_same_payload_same_cid(self, data, tmp_path):
         provider_name, raw_bytes, unique_id = data
         _, result1 = _parse_and_transform(provider_name, raw_bytes, tmp_path, unique_id)
         _, result2 = _parse_and_transform(provider_name, raw_bytes, tmp_path, unique_id)
 
-        assert result1.candidate_cid == result2.candidate_cid, (
-            "Same payload produced different conversation IDs"
-        )
+        assert result1.candidate_cid == result2.candidate_cid, "Same payload produced different conversation IDs"
 
 
 # ---------------------------------------------------------------------------
@@ -306,7 +326,9 @@ def test_provider_completes_full_roundtrip(provider_name, workspace_env):
     from polylogue.storage.backends.connection import open_connection
 
     with open_connection(db_path) as conn:
-        parsed, result = _parse_and_transform(provider_name, raw_bytes, workspace_env["archive_root"], f"{provider_name}-42")
+        parsed, result = _parse_and_transform(
+            provider_name, raw_bytes, workspace_env["archive_root"], f"{provider_name}-42"
+        )
         hydrated = _save_and_hydrate(result, conn)
 
         assert hydrated is not None

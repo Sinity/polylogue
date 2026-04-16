@@ -96,8 +96,7 @@ class TestArchiveFactsConsistency:
             facts = ArchiveFacts.from_db_connection(conn)
 
             all_ids = {
-                r["conversation_id"]
-                for r in conn.execute("SELECT conversation_id FROM conversations").fetchall()
+                r["conversation_id"] for r in conn.execute("SELECT conversation_id FROM conversations").fetchall()
             }
             per_provider_ids = set()
             for provider in facts.provider_counts:
