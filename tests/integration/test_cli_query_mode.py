@@ -66,7 +66,9 @@ def test_cli_query_summary_list_json_no_results_still_returns_json(tmp_path):
 def test_cli_query_open_print_path_json_no_results_still_returns_json(tmp_path):
     workspace = setup_isolated_workspace(tmp_path)
 
-    result = run_cli(["--plain", "--format", "json", "--latest", "open", "--print-path"], env=workspace["env"], cwd=tmp_path)
+    result = run_cli(
+        ["--plain", "--format", "json", "--latest", "open", "--print-path"], env=workspace["env"], cwd=tmp_path
+    )
 
     assert result.exit_code == 2, result.output
     assert result.stderr == ""
