@@ -189,7 +189,9 @@ def render_schema_list_result(
         age_str = f" ({snapshot.latest_age_days}d old)" if snapshot.latest_age_days is not None else ""
         package_str = f", packages={len(snapshot.catalog.packages)}" if snapshot.catalog else ""
         corpus_spec_str = f", corpus-specs={len(snapshot.corpus_specs)}" if snapshot.corpus_specs else ""
-        corpus_scenario_str = f", corpus-scenarios={len(snapshot.corpus_scenarios)}" if snapshot.corpus_scenarios else ""
+        corpus_scenario_str = (
+            f", corpus-scenarios={len(snapshot.corpus_scenarios)}" if snapshot.corpus_scenarios else ""
+        )
         click.echo(
             f"  {snapshot.provider}: {len(snapshot.versions)} version(s){package_str}{corpus_spec_str}{corpus_scenario_str}, "
             f"latest={latest}{age_str}"

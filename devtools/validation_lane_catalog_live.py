@@ -59,6 +59,7 @@ def _memory_budget_operational_lanes() -> dict[str, object]:
         for spec in build_memory_budget_operational_surface_lanes()
     }
 
+
 LIVE_LANES = {
     "live-archive-subset-parse-probe": pipeline_probe_lane(
         "live-archive-subset-parse-probe",

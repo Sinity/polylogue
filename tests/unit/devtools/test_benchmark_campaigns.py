@@ -148,7 +148,9 @@ def test_action_event_materialization_campaign_reports_action_row_counts(monkeyp
 
     monkeypatch.setattr("devtools.synthetic_benchmark_runtime._db_row_counts", lambda _db_path: next(row_counts))
     monkeypatch.setattr("polylogue.storage.backends.connection.open_connection", lambda _db_path: FakeContext())
-    monkeypatch.setattr("polylogue.storage.action_event_rebuild_runtime.rebuild_action_event_read_model_sync", lambda conn: 7)
+    monkeypatch.setattr(
+        "polylogue.storage.action_event_rebuild_runtime.rebuild_action_event_read_model_sync", lambda conn: 7
+    )
 
     result = run_action_event_materialization_campaign(tmp_path / "benchmark.db")
 
@@ -195,7 +197,9 @@ def test_session_product_materialization_campaign_reports_rebuild_counts(monkeyp
         def __exit__(self, exc_type, exc, tb) -> bool:
             return False
 
-    monkeypatch.setattr("devtools.synthetic_benchmark_runtime._session_product_table_counts", lambda _db_path: next(table_counts))
+    monkeypatch.setattr(
+        "devtools.synthetic_benchmark_runtime._session_product_table_counts", lambda _db_path: next(table_counts)
+    )
     monkeypatch.setattr("polylogue.storage.backends.connection.open_connection", lambda _db_path: FakeContext())
     monkeypatch.setattr(
         "polylogue.storage.session_product_rebuild.rebuild_session_products_sync",

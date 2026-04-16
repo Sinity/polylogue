@@ -85,9 +85,7 @@ def build_cli_surface_exercises(families: tuple[CliSurfaceFamily, ...]) -> tuple
     """Compile exercise projections from authored families."""
 
     return tuple(
-        compile_cli_surface_variant(family, family.exercise)
-        for family in families
-        if family.exercise is not None
+        compile_cli_surface_variant(family, family.exercise) for family in families if family.exercise is not None
     )
 
 
@@ -95,9 +93,7 @@ def build_cli_surface_live_variants(families: tuple[CliSurfaceFamily, ...]) -> t
     """Compile live-lane projections from authored families."""
 
     return tuple(
-        compile_cli_surface_variant(family, variant)
-        for family in families
-        for variant in family.live_variants
+        compile_cli_surface_variant(family, variant) for family in families for variant in family.live_variants
     )
 
 
@@ -107,9 +103,7 @@ def build_cli_surface_memory_budget_variants(
     """Compile memory-budget projections from authored families."""
 
     return tuple(
-        compile_cli_surface_variant(family, variant)
-        for family in families
-        for variant in family.memory_budget_variants
+        compile_cli_surface_variant(family, variant) for family in families for variant in family.memory_budget_variants
     )
 
 

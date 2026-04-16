@@ -64,6 +64,8 @@ _PRODUCT_SUBCOMMAND_OPERATION_NAMES = {
     "status": "query-session-product-status",
     "debt": "query-archive-debt",
 }
+
+
 def _unique(items: tuple[str, ...]) -> tuple[str, ...]:
     seen: set[str] = set()
     merged: list[str] = []
@@ -121,7 +123,8 @@ def _metadata_for_polylogue_products(argv: tuple[str, ...]) -> ScenarioMetadata:
         (
             _PRODUCT_OPERATION_BY_METHOD[product.operations_method]
             for product in PRODUCT_REGISTRY.values()
-            if product.resolved_cli_command_name == subcommand and product.operations_method in _PRODUCT_OPERATION_BY_METHOD
+            if product.resolved_cli_command_name == subcommand
+            and product.operations_method in _PRODUCT_OPERATION_BY_METHOD
         ),
         "",
     )
@@ -556,7 +559,11 @@ class ExecutionSpec:
             PipelineProbeRequest.from_payload(probe_payload) if isinstance(probe_payload, Mapping) else None
         )
         metadata_payload = payload.get("metadata")
-        metadata = ScenarioMetadata.from_payload(metadata_payload) if isinstance(metadata_payload, Mapping) else ScenarioMetadata()
+        metadata = (
+            ScenarioMetadata.from_payload(metadata_payload)
+            if isinstance(metadata_payload, Mapping)
+            else ScenarioMetadata()
+        )
         return cls(
             kind=kind,
             argv=argv,

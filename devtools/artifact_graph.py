@@ -37,11 +37,12 @@ def render_artifact_graph(*, as_json: bool) -> str:
     lines.append("Maintenance Targets:")
     for target in graph.maintenance_targets:
         artifacts = ", ".join(node.name for node in graph.artifacts_for_maintenance_target(target)) or "—"
-        operations = ", ".join(
-            operation
-            for operation in (target.doctor_health_operation, target.doctor_repair_operation)
-            if operation
-        ) or "—"
+        operations = (
+            ", ".join(
+                operation for operation in (target.doctor_health_operation, target.doctor_repair_operation) if operation
+            )
+            or "—"
+        )
         lines.append(f"- {target.name} [{target.mode.value}/{target.category.value}]: {target.description}")
         lines.append(f"  - artifacts: {artifacts}")
         lines.append(f"  - operations: {operations}")

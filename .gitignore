@@ -24,7 +24,7 @@ venv/
 !/.cache/README.md
 /.local/*
 !/.local/README.md
-.claude/scratch/
+.agent/scratch/
 .claude/worktrees/
 .claude/*.local.*
 

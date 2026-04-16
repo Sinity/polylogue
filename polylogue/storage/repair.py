@@ -371,8 +371,7 @@ def preview_counts_from_archive_debt(
     return {
         status.maintenance_target: status.issue_count
         for status in statuses.values()
-        if status.issue_count > 0
-        or status.maintenance_target in preview_targets
+        if status.issue_count > 0 or status.maintenance_target in preview_targets
     }
 
 
