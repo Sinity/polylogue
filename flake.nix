@@ -140,6 +140,9 @@
             if [ -L result ]; then
               rm result
             fi
+
+            # Install repo git hooks (format/lint on commit, verify on push).
+            git config --local core.hooksPath .githooks 2>/dev/null || true
             find polylogue tests devtools -type d -name __pycache__ -prune -exec rm -r {} + 2>/dev/null || true
 
             # Create venv if it doesn't exist

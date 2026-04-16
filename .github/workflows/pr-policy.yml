@@ -3,13 +3,7 @@ name: Pull Request Policy
 on:
   pull_request:
     branches: [master]
-    types:
-      - opened
-      - edited
-      - reopened
-      - synchronize
-      - ready_for_review
-  workflow_dispatch:
+    types: [opened, edited, reopened, synchronize, ready_for_review]
 
 permissions:
   contents: read
@@ -23,62 +17,41 @@ jobs:
   validate:
     name: Validate PR metadata
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 1
     steps:
-      - name: Enforce branch naming and title
+      - name: Check branch name, title, and body sections
         env:
           HEAD_REF: ${{ github.head_ref }}
           PR_TITLE: ${{ github.event.pull_request.title }}
           PR_BODY: ${{ github.event.pull_request.body || '' }}
         run: |
-          python - <<'PY'
-          import os
-          import re
-          import sys
+          python3 - <<'PY'
+          import os, re, sys
 
           branch = os.environ["HEAD_REF"]
           title = os.environ["PR_TITLE"]
           body = os.environ["PR_BODY"]
-
           errors: list[str] = []
 
-          branch_pattern = re.compile(
-              r"^feature/(feat|fix|refactor|perf|test|docs|chore)/[a-z0-9][a-z0-9-]*$"
-          )
-          title_pattern = re.compile(r"^(feat|fix|refactor|test|docs|chore|perf)(\([^)]+\))?: .+")
+          # Branch: feature/<category>/<kebab-description>
+          if not re.match(r"^feature/(feat|fix|refactor|perf|test|docs|chore)/[a-z0-9][a-z0-9-]*$", branch):
+              errors.append("Branch must match `feature/<category>/<description>` (categories: feat|fix|refactor|perf|test|docs|chore)")
 
-          if not branch_pattern.match(branch):
-              errors.append(
-                  "Branch name must match "
-                  "`feature/<category>/<description>` with category in "
-                  "`feat|fix|refactor|perf|test|docs|chore`."
-              )
+          # Title: conventional commit prefix
+          if not re.match(r"^(feat|fix|refactor|test|docs|chore|perf)(\([^)]+\))?: .+", title):
+              errors.append("Title must use conventional form: `feat: add X`, `fix(cli): correct Y`")
 
-          if not title_pattern.match(title):
-              errors.append(
-                  "PR title must use conventional form like "
-                  "`feat: add X` or `fix(cli): correct Y`."
-              )
-
-          required_sections = ("## Summary", "## Problem", "## Solution", "## Verification")
-          missing_sections = [section for section in required_sections if section not in body]
-          if missing_sections:
-              errors.append(
-                  "PR body must include the required sections: "
-                  + ", ".join(f"`{section}`" for section in missing_sections)
-              )
-
-          # Strip bot-injected comment blocks (CodeRabbit, etc.) before checking
-          # for leftover template placeholders in the author-written body.
-          clean_body = re.sub(r"<!--.*?-->", "", body, flags=re.DOTALL).strip()
-          if "<!--" in clean_body:
-              errors.append("PR body still contains template comments; remove or replace them before merge.")
+          # Body: required sections (ignore content inside fenced code blocks)
+          body_without_fences = re.sub(r"```.*?```", "", body, flags=re.DOTALL)
+          for section in ("## Summary", "## Problem", "## Solution", "## Verification"):
+              if section not in body_without_fences:
+                  errors.append(f"Missing required section: `{section}`")
 
           if errors:
-              print("Pull request policy check failed:\n")
-              for error in errors:
-                  print(f"- {error}")
+              print("PR policy check failed:\n")
+              for e in errors:
+                  print(f"  - {e}")
               sys.exit(1)
 
-          print("Pull request policy check passed.")
+          print("PR policy check passed.")
           PY

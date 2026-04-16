@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# Fast pre-commit gate: format + lint only.
+# Installed automatically by the devshell (shellHook in flake.nix).
+
+set -euo pipefail
+
+# Only check files that are staged for commit.
+staged=$(git diff --cached --name-only --diff-filter=ACM -- '*.py')
+if [ -z "$staged" ]; then
+  exit 0
+fi
+
+echo "pre-commit: checking format and lint" >&2
+
+if ! ruff format --check $staged 2>/dev/null; then
+  echo "" >&2
+  echo "pre-commit: files need formatting. Run: ruff format polylogue/ tests/ devtools/" >&2
+  exit 1
+fi
+
+if ! ruff check --quiet $staged 2>/dev/null; then
+  echo "" >&2
+  echo "pre-commit: lint errors found. Run: ruff check --fix polylogue/ tests/ devtools/" >&2
+  exit 1
+fi

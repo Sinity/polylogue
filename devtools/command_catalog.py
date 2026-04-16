@@ -99,6 +99,15 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         "Render docs/test-quality-workflows.md from live validation, mutation, and benchmark registries.",
         "devtools.render_quality_reference",
     ),
+    CommandSpec(
+        "verify",
+        "verification",
+        "Run the local verification baseline before pushing or creating a PR.",
+        "devtools.verify",
+        use_when="Run format, lint, render-all, and test checks locally before pushing.",
+        examples=("devtools verify", "devtools verify --quick"),
+        featured=True,
+    ),
     CommandSpec("run-validation-lanes", "verification", "Run named validation lanes.", "devtools.run_validation_lanes"),
     CommandSpec(
         "artifact-graph",
