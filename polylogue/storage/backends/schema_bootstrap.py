@@ -129,15 +129,21 @@ def build_current_schema_extension_plan(snapshot: SchemaSnapshot) -> SchemaExten
         if "cost_is_estimated" not in session_profile_columns:
             statements.append("ALTER TABLE session_profiles ADD COLUMN cost_is_estimated INTEGER NOT NULL DEFAULT 0")
         if "evidence_payload_json" not in session_profile_columns:
-            statements.append("ALTER TABLE session_profiles ADD COLUMN evidence_payload_json TEXT NOT NULL DEFAULT '{}'")
+            statements.append(
+                "ALTER TABLE session_profiles ADD COLUMN evidence_payload_json TEXT NOT NULL DEFAULT '{}'"
+            )
         if "inference_payload_json" not in session_profile_columns:
-            statements.append("ALTER TABLE session_profiles ADD COLUMN inference_payload_json TEXT NOT NULL DEFAULT '{}'")
+            statements.append(
+                "ALTER TABLE session_profiles ADD COLUMN inference_payload_json TEXT NOT NULL DEFAULT '{}'"
+            )
         if "evidence_search_text" not in session_profile_columns:
             statements.append("ALTER TABLE session_profiles ADD COLUMN evidence_search_text TEXT NOT NULL DEFAULT ''")
         if "inference_search_text" not in session_profile_columns:
             statements.append("ALTER TABLE session_profiles ADD COLUMN inference_search_text TEXT NOT NULL DEFAULT ''")
         if "enrichment_payload_json" not in session_profile_columns:
-            statements.append("ALTER TABLE session_profiles ADD COLUMN enrichment_payload_json TEXT NOT NULL DEFAULT '{}'")
+            statements.append(
+                "ALTER TABLE session_profiles ADD COLUMN enrichment_payload_json TEXT NOT NULL DEFAULT '{}'"
+            )
         if "enrichment_search_text" not in session_profile_columns:
             statements.append("ALTER TABLE session_profiles ADD COLUMN enrichment_search_text TEXT NOT NULL DEFAULT ''")
         if "enrichment_version" not in session_profile_columns:
@@ -273,9 +279,7 @@ async def capture_schema_snapshot_async(conn: aiosqlite.Connection) -> SchemaSna
         columns = {item[1] for item in await cursor.fetchall()}
         table_columns[table_name] = frozenset(columns)
 
-    cursor = await conn.execute(
-        "SELECT sql FROM sqlite_master WHERE type='index' AND name='idx_raw_conv_source_mtime'"
-    )
+    cursor = await conn.execute("SELECT sql FROM sqlite_master WHERE type='index' AND name='idx_raw_conv_source_mtime'")
     row = await cursor.fetchone()
     index_sql["idx_raw_conv_source_mtime"] = row[0] if row and isinstance(row[0], str) else None
     return SchemaSnapshot(current_version=current_version, table_columns=table_columns, index_sql=index_sql)

@@ -17,9 +17,7 @@ def test_action_event_artifact_state_reports_pending_and_extra_fts_rows() -> Non
     assert state.pending_fts_rows == 0
     assert state.excess_fts_rows == 3
     assert state.repair_item_count == 3
-    assert state.repair_detail() == (
-        "Action-event read model pending (3 stale extra action-event FTS rows)"
-    )
+    assert state.repair_detail() == ("Action-event read model pending (3 stale extra action-event FTS rows)")
 
 
 def test_action_event_artifact_state_reports_missing_and_stale_rows() -> None:

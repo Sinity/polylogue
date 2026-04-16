@@ -64,9 +64,7 @@ class ActionEventArtifactState:
 
     @property
     def rows_ready(self) -> bool:
-        return self.source_conversations == 0 or (
-            self.missing_conversations == 0 and self.stale_rows == 0
-        )
+        return self.source_conversations == 0 or (self.missing_conversations == 0 and self.stale_rows == 0)
 
     @property
     def fts_ready(self) -> bool:
