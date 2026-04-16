@@ -11,6 +11,7 @@ from polylogue.logging import get_logger
 from polylogue.storage.backends.schema_bootstrap import (
     SCHEMA_DDL,
     SCHEMA_VERSION,
+    SchemaSnapshot,
     apply_schema_extension_plan,
     apply_schema_extension_plan_async,
     assert_supported_archive_layout_snapshot,
@@ -38,8 +39,14 @@ def assert_supported_archive_layout(conn: sqlite3.Connection) -> None:
     assert_supported_archive_layout_snapshot(capture_schema_snapshot(conn))
 
 
-def apply_current_schema_extensions(conn: sqlite3.Connection) -> None:
-    snapshot = capture_schema_snapshot(conn)
+def _apply_extensions_for_snapshot(
+    conn: sqlite3.Connection, snapshot: SchemaSnapshot
+) -> None:
+    """Apply schema extensions for a current-version database.
+
+    Shared logic used by both the sync ensure path and the public
+    apply_current_schema_extensions helper.
+    """
     plan = build_current_schema_extension_plan(snapshot)
     if snapshot.sql_for_index("idx_raw_conv_source_mtime") is not None and any(
         statement == "DROP INDEX IF EXISTS idx_raw_conv_source_mtime" for statement in plan.statements
@@ -50,8 +57,16 @@ def apply_current_schema_extensions(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+def apply_current_schema_extensions(conn: sqlite3.Connection) -> None:
+    _apply_extensions_for_snapshot(conn, capture_schema_snapshot(conn))
+
+
 def _ensure_schema(conn: sqlite3.Connection) -> None:
-    """Ensure the database is at the current schema version."""
+    """Ensure the database is at the current schema version.
+
+    Control flow mirrors ensure_schema_async exactly:
+    fresh-create → version-mismatch rejection → extension application.
+    """
     snapshot = capture_schema_snapshot(conn)
 
     if snapshot.current_version == 0:
@@ -65,15 +80,18 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
 
     assert_supported_archive_layout_snapshot(snapshot)
 
-    if snapshot.current_version == SCHEMA_VERSION:
-        apply_current_schema_extensions(conn)
-        return
+    if snapshot.current_version != SCHEMA_VERSION:
+        raise DatabaseError(schema_version_mismatch_message(snapshot.current_version))
 
-    raise DatabaseError(schema_version_mismatch_message(snapshot.current_version))
+    _apply_extensions_for_snapshot(conn, snapshot)
 
 
 async def ensure_schema_async(conn: aiosqlite.Connection) -> None:
-    """Ensure the async connection is at the current schema version."""
+    """Ensure the async connection is at the current schema version.
+
+    Control flow mirrors _ensure_schema exactly:
+    fresh-create → version-mismatch rejection → extension application.
+    """
     snapshot = await capture_schema_snapshot_async(conn)
 
     if snapshot.current_version == 0:
