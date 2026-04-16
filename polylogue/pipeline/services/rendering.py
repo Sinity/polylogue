@@ -9,6 +9,7 @@ from collections.abc import AsyncIterable, AsyncIterator, Iterable, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from polylogue.lib.metrics import read_current_rss_mb
 from polylogue.logging import get_logger
 from polylogue.protocols import OutputRenderer, ProgressCallback
 
@@ -25,6 +26,9 @@ RENDER_TIMEOUT_S = 120
 
 # Log a warning when a single render exceeds this duration.
 SLOW_RENDER_THRESHOLD_S = 10.0
+_DEFAULT_RENDER_WORKER_LIMIT = 4
+_HIGH_RSS_RENDER_LIMIT_MB = 1024.0
+_VERY_HIGH_RSS_RENDER_LIMIT_MB = 2048.0
 
 
 class RenderResult:
@@ -33,6 +37,10 @@ class RenderResult:
     def __init__(self) -> None:
         self.rendered_count: int = 0
         self.failures: list[dict[str, str]] = []
+        self.worker_count: int = 0
+        self.rss_start_mb: float | None = None
+        self.rss_end_mb: float | None = None
+        self.max_current_rss_mb: float | None = None
 
     def record_success(self) -> None:
         """Record a successful render."""
@@ -46,6 +54,27 @@ class RenderResult:
                 "error": error,
             }
         )
+
+    def observe_current_rss(self) -> None:
+        current_rss_mb = read_current_rss_mb()
+        if current_rss_mb is None:
+            return
+        if self.max_current_rss_mb is None or current_rss_mb > self.max_current_rss_mb:
+            self.max_current_rss_mb = current_rss_mb
+
+
+def _resolve_default_render_workers(max_workers: int | None) -> int:
+    if max_workers is not None:
+        return max_workers
+    worker_limit = min(os.cpu_count() or 4, _DEFAULT_RENDER_WORKER_LIMIT)
+    current_rss_mb = read_current_rss_mb()
+    if current_rss_mb is None:
+        return worker_limit
+    if current_rss_mb >= _VERY_HIGH_RSS_RENDER_LIMIT_MB:
+        return min(worker_limit, 1)
+    if current_rss_mb >= _HIGH_RSS_RENDER_LIMIT_MB:
+        return min(worker_limit, 2)
+    return worker_limit
 
 
 class RenderService:
@@ -93,16 +122,18 @@ class RenderService:
         5. Slow renders (>10s) are logged for investigation
         """
         result = RenderResult()
+        result.rss_start_mb = read_current_rss_mb()
         if total is None and isinstance(conversation_ids, Sequence):
             total = len(conversation_ids)
         if total == 0:
+            result.rss_end_mb = result.rss_start_mb
             return result
 
-        # Scale workers to CPU count (capped at 8 to avoid fd pressure)
-        if max_workers is None:
-            max_workers = min(os.cpu_count() or 4, 8)
+        max_workers = _resolve_default_render_workers(max_workers)
         worker_limit = total if total is not None else max_workers
         worker_count = max(1, min(max_workers, worker_limit))
+        result.worker_count = worker_count
+        result.observe_current_rss()
 
         queue: asyncio.Queue[str | None] = asyncio.Queue(maxsize=max(worker_count * 2, 1))
 
@@ -126,6 +157,7 @@ class RenderService:
                 result.record_failure(convo_id, str(exc))
 
             elapsed = time.perf_counter() - t0
+            result.observe_current_rss()
             if elapsed > SLOW_RENDER_THRESHOLD_S:
                 logger.info(
                     "Slow render: %.1fs",
@@ -169,6 +201,8 @@ class RenderService:
         else:
             await _run_workers()
 
+        result.rss_end_mb = read_current_rss_mb()
+        result.observe_current_rss()
         return result
 
 

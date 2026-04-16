@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 import pytest
 
+from polylogue.scenarios import CorpusSpec
 from polylogue.schemas import ValidationResult
 from polylogue.schemas.registry import SchemaRegistry
 from polylogue.schemas.synthetic import SyntheticCorpus
@@ -578,8 +579,15 @@ def test_verify_raw_corpus_reports_valid_synthetic_chatgpt(db_path, monkeypatch)
         lambda *args, **kwargs: _AlwaysValidValidator(),
     )
 
-    corpus = SyntheticCorpus.for_provider("chatgpt")
-    raw = corpus.generate(count=1, seed=42)[0]
+    raw = SyntheticCorpus.generate_for_spec(
+        CorpusSpec.for_provider(
+            "chatgpt",
+            count=1,
+            seed=42,
+            origin="generated.test-schema-validation",
+            tags=("synthetic", "test", "schema-validation"),
+        )
+    )[0]
     _insert_raw_record(
         db_path=db_path,
         raw_id="raw-chatgpt-1",
@@ -744,6 +752,51 @@ def test_verify_raw_corpus_quarantine_malformed_updates_validation_state(db_path
     assert row[4] == "codex"
     assert row[5] is not None
     assert isinstance(row[6], str) and "Malformed JSONL lines" in row[6]
+
+
+def test_verify_raw_corpus_quarantine_empty_payload_updates_validation_state(db_path):
+    raw_id = _insert_raw_record(
+        db_path=db_path,
+        raw_id="raw-codex-empty",
+        provider_name="codex",
+        source_name="codex",
+        source_path="/tmp/empty-session.jsonl",
+        raw_content=b"",
+    )
+
+    report = verify_raw_corpus(
+        db_path=db_path,
+        request=SchemaVerificationRequest(
+            providers=["codex"],
+            max_samples=16,
+            quarantine_malformed=True,
+        ),
+    )
+    stats = report.providers["codex"]
+
+    assert report.total_records == 1
+    assert stats.decode_errors == 1
+    assert stats.quarantined_records == 1
+
+    with open_connection(db_path) as conn:
+        row = conn.execute(
+            """
+            SELECT validation_status, validation_error, validation_mode, validation_provider,
+                   payload_provider,
+                   validated_at, parse_error
+            FROM raw_conversations
+            WHERE raw_id = ?
+            """,
+            (raw_id,),
+        ).fetchone()
+    assert row is not None
+    assert row[0] == "failed"
+    assert isinstance(row[1], str) and "zero-length" in row[1]
+    assert row[2] == "strict"
+    assert row[3] == "codex"
+    assert row[4] is None
+    assert row[5] is not None
+    assert isinstance(row[6], str) and "zero-length" in row[6]
 
 
 def test_verify_raw_corpus_honors_record_limit_and_offset(db_path, monkeypatch):

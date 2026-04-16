@@ -5,6 +5,8 @@ from __future__ import annotations
 from polylogue.showcase.exercises import (
     EXERCISES,
     GROUPS,
+    QA_EXTRA_EXERCISES,
+    QA_EXTRA_SCENARIOS,
     Exercise,
     exercises_by_group,
     topological_order,
@@ -12,6 +14,7 @@ from polylogue.showcase.exercises import (
 )
 from polylogue.showcase.generators import (
     command_help_exercise_names,
+    generate_qa_extra_scenarios,
     inventory_command_paths,
     json_contract_exercise_names,
 )
@@ -79,7 +82,7 @@ class TestExercisesByGroup:
         }
         assert set(observed) == expected
         for exercise in observed.values():
-            assert exercise.validation.stdout_is_valid_json is True
+            assert exercise.assertion.stdout_is_valid_json is True
             assert exercise.output_ext == ".json"
 
     def test_json_contract_exercises_use_curated_runnable_args(self):
@@ -89,10 +92,139 @@ class TestExercisesByGroup:
             if exercise.group == "subcommands" and exercise.name.startswith("json-")
         }
         assert observed["json-audit"].args == ["audit", "--only", "audit", "--json"]
+        assert observed["json-doctor-action-event-preview"].args == [
+            "doctor",
+            "--json",
+            "--repair",
+            "--preview",
+            "--target",
+            "action_event_read_model",
+        ]
+        assert observed["json-doctor-session-products-preview"].args == [
+            "doctor",
+            "--json",
+            "--repair",
+            "--preview",
+            "--target",
+            "session_products",
+        ]
         assert observed["json-run-embed"].args == ["run", "embed", "--stats", "--json"]
         assert "json-schema-compare" not in observed
         assert "json-schema-generate" not in observed
         assert "json-schema-promote" not in observed
+
+    def test_runtime_aligned_json_contract_exercise_preserves_declared_targets(self):
+        observed = {
+            exercise.name: exercise
+            for exercise in EXERCISES
+            if exercise.group == "subcommands" and exercise.name.startswith("json-")
+        }
+
+        action_preview = observed["json-doctor-action-event-preview"]
+
+        assert action_preview.path_targets == ("action-event-repair-loop",)
+        assert action_preview.artifact_targets == (
+            "action_event_rows",
+            "action_event_fts",
+            "action_event_health",
+        )
+        assert action_preview.operation_targets == (
+            "cli.json-contract",
+            "project-action-event-health",
+        )
+        assert action_preview.tags == (
+            "generated",
+            "json-contract",
+            "maintenance",
+            "action-events",
+        )
+
+        session_preview = observed["json-doctor-session-products-preview"]
+        assert session_preview.path_targets == ("session-product-repair-loop",)
+        assert session_preview.artifact_targets == (
+            "session_product_rows",
+            "session_product_fts",
+            "session_product_health",
+        )
+        assert session_preview.operation_targets == (
+            "cli.json-contract",
+            "project-session-product-health",
+        )
+        assert session_preview.tags == (
+            "generated",
+            "json-contract",
+            "maintenance",
+            "session-products",
+        )
+
+        profiles = observed["json-products-profiles"]
+        assert profiles.path_targets == ("session-profile-query-loop",)
+        assert profiles.artifact_targets == (
+            "session_profile_rows",
+            "session_profile_merged_fts",
+            "session_profile_results",
+        )
+        assert profiles.operation_targets == (
+            "cli.json-contract",
+            "query-session-profiles",
+        )
+        assert profiles.tags == (
+            "generated",
+            "json-contract",
+            "products",
+            "session-profiles",
+        )
+
+        threads = observed["json-products-threads"]
+        assert threads.path_targets == ("work-thread-query-loop",)
+        assert threads.artifact_targets == ("work_thread_rows", "work_thread_fts", "work_thread_results")
+        assert threads.operation_targets == (
+            "cli.json-contract",
+            "query-work-threads",
+        )
+        assert threads.tags == (
+            "generated",
+            "json-contract",
+            "products",
+            "threads",
+        )
+
+    def test_static_reparse_preview_exercise_preserves_declared_targets(self):
+        observed = {exercise.name: exercise for exercise in EXERCISES}
+
+        reparse_preview = observed["run-preview-reparse"]
+
+        assert reparse_preview.args == [
+            "run",
+            "--preview",
+            "--reparse",
+            "--source",
+            "inbox",
+            "parse",
+        ]
+        assert reparse_preview.origin == "authored.showcase-catalog"
+        assert reparse_preview.path_targets == ("raw-reparse-loop",)
+        assert reparse_preview.artifact_targets == (
+            "raw_validation_state",
+            "validation_backlog",
+            "parse_backlog",
+            "parse_quarantine",
+        )
+        assert reparse_preview.operation_targets == (
+            "plan-validation-backlog",
+            "plan-parse-backlog",
+        )
+        assert reparse_preview.tags == (
+            "pipeline",
+            "reparse",
+            "maintenance",
+        )
+
+    def test_exported_qa_extra_roots_match_generated_family(self):
+        expected_names = [scenario.name for scenario in generate_qa_extra_scenarios()]
+
+        assert [scenario.name for scenario in QA_EXTRA_SCENARIOS] == expected_names
+        assert [exercise.name for exercise in QA_EXTRA_EXERCISES] == expected_names
 
 
 class TestVhsExercises:

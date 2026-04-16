@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from polylogue.maintenance_models import DerivedModelStatus
+from polylogue.storage.action_event_artifacts import ActionEventArtifactState
 from polylogue.storage.store import ACTION_EVENT_MATERIALIZER_VERSION, SESSION_PRODUCT_MATERIALIZER_VERSION
 
 
@@ -20,49 +21,34 @@ def pending_docs(source_docs: int, materialized_docs: int) -> int:
 
 
 def build_action_statuses(metrics: dict[str, int | bool]) -> dict[str, DerivedModelStatus]:
+    state = ActionEventArtifactState.from_metrics(metrics)
+    action_rows_status = state.row_status()
+    action_rows_payload = action_rows_status.to_dict()
+    action_rows_payload["materializer_version"] = ACTION_EVENT_MATERIALIZER_VERSION
+    message_fts_exact_counts = bool(metrics.get("message_fts_exact_counts", True))
     return {
         "messages_fts": DerivedModelStatus(
             name="messages_fts",
             ready=bool(metrics["message_fts_ready"]),
             detail=(
-                f"Messages FTS ready ({metrics['message_fts_rows']:,}/{metrics['total_messages']:,} rows)"
+                (
+                    f"Messages FTS ready ({metrics['message_fts_rows']:,}/{metrics['message_source_rows']:,} rows)"
+                    if message_fts_exact_counts
+                    else "Messages FTS present"
+                )
                 if bool(metrics["message_fts_ready"])
-                else f"Messages FTS pending ({metrics['message_fts_rows']:,}/{metrics['total_messages']:,} rows)"
+                else (
+                    f"Messages FTS pending ({metrics['message_fts_rows']:,}/{metrics['message_source_rows']:,} rows)"
+                    if message_fts_exact_counts
+                    else "Messages FTS missing or empty; use --deep to verify full coverage"
+                )
             ),
-            source_rows=int(metrics["total_messages"]),
+            source_rows=int(metrics["message_source_rows"]),
             materialized_rows=int(metrics["message_fts_rows"]),
-            pending_rows=pending_rows(int(metrics["total_messages"]), int(metrics["message_fts_rows"])),
+            pending_rows=pending_rows(int(metrics["message_source_rows"]), int(metrics["message_fts_rows"])),
         ),
-        "action_events": DerivedModelStatus(
-            name="action_events",
-            ready=bool(metrics["action_rows_ready"]),
-            detail=(
-                f"Action-event rows ready ({metrics['action_documents']:,}/{metrics['action_source_documents']:,} conversations)"
-                if bool(metrics["action_rows_ready"])
-                else f"Action-event rows pending ({metrics['action_documents']:,}/{metrics['action_source_documents']:,} conversations)"
-            ),
-            source_documents=int(metrics["action_source_documents"]),
-            materialized_documents=int(metrics["action_documents"]),
-            materialized_rows=int(metrics["action_rows"]),
-            pending_documents=pending_docs(int(metrics["action_source_documents"]), int(metrics["action_documents"])),
-            stale_rows=int(metrics["action_stale_rows"]),
-            orphan_rows=int(metrics["action_orphan_rows"]),
-            materializer_version=ACTION_EVENT_MATERIALIZER_VERSION,
-            matches_version=bool(metrics["action_matches_version"]),
-        ),
-        "action_events_fts": DerivedModelStatus(
-            name="action_events_fts",
-            ready=bool(metrics["action_fts_ready"]),
-            detail=(
-                f"Action-event FTS ready ({metrics['action_fts_rows']:,}/{metrics['action_rows']:,} rows)"
-                if bool(metrics["action_fts_ready"])
-                else f"Action-event FTS pending ({metrics['action_fts_rows']:,}/{metrics['action_rows']:,} rows)"
-            ),
-            source_rows=int(metrics["action_rows"]),
-            materialized_rows=int(metrics["action_fts_rows"]),
-            pending_rows=pending_rows(int(metrics["action_rows"]), int(metrics["action_fts_rows"])),
-            orphan_rows=int(metrics["action_orphan_rows"]),
-        ),
+        "action_events": DerivedModelStatus(**action_rows_payload),
+        "action_events_fts": state.fts_status(),
     }
 
 

@@ -2,7 +2,16 @@
 
 from __future__ import annotations
 
-from devtools.validation_lane_base import devtools_lane, pytest_lane
+from functools import partial
+
+from devtools.validation_lane_base import devtools_lane as _devtools_lane
+from devtools.validation_lane_base import pipeline_probe_lane as _pipeline_probe_lane
+from devtools.validation_lane_base import pytest_lane as _pytest_lane
+from polylogue.scenarios import CorpusRequest
+
+devtools_lane = partial(_devtools_lane, category="contract")
+pipeline_probe_lane = partial(_pipeline_probe_lane, category="contract")
+pytest_lane = partial(_pytest_lane, category="contract")
 
 CONTRACT_LANES = {
     "machine-contract": pytest_lane(
@@ -14,6 +23,8 @@ CONTRACT_LANES = {
         "0",
         "-m",
         "machine_contract",
+        operation_targets=("cli.json-contract",),
+        tags=("contract", "json", "cli"),
     ),
     "query-routing": pytest_lane(
         "query-routing",
@@ -30,22 +41,17 @@ CONTRACT_LANES = {
         "Registry-derived tier-0 CLI help/source showcase baselines",
         180,
         "verify-showcase",
+        operation_targets=("cli.help",),
+        tags=("contract", "showcase", "help"),
     ),
-    "pipeline-probe-chatgpt": devtools_lane(
+    "pipeline-probe-chatgpt": pipeline_probe_lane(
         "pipeline-probe-chatgpt",
         "Synthetic ChatGPT parse-stage pipeline probe under explicit runtime and RSS budgets",
         180,
-        "pipeline-probe",
-        "--provider",
-        "chatgpt",
-        "--count",
-        "5",
-        "--stage",
-        "parse",
-        "--max-total-ms",
-        "10000",
-        "--max-peak-rss-mb",
-        "512",
+        stage="parse",
+        corpus_request=CorpusRequest(providers=("chatgpt",), count=5, messages_min=4, messages_max=12, seed=42),
+        max_total_ms=10000,
+        max_peak_rss_mb=512,
     ),
     "semantic-stack": pytest_lane(
         "semantic-stack",
@@ -77,6 +83,15 @@ CONTRACT_LANES = {
         "tests/unit/storage/test_parse_tracking.py",
         "tests/unit/pipeline/test_ingestion_chaos.py",
         "tests/integration/test_security.py",
+        path_targets=("source-acquisition-loop",),
+        artifact_targets=(
+            "configured_sources",
+            "source_payload_stream",
+            "raw_validation_state",
+            "artifact_observation_rows",
+        ),
+        operation_targets=("acquire-raw-conversations",),
+        tags=("contract", "sources", "acquisition"),
     ),
     "maintenance-workflows": pytest_lane(
         "maintenance-workflows",
@@ -94,6 +109,15 @@ CONTRACT_LANES = {
         "tests/unit/site/test_builder.py",
         "tests/unit/cli/test_site.py",
         "tests/integration/test_health.py",
+        path_targets=("site-publication-loop",),
+        artifact_targets=(
+            "conversation_render_projection",
+            "site_conversation_pages",
+            "site_publication_manifest",
+            "publication_records",
+        ),
+        operation_targets=("publish-site",),
+        tags=("contract", "maintenance", "publication"),
     ),
     "archive-data-products": pytest_lane(
         "archive-data-products",
@@ -146,6 +170,10 @@ CONTRACT_LANES = {
         "tests/unit/core/test_health_core.py",
         "tests/unit/mcp/test_tool_contracts.py",
         "tests/unit/cli/test_source_selection_helpers.py",
+        path_targets=("conversation-query-loop", "message-fts-health-loop"),
+        artifact_targets=("message_fts", "conversation_query_results", "archive_health"),
+        operation_targets=("query-conversations", "project-archive-health"),
+        tags=("contract", "retrieval", "health"),
     ),
     "embeddings-coverage": pytest_lane(
         "embeddings-coverage",
@@ -159,6 +187,21 @@ CONTRACT_LANES = {
         "tests/unit/core/test_health_core.py",
         "tests/unit/cli/test_source_selection_helpers.py",
         "tests/unit/mcp/test_tool_contracts.py",
+        path_targets=("embedding-materialization-loop", "embedding-status-query-loop", "retrieval-band-health-loop"),
+        artifact_targets=(
+            "archive_conversation_rows",
+            "embedding_metadata_rows",
+            "embedding_status_rows",
+            "message_embedding_vectors",
+            "retrieval_band_health",
+            "embedding_status_results",
+        ),
+        operation_targets=(
+            "materialize-transcript-embeddings",
+            "project-retrieval-band-health",
+            "query-embedding-status",
+        ),
+        tags=("contract", "embeddings", "retrieval"),
     ),
     "evidence-tier-contracts": pytest_lane(
         "evidence-tier-contracts",
@@ -209,6 +252,17 @@ CONTRACT_LANES = {
         "tests/unit/core/test_health_core.py",
         "tests/unit/cli/test_check.py",
         "tests/unit/mcp/test_tool_contracts.py",
+        path_targets=("embedding-status-query-loop", "retrieval-band-health-loop", "message-fts-health-loop"),
+        artifact_targets=(
+            "embedding_metadata_rows",
+            "embedding_status_rows",
+            "message_embedding_vectors",
+            "retrieval_band_health",
+            "embedding_status_results",
+            "archive_health",
+        ),
+        operation_targets=("project-retrieval-band-health", "query-embedding-status", "project-archive-health"),
+        tags=("contract", "retrieval", "embeddings", "health"),
     ),
     "heuristic-inference-contracts": pytest_lane(
         "heuristic-inference-contracts",
@@ -269,21 +323,24 @@ CONTRACT_LANES = {
         "-m",
         "chaos",
     ),
-    "scale-fast": devtools_lane(
+    "scale-fast": pytest_lane(
         "scale-fast",
         "Fast storage scale budgets",
         120,
-        "run-scale-lanes",
-        "--lane",
-        "fast",
+        "-v",
+        "tests/unit/storage/test_scale.py",
+        "-x",
+        "--timeout=30",
     ),
-    "scale-slow": devtools_lane(
+    "scale-slow": pytest_lane(
         "scale-slow",
         "Slow local storage scale budgets",
         360,
-        "run-scale-lanes",
-        "--lane",
+        "-v",
+        "-m",
         "slow",
+        "tests/unit/storage/",
+        "--timeout=120",
     ),
     "long-haul-small": devtools_lane(
         "long-haul-small",

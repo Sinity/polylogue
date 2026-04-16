@@ -6,14 +6,14 @@ import argparse
 import sys
 from pathlib import Path
 
+from devtools.benchmark_catalog import BenchmarkCampaignEntry
 from devtools.command_catalog import control_plane_command
-from devtools.quality_registry import (
-    BenchmarkCampaignEntry,
-    MutationCampaignEntry,
-    QualityRegistry,
-    ValidationLaneEntry,
-    build_quality_registry,
-)
+from devtools.lane_models import LaneEntry
+from devtools.mutation_catalog import MutationCampaignEntry
+from devtools.quality_registry import QualityRegistry, build_quality_registry
+from devtools.scenario_coverage import RuntimeScenarioCoverage, build_runtime_scenario_coverage
+from devtools.validation_family_models import ValidationLaneFamily
+from polylogue.scenarios import CorpusScenario, ScenarioProjectionEntry
 
 
 def _format_code_list(items: tuple[str, ...]) -> str:
@@ -22,7 +22,7 @@ def _format_code_list(items: tuple[str, ...]) -> str:
     return "<br>".join(f"`{item}`" for item in items)
 
 
-def _render_lane_table(entries: tuple[ValidationLaneEntry, ...]) -> list[str]:
+def _render_lane_table(entries: tuple[LaneEntry, ...]) -> list[str]:
     lines = [
         "| Lane | Timeout (s) | Description |",
         "| --- | ---: | --- |",
@@ -32,7 +32,18 @@ def _render_lane_table(entries: tuple[ValidationLaneEntry, ...]) -> list[str]:
     return lines
 
 
-def _render_composite_lane_table(entries: tuple[ValidationLaneEntry, ...]) -> list[str]:
+def _render_validation_family_table(entries: tuple[ValidationLaneFamily, ...]) -> list[str]:
+    lines = [
+        "| Family | Composite Lanes | Description |",
+        "| --- | --- | --- |",
+    ]
+    for entry in entries:
+        lane_names = tuple(lane.name for lane in entry.lanes)
+        lines.append(f"| `{entry.name}` | {_format_code_list(lane_names)} | {entry.description} |")
+    return lines
+
+
+def _render_composite_lane_table(entries: tuple[LaneEntry, ...]) -> list[str]:
     lines = [
         "| Lane | Timeout (s) | Includes | Description |",
         "| --- | ---: | --- | --- |",
@@ -69,7 +80,96 @@ def _render_benchmark_table(entries: tuple[BenchmarkCampaignEntry, ...]) -> list
     return lines
 
 
-def build_document(registry: QualityRegistry) -> str:
+def _render_inferred_corpus_table(entries: tuple[CorpusScenario, ...]) -> list[str]:
+    lines = [
+        "| Provider | Package | Variants | Targets | Tags |",
+        "| --- | --- | ---: | --- | --- |",
+    ]
+    for entry in entries:
+        lines.append(
+            f"| `{entry.provider}` | `{entry.package_version}` | `{len(entry.corpus_specs)}` | "
+            f"{_format_code_list(entry.target_labels)} | "
+            f"{_format_code_list(entry.tags)} |"
+        )
+    return lines
+
+
+def _render_scenario_projection_table(entries: tuple[ScenarioProjectionEntry, ...]) -> list[str]:
+    lines = [
+        "| Source | Projection | Path Targets | Artifact Targets | Operation Targets | Maintenance Targets | Tags | Description |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- |",
+    ]
+    for entry in entries:
+        lines.append(
+            f"| `{entry.source_kind.value}` | `{entry.name}` | "
+            f"{_format_code_list(entry.runtime_path_targets())} | "
+            f"{_format_code_list(entry.artifact_targets)} | "
+            f"{_format_code_list(entry.operation_targets)} | "
+            f"{_format_code_list(entry.maintenance_targets)} | "
+            f"{_format_code_list(entry.tags)} | {entry.description} |"
+        )
+    return lines
+
+
+def _render_runtime_coverage_section(coverage: RuntimeScenarioCoverage) -> list[str]:
+    uncovered_paths = tuple(sorted(name for name, path in coverage.paths.items() if not path.complete))
+    return [
+        "## Runtime Coverage",
+        "",
+        f"- covered runtime paths: `{sum(1 for path in coverage.paths.values() if path.complete)}`",
+        f"- covered runtime artifacts: `{len(coverage.artifacts)}`",
+        f"- covered runtime operations: `{len(coverage.operations)}`",
+        f"- covered maintenance targets: `{len(coverage.maintenance_targets)}`",
+        f"- covered declared operation targets: `{len(coverage.declared_operations)}`",
+        "- uncovered runtime paths: "
+        + ("—" if not uncovered_paths else ", ".join(f"`{name}`" for name in uncovered_paths)),
+        "- uncovered runtime artifacts: "
+        + (
+            "—" if not coverage.uncovered_artifacts else ", ".join(f"`{name}`" for name in coverage.uncovered_artifacts)
+        ),
+        "- uncovered runtime operations: "
+        + (
+            "—"
+            if not coverage.uncovered_operations
+            else ", ".join(f"`{name}`" for name in coverage.uncovered_operations)
+        ),
+        "- uncovered maintenance targets: "
+        + (
+            "—"
+            if not coverage.uncovered_maintenance_targets
+            else ", ".join(f"`{name}`" for name in coverage.uncovered_maintenance_targets)
+        ),
+        "- uncovered declared operation targets: "
+        + (
+            "—"
+            if not coverage.uncovered_declared_operations
+            else ", ".join(f"`{name}`" for name in coverage.uncovered_declared_operations)
+        ),
+        "",
+        "Inspect the full authored map with:",
+        "",
+        "```bash",
+        control_plane_command("artifact-graph"),
+        control_plane_command("artifact-graph", "--json"),
+        "```",
+        "",
+    ]
+
+
+def _render_scenario_projection_snapshot(registry: QualityRegistry) -> list[str]:
+    projection_counts: dict[str, int] = {}
+    for entry in registry.scenario_projections:
+        source_kind = entry.source_kind.value
+        projection_counts[source_kind] = projection_counts.get(source_kind, 0) + 1
+    return [
+        f"- scenario projections: `{len(registry.scenario_projections)}`",
+        f"- inferred corpus scenarios: `{len(registry.inferred_corpus_scenarios)}`",
+        *(f"  - {source_kind}: `{count}`" for source_kind, count in sorted(projection_counts.items())),
+    ]
+
+
+def build_document(registry: QualityRegistry, *, runtime_coverage: RuntimeScenarioCoverage | None = None) -> str:
+    coverage = runtime_coverage or build_runtime_scenario_coverage(projections=registry.scenario_projections)
     parts = [
         "[← Back to README](../README.md)",
         "",
@@ -84,9 +184,13 @@ def build_document(registry: QualityRegistry) -> str:
         f"- contract lanes: `{len(registry.contract_lanes)}`",
         f"- live lanes: `{len(registry.live_lanes)}`",
         f"- composite lanes: `{len(registry.composite_lanes)}`",
+        f"- validation families: `{len(registry.validation_families)}`",
         f"- mutation campaigns: `{len(registry.mutation_campaigns)}`",
         f"- benchmark campaigns: `{len(registry.benchmark_campaigns)}`",
+        f"- synthetic benchmark campaigns: `{len(registry.synthetic_benchmark_campaigns)}`",
+        *_render_scenario_projection_snapshot(registry),
         "",
+        *_render_runtime_coverage_section(coverage),
         "## Common Commands",
         "",
         "Commands below assume the project devshell is already active. If not, prefix them with `nix develop -c`.",
@@ -130,6 +234,8 @@ def build_document(registry: QualityRegistry) -> str:
         "  .local/benchmark-campaigns/<baseline>.json \\",
         "  .local/benchmark-campaigns/<candidate>.json",
         control_plane_command("benchmark-campaign", "index"),
+        control_plane_command("run-benchmark-campaigns", "--list"),
+        control_plane_command("run-benchmark-campaigns", "--scale", "medium", "--campaign", "<campaign>"),
         "```",
         "",
         "### Fast pipeline probes",
@@ -185,6 +291,10 @@ def build_document(registry: QualityRegistry) -> str:
         "",
         "Use the named lanes through the runner.",
         "",
+        "### Validation Families",
+        "",
+        *_render_validation_family_table(registry.validation_families),
+        "",
         "### Contract Lanes",
         "",
         *_render_lane_table(registry.contract_lanes),
@@ -208,6 +318,24 @@ def build_document(registry: QualityRegistry) -> str:
         "Benchmark comparisons are manual.",
         "",
         *_render_benchmark_table(registry.benchmark_campaigns),
+        "",
+        "## Synthetic Benchmark Campaign Catalog",
+        "",
+        "These campaigns generate synthetic archives and run long-haul benchmark workloads through `devtools run-benchmark-campaigns`.",
+        "",
+        *_render_benchmark_table(registry.synthetic_benchmark_campaigns),
+        "",
+        "## Inferred Corpus Catalog",
+        "",
+        "These inferred corpus specs come from the live schema registry and participate in the shared scenario projection map.",
+        "",
+        *_render_inferred_corpus_table(registry.inferred_corpus_scenarios),
+        "",
+        "## Scenario Projection Catalog",
+        "",
+        "These are the authored scenario-bearing projections currently feeding runtime coverage and related control-plane maps.",
+        "",
+        *_render_scenario_projection_table(registry.scenario_projections),
         "",
         "## Artifact Locations",
         "",

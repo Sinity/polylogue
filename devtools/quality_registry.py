@@ -4,108 +4,71 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from devtools.benchmark_campaign import CAMPAIGNS as BENCHMARK_CAMPAIGNS
-from devtools.mutmut_campaign import CAMPAIGNS as MUTATION_CAMPAIGNS
-from devtools.validation_lane_base import LaneConfig
-from devtools.validation_lane_catalog_composites import COMPOSITE_LANES
-from devtools.validation_lane_catalog_contracts import CONTRACT_LANES
-from devtools.validation_lane_catalog_live import LIVE_LANES
-
-
-@dataclass(frozen=True)
-class ValidationLaneEntry:
-    name: str
-    description: str
-    timeout_s: int
-    category: str
-    sub_lanes: tuple[str, ...] = ()
-
-
-@dataclass(frozen=True)
-class MutationCampaignEntry:
-    name: str
-    description: str
-    paths_to_mutate: tuple[str, ...]
-    tests: tuple[str, ...]
-    notes: tuple[str, ...] = ()
-
-
-@dataclass(frozen=True)
-class BenchmarkCampaignEntry:
-    name: str
-    description: str
-    tests: tuple[str, ...]
-    notes: tuple[str, ...] = ()
-    warn_pct: float = 0.0
-    fail_pct: float = 0.0
+from devtools.authored_scenario_catalog import AuthoredScenarioCatalog, get_authored_scenario_catalog
+from devtools.benchmark_catalog import BenchmarkCampaignEntry
+from devtools.lane_models import LaneEntry
+from devtools.mutation_catalog import MutationCampaignEntry
+from devtools.scenario_projection_catalog import build_scenario_projection_entries
+from devtools.validation_family_models import ValidationLaneFamily
+from polylogue.scenarios import CorpusScenario, ScenarioProjectionEntry
+from polylogue.showcase.exercise_models import Exercise
 
 
 @dataclass(frozen=True)
 class QualityRegistry:
-    contract_lanes: tuple[ValidationLaneEntry, ...]
-    live_lanes: tuple[ValidationLaneEntry, ...]
-    composite_lanes: tuple[ValidationLaneEntry, ...]
-    mutation_campaigns: tuple[MutationCampaignEntry, ...]
-    benchmark_campaigns: tuple[BenchmarkCampaignEntry, ...]
+    catalog: AuthoredScenarioCatalog
+    scenario_projections: tuple[ScenarioProjectionEntry, ...]
 
+    @property
+    def exercise_scenarios(self) -> tuple[Exercise, ...]:
+        return self.catalog.exercise_scenarios
 
-def _lane_entries(category: str, lanes: dict[str, LaneConfig]) -> tuple[ValidationLaneEntry, ...]:
-    entries = [
-        ValidationLaneEntry(
-            name=lane.name,
-            description=lane.description,
-            timeout_s=lane.timeout_s,
-            category=category,
-            sub_lanes=tuple(lane.sub_lanes),
-        )
-        for lane in lanes.values()
-    ]
-    return tuple(sorted(entries, key=lambda item: item.name))
+    @property
+    def qa_extra_scenarios(self) -> tuple[Exercise, ...]:
+        return self.catalog.qa_extra_scenarios
 
+    @property
+    def contract_lanes(self) -> tuple[LaneEntry, ...]:
+        return self.catalog.contract_lanes
 
-def _mutation_entries() -> tuple[MutationCampaignEntry, ...]:
-    entries = [
-        MutationCampaignEntry(
-            name=campaign.name,
-            description=campaign.description,
-            paths_to_mutate=tuple(campaign.paths_to_mutate),
-            tests=tuple(campaign.tests),
-            notes=tuple(campaign.notes),
-        )
-        for campaign in MUTATION_CAMPAIGNS.values()
-    ]
-    return tuple(sorted(entries, key=lambda item: item.name))
+    @property
+    def validation_families(self) -> tuple[ValidationLaneFamily, ...]:
+        return self.catalog.validation_families
 
+    @property
+    def live_lanes(self) -> tuple[LaneEntry, ...]:
+        return self.catalog.live_lanes
 
-def _benchmark_entries() -> tuple[BenchmarkCampaignEntry, ...]:
-    entries = [
-        BenchmarkCampaignEntry(
-            name=campaign.name,
-            description=campaign.description,
-            tests=tuple(campaign.tests),
-            notes=tuple(campaign.notes),
-            warn_pct=campaign.warn_pct,
-            fail_pct=campaign.fail_pct,
-        )
-        for campaign in BENCHMARK_CAMPAIGNS.values()
-    ]
-    return tuple(sorted(entries, key=lambda item: item.name))
+    @property
+    def composite_lanes(self) -> tuple[LaneEntry, ...]:
+        return self.catalog.composite_lanes
+
+    @property
+    def mutation_campaigns(self) -> tuple[MutationCampaignEntry, ...]:
+        return self.catalog.mutation_campaigns
+
+    @property
+    def benchmark_campaigns(self) -> tuple[BenchmarkCampaignEntry, ...]:
+        return self.catalog.benchmark_campaigns
+
+    @property
+    def synthetic_benchmark_campaigns(self) -> tuple[BenchmarkCampaignEntry, ...]:
+        return self.catalog.synthetic_benchmark_campaigns
+
+    @property
+    def inferred_corpus_scenarios(self) -> tuple[CorpusScenario, ...]:
+        return self.catalog.inferred_corpus_scenarios
 
 
 def build_quality_registry() -> QualityRegistry:
+    catalog = get_authored_scenario_catalog()
     return QualityRegistry(
-        contract_lanes=_lane_entries("contract", CONTRACT_LANES),
-        live_lanes=_lane_entries("live", LIVE_LANES),
-        composite_lanes=_lane_entries("composite", COMPOSITE_LANES),
-        mutation_campaigns=_mutation_entries(),
-        benchmark_campaigns=_benchmark_entries(),
+        catalog=catalog,
+        scenario_projections=build_scenario_projection_entries(catalog=catalog),
     )
 
 
 __all__ = [
-    "BenchmarkCampaignEntry",
-    "MutationCampaignEntry",
     "QualityRegistry",
-    "ValidationLaneEntry",
     "build_quality_registry",
 ]

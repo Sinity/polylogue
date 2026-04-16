@@ -16,6 +16,14 @@ from polylogue.storage.blob_store import get_blob_store
 from .verification_models import ProviderSchemaVerification, SchemaVerificationReport
 from .verification_requests import SchemaVerificationRequest, bounded_window
 
+
+def _format_malformed_jsonl_error(*, malformed_lines: int, malformed_detail: str | None) -> str:
+    message = f"Malformed JSONL lines: {malformed_lines}"
+    if malformed_detail:
+        return f"{message} (first bad {malformed_detail})"
+    return message
+
+
 # ---------------------------------------------------------------------------
 # Row iteration helpers
 # ---------------------------------------------------------------------------
@@ -181,6 +189,7 @@ def verify_raw_corpus(
                 )
                 payload = envelope.payload
                 malformed_lines = envelope.malformed_jsonl_lines
+                malformed_detail = envelope.malformed_jsonl_detail
             except Exception as exc:
                 if provider_filter and candidate_provider not in provider_filter:
                     continue
@@ -193,7 +202,7 @@ def verify_raw_corpus(
                 provider_stats.decode_errors += 1
                 if request.quarantine_malformed:
                     raw_id = str(row["raw_id"])
-                    reason = f"Unable to decode payload: {type(exc).__name__}"
+                    reason = f"Unable to decode payload: {exc}"
                     quarantine_updates.append((raw_id, reason, candidate_provider, stored_payload_provider))
                     provider_stats.quarantined_records += 1
                 if request.progress_callback is not None:
@@ -218,7 +227,10 @@ def verify_raw_corpus(
                 provider_stats.decode_errors += 1
                 if request.quarantine_malformed:
                     raw_id = str(row["raw_id"])
-                    reason = f"Malformed JSONL lines: {malformed_lines}"
+                    reason = _format_malformed_jsonl_error(
+                        malformed_lines=malformed_lines,
+                        malformed_detail=malformed_detail,
+                    )
                     quarantine_updates.append((raw_id, reason, actual_provider, actual_provider))
                     provider_stats.quarantined_records += 1
                 if request.progress_callback is not None:

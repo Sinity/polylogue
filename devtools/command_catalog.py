@@ -100,7 +100,26 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         "devtools.render_quality_reference",
     ),
     CommandSpec("run-validation-lanes", "verification", "Run named validation lanes.", "devtools.run_validation_lanes"),
-    CommandSpec("run-scale-lanes", "verification", "Run scale-validation lanes.", "devtools.run_scale_lanes"),
+    CommandSpec(
+        "artifact-graph",
+        "verification",
+        "Render the runtime artifact, operation, and scenario-coverage map.",
+        "devtools.artifact_graph",
+        use_when="Inspect the authored runtime graph and see which scenarios currently cover declared artifacts and operations.",
+        examples=("devtools artifact-graph", "devtools artifact-graph --json"),
+    ),
+    CommandSpec(
+        "scenario-projections",
+        "verification",
+        "Render the authored scenario-bearing verification projections.",
+        "devtools.scenario_projections",
+        use_when="Inspect the unified projection inventory that feeds runtime coverage, generated docs, and control-plane maps.",
+        examples=(
+            "devtools scenario-projections",
+            "devtools scenario-projections --source-kind exercise --artifact-target action_event_rows",
+            "devtools scenario-projections --json",
+        ),
+    ),
     CommandSpec(
         "verify-showcase",
         "verification",

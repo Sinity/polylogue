@@ -150,18 +150,34 @@ class SQLiteRawMixin:
         """Return {source_path: file_mtime} for all raw records with an mtime."""
         return await self.queries.get_known_source_mtimes()
 
-    async def reset_parse_status(self, *, provider: str | None = None) -> int:
+    async def reset_parse_status(
+        self,
+        *,
+        provider: str | None = None,
+        source_names: list[str] | None = None,
+    ) -> int:
         """Clear parsed_at/parse_error to force re-parsing on next run."""
         async with self._get_connection() as conn:
             return await raw_queries.reset_parse_status(
-                conn, provider=provider, transaction_depth=self._transaction_depth
+                conn,
+                provider=provider,
+                source_names=source_names,
+                transaction_depth=self._transaction_depth,
             )
 
-    async def reset_validation_status(self, *, provider: str | None = None) -> int:
+    async def reset_validation_status(
+        self,
+        *,
+        provider: str | None = None,
+        source_names: list[str] | None = None,
+    ) -> int:
         """Clear validation tracking to force re-validation on next run."""
         async with self._get_connection() as conn:
             return await raw_queries.reset_validation_status(
-                conn, provider=provider, transaction_depth=self._transaction_depth
+                conn,
+                provider=provider,
+                source_names=source_names,
+                transaction_depth=self._transaction_depth,
             )
 
     async def get_raw_conversations_batch(

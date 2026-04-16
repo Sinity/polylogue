@@ -8,32 +8,34 @@ from polylogue.maintenance_models import DerivedModelStatus
 from polylogue.storage.action_event_status import action_event_read_model_status_sync
 from polylogue.storage.derived_status_products import build_archive_product_statuses, pending_docs, pending_rows
 from polylogue.storage.embedding_stats import read_embedding_stats_sync
-from polylogue.storage.fts_lifecycle import fts_index_status_sync
+from polylogue.storage.fts_lifecycle import message_fts_readiness_sync
 from polylogue.storage.session_product_status import session_product_status_sync
 
 
 def collect_derived_model_statuses_sync(
     conn: sqlite3.Connection,
+    *,
+    verify_full: bool = True,
 ) -> dict[str, DerivedModelStatus]:
     total_conversations = int(conn.execute("SELECT COUNT(*) FROM conversations").fetchone()[0] or 0)
-    total_messages = int(conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0] or 0)
 
-    fts_status = fts_index_status_sync(conn)
-    action_status = action_event_read_model_status_sync(conn)
-    session_status = session_product_status_sync(conn)
+    fts_status = message_fts_readiness_sync(conn, verify_total_rows=verify_full)
+    action_status = action_event_read_model_status_sync(conn, verify_source_alignment=verify_full)
+    session_status = session_product_status_sync(conn, verify_freshness=verify_full)
     embedding_stats = read_embedding_stats_sync(conn, include_retrieval_bands=False)
 
     metrics: dict[str, int | bool] = {
         "total_conversations": total_conversations,
-        "total_messages": total_messages,
-        "message_fts_rows": int(fts_status.get("count", 0)),
-        "message_fts_ready": bool(fts_status.get("exists", False))
-        and int(fts_status.get("count", 0)) == total_messages,
+        "message_fts_exact_counts": verify_full,
+        "message_source_rows": int(fts_status["total_rows"]),
+        "message_fts_rows": int(fts_status["indexed_rows"]),
+        "message_fts_ready": bool(fts_status["ready"]),
         "action_rows": int(action_status["count"]),
         "action_documents": int(action_status["materialized_conversation_count"]),
         "action_source_documents": int(action_status["valid_source_conversation_count"]),
         "action_orphan_rows": int(action_status["orphan_tool_block_count"]),
         "action_fts_rows": int(action_status["action_fts_count"]),
+        "action_fts_stale_rows": int(action_status.get("action_fts_stale_rows", 0)),
         "action_rows_ready": bool(action_status["rows_ready"]),
         "action_fts_ready": bool(action_status["action_fts_ready"]),
         "action_stale_rows": int(action_status["stale_count"]),
@@ -171,7 +173,11 @@ def build_retrieval_statuses(metrics: dict[str, int | bool]) -> dict[str, Derive
             pending_rows=pending_rows(
                 int(metrics["expected_evidence_retrieval_rows"]), int(metrics["evidence_retrieval_rows"])
             ),
-            stale_rows=int(metrics["profile_evidence_fts_duplicates"]) + int(metrics["action_stale_rows"]),
+            stale_rows=(
+                int(metrics["profile_evidence_fts_duplicates"])
+                + int(metrics["action_stale_rows"])
+                + int(metrics.get("action_fts_stale_rows", 0))
+            ),
             orphan_rows=int(metrics["action_orphan_rows"]) + int(metrics["orphan_profile_rows"]),
         ),
         "retrieval_inference": DerivedModelStatus(

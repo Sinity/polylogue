@@ -2,30 +2,13 @@
 
 from __future__ import annotations
 
-import os
 import tempfile
-from collections.abc import Iterator
-from contextlib import contextmanager
 from pathlib import Path
 
 import click
 
 from polylogue.cli.types import AppEnv
-
-
-@contextmanager
-def _temporary_env(updates: dict[str, str]) -> Iterator[None]:
-    """Temporarily set environment variables and restore previous values on exit."""
-    previous = {key: os.environ.get(key) for key in updates}
-    os.environ.update(updates)
-    try:
-        yield
-    finally:
-        for key, value in previous.items():
-            if value is None:
-                os.environ.pop(key, None)
-            else:
-                os.environ[key] = value
+from polylogue.scenarios import CorpusRequest, CorpusSourceKind
 
 
 @click.command("generate")
@@ -37,6 +20,13 @@ def _temporary_env(updates: dict[str, str]) -> Iterator[None]:
     help="Providers to include (default: all). Can be repeated.",
 )
 @click.option("--count", "-n", default=3, show_default=True, help="Conversations per provider")
+@click.option(
+    "--corpus-source",
+    type=click.Choice([kind.value for kind in CorpusSourceKind], case_sensitive=False),
+    default=CorpusSourceKind.DEFAULT.value,
+    show_default=True,
+    help="Corpus spec source to execute.",
+)
 @click.option("--output-dir", "-o", type=click.Path(path_type=Path), default=None, help="Output directory")
 @click.option("--seed", is_flag=True, help="Run pipeline to produce a usable demo environment")
 @click.option("--env-only", is_flag=True, help="Print shell export statements only (requires --seed)")
@@ -45,6 +35,7 @@ def generate_command(
     env: AppEnv,
     providers: tuple[str, ...],
     count: int,
+    corpus_source: str,
     output_dir: Path | None,
     seed: bool,
     env_only: bool,
@@ -64,52 +55,64 @@ def generate_command(
 
     from polylogue.schemas.synthetic import SyntheticCorpus
 
-    available = SyntheticCorpus.available_providers()
-    selected = list(providers) if providers else available
+    source_kind = CorpusSourceKind(corpus_source)
 
-    invalid = set(selected) - set(available)
-    if invalid:
-        raise click.BadParameter(
-            f"Unknown provider(s): {', '.join(sorted(invalid))}. Available: {', '.join(available)}",
-            param_hint="--provider",
-        )
+    if source_kind is CorpusSourceKind.DEFAULT:
+        available = SyntheticCorpus.available_providers()
+        selected = list(providers) if providers else available
+        invalid = set(selected) - set(available)
+        if invalid:
+            raise click.BadParameter(
+                f"Unknown provider(s): {', '.join(sorted(invalid))}. Available: {', '.join(available)}",
+                param_hint="--provider",
+            )
+    else:
+        selected = list(providers)
 
     if seed:
-        _do_seed(env, selected, count, output_dir, env_only)
+        _do_seed(env, selected, count, source_kind, output_dir, env_only)
     else:
-        _do_corpus(env, selected, count, output_dir)
+        _do_corpus(env, selected, count, source_kind, output_dir)
 
 
 def _do_corpus(
     env: AppEnv,
     providers: list[str],
     count: int,
+    corpus_source: CorpusSourceKind,
     output_dir: Path | None,
 ) -> None:
     """Generate raw wire-format files for each provider."""
-    from polylogue.schemas.synthetic import SyntheticCorpus
+    from polylogue.showcase.workspace import (
+        build_synthetic_corpus_scenarios,
+        generate_synthetic_fixtures_from_scenarios,
+    )
 
     out = output_dir or Path(tempfile.mkdtemp(prefix="polylogue-corpus-"))
-
-    for provider in providers:
-        corpus = SyntheticCorpus.for_provider(provider)
-        ext = ".json" if corpus.wire_format.encoding == "json" else ".jsonl"
-        provider_dir = out / provider
-        provider_dir.mkdir(parents=True, exist_ok=True)
-
-        batch = corpus.generate_batch(
-            count=count,
-            messages_per_conversation=range(4, 16),
-            seed=42,
+    request = CorpusRequest(
+        providers=tuple(providers) or None,
+        source=corpus_source,
+        count=count,
+        style="default",
+        messages_min=4,
+        messages_max=15,
+        seed=42,
+    )
+    scenarios = build_synthetic_corpus_scenarios(request=request)
+    if not scenarios:
+        raise click.BadParameter(
+            "No corpus scenarios matched the selected source/providers.",
+            param_hint="--corpus-source",
         )
+    written_batches = generate_synthetic_fixtures_from_scenarios(out, corpus_scenarios=scenarios, prefix="sample")
+    specs = tuple(spec for scenario in scenarios for spec in scenario.corpus_specs)
 
-        for idx, artifact in enumerate(batch.artifacts):
-            dest = provider_dir / f"sample-{idx:02d}{ext}"
-            dest.write_bytes(artifact.raw_bytes)
+    for spec, written in zip(specs, written_batches, strict=True):
+        provider_dir = out / spec.provider
 
         env.ui.console.print(
-            f"  {provider}: {batch.report.generated_count} files "
-            f"({batch.report.element_kind or 'default'}) → {provider_dir}"
+            f"  {spec.provider}:{spec.scope_label}: {written.batch.report.generated_count} files "
+            f"({written.batch.report.element_kind or 'default'}) → {provider_dir}"
         )
 
     env.ui.console.print(f"\nCorpus written to: {out}")
@@ -119,88 +122,45 @@ def _do_seed(
     env: AppEnv,
     providers: list[str],
     count: int,
+    corpus_source: CorpusSourceKind,
     output_dir: Path | None,
     env_only: bool,
 ) -> None:
     """Seed a full demo database via the pipeline."""
-    from polylogue.config import Config, Source
-    from polylogue.pipeline.runner import run_sources
-    from polylogue.schemas.synthetic import SyntheticCorpus
-    from polylogue.sync_bridge import run_coroutine_sync
+    from polylogue.showcase.workspace import (
+        build_synthetic_corpus_scenarios,
+        create_verification_workspace,
+        seed_workspace_from_scenarios,
+    )
 
     out = output_dir or Path(tempfile.mkdtemp(prefix="polylogue-demo-"))
-
-    data_home = out / "data"
-    state_home = out / "state"
-    config_home = out / "config"
-    cache_home = out / "cache"
-    archive_root = out / "archive"
-    render_root = archive_root / "render"
-    fake_home = out / "home"
-    fixture_dir = out / "fixtures"
-    inbox_dir = data_home / "polylogue" / "inbox"
-
-    for d in [data_home, state_home, config_home, cache_home, archive_root, render_root, fake_home, inbox_dir]:
-        d.mkdir(parents=True, exist_ok=True)
-
-    env_vars = {
-        "HOME": str(fake_home),
-        "XDG_CONFIG_HOME": str(config_home),
-        "XDG_CACHE_HOME": str(cache_home),
-        "XDG_DATA_HOME": str(data_home),
-        "XDG_STATE_HOME": str(state_home),
-        "POLYLOGUE_ARCHIVE_ROOT": str(archive_root),
-        "POLYLOGUE_FORCE_PLAIN": "1",
-    }
-
-    sources: list[Source] = []
-    for provider in providers:
-        corpus = SyntheticCorpus.for_provider(provider)
-        ext = ".json" if corpus.wire_format.encoding == "json" else ".jsonl"
-        provider_dir = fixture_dir / provider
-        provider_dir.mkdir(parents=True, exist_ok=True)
-
-        batch = corpus.generate_batch(
-            count=count,
-            messages_per_conversation=range(6, 20),
-            seed=42,
+    workspace = create_verification_workspace(out)
+    request = CorpusRequest(
+        providers=tuple(providers) or None,
+        source=corpus_source,
+        count=count,
+        style="default",
+        messages_min=6,
+        messages_max=19,
+        seed=42,
+    )
+    scenarios = build_synthetic_corpus_scenarios(request=request)
+    if not scenarios:
+        raise click.BadParameter(
+            "No corpus scenarios matched the selected source/providers.",
+            param_hint="--corpus-source",
         )
-        for idx, artifact in enumerate(batch.artifacts):
-            (provider_dir / f"demo-{idx:02d}{ext}").write_bytes(artifact.raw_bytes)
-
-        sources.append(Source(name=provider, path=provider_dir))
-        inbox_provider_dir = inbox_dir / provider
-        inbox_provider_dir.mkdir(parents=True, exist_ok=True)
-        for fixture in provider_dir.iterdir():
-            if fixture.is_file():
-                (inbox_provider_dir / fixture.name).write_bytes(fixture.read_bytes())
-
-    with _temporary_env(env_vars):
-        config = Config(
-            archive_root=archive_root,
-            render_root=render_root,
-            sources=sources,
-        )
-
-        result = run_coroutine_sync(
-            run_sources(
-                config=config,
-                stage="all",
-                plan=None,
-                ui=None,
-                source_names=None,
-            )
-        )
+    result = seed_workspace_from_scenarios(workspace, corpus_scenarios=scenarios, prefix="demo")
 
     if env_only:
-        for key, value in env_vars.items():
+        for key, value in workspace.env_vars.items():
             click.echo(f'export {key}="{value}"')
     else:
         c = result.counts
         env.ui.console.print(f"Seeded {c.get('conversations', 0)} conversations, {c.get('messages', 0)} messages")
         env.ui.console.print(f"\nDemo environment: {out}")
         env.ui.console.print("\nTo use:")
-        for key, value in env_vars.items():
+        for key, value in workspace.env_vars.items():
             env.ui.console.print(f'  export {key}="{value}"')
 
 

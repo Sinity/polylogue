@@ -7,7 +7,16 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from polylogue.scenarios import ScenarioMetadata
 from polylogue.showcase.runner import ExerciseResult, ShowcaseResult
+
+
+def _serialize_exercise_corpus_specs(exercise: object) -> list[dict[str, Any]] | None:
+    corpus_specs = getattr(exercise, "corpus_specs", ())
+    if not isinstance(corpus_specs, (list, tuple)):
+        return None
+    payloads = [spec.to_payload() for spec in corpus_specs if hasattr(spec, "to_payload")]
+    return payloads or None
 
 
 def serialize_showcase_exercise(
@@ -27,6 +36,10 @@ def serialize_showcase_exercise(
         entry["description"] = result.exercise.description
     if include_tier:
         entry["tier"] = result.exercise.tier
+    entry.update(ScenarioMetadata.from_object(result.exercise).to_payload())
+    corpus_spec_payloads = _serialize_exercise_corpus_specs(result.exercise)
+    if corpus_spec_payloads is not None:
+        entry["corpus_specs"] = corpus_spec_payloads
     if result.skipped:
         entry["skipped"] = True
         entry["skip_reason"] = result.skip_reason

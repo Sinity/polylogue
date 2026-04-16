@@ -7,7 +7,7 @@ from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
 
-from devtools.benchmark_campaigns import CampaignResult
+from devtools.synthetic_benchmark_runtime import CampaignResult
 
 
 def generate_campaign_markdown(results: list[CampaignResult]) -> str:
@@ -76,6 +76,23 @@ def _render_campaign_section(result: CampaignResult) -> list[str]:
         f"### {result.campaign_name}",
         "",
     ]
+    if result.path_targets or result.artifact_targets or result.operation_targets or result.tags:
+        lines.extend(
+            [
+                "| Scenario metadata | Value |",
+                "| --- | --- |",
+                f"| origin | `{result.origin}` |",
+            ]
+        )
+        if result.path_targets:
+            lines.append(f"| path targets | `{', '.join(result.path_targets)}` |")
+        if result.artifact_targets:
+            lines.append(f"| artifact targets | `{', '.join(result.artifact_targets)}` |")
+        if result.operation_targets:
+            lines.append(f"| operation targets | `{', '.join(result.operation_targets)}` |")
+        if result.tags:
+            lines.append(f"| tags | `{', '.join(result.tags)}` |")
+        lines.append("")
 
     if result.metrics:
         lines.extend(

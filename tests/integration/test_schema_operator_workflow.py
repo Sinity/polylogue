@@ -122,6 +122,9 @@ class TestSchemaListCommand:
         assert isinstance(data, dict)
         providers = [entry["provider"] for entry in data["providers"]]
         assert "test-provider" in providers
+        snapshot = next(entry for entry in data["providers"] if entry["provider"] == "test-provider")
+        assert snapshot["corpus_spec_count"] == 1
+        assert snapshot["corpus_scenario_count"] == 1
 
     def test_list_specific_provider_json(self, runner: CliRunner, seeded_registry: SchemaRegistry) -> None:
         with _patch_registry(seeded_registry):
@@ -134,6 +137,10 @@ class TestSchemaListCommand:
         assert data["provider"] == "test-provider"
         assert "v1" in data["versions"]
         assert "v2" in data["versions"]
+        assert len(data["corpus_specs"]) == 1
+        assert len(data["corpus_scenarios"]) == 1
+        assert data["corpus_specs"][0]["provider"] == "test-provider"
+        assert data["corpus_scenarios"][0]["provider"] == "test-provider"
 
     def test_list_specific_provider_text(self, runner: CliRunner, seeded_registry: SchemaRegistry) -> None:
         with _patch_registry(seeded_registry):
@@ -143,6 +150,8 @@ class TestSchemaListCommand:
         assert "test-provider" in result.output
         assert "v1" in result.output
         assert "v2" in result.output
+        assert "Suggested synthetic scenarios:" in result.output
+        assert "Suggested synthetic corpus specs:" in result.output
 
     def test_list_unknown_provider(self, runner: CliRunner, seeded_registry: SchemaRegistry) -> None:
         with _patch_registry(seeded_registry):

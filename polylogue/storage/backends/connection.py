@@ -1,9 +1,4 @@
-"""SQLite connection management and database utilities.
-
-Provides thread-local connection caching for ``connection_context()``,
-the ``_load_sqlite_vec()`` helper, and factory functions for the
-default backend.
-"""
+"""SQLite connection management and database utilities."""
 
 from __future__ import annotations
 
@@ -26,7 +21,32 @@ DB_TIMEOUT = 30
 READ_DB_TIMEOUT = 1
 WRITE_CACHE_SIZE_KIB = 131072  # 128 MiB
 READ_CACHE_SIZE_KIB = 32768  # 32 MiB
+WRITE_MMAP_SIZE_BYTES = 1073741824  # 1 GiB
 READ_MMAP_SIZE_BYTES = 134217728  # 128 MiB
+WAL_AUTOCHECKPOINT_PAGES = 10000
+
+WRITE_CONNECTION_PRAGMA_STATEMENTS: tuple[str, ...] = (
+    "PRAGMA foreign_keys = ON",
+    "PRAGMA journal_mode=WAL",
+    f"PRAGMA busy_timeout = {DB_TIMEOUT * 1000}",
+    f"PRAGMA cache_size = -{WRITE_CACHE_SIZE_KIB}",
+    "PRAGMA synchronous = NORMAL",
+    f"PRAGMA mmap_size = {WRITE_MMAP_SIZE_BYTES}",
+    "PRAGMA temp_store = MEMORY",
+    f"PRAGMA wal_autocheckpoint = {WAL_AUTOCHECKPOINT_PAGES}",
+)
+
+READ_CONNECTION_PRAGMA_STATEMENTS: tuple[str, ...] = (
+    f"PRAGMA busy_timeout = {READ_DB_TIMEOUT * 1000}",
+    f"PRAGMA cache_size = -{READ_CACHE_SIZE_KIB}",
+    f"PRAGMA mmap_size = {READ_MMAP_SIZE_BYTES}",
+    "PRAGMA temp_store = MEMORY",
+)
+
+
+def _apply_pragma_statements(conn: sqlite3.Connection, statements: Sequence[str]) -> None:
+    for statement in statements:
+        conn.execute(statement)
 
 
 def _load_sqlite_vec(conn: sqlite3.Connection) -> bool:
@@ -59,10 +79,7 @@ def _load_sqlite_vec(conn: sqlite3.Connection) -> bool:
 def _configure_read_connection(conn: sqlite3.Connection) -> None:
     """Apply read-safe settings without taking write-oriented locks."""
     conn.row_factory = sqlite3.Row
-    conn.execute(f"PRAGMA busy_timeout = {READ_DB_TIMEOUT * 1000}")
-    conn.execute(f"PRAGMA cache_size = -{READ_CACHE_SIZE_KIB}")
-    conn.execute(f"PRAGMA mmap_size = {READ_MMAP_SIZE_BYTES}")
-    conn.execute("PRAGMA temp_store = MEMORY")
+    _apply_pragma_statements(conn, READ_CONNECTION_PRAGMA_STATEMENTS)
 
 
 # ---------------------------------------------------------------------------
@@ -90,14 +107,7 @@ def _get_cached_connection(path: Path) -> sqlite3.Connection:
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path, timeout=DB_TIMEOUT)
     conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute(f"PRAGMA busy_timeout = {DB_TIMEOUT * 1000}")
-    conn.execute(f"PRAGMA cache_size = -{WRITE_CACHE_SIZE_KIB}")
-    conn.execute("PRAGMA synchronous = NORMAL")  # safe with WAL
-    conn.execute("PRAGMA mmap_size = 1073741824")  # 1 GB
-    conn.execute("PRAGMA temp_store = MEMORY")
-    conn.execute("PRAGMA wal_autocheckpoint = 10000")
+    _apply_pragma_statements(conn, WRITE_CONNECTION_PRAGMA_STATEMENTS)
     _load_sqlite_vec(conn)
     _ensure_schema(conn)
 
@@ -143,7 +153,7 @@ def connection_context(db_path: Path | str | sqlite3.Connection | None = None) -
         yield db_path
         return
 
-    path = Path(db_path) if db_path else default_db_path()
+    path = Path(db_path) if db_path else _paths.db_path()
     yield _get_cached_connection(path)
 
 
@@ -159,7 +169,7 @@ def open_read_connection(db_path: Path | str | None = None) -> Iterator[sqlite3.
     If the database does not exist yet, fall back to the normal connection path
     so first-run callers still get a usable empty archive.
     """
-    path = Path(db_path) if db_path else default_db_path()
+    path = Path(db_path) if db_path else _paths.db_path()
     if not path.exists():
         with open_connection(path) as conn:
             yield conn
@@ -171,16 +181,6 @@ def open_read_connection(db_path: Path | str | None = None) -> Iterator[sqlite3.
         yield conn
     finally:
         conn.close()
-
-
-def default_db_path() -> Path:
-    """Return the default database path.
-
-    Uses XDG_DATA_HOME/polylogue/polylogue.db (semantic data, not ephemeral state).
-    Reads from polylogue.paths at call time (not import time) so that
-    tests can reload the paths module with monkeypatched XDG_DATA_HOME.
-    """
-    return _paths.data_home() / "polylogue.db"
 
 
 def create_default_backend() -> object:
@@ -233,14 +233,16 @@ def _build_provider_scope_filter(
 
 __all__ = [
     "DB_TIMEOUT",
+    "READ_CONNECTION_PRAGMA_STATEMENTS",
     "READ_MMAP_SIZE_BYTES",
     "READ_DB_TIMEOUT",
+    "WAL_AUTOCHECKPOINT_PAGES",
+    "WRITE_CONNECTION_PRAGMA_STATEMENTS",
     "_build_provider_scope_filter",
     "_build_scope_filter",
     "_build_source_scope_filter",
     "connection_context",
     "create_default_backend",
-    "default_db_path",
     "open_connection",
     "open_read_connection",
 ]

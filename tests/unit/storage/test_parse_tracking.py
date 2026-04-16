@@ -20,9 +20,9 @@ import pytest
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.backends.schema import (
     SCHEMA_VERSION,
+    _ensure_raw_source_mtime_index,
     _ensure_schema,
 )
-from polylogue.storage.backends.schema_upgrade import _ensure_raw_source_mtime_index
 from polylogue.storage.state_views import RawConversationStateUpdate
 from polylogue.storage.store import RawConversationRecord
 
@@ -299,11 +299,17 @@ class TestResetParseStatus:
 
     async def _populate(self, backend: SQLiteBackend) -> None:
         """Create 3 raw records, mark 2 as parsed."""
-        for i, provider in enumerate(["chatgpt", "chatgpt", "claude-ai"]):
+        rows = [
+            ("chatgpt", "inbox-a"),
+            ("chatgpt", "inbox-b"),
+            ("claude-ai", "inbox-a"),
+        ]
+        for i, (provider, source_name) in enumerate(rows):
             await backend.save_raw_conversation(
                 RawConversationRecord(
                     raw_id=f"raw-{i}",
                     provider_name=provider,
+                    source_name=source_name,
                     source_path=f"/path/{i}.json",
                     blob_size=len(f'{{"i": {i}}}'.encode()),
                     acquired_at="2026-01-01T00:00:00Z",
@@ -340,6 +346,20 @@ class TestResetParseStatus:
         assert rec2 is not None
         assert rec2.parsed_at is not None
 
+    async def test_reset_by_source_scope(self, backend: SQLiteBackend) -> None:
+        """Reset specific sources only clears matching parsed records."""
+        await self._populate(backend)
+        count = await backend.reset_parse_status(source_names=["inbox-a"])
+        assert count == 2
+
+        rec0 = await backend.get_raw_conversation("raw-0")
+        rec1 = await backend.get_raw_conversation("raw-1")
+        rec2 = await backend.get_raw_conversation("raw-2")
+        assert rec0 is not None and rec1 is not None and rec2 is not None
+        assert rec0.parsed_at is None
+        assert rec1.parsed_at is None
+        assert rec2.parsed_at is None
+
     async def test_reset_returns_zero_when_nothing_to_reset(self, backend: SQLiteBackend) -> None:
         """Reset returns 0 when no records have parsed_at set."""
         await backend.save_raw_conversation(
@@ -363,11 +383,17 @@ class TestResetValidationStatus:
         return SQLiteBackend(db_path=tmp_path / "test.db")
 
     async def _populate(self, backend: SQLiteBackend) -> None:
-        for i, provider in enumerate(["chatgpt", "chatgpt", "claude-ai"]):
+        rows = [
+            ("chatgpt", "inbox-a"),
+            ("chatgpt", "inbox-b"),
+            ("claude-ai", "inbox-a"),
+        ]
+        for i, (provider, source_name) in enumerate(rows):
             await backend.save_raw_conversation(
                 RawConversationRecord(
                     raw_id=f"raw-{i}",
                     provider_name=provider,
+                    source_name=source_name,
                     source_path=f"/path/{i}.json",
                     blob_size=len(f'{{"i": {i}}}'.encode()),
                     acquired_at="2026-01-01T00:00:00Z",
@@ -418,6 +444,19 @@ class TestResetValidationStatus:
         assert rec2.validation_status == "failed"
         assert rec0.payload_provider == "chatgpt"
         assert rec2.payload_provider == "claude-ai"
+
+    async def test_reset_validation_by_source_scope(self, backend: SQLiteBackend) -> None:
+        await self._populate(backend)
+        count = await backend.reset_validation_status(source_names=["inbox-a"])
+        assert count == 2
+
+        rec0 = await backend.get_raw_conversation("raw-0")
+        rec1 = await backend.get_raw_conversation("raw-1")
+        rec2 = await backend.get_raw_conversation("raw-2")
+        assert rec0 is not None and rec1 is not None and rec2 is not None
+        assert rec0.validation_status is None
+        assert rec1.validation_status is None
+        assert rec2.validation_status is None
 
 
 # ─── Mtime skip integration test ──────────────────────────────────────────

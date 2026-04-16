@@ -2,50 +2,152 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-
-from devtools.command_catalog import control_plane_argv
-
-
-@dataclass(frozen=True)
-class LaneConfig:
-    """Configuration for a validation lane."""
-
-    name: str
-    description: str
-    timeout_s: int
-    command: list[str] | None = None
-    sub_lanes: tuple[str, ...] = ()
-
-    @property
-    def is_composite(self) -> bool:
-        return bool(self.sub_lanes)
+from devtools.lane_models import LaneEntry
+from polylogue.scenarios import (
+    AssertionSpec,
+    CorpusRequest,
+    ExecutionSpec,
+    PipelineProbeInputMode,
+    PipelineProbeRequest,
+    composite_execution,
+    devtools_execution,
+    memory_budget_execution,
+    pipeline_probe_execution,
+    polylogue_execution,
+    pytest_execution,
+)
 
 
-def cli_lane(name: str, description: str, timeout_s: int, executable: str, *args: str) -> LaneConfig:
-    return LaneConfig(
+def pytest_lane(
+    name: str,
+    description: str,
+    timeout_s: int,
+    *args: str,
+    category: str,
+    origin: str = "authored.validation-lane",
+    assertion: AssertionSpec = AssertionSpec(),
+    path_targets: tuple[str, ...] = (),
+    artifact_targets: tuple[str, ...] = (),
+    operation_targets: tuple[str, ...] = (),
+    tags: tuple[str, ...] = (),
+) -> LaneEntry:
+    return LaneEntry(
         name=name,
         description=description,
         timeout_s=timeout_s,
-        command=[executable, *args],
+        category=category,
+        execution=pytest_execution(*args),
+        assertion=assertion,
+        origin=origin,
+        path_targets=path_targets,
+        artifact_targets=artifact_targets,
+        operation_targets=operation_targets,
+        tags=tags,
     )
 
 
-def pytest_lane(name: str, description: str, timeout_s: int, *args: str) -> LaneConfig:
-    return cli_lane(name, description, timeout_s, "pytest", *args)
-
-
-def devtools_lane(name: str, description: str, timeout_s: int, subcommand: str, *args: str) -> LaneConfig:
-    return LaneConfig(
+def devtools_lane(
+    name: str,
+    description: str,
+    timeout_s: int,
+    subcommand: str,
+    *args: str,
+    category: str,
+    origin: str = "authored.validation-lane",
+    assertion: AssertionSpec = AssertionSpec(),
+    path_targets: tuple[str, ...] = (),
+    artifact_targets: tuple[str, ...] = (),
+    operation_targets: tuple[str, ...] = (),
+    tags: tuple[str, ...] = (),
+) -> LaneEntry:
+    return LaneEntry(
         name=name,
         description=description,
         timeout_s=timeout_s,
-        command=list(control_plane_argv(subcommand, *args)),
+        category=category,
+        execution=devtools_execution(subcommand, *args),
+        assertion=assertion,
+        origin=origin,
+        path_targets=path_targets,
+        artifact_targets=artifact_targets,
+        operation_targets=operation_targets,
+        tags=tags,
     )
 
 
-def polylogue_lane(name: str, description: str, timeout_s: int, *args: str) -> LaneConfig:
-    return cli_lane(name, description, timeout_s, "polylogue", "--plain", *args)
+def pipeline_probe_lane(
+    name: str,
+    description: str,
+    timeout_s: int,
+    *,
+    stage: str = "all",
+    input_mode: PipelineProbeInputMode | str = PipelineProbeInputMode.SYNTHETIC,
+    corpus_request: CorpusRequest | None = None,
+    sample_per_provider: int | None = None,
+    workdir: str | None = None,
+    json_out: str | None = None,
+    max_total_ms: float | None = None,
+    max_peak_rss_mb: float | None = None,
+    category: str,
+    origin: str = "authored.validation-lane",
+    assertion: AssertionSpec = AssertionSpec(),
+    path_targets: tuple[str, ...] = (),
+    artifact_targets: tuple[str, ...] = (),
+    operation_targets: tuple[str, ...] = (),
+    tags: tuple[str, ...] = (),
+) -> LaneEntry:
+    return LaneEntry(
+        name=name,
+        description=description,
+        timeout_s=timeout_s,
+        category=category,
+        execution=pipeline_probe_execution(
+            PipelineProbeRequest(
+                stage=stage,
+                input_mode=input_mode,
+                corpus_request=corpus_request,
+                sample_per_provider=sample_per_provider,
+                workdir=workdir,
+                json_out=json_out,
+                max_total_ms=max_total_ms,
+                max_peak_rss_mb=max_peak_rss_mb,
+            )
+        ),
+        assertion=assertion,
+        origin=origin,
+        path_targets=path_targets,
+        artifact_targets=artifact_targets,
+        operation_targets=operation_targets,
+        tags=tags,
+    )
+
+
+def polylogue_lane(
+    name: str,
+    description: str,
+    timeout_s: int,
+    *args: str,
+    category: str,
+    origin: str = "authored.validation-lane",
+    assertion: AssertionSpec = AssertionSpec(),
+    path_targets: tuple[str, ...] = (),
+    artifact_targets: tuple[str, ...] = (),
+    operation_targets: tuple[str, ...] = (),
+    tags: tuple[str, ...] = (),
+) -> LaneEntry:
+    return LaneEntry(
+        name=name,
+        description=description,
+        timeout_s=timeout_s,
+        category=category,
+        execution=polylogue_execution(*args),
+        assertion=assertion,
+        origin=origin,
+        path_targets=path_targets,
+        artifact_targets=artifact_targets,
+        operation_targets=operation_targets,
+        tags=tags,
+    )
 
 
 def memory_budget_lane(
@@ -54,35 +156,66 @@ def memory_budget_lane(
     timeout_s: int,
     *,
     max_rss_mb: int,
-    command: list[str],
-) -> LaneConfig:
-    return devtools_lane(
-        name,
-        description,
-        timeout_s,
-        "query-memory-budget",
-        "--max-rss-mb",
-        str(max_rss_mb),
-        "--",
-        *command,
-    )
-
-
-def composite_lane(name: str, description: str, timeout_s: int, *sub_lanes: str) -> LaneConfig:
-    return LaneConfig(
+    execution: ExecutionSpec,
+    category: str,
+    origin: str = "authored.validation-lane",
+    assertion: AssertionSpec = AssertionSpec(),
+    path_targets: tuple[str, ...] = (),
+    artifact_targets: tuple[str, ...] = (),
+    operation_targets: tuple[str, ...] = (),
+    tags: tuple[str, ...] = (),
+) -> LaneEntry:
+    return LaneEntry(
         name=name,
         description=description,
         timeout_s=timeout_s,
-        sub_lanes=sub_lanes,
+        category=category,
+        execution=memory_budget_execution(max_rss_mb, execution),
+        assertion=assertion,
+        origin=origin,
+        path_targets=path_targets,
+        artifact_targets=artifact_targets,
+        operation_targets=operation_targets,
+        tags=tags,
+    )
+
+
+def composite_lane(
+    name: str,
+    description: str,
+    timeout_s: int,
+    *sub_lanes: str,
+    category: str,
+    family: str | None = None,
+    origin: str = "authored.validation-lane.composite",
+    assertion: AssertionSpec = AssertionSpec(),
+    path_targets: tuple[str, ...] = (),
+    artifact_targets: tuple[str, ...] = (),
+    operation_targets: tuple[str, ...] = (),
+    tags: tuple[str, ...] = (),
+) -> LaneEntry:
+    return LaneEntry(
+        name=name,
+        description=description,
+        timeout_s=timeout_s,
+        category=category,
+        family=family,
+        execution=composite_execution(*sub_lanes),
+        assertion=assertion,
+        origin=origin,
+        path_targets=path_targets,
+        artifact_targets=artifact_targets,
+        operation_targets=operation_targets,
+        tags=tags,
     )
 
 
 __all__ = [
-    "LaneConfig",
-    "cli_lane",
     "composite_lane",
     "devtools_lane",
+    "LaneEntry",
     "memory_budget_lane",
+    "pipeline_probe_lane",
     "polylogue_lane",
     "pytest_lane",
 ]

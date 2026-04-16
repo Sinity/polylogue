@@ -20,9 +20,12 @@ import shutil
 import subprocess
 import tempfile
 from collections import Counter
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
+
+from .authored_scenario_catalog import get_authored_scenario_catalog
+from .mutation_catalog import MutationCampaignEntry
 
 ROOT = Path(__file__).resolve().parent.parent
 CAMPAIGN_ARTIFACT_DIR = Path(".local/mutation-campaigns")
@@ -40,15 +43,7 @@ DEFAULT_IGNORE_PATTERNS = shutil.ignore_patterns(
     "qa_outputs",
     "qa_2026-03-10",
 )
-
-
-@dataclass(frozen=True)
-class Campaign:
-    name: str
-    description: str
-    paths_to_mutate: tuple[str, ...]
-    tests: tuple[str, ...]
-    notes: tuple[str, ...] = ()
+CAMPAIGNS = get_authored_scenario_catalog().mutation_campaign_index()
 
 
 @dataclass(frozen=True)
@@ -73,265 +68,11 @@ class CampaignResult:
     runtime_seconds: float
     exit_code: int
     notes: list[str]
-
-
-CAMPAIGNS: dict[str, Campaign] = {
-    "filters": Campaign(
-        name="filters",
-        description="ConversationFilter semantics and summary/picker contracts",
-        paths_to_mutate=("polylogue/lib/filters.py",),
-        tests=(
-            "tests/unit/core/test_filters_schemas.py",
-            "tests/unit/core/test_filters_props.py",
-        ),
-        notes=(
-            "Targets the historical largest no-test blind spot.",
-            "Timeout tail is expected in filter pipeline helpers.",
-        ),
-    ),
-    "models": Campaign(
-        name="models",
-        description="Message/Conversation semantic helpers and pairing logic",
-        paths_to_mutate=("polylogue/lib/models.py",),
-        tests=(
-            "tests/unit/core/test_models.py",
-            "tests/unit/core/test_message_laws.py",
-            "tests/unit/core/test_conversation_semantics.py",
-        ),
-    ),
-    "json": Campaign(
-        name="json",
-        description="JSON serialization and parser laws",
-        paths_to_mutate=("polylogue/lib/json.py",),
-        tests=("tests/unit/core/test_json.py",),
-    ),
-    "hybrid": Campaign(
-        name="hybrid",
-        description="Hybrid search fusion and ranked-conversation resolution",
-        paths_to_mutate=("polylogue/storage/search_providers/hybrid.py",),
-        tests=(
-            "tests/unit/storage/test_hybrid.py",
-            "tests/unit/storage/test_hybrid_laws.py",
-        ),
-    ),
-    "fts5": Campaign(
-        name="fts5",
-        description="FTS5 query escaping and conversation search semantics",
-        paths_to_mutate=("polylogue/storage/search_providers/fts5.py",),
-        tests=("tests/unit/storage/test_fts5.py",),
-    ),
-    "schema-core": Campaign(
-        name="schema-core",
-        description="Schema generation, privacy, verification, and safety contracts",
-        paths_to_mutate=(
-            "polylogue/schemas/schema_inference.py",
-            "polylogue/schemas/validator.py",
-            "polylogue/schemas/operator_verification.py",
-        ),
-        tests=(
-            "tests/unit/core/test_schema_validation.py",
-            "tests/unit/core/test_schema_generation.py",
-            "tests/unit/core/test_schema_annotation_contracts.py",
-            "tests/unit/core/test_schema_laws.py",
-            "tests/unit/core/test_schema_privacy.py",
-            "tests/unit/core/test_verification.py",
-            "tests/unit/storage/test_schema_safety.py",
-        ),
-        notes=("Larger campaign; use when law and privacy work are stable.",),
-    ),
-    "schema-inference": Campaign(
-        name="schema-inference",
-        description="Schema inference and privacy heuristics",
-        paths_to_mutate=("polylogue/schemas/schema_inference.py",),
-        tests=(
-            "tests/unit/core/test_schema_generation.py",
-            "tests/unit/core/test_schema_laws.py",
-            "tests/unit/core/test_schema_privacy.py",
-        ),
-    ),
-    "schema-validation": Campaign(
-        name="schema-validation",
-        description="Schema validator and verification contracts",
-        paths_to_mutate=(
-            "polylogue/schemas/validator.py",
-            "polylogue/schemas/operator_verification.py",
-        ),
-        tests=(
-            "tests/unit/core/test_schema_validation.py",
-            "tests/unit/core/test_schema_laws.py",
-            "tests/unit/core/test_verification.py",
-            "tests/unit/storage/test_schema_safety.py",
-        ),
-    ),
-    "pipeline-services": Campaign(
-        name="pipeline-services",
-        description="Acquire/validate/parse planning and stage contracts",
-        paths_to_mutate=("polylogue/pipeline/services",),
-        tests=(
-            "tests/unit/pipeline/test_acquisition_streams.py",
-            "tests/unit/pipeline/test_parsing_service.py",
-            "tests/unit/pipeline/test_render_service.py",
-            "tests/unit/pipeline/test_indexing.py",
-            "tests/unit/pipeline/test_ingest_batch.py",
-            "tests/unit/pipeline/test_stage_independence.py",
-            "tests/unit/pipeline/test_resilience.py",
-        ),
-        notes=("Likely to need more helper-level laws to reduce timeout noise.",),
-    ),
-    "cli-query": Campaign(
-        name="cli-query",
-        description="Query command planning, action routing, and summary output contracts",
-        paths_to_mutate=(
-            "polylogue/cli/query.py",
-            "polylogue/lib/query_plan.py",
-            "polylogue/cli/query_actions.py",
-            "polylogue/cli/query_output.py",
-        ),
-        tests=(
-            "tests/unit/cli/test_query_exec.py",
-            "tests/unit/cli/test_query_exec_laws.py",
-            "tests/unit/cli/test_query_fmt.py",
-        ),
-    ),
-    "cli-run": Campaign(
-        name="cli-run",
-        description="Run command execution, display, and watch contracts",
-        paths_to_mutate=("polylogue/cli/commands/run.py",),
-        tests=(
-            "tests/unit/cli/test_run.py",
-            "tests/unit/cli/test_run_int.py",
-            "tests/unit/cli/test_run_laws.py",
-        ),
-    ),
-    "ui-core": Campaign(
-        name="ui-core",
-        description="UI prompt, progress, and facade interaction contracts",
-        paths_to_mutate=(
-            "polylogue/ui/__init__.py",
-            "polylogue/ui/facade.py",
-        ),
-        tests=(
-            "tests/unit/ui/test_ui.py",
-            "tests/unit/ui/test_ui_visual.py",
-            "tests/unit/ui/test_tui.py",
-        ),
-    ),
-    "site-builder": Campaign(
-        name="site-builder",
-        description="Static-site builder and CLI archive contracts",
-        paths_to_mutate=("polylogue/site/builder.py",),
-        tests=(
-            "tests/integration/test_site.py",
-            "tests/integration/test_site_laws.py",
-        ),
-    ),
-    "drive-client": Campaign(
-        name="drive-client",
-        description="Drive auth, transport, JSON payload parsing, and ingest attachment contracts",
-        paths_to_mutate=(
-            "polylogue/sources/drive_source.py",
-            "polylogue/sources/drive_gateway.py",
-            "polylogue/sources/drive_auth.py",
-            "polylogue/sources/drive.py",
-        ),
-        tests=(
-            "tests/unit/sources/test_drive_source_client.py",
-            "tests/unit/sources/test_drive_gateway.py",
-            "tests/unit/sources/test_drive_auth.py",
-            "tests/unit/sources/test_drive_ops.py",
-        ),
-        notes=("Targets the historical Drive not_checked cluster with focused tests.",),
-    ),
-    "repository": Campaign(
-        name="repository",
-        description="Repository query, projection, and CRUD contracts",
-        paths_to_mutate=("polylogue/storage/repository.py",),
-        tests=(
-            "tests/unit/storage/test_store_ops.py",
-            "tests/unit/storage/test_tree_laws.py",
-        ),
-        notes=("Large surface; use to gauge storage law readiness before repository-law work.",),
-    ),
-    "source-detection": Campaign(
-        name="source-detection",
-        description="Source detection, sniffing, and parser dispatch",
-        paths_to_mutate=(
-            "polylogue/sources/source_parsing.py",
-            "polylogue/sources/source_acquisition.py",
-            "polylogue/sources/dispatch.py",
-            "polylogue/sources/decoders.py",
-        ),
-        tests=(
-            "tests/unit/sources/test_source_laws.py",
-            "tests/unit/sources/test_parsers_base.py",
-            "tests/unit/sources/test_parsers_chatgpt.py",
-            "tests/unit/sources/test_parsers_codex.py",
-            "tests/unit/sources/test_parsers_props.py",
-            "tests/unit/sources/test_parsers_drive.py",
-        ),
-    ),
-    "provider-parsers": Campaign(
-        name="provider-parsers",
-        description="Provider parser semantic correctness — where message extraction and compaction detection live",
-        paths_to_mutate=(
-            "polylogue/sources/parsers/chatgpt.py",
-            "polylogue/sources/parsers/claude_code_parser.py",
-            "polylogue/sources/parsers/codex.py",
-            "polylogue/sources/parsers/claude_index.py",
-            "polylogue/pipeline/semantic_capture.py",
-        ),
-        tests=(
-            "tests/unit/sources/test_parsers_chatgpt.py",
-            "tests/unit/sources/test_parsers_codex.py",
-            "tests/unit/sources/test_parsers_props.py",
-            "tests/unit/sources/test_parser_crashlessness.py",
-            "tests/unit/sources/test_compaction.py",
-            "tests/unit/sources/test_assembly.py",
-        ),
-        notes=("Focused on the parser modules where semantic correctness is most critical.",),
-    ),
-    "providers-semantics": Campaign(
-        name="providers-semantics",
-        description="Provider semantic extraction, harmonization, and viewport contracts",
-        paths_to_mutate=(
-            "polylogue/sources/providers",
-            "polylogue/schemas/unified.py",
-        ),
-        tests=(
-            "tests/unit/sources/test_unified_semantic_laws.py",
-            "tests/unit/sources/test_null_guard_properties.py",
-            "tests/unit/sources/test_models.py",
-            "tests/unit/sources/test_parsers_props.py",
-            "tests/unit/sources/test_assembly.py",
-        ),
-        notes=("Directly relevant to the next provider-law wave.",),
-    ),
-    "sources-parse": Campaign(
-        name="sources-parse",
-        description="Provider detection, parsing, harmonization, and parser laws",
-        paths_to_mutate=(
-            "polylogue/sources",
-            "polylogue/schemas/unified.py",
-        ),
-        tests=(
-            "tests/unit/sources/test_parsers_props.py",
-            "tests/unit/sources/test_source_laws.py",
-            "tests/unit/sources/test_unified_semantic_laws.py",
-            "tests/unit/sources/test_parsers_base.py",
-            "tests/unit/sources/test_parsers_chatgpt.py",
-            "tests/unit/sources/test_parsers_codex.py",
-            "tests/unit/sources/test_parsers_drive.py",
-            "tests/unit/sources/test_drive_source_client.py",
-            "tests/unit/sources/test_drive_gateway.py",
-            "tests/unit/sources/test_drive_auth.py",
-            "tests/unit/sources/test_drive_ops.py",
-            "tests/unit/sources/test_null_guard_properties.py",
-            "tests/unit/sources/test_models.py",
-            "tests/unit/sources/test_token_store.py",
-        ),
-        notes=("Broadest campaign here; best run after law-wave work lands.",),
-    ),
-}
+    origin: str = "authored"
+    path_targets: list[str] = field(default_factory=list)
+    artifact_targets: list[str] = field(default_factory=list)
+    operation_targets: list[str] = field(default_factory=list)
+    tags: list[str] = field(default_factory=list)
 
 
 def _toml_list(items: tuple[str, ...] | list[str]) -> str:
@@ -534,33 +275,48 @@ def format_markdown(result: CampaignResult) -> str:
         "",
         f"- Mutated paths: {', '.join(f'`{path}`' for path in result.paths_to_mutate)}",
         f"- Selected tests: {', '.join(f'`{path}`' for path in result.tests)}",
-        "",
-        "## Counts",
-        "",
-        "| Status | Count |",
-        "| --- | ---: |",
-        f"| Killed | {result.counts.get('killed', 0)} |",
-        f"| Survived | {result.counts.get('survived', 0)} |",
-        f"| Timeout | {result.counts.get('timeout', 0)} |",
-        f"| Not checked | {result.counts.get('not_checked', 0)} |",
-        f"| Suspicious | {result.counts.get('suspicious', 0)} |",
-        f"| Skipped | {result.counts.get('skipped', 0)} |",
-        "",
-        f"- Runtime: `{result.runtime_seconds:.2f}s`",
-        f"- Exit code: `{result.exit_code}`",
-        "",
-        "## Dominant Survivors",
-        "",
-        render_table(result.dominant_survivors),
-        "",
-        "## Dominant Timeouts",
-        "",
-        render_table(result.dominant_timeouts),
-        "",
-        "## Dominant Not-Checked Clusters",
-        "",
-        render_table(result.dominant_not_checked),
     ]
+    if result.path_targets or result.artifact_targets or result.operation_targets or result.tags:
+        lines.extend(["", "## Scenario Metadata", ""])
+        lines.append(f"- Origin: `{result.origin}`")
+        if result.path_targets:
+            lines.append(f"- Path targets: `{', '.join(result.path_targets)}`")
+        if result.artifact_targets:
+            lines.append(f"- Artifact targets: `{', '.join(result.artifact_targets)}`")
+        if result.operation_targets:
+            lines.append(f"- Operation targets: `{', '.join(result.operation_targets)}`")
+        if result.tags:
+            lines.append(f"- Tags: `{', '.join(result.tags)}`")
+    lines.extend(
+        [
+            "",
+            "## Counts",
+            "",
+            "| Status | Count |",
+            "| --- | ---: |",
+            f"| Killed | {result.counts.get('killed', 0)} |",
+            f"| Survived | {result.counts.get('survived', 0)} |",
+            f"| Timeout | {result.counts.get('timeout', 0)} |",
+            f"| Not checked | {result.counts.get('not_checked', 0)} |",
+            f"| Suspicious | {result.counts.get('suspicious', 0)} |",
+            f"| Skipped | {result.counts.get('skipped', 0)} |",
+            "",
+            f"- Runtime: `{result.runtime_seconds:.2f}s`",
+            f"- Exit code: `{result.exit_code}`",
+            "",
+            "## Dominant Survivors",
+            "",
+            render_table(result.dominant_survivors),
+            "",
+            "## Dominant Timeouts",
+            "",
+            render_table(result.dominant_timeouts),
+            "",
+            "## Dominant Not-Checked Clusters",
+            "",
+            render_table(result.dominant_not_checked),
+        ]
+    )
     if result.survivor_keys:
         lines.extend(
             [
@@ -631,6 +387,11 @@ def load_results(campaign_dir: Path) -> list[CampaignResult]:
             runtime_seconds=float(payload["runtime_seconds"]),
             exit_code=int(payload["exit_code"]),
             notes=list(payload.get("notes", [])),
+            origin=str(payload.get("origin", "authored")),
+            path_targets=list(payload.get("path_targets", [])),
+            artifact_targets=list(payload.get("artifact_targets", [])),
+            operation_targets=list(payload.get("operation_targets", [])),
+            tags=list(payload.get("tags", [])),
         )
         results.append(result)
     return results
@@ -692,7 +453,7 @@ def write_artifacts(result: CampaignResult, *, json_out: Path | None, markdown_o
 
 
 def run_campaign(
-    campaign: Campaign,
+    campaign: MutationCampaignEntry,
     *,
     repo_root: Path,
     json_out: Path | None,
@@ -767,6 +528,11 @@ def run_campaign(
             runtime_seconds=runtime,
             exit_code=completed.returncode,
             notes=list(campaign.notes),
+            origin="authored.mutation-campaign" if campaign.origin == "authored" else campaign.origin,
+            path_targets=list(campaign.path_targets),
+            artifact_targets=list(campaign.artifact_targets),
+            operation_targets=list(campaign.operation_targets),
+            tags=list(campaign.tags or ("mutation",)),
         )
         write_artifacts(result, json_out=json_out, markdown_out=markdown_out)
         return result

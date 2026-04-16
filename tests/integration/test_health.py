@@ -504,6 +504,29 @@ class TestRepairDanglingFts:
             fts_count = conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0]
             assert abs(msg_count - fts_count) == initial_diff
 
+    def test_dangling_fts_ignores_null_text_messages(self, cli_workspace):
+        """Null-text messages should not count as missing FTS rows."""
+        from polylogue.config import get_config
+        from polylogue.storage.backends.connection import connection_context
+        from polylogue.storage.repair import repair_dangling_fts
+
+        config = get_config()
+        with connection_context(None) as conn:
+            _insert_conversation(conn, "conv-1")
+            _insert_message(conn, "msg-1", "conv-1", "user", "Text")
+            _insert_message(conn, "msg-2", "conv-1", "assistant", "Placeholder")
+            conn.execute("UPDATE messages SET text = NULL WHERE message_id = ?", ("msg-2",))
+            conn.commit()
+
+            indexed_rows = conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0]
+            assert indexed_rows == 1
+
+        result = repair_dangling_fts(config, dry_run=True)
+
+        assert result.success is True
+        assert result.repaired_count == 0
+        assert result.detail == "FTS index in sync"
+
 
 class TestRepairActionEventReadModel:
     """Tests for repair_action_event_read_model function."""

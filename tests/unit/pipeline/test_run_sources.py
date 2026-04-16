@@ -10,7 +10,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from polylogue.config import Config, Source
-from polylogue.pipeline.run_stages import IndexStageOutcome, MaterializeStageOutcome, RenderStageOutcome
+from polylogue.pipeline.run_stages import (
+    IndexStageOutcome,
+    MaterializeStageOutcome,
+    RenderStageOutcome,
+    execute_materialize_stage,
+)
 from polylogue.pipeline.run_support import expand_requested_stage, normalize_stage_sequence
 from polylogue.pipeline.runner import _select_sources, latest_run, plan_sources, run_sources
 from polylogue.pipeline.services.parsing_models import IngestResult, ParseResult
@@ -167,6 +172,126 @@ def test_explicit_leaf_stage_sequence_uses_order_sensitive_leaf_semantics(worksp
     assert mock_ingest.await_args.kwargs["stage"] == "parse"
     assert mock_materialize.await_args.kwargs["stage"] == "all"
     assert mock_index.await_args.kwargs["stage"] == "all"
+
+
+def test_ingest_stage_log_omits_full_batch_telemetry(workspace_env, tmp_path: Path) -> None:
+    config = Config(
+        sources=[Source(name="explicit", path=tmp_path / "explicit")],
+        archive_root=workspace_env["archive_root"],
+        render_root=workspace_env["archive_root"] / "render",
+    )
+    config.sources[0].path.mkdir(parents=True, exist_ok=True)
+
+    parse_result = ParseResult()
+    parse_result.processed_ids.add("conv-log")
+    ingest_result = IngestResult(
+        acquire_result=AcquireResult(),
+        validation_result=None,
+        parse_result=parse_result,
+        parse_raw_ids=["raw-log"],
+        timings={"acquire": 0.0, "ingest": 0.02},
+        diagnostics={
+            "batch_observations": {
+                "batch_count": 2,
+                "slow_batch_count": 1,
+                "batches": [
+                    {"elapsed_ms": 123.4, "blob_mb": 12.3},
+                    {"elapsed_ms": 456.7, "blob_mb": 45.6},
+                ],
+            }
+        },
+    )
+    persisted_result = RunResult(
+        run_id="test-run",
+        counts={"conversations": 1},
+        drift={"new": {"conversations": 1}, "changed": {"conversations": 0}, "removed": {"conversations": 0}},
+        indexed=False,
+        index_error=None,
+        duration_ms=1,
+        render_failures=[],
+        run_path=None,
+    )
+
+    with (
+        patch(
+            "polylogue.pipeline.run_execution.execute_ingest_stage",
+            new_callable=AsyncMock,
+            return_value=ingest_result,
+        ),
+        patch(
+            "polylogue.pipeline.run_execution.persist_run_result",
+            new_callable=AsyncMock,
+            return_value=persisted_result,
+        ),
+        patch("polylogue.pipeline.run_execution.logger.info") as mock_logger_info,
+    ):
+        asyncio.run(run_sources(config=config, stage="parse"))
+
+    ingest_complete_calls = [
+        call for call in mock_logger_info.call_args_list if call.args and call.args[0] == "Ingest complete"
+    ]
+    assert len(ingest_complete_calls) == 1
+    details = ingest_complete_calls[0].kwargs["details"]
+    assert details["batch_observations"]["batch_count"] == 2
+    assert details["batch_observations"]["slow_batch_count"] == 1
+    assert "batches" not in details["batch_observations"]
+
+
+def test_materialize_stage_log_omits_full_chunk_telemetry(workspace_env, tmp_path: Path) -> None:
+    config = Config(
+        sources=[Source(name="explicit", path=tmp_path / "explicit")],
+        archive_root=workspace_env["archive_root"],
+        render_root=workspace_env["archive_root"] / "render",
+    )
+    config.sources[0].path.mkdir(parents=True, exist_ok=True)
+
+    materialize_outcome = MaterializeStageOutcome(
+        item_count=12,
+        rebuilt=False,
+        observation={
+            "conversations": 12,
+            "update_chunk_count": 2,
+            "update_slow_chunk_count": 1,
+            "update_chunks": [
+                {"total_ms": 123.4, "conversation_count": 10},
+                {"total_ms": 456.7, "conversation_count": 2},
+            ],
+        },
+    )
+    persisted_result = RunResult(
+        run_id="test-run",
+        counts={"conversations": 1, "materialized": 12},
+        drift={"new": {"conversations": 1}, "changed": {"conversations": 0}, "removed": {"conversations": 0}},
+        indexed=False,
+        index_error=None,
+        duration_ms=1,
+        render_failures=[],
+        run_path=None,
+    )
+
+    with (
+        patch(
+            "polylogue.pipeline.run_execution.execute_materialize_stage",
+            new_callable=AsyncMock,
+            return_value=materialize_outcome,
+        ),
+        patch(
+            "polylogue.pipeline.run_execution.persist_run_result",
+            new_callable=AsyncMock,
+            return_value=persisted_result,
+        ),
+        patch("polylogue.pipeline.run_execution.logger.info") as mock_logger_info,
+    ):
+        asyncio.run(run_sources(config=config, stage="materialize"))
+
+    materialize_calls = [
+        call for call in mock_logger_info.call_args_list if call.args and call.args[0] == "Materialize stage complete"
+    ]
+    assert len(materialize_calls) == 1
+    details = materialize_calls[0].kwargs["details"]
+    assert details["update_chunk_count"] == 2
+    assert details["update_slow_chunk_count"] == 1
+    assert "update_chunks" not in details
 
 
 class TestRunSourcesRenderFailures:
@@ -419,6 +544,8 @@ class TestRunSourcesIntegration:
             result = asyncio.run(run_sources(config=config, stage="materialize"))
 
         mock_rebuild.assert_awaited_once()
+        assert mock_rebuild.await_args.kwargs["progress_total"] == 1
+        assert "progress_callback" in mock_rebuild.await_args.kwargs
         assert result.counts["materialized"] == 1
         assert result.indexed is False
 
@@ -493,6 +620,60 @@ class TestRunSourcesIntegration:
         asyncio.run(backend.close())
         assert result.counts["conversations"] >= 1
 
+    def test_materialize_stage_rebuild_progress_advances_by_processed_chunk(self, workspace_env):
+        _seed_conversations(workspace_env, "test:materialize-a", "test:materialize-b", with_message=True)
+        backend = create_backend(workspace_env["data_root"] / "polylogue" / "polylogue.db")
+        callback = MagicMock()
+
+        result = asyncio.run(
+            execute_materialize_stage(
+                stage="materialize",
+                source_names=None,
+                processed_ids=set(),
+                backend=backend,
+                progress_callback=callback,
+            )
+        )
+        asyncio.run(backend.close())
+
+        assert result.item_count == 2
+        assert result.rebuilt is True
+        assert callback.call_args_list[0].args == (0,)
+        assert callback.call_args_list[0].kwargs == {"desc": "Materializing: 0/2"}
+        assert [call.args[0] for call in callback.call_args_list[1:]] == [1, 1]
+        assert [call.kwargs["desc"] for call in callback.call_args_list[1:]] == [
+            "Materializing: 1/2",
+            "Materializing: 2/2",
+        ]
+
+    def test_all_stage_uses_bounded_rebuild_when_products_are_empty(self, workspace_env):
+        _seed_conversations(workspace_env, "test:all-a", "test:all-b", with_message=True)
+        backend = create_backend(workspace_env["data_root"] / "polylogue" / "polylogue.db")
+        callback = MagicMock()
+
+        result = asyncio.run(
+            execute_materialize_stage(
+                stage="all",
+                source_names=None,
+                processed_ids={"test:all-a", "test:all-b"},
+                backend=backend,
+                progress_callback=callback,
+            )
+        )
+        asyncio.run(backend.close())
+
+        assert result.item_count == 2
+        assert result.rebuilt is True
+        assert result.observation is not None
+        assert result.observation["mode"] == "rebuild-from-empty"
+        assert callback.call_args_list[0].args == (0,)
+        assert callback.call_args_list[0].kwargs == {"desc": "Materializing: 0/2"}
+        assert [call.args[0] for call in callback.call_args_list[1:]] == [1, 1]
+        assert [call.kwargs["desc"] for call in callback.call_args_list[1:]] == [
+            "Materializing: 1/2",
+            "Materializing: 2/2",
+        ]
+
     def test_parse_with_explicit_source_filter_skips_acquire(self, workspace_env, tmp_path: Path):
         scoped_source = tmp_path / "scoped"
         scoped_source.mkdir()
@@ -565,7 +746,7 @@ class TestAcquisitionServiceAcquireSources:
 
         await service.acquire_sources([source], progress_callback=callback)
 
-        callback.assert_any_call(1, desc="Acquiring [test-source]")
+        callback.assert_any_call(1, desc="Scanning [test-source]")
         assert mock_iter.call_args is not None
         assert mock_iter.call_args.kwargs.get("known_mtimes") is not None
 

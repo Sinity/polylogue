@@ -44,7 +44,7 @@ class InvariantResult:
 
 def _check_json_valid(result: ExerciseResult) -> str | None:
     """All -f json output parses as valid JSON (or JSON Lines for .jsonl)."""
-    args_str = " ".join(result.exercise.args)
+    args_str = result.exercise.args_text
     if "-f json" not in args_str and "--json" not in args_str:
         return SKIP
     if result.exercise.output_ext not in (".json", ".jsonl"):
@@ -74,7 +74,7 @@ def _check_json_valid(result: ExerciseResult) -> str | None:
 
 def _check_exit_code(result: ExerciseResult) -> str | None:
     """Exit code matches validation spec."""
-    expected = result.exercise.validation.exit_code
+    expected = result.exercise.assertion.exit_code
     if expected is None:
         return SKIP  # Delegated to custom validator
     if result.exit_code != expected:
@@ -95,7 +95,7 @@ def _check_nonempty_output(result: ExerciseResult) -> str | None:
     """Non-count read commands produce non-empty output."""
     if result.exercise.writes:
         return SKIP
-    args_str = " ".join(result.exercise.args)
+    args_str = result.exercise.args_text
     if "--count" in args_str:
         return SKIP
     if "--help" in args_str or "--version" in args_str:

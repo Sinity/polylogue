@@ -72,6 +72,8 @@ def test_schema_list_result_to_dict_for_provider_with_components() -> None:
             "default_version": "v1",
             "latest_version": "v1",
             "cluster_count": 0,
+            "corpus_spec_count": 0,
+            "corpus_scenario_count": 0,
         }
     ]
 

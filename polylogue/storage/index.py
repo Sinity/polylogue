@@ -45,9 +45,8 @@ def update_index_for_conversations(conversation_ids: Sequence[str], conn: sqlite
     changed = bool(conversation_ids)
 
     def _do(db_conn: sqlite3.Connection) -> None:
-        action_targets = _action_event_repair_targets_sync(db_conn, conversation_ids)
-        if action_targets:
-            rebuild_action_event_read_model_sync(db_conn, conversation_ids=action_targets)
+        if conversation_ids:
+            rebuild_action_event_read_model_sync(db_conn, conversation_ids=conversation_ids)
         repair_fts_index_sync(db_conn, conversation_ids)
         db_conn.commit()
         if changed:
@@ -62,19 +61,6 @@ def index_status(conn: sqlite3.Connection | None = None) -> dict[str, object]:
         return fts_index_status_sync(conn)
     with open_read_connection(None) as fallback_conn:
         return fts_index_status_sync(fallback_conn)
-
-
-def _action_event_repair_targets_sync(
-    conn: sqlite3.Connection,
-    conversation_ids: Sequence[str],
-) -> list[str]:
-    if not conversation_ids:
-        return []
-    candidate_ids = action_event_repair_candidates_sync(conn)
-    if not candidate_ids:
-        return []
-    allowed = set(conversation_ids)
-    return [conversation_id for conversation_id in candidate_ids if conversation_id in allowed]
 
 
 __all__ = [

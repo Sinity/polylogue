@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from io import BytesIO, StringIO
 from pathlib import Path
@@ -16,6 +17,16 @@ from polylogue.types import Provider
 WireFormat = Literal["json", "jsonl"]
 
 
+def _load_json_record(line: str) -> Any:
+    try:
+        return orjson.loads(line)
+    except (orjson.JSONDecodeError, ValueError) as exc:
+        try:
+            return json.loads(line)
+        except json.JSONDecodeError:
+            raise exc from None
+
+
 @dataclass(frozen=True)
 class RawPayloadEnvelope:
     """Canonical decoded raw payload with inferred runtime semantics."""
@@ -25,13 +36,14 @@ class RawPayloadEnvelope:
     wire_format: WireFormat
     artifact: ArtifactClassification
     malformed_jsonl_lines: int = 0
+    malformed_jsonl_detail: str | None = None
 
 
 def _decode_jsonl_payload(
     raw: Path | bytes | str,
     *,
     jsonl_dict_only: bool = False,
-) -> tuple[list[Any], int]:
+) -> tuple[list[Any], int, str | None]:
     """Decode JSONL incrementally to avoid full-file line splitting.
 
     When *raw* is a :class:`~pathlib.Path`, lines are streamed directly
@@ -39,7 +51,9 @@ def _decode_jsonl_payload(
     """
     lines: list[Any] = []
     malformed_lines = 0
+    malformed_detail: str | None = None
     first_line = True
+    line_number = 0
 
     fh = (
         open(raw, "rb")  # noqa: SIM115 — caller-managed context
@@ -51,10 +65,13 @@ def _decode_jsonl_payload(
 
     try:
         for raw_line in fh:
+            line_number += 1
             try:
                 line = raw_line.decode("utf-8") if isinstance(raw_line, bytes) else raw_line
-            except UnicodeDecodeError:
+            except UnicodeDecodeError as exc:
                 malformed_lines += 1
+                if malformed_detail is None:
+                    malformed_detail = f"line {line_number}: {exc.reason}"
                 continue
             if first_line:
                 line = line.lstrip("\ufeff")
@@ -63,9 +80,11 @@ def _decode_jsonl_payload(
             if not line:
                 continue
             try:
-                parsed = orjson.loads(line)
-            except (orjson.JSONDecodeError, ValueError):
+                parsed = _load_json_record(line)
+            except (orjson.JSONDecodeError, ValueError) as exc:
                 malformed_lines += 1
+                if malformed_detail is None:
+                    malformed_detail = f"line {line_number}: {exc}"
                 continue
             if jsonl_dict_only and not isinstance(parsed, dict):
                 continue
@@ -76,15 +95,15 @@ def _decode_jsonl_payload(
 
     if not lines:
         raise ValueError("No valid JSONL records found")
-    return lines, malformed_lines
+    return lines, malformed_lines, malformed_detail
 
 
-def sample_jsonl_payload(
+def _sample_jsonl_payload_with_detail(
     raw: Path | bytes | str,
     *,
     max_samples: int = 64,
     jsonl_dict_only: bool = False,
-) -> tuple[list[Any], int]:
+) -> tuple[list[Any], int, str | None]:
     """Collect a bounded sample of valid JSONL records while scanning the full file.
 
     This is intended for provider/artifact/schema resolution where full-record
@@ -93,8 +112,10 @@ def sample_jsonl_payload(
     """
     samples: list[Any] = []
     malformed_lines = 0
+    malformed_detail: str | None = None
     valid_records = 0
     first_line = True
+    line_number = 0
 
     fh = (
         open(raw, "rb")  # noqa: SIM115 — caller-managed context
@@ -106,10 +127,13 @@ def sample_jsonl_payload(
 
     try:
         for raw_line in fh:
+            line_number += 1
             try:
                 line = raw_line.decode("utf-8") if isinstance(raw_line, bytes) else raw_line
-            except UnicodeDecodeError:
+            except UnicodeDecodeError as exc:
                 malformed_lines += 1
+                if malformed_detail is None:
+                    malformed_detail = f"line {line_number}: {exc.reason}"
                 continue
             if first_line:
                 line = line.lstrip("\ufeff")
@@ -118,9 +142,11 @@ def sample_jsonl_payload(
             if not line:
                 continue
             try:
-                parsed = orjson.loads(line)
-            except (orjson.JSONDecodeError, ValueError):
+                parsed = _load_json_record(line)
+            except (orjson.JSONDecodeError, ValueError) as exc:
                 malformed_lines += 1
+                if malformed_detail is None:
+                    malformed_detail = f"line {line_number}: {exc}"
                 continue
             if jsonl_dict_only and not isinstance(parsed, dict):
                 continue
@@ -133,6 +159,20 @@ def sample_jsonl_payload(
 
     if valid_records == 0:
         raise ValueError("No valid JSONL records found")
+    return samples, malformed_lines, malformed_detail
+
+
+def sample_jsonl_payload(
+    raw: Path | bytes | str,
+    *,
+    max_samples: int = 64,
+    jsonl_dict_only: bool = False,
+) -> tuple[list[Any], int]:
+    samples, malformed_lines, _detail = _sample_jsonl_payload_with_detail(
+        raw,
+        max_samples=max_samples,
+        jsonl_dict_only=jsonl_dict_only,
+    )
     return samples, malformed_lines
 
 
@@ -141,7 +181,7 @@ def _decode_raw_payload(
     *,
     jsonl_dict_only: bool = False,
     prefer_jsonl: bool = False,
-) -> tuple[Any, WireFormat, int]:
+) -> tuple[Any, WireFormat, int, str | None]:
     """Decode JSON payload bytes, with JSONL fallback support.
 
     When *raw_content* is a :class:`~pathlib.Path`, JSONL files are
@@ -151,47 +191,47 @@ def _decode_raw_payload(
     if isinstance(raw_content, Path):
         if prefer_jsonl:
             try:
-                payload, malformed_lines = _decode_jsonl_payload(
+                payload, malformed_lines, malformed_detail = _decode_jsonl_payload(
                     raw_content,
                     jsonl_dict_only=jsonl_dict_only,
                 )
-                return payload, "jsonl", malformed_lines
+                return payload, "jsonl", malformed_lines, malformed_detail
             except (UnicodeDecodeError, ValueError):
                 pass
         raw_bytes = raw_content.read_bytes()
         try:
-            return orjson.loads(raw_bytes), "json", 0
+            return orjson.loads(raw_bytes), "json", 0, None
         except (orjson.JSONDecodeError, ValueError) as exc:
             try:
-                payload, malformed_lines = _decode_jsonl_payload(
+                payload, malformed_lines, malformed_detail = _decode_jsonl_payload(
                     raw_bytes,
                     jsonl_dict_only=jsonl_dict_only,
                 )
             except (UnicodeDecodeError, ValueError):
                 raise exc from None
-            return payload, "jsonl", malformed_lines
+            return payload, "jsonl", malformed_lines, malformed_detail
 
     raw = raw_content if isinstance(raw_content, (bytes, str)) else str(raw_content)
     if prefer_jsonl:
         try:
-            payload, malformed_lines = _decode_jsonl_payload(
+            payload, malformed_lines, malformed_detail = _decode_jsonl_payload(
                 raw,
                 jsonl_dict_only=jsonl_dict_only,
             )
-            return payload, "jsonl", malformed_lines
+            return payload, "jsonl", malformed_lines, malformed_detail
         except (UnicodeDecodeError, ValueError):
             pass
     try:
-        return orjson.loads(raw), "json", 0
+        return orjson.loads(raw), "json", 0, None
     except (orjson.JSONDecodeError, ValueError) as exc:
         try:
-            payload, malformed_lines = _decode_jsonl_payload(
+            payload, malformed_lines, malformed_detail = _decode_jsonl_payload(
                 raw,
                 jsonl_dict_only=jsonl_dict_only,
             )
         except (UnicodeDecodeError, ValueError):
             raise exc from None
-        return payload, "jsonl", malformed_lines
+        return payload, "jsonl", malformed_lines, malformed_detail
 
 
 def _infer_payload_provider(
@@ -235,7 +275,7 @@ def build_raw_payload_envelope(
     if not prefer_jsonl:
         runtime_provider = Provider.from_string(preferred_provider)
         prefer_jsonl = runtime_provider in {Provider.CLAUDE_CODE, Provider.CODEX}
-    payload, wire_format, malformed_jsonl_lines = _decode_raw_payload(
+    payload, wire_format, malformed_jsonl_lines, malformed_jsonl_detail = _decode_raw_payload(
         raw_content,
         jsonl_dict_only=jsonl_dict_only,
         prefer_jsonl=prefer_jsonl,
@@ -257,6 +297,7 @@ def build_raw_payload_envelope(
         wire_format=wire_format,
         artifact=artifact,
         malformed_jsonl_lines=malformed_jsonl_lines,
+        malformed_jsonl_detail=malformed_jsonl_detail,
     )
 
 

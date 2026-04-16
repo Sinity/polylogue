@@ -6,7 +6,8 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
-from polylogue.showcase.exercise_models import Exercise, Validation
+from polylogue.scenarios import AssertionSpec, CorpusSpec, ExecutionSpec, ScenarioMetadata
+from polylogue.showcase.exercise_models import Exercise
 
 _CATALOG_PATH = Path(__file__).with_name("exercise_catalog.json")
 
@@ -101,14 +102,14 @@ def _load_custom_validator(payload: dict[str, object]):
     return validator
 
 
-def _load_validation(payload: dict[str, object] | None) -> Validation:
+def _load_assertion(payload: dict[str, object] | None) -> AssertionSpec:
     if payload is None:
-        return Validation()
+        return AssertionSpec()
     custom_payload = payload.get("custom")
     custom = None
     if isinstance(custom_payload, dict):
         custom = _load_custom_validator(custom_payload)
-    return Validation(
+    return AssertionSpec(
         exit_code=payload.get("exit_code", 0),  # type: ignore[arg-type]
         stdout_contains=tuple(str(item) for item in payload.get("stdout_contains", ())),
         stdout_not_contains=tuple(str(item) for item in payload.get("stdout_not_contains", ())),
@@ -119,12 +120,23 @@ def _load_validation(payload: dict[str, object] | None) -> Validation:
 
 
 def _load_exercise(payload: dict[str, object]) -> Exercise:
+    metadata = ScenarioMetadata.from_payload(payload)
+    execution_payload = payload.get("execution")
+    if not isinstance(execution_payload, dict):
+        raise ValueError("Serialized showcase exercises must declare execution payloads")
+    corpus_payloads = payload.get("corpus_specs")
+    corpus_specs = ()
+    if isinstance(corpus_payloads, list):
+        corpus_specs = tuple(
+            CorpusSpec.from_payload(spec_payload) for spec_payload in corpus_payloads if isinstance(spec_payload, dict)
+        )
     return Exercise(
         name=str(payload["name"]),
         group=str(payload["group"]),
         description=str(payload["description"]),
-        args=[str(item) for item in payload.get("args", ())],
-        validation=_load_validation(payload.get("validation") if isinstance(payload.get("validation"), dict) else None),
+        execution=ExecutionSpec.from_payload(execution_payload),
+        corpus_specs=corpus_specs,
+        assertion=_load_assertion(payload.get("assertion") if isinstance(payload.get("assertion"), dict) else None),
         needs_data=bool(payload.get("needs_data", False)),
         writes=bool(payload.get("writes", False)),
         depends_on=str(payload["depends_on"]) if payload.get("depends_on") is not None else None,
@@ -135,6 +147,11 @@ def _load_exercise(payload: dict[str, object]) -> Exercise:
         vhs_capture=bool(payload.get("vhs_capture", False)),
         artifact_class=str(payload.get("artifact_class", "text")),
         capture_steps=tuple(str(item) for item in payload.get("capture_steps", ())),
+        origin=metadata.origin,
+        path_targets=metadata.path_targets,
+        artifact_targets=metadata.artifact_targets,
+        operation_targets=metadata.operation_targets,
+        tags=metadata.tags,
     )
 
 
@@ -147,4 +164,7 @@ def load_exercise_catalog(path: Path | None = None) -> ExerciseCatalog:
     return ExerciseCatalog(groups=groups, exercises=exercises)
 
 
-__all__ = ["ExerciseCatalog", "load_exercise_catalog"]
+__all__ = [
+    "ExerciseCatalog",
+    "load_exercise_catalog",
+]

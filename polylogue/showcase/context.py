@@ -17,6 +17,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from polylogue.showcase.corpus_requests import showcase_corpus_request
+
 
 @dataclass(frozen=True, slots=True)
 class ShowcaseContext:
@@ -37,15 +39,16 @@ class ShowcaseContext:
         """Create a fresh temp workspace with synthetic generated data."""
         from polylogue.showcase.workspace import (
             create_verification_workspace,
-            generate_synthetic_fixtures,
-            run_pipeline_for_fixture_workspace,
+            seed_workspace_from_corpus_request,
         )
 
         workspace = create_verification_workspace(workspace_dir)
-        generate_synthetic_fixtures(workspace.fixture_dir, count=count, style=style)
-        run_pipeline_for_fixture_workspace(workspace)
+        seed_workspace_from_corpus_request(
+            workspace,
+            request=showcase_corpus_request(count=count, style=style),
+        )
         return cls(
-            db_path=workspace.data_home / "polylogue" / "polylogue.db",
+            db_path=workspace.db_path,
             archive_root=workspace.archive_root,
             env_vars=dict(workspace.env_vars),
         )
@@ -82,7 +85,7 @@ class ShowcaseContext:
             regenerate_schemas=regenerate_schemas,
         )
         return cls(
-            db_path=workspace.data_home / "polylogue" / "polylogue.db",
+            db_path=workspace.db_path,
             archive_root=workspace.archive_root,
             env_vars=dict(workspace.env_vars),
         )
