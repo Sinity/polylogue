@@ -68,7 +68,10 @@ jobs:
                   + ", ".join(f"`{section}`" for section in missing_sections)
               )
 
-          if "<!--" in body:
+          # Strip bot-injected comment blocks (CodeRabbit, etc.) before checking
+          # for leftover template placeholders in the author-written body.
+          clean_body = re.sub(r"<!--.*?-->", "", body, flags=re.DOTALL).strip()
+          if "<!--" in clean_body:
               errors.append("PR body still contains template comments; remove or replace them before merge.")
 
           if errors:
