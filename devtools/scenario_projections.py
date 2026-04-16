@@ -63,7 +63,9 @@ def render_scenario_projections(
     for entry in projections:
         lines.append(f"- {entry.source_kind.value}:{entry.name} [{entry.origin}]")
         lines.append(f"  - description: {entry.description}")
-        lines.append(f"  - path targets: {', '.join(entry.runtime_path_targets()) if entry.runtime_path_targets() else '—'}")
+        lines.append(
+            f"  - path targets: {', '.join(entry.runtime_path_targets()) if entry.runtime_path_targets() else '—'}"
+        )
         lines.append(f"  - artifact targets: {', '.join(entry.artifact_targets) if entry.artifact_targets else '—'}")
         lines.append(f"  - operation targets: {', '.join(entry.operation_targets) if entry.operation_targets else '—'}")
         lines.append(f"  - tags: {', '.join(entry.tags) if entry.tags else '—'}")
@@ -80,8 +82,12 @@ def main(argv: list[str] | None = None) -> int:
         default=[],
         help="Restrict to a specific projection source kind (repeatable).",
     )
-    parser.add_argument("--path-target", default=None, help="Restrict to projections covering this runtime path target.")
-    parser.add_argument("--artifact-target", default=None, help="Restrict to projections covering this artifact target.")
+    parser.add_argument(
+        "--path-target", default=None, help="Restrict to projections covering this runtime path target."
+    )
+    parser.add_argument(
+        "--artifact-target", default=None, help="Restrict to projections covering this artifact target."
+    )
     parser.add_argument(
         "--operation-target",
         default=None,

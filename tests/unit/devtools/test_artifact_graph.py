@@ -50,7 +50,7 @@ def test_render_artifact_graph_json_is_machine_readable() -> None:
             "source": "synthetic-benchmark",
             "name": "action-event-materialization",
             "origin": "authored.synthetic-benchmark",
-        }
+        },
     ]
     assert payload["scenario_coverage"]["operations"]["project-action-event-health"] == [
         {
@@ -69,7 +69,7 @@ def test_render_artifact_graph_json_is_machine_readable() -> None:
             "source": "synthetic-benchmark",
             "name": "session-product-materialization",
             "origin": "authored.synthetic-benchmark",
-        }
+        },
     ]
     assert payload["scenario_coverage"]["operations"]["project-session-product-health"] == [
         {

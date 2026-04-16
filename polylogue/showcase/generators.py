@@ -361,7 +361,10 @@ def generate_json_contract_scenarios() -> tuple[ExerciseScenario, ...]:
                     origin="generated.json-contract",
                     path_targets=_coerce_optional_string_tuple(spec.get("path_targets")),
                     artifact_targets=_coerce_optional_string_tuple(spec.get("artifact_targets")),
-                    operation_targets=("cli.json-contract", *_coerce_optional_string_tuple(spec.get("operation_targets"))),
+                    operation_targets=(
+                        "cli.json-contract",
+                        *_coerce_optional_string_tuple(spec.get("operation_targets")),
+                    ),
                     tags=("generated", "json-contract", *_coerce_optional_string_tuple(spec.get("tags"))),
                 )
             )

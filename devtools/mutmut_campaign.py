@@ -43,6 +43,8 @@ DEFAULT_IGNORE_PATTERNS = shutil.ignore_patterns(
     "qa_outputs",
     "qa_2026-03-10",
 )
+
+
 @dataclass(frozen=True)
 class CampaignResult:
     campaign: str
