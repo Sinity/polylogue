@@ -557,6 +557,7 @@ async def async_execute_query(env: AppEnv, params: dict[str, Any]) -> None:
             summaries,
             msg_counts,
             plan.stats_dimension or "all",
+            selection=plan.selection,
             output_format=plan.output.output_format,
         )
         return
@@ -588,7 +589,7 @@ async def async_execute_query(env: AppEnv, params: dict[str, Any]) -> None:
                 )
                 return
 
-    if route == QueryRoute.STATS_BY and plan.stats_dimension in {"project", "work-kind"}:
+    if route == QueryRoute.STATS_BY and plan.stats_dimension in {"repo", "work-kind"}:
         if filter_chain.can_use_summaries():
             summaries = await filter_chain.list_summaries()
             await _query_output.output_stats_by_profile_summaries(
@@ -596,6 +597,7 @@ async def async_execute_query(env: AppEnv, params: dict[str, Any]) -> None:
                 summaries,
                 repo,
                 plan.stats_dimension or "all",
+                selection=plan.selection,
                 output_format=plan.output.output_format,
             )
             return
@@ -606,8 +608,17 @@ async def async_execute_query(env: AppEnv, params: dict[str, Any]) -> None:
             [record.conversation_id for record in records],
             repo,
             plan.stats_dimension or "all",
+            selection=plan.selection,
             output_format=plan.output.output_format,
         )
+        return
+
+    if route == QueryRoute.OPEN:
+        if filter_chain.can_use_summaries():
+            results = await filter_chain.list_summaries()
+        else:
+            results = await filter_chain.list()
+        _query_output._open_result(env, results, params)
         return
 
     if route in {QueryRoute.SUMMARY_MODIFY, QueryRoute.SUMMARY_DELETE}:
@@ -633,10 +644,6 @@ async def async_execute_query(env: AppEnv, params: dict[str, Any]) -> None:
             selection=plan.selection,
             output_format=plan.output.output_format,
         )
-        return
-
-    if route == QueryRoute.OPEN:
-        _query_output._open_result(env, results, params)
         return
 
     _query_output.output_results(env, results, params)

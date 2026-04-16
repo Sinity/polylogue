@@ -6,17 +6,25 @@ import asyncio
 import importlib
 import sqlite3
 import threading
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
 
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
-from polylogue.storage.backends.connection import connection_context, open_connection
+from polylogue.storage.backends.connection import (
+    READ_CACHE_SIZE_KIB,
+    WRITE_CACHE_SIZE_KIB,
+    connection_context,
+    open_connection,
+    open_read_connection,
+)
 from polylogue.storage.backends.schema import SCHEMA_VERSION, _ensure_schema
+from polylogue.storage.embedding_stats_models import EmbeddingStatsSnapshot
 from polylogue.storage.query_models import ConversationRecordQuery
 from polylogue.storage.repository import ConversationRepository
-from polylogue.storage.store import ConversationRecord, RawConversationRecord
+from polylogue.storage.store import ContentBlockRecord, ConversationRecord, RawConversationRecord
 from tests.infra.storage_records import make_attachment, make_conversation, make_message
 
 
@@ -57,6 +65,8 @@ def test_ensure_schema_contract(tmp_path: Path) -> None:
         "publications",
     }.issubset(_table_names(conn))
     assert "message_meta" not in _table_names(conn)
+    raw_columns = {row[1] for row in conn.execute("PRAGMA table_info(raw_conversations)").fetchall()}
+    assert "blob_size" in raw_columns
     conn.close()
 
 
@@ -75,6 +85,82 @@ def test_ensure_schema_rejects_unsupported_version(tmp_path: Path) -> None:
     conn.close()
 
 
+def test_ensure_schema_adds_blob_size_to_legacy_v1_raw_table(tmp_path: Path) -> None:
+    """Legacy v1 databases without blob_size should be extended in place."""
+    db_path = tmp_path / "legacy-v1.db"
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    conn.executescript(
+        """
+        CREATE TABLE raw_conversations (
+            raw_id TEXT PRIMARY KEY,
+            provider_name TEXT NOT NULL,
+            payload_provider TEXT,
+            source_name TEXT,
+            source_path TEXT NOT NULL,
+            source_index INTEGER,
+            acquired_at TEXT NOT NULL,
+            file_mtime TEXT,
+            parsed_at TEXT,
+            parse_error TEXT,
+            validated_at TEXT,
+            validation_status TEXT,
+            validation_error TEXT,
+            validation_drift_count INTEGER DEFAULT 0,
+            validation_provider TEXT,
+            validation_mode TEXT
+        );
+        PRAGMA user_version = 1;
+        """
+    )
+    conn.commit()
+
+    _ensure_schema(conn)
+
+    raw_columns = {row[1] for row in conn.execute("PRAGMA table_info(raw_conversations)").fetchall()}
+    assert "blob_size" in raw_columns
+    conn.close()
+
+
+def test_ensure_schema_rejects_legacy_inline_raw_layout(tmp_path: Path) -> None:
+    """Legacy inline-raw databases should fail with a clear reset/back-up message."""
+    db_path = tmp_path / "legacy-inline-raw.db"
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    conn.executescript(
+        """
+        CREATE TABLE raw_conversations (
+            raw_id TEXT PRIMARY KEY,
+            provider_name TEXT NOT NULL,
+            payload_provider TEXT,
+            source_name TEXT,
+            source_path TEXT NOT NULL,
+            source_index INTEGER,
+            raw_content BLOB NOT NULL,
+            acquired_at TEXT NOT NULL,
+            file_mtime TEXT,
+            parsed_at TEXT,
+            parse_error TEXT,
+            validated_at TEXT,
+            validation_status TEXT,
+            validation_error TEXT,
+            validation_drift_count INTEGER DEFAULT 0,
+            validation_provider TEXT,
+            validation_mode TEXT
+        );
+        PRAGMA user_version = 1;
+        """
+    )
+    conn.commit()
+
+    with pytest.raises(Exception) as exc_info:
+        _ensure_schema(conn)
+
+    assert exc_info.type.__name__ == "DatabaseError"
+    assert "legacy inline raw-content layout" in str(exc_info.value)
+    conn.close()
+
+
 def test_open_connection_contract(tmp_path: Path) -> None:
     """open_connection() must create directories, apply schema, and set sqlite pragmas."""
     db_path = tmp_path / "nested" / "path" / "test.db"
@@ -83,6 +169,7 @@ def test_open_connection_contract(tmp_path: Path) -> None:
         assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
         assert conn.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"
         assert conn.execute("PRAGMA busy_timeout").fetchone()[0] == 30000
+        assert conn.execute("PRAGMA cache_size").fetchone()[0] == -WRITE_CACHE_SIZE_KIB
         assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
         assert {
             "artifact_observations",
@@ -95,6 +182,24 @@ def test_open_connection_contract(tmp_path: Path) -> None:
 
     assert db_path.exists()
     assert db_path.parent.exists()
+
+
+def test_open_read_connection_contract(tmp_path: Path) -> None:
+    """open_read_connection() must avoid writer-style setup when the DB exists."""
+    db_path = tmp_path / "readonly.db"
+    with open_connection(db_path) as conn:
+        conn.execute("CREATE TABLE IF NOT EXISTS sentinel(value INTEGER)")
+        conn.execute("INSERT INTO sentinel(value) VALUES (1)")
+        conn.commit()
+
+    with open_read_connection(db_path) as conn:
+        assert conn.execute("PRAGMA query_only").fetchone()[0] == 0
+        assert conn.execute("PRAGMA busy_timeout").fetchone()[0] == 1000
+        assert conn.execute("PRAGMA cache_size").fetchone()[0] == -READ_CACHE_SIZE_KIB
+        assert conn.execute("SELECT value FROM sentinel").fetchone()[0] == 1
+        with pytest.raises(sqlite3.OperationalError):
+            conn.execute("INSERT INTO sentinel(value) VALUES (2)")
+            conn.commit()
 
 
 @pytest.mark.slow
@@ -193,12 +298,151 @@ async def test_sqlite_backend_init_contract(tmp_path: Path, monkeypatch) -> None
     await default_backend.close()
 
 
+async def test_async_backend_rejects_legacy_inline_raw_layout(tmp_path: Path) -> None:
+    """Async backend writes should reject legacy inline-raw databases before acquisition begins."""
+    db_path = tmp_path / "legacy-inline-raw.db"
+    conn = sqlite3.connect(db_path)
+    conn.executescript(
+        """
+        CREATE TABLE raw_conversations (
+            raw_id TEXT PRIMARY KEY,
+            provider_name TEXT NOT NULL,
+            payload_provider TEXT,
+            source_name TEXT,
+            source_path TEXT NOT NULL,
+            source_index INTEGER,
+            raw_content BLOB NOT NULL,
+            acquired_at TEXT NOT NULL,
+            file_mtime TEXT,
+            parsed_at TEXT,
+            parse_error TEXT,
+            validated_at TEXT,
+            validation_status TEXT,
+            validation_error TEXT,
+            validation_drift_count INTEGER DEFAULT 0,
+            validation_provider TEXT,
+            validation_mode TEXT
+        );
+        PRAGMA user_version = 1;
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    backend = SQLiteBackend(db_path=db_path)
+    with pytest.raises(Exception) as exc_info:
+        await backend.get_raw_conversation_count()
+
+    assert exc_info.type.__name__ == "DatabaseError"
+    assert "legacy inline raw-content layout" in str(exc_info.value)
+    await backend.close()
+
+
 async def test_async_backend_schema_and_lock_contracts(tmp_path: Path) -> None:
     """Async schema guards and write locks must serialize correctly without blocking readers."""
     backend = SQLiteBackend(db_path=tmp_path / "async.db")
 
     results = await asyncio.gather(*[backend.get_conversation(f"conv:{idx}") for idx in range(10)])
     assert all(result is None for result in results)
+
+
+async def test_async_backend_extends_legacy_v1_raw_table(tmp_path: Path) -> None:
+    """Async backend init should repair legacy v1 raw tables before writes."""
+    db_path = tmp_path / "legacy-v1-async.db"
+    conn = sqlite3.connect(db_path)
+    conn.executescript(
+        """
+        CREATE TABLE raw_conversations (
+            raw_id TEXT PRIMARY KEY,
+            provider_name TEXT NOT NULL,
+            payload_provider TEXT,
+            source_name TEXT,
+            source_path TEXT NOT NULL,
+            source_index INTEGER,
+            acquired_at TEXT NOT NULL,
+            file_mtime TEXT,
+            parsed_at TEXT,
+            parse_error TEXT,
+            validated_at TEXT,
+            validation_status TEXT,
+            validation_error TEXT,
+            validation_drift_count INTEGER DEFAULT 0,
+            validation_provider TEXT,
+            validation_mode TEXT
+        );
+        PRAGMA user_version = 1;
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    backend = SQLiteBackend(db_path=db_path)
+    await backend.save_raw_conversation(
+        RawConversationRecord(
+            raw_id="raw-legacy",
+            provider_name="chatgpt",
+            source_path="/tmp/legacy.json",
+            blob_size=123,
+            acquired_at=datetime.now(timezone.utc).isoformat(),
+        )
+    )
+
+    with sqlite3.connect(db_path) as verify_conn:
+        columns = {row[1] for row in verify_conn.execute("PRAGMA table_info(raw_conversations)").fetchall()}
+        row = verify_conn.execute(
+            "SELECT blob_size FROM raw_conversations WHERE raw_id = ?",
+            ("raw-legacy",),
+        ).fetchone()
+
+    assert "blob_size" in columns
+    assert row is not None
+    assert row[0] == 123
+    await backend.close()
+
+
+async def test_async_read_pool_uses_read_connection_settings(tmp_path: Path) -> None:
+    """read_pool() should reuse read-oriented connections instead of writer-style ones."""
+    backend = SQLiteBackend(db_path=tmp_path / "pooled.db")
+
+    async with backend.connection() as conn:
+        await conn.execute("CREATE TABLE IF NOT EXISTS sentinel(value INTEGER)")
+        await conn.execute("INSERT INTO sentinel(value) VALUES (1)")
+        await conn.commit()
+
+    async with backend.read_pool(size=1):
+        async with backend.read_connection() as conn:
+            cursor = await conn.execute("PRAGMA busy_timeout")
+            assert (await cursor.fetchone())[0] == 1000
+            cursor = await conn.execute("PRAGMA cache_size")
+            assert (await cursor.fetchone())[0] == -READ_CACHE_SIZE_KIB
+            cursor = await conn.execute("SELECT value FROM sentinel")
+            assert (await cursor.fetchone())[0] == 1
+            with pytest.raises(Exception) as exc_info:
+                await conn.execute("INSERT INTO sentinel(value) VALUES (2)")
+                await conn.commit()
+            assert "readonly" in str(exc_info.value).lower() or "read-only" in str(exc_info.value).lower()
+
+    await backend.close()
+
+
+async def test_async_read_connection_closes_cleanly_after_pool_teardown(tmp_path: Path) -> None:
+    """Checked-out read connections should not explode if the pool tears down first."""
+    backend = SQLiteBackend(db_path=tmp_path / "pool-teardown.db")
+
+    async with backend.connection() as conn:
+        await conn.execute("CREATE TABLE IF NOT EXISTS sentinel(value INTEGER)")
+        await conn.commit()
+
+    pool_cm = backend.read_pool(size=1)
+    await pool_cm.__aenter__()
+    conn_cm = backend.read_connection()
+    conn = await conn_cm.__aenter__()
+    cursor = await conn.execute("SELECT 1")
+    assert (await cursor.fetchone())[0] == 1
+
+    await pool_cm.__aexit__(None, None, None)
+    await conn_cm.__aexit__(None, None, None)
+    await backend.close()
     assert backend._schema_ensured is True
 
     init_count = 0
@@ -212,7 +456,7 @@ async def test_async_backend_schema_and_lock_contracts(tmp_path: Path) -> None:
     backend._schema_ensured = False
     backend._ensure_schema = counting_ensure_schema
     await asyncio.gather(*[backend.queries.list_conversations(ConversationRecordQuery()) for _ in range(20)])
-    assert init_count == 1
+    assert init_count == 0
 
     slow_backend = SQLiteBackend(db_path=tmp_path / "slow.db")
     events: list[str] = []
@@ -263,7 +507,24 @@ async def test_async_backend_schema_and_lock_contracts(tmp_path: Path) -> None:
     await asyncio.gather(write_task, asyncio.create_task(quick_read()))
     assert read_completed is True
 
+    second_backend = SQLiteBackend(db_path=backend.db_path)
+    second_repo = ConversationRepository(backend=second_backend)
+
+    cross_backend_read_completed = False
+
+    async def cross_backend_read() -> None:
+        nonlocal cross_backend_read_completed
+        await asyncio.wait_for(second_backend.queries.list_conversations(ConversationRecordQuery()), timeout=2)
+        await asyncio.wait_for(second_repo.get_archive_stats(), timeout=2)
+        cross_backend_read_completed = True
+
+    write_task = asyncio.create_task(slow_write())
+    await asyncio.sleep(0.01)
+    await asyncio.gather(write_task, asyncio.create_task(cross_backend_read()))
+    assert cross_backend_read_completed is True
+
     await backend.close()
+    await second_backend.close()
     await backend.close()
     await slow_backend.close()
 
@@ -273,6 +534,43 @@ async def test_async_backend_connection_error_surfaces() -> None:
     with pytest.raises((OSError, PermissionError, Exception)):
         backend = SQLiteBackend(db_path=Path("/nonexistent/deeply/nested/path/db.db"))
         await backend.get_conversation("test")
+
+
+async def test_async_read_connection_stays_responsive_during_sync_writer_lock(tmp_path: Path) -> None:
+    """Fresh read backends must not take the writer-style path when a DB already exists."""
+    db_path = tmp_path / "locked.db"
+    with open_connection(db_path) as conn:
+        conn.execute("CREATE TABLE IF NOT EXISTS sentinel(value INTEGER)")
+        conn.execute("INSERT INTO sentinel(value) VALUES (1)")
+        conn.commit()
+
+    writer_started = threading.Event()
+    writer_release = threading.Event()
+
+    def hold_writer_lock() -> None:
+        with sqlite3.connect(db_path, timeout=30) as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            writer_started.set()
+            writer_release.wait(timeout=5)
+            conn.rollback()
+
+    writer = threading.Thread(target=hold_writer_lock)
+    writer.start()
+    writer_started.wait(timeout=2)
+
+    backend = SQLiteBackend(db_path=db_path)
+    backend._schema_ensured = False
+    started = time.perf_counter()
+    try:
+        records = await asyncio.wait_for(backend.queries.list_conversations(ConversationRecordQuery()), timeout=2)
+    finally:
+        writer_release.set()
+        writer.join(timeout=2)
+        await backend.close()
+
+    elapsed = time.perf_counter() - started
+    assert records == []
+    assert elapsed < 1.5
 
 
 async def test_paged_id_iteration_contract(tmp_path: Path) -> None:
@@ -339,6 +637,134 @@ async def test_backend_transaction_contracts(tmp_path: Path) -> None:
             await backend.save_conversation_record(make_conversation("conv-error", title="Error"))
             raise ValueError("Test error")
     assert await backend.get_conversation("conv-error") is None
+    await backend.close()
+
+
+async def test_save_conversation_replaces_runtime_rows_on_content_change(tmp_path: Path) -> None:
+    """Content changes must replace stale runtime rows instead of accumulating them."""
+    backend = SQLiteBackend(db_path=tmp_path / "replace.db")
+    repo = ConversationRepository(backend=backend)
+
+    conv_v1 = make_conversation(
+        "conv-replace",
+        provider_name="codex",
+        title="Replace",
+        content_hash="hash-v1",
+    )
+    msg1_v1 = make_message(
+        "msg-1",
+        "conv-replace",
+        text="first",
+        content_hash="msg-hash-v1-1",
+        content_blocks=[
+            ContentBlockRecord(
+                block_id="blk-msg-1-0",
+                message_id="msg-1",
+                conversation_id="conv-replace",
+                block_index=0,
+                type="text",
+                text="alpha",
+            ),
+            ContentBlockRecord(
+                block_id="blk-msg-1-1",
+                message_id="msg-1",
+                conversation_id="conv-replace",
+                block_index=1,
+                type="text",
+                text="beta",
+            ),
+        ],
+    )
+    msg2_v1 = make_message(
+        "msg-2",
+        "conv-replace",
+        role="assistant",
+        text="second",
+        content_hash="msg-hash-v1-2",
+    )
+    att1 = make_attachment("att-1", "conv-replace", "msg-1", mime_type="image/png")
+    att2 = make_attachment("att-2", "conv-replace", "msg-2", mime_type="image/jpeg")
+
+    await repo.save_conversation(conv_v1, [msg1_v1, msg2_v1], [att1, att2])
+
+    conv_v2 = make_conversation(
+        "conv-replace",
+        provider_name="codex",
+        title="Replace",
+        content_hash="hash-v2",
+    )
+    msg1_v2 = make_message(
+        "msg-1",
+        "conv-replace",
+        text="first updated",
+        content_hash="msg-hash-v2-1",
+        content_blocks=[
+            ContentBlockRecord(
+                block_id="blk-msg-1-0-v2",
+                message_id="msg-1",
+                conversation_id="conv-replace",
+                block_index=0,
+                type="text",
+                text="alpha updated",
+            )
+        ],
+    )
+    att1_v2 = make_attachment("att-1", "conv-replace", "msg-1", mime_type="image/png")
+
+    await repo.save_conversation(conv_v2, [msg1_v2], [att1_v2])
+
+    messages = await backend.get_messages("conv-replace")
+    assert [message.message_id for message in messages] == ["msg-1"]
+    assert messages[0].text == "first updated"
+    assert [(block.block_index, block.text) for block in messages[0].content_blocks] == [(0, "alpha updated")]
+
+    attachments = sorted(await backend.get_attachments("conv-replace"), key=lambda record: record.attachment_id)
+    assert [(attachment.attachment_id, attachment.message_id) for attachment in attachments] == [("att-1", "msg-1")]
+
+    with open_connection(backend.db_path) as conn:
+        assert (
+            conn.execute(
+                "SELECT COUNT(*) FROM messages WHERE conversation_id = ?",
+                ("conv-replace",),
+            ).fetchone()[0]
+            == 1
+        )
+        assert (
+            conn.execute(
+                "SELECT COUNT(*) FROM content_blocks WHERE conversation_id = ?",
+                ("conv-replace",),
+            ).fetchone()[0]
+            == 1
+        )
+        assert (
+            conn.execute(
+                "SELECT COUNT(*) FROM attachment_refs WHERE conversation_id = ?",
+                ("conv-replace",),
+            ).fetchone()[0]
+            == 1
+        )
+        assert (
+            conn.execute(
+                "SELECT message_id FROM attachment_refs WHERE conversation_id = ? AND attachment_id = ?",
+                ("conv-replace", "att-1"),
+            ).fetchone()[0]
+            == "msg-1"
+        )
+        assert (
+            conn.execute(
+                "SELECT COUNT(*) FROM attachments WHERE attachment_id = ?",
+                ("att-2",),
+            ).fetchone()[0]
+            == 0
+        )
+        stats_row = conn.execute(
+            "SELECT message_count, word_count FROM conversation_stats WHERE conversation_id = ?",
+            ("conv-replace",),
+        ).fetchone()
+        assert stats_row is not None
+        assert stats_row["message_count"] == 1
+        assert stats_row["word_count"] == 2
+
     await backend.close()
 
 
@@ -446,4 +872,27 @@ async def test_backend_lifecycle_reopen_contract(tmp_path: Path) -> None:
         assert conn is not None
 
     assert await backend.get_conversation("conv-life") is not None
+    await backend.close()
+
+
+@pytest.mark.asyncio
+async def test_get_archive_stats_skips_retrieval_band_status(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    backend = SQLiteBackend(db_path=tmp_path / "archive-stats.db")
+    repo = ConversationRepository(backend=backend)
+    observed: list[bool] = []
+
+    async def fake_read_embedding_stats(conn, *, include_retrieval_bands: bool = True):
+        observed.append(include_retrieval_bands)
+        return EmbeddingStatsSnapshot(
+            embedded_conversations=0,
+            embedded_messages=0,
+            pending_conversations=0,
+        )
+
+    monkeypatch.setattr("polylogue.storage.repository_vectors.read_embedding_stats_async", fake_read_embedding_stats)
+
+    stats = await repo.get_archive_stats()
+
+    assert stats.total_conversations == 0
+    assert observed == [False]
     await backend.close()

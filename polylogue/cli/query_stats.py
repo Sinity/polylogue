@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 import click
 
 from polylogue.cli.machine_errors import error_no_results
+from polylogue.storage.backends.queries import stats as stats_q
 
 if TYPE_CHECKING:
     from polylogue.cli.types import AppEnv
@@ -79,6 +80,26 @@ def emit_structured_stats(
     return False
 
 
+def _emit_grouped_no_results(
+    env: AppEnv,
+    *,
+    output_format: str = "text",
+    selection: ConversationQuerySpec | None = None,
+) -> None:
+    filters = selection.describe() if selection is not None else []
+    if output_format == "json":
+        message = "No conversations matched filters." if filters else "No conversations matched."
+        error_no_results(message, filters=filters or None).emit(exit_code=2)
+    if filters:
+        env.ui.console.print("No conversations matched filters:")
+        for item in filters:
+            env.ui.console.print(f"  {item}")
+        env.ui.console.print("Hint: try broadening your filters or use `list` to browse")
+    else:
+        env.ui.console.print("No conversations matched.")
+    raise SystemExit(2)
+
+
 # ---------------------------------------------------------------------------
 # SQL-backed archive stats (from query_sql_stats.py)
 # ---------------------------------------------------------------------------
@@ -95,6 +116,7 @@ async def output_stats_sql(
     described_filters = filter_chain.describe()
     has_filters = bool(described_filters)
 
+    archive_stats = None
     if has_filters:
         summaries = await filter_chain.list_summaries() if filter_chain.can_use_summaries() else None
         if summaries is not None:
@@ -115,14 +137,23 @@ async def output_stats_sql(
             conv_ids = None
     else:
         conv_ids = None
-        conv_count = await filter_chain.count()
-        if conv_count == 0:
-            if output_format == "json":
-                error_no_results("No conversations in archive.").emit(exit_code=2)
-            env.ui.console.print("No conversations in archive.")
-            return
+        async with repo.backend.read_connection() as conn:
+            await conn.execute("BEGIN")
+            try:
+                archive_stats = await repo.get_archive_stats(conn=conn)
+                conv_count = archive_stats.total_conversations
+                if conv_count == 0:
+                    if output_format == "json":
+                        error_no_results("No conversations in archive.").emit(exit_code=2)
+                    env.ui.console.print("No conversations in archive.")
+                    return
+                stats = await stats_q.aggregate_message_stats(conn, None)
+            finally:
+                if conn.in_transaction:
+                    await conn.rollback()
 
-    stats = await repo.queries.aggregate_message_stats(conv_ids)
+    if has_filters:
+        stats = await repo.queries.aggregate_message_stats(conv_ids)
 
     date_range = ""
     if stats["min_sort_key"] and stats["max_sort_key"]:
@@ -136,26 +167,30 @@ async def output_stats_sql(
         "messages_user": stats["user"],
         "messages_assistant": stats["assistant"],
         "words_approx": stats["words_approx"],
-        "attachments": stats["attachments"],
+        "attachment_refs": stats["attachment_refs"],
+        "distinct_attachments": stats["distinct_attachments"],
         "providers": stats.get("providers") or {},
         "date_range": None,
         "filtered": has_filters,
     }
     if not has_filters:
-        archive_stats = await repo.get_archive_stats()
+        assert archive_stats is not None
         pending_embedding_conversations = getattr(archive_stats, "pending_embedding_conversations", 0)
         stale_embedding_messages = getattr(archive_stats, "stale_embedding_messages", 0)
-        if hasattr(archive_stats, "to_dict"):
-            embeddings_payload = archive_stats.to_dict()
-        else:
-            embeddings_payload = {
-                "total_conversations": getattr(archive_stats, "total_conversations", 0),
-                "embedded_conversations": getattr(archive_stats, "embedded_conversations", 0),
-                "embedded_messages": getattr(archive_stats, "embedded_messages", 0),
-                "pending_embedding_conversations": pending_embedding_conversations,
-                "stale_embedding_messages": stale_embedding_messages,
-                "embedding_coverage_percent": round(getattr(archive_stats, "embedding_coverage", 0.0), 1),
-            }
+        embeddings_payload = {
+            "embedded_conversations": getattr(archive_stats, "embedded_conversations", 0),
+            "embedded_messages": getattr(archive_stats, "embedded_messages", 0),
+            "pending_embedding_conversations": pending_embedding_conversations,
+            "stale_embedding_messages": stale_embedding_messages,
+            "messages_missing_embedding_provenance": getattr(
+                archive_stats,
+                "messages_missing_embedding_provenance",
+                0,
+            ),
+            "embedding_coverage_percent": round(getattr(archive_stats, "embedding_coverage", 0.0), 1),
+            "embedding_health_status": getattr(archive_stats, "embedding_health_status", None),
+            "retrieval_ready": getattr(archive_stats, "retrieval_ready", None),
+        }
         structured_summary["embeddings"] = embeddings_payload
     if date_range:
         structured_summary["date_range"] = date_range
@@ -182,7 +217,8 @@ async def output_stats_sql(
         provider_parts = [f"{name} ({count:,})" for name, count in stats["providers"].items()]
         out(f"Providers: {', '.join(provider_parts)}")
 
-    out(f"Attachments: {stats['attachments']:,}")
+    out(f"Attachment refs: {stats['attachment_refs']:,}")
+    out(f"Unique attachments: {stats['distinct_attachments']:,}")
     if not has_filters:
         embedding_line = (
             f"Embeddings: {archive_stats.embedded_conversations:,}/{archive_stats.total_conversations:,} convs, "
@@ -208,6 +244,7 @@ def output_stats_by_summaries(
     msg_counts: dict[str, int],
     dimension: str,
     *,
+    selection: ConversationQuerySpec | None = None,
     output_format: str = "text",
 ) -> None:
     from collections import defaultdict
@@ -217,8 +254,7 @@ def output_stats_by_summaries(
     from polylogue.ui.theme import provider_color
 
     if not summaries:
-        env.ui.console.print("No conversations matched.")
-        return
+        _emit_grouped_no_results(env, output_format=output_format, selection=selection)
 
     groups: dict[str, list[ConversationSummary]] = defaultdict(list)
     for summary in summaries:
@@ -552,8 +588,7 @@ def output_stats_by_conversations(
     output_format: str = "text",
 ) -> None:
     if not results:
-        env.ui.console.print("No conversations matched.")
-        return
+        _emit_grouped_no_results(env, output_format=output_format, selection=selection)
 
     if output_semantic_grouped_stats(
         env,
@@ -583,6 +618,7 @@ async def output_stats_by_profile_summaries(
     repo: ConversationRepository,
     dimension: str,
     *,
+    selection: ConversationQuerySpec | None = None,
     output_format: str = "text",
     batch_size: int = 100,
 ) -> None:
@@ -591,6 +627,7 @@ async def output_stats_by_profile_summaries(
         [str(summary.id) for summary in summaries],
         repo,
         dimension,
+        selection=selection,
         output_format=output_format,
         batch_size=batch_size,
     )
@@ -602,6 +639,7 @@ async def output_stats_by_profile_query(
     repo: ConversationRepository,
     dimension: str,
     *,
+    selection: ConversationQuerySpec | None = None,
     output_format: str = "text",
     batch_size: int = 100,
 ) -> None:
@@ -610,6 +648,7 @@ async def output_stats_by_profile_query(
         conversation_ids,
         repo,
         dimension,
+        selection=selection,
         output_format=output_format,
         batch_size=batch_size,
     )
@@ -621,6 +660,7 @@ async def output_stats_by_profile_ids(
     repo: ConversationRepository,
     dimension: str,
     *,
+    selection: ConversationQuerySpec | None = None,
     output_format: str = "text",
     batch_size: int = 100,
 ) -> None:
@@ -631,8 +671,7 @@ async def output_stats_by_profile_ids(
     if dimension not in {"repo", "work-kind"}:
         raise ValueError(f"Unsupported profile stats dimension: {dimension}")
     if not conversation_ids:
-        env.ui.console.print("No conversations matched.")
-        return
+        _emit_grouped_no_results(env, output_format=output_format, selection=selection)
 
     from polylogue.lib.session_profile import build_session_profile
 

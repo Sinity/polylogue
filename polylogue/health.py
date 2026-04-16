@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, cast
 
 from polylogue.lib.outcomes import OutcomeCheck, OutcomeReport, OutcomeStatus
@@ -66,13 +67,26 @@ class _ReportProvenance:
         return {"source": self.source}
 
 
+def _summarize_db_error(exc: Exception) -> str:
+    detail = str(exc)
+    if "database is locked" in detail.lower():
+        return "database is locked (archive is busy; retry after the current run completes)"
+    return detail
+
+
+def _open_health_probe_connection(db_path: Path) -> Any:
+    from polylogue.storage.backends.connection import open_read_connection
+
+    return open_read_connection(db_path)
+
+
 # ---------------------------------------------------------------------------
 # Archive health (database, derived models, orphans, providers)
 # ---------------------------------------------------------------------------
 
 
 def run_archive_health(config: Any, *, deep: bool = False) -> HealthReport:
-    from polylogue.storage.backends.connection import connection_context, open_connection
+    from polylogue.storage.backends.schema_upgrade import assert_supported_archive_layout
     from polylogue.storage.derived_status import collect_derived_model_statuses_sync
     from polylogue.storage.index import index_status
     from polylogue.storage.repair import collect_archive_debt_statuses_sync
@@ -90,7 +104,8 @@ def run_archive_health(config: Any, *, deep: bool = False) -> HealthReport:
     # --- database reachability ---
     db_error: str | None = None
     try:
-        with open_connection(None) as conn:
+        with _open_health_probe_connection(config.db_path) as conn:
+            assert_supported_archive_layout(conn)
             checks.append(HealthCheck("database", VerifyStatus.OK, summary="DB reachable"))
             if deep:
                 integrity = conn.execute("PRAGMA integrity_check").fetchone()[0]
@@ -102,12 +117,25 @@ def run_archive_health(config: Any, *, deep: bool = False) -> HealthReport:
                     )
                 )
     except Exception as exc:
-        db_error = str(exc)
+        db_error = _summarize_db_error(exc)
         checks.append(HealthCheck("database", VerifyStatus.ERROR, summary=f"DB error: {db_error}"))
 
     # --- index ---
-    if db_error is None:
-        idx = index_status()
+    if db_error is not None:
+        checks.append(
+            HealthCheck(
+                "index",
+                VerifyStatus.WARNING,
+                summary=f"Skipped: database unavailable ({db_error})",
+            )
+        )
+        return HealthReport(checks=checks)
+
+    # --- derived models, debt, duplicates, providers ---
+    derived_statuses: dict[str, DerivedModelStatus] = {}
+    archive_debt: dict[str, Any] = {}
+    with _open_health_probe_connection(config.db_path) as conn:
+        idx = index_status(conn)
         if idx["exists"]:
             checks.append(
                 HealthCheck(
@@ -119,26 +147,25 @@ def run_archive_health(config: Any, *, deep: bool = False) -> HealthReport:
             )
         else:
             checks.append(HealthCheck("index", VerifyStatus.WARNING, summary="index not built"))
-    else:
-        checks.append(
-            HealthCheck(
-                "index",
-                VerifyStatus.WARNING,
-                summary=f"Skipped: database unavailable ({db_error})",
-            )
-        )
 
-    if db_error is not None:
-        return HealthReport(checks=checks)
-
-    # --- derived models, debt, duplicates, providers ---
-    derived_statuses: dict[str, DerivedModelStatus] = {}
-    archive_debt: dict[str, Any] = {}
-    with connection_context(config.db_path) as conn:
         derived_statuses = collect_derived_model_statuses_sync(conn)
-        archive_debt = collect_archive_debt_statuses_sync(conn, derived_statuses=derived_statuses)
-        for debt_name in ("orphaned_messages", "orphaned_content_blocks", "orphaned_attachments"):
+        archive_debt = collect_archive_debt_statuses_sync(
+            conn,
+            derived_statuses=derived_statuses,
+            include_expensive=deep,
+        )
+        for debt_name in ("orphaned_messages", "orphaned_attachments"):
             debt = archive_debt[debt_name]
+            checks.append(
+                HealthCheck(
+                    debt.name,
+                    VerifyStatus.OK if debt.healthy else VerifyStatus.ERROR,
+                    count=debt.issue_count,
+                    summary=debt.detail,
+                )
+            )
+        if deep and "orphaned_content_blocks" in archive_debt:
+            debt = archive_debt["orphaned_content_blocks"]
             checks.append(
                 HealthCheck(
                     debt.name,
@@ -276,8 +303,6 @@ def get_health(config: Any, *, deep: bool = False) -> HealthReport:
 
 
 def run_runtime_health(config: Any) -> HealthReport:
-    from polylogue.storage.backends.connection import connection_context, open_connection
-
     checks: list[HealthCheck] = []
 
     db = config.db_path
@@ -303,8 +328,10 @@ def run_runtime_health(config: Any) -> HealthReport:
 
     try:
         from polylogue.storage.backends.schema import SCHEMA_VERSION
+        from polylogue.storage.backends.schema_upgrade import assert_supported_archive_layout
 
-        with open_connection(None) as conn:
+        with _open_health_probe_connection(config.db_path) as conn:
+            assert_supported_archive_layout(conn)
             current = conn.execute("PRAGMA user_version").fetchone()[0]
             if current == SCHEMA_VERSION:
                 checks.append(HealthCheck("schema_version", VerifyStatus.OK, summary=f"v{current} (current)"))
@@ -319,10 +346,12 @@ def run_runtime_health(config: Any) -> HealthReport:
                     )
                 )
     except Exception as exc:
-        checks.append(HealthCheck("schema_version", VerifyStatus.ERROR, summary=f"Cannot check: {exc}"))
+        checks.append(
+            HealthCheck("schema_version", VerifyStatus.ERROR, summary=f"Cannot check: {_summarize_db_error(exc)}")
+        )
 
     try:
-        with connection_context(None) as conn:
+        with _open_health_probe_connection(config.db_path) as conn:
             fts = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='messages_fts'").fetchone()
             if fts:
                 conn.execute("SELECT * FROM messages_fts LIMIT 0")
@@ -330,7 +359,9 @@ def run_runtime_health(config: Any) -> HealthReport:
             else:
                 checks.append(HealthCheck("fts_tables", VerifyStatus.WARNING, summary="FTS5 table not found"))
     except Exception as exc:
-        checks.append(HealthCheck("fts_tables", VerifyStatus.ERROR, summary=f"FTS check failed: {exc}"))
+        checks.append(
+            HealthCheck("fts_tables", VerifyStatus.ERROR, summary=f"FTS check failed: {_summarize_db_error(exc)}")
+        )
 
     try:
         import sqlite_vec  # noqa: F401
@@ -523,10 +554,10 @@ def quick_health_summary(archive_root: Any) -> str:
     summary suitable for the non-verbose CLI status line.
     """
     try:
-        from polylogue.storage.backends.connection import open_connection
         from polylogue.storage.backends.schema import SCHEMA_VERSION
 
-        with open_connection(None) as conn:
+        db_path = archive_root / "polylogue.db"
+        with _open_health_probe_connection(db_path) as conn:
             version = conn.execute("PRAGMA user_version").fetchone()[0]
             if version != SCHEMA_VERSION:
                 return f"schema v{version} (expected v{SCHEMA_VERSION})"
@@ -534,7 +565,7 @@ def quick_health_summary(archive_root: Any) -> str:
             count = row[0] if row else 0
             return f"OK ({count:,} conversations)"
     except Exception as exc:
-        return f"unavailable ({exc})"
+        return f"unavailable ({_summarize_db_error(exc)})"
 
 
 __all__ = [

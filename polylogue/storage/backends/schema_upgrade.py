@@ -73,9 +73,40 @@ def _ensure_raw_source_mtime_index(conn: sqlite3.Connection) -> None:
     conn.execute(desired_sql)
 
 
+def _ensure_tool_use_conversation_index(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_content_blocks_tool_use_conversation
+        ON content_blocks(conversation_id)
+        WHERE type = 'tool_use'
+        """
+    )
+
+
+def assert_supported_archive_layout(conn: sqlite3.Connection) -> None:
+    """Reject legacy archive layouts that the current runtime cannot write safely."""
+    if not _table_exists(conn, "raw_conversations"):
+        return
+
+    raw_columns = _table_columns(conn, "raw_conversations")
+    if "raw_content" in raw_columns:
+        raise DatabaseError(
+            "Database uses the legacy inline raw-content layout and is incompatible with the current blob-store "
+            "archive format. Move the database aside or run `polylogue reset --database` before re-importing."
+        )
+
+
 def apply_current_schema_extensions(conn: sqlite3.Connection) -> None:
+    assert_supported_archive_layout(conn)
+    if _table_exists(conn, "raw_conversations"):
+        raw_columns = _table_columns(conn, "raw_conversations")
+        if "blob_size" not in raw_columns:
+            conn.execute("ALTER TABLE raw_conversations ADD COLUMN blob_size INTEGER NOT NULL DEFAULT 0")
+
     # Covering index for mtime-skip queries (avoids full table scan of raw payload storage)
     _ensure_raw_source_mtime_index(conn)
+    if _table_exists(conn, "content_blocks"):
+        _ensure_tool_use_conversation_index(conn)
     conn.executescript(_ARTIFACT_OBSERVATION_DDL)
     conn.executescript(_PUBLICATION_DDL)
     conn.executescript(_ACTION_EVENT_DDL)
@@ -202,6 +233,8 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
         logger.debug("Created fresh schema v%s", SCHEMA_VERSION)
         return
 
+    assert_supported_archive_layout(conn)
+
     if current_version == SCHEMA_VERSION:
         apply_current_schema_extensions(conn)
         return
@@ -212,4 +245,4 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     )
 
 
-__all__ = ["apply_current_schema_extensions", "ensure_schema", "ensure_vec0_table"]
+__all__ = ["apply_current_schema_extensions", "assert_supported_archive_layout", "ensure_schema", "ensure_vec0_table"]

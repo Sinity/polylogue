@@ -173,6 +173,32 @@ async def thread_conversation_ids_async(conn: aiosqlite.Connection, root_id: str
     return [str(row["conversation_id"]) for row in rows]
 
 
+def iter_root_id_pages_sync(
+    conn: sqlite3.Connection,
+    *,
+    size: int = _ROOT_BATCH_SIZE,
+):
+    cursor = conn.execute(_ROOT_THREAD_IDS_SQL)
+    while True:
+        rows = cursor.fetchmany(size)
+        if not rows:
+            break
+        yield [str(row["conversation_id"]) for row in rows]
+
+
+async def iter_root_id_pages_async(
+    conn: aiosqlite.Connection,
+    *,
+    size: int = _ROOT_BATCH_SIZE,
+):
+    cursor = await conn.execute(_ROOT_THREAD_IDS_SQL)
+    while True:
+        rows = await cursor.fetchmany(size)
+        if not rows:
+            break
+        yield [str(row["conversation_id"]) for row in rows]
+
+
 def _chunk_root_ids(root_ids: Sequence[str], *, size: int = _ROOT_BATCH_SIZE) -> list[tuple[str, ...]]:
     return [
         tuple(root_ids[index : index + size])
@@ -297,19 +323,16 @@ async def build_thread_records_for_roots_async(
 
 
 def build_all_thread_records_sync(conn: sqlite3.Connection) -> list[WorkThreadRecord]:
-    root_ids = [str(row["conversation_id"]) for row in conn.execute(_ROOT_THREAD_IDS_SQL).fetchall()]
     records: list[WorkThreadRecord] = []
-    for root_chunk in _chunk_root_ids(root_ids):
+    for root_chunk in iter_root_id_pages_sync(conn):
         records_by_root = build_thread_records_for_roots_sync(conn, root_chunk)
         records.extend(records_by_root[root_id] for root_id in root_chunk if root_id in records_by_root)
     return records
 
 
 async def build_all_thread_records_async(conn: aiosqlite.Connection) -> list[WorkThreadRecord]:
-    rows = await (await conn.execute(_ROOT_THREAD_IDS_SQL)).fetchall()
-    root_ids = [str(row["conversation_id"]) for row in rows]
     records: list[WorkThreadRecord] = []
-    for root_chunk in _chunk_root_ids(root_ids):
+    async for root_chunk in iter_root_id_pages_async(conn):
         records_by_root = await build_thread_records_for_roots_async(conn, root_chunk)
         records.extend(records_by_root[root_id] for root_id in root_chunk if root_id in records_by_root)
     return records
@@ -322,6 +345,8 @@ __all__ = [
     "build_thread_records_for_roots_sync",
     "build_work_thread_record",
     "hydrate_work_thread",
+    "iter_root_id_pages_async",
+    "iter_root_id_pages_sync",
     "load_thread_profile_records_async",
     "load_thread_profile_records_by_root_async",
     "load_thread_profile_records_by_root_sync",

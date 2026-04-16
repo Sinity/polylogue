@@ -79,6 +79,63 @@ def _decode_jsonl_payload(
     return lines, malformed_lines
 
 
+def sample_jsonl_payload(
+    raw: Path | bytes | str,
+    *,
+    max_samples: int = 64,
+    jsonl_dict_only: bool = False,
+) -> tuple[list[Any], int]:
+    """Collect a bounded sample of valid JSONL records while scanning the full file.
+
+    This is intended for provider/artifact/schema resolution where full-record
+    materialization is unnecessary, but malformed-line accounting must still
+    reflect the entire source.
+    """
+    samples: list[Any] = []
+    malformed_lines = 0
+    valid_records = 0
+    first_line = True
+
+    fh = (
+        open(raw, "rb")  # noqa: SIM115 — caller-managed context
+        if isinstance(raw, Path)
+        else BytesIO(raw)
+        if isinstance(raw, bytes)
+        else StringIO(raw)
+    )
+
+    try:
+        for raw_line in fh:
+            try:
+                line = raw_line.decode("utf-8") if isinstance(raw_line, bytes) else raw_line
+            except UnicodeDecodeError:
+                malformed_lines += 1
+                continue
+            if first_line:
+                line = line.lstrip("\ufeff")
+                first_line = False
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                parsed = orjson.loads(line)
+            except (orjson.JSONDecodeError, ValueError):
+                malformed_lines += 1
+                continue
+            if jsonl_dict_only and not isinstance(parsed, dict):
+                continue
+            valid_records += 1
+            if len(samples) < max_samples:
+                samples.append(parsed)
+    finally:
+        if isinstance(raw, Path):
+            fh.close()
+
+    if valid_records == 0:
+        raise ValueError("No valid JSONL records found")
+    return samples, malformed_lines
+
+
 def _decode_raw_payload(
     raw_content: Path | bytes | str | Any,
     *,
@@ -168,8 +225,9 @@ def build_raw_payload_envelope(
     """Decode raw payload and attach canonical provider/wire-format identity.
 
     When *raw_content* is a :class:`~pathlib.Path`, JSONL payloads are
-    streamed line-by-line from disk — enabling constant-memory parsing
-    of multi-GB files.
+    decoded line-by-line from disk before being materialized into a
+    Python list. This avoids reading the whole file into one byte string,
+    but grouped-provider parses still hold the decoded records in memory.
     """
     normalized_path = str(source_path or "").lower()
     prefer_jsonl = normalized_path.endswith((".jsonl", ".jsonl.txt", ".ndjson"))
@@ -202,4 +260,4 @@ def build_raw_payload_envelope(
     )
 
 
-__all__ = ["RawPayloadEnvelope", "WireFormat", "build_raw_payload_envelope"]
+__all__ = ["RawPayloadEnvelope", "WireFormat", "build_raw_payload_envelope", "sample_jsonl_payload"]

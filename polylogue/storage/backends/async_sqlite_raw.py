@@ -53,6 +53,27 @@ class SQLiteRawMixin:
         ):
             yield rid
 
+    async def iter_raw_headers(
+        self,
+        *,
+        source_names: list[str] | None = None,
+        provider_name: str | None = None,
+        require_unparsed: bool = False,
+        require_unvalidated: bool = False,
+        validation_statuses: list[str] | None = None,
+        page_size: int = 1000,
+    ) -> AsyncIterator[tuple[str, int]]:
+        """Iterate raw conversation IDs with blob sizes for lightweight batching."""
+        async for raw_header in self.queries.iter_raw_headers(
+            source_names=source_names,
+            provider_name=provider_name,
+            require_unparsed=require_unparsed,
+            require_unvalidated=require_unvalidated,
+            validation_statuses=validation_statuses,
+            page_size=page_size,
+        ):
+            yield raw_header
+
     async def save_raw_conversation(self, record: RawConversationRecord) -> bool:
         """Save a raw conversation record. Returns True if inserted."""
         async with self._get_connection() as conn:
@@ -150,6 +171,14 @@ class SQLiteRawMixin:
         """Fetch multiple raw conversations in a single query."""
         async with self._get_connection() as conn:
             return await raw_queries.get_raw_conversations_batch(conn, raw_ids)
+
+    async def get_raw_blob_sizes(
+        self,
+        raw_ids: list[str],
+    ) -> list[tuple[str, int]]:
+        """Fetch raw conversation blob sizes without hydrating full records."""
+        async with self._get_connection() as conn:
+            return await raw_queries.get_raw_blob_sizes(conn, raw_ids)
 
     async def get_raw_conversation_states(
         self,

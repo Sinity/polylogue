@@ -488,7 +488,7 @@ def test_action_events_capture_normalized_command_query_branch_and_cwd() -> None
     assert profile.repo_names == ("polylogue",)
 
 
-def test_build_session_profile_detects_project_paths_in_user_text() -> None:
+def test_build_session_profile_does_not_infer_repos_from_dialogue_paths() -> None:
     conversation = Conversation(
         id="conv-user-paths",
         provider="gemini",
@@ -514,20 +514,26 @@ def test_build_session_profile_detects_project_paths_in_user_text() -> None:
 
     profile = build_session_profile(conversation)
 
-    assert profile.repo_names == ("polylogue",)
+    assert profile.repo_names == ()
+    assert profile.repo_paths == ()
+    assert profile.file_paths_touched == ()
 
 
-def test_build_session_profile_discards_markdown_glob_paths_in_dialogue_text() -> None:
+def test_build_session_profile_ignores_persisted_output_paths_in_dialogue_text() -> None:
     conversation = Conversation(
-        id="conv-user-path-globs",
+        id="conv-user-path-noise",
         provider="claude-code",
+        provider_meta={"working_directories": [str(REPO_ROOT)]},
         messages=MessageCollection(
             messages=[
                 Message(
                     id="u1",
                     role="user",
                     provider="claude-code",
-                    text=f"Check `{SHOWCASE_REPORT_PATH}` and ignore `{SHOWCASE_REPORT_PATH.parent / '*.py'}`.",
+                    text=(
+                        "Output too large. Full output saved to: "
+                        "/home/sinity/.claude/projects/-realm-project-polylogue/example/tool-results/toolu_123.txt"
+                    ),
                     timestamp=datetime(2026, 3, 23, 9, 0, tzinfo=timezone.utc),
                 ),
                 Message(
@@ -543,9 +549,51 @@ def test_build_session_profile_discards_markdown_glob_paths_in_dialogue_text() -
 
     profile = build_session_profile(conversation)
 
-    assert str(SHOWCASE_REPORT_PATH) in profile.file_paths_touched
-    assert str(SHOWCASE_REPORT_PATH.parent / "*.py") not in profile.file_paths_touched
-    assert not any("*" in path for path in profile.file_paths_touched)
+    assert profile.repo_names == ("polylogue",)
+    assert profile.repo_paths == (str(REPO_ROOT),)
+    assert profile.file_paths_touched == ()
+
+
+def test_build_session_profile_discards_shell_path_noise_from_action_events() -> None:
+    conversation = Conversation(
+        id="conv-action-path-noise",
+        provider="claude-code",
+        messages=MessageCollection(
+            messages=[
+                Message(
+                    id="a1",
+                    role="assistant",
+                    provider="claude-code",
+                    text="Running a shell command.",
+                    timestamp=datetime(2026, 3, 23, 9, 0, tzinfo=timezone.utc),
+                    content_blocks=[
+                        {
+                            "type": "tool_use",
+                            "tool_name": "Bash",
+                            "tool_input": {
+                                "command": (
+                                    f"echo /# /12 /AFK/browser /Codex /DAG && "
+                                    f"cat {README_PATH} {LIB_PATH / 'action_events.py'}"
+                                )
+                            },
+                            "semantic_type": "shell",
+                        }
+                    ],
+                )
+            ]
+        ),
+    )
+
+    profile = build_session_profile(conversation)
+
+    assert str(README_PATH) in profile.file_paths_touched
+    assert str(LIB_PATH / "action_events.py") in profile.file_paths_touched
+    assert str(REPO_ROOT) in profile.repo_paths
+    assert "/#" not in profile.file_paths_touched
+    assert "/12" not in profile.file_paths_touched
+    assert "/AFK/browser" not in profile.file_paths_touched
+    assert "/Codex" not in profile.file_paths_touched
+    assert "/DAG" not in profile.file_paths_touched
 
 
 def test_build_session_profile_uses_conversation_level_git_context() -> None:

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 
 import aiosqlite
 
@@ -13,7 +13,8 @@ from polylogue.storage.state_views import RawConversationState
 from polylogue.storage.store import RawConversationRecord
 
 
-def raw_id_query(
+def _raw_select_query(
+    select_columns: str,
     *,
     source_names: list[str] | None = None,
     provider_name: str | None = None,
@@ -44,11 +45,47 @@ def raw_id_query(
         where_clauses.append(predicate)
         params.extend(scope_params)
 
-    sql = "SELECT raw_id FROM raw_conversations"
+    sql = f"SELECT {select_columns} FROM raw_conversations"
     if where_clauses:
         sql += f" WHERE {' AND '.join(where_clauses)}"
     sql += " ORDER BY acquired_at DESC, raw_id ASC"
     return sql, tuple(params)
+
+
+def raw_id_query(
+    *,
+    source_names: list[str] | None = None,
+    provider_name: str | None = None,
+    require_unparsed: bool = False,
+    require_unvalidated: bool = False,
+    validation_statuses: list[str] | None = None,
+) -> tuple[str, tuple[str, ...]]:
+    return _raw_select_query(
+        "raw_id",
+        source_names=source_names,
+        provider_name=provider_name,
+        require_unparsed=require_unparsed,
+        require_unvalidated=require_unvalidated,
+        validation_statuses=validation_statuses,
+    )
+
+
+def raw_header_query(
+    *,
+    source_names: list[str] | None = None,
+    provider_name: str | None = None,
+    require_unparsed: bool = False,
+    require_unvalidated: bool = False,
+    validation_statuses: list[str] | None = None,
+) -> tuple[str, tuple[str, ...]]:
+    return _raw_select_query(
+        "raw_id, blob_size",
+        source_names=source_names,
+        provider_name=provider_name,
+        require_unparsed=require_unparsed,
+        require_unvalidated=require_unvalidated,
+        validation_statuses=validation_statuses,
+    )
 
 
 async def iter_raw_ids(
@@ -75,6 +112,32 @@ async def iter_raw_ids(
             break
         for row in rows:
             yield str(row["raw_id"])
+
+
+async def iter_raw_headers(
+    conn: aiosqlite.Connection,
+    *,
+    source_names: list[str] | None = None,
+    provider_name: str | None = None,
+    require_unparsed: bool = False,
+    require_unvalidated: bool = False,
+    validation_statuses: list[str] | None = None,
+    page_size: int = 1000,
+) -> AsyncIterator[tuple[str, int]]:
+    sql, params = raw_header_query(
+        source_names=source_names,
+        provider_name=provider_name,
+        require_unparsed=require_unparsed,
+        require_unvalidated=require_unvalidated,
+        validation_statuses=validation_statuses,
+    )
+    cursor = await conn.execute(sql, params)
+    while True:
+        rows = await cursor.fetchmany(page_size)
+        if not rows:
+            break
+        for row in rows:
+            yield (str(row["raw_id"]), int(row["blob_size"]))
 
 
 async def get_raw_conversation(conn: aiosqlite.Connection, raw_id: str) -> RawConversationRecord | None:
@@ -115,6 +178,21 @@ async def get_raw_conversations_batch(conn: aiosqlite.Connection, raw_ids: list[
             break
         records.extend(_row_to_raw_conversation(row) for row in rows)
     return records
+
+
+async def get_raw_blob_sizes(
+    conn: aiosqlite.Connection,
+    raw_ids: Sequence[str],
+) -> list[tuple[str, int]]:
+    if not raw_ids:
+        return []
+    placeholders = ",".join("?" * len(raw_ids))
+    cursor = await conn.execute(
+        f"SELECT raw_id, blob_size FROM raw_conversations WHERE raw_id IN ({placeholders})",
+        tuple(raw_ids),
+    )
+    sizes = {str(row["raw_id"]): int(row["blob_size"]) for row in await cursor.fetchall()}
+    return [(raw_id, sizes[raw_id]) for raw_id in raw_ids if raw_id in sizes]
 
 
 async def get_raw_conversation_states(
@@ -201,11 +279,14 @@ async def get_raw_conversation_count(conn: aiosqlite.Connection, provider: str |
 
 __all__ = [
     "get_known_source_mtimes",
+    "get_raw_blob_sizes",
     "get_raw_conversation",
     "get_raw_conversation_count",
     "get_raw_conversation_states",
     "get_raw_conversations_batch",
+    "iter_raw_headers",
     "iter_raw_conversations",
     "iter_raw_ids",
+    "raw_header_query",
     "raw_id_query",
 ]

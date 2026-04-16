@@ -21,6 +21,7 @@ from polylogue.sources.parsers.claude import (
     extract_text_from_segments,
     parse_ai,
     parse_code,
+    parse_stream,
 )
 from tests.infra.source_builders import make_claude_chat_message
 from tests.infra.strategies import parsed_attachment_model_strategy
@@ -258,6 +259,32 @@ def test_parse_code_result_record_text_never_none():
     for msg in result.messages:
         assert msg.text is not None, f"Message {msg.provider_message_id} has text=None"
         assert isinstance(msg.text, str)
+
+
+def test_parse_code_stream_matches_list_parse():
+    items = [
+        {
+            "sessionId": "session-1",
+            "uuid": "msg-1",
+            "parentUuid": None,
+            "timestamp": "2025-01-01T00:00:00Z",
+            "type": "user",
+            "message": {"role": "user", "content": "hello"},
+        },
+        {
+            "sessionId": "session-1",
+            "uuid": "msg-2",
+            "parentUuid": "msg-1",
+            "timestamp": "2025-01-01T00:00:01Z",
+            "type": "assistant",
+            "message": {"role": "assistant", "content": [{"type": "text", "text": "hi"}]},
+        },
+    ]
+
+    from_list = parse_code(items, "fallback")
+    from_stream = parse_stream(iter(items), "fallback")
+
+    assert from_stream == from_list
 
 
 def test_parse_code_assistant_no_text_blocks_text_never_none():
@@ -1234,6 +1261,49 @@ def test_parse_code_semantic_projection_contract() -> None:
     assert len(result.provider_meta["context_compactions"]) == 1
     assert result.provider_meta["total_cost_usd"] == pytest.approx(0.03)
     assert result.provider_meta["total_duration_ms"] == 3000
+
+
+def test_parse_code_deduplicates_repeated_record_uuids() -> None:
+    repeated_user = {
+        "type": "user",
+        "uuid": "user-1",
+        "sessionId": "sess-1",
+        "timestamp": "2026-03-09T19:51:01.185Z",
+        "message": {"role": "user", "content": "Investigate duplicate rows"},
+    }
+    repeated_assistant = {
+        "type": "assistant",
+        "uuid": "assistant-1",
+        "sessionId": "sess-1",
+        "timestamp": "2026-03-09T19:51:39.108Z",
+        "costUSD": 0.25,
+        "durationMs": 1500,
+        "message": {
+            "role": "assistant",
+            "content": [
+                {"type": "text", "text": "Reading the file now."},
+                {"type": "tool_use", "name": "Read", "id": "tool-1", "input": {"file_path": "/tmp/x"}},
+            ],
+        },
+    }
+    repeated_assistant_conflict = {
+        **repeated_assistant,
+        "message": {
+            "role": "assistant",
+            "content": [{"type": "text", "text": "A conflicting duplicate should still be ignored."}],
+        },
+    }
+
+    result = parse_code(
+        [repeated_user, repeated_user, repeated_assistant, repeated_assistant_conflict],
+        "agent-dup-test",
+    )
+
+    assert len(result.messages) == 2
+    assert [message.provider_message_id for message in result.messages] == ["user-1", "assistant-1"]
+    assert result.provider_meta is not None
+    assert result.provider_meta["total_cost_usd"] == pytest.approx(0.25)
+    assert result.provider_meta["total_duration_ms"] == 1500
 
 
 @given(st.lists(st.text(min_size=1, max_size=50), min_size=0, max_size=5))
