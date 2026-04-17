@@ -82,7 +82,10 @@ def build_tool_calls_from_content_blocks(
         normalized_input = _normalized_mapping(block.get("tool_input"))
         semantic_category = _tool_category_from_semantic(block.get("semantic_type"))
         classified_category = classify_tool(name, normalized_input)
-        category = classified_category if semantic_category in (None, ToolCategory.OTHER) else semantic_category
+        if semantic_category is None or semantic_category is ToolCategory.OTHER:
+            category = classified_category
+        else:
+            category = semantic_category
         raw = {
             "block_id": block.get("block_id"),
             "block_index": block.get("block_index"),
