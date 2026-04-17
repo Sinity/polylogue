@@ -65,6 +65,7 @@ dev = [
   "pyte>=0.8.0",  # Terminal emulator for deterministic output snapshot tests
   "mutmut>=3.0.0",  # Mutation testing for coverage verification
   "mypy>=1.17,<1.18",
+  "types-PyYAML>=6.0",  # yaml library stubs for mypy
   "ruff>=0.1.0",
   "pre-commit>=3.5.0",
 ]
@@ -164,7 +165,6 @@ exclude = [
   "polylogue/archive_product_rollups\\.py$",
   "polylogue/archive_product_summaries\\.py$",
   "polylogue/archive_products\\.py$",
-  "polylogue/cli/commands/check\\.py$",
   "polylogue/cli/commands/generate\\.py$",
   "polylogue/cli/commands/products\\.py$",
   "polylogue/cli/commands/run\\.py$",
@@ -206,7 +206,6 @@ exclude = [
   "polylogue/lib/session_profile_models\\.py$",
   "polylogue/lib/threads\\.py$",
   "polylogue/lib/work_event_extraction\\.py$",
-  "polylogue/mcp/server\\.py$",
   "polylogue/mcp/server_maintenance_tools\\.py$",
   "polylogue/mcp/server_product_tools\\.py$",
   "polylogue/mcp/server_prompts\\.py$",
@@ -233,7 +232,6 @@ exclude = [
   "polylogue/products/registry\\.py$",
   "polylogue/protocols\\.py$",
   "polylogue/rendering/core_formatter\\.py$",
-  "polylogue/rendering/formatting\\.py$",
   "polylogue/rendering/renderers/html\\.py$",
   "polylogue/scenarios/assertions\\.py$",
   "polylogue/scenarios/execution\\.py$",

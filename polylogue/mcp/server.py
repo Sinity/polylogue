@@ -60,7 +60,7 @@ def build_server() -> FastMCP:
         get_repo=lambda: _get_repo(),
         get_config=lambda: _get_config(),
         get_archive_ops=lambda: _get_archive_ops(),
-        extract_fenced_code=lambda text, language="": _extract_fenced_code(text, language),
+        extract_fenced_code=_extract_fenced_code,
     )
     register_tools(mcp, hooks)
     register_resources(mcp, hooks)
