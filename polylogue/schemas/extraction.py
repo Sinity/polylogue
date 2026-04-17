@@ -240,16 +240,18 @@ def extract_message_from_schema(
 
     # Resolve role
     role_raw = None
-    if paths.get("message_role"):
-        role_raw = _resolve_json_path(raw, paths["message_role"])
+    role_path = paths.get("message_role")
+    if role_path:
+        role_raw = _resolve_json_path(raw, role_path)
     if role_raw is None:
         role_raw = _find_by_well_known_names(raw, _WELL_KNOWN_ROLE_NAMES)
     role = Role.normalize(str(role_raw) if role_raw else "unknown")
 
     # Resolve body
     body_raw = None
-    if paths.get("message_body"):
-        body_raw = _resolve_json_path(raw, paths["message_body"])
+    body_path = paths.get("message_body")
+    if body_path:
+        body_raw = _resolve_json_path(raw, body_path)
     if body_raw is None:
         body_raw = _find_by_well_known_names(raw, _WELL_KNOWN_BODY_NAMES)
 
@@ -263,8 +265,9 @@ def extract_message_from_schema(
 
     # Resolve timestamp
     ts_raw = None
-    if paths.get("message_timestamp"):
-        ts_raw = _resolve_json_path(raw, paths["message_timestamp"])
+    ts_path = paths.get("message_timestamp")
+    if ts_path:
+        ts_raw = _resolve_json_path(raw, ts_path)
     if ts_raw is None:
         ts_raw = _find_by_well_known_names(raw, _WELL_KNOWN_TIMESTAMP_NAMES)
     timestamp = parse_timestamp(ts_raw)

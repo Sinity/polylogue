@@ -7,6 +7,7 @@ with automatic validation and normalization.
 from __future__ import annotations
 
 from collections.abc import Iterable
+from datetime import datetime
 
 from pydantic import ValidationError
 
@@ -15,7 +16,7 @@ from polylogue.lib.roles import Role
 from polylogue.lib.timestamps import format_timestamp, parse_timestamp
 from polylogue.logging import get_logger
 from polylogue.sources.providers.codex import CodexRecord
-from polylogue.types import Provider
+from polylogue.types import ContentBlockType, Provider
 
 from .base import ParsedConversation, ParsedMessage, ParsedProviderEvent, content_blocks_from_segments
 
@@ -32,7 +33,7 @@ def _normalize_timestamp(value: str | int | float | None) -> str | None:
 
 
 def _latest_timestamp(*values: str | None) -> str | None:
-    candidates: list[tuple[object, str]] = []
+    candidates: list[tuple[datetime, str]] = []
     for value in values:
         if not isinstance(value, str) or not value:
             continue
@@ -215,7 +216,7 @@ def _parse_records(records: Iterable[object], fallback_id: str) -> ParsedConvers
             if not content_blocks and text:
                 from .base import ParsedContentBlock
 
-                content_blocks = [ParsedContentBlock(type="text", text=text)]
+                content_blocks = [ParsedContentBlock(type=ContentBlockType.TEXT, text=text)]
 
             messages.append(
                 ParsedMessage(

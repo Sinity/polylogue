@@ -5,7 +5,9 @@ from __future__ import annotations
 from typing import Any
 
 from polylogue.scenarios import CorpusScenario, CorpusSpec, build_corpus_scenarios, build_inferred_corpus_specs
+from polylogue.schemas.audit_models import AuditReport
 from polylogue.schemas.operator_models import (
+    SchemaAuditRequest,
     SchemaCompareRequest,
     SchemaCompareResult,
     SchemaInferRequest,
@@ -261,7 +263,7 @@ def promote_schema_cluster(request: SchemaPromoteRequest) -> SchemaPromoteResult
     )
 
 
-def audit_schemas(request):
+def audit_schemas(request: SchemaAuditRequest) -> AuditReport:
     from polylogue.schemas.audit_workflow import audit_all_providers, audit_provider
 
     return audit_provider(request.provider) if request.provider else audit_all_providers()

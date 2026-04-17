@@ -5,10 +5,9 @@ from __future__ import annotations
 from pydantic import ValidationError
 
 from polylogue.sources.providers.claude_ai import ClaudeAIConversation
-from polylogue.types import Provider
+from polylogue.types import ContentBlockType, Provider
 
 from .base import (
-    ParsedAttachment,
     ParsedContentBlock,
     ParsedConversation,
     ParsedMessage,
@@ -42,15 +41,15 @@ def parse_ai(payload: dict[str, object], fallback_id: str) -> ParsedConversation
             attachments=attachments,
         )
 
-    messages: list[ParsedMessage] = []
-    attachments: list[ParsedAttachment] = []
+    messages = []
+    attachments = []
     for msg in conv.chat_messages:
         timestamp = normalize_timestamp(msg.created_at)
         if msg.text:
             raw_content = msg.model_dump().get("content")
             content_blocks = content_blocks_from_segments(raw_content) if isinstance(raw_content, list) else []
             if not content_blocks and msg.text:
-                content_blocks = [ParsedContentBlock(type="text", text=msg.text)]
+                content_blocks = [ParsedContentBlock(type=ContentBlockType.TEXT, text=msg.text)]
             messages.append(
                 ParsedMessage(
                     provider_message_id=msg.uuid,

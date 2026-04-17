@@ -4,6 +4,10 @@ from __future__ import annotations
 
 
 class ProjectionTransformMixin:
+    _limit: int | None
+    _offset: int
+    _reverse: bool
+
     def transform(self, fn):
         self._transforms.append(fn)
         return self

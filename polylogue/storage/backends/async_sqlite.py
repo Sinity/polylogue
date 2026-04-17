@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager, suppress
+from contextlib import AbstractAsyncContextManager, asynccontextmanager, suppress
 from pathlib import Path
 
 import aiosqlite
@@ -384,11 +384,11 @@ class SQLiteBackend(
 
     # -- Connection lifecycle -----------------------------------------------
 
-    def connection(self):
+    def connection(self) -> AbstractAsyncContextManager[aiosqlite.Connection]:
         """Public connection context for read/query helpers."""
         return _backend_connection(self)
 
-    def read_connection(self):
+    def read_connection(self) -> AbstractAsyncContextManager[aiosqlite.Connection]:
         """Public read-oriented connection context for query/report helpers."""
         return _get_read_connection(self)
 
@@ -396,7 +396,7 @@ class SQLiteBackend(
         """Ensure schema is initialized exactly once (thread-safe via asyncio lock)."""
         await ensure_schema_once(self)
 
-    def bulk_connection(self):
+    def bulk_connection(self) -> AbstractAsyncContextManager[None]:
         """Keep a single connection alive for many sequential operations."""
         return _bulk_connection(self)
 
@@ -412,7 +412,7 @@ class SQLiteBackend(
         """Get async database connection with schema ensured."""
         return _get_connection(self)
 
-    def _get_read_connection(self):
+    def _get_read_connection(self) -> AbstractAsyncContextManager[aiosqlite.Connection]:
         """Get async read connection with read-only semantics when possible."""
         return _get_read_connection(self)
 

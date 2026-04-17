@@ -25,8 +25,8 @@ def detect_string_lengths(stats: dict[str, FieldStats]) -> list[StringLengthProf
         results.append(
             StringLengthProfile(
                 path=path,
-                min_length=length_stats["min"],
-                max_length=length_stats["max"],
+                min_length=int(length_stats["min"]),
+                max_length=int(length_stats["max"]),
                 avg_length=avg,
                 stddev=stddev,
                 evidence={

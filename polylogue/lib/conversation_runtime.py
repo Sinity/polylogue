@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from typing import TYPE_CHECKING
 
 from polylogue.lib.branch_type import BranchType
 from polylogue.lib.message_models import DialoguePair
 from polylogue.lib.messages import MessageCollection
+
+if TYPE_CHECKING:
+    from polylogue.lib.projections import ConversationProjection
 
 
 class ConversationRuntimeMixin:
@@ -159,7 +163,7 @@ class ConversationRuntimeMixin:
             return 0
         return _coerce_optional_int(self.provider_meta.get("total_duration_ms")) or 0
 
-    def project(self):
+    def project(self) -> ConversationProjection:
         from polylogue.lib.projections import ConversationProjection
 
         return ConversationProjection(self)

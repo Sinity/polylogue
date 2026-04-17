@@ -24,6 +24,7 @@ from polylogue.storage.store import (
     SessionPhaseRecord,
     SessionWorkEventRecord,
 )
+from polylogue.types import ConversationId
 
 # ---------------------------------------------------------------------------
 # Work-event row builders and hydration
@@ -134,7 +135,7 @@ def build_session_work_event_records(
         records.append(
             SessionWorkEventRecord(
                 event_id=_event_id(profile.conversation_id, index, event, summary=summary),
-                conversation_id=profile.conversation_id,
+                conversation_id=ConversationId(profile.conversation_id),
                 materializer_version=SESSION_PRODUCT_MATERIALIZER_VERSION,
                 materialized_at=built_at,
                 source_updated_at=source_updated_at,
@@ -256,7 +257,7 @@ def build_session_phase_records(
         records.append(
             SessionPhaseRecord(
                 phase_id=phase_id(profile.conversation_id, index, phase),
-                conversation_id=profile.conversation_id,
+                conversation_id=ConversationId(profile.conversation_id),
                 materializer_version=SESSION_PRODUCT_MATERIALIZER_VERSION,
                 materialized_at=built_at,
                 source_updated_at=source_updated_at,
@@ -298,8 +299,9 @@ def hydrate_session_phase(record: SessionPhaseRecord) -> SessionPhase:
             if payload.get("canonical_session_date")
             else None
         ),
-        message_range=tuple(
-            int(value) for value in payload.get("message_range", [record.start_index, record.end_index])
+        message_range=(
+            int(payload.get("message_range", [record.start_index, record.end_index])[0]),
+            int(payload.get("message_range", [record.start_index, record.end_index])[1]),
         ),
         duration_ms=int(payload.get("duration_ms", record.duration_ms) or 0),
         tool_counts={

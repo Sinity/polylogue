@@ -24,7 +24,7 @@ async def resolve_id(conn: aiosqlite.Connection, id_prefix: str) -> str | None:
         "SELECT conversation_id FROM conversations WHERE conversation_id LIKE ? LIMIT 2",
         (f"{id_prefix}%",),
     )
-    rows = await cursor.fetchall()
+    rows = list(await cursor.fetchall())
     if len(rows) == 1:
         return str(rows[0]["conversation_id"])
     return None

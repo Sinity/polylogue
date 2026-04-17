@@ -10,13 +10,15 @@ async def get_conversation_stats(conn: aiosqlite.Connection, conversation_id: st
         "SELECT COUNT(*) as cnt FROM messages WHERE conversation_id = ?",
         (conversation_id,),
     )
-    total = (await cursor.fetchone())["cnt"]
+    row = await cursor.fetchone()
+    total = int(row["cnt"]) if row else 0
 
     cursor = await conn.execute(
         "SELECT COUNT(*) as cnt FROM messages WHERE conversation_id = ? AND role IN ('user', 'assistant', 'human')",
         (conversation_id,),
     )
-    dialogue = (await cursor.fetchone())["cnt"]
+    row = await cursor.fetchone()
+    dialogue = int(row["cnt"]) if row else 0
 
     return {
         "total_messages": total,

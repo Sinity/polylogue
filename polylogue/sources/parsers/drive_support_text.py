@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+
 from polylogue.lib.timestamps import parse_timestamp
 
 
@@ -35,7 +37,7 @@ def chunk_timestamp(chunk: dict[str, object], default_timestamp: str | None) -> 
 
 
 def select_timestamp(values: list[str | None], *, latest: bool) -> str | None:
-    candidates: list[tuple[object, str]] = []
+    candidates: list[tuple[datetime, str]] = []
     seen: set[str] = set()
     for value in values:
         if not isinstance(value, str) or not value or value in seen:
