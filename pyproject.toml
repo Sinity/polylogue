@@ -184,13 +184,11 @@ exclude = [
   "polylogue/facade_archive\\.py$",
   "polylogue/facade_ingest\\.py$",
   "polylogue/facade_products\\.py$",
-  "polylogue/lib/action_event_parsing\\.py$",
   "polylogue/lib/attribution\\.py$",
   "polylogue/lib/conversation_runtime\\.py$",
   "polylogue/lib/conversation_summary_runtime\\.py$",
   "polylogue/lib/filter_builder\\.py$",
   "polylogue/lib/message_model_runtime\\.py$",
-  "polylogue/lib/phase_extraction\\.py$",
   "polylogue/lib/projection_filter_mixin\\.py$",
   "polylogue/lib/projection_terminal_mixin\\.py$",
   "polylogue/lib/projection_transform_mixin\\.py$",
@@ -332,7 +330,6 @@ exclude = [
   "polylogue/sync_product_queries\\.py$",
   "polylogue/ui/__init__\\.py$",
   "polylogue/ui/facade\\.py$",
-  "polylogue/ui/facade_prompts\\.py$",
   "polylogue/ui/facade_rendering\\.py$",
 ]
 files = [
