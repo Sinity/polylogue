@@ -47,10 +47,12 @@ def run_machine_entry(
             option=option,
         ).emit(exit_code=exc.exit_code if hasattr(exc, "exit_code") else 2)
     except click.BadParameter as exc:
+        param_hint = exc.param_hint
+        option_hint = param_hint if param_hint is None or isinstance(param_hint, str) else ", ".join(param_hint)
         error_invalid_arguments(
             str(exc),
             command=command,
-            option=exc.param_hint,
+            option=option_hint,
         ).emit(exit_code=2)
     except click.ClickException as exc:
         error_runtime(

@@ -35,7 +35,7 @@ def plan_sources(
         plan = await planner.build_plan(
             sources=select_sources(config, source_names),
             stage=stage,
-            stage_sequence=stage_sequence,
+            stage_sequence=tuple(stage_sequence) if stage_sequence is not None else None,
             ui=ui,
             progress_callback=progress_callback,
             preview=True,
