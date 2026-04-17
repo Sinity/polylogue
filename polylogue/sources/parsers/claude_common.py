@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 
 from polylogue.lib.roles import Role
+from polylogue.types import ContentBlockType
 
 from .base import (
     ParsedAttachment,
@@ -95,7 +96,7 @@ def extract_messages_from_chat_messages(
         raw_content = item.get("content")
         content_blocks = content_blocks_from_segments(raw_content) if isinstance(raw_content, list) else []
         if not content_blocks and text:
-            content_blocks = [ParsedContentBlock(type="text", text=text)]
+            content_blocks = [ParsedContentBlock(type=ContentBlockType.TEXT, text=text)]
 
         if text:
             messages.append(

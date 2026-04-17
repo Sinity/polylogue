@@ -11,7 +11,7 @@ from pydantic import ValidationError
 from polylogue.lib.branch_type import BranchType
 from polylogue.logging import get_logger
 from polylogue.sources.providers.claude_code import ClaudeCodeRecord
-from polylogue.types import Provider
+from polylogue.types import ContentBlockType, Provider
 
 from .base import (
     ParsedContentBlock,
@@ -68,7 +68,7 @@ def _content_blocks_from_record(record: ClaudeCodeRecord, text: str | None) -> l
     )
     content_blocks = content_blocks_from_segments(raw_msg_content) if raw_msg_content else []
     if not content_blocks and text:
-        return [ParsedContentBlock(type="text", text=text)]
+        return [ParsedContentBlock(type=ContentBlockType.TEXT, text=text)]
     return content_blocks
 
 
