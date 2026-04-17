@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from polylogue.schemas.operator_models import (
     SchemaAnnotationSummary,
     SchemaCoverageSummary,
@@ -11,7 +13,7 @@ from polylogue.schemas.operator_models import (
 )
 
 
-def collect_annotation_summary(schema: dict) -> SchemaAnnotationSummary:
+def collect_annotation_summary(schema: dict[str, Any]) -> SchemaAnnotationSummary:
     """Collect format/value/semantic coverage from a schema document."""
     format_count = 0
     values_count = 0
@@ -22,7 +24,7 @@ def collect_annotation_summary(schema: dict) -> SchemaAnnotationSummary:
     with_values = 0
     with_role = 0
 
-    def visit(node: dict, *, path: str) -> None:
+    def visit(node: dict[str, Any], *, path: str) -> None:
         nonlocal format_count, values_count, total_enum_values
         nonlocal total_fields, with_format, with_values, with_role
         if not isinstance(node, dict):
@@ -81,7 +83,7 @@ def collect_annotation_summary(schema: dict) -> SchemaAnnotationSummary:
     )
 
 
-def build_review_proof(schema: dict) -> SchemaReviewProof:
+def build_review_proof(schema: dict[str, Any]) -> SchemaReviewProof:
     """Build a proof surface from a schema's semantic annotations and field stats.
 
     Re-runs inference from the schema's own samples metadata to produce
@@ -103,7 +105,7 @@ def build_review_proof(schema: dict) -> SchemaReviewProof:
         ineligible_roles = [r for r in SEMANTIC_ROLES if r not in RECORD_STREAM_ELIGIBLE_ROLES]
 
     # Collect all role assignments from the schema itself
-    role_entries: dict[str, list[dict]] = {}  # role -> list of {path, score, evidence}
+    role_entries: dict[str, list[dict[str, Any]]] = {}  # role -> list of {path, score, evidence}
     _collect_role_candidates_from_schema(schema, "$", role_entries)
 
     # Build proof entries for each semantic role
@@ -160,9 +162,9 @@ def build_review_proof(schema: dict) -> SchemaReviewProof:
 
 
 def _collect_role_candidates_from_schema(
-    node: dict,
+    node: dict[str, Any],
     path: str,
-    role_entries: dict[str, list[dict]],
+    role_entries: dict[str, list[dict[str, Any]]],
 ) -> None:
     """Walk a schema and collect all semantic role annotations with scores."""
     if not isinstance(node, dict):

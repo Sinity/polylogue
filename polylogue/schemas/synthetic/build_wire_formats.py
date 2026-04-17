@@ -5,14 +5,15 @@ from __future__ import annotations
 import random
 import uuid
 from datetime import datetime, timezone
+from typing import Any
 
 from polylogue.schemas.synthetic.semantic_values import _text_for_role
 from polylogue.schemas.synthetic.showcase import ConversationTheme
 
 
 def _ensure_wire_format(
-    self,
-    data: dict,
+    self: Any,
+    data: dict[str, Any],
     role: str,
     rng: random.Random,
     index: int,
@@ -34,7 +35,14 @@ def _ensure_wire_format(
 
 
 def _ensure_wire_chatgpt(
-    self, data: dict, role: str, rng: random.Random, ts: float, *, index: int, theme: ConversationTheme | None
+    self: Any,
+    data: dict[str, Any],
+    role: str,
+    rng: random.Random,
+    ts: float,
+    *,
+    index: int,
+    theme: ConversationTheme | None,
 ) -> None:
     msg = data.get("message")
     if not isinstance(msg, dict):
@@ -55,7 +63,14 @@ def _ensure_wire_chatgpt(
 
 
 def _ensure_wire_claude_ai(
-    self, data: dict, role: str, rng: random.Random, ts: float, *, index: int, theme: ConversationTheme | None
+    self: Any,
+    data: dict[str, Any],
+    role: str,
+    rng: random.Random,
+    ts: float,
+    *,
+    index: int,
+    theme: ConversationTheme | None,
 ) -> None:
     data.setdefault("uuid", str(uuid.UUID(int=rng.getrandbits(128), version=4)))
     data.setdefault("sender", role)
@@ -66,7 +81,14 @@ def _ensure_wire_claude_ai(
 
 
 def _ensure_wire_claude_code(
-    self, data: dict, role: str, rng: random.Random, ts: float, *, index: int, theme: ConversationTheme | None
+    self: Any,
+    data: dict[str, Any],
+    role: str,
+    rng: random.Random,
+    ts: float,
+    *,
+    index: int,
+    theme: ConversationTheme | None,
 ) -> None:
     data.setdefault("type", role)
     if not isinstance(data.get("message"), dict):
@@ -80,7 +102,14 @@ def _ensure_wire_claude_code(
 
 
 def _ensure_wire_codex(
-    self, data: dict, role: str, rng: random.Random, ts: float, *, index: int, theme: ConversationTheme | None
+    self: Any,
+    data: dict[str, Any],
+    role: str,
+    rng: random.Random,
+    ts: float,
+    *,
+    index: int,
+    theme: ConversationTheme | None,
 ) -> None:
     data["type"] = "message"
     data.setdefault("role", role)
@@ -94,7 +123,7 @@ def _ensure_wire_codex(
 
 
 def _ensure_wire_gemini(
-    self, data: dict, role: str, rng: random.Random, *, index: int, theme: ConversationTheme | None
+    self: Any, data: dict[str, Any], role: str, rng: random.Random, *, index: int, theme: ConversationTheme | None
 ) -> None:
     data.setdefault("role", role)
     if not data.get("text"):

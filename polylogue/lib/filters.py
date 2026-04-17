@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import builtins
+from datetime import datetime
 from typing import TYPE_CHECKING
 
 from polylogue.lib.filter_builder import ConversationFilterBuilderMixin
@@ -16,6 +18,7 @@ from polylogue.lib.query_plan_execution import (
 )
 
 if TYPE_CHECKING:
+    from polylogue.lib.conversation_models import Conversation, ConversationSummary
     from polylogue.protocols import VectorProvider
     from polylogue.storage.repository import ConversationRepository
 
@@ -42,23 +45,23 @@ class ConversationFilter(ConversationFilterBuilderMixin):
         return cls(repository, vector_provider=query_plan.vector_provider, query_plan=query_plan)
 
     @property
-    def _since_date(self):
+    def _since_date(self) -> datetime | None:
         return self._plan.since
 
     @property
-    def _until_date(self):
+    def _until_date(self) -> datetime | None:
         return self._plan.until
 
     @property
-    def _continuation(self):
+    def _continuation(self) -> bool | None:
         return self._plan.continuation
 
     @property
-    def _sidechain(self):
+    def _sidechain(self) -> bool | None:
         return self._plan.sidechain
 
     @property
-    def _has_branches(self):
+    def _has_branches(self) -> bool | None:
         return self._plan.has_branches
 
     def build_query_plan(self) -> ConversationQueryPlan:
@@ -79,14 +82,14 @@ class ConversationFilter(ConversationFilterBuilderMixin):
     def describe(self) -> list[str]:
         return self._plan.describe()
 
-    async def list(self):
-        return await list_for_plan(self._plan, self._repo)
+    async def list(self) -> builtins.list[Conversation]:
+        return await list_for_plan(self._plan, self._repo)  # type: ignore[no-any-return]
 
-    async def list_summaries(self):
-        return await list_summaries_for_plan(self._plan, self._repo)
+    async def list_summaries(self) -> builtins.list[ConversationSummary]:
+        return await list_summaries_for_plan(self._plan, self._repo)  # type: ignore[no-any-return]
 
-    async def first(self):
-        return await first_for_plan(self._plan, self._repo)
+    async def first(self) -> Conversation | None:
+        return await first_for_plan(self._plan, self._repo)  # type: ignore[no-any-return]
 
     async def count(self) -> int:
         return await count_for_plan(self._plan, self._repo)
