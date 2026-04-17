@@ -34,7 +34,7 @@ class PygmentsHighlighter:
         )
 
     def get_css(self) -> str:
-        return self.formatter.get_style_defs(".highlight")
+        return str(self.formatter.get_style_defs(".highlight"))
 
     def highlight_code(self, code: str, language: str | None = None) -> str:
         try:
@@ -51,7 +51,7 @@ class PygmentsHighlighter:
             escaped = code.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
             return f'<pre class="highlight"><code>{escaped}</code></pre>'
 
-        return highlight(code, lexer, self.formatter)
+        return str(highlight(code, lexer, self.formatter))
 
 
 class HTMLMessageRenderer:

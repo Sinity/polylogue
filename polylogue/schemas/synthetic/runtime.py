@@ -12,7 +12,7 @@ from polylogue.schemas.synthetic.semantic_values import _text_for_role
 
 
 def _generate_from_schema(
-    self,
+    self: Any,
     schema: dict[str, Any],
     rng: random.Random,
     *,
@@ -96,15 +96,15 @@ def _generate_from_schema(
 
 
 def _generate_object(
-    self,
-    schema: dict,
+    self: Any,
+    schema: dict[str, Any],
     rng: random.Random,
     *,
     skip_keys: set[str] | None = None,
     depth: int = 0,
     max_depth: int = 6,
     path: str = "$",
-) -> dict:
+) -> dict[str, object]:
     obj: dict[str, Any] = {}
     properties = schema.get("properties", {})
     candidate_keys = set(properties.keys())
@@ -142,9 +142,9 @@ def _generate_object(
     return obj
 
 
-def _generate_string(self, schema: dict, rng: random.Random) -> str:
+def _generate_string(self: Any, schema: dict[str, Any], rng: random.Random) -> str:
     if values := schema.get("x-polylogue-values"):
-        return rng.choice(values)
+        return str(rng.choice(values))
 
     match schema.get("x-polylogue-format"):
         case "uuid4" | "uuid":
@@ -171,7 +171,7 @@ def _generate_string(self, schema: dict, rng: random.Random) -> str:
     return f"synthetic-{rng.randint(0, 99999)}"
 
 
-def _generate_number(self, schema: dict, rng: random.Random, *, is_int: bool = False) -> float | int:
+def _generate_number(self: Any, schema: dict[str, Any], rng: random.Random, *, is_int: bool = False) -> float | int:
     if value_range := schema.get("x-polylogue-range"):
         lo, hi = value_range
         value = rng.uniform(lo, hi)
@@ -183,14 +183,14 @@ def _generate_number(self, schema: dict, rng: random.Random, *, is_int: bool = F
 
 
 def _generate_array(
-    self,
-    schema: dict,
+    self: Any,
+    schema: dict[str, Any],
     rng: random.Random,
     *,
     depth: int = 0,
     max_depth: int = 6,
     path: str = "$",
-) -> list:
+) -> list[Any]:
     item_schema = schema.get("items", {})
     if lengths := schema.get("x-polylogue-array-lengths"):
         lo, hi = lengths
@@ -221,7 +221,7 @@ def _generate_array(
     return items
 
 
-def _serialize(self, data: Any) -> bytes:
+def _serialize(self: Any, data: Any) -> bytes:
     if self.wire_format.encoding == "jsonl":
         lines = [json.dumps(record, separators=(",", ":")) for record in data]
         return ("\n".join(lines) + "\n").encode("utf-8")

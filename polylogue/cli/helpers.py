@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 from polylogue.cli.formatting import format_sources_summary
 from polylogue.cli.helper_source_selection import (
@@ -36,7 +37,7 @@ def latest_render_path(render_root: Path) -> Path | None:
     return latest
 
 
-def print_summary(env, *, verbose: bool = False) -> None:
+def print_summary(env: Any, *, verbose: bool = False) -> None:
     print_summary_impl(
         env,
         verbose=verbose,

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from polylogue.showcase.exercises import GROUPS
 from polylogue.showcase.runner import ShowcaseResult
+from polylogue.showcase.showcase_runner_models import ExerciseResult
 
 
 def generate_summary(result: ShowcaseResult) -> str:
@@ -98,7 +99,7 @@ def generate_showcase_markdown(
     *,
     git_sha: str | None = None,
 ) -> str:
-    def _status_marker(result_entry) -> str:
+    def _status_marker(result_entry: ExerciseResult) -> str:
         if result_entry.skipped:
             return "[SKIP]"
         return "[PASS]" if result_entry.passed else "[FAIL]"

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from typing import Any
 
 import click
 
@@ -31,7 +32,7 @@ from polylogue.sync_bridge import run_coroutine_sync
 
 def execute_sync_once(
     cfg: Config,
-    env,
+    env: Any,
     stage: str,
     stage_sequence: Sequence[str] | None,
     selected_sources: list[str] | None,
@@ -59,7 +60,7 @@ def execute_sync_once(
 
 def run_with_progress(
     cfg: Config,
-    env,
+    env: Any,
     stage: str,
     stage_sequence: Sequence[str] | None,
     selected_sources: list[str] | None,
@@ -91,7 +92,7 @@ def run_with_progress(
 
 def run_sync_once(
     cfg: Config,
-    env,
+    env: Any,
     stage: str,
     stage_sequence: Sequence[str] | None,
     selected_sources: list[str] | None,
@@ -123,9 +124,9 @@ def run_sync_once(
 
 
 def display_result(
-    env,
-    cfg,
-    result,
+    env: Any,
+    cfg: Any,
+    result: Any,
     stage: str,
     selected_sources: list[str] | None,
     *,
@@ -191,10 +192,10 @@ def handle_drive_error(exc: DriveError) -> None:
 
 
 def render_preview_summary(
-    env,
+    env: Any,
     *,
     selected_sources: list[str] | None,
-    plan_snapshot,
+    plan_snapshot: Any,
 ) -> None:
     plan_lines = []
     if selected_sources:

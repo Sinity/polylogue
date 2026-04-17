@@ -18,7 +18,7 @@ def select_synthetic_schema(
     package = registry.get_package(canonical_provider, version=version) if hasattr(registry, "get_package") else None
     resolved_element_kind = element_kind
 
-    schema: dict | None
+    schema: dict[str, object] | None
     if package is not None and hasattr(registry, "get_element_schema"):
         if resolved_element_kind is None or resolved_element_kind == "default":
             resolved_element_kind = package.default_element_kind

@@ -51,5 +51,5 @@ list_artifact_observations = _list_artifact_observations
 list_artifact_cohorts = _list_artifact_cohorts
 
 
-def _collect_annotation_summary(schema: dict) -> SchemaAnnotationSummary:
+def _collect_annotation_summary(schema: dict[str, object]) -> SchemaAnnotationSummary:
     return collect_annotation_summary(schema)

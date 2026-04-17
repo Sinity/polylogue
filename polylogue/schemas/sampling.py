@@ -27,7 +27,7 @@ def iter_schema_units(
     db_path: Path | None = None,
     max_samples: int | None = None,
     full_corpus: bool = False,
-):
+) -> Any:
     """Yield schema units for a provider from DB, with session fallback."""
     provider_name = Provider.from_string(provider_name)
     if db_path is None:

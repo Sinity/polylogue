@@ -7,6 +7,7 @@ import json
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 from polylogue.cli.machine_errors import emit_success
 from polylogue.cli.qa_requests import QASnapshotPlan
@@ -57,7 +58,7 @@ def snapshot_results(
     label: str,
     output_root: Path,
     json_output: bool,
-    env,
+    env: Any,
 ) -> None:
     """Archive a QA output directory into a timestamped snapshot."""
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -113,7 +114,7 @@ def execute_snapshot_plan(
     fallback_source_dir: Path | None,
     output_root: Path,
     json_output: bool,
-    env,
+    env: Any,
 ) -> bool:
     """Execute a normalized snapshot plan if a source directory is available."""
     source_dir = plan.resolve_source_dir(fallback_source_dir)

@@ -1,13 +1,15 @@
 """QA-specific report rendering built on showcase session payloads."""
 
 from datetime import datetime, timezone
+from typing import Any
 
 from polylogue.showcase.qa_markdown import generate_qa_markdown
+from polylogue.showcase.qa_runner_models import QAResult
 from polylogue.showcase.qa_session_payload import build_qa_session_payload
 from polylogue.showcase.qa_summary import generate_qa_summary
 
 
-def generate_qa_session(result):
+def generate_qa_session(result: QAResult) -> dict[str, Any]:
     """Generate a structured full QA session record."""
     from polylogue.showcase.showcase_report_payloads import generate_showcase_session
 

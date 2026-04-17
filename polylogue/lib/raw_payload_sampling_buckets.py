@@ -51,7 +51,7 @@ def record_bucket_key(sample: dict[str, Any], record_type_key: str | None = None
 def bucket_target_counts(bucket_counts: Counter[str], limit: int) -> Counter[str]:
     """Compute per-bucket quotas matching the existing round-robin sampler."""
     remaining = Counter(bucket_counts)
-    selected = Counter()
+    selected: Counter[str] = Counter()
     ordered_keys = sorted(bucket_counts, key=lambda key: bucket_counts[key], reverse=True)
     selected_total = 0
 

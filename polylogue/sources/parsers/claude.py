@@ -6,7 +6,9 @@ with automatic validation and normalized property access.
 
 from __future__ import annotations
 
-from .base import ParsedConversation
+from pathlib import Path
+
+from .base import ParsedAttachment, ParsedConversation, ParsedMessage
 from .claude_ai_parser import looks_like_ai as _looks_like_ai
 from .claude_ai_parser import parse_ai as _parse_ai
 from .claude_code_detection import looks_like_code
@@ -34,11 +36,11 @@ def looks_like_ai(payload: object) -> bool:
     return _looks_like_ai(payload)
 
 
-def parse_sessions_index(index_path):
+def parse_sessions_index(index_path: Path) -> dict[str, SessionIndexEntry]:
     return _parse_sessions_index(index_path)
 
 
-def find_sessions_index(session_path):
+def find_sessions_index(session_path: Path) -> Path | None:
     return _find_sessions_index(session_path)
 
 
@@ -50,7 +52,9 @@ def extract_text_from_segments(segments: list[object]) -> str | None:
     return _extract_text_from_segments(segments)
 
 
-def extract_messages_from_chat_messages(chat_messages: list[object]):
+def extract_messages_from_chat_messages(
+    chat_messages: list[object],
+) -> tuple[list[ParsedMessage], list[ParsedAttachment]]:
     return _extract_messages_from_chat_messages(chat_messages)
 
 
