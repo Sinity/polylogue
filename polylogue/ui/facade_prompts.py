@@ -6,12 +6,16 @@ import json
 import sys
 from collections import deque
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from polylogue.ui.facade import UIError
 
 _NO_STUB_RESPONSE = object()
 
 
 def load_prompt_responses(
-    ui_error_cls: type[Exception],
+    ui_error_cls: type[UIError],
     *,
     prompt_stub_path: Path | None = None,
 ) -> deque[dict[str, object]]:
@@ -34,7 +38,7 @@ def load_prompt_responses(
 def pop_prompt_response(
     prompt_responses: deque[dict[str, object]],
     kind: str,
-    ui_error_cls: type[Exception],
+    ui_error_cls: type[UIError],
 ) -> dict[str, object] | None:
     if not prompt_responses:
         return None
@@ -45,7 +49,7 @@ def pop_prompt_response(
     return entry
 
 
-def require_plain_prompt_tty(prompt_topic: str, ui_error_cls: type[Exception]) -> None:
+def require_plain_prompt_tty(prompt_topic: str, ui_error_cls: type[UIError]) -> None:
     if not sys.stdin.isatty():
         raise ui_error_cls(
             f"Plain mode cannot prompt for {prompt_topic}",
@@ -57,7 +61,7 @@ def consume_confirm_stub(
     prompt_responses: deque[dict[str, object]],
     *,
     default: bool,
-    ui_error_cls: type[Exception],
+    ui_error_cls: type[UIError],
 ) -> bool | object:
     response = pop_prompt_response(prompt_responses, "confirm", ui_error_cls)
     if response is None:
@@ -79,7 +83,7 @@ def consume_confirm_stub(
 def consume_choose_stub(
     prompt_responses: deque[dict[str, object]],
     options: list[str],
-    ui_error_cls: type[Exception],
+    ui_error_cls: type[UIError],
 ) -> str | None | object:
     response = pop_prompt_response(prompt_responses, "choose", ui_error_cls)
     if response is None:
@@ -109,7 +113,7 @@ def consume_input_stub(
     prompt_responses: deque[dict[str, object]],
     *,
     default: str | None,
-    ui_error_cls: type[Exception],
+    ui_error_cls: type[UIError],
 ) -> str | None | object:
     response = pop_prompt_response(prompt_responses, "input", ui_error_cls)
     if response is None:

@@ -60,10 +60,11 @@ def _build_phase(
     if start_time and end_time:
         duration_ms = max(int((end_time - start_time).total_seconds() * 1000), 0)
 
+    ref_time = start_time or end_time
     return SessionPhase(
         start_time=start_time,
         end_time=end_time,
-        canonical_session_date=(start_time or end_time).date() if (start_time or end_time) else None,
+        canonical_session_date=ref_time.date() if ref_time else None,
         message_range=(start_idx, end_idx),
         duration_ms=duration_ms,
         tool_counts=dict(tool_counts),
