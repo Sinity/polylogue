@@ -65,9 +65,7 @@ class ConversationFormatter:
                 text=message.text,
                 timestamp=message.sort_key,
                 default_role="message",
-                content_blocks=[
-                    b.model_dump(mode="json") if hasattr(b, "model_dump") else b for b in message.content_blocks
-                ]
+                content_blocks=[b.model_dump(mode="json") for b in message.content_blocks]
                 if message.content_blocks
                 else None,
             )
