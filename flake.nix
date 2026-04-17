@@ -141,6 +141,12 @@
               rm result
             fi
 
+            for legacy_cache_root in __pycache__ .pytest_cache .hypothesis .mypy_cache .ruff_cache .benchmarks; do
+              if [ -e "$legacy_cache_root" ]; then
+                rm -rf "$legacy_cache_root"
+              fi
+            done
+
             # Install repo git hooks (format/lint on commit, verify on push).
             git config --local core.hooksPath .githooks 2>/dev/null || true
             find polylogue tests devtools -type d -name __pycache__ -prune -exec rm -r {} + 2>/dev/null || true

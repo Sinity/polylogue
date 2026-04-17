@@ -117,6 +117,8 @@ def status_snapshot(cwd: Path, *, verify_generated: bool = False) -> dict[str, o
             "discover": control_plane_command("--list-commands", "--json"),
             "status": control_plane_command("status", "--json"),
             "render_all_check": control_plane_command("render-all", "--check"),
+            "verify_quick": control_plane_command("verify", "--quick"),
+            "build_package": control_plane_command("build-package"),
             "test_baseline": "pytest -q --ignore=tests/integration",
         },
         "local_state": {
@@ -156,6 +158,16 @@ def summarize_generated_surfaces(generated_surfaces: dict[str, object]) -> str:
     return f"{fresh}/{total} generated clean · stale: {', '.join(stale)}"
 
 
+def summarize_local_state(local_state: dict[str, object]) -> str:
+    root_residents = local_state["root_residents"]
+    assert isinstance(root_residents, list)
+    keep_roots = " ".join(str(item) for item in root_residents)
+    return (
+        f"keep {keep_roots} · cache {local_state['cache']} · "
+        f"outputs {local_state['outputs']} · build {local_state['preferred_build_out_link']}"
+    )
+
+
 def use_color(stream: TextIO = sys.stdout) -> bool:
     return stream.isatty() and os.environ.get("NO_COLOR") is None and os.environ.get("TERM") not in {None, "dumb"}
 
@@ -189,6 +201,8 @@ def render_motd(cwd: Path, *, verify_generated: bool = False, stream: TextIO = s
 
     commands = snapshot["commands"]
     assert isinstance(commands, dict)
+    local_state = snapshot["local_state"]
+    assert isinstance(local_state, dict)
     revision = str(snapshot["revision"])
     dirty = summarize_worktree(changes) != "clean"
     display_version = f"v{snapshot['version']}+{revision}"
@@ -200,8 +214,16 @@ def render_motd(cwd: Path, *, verify_generated: bool = False, stream: TextIO = s
         ("worktree", style_worktree(summarize_worktree(changes), stream=stream)),
         ("generated", style_generated(summarize_generated_surfaces(generated_surfaces), stream=stream)),
         ("head", style(str(snapshot["last_commit"]), ANSI_DIM, stream=stream)),
-        ("run", style(str(commands["render_all_check"]), ANSI_GREEN, stream=stream)),
+        (
+            "ready",
+            style(
+                f"{commands['render_all_check']} · {commands['verify_quick']} · {commands['build_package']}",
+                ANSI_GREEN,
+                stream=stream,
+            ),
+        ),
         ("test", style(str(commands["test_baseline"]), ANSI_GREEN, stream=stream)),
+        ("roots", style(summarize_local_state(local_state), ANSI_DIM, stream=stream)),
     ]
 
     header = "  ".join(
