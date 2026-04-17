@@ -59,7 +59,9 @@ def _validate_record_sync(
     if not isinstance(stored_payload_provider, str) or not stored_payload_provider.strip():
         stored_payload_provider = None
     canonical_provider = Provider.from_string(stored_payload_provider or raw_record.provider_name)
-    payload_provider = stored_payload_provider
+    payload_provider: Provider | None = (
+        Provider.from_string(stored_payload_provider) if stored_payload_provider else None
+    )
 
     blob_store = BlobStore(Path(blob_root_str))
     raw_source = blob_store.blob_path(raw_record.raw_id)

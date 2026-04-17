@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Any, NoReturn
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -12,7 +12,7 @@ from polylogue.lib.viewports import ContentBlock, CostInfo, ReasoningTrace, Toke
 from polylogue.types import Provider
 
 
-def _missing_role() -> str:
+def _missing_role() -> NoReturn:
     """Called when role is missing - raises error to surface data quality issues."""
     raise ValueError("Message has no role. Data should be validated at import time.")
 
