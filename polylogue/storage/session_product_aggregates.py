@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Sequence
+from collections.abc import Coroutine, Iterable, Sequence
+from typing import Any
 
 import aiosqlite
 
@@ -57,9 +58,9 @@ def replace_day_session_summaries_async(
     *,
     provider_name: str,
     day: str,
-    records,
+    records: list[DaySessionSummaryRecord],
     transaction_depth: int,
-):
+) -> Coroutine[Any, Any, None]:
     from polylogue.storage.backends.queries.session_product_summary_queries import (
         replace_day_session_summaries as replace_day_session_summaries_async_query,
     )
@@ -78,9 +79,9 @@ def replace_session_tag_rollup_rows_async(
     *,
     provider_name: str,
     bucket_day: str,
-    records,
+    records: list[SessionTagRollupRecord],
     transaction_depth: int,
-):
+) -> Coroutine[Any, Any, None]:
     from polylogue.storage.backends.queries.session_product_summary_queries import (
         replace_session_tag_rollup_rows as replace_session_tag_rollup_rows_async_query,
     )
@@ -167,7 +168,7 @@ def _empty_provider_day_profile_groups(
 
 
 def _group_profile_records_by_provider_day(
-    rows,
+    rows: Iterable[sqlite3.Row] | Iterable[aiosqlite.Row],
     *,
     groups: Sequence[tuple[str, str]],
 ) -> dict[tuple[str, str], list[SessionProfileRecord]]:

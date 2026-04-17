@@ -38,7 +38,7 @@ def parse_schema_samples(raw: str) -> int | None:
     return parsed
 
 
-def make_count_progress_callback(*, label: str, unit: str):
+def make_count_progress_callback(*, label: str, unit: str) -> Any:
     """Return a stderr progress reporter for monotonically increasing counters."""
     start = time.monotonic()
     count = 0
@@ -59,12 +59,12 @@ def make_count_progress_callback(*, label: str, unit: str):
     return _cb
 
 
-def make_schema_progress_callback():
+def make_schema_progress_callback() -> Any:
     """Return a stderr progress reporter for schema verification."""
     return make_count_progress_callback(label="Verifying schemas", unit="raw records")
 
 
-def make_session_product_progress_callback():
+def make_session_product_progress_callback() -> Any:
     """Return a stderr progress reporter for session-product repairs."""
     return make_count_progress_callback(label="Repairing session products", unit="conversations")
 

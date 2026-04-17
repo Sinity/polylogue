@@ -10,7 +10,7 @@ import click
 from polylogue.cli.machine_errors import emit_success
 
 
-def _render_corpus_spec_preview(*, corpus_specs, header: str) -> None:
+def _render_corpus_spec_preview(*, corpus_specs: Any, header: str) -> None:
     if not corpus_specs:
         return
     click.echo(header)
@@ -24,7 +24,7 @@ def _render_corpus_spec_preview(*, corpus_specs, header: str) -> None:
         click.echo(f"    … {len(corpus_specs) - 3} more")
 
 
-def _render_corpus_scenario_preview(*, corpus_scenarios, header: str) -> None:
+def _render_corpus_scenario_preview(*, corpus_scenarios: Any, header: str) -> None:
     if not corpus_scenarios:
         return
     click.echo(header)
@@ -41,7 +41,7 @@ def _render_corpus_scenario_preview(*, corpus_scenarios, header: str) -> None:
 def render_schema_generate_result(
     *,
     provider: str,
-    result,
+    result: Any,
     json_output: bool,
     report: bool,
 ) -> None:
@@ -107,7 +107,7 @@ def render_schema_generate_result(
 def render_schema_list_result(
     *,
     provider: str | None,
-    result,
+    result: Any,
     json_output: bool,
 ) -> None:
     """Render schema list output in JSON or text mode."""
@@ -198,7 +198,7 @@ def render_schema_list_result(
         )
 
 
-def render_schema_compare_result(*, result, json_output: bool, md_output: bool) -> None:
+def render_schema_compare_result(*, result: Any, json_output: bool, md_output: bool) -> None:
     """Render schema comparison output."""
     if json_output:
         emit_success(result.to_dict())
@@ -208,7 +208,7 @@ def render_schema_compare_result(*, result, json_output: bool, md_output: bool) 
         click.echo(result.diff.to_text())
 
 
-def render_schema_promote_result(*, result, json_output: bool) -> None:
+def render_schema_promote_result(*, result: Any, json_output: bool) -> None:
     """Render schema cluster promotion output."""
     if json_output:
         emit_success(result.to_dict())
@@ -218,7 +218,7 @@ def render_schema_promote_result(*, result, json_output: bool) -> None:
     click.echo(f"Available versions: {', '.join(result.versions)}")
 
 
-def render_schema_audit_result(*, report, json_output: bool) -> None:
+def render_schema_audit_result(*, report: Any, json_output: bool) -> None:
     """Render schema audit output."""
     if json_output:
         emit_success(report.to_json())

@@ -134,7 +134,7 @@ def generate_schema_from_samples(
         schema = _annotate_semantic_and_relational(schema, field_stats)
 
     schema["$schema"] = "https://json-schema.org/draft/2020-12/schema"
-    return schema
+    return dict(schema)
 
 
 __all__ = [

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import Counter
+from typing import Any
 
 from polylogue.lib.action_events import ActionEvent, build_action_events
 from polylogue.lib.semantic_fact_models import (
@@ -29,7 +30,7 @@ from polylogue.lib.semantic_fact_support import (
 # ---------------------------------------------------------------------------
 
 
-def build_projection_semantic_facts(projection) -> ProjectionSemanticFacts:
+def build_projection_semantic_facts(projection: Any) -> ProjectionSemanticFacts:
     attachment_counts: Counter[str] = Counter(
         attachment.message_id for attachment in projection.attachments if attachment.message_id
     )
@@ -67,7 +68,7 @@ def build_projection_semantic_facts(projection) -> ProjectionSemanticFacts:
     )
 
 
-def build_message_semantic_facts(message) -> MessageSemanticFacts:
+def build_message_semantic_facts(message: Any) -> MessageSemanticFacts:
     tool_calls = message_tool_calls(message)
     action_events = build_action_events(message, tool_calls)
     tool_category_counts = Counter(action.kind.value for action in action_events)
@@ -98,7 +99,7 @@ def build_message_semantic_facts(message) -> MessageSemanticFacts:
 # ---------------------------------------------------------------------------
 
 
-def build_conversation_semantic_facts(conversation) -> ConversationSemanticFacts:
+def build_conversation_semantic_facts(conversation: Any) -> ConversationSemanticFacts:
     role_counts: Counter[str] = Counter()
     tool_categories: Counter[str] = Counter()
     message_facts = tuple(build_message_semantic_facts(message) for message in conversation.messages)
@@ -111,7 +112,7 @@ def build_conversation_semantic_facts(conversation) -> ConversationSemanticFacts
     branch_messages = 0
     substantive_messages = 0
     word_count = 0
-    timestamps: list = []
+    timestamps: list[Any] = []
     action_events: list[ActionEvent] = []
 
     for message_fact in message_facts:
@@ -169,7 +170,7 @@ def build_conversation_semantic_facts(conversation) -> ConversationSemanticFacts
     )
 
 
-def build_mcp_detail_semantic_facts(conversation) -> MCPDetailSemanticFacts:
+def build_mcp_detail_semantic_facts(conversation: Any) -> MCPDetailSemanticFacts:
     facts = build_conversation_semantic_facts(conversation)
     return MCPDetailSemanticFacts(
         conversation_id=facts.conversation_id,
@@ -193,7 +194,7 @@ def build_mcp_detail_semantic_facts(conversation) -> MCPDetailSemanticFacts:
 # ---------------------------------------------------------------------------
 
 
-def build_summary_semantic_facts(summary, *, message_count: int) -> SummarySemanticFacts:
+def build_summary_semantic_facts(summary: Any, *, message_count: int) -> SummarySemanticFacts:
     return SummarySemanticFacts(
         conversation_id=str(summary.id),
         provider=str(summary.provider),
@@ -206,7 +207,7 @@ def build_summary_semantic_facts(summary, *, message_count: int) -> SummarySeman
 
 
 def build_mcp_summary_semantic_facts(
-    summary,
+    summary: Any,
     *,
     message_count: int,
 ) -> MCPSummarySemanticFacts:
@@ -223,7 +224,7 @@ def build_mcp_summary_semantic_facts(
 
 
 def build_stream_semantic_facts(
-    conversation,
+    conversation: Any,
     *,
     dialogue_only: bool = False,
     message_limit: int | None = None,

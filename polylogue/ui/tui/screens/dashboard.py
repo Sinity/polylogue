@@ -6,6 +6,7 @@ from textual.app import ComposeResult
 from textual.containers import Container, Grid
 from textual.widgets import Static
 
+from polylogue.lib.stats import ArchiveStats
 from polylogue.logging import get_logger
 from polylogue.ui.tui.screens.base import RepositoryBoundContainer
 from polylogue.ui.tui.widgets.stats import StatCard
@@ -103,7 +104,7 @@ class Dashboard(RepositoryBoundContainer):
 
         self._apply_stats(stats)
 
-    def _apply_stats(self, stats) -> None:
+    def _apply_stats(self, stats: ArchiveStats) -> None:
         """Apply fetched stats to DOM widgets (runs on main thread)."""
 
         self.query_one("#stat-conversations", StatCard).value = str(stats.total_conversations)

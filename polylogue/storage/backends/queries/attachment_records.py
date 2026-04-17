@@ -9,7 +9,7 @@ from polylogue.storage.store import AttachmentRecord
 from polylogue.types import ConversationId
 
 
-def _build_attachment_record(row, *, conversation_id: str) -> AttachmentRecord:
+def _build_attachment_record(row: aiosqlite.Row, *, conversation_id: str) -> AttachmentRecord:
     return AttachmentRecord(
         attachment_id=row["attachment_id"],
         conversation_id=ConversationId(conversation_id),

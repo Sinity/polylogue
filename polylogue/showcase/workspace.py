@@ -207,7 +207,7 @@ def seed_workspace_from_specs(
     corpus_specs: tuple[CorpusSpec, ...],
     regenerate_schemas: bool = False,
     prefix: str = "showcase",
-):
+) -> object:
     """Generate fixtures from explicit specs and ingest them into the workspace."""
     return seed_workspace_from_scenarios(
         workspace,
@@ -227,7 +227,7 @@ def seed_workspace_from_scenarios(
     corpus_scenarios: tuple[CorpusScenario, ...],
     regenerate_schemas: bool = False,
     prefix: str = "showcase",
-):
+) -> object:
     """Generate fixtures from explicit corpus scenarios and ingest them into the workspace."""
     generate_synthetic_fixtures_from_scenarios(
         workspace.fixture_dir,
@@ -246,7 +246,7 @@ def seed_workspace_from_corpus_request(
     request: CorpusRequest,
     regenerate_schemas: bool = False,
     prefix: str = "showcase",
-):
+) -> object:
     """Resolve corpus specs, generate fixtures, and ingest them into the workspace."""
     scenarios = build_synthetic_corpus_scenarios(request=request)
     return seed_workspace_from_scenarios(
@@ -269,7 +269,7 @@ def seed_workspace_from_corpus_options(
     seed: int = 42,
     regenerate_schemas: bool = False,
     prefix: str = "showcase",
-):
+) -> object:
     """Resolve corpus specs, generate fixtures, and ingest them into the workspace."""
     return seed_workspace_from_corpus_request(
         workspace,

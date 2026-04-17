@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from polylogue.logging import get_logger
 from polylogue.pipeline.ids import (
@@ -44,7 +44,7 @@ async def save_bundle(bundle: RecordBundle, repository: ConversationRepository) 
 
 
 async def prepare_bundle(
-    convo,
+    convo: Any,
     source_name: str,
     *,
     archive_root: Path,
@@ -100,7 +100,7 @@ async def persist_prepared_bundle(
 
 
 async def prepare_records(
-    convo,
+    convo: Any,
     source_name: str,
     *,
     archive_root: Path,

@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from polylogue.lib.outcomes import OutcomeStatus
+from polylogue.showcase.qa_runner_models import QAResult
 from polylogue.showcase.report_common import (
     format_count_mapping,
     status_label,
 )
 
 
-def generate_qa_summary(result, *, session: dict | None = None) -> str:
+def generate_qa_summary(result: QAResult, *, session: dict[str, Any] | None = None) -> str:
     """Generate a human-readable summary for a full QA run."""
     from polylogue.showcase.qa_session_payload import generate_qa_session
 

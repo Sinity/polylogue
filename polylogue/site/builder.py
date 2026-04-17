@@ -6,7 +6,7 @@ import asyncio
 from datetime import datetime, timezone
 from pathlib import Path
 from time import perf_counter
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from polylogue.publication import SitePublicationManifest
 from polylogue.rendering.renderers.html import HTMLMessageRenderer, PygmentsHighlighter
@@ -154,7 +154,9 @@ class SiteBuilder:
                 self._backend = None
                 self._repository = None
 
-    async def _iter_conversation_indexes(self, *, provider: str | None = None, backend=None, repository=None):
+    async def _iter_conversation_indexes(
+        self, *, provider: str | None = None, backend: Any = None, repository: Any = None
+    ) -> Any:
         async for conversation in iter_conversation_indexes_for_builder(
             self,
             provider=provider,
@@ -170,7 +172,7 @@ class SiteBuilder:
         return await scan_archive_for_builder(self, incremental=incremental)
 
     async def _generate_conversation_page(
-        self, repository, conversation: ConversationIndex, *, incremental: bool = True
+        self, repository: Any, conversation: ConversationIndex, *, incremental: bool = True
     ) -> str:
         return await generate_conversation_page_for_builder(
             self,

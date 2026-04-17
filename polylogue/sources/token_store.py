@@ -79,7 +79,7 @@ class KeyringTokenStore:
     @staticmethod
     def _try_import_keyring() -> object | None:
         try:
-            import keyring  # type: ignore[import]
+            import keyring
 
             # Test that keyring backend is functional
             keyring.get_keyring()

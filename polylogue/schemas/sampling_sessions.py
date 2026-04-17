@@ -19,7 +19,7 @@ def _iter_schema_units_from_sessions(
     max_sessions: int | None,
     config: ProviderConfig,
     max_samples: int | None = None,
-):
+) -> Any:
     """Yield clusterable schema units from filesystem session files."""
     provider_name = Provider.from_string(provider_name)
     if not session_dir.exists():
@@ -66,7 +66,7 @@ def _iter_samples_from_sessions(
     session_dir: Path,
     *,
     max_sessions: int | None,
-):
+) -> Any:
     """Yield individual sample dicts from session files."""
     if not session_dir.exists():
         return

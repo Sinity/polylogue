@@ -57,9 +57,20 @@ jobs:
           name: coverage-report
           path: coverage.xml
 
-  # typecheck (mypy --strict) is tracked debt: currently 1,688 errors across 233
-  # files. Dedicated cleanup branch will re-introduce this job. See issue tracker
-  # for the mypy-strict cleanup plan.
+  typecheck:
+    # Strict mypy over the clean subset of polylogue/*. The list of
+    # legacy-dirty files is maintained in `pyproject.toml` under
+    # `[tool.mypy] exclude` — shrinking that list is the mechanism for
+    # widening coverage over time (issue #188).
+    timeout-minutes: 10
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v8.0.0
+        with:
+          python-version: "3.13"
+      - run: uv sync --extra dev --frozen
+      - run: uv run mypy polylogue/
 
   showcase-verify:
     timeout-minutes: 20

@@ -161,7 +161,7 @@ def _load_toml_section(path: Path) -> dict[str, Any]:
     """Load the [schema.privacy] section from a TOML file."""
     with open(path, "rb") as f:
         data = tomllib.load(f)
-    return data.get("schema", {}).get("privacy", {})
+    return dict(data.get("schema", {}).get("privacy", {}))
 
 
 def _merge_into(

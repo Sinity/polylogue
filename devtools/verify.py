@@ -6,10 +6,11 @@ the branch is ready to push; non-zero means fix before pushing.
 Steps:
   1. ruff format --check (fast, <2s)
   2. ruff check (fast, <2s)
-  3. devtools render-all --check (fast, <5s)
-  4. pytest --ignore=tests/integration (slow but essential, ~3min)
+  3. mypy polylogue/ (warm ~1s, cold ~25s)
+  4. devtools render-all --check (fast, <5s)
+  5. pytest --ignore=tests/integration (slow but essential, ~3min)
 
-Use --quick to run only steps 1-3 (suitable for pre-commit).
+Use --quick to run only steps 1-4 (suitable for pre-commit).
 """
 
 from __future__ import annotations
@@ -47,6 +48,7 @@ def main(argv: list[str] | None = None) -> int:
     steps: list[tuple[str, list[str]]] = [
         ("ruff format", ["ruff", "format", "--check", "polylogue/", "tests/", "devtools/"]),
         ("ruff check", ["ruff", "check", "polylogue/", "tests/", "devtools/"]),
+        ("mypy", ["mypy", "polylogue/"]),
         ("render-all", ["devtools", "render-all", "--check"]),
     ]
 

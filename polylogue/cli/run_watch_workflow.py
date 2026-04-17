@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Sequence
+from typing import Any
 
 import click
 
@@ -19,8 +20,8 @@ class WatchDisplayObserver(RunObserver):
 
     def __init__(
         self,
-        env,
-        cfg,
+        env: Any,
+        cfg: Any,
         stage: str,
         selected_sources: list[str] | None,
         *,
@@ -34,7 +35,7 @@ class WatchDisplayObserver(RunObserver):
         self._display_stage = display_stage
         self._stage_sequence = stage_sequence
 
-    def on_completed(self, result) -> None:
+    def on_completed(self, result: Any) -> None:
         activity_count, _, _ = conversation_activity_counts(result.counts, result.drift)
         if activity_count > 0:
             display_result(
@@ -51,7 +52,7 @@ class WatchDisplayObserver(RunObserver):
 class WatchStatusObserver(RunObserver):
     """Print idle and error status in watch mode."""
 
-    def on_idle(self, result) -> None:
+    def on_idle(self, result: Any) -> None:
         click.echo(f"No conversation changes at {time.strftime('%H:%M:%S')}")
 
     def on_error(self, exc: Exception) -> None:

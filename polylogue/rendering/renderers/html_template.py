@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 from jinja2 import DictLoader, Environment, select_autoescape
 
@@ -11,7 +12,7 @@ DEFAULT_HTML_TEMPLATE = (Path(__file__).parent.parent / "templates" / "conversat
 _CACHED_TEMPLATE_ENV: Environment | None = None
 
 
-def get_cached_template():
+def get_cached_template() -> Any:
     """Return a module-level cached Jinja2 template for HTML rendering."""
     global _CACHED_TEMPLATE_ENV
     if _CACHED_TEMPLATE_ENV is None:

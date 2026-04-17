@@ -35,7 +35,7 @@ def generate_provider_schema(
     max_samples: int | None = None,
     privacy_config: Any | None = None,
     full_corpus: bool = False,
-):
+) -> Any:
     """Generate the default inferred schema for a provider."""
     return _build_provider_bundle(
         provider,
@@ -52,7 +52,7 @@ def generate_all_schemas(
     providers: list[str] | None = None,
     max_samples: int | None = None,
     privacy_config: Any | None = None,
-):
+) -> Any:
     """Generate versioned schemas for all providers."""
     if db_path is None:
         db_path = archive_db_path()

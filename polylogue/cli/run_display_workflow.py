@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from typing import Any
 
 import click
 
@@ -21,9 +22,9 @@ from polylogue.sources import DriveError
 
 
 def display_result(
-    env,
-    cfg,
-    result,
+    env: Any,
+    cfg: Any,
+    result: Any,
     stage: str,
     selected_sources: list[str] | None,
     *,
@@ -84,7 +85,7 @@ def display_result(
         )
 
 
-def render_sources(env, *, json_output: bool) -> None:
+def render_sources(env: Any, *, json_output: bool) -> None:
     from polylogue.cli.machine_errors import emit_success
 
     cfg = env.config
@@ -116,10 +117,10 @@ def handle_drive_error(exc: DriveError) -> None:
 
 
 def render_preview_summary(
-    env,
+    env: Any,
     *,
     selected_sources: list[str] | None,
-    plan_snapshot,
+    plan_snapshot: Any,
 ) -> None:
     plan_lines = []
     if selected_sources:
