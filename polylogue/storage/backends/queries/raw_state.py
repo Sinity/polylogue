@@ -8,7 +8,7 @@ from typing import Any
 import aiosqlite
 
 from polylogue.storage.backends.connection import _build_source_scope_filter
-from polylogue.storage.state_views import UNSET, RawConversationStateUpdate
+from polylogue.storage.state_views import UNSET, RawConversationStateUpdate, _RawStateUnset
 from polylogue.types import Provider, ValidationMode, ValidationStatus
 
 EFFECTIVE_RAW_PROVIDER_SQL = "COALESCE(payload_provider, provider_name)"
@@ -64,8 +64,9 @@ async def apply_raw_state_update(
             state.validation_error[:2000] if isinstance(state.validation_error, str) else state.validation_error
         )
     if state.validation_drift_count is not UNSET:
+        drift_count = state.validation_drift_count
         set_clauses.append("validation_drift_count = ?")
-        params.append(max(0, int(state.validation_drift_count)))
+        params.append(max(0, int(drift_count or 0)) if not isinstance(drift_count, _RawStateUnset) else 0)
     if state.validation_provider is not UNSET:
         set_clauses.append("validation_provider = ?")
         params.append(coerce_provider(state.validation_provider))
