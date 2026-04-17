@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 try:
     import jsonschema
@@ -73,8 +73,13 @@ def collect_validation_samples(
     max_samples: int | None = None,
 ) -> list[dict[str, Any]]:
     """Extract representative objects from a payload for validation."""
-    granularity = schema.get("x-polylogue-sample-granularity")
-    if not isinstance(granularity, str):
+    raw_granularity = schema.get("x-polylogue-sample-granularity")
+    granularity: Literal["document", "record"]
+    if raw_granularity == "record":
+        granularity = "record"
+    elif raw_granularity == "document":
+        granularity = "document"
+    else:
         granularity = "record" if provider in _RECORD_VALIDATION_PROVIDERS else "document"
     return extract_payload_samples(
         payload,
