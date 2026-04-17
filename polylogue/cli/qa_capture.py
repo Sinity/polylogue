@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from typing import Any
 
-def run_vhs_capture(env, showcase_result, json_output: bool) -> None:
+
+def run_vhs_capture(env: Any, showcase_result: Any, json_output: bool) -> None:
     """Run VHS tape captures if available."""
     try:
         from polylogue.showcase.vhs import (

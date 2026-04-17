@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from polylogue.schemas import generation_dynamic_keys as _dynamic_keys
 from polylogue.schemas.generation_field_annotations import (
     annotate_schema,
@@ -15,11 +17,13 @@ SchemaBuilder = _dynamic_keys.SchemaBuilder
 collapse_dynamic_keys = _dynamic_keys.collapse_dynamic_keys
 
 
-def _merge_schemas(schemas):
+def _merge_schemas(schemas: Any) -> Any:
     return _dynamic_keys.merge_schemas(schemas)
 
 
-def _annotate_schema(schema, stats, path: str = "$", *, min_conversation_count: int = 1, privacy_config=None):
+def _annotate_schema(
+    schema: Any, stats: Any, path: str = "$", *, min_conversation_count: int = 1, privacy_config: Any = None
+) -> Any:
     return annotate_schema(
         schema,
         stats,
@@ -29,11 +33,11 @@ def _annotate_schema(schema, stats, path: str = "$", *, min_conversation_count: 
     )
 
 
-def _annotate_semantic_and_relational(schema, field_stats, *, artifact_kind: str | None = None):
+def _annotate_semantic_and_relational(schema: Any, field_stats: Any, *, artifact_kind: str | None = None) -> Any:
     return annotate_semantic_and_relational(schema, field_stats, artifact_kind=artifact_kind)
 
 
-def _remove_nested_required(schema, depth: int = 0):
+def _remove_nested_required(schema: Any, depth: int = 0) -> Any:
     return remove_nested_required(schema, depth=depth)
 
 

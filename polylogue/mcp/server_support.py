@@ -47,7 +47,7 @@ def _extract_fenced_code(text: str, language: str = "") -> list[dict[str, str]]:
 
 def _json_payload(payload: Any, *, exclude_none: bool = False) -> str:
     """Serialize a typed MCP payload with canonical JSON formatting."""
-    return payload.to_json(exclude_none=exclude_none)
+    return str(payload.to_json(exclude_none=exclude_none))
 
 
 def _clamp_limit(limit: int | Any) -> int:
@@ -61,7 +61,7 @@ def _clamp_limit(limit: int | Any) -> int:
 def _safe_call(fn_name: str, fn: Any) -> str:
     """Call fn() and return its result, or a JSON error dict on exception."""
     try:
-        return fn()
+        return str(fn())
     except Exception as exc:
         logger.exception("MCP tool %s failed", fn_name)
         return _json_payload(MCPErrorPayload(error=str(exc), tool=fn_name), exclude_none=True)
@@ -70,7 +70,7 @@ def _safe_call(fn_name: str, fn: Any) -> str:
 async def _async_safe_call(fn_name: str, fn: Any) -> str:
     """Async version of _safe_call for async tool handlers."""
     try:
-        return await fn()
+        return str(await fn())
     except Exception as exc:
         logger.exception("MCP tool %s failed", fn_name)
         return _json_payload(MCPErrorPayload(error=str(exc), tool=fn_name), exclude_none=True)
@@ -95,12 +95,12 @@ def _get_runtime_services() -> RuntimeServices:
     return _runtime_services
 
 
-def _get_repo():
+def _get_repo() -> Any:
     """Return the MCP repository from the configured runtime services."""
     return _get_runtime_services().get_repository()
 
 
-def _get_config():
+def _get_config() -> Any:
     """Return the MCP config from the configured runtime services."""
     return _get_runtime_services().get_config()
 

@@ -192,3 +192,20 @@ Nix expressions.
 
 See [TESTING.md](TESTING.md) and [docs/devtools.md](docs/devtools.md) for
 details.
+
+## Widening Type-Check Coverage
+
+CI runs `mypy --strict` over a subset of `polylogue/*`. The legacy debt
+is tracked as a list of excluded files in `[tool.mypy] exclude` in
+`pyproject.toml`. The list only shrinks.
+
+To clean a module:
+
+1. Pick a file from the exclude list.
+2. Remove its entry and run `mypy polylogue/` — fix the reported errors.
+3. Run `devtools verify` to confirm the gate still passes.
+4. Commit the removed entry together with the fixes.
+
+New files under `polylogue/` are checked by default. Anything added
+that fails `mypy --strict` must be cleaned before merge, not added to
+the exclude list.

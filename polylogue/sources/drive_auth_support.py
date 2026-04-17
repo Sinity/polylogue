@@ -65,7 +65,7 @@ def import_auth_module(name: str) -> Any:
 
 def load_cached_credentials(
     *,
-    token_store,
+    token_store: Any,
     credentials_cls: Any,
     token_path: Path,
 ) -> CachedCredentialState:
@@ -89,14 +89,14 @@ def load_cached_credentials(
     return CachedCredentialState(creds=creds, had_invalid_token_path=had_invalid_token_path)
 
 
-def persist_token(*, token_store, creds: Any, token_path: Path) -> None:
+def persist_token(*, token_store: Any, creds: Any, token_path: Path) -> None:
     token_store.save("drive_token", creds.to_json())
     token_path.parent.mkdir(parents=True, exist_ok=True)
     token_path.write_text(creds.to_json(), encoding="utf-8")
     token_path.chmod(0o600)
 
 
-def refresh_credentials_if_needed(*, creds: Any, token_path: Path, token_store) -> Any:
+def refresh_credentials_if_needed(*, creds: Any, token_path: Path, token_store: Any) -> Any:
     if creds and creds.expired and creds.refresh_token:
         try:
             import google.auth.transport.requests as _gtr

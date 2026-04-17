@@ -13,7 +13,7 @@ def build_preview_counts(report: Any) -> dict[str, int]:
 
 
 def resolve_selected_maintenance_targets(
-    options,
+    options: Any,
 ) -> tuple[str, ...]:
     if options.maintenance_targets:
         return tuple(options.maintenance_targets)
@@ -27,10 +27,10 @@ def resolve_selected_maintenance_targets(
 
 
 def persist_maintenance_run(
-    env,
+    env: Any,
     *,
     report: Any,
-    options,
+    options: Any,
     targets: tuple[str, ...],
     maintenance_results: list[Any],
     vacuum_result: dict[str, Any] | None,

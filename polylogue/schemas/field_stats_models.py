@@ -16,8 +16,8 @@ class FieldStats:
     """Statistics collected for a single JSON path across all samples."""
 
     path: str
-    observed_values: Counter = field(default_factory=Counter)
-    detected_formats: Counter = field(default_factory=Counter)
+    observed_values: Counter[str] = field(default_factory=Counter)
+    detected_formats: Counter[str] = field(default_factory=Counter)
     num_min: float | None = None
     num_max: float | None = None
     total_samples: int = 0
@@ -32,7 +32,7 @@ class FieldStats:
     distinct_value_count: int = 0
     values_per_conversation: dict[str, set[str]] = field(default_factory=dict)
     _ordered_samples: list[list[float]] = field(default_factory=list)
-    co_occurring_fields: Counter = field(default_factory=Counter)
+    co_occurring_fields: Counter[str] = field(default_factory=Counter)
     object_key_counts: list[int] = field(default_factory=list)
     max_depth_seen: int = 0
 
@@ -46,7 +46,7 @@ class FieldStats:
             return None
         fmt, count = self.detected_formats.most_common(1)[0]
         if count / self.value_count >= 0.8:
-            return fmt
+            return str(fmt) if fmt is not None else None
         return None
 
     @property

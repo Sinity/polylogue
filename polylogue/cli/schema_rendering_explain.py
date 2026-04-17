@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import json
+from typing import Any
 
 import click
 
 from polylogue.cli.machine_errors import emit_success
 
 
-def render_schema_explain_result(*, result, json_output: bool, verbose: bool) -> None:
+def render_schema_explain_result(*, result: Any, json_output: bool, verbose: bool) -> None:
     """Render schema explain output in JSON or human-readable form."""
     if json_output:
         emit_success(result.to_dict())
@@ -95,7 +96,7 @@ def render_schema_explain_result(*, result, json_output: bool, verbose: bool) ->
         render_explain_verbose(result)
 
 
-def render_explain_verbose(result) -> None:
+def render_explain_verbose(result: Any) -> None:
     """Render verbose schema explain coverage and role evidence."""
     click.echo()
     roles = result.annotations.roles
@@ -124,7 +125,7 @@ def render_explain_verbose(result) -> None:
         )
 
 
-def _render_proof_surface(result) -> None:
+def _render_proof_surface(result: Any) -> None:
     """Render the proof surface for schema role assignment decisions."""
     proof = result.review_proof
     click.echo(f"Schema Review Proof: {result.provider} {result.version}")

@@ -117,7 +117,7 @@ class DriveAuthManager:
     def _resolved_token_path(self) -> Path:
         return self._token_path or _resolve_token_path(self._config)
 
-    def _load_cached_credentials(self, credentials_cls: Any, token_path: Path):
+    def _load_cached_credentials(self, credentials_cls: Any, token_path: Path) -> Any:
         return load_cached_credentials(
             token_store=self._token_store,
             credentials_cls=credentials_cls,

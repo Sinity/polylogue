@@ -10,7 +10,7 @@ def build_schema_privacy_config(
     *,
     privacy: str | None,
     privacy_config_path: Path | None,
-):
+) -> Any:
     """Resolve schema-generation privacy config from CLI options."""
     from polylogue.schemas.privacy_config import PrivacyConfig, load_privacy_config
 

@@ -48,7 +48,7 @@ def _iter_schema_units_from_db(
     config: ProviderConfig,
     max_samples: int | None = None,
     full_corpus: bool = False,
-):
+) -> Any:
     """Yield clusterable schema units from raw_conversations."""
     provider_name = Provider.from_string(provider_name)
     blob_store = get_blob_store()
@@ -147,7 +147,7 @@ def _iter_samples_from_db(
     db_path: Path,
     config: ProviderConfig,
     with_conv_ids: bool = False,
-):
+) -> Any:
     """Yield individual sample dicts from the database."""
     provider_name = Provider.from_string(provider_name)
     for unit in _iter_schema_units_from_db(provider_name, db_path=db_path, config=config):

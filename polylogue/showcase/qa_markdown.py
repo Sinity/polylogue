@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from polylogue.lib.outcomes import OutcomeStatus
 from polylogue.showcase.exercises import GROUPS
+from polylogue.showcase.qa_runner_models import QAResult
 from polylogue.showcase.report_common import status_label
 
 
 def generate_qa_markdown(
-    result,
+    result: QAResult,
     *,
-    session: dict | None = None,
+    session: dict[str, Any] | None = None,
     git_sha: str | None = None,
 ) -> str:
     """Generate a stable, diffable Markdown report for a full QA run."""

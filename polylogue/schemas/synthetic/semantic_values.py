@@ -137,8 +137,10 @@ class SemanticValueGenerator:
             # Filter to known conversational roles if present
             conversational = [v for v in values if v in {"user", "assistant", "human", "model", "system", "tool"}]
             if conversational:
-                return self.current_role if self.current_role in conversational else self.rng.choice(conversational)
-            return self.rng.choice(values)
+                return (
+                    self.current_role if self.current_role in conversational else str(self.rng.choice(conversational))
+                )
+            return str(self.rng.choice(values))
         return self.current_role
 
     def _generate_body(self, schema: dict[str, Any]) -> str:
@@ -178,7 +180,7 @@ class SemanticValueGenerator:
 
         # Use observed values if available
         if values := schema.get("x-polylogue-values"):
-            return self.rng.choice(values)
+            return str(self.rng.choice(values))
 
         # Fallback: pick a theme title
         return self.rng.choice(_SHOWCASE_THEMES).title

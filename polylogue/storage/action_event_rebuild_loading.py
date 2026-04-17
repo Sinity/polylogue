@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Iterable, Sequence
+from collections.abc import AsyncIterator, Iterable, Sequence
 
 import aiosqlite
 
@@ -49,7 +49,7 @@ async def iter_conversation_id_pages_async(
     conn: aiosqlite.Connection,
     *,
     page_size: int,
-):
+) -> AsyncIterator[list[str]]:
     cursor = await conn.execute(_ALL_ACTION_EVENT_CONVERSATION_IDS_SQL)
     while True:
         rows = await cursor.fetchmany(page_size)

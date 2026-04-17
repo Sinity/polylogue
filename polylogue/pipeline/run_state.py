@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Any
 
 from polylogue.pipeline.services.parsing import ParseResult
 
@@ -35,12 +36,12 @@ class RunExecutionState:
     processed_ids: set[str] = field(default_factory=set)
     render_failures: list[dict[str, str]] = field(default_factory=list)
 
-    def record_acquire(self, acquire_result) -> None:
+    def record_acquire(self, acquire_result: Any) -> None:
         self.counts["acquired"] = acquire_result.counts["acquired"]
         self.counts["skipped"] = acquire_result.counts["skipped"]
         self.counts["acquire_errors"] = acquire_result.counts["errors"]
 
-    def record_validation(self, validation_result) -> None:
+    def record_validation(self, validation_result: Any) -> None:
         if validation_result is None:
             return
         self.counts["validated"] = validation_result.counts["validated"]

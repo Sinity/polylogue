@@ -54,7 +54,7 @@ def _attach_semantic_roles(
             _attach_semantic_roles(item, role_by_path, path=path)
 
 
-def _attach_relational_annotations(schema: dict[str, Any], relations) -> None:
+def _attach_relational_annotations(schema: dict[str, Any], relations: Any) -> None:
     if relations.foreign_keys:
         schema["x-polylogue-foreign-keys"] = [
             {

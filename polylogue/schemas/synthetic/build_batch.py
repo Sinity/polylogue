@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import random
+from typing import Any
 
 from polylogue.schemas.synthetic.models import (
     SyntheticArtifact,
@@ -14,7 +15,7 @@ from polylogue.schemas.synthetic.showcase import _SHOWCASE_THEMES, ConversationT
 
 
 def generate_batch(
-    self,
+    self: Any,
     count: int = 5,
     messages_per_conversation: range = range(3, 15),
     seed: int | None = None,
@@ -53,12 +54,12 @@ def generate_batch(
 
 
 def _generate_conversation(
-    self,
+    self: Any,
     n_messages: int,
     rng: random.Random,
     *,
     theme: ConversationTheme | None = None,
-):
+) -> Any:
     wf = self.wire_format
     if wf.encoding == "jsonl":
         return self._generate_jsonl_records(n_messages, rng, theme=theme)
@@ -69,7 +70,7 @@ def _generate_conversation(
     return self._generate_from_schema(self.schema, rng)
 
 
-def _role_cycle(self) -> list[str]:
+def _role_cycle(self: Any) -> list[str]:
     match self.provider:
         case "chatgpt":
             return ["user", "assistant"]

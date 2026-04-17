@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from polylogue.rendering.core import build_rendered_message_payload
 
@@ -53,7 +53,7 @@ def _attach_branches(messages: list[dict[str, object]]) -> list[dict[str, object
 def build_projection_html_messages(
     projection: ConversationRenderProjection,
     *,
-    render_html,
+    render_html: Any,
     preview_limit: int = 120,
 ) -> list[dict[str, object]]:
     raw_messages: list[dict[str, object]] = []
@@ -79,7 +79,7 @@ def build_projection_html_messages(
 def build_conversation_html_messages(
     conversation: Conversation,
     *,
-    render_html,
+    render_html: Any,
     preview_limit: int = 120,
 ) -> list[dict[str, object]]:
     raw_messages: list[dict[str, object]] = []
