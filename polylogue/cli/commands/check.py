@@ -93,7 +93,7 @@ def check_command(
     render_plain_output(env, result, options)
 
 
-def _make_schema_progress_callback():
+def _make_schema_progress_callback() -> Any:
     return _make_schema_progress_callback_impl()
 
 
