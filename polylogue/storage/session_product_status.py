@@ -251,7 +251,12 @@ _TABLE_SQLS = {
 
 
 def _to_int(row: tuple[object, ...] | sqlite3.Row | None) -> int:
-    return int(row[0] or 0) if row else 0
+    if not row:
+        return 0
+    value = row[0]
+    if isinstance(value, (int, float, str)):
+        return int(value)
+    return 0
 
 
 def _status_payload(
