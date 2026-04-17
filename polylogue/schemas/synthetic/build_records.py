@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import random
 import uuid
+from typing import Any
 
 from polylogue.schemas.synthetic.semantic_values import SemanticValueGenerator
 from polylogue.schemas.synthetic.showcase import ConversationTheme
 
 
-def _generate_tree_json(self, n_messages: int, rng: random.Random, *, theme: ConversationTheme | None = None) -> dict:
+def _generate_tree_json(
+    self: Any, n_messages: int, rng: random.Random, *, theme: ConversationTheme | None = None
+) -> dict[str, Any]:
     tree_cfg = self.wire_format.tree
     assert tree_cfg is not None and tree_cfg.container_path is not None
 
@@ -23,7 +26,7 @@ def _generate_tree_json(self, n_messages: int, rng: random.Random, *, theme: Con
 
     container_schema = self.schema.get("properties", {}).get(tree_cfg.container_path, {})
     node_schema = container_schema.get("additionalProperties", {})
-    nodes: list[dict] = []
+    nodes: list[dict[str, Any]] = []
 
     for i in range(n_messages):
         node = self._generate_from_schema(node_schema, rng)
@@ -62,7 +65,9 @@ def _generate_tree_json(self, n_messages: int, rng: random.Random, *, theme: Con
     return top
 
 
-def _generate_linear_json(self, n_messages: int, rng: random.Random, *, theme: ConversationTheme | None = None) -> dict:
+def _generate_linear_json(
+    self: Any, n_messages: int, rng: random.Random, *, theme: ConversationTheme | None = None
+) -> dict[str, Any]:
     msgs_path = self.wire_format.messages_path
     assert msgs_path is not None
 
@@ -114,10 +119,10 @@ def _generate_linear_json(self, n_messages: int, rng: random.Random, *, theme: C
 
 
 def _generate_jsonl_records(
-    self, n_messages: int, rng: random.Random, *, theme: ConversationTheme | None = None
-) -> list[dict]:
+    self: Any, n_messages: int, rng: random.Random, *, theme: ConversationTheme | None = None
+) -> list[dict[str, Any]]:
     tree_cfg = self.wire_format.tree
-    records: list[dict] = []
+    records: list[dict[str, Any]] = []
     roles = self._role_cycle()
     session_id = str(uuid.UUID(int=rng.getrandbits(128), version=4))
     base_ts = rng.uniform(1670000000, 1760000000)
