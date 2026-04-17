@@ -11,6 +11,7 @@ from polylogue.logging import get_logger
 from polylogue.storage.backends.schema_bootstrap import (
     SCHEMA_DDL,
     SCHEMA_VERSION,
+    SchemaExtensionPlan,
     SchemaSnapshot,
     apply_schema_extension_plan,
     apply_schema_extension_plan_async,
@@ -39,7 +40,7 @@ def assert_supported_archive_layout(conn: sqlite3.Connection) -> None:
     assert_supported_archive_layout_snapshot(capture_schema_snapshot(conn))
 
 
-def _log_index_replacement(snapshot: SchemaSnapshot, plan: object) -> None:
+def _log_index_replacement(snapshot: SchemaSnapshot, plan: SchemaExtensionPlan) -> None:
     if snapshot.sql_for_index("idx_raw_conv_source_mtime") is not None and any(
         statement == "DROP INDEX IF EXISTS idx_raw_conv_source_mtime" for statement in plan.statements
     ):
