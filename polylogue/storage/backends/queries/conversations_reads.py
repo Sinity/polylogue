@@ -275,7 +275,7 @@ async def count_conversations(
         sql = f"SELECT COUNT(*) as cnt FROM conversations {where_sql}"
     cursor = await conn.execute(sql, tuple(params))
     row = await cursor.fetchone()
-    return int(row["cnt"])
+    return int(row["cnt"]) if row else 0
 
 
 async def list_conversations_by_parent(conn: aiosqlite.Connection, parent_id: str) -> list[ConversationRecord]:
