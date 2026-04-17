@@ -14,6 +14,8 @@ def sort_key_to_iso(sort_key: object) -> str | None:
     """Convert a sort_key (epoch float) to ISO 8601, or None."""
     if sort_key is None:
         return None
+    if not isinstance(sort_key, (int, float, str)):
+        return None
     try:
         return datetime.fromtimestamp(float(sort_key), tz=timezone.utc).isoformat()
     except (TypeError, ValueError, OSError):
