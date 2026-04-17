@@ -12,6 +12,7 @@ from polylogue.storage.hydrators import message_from_record
 from polylogue.storage.store import (
     ACTION_EVENT_MATERIALIZER_VERSION,
     ActionEventRecord,
+    ContentBlockRecord,
     ConversationRecord,
     MessageRecord,
 )
@@ -113,10 +114,10 @@ def build_action_event_records(
 
 def attach_blocks_to_messages(
     messages: Sequence[MessageRecord],
-    content_blocks: Sequence[object],
+    content_blocks: Sequence[ContentBlockRecord],
 ) -> list[MessageRecord]:
     """Attach content blocks to message records for action-event derivation."""
-    grouped: dict[str, list[object]] = defaultdict(list)
+    grouped: dict[str, list[ContentBlockRecord]] = defaultdict(list)
     for block in content_blocks:
         grouped[str(block.message_id)].append(block)
     return [
