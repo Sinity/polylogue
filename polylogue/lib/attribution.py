@@ -189,10 +189,12 @@ def extract_attribution_from_action_events(
     if isinstance(cwd_value, str) and cwd_value:
         cwd_paths.add(cwd_value)
         _add_repo_candidate_from_path(cwd_value, repo_paths=repo_paths, repo_names=repo_names)
-    for working_directory in provider_meta.get("working_directories", []) or []:
-        if isinstance(working_directory, str) and working_directory:
-            cwd_paths.add(working_directory)
-            _add_repo_candidate_from_path(working_directory, repo_paths=repo_paths, repo_names=repo_names)
+    working_dirs = provider_meta.get("working_directories") or []
+    if isinstance(working_dirs, (list, tuple)):
+        for working_directory in working_dirs:
+            if isinstance(working_directory, str) and working_directory:
+                cwd_paths.add(working_directory)
+                _add_repo_candidate_from_path(working_directory, repo_paths=repo_paths, repo_names=repo_names)
 
     git_branch = provider_meta.get("gitBranch")
     if isinstance(git_branch, str) and git_branch:
