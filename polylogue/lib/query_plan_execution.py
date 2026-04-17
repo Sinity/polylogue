@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, cast
+
 from polylogue.lib.query_retrieval import (
     fetch_batched_filtered_conversations,
     fetch_candidates,
@@ -10,16 +12,23 @@ from polylogue.lib.query_support import conversation_to_summary
 
 from .query_plan import ConversationQueryPlan
 
+if TYPE_CHECKING:
+    from polylogue.lib.models import Conversation, ConversationSummary
+    from polylogue.storage.repository import ConversationRepository
+
 
 async def list_for_plan(
     plan: ConversationQueryPlan,
-    repository,
-):
+    repository: ConversationRepository,
+) -> list[Conversation]:
     if plan.similar_text:
-        candidates = await repository.search_similar(
-            plan.similar_text,
-            limit=plan.limit or 10,
-            vector_provider=plan.vector_provider,
+        candidates = cast(
+            list[Conversation],
+            await repository.search_similar(
+                plan.similar_text,
+                limit=plan.limit or 10,
+                vector_provider=plan.vector_provider,
+            ),
         )
         return plan._finalize(plan._apply_full_filters(candidates, sql_pushed=False))
 
@@ -27,15 +36,16 @@ async def list_for_plan(
         batched = await fetch_batched_filtered_conversations(plan, repository)
         return plan._finalize(plan._sort_conversations(batched))
 
-    candidates, sql_pushed = await fetch_candidates(plan, repository, summaries=False)
-    filtered = plan._apply_full_filters(candidates, sql_pushed=sql_pushed)
+    candidate_results, sql_pushed = await fetch_candidates(plan, repository, summaries=False)
+    candidate_conversations = cast(list[Conversation], candidate_results)
+    filtered = plan._apply_full_filters(candidate_conversations, sql_pushed=sql_pushed)
     return plan._finalize(plan._sort_conversations(filtered))
 
 
 async def list_summaries_for_plan(
     plan: ConversationQueryPlan,
-    repository,
-):
+    repository: ConversationRepository,
+) -> list[ConversationSummary]:
     can_use_action_stats = await plan.can_use_action_event_stats_with(repository)
     uses_action_read_model = plan._uses_action_read_model()
     if not plan.can_use_summaries() and not uses_action_read_model:
@@ -50,24 +60,25 @@ async def list_summaries_for_plan(
         return [conversation_to_summary(conversation) for conversation in conversations]
 
     candidates, sql_pushed = await fetch_candidates(plan, repository, summaries=True)
-    filtered = plan._apply_common_filters(candidates, sql_pushed=sql_pushed)
+    candidate_summaries = cast(list[ConversationSummary], candidates)
+    filtered = plan._apply_common_filters(candidate_summaries, sql_pushed=sql_pushed)
     return plan._finalize(plan._sort_summaries(filtered))
 
 
 async def first_for_plan(
     plan: ConversationQueryPlan,
-    repository,
-):
+    repository: ConversationRepository,
+) -> Conversation | None:
     results = await list_for_plan(plan.with_limit(1), repository)
     return results[0] if results else None
 
 
 async def count_for_plan(
     plan: ConversationQueryPlan,
-    repository,
+    repository: ConversationRepository,
 ) -> int:
     if plan.can_count_in_sql() and await plan._action_event_rows_ready(repository):
-        return await repository.count_by_query(plan.record_query.for_count())
+        return int(await repository.count_by_query(plan.record_query.for_count()))
 
     unbounded = plan.with_limit(None)
     if unbounded.can_use_summaries():
@@ -77,8 +88,9 @@ async def count_for_plan(
 
 async def delete_for_plan(
     plan: ConversationQueryPlan,
-    repository,
+    repository: ConversationRepository,
 ) -> int:
+    results: list[Conversation] | list[ConversationSummary]
     if plan.can_use_summaries():
         results = await list_summaries_for_plan(plan, repository)
     else:

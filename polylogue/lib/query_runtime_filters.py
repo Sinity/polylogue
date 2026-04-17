@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, TypeVar
+from datetime import datetime
+from typing import TYPE_CHECKING, Protocol, TypeVar, cast
 
 from polylogue.lib.query_runtime_matching import (
     matches_action_sequence,
@@ -17,7 +18,21 @@ if TYPE_CHECKING:
     from polylogue.lib.models import Conversation
     from polylogue.lib.query_plan import ConversationQueryPlan
 
-_T = TypeVar("_T")
+
+class _FilterableConversationLike(Protocol):
+    provider: object
+    updated_at: datetime | None
+    display_title: str
+    parent_id: str | None
+    tags: list[str]
+    id: str
+    summary: str | None
+    is_continuation: bool
+    is_sidechain: bool
+    is_root: bool
+
+
+_T = TypeVar("_T", bound=_FilterableConversationLike)
 
 
 def apply_common_filters(
@@ -88,7 +103,7 @@ def apply_full_filters(
     *,
     sql_pushed: bool,
 ) -> list[Conversation]:
-    results = apply_common_filters(plan, conversations, sql_pushed=sql_pushed)
+    results = cast(list[Conversation], apply_common_filters(plan, conversations, sql_pushed=sql_pushed))
 
     if plan.has_types:
         for content_type in plan.has_types:

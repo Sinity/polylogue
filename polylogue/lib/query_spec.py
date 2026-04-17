@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+import builtins
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, replace
 from datetime import datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypeVar, cast
 
 from polylogue.lib.dates import parse_date
+from polylogue.lib.filter_types import SortField
 from polylogue.lib.query_plan import ConversationQueryPlan
 from polylogue.lib.viewports import ToolCategory
 from polylogue.types import Provider
@@ -17,6 +19,8 @@ if TYPE_CHECKING:
     from polylogue.lib.models import Conversation, ConversationSummary
     from polylogue.protocols import VectorProvider
     from polylogue.storage.repository import ConversationRepository
+
+_SpecT = TypeVar("_SpecT", bound="ConversationQuerySpec")
 
 
 # ---------------------------------------------------------------------------
@@ -42,12 +46,22 @@ QUERY_SEQUENCE_ACTION_TYPES = tuple(category.value for category in ToolCategory)
 QUERY_RETRIEVAL_LANES = ("auto", "dialogue", "actions", "hybrid")
 
 
+def _iter_values(value: object) -> Iterable[object]:
+    if value is None:
+        return ()
+    if isinstance(value, str):
+        return (value,)
+    if isinstance(value, Iterable):
+        return value
+    return (value,)
+
+
 def split_csv(value: object) -> tuple[str, ...]:
     if value is None:
         return ()
     if isinstance(value, str):
         return tuple(part.strip() for part in value.split(",") if part.strip())
-    return tuple(str(item).strip() for item in value if str(item).strip())
+    return tuple(str(item).strip() for item in _iter_values(value) if str(item).strip())
 
 
 def as_tuple(value: object) -> tuple[str, ...]:
@@ -55,7 +69,7 @@ def as_tuple(value: object) -> tuple[str, ...]:
         return ()
     if isinstance(value, str):
         return (value,)
-    return tuple(str(item) for item in value)
+    return tuple(str(item) for item in _iter_values(value))
 
 
 def parse_query_date(field: str, value: str | None) -> datetime | None:
@@ -96,12 +110,31 @@ def normalize_action_sequence(field: str, value: object) -> tuple[str, ...]:
     return tuple(normalized)
 
 
+def optional_text(value: object) -> str | None:
+    if not value:
+        return None
+    return str(value)
+
+
+def optional_int(value: object) -> int | None:
+    if not value:
+        return None
+    return int(str(value))
+
+
+def optional_sort_field(value: object) -> SortField | None:
+    candidate = optional_text(value)
+    if candidate is None:
+        return None
+    return cast(SortField, candidate)
+
+
 # ---------------------------------------------------------------------------
 # Description helpers
 # ---------------------------------------------------------------------------
 
 
-def describe_query_spec(spec) -> list[str]:
+def describe_query_spec(spec: ConversationQuerySpec) -> list[str]:
     parts: list[str] = []
     if spec.query_terms:
         parts.append(f"search: {' '.join(spec.query_terms)}")
@@ -158,7 +191,7 @@ def describe_query_spec(spec) -> list[str]:
     return parts
 
 
-def query_spec_has_filters(spec) -> bool:
+def query_spec_has_filters(spec: ConversationQuerySpec) -> bool:
     return any(
         (
             spec.query_terms,
@@ -197,9 +230,9 @@ def query_spec_has_filters(spec) -> bool:
 
 
 def build_query_spec_from_params(
-    spec_cls,
+    spec_cls: type[_SpecT],
     params: Mapping[str, object],
-):
+) -> _SpecT:
     return spec_cls(
         query_terms=as_tuple(params.get("query")),
         contains_terms=as_tuple(params.get("contains")),
@@ -217,28 +250,28 @@ def build_query_spec_from_params(
         tags=split_csv(params.get("tag")),
         excluded_tags=split_csv(params.get("exclude_tag")),
         has_types=as_tuple(params.get("has_type")),
-        title=str(params["title"]) if params.get("title") else None,
-        conversation_id=str(params["conv_id"]) if params.get("conv_id") else None,
-        since=str(params["since"]) if params.get("since") else None,
-        until=str(params["until"]) if params.get("until") else None,
+        title=optional_text(params.get("title")),
+        conversation_id=optional_text(params.get("conv_id")),
+        since=optional_text(params.get("since")),
+        until=optional_text(params.get("until")),
         latest=bool(params.get("latest")),
-        sort=str(params["sort"]) if params.get("sort") else None,
+        sort=optional_sort_field(params.get("sort")),
         reverse=bool(params.get("reverse")),
-        limit=int(params["limit"]) if params.get("limit") else None,
-        sample=int(params["sample"]) if params.get("sample") else None,
+        limit=optional_int(params.get("limit")),
+        sample=optional_int(params.get("sample")),
         filter_has_tool_use=bool(params.get("filter_has_tool_use")),
         filter_has_thinking=bool(params.get("filter_has_thinking")),
-        min_messages=int(params["min_messages"]) if params.get("min_messages") else None,
-        max_messages=int(params["max_messages"]) if params.get("max_messages") else None,
-        min_words=int(params["min_words"]) if params.get("min_words") else None,
-        similar_text=str(params["similar_text"]) if params.get("similar_text") else None,
+        min_messages=optional_int(params.get("min_messages")),
+        max_messages=optional_int(params.get("max_messages")),
+        min_words=optional_int(params.get("min_words")),
+        similar_text=optional_text(params.get("similar_text")),
     )
 
 
 def query_spec_to_plan(
-    spec,
+    spec: ConversationQuerySpec,
     *,
-    vector_provider=None,
+    vector_provider: VectorProvider | None = None,
 ) -> ConversationQueryPlan:
     plan = ConversationQueryPlan(
         query_terms=spec.query_terms,
@@ -308,7 +341,7 @@ class ConversationQuerySpec:
     since: str | None = None
     until: str | None = None
     latest: bool = False
-    sort: str | None = None
+    sort: SortField | None = None
     reverse: bool = False
     limit: int | None = None
     sample: int | None = None
@@ -346,7 +379,7 @@ class ConversationQuerySpec:
         repository: ConversationRepository,
         *,
         vector_provider: VectorProvider | None = None,
-    ) -> list[Conversation]:
+    ) -> builtins.list[Conversation]:
         return await self.build_filter(repository, vector_provider=vector_provider).list()
 
     async def list_summaries(
@@ -354,7 +387,7 @@ class ConversationQuerySpec:
         repository: ConversationRepository,
         *,
         vector_provider: VectorProvider | None = None,
-    ) -> list[ConversationSummary]:
+    ) -> builtins.list[ConversationSummary]:
         return await self.build_filter(repository, vector_provider=vector_provider).list_summaries()
 
     async def count(
