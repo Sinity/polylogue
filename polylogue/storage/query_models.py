@@ -3,6 +3,48 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from typing import TypedDict
+
+
+class ConversationListQueryKwargs(TypedDict):
+    source: str | None
+    provider: str | None
+    providers: list[str] | None
+    parent_id: str | None
+    since: str | None
+    until: str | None
+    title_contains: str | None
+    path_terms: list[str] | None
+    action_terms: list[str] | None
+    excluded_action_terms: list[str] | None
+    tool_terms: list[str] | None
+    excluded_tool_terms: list[str] | None
+    limit: int | None
+    offset: int
+    has_tool_use: bool
+    has_thinking: bool
+    min_messages: int | None
+    max_messages: int | None
+    min_words: int | None
+
+
+class ConversationCountQueryKwargs(TypedDict):
+    source: str | None
+    provider: str | None
+    providers: list[str] | None
+    since: str | None
+    until: str | None
+    title_contains: str | None
+    path_terms: list[str] | None
+    action_terms: list[str] | None
+    excluded_action_terms: list[str] | None
+    tool_terms: list[str] | None
+    excluded_tool_terms: list[str] | None
+    has_tool_use: bool
+    has_thinking: bool
+    min_messages: int | None
+    max_messages: int | None
+    min_words: int | None
 
 
 @dataclass(frozen=True)
@@ -53,7 +95,7 @@ class ConversationRecordQuery:
             return None, list(self.providers)
         return None, None
 
-    def to_list_kwargs(self) -> dict[str, object]:
+    def to_list_kwargs(self) -> ConversationListQueryKwargs:
         return {
             "source": self.source,
             "provider": self.provider,
@@ -76,12 +118,29 @@ class ConversationRecordQuery:
             "min_words": self.min_words,
         }
 
-    def to_count_kwargs(self) -> dict[str, object]:
-        data = self.to_list_kwargs()
-        data.pop("limit")
-        data.pop("offset")
-        data.pop("parent_id")
-        return data
+    def to_count_kwargs(self) -> ConversationCountQueryKwargs:
+        return {
+            "source": self.source,
+            "provider": self.provider,
+            "providers": list(self.providers) or None,
+            "since": self.since,
+            "until": self.until,
+            "title_contains": self.title_contains,
+            "path_terms": list(self.path_terms) or None,
+            "action_terms": list(self.action_terms) or None,
+            "excluded_action_terms": list(self.excluded_action_terms) or None,
+            "tool_terms": list(self.tool_terms) or None,
+            "excluded_tool_terms": list(self.excluded_tool_terms) or None,
+            "has_tool_use": self.has_tool_use,
+            "has_thinking": self.has_thinking,
+            "min_messages": self.min_messages,
+            "max_messages": self.max_messages,
+            "min_words": self.min_words,
+        }
 
 
-__all__ = ["ConversationRecordQuery"]
+__all__ = [
+    "ConversationCountQueryKwargs",
+    "ConversationListQueryKwargs",
+    "ConversationRecordQuery",
+]

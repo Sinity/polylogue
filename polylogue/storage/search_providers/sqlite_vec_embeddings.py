@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from typing import TYPE_CHECKING
 
 import httpx
 from tenacity import (
@@ -23,6 +24,11 @@ from polylogue.storage.store import MessageRecord
 
 class SqliteVecEmbeddingMixin:
     """Embedding generation and message-selection helpers."""
+
+    if TYPE_CHECKING:
+        model: str
+        dimension: int
+        voyage_key: str
 
     def _get_embeddings(
         self,

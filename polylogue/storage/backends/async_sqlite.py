@@ -369,6 +369,17 @@ class SQLiteBackend(
     true concurrency for read operations while maintaining write safety.
     """
 
+    _db_path: Path
+    _write_lock: asyncio.Lock
+    _schema_lock: asyncio.Lock
+    _schema_ensured: bool
+    _transaction_depth: int
+    _txn_conn: aiosqlite.Connection | None
+    _bulk_conn: aiosqlite.Connection | None
+    _read_pool: asyncio.Queue[aiosqlite.Connection] | None
+    queries: SQLiteQueryStore
+    _shared_schema_ddl: str
+
     def __init__(self, db_path: Path | None = None) -> None:
         initialize_backend_state(self, db_path)
 
@@ -404,11 +415,11 @@ class SQLiteBackend(
         """Commit the current bulk transaction and start a new one."""
         await _bulk_flush(self)
 
-    def read_pool(self, size: int = 4):
+    def read_pool(self, size: int = 4) -> AbstractAsyncContextManager[None]:
         """Open a pool of reusable read connections for concurrent operations."""
         return _read_pool(self, size=size)
 
-    def _get_connection(self):
+    def _get_connection(self) -> AbstractAsyncContextManager[aiosqlite.Connection]:
         """Get async database connection with schema ensured."""
         return _get_connection(self)
 
@@ -416,13 +427,13 @@ class SQLiteBackend(
         """Get async read connection with read-only semantics when possible."""
         return _get_read_connection(self)
 
-    async def _ensure_schema(self, conn) -> None:
+    async def _ensure_schema(self, conn: aiosqlite.Connection) -> None:
         """Ensure database schema exists and is at the current schema version."""
         await ensure_schema_async(conn)
 
     # -- Transaction management ---------------------------------------------
 
-    def transaction(self):
+    def transaction(self) -> AbstractAsyncContextManager[None]:
         """Context manager for database transactions."""
         return _backend_transaction(self)
 

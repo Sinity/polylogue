@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
+from contextlib import AbstractAsyncContextManager
+from typing import TYPE_CHECKING
+
+import aiosqlite
 
 from polylogue.storage.backends.queries import publications as publications_q
 from polylogue.storage.backends.queries import raw as raw_queries
@@ -11,6 +15,9 @@ from polylogue.storage.store import PublicationRecord, RunRecord
 
 
 class SQLiteQueryStoreMaintenanceMixin:
+    if TYPE_CHECKING:
+        _connection_factory: Callable[[], AbstractAsyncContextManager[aiosqlite.Connection]]
+
     def raw_id_query(
         self,
         *,

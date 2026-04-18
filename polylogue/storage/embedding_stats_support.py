@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Mapping
 from typing import cast
 
 import aiosqlite
@@ -38,8 +39,8 @@ def build_retrieval_bands_from_status(
     pending_conversations: int,
     stale_messages: int,
     missing_provenance: int,
-    action_status: dict[str, object],
-    session_status: dict[str, int | bool],
+    action_status: Mapping[str, object],
+    session_status: Mapping[str, object],
 ) -> dict[str, dict[str, object]]:
     transcript_ready = total_conversations == 0 or (
         embedded_conversations == total_conversations

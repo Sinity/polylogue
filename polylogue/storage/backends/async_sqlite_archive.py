@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from contextlib import AbstractAsyncContextManager
+from typing import TYPE_CHECKING
 
 from polylogue.storage.backends.queries import attachments as attachments_q
 from polylogue.storage.backends.queries import conversations as conversations_q
@@ -10,9 +12,20 @@ from polylogue.storage.backends.queries import messages as messages_q
 from polylogue.storage.backends.queries.stats import AggregateMessageStats
 from polylogue.storage.store import AttachmentRecord, ContentBlockRecord, ConversationRecord, MessageRecord
 
+if TYPE_CHECKING:
+    import aiosqlite
+
+    from polylogue.storage.backends.query_store import SQLiteQueryStore
+
 
 class SQLiteArchiveMixin:
     """Conversation/message/archive-query methods for ``SQLiteBackend``."""
+
+    if TYPE_CHECKING:
+        queries: SQLiteQueryStore
+        _transaction_depth: int
+
+        def _get_connection(self) -> AbstractAsyncContextManager[aiosqlite.Connection]: ...
 
     async def get_conversation(self, conversation_id: str) -> ConversationRecord | None:
         """Retrieve a conversation by ID."""

@@ -9,13 +9,13 @@ from typing import TYPE_CHECKING
 from polylogue.logging import get_logger
 from polylogue.protocols import VectorProvider
 from polylogue.storage.embedding_stats import read_embedding_stats_async
+from polylogue.storage.repository_contracts import RepositoryBackendProtocol
 
 if TYPE_CHECKING:
     import aiosqlite
 
     from polylogue.lib.conversation_models import Conversation
     from polylogue.lib.stats import ArchiveStats
-    from polylogue.storage.backends.async_sqlite import SQLiteBackend
     from polylogue.storage.backends.query_store import SQLiteQueryStore
 
 
@@ -36,7 +36,7 @@ logger = get_logger(__name__)
 
 class RepositoryVectorMixin:
     if TYPE_CHECKING:
-        _backend: SQLiteBackend
+        _backend: RepositoryBackendProtocol
         queries: SQLiteQueryStore
 
         async def get_many(self, conversation_ids: builtins.list[str]) -> builtins.list[Conversation]: ...

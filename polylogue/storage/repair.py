@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -15,6 +16,7 @@ from polylogue.maintenance_targets import (
     MaintenanceTargetSpec,
     build_maintenance_target_catalog,
 )
+from polylogue.protocols import ProgressCallback
 from polylogue.storage.action_event_artifacts import ActionEventArtifactState
 
 logger = get_logger(__name__)
@@ -148,9 +150,10 @@ def session_product_repair_count(derived_statuses: dict[str, DerivedModelStatus]
         "day_session_summaries",
         "week_session_summaries",
     ]
-    statuses = [derived_statuses.get(k) for k in keys]
-    if not all(s is not None for s in statuses):
+    maybe_statuses = [derived_statuses.get(k) for k in keys]
+    if not all(status is not None for status in maybe_statuses):
         return 0
+    statuses = [status for status in maybe_statuses if status is not None]
     total = 0
     for s in statuses:
         total += max(0, int(s.pending_documents or 0))
@@ -591,7 +594,7 @@ def repair_session_products(
     config: Any,
     dry_run: bool = False,
     *,
-    progress_callback=None,
+    progress_callback: ProgressCallback | None = None,
     progress_total: int | None = None,
 ) -> RepairResult:
     from polylogue.storage.backends.connection import connection_context
@@ -893,7 +896,7 @@ def repair_wal_checkpoint(config: Any, dry_run: bool = False) -> RepairResult:
         )
 
 
-_PREVIEW_HANDLERS = {
+_PREVIEW_HANDLERS: dict[str, Callable[..., RepairResult]] = {
     "session_products": preview_session_products,
     "action_event_read_model": preview_action_event_read_model,
     "dangling_fts": preview_dangling_fts,
@@ -903,7 +906,7 @@ _PREVIEW_HANDLERS = {
     "orphaned_attachments": preview_orphaned_attachments,
 }
 
-_REPAIR_HANDLERS = {
+_REPAIR_HANDLERS: dict[str, Callable[..., RepairResult]] = {
     "session_products": repair_session_products,
     "action_event_read_model": repair_action_event_read_model,
     "dangling_fts": repair_dangling_fts,
@@ -926,7 +929,7 @@ def run_safe_repairs(
     *,
     preview_counts: dict[str, int] | None = None,
     targets: tuple[str, ...] = (),
-    session_product_progress_callback=None,
+    session_product_progress_callback: ProgressCallback | None = None,
     session_product_progress_total: int | None = None,
 ) -> list[RepairResult]:
     preview_counts = preview_counts or {}
@@ -983,7 +986,7 @@ def run_selected_maintenance(
     dry_run: bool = False,
     preview_counts: dict[str, int] | None = None,
     targets: tuple[str, ...] = (),
-    session_product_progress_callback=None,
+    session_product_progress_callback: ProgressCallback | None = None,
     session_product_progress_total: int | None = None,
 ) -> list[RepairResult]:
     results: list[RepairResult] = []

@@ -162,20 +162,6 @@ plugins = []
 exclude = [
   "tests/",
   "polylogue/sources/providers/",
-    "polylogue/storage/backends/async_sqlite\\.py$",
-    "polylogue/storage/backends/async_sqlite_archive\\.py$",
-    "polylogue/storage/backends/async_sqlite_raw\\.py$",
-    "polylogue/storage/backends/queries/raw_reads\\.py$",
-    "polylogue/storage/backends/query_store_archive\\.py$",
-    "polylogue/storage/backends/query_store_maintenance\\.py$",
-    "polylogue/storage/embedding_stats\\.py$",
-    "polylogue/storage/repair\\.py$",
-    "polylogue/storage/repository\\.py$",
-    "polylogue/storage/repository_vectors\\.py$",
-    "polylogue/storage/search_providers/hybrid\\.py$",
-  "polylogue/storage/search_providers/sqlite_vec_embeddings\\.py$",
-  "polylogue/storage/search_providers/sqlite_vec_queries\\.py$",
-  "polylogue/storage/search_providers/sqlite_vec_runtime\\.py$",
 ]
 files = [
   "polylogue",
