@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from polylogue.logging import get_logger
 from polylogue.pipeline.stage_models import AcquireResult
+from polylogue.protocols import RawPersistenceStore
 from polylogue.storage.artifact_inspection import inspect_raw_artifact
 from polylogue.storage.store import RawConversationRecord
 
@@ -11,7 +12,7 @@ logger = get_logger(__name__)
 
 
 async def persist_raw_record(
-    repository: object,
+    repository: RawPersistenceStore,
     record: RawConversationRecord,
     *,
     result: AcquireResult,

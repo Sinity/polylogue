@@ -9,6 +9,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field
 
 from polylogue.lib.session_profile import SessionProfile
+from polylogue.storage.repair import ArchiveDebtStatus
 from polylogue.storage.store import (
     SESSION_PRODUCT_MATERIALIZER_VERSION,
     SessionPhaseRecord,
@@ -485,10 +486,10 @@ class ArchiveDebtProduct(ArchiveProductModel):
     detail: str
 
     @classmethod
-    def from_status(cls, status: object) -> ArchiveDebtProduct:
+    def from_status(cls, status: ArchiveDebtStatus) -> ArchiveDebtProduct:
         return cls(
             debt_name=status.name,
-            category=status.category if isinstance(status.category, str) else status.category.value,
+            category=status.category.value,
             maintenance_target=status.maintenance_target,
             destructive=status.destructive,
             issue_count=status.issue_count,

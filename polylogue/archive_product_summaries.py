@@ -4,12 +4,12 @@ from __future__ import annotations
 
 from collections import Counter, defaultdict
 from collections.abc import Iterable, Sequence
-from datetime import UTC, datetime
+from dataclasses import dataclass, field
+from datetime import UTC, date, datetime
 
 from polylogue.archive_products import (
     DaySessionSummaryProduct,
     WeekSessionSummaryProduct,
-    date_from_iso,
     profile_bucket_day,
     profile_timestamp_values,
     records_provenance,
@@ -19,13 +19,27 @@ from polylogue.lib.session_summaries import DaySessionSummary, summarize_day, su
 from polylogue.storage.store import DaySessionSummaryRecord
 
 
+@dataclass(slots=True)
+class _DayAggregateBucket:
+    session_count: int = 0
+    total_cost_usd: float = 0.0
+    total_duration_ms: int = 0
+    total_wall_duration_ms: int = 0
+    total_messages: int = 0
+    total_words: int = 0
+    work_event_breakdown: Counter[str] = field(default_factory=Counter)
+    repos_active: set[str] = field(default_factory=set)
+    providers: Counter[str] = field(default_factory=Counter)
+    rows: list[DaySessionSummaryRecord] = field(default_factory=list)
+
+
 def build_day_session_summary_records(
     profiles: Iterable[SessionProfile],
     *,
     materialized_at: str | None = None,
 ) -> list[DaySessionSummaryRecord]:
     built_at = materialized_at or datetime.now(UTC).isoformat()
-    by_provider_day: dict[tuple[str, object], list[SessionProfile]] = defaultdict(list)
+    by_provider_day: dict[tuple[str, date], list[SessionProfile]] = defaultdict(list)
     for profile in profiles:
         bucket_day = profile_bucket_day(profile)
         if bucket_day is None:
@@ -77,104 +91,72 @@ def build_day_session_summary_records(
     return rows
 
 
+def _aggregate_day_buckets(
+    rows: Sequence[DaySessionSummaryRecord],
+) -> dict[str, _DayAggregateBucket]:
+    grouped: dict[str, _DayAggregateBucket] = {}
+    for row in rows:
+        bucket = grouped.setdefault(row.day, _DayAggregateBucket())
+        bucket.session_count += row.conversation_count
+        bucket.total_cost_usd += row.total_cost_usd
+        bucket.total_duration_ms += row.total_duration_ms
+        bucket.total_wall_duration_ms += row.total_wall_duration_ms
+        bucket.total_messages += row.total_messages
+        bucket.total_words += row.total_words
+        bucket.work_event_breakdown.update(row.work_event_breakdown)
+        bucket.repos_active.update(str(name) for name in row.repos_active if str(name).strip())
+        bucket.providers[row.provider_name] += row.conversation_count
+        bucket.rows.append(row)
+    return grouped
+
+
+def _aggregate_day_summaries(
+    rows: Sequence[DaySessionSummaryRecord],
+) -> list[tuple[str, DaySessionSummary, list[DaySessionSummaryRecord]]]:
+    grouped = _aggregate_day_buckets(rows)
+    summaries: list[tuple[str, DaySessionSummary, list[DaySessionSummaryRecord]]] = []
+    for day in sorted(grouped.keys(), reverse=True):
+        bucket = grouped[day]
+        summary = DaySessionSummary(
+            date=datetime.fromisoformat(day).date(),
+            session_count=bucket.session_count,
+            total_cost_usd=bucket.total_cost_usd,
+            total_duration_ms=bucket.total_duration_ms,
+            total_wall_duration_ms=bucket.total_wall_duration_ms,
+            total_messages=bucket.total_messages,
+            total_words=bucket.total_words,
+            work_event_breakdown=dict(bucket.work_event_breakdown),
+            repos_active=tuple(sorted(bucket.repos_active)),
+            providers=dict(bucket.providers),
+        )
+        summaries.append((day, summary, bucket.rows))
+    return summaries
+
+
 def aggregate_day_session_summary_products(
     rows: Sequence[DaySessionSummaryRecord],
 ) -> list[DaySessionSummaryProduct]:
-    grouped: dict[str, dict[str, object]] = {}
-    for row in rows:
-        bucket = grouped.setdefault(
-            row.day,
-            {
-                "session_count": 0,
-                "total_cost_usd": 0.0,
-                "total_duration_ms": 0,
-                "total_wall_duration_ms": 0,
-                "total_messages": 0,
-                "total_words": 0,
-                "work_event_breakdown": Counter(),
-                "repos_active": set(),
-                "providers": Counter(),
-                "rows": [],
-            },
+    return [
+        DaySessionSummaryProduct(
+            date=day,
+            provenance=records_provenance(record_rows),
+            summary=summary.to_dict(),
         )
-        bucket["session_count"] = int(bucket["session_count"]) + row.conversation_count
-        bucket["total_cost_usd"] = float(bucket["total_cost_usd"]) + row.total_cost_usd
-        bucket["total_duration_ms"] = int(bucket["total_duration_ms"]) + row.total_duration_ms
-        bucket["total_wall_duration_ms"] = int(bucket["total_wall_duration_ms"]) + row.total_wall_duration_ms
-        bucket["total_messages"] = int(bucket["total_messages"]) + row.total_messages
-        bucket["total_words"] = int(bucket["total_words"]) + row.total_words
-        work_event_breakdown = bucket["work_event_breakdown"]
-        repos_active = bucket["repos_active"]
-        providers = bucket["providers"]
-        record_rows = bucket["rows"]
-        assert isinstance(work_event_breakdown, Counter)
-        assert isinstance(repos_active, set)
-        assert isinstance(providers, Counter)
-        assert isinstance(record_rows, list)
-        work_event_breakdown.update(row.work_event_breakdown)
-        repos_active.update(str(name) for name in row.repos_active if str(name).strip())
-        providers[row.provider_name] += row.conversation_count
-        record_rows.append(row)
-
-    products: list[DaySessionSummaryProduct] = []
-    for day, bucket in sorted(grouped.items(), reverse=True):
-        work_event_breakdown = bucket["work_event_breakdown"]
-        repos_active = bucket["repos_active"]
-        providers = bucket["providers"]
-        record_rows = bucket["rows"]
-        assert isinstance(work_event_breakdown, Counter)
-        assert isinstance(repos_active, set)
-        assert isinstance(providers, Counter)
-        assert isinstance(record_rows, list)
-        summary = DaySessionSummary(
-            date=date_from_iso(day),
-            session_count=int(bucket["session_count"]),
-            total_cost_usd=float(bucket["total_cost_usd"]),
-            total_duration_ms=int(bucket["total_duration_ms"]),
-            total_wall_duration_ms=int(bucket["total_wall_duration_ms"]),
-            total_messages=int(bucket["total_messages"]),
-            total_words=int(bucket["total_words"]),
-            work_event_breakdown=dict(work_event_breakdown),
-            repos_active=tuple(sorted(str(path) for path in repos_active)),
-            providers=dict(providers),
-        )
-        products.append(
-            DaySessionSummaryProduct(
-                date=day,
-                provenance=records_provenance(record_rows),
-                summary=summary.to_dict(),
-            )
-        )
-    return products
+        for day, summary, record_rows in _aggregate_day_summaries(rows)
+    ]
 
 
 def aggregate_week_session_summary_products(
     rows: Sequence[DaySessionSummaryRecord],
 ) -> list[WeekSessionSummaryProduct]:
-    day_products = aggregate_day_session_summary_products(rows)
-    day_summaries = [
-        DaySessionSummary(
-            date=date_from_iso(product.date),
-            session_count=int(product.summary["session_count"]),
-            total_cost_usd=float(product.summary["total_cost_usd"]),
-            total_duration_ms=int(product.summary["total_duration_ms"]),
-            total_wall_duration_ms=int(product.summary["total_wall_duration_ms"]),
-            total_messages=int(product.summary["total_messages"]),
-            total_words=int(product.summary["total_words"]),
-            work_event_breakdown=dict(product.summary["work_event_breakdown"]),
-            repos_active=tuple(product.summary["repos_active"]),
-            providers=dict(product.summary["providers"]),
-        )
-        for product in day_products
-    ]
+    day_entries = _aggregate_day_summaries(rows)
     by_week: dict[str, list[DaySessionSummary]] = defaultdict(list)
     provenance_rows: dict[str, list[DaySessionSummaryRecord]] = defaultdict(list)
-    for day_summary in day_summaries:
+    for _day, day_summary, record_rows in day_entries:
         iso = day_summary.date.isocalendar()
         week_key = f"{iso[0]}-W{iso[1]:02d}"
         by_week[week_key].append(day_summary)
-        day_key = day_summary.date.isoformat()
-        provenance_rows[week_key].extend([row for row in rows if row.day == day_key])
+        provenance_rows[week_key].extend(record_rows)
 
     products: list[WeekSessionSummaryProduct] = []
     for iso_week in sorted(by_week.keys(), reverse=True):
