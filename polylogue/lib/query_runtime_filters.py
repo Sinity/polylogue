@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from datetime import datetime
-from typing import TYPE_CHECKING, Protocol, TypeVar, cast
+from typing import TYPE_CHECKING, Protocol, TypeVar
 
 from polylogue.lib.query_runtime_matching import (
     matches_action_sequence,
@@ -123,7 +123,7 @@ def apply_full_filters(
     *,
     sql_pushed: bool,
 ) -> list[Conversation]:
-    results = cast(list[Conversation], apply_common_filters(plan, conversations, sql_pushed=sql_pushed))
+    results = apply_common_filters(plan, conversations, sql_pushed=sql_pushed)
 
     if plan.has_types:
         for content_type in plan.has_types:

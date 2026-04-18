@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import webbrowser
+from collections.abc import Sequence
 from datetime import datetime
 from html import escape as html_escape
 from pathlib import Path
@@ -206,7 +207,7 @@ def copy_to_clipboard(env: AppEnv, content: str) -> None:
 
 def open_result(
     env: AppEnv,
-    results: list[Conversation | ConversationSummary],
+    results: Sequence[Conversation | ConversationSummary],
     params: dict[str, object],
 ) -> None:
     if not results:

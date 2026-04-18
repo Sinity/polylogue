@@ -163,7 +163,6 @@ exclude = [
   "tests/",
   "polylogue/sources/providers/",
   "polylogue/cli/query\\.py$",
-  "polylogue/operations/archive\\.py$",
   "polylogue/pipeline/services/ingest_batch\\.py$",
   "polylogue/pipeline/services/ingest_worker\\.py$",
   "polylogue/products/registry\\.py$",
