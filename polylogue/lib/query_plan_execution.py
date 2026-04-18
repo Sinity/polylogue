@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 
 from polylogue.lib.query_retrieval import (
     fetch_batched_filtered_conversations,
@@ -22,13 +22,10 @@ async def list_for_plan(
     repository: ConversationRepository,
 ) -> list[Conversation]:
     if plan.similar_text:
-        candidates = cast(
-            list[Conversation],
-            await repository.search_similar(
-                plan.similar_text,
-                limit=plan.limit or 10,
-                vector_provider=plan.vector_provider,
-            ),
+        candidates = await repository.search_similar(
+            plan.similar_text,
+            limit=plan.limit or 10,
+            vector_provider=plan.vector_provider,
         )
         return plan._finalize(plan._apply_full_filters(candidates, sql_pushed=False))
 
@@ -37,8 +34,7 @@ async def list_for_plan(
         return plan._finalize(plan._sort_conversations(batched))
 
     candidate_results, sql_pushed = await fetch_candidates(plan, repository, summaries=False)
-    candidate_conversations = cast(list[Conversation], candidate_results)
-    filtered = plan._apply_full_filters(candidate_conversations, sql_pushed=sql_pushed)
+    filtered = plan._apply_full_filters(candidate_results, sql_pushed=sql_pushed)
     return plan._finalize(plan._sort_conversations(filtered))
 
 
@@ -60,8 +56,7 @@ async def list_summaries_for_plan(
         return [conversation_to_summary(conversation) for conversation in conversations]
 
     candidates, sql_pushed = await fetch_candidates(plan, repository, summaries=True)
-    candidate_summaries = cast(list[ConversationSummary], candidates)
-    filtered = plan._apply_common_filters(candidate_summaries, sql_pushed=sql_pushed)
+    filtered = plan._apply_common_filters(candidates, sql_pushed=sql_pushed)
     return plan._finalize(plan._sort_summaries(filtered))
 
 
