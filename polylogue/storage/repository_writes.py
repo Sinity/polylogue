@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import builtins
 from collections.abc import Callable
+from typing import TYPE_CHECKING
 
 from polylogue.lib.conversation_models import Conversation
 from polylogue.storage.backends.queries import conversations as conversations_q
@@ -18,6 +19,7 @@ from polylogue.storage.store import (
     RunRecord,
 )
 
+from .repository_contracts import RepositoryBackendProtocol
 from .repository_write_conversations import (
     conversation_to_record,
     delete_conversation_via_backend,
@@ -27,6 +29,9 @@ from .repository_write_metadata import metadata_read_modify_write
 
 
 class RepositoryWriteMixin:
+    if TYPE_CHECKING:
+        _backend: RepositoryBackendProtocol
+
     async def save_conversation(
         self,
         conversation: Conversation | ConversationRecord,

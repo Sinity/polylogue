@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from typing import Any
 from unittest.mock import MagicMock
 
 from polylogue.pipeline.observers import RunObserver
@@ -16,12 +17,12 @@ def _make_result(conversations: int = 0) -> MagicMock:
 
 
 class TestWatchRunner:
-    def test_calls_sync_fn_and_observer(self):
+    def test_calls_sync_fn_and_observer(self) -> Any:
         """WatchRunner calls sync_fn and forwards completion to the observer."""
         result = _make_result(3)
         call_count = 0
 
-        def sync_fn():
+        def sync_fn() -> Any:
             nonlocal call_count
             call_count += 1
             if call_count >= 2:
@@ -36,12 +37,12 @@ class TestWatchRunner:
         observer.on_completed.assert_called()
         assert observer.on_completed.call_args[0][0] is result
 
-    def test_on_idle_called_when_no_new(self):
+    def test_on_idle_called_when_no_new(self) -> Any:
         """Observer idle hook is called when no new conversations are found."""
         result = _make_result(0)
         observer = MagicMock(spec=RunObserver)
 
-        def sync_fn():
+        def sync_fn() -> Any:
             runner.stop()
             return result
 
@@ -50,12 +51,12 @@ class TestWatchRunner:
 
         observer.on_idle.assert_called_once_with(result)
 
-    def test_on_idle_not_called_when_new(self):
+    def test_on_idle_not_called_when_new(self) -> Any:
         """Observer idle hook is not called when new conversations are found."""
         result = _make_result(5)
         observer = MagicMock(spec=RunObserver)
 
-        def sync_fn():
+        def sync_fn() -> Any:
             runner.stop()
             return result
 
@@ -64,12 +65,12 @@ class TestWatchRunner:
 
         observer.on_idle.assert_not_called()
 
-    def test_on_error_called_on_exception(self):
+    def test_on_error_called_on_exception(self) -> Any:
         """Observer error hook receives exceptions from sync_fn."""
         call_count = 0
         observer = MagicMock(spec=RunObserver)
 
-        def sync_fn():
+        def sync_fn() -> Any:
             nonlocal call_count
             call_count += 1
             if call_count >= 2:
@@ -83,11 +84,11 @@ class TestWatchRunner:
         observer.on_error.assert_called_once()
         assert isinstance(observer.on_error.call_args[0][0], RuntimeError)
 
-    def test_stop_terminates_loop(self):
+    def test_stop_terminates_loop(self) -> Any:
         """stop() causes the loop to exit."""
         call_count = 0
 
-        def sync_fn():
+        def sync_fn() -> Any:
             nonlocal call_count
             call_count += 1
             if call_count >= 3:
@@ -99,11 +100,11 @@ class TestWatchRunner:
 
         assert call_count == 3
 
-    def test_keyboard_interrupt_stops_loop(self):
+    def test_keyboard_interrupt_stops_loop(self) -> Any:
         """KeyboardInterrupt stops the watch loop."""
         call_count = 0
 
-        def sync_fn():
+        def sync_fn() -> Any:
             nonlocal call_count
             call_count += 1
             if call_count >= 2:
@@ -115,16 +116,16 @@ class TestWatchRunner:
 
         assert call_count == 2
 
-    def test_observer_receives_result(self):
+    def test_observer_receives_result(self) -> Any:
         """Observer receives the completed run result."""
         result = _make_result(42)
         received: list[MagicMock] = []
 
         class TestObserver(RunObserver):
-            def on_completed(self, completed) -> None:
+            def on_completed(self, completed: Any) -> None:
                 received.append(completed)
 
-        def sync_fn():
+        def sync_fn() -> Any:
             runner.stop()
             return result
 

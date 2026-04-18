@@ -26,23 +26,38 @@ from polylogue.storage.action_event_rebuild_storage import (
 from polylogue.storage.store import ACTION_EVENT_MATERIALIZER_VERSION
 
 
+def _row_int(row: sqlite3.Row | None, key: int | str) -> int:
+    if row is None:
+        return 0
+    try:
+        return int(row[key])
+    except (TypeError, ValueError):
+        return 0
+
+
 def rebuild_action_event_read_model_sync(
     conn: sqlite3.Connection,
     *,
     conversation_ids: Sequence[str] | None = None,
     page_size: int = 200,
 ) -> int:
+    replaced = 0
     if conversation_ids is None:
         conn.execute("DELETE FROM action_events")
-        conversation_chunks = iter_conversation_id_pages_sync(conn, page_size=page_size)
+        for chunk in iter_conversation_id_pages_sync(conn, page_size=page_size):
+            conversations, messages, blocks = load_sync_batch(conn, chunk)
+            materialized = materialize_batch(conversations, messages, blocks)
+            for conversation_id in chunk:
+                records = materialized.get(conversation_id, [])
+                replace_action_events_sync(conn, conversation_id, records)
+                replaced += len(records)
+        return replaced
     elif not conversation_ids:
         conn.execute("DELETE FROM action_events")
         return 0
-    else:
-        conversation_chunks = chunked(list(conversation_ids), size=page_size)
 
-    replaced = 0
-    for chunk in conversation_chunks:
+    for raw_chunk in chunked(list(conversation_ids), size=page_size):
+        chunk = list(raw_chunk)
         conversations, messages, blocks = load_sync_batch(conn, chunk)
         materialized = materialize_batch(conversations, messages, blocks)
         for conversation_id in chunk:
@@ -62,19 +77,17 @@ async def rebuild_action_event_read_model_async(
 ) -> int:
     if conversation_ids is None:
         await conn.execute("DELETE FROM action_events")
-        total = int((await (await conn.execute("SELECT COUNT(*) FROM conversations")).fetchone())[0] or 0)
-        conversation_chunks = iter_conversation_id_pages_async(conn, page_size=page_size)
+        total = _row_int(await (await conn.execute("SELECT COUNT(*) FROM conversations")).fetchone(), 0)
     elif not conversation_ids:
         await conn.execute("DELETE FROM action_events")
         return 0
     else:
         total = len(conversation_ids)
-        conversation_chunks = chunked(list(conversation_ids), size=page_size)
 
     replaced = 0
     processed = 0
     if conversation_ids is None:
-        async for chunk in conversation_chunks:
+        async for chunk in iter_conversation_id_pages_async(conn, page_size=page_size):
             conversations, messages, blocks = await load_async_batch(conn, chunk)
             materialized = materialize_batch(conversations, messages, blocks)
             for conversation_id in chunk:
@@ -86,7 +99,8 @@ async def rebuild_action_event_read_model_async(
                 desc = progress_desc(processed, total) if progress_desc is not None else None
                 progress_callback(len(chunk), desc)
     else:
-        for chunk in conversation_chunks:
+        for raw_chunk in chunked(list(conversation_ids), size=page_size):
+            chunk = list(raw_chunk)
             conversations, messages, blocks = await load_async_batch(conn, chunk)
             materialized = materialize_batch(conversations, messages, blocks)
             for conversation_id in chunk:

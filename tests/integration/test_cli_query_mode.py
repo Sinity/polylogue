@@ -4,21 +4,22 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from pathlib import Path
 
 import pytest
 
-from tests.infra.cli_subprocess import run_cli, setup_isolated_workspace
+from tests.infra.cli_subprocess import IsolatedWorkspace, run_cli, setup_isolated_workspace
 from tests.infra.source_builders import GenericConversationBuilder, InboxBuilder
 
 pytestmark = [pytest.mark.integration, pytest.mark.query_routing]
 
 
-def _run_inbox(workspace, *, cwd) -> None:
+def _run_inbox(workspace: IsolatedWorkspace, *, cwd: Path) -> None:
     result = run_cli(["--plain", "run", "--source", "inbox"], env=workspace["env"], cwd=cwd)
     assert result.exit_code == 0, result.output
 
 
-def _run_completion(workspace, *, cwd, words: str, cword: int) -> list[dict[str, str]]:
+def _run_completion(workspace: IsolatedWorkspace, *, cwd: Path, words: str, cword: int) -> list[dict[str, str]]:
     result = run_cli(
         [],
         env={
@@ -44,7 +45,7 @@ def _run_completion(workspace, *, cwd, words: str, cword: int) -> list[dict[str,
     return records
 
 
-def test_cli_query_count_route_returns_exact_count(tmp_path):
+def test_cli_query_count_route_returns_exact_count(tmp_path: Path) -> None:
     workspace = setup_isolated_workspace(tmp_path)
     inbox = workspace["paths"]["inbox"]
 
@@ -59,7 +60,7 @@ def test_cli_query_count_route_returns_exact_count(tmp_path):
     assert result.stdout.strip() == "1"
 
 
-def test_cli_query_summary_list_json_route_returns_structured_rows(tmp_path):
+def test_cli_query_summary_list_json_route_returns_structured_rows(tmp_path: Path) -> None:
     workspace = setup_isolated_workspace(tmp_path)
     inbox = workspace["paths"]["inbox"]
 
@@ -77,7 +78,7 @@ def test_cli_query_summary_list_json_route_returns_structured_rows(tmp_path):
     assert rows[0]["title"] == "List Route"
 
 
-def test_cli_query_summary_list_json_no_results_still_returns_json(tmp_path):
+def test_cli_query_summary_list_json_no_results_still_returns_json(tmp_path: Path) -> None:
     workspace = setup_isolated_workspace(tmp_path)
 
     result = run_cli(["--plain", "searchable", "list", "-f", "json"], env=workspace["env"], cwd=tmp_path)
@@ -90,7 +91,7 @@ def test_cli_query_summary_list_json_no_results_still_returns_json(tmp_path):
     assert payload["message"] == "No conversations matched."
 
 
-def test_cli_query_open_print_path_json_no_results_still_returns_json(tmp_path):
+def test_cli_query_open_print_path_json_no_results_still_returns_json(tmp_path: Path) -> None:
     workspace = setup_isolated_workspace(tmp_path)
 
     result = run_cli(
@@ -105,7 +106,7 @@ def test_cli_query_open_print_path_json_no_results_still_returns_json(tmp_path):
     assert payload["message"] == "No conversations matched."
 
 
-def test_cli_query_stats_json_empty_archive_still_returns_json(tmp_path):
+def test_cli_query_stats_json_empty_archive_still_returns_json(tmp_path: Path) -> None:
     workspace = setup_isolated_workspace(tmp_path)
 
     result = run_cli(["--plain", "stats", "-f", "json"], env=workspace["env"], cwd=tmp_path)
@@ -118,7 +119,7 @@ def test_cli_query_stats_json_empty_archive_still_returns_json(tmp_path):
     assert payload["message"] == "No conversations in archive."
 
 
-def test_cli_query_stream_route_emits_json_lines_header_messages_footer(tmp_path):
+def test_cli_query_stream_route_emits_json_lines_header_messages_footer(tmp_path: Path) -> None:
     workspace = setup_isolated_workspace(tmp_path)
     inbox = workspace["paths"]["inbox"]
 
@@ -137,7 +138,7 @@ def test_cli_query_stream_route_emits_json_lines_header_messages_footer(tmp_path
     assert records[-1] == {"type": "footer", "message_count": 2}
 
 
-def test_cli_query_open_print_path_returns_render_target_without_launching(tmp_path):
+def test_cli_query_open_print_path_returns_render_target_without_launching(tmp_path: Path) -> None:
     workspace = setup_isolated_workspace(tmp_path)
     inbox = workspace["paths"]["inbox"]
 
@@ -156,7 +157,7 @@ def test_cli_query_open_print_path_returns_render_target_without_launching(tmp_p
     assert render_path.endswith("conversation.html") or render_path.endswith("conversation.md")
 
 
-def test_cli_query_open_print_path_accepts_query_after_verb(tmp_path):
+def test_cli_query_open_print_path_accepts_query_after_verb(tmp_path: Path) -> None:
     workspace = setup_isolated_workspace(tmp_path)
     inbox = workspace["paths"]["inbox"]
 
@@ -182,7 +183,7 @@ def test_cli_query_open_print_path_accepts_query_after_verb(tmp_path):
     assert render_path.endswith("conversation.html") or render_path.endswith("conversation.md")
 
 
-def test_cli_query_stats_by_provider_reports_provider_groups(tmp_path):
+def test_cli_query_stats_by_provider_reports_provider_groups(tmp_path: Path) -> None:
     workspace = setup_isolated_workspace(tmp_path)
     inbox = workspace["paths"]["inbox"]
 
@@ -204,7 +205,7 @@ def test_cli_query_stats_by_provider_reports_provider_groups(tmp_path):
     assert "unknown" in output
 
 
-def test_cli_query_stats_by_provider_accepts_limit_after_verb(tmp_path):
+def test_cli_query_stats_by_provider_accepts_limit_after_verb(tmp_path: Path) -> None:
     workspace = setup_isolated_workspace(tmp_path)
     inbox = workspace["paths"]["inbox"]
 
@@ -224,7 +225,7 @@ def test_cli_query_stats_by_provider_accepts_limit_after_verb(tmp_path):
     assert len(payload["rows"]) == 1
 
 
-def test_cli_completion_id_offers_recent_conversation_ids_with_titles(tmp_path):
+def test_cli_completion_id_offers_recent_conversation_ids_with_titles(tmp_path: Path) -> None:
     workspace = setup_isolated_workspace(tmp_path)
     inbox = workspace["paths"]["inbox"]
 
@@ -243,7 +244,7 @@ def test_cli_completion_id_offers_recent_conversation_ids_with_titles(tmp_path):
     assert "Completion Target" in match["help"]
 
 
-def test_cli_completion_open_target_offers_recent_conversation_ids(tmp_path):
+def test_cli_completion_open_target_offers_recent_conversation_ids(tmp_path: Path) -> None:
     workspace = setup_isolated_workspace(tmp_path)
     inbox = workspace["paths"]["inbox"]
 
@@ -260,7 +261,7 @@ def test_cli_completion_open_target_offers_recent_conversation_ids(tmp_path):
     assert any(record["value"] == conv_id for record in records)
 
 
-def test_cli_completion_tag_and_tool_values_are_archive_backed(tmp_path):
+def test_cli_completion_tag_and_tool_values_are_archive_backed(tmp_path: Path) -> None:
     workspace = setup_isolated_workspace(tmp_path)
     inbox = workspace["paths"]["inbox"]
 
@@ -321,7 +322,7 @@ def test_cli_completion_tag_and_tool_values_are_archive_backed(tmp_path):
     assert bash["help"] == "1 actions"
 
 
-def test_cli_completion_provider_values_keep_csv_prefix_and_descriptions(tmp_path):
+def test_cli_completion_provider_values_keep_csv_prefix_and_descriptions(tmp_path: Path) -> None:
     workspace = setup_isolated_workspace(tmp_path)
 
     records = _run_completion(workspace, cwd=tmp_path, words="polylogue --provider claude-ai,c", cword=2)
@@ -333,7 +334,7 @@ def test_cli_completion_provider_values_keep_csv_prefix_and_descriptions(tmp_pat
     assert any(record["value"] == "claude-ai,codex" and record["help"] == "OpenAI Codex sessions" for record in records)
 
 
-def test_cli_no_args_stats_surface_still_works(tmp_path):
+def test_cli_no_args_stats_surface_still_works(tmp_path: Path) -> None:
     workspace = setup_isolated_workspace(tmp_path)
 
     result = run_cli(["--plain"], env=workspace["env"], cwd=tmp_path)

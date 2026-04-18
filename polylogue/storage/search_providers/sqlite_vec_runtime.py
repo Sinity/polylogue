@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import sqlite3
+from pathlib import Path
+from typing import TYPE_CHECKING
 
 from polylogue.storage.backends.connection import DB_TIMEOUT
 from polylogue.storage.search_providers.sqlite_vec_support import SqliteVecError, logger
@@ -10,6 +12,11 @@ from polylogue.storage.search_providers.sqlite_vec_support import SqliteVecError
 
 class SqliteVecRuntimeMixin:
     """Connection, capability, and table-management helpers."""
+
+    if TYPE_CHECKING:
+        db_path: Path
+        _vec_available: bool | None
+        _tables_ensured: bool
 
     def _get_connection(self) -> sqlite3.Connection:
         """Get connection with sqlite-vec extension loaded if available."""

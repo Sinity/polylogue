@@ -7,6 +7,9 @@ disagree about what's in the archive.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from pathlib import Path
+
 import pytest
 
 from tests.infra.semantic_facts import ArchiveFacts, ConversationFacts
@@ -14,7 +17,7 @@ from tests.infra.storage_records import ConversationBuilder, db_setup
 
 
 @pytest.fixture()
-def multi_provider_db(workspace_env):
+def multi_provider_db(workspace_env: Mapping[str, Path]) -> Path:
     """Populate a DB with conversations across providers."""
     db_path = db_setup(workspace_env)
 
@@ -39,7 +42,7 @@ def multi_provider_db(workspace_env):
 
 
 class TestRecordVsHydrationAgreement:
-    def test_facts_agree_for_each_conversation(self, multi_provider_db):
+    def test_facts_agree_for_each_conversation(self, multi_provider_db: Path) -> None:
         from polylogue.storage.backends.connection import open_connection
         from polylogue.storage.backends.queries.mappers_archive import (
             _row_to_conversation,
@@ -75,7 +78,7 @@ class TestRecordVsHydrationAgreement:
 
 
 class TestArchiveFactsConsistency:
-    def test_archive_facts_internally_consistent(self, multi_provider_db):
+    def test_archive_facts_internally_consistent(self, multi_provider_db: Path) -> None:
         from polylogue.storage.backends.connection import open_connection
 
         with open_connection(multi_provider_db) as conn:
@@ -88,7 +91,7 @@ class TestArchiveFactsConsistency:
             assert facts.provider_counts.get("claude-code") == 1
             assert facts.provider_counts.get("codex") == 1
 
-    def test_provider_partition_exhaustive(self, multi_provider_db):
+    def test_provider_partition_exhaustive(self, multi_provider_db: Path) -> None:
         """Every conversation belongs to exactly one provider in the facts."""
         from polylogue.storage.backends.connection import open_connection
 
@@ -118,7 +121,11 @@ class TestArchiveFactsConsistency:
 
 class TestSyntheticRoundtripFactAgreement:
     @pytest.mark.parametrize("provider_name", ["chatgpt", "claude-code", "claude-ai", "codex", "gemini"])
-    def test_parsed_vs_hydrated_facts_agree(self, provider_name, workspace_env):
+    def test_parsed_vs_hydrated_facts_agree(
+        self,
+        provider_name: str,
+        workspace_env: Mapping[str, Path],
+    ) -> None:
         import json
 
         from polylogue.pipeline.prepare_transform import transform_to_records

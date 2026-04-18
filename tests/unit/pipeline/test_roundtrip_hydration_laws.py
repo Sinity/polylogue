@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 from collections import Counter
 from pathlib import Path
+from typing import Any
 
 import pytest
 from hypothesis import HealthCheck, given, settings
@@ -30,7 +31,7 @@ PROVIDERS_WITH_SYNTHETIC = ("chatgpt", "claude-code", "claude-ai", "codex", "gem
 _corpus_cache: dict[str, object] = {}
 
 
-def _get_corpus(provider: str):
+def _get_corpus(provider: str) -> Any:
     if provider not in _corpus_cache:
         from polylogue.schemas.synthetic.core import SyntheticCorpus
 
@@ -39,7 +40,7 @@ def _get_corpus(provider: str):
 
 
 @st.composite
-def synthetic_payload(draw, providers=PROVIDERS_WITH_SYNTHETIC):
+def synthetic_payload(draw: Any, providers: Any = PROVIDERS_WITH_SYNTHETIC) -> Any:
     """Generate a (provider_name, raw_bytes, unique_id) tuple from synthetic corpus."""
     provider = draw(st.sampled_from(providers))
     seed = draw(st.integers(min_value=0, max_value=2**16))
@@ -54,7 +55,7 @@ def synthetic_payload(draw, providers=PROVIDERS_WITH_SYNTHETIC):
 # ---------------------------------------------------------------------------
 
 
-def _decode_payload(raw_bytes: bytes):
+def _decode_payload(raw_bytes: bytes) -> Any:
     """Decode raw bytes, handling both JSON and JSONL (Codex/Claude Code)."""
     text = raw_bytes.decode("utf-8")
     try:
@@ -64,7 +65,7 @@ def _decode_payload(raw_bytes: bytes):
         return lines
 
 
-def _parse_and_transform(provider_name: str, raw_bytes: bytes, archive_root: Path, unique_id: str = "default"):
+def _parse_and_transform(provider_name: str, raw_bytes: bytes, archive_root: Path, unique_id: str = "default") -> Any:
     """Run the full parse → transform path, returning (parsed, transform_result)."""
     payload = _decode_payload(raw_bytes)
     detected = detect_provider(payload)
@@ -78,7 +79,7 @@ def _parse_and_transform(provider_name: str, raw_bytes: bytes, archive_root: Pat
     return parsed, result
 
 
-def _save_and_hydrate(result, db_conn):
+def _save_and_hydrate(result: Any, db_conn: Any) -> Any:
     """Save records to DB and hydrate back to domain model."""
     from polylogue.storage.backends.queries.mappers_archive import (
         _row_to_conversation,
@@ -120,7 +121,7 @@ class TestMessageCountPreservation:
         suppress_health_check=[HealthCheck.too_slow, HealthCheck.function_scoped_fixture],
         deadline=None,
     )
-    def test_message_count_preserved(self, data, workspace_env):
+    def test_message_count_preserved(self: Any, data: Any, workspace_env: Any) -> None:
         provider_name, raw_bytes, unique_id = data
         parsed, result = _parse_and_transform(provider_name, raw_bytes, workspace_env["archive_root"], unique_id)
 
@@ -134,7 +135,7 @@ class TestMessageCountPreservation:
         suppress_health_check=[HealthCheck.too_slow, HealthCheck.function_scoped_fixture],
         deadline=None,
     )
-    def test_message_count_survives_save_hydrate(self, data, workspace_env):
+    def test_message_count_survives_save_hydrate(self: Any, data: Any, workspace_env: Any) -> None:
         provider_name, raw_bytes, unique_id = data
         db_path = db_setup(workspace_env)
 
@@ -161,7 +162,7 @@ class TestRolePreservation:
         suppress_health_check=[HealthCheck.too_slow, HealthCheck.function_scoped_fixture],
         deadline=None,
     )
-    def test_role_multiset_preserved(self, data, workspace_env):
+    def test_role_multiset_preserved(self: Any, data: Any, workspace_env: Any) -> None:
         provider_name, raw_bytes, unique_id = data
         db_path = db_setup(workspace_env)
 
@@ -188,7 +189,7 @@ class TestTitleStability:
         suppress_health_check=[HealthCheck.too_slow, HealthCheck.function_scoped_fixture],
         deadline=None,
     )
-    def test_title_preserved(self, data, workspace_env):
+    def test_title_preserved(self: Any, data: Any, workspace_env: Any) -> None:
         provider_name, raw_bytes, unique_id = data
         db_path = db_setup(workspace_env)
 
@@ -213,7 +214,7 @@ class TestContentHashDeterminism:
         suppress_health_check=[HealthCheck.too_slow, HealthCheck.function_scoped_fixture],
         deadline=None,
     )
-    def test_same_payload_same_hash(self, data, tmp_path):
+    def test_same_payload_same_hash(self: Any, data: Any, tmp_path: Any) -> None:
         provider_name, raw_bytes, unique_id = data
         _, result1 = _parse_and_transform(provider_name, raw_bytes, tmp_path, unique_id)
         _, result2 = _parse_and_transform(provider_name, raw_bytes, tmp_path, unique_id)
@@ -233,7 +234,7 @@ class TestIdempotentReimport:
         suppress_health_check=[HealthCheck.too_slow, HealthCheck.function_scoped_fixture],
         deadline=None,
     )
-    def test_second_import_is_noop(self, data, workspace_env):
+    def test_second_import_is_noop(self: Any, data: Any, workspace_env: Any) -> None:
         provider_name, raw_bytes, unique_id = data
         db_path = db_setup(workspace_env)
 
@@ -274,7 +275,7 @@ class TestProviderIdentity:
         suppress_health_check=[HealthCheck.too_slow, HealthCheck.function_scoped_fixture],
         deadline=None,
     )
-    def test_provider_preserved(self, data, workspace_env):
+    def test_provider_preserved(self: Any, data: Any, workspace_env: Any) -> None:
         provider_name, raw_bytes, unique_id = data
         db_path = db_setup(workspace_env)
 
@@ -301,7 +302,7 @@ class TestConversationIdDeterminism:
         suppress_health_check=[HealthCheck.too_slow, HealthCheck.function_scoped_fixture],
         deadline=None,
     )
-    def test_same_payload_same_cid(self, data, tmp_path):
+    def test_same_payload_same_cid(self: Any, data: Any, tmp_path: Any) -> None:
         provider_name, raw_bytes, unique_id = data
         _, result1 = _parse_and_transform(provider_name, raw_bytes, tmp_path, unique_id)
         _, result2 = _parse_and_transform(provider_name, raw_bytes, tmp_path, unique_id)
@@ -315,7 +316,7 @@ class TestConversationIdDeterminism:
 
 
 @pytest.mark.parametrize("provider_name", PROVIDERS_WITH_SYNTHETIC)
-def test_provider_completes_full_roundtrip(provider_name, workspace_env):
+def test_provider_completes_full_roundtrip(provider_name: Any, workspace_env: Any) -> None:
     """Each provider can complete generate → parse → transform → save → hydrate."""
     corpus = _get_corpus(provider_name)
     raw_items = corpus.generate(count=1, seed=42)

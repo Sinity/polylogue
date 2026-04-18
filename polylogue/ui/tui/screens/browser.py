@@ -35,7 +35,7 @@ class Browser(RepositoryBoundContainer):
             tree_data: list[tuple[str, list[tuple[str, str]]]] = []
             for provider in providers:
                 summaries = await repo.list_summaries(limit=50, provider=provider)
-                leaves = [(s.title or s.id, s.id) for s in summaries]
+                leaves = [(str(s.title or s.id), str(s.id)) for s in summaries]
                 tree_data.append((provider.capitalize(), leaves))
 
         except Exception as e:

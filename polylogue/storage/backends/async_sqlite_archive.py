@@ -3,15 +3,29 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from contextlib import AbstractAsyncContextManager
+from typing import TYPE_CHECKING
 
 from polylogue.storage.backends.queries import attachments as attachments_q
 from polylogue.storage.backends.queries import conversations as conversations_q
 from polylogue.storage.backends.queries import messages as messages_q
+from polylogue.storage.backends.queries.stats import AggregateMessageStats
 from polylogue.storage.store import AttachmentRecord, ContentBlockRecord, ConversationRecord, MessageRecord
+
+if TYPE_CHECKING:
+    import aiosqlite
+
+    from polylogue.storage.backends.query_store import SQLiteQueryStore
 
 
 class SQLiteArchiveMixin:
     """Conversation/message/archive-query methods for ``SQLiteBackend``."""
+
+    if TYPE_CHECKING:
+        queries: SQLiteQueryStore
+        _transaction_depth: int
+
+        def _get_connection(self) -> AbstractAsyncContextManager[aiosqlite.Connection]: ...
 
     async def get_conversation(self, conversation_id: str) -> ConversationRecord | None:
         """Retrieve a conversation by ID."""
@@ -27,7 +41,7 @@ class SQLiteArchiveMixin:
     async def aggregate_message_stats(
         self,
         conversation_ids: list[str] | None = None,
-    ) -> dict[str, int]:
+    ) -> AggregateMessageStats:
         """Compute aggregate message statistics via SQL."""
         return await self.queries.aggregate_message_stats(conversation_ids)
 
@@ -123,6 +137,10 @@ class SQLiteArchiveMixin:
         """Iterate conversation IDs in bounded fetch batches."""
         async for cid in self.queries.iter_conversation_ids(source_names=source_names, page_size=page_size):
             yield cid
+
+    async def get_session_product_status(self) -> dict[str, int | bool]:
+        """Return materialized session-product coverage counters."""
+        return await self.queries.get_session_product_status()
 
     async def search_conversations(self, query: str, limit: int = 100, providers: list[str] | None = None) -> list[str]:
         """Search conversations using the canonical ranked FTS conversation query."""

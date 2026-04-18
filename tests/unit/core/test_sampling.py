@@ -10,40 +10,43 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
+import pytest
+
 from polylogue.schemas.observation import PROVIDERS, ProviderConfig
 from polylogue.schemas.sampling import load_samples_from_db, load_samples_from_sessions
+from polylogue.types import Provider
 
 
 class TestProviderConfig:
     def test_init_minimal(self) -> None:
         config = ProviderConfig(
-            name="test",
+            name=Provider.UNKNOWN,
             description="Test provider",
         )
-        assert config.name == "test"
+        assert config.name is Provider.UNKNOWN
         assert config.description == "Test provider"
         assert config.db_provider_name is None
         assert config.session_dir is None
 
     def test_init_with_db_provider(self) -> None:
         config = ProviderConfig(
-            name="test",
+            name=Provider.UNKNOWN,
             description="Test",
-            db_provider_name="test_db",
+            db_provider_name=Provider.CHATGPT,
         )
-        assert config.db_provider_name == "test_db"
+        assert config.db_provider_name is Provider.CHATGPT
 
     def test_init_with_session_dir(self) -> None:
         path = Path.home() / ".test"
         config = ProviderConfig(
-            name="test",
+            name=Provider.UNKNOWN,
             description="Test",
             session_dir=path,
         )
         assert config.session_dir == path
 
     def test_defaults(self) -> None:
-        config = ProviderConfig(name="test", description="Test")
+        config = ProviderConfig(name=Provider.UNKNOWN, description="Test")
         assert config.sample_granularity == "document"
         assert config.max_sessions is None
         assert config.record_type_key is None
@@ -52,44 +55,44 @@ class TestProviderConfig:
 class TestProvidersConfig:
     def test_all_five_providers_present(self) -> None:
         expected = {"chatgpt", "claude-code", "claude-ai", "gemini", "codex"}
-        assert set(PROVIDERS.keys()) == expected
+        assert {provider.value for provider in PROVIDERS} == expected
 
     def test_each_has_name_and_description(self) -> None:
         for name, config in PROVIDERS.items():
-            assert config.name == name
+            assert config.name is name
             assert isinstance(config.description, str)
             assert len(config.description) > 0
 
     def test_chatgpt_has_db_provider(self) -> None:
-        assert PROVIDERS["chatgpt"].db_provider_name == "chatgpt"
+        assert PROVIDERS[Provider.CHATGPT].db_provider_name is Provider.CHATGPT
 
     def test_claude_ai_db_name_is_canonical(self) -> None:
         # Claude AI rows are stored under the canonical provider token.
-        assert PROVIDERS["claude-ai"].db_provider_name == "claude-ai"
+        assert PROVIDERS[Provider.CLAUDE_AI].db_provider_name is Provider.CLAUDE_AI
 
     def test_claude_code_has_db_provider(self) -> None:
-        assert PROVIDERS["claude-code"].db_provider_name == "claude-code"
+        assert PROVIDERS[Provider.CLAUDE_CODE].db_provider_name is Provider.CLAUDE_CODE
 
     def test_gemini_has_db_provider(self) -> None:
-        assert PROVIDERS["gemini"].db_provider_name == "gemini"
+        assert PROVIDERS[Provider.GEMINI].db_provider_name is Provider.GEMINI
 
     def test_codex_has_session_dir(self) -> None:
-        assert PROVIDERS["codex"].session_dir is not None
+        assert PROVIDERS[Provider.CODEX].session_dir is not None
 
     def test_codex_record_type_key(self) -> None:
-        assert PROVIDERS["codex"].record_type_key == "type"
+        assert PROVIDERS[Provider.CODEX].record_type_key == "type"
 
     def test_claude_code_record_type_key(self) -> None:
-        assert PROVIDERS["claude-code"].record_type_key == "type"
+        assert PROVIDERS[Provider.CLAUDE_CODE].record_type_key == "type"
 
     def test_chatgpt_no_record_type_key(self) -> None:
-        assert PROVIDERS["chatgpt"].record_type_key is None
+        assert PROVIDERS[Provider.CHATGPT].record_type_key is None
 
     def test_document_granularity_for_chatgpt(self) -> None:
-        assert PROVIDERS["chatgpt"].sample_granularity == "document"
+        assert PROVIDERS[Provider.CHATGPT].sample_granularity == "document"
 
     def test_record_granularity_for_claude_code(self) -> None:
-        assert PROVIDERS["claude-code"].sample_granularity == "record"
+        assert PROVIDERS[Provider.CLAUDE_CODE].sample_granularity == "record"
 
 
 class TestLoadSamplesFromDb:
@@ -164,7 +167,11 @@ class TestLoadSamplesFromDb:
         assert len(result) == 1
         assert result[0]["uuid"] == "conv-1"
 
-    def test_record_provider_sampling_streams_without_full_envelope(self, tmp_path: Path, monkeypatch) -> None:
+    def test_record_provider_sampling_streams_without_full_envelope(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
         from polylogue.storage.backends.connection import open_connection
 
         db = tmp_path / "codex.db"

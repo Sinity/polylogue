@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from polylogue.lib.roles import Role
-from polylogue.types import Provider
+from polylogue.types import ContentBlockType, Provider
 
 from .base import ParsedAttachment, ParsedContentBlock, ParsedConversation, ParsedMessage
 
@@ -139,7 +139,7 @@ def extract_messages_from_mapping(mapping: dict[str, object]) -> tuple[list[Pars
             # ChatGPT thinking/reasoning blocks
             content_blocks.append(
                 ParsedContentBlock(
-                    type="thinking",
+                    type=ContentBlockType.THINKING,
                     text=text,
                     metadata={"content_type": content_type},
                 )
@@ -147,11 +147,11 @@ def extract_messages_from_mapping(mapping: dict[str, object]) -> tuple[list[Pars
         elif parts:
             for part in parts:
                 if isinstance(part, str) and part:
-                    content_blocks.append(ParsedContentBlock(type="text", text=part))
+                    content_blocks.append(ParsedContentBlock(type=ContentBlockType.TEXT, text=part))
                 elif isinstance(part, dict) and part.get("content_type") == "image_asset_pointer":
                     content_blocks.append(
                         ParsedContentBlock(
-                            type="image",
+                            type=ContentBlockType.IMAGE,
                             metadata={"asset_pointer": str(part.get("asset_pointer", ""))},
                         )
                     )

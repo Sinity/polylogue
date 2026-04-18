@@ -8,13 +8,15 @@ from typing import TYPE_CHECKING
 from polylogue.sync_bridge import run_coroutine_sync
 
 if TYPE_CHECKING:
-    from polylogue.facade import ArchiveStats
+    from polylogue.facade import ArchiveStats, Polylogue
     from polylogue.lib.conversation_models import Conversation, ConversationSummary
     from polylogue.storage.search import SearchResult
 
 
 class SyncConversationQueriesMixin:
     """Conversation and archive query helpers for ``SyncPolylogue``."""
+
+    _facade: Polylogue
 
     def get_conversation(self, conversation_id: str) -> Conversation | None:
         return run_coroutine_sync(self._facade.get_conversation(conversation_id))

@@ -12,6 +12,8 @@ These tests verify:
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
 syrupy = pytest.importorskip("syrupy")
@@ -25,7 +27,7 @@ pytestmark = pytest.mark.skipif(not HAS_PYTE, reason="pyte not installed")
 class TestHelpOutput:
     """Test --help output rendering."""
 
-    def test_help_output_snapshot(self, snapshot):
+    def test_help_output_snapshot(self, snapshot: Any) -> None:
         """Verify --help output renders correctly."""
         result = run_in_pty(["--help"], rows=80)
         assert result.exit_code == 0
@@ -36,7 +38,7 @@ class TestHelpOutput:
 
         assert output == snapshot
 
-    def test_help_output_has_basic_structure(self):
+    def test_help_output_has_basic_structure(self) -> None:
         """Verify --help output contains expected sections."""
         result = run_in_pty(["--help"], rows=80)
         assert result.exit_code == 0
@@ -50,7 +52,7 @@ class TestHelpOutput:
 class TestCommandOutputs:
     """Test individual command outputs."""
 
-    def test_check_output_snapshot(self, snapshot):
+    def test_check_output_snapshot(self, snapshot: Any) -> None:
         """Verify check command output renders correctly."""
         result = run_in_pty(["doctor", "--help"], rows=80)
         assert result.exit_code == 0
@@ -60,7 +62,7 @@ class TestCommandOutputs:
 
         assert output == snapshot
 
-    def test_run_help_output_snapshot(self, snapshot):
+    def test_run_help_output_snapshot(self, snapshot: Any) -> None:
         """Verify run command help renders correctly."""
         result = run_in_pty(["run", "--help"], cols=120, rows=80)
         assert result.exit_code == 0
@@ -77,7 +79,7 @@ class TestCommandOutputs:
 class TestErrorOutput:
     """Test error message rendering."""
 
-    def test_invalid_option_error_output(self, snapshot):
+    def test_invalid_option_error_output(self, snapshot: Any) -> None:
         """Verify invalid option error message."""
         result = run_in_pty(["--bogus"])
         assert result.exit_code != 0
@@ -87,7 +89,7 @@ class TestErrorOutput:
 
         assert output == snapshot
 
-    def test_missing_required_argument_error(self):
+    def test_missing_required_argument_error(self) -> None:
         """Verify error on missing required arguments."""
         # Use completions command without --shell (requires it)
         result = run_in_pty(["completions"])
@@ -97,7 +99,7 @@ class TestErrorOutput:
 class TestTerminalDimensions:
     """Test output at different terminal widths."""
 
-    def test_help_at_narrow_width(self, snapshot):
+    def test_help_at_narrow_width(self, snapshot: Any) -> None:
         """Verify help wraps correctly at 60 columns."""
         result = run_in_pty(["--help"], cols=60, rows=80)
         assert result.exit_code == 0
@@ -109,7 +111,7 @@ class TestTerminalDimensions:
         # Verify wrapping occurred (should have lines)
         assert len(output) > 0
 
-    def test_help_at_wide_width(self, snapshot):
+    def test_help_at_wide_width(self, snapshot: Any) -> None:
         """Verify help renders at 120 columns."""
         result = run_in_pty(["--help"], cols=120, rows=80)
         assert result.exit_code == 0
@@ -123,7 +125,7 @@ class TestTerminalDimensions:
 class TestPlainModeConsistency:
     """Test consistency between plain and PTY modes."""
 
-    def test_help_plain_vs_pty_consistency(self):
+    def test_help_plain_vs_pty_consistency(self) -> None:
         """Verify --help output is similar in plain and PTY modes."""
         # Run with enough rows to capture full output
         result_pty = run_in_pty(["--help"], rows=80)
@@ -138,7 +140,7 @@ class TestPlainModeConsistency:
         # Should have help content
         assert "Usage:" in pty_text or "usage:" in pty_text
 
-    def test_error_consistency_across_modes(self):
+    def test_error_consistency_across_modes(self) -> None:
         """Verify Click's unknown-subcommand error is rendered in the PTY."""
         result = run_in_pty(["run", "invalid-xyz"])
         assert result.exit_code != 0

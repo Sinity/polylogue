@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -103,7 +103,7 @@ def _seed_db(
 
 
 @pytest.fixture
-def corpus_seeded_db(tmp_path, workspace_env):
+def corpus_seeded_db(tmp_path: Path, workspace_env: dict[str, Path]) -> Callable[..., Path]:
     """Factory: returns db_path seeded with corpus data through the real pipeline.
 
     Usage::
@@ -111,6 +111,8 @@ def corpus_seeded_db(tmp_path, workspace_env):
         def test_something(corpus_seeded_db):
             db = corpus_seeded_db(providers=("chatgpt",), count=2)
     """
+
+    del workspace_env
 
     def _seed(
         providers: Sequence[str] = ("chatgpt", "claude-ai"),

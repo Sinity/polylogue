@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import asyncio
-import builtins
 from collections.abc import AsyncIterator
+from typing import TYPE_CHECKING
 
 from polylogue.lib.conversation_models import Conversation, ConversationSummary
 from polylogue.lib.message_models import Message
@@ -17,9 +17,16 @@ from polylogue.storage.query_models import ConversationRecordQuery
 from polylogue.storage.state_views import ConversationRenderProjection
 from polylogue.storage.store import ConversationRecord
 
+if TYPE_CHECKING:
+    from polylogue.storage.backends.query_store import SQLiteQueryStore
+    from polylogue.types import ConversationId
+
 
 class RepositoryArchiveConversationMixin:
-    async def resolve_id(self, id_prefix: str):
+    if TYPE_CHECKING:
+        queries: SQLiteQueryStore
+
+    async def resolve_id(self, id_prefix: str) -> ConversationId | None:
         resolved = await self.queries.resolve_id(id_prefix)
         from polylogue.types import ConversationId
 
@@ -60,14 +67,14 @@ class RepositoryArchiveConversationMixin:
 
     async def _hydrate_conversations(
         self,
-        conversation_records: builtins.list[ConversationRecord],
+        conversation_records: list[ConversationRecord],
         *,
-        ordered_ids: builtins.list[str] | None = None,
-    ) -> builtins.list[Conversation]:
+        ordered_ids: list[str] | None = None,
+    ) -> list[Conversation]:
         if not conversation_records:
             return []
 
-        by_id = {record.conversation_id: record for record in conversation_records}
+        by_id: dict[str, ConversationRecord] = {str(record.conversation_id): record for record in conversation_records}
         conversation_ids = ordered_ids or [record.conversation_id for record in conversation_records]
         present_ids = [conversation_id for conversation_id in conversation_ids if conversation_id in by_id]
         if not present_ids:
@@ -95,18 +102,18 @@ class RepositoryArchiveConversationMixin:
     async def list_summaries_by_query(
         self,
         query: ConversationRecordQuery,
-    ) -> builtins.list[ConversationSummary]:
+    ) -> list[ConversationSummary]:
         conv_records = await self.queries.list_conversation_summaries(query)
         return [conversation_summary_from_record(record) for record in conv_records]
 
     async def list_by_query(
         self,
         query: ConversationRecordQuery,
-    ) -> builtins.list[Conversation]:
+    ) -> list[Conversation]:
         conv_records = await self.queries.list_conversations(query)
         return await self._hydrate_conversations(conv_records)
 
-    async def get_many(self, conversation_ids: builtins.list[str]) -> builtins.list[Conversation]:
+    async def get_many(self, conversation_ids: list[str]) -> list[Conversation]:
         if not conversation_ids:
             return []
         records = await self.queries.get_conversations_batch(conversation_ids)

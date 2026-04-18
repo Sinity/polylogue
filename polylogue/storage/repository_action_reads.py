@@ -2,13 +2,20 @@
 
 from __future__ import annotations
 
-import builtins
+from typing import TYPE_CHECKING
 
+from polylogue.lib.action_events import ActionEvent
 from polylogue.storage.action_event_rows import hydrate_action_events
 from polylogue.storage.store import ActionEventRecord
 
+if TYPE_CHECKING:
+    from polylogue.storage.backends.query_store import SQLiteQueryStore
+
 
 class RepositoryActionReadMixin:
+    if TYPE_CHECKING:
+        queries: SQLiteQueryStore
+
     async def get_action_event_read_model_status(self) -> dict[str, int | bool]:
         return await self.queries.get_action_event_read_model_status()
 
@@ -17,17 +24,17 @@ class RepositoryActionReadMixin:
 
     async def get_action_event_records_batch(
         self,
-        conversation_ids: builtins.list[str],
+        conversation_ids: list[str],
     ) -> dict[str, list[ActionEventRecord]]:
         return await self.queries.get_action_events_batch(conversation_ids)
 
-    async def get_action_events(self, conversation_id: str):
+    async def get_action_events(self, conversation_id: str) -> tuple[ActionEvent, ...]:
         return hydrate_action_events(await self.get_action_event_records(conversation_id))
 
     async def get_action_events_batch(
         self,
-        conversation_ids: builtins.list[str],
-    ) -> dict[str, tuple]:
+        conversation_ids: list[str],
+    ) -> dict[str, tuple[ActionEvent, ...]]:
         records_by_conversation = await self.get_action_event_records_batch(conversation_ids)
         return {
             conversation_id: hydrate_action_events(records)

@@ -66,6 +66,7 @@ class HTMLRenderer:
         self.message_renderer = HTMLMessageRenderer(self.highlighter)
 
         # Pre-compile Jinja2 template once (avoid per-render overhead)
+        self._jinja_env: Environment | None
         if self.template_path and self.template_path.exists():
             self._jinja_env = Environment(
                 loader=FileSystemLoader(self.template_path.parent),
@@ -179,7 +180,7 @@ def render_conversation_html(conv: Conversation, theme: str = "dark") -> str:
 
     template = get_cached_template()
 
-    return template.render(
+    rendered = template.render(
         title=title,
         provider=conv.provider,
         conversation_id=str(conv.id),
@@ -189,6 +190,7 @@ def render_conversation_html(conv: Conversation, theme: str = "dark") -> str:
         highlight_css=highlighter.get_css(),
         theme=theme,
     )
+    return str(rendered)
 
 
 __all__ = [

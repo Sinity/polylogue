@@ -11,9 +11,10 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from polylogue.lib.roles import normalize_role
+from polylogue.lib.roles import Role
 from polylogue.lib.timestamps import parse_timestamp
 from polylogue.lib.viewports import ContentBlock, ContentType, MessageMeta, ReasoningTrace, ToolCall
+from polylogue.types import Provider
 
 
 class ClaudeAIChatMessage(BaseModel):
@@ -48,12 +49,12 @@ class ClaudeAIChatMessage(BaseModel):
         return self.text
 
     @property
-    def role_normalized(self) -> str:
+    def role_normalized(self) -> Role:
         """Normalize role to standard values."""
         try:
-            return normalize_role(self.sender)
+            return Role.normalize(self.sender)
         except ValueError:
-            return "unknown"
+            return Role.UNKNOWN
 
     @property
     def parsed_timestamp(self) -> datetime | None:
@@ -66,7 +67,7 @@ class ClaudeAIChatMessage(BaseModel):
             id=self.uuid,
             timestamp=self.parsed_timestamp,
             role=self.role_normalized,
-            provider="claude-ai",
+            provider=Provider.CLAUDE_AI,
         )
 
     def to_content_blocks(self) -> list[ContentBlock]:

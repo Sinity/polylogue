@@ -9,6 +9,7 @@ from typing import Any
 from pydantic import ValidationError
 
 from polylogue.lib.branch_type import BranchType
+from polylogue.lib.roles import Role
 from polylogue.logging import get_logger
 from polylogue.sources.providers.claude_code import ClaudeCodeRecord
 from polylogue.types import ContentBlockType, Provider
@@ -136,7 +137,7 @@ def _parse_code_records(records: Iterable[object], fallback_id: str) -> ParsedCo
         messages.append(
             ParsedMessage(
                 provider_message_id=str(record.uuid or f"msg-{index}"),
-                role=record.role,
+                role=Role.normalize(record.role) if record.role else Role.UNKNOWN,
                 text=text or "",
                 timestamp=timestamp,
                 content_blocks=_content_blocks_from_record(record, text),

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -19,24 +20,24 @@ from polylogue.cli.commands.auth import (
 class TestAuthCommandRouting:
     """CLI command routing tests — service dispatch and error handling."""
 
-    def test_unknown_service_fails(self, cli_runner):
+    def test_unknown_service_fails(self, cli_runner: Any) -> None:
         result = cli_runner.invoke(click_cli, ["auth", "--service", "unknown", "--plain"])
         assert result.exit_code != 0
 
-    def test_default_service_is_drive(self, cli_runner):
+    def test_default_service_is_drive(self, cli_runner: Any) -> None:
         with patch("polylogue.cli.commands.auth._drive_oauth_flow"):
             result = cli_runner.invoke(click_cli, ["auth", "--plain"])
             assert "Unknown auth service" not in result.output
 
 
 class TestGetDrivePaths:
-    def test_get_drive_paths_returns_path_objects(self, tmp_path):
+    def test_get_drive_paths_returns_path_objects(self, tmp_path: Any) -> None:
         env = MagicMock()
         creds_path, token_path = _get_drive_paths(env)
         assert isinstance(creds_path, Path)
         assert isinstance(token_path, Path)
 
-    def test_get_drive_paths_falls_back_on_config_error(self, tmp_path):
+    def test_get_drive_paths_falls_back_on_config_error(self, tmp_path: Any) -> None:
         env = MagicMock()
         with patch("polylogue.cli.helpers.load_effective_config", side_effect=Exception("config error")):
             creds_path, token_path = _get_drive_paths(env)
@@ -45,7 +46,7 @@ class TestGetDrivePaths:
 
 
 class TestDriveOAuthFlow:
-    def test_oauth_missing_credentials_exits(self, tmp_path):
+    def test_oauth_missing_credentials_exits(self, tmp_path: Any) -> None:
         env = MagicMock()
         creds_path = tmp_path / "missing.json"
         token_path = tmp_path / "token.json"
@@ -53,7 +54,7 @@ class TestDriveOAuthFlow:
             with pytest.raises(SystemExit):
                 _drive_oauth_flow(env)
 
-    def test_oauth_calls_load_credentials_on_auth_manager(self, tmp_path):
+    def test_oauth_calls_load_credentials_on_auth_manager(self, tmp_path: Any) -> None:
         env = MagicMock()
         creds_path = tmp_path / "creds.json"
         creds_path.write_text("{}")
@@ -66,7 +67,7 @@ class TestDriveOAuthFlow:
                 _drive_oauth_flow(env)
                 mock_manager.load_credentials.assert_called_once()
 
-    def test_oauth_cached_token_reports_using_cached(self, tmp_path):
+    def test_oauth_cached_token_reports_using_cached(self, tmp_path: Any) -> None:
         env = MagicMock()
         creds_path = tmp_path / "creds.json"
         creds_path.write_text("{}")
@@ -80,7 +81,7 @@ class TestDriveOAuthFlow:
                 # Should not raise
                 _drive_oauth_flow(env)
 
-    def test_oauth_file_not_found_exits(self, tmp_path):
+    def test_oauth_file_not_found_exits(self, tmp_path: Any) -> None:
         env = MagicMock()
         creds_path = tmp_path / "creds.json"
         creds_path.write_text("{}")
@@ -93,7 +94,7 @@ class TestDriveOAuthFlow:
                 with pytest.raises(SystemExit):
                     _drive_oauth_flow(env)
 
-    def test_oauth_token_refresh_failure_retries(self, tmp_path):
+    def test_oauth_token_refresh_failure_retries(self, tmp_path: Any) -> Any:
         env = MagicMock()
         creds_path = tmp_path / "creds.json"
         creds_path.write_text("{}")
@@ -102,7 +103,7 @@ class TestDriveOAuthFlow:
 
         call_count = [0]
 
-        def side_effect(*args, **kwargs):
+        def side_effect(*args: Any, **kwargs: Any) -> Any:
             call_count[0] += 1
             if call_count[0] == 1:
                 raise Exception("Token refresh failed")
@@ -114,7 +115,7 @@ class TestDriveOAuthFlow:
                 _drive_oauth_flow(env, retry_on_failure=True)
                 assert call_count[0] == 2
 
-    def test_oauth_non_retriable_error_exits(self, tmp_path):
+    def test_oauth_non_retriable_error_exits(self, tmp_path: Any) -> None:
         env = MagicMock()
         creds_path = tmp_path / "creds.json"
         creds_path.write_text("{}")
@@ -130,7 +131,7 @@ class TestDriveOAuthFlow:
 
 
 class TestRefreshDriveToken:
-    def test_refresh_deletes_token_before_reauth(self, tmp_path):
+    def test_refresh_deletes_token_before_reauth(self, tmp_path: Any) -> None:
         env = MagicMock()
         creds_path = tmp_path / "creds.json"
         creds_path.write_text("{}")
@@ -143,7 +144,7 @@ class TestRefreshDriveToken:
                 assert not token_path.exists()
                 mock_flow.assert_called_once_with(env)
 
-    def test_refresh_without_token_still_reauths(self, tmp_path):
+    def test_refresh_without_token_still_reauths(self, tmp_path: Any) -> None:
         env = MagicMock()
         creds_path = tmp_path / "creds.json"
         creds_path.write_text("{}")
@@ -156,7 +157,7 @@ class TestRefreshDriveToken:
 
 
 class TestRevokeDriveCredentials:
-    def test_revoke_calls_auth_manager_revoke(self, tmp_path):
+    def test_revoke_calls_auth_manager_revoke(self, tmp_path: Any) -> None:
         env = MagicMock()
         creds_path = tmp_path / "creds.json"
         token_path = tmp_path / "token.json"
@@ -169,7 +170,7 @@ class TestRevokeDriveCredentials:
                 _revoke_drive_credentials(env)
                 mock_manager.revoke.assert_called_once()
 
-    def test_revoke_without_token_does_not_raise(self, tmp_path):
+    def test_revoke_without_token_does_not_raise(self, tmp_path: Any) -> None:
         env = MagicMock()
         creds_path = tmp_path / "creds.json"
         token_path = tmp_path / "token.json"
@@ -186,14 +187,14 @@ class TestRevokeDriveCredentials:
 class TestAuthCommand:
     """Integration tests for the auth command (subprocess)."""
 
-    def test_auth_unknown_service_fails(self, tmp_path):
+    def test_auth_unknown_service_fails(self, tmp_path: Any) -> None:
         from tests.infra.cli_subprocess import run_cli, setup_isolated_workspace
 
         workspace = setup_isolated_workspace(tmp_path)
         result = run_cli(["auth", "--service", "unknown"], env=workspace["env"])
         assert result.exit_code != 0
 
-    def test_auth_revoke_no_token(self, tmp_path):
+    def test_auth_revoke_no_token(self, tmp_path: Any) -> None:
         from tests.infra.cli_subprocess import run_cli, setup_isolated_workspace
 
         workspace = setup_isolated_workspace(tmp_path)
@@ -201,7 +202,7 @@ class TestAuthCommand:
         output_lower = result.output.lower()
         assert result.exit_code == 0 or "no token" in output_lower or "not found" in output_lower
 
-    def test_auth_missing_credentials(self, tmp_path):
+    def test_auth_missing_credentials(self, tmp_path: Any) -> None:
         from tests.infra.cli_subprocess import run_cli, setup_isolated_workspace
 
         workspace = setup_isolated_workspace(tmp_path)

@@ -8,7 +8,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field
 
 from polylogue.lib.provider_semantics import extract_chatgpt_text
-from polylogue.lib.roles import normalize_role
+from polylogue.lib.roles import Role
 from polylogue.lib.timestamps import parse_timestamp
 from polylogue.lib.viewports import (
     ContentBlock,
@@ -17,6 +17,7 @@ from polylogue.lib.viewports import (
     ReasoningTrace,
     ToolCall,
 )
+from polylogue.types import Provider
 
 
 class ChatGPTAuthor(BaseModel):
@@ -71,12 +72,12 @@ class ChatGPTMessage(BaseModel):
         return self.timestamp
 
     @property
-    def role_normalized(self) -> str:
+    def role_normalized(self) -> Role:
         role = self.author.role if self.author.role else "unknown"
         try:
-            return normalize_role(role)
+            return Role.normalize(role)
         except ValueError:
-            return "unknown"
+            return Role.UNKNOWN
 
     def to_meta(self) -> MessageMeta:
         return MessageMeta(
@@ -84,7 +85,7 @@ class ChatGPTMessage(BaseModel):
             timestamp=self.timestamp,
             role=self.role_normalized,
             model=self.metadata.get("model_slug"),
-            provider="chatgpt",
+            provider=Provider.CHATGPT,
         )
 
     def to_content_blocks(self) -> list[ContentBlock]:

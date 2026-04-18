@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from polylogue.logging import get_logger
 from polylogue.paths import safe_path_component
 from polylogue.types import SearchProvider
+
+if TYPE_CHECKING:
+    from polylogue.lib.conversation_models import ConversationSummary
 
 logger = get_logger(__name__)
 
@@ -16,7 +20,11 @@ def format_summary_date(value: object, fmt: str, summary_id: str) -> str | None:
     if value is None:
         return None
     try:
-        return value.strftime(fmt)
+        strftime = getattr(value, "strftime", None)
+        if not callable(strftime):
+            raise AttributeError("value has no strftime()")
+        formatted = strftime(fmt)
+        return formatted if isinstance(formatted, str) else str(formatted)
     except (AttributeError, ValueError) as exc:
         logger.debug("Timestamp format error for %s: %s", summary_id, exc)
         return str(value)[:10] if fmt == "%Y-%m-%d" else str(value)
@@ -48,7 +56,7 @@ class ConversationIndex:
     path: str
 
     @classmethod
-    def from_summary(cls, summary: object, message_count: int) -> ConversationIndex:
+    def from_summary(cls, summary: ConversationSummary, message_count: int) -> ConversationIndex:
         sid = str(summary.id)
         provider = getattr(summary.provider, "value", str(summary.provider))
         return cls(

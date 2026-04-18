@@ -3,39 +3,46 @@
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import AsyncIterator
+from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from polylogue.config import Config
 from polylogue.pipeline.services.indexing import IndexService
+from polylogue.storage.backends.async_sqlite import SQLiteBackend
+from tests.infra.storage_records import make_content_block, make_conversation, make_message
+
+
+def _config() -> Config:
+    return Config(
+        archive_root=Path("/tmp"),
+        render_root=Path("/tmp/render"),
+        sources=[],
+    )
 
 
 class TestIndexService:
     """Test IndexService functionality."""
 
-    async def test_update_index_empty_list(self, sqlite_backend):
+    async def test_update_index_empty_list(self, sqlite_backend: SQLiteBackend) -> None:
         """Update index with empty conversation list."""
-        config = Config(
-            archive_root="/tmp",
-            render_root="/tmp/render",
-            sources=[],
-        )
-        service = IndexService(config, backend=sqlite_backend)
+        service = IndexService(_config(), backend=sqlite_backend)
 
         result = await service.update_index([])
         assert result is True
 
-    async def test_update_index_with_conversations(self, sqlite_backend):
+    async def test_update_index_with_conversations(self, sqlite_backend: SQLiteBackend) -> None:
         """Update index with actual conversations."""
-        from polylogue.storage.store import ConversationRecord, MessageRecord
 
         # Create test data using backend-compatible records
-        conv = ConversationRecord(
+        conv = make_conversation(
             conversation_id="conv1",
             provider_name="chatgpt",
             provider_conversation_id="prov_conv1",
             title="Test",
             content_hash="hash123",
         )
-        msg = MessageRecord(
+        msg = make_message(
             message_id="msg1",
             conversation_id="conv1",
             role="user",
@@ -46,22 +53,16 @@ class TestIndexService:
         await sqlite_backend.save_conversation_record(conv)
         await sqlite_backend.save_messages([msg])
 
-        config = Config(
-            archive_root="/tmp",
-            render_root="/tmp/render",
-            sources=[],
-        )
-        service = IndexService(config, backend=sqlite_backend)
+        service = IndexService(_config(), backend=sqlite_backend)
 
         result = await service.update_index(["conv1"])
         assert result is True
 
-    async def test_update_index_accepts_async_iterable(self, sqlite_backend):
+    async def test_update_index_accepts_async_iterable(self, sqlite_backend: SQLiteBackend) -> None:
         """Streaming conversation IDs can be indexed without prebuilding a list."""
-        from polylogue.storage.store import ConversationRecord, MessageRecord
 
         await sqlite_backend.save_conversation_record(
-            ConversationRecord(
+            make_conversation(
                 conversation_id="conv-stream",
                 provider_name="chatgpt",
                 provider_conversation_id="prov-conv-stream",
@@ -71,7 +72,7 @@ class TestIndexService:
         )
         await sqlite_backend.save_messages(
             [
-                MessageRecord(
+                make_message(
                     message_id="msg-stream",
                     conversation_id="conv-stream",
                     role="user",
@@ -81,14 +82,9 @@ class TestIndexService:
             ]
         )
 
-        config = Config(
-            archive_root="/tmp",
-            render_root="/tmp/render",
-            sources=[],
-        )
-        service = IndexService(config, backend=sqlite_backend)
+        service = IndexService(_config(), backend=sqlite_backend)
 
-        async def conversation_ids():
+        async def conversation_ids() -> AsyncIterator[str]:
             yield "conv-stream"
 
         result = await service.update_index(conversation_ids())
@@ -98,26 +94,20 @@ class TestIndexService:
         assert status["exists"] is True
         assert status["count"] >= 1
 
-    async def test_rebuild_index_success(self, sqlite_backend):
+    async def test_rebuild_index_success(self, sqlite_backend: SQLiteBackend) -> None:
         """Rebuild index from scratch."""
-        config = Config(
-            archive_root="/tmp",
-            render_root="/tmp/render",
-            sources=[],
-        )
-        service = IndexService(config, backend=sqlite_backend)
+        service = IndexService(_config(), backend=sqlite_backend)
 
         result = await service.rebuild_index()
         assert result is True
 
-    async def test_rebuild_index_reports_chunk_progress(self, sqlite_backend):
+    async def test_rebuild_index_reports_chunk_progress(self, sqlite_backend: SQLiteBackend) -> None:
         """Full rebuild skips the action phase when no action repair is needed."""
-        from polylogue.storage.store import ConversationRecord, MessageRecord
 
         for index in range(3):
             conversation_id = f"conv-progress-{index}"
             await sqlite_backend.save_conversation_record(
-                ConversationRecord(
+                make_conversation(
                     conversation_id=conversation_id,
                     provider_name="chatgpt",
                     provider_conversation_id=f"prov-{index}",
@@ -127,7 +117,7 @@ class TestIndexService:
             )
             await sqlite_backend.save_messages(
                 [
-                    MessageRecord(
+                    make_message(
                         message_id=f"msg-progress-{index}",
                         conversation_id=conversation_id,
                         role="user",
@@ -137,12 +127,7 @@ class TestIndexService:
                 ]
             )
 
-        config = Config(
-            archive_root="/tmp",
-            render_root="/tmp/render",
-            sources=[],
-        )
-        service = IndexService(config, backend=sqlite_backend)
+        service = IndexService(_config(), backend=sqlite_backend)
         progress_events: list[tuple[int, str | None]] = []
 
         def capture(amount: int, desc: str | None = None) -> None:
@@ -156,12 +141,14 @@ class TestIndexService:
         assert descriptions[0] == "Indexing: full-text search 0/3"
         assert descriptions[-1] == "Indexing: full-text search 3/3"
 
-    async def test_rebuild_index_reports_action_phase_for_missing_action_rows(self, sqlite_backend):
+    async def test_rebuild_index_reports_action_phase_for_missing_action_rows(
+        self,
+        sqlite_backend: SQLiteBackend,
+    ) -> None:
         """Full rebuild still repairs action rows when tool-use blocks exist without action rows."""
-        from polylogue.storage.store import ContentBlockRecord, ConversationRecord, MessageRecord
 
         await sqlite_backend.save_conversation_record(
-            ConversationRecord(
+            make_conversation(
                 conversation_id="conv-plain",
                 provider_name="chatgpt",
                 provider_conversation_id="prov-plain",
@@ -171,7 +158,7 @@ class TestIndexService:
         )
         await sqlite_backend.save_messages(
             [
-                MessageRecord(
+                make_message(
                     message_id="msg-plain",
                     conversation_id="conv-plain",
                     role="user",
@@ -182,7 +169,7 @@ class TestIndexService:
             ]
         )
         await sqlite_backend.save_conversation_record(
-            ConversationRecord(
+            make_conversation(
                 conversation_id="conv-action",
                 provider_name="chatgpt",
                 provider_conversation_id="prov-action",
@@ -192,7 +179,7 @@ class TestIndexService:
         )
         await sqlite_backend.save_messages(
             [
-                MessageRecord(
+                make_message(
                     message_id="msg-action",
                     conversation_id="conv-action",
                     role="assistant",
@@ -204,12 +191,11 @@ class TestIndexService:
         )
         await sqlite_backend.save_content_blocks(
             [
-                ContentBlockRecord(
-                    block_id=ContentBlockRecord.make_id("msg-action", 0),
+                make_content_block(
                     message_id="msg-action",
                     conversation_id="conv-action",
                     block_index=0,
-                    type="tool_use",
+                    block_type="tool_use",
                     tool_name="exec_command",
                     tool_id="tool-1",
                     tool_input='{"cmd":"rg -n action_events"}',
@@ -217,12 +203,7 @@ class TestIndexService:
             ]
         )
 
-        config = Config(
-            archive_root="/tmp",
-            render_root="/tmp/render",
-            sources=[],
-        )
-        service = IndexService(config, backend=sqlite_backend)
+        service = IndexService(_config(), backend=sqlite_backend)
         progress_events: list[tuple[int, str | None]] = []
 
         def capture(amount: int, desc: str | None = None) -> None:
@@ -236,40 +217,25 @@ class TestIndexService:
         assert "Indexing: full-text search 1/3" in descriptions
         assert descriptions[-1] == "Indexing: full-text search 3/3"
 
-    async def test_ensure_index_exists_success(self, sqlite_backend):
+    async def test_ensure_index_exists_success(self, sqlite_backend: SQLiteBackend) -> None:
         """Ensure FTS5 index exists."""
-        config = Config(
-            archive_root="/tmp",
-            render_root="/tmp/render",
-            sources=[],
-        )
-        service = IndexService(config, backend=sqlite_backend)
+        service = IndexService(_config(), backend=sqlite_backend)
 
         result = await service.ensure_index_exists()
         assert result is True
 
-    async def test_get_index_status(self, sqlite_backend):
+    async def test_get_index_status(self, sqlite_backend: SQLiteBackend) -> None:
         """Get index status."""
-        config = Config(
-            archive_root="/tmp",
-            render_root="/tmp/render",
-            sources=[],
-        )
-        service = IndexService(config, backend=sqlite_backend)
+        service = IndexService(_config(), backend=sqlite_backend)
 
         status = await service.get_index_status()
         assert isinstance(status, dict)
         assert "exists" in status
         assert "count" in status
 
-    async def test_get_index_status_uses_service_connection(self, sqlite_backend):
+    async def test_get_index_status_uses_service_connection(self, sqlite_backend: SQLiteBackend) -> None:
         """Regression: get_index_status must use the service's backend, not open_connection(None)."""
-        config = Config(
-            archive_root="/tmp",
-            render_root="/tmp/render",
-            sources=[],
-        )
-        service = IndexService(config, backend=sqlite_backend)
+        service = IndexService(_config(), backend=sqlite_backend)
 
         # Ensure FTS table exists via this backend
         await service.ensure_index_exists()
@@ -279,14 +245,9 @@ class TestIndexService:
         assert status["exists"] is True
         assert isinstance(status["count"], int)
 
-    async def test_get_index_status_after_schema_init(self, sqlite_backend):
+    async def test_get_index_status_after_schema_init(self, sqlite_backend: SQLiteBackend) -> None:
         """Status after schema init shows index exists with zero-or-more entries."""
-        config = Config(
-            archive_root="/tmp",
-            render_root="/tmp/render",
-            sources=[],
-        )
-        service = IndexService(config, backend=sqlite_backend)
+        service = IndexService(_config(), backend=sqlite_backend)
 
         from polylogue.storage.query_models import ConversationRecordQuery
 
@@ -303,12 +264,8 @@ class TestIndexService:
 class TestIndexServiceErrors:
     """Tests for IndexService error handling paths."""
 
-    async def test_update_index_failure(self):
+    async def test_update_index_failure(self) -> None:
         """update_index should return False on exception."""
-        from unittest.mock import AsyncMock, MagicMock, patch
-
-        from polylogue.pipeline.services.indexing import IndexService
-
         config = MagicMock()
         service = IndexService(config=config, backend=MagicMock())
 
@@ -320,12 +277,8 @@ class TestIndexServiceErrors:
             result = await service.update_index(["conv1", "conv2"])
             assert result is False
 
-    async def test_rebuild_index_failure(self):
+    async def test_rebuild_index_failure(self) -> None:
         """rebuild_index should return False on exception."""
-        from unittest.mock import AsyncMock, MagicMock, patch
-
-        from polylogue.pipeline.services.indexing import IndexService
-
         config = MagicMock()
         service = IndexService(config=config, backend=MagicMock())
 
@@ -337,12 +290,8 @@ class TestIndexServiceErrors:
             result = await service.rebuild_index()
             assert result is False
 
-    async def test_ensure_index_failure(self):
+    async def test_ensure_index_failure(self) -> None:
         """ensure_index_exists should return False on exception."""
-        from unittest.mock import AsyncMock, MagicMock, patch
-
-        from polylogue.pipeline.services.indexing import IndexService
-
         config = MagicMock()
         mock_backend = MagicMock()
         service = IndexService(config=config, backend=mock_backend)
@@ -355,12 +304,8 @@ class TestIndexServiceErrors:
             result = await service.ensure_index_exists()
             assert result is False
 
-    async def test_get_index_status_failure(self):
+    async def test_get_index_status_failure(self) -> None:
         """get_index_status should return fallback on exception."""
-        from unittest.mock import AsyncMock, MagicMock, patch
-
-        from polylogue.pipeline.services.indexing import IndexService
-
         config = MagicMock()
         service = IndexService(config=config, backend=MagicMock())
 
@@ -372,10 +317,8 @@ class TestIndexServiceErrors:
             result = await service.get_index_status()
             assert result == {"exists": False, "count": 0}
 
-    async def test_update_index_no_backend(self):
+    async def test_update_index_no_backend(self) -> None:
         """Update without backend returns False."""
-        from unittest.mock import MagicMock
-
         config = MagicMock()
         service = IndexService(config=config, backend=None)
 
@@ -383,10 +326,8 @@ class TestIndexServiceErrors:
 
         assert result is False
 
-    async def test_rebuild_no_backend(self):
+    async def test_rebuild_no_backend(self) -> None:
         """Rebuild without backend returns False."""
-        from unittest.mock import MagicMock
-
         config = MagicMock()
         service = IndexService(config=config, backend=None)
 
@@ -394,10 +335,8 @@ class TestIndexServiceErrors:
 
         assert result is False
 
-    async def test_get_index_status_no_backend(self):
+    async def test_get_index_status_no_backend(self) -> None:
         """Status without backend returns defaults."""
-        from unittest.mock import MagicMock
-
         config = MagicMock()
         service = IndexService(config=config, backend=None)
 
@@ -405,12 +344,8 @@ class TestIndexServiceErrors:
 
         assert status == {"exists": False, "count": 0}
 
-    async def test_update_index_empty_ids_ensures_index(self):
+    async def test_update_index_empty_ids_ensures_index(self) -> None:
         """update_index always delegates to the canonical storage helper."""
-        from unittest.mock import AsyncMock, MagicMock, patch
-
-        from polylogue.pipeline.services.indexing import IndexService
-
         config = MagicMock()
         mock_backend = MagicMock()
         service = IndexService(config=config, backend=mock_backend)

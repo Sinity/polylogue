@@ -3,12 +3,19 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
 from enum import Enum
 from typing import TYPE_CHECKING
 
+from polylogue.lib.payload_coercion import (
+    coerce_float,
+    coerce_int,
+    optional_date,
+    optional_datetime,
+    string_sequence,
+)
 from polylogue.lib.phase_extraction import SessionPhase, extract_phases
 from polylogue.lib.semantic_facts import (
     ConversationSemanticFacts,
@@ -66,6 +73,17 @@ def _clean_summary_text(text: str) -> str:
     return cleaned[:_SUMMARY_MAX_TEXT_LEN] if cleaned else ""
 
 
+def _duration_ms_between(start_time: datetime | None, end_time: datetime | None) -> int:
+    if start_time is None or end_time is None:
+        return 0
+    return max(int((end_time - start_time).total_seconds() * 1000), 0)
+
+
+def _canonical_event_date(start_time: datetime | None, end_time: datetime | None) -> date | None:
+    reference_time = start_time or end_time
+    return reference_time.date() if reference_time is not None else None
+
+
 class WorkEventKind(str, Enum):
     """Classification of work performed in a message range."""
 
@@ -118,23 +136,19 @@ class WorkEvent:
         }
 
     @classmethod
-    def from_dict(cls, payload: dict[str, object]) -> WorkEvent:
+    def from_dict(cls, payload: Mapping[str, object]) -> WorkEvent:
         return cls(
             kind=WorkEventKind(str(payload["kind"])),
-            start_index=int(payload.get("start_index", 0) or 0),
-            end_index=int(payload.get("end_index", 0) or 0),
-            start_time=(datetime.fromisoformat(str(payload["start_time"])) if payload.get("start_time") else None),
-            end_time=(datetime.fromisoformat(str(payload["end_time"])) if payload.get("end_time") else None),
-            canonical_session_date=(
-                date.fromisoformat(str(payload["canonical_session_date"]))
-                if payload.get("canonical_session_date")
-                else None
-            ),
-            duration_ms=int(payload.get("duration_ms", 0) or 0),
-            confidence=float(payload.get("confidence", 0.0) or 0.0),
-            evidence=tuple(str(item) for item in payload.get("evidence", []) or []),
-            file_paths=tuple(str(item) for item in payload.get("file_paths", []) or []),
-            tools_used=tuple(str(item) for item in payload.get("tools_used", []) or []),
+            start_index=coerce_int(payload.get("start_index"), 0),
+            end_index=coerce_int(payload.get("end_index"), 0),
+            start_time=optional_datetime(payload.get("start_time")),
+            end_time=optional_datetime(payload.get("end_time")),
+            canonical_session_date=optional_date(payload.get("canonical_session_date")),
+            duration_ms=coerce_int(payload.get("duration_ms"), 0),
+            confidence=coerce_float(payload.get("confidence"), 0.0),
+            evidence=string_sequence(payload.get("evidence")),
+            file_paths=string_sequence(payload.get("file_paths")),
+            tools_used=string_sequence(payload.get("tools_used")),
             summary=str(payload.get("summary", "") or ""),
         )
 
@@ -314,13 +328,7 @@ def _merge_adjacent(events: list[WorkEvent]) -> list[WorkEvent]:
             end_time=event.end_time or prev.end_time,
             canonical_session_date=prev.canonical_session_date or event.canonical_session_date,
             duration_ms=(
-                max(
-                    int(
-                        ((event.end_time or prev.end_time) - (prev.start_time or event.start_time)).total_seconds()
-                        * 1000
-                    ),
-                    0,
-                )
+                _duration_ms_between(prev.start_time or event.start_time, event.end_time or prev.end_time)
                 if (prev.start_time or event.start_time) and (event.end_time or prev.end_time)
                 else prev.duration_ms + event.duration_ms
             ),
@@ -371,9 +379,7 @@ def extract_work_events(
         timestamps = [message.timestamp for message in messages[chunk_start:chunk_end] if message.timestamp is not None]
         start_time = timestamps[0] if timestamps else None
         end_time = timestamps[-1] if timestamps else None
-        duration_ms = 0
-        if start_time and end_time:
-            duration_ms = max(int((end_time - start_time).total_seconds() * 1000), 0)
+        duration_ms = _duration_ms_between(start_time, end_time)
 
         events.append(
             WorkEvent(
@@ -382,7 +388,7 @@ def extract_work_events(
                 end_index=chunk_end,
                 start_time=start_time,
                 end_time=end_time,
-                canonical_session_date=(start_time or end_time).date() if (start_time or end_time) else None,
+                canonical_session_date=_canonical_event_date(start_time, end_time),
                 duration_ms=duration_ms,
                 confidence=confidence,
                 evidence=tuple(dict.fromkeys(evidence)),

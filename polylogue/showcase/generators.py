@@ -22,6 +22,7 @@ from polylogue.scenarios import (
 )
 from polylogue.showcase.dimensions import query_read, schema_exercise
 from polylogue.showcase.exercise_models import AssertionSpec, Exercise
+from polylogue.types import ExerciseIOMode
 
 
 def discover_filter_flags(cli_group: click.Group) -> list[dict[str, Any]]:
@@ -403,7 +404,7 @@ def generate_schema_scenarios() -> tuple[Exercise, ...]:
     scenarios: list[Exercise] = []
 
     # Tier 0: schema list returns valid JSON
-    dims_smoke = schema_exercise(complexity="smoke", io_mode="read")
+    dims_smoke = schema_exercise(complexity="smoke", io_mode=ExerciseIOMode.READ)
     scenarios.append(
         Exercise(
             name="gen-schema-list",
@@ -421,7 +422,7 @@ def generate_schema_scenarios() -> tuple[Exercise, ...]:
     )
 
     # Tier 1: schema explain for each provider
-    dims_explain = schema_exercise(complexity="basic", io_mode="read")
+    dims_explain = schema_exercise(complexity="basic", io_mode=ExerciseIOMode.READ)
     for provider in PROVIDERS:
         scenarios.append(
             Exercise(

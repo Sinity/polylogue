@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import io
 import json
+from typing import Any
 
 import pytest
 
@@ -21,7 +22,7 @@ class TestDecoderConvergence:
     (parser) must agree on which lines are valid and how many are malformed."""
 
     @staticmethod
-    def _sample_decode(raw_bytes: bytes) -> tuple[list, int]:
+    def _sample_decode(raw_bytes: bytes) -> tuple[list[object], int]:
         """Run the sample decoder path, return (valid_records, malformed_count)."""
         from polylogue.lib.raw_payload_decode import _sample_jsonl_payload_with_detail
 
@@ -29,7 +30,7 @@ class TestDecoderConvergence:
         return records, malformed_count
 
     @staticmethod
-    def _stream_decode(raw_bytes: bytes) -> list:
+    def _stream_decode(raw_bytes: bytes) -> list[object]:
         """Run the streaming decoder path, return valid records.
 
         The streaming decoder (ijson) operates on token streams, not lines,
@@ -54,7 +55,7 @@ class TestDecoderConvergence:
 
         return records
 
-    def test_well_formed_jsonl_same_record_count(self):
+    def test_well_formed_jsonl_same_record_count(self: Any) -> None:
         lines = [json.dumps({"id": i, "text": f"message {i}"}) for i in range(10)]
         raw = ("\n".join(lines) + "\n").encode("utf-8")
 
@@ -64,7 +65,7 @@ class TestDecoderConvergence:
         assert len(sample_records) == len(stream_records) == 10
         assert sample_malformed == 0
 
-    def test_mixed_valid_invalid_jsonl(self):
+    def test_mixed_valid_invalid_jsonl(self: Any) -> None:
         lines = [
             json.dumps({"id": 1, "text": "valid"}),
             "not valid json {{{",
@@ -83,7 +84,7 @@ class TestDecoderConvergence:
             f"Decoder agreement: sample={len(sample_records)}, stream={len(stream_records)}"
         )
 
-    def test_bom_handling_agrees(self):
+    def test_bom_handling_agrees(self: Any) -> None:
         line = json.dumps({"id": 1, "text": "bom test"})
         raw = ("\ufeff" + line + "\n").encode("utf-8")
 
@@ -93,7 +94,7 @@ class TestDecoderConvergence:
         assert len(sample_records) >= 1, "Sample should handle BOM"
         assert len(stream_records) >= 1, "Stream should handle BOM"
 
-    def test_empty_lines_skipped_by_both(self):
+    def test_empty_lines_skipped_by_both(self: Any) -> None:
         lines = [
             json.dumps({"id": 1}),
             "",
@@ -120,7 +121,7 @@ class TestHealthRepairConvergence:
     the same database state."""
 
     @pytest.fixture()
-    def seeded_db(self, workspace_env):
+    def seeded_db(self: Any, workspace_env: Any) -> Any:
         """Create a DB with some conversations and introduce orphaned messages."""
         from polylogue.storage.backends.connection import open_connection
         from tests.infra.storage_records import ConversationBuilder, db_setup
@@ -153,7 +154,7 @@ class TestHealthRepairConvergence:
 
         return db_path
 
-    def test_orphaned_message_count_agrees(self, seeded_db):
+    def test_orphaned_message_count_agrees(self: Any, seeded_db: Any) -> None:
         from polylogue.storage.backends.connection import open_connection
         from polylogue.storage.repair import count_orphaned_messages_sync
 
@@ -162,7 +163,7 @@ class TestHealthRepairConvergence:
 
         assert count >= 1, "Should detect at least 1 orphaned message"
 
-    def test_empty_conversation_count_agrees(self, workspace_env):
+    def test_empty_conversation_count_agrees(self: Any, workspace_env: Any) -> None:
         from polylogue.storage.backends.connection import open_connection
         from polylogue.storage.repair import count_empty_conversations_sync
         from tests.infra.storage_records import db_setup
@@ -189,7 +190,7 @@ class TestRepairPreviewConvergence:
     actual repair handler would find on a fresh connection."""
 
     @pytest.fixture()
-    def db_with_orphans(self, workspace_env):
+    def db_with_orphans(self: Any, workspace_env: Any) -> Any:
         from polylogue.storage.backends.connection import open_connection
         from tests.infra.storage_records import ConversationBuilder, db_setup
 
@@ -212,7 +213,7 @@ class TestRepairPreviewConvergence:
             conn.execute("PRAGMA foreign_keys = ON")
         return db_path
 
-    def test_preview_matches_live_orphan_count(self, db_with_orphans):
+    def test_preview_matches_live_orphan_count(self: Any, db_with_orphans: Any) -> None:
         """The count from health/debt should match what repair would find."""
         from polylogue.storage.backends.connection import open_connection
         from polylogue.storage.repair import count_orphaned_messages_sync
@@ -224,7 +225,7 @@ class TestRepairPreviewConvergence:
         assert count1 == count2, "Same query on same state should return same count"
         assert count1 == 2, "Should find exactly 2 orphaned messages"
 
-    def test_repair_removes_exactly_previewed_count(self, db_with_orphans):
+    def test_repair_removes_exactly_previewed_count(self: Any, db_with_orphans: Any) -> None:
         """After repair, orphan count should be zero."""
         from polylogue.storage.backends.connection import open_connection
         from polylogue.storage.repair import (

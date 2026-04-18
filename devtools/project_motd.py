@@ -11,10 +11,10 @@ import re
 import subprocess
 import sys
 from pathlib import Path
-from typing import TextIO
+from typing import TextIO, TypedDict
 
 from devtools.command_catalog import control_plane_command
-from devtools.generated_surfaces import GENERATED_SURFACES
+from devtools.generated_surfaces import GENERATED_SURFACES, GeneratedSurface
 
 ANSI_RESET = "\x1b[0m"
 ANSI_BOLD = "\x1b[1m"
@@ -23,6 +23,43 @@ ANSI_CYAN = "\x1b[36m"
 ANSI_GREEN = "\x1b[32m"
 ANSI_YELLOW = "\x1b[33m"
 ANSI_RED = "\x1b[31m"
+
+
+class WorktreeChanges(TypedDict):
+    staged: int
+    modified: int
+    untracked: int
+
+
+class SnapshotCommands(TypedDict):
+    discover: str
+    status: str
+    render_all_check: str
+    verify_quick: str
+    build_package: str
+    test_baseline: str
+
+
+class LocalState(TypedDict):
+    cache: str
+    outputs: str
+    root_residents: list[str]
+    preferred_build_out_link: str
+
+
+class StatusSnapshot(TypedDict):
+    project: str
+    version: str
+    revision: str
+    branch: str
+    changes: WorktreeChanges
+    generated_surfaces: dict[str, str]
+    stale_surfaces: list[str]
+    unchecked_surfaces: list[str]
+    generated_checked: bool
+    last_commit: str
+    commands: SnapshotCommands
+    local_state: LocalState
 
 
 def read_version(pyproject_path: Path) -> str:
@@ -73,7 +110,7 @@ def last_commit_subject(cwd: Path) -> str:
     return lines[0] if lines else "no commits"
 
 
-def run_check(cwd: Path, surface) -> str:
+def run_check(cwd: Path, surface: GeneratedSurface) -> str:
     stdout = io.StringIO()
     stderr = io.StringIO()
     previous_cwd = Path.cwd()
@@ -88,7 +125,7 @@ def run_check(cwd: Path, surface) -> str:
     return "ok" if result == 0 else "stale"
 
 
-def status_snapshot(cwd: Path, *, verify_generated: bool = False) -> dict[str, object]:
+def status_snapshot(cwd: Path, *, verify_generated: bool = False) -> StatusSnapshot:
     version = read_version(cwd / "pyproject.toml")
     branch, staged, changed, untracked = git_status_summary(cwd)
     revision = git_short_revision(cwd)
@@ -117,6 +154,8 @@ def status_snapshot(cwd: Path, *, verify_generated: bool = False) -> dict[str, o
             "discover": control_plane_command("--list-commands", "--json"),
             "status": control_plane_command("status", "--json"),
             "render_all_check": control_plane_command("render-all", "--check"),
+            "verify_quick": control_plane_command("verify", "--quick"),
+            "build_package": control_plane_command("build-package"),
             "test_baseline": "pytest -q --ignore=tests/integration",
         },
         "local_state": {
@@ -128,10 +167,10 @@ def status_snapshot(cwd: Path, *, verify_generated: bool = False) -> dict[str, o
     }
 
 
-def summarize_worktree(changes: dict[str, object]) -> str:
-    staged = int(changes["staged"])
-    modified = int(changes["modified"])
-    untracked = int(changes["untracked"])
+def summarize_worktree(changes: WorktreeChanges) -> str:
+    staged = changes["staged"]
+    modified = changes["modified"]
+    untracked = changes["untracked"]
     if staged == 0 and modified == 0 and untracked == 0:
         return "clean"
     parts: list[str] = []
@@ -144,7 +183,7 @@ def summarize_worktree(changes: dict[str, object]) -> str:
     return "dirty · " + " · ".join(parts)
 
 
-def summarize_generated_surfaces(generated_surfaces: dict[str, object]) -> str:
+def summarize_generated_surfaces(generated_surfaces: dict[str, str]) -> str:
     total = len(generated_surfaces)
     unchecked = [label for label, status in generated_surfaces.items() if status == "unchecked"]
     if len(unchecked) == total:
@@ -154,6 +193,15 @@ def summarize_generated_surfaces(generated_surfaces: dict[str, object]) -> str:
         return f"{total}/{total} generated clean"
     fresh = total - len(stale)
     return f"{fresh}/{total} generated clean · stale: {', '.join(stale)}"
+
+
+def summarize_local_state(local_state: LocalState) -> str:
+    root_residents = local_state["root_residents"]
+    keep_roots = " ".join(root_residents)
+    return (
+        f"keep {keep_roots} · cache {local_state['cache']} · "
+        f"outputs {local_state['outputs']} · build {local_state['preferred_build_out_link']}"
+    )
 
 
 def use_color(stream: TextIO = sys.stdout) -> bool:
@@ -183,12 +231,9 @@ def style_generated(summary: str, *, stream: TextIO) -> str:
 def render_motd(cwd: Path, *, verify_generated: bool = False, stream: TextIO = sys.stdout) -> str:
     snapshot = status_snapshot(cwd, verify_generated=verify_generated)
     changes = snapshot["changes"]
-    assert isinstance(changes, dict)
     generated_surfaces = snapshot["generated_surfaces"]
-    assert isinstance(generated_surfaces, dict)
-
     commands = snapshot["commands"]
-    assert isinstance(commands, dict)
+    local_state = snapshot["local_state"]
     revision = str(snapshot["revision"])
     dirty = summarize_worktree(changes) != "clean"
     display_version = f"v{snapshot['version']}+{revision}"
@@ -200,8 +245,16 @@ def render_motd(cwd: Path, *, verify_generated: bool = False, stream: TextIO = s
         ("worktree", style_worktree(summarize_worktree(changes), stream=stream)),
         ("generated", style_generated(summarize_generated_surfaces(generated_surfaces), stream=stream)),
         ("head", style(str(snapshot["last_commit"]), ANSI_DIM, stream=stream)),
-        ("run", style(str(commands["render_all_check"]), ANSI_GREEN, stream=stream)),
+        (
+            "ready",
+            style(
+                f"{commands['render_all_check']} · {commands['verify_quick']} · {commands['build_package']}",
+                ANSI_GREEN,
+                stream=stream,
+            ),
+        ),
         ("test", style(str(commands["test_baseline"]), ANSI_GREEN, stream=stream)),
+        ("roots", style(summarize_local_state(local_state), ANSI_DIM, stream=stream)),
     ]
 
     header = "  ".join(

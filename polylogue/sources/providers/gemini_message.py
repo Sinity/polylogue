@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from polylogue.lib.roles import normalize_role
+from polylogue.lib.roles import Role
 from polylogue.lib.timestamps import parse_timestamp
 from polylogue.lib.viewports import (
     ContentBlock,
@@ -16,6 +17,7 @@ from polylogue.lib.viewports import (
     TokenUsage,
     ToolCall,
 )
+from polylogue.types import Provider
 
 from .gemini_models import GeminiBranchParent, GeminiGrounding, GeminiPart, GeminiThoughtSignature
 
@@ -48,15 +50,15 @@ class GeminiMessage(BaseModel):
     isEdited: bool = False
 
     @property
-    def role_normalized(self) -> str:
+    def role_normalized(self) -> Role:
         role = self.role if self.role else "unknown"
         try:
-            return normalize_role(role)
+            return Role.normalize(role)
         except ValueError:
-            return "unknown"
+            return Role.UNKNOWN
 
     @property
-    def parsed_timestamp(self):
+    def parsed_timestamp(self) -> datetime | None:
         return parse_timestamp(self.createTime or self.timestamp)
 
     @property
@@ -82,7 +84,7 @@ class GeminiMessage(BaseModel):
             timestamp=self.parsed_timestamp,
             role=self.role_normalized,
             tokens=tokens,
-            provider="gemini",
+            provider=Provider.GEMINI,
         )
 
     def extract_reasoning_traces(self) -> list[ReasoningTrace]:
@@ -101,7 +103,7 @@ class GeminiMessage(BaseModel):
                 ReasoningTrace(
                     text=self.text,
                     token_count=self.thinkingBudget,
-                    provider="gemini",
+                    provider=Provider.GEMINI,
                     raw={
                         "isThought": True,
                         "thinkingBudget": self.thinkingBudget,

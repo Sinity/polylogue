@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+from typing import cast
 
 import aiosqlite
 
@@ -23,6 +24,7 @@ from polylogue.storage.embedding_stats_sql import (
     STALE_MESSAGES_SQL,
 )
 from polylogue.storage.embedding_stats_support import (
+    StatsRow,
     build_retrieval_bands_from_status,
     optional_count_async,
     optional_count_sync,
@@ -35,6 +37,15 @@ from polylogue.storage.session_product_status import (
     session_product_status_async,
     session_product_status_sync,
 )
+
+
+def _bounds_value(bounds: StatsRow | None, *, index: int, key: str) -> str | None:
+    if bounds is None:
+        return None
+    value = (bounds[index] if index < len(bounds) else None) if isinstance(bounds, tuple) else cast(object, bounds[key])
+    if value is None:
+        return None
+    return str(value)
 
 
 def read_embedding_stats_sync(
@@ -79,8 +90,8 @@ def read_embedding_stats_sync(
         pending_conversations=pending_conversations,
         stale_messages=stale_messages,
         messages_missing_provenance=missing_provenance,
-        oldest_embedded_at=(bounds["oldest_embedded_at"] if bounds is not None else None),
-        newest_embedded_at=(bounds["newest_embedded_at"] if bounds is not None else None),
+        oldest_embedded_at=_bounds_value(bounds, index=0, key="oldest_embedded_at"),
+        newest_embedded_at=_bounds_value(bounds, index=1, key="newest_embedded_at"),
         model_counts={str(row["model"]): int(row["count"]) for row in model_rows if row["model"]},
         dimension_counts={
             int(row["dimension"]): int(row["count"]) for row in dimension_rows if row["dimension"] is not None
@@ -131,8 +142,8 @@ async def read_embedding_stats_async(
         pending_conversations=pending_conversations,
         stale_messages=stale_messages,
         messages_missing_provenance=missing_provenance,
-        oldest_embedded_at=(bounds["oldest_embedded_at"] if bounds is not None else None),
-        newest_embedded_at=(bounds["newest_embedded_at"] if bounds is not None else None),
+        oldest_embedded_at=_bounds_value(bounds, index=0, key="oldest_embedded_at"),
+        newest_embedded_at=_bounds_value(bounds, index=1, key="newest_embedded_at"),
         model_counts={str(row["model"]): int(row["count"]) for row in model_rows if row["model"]},
         dimension_counts={
             int(row["dimension"]): int(row["count"]) for row in dimension_rows if row["dimension"] is not None

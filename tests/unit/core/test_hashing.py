@@ -25,7 +25,7 @@ HASH_TEXT_CASES = [
 
 
 @pytest.mark.parametrize("text,expected,desc", HASH_TEXT_CASES)
-def test_hash_text_comprehensive(text, expected, desc):
+def test_hash_text_comprehensive(text: str, expected: int | str, desc: str) -> None:
     """Comprehensive hash_text test."""
     result = hash_text(text)
 
@@ -57,7 +57,7 @@ HASH_TEXT_SHORT_CASES = [
 
 
 @pytest.mark.parametrize("text,length,expected,desc", HASH_TEXT_SHORT_CASES)
-def test_hash_text_short_comprehensive(text, length, expected, desc):
+def test_hash_text_short_comprehensive(text: str, length: int | None, expected: int | str, desc: str) -> None:
     """Comprehensive hash_text_short test."""
     result = hash_text_short(text, length=length) if length is not None else hash_text_short(text)
 
@@ -95,7 +95,7 @@ HASH_PAYLOAD_CASES = [
 
 
 @pytest.mark.parametrize("payload,expected,desc", HASH_PAYLOAD_CASES)
-def test_hash_payload_comprehensive(payload, expected, desc):
+def test_hash_payload_comprehensive(payload: object, expected: int | str, desc: str) -> None:
     """Comprehensive hash_payload test."""
     result = hash_payload(payload)
 
@@ -128,7 +128,13 @@ HASH_FILE_CASES = [
 
 
 @pytest.mark.parametrize("content,expected,encoding,desc", HASH_FILE_CASES)
-def test_hash_file_comprehensive(tmp_path: Path, content, expected, encoding, desc):
+def test_hash_file_comprehensive(
+    tmp_path: Path,
+    content: str | bytes | None,
+    expected: int | str,
+    encoding: str | None,
+    desc: str,
+) -> None:
     """Comprehensive hash_file test."""
     file = tmp_path / "test.dat"
 
@@ -145,6 +151,7 @@ def test_hash_file_comprehensive(tmp_path: Path, content, expected, encoding, de
     if isinstance(content, bytes):
         file.write_bytes(content)
     else:
+        assert content is not None
         file.write_text(content, encoding=encoding or "utf-8")
 
     result = hash_file(file)
@@ -170,13 +177,15 @@ CONSISTENCY_CASES = [
 
 
 @pytest.mark.parametrize("label,text,test_type,desc", CONSISTENCY_CASES)
-def test_cross_function_consistency(tmp_path: Path, label, text, test_type, desc):
+def test_cross_function_consistency(tmp_path: Path, label: str, text: str | None, test_type: str, desc: str) -> None:
     """Cross-function consistency tests."""
     if test_type == "payload_vs_text":
+        assert text is not None
         assert hash_payload(text) == hash_text(f'"{text}"'), f"Failed {desc}"
         assert hash_payload(text) != hash_text(text), f"Failed {desc}"
 
     elif test_type == "file_vs_text":
+        assert text is not None
         file = tmp_path / "test.txt"
         file.write_text(text, encoding="utf-8")
         assert hash_file(file) == hash_text(text), f"Failed {desc}"
@@ -198,7 +207,7 @@ UNICODE_NORMALIZATION_CASES = [
 
 
 @pytest.mark.parametrize("text,test_type,desc", UNICODE_NORMALIZATION_CASES)
-def test_unicode_normalization_comprehensive(text, test_type, desc):
+def test_unicode_normalization_comprehensive(text: str, test_type: str, desc: str) -> None:
     """Unicode normalization tests."""
     if test_type == "nfc_nfd":
         nfc = unicodedata.normalize("NFC", text)
@@ -272,7 +281,7 @@ def test_hash_text_hex_characters_property(text: str) -> None:
 
 
 @given(st.text())
-def test_hash_text_unicode_normalization_invariant(text: str):
+def test_hash_text_unicode_normalization_invariant(text: str) -> None:
     """Hash MUST be invariant under Unicode normalization."""
     nfc = unicodedata.normalize("NFC", text)
     nfd = unicodedata.normalize("NFD", text)

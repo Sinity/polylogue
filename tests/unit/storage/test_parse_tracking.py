@@ -485,6 +485,7 @@ class TestMtimeSkip:
 
         # Get the actual mtime
         file_mtime = _get_file_mtime(test_file)
+        assert file_mtime is not None
         known_mtimes = {str(test_file): file_mtime}
 
         # Second pass with known_mtimes: file should be skipped

@@ -8,11 +8,17 @@ Only protocols with 2+ implementations earn their existence here:
 
 from __future__ import annotations
 
+import builtins
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
-from polylogue.storage.store import MessageRecord
+from polylogue.storage.store import (
+    ArtifactObservationRecord,
+    MessageRecord,
+    RawConversationRecord,
+)
+from polylogue.types import Provider, ValidationMode, ValidationStatus
 
 if TYPE_CHECKING:
     from polylogue.lib.conversation_models import Conversation, ConversationSummary
@@ -43,6 +49,8 @@ class VectorProvider(Protocol):
     Implementations: SqliteVecProvider (polylogue.storage.search_providers.sqlite_vec)
     Uses Voyage AI embeddings stored in sqlite-vec.
     """
+
+    model: str
 
     def upsert(self, conversation_id: str, messages: list[MessageRecord]) -> None:
         """Synchronously embed and store vectors for a conversation's messages."""
@@ -90,11 +98,67 @@ class ConversationReader(Protocol):
 
     async def get_eager(self, conversation_id: str) -> Conversation | None: ...
 
-    async def list(self, **kwargs: object) -> list[Conversation]: ...
+    async def list(
+        self,
+        limit: int | None = 50,
+        offset: int = 0,
+        provider: str | None = None,
+        providers: builtins.list[str] | None = None,
+        since: str | None = None,
+        until: str | None = None,
+        title_contains: str | None = None,
+        path_terms: builtins.list[str] | None = None,
+        action_terms: builtins.list[str] | None = None,
+        excluded_action_terms: builtins.list[str] | None = None,
+        tool_terms: builtins.list[str] | None = None,
+        excluded_tool_terms: builtins.list[str] | None = None,
+        has_tool_use: bool = False,
+        has_thinking: bool = False,
+        min_messages: int | None = None,
+        max_messages: int | None = None,
+        min_words: int | None = None,
+    ) -> builtins.list[Conversation]: ...
 
-    async def list_summaries(self, **kwargs: object) -> list[ConversationSummary]: ...
+    async def list_summaries(
+        self,
+        limit: int | None = 50,
+        offset: int = 0,
+        provider: str | None = None,
+        providers: builtins.list[str] | None = None,
+        source: str | None = None,
+        since: str | None = None,
+        until: str | None = None,
+        title_contains: str | None = None,
+        path_terms: builtins.list[str] | None = None,
+        action_terms: builtins.list[str] | None = None,
+        excluded_action_terms: builtins.list[str] | None = None,
+        tool_terms: builtins.list[str] | None = None,
+        excluded_tool_terms: builtins.list[str] | None = None,
+        has_tool_use: bool = False,
+        has_thinking: bool = False,
+        min_messages: int | None = None,
+        max_messages: int | None = None,
+        min_words: int | None = None,
+    ) -> builtins.list[ConversationSummary]: ...
 
-    async def count(self, **kwargs: object) -> int: ...
+    async def count(
+        self,
+        provider: str | None = None,
+        providers: builtins.list[str] | None = None,
+        since: str | None = None,
+        until: str | None = None,
+        title_contains: str | None = None,
+        path_terms: builtins.list[str] | None = None,
+        action_terms: builtins.list[str] | None = None,
+        excluded_action_terms: builtins.list[str] | None = None,
+        tool_terms: builtins.list[str] | None = None,
+        excluded_tool_terms: builtins.list[str] | None = None,
+        has_tool_use: bool = False,
+        has_thinking: bool = False,
+        min_messages: int | None = None,
+        max_messages: int | None = None,
+        min_words: int | None = None,
+    ) -> int: ...
 
     async def get_summary(self, conversation_id: str) -> ConversationSummary | None: ...
 
@@ -113,24 +177,78 @@ class ConversationReader(Protocol):
 class SearchStore(Protocol):
     """Search interface for conversation retrieval."""
 
-    async def search(self, query: str, **kwargs: object) -> list[Conversation]: ...
+    async def search(
+        self,
+        query: str,
+        limit: int = 20,
+        providers: builtins.list[str] | None = None,
+    ) -> list[Conversation]: ...
 
-    async def search_summaries(self, query: str, **kwargs: object) -> list[ConversationSummary]: ...
+    async def search_summaries(
+        self,
+        query: str,
+        limit: int = 20,
+        providers: builtins.list[str] | None = None,
+    ) -> list[ConversationSummary]: ...
 
-    async def search_similar(self, text: str, **kwargs: object) -> list[Conversation]: ...
+    async def search_similar(
+        self,
+        text: str,
+        limit: int = 10,
+        vector_provider: VectorProvider | None = None,
+    ) -> list[Conversation]: ...
 
 
 @runtime_checkable
 class TagStore(Protocol):
     """Tag and metadata management interface."""
 
-    async def list_tags(self, **kwargs: object) -> dict[str, int]: ...
+    async def list_tags(self, *, provider: str | None = None) -> dict[str, int]: ...
 
     async def get_metadata(self, conversation_id: str) -> dict[str, object]: ...
 
     async def update_metadata(self, conversation_id: str, key: str, value: object) -> None: ...
 
     async def delete_metadata(self, conversation_id: str, key: str) -> None: ...
+
+
+@runtime_checkable
+class RawPersistenceStore(Protocol):
+    """Minimal raw-persistence surface used during acquisition."""
+
+    async def save_raw_conversation(self, record: RawConversationRecord) -> bool: ...
+
+    async def save_artifact_observation(self, record: ArtifactObservationRecord) -> bool: ...
+
+
+@runtime_checkable
+class RawValidationStore(Protocol):
+    """Minimal raw-validation surface used by validation flows."""
+
+    async def get_raw_conversations_batch(
+        self,
+        raw_ids: builtins.list[str],
+    ) -> builtins.list[RawConversationRecord]: ...
+
+    async def mark_raw_validated(
+        self,
+        raw_id: str,
+        *,
+        status: ValidationStatus | str,
+        error: str | None = None,
+        drift_count: int = 0,
+        provider: Provider | str | None = None,
+        mode: ValidationMode | str | None = None,
+        payload_provider: Provider | str | None = None,
+    ) -> None: ...
+
+    async def mark_raw_parsed(
+        self,
+        raw_id: str,
+        *,
+        error: str | None = None,
+        payload_provider: Provider | str | None = None,
+    ) -> None: ...
 
 
 __all__ = [
@@ -141,4 +259,6 @@ __all__ = [
     "ConversationReader",
     "SearchStore",
     "TagStore",
+    "RawPersistenceStore",
+    "RawValidationStore",
 ]

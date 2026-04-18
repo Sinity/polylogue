@@ -6,6 +6,9 @@ handles invalid flags gracefully, and all subcommands provide --help.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from pathlib import Path
+
 import pytest
 from click.testing import CliRunner
 
@@ -106,17 +109,17 @@ class TestInvalidDates:
     --limit 0 exits after filter parsing with zero results rendered.
     """
 
-    def test_invalid_since_date(self, runner: CliRunner, workspace_env) -> None:
+    def test_invalid_since_date(self, runner: CliRunner, workspace_env: Mapping[str, Path]) -> None:
         """Malformed --since should not produce traceback."""
         result = runner.invoke(cli, ["--plain", "--since", "not-a-date", "--limit", "0"])
         assert TRACEBACK_SENTINEL not in result.output
 
-    def test_invalid_until_date(self, runner: CliRunner, workspace_env) -> None:
+    def test_invalid_until_date(self, runner: CliRunner, workspace_env: Mapping[str, Path]) -> None:
         """Malformed --until should not produce traceback."""
         result = runner.invoke(cli, ["--plain", "--until", "garbage-date", "--limit", "0"])
         assert TRACEBACK_SENTINEL not in result.output
 
-    def test_since_format_variations(self, runner: CliRunner, workspace_env) -> None:
+    def test_since_format_variations(self, runner: CliRunner, workspace_env: Mapping[str, Path]) -> None:
         """Partial/malformed ISO dates should not crash."""
         bad_dates = ["2024", "2024-13", "2024-01-32", "invalid"]
         for bad_date in bad_dates:
@@ -135,7 +138,7 @@ class TestNonexistentPaths:
         result = runner.invoke(cli, ["run", "--source", "/nonexistent/path"])
         assert TRACEBACK_SENTINEL not in result.output
 
-    def test_nonexistent_output_path(self, runner: CliRunner, workspace_env) -> None:
+    def test_nonexistent_output_path(self, runner: CliRunner, workspace_env: Mapping[str, Path]) -> None:
         """Non-existent --output path should not produce traceback."""
         result = runner.invoke(cli, ["--plain", "--output", "/nonexistent/dir/file.md", "--limit", "0"])
         assert TRACEBACK_SENTINEL not in result.output
@@ -176,19 +179,23 @@ class TestFilterCombinations:
     --limit 0 ensures we exit after filter resolution with zero results rendered.
     """
 
-    def test_exclude_and_include_same_provider(self, runner: CliRunner, workspace_env) -> None:
+    def test_exclude_and_include_same_provider(
+        self,
+        runner: CliRunner,
+        workspace_env: Mapping[str, Path],
+    ) -> None:
         """Conflicting provider filters should not traceback."""
         result = runner.invoke(
             cli, ["--plain", "--provider", "claude-ai", "--exclude-provider", "claude-ai", "--limit", "0"]
         )
         assert TRACEBACK_SENTINEL not in result.output
 
-    def test_multiple_contain_terms(self, runner: CliRunner, workspace_env) -> None:
+    def test_multiple_contain_terms(self, runner: CliRunner, workspace_env: Mapping[str, Path]) -> None:
         """Multiple --contains should work without traceback."""
         result = runner.invoke(cli, ["--plain", "--contains", "word1", "--contains", "word2", "--limit", "0"])
         assert TRACEBACK_SENTINEL not in result.output
 
-    def test_multiple_exclude_terms(self, runner: CliRunner, workspace_env) -> None:
+    def test_multiple_exclude_terms(self, runner: CliRunner, workspace_env: Mapping[str, Path]) -> None:
         """Multiple --exclude-text should work without traceback."""
         result = runner.invoke(cli, ["--plain", "--exclude-text", "bad1", "--exclude-text", "bad2", "--limit", "0"])
         assert TRACEBACK_SENTINEL not in result.output

@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 from polylogue.cli.click_app import cli as root_cli
+from polylogue.showcase.exercises import Exercise
 from polylogue.showcase.generators import (
     generate_all_exercises,
     generate_all_scenarios,
@@ -18,7 +21,7 @@ from polylogue.showcase.generators import (
 )
 
 
-def _names(items: list | tuple) -> list[str]:
+def _names(items: Sequence[Exercise]) -> list[str]:
     return [item.name for item in items]
 
 

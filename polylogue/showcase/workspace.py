@@ -18,6 +18,8 @@ from polylogue.scenarios import (
     build_corpus_scenarios,
     flatten_corpus_specs,
 )
+from polylogue.schemas.synthetic.models import SyntheticWrittenBatch
+from polylogue.storage.state_views import RunResult
 from polylogue.sync_bridge import run_coroutine_sync
 
 
@@ -174,7 +176,7 @@ def generate_synthetic_fixtures_from_specs(
     *,
     corpus_specs: tuple[CorpusSpec, ...],
     prefix: str = "showcase",
-) -> object:
+) -> tuple[SyntheticWrittenBatch, ...]:
     """Generate schema-driven synthetic fixtures for explicit corpus specs."""
     return generate_synthetic_fixtures_from_scenarios(
         fixture_dir,
@@ -192,7 +194,7 @@ def generate_synthetic_fixtures_from_scenarios(
     *,
     corpus_scenarios: tuple[CorpusScenario, ...],
     prefix: str = "showcase",
-) -> object:
+) -> tuple[SyntheticWrittenBatch, ...]:
     """Generate schema-driven synthetic fixtures for explicit corpus scenarios."""
     from polylogue.schemas.synthetic import SyntheticCorpus
 
@@ -207,7 +209,7 @@ def seed_workspace_from_specs(
     corpus_specs: tuple[CorpusSpec, ...],
     regenerate_schemas: bool = False,
     prefix: str = "showcase",
-) -> object:
+) -> RunResult:
     """Generate fixtures from explicit specs and ingest them into the workspace."""
     return seed_workspace_from_scenarios(
         workspace,
@@ -227,7 +229,7 @@ def seed_workspace_from_scenarios(
     corpus_scenarios: tuple[CorpusScenario, ...],
     regenerate_schemas: bool = False,
     prefix: str = "showcase",
-) -> object:
+) -> RunResult:
     """Generate fixtures from explicit corpus scenarios and ingest them into the workspace."""
     generate_synthetic_fixtures_from_scenarios(
         workspace.fixture_dir,
@@ -246,7 +248,7 @@ def seed_workspace_from_corpus_request(
     request: CorpusRequest,
     regenerate_schemas: bool = False,
     prefix: str = "showcase",
-) -> object:
+) -> RunResult:
     """Resolve corpus specs, generate fixtures, and ingest them into the workspace."""
     scenarios = build_synthetic_corpus_scenarios(request=request)
     return seed_workspace_from_scenarios(
@@ -269,7 +271,7 @@ def seed_workspace_from_corpus_options(
     seed: int = 42,
     regenerate_schemas: bool = False,
     prefix: str = "showcase",
-) -> object:
+) -> RunResult:
     """Resolve corpus specs, generate fixtures, and ingest them into the workspace."""
     return seed_workspace_from_corpus_request(
         workspace,
@@ -322,7 +324,7 @@ def run_pipeline_for_fixture_workspace(
     workspace: VerificationWorkspace,
     *,
     regenerate_schemas: bool = False,
-) -> object:
+) -> RunResult:
     """Ingest synthetic fixtures inside an isolated workspace."""
     mirror_fixtures_to_inbox(workspace.fixture_dir, workspace.inbox_dir)
 
@@ -344,7 +346,7 @@ def run_pipeline_for_configured_sources(
     *,
     source_names: list[str] | None = None,
     regenerate_schemas: bool = False,
-) -> object:
+) -> RunResult:
     """Ingest configured user sources inside an isolated workspace."""
     configured_sources = get_config().sources
     if source_names is None:
@@ -365,7 +367,7 @@ def _run_pipeline_with_sources(
     *,
     sources: list[Source],
     regenerate_schemas: bool,
-) -> object:
+) -> RunResult:
     """Run the ingestion pipeline under a workspace environment."""
     del regenerate_schemas
     from polylogue.pipeline.runner import run_sources

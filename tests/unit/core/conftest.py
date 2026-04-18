@@ -8,7 +8,9 @@ Module-level fixtures for test consolidation:
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -45,13 +47,13 @@ def populated_db(db_path: Path) -> Path:
 
 
 @pytest.fixture
-def mock_schema_dir(tmp_path):
+def mock_schema_dir(tmp_path: Path) -> Path:
     """Create a mock schema directory with test schemas."""
     schema_dir = tmp_path / "schemas"
     schema_dir.mkdir()
     registry = SchemaRegistry(storage_root=schema_dir)
 
-    test_schema = {
+    test_schema: dict[str, object] = {
         "$schema": "http://json-schema.org/draft-07/schema#",
         "type": "object",
         "properties": {
@@ -63,7 +65,11 @@ def mock_schema_dir(tmp_path):
         "additionalProperties": False,
     }
 
-    open_schema = {"type": "object", "properties": {"id": {"type": "string"}}, "additionalProperties": {}}
+    open_schema: dict[str, object] = {
+        "type": "object",
+        "properties": {"id": {"type": "string"}},
+        "additionalProperties": {},
+    }
     registry.write_schema_version("chatgpt", "v1", test_schema)
     registry.write_schema_version("codex", "v1", open_schema)
 
@@ -71,7 +77,7 @@ def mock_schema_dir(tmp_path):
 
 
 @pytest.fixture
-def make_filter_repo(tmp_path):
+def make_filter_repo(tmp_path: Path) -> Callable[[list[dict[str, object]]], ConversationRepository]:
     """Factory fixture: build a ConversationRepository with custom conversations.
 
     Usage::
@@ -94,32 +100,32 @@ def make_filter_repo(tmp_path):
         parent_conversation (str): optional
     """
 
-    def _factory(conversations: list[dict]) -> ConversationRepository:
+    def _factory(conversations: list[dict[str, object]]) -> ConversationRepository:
         db_path = tmp_path / "test.db"
         with open_connection(db_path) as conn:
             rebuild_index(conn)
 
         for spec in conversations:
-            cid = spec["id"]
-            provider = spec.get("provider", "test")
+            cid = str(spec["id"])
+            provider = str(spec.get("provider", "test"))
             builder = ConversationBuilder(db_path, cid).provider(provider)
 
             if title := spec.get("title"):
-                builder = builder.title(title)
+                builder = builder.title(str(title))
             if metadata := spec.get("metadata"):
-                builder = builder.metadata(metadata)
+                builder = builder.metadata(cast(dict[str, object], metadata))
             if created_at := spec.get("created_at"):
-                builder = builder.created_at(created_at)
+                builder = builder.created_at(str(created_at))
             if branch_type := spec.get("branch_type"):
-                builder = builder.branch_type(branch_type)
+                builder = builder.branch_type(str(branch_type))
             if parent := spec.get("parent_conversation"):
-                builder = builder.parent_conversation(parent)
+                builder = builder.parent_conversation(str(parent))
 
-            for msg in spec.get("messages", []):
+            for msg in cast(list[dict[str, object]], spec.get("messages", [])):
                 builder = builder.add_message(
-                    msg["id"],
-                    role=msg.get("role", "user"),
-                    text=msg.get("text", ""),
+                    str(msg["id"]),
+                    role=str(msg.get("role", "user")),
+                    text=str(msg.get("text", "")),
                 )
 
             builder.save()

@@ -83,13 +83,13 @@ class ConversationFilter(ConversationFilterBuilderMixin):
         return self._plan.describe()
 
     async def list(self) -> builtins.list[Conversation]:
-        return await list_for_plan(self._plan, self._repo)  # type: ignore[no-any-return]
+        return await list_for_plan(self._plan, self._repo)
 
     async def list_summaries(self) -> builtins.list[ConversationSummary]:
-        return await list_summaries_for_plan(self._plan, self._repo)  # type: ignore[no-any-return]
+        return await list_summaries_for_plan(self._plan, self._repo)
 
     async def first(self) -> Conversation | None:
-        return await first_for_plan(self._plan, self._repo)  # type: ignore[no-any-return]
+        return await first_for_plan(self._plan, self._repo)
 
     async def count(self) -> int:
         return await count_for_plan(self._plan, self._repo)

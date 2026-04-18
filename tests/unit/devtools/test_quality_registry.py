@@ -161,6 +161,6 @@ def test_quality_registry_references_existing_files() -> None:
         for path in (*campaign.paths_to_mutate, *campaign.tests):
             assert (ROOT / path).exists(), path
 
-    for campaign in registry.benchmark_campaigns:
-        for path in campaign.tests:
+    for benchmark_campaign in registry.benchmark_campaigns:
+        for path in benchmark_campaign.tests:
             assert (ROOT / path).exists(), path

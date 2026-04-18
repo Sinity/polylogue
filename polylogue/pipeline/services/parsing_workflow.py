@@ -99,13 +99,36 @@ def _summarize_batch_observations(
     if not batch_observations:
         return {}
 
+    def _observation_float(observation: dict[str, object], field: str) -> float | None:
+        value = observation.get(field)
+        if value is None:
+            return None
+        if isinstance(value, bool):
+            return float(value)
+        if isinstance(value, int | float):
+            return float(value)
+        if isinstance(value, str):
+            try:
+                return float(value)
+            except ValueError:
+                return None
+        return None
+
     def _max_float(field: str) -> float | None:
-        values = [float(value) for observation in batch_observations if (value := observation.get(field)) is not None]
+        values = [
+            value for observation in batch_observations if (value := _observation_float(observation, field)) is not None
+        ]
         return round(max(values), 1) if values else None
+
+    slow_batch_count = 0
+    for observation in batch_observations:
+        elapsed_ms = _observation_float(observation, "elapsed_ms")
+        if elapsed_ms is not None and elapsed_ms >= 2000.0:
+            slow_batch_count += 1
 
     return {
         "batch_count": len(batch_observations),
-        "slow_batch_count": sum(1 for observation in batch_observations if float(observation["elapsed_ms"]) >= 2000.0),
+        "slow_batch_count": slow_batch_count,
         "max_elapsed_ms": _max_float("elapsed_ms"),
         "max_blob_mb": _max_float("blob_mb"),
         "max_result_mb": _max_float("max_result_mb"),

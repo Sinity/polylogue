@@ -5,6 +5,7 @@ from __future__ import annotations
 import tempfile
 import zipfile
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -62,7 +63,7 @@ def test_symlink_circular_reference() -> None:
             pass
 
 
-def test_zip_bomb_compression_ratio_blocked(tmp_path) -> None:
+def test_zip_bomb_compression_ratio_blocked(tmp_path: Path) -> None:
     zip_path = tmp_path / "suspicious.zip"
     json_content = b'{"id": "test", "messages": []}'
     with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
@@ -70,10 +71,11 @@ def test_zip_bomb_compression_ratio_blocked(tmp_path) -> None:
         zf.writestr("valid.json", json_content)
 
     source = Source(name="test", path=tmp_path)
-    cursor_state: dict = {}
+    cursor_state: dict[str, object] = {}
     list(iter_source_conversations(source, cursor_state=cursor_state))
-    failed = cursor_state.get("failed_files", [])
-    assert cursor_state.get("failed_count", 0) >= 1 or not failed
+    failed = cast(list[dict[str, object]], cursor_state.get("failed_files", []))
+    failed_count = cast(int, cursor_state.get("failed_count", 0))
+    assert failed_count >= 1 or not failed
     if failed:
         has_expected_error = any(
             "ratio" in str(f.get("error", "")).lower() or "json" in str(f.get("error", "")).lower() for f in failed
@@ -81,11 +83,11 @@ def test_zip_bomb_compression_ratio_blocked(tmp_path) -> None:
         assert has_expected_error or len(failed) == 0
 
 
-def test_zip_oversized_file_limit_constant(tmp_path) -> None:
+def test_zip_oversized_file_limit_constant(tmp_path: Path) -> None:
     assert MAX_UNCOMPRESSED_SIZE == 10 * 1024 * 1024 * 1024
 
 
-def test_zip_path_traversal_filenames_handled(tmp_path) -> None:
+def test_zip_path_traversal_filenames_handled(tmp_path: Path) -> None:
     zip_path = tmp_path / "traversal.zip"
     json_content = b'{"id": "traversal-test", "messages": [{"role": "user", "content": "test"}]}'
     with zipfile.ZipFile(zip_path, "w") as zf:
@@ -94,6 +96,6 @@ def test_zip_path_traversal_filenames_handled(tmp_path) -> None:
         zf.writestr("normal.json", json_content)
 
     source = Source(name="test", path=tmp_path)
-    cursor_state: dict = {}
+    cursor_state: dict[str, object] = {}
     payloads = list(iter_source_conversations(source, cursor_state=cursor_state))
     assert len(payloads) >= 1

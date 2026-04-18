@@ -2,20 +2,36 @@
 
 from __future__ import annotations
 
-import builtins
+from typing import TYPE_CHECKING
 
+from polylogue.lib.conversation_models import Conversation
 from polylogue.storage.query_models import ConversationRecordQuery
 from polylogue.storage.store import ConversationRecord
 
+if TYPE_CHECKING:
+    from polylogue.storage.backends.query_store import SQLiteQueryStore
+
 
 class RepositoryArchiveTreeMixin:
-    async def get_parent(self, conversation_id: str):
+    if TYPE_CHECKING:
+        queries: SQLiteQueryStore
+
+        async def get(self, conversation_id: str) -> Conversation | None: ...
+
+        async def _hydrate_conversations(
+            self,
+            conversation_records: list[ConversationRecord],
+            *,
+            ordered_ids: list[str] | None = None,
+        ) -> list[Conversation]: ...
+
+    async def get_parent(self, conversation_id: str) -> Conversation | None:
         conv_record = await self.queries.get_conversation(conversation_id)
         if conv_record and conv_record.parent_conversation_id:
             return await self.get(str(conv_record.parent_conversation_id))
         return None
 
-    async def get_children(self, conversation_id: str):
+    async def get_children(self, conversation_id: str) -> list[Conversation]:
         child_records = await self.queries.list_conversations(ConversationRecordQuery(parent_id=conversation_id))
         if not child_records:
             return []
@@ -33,18 +49,18 @@ class RepositoryArchiveTreeMixin:
             current = parent
         return current
 
-    async def get_root(self, conversation_id: str):
+    async def get_root(self, conversation_id: str) -> Conversation:
         root_record = await self._get_root_record(conversation_id)
         root = await self.get(root_record.conversation_id)
         if root is None:
             raise ValueError(f"Conversation {conversation_id} not found")
         return root
 
-    async def get_session_tree(self, conversation_id: str):
+    async def get_session_tree(self, conversation_id: str) -> list[Conversation]:
         root_record = await self._get_root_record(conversation_id)
 
-        tree_records: builtins.list[ConversationRecord] = []
-        queue: builtins.list[ConversationRecord] = [root_record]
+        tree_records: list[ConversationRecord] = []
+        queue: list[ConversationRecord] = [root_record]
 
         while queue:
             current = queue.pop(0)

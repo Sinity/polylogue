@@ -3,26 +3,194 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import sqlite3
 import threading
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Final, cast
 from uuid import uuid4
 
+from polylogue.lib.branch_type import BranchType
+from polylogue.lib.roles import Role
+from polylogue.pipeline.prepare import _timestamp_sort_key
 from polylogue.storage.backends.connection import connection_context, open_connection
 from polylogue.storage.store import (
     AttachmentRecord,
     ContentBlockRecord,
     ConversationRecord,
     MessageRecord,
+    RawConversationRecord,
     RunRecord,
     _json_or_none,
     _make_ref_id,
 )
+from polylogue.types import (
+    AttachmentId,
+    ContentBlockType,
+    ContentHash,
+    ConversationId,
+    MessageId,
+    Provider,
+    SemanticBlockType,
+    ValidationMode,
+    ValidationStatus,
+)
 
 # Thread-safety lock for writes (matches store.py pattern)
 _WRITE_LOCK = threading.Lock()
+_AUTO_TIMESTAMP: Final[object] = object()
+_AUTO_MESSAGE_ID: Final[object] = object()
+
+
+def _conversation_id(value: str) -> ConversationId:
+    return ConversationId(value)
+
+
+def _message_id(value: str) -> MessageId:
+    return MessageId(value)
+
+
+def _attachment_id(value: str) -> AttachmentId:
+    return AttachmentId(value)
+
+
+def _content_hash(value: str) -> ContentHash:
+    return ContentHash(value)
+
+
+def _optional_str(value: object) -> str | None:
+    return value if isinstance(value, str) else None
+
+
+def _optional_int(value: object) -> int | None:
+    return value if isinstance(value, int) else None
+
+
+def _optional_dict(value: object) -> dict[str, object] | None:
+    return cast(dict[str, object], value) if isinstance(value, dict) else None
+
+
+def _content_block_record(
+    *,
+    message_id: str,
+    conversation_id: str,
+    block_index: int,
+    block_type: str,
+    text: str | None = None,
+    tool_name: str | None = None,
+    tool_id: str | None = None,
+    tool_input: str | None = None,
+    media_type: str | None = None,
+    metadata: str | None = None,
+    semantic_type: str | None = None,
+) -> ContentBlockRecord:
+    return ContentBlockRecord(
+        block_id=ContentBlockRecord.make_id(message_id, block_index),
+        message_id=_message_id(message_id),
+        conversation_id=_conversation_id(conversation_id),
+        block_index=block_index,
+        type=ContentBlockType.from_string(block_type),
+        text=text,
+        tool_name=tool_name,
+        tool_id=tool_id,
+        tool_input=tool_input,
+        media_type=media_type,
+        metadata=metadata,
+        semantic_type=None if semantic_type is None else SemanticBlockType.from_string(semantic_type),
+    )
+
+
+def _content_block_from_mapping(
+    *,
+    block: Mapping[str, object],
+    message_id: str,
+    conversation_id: str,
+    block_index: int,
+) -> ContentBlockRecord:
+    raw_tool_input = block.get("tool_input", block.get("input"))
+    raw_metadata = block.get("metadata")
+    return _content_block_record(
+        message_id=message_id,
+        conversation_id=conversation_id,
+        block_index=block_index,
+        block_type=_optional_str(block.get("type")) or "text",
+        text=_optional_str(block.get("text")),
+        tool_name=_optional_str(block.get("tool_name")) or _optional_str(block.get("name")),
+        tool_id=_optional_str(block.get("tool_id")) or _optional_str(block.get("id")),
+        tool_input=(
+            raw_tool_input
+            if isinstance(raw_tool_input, str)
+            else json.dumps(raw_tool_input)
+            if raw_tool_input is not None
+            else None
+        ),
+        media_type=_optional_str(block.get("media_type")),
+        metadata=(
+            raw_metadata
+            if isinstance(raw_metadata, str)
+            else json.dumps(raw_metadata)
+            if raw_metadata is not None
+            else None
+        ),
+        semantic_type=_optional_str(block.get("semantic_type")),
+    )
+
+
+def _normalize_content_blocks(
+    *,
+    raw_blocks: object,
+    message_id: str,
+    conversation_id: str,
+) -> list[ContentBlockRecord]:
+    if not isinstance(raw_blocks, list):
+        return []
+    blocks: list[ContentBlockRecord] = []
+    for idx, raw_block in enumerate(raw_blocks):
+        if isinstance(raw_block, ContentBlockRecord):
+            blocks.append(raw_block)
+            continue
+        if isinstance(raw_block, Mapping):
+            blocks.append(
+                _content_block_from_mapping(
+                    block=raw_block,
+                    message_id=message_id,
+                    conversation_id=conversation_id,
+                    block_index=idx,
+                )
+            )
+    return blocks
+
+
+def make_content_block(
+    *,
+    message_id: str,
+    conversation_id: str,
+    block_index: int,
+    block_type: str = "text",
+    text: str | None = None,
+    tool_name: str | None = None,
+    tool_id: str | None = None,
+    tool_input: str | None = None,
+    media_type: str | None = None,
+    metadata: str | None = None,
+    semantic_type: str | None = None,
+) -> ContentBlockRecord:
+    return _content_block_record(
+        message_id=message_id,
+        conversation_id=conversation_id,
+        block_index=block_index,
+        block_type=block_type,
+        text=text,
+        tool_name=tool_name,
+        tool_id=tool_id,
+        tool_input=tool_input,
+        media_type=media_type,
+        metadata=metadata,
+        semantic_type=semantic_type,
+    )
+
 
 # =============================================================================
 # STORE FUNCTIONS (moved from store.py for testing)
@@ -371,13 +539,8 @@ def store_records(
 # =============================================================================
 
 
-def db_setup(workspace_env) -> Path:
-    """Initialize database path in workspace environment.
-
-    Usage in tests:
-        db_path = db_setup(workspace_env)
-        builder = ConversationBuilder(db_path, "test-conv")
-    """
+def db_setup(workspace_env: Mapping[str, Path]) -> Path:
+    """Initialize database path in workspace environment."""
     db_path = workspace_env["data_root"] / "polylogue" / "polylogue.db"
     db_path.parent.mkdir(parents=True, exist_ok=True)
     return db_path
@@ -389,38 +552,20 @@ def db_setup(workspace_env) -> Path:
 
 
 class ConversationBuilder:
-    """Fluent builder for creating conversations in test database.
+    """Fluent builder for creating conversations in test databases."""
 
-    Example:
-        (ConversationBuilder(db_path, "test-conv")
-         .title("My Test")
-         .provider("chatgpt")
-         .add_message(msg1)
-         .add_message(msg2)
-         .add_attachment(att1)
-         .save())
-
-    Simplifies:
-        - Creating ConversationRecord
-        - Adding messages/attachments
-        - Calling store_records with proper open_connection
-    """
-
-    def __init__(self, db_path: Path, conversation_id: str):
+    def __init__(self, db_path: Path, conversation_id: str) -> None:
         self.db_path = db_path
         now = datetime.now(timezone.utc).isoformat()
-
-        from polylogue.pipeline.prepare import _timestamp_sort_key
-
         self.conv = ConversationRecord(
-            conversation_id=conversation_id,
+            conversation_id=_conversation_id(conversation_id),
             provider_name="test",
             provider_conversation_id=f"ext-{conversation_id}",
             title="Test Conversation",
             created_at=now,
             updated_at=now,
             sort_key=_timestamp_sort_key(now),
-            content_hash=uuid4().hex,
+            content_hash=_content_hash(uuid4().hex),
         )
         self.messages: list[MessageRecord] = []
         self.attachments: list[AttachmentRecord] = []
@@ -438,101 +583,66 @@ class ConversationBuilder:
         return self
 
     def updated_at(self, updated_at: str) -> ConversationBuilder:
-        from polylogue.pipeline.prepare import _timestamp_sort_key
-
-        self.conv = self.conv.model_copy(
-            update={
-                "updated_at": updated_at,
-                "sort_key": _timestamp_sort_key(updated_at),
-            }
-        )
+        self.conv = self.conv.model_copy(update={"updated_at": updated_at, "sort_key": _timestamp_sort_key(updated_at)})
         return self
 
-    def metadata(self, metadata: dict[str, Any] | None) -> ConversationBuilder:
+    def metadata(self, metadata: dict[str, object] | None) -> ConversationBuilder:
         self.conv = self.conv.model_copy(update={"metadata": metadata})
         return self
 
     def parent_conversation(self, parent_id: str) -> ConversationBuilder:
-        """Set parent conversation for continuations/sidechains."""
-        self.conv = self.conv.model_copy(update={"parent_conversation_id": parent_id})
+        self.conv = self.conv.model_copy(update={"parent_conversation_id": _conversation_id(parent_id)})
         return self
 
     def branch_type(self, branch_type: str) -> ConversationBuilder:
-        """Set branch type: 'continuation', 'sidechain', or 'fork'."""
-        self.conv = self.conv.model_copy(update={"branch_type": branch_type})
+        self.conv = self.conv.model_copy(update={"branch_type": BranchType(branch_type)})
         return self
 
     def add_message(
         self,
         message_id: str | None = None,
-        role: str = "user",
+        role: str | None = "user",
         text: str = "Test message",
-        timestamp: str | None | object = ...,  # ... = auto-generate, None = no timestamp
-        **kwargs,
+        timestamp: str | None | object = _AUTO_TIMESTAMP,
+        **kwargs: Any,
     ) -> ConversationBuilder:
-        """Add a message to the conversation.
-
-        Can pass MessageRecord directly or use kwargs to build one.
-
-        Usage:
-            .add_message("m1", role="user", text="Hello!")
-            .add_message("m2", timestamp=None)  # Explicitly no timestamp
-            .add_message(message_record)
-        """
         msg_id = f"m{len(self.messages) + 1}" if message_id is None else message_id
+        ts = datetime.now(timezone.utc).isoformat() if timestamp is _AUTO_TIMESTAMP else cast(str | None, timestamp)
 
-        # Handle timestamp: ... = auto-generate, None = keep None, str = use value
-        ts = datetime.now(timezone.utc).isoformat() if timestamp is ... else timestamp
+        provider_meta = _optional_dict(kwargs.pop("provider_meta", None))
+        extra_blocks = _normalize_content_blocks(
+            raw_blocks=provider_meta.get("content_blocks") if provider_meta is not None else None,
+            message_id=msg_id,
+            conversation_id=str(self.conv.conversation_id),
+        )
+        existing_blocks = _normalize_content_blocks(
+            raw_blocks=kwargs.pop("content_blocks", []),
+            message_id=msg_id,
+            conversation_id=str(self.conv.conversation_id),
+        )
+        all_blocks = [*extra_blocks, *existing_blocks]
 
-        from polylogue.pipeline.prepare import _timestamp_sort_key
-
-        # Extract content_blocks from provider_meta if provided (legacy test format)
-        provider_meta = kwargs.pop("provider_meta", None)
-        raw_blocks = (provider_meta or {}).get("content_blocks") or []
-        extra_blocks: list[ContentBlockRecord] = []
-        for idx, blk in enumerate(raw_blocks):
-            extra_blocks.append(
-                ContentBlockRecord(
-                    block_id=f"blk-{msg_id}-{idx}",
-                    message_id=msg_id,
-                    conversation_id=self.conv.conversation_id,
-                    block_index=idx,
-                    type=blk.get("type", "text"),
-                    text=blk.get("text"),
-                    tool_name=blk.get("tool_name"),
-                    tool_id=blk.get("tool_id"),
-                    tool_input=(
-                        blk["input"]
-                        if isinstance(blk.get("input"), str)
-                        else __import__("json").dumps(blk["input"])
-                        if blk.get("input") is not None
-                        else None
-                    ),
-                    semantic_type=blk.get("semantic_type"),
-                )
-            )
-
-        # Merge with any content_blocks already in kwargs
-        existing_blocks = kwargs.pop("content_blocks", [])
-        all_blocks = extra_blocks + list(existing_blocks)
-
-        # Compute analytics fields from content_blocks (same logic as prepare.py)
-        _block_types = {blk.type for blk in all_blocks}
-        _word_count = len(text.split()) if text and text.strip() else 0
-        _has_tool_use = 1 if (_block_types & {"tool_use", "tool_result"}) or role == "tool" else 0
-        _has_thinking = 1 if "thinking" in _block_types else 0
+        block_types = {blk.type for blk in all_blocks}
+        role_value = None if role is None else Role.normalize(role)
+        word_count = len(text.split()) if text.strip() else 0
+        has_tool_use = (
+            1
+            if (block_types & {ContentBlockType.TOOL_USE, ContentBlockType.TOOL_RESULT}) or role_value is Role.TOOL
+            else 0
+        )
+        has_thinking = 1 if ContentBlockType.THINKING in block_types else 0
 
         msg = MessageRecord(
-            message_id=msg_id,
+            message_id=_message_id(msg_id),
             conversation_id=self.conv.conversation_id,
-            role=role,
+            role=role_value,
             text=text,
-            sort_key=_timestamp_sort_key(ts) if ts is not None else None,
-            content_hash=uuid4().hex[:16],
+            sort_key=kwargs.pop("sort_key", _timestamp_sort_key(ts) if ts is not None else None),
+            content_hash=_content_hash(cast(str, kwargs.pop("content_hash", uuid4().hex[:16]))),
             content_blocks=all_blocks,
-            word_count=kwargs.pop("word_count", _word_count),
-            has_tool_use=kwargs.pop("has_tool_use", _has_tool_use),
-            has_thinking=kwargs.pop("has_thinking", _has_thinking),
+            word_count=cast(int, kwargs.pop("word_count", word_count)),
+            has_tool_use=cast(int, kwargs.pop("has_tool_use", has_tool_use)),
+            has_thinking=cast(int, kwargs.pop("has_thinking", has_thinking)),
             **kwargs,
         )
         self.messages.append(msg)
@@ -541,26 +651,22 @@ class ConversationBuilder:
     def add_attachment(
         self,
         attachment_id: str | None = None,
-        message_id: str | None | object = ...,  # ... = auto-assign to last message, None = orphaned
+        message_id: str | None | object = _AUTO_MESSAGE_ID,
         mime_type: str = "application/octet-stream",
         size_bytes: int = 1024,
         path: str | None = None,
-        provider_meta: dict | None = None,
+        provider_meta: dict[str, object] | None = None,
     ) -> ConversationBuilder:
-        """Add an attachment to the conversation.
-
-        Args:
-            message_id: ... (default) = attach to last message, None = orphaned attachment
-        """
         att_id = f"att{len(self.attachments) + 1}" if attachment_id is None else attachment_id
-
-        # Handle message_id: ... = auto-assign to last message, None = orphaned
-        msg_id = (self.messages[-1].message_id if self.messages else None) if message_id is ... else message_id
-
+        resolved_message_id = (
+            str(self.messages[-1].message_id)
+            if self.messages and message_id is _AUTO_MESSAGE_ID
+            else cast(str | None, message_id)
+        )
         att = AttachmentRecord(
-            attachment_id=att_id,
+            attachment_id=_attachment_id(att_id),
             conversation_id=self.conv.conversation_id,
-            message_id=msg_id,
+            message_id=None if resolved_message_id is None else _message_id(resolved_message_id),
             mime_type=mime_type,
             size_bytes=size_bytes,
             path=path,
@@ -570,7 +676,6 @@ class ConversationBuilder:
         return self
 
     def save(self) -> ConversationRecord:
-        """Save conversation, messages, and attachments to database."""
         with open_connection(self.db_path) as conn:
             store_records(
                 conversation=self.conv,
@@ -580,8 +685,7 @@ class ConversationBuilder:
             )
         return self.conv
 
-    async def build(self):
-        """Save to the DB and return the hydrated domain conversation."""
+    async def build(self) -> object:
         from polylogue.storage.backends.async_sqlite import SQLiteBackend
         from polylogue.storage.repository import ConversationRepository
 
@@ -606,22 +710,17 @@ def make_conversation(
     title: str = "Test Conversation",
     created_at: str | None = None,
     updated_at: str | None = None,
-    **kwargs,
+    **kwargs: Any,
 ) -> ConversationRecord:
-    """Quick conversation record creation without storing.
-
-    Usage:
-        conv = make_conversation("conv1", provider_name="claude-ai", title="My Conv")
-    """
     now = datetime.now(timezone.utc).isoformat()
     return ConversationRecord(
-        conversation_id=conversation_id,
+        conversation_id=_conversation_id(conversation_id),
         provider_name=provider_name,
-        provider_conversation_id=kwargs.pop("provider_conversation_id", f"ext-{conversation_id}"),
+        provider_conversation_id=cast(str, kwargs.pop("provider_conversation_id", f"ext-{conversation_id}")),
         title=title,
         created_at=created_at or now,
         updated_at=updated_at or now,
-        content_hash=kwargs.pop("content_hash", uuid4().hex),
+        content_hash=_content_hash(cast(str, kwargs.pop("content_hash", uuid4().hex))),
         **kwargs,
     )
 
@@ -630,71 +729,43 @@ def make_message(
     message_id: str = "m1",
     conversation_id: str = "conv1",
     role: str = "user",
-    text: str = "Test message",
+    text: str | None = "Test message",
     timestamp: str | None = None,
-    **kwargs,
+    **kwargs: Any,
 ) -> MessageRecord:
-    """Quick message creation without builder.
-
-    Usage:
-        msg = make_message("m1", role="assistant", text="Reply")
-        msg = make_message("m1", content_hash="explicit-hash")  # Override hash
-        msg = make_message("m1", provider_meta={"content_blocks": [{"type": "thinking"}]})
-    """
-    import json as _json
-
-    from polylogue.pipeline.prepare import _timestamp_sort_key
-
     ts = timestamp or datetime.now(timezone.utc).isoformat()
-
-    # Extract content_blocks from provider_meta if provided (legacy test format)
-    provider_meta = kwargs.pop("provider_meta", None)
-    raw_blocks = (provider_meta or {}).get("content_blocks") or []
-    extra_blocks: list[ContentBlockRecord] = []
-    for idx, blk in enumerate(raw_blocks or []):
-        if not isinstance(blk, dict):
-            continue
-        tool_input = blk.get("input")
-        extra_blocks.append(
-            ContentBlockRecord(
-                block_id=f"blk-{message_id}-{idx}",
-                message_id=message_id,
-                conversation_id=conversation_id,
-                block_index=idx,
-                type=blk.get("type", "text"),
-                text=blk.get("text"),
-                tool_name=blk.get("tool_name") or blk.get("name"),
-                tool_id=blk.get("tool_id") or blk.get("id"),
-                tool_input=(
-                    tool_input
-                    if isinstance(tool_input, str)
-                    else _json.dumps(tool_input)
-                    if tool_input is not None
-                    else None
-                ),
-            )
-        )
-
-    existing_blocks = kwargs.pop("content_blocks", [])
-    all_blocks = extra_blocks + list(existing_blocks)
-
-    # Compute analytics fields from content_blocks (same logic as prepare.py)
-    _block_types = {blk.type for blk in all_blocks}
-    _word_count = len(text.split()) if text and text.strip() else 0
-    _has_tool_use = 1 if (_block_types & {"tool_use", "tool_result"}) or role == "tool" else 0
-    _has_thinking = 1 if "thinking" in _block_types else 0
-
-    return MessageRecord(
+    provider_meta = _optional_dict(kwargs.pop("provider_meta", None))
+    extra_blocks = _normalize_content_blocks(
+        raw_blocks=provider_meta.get("content_blocks") if provider_meta is not None else None,
         message_id=message_id,
         conversation_id=conversation_id,
-        role=role,
+    )
+    existing_blocks = _normalize_content_blocks(
+        raw_blocks=kwargs.pop("content_blocks", []),
+        message_id=message_id,
+        conversation_id=conversation_id,
+    )
+    all_blocks = [*extra_blocks, *existing_blocks]
+
+    block_types = {blk.type for blk in all_blocks}
+    role_value = Role.normalize(role)
+    word_count = len(text.split()) if isinstance(text, str) and text.strip() else 0
+    has_tool_use = (
+        1 if (block_types & {ContentBlockType.TOOL_USE, ContentBlockType.TOOL_RESULT}) or role_value is Role.TOOL else 0
+    )
+    has_thinking = 1 if ContentBlockType.THINKING in block_types else 0
+
+    return MessageRecord(
+        message_id=_message_id(message_id),
+        conversation_id=_conversation_id(conversation_id),
+        role=role_value,
         text=text,
-        sort_key=kwargs.pop("sort_key", _timestamp_sort_key(ts)),
-        content_hash=kwargs.pop("content_hash", uuid4().hex[:16]),
+        sort_key=kwargs.pop("sort_key", _timestamp_sort_key(ts) if ts is not None else None),
+        content_hash=_content_hash(cast(str, kwargs.pop("content_hash", uuid4().hex[:16]))),
         content_blocks=all_blocks,
-        word_count=kwargs.pop("word_count", _word_count),
-        has_tool_use=kwargs.pop("has_tool_use", _has_tool_use),
-        has_thinking=kwargs.pop("has_thinking", _has_thinking),
+        word_count=cast(int, kwargs.pop("word_count", word_count)),
+        has_tool_use=cast(int, kwargs.pop("has_tool_use", has_tool_use)),
+        has_thinking=cast(int, kwargs.pop("has_thinking", has_thinking)),
         **kwargs,
     )
 
@@ -706,21 +777,16 @@ def make_attachment(
     mime_type: str = "application/octet-stream",
     size_bytes: int = 1024,
     name: str | None = None,
-    **kwargs,
+    **kwargs: Any,
 ) -> AttachmentRecord:
-    """Quick attachment creation.
-
-    Usage:
-        att = make_attachment("att1", name="file.pdf")
-    """
-    provider_meta = kwargs.pop("provider_meta", None)
+    provider_meta = _optional_dict(kwargs.pop("provider_meta", None))
     if name and provider_meta is None:
         provider_meta = {"name": name}
 
     return AttachmentRecord(
-        attachment_id=attachment_id,
-        conversation_id=conversation_id,
-        message_id=message_id,
+        attachment_id=_attachment_id(attachment_id),
+        conversation_id=_conversation_id(conversation_id),
+        message_id=None if message_id is None else _message_id(message_id),
         mime_type=mime_type,
         size_bytes=size_bytes,
         provider_meta=provider_meta,
@@ -728,10 +794,54 @@ def make_attachment(
     )
 
 
+def make_raw_conversation(
+    raw_id: str = "raw1",
+    provider_name: str = "test",
+    source_path: str = "/tmp/test.json",
+    *,
+    blob_size: int = 2,
+    acquired_at: str | None = None,
+    payload_provider: str | Provider | None = None,
+    validation_status: str | ValidationStatus | None = None,
+    validation_provider: str | Provider | None = None,
+    validation_mode: str | ValidationMode | None = None,
+    **kwargs: Any,
+) -> RawConversationRecord:
+    timestamp = acquired_at or datetime.now(timezone.utc).isoformat()
+    return RawConversationRecord(
+        raw_id=raw_id,
+        provider_name=provider_name,
+        source_path=source_path,
+        blob_size=blob_size,
+        acquired_at=timestamp,
+        payload_provider=(
+            payload_provider
+            if isinstance(payload_provider, Provider) or payload_provider is None
+            else Provider.from_string(payload_provider)
+        ),
+        validation_status=(
+            validation_status
+            if isinstance(validation_status, ValidationStatus) or validation_status is None
+            else ValidationStatus.from_string(validation_status)
+        ),
+        validation_provider=(
+            validation_provider
+            if isinstance(validation_provider, Provider) or validation_provider is None
+            else Provider.from_string(validation_provider)
+        ),
+        validation_mode=(
+            validation_mode
+            if isinstance(validation_mode, ValidationMode) or validation_mode is None
+            else ValidationMode.from_string(validation_mode)
+        ),
+        **kwargs,
+    )
+
+
 class DbFactory:
     """Low-ceremony DB seeder built on top of ConversationBuilder."""
 
-    def __init__(self, db_path: Path):
+    def __init__(self, db_path: Path) -> None:
         self.db_path = db_path
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -740,12 +850,11 @@ class DbFactory:
         id: str | None = None,
         provider: str = "test",
         title: str = "Test Conversation",
-        messages: list[dict[str, Any]] | None = None,
+        messages: list[dict[str, object]] | None = None,
         created_at: datetime | None = None,
         updated_at: datetime | None = None,
-        metadata: dict[str, Any] | None = None,
+        metadata: dict[str, object] | None = None,
     ) -> str:
-        """Create a conversation with simple dict-shaped messages and attachments."""
         cid = id or str(uuid4())
         created_iso = (created_at or datetime.now(timezone.utc)).isoformat()
         updated_iso = (updated_at or datetime.now(timezone.utc)).isoformat()
@@ -760,38 +869,50 @@ class DbFactory:
         )
 
         for msg in messages or []:
-            message_id = msg.get("id")
-            message_kwargs: dict[str, Any] = {
-                "provider_message_id": msg.get("provider_message_id"),
-                "parent_message_id": msg.get("parent_message_id"),
-                "branch_index": msg.get("branch_index", 0),
+            message_id = _optional_str(msg.get("id"))
+            text_value = _optional_str(msg.get("text"))
+            if text_value is None:
+                text_value = _optional_str(msg.get("content")) or "hello"
+            message_kwargs: dict[str, object] = {
+                "provider_message_id": _optional_str(msg.get("provider_message_id")),
+                "parent_message_id": _optional_str(msg.get("parent_message_id")),
+                "branch_index": _optional_int(msg.get("branch_index")) or 0,
                 "content_blocks": msg.get("content_blocks", []),
             }
-            if "provider_meta" in msg:
-                message_kwargs["provider_meta"] = msg["provider_meta"]
-            if "word_count" in msg:
-                message_kwargs["word_count"] = msg["word_count"]
-            if "has_tool_use" in msg:
-                message_kwargs["has_tool_use"] = msg["has_tool_use"]
-            if "has_thinking" in msg:
-                message_kwargs["has_thinking"] = msg["has_thinking"]
+            provider_meta = _optional_dict(msg.get("provider_meta"))
+            if provider_meta is not None:
+                message_kwargs["provider_meta"] = provider_meta
+            if (word_count := _optional_int(msg.get("word_count"))) is not None:
+                message_kwargs["word_count"] = word_count
+            if (has_tool_use := _optional_int(msg.get("has_tool_use"))) is not None:
+                message_kwargs["has_tool_use"] = has_tool_use
+            if (has_thinking := _optional_int(msg.get("has_thinking"))) is not None:
+                message_kwargs["has_thinking"] = has_thinking
 
             builder.add_message(
                 message_id=message_id,
-                role=msg.get("role", "user"),
-                text=msg.get("text", msg.get("content", "hello")),
-                timestamp=msg.get("timestamp", ...),
+                role=_optional_str(msg.get("role")) or "user",
+                text=text_value,
+                timestamp=msg.get("timestamp", _AUTO_TIMESTAMP),
                 **message_kwargs,
             )
 
-            for att in msg.get("attachments", []):
+            attachments = msg.get("attachments")
+            if not isinstance(attachments, list):
+                continue
+            for raw_attachment in attachments:
+                if not isinstance(raw_attachment, Mapping):
+                    continue
                 builder.add_attachment(
-                    attachment_id=att.get("id"),
-                    message_id=message_id if message_id is not None else ...,
-                    mime_type=att.get("mime_type", "application/octet-stream"),
-                    size_bytes=att.get("size_bytes", 1024),
-                    path=att.get("path"),
-                    provider_meta=att.get("meta") or att.get("provider_meta"),
+                    attachment_id=_optional_str(raw_attachment.get("id")),
+                    message_id=message_id if message_id is not None else _AUTO_MESSAGE_ID,
+                    mime_type=_optional_str(raw_attachment.get("mime_type")) or "application/octet-stream",
+                    size_bytes=_optional_int(raw_attachment.get("size_bytes")) or 1024,
+                    path=_optional_str(raw_attachment.get("path")),
+                    provider_meta=(
+                        _optional_dict(raw_attachment.get("meta"))
+                        or _optional_dict(raw_attachment.get("provider_meta"))
+                    ),
                 )
 
         builder.save()

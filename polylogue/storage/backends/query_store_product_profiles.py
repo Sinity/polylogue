@@ -2,6 +2,12 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from contextlib import AbstractAsyncContextManager
+from typing import TYPE_CHECKING
+
+import aiosqlite
+
 from polylogue.storage.backends.queries import (
     session_product_profile_reads as session_product_profiles_q,
 )
@@ -9,6 +15,9 @@ from polylogue.storage.store import SessionProfileRecord
 
 
 class SQLiteQueryStoreProductProfilesMixin:
+    if TYPE_CHECKING:
+        _connection_factory: Callable[[], AbstractAsyncContextManager[aiosqlite.Connection]]
+
     async def get_session_profile(self, conversation_id: str) -> SessionProfileRecord | None:
         async with self._connection_factory() as conn:
             return await session_product_profiles_q.get_session_profile(conn, conversation_id)

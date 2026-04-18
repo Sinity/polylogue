@@ -2,29 +2,37 @@
 
 from __future__ import annotations
 
-import builtins
+from typing import TYPE_CHECKING
 
+from polylogue.lib.session_profile import SessionProfile
 from polylogue.storage.session_product_profiles import hydrate_session_profile
+from polylogue.storage.store import SessionProfileRecord
+
+if TYPE_CHECKING:
+    from polylogue.storage.backends.query_store import SQLiteQueryStore
 
 
 class RepositoryProductProfileReadMixin:
-    async def get_session_profile_record(self, conversation_id: str):
+    if TYPE_CHECKING:
+        queries: SQLiteQueryStore
+
+    async def get_session_profile_record(self, conversation_id: str) -> SessionProfileRecord | None:
         return await self.queries.get_session_profile(conversation_id)
 
-    async def get_session_profile(self, conversation_id: str):
+    async def get_session_profile(self, conversation_id: str) -> SessionProfile | None:
         record = await self.get_session_profile_record(conversation_id)
         return hydrate_session_profile(record) if record is not None else None
 
     async def get_session_profile_records_batch(
         self,
-        conversation_ids: builtins.list[str],
-    ):
+        conversation_ids: list[str],
+    ) -> dict[str, SessionProfileRecord]:
         return await self.queries.get_session_profiles_batch(conversation_ids)
 
     async def get_session_profiles_batch(
         self,
-        conversation_ids: builtins.list[str],
-    ):
+        conversation_ids: list[str],
+    ) -> dict[str, SessionProfile]:
         records = await self.get_session_profile_records_batch(conversation_ids)
         return {conversation_id: hydrate_session_profile(record) for conversation_id, record in records.items()}
 
@@ -42,7 +50,7 @@ class RepositoryProductProfileReadMixin:
         limit: int | None = 50,
         offset: int = 0,
         query: str | None = None,
-    ):
+    ) -> list[SessionProfile]:
         records = await self.queries.list_session_profiles(
             provider=provider,
             since=since,
@@ -72,7 +80,7 @@ class RepositoryProductProfileReadMixin:
         limit: int | None = 50,
         offset: int = 0,
         query: str | None = None,
-    ):
+    ) -> list[SessionProfileRecord]:
         return await self.queries.list_session_profiles(
             provider=provider,
             since=since,
@@ -87,7 +95,7 @@ class RepositoryProductProfileReadMixin:
             query=query,
         )
 
-    async def get_session_enrichment_record(self, conversation_id: str):
+    async def get_session_enrichment_record(self, conversation_id: str) -> SessionProfileRecord | None:
         return await self.queries.get_session_profile(conversation_id)
 
     async def list_session_enrichment_records(
@@ -103,7 +111,7 @@ class RepositoryProductProfileReadMixin:
         limit: int | None = 50,
         offset: int = 0,
         query: str | None = None,
-    ):
+    ) -> list[SessionProfileRecord]:
         return await self.queries.list_session_profiles(
             provider=provider,
             since=since,

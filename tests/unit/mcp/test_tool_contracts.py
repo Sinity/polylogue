@@ -4,24 +4,37 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from polylogue.archive_products import (
+    ArchiveEnrichmentProvenance,
+    ArchiveInferenceProvenance,
+    ArchiveProductProvenance,
     DaySessionSummaryProduct,
     ProviderAnalyticsProduct,
+    SessionEnrichmentPayload,
     SessionEnrichmentProduct,
+    SessionEvidencePayload,
+    SessionInferencePayload,
+    SessionPhaseEvidencePayload,
+    SessionPhaseInferencePayload,
     SessionPhaseProduct,
     SessionProfileProduct,
     SessionTagRollupProduct,
     SessionWorkEventProduct,
     WeekSessionSummaryProduct,
+    WorkEventEvidencePayload,
+    WorkEventInferencePayload,
     WorkThreadProduct,
 )
-from polylogue.lib.models import Conversation, ConversationSummary, Message
+from polylogue.lib.models import Conversation, ConversationSummary
 from polylogue.lib.query_spec import ConversationQuerySpec
 from polylogue.lib.stats import ArchiveStats
+from polylogue.types import ConversationId, Provider
+from tests.infra.builders import make_conv, make_msg
 from tests.infra.mcp import (
     invoke_surface,
     invoke_surface_async,
@@ -32,7 +45,7 @@ from tests.infra.mcp import (
 STATS_CONFIGS = [
     (100, 5000, {"claude-ai": 50, "chatgpt": 30, "claude-code": 20}, 10, 200, 90, 1048576, 10.0, 1.0),
     (0, 0, {}, 0, 0, 0, 0, 0.0, 0),
-    (5, 20, {"test": 5}, 0, 0, 5, None, 0.0, 0),
+    (5, 20, {"test": 5}, 0, 0, 5, 0, 0.0, 0),
 ]
 
 QUERY_TOOL_CASES = [
@@ -186,10 +199,60 @@ def simple_conversation() -> Conversation:
     return make_simple_conversation()
 
 
+def _make_summary(
+    conversation_id: str = "test:conv-123",
+    *,
+    provider: Provider = Provider.CHATGPT,
+    title: str | None = "Test Conv",
+    created_at: datetime | None = None,
+    updated_at: datetime | None = None,
+) -> ConversationSummary:
+    return ConversationSummary(
+        id=ConversationId(conversation_id),
+        provider=provider,
+        title=title,
+        message_count=None,
+        created_at=created_at,
+        updated_at=updated_at,
+    )
+
+
+def _provenance() -> ArchiveProductProvenance:
+    return ArchiveProductProvenance(
+        materializer_version=1,
+        materialized_at="2026-03-24T10:00:00+00:00",
+    )
+
+
+def _inference_provenance() -> ArchiveInferenceProvenance:
+    return ArchiveInferenceProvenance(
+        materializer_version=1,
+        materialized_at="2026-03-24T10:00:00+00:00",
+        inference_version=1,
+        inference_family="heuristic_session_semantics",
+    )
+
+
+def _enrichment_provenance() -> ArchiveEnrichmentProvenance:
+    return ArchiveEnrichmentProvenance(
+        materializer_version=1,
+        materialized_at="2026-03-24T10:00:00+00:00",
+        enrichment_version=1,
+        enrichment_family="scored_session_enrichment",
+    )
+
+
 class TestQueryTools:
     @pytest.mark.parametrize(("tool_name", "args", "expected_calls"), QUERY_TOOL_CASES)
     @pytest.mark.asyncio
-    async def test_query_tool_filter_contract(self, simple_conversation, tool_name, args, expected_calls, mcp_server):
+    async def test_query_tool_filter_contract(
+        self,
+        simple_conversation: Conversation,
+        tool_name: str,
+        args: dict[str, object],
+        expected_calls: dict[str, tuple[object, ...]],
+        mcp_server: Any,
+    ) -> None:
         with patch("polylogue.mcp.server._get_archive_ops") as mock_get_archive_ops:
             mock_ops = MagicMock()
             mock_ops.query_conversations = AsyncMock(return_value=[simple_conversation])
@@ -236,7 +299,7 @@ class TestQueryTools:
                 assert spec.limit == expected_value
 
     @pytest.mark.asyncio
-    async def test_search_with_empty_query(self, mcp_server):
+    async def test_search_with_empty_query(self, mcp_server: Any) -> None:
         with patch("polylogue.mcp.server._get_archive_ops") as mock_get_archive_ops:
             mock_ops = MagicMock()
             mock_ops.query_conversations = AsyncMock(return_value=[])
@@ -249,7 +312,7 @@ class TestQueryTools:
 
 
 class TestGetConversationTool:
-    def test_get_returns_conversation(self, simple_conversation, mcp_server):
+    def test_get_returns_conversation(self, simple_conversation: Conversation, mcp_server: Any) -> None:
         with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
             mock_repo = make_repo_mock()
             mock_repo.view.return_value = simple_conversation
@@ -261,7 +324,7 @@ class TestGetConversationTool:
         assert conv["id"] == "test:conv-123"
         assert len(conv["messages"]) == 2
 
-    def test_get_not_found(self, mcp_server):
+    def test_get_not_found(self, mcp_server: Any) -> None:
         with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
             mock_repo = make_repo_mock()
             mock_repo.view.return_value = None
@@ -273,13 +336,13 @@ class TestGetConversationTool:
         assert "error" in parsed
         assert "not found" in parsed["error"].lower()
 
-    def test_get_returns_full_messages(self, mcp_server):
+    def test_get_returns_full_messages(self, mcp_server: Any) -> None:
         long_text = "A" * 2000
-        conv = Conversation(
+        conv = make_conv(
             id="test:long",
-            provider="test",
+            provider=Provider.UNKNOWN,
             title="Long Message",
-            messages=[Message(id="m1", role="assistant", text=long_text)],
+            messages=[make_msg(id="m1", role="assistant", text=long_text)],
         )
 
         with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
@@ -292,7 +355,7 @@ class TestGetConversationTool:
         assert json.loads(result)["messages"][0]["text"] == long_text
 
     @pytest.mark.asyncio
-    async def test_get_with_nonexistent_id(self, mcp_server):
+    async def test_get_with_nonexistent_id(self, mcp_server: Any) -> None:
         with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
             mock_repo = make_repo_mock()
             mock_repo.view.return_value = None
@@ -307,24 +370,16 @@ class TestGetConversationTool:
 
 class TestProductTools:
     @pytest.mark.asyncio
-    async def test_session_profile_tool_uses_archive_product_contract(self, mcp_server):
+    async def test_session_profile_tool_uses_archive_product_contract(self, mcp_server: Any) -> None:
         product = SessionProfileProduct(
             conversation_id="conv-1",
             provider_name="claude-code",
             title="Profiled Session",
             semantic_tier="merged",
-            provenance={
-                "materializer_version": 1,
-                "materialized_at": "2026-03-24T10:00:00+00:00",
-            },
-            evidence={"canonical_session_date": "2026-03-24", "message_count": 2},
-            inference_provenance={
-                "materializer_version": 1,
-                "materialized_at": "2026-03-24T10:00:00+00:00",
-                "inference_version": 1,
-                "inference_family": "heuristic_session_semantics",
-            },
-            inference={"engaged_duration_ms": 120000},
+            provenance=_provenance(),
+            evidence=SessionEvidencePayload(canonical_session_date="2026-03-24", message_count=2),
+            inference_provenance=_inference_provenance(),
+            inference=SessionInferencePayload(engaged_duration_ms=120000),
         )
         with patch("polylogue.mcp.server._get_archive_ops") as mock_get_archive_ops:
             mock_ops = MagicMock()
@@ -341,90 +396,57 @@ class TestProductTools:
         assert payload["conversation_id"] == "conv-1"
 
     @pytest.mark.asyncio
-    async def test_product_list_tools_use_archive_queries(self, mcp_server):
+    async def test_product_list_tools_use_archive_queries(self, mcp_server: Any) -> None:
         profile = SessionProfileProduct(
             conversation_id="conv-1",
             provider_name="claude-code",
             title="Profiled Session",
             semantic_tier="merged",
-            provenance={
-                "materializer_version": 1,
-                "materialized_at": "2026-03-24T10:00:00+00:00",
-            },
-            evidence={"canonical_session_date": "2026-03-24", "message_count": 2},
-            inference_provenance={
-                "materializer_version": 1,
-                "materialized_at": "2026-03-24T10:00:00+00:00",
-                "inference_version": 1,
-                "inference_family": "heuristic_session_semantics",
-            },
-            inference={"engaged_duration_ms": 120000},
+            provenance=_provenance(),
+            evidence=SessionEvidencePayload(canonical_session_date="2026-03-24", message_count=2),
+            inference_provenance=_inference_provenance(),
+            inference=SessionInferencePayload(engaged_duration_ms=120000),
         )
         enrichment = SessionEnrichmentProduct(
             conversation_id="conv-1",
             provider_name="claude-code",
             title="Profiled Session",
-            provenance={
-                "materializer_version": 1,
-                "materialized_at": "2026-03-24T10:00:00+00:00",
-            },
-            enrichment_provenance={
-                "materializer_version": 1,
-                "materialized_at": "2026-03-24T10:00:00+00:00",
-                "enrichment_version": 1,
-                "enrichment_family": "scored_session_enrichment",
-            },
-            enrichment={
-                "intent_summary": "Plan the refactor",
-                "outcome_summary": "Ran tests",
-                "confidence": 0.72,
-                "support_level": "moderate",
-            },
+            provenance=_provenance(),
+            enrichment_provenance=_enrichment_provenance(),
+            enrichment=SessionEnrichmentPayload(
+                intent_summary="Plan the refactor",
+                outcome_summary="Ran tests",
+                confidence=0.72,
+                support_level="moderate",
+            ),
         )
         work_event = SessionWorkEventProduct(
             event_id="evt-1",
             conversation_id="conv-1",
             provider_name="claude-code",
             event_index=0,
-            provenance={
-                "materializer_version": 1,
-                "materialized_at": "2026-03-24T10:00:00+00:00",
-            },
-            inference_provenance={
-                "materializer_version": 1,
-                "materialized_at": "2026-03-24T10:00:00+00:00",
-                "inference_version": 1,
-                "inference_family": "heuristic_session_semantics",
-            },
-            evidence={"start_index": 0, "end_index": 1, "file_paths": ["/workspace/polylogue/README.md"]},
-            inference={"kind": "implementation", "summary": "editing files", "confidence": 0.8},
+            provenance=_provenance(),
+            inference_provenance=_inference_provenance(),
+            evidence=WorkEventEvidencePayload(
+                start_index=0, end_index=1, file_paths=("/workspace/polylogue/README.md",)
+            ),
+            inference=WorkEventInferencePayload(kind="implementation", summary="editing files", confidence=0.8),
         )
         phase = SessionPhaseProduct(
             phase_id="phase-1",
             conversation_id="conv-1",
             provider_name="claude-code",
             phase_index=0,
-            provenance={
-                "materializer_version": 1,
-                "materialized_at": "2026-03-24T10:00:00+00:00",
-            },
-            inference_provenance={
-                "materializer_version": 1,
-                "materialized_at": "2026-03-24T10:00:00+00:00",
-                "inference_version": 1,
-                "inference_family": "heuristic_session_semantics",
-            },
-            evidence={"message_range": [0, 2], "tool_counts": {"edit": 1}},
-            inference={"confidence": 0.8},
+            provenance=_provenance(),
+            inference_provenance=_inference_provenance(),
+            evidence=SessionPhaseEvidencePayload(message_range=(0, 2), tool_counts={"edit": 1}),
+            inference=SessionPhaseInferencePayload(confidence=0.8),
         )
         thread = WorkThreadProduct(
             thread_id="conv-1",
             root_id="conv-1",
             dominant_repo="polylogue",
-            provenance={
-                "materializer_version": 1,
-                "materialized_at": "2026-03-24T10:00:00+00:00",
-            },
+            provenance=_provenance(),
             thread={"session_count": 2},
         )
         tag_rollup = SessionTagRollupProduct(
@@ -434,25 +456,16 @@ class TestProductTools:
             auto_count=1,
             provider_breakdown={"claude-code": 1},
             repo_breakdown={"polylogue": 1},
-            provenance={
-                "materializer_version": 1,
-                "materialized_at": "2026-03-24T10:00:00+00:00",
-            },
+            provenance=_provenance(),
         )
         day_summary = DaySessionSummaryProduct(
             date="2026-03-24",
-            provenance={
-                "materializer_version": 1,
-                "materialized_at": "2026-03-24T10:00:00+00:00",
-            },
+            provenance=_provenance(),
             summary={"session_count": 1, "total_messages": 2},
         )
         week_summary = WeekSessionSummaryProduct(
             iso_week="2026-W13",
-            provenance={
-                "materializer_version": 1,
-                "materialized_at": "2026-03-24T10:00:00+00:00",
-            },
+            provenance=_provenance(),
             summary={"session_count": 1, "total_messages": 2, "day_summaries": []},
         )
         analytics = ProviderAnalyticsProduct(
@@ -556,7 +569,7 @@ class TestProductTools:
         assert analytics_payload["items"][0]["product_kind"] == "provider_analytics"
 
     @pytest.mark.asyncio
-    async def test_session_enrichments_tool_rejects_unknown_query_fields(self, mcp_server):
+    async def test_session_enrichments_tool_rejects_unknown_query_fields(self, mcp_server: Any) -> None:
         with patch("polylogue.mcp.server._get_archive_ops") as mock_get_archive_ops:
             mock_ops = MagicMock()
             mock_ops.list_session_enrichment_products = AsyncMock(return_value=[])
@@ -592,17 +605,17 @@ class TestStatsTool:
     )
     def test_stats_configurations(
         self,
-        total_conversations,
-        total_messages,
-        providers,
-        embedded_convs,
-        embedded_msgs,
-        pending_convs,
-        db_size,
-        expected_coverage,
-        expected_mb,
-        mcp_server,
-    ):
+        total_conversations: int,
+        total_messages: int,
+        providers: dict[str, int],
+        embedded_convs: int,
+        embedded_msgs: int,
+        pending_convs: int,
+        db_size: int,
+        expected_coverage: float,
+        expected_mb: float | int,
+        mcp_server: Any,
+    ) -> None:
         with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
             mock_repo = make_repo_mock()
             mock_repo.get_archive_stats.return_value = ArchiveStats(
@@ -627,7 +640,7 @@ class TestStatsTool:
 
 
 class TestMutationTools:
-    def test_add_tag_success(self, mcp_server):
+    def test_add_tag_success(self, mcp_server: Any) -> None:
         with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
             mock_repo = make_repo_mock()
             mock_repo.add_tag.return_value = None
@@ -641,7 +654,7 @@ class TestMutationTools:
         assert parsed == {"status": "ok", "conversation_id": "test:conv-123", "tag": "important"}
         mock_repo.add_tag.assert_called_once_with("test:conv-123", "important")
 
-    def test_add_tag_error(self, mcp_server):
+    def test_add_tag_error(self, mcp_server: Any) -> None:
         with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
             mock_repo = make_repo_mock()
             mock_repo.add_tag.side_effect = ValueError("Invalid tag")
@@ -654,7 +667,7 @@ class TestMutationTools:
         parsed = json.loads(result)
         assert "Invalid tag" in parsed["error"]
 
-    def test_remove_tag_success(self, mcp_server):
+    def test_remove_tag_success(self, mcp_server: Any) -> None:
         with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
             mock_repo = make_repo_mock()
             mock_repo.remove_tag.return_value = None
@@ -668,7 +681,7 @@ class TestMutationTools:
         assert parsed == {"status": "ok", "conversation_id": "test:conv-123", "tag": "important"}
         mock_repo.remove_tag.assert_called_once_with("test:conv-123", "important")
 
-    def test_remove_tag_error(self, mcp_server):
+    def test_remove_tag_error(self, mcp_server: Any) -> None:
         with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
             mock_repo = make_repo_mock()
             mock_repo.remove_tag.side_effect = RuntimeError("Backend error")
@@ -680,7 +693,7 @@ class TestMutationTools:
 
         assert "error" in json.loads(result)
 
-    def test_list_tags_returns_counts(self, mcp_server):
+    def test_list_tags_returns_counts(self, mcp_server: Any) -> None:
         with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
             mock_repo = make_repo_mock()
             mock_repo.list_tags.return_value = {"bug": 3, "feature": 5, "urgent": 1}
@@ -690,7 +703,7 @@ class TestMutationTools:
 
         assert json.loads(result) == {"bug": 3, "feature": 5, "urgent": 1}
 
-    def test_list_tags_with_provider(self, mcp_server):
+    def test_list_tags_with_provider(self, mcp_server: Any) -> None:
         with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
             mock_repo = make_repo_mock()
             mock_repo.list_tags.return_value = {"claude-ai": 2}
@@ -701,7 +714,7 @@ class TestMutationTools:
         assert json.loads(result) == {"claude-ai": 2}
         mock_repo.list_tags.assert_called_once_with(provider="claude-ai")
 
-    def test_get_metadata_success(self, mcp_server):
+    def test_get_metadata_success(self, mcp_server: Any) -> None:
         with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
             mock_repo = make_repo_mock()
             mock_repo.get_metadata.return_value = {"key": "value", "count": 42}
@@ -711,7 +724,7 @@ class TestMutationTools:
 
         assert json.loads(result) == {"key": "value", "count": 42}
 
-    def test_set_metadata_string_value(self, mcp_server):
+    def test_set_metadata_string_value(self, mcp_server: Any) -> None:
         with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
             mock_repo = make_repo_mock()
             mock_repo.update_metadata.return_value = None
@@ -727,7 +740,7 @@ class TestMutationTools:
         assert json.loads(result)["status"] == "ok"
         mock_repo.update_metadata.assert_called_once_with("test:conv-123", "author", "john")
 
-    def test_set_metadata_json_value(self, mcp_server):
+    def test_set_metadata_json_value(self, mcp_server: Any) -> None:
         with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
             mock_repo = make_repo_mock()
             mock_repo.update_metadata.return_value = None
@@ -743,7 +756,7 @@ class TestMutationTools:
         assert json.loads(result)["status"] == "ok"
         mock_repo.update_metadata.assert_called_once_with("test:conv-123", "config", {"nested": True})
 
-    def test_delete_metadata_success(self, mcp_server):
+    def test_delete_metadata_success(self, mcp_server: Any) -> None:
         with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
             mock_repo = make_repo_mock()
             mock_repo.delete_metadata.return_value = None
@@ -760,7 +773,7 @@ class TestMutationTools:
         assert parsed["key"] == "author"
         mock_repo.delete_metadata.assert_called_once_with("test:conv-123", "author")
 
-    def test_delete_requires_confirm(self, mcp_server):
+    def test_delete_requires_confirm(self, mcp_server: Any) -> None:
         with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
             mock_repo = make_repo_mock()
             mock_get_repo.return_value = mock_repo
@@ -775,7 +788,7 @@ class TestMutationTools:
         assert "confirm=true" in parsed["error"]
         mock_repo.delete_conversation.assert_not_called()
 
-    def test_delete_with_confirm(self, mcp_server):
+    def test_delete_with_confirm(self, mcp_server: Any) -> None:
         with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
             mock_repo = make_repo_mock()
             mock_repo.delete_conversation.return_value = True
@@ -790,7 +803,7 @@ class TestMutationTools:
         assert json.loads(result)["status"] == "deleted"
         mock_repo.delete_conversation.assert_called_once_with("test:conv-123")
 
-    def test_delete_not_found(self, mcp_server):
+    def test_delete_not_found(self, mcp_server: Any) -> None:
         with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
             mock_repo = make_repo_mock()
             mock_repo.delete_conversation.return_value = False
@@ -804,14 +817,13 @@ class TestMutationTools:
 
         assert json.loads(result)["status"] == "not_found"
 
-    def test_summary_returns_metadata(self, mcp_server):
+    def test_summary_returns_metadata(self, mcp_server: Any) -> None:
         with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
             mock_repo = make_repo_mock()
-            mock_summary = ConversationSummary(
-                id="test:conv-123",
-                provider="chatgpt",
+            mock_summary = _make_summary(
+                "test:conv-123",
+                provider=Provider.CHATGPT,
                 title="Test Conv",
-                message_count=None,
                 created_at=datetime(2024, 1, 15, tzinfo=timezone.utc),
                 updated_at=datetime(2024, 1, 15, 11, 0, 0, tzinfo=timezone.utc),
             )
@@ -828,7 +840,7 @@ class TestMutationTools:
         assert parsed["title"] == "Test Conv"
         assert parsed["message_count"] == 5
 
-    def test_summary_not_found(self, mcp_server):
+    def test_summary_not_found(self, mcp_server: Any) -> None:
         with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
             mock_repo = make_repo_mock()
             mock_repo.resolve_id.return_value = None
@@ -839,7 +851,7 @@ class TestMutationTools:
 
         assert "not found" in json.loads(result)["error"].lower()
 
-    def test_session_tree_returns_list(self, simple_conversation, mcp_server):
+    def test_session_tree_returns_list(self, simple_conversation: Conversation, mcp_server: Any) -> None:
         with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
             mock_repo = make_repo_mock()
             mock_repo.get_session_tree.return_value = [simple_conversation]
@@ -860,7 +872,7 @@ class TestMutationTools:
             ("month", {"2024-01": 15, "2024-02": 20}),
         ],
     )
-    def test_stats_by_group(self, group_by, expected, mcp_server):
+    def test_stats_by_group(self, group_by: str, expected: dict[str, int], mcp_server: Any) -> None:
         with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
             mock_repo = make_repo_mock()
             mock_repo.queries.get_stats_by.return_value = expected
@@ -870,7 +882,7 @@ class TestMutationTools:
 
         assert json.loads(result) == expected
 
-    def test_health_check_success(self, mcp_server):
+    def test_health_check_success(self, mcp_server: Any) -> None:
         mock_check = MagicMock()
         mock_check.name = "database"
         mock_check.status.value = "ok"
@@ -895,7 +907,7 @@ class TestMutationTools:
         assert parsed["summary"] == "Healthy"
         assert parsed["checks"][0]["name"] == "database"
 
-    def test_rebuild_index_success(self, mcp_server):
+    def test_rebuild_index_success(self, mcp_server: Any) -> None:
         with (
             patch("polylogue.mcp.server._get_config") as mock_get_config,
             patch("polylogue.mcp.server._get_repo") as mock_get_repo,
@@ -915,7 +927,7 @@ class TestMutationTools:
         assert parsed["index_exists"] is True
         assert parsed["indexed_messages"] == 500
 
-    def test_update_index_success(self, mcp_server):
+    def test_update_index_success(self, mcp_server: Any) -> None:
         with (
             patch("polylogue.mcp.server._get_config") as mock_get_config,
             patch("polylogue.mcp.server._get_repo") as mock_get_repo,

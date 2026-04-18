@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
@@ -11,11 +13,11 @@ from tests.infra.cli_subprocess import run_cli, setup_isolated_workspace
 pytestmark = [pytest.mark.integration, pytest.mark.machine_contract]
 
 
-def _parse_json(stdout: str) -> dict[str, object]:
-    return json.loads(stdout)
+def _parse_json(stdout: str) -> dict[str, Any]:
+    return cast(dict[str, Any], json.loads(stdout))
 
 
-def test_script_entrypoint_invalid_flag_emits_json_error(tmp_path):
+def test_script_entrypoint_invalid_flag_emits_json_error(tmp_path: Path) -> None:
     workspace = setup_isolated_workspace(tmp_path)
 
     result = run_cli(["doctor", "--json", "--bad-flag"], env=workspace["env"], cwd=tmp_path)
@@ -29,7 +31,7 @@ def test_script_entrypoint_invalid_flag_emits_json_error(tmp_path):
     assert "No such option" not in result.stderr
 
 
-def test_module_entrypoint_invalid_flag_emits_json_error(tmp_path):
+def test_module_entrypoint_invalid_flag_emits_json_error(tmp_path: Path) -> None:
     workspace = setup_isolated_workspace(tmp_path)
 
     result = run_cli(
@@ -48,7 +50,7 @@ def test_module_entrypoint_invalid_flag_emits_json_error(tmp_path):
     assert "No such option" not in result.stderr
 
 
-def test_module_entrypoint_command_validation_emits_json_error(tmp_path):
+def test_module_entrypoint_command_validation_emits_json_error(tmp_path: Path) -> None:
     workspace = setup_isolated_workspace(tmp_path)
 
     result = run_cli(
@@ -66,7 +68,7 @@ def test_module_entrypoint_command_validation_emits_json_error(tmp_path):
     assert "Traceback" not in result.stderr
 
 
-def test_script_entrypoint_success_still_uses_success_envelope(tmp_path):
+def test_script_entrypoint_success_still_uses_success_envelope(tmp_path: Path) -> None:
     workspace = setup_isolated_workspace(tmp_path)
 
     result = run_cli(["doctor", "--json"], env=workspace["env"], cwd=tmp_path)

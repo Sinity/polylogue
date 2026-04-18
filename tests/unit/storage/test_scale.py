@@ -18,6 +18,8 @@ from __future__ import annotations
 
 import asyncio
 import time
+from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -26,14 +28,15 @@ from polylogue.storage.backends.connection import open_connection
 from polylogue.storage.index import rebuild_index
 from polylogue.storage.query_models import ConversationRecordQuery
 from polylogue.storage.repository import ConversationRepository
-from polylogue.storage.store import ContentBlockRecord, ConversationRecord, MessageRecord
+from polylogue.storage.store import ContentBlockRecord
+from tests.infra.storage_records import make_content_block, make_conversation, make_message
 
 # Number of conversations for scale tests.
 # 200 is enough to expose N+1 patterns while keeping tests fast (<2s).
 SCALE_COUNT = 200
 
 
-def _record_query(**kwargs) -> ConversationRecordQuery:
+def _record_query(**kwargs: Any) -> ConversationRecordQuery:
     return ConversationRecordQuery(**kwargs)
 
 
@@ -45,7 +48,7 @@ async def _seed_conversations(backend: SQLiteBackend, count: int, msgs_per_conv:
     """
     ids = [f"scale-conv-{i:04d}" for i in range(count)]
     conv_records = [
-        ConversationRecord(
+        make_conversation(
             conversation_id=ids[i],
             provider_name="chatgpt" if i % 2 == 0 else "claude-ai",
             provider_conversation_id=f"prov-{ids[i]}",
@@ -58,7 +61,7 @@ async def _seed_conversations(backend: SQLiteBackend, count: int, msgs_per_conv:
     ]
     await asyncio.gather(*(backend.save_conversation_record(r) for r in conv_records))
     all_msgs = [
-        MessageRecord(
+        make_message(
             message_id=f"{ids[i]}-m{j}",
             conversation_id=ids[i],
             role="user" if j % 2 == 0 else "assistant",
@@ -76,7 +79,7 @@ async def _seed_conversations(backend: SQLiteBackend, count: int, msgs_per_conv:
 class TestGetManyScale:
     """Test repository.get_many() with 200+ conversations."""
 
-    async def test_get_many_returns_all_conversations(self, tmp_path):
+    async def test_get_many_returns_all_conversations(self, tmp_path: Path) -> None:
         """get_many with 200 IDs returns all conversations with messages."""
         from polylogue.storage.repository import ConversationRepository
 
@@ -92,7 +95,7 @@ class TestGetManyScale:
         for convo in convos:
             assert len(convo.messages) == 3, f"Conv {convo.id} has {len(convo.messages)} messages, expected 3"
 
-    async def test_get_many_preserves_order(self, tmp_path):
+    async def test_get_many_preserves_order(self, tmp_path: Path) -> None:
         """get_many returns conversations in input order."""
         from polylogue.storage.repository import ConversationRepository
 
@@ -107,7 +110,7 @@ class TestGetManyScale:
 
         assert [c.id for c in convos] == reversed_ids
 
-    async def test_get_many_messages_correctly_associated(self, tmp_path):
+    async def test_get_many_messages_correctly_associated(self, tmp_path: Path) -> None:
         """Each conversation's messages actually belong to that conversation."""
         from polylogue.storage.repository import ConversationRepository
 
@@ -122,7 +125,7 @@ class TestGetManyScale:
             for msg in convo.messages:
                 assert msg.id.startswith(convo.id + "-"), f"Message {msg.id} doesn't belong to conversation {convo.id}"
 
-    async def test_get_many_varying_message_counts(self, tmp_path):
+    async def test_get_many_varying_message_counts(self, tmp_path: Path) -> None:
         """Conversations with different message counts are handled correctly."""
         from polylogue.storage.repository import ConversationRepository
 
@@ -133,7 +136,7 @@ class TestGetManyScale:
         msg_counts = [1, 5, 10]
         all_ids = [f"var-{msgs}msg-{i:03d}" for msgs in msg_counts for i in range(20)]
         conv_records = [
-            ConversationRecord(
+            make_conversation(
                 conversation_id=cid,
                 provider_name="test",
                 provider_conversation_id=f"prov-{cid}",
@@ -146,7 +149,7 @@ class TestGetManyScale:
         ]
         await asyncio.gather(*(backend.save_conversation_record(r) for r in conv_records))
         all_msg_records = [
-            MessageRecord(
+            make_message(
                 message_id=f"{cid}-m{j}",
                 conversation_id=cid,
                 role="user",
@@ -178,7 +181,7 @@ class TestGetManyScale:
 class TestFacadeScale:
     """Test facade batch operations at scale."""
 
-    async def test_get_conversations_at_scale(self, tmp_path):
+    async def test_get_conversations_at_scale(self, tmp_path: Path) -> None:
         """Facade.get_conversations with 200 IDs returns correct results."""
         from polylogue.facade import Polylogue
 
@@ -194,7 +197,7 @@ class TestFacadeScale:
         for convo in convos:
             assert len(convo.messages) == 3
 
-    async def test_get_conversations_empty_input(self, tmp_path):
+    async def test_get_conversations_empty_input(self, tmp_path: Path) -> None:
         """Facade.get_conversations with empty list returns empty."""
         from polylogue.facade import Polylogue
 
@@ -208,7 +211,7 @@ class TestFacadeScale:
 
         assert convos == []
 
-    async def test_list_conversations_at_scale(self, tmp_path):
+    async def test_list_conversations_at_scale(self, tmp_path: Path) -> None:
         """Facade.list_conversations with 200 conversations works."""
         from polylogue.facade import Polylogue
 
@@ -222,7 +225,7 @@ class TestFacadeScale:
 
         assert len(convos) == SCALE_COUNT
 
-    async def test_list_conversations_with_provider_filter(self, tmp_path):
+    async def test_list_conversations_with_provider_filter(self, tmp_path: Path) -> None:
         """Facade.list_conversations filtered by provider at scale."""
         from polylogue.facade import Polylogue
 
@@ -242,7 +245,7 @@ class TestFacadeScale:
 class TestBatchQueryScale:
     """Test backend batch queries at scale."""
 
-    async def test_messages_batch_200_conversations(self, tmp_path):
+    async def test_messages_batch_200_conversations(self, tmp_path: Path) -> None:
         """get_messages_batch with 200 conversation IDs returns correct grouping."""
         db_path = tmp_path / "batch_scale.db"
         backend = SQLiteBackend(db_path=db_path)
@@ -254,7 +257,7 @@ class TestBatchQueryScale:
         for cid in ids:
             assert len(result[cid]) == 5, f"Conv {cid} has {len(result[cid])} messages, expected 5"
 
-    async def test_conversations_batch_200_ids(self, tmp_path):
+    async def test_conversations_batch_200_ids(self, tmp_path: Path) -> None:
         """get_conversations_batch with 200 IDs returns all."""
         db_path = tmp_path / "conv_batch_scale.db"
         backend = SQLiteBackend(db_path=db_path)
@@ -264,7 +267,9 @@ class TestBatchQueryScale:
         assert len(records) == SCALE_COUNT
 
 
-async def _seed_budget_db(tmp_path, *, conv_count: int = 500, msgs_per_conv: int = 10):
+async def _seed_budget_db(
+    tmp_path: Path, *, conv_count: int = 500, msgs_per_conv: int = 10
+) -> tuple[SQLiteBackend, list[str]]:
     """Seed a DB for performance budget tests. Returns (backend, ids)."""
     db_path = tmp_path / "budget.db"
     backend = SQLiteBackend(db_path=db_path)
@@ -280,7 +285,7 @@ class TestPerformanceBudget:
     Budgets are conservative (10–20× typical times on a modern workstation).
     """
 
-    async def test_list_performance_budget(self, tmp_path):
+    async def test_list_performance_budget(self, tmp_path: Path) -> None:
         """list_conversations(limit=50) on 5k-message DB must finish in <100ms."""
         backend, _ = await _seed_budget_db(tmp_path)
         t0 = time.monotonic()
@@ -289,7 +294,7 @@ class TestPerformanceBudget:
         assert len(results) == 50
         assert elapsed_ms < 100, f"list_conversations took {elapsed_ms:.0f}ms (budget: 100ms)"
 
-    async def test_get_many_performance_budget(self, tmp_path):
+    async def test_get_many_performance_budget(self, tmp_path: Path) -> None:
         """get_many(100 ids) on 5k DB must finish in <500ms."""
         backend, ids = await _seed_budget_db(tmp_path)
         repo = ConversationRepository(backend=backend)
@@ -300,7 +305,7 @@ class TestPerformanceBudget:
         assert len(results) == 100
         assert elapsed_ms < 500, f"get_many(100) took {elapsed_ms:.0f}ms (budget: 500ms)"
 
-    async def test_fts_search_budget(self, tmp_path):
+    async def test_fts_search_budget(self, tmp_path: Path) -> None:
         """FTS5 search for common term on 5k-message DB must finish in <200ms."""
         backend, _ = await _seed_budget_db(tmp_path)
         # Rebuild index so FTS has content
@@ -314,7 +319,7 @@ class TestPerformanceBudget:
         assert elapsed_ms < 200, f"FTS search took {elapsed_ms:.0f}ms (budget: 200ms)"
         _ = results  # exercised
 
-    async def test_has_tool_use_filter_budget(self, tmp_path):
+    async def test_has_tool_use_filter_budget(self, tmp_path: Path) -> None:
         """has_tool_use=True filter on 5k DB must finish in <100ms.
 
         Validates that the stats LEFT JOIN covering index is effective.
@@ -326,7 +331,7 @@ class TestPerformanceBudget:
         assert elapsed_ms < 100, f"has_tool_use filter took {elapsed_ms:.0f}ms (budget: 100ms)"
         _ = results  # exercised
 
-    async def test_semantic_filter_budget(self, tmp_path):
+    async def test_semantic_filter_budget(self, tmp_path: Path) -> None:
         """Semantic action EXISTS filter on 5k DB must finish in <200ms.
 
         Now that content_blocks are seeded, this validates the covering index
@@ -340,12 +345,11 @@ class TestPerformanceBudget:
             if i % 5 == 0:  # 20% of conversations
                 mid = f"{cid}-m0"
                 blocks.append(
-                    ContentBlockRecord(
-                        block_id=ContentBlockRecord.make_id(mid, 0),
+                    make_content_block(
                         message_id=mid,
                         conversation_id=cid,
                         block_index=0,
-                        type="tool_use",
+                        block_type="tool_use",
                         tool_name="Read",
                         semantic_type="file_read",
                     )
@@ -377,7 +381,7 @@ class TestPerformanceBudget:
 class TestLargeInputRoundTrip:
     """Property: oversized message text round-trips through storage and FTS5."""
 
-    async def test_large_message_round_trips(self, tmp_path):
+    async def test_large_message_round_trips(self, tmp_path: Path) -> None:
         """Store a message with 200KB text, retrieve, verify text matches and FTS indexes."""
         db_path = tmp_path / "large.db"
         backend = SQLiteBackend(db_path=db_path)
@@ -386,7 +390,7 @@ class TestLargeInputRoundTrip:
         large_text = "word " * 50_000  # ~250KB, 50k words
 
         conv_id = "large-conv-1"
-        conv = ConversationRecord(
+        conv = make_conversation(
             conversation_id=conv_id,
             provider_name="test",
             provider_conversation_id="prov-large",
@@ -395,7 +399,7 @@ class TestLargeInputRoundTrip:
             updated_at="2025-01-01T00:00:00Z",
             content_hash="hash-large",
         )
-        msg = MessageRecord(
+        msg = make_message(
             message_id="large-msg-1",
             conversation_id=conv_id,
             role="user",
@@ -411,7 +415,7 @@ class TestLargeInputRoundTrip:
         result = await repo.get(conv_id)
         assert result is not None
         assert len(result.messages) == 1
-        assert result.messages[0].text == large_text
+        assert result.messages.to_list()[0].text == large_text
 
         # Verify FTS5 indexing doesn't crash
         with open_connection(db_path) as conn:
@@ -438,7 +442,7 @@ async def _seed_budget_conversations(backend: SQLiteBackend, count: int, msgs_pe
 
     async with backend.bulk_connection():
         for i in range(count):
-            conv = ConversationRecord(
+            conv = make_conversation(
                 conversation_id=ids[i],
                 provider_name=providers[i % len(providers)],
                 provider_conversation_id=f"prov-{ids[i]}",
@@ -450,7 +454,7 @@ async def _seed_budget_conversations(backend: SQLiteBackend, count: int, msgs_pe
             await backend.save_conversation_record(conv)
 
             messages = [
-                MessageRecord(
+                make_message(
                     message_id=f"{ids[i]}-m{j}",
                     conversation_id=ids[i],
                     role="user" if j % 2 == 0 else "assistant",
@@ -471,7 +475,7 @@ async def _seed_budget_conversations(backend: SQLiteBackend, count: int, msgs_pe
 
 
 @pytest.fixture(scope="module")
-def budget_db(tmp_path_factory):
+def budget_db(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, list[str]]:
     """Module-scoped fixture that seeds a 1000-conversation database.
 
     Reused across all budget tests in this module for efficiency.
@@ -480,7 +484,7 @@ def budget_db(tmp_path_factory):
     db_path = tmp_dir / "budget.db"
     backend = SQLiteBackend(db_path=db_path)
 
-    async def _setup():
+    async def _setup() -> list[str]:
         ids = await _seed_budget_conversations(backend, BUDGET_CONV_COUNT, BUDGET_MSGS_PER_CONV)
         await backend.close()
         return ids
@@ -504,9 +508,9 @@ class TestScaleBudgets:
     to avoid flaky CI failures.
     """
 
-    async def test_list_conversations_under_budget(self, budget_db):
+    async def test_list_conversations_under_budget(self, budget_db: tuple[Path, list[str]]) -> None:
         """1000 conversations, list should complete in < 2s."""
-        db_path, ids = budget_db
+        db_path, _ids = budget_db
         backend = SQLiteBackend(db_path=db_path)
         try:
             t0 = time.monotonic()
@@ -518,9 +522,9 @@ class TestScaleBudgets:
         finally:
             await backend.close()
 
-    async def test_fts_search_under_budget(self, budget_db):
+    async def test_fts_search_under_budget(self, budget_db: tuple[Path, list[str]]) -> None:
         """Search across 1000 conversations, should complete in < 1s."""
-        db_path, ids = budget_db
+        db_path, _ids = budget_db
         backend = SQLiteBackend(db_path=db_path)
         try:
             repo = ConversationRepository(backend=backend)
@@ -532,9 +536,9 @@ class TestScaleBudgets:
         finally:
             await backend.close()
 
-    async def test_filter_pushdown_under_budget(self, budget_db):
+    async def test_filter_pushdown_under_budget(self, budget_db: tuple[Path, list[str]]) -> None:
         """Filter by provider/date across 1000 conversations, < 1s."""
-        db_path, ids = budget_db
+        db_path, _ids = budget_db
         backend = SQLiteBackend(db_path=db_path)
         try:
             # Provider filter
@@ -572,7 +576,7 @@ class TestScaleBudgets:
         finally:
             await backend.close()
 
-    async def test_batch_insert_under_budget(self, tmp_path):
+    async def test_batch_insert_under_budget(self, tmp_path: Path) -> None:
         """Insert 100 conversations with messages, should complete in < 5s."""
         db_path = tmp_path / "insert_budget.db"
         backend = SQLiteBackend(db_path=db_path)

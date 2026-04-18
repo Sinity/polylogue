@@ -2,22 +2,27 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
+from collections.abc import AsyncIterator, Callable, Iterator, Mapping
 from pathlib import Path
+from typing import Any
 
 import pytest
 from hypothesis import HealthCheck, settings
 from hypothesis.configuration import set_hypothesis_home_dir
 from hypothesis.database import DirectoryBasedExampleDatabase
 
-from polylogue.lib.messages import MessageCollection
+from polylogue.lib.models import Conversation
 from polylogue.scenarios import CorpusSpec, build_default_corpus_specs
+from polylogue.storage.store import RawConversationRecord
+from tests.infra.builders import make_conv, make_msg
 
 # ---------------------------------------------------------------------------
 # Scale markers for data-gravity and long-haul validation (Workstream H)
 # ---------------------------------------------------------------------------
 
 
-def pytest_configure(config):
+def pytest_configure(config: pytest.Config) -> None:
     """Register custom markers for scale and benchmark tests."""
     config.addinivalue_line("markers", "scale(level): parametric scale marker (small/medium/large/stretch)")
 
@@ -47,7 +52,7 @@ settings.load_profile(os.environ.get("HYPOTHESIS_PROFILE", "default"))
 
 
 @pytest.fixture(autouse=True)
-def _clear_polylogue_env(monkeypatch, tmp_path):
+def _clear_polylogue_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     # Close any cached SQLite connections to prevent WAL sidecar corruption
     # when tests create/move/delete temp database files.
     from polylogue.storage.backends.connection import _clear_connection_cache
@@ -97,7 +102,7 @@ def _clear_polylogue_env(monkeypatch, tmp_path):
 
 
 @pytest.fixture
-def workspace_env(tmp_path, monkeypatch):
+def workspace_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Path]:
     data_dir = tmp_path / "data"
     state_dir = tmp_path / "state"
     archive_root = tmp_path / "archive"
@@ -117,7 +122,7 @@ def workspace_env(tmp_path, monkeypatch):
 
 
 @pytest.fixture
-def db_without_fts(tmp_path):
+def db_without_fts(tmp_path: Path) -> Path:
     """Database with schema but WITHOUT the FTS table (simulates fresh install)."""
     from polylogue.storage.backends.connection import open_connection
 
@@ -133,7 +138,7 @@ def db_without_fts(tmp_path):
 
 
 @pytest.fixture
-def storage_repository(workspace_env):
+def storage_repository(workspace_env: dict[str, Path]) -> Any:
     """Storage repository with its own write lock.
 
     Use this fixture in tests that need thread-safe storage operations.
@@ -151,7 +156,7 @@ def storage_repository(workspace_env):
 
 
 @pytest.fixture
-def cli_workspace(tmp_path, monkeypatch):
+def cli_workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Path]:
     """
     Isolated CLI workspace with archive roots and database.
 
@@ -202,7 +207,7 @@ def cli_workspace(tmp_path, monkeypatch):
 
 
 @pytest.fixture
-def mock_drive_credentials(tmp_path, monkeypatch):
+def mock_drive_credentials(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, object]:
     """
     Mock Google Drive OAuth credentials for testing.
 
@@ -250,7 +255,7 @@ def mock_drive_credentials(tmp_path, monkeypatch):
 
 
 @pytest.fixture
-def mock_drive_service(monkeypatch):
+def mock_drive_service(monkeypatch: pytest.MonkeyPatch) -> dict[str, object]:
     """
     Mock Google Drive service for testing.
 
@@ -276,7 +281,7 @@ def mock_drive_service(monkeypatch):
         ),
     }
 
-    file_content = {
+    file_content: dict[str, bytes | str] = {
         "prompt1": b'{"title": "Test Prompt", "content": "Test content"}',
     }
 
@@ -284,11 +289,19 @@ def mock_drive_service(monkeypatch):
     mock_creds = MockCredentials()
 
     # Patch google.auth.default
-    def mock_google_auth_default(*args, **kwargs):
+    def mock_google_auth_default(*args: object, **kwargs: object) -> tuple[MockCredentials, None]:
+        del args, kwargs
         return mock_creds, None
 
     # Patch googleapiclient.discovery.build
-    def mock_discovery_build(service_name, version, credentials=None, *args, **kwargs):
+    def mock_discovery_build(
+        service_name: str,
+        version: str,
+        credentials: object | None = None,
+        *args: object,
+        **kwargs: object,
+    ) -> MockDriveService:
+        del service_name, version, credentials, args, kwargs
         return mock_service
 
     # Patch google.auth.transport.requests.Request
@@ -308,7 +321,7 @@ def mock_drive_service(monkeypatch):
 
 
 @pytest.fixture
-def mock_media_downloader(monkeypatch):
+def mock_media_downloader(monkeypatch: pytest.MonkeyPatch) -> dict[str, object]:
     """
     Patch GoogleAPI's MediaIoBaseDownload with our mock.
 
@@ -319,11 +332,11 @@ def mock_media_downloader(monkeypatch):
 
     # Patch the _import_module function to return mock for MediaIoBaseDownload
 
-    def mock_import_module(name: str):
+    def mock_import_module(name: str) -> Any:
         if name == "googleapiclient.http":
             import types
 
-            mock_http = types.ModuleType("googleapiclient.http")
+            mock_http: Any = types.ModuleType("googleapiclient.http")
             mock_http.MediaIoBaseDownload = MockMediaIoBaseDownload
             return mock_http
         # Fall through to original for other modules
@@ -344,7 +357,7 @@ def mock_media_downloader(monkeypatch):
 
 
 @pytest.fixture
-def db_path(workspace_env):
+def db_path(workspace_env: Mapping[str, Path]) -> Path:
     """Shortcut fixture for database path setup.
 
     Usage in tests:
@@ -357,7 +370,7 @@ def db_path(workspace_env):
 
 
 @pytest.fixture
-def conversation_builder(db_path):
+def conversation_builder(db_path: Path) -> Callable[[str], Any]:
     """Fixture that provides ConversationBuilder factory.
 
     Usage in tests:
@@ -368,7 +381,7 @@ def conversation_builder(db_path):
     """
     from tests.infra.storage_records import ConversationBuilder
 
-    def _builder(conversation_id: str = "test-conv"):
+    def _builder(conversation_id: str = "test-conv") -> Any:
         return ConversationBuilder(db_path, conversation_id)
 
     return _builder
@@ -380,7 +393,7 @@ def conversation_builder(db_path):
 
 
 @pytest.fixture
-def test_db(tmp_path):
+def test_db(tmp_path: Path) -> Path:
     """Create an isolated test database with schema initialized.
 
     Replaces duplicate fixtures in: test_store.py, test_pipeline.py, test_lib.py,
@@ -395,7 +408,7 @@ def test_db(tmp_path):
 
 
 @pytest.fixture
-def test_conn(test_db):
+def test_conn(test_db: Path) -> Iterator[sqlite3.Connection]:
     """Provide a connection to the test database.
 
     Replaces duplicate fixtures in: test_store.py, test_pipeline.py, test_search_index.py
@@ -407,7 +420,7 @@ def test_conn(test_db):
 
 
 @pytest.fixture
-async def sqlite_backend(tmp_path):
+async def sqlite_backend(tmp_path: Path) -> AsyncIterator[Any]:
     """Create a SQLite backend for testing."""
 
     from polylogue.storage.backends import SQLiteBackend
@@ -419,7 +432,7 @@ async def sqlite_backend(tmp_path):
 
 
 @pytest.fixture
-def sample_conversation():
+def sample_conversation() -> Conversation:
     """Create a diverse conversation for filter/projection testing.
 
     Includes:
@@ -431,28 +444,30 @@ def sample_conversation():
 
     Replaces duplicate fixtures in: test_projections.py
     """
-    from datetime import datetime
-
-    from polylogue.lib.models import Conversation, Message
-
     messages = [
-        Message(id="m1", role="user", text="User question", timestamp=datetime(2024, 1, 1, 10, 0)),
-        Message(id="m2", role="assistant", text="Assistant response", timestamp=datetime(2024, 1, 1, 10, 1)),
-        Message(id="m3", role="system", text="System prompt", timestamp=datetime(2024, 1, 1, 10, 2)),
-        Message(id="m4", role="tool", text="Tool output", timestamp=datetime(2024, 1, 1, 10, 3)),
-        Message(
-            id="m5", role="user", text="Another question with searchterm here", timestamp=datetime(2024, 1, 1, 10, 4)
+        make_msg(id="m1", role="user", text="User question", timestamp="2024-01-01T10:00:00"),
+        make_msg(id="m2", role="assistant", text="Assistant response", timestamp="2024-01-01T10:01:00"),
+        make_msg(id="m3", role="system", text="System prompt", timestamp="2024-01-01T10:02:00"),
+        make_msg(id="m4", role="tool", text="Tool output", timestamp="2024-01-01T10:03:00"),
+        make_msg(
+            id="m5",
+            role="user",
+            text="Another question with searchterm here",
+            timestamp="2024-01-01T10:04:00",
         ),
-        Message(id="m6", role="assistant", text="ok", timestamp=datetime(2024, 1, 1, 10, 5)),  # Short (noise)
-        Message(
-            id="m7", role="assistant", text="Substantial answer with details", timestamp=datetime(2024, 1, 1, 10, 6)
+        make_msg(id="m6", role="assistant", text="ok", timestamp="2024-01-01T10:05:00"),
+        make_msg(
+            id="m7",
+            role="assistant",
+            text="Substantial answer with details",
+            timestamp="2024-01-01T10:06:00",
         ),
     ]
-    return Conversation(id="conv1", provider="test", messages=MessageCollection(messages=messages))
+    return make_conv(id="conv1", provider="test", messages=messages)
 
 
 @pytest.fixture
-def cli_runner():
+def cli_runner() -> Any:
     """Create a CliRunner for testing CLI commands.
 
     Replaces duplicate definitions across CLI test files.
@@ -468,7 +483,7 @@ def cli_runner():
 
 
 @pytest.fixture(scope="session")
-def seeded_db(tmp_path_factory):
+def seeded_db(tmp_path_factory: pytest.TempPathFactory) -> Path:
     """Create a database seeded with synthetic data from all providers.
 
     Uses SyntheticCorpus to generate schema-driven test data for each provider,
@@ -575,7 +590,7 @@ def seeded_db(tmp_path_factory):
 
 
 @pytest.fixture
-def seeded_repository(seeded_db):
+def seeded_repository(seeded_db: Path) -> Any:
     """Repository backed by the seeded database.
 
     Use this when tests need a ConversationRepository with real provider data.
@@ -593,7 +608,7 @@ def seeded_repository(seeded_db):
 
 
 @pytest.fixture(scope="session")
-def raw_synthetic_samples():
+def raw_synthetic_samples() -> list[RawConversationRecord]:
     """Generate synthetic raw conversation records for all providers.
 
     Uses SyntheticCorpus to generate wire-format bytes, wrapped in
@@ -644,7 +659,7 @@ from tests.infra.corpus_fixtures import corpus_seeded_db  # noqa: F401
 
 
 @pytest.fixture
-def synthetic_source(tmp_path):
+def synthetic_source(tmp_path: Path) -> Callable[[str, int, range, int], Any]:
     """Factory fixture that generates synthetic Source objects for any provider.
 
     Writes SyntheticCorpus output to temp files, returning Source objects that

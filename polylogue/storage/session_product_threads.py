@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Sequence
+from collections.abc import AsyncIterator, Iterable, Iterator, Sequence
 
 import aiosqlite
 
@@ -15,6 +15,7 @@ from polylogue.storage.store import (
     SessionProfileRecord,
     WorkThreadRecord,
 )
+from polylogue.types import ConversationId
 
 _ROOT_THREAD_IDS_SQL = """
     SELECT c.conversation_id
@@ -109,7 +110,7 @@ def build_work_thread_record(
     built_at = materialized_at or now_iso()
     return WorkThreadRecord(
         thread_id=thread.thread_id,
-        root_id=thread.root_id,
+        root_id=ConversationId(thread.root_id),
         materializer_version=SESSION_PRODUCT_MATERIALIZER_VERSION,
         materialized_at=built_at,
         start_time=thread.start_time.isoformat() if thread.start_time else None,
@@ -177,7 +178,7 @@ def iter_root_id_pages_sync(
     conn: sqlite3.Connection,
     *,
     size: int = _ROOT_BATCH_SIZE,
-):
+) -> Iterator[list[str]]:
     cursor = conn.execute(_ROOT_THREAD_IDS_SQL)
     while True:
         rows = cursor.fetchmany(size)
@@ -190,7 +191,7 @@ async def iter_root_id_pages_async(
     conn: aiosqlite.Connection,
     *,
     size: int = _ROOT_BATCH_SIZE,
-):
+) -> AsyncIterator[list[str]]:
     cursor = await conn.execute(_ROOT_THREAD_IDS_SQL)
     while True:
         rows = await cursor.fetchmany(size)
@@ -212,7 +213,7 @@ def _empty_profile_record_groups(root_ids: Sequence[str]) -> dict[str, list[Sess
 
 
 def _group_profile_records_by_root(
-    rows,
+    rows: Iterable[sqlite3.Row],
     *,
     root_ids: Sequence[str],
 ) -> dict[str, list[SessionProfileRecord]]:
@@ -238,11 +239,17 @@ def _thread_record_for_root(
     return _thread_records_from_profile_records(profile_records).get(str(root_id))
 
 
-def load_thread_profile_records_sync(conn: sqlite3.Connection, root_id: str):
+def load_thread_profile_records_sync(
+    conn: sqlite3.Connection,
+    root_id: str,
+) -> list[SessionProfileRecord]:
     return load_thread_profile_records_by_root_sync(conn, [root_id]).get(root_id, [])
 
 
-async def load_thread_profile_records_async(conn: aiosqlite.Connection, root_id: str):
+async def load_thread_profile_records_async(
+    conn: aiosqlite.Connection,
+    root_id: str,
+) -> list[SessionProfileRecord]:
     return (await load_thread_profile_records_by_root_async(conn, [root_id])).get(root_id, [])
 
 

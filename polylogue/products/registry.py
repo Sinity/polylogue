@@ -20,9 +20,12 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, cast
 
 import click
+from pydantic import BaseModel
+
+from polylogue.archive_products import ArchiveProductModel
 
 # -------------------------------------------------------------------
 # Field descriptors
@@ -524,13 +527,16 @@ register(
 # -------------------------------------------------------------------
 
 
-def _resolve_query_class(dotted_path: str) -> type:
+def _resolve_query_class(dotted_path: str) -> type[ArchiveProductModel]:
     """Import and return a class from a dotted path."""
     module_path, class_name = dotted_path.rsplit(".", 1)
     import importlib
 
     mod = importlib.import_module(module_path)
-    return getattr(mod, class_name)
+    resolved = getattr(mod, class_name)
+    if not isinstance(resolved, type) or not issubclass(resolved, BaseModel):
+        raise TypeError(f"{dotted_path} is not a Pydantic model class")
+    return cast(type[ArchiveProductModel], resolved)
 
 
 class ProductQueryError(ValueError):
@@ -568,7 +574,7 @@ def fetch_products(
 
     query = _build_query(product_type, **kwargs)
     method = getattr(operations, product_type.operations_method)
-    return run_coroutine_sync(method(query))
+    return cast(list[Any], run_coroutine_sync(method(query)))
 
 
 async def fetch_products_async(
@@ -579,7 +585,7 @@ async def fetch_products_async(
     """Async variant of ``fetch_products()``."""
     query = _build_query(product_type, **kwargs)
     method = getattr(operations, product_type.operations_method)
-    return await method(query)
+    return cast(list[Any], await method(query))
 
 
 __all__ = [

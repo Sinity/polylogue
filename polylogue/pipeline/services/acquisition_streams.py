@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
+from functools import partial
+from itertools import islice
 from typing import TYPE_CHECKING
 
 from polylogue.logging import get_logger
@@ -17,6 +19,15 @@ if TYPE_CHECKING:
 
 logger = get_logger(__name__)
 ObservationCallback = Callable[[dict[str, object]], None]
+
+
+def _drain_batch(
+    iterator: Iterator[RawConversationData],
+    *,
+    batch_size: int,
+) -> list[RawConversationData]:
+    """Read up to ``batch_size`` items without sentinel gymnastics."""
+    return list(islice(iterator, batch_size))
 
 
 async def iter_source_raw_stream(
@@ -36,28 +47,23 @@ async def iter_source_raw_stream(
             return
         loop.call_soon_threadsafe(progress_callback, 0, desc)
 
-    iterator = acquisition_root.iter_source_raw_data(
-        source,
-        known_mtimes=known_mtimes,
-        observation_callback=observation_callback,
-        status_callback=_status_callback if progress_callback is not None else None,
+    iterator = iter(
+        acquisition_root.iter_source_raw_data(
+            source,
+            known_mtimes=known_mtimes,
+            observation_callback=observation_callback,
+            status_callback=_status_callback if progress_callback is not None else None,
+        )
     )
-    sentinel = object()
     batch_size = 128
-
-    def _next_batch() -> list[RawConversationData]:
-        batch: list[RawConversationData] = []
-        for _ in range(batch_size):
-            item = next(iterator, sentinel)
-            if item is sentinel:
-                break
-            batch.append(item)
-        return batch
 
     loop = asyncio.get_running_loop()
     with ThreadPoolExecutor(max_workers=1) as executor:
         while True:
-            batch = await loop.run_in_executor(executor, _next_batch)
+            batch = await loop.run_in_executor(
+                executor,
+                partial(_drain_batch, iterator, batch_size=batch_size),
+            )
             if not batch:
                 break
             for item in batch:
@@ -75,29 +81,24 @@ async def iter_drive_raw_stream(
     """Stream Drive payloads as raw records without touching the local cache."""
     from polylogue.sources.drive import iter_drive_raw_data
 
-    sentinel = object()
     batch_size = 32
-    iterator = iter_drive_raw_data(
-        source=source,
-        ui=ui,
-        cursor_state=cursor_state,
-        drive_config=drive_config,
-        known_mtimes=known_mtimes,
+    iterator = iter(
+        iter_drive_raw_data(
+            source=source,
+            ui=ui,
+            cursor_state=cursor_state,
+            drive_config=drive_config,
+            known_mtimes=known_mtimes,
+        )
     )
-
-    def _next_batch() -> list[RawConversationData]:
-        batch: list[RawConversationData] = []
-        for _ in range(batch_size):
-            item = next(iterator, sentinel)
-            if item is sentinel:
-                break
-            batch.append(item)
-        return batch
 
     loop = asyncio.get_running_loop()
     with ThreadPoolExecutor(max_workers=1) as executor:
         while True:
-            batch = await loop.run_in_executor(executor, _next_batch)
+            batch = await loop.run_in_executor(
+                executor,
+                partial(_drain_batch, iterator, batch_size=batch_size),
+            )
             if not batch:
                 break
             for item in batch:

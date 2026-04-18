@@ -2,14 +2,54 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date, datetime
 
 from polylogue.lib.attribution import ConversationAttribution
+from polylogue.lib.payload_coercion import (
+    coerce_float,
+    coerce_int,
+    int_pair,
+    mapping_sequence,
+    optional_date,
+    optional_datetime,
+    optional_string,
+    string_int_mapping,
+    string_sequence,
+)
 from polylogue.lib.phase_extraction import SessionPhase
 from polylogue.lib.repo_identity import normalize_repo_names, normalize_repo_paths
 from polylogue.lib.semantic_facts import ConversationSemanticFacts
 from polylogue.lib.work_event_extraction import WorkEvent
+
+
+def _phase_to_dict(phase: SessionPhase) -> dict[str, object]:
+    return {
+        "start_time": phase.start_time.isoformat() if phase.start_time else None,
+        "end_time": phase.end_time.isoformat() if phase.end_time else None,
+        "canonical_session_date": phase.canonical_session_date.isoformat() if phase.canonical_session_date else None,
+        "message_range": list(phase.message_range),
+        "duration_ms": phase.duration_ms,
+        "tool_counts": phase.tool_counts,
+        "word_count": phase.word_count,
+        "confidence": phase.confidence,
+        "evidence": list(phase.evidence),
+    }
+
+
+def _phase_from_mapping(payload: Mapping[str, object]) -> SessionPhase:
+    return SessionPhase(
+        start_time=optional_datetime(payload.get("start_time")),
+        end_time=optional_datetime(payload.get("end_time")),
+        canonical_session_date=optional_date(payload.get("canonical_session_date")),
+        message_range=int_pair(payload.get("message_range")),
+        duration_ms=coerce_int(payload.get("duration_ms"), 0),
+        tool_counts=string_int_mapping(payload.get("tool_counts")),
+        word_count=coerce_int(payload.get("word_count"), 0),
+        confidence=coerce_float(payload.get("confidence"), 0.0),
+        evidence=string_sequence(payload.get("evidence")),
+    )
 
 
 @dataclass(frozen=True)
@@ -75,27 +115,10 @@ class SessionProfile:
             "languages_detected": list(self.languages_detected),
             "repo_names": list(self.repo_names),
             "work_events": [event.to_dict() for event in self.work_events],
-            "phases": [
-                {
-                    "start_time": phase.start_time.isoformat() if phase.start_time else None,
-                    "end_time": phase.end_time.isoformat() if phase.end_time else None,
-                    "canonical_session_date": (
-                        phase.canonical_session_date.isoformat() if phase.canonical_session_date else None
-                    ),
-                    "message_range": list(phase.message_range),
-                    "duration_ms": phase.duration_ms,
-                    "tool_counts": phase.tool_counts,
-                    "word_count": phase.word_count,
-                    "confidence": phase.confidence,
-                    "evidence": list(phase.evidence),
-                }
-                for phase in self.phases
-            ],
+            "phases": [_phase_to_dict(phase) for phase in self.phases],
             "first_message_at": self.first_message_at.isoformat() if self.first_message_at else None,
             "last_message_at": self.last_message_at.isoformat() if self.last_message_at else None,
-            "canonical_session_date": (
-                self.canonical_session_date.isoformat() if self.canonical_session_date else None
-            ),
+            "canonical_session_date": self.canonical_session_date.isoformat() if self.canonical_session_date else None,
             "engaged_duration_ms": self.engaged_duration_ms,
             "engaged_minutes": round(self.engaged_duration_ms / 60_000.0, 4),
             "wall_duration_ms": self.wall_duration_ms,
@@ -110,79 +133,48 @@ class SessionProfile:
         }
 
     @classmethod
-    def from_dict(cls, payload: dict[str, object]) -> SessionProfile:
-        repo_paths = normalize_repo_paths(payload.get("repo_paths", []) or [])
-        repo_names = tuple(
-            sorted({str(item).strip() for item in (payload.get("repo_names", []) or []) if str(item).strip()})
-        ) or normalize_repo_names(repo_paths=repo_paths)
+    def from_dict(cls, payload: Mapping[str, object]) -> SessionProfile:
+        repo_paths = normalize_repo_paths(string_sequence(payload.get("repo_paths")))
+        explicit_repo_names = tuple(
+            sorted({item.strip() for item in string_sequence(payload.get("repo_names")) if item.strip()})
+        )
+        repo_names = explicit_repo_names or normalize_repo_names(repo_paths=repo_paths)
         return cls(
             conversation_id=str(payload["conversation_id"]),
             provider=str(payload["provider"]),
-            title=str(payload["title"]) if payload.get("title") is not None else None,
-            created_at=datetime.fromisoformat(str(payload["created_at"])) if payload.get("created_at") else None,
-            updated_at=datetime.fromisoformat(str(payload["updated_at"])) if payload.get("updated_at") else None,
-            message_count=int(payload.get("message_count", 0) or 0),
-            substantive_count=int(payload.get("substantive_count", 0) or 0),
-            tool_use_count=int(payload.get("tool_use_count", 0) or 0),
-            thinking_count=int(payload.get("thinking_count", 0) or 0),
-            attachment_count=int(payload.get("attachment_count", 0) or 0),
-            word_count=int(payload.get("word_count", 0) or 0),
-            total_cost_usd=float(payload.get("total_cost_usd", 0.0) or 0.0),
-            total_duration_ms=int(payload.get("total_duration_ms", 0) or 0),
-            tool_categories={
-                str(key): int(value or 0) for key, value in (payload.get("tool_categories", {}) or {}).items()
-            },
+            title=optional_string(payload.get("title")),
+            created_at=optional_datetime(payload.get("created_at")),
+            updated_at=optional_datetime(payload.get("updated_at")),
+            message_count=coerce_int(payload.get("message_count"), 0),
+            substantive_count=coerce_int(payload.get("substantive_count"), 0),
+            tool_use_count=coerce_int(payload.get("tool_use_count"), 0),
+            thinking_count=coerce_int(payload.get("thinking_count"), 0),
+            attachment_count=coerce_int(payload.get("attachment_count"), 0),
+            word_count=coerce_int(payload.get("word_count"), 0),
+            total_cost_usd=coerce_float(payload.get("total_cost_usd"), 0.0),
+            total_duration_ms=coerce_int(payload.get("total_duration_ms"), 0),
+            tool_categories=string_int_mapping(payload.get("tool_categories")),
             repo_paths=repo_paths,
-            cwd_paths=tuple(str(item) for item in payload.get("cwd_paths", []) or []),
-            branch_names=tuple(str(item) for item in payload.get("branch_names", []) or []),
-            file_paths_touched=tuple(str(item) for item in payload.get("file_paths_touched", []) or []),
-            languages_detected=tuple(str(item) for item in payload.get("languages_detected", []) or []),
+            cwd_paths=string_sequence(payload.get("cwd_paths")),
+            branch_names=string_sequence(payload.get("branch_names")),
+            file_paths_touched=string_sequence(payload.get("file_paths_touched")),
+            languages_detected=string_sequence(payload.get("languages_detected")),
             repo_names=repo_names,
-            work_events=tuple(
-                WorkEvent.from_dict(item) for item in payload.get("work_events", []) or [] if isinstance(item, dict)
-            ),
-            phases=tuple(
-                SessionPhase(
-                    start_time=datetime.fromisoformat(str(item["start_time"])) if item.get("start_time") else None,
-                    end_time=datetime.fromisoformat(str(item["end_time"])) if item.get("end_time") else None,
-                    canonical_session_date=(
-                        date.fromisoformat(str(item["canonical_session_date"]))
-                        if item.get("canonical_session_date")
-                        else None
-                    ),
-                    message_range=tuple(int(value) for value in item.get("message_range", [0, 0])),
-                    duration_ms=int(item.get("duration_ms", 0) or 0),
-                    tool_counts={
-                        str(key): int(value or 0) for key, value in (item.get("tool_counts", {}) or {}).items()
-                    },
-                    word_count=int(item.get("word_count", 0) or 0),
-                    confidence=float(item.get("confidence", 0.0) or 0.0),
-                    evidence=tuple(str(value) for value in item.get("evidence", []) or []),
-                )
-                for item in payload.get("phases", []) or []
-                if isinstance(item, dict)
-            ),
-            first_message_at=(
-                datetime.fromisoformat(str(payload["first_message_at"])) if payload.get("first_message_at") else None
-            ),
-            last_message_at=(
-                datetime.fromisoformat(str(payload["last_message_at"])) if payload.get("last_message_at") else None
-            ),
-            canonical_session_date=(
-                date.fromisoformat(str(payload["canonical_session_date"]))
-                if payload.get("canonical_session_date")
-                else None
-            ),
-            engaged_duration_ms=int(payload.get("engaged_duration_ms", 0) or 0),
-            wall_duration_ms=int(payload.get("wall_duration_ms", 0) or 0),
+            work_events=tuple(WorkEvent.from_dict(item) for item in mapping_sequence(payload.get("work_events"))),
+            phases=tuple(_phase_from_mapping(item) for item in mapping_sequence(payload.get("phases"))),
+            first_message_at=optional_datetime(payload.get("first_message_at")),
+            last_message_at=optional_datetime(payload.get("last_message_at")),
+            canonical_session_date=optional_date(payload.get("canonical_session_date")),
+            engaged_duration_ms=coerce_int(payload.get("engaged_duration_ms"), 0),
+            wall_duration_ms=coerce_int(payload.get("wall_duration_ms"), 0),
             cost_is_estimated=bool(payload.get("cost_is_estimated", False)),
-            compaction_count=int(payload.get("compaction_count", 0) or 0),
-            thread_id=str(payload["thread_id"]) if payload.get("thread_id") is not None else None,
-            continuation_depth=int(payload.get("continuation_depth", 0) or 0),
-            tags=tuple(str(item) for item in payload.get("tags", []) or []),
-            auto_tags=tuple(str(item) for item in payload.get("auto_tags", []) or []),
+            compaction_count=coerce_int(payload.get("compaction_count"), 0),
+            thread_id=optional_string(payload.get("thread_id")),
+            continuation_depth=coerce_int(payload.get("continuation_depth"), 0),
+            tags=string_sequence(payload.get("tags")),
+            auto_tags=string_sequence(payload.get("auto_tags")),
             is_continuation=bool(payload.get("is_continuation", False)),
-            parent_id=str(payload["parent_id"]) if payload.get("parent_id") is not None else None,
+            parent_id=optional_string(payload.get("parent_id")),
         )
 
 

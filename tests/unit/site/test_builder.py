@@ -3,16 +3,18 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 
 from polylogue.site.builder import SiteBuilder, SiteConfig
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.backends.connection import open_connection
 from polylogue.storage.repository import ConversationRepository
 from polylogue.storage.store import RunRecord
+from polylogue.types import SearchProvider
 from tests.infra.storage_records import ConversationBuilder, record_run
 
 
-def _seed_latest_run(db_path) -> None:
+def _seed_latest_run(db_path: Path) -> None:
     with open_connection(db_path) as conn:
         record_run(
             conn,
@@ -28,7 +30,7 @@ def _seed_latest_run(db_path) -> None:
         conn.commit()
 
 
-def test_site_builder_returns_typed_manifest_and_persists_it(db_path, tmp_path) -> None:
+def test_site_builder_returns_typed_manifest_and_persists_it(db_path: Path, tmp_path: Path) -> None:
     """A site build writes a manifest file and persists the same manifest to SQLite."""
     (
         ConversationBuilder(db_path, "conv-site-1")
@@ -45,7 +47,7 @@ def test_site_builder_returns_typed_manifest_and_persists_it(db_path, tmp_path) 
     repository = ConversationRepository(backend=backend)
     builder = SiteBuilder(
         output_dir=tmp_path / "site",
-        config=SiteConfig(enable_search=True, search_provider="lunr"),
+        config=SiteConfig(enable_search=True, search_provider=SearchProvider.LUNR),
         backend=backend,
         repository=repository,
     )
@@ -78,7 +80,7 @@ def test_site_builder_returns_typed_manifest_and_persists_it(db_path, tmp_path) 
     assert "maintenance" in persisted.manifest
 
 
-def test_site_builder_reports_reused_pages_on_incremental_rebuild(db_path, tmp_path) -> None:
+def test_site_builder_reports_reused_pages_on_incremental_rebuild(db_path: Path, tmp_path: Path) -> None:
     """Incremental rebuilds distinguish reused conversation pages from rendered ones."""
     (
         ConversationBuilder(db_path, "conv-site-2")
@@ -110,7 +112,7 @@ def test_site_builder_reports_reused_pages_on_incremental_rebuild(db_path, tmp_p
     assert second.outputs.failed_conversation_pages == 0
 
 
-def test_site_builder_emits_progress_during_scan_and_manifest_write(db_path, tmp_path) -> None:
+def test_site_builder_emits_progress_during_scan_and_manifest_write(db_path: Path, tmp_path: Path) -> None:
     (
         ConversationBuilder(db_path, "conv-site-progress")
         .provider("chatgpt")

@@ -186,7 +186,9 @@ def root_index(specs: tuple[ConversationSpec, ...], index: int) -> int:
     """Resolve the root conversation index for a generated node."""
     current = index
     while specs[current].parent_index is not None:
-        current = specs[current].parent_index
+        parent_index = specs[current].parent_index
+        assert parent_index is not None
+        current = parent_index
     return current
 
 

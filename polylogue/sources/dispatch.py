@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from io import BytesIO
 from typing import TYPE_CHECKING, Any
 
@@ -89,7 +90,7 @@ def _looks_like_chunked_conversation_list(payload: list[Any]) -> bool:
 def _parse_bundle_items(
     payload: list[Any],
     fallback_id: str,
-    parser,
+    parser: Callable[[dict[str, object], str], ParsedConversation],
 ) -> list[ParsedConversation]:
     return [parser(item, f"{fallback_id}-{i}") for i, item in enumerate(payload) if isinstance(item, dict)]
 

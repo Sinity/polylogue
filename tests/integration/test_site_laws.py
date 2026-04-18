@@ -5,14 +5,18 @@ from __future__ import annotations
 import asyncio
 import json
 import tempfile
+from collections.abc import AsyncIterator, Sequence
 from pathlib import Path
+from typing import TypeVar
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
+from polylogue.lib.models import ConversationSummary
 from polylogue.paths import safe_path_component
 from polylogue.site.builder import ArchiveIndexStats, ConversationIndex, SiteBuilder, SiteConfig
+from polylogue.types import SearchProvider
 from tests.infra.strategies import (
     ConversationSummarySpec,
     build_conversation_summary,
@@ -22,20 +26,23 @@ from tests.infra.strategies import (
     expected_index_pages,
     site_archive_spec_strategy,
 )
+from tests.infra.strategies.site import SiteArchiveSpec
+
+_T = TypeVar("_T")
 
 
-async def _empty_messages(*args, **kwargs):
+async def _empty_messages(*args: object, **kwargs: object) -> AsyncIterator[None]:
     if False:  # pragma: no cover
         yield None
 
 
-async def _summary_pages(*pages):
+async def _summary_pages(*pages: Sequence[_T]) -> AsyncIterator[Sequence[_T]]:
     for page in pages:
         if page:
             yield page
 
 
-def _configure_summary_pages(repo: AsyncMock, summaries):
+def _configure_summary_pages(repo: AsyncMock, summaries: Sequence[ConversationSummary]) -> None:
     repo.iter_summary_pages = MagicMock(side_effect=lambda *args, **kwargs: _summary_pages(summaries))
     repo.iter_messages = _empty_messages
 
@@ -49,7 +56,7 @@ def _make_backend() -> AsyncMock:
 
 @settings(max_examples=60, deadline=None)
 @given(spec=conversation_summary_spec_strategy())
-def test_conversation_index_from_summary_contract(spec) -> None:
+def test_conversation_index_from_summary_contract(spec: ConversationSummarySpec) -> None:
     summary = build_conversation_summary(spec)
     index = ConversationIndex.from_summary(summary, spec.message_count)
 
@@ -73,7 +80,7 @@ def test_conversation_index_from_summary_contract(spec) -> None:
 
 @settings(max_examples=40, deadline=None)
 @given(spec=site_archive_spec_strategy())
-def test_site_builder_archive_shape_contract(spec) -> None:
+def test_site_builder_archive_shape_contract(spec: SiteArchiveSpec) -> None:
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)
         summaries = [build_conversation_summary(summary) for summary in spec.summaries]
@@ -91,7 +98,7 @@ def test_site_builder_archive_shape_contract(spec) -> None:
             config=SiteConfig(
                 title=spec.custom_title or "Contract Archive",
                 enable_search=spec.enable_search,
-                search_provider=spec.search_provider,
+                search_provider=SearchProvider.from_string(spec.search_provider),
                 include_dashboard=spec.include_dashboard,
             ),
             backend=backend,
@@ -118,7 +125,10 @@ def test_site_builder_archive_shape_contract(spec) -> None:
     summaries=conversation_summary_batch_strategy(min_size=0, max_size=5),
     mode=st.sampled_from(("disabled", "lunr", "pagefind")),
 )
-def test_site_builder_search_surface_contract(summaries, mode: str) -> None:
+def test_site_builder_search_surface_contract(
+    summaries: tuple[ConversationSummarySpec, ...],
+    mode: str,
+) -> None:
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)
         backend = _make_backend()
@@ -128,7 +138,7 @@ def test_site_builder_search_surface_contract(summaries, mode: str) -> None:
         output_dir = tmp_path / "site"
 
         enable_search = mode != "disabled"
-        search_provider = "pagefind" if mode == "pagefind" else "lunr"
+        search_provider = SearchProvider.PAGEFIND if mode == "pagefind" else SearchProvider.LUNR
         builder = SiteBuilder(
             output_dir=output_dir,
             config=SiteConfig(
@@ -161,7 +171,7 @@ def test_site_builder_search_surface_contract(summaries, mode: str) -> None:
 
 @settings(max_examples=30, deadline=None)
 @given(spec=site_archive_spec_strategy())
-def test_site_builder_option_passthrough_contract(spec) -> None:
+def test_site_builder_option_passthrough_contract(spec: SiteArchiveSpec) -> None:
     """Builder produces correct output for all option combinations (was: test_site_command_contract)."""
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)
@@ -177,7 +187,7 @@ def test_site_builder_option_passthrough_contract(spec) -> None:
             config=SiteConfig(
                 title=spec.custom_title or "Polylogue Archive",
                 enable_search=spec.enable_search,
-                search_provider=spec.search_provider,
+                search_provider=SearchProvider.from_string(spec.search_provider),
                 include_dashboard=spec.include_dashboard,
             ),
             backend=backend,
@@ -225,14 +235,14 @@ def test_site_builder_scan_archive_streaming_contract() -> None:
 
         builder = SiteBuilder(
             output_dir=tmp_path / "site",
-            config=SiteConfig(enable_search=True, search_provider="lunr", include_dashboard=False),
+            config=SiteConfig(enable_search=True, search_provider=SearchProvider.LUNR, include_dashboard=False),
             backend=backend,
             repository=repository,
         )
         builder.output_dir.mkdir(parents=True, exist_ok=True)
-        builder._generate_conversation_page = AsyncMock(return_value="rendered")  # type: ignore[method-assign]
 
-        stats, generated = asyncio.run(builder._scan_archive(incremental=True))
+        with patch.object(builder, "_generate_conversation_page", AsyncMock(return_value="rendered")):
+            stats, generated = asyncio.run(builder._scan_archive(incremental=True))
 
         assert generated.total == len(specs)
         assert generated.rendered == len(specs)
@@ -274,29 +284,36 @@ def test_site_builder_root_and_provider_index_contract() -> None:
             total_conversations=3,
             total_messages=7,
         )
-        builder._write_template_stream = AsyncMock()  # type: ignore[method-assign]
-        builder._iter_conversation_indexes = MagicMock(
-            side_effect=lambda provider=None: _summary_pages(
-                [
-                    ConversationIndex(
-                        id=f"{provider}-1",
-                        title=f"{provider} title",
-                        provider=provider or "claude-ai",
-                        created_at="2024-01-01",
-                        updated_at="2024-01-01 00:00",
-                        message_count=1,
-                        preview="preview",
-                        path=f"{provider}/conv/conversation.html",
+        with (
+            patch.object(builder, "_write_template_stream", AsyncMock()) as mock_write_template_stream,
+            patch.object(
+                builder,
+                "_iter_conversation_indexes",
+                MagicMock(
+                    side_effect=lambda provider=None: _summary_pages(
+                        [
+                            ConversationIndex(
+                                id=f"{provider}-1",
+                                title=f"{provider} title",
+                                provider=provider or "claude-ai",
+                                created_at="2024-01-01",
+                                updated_at="2024-01-01 00:00",
+                                message_count=1,
+                                preview="preview",
+                                path=f"{provider}/conv/conversation.html",
+                            )
+                        ]
                     )
-                ]
+                ),
+            ),
+        ):
+            asyncio.run(builder._generate_root_index(archive_stats, generated_at="2026-03-11 10:00"))
+            provider_pages = asyncio.run(
+                builder._generate_provider_indexes(archive_stats, generated_at="2026-03-11 10:00")
             )
-        )
-
-        asyncio.run(builder._generate_root_index(archive_stats, generated_at="2026-03-11 10:00"))
-        provider_pages = asyncio.run(builder._generate_provider_indexes(archive_stats, generated_at="2026-03-11 10:00"))
 
         assert provider_pages == 2
-        calls = builder._write_template_stream.await_args_list
+        calls = mock_write_template_stream.await_args_list
         assert calls[0].args[1] == builder.output_dir / "index.html"
         assert calls[0].kwargs["conversations"] == archive_stats.root_page_conversations
         assert (
@@ -313,7 +330,7 @@ def test_site_builder_pagefind_config_contract() -> None:
         tmp_path = Path(tmp)
         builder = SiteBuilder(
             output_dir=tmp_path / "site",
-            config=SiteConfig(enable_search=True, search_provider="pagefind"),
+            config=SiteConfig(enable_search=True, search_provider=SearchProvider.PAGEFIND),
             backend=AsyncMock(),
             repository=AsyncMock(),
         )

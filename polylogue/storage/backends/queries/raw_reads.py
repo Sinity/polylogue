@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Sequence
+from typing import cast
 
 import aiosqlite
 
@@ -253,7 +254,7 @@ async def iter_raw_conversations(
         params.extend([chunk_size, offset])
 
         cursor = await conn.execute(query_with_limit, tuple(params))
-        rows = await cursor.fetchall()
+        rows = cast(list[aiosqlite.Row], await cursor.fetchall())
         if not rows:
             break
         for row in rows:
@@ -274,7 +275,7 @@ async def get_raw_conversation_count(conn: aiosqlite.Connection, provider: str |
         params = (provider,)
     cursor = await conn.execute(query, params)
     row = await cursor.fetchone()
-    return int(row["cnt"])
+    return int(row["cnt"]) if row is not None else 0
 
 
 __all__ = [

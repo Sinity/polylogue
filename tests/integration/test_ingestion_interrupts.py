@@ -25,7 +25,7 @@ pytestmark = [pytest.mark.integration, pytest.mark.chaos]
 # =============================================================================
 
 
-def test_interrupted_pipeline_preserves_partial_progress(tmp_path):
+def test_interrupted_pipeline_preserves_partial_progress(tmp_path: Path) -> None:
     """Test that SIGINT mid-stream preserves already-persisted data.
 
     Strategy:
@@ -95,7 +95,7 @@ def test_interrupted_pipeline_preserves_partial_progress(tmp_path):
         # The key is that we got *something* and didn't corrupt the DB
 
 
-def test_rerun_after_interruption_completes_remaining(tmp_path):
+def test_rerun_after_interruption_completes_remaining(tmp_path: Path) -> None:
     """Test that rerunning after interruption completes without duplication.
 
     Strategy:
@@ -179,7 +179,7 @@ def test_rerun_after_interruption_completes_remaining(tmp_path):
     assert final_count == 50, f"Expected 50 records, got {final_count}"
 
 
-def test_concurrent_pipeline_runs_serialized(tmp_path):
+def test_concurrent_pipeline_runs_serialized(tmp_path: Path) -> None:
     """Test that two simultaneous pipeline runs don't corrupt each other.
 
     Strategy:

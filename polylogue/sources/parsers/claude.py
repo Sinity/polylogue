@@ -72,3 +72,21 @@ def parse_ai(payload: dict[str, object], fallback_id: str) -> ParsedConversation
 parse = parse_code
 parse_stream = parse_code_stream
 looks_like = looks_like_code
+
+__all__ = [
+    "SessionIndexEntry",
+    "enrich_conversation_from_index",
+    "extract_messages_from_chat_messages",
+    "extract_text_from_segments",
+    "find_sessions_index",
+    "looks_like",
+    "looks_like_ai",
+    "looks_like_code",
+    "normalize_timestamp",
+    "parse",
+    "parse_ai",
+    "parse_code",
+    "parse_code_stream",
+    "parse_sessions_index",
+    "parse_stream",
+]

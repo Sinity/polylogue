@@ -8,12 +8,14 @@ acyclic conversation graphs.
 from __future__ import annotations
 
 import uuid
+from pathlib import Path
 
 from hypothesis import HealthCheck, given, settings
 
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.repository import ConversationRepository
 from tests.infra.strategies.storage import (
+    ConversationSpec,
     conversation_graph_strategy,
     expected_sorted_ids,
     expected_tree_ids,
@@ -25,7 +27,7 @@ from tests.infra.strategies.storage import (
 
 @given(conversation_graph_strategy(min_conversations=2, max_conversations=6))
 @settings(max_examples=20, deadline=None, suppress_health_check=[HealthCheck.function_scoped_fixture])
-async def test_get_root_returns_node_without_parent(tmp_path, specs):
+async def test_get_root_returns_node_without_parent(tmp_path: Path, specs: tuple[ConversationSpec, ...]) -> None:
     """get_root resolves to a node whose parent is None."""
     db_path = tmp_path / f"tree-{uuid.uuid4().hex}.db"
     backend = SQLiteBackend(db_path=db_path)
@@ -42,7 +44,7 @@ async def test_get_root_returns_node_without_parent(tmp_path, specs):
 
 @given(conversation_graph_strategy(min_conversations=2, max_conversations=6))
 @settings(max_examples=20, deadline=None, suppress_health_check=[HealthCheck.function_scoped_fixture])
-async def test_get_root_matches_expected(tmp_path, specs):
+async def test_get_root_matches_expected(tmp_path: Path, specs: tuple[ConversationSpec, ...]) -> None:
     """get_root for each node matches the strategy's expected root."""
     db_path = tmp_path / f"tree-{uuid.uuid4().hex}.db"
     backend = SQLiteBackend(db_path=db_path)
@@ -60,7 +62,7 @@ async def test_get_root_matches_expected(tmp_path, specs):
 
 @given(conversation_graph_strategy(min_conversations=2, max_conversations=6))
 @settings(max_examples=20, deadline=None, suppress_health_check=[HealthCheck.function_scoped_fixture])
-async def test_tree_ids_match_expected(tmp_path, specs):
+async def test_tree_ids_match_expected(tmp_path: Path, specs: tuple[ConversationSpec, ...]) -> None:
     """For each node, the full tree reachable from its root matches expected_tree_ids."""
     db_path = tmp_path / f"tree-{uuid.uuid4().hex}.db"
     backend = SQLiteBackend(db_path=db_path)
@@ -87,7 +89,7 @@ async def test_tree_ids_match_expected(tmp_path, specs):
 
 @given(conversation_graph_strategy(min_conversations=2, max_conversations=6))
 @settings(max_examples=20, deadline=None, suppress_health_check=[HealthCheck.function_scoped_fixture])
-async def test_sorted_ids_match_expected(tmp_path, specs):
+async def test_sorted_ids_match_expected(tmp_path: Path, specs: tuple[ConversationSpec, ...]) -> None:
     """list() returns conversations in expected sort order."""
     db_path = tmp_path / f"tree-{uuid.uuid4().hex}.db"
     backend = SQLiteBackend(db_path=db_path)
@@ -103,7 +105,10 @@ async def test_sorted_ids_match_expected(tmp_path, specs):
 
 @given(conversation_graph_strategy(min_conversations=2, max_conversations=6))
 @settings(max_examples=15, deadline=None, suppress_health_check=[HealthCheck.function_scoped_fixture])
-async def test_shortest_unique_prefix_resolves_unambiguously(tmp_path, specs):
+async def test_shortest_unique_prefix_resolves_unambiguously(
+    tmp_path: Path,
+    specs: tuple[ConversationSpec, ...],
+) -> None:
     """shortest_unique_prefix for each ID matches exactly one conversation."""
     db_path = tmp_path / f"tree-{uuid.uuid4().hex}.db"
     backend = SQLiteBackend(db_path=db_path)

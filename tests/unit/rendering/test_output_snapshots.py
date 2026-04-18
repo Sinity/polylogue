@@ -14,9 +14,10 @@ import pytest
 
 syrupy = pytest.importorskip("syrupy")
 
-from polylogue.lib.messages import MessageCollection
 from polylogue.lib.models import Conversation, Message
 from polylogue.rendering.renderers.html import render_conversation_html
+from tests.infra.builders import make_conv as build_conv
+from tests.infra.builders import make_msg as build_msg
 
 
 def _make_msg(
@@ -26,7 +27,7 @@ def _make_msg(
     parent_id: str | None = None,
     branch_index: int = 0,
 ) -> Message:
-    return Message(
+    return build_msg(
         id=id,
         role=role,
         text=text,
@@ -36,11 +37,11 @@ def _make_msg(
 
 
 def _make_conv(messages: list[Message], title: str = "Snapshot Test") -> Conversation:
-    return Conversation(
+    return build_conv(
         id="snap-conv-01",
         provider="chatgpt",
         title=title,
-        messages=MessageCollection(messages=messages),
+        messages=messages,
     )
 
 
@@ -49,7 +50,7 @@ def _make_conv(messages: list[Message], title: str = "Snapshot Test") -> Convers
 # ---------------------------------------------------------------------------
 
 
-def test_linear_conversation_html_snapshot(snapshot):
+def test_linear_conversation_html_snapshot(snapshot: object) -> None:
     """Linear 2-message conversation renders stably."""
     msgs = [_make_msg("m1", "user", "Hello there"), _make_msg("m2", "assistant", "Hi!")]
     conv = _make_conv(msgs, title="Linear Conversation")
@@ -57,7 +58,7 @@ def test_linear_conversation_html_snapshot(snapshot):
     assert html == snapshot
 
 
-def test_branching_conversation_html_snapshot(snapshot):
+def test_branching_conversation_html_snapshot(snapshot: object) -> None:
     """Branching conversation with 1 alternative renders stably."""
     msgs = [
         _make_msg("m1", "user", "Question", parent_id=None, branch_index=0),
@@ -69,7 +70,7 @@ def test_branching_conversation_html_snapshot(snapshot):
     assert html == snapshot
 
 
-def test_multi_branch_conversation_html_snapshot(snapshot):
+def test_multi_branch_conversation_html_snapshot(snapshot: object) -> None:
     """Conversation with 2 alternatives renders stably."""
     msgs = [
         _make_msg("m1", "user", "Question"),
@@ -82,7 +83,7 @@ def test_multi_branch_conversation_html_snapshot(snapshot):
     assert html == snapshot
 
 
-def test_conversation_with_followup_html_snapshot(snapshot):
+def test_conversation_with_followup_html_snapshot(snapshot: object) -> None:
     """Branching conversation with post-branch follow-up renders stably."""
     msgs = [
         _make_msg("m1", "user", "Q"),

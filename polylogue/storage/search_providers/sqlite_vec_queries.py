@@ -2,16 +2,38 @@
 
 from __future__ import annotations
 
+import sqlite3
+from typing import TYPE_CHECKING
+
 import httpx
 
 from polylogue.storage.embedding_stats import read_embedding_stats_sync
 from polylogue.storage.search_providers.sqlite_vec_support import SqliteVecError, _serialize_f32, logger
+from polylogue.storage.store import MessageRecord
 
 
 class SqliteVecQueryMixin:
     """Vector upsert/query/stat operations."""
 
-    def upsert(self, conversation_id: str, messages) -> None:
+    if TYPE_CHECKING:
+        model: str
+        dimension: int
+
+        def _ensure_vec_available(self) -> None: ...
+
+        def _ensure_tables(self) -> None: ...
+
+        def _should_embed_message(self, msg: MessageRecord) -> bool: ...
+
+        def _get_embeddings(
+            self,
+            texts: list[str],
+            input_type: str = "document",
+        ) -> list[list[float]]: ...
+
+        def _get_connection(self) -> sqlite3.Connection: ...
+
+    def upsert(self, conversation_id: str, messages: list[MessageRecord]) -> None:
         """Upsert message embeddings into the vector store."""
         if not messages:
             return

@@ -22,13 +22,14 @@ from polylogue.pipeline.prepare_models import (
 from polylogue.pipeline.prepare_transform_content import canonicalize_conversation_content
 from polylogue.pipeline.semantic_metadata import extract_tool_metadata
 from polylogue.schemas.code_detection import detect_language
+from polylogue.sources.parsers.base import ParsedConversation
 from polylogue.storage.store import (
     AttachmentRecord,
     ContentBlockRecord,
     ConversationRecord,
     MessageRecord,
 )
-from polylogue.types import AttachmentId, MessageId
+from polylogue.types import AttachmentId, MessageId, SemanticBlockType
 
 
 def plan_attachment_materialization(
@@ -47,7 +48,7 @@ def plan_attachment_materialization(
     return AttachmentMaterializationPlan(move_before_save=[(source, target)])
 
 
-def transform_to_records(convo, source_name: str, *, archive_root: Path) -> TransformResult:
+def transform_to_records(convo: ParsedConversation, source_name: str, *, archive_root: Path) -> TransformResult:
     convo = canonicalize_conversation_content(convo)
     content_hash = conversation_content_hash(convo)
     candidate_cid = make_conversation_id(convo.provider_name, convo.provider_conversation_id)
@@ -110,19 +111,21 @@ def transform_to_records(convo, source_name: str, *, archive_root: Path) -> Tran
 
         for block_idx, block in enumerate(msg.content_blocks):
             tool_input_json = json_dumps(block.tool_input) if block.tool_input is not None else None
-            semantic_type: str | None = None
-            semantic_metadata: dict | None = block.metadata
+            semantic_type: SemanticBlockType | None = None
+            semantic_metadata: dict[str, object] | None = dict(block.metadata) if block.metadata is not None else None
 
             if block.type == "tool_use" and block.tool_name:
                 category = classify_tool(block.tool_name, block.tool_input or {})
-                semantic_type = None if category is ToolCategory.OTHER else category.value
+                semantic_type = (
+                    None if category is ToolCategory.OTHER else SemanticBlockType.from_string(category.value)
+                )
                 tool_meta = extract_tool_metadata(block.tool_name, block.tool_input or {})
                 if tool_meta is not None:
                     base = dict(block.metadata) if isinstance(block.metadata, dict) else {}
                     base.update(tool_meta)
                     semantic_metadata = base
             elif block.type == "thinking":
-                semantic_type = "thinking"
+                semantic_type = SemanticBlockType.THINKING
             elif block.type == "code" and block.text and semantic_metadata is None:
                 detected_lang = detect_language(block.text)
                 if detected_lang:

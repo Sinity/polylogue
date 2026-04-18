@@ -7,6 +7,7 @@ works without re-specifying the filter on the subcommand.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 import click
@@ -97,7 +98,7 @@ def _find_root_params(ctx: click.Context) -> dict[str, Any]:
     return cur.params
 
 
-def _make_callback(pt: ProductType):
+def _make_callback(pt: ProductType) -> Callable[..., None]:
     """Create the Click callback for a product type command.
 
     Inherits ``provider``, ``since``, and ``until`` from the root CLI
@@ -110,6 +111,7 @@ def _make_callback(pt: ProductType):
     @click.pass_context
     def callback(
         ctx: click.Context,
+        /,
         json_mode: bool = False,
         output_format: str | None = None,
         **kwargs: Any,

@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import os
 import re
+from typing import Any
 
 import pytest
 
@@ -46,7 +47,7 @@ from tests.infra.storage_records import (
 
 
 @pytest.fixture
-def sample_conversation_id():
+def sample_conversation_id() -> Any:
     """Create a sample conversation for testing."""
     conversation = make_conversation(
         "test-conv-1",
@@ -76,7 +77,7 @@ def sample_conversation_id():
 
 
 @pytest.fixture
-def sample_conversation_with_json():
+def sample_conversation_with_json() -> Any:
     """Create a conversation with JSON content (tool use)."""
     conversation = make_conversation(
         "test-conv-json",
@@ -107,12 +108,12 @@ def sample_conversation_with_json():
 class TestMarkdownRenderer:
     """Tests for MarkdownRenderer."""
 
-    def test_supports_format(self, workspace_env):
+    def test_supports_format(self, workspace_env: Any) -> None:
         renderer = MarkdownRenderer(archive_root=workspace_env["archive_root"])
         assert renderer.supports_format() == "markdown"
 
     @pytest.mark.asyncio
-    async def test_render_basic_conversation(self, workspace_env, sample_conversation_id):
+    async def test_render_basic_conversation(self, workspace_env: Any, sample_conversation_id: Any) -> None:
         renderer = MarkdownRenderer(archive_root=workspace_env["archive_root"])
         output_path = workspace_env["archive_root"] / "render"
         result_path = await renderer.render(sample_conversation_id, output_path)
@@ -129,7 +130,7 @@ class TestMarkdownRenderer:
         assert "I need help with Python testing" in content
 
     @pytest.mark.asyncio
-    async def test_render_with_json_formatting(self, workspace_env, sample_conversation_with_json):
+    async def test_render_with_json_formatting(self, workspace_env: Any, sample_conversation_with_json: Any) -> None:
         renderer = MarkdownRenderer(archive_root=workspace_env["archive_root"])
         output_path = workspace_env["archive_root"] / "render"
         result_path = await renderer.render(sample_conversation_with_json, output_path)
@@ -139,14 +140,14 @@ class TestMarkdownRenderer:
         assert '"results"' in content
 
     @pytest.mark.asyncio
-    async def test_render_nonexistent_conversation(self, workspace_env):
+    async def test_render_nonexistent_conversation(self, workspace_env: Any) -> None:
         renderer = MarkdownRenderer(archive_root=workspace_env["archive_root"])
         output_path = workspace_env["archive_root"] / "render"
         with pytest.raises(ValueError, match="Conversation not found"):
             await renderer.render("nonexistent-id", output_path)
 
     @pytest.mark.asyncio
-    async def test_render_creates_output_directory(self, workspace_env, sample_conversation_id):
+    async def test_render_creates_output_directory(self, workspace_env: Any, sample_conversation_id: Any) -> None:
         renderer = MarkdownRenderer(archive_root=workspace_env["archive_root"])
         output_path = workspace_env["archive_root"] / "custom" / "nested" / "render"
         assert not output_path.exists()
@@ -158,12 +159,12 @@ class TestMarkdownRenderer:
 class TestHTMLRenderer:
     """Tests for HTMLRenderer."""
 
-    def test_supports_format(self, workspace_env):
+    def test_supports_format(self, workspace_env: Any) -> None:
         renderer = HTMLRenderer(archive_root=workspace_env["archive_root"])
         assert renderer.supports_format() == "html"
 
     @pytest.mark.asyncio
-    async def test_render_basic_conversation(self, workspace_env, sample_conversation_id):
+    async def test_render_basic_conversation(self, workspace_env: Any, sample_conversation_id: Any) -> None:
         renderer = HTMLRenderer(archive_root=workspace_env["archive_root"])
         output_path = workspace_env["archive_root"] / "render"
         result_path = await renderer.render(sample_conversation_id, output_path)
@@ -180,14 +181,14 @@ class TestHTMLRenderer:
         assert "Hello, can you help me?" in content
 
     @pytest.mark.asyncio
-    async def test_render_nonexistent_conversation(self, workspace_env):
+    async def test_render_nonexistent_conversation(self, workspace_env: Any) -> None:
         renderer = HTMLRenderer(archive_root=workspace_env["archive_root"])
         output_path = workspace_env["archive_root"] / "render"
         with pytest.raises(ValueError, match="Conversation not found"):
             await renderer.render("nonexistent-id", output_path)
 
     @pytest.mark.asyncio
-    async def test_render_with_json_content(self, workspace_env, sample_conversation_with_json):
+    async def test_render_with_json_content(self, workspace_env: Any, sample_conversation_with_json: Any) -> None:
         renderer = HTMLRenderer(archive_root=workspace_env["archive_root"])
         output_path = workspace_env["archive_root"] / "render"
         result_path = await renderer.render(sample_conversation_with_json, output_path)
@@ -199,7 +200,7 @@ class TestHTMLRenderer:
 class TestRendererFactory:
     """Tests for renderer factory functions."""
 
-    def test_create_markdown_renderer(self, workspace_env):
+    def test_create_markdown_renderer(self, workspace_env: Any) -> None:
         config = Config(
             archive_root=workspace_env["archive_root"],
             render_root=workspace_env["archive_root"] / "render",
@@ -209,7 +210,7 @@ class TestRendererFactory:
         assert isinstance(renderer, MarkdownRenderer)
         assert renderer.supports_format() == "markdown"
 
-    def test_create_html_renderer(self, workspace_env):
+    def test_create_html_renderer(self, workspace_env: Any) -> None:
         config = Config(
             archive_root=workspace_env["archive_root"],
             render_root=workspace_env["archive_root"] / "render",
@@ -219,7 +220,7 @@ class TestRendererFactory:
         assert isinstance(renderer, HTMLRenderer)
         assert renderer.supports_format() == "html"
 
-    def test_create_renderer_case_insensitive(self, workspace_env):
+    def test_create_renderer_case_insensitive(self, workspace_env: Any) -> None:
         config = Config(
             archive_root=workspace_env["archive_root"],
             render_root=workspace_env["archive_root"] / "render",
@@ -232,7 +233,7 @@ class TestRendererFactory:
         assert isinstance(renderer2, HTMLRenderer)
         assert isinstance(renderer3, MarkdownRenderer)
 
-    def test_create_renderer_unsupported_format(self, workspace_env):
+    def test_create_renderer_unsupported_format(self, workspace_env: Any) -> None:
         config = Config(
             archive_root=workspace_env["archive_root"],
             render_root=workspace_env["archive_root"] / "render",
@@ -241,7 +242,7 @@ class TestRendererFactory:
         with pytest.raises(ValueError, match="Unsupported format: json"):
             create_renderer("json", config)
 
-    def test_list_formats(self):
+    def test_list_formats(self) -> None:
         formats = list_formats()
         assert isinstance(formats, list)
         assert "markdown" in formats
@@ -253,7 +254,7 @@ class TestRendererIntegration:
     """Integration tests for renderers."""
 
     @pytest.mark.asyncio
-    async def test_both_renderers_produce_output(self, workspace_env, sample_conversation_id):
+    async def test_both_renderers_produce_output(self, workspace_env: Any, sample_conversation_id: Any) -> None:
         md_renderer = MarkdownRenderer(archive_root=workspace_env["archive_root"])
         html_renderer = HTMLRenderer(archive_root=workspace_env["archive_root"])
         output_path = workspace_env["archive_root"] / "render"
@@ -268,7 +269,7 @@ class TestRendererIntegration:
         assert "Hello, can you help me?" in md_content
         assert "Hello, can you help me?" in html_content
 
-    def test_protocol_compliance(self, workspace_env):
+    def test_protocol_compliance(self, workspace_env: Any) -> None:
         from polylogue.protocols import OutputRenderer
 
         md_renderer = MarkdownRenderer(archive_root=workspace_env["archive_root"])
@@ -286,7 +287,7 @@ class TestRendererIntegration:
 # =============================================================================
 
 
-def test_formatted_conversation_dataclass_fields():
+def test_formatted_conversation_dataclass_fields() -> None:
     fc = FormattedConversation(
         title="Test Title",
         provider="chatgpt",
@@ -301,7 +302,7 @@ def test_formatted_conversation_dataclass_fields():
     assert fc.metadata == {"message_count": 5}
 
 
-def test_formatted_conversation_dataclass_equality():
+def test_formatted_conversation_dataclass_equality() -> None:
     fc1 = FormattedConversation(
         title="Test", provider="claude-ai", conversation_id="c1", markdown_text="md", metadata={}
     )
@@ -318,7 +319,7 @@ INIT_CASES = [
 
 
 @pytest.mark.parametrize("label,desc", INIT_CASES)
-def test_formatter_initialization_comprehensive(tmp_path, label, desc):
+def test_formatter_initialization_comprehensive(tmp_path: Any, label: Any, desc: Any) -> None:
     if label == "basic path":
         formatter = ConversationFormatter(tmp_path)
         assert formatter.archive_root == tmp_path
@@ -338,7 +339,7 @@ FORMAT_CASES = [
 
 @pytest.mark.parametrize("label,conv_id,desc", FORMAT_CASES)
 @pytest.mark.asyncio
-async def test_formatter_format_comprehensive(workspace_env, label, conv_id, desc):
+async def test_formatter_format_comprehensive(workspace_env: Any, label: Any, conv_id: Any, desc: Any) -> None:
     db_path = db_setup(workspace_env)
     formatter = ConversationFormatter(workspace_env["archive_root"], db_path=db_path)
 
@@ -395,7 +396,9 @@ MESSAGE_ORDERING_CASES = [
 
 @pytest.mark.parametrize("label,conv_id,message_data,desc", MESSAGE_ORDERING_CASES)
 @pytest.mark.asyncio
-async def test_message_ordering_comprehensive(workspace_env, label, conv_id, message_data, desc):
+async def test_message_ordering_comprehensive(
+    workspace_env: Any, label: Any, conv_id: Any, message_data: Any, desc: Any
+) -> None:
     db_path = db_setup(workspace_env)
     builder = ConversationBuilder(db_path, conv_id)
     for i, (msg_id, text, timestamp) in enumerate(message_data):
@@ -423,7 +426,7 @@ JSON_WRAPPING_CASES = [
 
 @pytest.mark.parametrize("text,wrapped,desc", JSON_WRAPPING_CASES)
 @pytest.mark.asyncio
-async def test_json_text_wrapping_comprehensive(workspace_env, text, wrapped, desc):
+async def test_json_text_wrapping_comprehensive(workspace_env: Any, text: Any, wrapped: Any, desc: Any) -> None:
     db_path = db_setup(workspace_env)
     conv_id = f"json-{hash(text) % 10000}-conv"
     (ConversationBuilder(db_path, conv_id).title("Test").add_message("m1", role="tool", text=text).save())
@@ -452,7 +455,7 @@ TIMESTAMP_RENDERING_CASES = [
 
 @pytest.mark.parametrize("timestamp,rendered,desc", TIMESTAMP_RENDERING_CASES)
 @pytest.mark.asyncio
-async def test_timestamp_rendering_comprehensive(workspace_env, timestamp, rendered, desc):
+async def test_timestamp_rendering_comprehensive(workspace_env: Any, timestamp: Any, rendered: Any, desc: Any) -> None:
     db_path = db_setup(workspace_env)
     conv_id = f"ts-{hash(str(timestamp)) % 10000}-conv"
     (
@@ -491,7 +494,9 @@ ATTACHMENT_CASES = [
 
 @pytest.mark.parametrize("label,meta,expected,desc", ATTACHMENT_CASES)
 @pytest.mark.asyncio
-async def test_attachment_handling_comprehensive(workspace_env, label, meta, expected, desc):
+async def test_attachment_handling_comprehensive(
+    workspace_env: Any, label: Any, meta: Any, expected: Any, desc: Any
+) -> None:
     db_path = db_setup(workspace_env)
     conv_id = f"att-{label}-conv"
     builder = ConversationBuilder(db_path, conv_id).title("Test").add_message("m1", role="user", text="See attachment")
@@ -527,7 +532,7 @@ async def test_attachment_handling_comprehensive(workspace_env, label, meta, exp
 
 
 @pytest.mark.asyncio
-async def test_orphaned_attachments_section(workspace_env):
+async def test_orphaned_attachments_section(workspace_env: Any) -> None:
     db_path = db_setup(workspace_env)
     conv_id = "orphan-att-conv"
     (
@@ -557,7 +562,7 @@ METADATA_CASES = [
 
 @pytest.mark.parametrize("label,data,desc", METADATA_CASES)
 @pytest.mark.asyncio
-async def test_metadata_comprehensive(workspace_env, label, data, desc):
+async def test_metadata_comprehensive(workspace_env: Any, label: Any, data: Any, desc: Any) -> None:
     db_path = db_setup(workspace_env)
     conv_id = f"meta-{label}-conv"
     if label == "counts":
@@ -617,7 +622,7 @@ MARKDOWN_STRUCTURE_CASES = [
 
 @pytest.mark.parametrize("label,messages_data,desc", MARKDOWN_STRUCTURE_CASES)
 @pytest.mark.asyncio
-async def test_markdown_structure_comprehensive(workspace_env, label, messages_data, desc):
+async def test_markdown_structure_comprehensive(workspace_env: Any, label: Any, messages_data: Any, desc: Any) -> None:
     db_path = db_setup(workspace_env)
     conv_id = f"md-{label}-conv"
     builder = ConversationBuilder(db_path, conv_id).provider("chatgpt").title("My Chat Title")
@@ -684,7 +689,7 @@ class TestGoldenMarkdownRendering:
     """Test markdown rendering against golden reference files."""
 
     @pytest.mark.asyncio
-    async def test_chatgpt_simple_conversation(self, tmp_path, workspace_env, db_path):
+    async def test_chatgpt_simple_conversation(self, tmp_path: Any, workspace_env: Any, db_path: Any) -> None:
         factory = DbFactory(db_path)
         conv_id = "golden-chatgpt-simple"
         factory.create_conversation(
@@ -725,7 +730,7 @@ class TestGoldenMarkdownRendering:
         assert_golden("chatgpt-simple", formatted.markdown_text)
 
     @pytest.mark.asyncio
-    async def test_claude_with_thinking_blocks(self, tmp_path, workspace_env, db_path):
+    async def test_claude_with_thinking_blocks(self, tmp_path: Any, workspace_env: Any, db_path: Any) -> None:
         factory = DbFactory(db_path)
         conv_id = "golden-claude-thinking"
         factory.create_conversation(
@@ -751,7 +756,7 @@ class TestGoldenMarkdownRendering:
         assert_golden("claude-thinking", formatted.markdown_text)
 
     @pytest.mark.asyncio
-    async def test_json_tool_use_formatted(self, tmp_path, workspace_env, db_path):
+    async def test_json_tool_use_formatted(self, tmp_path: Any, workspace_env: Any, db_path: Any) -> None:
         factory = DbFactory(db_path)
         conv_id = "golden-tool-use"
         factory.create_conversation(
@@ -781,7 +786,7 @@ class TestGoldenMarkdownRendering:
         assert_golden("tool-use-json", formatted.markdown_text)
 
     @pytest.mark.asyncio
-    async def test_empty_messages_skipped(self, tmp_path, workspace_env, db_path):
+    async def test_empty_messages_skipped(self, tmp_path: Any, workspace_env: Any, db_path: Any) -> None:
         factory = DbFactory(db_path)
         conv_id = "golden-empty-messages"
         factory.create_conversation(
@@ -802,7 +807,7 @@ class TestGoldenMarkdownRendering:
         assert_golden("empty-messages", formatted.markdown_text)
 
     @pytest.mark.asyncio
-    async def test_unicode_content_preserved(self, tmp_path, workspace_env, db_path):
+    async def test_unicode_content_preserved(self, tmp_path: Any, workspace_env: Any, db_path: Any) -> None:
         factory = DbFactory(db_path)
         conv_id = "golden-unicode"
         factory.create_conversation(
@@ -839,7 +844,7 @@ class TestGoldenMarkdownRendering:
         assert_golden("unicode", formatted.markdown_text)
 
     @pytest.mark.asyncio
-    async def test_attachments_formatted_as_links(self, tmp_path, workspace_env, db_path):
+    async def test_attachments_formatted_as_links(self, tmp_path: Any, workspace_env: Any, db_path: Any) -> None:
         factory = DbFactory(db_path)
         conv_id = "golden-attachments"
         factory.create_conversation(
@@ -871,7 +876,7 @@ class TestGoldenMarkdownRendering:
         assert_golden("attachments", formatted.markdown_text)
 
     @pytest.mark.asyncio
-    async def test_message_ordering_by_timestamp(self, tmp_path, workspace_env, db_path):
+    async def test_message_ordering_by_timestamp(self, tmp_path: Any, workspace_env: Any, db_path: Any) -> None:
         factory = DbFactory(db_path)
         conv_id = "golden-ordering"
         factory.create_conversation(
@@ -897,7 +902,7 @@ class TestGoldenFileStructure:
     """Test file structure and naming conventions."""
 
     @pytest.mark.asyncio
-    async def test_markdown_renderer_output_path(self, tmp_path, workspace_env, db_path):
+    async def test_markdown_renderer_output_path(self, tmp_path: Any, workspace_env: Any, db_path: Any) -> None:
         factory = DbFactory(db_path)
         conv_id = "test-file-structure"
         factory.create_conversation(
@@ -913,7 +918,7 @@ class TestGoldenFileStructure:
         assert "chatgpt" in str(output_path.parent)
 
     @pytest.mark.asyncio
-    async def test_multiple_conversations_isolated(self, tmp_path, workspace_env, db_path):
+    async def test_multiple_conversations_isolated(self, tmp_path: Any, workspace_env: Any, db_path: Any) -> None:
         factory = DbFactory(db_path)
         conv1_id = "test-conv-1"
         conv2_id = "test-conv-2"
@@ -940,7 +945,7 @@ class TestGoldenEdgeCases:
     """Test edge cases in rendering."""
 
     @pytest.mark.asyncio
-    async def test_very_long_text_not_truncated(self, tmp_path, workspace_env, db_path):
+    async def test_very_long_text_not_truncated(self, tmp_path: Any, workspace_env: Any, db_path: Any) -> None:
         factory = DbFactory(db_path)
         long_text = "This is a very long message. " * 1000
         conv_id = "golden-long-text"
@@ -959,7 +964,9 @@ class TestGoldenEdgeCases:
         assert occurrences >= 999
 
     @pytest.mark.asyncio
-    async def test_special_markdown_chars_not_double_escaped(self, tmp_path, workspace_env, db_path):
+    async def test_special_markdown_chars_not_double_escaped(
+        self, tmp_path: Any, workspace_env: Any, db_path: Any
+    ) -> None:
         factory = DbFactory(db_path)
         conv_id = "golden-markdown-chars"
         text_with_markdown = "This has **bold**, *italic*, `code`, [links](url), and # headers"
@@ -979,7 +986,7 @@ class TestGoldenEdgeCases:
         assert_golden("markdown-chars", formatted.markdown_text)
 
     @pytest.mark.asyncio
-    async def test_messages_with_timestamps_rendered(self, tmp_path, workspace_env, db_path):
+    async def test_messages_with_timestamps_rendered(self, tmp_path: Any, workspace_env: Any, db_path: Any) -> None:
         factory = DbFactory(db_path)
         conv_id = "golden-with-timestamp"
         factory.create_conversation(

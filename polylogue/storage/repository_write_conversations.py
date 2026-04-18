@@ -15,6 +15,7 @@ from polylogue.storage.conversation_replacement import (
     recount_and_prune_attachments_async,
     replace_conversation_runtime_state_async,
 )
+from polylogue.storage.repository_contracts import RepositoryBackendProtocol
 from polylogue.storage.search_cache import invalidate_search_cache
 from polylogue.storage.session_product_refresh import (
     delete_session_products_for_conversation_async,
@@ -62,7 +63,7 @@ def conversation_to_record(conversation: Conversation) -> ConversationRecord:
 
 
 async def save_via_backend(
-    backend,
+    backend: RepositoryBackendProtocol,
     conversation: ConversationRecord,
     messages: builtins.list[MessageRecord],
     attachments: builtins.list[AttachmentRecord],
@@ -170,7 +171,10 @@ async def save_via_backend(
     return counts
 
 
-async def delete_conversation_via_backend(backend, conversation_id: str) -> bool:
+async def delete_conversation_via_backend(
+    backend: RepositoryBackendProtocol,
+    conversation_id: str,
+) -> bool:
     from polylogue.storage.backends.queries import conversations as conversations_q
 
     async with backend.transaction(), backend.connection() as conn:

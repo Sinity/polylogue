@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 from polylogue.lib.outcomes import OutcomeCheck, OutcomeStatus
 from polylogue.scenarios import AssertionSpec, polylogue_execution
@@ -14,7 +15,7 @@ from polylogue.showcase.qa_runner import QAResult, _save_qa_reports
 from polylogue.showcase.runner import ExerciseResult, ShowcaseResult
 
 
-def _make_showcase_result(output_dir) -> ShowcaseResult:
+def _make_showcase_result(output_dir: Path) -> ShowcaseResult:
     exercise = Exercise(
         name="test-help",
         group="structural",
@@ -38,7 +39,7 @@ def _make_showcase_result(output_dir) -> ShowcaseResult:
     return result
 
 
-def test_save_qa_reports_writes_composed_session_artifacts(tmp_path):
+def test_save_qa_reports_writes_composed_session_artifacts(tmp_path: Path) -> None:
     report_dir = tmp_path / "qa"
     qa_result = QAResult(
         audit_report=AuditReport(
@@ -88,7 +89,7 @@ def test_save_qa_reports_writes_composed_session_artifacts(tmp_path):
     assert (report_dir / "qa-session.md").exists()
 
 
-def test_qa_result_marks_skipped_proof_as_non_failing(tmp_path):
+def test_qa_result_marks_skipped_proof_as_non_failing(tmp_path: Path) -> None:
     report_dir = tmp_path / "qa"
     qa_result = QAResult(
         audit_report=AuditReport(

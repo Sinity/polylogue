@@ -112,7 +112,7 @@ async def replace_work_thread(
                 record.total_messages,
                 record.total_cost_usd,
                 record.wall_duration_ms,
-                _json_or_none(record.work_event_breakdown or {}),
+                _json_or_none(dict[str, object](record.work_event_breakdown or {})),
                 _json_or_none(record.payload),
                 record.search_text,
             ),

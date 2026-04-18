@@ -11,6 +11,7 @@ import json
 import subprocess
 import time
 from pathlib import Path
+from typing import cast
 
 
 def _read_vm_rss_kb(pid: int) -> int:
@@ -74,9 +75,11 @@ def main(argv: list[str] | None = None) -> int:
     result = run_memory_budget(command, max_rss_mb=args.max_rss_mb)
     print(json.dumps(result, indent=2, sort_keys=True))
 
-    if result["exit_code"] != 0:
-        return int(result["exit_code"])
-    return 0 if bool(result["within_budget"]) else 3
+    exit_code = cast(int, result["exit_code"])
+    within_budget = cast(bool, result["within_budget"])
+    if exit_code != 0:
+        return exit_code
+    return 0 if within_budget else 3
 
 
 if __name__ == "__main__":

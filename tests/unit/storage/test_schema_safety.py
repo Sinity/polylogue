@@ -14,6 +14,7 @@ are invisible in unit tests with small datasets.
 from __future__ import annotations
 
 import sqlite3
+from typing import Any
 
 import pytest
 
@@ -32,7 +33,7 @@ class TestSchemaDDLParity:
     share SCHEMA_DDL as a single source of truth.
     """
 
-    def test_async_backend_imports_shared_schema_ddl(self):
+    def test_async_backend_imports_shared_schema_ddl(self) -> None:
         """Async backend must import SCHEMA_DDL from schema.py, not define its own."""
         import inspect
 
@@ -43,7 +44,7 @@ class TestSchemaDDLParity:
         assert "from polylogue.storage.backends.schema import" in source
         assert "SCHEMA_DDL" in source
 
-    def test_schema_ddl_has_all_required_tables(self):
+    def test_schema_ddl_has_all_required_tables(self) -> None:
         """SCHEMA_DDL must create all required tables."""
         required_tables = [
             "raw_conversations",
@@ -57,7 +58,7 @@ class TestSchemaDDLParity:
         for table in required_tables:
             assert f"create table if not exists {table}" in ddl_lower, f"SCHEMA_DDL missing table: {table}"
 
-    def test_schema_ddl_has_all_required_indexes(self):
+    def test_schema_ddl_has_all_required_indexes(self) -> None:
         """SCHEMA_DDL must create required indexes."""
         required_indexes = [
             "idx_conversations_provider",
@@ -67,11 +68,11 @@ class TestSchemaDDLParity:
         for idx in required_indexes:
             assert idx.lower() in ddl_lower, f"SCHEMA_DDL missing index: {idx}"
 
-    def test_schema_version_is_positive_int(self):
+    def test_schema_version_is_positive_int(self) -> None:
         assert isinstance(SCHEMA_VERSION, int)
         assert SCHEMA_VERSION > 0
 
-    def test_schema_ddl_applied_to_fresh_database(self, tmp_path):
+    def test_schema_ddl_applied_to_fresh_database(self, tmp_path: Any) -> None:
         """SCHEMA_DDL must apply cleanly to a fresh database."""
         db_path = tmp_path / "fresh.db"
         conn = sqlite3.connect(str(db_path))
@@ -87,7 +88,7 @@ class TestSchemaDDLParity:
         finally:
             conn.close()
 
-    def test_schema_ddl_is_idempotent(self, tmp_path):
+    def test_schema_ddl_is_idempotent(self, tmp_path: Any) -> None:
         """Applying SCHEMA_DDL twice must not error."""
         db_path = tmp_path / "idempotent.db"
         conn = sqlite3.connect(str(db_path))
@@ -118,7 +119,7 @@ class TestMigrationRollbackSafety:
     instead of `executescript()`.
     """
 
-    def test_executescript_implicit_commit_behavior(self, tmp_path):
+    def test_executescript_implicit_commit_behavior(self, tmp_path: Any) -> None:
         """Document that executescript() commits before executing.
 
         This test documents the SQLite behavior that caused the bug.
@@ -151,7 +152,7 @@ class TestMigrationRollbackSafety:
         finally:
             conn.close()
 
-    def test_execute_preserves_transaction(self, tmp_path):
+    def test_execute_preserves_transaction(self, tmp_path: Any) -> None:
         """execute() within BEGIN/ROLLBACK correctly rolls back."""
         db_path = tmp_path / "test.db"
         conn = sqlite3.connect(str(db_path))
@@ -173,7 +174,7 @@ class TestMigrationRollbackSafety:
         finally:
             conn.close()
 
-    def test_fresh_db_schema_matches_migrated_db(self, tmp_path):
+    def test_fresh_db_schema_matches_migrated_db(self, tmp_path: Any) -> None:
         """A fresh database and a migrated database must have the same schema.
 
         This catches drift between the DDL (for fresh installs) and the
@@ -231,7 +232,7 @@ class TestMigrationRollbackSafety:
 class TestSQLEdgeCases:
     """SQL edge cases that caused production bugs."""
 
-    def test_offset_without_limit_is_error(self, tmp_path):
+    def test_offset_without_limit_is_error(self, tmp_path: Any) -> None:
         """SQLite requires LIMIT when using OFFSET. Verify our code handles this."""
         db_path = tmp_path / "test.db"
         conn = sqlite3.connect(str(db_path))
@@ -252,7 +253,7 @@ class TestSQLEdgeCases:
         finally:
             conn.close()
 
-    def test_like_wildcards_in_search(self, tmp_path):
+    def test_like_wildcards_in_search(self, tmp_path: Any) -> None:
         """LIKE patterns with % and _ must be escaped properly.
 
         Regression: commit 177195c — unescaped LIKE wildcards in title search
@@ -288,7 +289,7 @@ class TestSQLEdgeCases:
         finally:
             conn.close()
 
-    def test_like_underscore_wildcard(self, tmp_path):
+    def test_like_underscore_wildcard(self, tmp_path: Any) -> None:
         """Underscore in LIKE is a single-char wildcard, must be escaped."""
         db_path = tmp_path / "test.db"
         conn = sqlite3.connect(str(db_path))
@@ -329,7 +330,7 @@ class TestFTS5CountGuard:
     COUNT(*) on the regular messages table instead.
     """
 
-    def test_count_on_regular_table_not_fts(self, test_db):
+    def test_count_on_regular_table_not_fts(self, test_db: Any) -> None:
         """Message count must come from the messages table, not messages_fts."""
         from polylogue.storage.backends.connection import open_connection
 
@@ -369,7 +370,7 @@ class TestFTS5CountGuard:
 class TestConversationFilterSQL:
     """Test SQL filter generation with adversarial inputs."""
 
-    def test_build_filters_with_special_characters(self):
+    def test_build_filters_with_special_characters(self) -> None:
         """Filter builder must handle SQL-special characters in input.
 
         _build_conversation_filters returns (where_clause_str, params_list).
@@ -386,7 +387,7 @@ class TestConversationFilterSQL:
         # SQL clause must use ? placeholder, not string interpolation
         assert "?" in where_clause
 
-    def test_build_filters_with_empty_provider(self):
+    def test_build_filters_with_empty_provider(self) -> None:
         """Empty provider should still produce valid SQL."""
         from polylogue.storage.backends.queries.filter_builder import _build_conversation_filters
 
@@ -394,7 +395,7 @@ class TestConversationFilterSQL:
         assert isinstance(where_clause, str)
         assert isinstance(params, list)
 
-    def test_build_filters_with_no_args(self):
+    def test_build_filters_with_no_args(self) -> None:
         """No filters should produce empty/trivial WHERE clause."""
         from polylogue.storage.backends.queries.filter_builder import _build_conversation_filters
 
@@ -403,7 +404,7 @@ class TestConversationFilterSQL:
         assert isinstance(params, list)
         assert len(params) == 0
 
-    def test_build_filters_with_title_contains_special(self):
+    def test_build_filters_with_title_contains_special(self) -> None:
         """Title search with SQL LIKE special characters must be safe."""
         from polylogue.storage.backends.queries.filter_builder import _build_conversation_filters
 
@@ -428,7 +429,7 @@ class TestFetchLimitPagination:
     This tests the low-level pagination SQL pattern used in async_sqlite.py.
     """
 
-    def test_limit_offset_returns_exact_count(self, tmp_path):
+    def test_limit_offset_returns_exact_count(self, tmp_path: Any) -> None:
         """LIMIT N OFFSET M returns exactly N rows when enough data exists."""
         db_path = tmp_path / "test.db"
         conn = sqlite3.connect(str(db_path))
@@ -439,7 +440,7 @@ class TestFetchLimitPagination:
             conn.commit()
 
             # Simulate chunked pagination: chunk_size=20, global limit=50
-            collected = []
+            collected: list[tuple[int]] = []
             offset = 0
             chunk_size = 20
             global_limit = 50
@@ -465,7 +466,7 @@ class TestFetchLimitPagination:
         finally:
             conn.close()
 
-    def test_limit_with_fewer_rows_than_limit(self, tmp_path):
+    def test_limit_with_fewer_rows_than_limit(self, tmp_path: Any) -> None:
         """When total rows < limit, return all rows without error."""
         db_path = tmp_path / "test.db"
         conn = sqlite3.connect(str(db_path))
@@ -484,7 +485,7 @@ class TestFetchLimitPagination:
         finally:
             conn.close()
 
-    def test_offset_beyond_data_returns_empty(self, tmp_path):
+    def test_offset_beyond_data_returns_empty(self, tmp_path: Any) -> None:
         """OFFSET past all data returns empty, not error."""
         db_path = tmp_path / "test.db"
         conn = sqlite3.connect(str(db_path))
@@ -517,7 +518,7 @@ class TestAnalyticsQueryPlan:
     would require a full table scan.
     """
 
-    def test_provider_group_by_uses_index(self, tmp_path):
+    def test_provider_group_by_uses_index(self, tmp_path: Any) -> None:
         """GROUP BY provider_name should use idx_conversations_provider."""
         db_path = tmp_path / "test.db"
         conn = sqlite3.connect(str(db_path))
@@ -535,7 +536,7 @@ class TestAnalyticsQueryPlan:
         finally:
             conn.close()
 
-    def test_messages_by_conversation_uses_index(self, tmp_path):
+    def test_messages_by_conversation_uses_index(self, tmp_path: Any) -> None:
         """WHERE conversation_id = ? should use idx_messages_conversation."""
         db_path = tmp_path / "test.db"
         conn = sqlite3.connect(str(db_path))
@@ -552,7 +553,7 @@ class TestAnalyticsQueryPlan:
         finally:
             conn.close()
 
-    def test_conversation_count_is_cheap(self, tmp_path):
+    def test_conversation_count_is_cheap(self, tmp_path: Any) -> None:
         """COUNT(*) on conversations table should not require FTS scan."""
         db_path = tmp_path / "test.db"
         conn = sqlite3.connect(str(db_path))

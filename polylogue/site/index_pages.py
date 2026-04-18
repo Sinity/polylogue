@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from pathlib import Path
 
 from jinja2 import Environment
@@ -19,7 +19,7 @@ async def generate_root_index(
     config: SiteConfig,
     archive_stats: ArchiveIndexStats,
     generated_at: str,
-    write_stream: Callable[..., object],
+    write_stream: Callable[..., Awaitable[None]],
 ) -> None:
     """Generate root index.html from streamed archive aggregates."""
     template = env.get_template("index.html")
@@ -46,7 +46,7 @@ async def generate_provider_indexes(
     archive_stats: ArchiveIndexStats,
     generated_at: str,
     conversation_iter_factory: Callable[[str | None], AsyncIterator[ConversationIndex]],
-    write_stream: Callable[..., object],
+    write_stream: Callable[..., Awaitable[None]],
 ) -> int:
     """Generate provider-scoped index pages without a full shared archive list."""
     template = env.get_template("index.html")
@@ -79,7 +79,7 @@ async def generate_dashboard(
     config: SiteConfig,
     archive_stats: ArchiveIndexStats,
     generated_at: str,
-    write_stream: Callable[..., object],
+    write_stream: Callable[..., Awaitable[None]],
 ) -> None:
     """Generate statistics dashboard from archive aggregates."""
     template = env.get_template("dashboard.html")

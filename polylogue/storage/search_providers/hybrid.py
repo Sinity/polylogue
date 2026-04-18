@@ -7,6 +7,8 @@ search (FTS5) with semantic vector search (sqlite-vec) using Reciprocal Rank Fus
 from __future__ import annotations
 
 import sqlite3
+from contextlib import AbstractContextManager
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from polylogue.storage.backends.connection import (
@@ -21,6 +23,7 @@ from polylogue.storage.search_providers.hybrid_factory import create_hybrid_prov
 if TYPE_CHECKING:
     from polylogue.protocols import VectorProvider
     from polylogue.storage.search_providers.fts5 import FTS5Provider
+    from polylogue.storage.store import MessageRecord
 
 
 # ---------------------------------------------------------------------------
@@ -28,7 +31,9 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 
 
-def open_connection(db_path: str | sqlite3.Connection):
+def open_connection(
+    db_path: Path | str | sqlite3.Connection | None,
+) -> AbstractContextManager[sqlite3.Connection]:
     """Return a readable connection for either DB paths or injected sqlite handles."""
     if isinstance(db_path, sqlite3.Connection):
         return _open_connection(db_path)
@@ -92,7 +97,7 @@ class HybridSearchProvider:
         self.vector_provider = vector_provider
         self.rrf_k = rrf_k
 
-    def index(self, messages: list) -> None:
+    def index(self, messages: list[MessageRecord]) -> None:
         """Index messages via the underlying FTS5 provider.
 
         Delegates to the FTS5 provider's index method, conforming to

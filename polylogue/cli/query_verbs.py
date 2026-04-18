@@ -87,7 +87,7 @@ def open_verb(ctx: click.Context, print_path: bool, target_terms: tuple[str, ...
     params = _parent_params(ctx)
     params["open_result"] = True
     params["print_path"] = print_path
-    if not ctx.parent.meta.get("polylogue_query_terms") and len(target_terms) == 1 and ":" in target_terms[0]:
+    if not _parent_query_terms(ctx) and len(target_terms) == 1 and ":" in target_terms[0]:
         params["conv_id"] = target_terms[0]
         _execute_query_verb(ctx, params)
         return
@@ -109,7 +109,21 @@ def delete_verb(ctx: click.Context, dry_run: bool, force: bool) -> None:
 
 def _parent_params(ctx: click.Context) -> dict[str, Any]:
     """Extract params from parent context."""
-    return dict(ctx.parent.params)
+    return dict(_require_parent_context(ctx).params)
+
+
+def _parent_query_terms(ctx: click.Context) -> tuple[str, ...]:
+    """Load query terms captured on the parent query context."""
+    raw_terms = _require_parent_context(ctx).meta.get("polylogue_query_terms", ())
+    return tuple(str(term) for term in raw_terms)
+
+
+def _require_parent_context(ctx: click.Context) -> click.Context:
+    """Require that the verb runs underneath the query command context."""
+    parent = ctx.parent
+    if parent is None:
+        raise click.UsageError("Query verbs must be invoked from the query command context.")
+    return parent
 
 
 def _execute_query_verb(
@@ -122,8 +136,7 @@ def _execute_query_verb(
     from polylogue.cli.query import execute_query
 
     env: AppEnv = ctx.obj
-    query_terms = tuple(ctx.parent.meta.get("polylogue_query_terms", ()))
-    params["query"] = query_terms + tuple(extra_query_terms)
+    params["query"] = _parent_query_terms(ctx) + extra_query_terms
     execute_query(env, params)
 
 

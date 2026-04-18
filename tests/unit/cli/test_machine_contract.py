@@ -7,6 +7,8 @@ hand-enumerated cases.
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 import pytest
 from hypothesis import example, given
 from hypothesis import strategies as st
@@ -31,6 +33,9 @@ from polylogue.cli.machine_errors import (
 
 pytestmark = pytest.mark.machine_contract
 
+ErrorBuilder = Callable[..., MachineError]
+ErrorBuilderSpec = tuple[ErrorBuilder, str, str | None]
+
 
 class TestMachineErrorEnvelope:
     """Property: MachineError.to_dict() always has status=error, code, message;
@@ -52,7 +57,9 @@ class TestMachineErrorEnvelope:
             ),
         ),
     )
-    def test_machine_error_envelope_contract(self, code, message, command, details):
+    def test_machine_error_envelope_contract(
+        self, code: str, message: str, command: list[str], details: dict[str, str]
+    ) -> None:
         err = MachineError(code=code, message=message, command=command, details=details)
         result = err.to_dict()
 
@@ -96,7 +103,7 @@ class TestMachineSuccessEnvelope:
             ),
         ),
     )
-    def test_machine_success_envelope_contract(self, result_data):
+    def test_machine_success_envelope_contract(self, result_data: dict[str, object]) -> None:
         success_obj = MachineSuccess(result=result_data)
         result = success_obj.to_dict()
 
@@ -107,7 +114,7 @@ class TestMachineSuccessEnvelope:
 # --- Error builder specs ---
 
 # Each spec: (builder_fn, expected_code, optional_kwarg_name)
-_ERROR_BUILDER_SPECS = [
+_ERROR_BUILDER_SPECS: list[ErrorBuilderSpec] = [
     (error_invalid_arguments, INVALID_ARGUMENTS, "option"),
     (error_invalid_path, INVALID_PATH, "path"),
     (error_runtime, RUNTIME_ERROR, "exception_type"),
@@ -130,10 +137,10 @@ class TestErrorBuilders:
         message="Platform not supported",
         kwarg_value=None,
     )
-    def test_error_builder_contract(self, spec, message, kwarg_value):
+    def test_error_builder_contract(self, spec: ErrorBuilderSpec, message: str, kwarg_value: str | None) -> None:
         builder_fn, expected_code, kwarg_name = spec
 
-        kwargs: dict = {}
+        kwargs: dict[str, str] = {}
         if kwarg_name is not None and kwarg_value is not None:
             kwargs[kwarg_name] = kwarg_value
 
@@ -163,7 +170,7 @@ class TestSuccessBuilder:
         ),
     )
     @example(result_data=None)
-    def test_success_builder_contract(self, result_data):
+    def test_success_builder_contract(self, result_data: dict[str, object] | None) -> None:
         success_obj = success(result_data)
         assert isinstance(success_obj, MachineSuccess)
         assert isinstance(success_obj.result, dict)
@@ -182,7 +189,7 @@ class TestWantsJsonDetection:
     @example(argv=["list", "--format", "json"])
     @example(argv=["--format=json", "list"])
     @example(argv=["-f", "json", "list"])
-    def test_wants_json_only_matches_exact_flag(self, argv):
+    def test_wants_json_only_matches_exact_flag(self, argv: list[str]) -> None:
         result = wants_json(argv)
         has_json_flag = False
         for index, arg in enumerate(argv):
@@ -207,7 +214,7 @@ class TestExtractCommand:
 
     @given(argv=st.lists(st.text(max_size=30), max_size=10))
     @example(argv=[])
-    def test_extract_command_contract(self, argv):
+    def test_extract_command_contract(self, argv: list[str]) -> None:
         result = extract_command(argv)
 
         # Every element in the result must come from argv
@@ -229,6 +236,6 @@ class TestExtractCommand:
                 except StopIteration:
                     raise AssertionError(f"Order violation: {item!r} not in expected position") from None
 
-    def test_extract_command_skips_option_values(self):
+    def test_extract_command_skips_option_values(self) -> None:
         argv = ["--format", "json", "--limit", "1", "list"]
         assert extract_command(argv) == ["list"]

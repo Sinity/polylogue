@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from typing import Any, Protocol
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -32,7 +34,7 @@ def _creds(
     expired: bool,
     refresh_token: str | None = "refresh-token",
     token_json: str = '{"token":"fresh"}',
-):
+) -> MagicMock:
     creds = MagicMock()
     creds.valid = valid
     creds.expired = expired
@@ -53,6 +55,10 @@ class FakeAuthPrompter:
 
     def request_authorization_code(self) -> str | None:
         return self.code or None
+
+
+class DefaultPathFn(Protocol):
+    def __call__(self, *, config: object | None = None) -> Path: ...
 
 
 def _auth_manager_with_prompter(
@@ -83,7 +89,7 @@ def _auth_manager_with_prompter(
 def test_default_path_helpers_contract(
     monkeypatch: pytest.MonkeyPatch,
     attr_name: str,
-    default_fn,
+    default_fn: DefaultPathFn,
     configured: str | None,
     expected: Path | None,
 ) -> None:
@@ -148,8 +154,10 @@ def test_resolve_credentials_path_contract(
 
     result = _resolve_credentials_path(ui=ui, config=config)
     if expected_kind == "config":
+        assert config_path is not None
         assert result == Path(config_path)
     elif expected_kind == "env":
+        assert env_path is not None
         assert result == Path(env_path).expanduser()
     elif expected_kind == "default":
         assert result == default_path
@@ -292,7 +300,7 @@ class AuthLoadCase:
     token_file_value: str | None
     info_side_effect: object | None = None
     file_side_effect: object | None = None
-    creds_factory: object | None = None
+    creds_factory: Callable[[], MagicMock] | None = None
     expect_message: str | None = None
     refreshes: bool = False
 
@@ -354,7 +362,7 @@ def test_load_credentials_state_machine(case: AuthLoadCase, monkeypatch: pytest.
 
     request_cls = MagicMock(return_value=SimpleNamespace(session=SimpleNamespace(timeout=None)))
 
-    def fake_import(name: str):
+    def fake_import(name: str) -> Any:
         if name == "google.oauth2.credentials":
             return MagicMock(Credentials=credentials_cls)
         if name == "google_auth_oauthlib.flow":
@@ -370,7 +378,7 @@ def test_load_credentials_state_machine(case: AuthLoadCase, monkeypatch: pytest.
 
     if case.refreshes and creds is not None:
 
-        def refresh(_request) -> None:
+        def refresh(_request: Any) -> None:
             creds.valid = True
             creds.expired = False
 
@@ -413,7 +421,7 @@ def test_refresh_credentials_if_needed_contract(tmp_path: Path, monkeypatch: pyt
     creds = _creds(valid=False, expired=True, token_json='{"token":"fresh"}')
     request = SimpleNamespace(session=SimpleNamespace(timeout=None))
 
-    def refresh(_request) -> None:
+    def refresh(_request: Any) -> None:
         creds.valid = True
         creds.expired = False
 
@@ -446,7 +454,7 @@ def test_load_credentials_uses_manual_flow_when_local_server_fails(
     installed_app_flow_cls.from_client_secrets_file.return_value = flow
     manual_creds = _creds(valid=True, expired=False, token_json='{"token":"manual"}')
 
-    def fake_import(name: str):
+    def fake_import(name: str) -> Any:
         if name == "google.oauth2.credentials":
             return MagicMock(Credentials=MagicMock())
         if name == "google_auth_oauthlib.flow":
@@ -457,13 +465,12 @@ def test_load_credentials_uses_manual_flow_when_local_server_fails(
     mgr._prompter = FakeAuthPrompter("manual-code")
     mgr._token_store = MagicMock()
     mgr._token_store.load.return_value = None
-    mgr._run_manual_auth_flow = MagicMock(return_value=manual_creds)
     monkeypatch.setattr("polylogue.sources.drive_auth._import_auth_module", fake_import)
-
-    result = mgr.load_credentials()
+    with patch.object(mgr, "_run_manual_auth_flow", return_value=manual_creds) as manual_auth_flow:
+        result = mgr.load_credentials()
 
     assert result is manual_creds
-    mgr._run_manual_auth_flow.assert_called_once_with(flow)
+    manual_auth_flow.assert_called_once_with(flow)
     mgr._token_store.save.assert_called_once_with("drive_token", '{"token":"manual"}')
 
 
@@ -477,7 +484,7 @@ def test_load_credentials_returns_local_server_result(monkeypatch: pytest.Monkey
     installed_app_flow_cls = MagicMock()
     installed_app_flow_cls.from_client_secrets_file.return_value = flow
 
-    def fake_import(name: str):
+    def fake_import(name: str) -> Any:
         if name == "google.oauth2.credentials":
             return MagicMock(Credentials=MagicMock())
         if name == "google_auth_oauthlib.flow":
@@ -488,13 +495,17 @@ def test_load_credentials_returns_local_server_result(monkeypatch: pytest.Monkey
     mgr._prompter = FakeAuthPrompter("should-not-be-used")
     mgr._token_store = MagicMock()
     mgr._token_store.load.return_value = None
-    mgr._run_manual_auth_flow = MagicMock(side_effect=AssertionError("manual flow should not run"))
     monkeypatch.setattr("polylogue.sources.drive_auth._import_auth_module", fake_import)
-
-    result = mgr.load_credentials()
+    with patch.object(
+        mgr,
+        "_run_manual_auth_flow",
+        side_effect=AssertionError("manual flow should not run"),
+    ) as manual_auth_flow:
+        result = mgr.load_credentials()
 
     assert result is server_creds
     flow.run_local_server.assert_called_once_with(open_browser=False, port=0)
+    manual_auth_flow.assert_not_called()
     mgr._token_store.save.assert_called_once_with("drive_token", '{"token":"server"}')
 
 

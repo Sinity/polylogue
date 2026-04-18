@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import inspect
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
@@ -21,7 +21,9 @@ from polylogue.sync_bridge import run_coroutine_sync
 logger = get_logger(__name__)
 
 if TYPE_CHECKING:
+    from polylogue.config import Config
     from polylogue.lib.models import Conversation, ConversationSummary
+    from polylogue.protocols import VectorProvider
 
 
 # ---------------------------------------------------------------------------
@@ -228,9 +230,33 @@ def build_query_execution_plan(params: Mapping[str, object]) -> QueryExecutionPl
         list_mode=bool(params.get("list_mode", False)),
     )
 
-    raw_set_meta = params.get("set_meta") or ()
-    set_meta = tuple((str(key), str(value)) for key, value in raw_set_meta)
-    add_tags = tuple(str(tag) for tag in (params.get("add_tag") or ()))
+    def _iter_param_values(value: object) -> Iterable[object] | None:
+        if isinstance(value, str | bytes):
+            return None
+        if isinstance(value, Iterable):
+            return value
+        return None
+
+    def _iter_set_meta_pairs(value: object) -> tuple[tuple[str, str], ...]:
+        if isinstance(value, str | bytes):
+            return ()
+        if not isinstance(value, Iterable):
+            return ()
+        pairs: list[tuple[str, str]] = []
+        for item in value:
+            if isinstance(item, str | bytes):
+                continue
+            if not isinstance(item, Sequence):
+                continue
+            if len(item) < 2:
+                continue
+            pairs.append((str(item[0]), str(item[1])))
+        return tuple(pairs)
+
+    raw_set_meta = params.get("set_meta")
+    set_meta = _iter_set_meta_pairs(raw_set_meta)
+    raw_add_tags = params.get("add_tag")
+    add_tags = tuple(str(tag) for tag in _iter_param_values(raw_add_tags) or ())
     mutation = QueryMutationSpec(
         set_meta=set_meta,
         add_tags=add_tags,
@@ -420,7 +446,7 @@ class QueryFirstGroupBase(click.Group):
 # ---------------------------------------------------------------------------
 
 
-def project_query_results(results: list[Any], plan: QueryExecutionPlan) -> list[Any]:
+def project_query_results(results: list[Conversation], plan: QueryExecutionPlan) -> list[Conversation]:
     """Apply post-selection transforms consistently before final output."""
     from polylogue.cli import query_actions as _query_actions
 
@@ -437,7 +463,7 @@ def execute_query(env: AppEnv, params: dict[str, Any]) -> None:
     run_coroutine_sync(async_execute_query(env, params))
 
 
-def _create_query_vector_provider(config: object) -> object | None:
+def _create_query_vector_provider(config: Config) -> VectorProvider | None:
     """Best-effort vector provider setup for query execution."""
     from polylogue.storage.search_providers import create_vector_provider
 
@@ -615,38 +641,43 @@ async def async_execute_query(env: AppEnv, params: dict[str, Any]) -> None:
 
     if route == QueryRoute.OPEN:
         if filter_chain.can_use_summaries():
-            results = await filter_chain.list_summaries()
+            open_results: Sequence[Conversation | ConversationSummary] = await filter_chain.list_summaries()
         else:
-            results = await filter_chain.list()
-        _query_output._open_result(env, results, params)
+            open_results = await filter_chain.list()
+        _query_output._open_result(env, open_results, params)
         return
 
-    if route in {QueryRoute.SUMMARY_MODIFY, QueryRoute.SUMMARY_DELETE}:
-        results = await filter_chain.list_summaries()
-    else:
-        results = await filter_chain.list()
-
     if route in {QueryRoute.MODIFY, QueryRoute.SUMMARY_MODIFY}:
-        await _query_actions.apply_modifiers(env, results, params, repo)
+        if route == QueryRoute.SUMMARY_MODIFY:
+            matched_results: Sequence[Conversation | ConversationSummary] = await filter_chain.list_summaries()
+        else:
+            matched_results = await filter_chain.list()
+        await _query_actions.apply_modifiers(env, matched_results, params, repo)
         return
 
     if route in {QueryRoute.DELETE, QueryRoute.SUMMARY_DELETE}:
-        await _query_actions.delete_conversations(env, results, params, repo)
+        if route == QueryRoute.SUMMARY_DELETE:
+            matched_results = await filter_chain.list_summaries()
+        else:
+            matched_results = await filter_chain.list()
+        await _query_actions.delete_conversations(env, matched_results, params, repo)
         return
 
-    results = project_query_results(results, plan)
-
     if route == QueryRoute.STATS_BY:
+        conversation_results = await filter_chain.list()
+        projected_results = project_query_results(conversation_results, plan)
         _query_output._output_stats_by(
             env,
-            results,
+            projected_results,
             plan.stats_dimension or "all",
             selection=plan.selection,
             output_format=plan.output.output_format,
         )
         return
 
-    _query_output.output_results(env, results, params)
+    conversation_results = await filter_chain.list()
+    projected_results = project_query_results(conversation_results, plan)
+    _query_output.output_results(env, projected_results, params)
 
 
 __all__ = [

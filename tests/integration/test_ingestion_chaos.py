@@ -6,17 +6,19 @@ and that error context is preserved for diagnostics.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from tests.infra.chaos_sources import (
     ChaosInboxBuilder,
 )
-from tests.infra.cli_subprocess import run_cli, setup_isolated_workspace
+from tests.infra.cli_subprocess import IsolatedWorkspace, run_cli, setup_isolated_workspace
 
 pytestmark = [pytest.mark.integration, pytest.mark.chaos]
 
 
-def _salvage_env(workspace: dict[str, object]) -> dict[str, str]:
+def _salvage_env(workspace: IsolatedWorkspace) -> dict[str, str]:
     env = dict(workspace["env"])
     env["POLYLOGUE_SCHEMA_VALIDATION"] = "off"
     return env
@@ -27,7 +29,7 @@ def _salvage_env(workspace: dict[str, object]) -> dict[str, str]:
 # =============================================================================
 
 
-def test_partial_corruption_does_not_abort_pipeline(tmp_path):
+def test_partial_corruption_does_not_abort_pipeline(tmp_path: Path) -> None:
     """Test that 5 corrupted lines out of 100 don't abort pipeline.
 
     Expected: ~95 valid records ingested, 5 skipped with error context.
@@ -70,7 +72,7 @@ def test_partial_corruption_does_not_abort_pipeline(tmp_path):
         assert 90 <= count <= 100, f"Expected ~95 records, got {count}"
 
 
-def test_malformed_json_lines_skipped_with_context(tmp_path):
+def test_malformed_json_lines_skipped_with_context(tmp_path: Path) -> None:
     """Test that malformed JSON lines are skipped and logged."""
     workspace = setup_isolated_workspace(tmp_path)
     inbox = workspace["paths"]["inbox"]
@@ -97,7 +99,7 @@ def test_malformed_json_lines_skipped_with_context(tmp_path):
     assert result.success, f"Pipeline failed: {result.stderr}"
 
 
-def test_truncated_lines_handled_gracefully(tmp_path):
+def test_truncated_lines_handled_gracefully(tmp_path: Path) -> None:
     """Test that truncated JSONL lines don't crash pipeline."""
     workspace = setup_isolated_workspace(tmp_path)
     inbox = workspace["paths"]["inbox"]
@@ -131,7 +133,7 @@ def test_truncated_lines_handled_gracefully(tmp_path):
         assert count >= 17, f"Expected at least 17 records, got {count}"
 
 
-def test_bad_utf8_lines_skipped(tmp_path):
+def test_bad_utf8_lines_skipped(tmp_path: Path) -> None:
     """Test that lines with invalid UTF-8 are handled gracefully."""
     workspace = setup_isolated_workspace(tmp_path)
     inbox = workspace["paths"]["inbox"]
@@ -164,7 +166,7 @@ def test_bad_utf8_lines_skipped(tmp_path):
         assert count >= 13, f"Expected at least 13 records, got {count}"
 
 
-def test_wrong_envelope_lines_skipped(tmp_path):
+def test_wrong_envelope_lines_skipped(tmp_path: Path) -> None:
     """Test that lines with wrong provider envelope are skipped."""
     workspace = setup_isolated_workspace(tmp_path)
     inbox = workspace["paths"]["inbox"]
@@ -202,7 +204,7 @@ def test_wrong_envelope_lines_skipped(tmp_path):
 # =============================================================================
 
 
-def test_empty_file_does_not_crash(tmp_path):
+def test_empty_file_does_not_crash(tmp_path: Path) -> None:
     """Test that empty JSONL files don't crash pipeline."""
     workspace = setup_isolated_workspace(tmp_path)
     inbox = workspace["paths"]["inbox"]
@@ -230,7 +232,7 @@ def test_empty_file_does_not_crash(tmp_path):
         assert count == 5, f"Expected 5 records, got {count}"
 
 
-def test_binary_garbage_file_skipped(tmp_path):
+def test_binary_garbage_file_skipped(tmp_path: Path) -> None:
     """Test that binary garbage files don't corrupt pipeline."""
     workspace = setup_isolated_workspace(tmp_path)
     inbox = workspace["paths"]["inbox"]
@@ -258,7 +260,7 @@ def test_binary_garbage_file_skipped(tmp_path):
         assert count == 8, f"Expected 8 records, got {count}"
 
 
-def test_zero_byte_file_handled(tmp_path):
+def test_zero_byte_file_handled(tmp_path: Path) -> None:
     """Test that zero-byte files are handled gracefully."""
     workspace = setup_isolated_workspace(tmp_path)
     inbox = workspace["paths"]["inbox"]
@@ -291,7 +293,7 @@ def test_zero_byte_file_handled(tmp_path):
 # =============================================================================
 
 
-def test_mixed_corruption_types_in_single_file(tmp_path):
+def test_mixed_corruption_types_in_single_file(tmp_path: Path) -> None:
     """Test resilience to multiple corruption types simultaneously."""
     workspace = setup_isolated_workspace(tmp_path)
     inbox = workspace["paths"]["inbox"]
@@ -329,7 +331,7 @@ def test_mixed_corruption_types_in_single_file(tmp_path):
         assert count >= 25, f"Expected at least 25 records, got {count}"
 
 
-def test_file_with_bom_marker_ingested(tmp_path):
+def test_file_with_bom_marker_ingested(tmp_path: Path) -> None:
     """Test that JSONL files with UTF-8 BOM markers are handled."""
     workspace = setup_isolated_workspace(tmp_path)
     inbox = workspace["paths"]["inbox"]
@@ -356,7 +358,7 @@ def test_file_with_bom_marker_ingested(tmp_path):
         assert count == 5, f"Expected 5 records, got {count}"
 
 
-def test_mixed_providers_in_single_inbox(tmp_path):
+def test_mixed_providers_in_single_inbox(tmp_path: Path) -> None:
     """Test that multiple provider formats coexist in same inbox."""
     workspace = setup_isolated_workspace(tmp_path)
     inbox = workspace["paths"]["inbox"]

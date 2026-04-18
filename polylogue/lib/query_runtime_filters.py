@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, TypeVar
+from collections.abc import Sequence
+from datetime import datetime
+from typing import TYPE_CHECKING, Protocol, TypeVar
 
 from polylogue.lib.query_runtime_matching import (
     matches_action_sequence,
@@ -17,7 +19,40 @@ if TYPE_CHECKING:
     from polylogue.lib.models import Conversation
     from polylogue.lib.query_plan import ConversationQueryPlan
 
-_T = TypeVar("_T")
+
+class FilterableConversationLike(Protocol):
+    @property
+    def provider(self) -> object: ...
+
+    @property
+    def updated_at(self) -> datetime | None: ...
+
+    @property
+    def display_title(self) -> str: ...
+
+    @property
+    def parent_id(self) -> str | None: ...
+
+    @property
+    def tags(self) -> Sequence[str]: ...
+
+    @property
+    def id(self) -> str: ...
+
+    @property
+    def summary(self) -> str | None: ...
+
+    @property
+    def is_continuation(self) -> bool: ...
+
+    @property
+    def is_sidechain(self) -> bool: ...
+
+    @property
+    def is_root(self) -> bool: ...
+
+
+_T = TypeVar("_T", bound=FilterableConversationLike)
 
 
 def apply_common_filters(
@@ -136,4 +171,4 @@ def apply_full_filters(
     return results
 
 
-__all__ = ["apply_common_filters", "apply_full_filters"]
+__all__ = ["FilterableConversationLike", "apply_common_filters", "apply_full_filters"]

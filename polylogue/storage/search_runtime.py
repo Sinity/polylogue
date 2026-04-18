@@ -111,4 +111,4 @@ def search_messages(
     return search_messages_cached(cache_key)
 
 
-__all__ = ["search_messages", "search_messages_cached", "search_messages_impl"]
+__all__ = ["open_read_connection", "search_messages", "search_messages_cached", "search_messages_impl"]

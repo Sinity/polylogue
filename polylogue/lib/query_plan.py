@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import builtins
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import datetime
@@ -39,10 +40,12 @@ from polylogue.types import Provider
 if TYPE_CHECKING:
     from polylogue.lib.filter_types import SortField
     from polylogue.lib.models import Conversation, ConversationSummary
+    from polylogue.lib.query_runtime_filters import FilterableConversationLike
     from polylogue.protocols import VectorProvider
     from polylogue.storage.repository import ConversationRepository
 
 _T = TypeVar("_T")
+_FilterableT = TypeVar("_FilterableT", bound="FilterableConversationLike")
 
 
 # ---------------------------------------------------------------------------
@@ -224,7 +227,12 @@ class ConversationQueryPlan:
     def _matches_action_text_terms(self, conversation: Conversation) -> bool:
         return matches_action_text_terms(self, conversation)
 
-    def _apply_common_filters(self, items: list[_T], *, sql_pushed: bool) -> list[_T]:
+    def _apply_common_filters(
+        self,
+        items: builtins.list[_FilterableT],
+        *,
+        sql_pushed: bool,
+    ) -> builtins.list[_FilterableT]:
         return apply_common_filters(self, items, sql_pushed=sql_pushed)
 
     def _apply_full_filters(self, conversations: list[Conversation], *, sql_pushed: bool) -> list[Conversation]:
@@ -280,7 +288,7 @@ class ConversationQueryPlan:
 
         return await list_for_plan(self, repository)
 
-    async def list_summaries(self, repository: ConversationRepository) -> list[ConversationSummary]:
+    async def list_summaries(self, repository: ConversationRepository) -> builtins.list[ConversationSummary]:
         from polylogue.lib.query_plan_execution import list_summaries_for_plan
 
         return await list_summaries_for_plan(self, repository)

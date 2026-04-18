@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from contextlib import ExitStack
+from typing import Any
 from unittest.mock import patch
 
 import pytest
@@ -33,7 +34,7 @@ RESET_DELETION_CASES = [
 class TestResetCommandSubprocess:
     """Subprocess integration tests for the reset command."""
 
-    def test_reset_requires_target(self, tmp_path):
+    def test_reset_requires_target(self, tmp_path: Any) -> None:
         """reset without flags fails with helpful message."""
         workspace = setup_isolated_workspace(tmp_path)
         env = workspace["env"]
@@ -43,7 +44,7 @@ class TestResetCommandSubprocess:
         output_lower = result.output.lower()
         assert "specify" in output_lower or "target" in output_lower or "--database" in output_lower
 
-    def test_reset_database_requires_force(self, tmp_path):
+    def test_reset_database_requires_force(self, tmp_path: Any) -> None:
         """reset --database without --yes prompts (plain mode fails)."""
         workspace = setup_isolated_workspace(tmp_path)
         env = workspace["env"]
@@ -54,7 +55,7 @@ class TestResetCommandSubprocess:
         output_lower = result.output.lower()
         assert result.exit_code == 0 or "force" in output_lower or "nothing" in output_lower
 
-    def test_reset_force_database(self, tmp_path):
+    def test_reset_force_database(self, tmp_path: Any) -> None:
         """reset --database --yes deletes database."""
         from tests.infra.source_builders import GenericConversationBuilder
 
@@ -71,7 +72,7 @@ class TestResetCommandSubprocess:
         # Should succeed (either deleted or nothing existed)
         assert result.exit_code == 0
 
-    def test_reset_all_flag(self, tmp_path):
+    def test_reset_all_flag(self, tmp_path: Any) -> None:
         """reset --all sets all targets."""
         workspace = setup_isolated_workspace(tmp_path)
         env = workspace["env"]
@@ -90,7 +91,7 @@ class TestResetCommandSubprocess:
 class TestResetCommandValidation:
     """Tests for reset command validation."""
 
-    def test_no_flags_shows_error(self, tmp_path, monkeypatch):
+    def test_no_flags_shows_error(self, tmp_path: Any, monkeypatch: Any) -> None:
         """Reset without any target flags shows error."""
         monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
 
@@ -100,7 +101,7 @@ class TestResetCommandValidation:
         assert result.exit_code == 1
         assert "specify" in result.output.lower()
 
-    def test_all_flag_sets_all_targets(self, tmp_path, monkeypatch):
+    def test_all_flag_sets_all_targets(self, tmp_path: Any, monkeypatch: Any) -> None:
         """--all enables all reset targets."""
         # Patch paths to point to tmp_path
         monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
@@ -124,7 +125,9 @@ class TestResetCommandDeletion:
     """Tests for reset file/directory deletion."""
 
     @pytest.mark.parametrize("flag,path_attr,desc", RESET_DELETION_CASES)
-    def test_reset_flag_deletes_target(self, tmp_path, monkeypatch, flag, path_attr, desc):
+    def test_reset_flag_deletes_target(
+        self, tmp_path: Any, monkeypatch: Any, flag: Any, path_attr: Any, desc: Any
+    ) -> None:
         """Reset flags delete specified targets."""
         monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
 
@@ -186,7 +189,7 @@ class TestResetCommandDeletion:
             assert result.exit_code == 0
             assert not target_path.exists()
 
-    def test_multiple_flags(self, tmp_path, monkeypatch):
+    def test_multiple_flags(self, tmp_path: Any, monkeypatch: Any) -> None:
         """Multiple flags delete specified targets."""
         monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
 
@@ -220,7 +223,7 @@ class TestResetCommandDeletion:
 class TestResetConfirmation:
     """Tests for reset confirmation flow."""
 
-    def test_without_force_in_plain_mode_skips(self, tmp_path, monkeypatch):
+    def test_without_force_in_plain_mode_skips(self, tmp_path: Any, monkeypatch: Any) -> None:
         """Without --yes in plain mode, shows message and skips."""
         monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
 
@@ -239,7 +242,7 @@ class TestResetConfirmation:
             assert db_path.exists()
             assert "force" in result.output.lower()
 
-    def test_force_bypasses_confirmation(self, tmp_path, monkeypatch):
+    def test_force_bypasses_confirmation(self, tmp_path: Any, monkeypatch: Any) -> None:
         """--yes bypasses confirmation prompt."""
         monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
 
@@ -260,7 +263,7 @@ class TestResetConfirmation:
 class TestResetEmptyTargets:
     """Tests for reset when targets don't exist."""
 
-    def test_nothing_to_reset(self, tmp_path, monkeypatch):
+    def test_nothing_to_reset(self, tmp_path: Any, monkeypatch: Any) -> None:
         """When no files exist, shows 'nothing to reset'."""
         monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
 
@@ -277,7 +280,7 @@ class TestResetEmptyTargets:
             assert result.exit_code == 0
             assert "nothing to reset" in result.output.lower()
 
-    def test_partial_targets_exist(self, tmp_path, monkeypatch):
+    def test_partial_targets_exist(self, tmp_path: Any, monkeypatch: Any) -> None:
         """Only deletes targets that exist."""
         monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
 
@@ -299,7 +302,7 @@ class TestResetEmptyTargets:
 class TestResetErrorHandling:
     """Tests for reset error handling."""
 
-    def test_deletion_failure_shows_error(self, tmp_path, monkeypatch):
+    def test_deletion_failure_shows_error(self, tmp_path: Any, monkeypatch: Any) -> None:
         """Deletion failure shows error but continues."""
         monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
 
@@ -319,7 +322,7 @@ class TestResetErrorHandling:
             # Should report failure but not crash
             assert "failed" in result.output.lower() or result.exit_code == 0
 
-    def test_shows_what_will_be_deleted(self, tmp_path, monkeypatch):
+    def test_shows_what_will_be_deleted(self, tmp_path: Any, monkeypatch: Any) -> None:
         """Shows summary of what will be deleted."""
         monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
 

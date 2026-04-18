@@ -3,14 +3,14 @@
 from __future__ import annotations
 
 from contextlib import suppress
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 from rich.text import Text
 
 
 @runtime_checkable
 class ConsoleLike(Protocol):
-    def print(self, *objects: object, **kwargs: object) -> None: ...
+    def print(self, *objects: Any, **kwargs: Any) -> None: ...
 
 
 class PlainConsole:

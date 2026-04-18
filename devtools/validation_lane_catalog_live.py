@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from functools import partial
 
+from devtools.lane_models import LaneEntry
 from devtools.validation_lane_base import memory_budget_lane as _memory_budget_lane
 from devtools.validation_lane_base import pipeline_probe_lane as _pipeline_probe_lane
 from devtools.validation_lane_base import polylogue_lane as _polylogue_lane
@@ -20,7 +21,7 @@ pipeline_probe_lane = partial(_pipeline_probe_lane, category="live")
 polylogue_lane = partial(_polylogue_lane, category="live")
 
 
-def _live_product_lanes() -> dict[str, object]:
+def _live_product_lanes() -> dict[str, LaneEntry]:
     return {
         spec.name: polylogue_lane(
             spec.name,
@@ -33,7 +34,7 @@ def _live_product_lanes() -> dict[str, object]:
     }
 
 
-def _live_operational_lanes() -> dict[str, object]:
+def _live_operational_lanes() -> dict[str, LaneEntry]:
     return {
         spec.name: polylogue_lane(
             spec.name,
@@ -46,7 +47,7 @@ def _live_operational_lanes() -> dict[str, object]:
     }
 
 
-def _memory_budget_operational_lanes() -> dict[str, object]:
+def _memory_budget_operational_lanes() -> dict[str, LaneEntry]:
     return {
         spec.name: memory_budget_lane(
             spec.name,
@@ -60,7 +61,7 @@ def _memory_budget_operational_lanes() -> dict[str, object]:
     }
 
 
-LIVE_LANES = {
+LIVE_LANES: dict[str, LaneEntry] = {
     "live-archive-subset-parse-probe": pipeline_probe_lane(
         "live-archive-subset-parse-probe",
         "Live archive medium archive-subset parse probe with persisted manifest/workdir artifacts",

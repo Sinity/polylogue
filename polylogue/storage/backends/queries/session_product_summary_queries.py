@@ -133,7 +133,7 @@ async def replace_session_tag_rollup_rows(
                     record.conversation_count,
                     record.explicit_count,
                     record.auto_count,
-                    _json_or_none(record.repo_breakdown),
+                    _json_or_none(dict[str, object](record.repo_breakdown)),
                     record.search_text,
                 )
                 for record in records
@@ -191,7 +191,7 @@ async def replace_day_session_summaries(
                     record.total_wall_duration_ms,
                     record.total_messages,
                     record.total_words,
-                    _json_or_none(record.work_event_breakdown),
+                    _json_or_none(dict[str, object](record.work_event_breakdown)),
                     _json_array_or_none(record.repos_active),
                     _json_or_none(record.payload),
                     record.search_text,

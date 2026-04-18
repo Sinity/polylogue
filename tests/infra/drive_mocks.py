@@ -56,9 +56,9 @@ class MockDriveFile:
     size: int | None = None
     parents: list[str] = field(default_factory=list)
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> dict[str, object]:
         """Convert to API response format."""
-        result = {
+        result: dict[str, object] = {
             "id": self.file_id,
             "name": self.name,
             "mimeType": self.mime_type,
@@ -79,9 +79,9 @@ class MockListResponse:
     files: list[MockDriveFile]
     next_page_token: str | None = None
 
-    def execute(self) -> dict[str, Any]:
+    def execute(self) -> dict[str, object]:
         """Execute the request and return response."""
-        result = {"files": [f.to_dict() for f in self.files]}
+        result: dict[str, object] = {"files": [f.to_dict() for f in self.files]}
         if self.next_page_token:
             result["nextPageToken"] = self.next_page_token
         return result
@@ -93,7 +93,7 @@ class MockGetResponse:
 
     file: MockDriveFile
 
-    def execute(self) -> dict[str, Any]:
+    def execute(self) -> dict[str, object]:
         """Execute the request and return file metadata."""
         return self.file.to_dict()
 
@@ -300,7 +300,7 @@ class FakeDriveServiceGateway:
     def __init__(
         self,
         mock_service: MockDriveService | None = None,
-        file_content: dict[str, bytes] | None = None,
+        file_content: dict[str, bytes | str] | None = None,
         download_error: Exception | None = None,
     ) -> None:
         self._mock_service = mock_service or MockDriveService(file_content=file_content)

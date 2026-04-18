@@ -6,7 +6,7 @@ from collections import Counter
 from collections.abc import Callable, Iterable
 from io import BytesIO, StringIO
 from pathlib import Path
-from typing import Any, Literal
+from typing import IO, Any, Literal
 
 import orjson
 
@@ -60,20 +60,20 @@ def collect_limited_samples(
         return []
 
     target_counts = bucket_target_counts(bucket_counts, limit)
-    collected_counts = Counter()
-    selected: list[dict[str, Any]] = []
+    collected_counts: Counter[str] = Counter()
+    stratified_selected: list[dict[str, Any]] = []
 
     for sample in sample_factory():
         bucket = record_bucket_key(sample, record_type_key)
         target = target_counts.get(bucket, 0)
         if target == 0 or collected_counts[bucket] >= target:
             continue
-        selected.append(sample)
+        stratified_selected.append(sample)
         collected_counts[bucket] += 1
-        if len(selected) >= limit:
+        if len(stratified_selected) >= limit:
             break
 
-    return selected
+    return stratified_selected
 
 
 def extract_payload_samples(
@@ -147,6 +147,7 @@ def extract_record_samples_from_raw_content(
     if max_samples is not None and max_samples <= 0:
         return []
 
+    stream: IO[Any]
     if isinstance(raw_content, Path):
         stream = open(raw_content, "rb")  # noqa: SIM115 — caller-managed context
     else:

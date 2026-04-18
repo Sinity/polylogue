@@ -7,6 +7,7 @@ filter logic.
 
 from __future__ import annotations
 
+from typing import Any
 from unittest.mock import patch
 
 import pytest
@@ -34,7 +35,7 @@ from polylogue.schemas.validator import (
 # =============================================================================
 
 
-REASONING_TRACES_CASES = [
+REASONING_TRACES_CASES: list[tuple[Any, str, int, str | None, str]] = [
     (None, "claude-ai", 0, None, "empty_none_content"),
     (["string", 123], "claude-ai", 0, None, "non_dict_block"),
     ([{"type": "thinking", "thinking": "Let me think..."}], "claude-ai", 1, "Let me think...", "thinking_block"),
@@ -42,7 +43,7 @@ REASONING_TRACES_CASES = [
     ([{"type": "thinking", "text": "Fallback text"}], "claude-ai", 1, "Fallback text", "thinking_fallback"),
 ]
 
-CONTENT_BLOCKS_CASES = [
+CONTENT_BLOCKS_CASES: list[tuple[Any, int, list[str], str]] = [
     (None, 0, [], "empty_none"),
     (["string", 123, None], 0, [], "non_dict_items"),
     ([{"type": "text", "text": "Hello"}], 1, ["text"], "text_block"),
@@ -60,7 +61,7 @@ CONTENT_BLOCKS_CASES = [
     ([{"type": "unknown", "data": "something"}], 0, [], "unknown_block_type"),
 ]
 
-EXTRACT_TEXT_CASES = [
+EXTRACT_TEXT_CASES: list[tuple[Any, Any, str, str]] = [
     (extract_claude_code_text, None, "", "claude_code_none"),
     (extract_claude_code_text, ["string", 123], "", "claude_code_non_dict"),
     (extract_chatgpt_text, None, "", "chatgpt_none"),
@@ -69,7 +70,7 @@ EXTRACT_TEXT_CASES = [
     (extract_chatgpt_text, {"parts": [123, "text", {"key": "val"}]}, "text", "chatgpt_non_string_parts"),
 ]
 
-HARMONIZED_MESSAGE_PROVIDER_CASES = [
+HARMONIZED_MESSAGE_PROVIDER_CASES: list[tuple[str, str, str]] = [
     ("claude-code", "claude_code_msg", "Claude Code extraction"),
     ("claude-ai", "claude_ai_msg", "Claude AI extraction"),
     ("chatgpt", "chatgpt_msg", "ChatGPT extraction"),
@@ -77,14 +78,14 @@ HARMONIZED_MESSAGE_PROVIDER_CASES = [
     ("codex", "codex_msg", "Codex extraction"),
 ]
 
-MESSAGE_RECORD_TYPE_CASES = [
+MESSAGE_RECORD_TYPE_CASES: list[tuple[str, str, bool, str]] = [
     ("claude-code", "user", True, "Claude Code user"),
     ("claude-code", "assistant", True, "Claude Code assistant"),
     ("claude-code", "metadata", False, "Claude Code metadata"),
     ("chatgpt", "anything", True, "Other providers always True"),
 ]
 
-TOKEN_USAGE_CASES = [
+TOKEN_USAGE_CASES: list[tuple[Any, str | None, str]] = [
     (None, None, "None usage"),
     ({}, None, "Empty dict (no tokens)"),
     ({"input_tokens": 100}, "partial", "Partial token fields"),
@@ -92,7 +93,7 @@ TOKEN_USAGE_CASES = [
 
 
 class TestUnifiedMissingRole:
-    def test_missing_role_raises_error(self):
+    def test_missing_role_raises_error(self: Any) -> None:
         from polylogue.schemas.unified import _missing_role
 
         with pytest.raises(ValueError, match="Message has no role"):
@@ -101,7 +102,9 @@ class TestUnifiedMissingRole:
 
 class TestUnifiedExtractReasoningTraces:
     @pytest.mark.parametrize("content,provider,expected_len,expected_text,description", REASONING_TRACES_CASES)
-    def test_extract_reasoning_traces(self, content, provider, expected_len, expected_text, description):
+    def test_extract_reasoning_traces(
+        self: Any, content: Any, provider: Any, expected_len: Any, expected_text: Any, description: Any
+    ) -> None:
         result = extract_reasoning_traces(content, provider)
         assert len(result) == expected_len
         if expected_text is not None:
@@ -110,7 +113,9 @@ class TestUnifiedExtractReasoningTraces:
 
 class TestUnifiedExtractContentBlocks:
     @pytest.mark.parametrize("content,expected_len,expected_types,description", CONTENT_BLOCKS_CASES)
-    def test_extract_content_blocks(self, content, expected_len, expected_types, description):
+    def test_extract_content_blocks(
+        self: Any, content: Any, expected_len: Any, expected_types: Any, description: Any
+    ) -> None:
         result = extract_content_blocks(content)
         assert len(result) == expected_len
         if expected_types:
@@ -120,28 +125,30 @@ class TestUnifiedExtractContentBlocks:
 
 class TestUnifiedExtractTokenUsage:
     @pytest.mark.parametrize("usage,expected_type,description", TOKEN_USAGE_CASES)
-    def test_extract_token_usage(self, usage, expected_type, description):
+    def test_extract_token_usage(self: Any, usage: Any, expected_type: Any, description: Any) -> None:
         result = extract_token_usage(usage)
         if expected_type is None:
             assert result is None
         elif expected_type == "partial":
+            assert result is not None
             assert result.input_tokens == 100
 
 
 class TestUnifiedExtractTextHelpers:
     @pytest.mark.parametrize("extract_fn,content,expected,description", EXTRACT_TEXT_CASES)
-    def test_extract_text(self, extract_fn, content, expected, description):
+    def test_extract_text(self: Any, extract_fn: Any, content: Any, expected: Any, description: Any) -> None:
         result = extract_fn(content)
         assert result == expected or expected in result
 
 
 class TestUnifiedExtractHarmonizedMessage:
-    def test_extract_harmonized_message_invalid_provider(self):
+    def test_extract_harmonized_message_invalid_provider(self: Any) -> None:
         with pytest.raises(ValueError, match="Unknown provider"):
             extract_harmonized_message("unknown_provider", {})
 
     @pytest.mark.parametrize("provider,msg_key,description", HARMONIZED_MESSAGE_PROVIDER_CASES)
-    def test_extract_harmonized_message_by_provider(self, provider, msg_key, description):
+    def test_extract_harmonized_message_by_provider(self: Any, provider: Any, msg_key: Any, description: Any) -> None:
+        raw: dict[str, Any]
         if provider == "claude-code":
             raw = {
                 "uuid": "msg1",
@@ -161,29 +168,29 @@ class TestUnifiedExtractHarmonizedMessage:
 
 
 class TestUnifiedHarmonizeParsedMessage:
-    def test_harmonize_parsed_message_none_meta(self):
+    def test_harmonize_parsed_message_none_meta(self: Any) -> None:
         assert harmonize_parsed_message("claude-ai", None) is None
 
-    def test_harmonize_parsed_message_not_message_record(self):
+    def test_harmonize_parsed_message_not_message_record(self: Any) -> None:
         assert harmonize_parsed_message("claude-code", {"type": "metadata"}) is None
 
-    def test_harmonize_parsed_message_valid(self):
+    def test_harmonize_parsed_message_valid(self: Any) -> None:
         meta = {"raw": {"uuid": "msg1", "sender": "user", "text": "Hello"}}
         result = harmonize_parsed_message("claude-ai", meta)
         assert isinstance(result, HarmonizedMessage)
 
 
 class TestUnifiedBulkHarmonize:
-    def test_bulk_harmonize_no_provider_meta(self):
+    def test_bulk_harmonize_no_provider_meta(self: Any) -> None:
         class MockParsedMessage:
             pass
 
         result = bulk_harmonize("claude-ai", [MockParsedMessage()])
         assert result == []
 
-    def test_bulk_harmonize_mixed_valid_invalid(self):
+    def test_bulk_harmonize_mixed_valid_invalid(self: Any) -> None:
         class MockParsedMessage:
-            def __init__(self, meta=None):
+            def __init__(self: Any, meta: Any = None) -> None:
                 self.provider_meta = meta
 
         messages = [
@@ -204,7 +211,7 @@ class TestUnifiedBulkHarmonize:
 
 class TestUnifiedIsMessageRecord:
     @pytest.mark.parametrize("provider,record_type,expected,description", MESSAGE_RECORD_TYPE_CASES)
-    def test_is_message_record(self, provider, record_type, expected, description):
+    def test_is_message_record(self: Any, provider: Any, record_type: Any, expected: Any, description: Any) -> None:
         result = is_message_record(provider, {"type": record_type})
         assert result == expected
 
@@ -215,33 +222,33 @@ class TestUnifiedIsMessageRecord:
 
 
 class TestValidatorImportErrorHandling:
-    def test_validator_jsonschema_not_installed(self):
+    def test_validator_jsonschema_not_installed(self: Any) -> None:
         with patch("polylogue.schemas.validator.jsonschema", None):
             with pytest.raises(ImportError, match="jsonschema not installed"):
                 SchemaValidator({})
 
 
 class TestValidatorAvailableProviders:
-    def test_available_providers_returns_list(self):
+    def test_available_providers_returns_list(self: Any) -> None:
         result = SchemaValidator.available_providers()
         assert isinstance(result, list)
 
 
 class TestValidatorDetectDrift:
-    def test_validate_detects_unexpected_field(self):
+    def test_validate_detects_unexpected_field(self: Any) -> None:
         schema = {"type": "object", "properties": {"name": {"type": "string"}}, "additionalProperties": False}
         validator = SchemaValidator(schema, strict=True)
         result = validator.validate({"name": "test", "extra": "field"})
         assert result.has_drift
         assert any("Unexpected field" in w for w in result.drift_warnings)
 
-    def test_validate_additional_properties_true(self):
+    def test_validate_additional_properties_true(self: Any) -> None:
         schema = {"type": "object", "properties": {"name": {"type": "string"}}, "additionalProperties": True}
         validator = SchemaValidator(schema, strict=True)
         result = validator.validate({"name": "test", "extra": "field"})
         assert not result.has_drift
 
-    def test_validate_additional_properties_schema(self):
+    def test_validate_additional_properties_schema(self: Any) -> None:
         schema = {
             "type": "object",
             "properties": {"name": {"type": "string"}},
@@ -250,7 +257,7 @@ class TestValidatorDetectDrift:
         validator = SchemaValidator(schema, strict=True)
         validator.validate({"name": "test", "extra": "value"})
 
-    def test_validate_nested_object_drift(self):
+    def test_validate_nested_object_drift(self: Any) -> None:
         schema = {
             "type": "object",
             "properties": {"user": {"type": "object", "properties": {"name": {"type": "string"}}}},
@@ -260,7 +267,7 @@ class TestValidatorDetectDrift:
         result = validator.validate(data)
         assert isinstance(result, ValidationResult)
 
-    def test_validate_list_items_drift(self):
+    def test_validate_list_items_drift(self: Any) -> None:
         schema = {
             "type": "object",
             "properties": {
@@ -274,7 +281,7 @@ class TestValidatorDetectDrift:
 
 
 class TestValidatorFormatError:
-    def test_validate_multiple_errors(self):
+    def test_validate_multiple_errors(self: Any) -> None:
         schema = {
             "type": "object",
             "required": ["name"],
@@ -286,25 +293,25 @@ class TestValidatorFormatError:
 
 
 class TestValidatorConvenienceFunction:
-    def test_validate_provider_export_raises_on_missing_schema(self):
+    def test_validate_provider_export_raises_on_missing_schema(self: Any) -> None:
         with pytest.raises(FileNotFoundError):
             validate_provider_export({}, "invalid_provider", strict=True)
 
 
 class TestValidationResult:
-    def test_validation_result_has_drift_property(self):
+    def test_validation_result_has_drift_property(self: Any) -> None:
         result = ValidationResult(is_valid=True, drift_warnings=["Field X is new"])
         assert result.has_drift is True
 
-    def test_validation_result_no_drift(self):
+    def test_validation_result_no_drift(self: Any) -> None:
         result = ValidationResult(is_valid=True)
         assert result.has_drift is False
 
-    def test_validation_result_raise_if_invalid(self):
+    def test_validation_result_raise_if_invalid(self: Any) -> None:
         result = ValidationResult(is_valid=False, errors=["Error 1", "Error 2"])
         with pytest.raises(ValueError, match="Schema validation failed"):
             result.raise_if_invalid()
 
-    def test_validation_result_raise_if_valid(self):
+    def test_validation_result_raise_if_valid(self: Any) -> None:
         result = ValidationResult(is_valid=True)
         result.raise_if_invalid()

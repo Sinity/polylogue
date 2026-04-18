@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import AsyncIterator, Sequence
 from datetime import datetime, timezone
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from click.testing import CliRunner
@@ -11,14 +13,19 @@ from click.testing import CliRunner
 from polylogue.cli.click_app import cli
 from polylogue.lib.models import ConversationSummary
 from polylogue.site.builder import SiteBuilder, SiteConfig
+from polylogue.site.models import ConversationIndex
+from polylogue.types import ConversationId, Provider
+
+WorkspaceEnv = dict[str, Path]
+MessagePayload = tuple[str, str]
 
 
-async def _empty_messages(*args, **kwargs):
+async def _empty_messages(*args: object, **kwargs: object) -> AsyncIterator[None]:
     if False:  # pragma: no cover
         yield None
 
 
-async def _iter_messages(payloads):
+async def _iter_messages(payloads: Sequence[MessagePayload]) -> AsyncIterator[MagicMock]:
     for index, (role, text) in enumerate(payloads, start=1):
         yield MagicMock(
             id=f"msg-{index}",
@@ -29,13 +36,13 @@ async def _iter_messages(payloads):
         )
 
 
-async def _summary_pages(*pages):
+async def _summary_pages(*pages: Sequence[ConversationSummary]) -> AsyncIterator[Sequence[ConversationSummary]]:
     for page in pages:
         if page:
             yield page
 
 
-def _configure_summary_pages(repo: AsyncMock, *pages) -> None:
+def _configure_summary_pages(repo: AsyncMock, *pages: Sequence[ConversationSummary]) -> None:
     repo.iter_summary_pages = MagicMock(side_effect=lambda *args, **kwargs: _summary_pages(*pages))
     repo.iter_messages = _empty_messages
 
@@ -47,7 +54,7 @@ def _make_backend() -> AsyncMock:
     return backend
 
 
-async def _collect_indexes(builder: SiteBuilder):
+async def _collect_indexes(builder: SiteBuilder) -> list[ConversationIndex]:
     return [conversation async for conversation in builder._iter_conversation_indexes()]
 
 
@@ -59,8 +66,8 @@ def _summary(
     summary: str | None = None,
 ) -> ConversationSummary:
     return ConversationSummary(
-        id=conversation_id,
-        provider=provider,
+        id=ConversationId(conversation_id),
+        provider=Provider.from_string(provider),
         title=title,
         created_at=datetime(2024, 1, 15, 10, 30, 0, tzinfo=timezone.utc),
         updated_at=datetime(2024, 1, 15, 10, 31, 0, tzinfo=timezone.utc),
@@ -68,7 +75,7 @@ def _summary(
     )
 
 
-def test_build_index_requests_all_summaries_without_silent_cap(tmp_path):
+def test_build_index_requests_all_summaries_without_silent_cap(tmp_path: Path) -> None:
     """Regression: root archive scan must use paged summary iteration without a silent cap."""
     backend = _make_backend()
     backend.queries.get_message_counts_batch.return_value = {"test-conv-001": 3}
@@ -86,7 +93,7 @@ def test_build_index_requests_all_summaries_without_silent_cap(tmp_path):
     repository.iter_summary_pages.assert_called_once_with(page_size=500, provider=None)
 
 
-def test_conversation_index_no_source_attribute_reference(tmp_path):
+def test_conversation_index_no_source_attribute_reference(tmp_path: Path) -> None:
     """Regression: ConversationIndex must not touch the removed conv.source attribute."""
     backend = _make_backend()
     backend.queries.get_message_counts_batch.return_value = {"test-conv-001": 3}
@@ -110,7 +117,7 @@ def test_conversation_index_no_source_attribute_reference(tmp_path):
     assert index.message_count == 3
 
 
-def test_run_site_no_rich_markup_in_output(workspace_env):
+def test_run_site_no_rich_markup_in_output(workspace_env: WorkspaceEnv) -> None:
     """Regression: plain CLI output must not leak Rich markup tags."""
     runner = CliRunner()
     output_dir = workspace_env["archive_root"] / "site"
@@ -125,7 +132,7 @@ def test_run_site_no_rich_markup_in_output(workspace_env):
         assert token not in result.output
 
 
-def test_run_site_error_handling(workspace_env):
+def test_run_site_error_handling(workspace_env: WorkspaceEnv) -> None:
     """Pinned error path: run site stage should record error when the builder fails."""
     runner = CliRunner()
     output_dir = workspace_env["archive_root"] / "site"
@@ -141,12 +148,12 @@ def test_run_site_error_handling(workspace_env):
     assert result.exit_code == 0
 
 
-def test_build_generates_valid_html(tmp_path):
+def test_build_generates_valid_html(tmp_path: Path) -> None:
     """Pinned smoke: generated HTML keeps the basic template skeleton intact."""
     backend = _make_backend()
     backend.queries.get_message_counts_batch.return_value = {"conv-123": 1}
     repository = AsyncMock()
-    _configure_summary_pages(repository, [_summary("conv-123", provider="test", title="Test")])
+    _configure_summary_pages(repository, [_summary("conv-123", provider="chatgpt", title="Test")])
     builder = SiteBuilder(
         output_dir=tmp_path / "site",
         config=SiteConfig(title="Test Archive", include_dashboard=True),
@@ -165,10 +172,12 @@ def test_build_generates_valid_html(tmp_path):
     assert "Dashboard" in dashboard_html or "Archive" in dashboard_html
 
 
-def test_build_conversation_page_keeps_tail_messages(tmp_path):
+def test_build_conversation_page_keeps_tail_messages(tmp_path: Path) -> None:
     """Regression: conversation pages must include messages beyond the old 500-message cap."""
     summary = _summary("conv-123", title="Long Conversation")
-    payloads = [("user" if index % 2 == 0 else "assistant", f"message {index}") for index in range(501)]
+    payloads: list[MessagePayload] = [
+        ("user" if index % 2 == 0 else "assistant", f"message {index}") for index in range(501)
+    ]
     backend = _make_backend()
     backend.queries.get_message_counts_batch.return_value = {"conv-123": 501}
     repository = AsyncMock()
@@ -189,7 +198,7 @@ def test_build_conversation_page_keeps_tail_messages(tmp_path):
     assert "message 500" in conversation_html
 
 
-def test_build_conversation_page_preserves_long_message_bodies(tmp_path):
+def test_build_conversation_page_preserves_long_message_bodies(tmp_path: Path) -> None:
     """Regression: conversation pages must not silently truncate long message bodies."""
     summary = _summary("conv-456", title="Long Message Conversation")
     long_text = ("abcdef " * 900) + "tail-marker"

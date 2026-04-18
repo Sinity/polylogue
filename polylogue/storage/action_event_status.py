@@ -40,6 +40,31 @@ _ACTION_EVENT_ORPHAN_TOOL_BLOCK_COUNT_SQL = """
 """
 
 
+def _row_int(row: sqlite3.Row | None, key: int | str) -> int:
+    if row is None:
+        return 0
+    try:
+        return int(row[key])
+    except (TypeError, ValueError):
+        return 0
+
+
+def _mapping_int(mapping: dict[str, object], key: str) -> int:
+    value = mapping.get(key, 0)
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        try:
+            return int(value)
+        except ValueError:
+            return 0
+    return 0
+
+
 def action_event_read_model_status_sync(
     conn: sqlite3.Connection,
     *,
@@ -52,25 +77,28 @@ def action_event_read_model_status_sync(
     stale_count = 0
     materialized_conversation_count = 0
     if exists:
-        count = int(conn.execute(_ACTION_EVENT_DOC_COUNT_SQL).fetchone()[0] or 0)
-        materialized_conversation_count = int(
-            conn.execute(_ACTION_EVENT_MATERIALIZED_CONVERSATION_COUNT_SQL).fetchone()[0] or 0
+        count = _row_int(conn.execute(_ACTION_EVENT_DOC_COUNT_SQL).fetchone(), 0)
+        materialized_conversation_count = _row_int(
+            conn.execute(_ACTION_EVENT_MATERIALIZED_CONVERSATION_COUNT_SQL).fetchone(),
+            0,
         )
     if verify_source_alignment:
-        valid_source_conversation_count = int(
-            conn.execute(_ACTION_EVENT_VALID_SOURCE_CONVERSATION_COUNT_SQL).fetchone()[0] or 0
+        valid_source_conversation_count = _row_int(
+            conn.execute(_ACTION_EVENT_VALID_SOURCE_CONVERSATION_COUNT_SQL).fetchone(),
+            0,
         )
-        orphan_source_conversation_count = int(
-            conn.execute(_ACTION_EVENT_ORPHAN_SOURCE_CONVERSATION_COUNT_SQL).fetchone()[0] or 0
+        orphan_source_conversation_count = _row_int(
+            conn.execute(_ACTION_EVENT_ORPHAN_SOURCE_CONVERSATION_COUNT_SQL).fetchone(),
+            0,
         )
-        orphan_tool_block_count = int(conn.execute(_ACTION_EVENT_ORPHAN_TOOL_BLOCK_COUNT_SQL).fetchone()[0] or 0)
+        orphan_tool_block_count = _row_int(conn.execute(_ACTION_EVENT_ORPHAN_TOOL_BLOCK_COUNT_SQL).fetchone(), 0)
         if exists:
-            stale_count = int(
+            stale_count = _row_int(
                 conn.execute(
                     _ACTION_EVENT_MISMATCH_COUNT_SQL,
                     (ACTION_EVENT_MATERIALIZER_VERSION,),
-                ).fetchone()[0]
-                or 0
+                ).fetchone(),
+                0,
             )
         source_conversation_count = valid_source_conversation_count + orphan_source_conversation_count
     else:
@@ -83,7 +111,7 @@ def action_event_read_model_status_sync(
         source_conversations=valid_source_conversation_count,
         materialized_conversations=materialized_conversation_count,
         materialized_rows=count,
-        fts_rows=int(fts_status.get("action_count", 0)),
+        fts_rows=_mapping_int(fts_status, "action_count"),
         stale_rows=stale_count,
         orphan_rows=orphan_tool_block_count,
         matches_version=stale_count == 0,
@@ -138,7 +166,7 @@ async def action_event_read_model_status_async(
                     (ACTION_EVENT_MATERIALIZER_VERSION,),
                 )
             ).fetchone()
-            stale_count = int(mismatch_row[0] or 0) if mismatch_row else 0
+        stale_count = int(mismatch_row[0] or 0) if mismatch_row else 0
         source_conversation_count = valid_source_conversation_count + orphan_source_conversation_count
     else:
         valid_source_conversation_count = materialized_conversation_count
@@ -150,7 +178,7 @@ async def action_event_read_model_status_async(
         source_conversations=valid_source_conversation_count,
         materialized_conversations=materialized_conversation_count,
         materialized_rows=count,
-        fts_rows=int(fts_status.get("action_count", 0)),
+        fts_rows=_mapping_int(fts_status, "action_count"),
         stale_rows=stale_count,
         orphan_rows=orphan_tool_block_count,
         matches_version=stale_count == 0,

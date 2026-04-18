@@ -7,13 +7,15 @@ properties of the filter DSL.
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
 from tests.infra.storage_records import ConversationBuilder, db_setup
 
 
 @pytest.fixture()
-def filterable_db(workspace_env):
+def filterable_db(workspace_env: Any) -> Any:
     """Create a rich DB with varied conversations for filter testing."""
     db_path = db_setup(workspace_env)
 
@@ -38,7 +40,7 @@ def filterable_db(workspace_env):
     return db_path
 
 
-def _query_ids(conn, where_clause: str = "", params: tuple = ()) -> set[str]:
+def _query_ids(conn: Any, where_clause: str = "", params: tuple[object, ...] = ()) -> set[str]:
     sql = "SELECT conversation_id FROM conversations"
     if where_clause:
         sql += f" WHERE {where_clause}"
@@ -48,7 +50,7 @@ def _query_ids(conn, where_clause: str = "", params: tuple = ()) -> set[str]:
 class TestFilterMonotonicity:
     """Adding a filter can only narrow or maintain the result set."""
 
-    def test_provider_filter_narrows(self, filterable_db):
+    def test_provider_filter_narrows(self: Any, filterable_db: Any) -> None:
         from polylogue.storage.backends.connection import open_connection
 
         with open_connection(filterable_db) as conn:
@@ -58,7 +60,7 @@ class TestFilterMonotonicity:
             assert chatgpt_ids.issubset(all_ids)
             assert len(chatgpt_ids) < len(all_ids)
 
-    def test_combined_filters_narrow_further(self, filterable_db):
+    def test_combined_filters_narrow_further(self: Any, filterable_db: Any) -> None:
         from polylogue.storage.backends.connection import open_connection
 
         with open_connection(filterable_db) as conn:
@@ -76,7 +78,7 @@ class TestFilterMonotonicity:
             assert chatgpt_with_stats.issubset(chatgpt_ids)
             assert chatgpt_ids.issubset(all_ids)
 
-    def test_empty_provider_returns_empty(self, filterable_db):
+    def test_empty_provider_returns_empty(self: Any, filterable_db: Any) -> None:
         from polylogue.storage.backends.connection import open_connection
 
         with open_connection(filterable_db) as conn:
@@ -87,7 +89,7 @@ class TestFilterMonotonicity:
 class TestFilterCommutativity:
     """Independent filters commute — order of application doesn't matter."""
 
-    def test_provider_then_message_count_equals_reverse(self, filterable_db):
+    def test_provider_then_message_count_equals_reverse(self: Any, filterable_db: Any) -> None:
         from polylogue.storage.backends.connection import open_connection
 
         with open_connection(filterable_db) as conn:
@@ -112,7 +114,7 @@ class TestFilterCommutativity:
 class TestFilterIdempotence:
     """Applying the same filter twice yields the same result."""
 
-    def test_double_provider_filter_is_idempotent(self, filterable_db):
+    def test_double_provider_filter_is_idempotent(self: Any, filterable_db: Any) -> None:
         from polylogue.storage.backends.connection import open_connection
 
         with open_connection(filterable_db) as conn:
@@ -124,7 +126,7 @@ class TestFilterIdempotence:
 class TestFilterPartition:
     """Provider filters partition the conversation space."""
 
-    def test_providers_partition_total(self, filterable_db):
+    def test_providers_partition_total(self: Any, filterable_db: Any) -> None:
         from polylogue.storage.backends.connection import open_connection
 
         with open_connection(filterable_db) as conn:
@@ -137,7 +139,7 @@ class TestFilterPartition:
 
             assert union == all_ids
 
-    def test_provider_partitions_are_disjoint(self, filterable_db):
+    def test_provider_partitions_are_disjoint(self: Any, filterable_db: Any) -> None:
         from polylogue.storage.backends.connection import open_connection
 
         with open_connection(filterable_db) as conn:

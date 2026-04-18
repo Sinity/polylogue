@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import deque
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -59,9 +60,9 @@ class ConsoleFacade:
 
     plain: bool
     prompt_stub_path: Path | None = None
-    console: Console | PlainConsole = field(init=False)
+    console: ConsoleLike = field(init=False)
     theme: Theme = field(init=False, repr=False)
-    _prompt_responses: object = field(init=False, repr=False)
+    _prompt_responses: deque[dict[str, object]] = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
         self.theme = Theme(rich_theme_styles())
@@ -73,22 +74,22 @@ class ConsoleFacade:
         self._banner_box = box.DOUBLE
         self._prompt_responses = load_prompt_responses(UIError, prompt_stub_path=self.prompt_stub_path)
 
-    def _load_prompt_responses(self):
+    def _load_prompt_responses(self) -> object:
         return load_prompt_responses(UIError, prompt_stub_path=self.prompt_stub_path)
 
-    def _pop_prompt_response(self, kind: str):
+    def _pop_prompt_response(self, kind: str) -> object:
         return pop_prompt_response(self._prompt_responses, kind, UIError)
 
     def _require_plain_prompt_tty(self, prompt_topic: str) -> None:
         require_plain_prompt_tty(prompt_topic, UIError)
 
-    def _consume_confirm_stub(self, *, default: bool):
+    def _consume_confirm_stub(self, *, default: bool) -> object:
         return consume_confirm_stub(self._prompt_responses, default=default, ui_error_cls=UIError)
 
-    def _consume_choose_stub(self, options: list[str]):
+    def _consume_choose_stub(self, options: list[str]) -> object:
         return consume_choose_stub(self._prompt_responses, options, UIError)
 
-    def _consume_input_stub(self, *, default: str | None):
+    def _consume_input_stub(self, *, default: str | None) -> object:
         return consume_input_stub(self._prompt_responses, default=default, ui_error_cls=UIError)
 
     def banner(self, title: str, subtitle: str | None = None) -> None:
@@ -118,7 +119,7 @@ class ConsoleFacade:
             return None
         stub_result = self._consume_choose_stub(options)
         if stub_result is not _NO_STUB_RESPONSE:
-            return stub_result
+            return stub_result if stub_result is None or isinstance(stub_result, str) else str(stub_result)
         if self.plain:
             self._require_plain_prompt_tty("menu selections")
             for idx, option in enumerate(options, start=1):
@@ -144,7 +145,7 @@ class ConsoleFacade:
     def input(self, prompt: str, *, default: str | None = None) -> str | None:
         stub_result = self._consume_input_stub(default=default)
         if stub_result is not _NO_STUB_RESPONSE:
-            return stub_result
+            return stub_result if stub_result is None or isinstance(stub_result, str) else str(stub_result)
         if self.plain:
             self._require_plain_prompt_tty("text input")
             suffix = f" [{default}]" if default else ""

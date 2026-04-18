@@ -44,6 +44,7 @@ from polylogue.storage.conversation_replacement import (
     replace_conversation_runtime_state_sync,
 )
 from polylogue.storage.state_views import RawConversationStateUpdate
+from polylogue.storage.store import RawConversationRecord
 
 if TYPE_CHECKING:
     from polylogue.pipeline.services.parsing import ParsingService
@@ -260,14 +261,14 @@ def _check_content_unchanged(conn: sqlite3.Connection, cid: str, content_hash: s
     return row is not None and row[0] == content_hash
 
 
-def _topo_sort_message_tuples(tuples: list[tuple]) -> list[tuple]:
+def _topo_sort_message_tuples(tuples: list[tuple[object, ...]]) -> list[tuple[object, ...]]:
     """Sort message tuples so parents come before children (FK constraint).
 
     message_id is at index 0, parent_message_id is at index 8.
     """
     ids_in_batch = {t[0] for t in tuples}
-    no_parent: list[tuple] = []
-    has_parent: list[tuple] = []
+    no_parent: list[tuple[object, ...]] = []
+    has_parent: list[tuple[object, ...]] = []
     for t in tuples:
         if t[8] and t[8] in ids_in_batch:
             has_parent.append(t)
@@ -281,7 +282,7 @@ def _topo_sort_message_tuples(tuples: list[tuple]) -> list[tuple]:
     for _ in range(len(remaining) + 1):
         if not remaining:
             break
-        next_remaining: list[tuple] = []
+        next_remaining: list[tuple[object, ...]] = []
         for t in remaining:
             if t[8] in inserted_ids:
                 ordered.append(t)
@@ -294,7 +295,8 @@ def _topo_sort_message_tuples(tuples: list[tuple]) -> list[tuple]:
 
 
 def _conversation_parent_id(cdata: ConversationData) -> str | None:
-    return cdata.conversation_tuple[11]
+    parent_id = cdata.conversation_tuple[11]
+    return parent_id if isinstance(parent_id, str) else None
 
 
 def _topo_sort_conversation_entries(
@@ -345,7 +347,7 @@ def _conversation_exists(conn: sqlite3.Connection, conversation_id: str) -> bool
 def _resolved_conversation_tuple(
     conn: sqlite3.Connection,
     cdata: ConversationData,
-) -> tuple:
+) -> tuple[object, ...]:
     """Resolve parent conversation links against the currently materialized archive.
 
     Parent conversation links are only durable when the parent already exists.
@@ -421,7 +423,9 @@ def _write_conversation(conn: sqlite3.Connection, cdata: ConversationData) -> tu
         conn.executemany(_ACTION_EVENT_INSERT_SQL, cdata.action_event_tuples)
 
     # Attachments
-    new_attachment_ids = {t[0] for t in cdata.attachment_tuples}
+    new_attachment_ids = {
+        attachment_id for attachment_id, *_rest in cdata.attachment_tuples if isinstance(attachment_id, str)
+    }
     affected_attachment_ids |= new_attachment_ids
     if cdata.attachment_tuples:
         conn.executemany(_ATTACHMENT_UPSERT_SQL, cdata.attachment_tuples)
@@ -559,7 +563,7 @@ def _flush_pending_conversation_entries(
 
 
 def _iter_ingest_results_sync(
-    raw_records: list,
+    raw_records: list[RawConversationRecord],
     *,
     archive_root_str: str,
     blob_root_str: str,
@@ -580,7 +584,7 @@ def _iter_ingest_results_sync(
 
     try:
         with process_pool_executor(max_workers=worker_count) as executor:
-            futures: dict[Future, str] = {}
+            futures: dict[Future[IngestRecordResult], str] = {}
             for raw_record in raw_records:
                 future = executor.submit(
                     ingest_record,
@@ -639,7 +643,7 @@ def _select_ingest_worker_count(raw_records: Sequence[object], ingest_workers: i
 
 
 def _process_ingest_batch_sync(
-    raw_records: list,
+    raw_records: list[RawConversationRecord],
     *,
     db_path: Path,
     archive_root_str: str,

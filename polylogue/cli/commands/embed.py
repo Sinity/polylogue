@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from polylogue.cli.embed_runtime import embed_batch, embed_single
-from polylogue.cli.embed_stats import embedding_status_payload, render_embedding_stats
+from polylogue.cli.embed_stats import EmbeddingStatusPayload, embedding_status_payload, render_embedding_stats
 
 if TYPE_CHECKING:
     from polylogue.cli.types import AppEnv
@@ -19,7 +19,7 @@ _embed_single = embed_single
 _embed_batch = embed_batch
 
 
-def _embedding_status_payload(env: AppEnv) -> dict[str, object]:
+def _embedding_status_payload(env: AppEnv) -> EmbeddingStatusPayload:
     return embedding_status_payload(env)
 
 

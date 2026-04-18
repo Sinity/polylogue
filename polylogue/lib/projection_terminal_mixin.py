@@ -3,15 +3,31 @@
 from __future__ import annotations
 
 import itertools
+from collections.abc import Callable, Iterator
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from polylogue.lib.conversation_models import Conversation
+    from polylogue.lib.message_models import Message
+
+MessagePredicate = Callable[["Message"], bool]
+MessageTransform = Callable[["Message"], "Message"]
 
 
 class ProjectionTerminalMixin:
-    def execute(self):
+    _conv: Conversation
+    _filters: list[MessagePredicate]
+    _transforms: list[MessageTransform]
+    _limit: int | None
+    _offset: int
+    _reverse: bool
+
+    def execute(self) -> Conversation:
         messages = list(self.iter())
         return self._conv.model_copy(update={"messages": messages})
 
-    def iter(self):
-        messages = iter(self._conv.messages)
+    def iter(self) -> Iterator[Message]:
+        messages: Iterator[Message] = iter(self._conv.messages)
         if self._reverse:
             messages = iter(reversed(list(messages)))
         messages = itertools.islice(messages, self._offset, None)
@@ -32,18 +48,18 @@ class ProjectionTerminalMixin:
     def count(self) -> int:
         return sum(1 for _ in self.iter())
 
-    def first(self):
+    def first(self) -> Message | None:
         for msg in self.iter():
             return msg
         return None
 
-    def last(self):
-        result = None
+    def last(self) -> Message | None:
+        result: Message | None = None
         for msg in self.iter():
             result = msg
         return result
 
-    def to_list(self):
+    def to_list(self) -> list[Message]:
         return list(self.iter())
 
     def exists(self) -> bool:

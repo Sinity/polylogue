@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypedDict, cast
 from uuid import uuid4
 
 from polylogue.pipeline.run_support import write_run_json
 from polylogue.storage.backends import create_backend
+from polylogue.storage.backends.queries import runs as runs_q
 from polylogue.storage.state_views import RunResult
 from polylogue.storage.store import RunRecord
 
@@ -21,19 +22,31 @@ if TYPE_CHECKING:
     from polylogue.storage.state_views import PlanResult
 
 
+class RunPayload(TypedDict):
+    run_id: str
+    timestamp: int
+    counts: dict[str, int]
+    drift: dict[str, dict[str, int]]
+    indexed: bool
+    index_error: str | None
+    duration_ms: int
+    metrics: dict[str, object]
+
+
 def build_run_payload(
     *,
     state: RunExecutionState,
     metrics: PipelineMetrics,
     index_outcome: IndexStageOutcome,
     duration_ms: int,
-) -> dict[str, object]:
+) -> RunPayload:
     """Create the canonical persisted payload for a completed pipeline run."""
+    drift = state.finalize()
     return {
         "run_id": uuid4().hex,
         "timestamp": int(time.time()),
         "counts": state.counts,
-        "drift": state.finalize(),
+        "drift": drift,
         "indexed": index_outcome.indexed,
         "index_error": index_outcome.error,
         "duration_ms": duration_ms,
@@ -69,7 +82,7 @@ async def persist_run_result(
             duration_ms=duration_ms,
         ),
     )
-    run_path = write_run_json(config.archive_root, run_payload)
+    run_path = write_run_json(config.archive_root, cast(dict[str, object], dict(run_payload)))
     return RunResult(
         run_id=str(run_payload["run_id"]),
         counts=state.counts,
@@ -87,7 +100,8 @@ async def latest_run(backend: SQLiteBackend | None = None) -> RunRecord | None:
     owns_backend = backend is None
     active_backend = backend or create_backend()
     try:
-        return await active_backend.queries.get_latest_run()
+        async with active_backend.connection() as conn:
+            return await runs_q.get_latest_run(conn)
     finally:
         if owns_backend:
             await active_backend.close()

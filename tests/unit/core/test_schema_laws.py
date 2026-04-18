@@ -21,7 +21,9 @@ from polylogue.schemas.schema_inference import (
     load_samples_from_sessions,
 )
 from polylogue.schemas.validator import SchemaValidator
+from polylogue.types import Provider
 from tests.infra.strategies import (
+    SessionJsonlFileSpec,
     dynamic_key_strategy,
     expected_session_documents,
     json_document_strategy,
@@ -146,7 +148,9 @@ def test_remove_nested_required_strips_required_recursively_but_keeps_root(
     schema: dict[str, object],
 ) -> None:
     """Only the root required array should survive recursive schema cleanup."""
-    root_required = list(schema.get("required", []))
+    root_required_value = schema.get("required", [])
+    assert isinstance(root_required_value, list)
+    root_required = list(root_required_value)
 
     result = _remove_nested_required(copy.deepcopy(schema), depth=0)
 
@@ -167,7 +171,7 @@ def test_validation_samples_record_payloads_preserve_variant_coverage_when_cappe
             "x-polylogue-sample-granularity": "record",
             "properties": {"type": {"type": "string"}},
         },
-        provider="codex",
+        provider=Provider.CODEX,
     )
     expected_signatures = {record_variant_signature(item) for item in payload}
     limit = data.draw(st.integers(min_value=len(expected_signatures), max_value=len(payload)))
@@ -184,7 +188,7 @@ def test_validation_samples_record_payloads_are_uncapped_by_default(payload: lis
     """Record-oriented providers should validate every dict record unless explicitly capped."""
     validator = SchemaValidator(
         {"type": "object", "properties": {"type": {"type": "string"}}},
-        provider="codex",
+        provider=Provider.CODEX,
     )
     assert validator.validation_samples(payload, max_samples=None) == payload
 
@@ -198,7 +202,7 @@ def test_validation_samples_document_mode_matches_payload_shape(
     """Document-mode sampling should validate top-level docs and prefix-limit lists."""
     validator = SchemaValidator(
         {"type": "object", "properties": {"id": {"type": "string"}}},
-        provider="chatgpt",
+        provider=Provider.CHATGPT,
     )
     limit = data.draw(st.one_of(st.none(), st.integers(min_value=1, max_value=len(documents))))
     single = data.draw(json_document_strategy())
@@ -215,7 +219,9 @@ def test_validation_samples_document_mode_matches_payload_shape(
     suppress_health_check=[HealthCheck.too_slow],
 )
 @given(session_jsonl_tree_strategy())
-def test_load_samples_from_sessions_keeps_valid_dicts_in_recursive_mtime_order(file_specs) -> None:
+def test_load_samples_from_sessions_keeps_valid_dicts_in_recursive_mtime_order(
+    file_specs: tuple[SessionJsonlFileSpec, ...],
+) -> None:
     """Recursive session loading should ignore junk lines and preserve valid dict order."""
     with TemporaryDirectory() as tempdir:
         session_dir = Path(tempdir) / "sessions"

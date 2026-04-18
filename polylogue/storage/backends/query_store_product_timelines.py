@@ -2,6 +2,12 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from contextlib import AbstractAsyncContextManager
+from typing import TYPE_CHECKING
+
+import aiosqlite
+
 from polylogue.storage.backends.queries import (
     session_product_timeline_reads as session_product_timelines_q,
 )
@@ -9,6 +15,9 @@ from polylogue.storage.store import SessionPhaseRecord, SessionWorkEventRecord
 
 
 class SQLiteQueryStoreProductTimelinesMixin:
+    if TYPE_CHECKING:
+        _connection_factory: Callable[[], AbstractAsyncContextManager[aiosqlite.Connection]]
+
     async def get_session_work_events(
         self,
         conversation_id: str,

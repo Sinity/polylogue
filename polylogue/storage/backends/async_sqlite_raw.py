@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from contextlib import AbstractAsyncContextManager
+from typing import TYPE_CHECKING
 
 from polylogue.storage.backends.queries import artifacts as artifacts_q
 from polylogue.storage.backends.queries import raw as raw_queries
@@ -10,9 +12,20 @@ from polylogue.storage.state_views import RawConversationState, RawConversationS
 from polylogue.storage.store import ArtifactObservationRecord, RawConversationRecord
 from polylogue.types import Provider, ValidationMode, ValidationStatus
 
+if TYPE_CHECKING:
+    import aiosqlite
+
+    from polylogue.storage.backends.query_store import SQLiteQueryStore
+
 
 class SQLiteRawMixin:
     """Raw archive and provenance methods for ``SQLiteBackend``."""
+
+    if TYPE_CHECKING:
+        queries: SQLiteQueryStore
+        _transaction_depth: int
+
+        def _get_connection(self) -> AbstractAsyncContextManager[aiosqlite.Connection]: ...
 
     def _raw_id_query(
         self,

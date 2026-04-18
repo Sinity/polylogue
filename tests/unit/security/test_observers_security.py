@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
@@ -16,19 +17,19 @@ from polylogue.pipeline.observers import (
 class TestExecCommandValidation:
     """Tests for _validate_exec_command — command injection prevention."""
 
-    def test_simple_command_accepted(self):
+    def test_simple_command_accepted(self) -> None:
         argv = _validate_exec_command("echo hello")
         assert argv == ["echo", "hello"]
 
-    def test_command_with_path(self):
+    def test_command_with_path(self) -> None:
         argv = _validate_exec_command("/usr/bin/my-script --flag value")
         assert argv == ["/usr/bin/my-script", "--flag", "value"]
 
-    def test_empty_command_rejected(self):
+    def test_empty_command_rejected(self) -> None:
         with pytest.raises(ValueError, match="cannot be empty"):
             _validate_exec_command("")
 
-    def test_whitespace_only_rejected(self):
+    def test_whitespace_only_rejected(self) -> None:
         with pytest.raises(ValueError, match="cannot be empty"):
             _validate_exec_command("   ")
 
@@ -47,11 +48,11 @@ class TestExecCommandValidation:
             r"echo hello\n",
         ],
     )
-    def test_shell_metacharacters_rejected(self, dangerous_cmd):
+    def test_shell_metacharacters_rejected(self, dangerous_cmd: Any) -> None:
         with pytest.raises(ValueError, match="unsafe shell metacharacters"):
             _validate_exec_command(dangerous_cmd)
 
-    def test_quoted_arguments_accepted(self):
+    def test_quoted_arguments_accepted(self) -> None:
         argv = _validate_exec_command('echo "hello world"')
         assert argv == ["echo", "hello world"]
 
@@ -59,7 +60,7 @@ class TestExecCommandValidation:
 class TestWebhookUrlValidation:
     """Tests for _validate_webhook_url — SSRF prevention."""
 
-    def test_https_url_accepted(self):
+    def test_https_url_accepted(self) -> None:
         # This may fail in DNS resolution, but should NOT fail on scheme
         try:
             _validate_webhook_url("https://hooks.example.com/webhook")
@@ -67,15 +68,15 @@ class TestWebhookUrlValidation:
             # DNS resolution failure is OK, but SSRF block is not expected
             assert "Cannot resolve" in str(e) or "private" not in str(e).lower()
 
-    def test_ftp_scheme_rejected(self):
+    def test_ftp_scheme_rejected(self) -> None:
         with pytest.raises(ValueError, match="http or https"):
             _validate_webhook_url("ftp://example.com/file")
 
-    def test_file_scheme_rejected(self):
+    def test_file_scheme_rejected(self) -> None:
         with pytest.raises(ValueError, match="http or https"):
             _validate_webhook_url("file:///etc/passwd")
 
-    def test_no_hostname_rejected(self):
+    def test_no_hostname_rejected(self) -> None:
         with pytest.raises(ValueError, match="must have a hostname"):
             _validate_webhook_url("http:///path")
 
@@ -87,7 +88,7 @@ class TestWebhookUrlValidation:
             "http://[::1]/webhook",
         ],
     )
-    def test_loopback_rejected(self, private_url):
+    def test_loopback_rejected(self, private_url: Any) -> None:
         with pytest.raises(ValueError, match="private|reserved|loopback"):
             _validate_webhook_url(private_url)
 
@@ -99,11 +100,11 @@ class TestWebhookUrlValidation:
             "http://172.16.0.1/webhook",
         ],
     )
-    def test_private_ip_rejected(self, private_url):
+    def test_private_ip_rejected(self, private_url: Any) -> None:
         with pytest.raises(ValueError, match="private|reserved"):
             _validate_webhook_url(private_url)
 
-    def test_metadata_endpoint_rejected(self):
+    def test_metadata_endpoint_rejected(self) -> None:
         with pytest.raises(ValueError, match="private|reserved|link"):
             _validate_webhook_url("http://169.254.169.254/latest/meta-data/")
 
@@ -111,15 +112,15 @@ class TestWebhookUrlValidation:
 class TestExecObserver:
     """Integration tests for ExecObserver."""
 
-    def test_construction_validates_command(self):
+    def test_construction_validates_command(self) -> None:
         with pytest.raises(ValueError):
             ExecObserver("echo hello; evil")
 
-    def test_valid_construction(self):
+    def test_valid_construction(self) -> None:
         handler = ExecObserver("echo hello")
         assert handler._argv == ["echo", "hello"]
 
-    def test_no_op_on_zero_conversations(self):
+    def test_no_op_on_zero_conversations(self) -> None:
         handler = ExecObserver("echo hello")
         # Should not raise even though command is valid
         handler.on_completed(MagicMock(counts={"conversations": 0}))  # Should be a no-op

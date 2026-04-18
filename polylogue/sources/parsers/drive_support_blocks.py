@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+from typing import Any
+
+from polylogue.types import ContentBlockType
+
 from .base import ParsedContentBlock
 
 
-def viewport_block_payload(block) -> dict[str, object] | None:
+def viewport_block_payload(block: Any) -> dict[str, object] | None:
     raw_type = block.type.value if hasattr(block.type, "value") else str(block.type)
     block_type = {
         "file": "document",
@@ -44,16 +48,15 @@ def parsed_content_blocks_from_meta(blocks: object) -> list[ParsedContentBlock]:
         block_type = block.get("type")
         if not isinstance(block_type, str) or not block_type:
             continue
-        metadata: dict[str, object] | None = (
-            dict(block.get("metadata")) if isinstance(block.get("metadata"), dict) else None
-        )
+        meta_value = block.get("metadata")
+        metadata: dict[str, object] | None = dict(meta_value) if isinstance(meta_value, dict) else None
         language = block.get("language")
         if isinstance(language, str) and language:
             metadata = dict(metadata or {})
             metadata.setdefault("language", language)
         parsed.append(
             ParsedContentBlock(
-                type=block_type,
+                type=ContentBlockType.from_string(block_type),
                 text=block.get("text") if isinstance(block.get("text"), str) else None,
                 media_type=block.get("media_type") if isinstance(block.get("media_type"), str) else None,
                 metadata=metadata,

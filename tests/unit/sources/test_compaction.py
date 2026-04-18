@@ -16,6 +16,16 @@ from polylogue.sources.parsers.codex import parse as parse_codex
 from polylogue.sources.providers.claude_code import ClaudeCodeRecord
 from polylogue.sources.providers.codex import CodexRecord
 
+
+def _provider_compactions(provider_meta: dict[str, object] | None) -> list[dict[str, object]]:
+    assert isinstance(provider_meta, dict)
+    compactions = provider_meta.get("context_compactions")
+    assert isinstance(compactions, list)
+    typed_compactions = [entry for entry in compactions if isinstance(entry, dict)]
+    assert len(typed_compactions) == len(compactions)
+    return typed_compactions
+
+
 # =============================================================================
 # detect_context_compaction — legacy format
 # =============================================================================
@@ -157,7 +167,7 @@ class TestClaudeCodeRecordCompaction:
 
 class TestClaudeCodeParserProviderEvents:
     def test_legacy_compaction_emits_provider_event(self) -> None:
-        payload = [
+        payload: list[object] = [
             {
                 "type": "user",
                 "uuid": "u1",
@@ -185,7 +195,7 @@ class TestClaudeCodeParserProviderEvents:
         assert event.payload["is_modern"] is False
 
     def test_modern_compaction_emits_provider_event(self) -> None:
-        payload = [
+        payload: list[object] = [
             {
                 "type": "user",
                 "uuid": "u1",
@@ -211,17 +221,16 @@ class TestClaudeCodeParserProviderEvents:
 
     def test_compaction_backward_compat_provider_meta(self) -> None:
         """provider_meta['context_compactions'] still populated for backward compat."""
-        payload = [
+        payload: list[object] = [
             {"type": "summary", "uuid": "s1", "message": {"content": "sum"}},
         ]
         result = parse_code(payload, "test-session")
-        assert result.provider_meta is not None
-        compactions = result.provider_meta["context_compactions"]
+        compactions = _provider_compactions(result.provider_meta)
         assert len(compactions) == 1
         assert compactions[0]["summary"] == "sum"
 
     def test_no_compaction_no_provider_events(self) -> None:
-        payload = [
+        payload: list[object] = [
             {
                 "type": "user",
                 "uuid": "u1",
@@ -234,7 +243,7 @@ class TestClaudeCodeParserProviderEvents:
 
     def test_compaction_not_counted_as_message(self) -> None:
         """Compaction records should not appear in messages list."""
-        payload = [
+        payload: list[object] = [
             {"type": "user", "uuid": "u1", "message": {"role": "user", "content": "hello"}},
             {"type": "summary", "uuid": "s1", "message": {"content": "summary"}},
             {"type": "assistant", "uuid": "a1", "message": {"role": "assistant", "content": "world"}},
@@ -289,7 +298,7 @@ class TestCodexRecordCompaction:
 
 class TestCodexParserProviderEvents:
     def test_compaction_emits_provider_event(self) -> None:
-        payload = [
+        payload: list[object] = [
             {"type": "session_meta", "payload": {"id": "s1", "timestamp": "2024-01-01"}},
             {"type": "compacted", "payload": {"message": "Context was compacted", "replacement_history": []}},
             {
@@ -308,7 +317,7 @@ class TestCodexParserProviderEvents:
         assert event.payload["summary"] == "Context was compacted"
 
     def test_turn_context_emits_provider_event(self) -> None:
-        payload = [
+        payload: list[object] = [
             {"type": "session_meta", "payload": {"id": "s1", "timestamp": "2024-01-01"}},
             {"type": "turn_context", "payload": {"context": "previous turn data"}},
             {
@@ -327,7 +336,7 @@ class TestCodexParserProviderEvents:
 
     def test_messages_still_extracted_alongside_compaction(self) -> None:
         """Compaction records must not break normal message extraction."""
-        payload = [
+        payload: list[object] = [
             {"type": "session_meta", "payload": {"id": "s1", "timestamp": "2024-01-01"}},
             {
                 "type": "response_item",
@@ -367,7 +376,7 @@ class TestCodexParserProviderEvents:
 
     def test_compaction_backward_compat_provider_meta(self) -> None:
         """provider_meta['context_compactions'] still populated for backward compat."""
-        payload = [
+        payload: list[object] = [
             {"type": "compacted", "payload": {"message": "compact text"}},
             {
                 "type": "response_item",
@@ -379,14 +388,12 @@ class TestCodexParserProviderEvents:
             },
         ]
         result = parse_codex(payload, "fallback")
-        assert result.provider_meta is not None
-        assert "context_compactions" in result.provider_meta
-        compactions = result.provider_meta["context_compactions"]
+        compactions = _provider_compactions(result.provider_meta)
         assert len(compactions) == 1
         assert compactions[0]["summary"] == "compact text"
 
     def test_no_compaction_no_provider_events(self) -> None:
-        payload = [
+        payload: list[object] = [
             {"type": "session_meta", "payload": {"id": "s1", "timestamp": "2024-01-01"}},
             {
                 "type": "response_item",

@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import random
 from datetime import datetime
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
@@ -149,7 +150,7 @@ class TestSyntheticConversationEnvelope:
         assert batch.report.provider == "chatgpt"
         assert batch.report.generated_count == 2
 
-    def test_write_spec_artifacts_returns_written_paths(self, tmp_path) -> None:
+    def test_write_spec_artifacts_returns_written_paths(self, tmp_path: Any) -> None:
         spec = CorpusSpec.for_provider(
             "chatgpt",
             count=1,
@@ -164,7 +165,7 @@ class TestSyntheticConversationEnvelope:
         assert written.files[0].exists()
         assert written.batch.report.generated_count == 1
 
-    def test_write_specs_artifacts_avoids_same_provider_name_collisions(self, tmp_path) -> None:
+    def test_write_specs_artifacts_avoids_same_provider_name_collisions(self, tmp_path: Any) -> None:
         specs = (
             CorpusSpec(
                 provider="chatgpt",
@@ -408,32 +409,32 @@ class TestWireFormatShape:
 
     EXPECTED_PROVIDERS = {"chatgpt", "claude-code", "claude-ai", "codex", "gemini"}
 
-    def test_all_expected_providers_have_entries(self):
+    def test_all_expected_providers_have_entries(self) -> None:
         """Every known provider has a wire format config."""
         assert set(PROVIDER_WIRE_FORMATS.keys()) == self.EXPECTED_PROVIDERS
 
     @pytest.mark.parametrize("provider", sorted(EXPECTED_PROVIDERS))
-    def test_encoding_is_valid(self, provider):
+    def test_encoding_is_valid(self, provider: Any) -> None:
         """Each wire format has a valid encoding value."""
         wf = PROVIDER_WIRE_FORMATS[provider]
         assert isinstance(wf, WireFormat)
         assert wf.encoding in ("json", "jsonl"), f"{provider} has invalid encoding: {wf.encoding}"
 
-    def test_json_providers_have_structure(self):
+    def test_json_providers_have_structure(self) -> None:
         """JSON-encoded providers have either tree or messages_path."""
         for name, wf in PROVIDER_WIRE_FORMATS.items():
             if wf.encoding == "json":
                 has_structure = wf.tree is not None or wf.messages_path is not None
                 assert has_structure, f"{name}: JSON provider needs tree or messages_path"
 
-    def test_chatgpt_has_tree_with_container(self):
+    def test_chatgpt_has_tree_with_container(self) -> None:
         """ChatGPT wire format uses tree structure with container_path."""
         wf = PROVIDER_WIRE_FORMATS["chatgpt"]
         assert wf.tree is not None
         assert wf.tree.container_path == "mapping"
         assert wf.tree.children_field == "children"
 
-    def test_claude_code_has_tree_without_container(self):
+    def test_claude_code_has_tree_without_container(self) -> None:
         """Claude Code uses tree structure in JSONL (no container_path)."""
         wf = PROVIDER_WIRE_FORMATS["claude-code"]
         assert wf.encoding == "jsonl"
@@ -445,7 +446,7 @@ class TestWireFormatShape:
 class TestCorpusSeedDeterminism:
     """Corpus generation is deterministic with same seed."""
 
-    def test_same_seed_same_output(self):
+    def test_same_seed_same_output(self) -> None:
         """Two generations with the same seed produce identical bytes."""
         available = SyntheticCorpus.available_providers()
         if not available:
@@ -455,7 +456,7 @@ class TestCorpusSeedDeterminism:
         b = corpus.generate(count=2, seed=99)
         assert a == b
 
-    def test_different_seed_different_output(self):
+    def test_different_seed_different_output(self) -> None:
         """Two generations with different seeds produce different bytes."""
         available = SyntheticCorpus.available_providers()
         if not available:
@@ -470,7 +471,7 @@ class TestCorpusParseRoundtrip:
     """Generated corpus parses successfully through source iterators."""
 
     @pytest.mark.parametrize("provider", sorted(PROVIDER_WIRE_FORMATS.keys()))
-    def test_generated_data_parses(self, provider, synthetic_source):
+    def test_generated_data_parses(self, provider: Any, synthetic_source: Any) -> None:
         """Synthetic data for each provider round-trips through parser."""
         from polylogue.sources import iter_source_conversations
 
@@ -494,7 +495,7 @@ class TestSeedDeterminism:
     """Corpus generation is deterministic given the same seed."""
 
     @pytest.mark.parametrize("provider", sorted(SyntheticCorpus.available_providers() or ["chatgpt"]))
-    def test_same_seed_produces_identical_output(self, provider):
+    def test_same_seed_produces_identical_output(self, provider: Any) -> None:
         """Two generate() calls with same seed → identical byte output."""
         try:
             corpus = SyntheticCorpus.for_provider(provider)
@@ -505,7 +506,7 @@ class TestSeedDeterminism:
         b = corpus.generate(count=3, seed=42)
         assert a == b, f"{provider}: same seed produced different output"
 
-    def test_different_seeds_produce_different_output(self):
+    def test_different_seeds_produce_different_output(self) -> None:
         """Different seeds produce different output."""
         available = SyntheticCorpus.available_providers()
         if not available:
@@ -521,7 +522,7 @@ class TestMessageCountContract:
     """Generated conversations respect the message count range."""
 
     @pytest.mark.parametrize("provider", sorted(SyntheticCorpus.available_providers() or ["chatgpt"]))
-    def test_generate_count_matches_requested(self, provider):
+    def test_generate_count_matches_requested(self, provider: Any) -> None:
         """generate(count=N) returns exactly N items."""
         try:
             corpus = SyntheticCorpus.for_provider(provider)
@@ -532,7 +533,7 @@ class TestMessageCountContract:
             items = corpus.generate(count=count, seed=0)
             assert len(items) == count, f"{provider}: requested {count}, got {len(items)}"
 
-    def test_generate_zero_returns_empty(self):
+    def test_generate_zero_returns_empty(self) -> None:
         """generate(count=0) returns an empty list."""
         available = SyntheticCorpus.available_providers()
         if not available:
@@ -542,7 +543,7 @@ class TestMessageCountContract:
         items = corpus.generate(count=0, seed=0)
         assert items == []
 
-    def test_generate_batch_reports_provider_and_count(self):
+    def test_generate_batch_reports_provider_and_count(self) -> None:
         """generate_batch() exposes a typed report aligned with raw output."""
         available = SyntheticCorpus.available_providers()
         if not available:
@@ -561,7 +562,7 @@ class TestParseRoundtrip:
     """Synthetic data round-trips through the actual provider parsers."""
 
     @pytest.mark.parametrize("provider", sorted(SyntheticCorpus.available_providers() or ["chatgpt"]))
-    def test_synthetic_parses_to_conversations(self, provider, synthetic_source):
+    def test_synthetic_parses_to_conversations(self, provider: Any, synthetic_source: Any) -> None:
         """Synthetic corpus for each provider parses into valid conversations."""
         from polylogue.sources import iter_source_conversations
 

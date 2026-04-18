@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
 from polylogue.errors import DatabaseError
@@ -10,7 +12,7 @@ from tests.infra.storage_records import ConversationBuilder
 
 
 @pytest.mark.asyncio
-async def test_fetch_search_results_raises_when_message_index_is_incomplete(storage_repository):
+async def test_fetch_search_results_raises_when_message_index_is_incomplete(storage_repository: Any) -> None:
     ConversationBuilder(storage_repository.backend.db_path, "conv-incomplete-search").add_message(
         "m1",
         text="python search contract",

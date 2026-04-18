@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from typing import Any, cast
 from unittest.mock import ANY, patch
 
 import pytest
@@ -32,12 +33,12 @@ from tests.infra.storage_records import ConversationBuilder, DbFactory
 
 
 @pytest.fixture
-def cli_runner():
+def cli_runner() -> Any:
     """Provide a Click CLI test runner."""
     return CliRunner()
 
 
-def _extract_json(output: str) -> dict:
+def _extract_json(output: str) -> dict[str, Any]:
     """Extract JSON from CLI output, unwrapping the success envelope."""
     lines = output.strip().split("\n")
     # Find first line that starts with { and join all subsequent lines
@@ -46,16 +47,21 @@ def _extract_json(output: str) -> dict:
         raise ValueError(f"No JSON found in output: {output}")
     json_str = "\n".join(lines[json_start:])
     data = json.loads(json_str)
+    if not isinstance(data, dict):
+        raise ValueError(f"Expected JSON object, got {type(data).__name__}")
     # Unwrap success envelope
     if isinstance(data, dict) and data.get("status") == "ok" and "result" in data:
-        return data["result"]
-    return data
+        result = data["result"]
+        if not isinstance(result, dict):
+            raise ValueError(f"Expected result object, got {type(result).__name__}")
+        return cast(dict[str, Any], result)
+    return cast(dict[str, Any], data)
 
 
 class TestHealthReportConstruction:
     """Tests for proper HealthReport instantiation."""
 
-    def test_health_report_requires_summary(self):
+    def test_health_report_requires_summary(self: Any) -> None:
         """HealthReport derives summary dict from check statuses."""
         checks = [
             HealthCheck("database", VerifyStatus.OK, summary="DB reachable"),
@@ -67,7 +73,7 @@ class TestHealthReportConstruction:
         assert len(report.checks) == 2
         assert report.summary == {"ok": 1, "warning": 1, "error": 0}
 
-    def test_health_report_summary_counts(self):
+    def test_health_report_summary_counts(self: Any) -> None:
         """Summary should accurately reflect check status counts."""
         checks = [
             HealthCheck("check1", VerifyStatus.OK),
@@ -83,7 +89,7 @@ class TestHealthReportConstruction:
         assert report.summary["warning"] == 1
         assert report.summary["error"] == 1
 
-    def test_health_report_to_dict_serialization(self):
+    def test_health_report_to_dict_serialization(self: Any) -> None:
         """HealthReport should serialize to dict with all required fields."""
         checks = [HealthCheck("test", VerifyStatus.OK, summary="OK")]
         report = HealthReport(checks=checks)
@@ -95,7 +101,7 @@ class TestHealthReportConstruction:
         assert "timestamp" in data
         assert data["summary"] == {"ok": 1, "warning": 0, "error": 0}
 
-    def test_health_report_empty_checks(self):
+    def test_health_report_empty_checks(self: Any) -> None:
         """HealthReport with no checks should still have summary."""
         report = HealthReport(checks=[])
 
@@ -103,7 +109,7 @@ class TestHealthReportConstruction:
         assert report.summary == {"ok": 0, "warning": 0, "error": 0}
 
 
-def test_check_records_scoped_maintenance_preview(cli_workspace, cli_runner):
+def test_check_records_scoped_maintenance_preview(cli_workspace: Any, cli_runner: Any) -> None:
     from polylogue.storage.session_product_rebuild import rebuild_session_products_sync
 
     db_path = cli_workspace["db_path"]
@@ -139,7 +145,7 @@ def test_check_records_scoped_maintenance_preview(cli_workspace, cli_runner):
     assert payload["maintenance"]["items"][0]["repaired_count"] > 0
 
 
-def test_check_records_scoped_maintenance_apply(cli_workspace, cli_runner):
+def test_check_records_scoped_maintenance_apply(cli_workspace: Any, cli_runner: Any) -> None:
     from polylogue.storage.session_product_rebuild import rebuild_session_products_sync
 
     db_path = cli_workspace["db_path"]
@@ -175,7 +181,7 @@ def test_check_records_scoped_maintenance_apply(cli_workspace, cli_runner):
     assert payload["maintenance"]["items"][0]["success"] is True
 
 
-def test_check_plain_preview_summarizes_changes_not_issues(cli_workspace, cli_runner):
+def test_check_plain_preview_summarizes_changes_not_issues(cli_workspace: Any, cli_runner: Any) -> None:
     from polylogue.storage.session_product_rebuild import rebuild_session_products_sync
 
     db_path = cli_workspace["db_path"]
@@ -210,7 +216,7 @@ def test_check_plain_preview_summarizes_changes_not_issues(cli_workspace, cli_ru
     assert "issue(s)" not in result.output
 
 
-def test_check_warns_when_message_index_is_incomplete(cli_workspace, cli_runner):
+def test_check_warns_when_message_index_is_incomplete(cli_workspace: Any, cli_runner: Any) -> None:
     db_path = cli_workspace["db_path"]
     factory = DbFactory(db_path)
     factory.create_conversation(
@@ -234,7 +240,7 @@ def test_check_warns_when_message_index_is_incomplete(cli_workspace, cli_runner)
     assert index_check["detail"] == "messages FTS missing or empty; use --deep to verify full coverage"
 
 
-def test_check_ignores_null_text_messages_in_fts_readiness(cli_workspace, cli_runner):
+def test_check_ignores_null_text_messages_in_fts_readiness(cli_workspace: Any, cli_runner: Any) -> None:
     db_path = cli_workspace["db_path"]
     factory = DbFactory(db_path)
     factory.create_conversation(
@@ -265,7 +271,7 @@ def test_check_ignores_null_text_messages_in_fts_readiness(cli_workspace, cli_ru
 class TestCheckCommand:
     """Tests for polylogue check command."""
 
-    def test_check_clean_database(self, db_path, cli_runner):
+    def test_check_clean_database(self: Any, db_path: Any, cli_runner: Any) -> None:
         """Check command succeeds on clean database with valid data."""
         factory = DbFactory(db_path)
 
@@ -284,7 +290,7 @@ class TestCheckCommand:
         assert result.exit_code == 0
         assert "ok" in result.output.lower() or "✓" in result.output
 
-    def test_check_json_output(self, db_path, cli_runner):
+    def test_check_json_output(self: Any, db_path: Any, cli_runner: Any) -> None:
         """Check --json flag produces valid JSON."""
         factory = DbFactory(db_path)
 
@@ -309,7 +315,7 @@ class TestCheckCommand:
         assert "warning" in data["summary"]
         assert "error" in data["summary"]
 
-    def test_check_runtime_only_skips_archive_health(self, monkeypatch) -> None:
+    def test_check_runtime_only_skips_archive_health(self: Any, monkeypatch: Any) -> None:
         runtime_report = HealthReport(checks=[HealthCheck("runtime_only", VerifyStatus.OK, summary="runtime ok")])
         env = AppEnv(ui=create_ui(True))
         options = CheckCommandOptions(
@@ -350,7 +356,7 @@ class TestCheckCommand:
         assert result.report is runtime_report
         assert result.runtime_report is None
 
-    def test_check_detects_orphan_messages(self, db_path, cli_runner):
+    def test_check_detects_orphan_messages(self: Any, db_path: Any, cli_runner: Any) -> None:
         """Check detects messages without conversations."""
 
         # Disable foreign key constraints temporarily to insert orphan message
@@ -393,7 +399,7 @@ class TestCheckCommand:
         # Summary should show at least one error
         assert data["summary"]["error"] >= 1
 
-    def test_check_verbose_output(self, db_path, cli_runner):
+    def test_check_verbose_output(self: Any, db_path: Any, cli_runner: Any) -> None:
         """Check -v flag increases detail with provider breakdown."""
         factory = DbFactory(db_path)
 
@@ -421,7 +427,7 @@ class TestCheckCommand:
         # (provider_distribution check always has breakdown)
         assert "chatgpt" in result_verbose.output or "claude-ai" in result_verbose.output
 
-    def test_check_detects_empty_conversations(self, db_path, cli_runner):
+    def test_check_detects_empty_conversations(self: Any, db_path: Any, cli_runner: Any) -> None:
         """Check detects conversations with no messages (warning status)."""
 
         # Create a conversation with no messages
@@ -461,7 +467,7 @@ class TestCheckCommand:
         assert empty_check["status"] == "warning"
         assert empty_check["count"] == 1
 
-    def test_check_no_duplicate_conversation_ids(self, db_path, cli_runner):
+    def test_check_no_duplicate_conversation_ids(self: Any, db_path: Any, cli_runner: Any) -> None:
         """Check duplicate_conversations check passes when there are no duplicates."""
         factory = DbFactory(db_path)
 
@@ -491,7 +497,7 @@ class TestCheckCommand:
         assert dup_check["status"] == "ok"
         assert dup_check["count"] == 0  # No duplicates found
 
-    def test_check_detects_fts_sync_issues(self, db_path, cli_runner):
+    def test_check_detects_fts_sync_issues(self: Any, db_path: Any, cli_runner: Any) -> None:
         """Check detects FTS sync issues when FTS table is missing."""
         factory = DbFactory(db_path)
 
@@ -521,7 +527,7 @@ class TestCheckCommand:
         # Should be warning due to missing FTS table
         assert fts_check["status"] == "warning"
 
-    def test_check_plain_output_format(self, db_path, cli_runner):
+    def test_check_plain_output_format(self: Any, db_path: Any, cli_runner: Any) -> None:
         """Check --plain flag produces plain text output without colors."""
         factory = DbFactory(db_path)
 
@@ -540,7 +546,7 @@ class TestCheckCommand:
         assert "[green]" not in result.output
         assert "[red]" not in result.output
 
-    def test_check_summary_counts(self, db_path, cli_runner):
+    def test_check_summary_counts(self: Any, db_path: Any, cli_runner: Any) -> None:
         """Check summary shows correct counts of ok/warning/error checks."""
         factory = DbFactory(db_path)
 
@@ -560,7 +566,7 @@ class TestCheckCommand:
         assert "warnings" in result.output or "warning" in result.output
         assert "errors" in result.output or "error" in result.output
 
-    def test_check_empty_database(self, db_path, cli_runner):
+    def test_check_empty_database(self: Any, db_path: Any, cli_runner: Any) -> None:
         """Check command succeeds on empty database."""
         # Don't create any data - just verify empty DB (db_path fixture ensures DB exists)
 
@@ -570,7 +576,7 @@ class TestCheckCommand:
         # Should show healthy status checks (no integrity_check without --deep)
         assert "OK database" in result.output
 
-    def test_check_sqlite_integrity_check(self, db_path, cli_runner):
+    def test_check_sqlite_integrity_check(self: Any, db_path: Any, cli_runner: Any) -> None:
         """Check includes SQLite integrity check when --deep is passed."""
         factory = DbFactory(db_path)
 
@@ -616,7 +622,7 @@ class TestCheckCommandSupplementary:
     ]
 
     @pytest.mark.parametrize("args,expected_error", INVALID_FLAG_COMBOS)
-    def test_invalid_flag_combinations_rejected(self, cli_workspace, args, expected_error):
+    def test_invalid_flag_combinations_rejected(self: Any, cli_workspace: Any, args: Any, expected_error: Any) -> None:
         """Flag dependencies and value constraints are enforced."""
         from click.testing import CliRunner
 
@@ -629,7 +635,7 @@ class TestCheckCommandSupplementary:
 
     # --- Remaining non-repetitive tests ---
 
-    def test_json_output_with_repair(self, cli_workspace):
+    def test_json_output_with_repair(self: Any, cli_workspace: Any) -> None:
         """--json with --repair includes maintenance results."""
         from click.testing import CliRunner
 
@@ -642,7 +648,7 @@ class TestCheckCommandSupplementary:
         data = envelope.get("result", envelope)
         assert "maintenance" in data
 
-    def test_repair_with_no_issues_shows_message(self, cli_workspace):
+    def test_repair_with_no_issues_shows_message(self: Any, cli_workspace: Any) -> None:
         """When repair finds no issues, should show a maintenance status message."""
         from click.testing import CliRunner
 
@@ -657,7 +663,7 @@ class TestCheckCommandSupplementary:
             or "maintenance" in result.output.lower()
         )
 
-    def test_vacuum_with_repair(self, cli_workspace):
+    def test_vacuum_with_repair(self: Any, cli_workspace: Any) -> None:
         """--vacuum with --repair should attempt VACUUM."""
         from click.testing import CliRunner
 
@@ -668,7 +674,7 @@ class TestCheckCommandSupplementary:
         assert result.exit_code == 0
         assert "VACUUM" in result.output
 
-    def test_json_output_with_repair_and_vacuum_is_machine_safe(self, cli_workspace):
+    def test_json_output_with_repair_and_vacuum_is_machine_safe(self: Any, cli_workspace: Any) -> None:
         """`--json --repair --vacuum` should stay valid JSON."""
         from click.testing import CliRunner
 
@@ -684,7 +690,7 @@ class TestCheckCommandSupplementary:
         assert data["vacuum"]["ok"] is True
         assert data["vacuum"]["preview"] is True
 
-    def test_check_schemas_json_output(self, cli_workspace):
+    def test_check_schemas_json_output(self: Any, cli_workspace: Any) -> None:
         """--schemas adds schema_verification block to JSON output."""
         from click.testing import CliRunner
 
@@ -717,7 +723,7 @@ class TestCheckCommandSupplementary:
         assert data["schema_verification"]["record_limit"] == "all"
         assert data["schema_verification"]["record_offset"] == 0
 
-    def test_check_schemas_forwards_record_chunk_options(self, cli_workspace):
+    def test_check_schemas_forwards_record_chunk_options(self: Any, cli_workspace: Any) -> None:
         """Chunking options are forwarded to verify_raw_corpus."""
         from click.testing import CliRunner
 
@@ -764,7 +770,7 @@ class TestCheckCommandSupplementary:
         assert request.progress_callback is not None
         assert mock_verify.call_args.kwargs["db_path"] == ANY
 
-    def test_check_schemas_forwards_quarantine_flag(self, cli_workspace):
+    def test_check_schemas_forwards_quarantine_flag(self: Any, cli_workspace: Any) -> None:
         """Quarantine option is forwarded to verify_raw_corpus."""
         from click.testing import CliRunner
 
@@ -795,7 +801,7 @@ class TestCheckCommandSupplementary:
         assert request.quarantine_malformed is True
         assert request.progress_callback is not None
 
-    def test_check_proof_json_output(self, cli_workspace):
+    def test_check_proof_json_output(self: Any, cli_workspace: Any) -> None:
         """--proof adds artifact_proof block to JSON output."""
         from click.testing import CliRunner
 
@@ -834,7 +840,7 @@ class TestCheckCommandSupplementary:
         assert data["artifact_proof"]["summary"]["unsupported_parseable_records"] == 1
         assert data["artifact_proof"]["summary"]["package_versions"] == {"v7": 1}
 
-    def test_check_proof_plain_output(self, cli_workspace):
+    def test_check_proof_plain_output(self: Any, cli_workspace: Any) -> None:
         """--proof renders the artifact proof summary in plain output."""
         from click.testing import CliRunner
 
@@ -869,7 +875,7 @@ class TestCheckCommandSupplementary:
         assert "chatgpt: contract_backed=1" in result.output
         assert "packages: v1=1" in result.output
 
-    def test_check_proof_forwards_artifact_scope(self, cli_workspace):
+    def test_check_proof_forwards_artifact_scope(self: Any, cli_workspace: Any) -> None:
         """Artifact provider/limit/offset are forwarded to the proof workflow."""
         from click.testing import CliRunner
 
@@ -904,7 +910,7 @@ class TestCheckCommandSupplementary:
         assert request.record_limit == 25
         assert request.record_offset == 50
 
-    def test_check_artifacts_json_output(self, cli_workspace):
+    def test_check_artifacts_json_output(self: Any, cli_workspace: Any) -> None:
         """--artifacts adds artifact_observations rows to JSON output."""
         from click.testing import CliRunner
 
@@ -966,7 +972,7 @@ class TestCheckCommandSupplementary:
         assert data["artifact_observations"]["count"] == 1
         assert data["artifact_observations"]["items"][0]["support_status"] == "supported_parseable"
 
-    def test_check_cohorts_plain_output(self, cli_workspace):
+    def test_check_cohorts_plain_output(self: Any, cli_workspace: Any) -> None:
         """--cohorts renders durable cohort summaries in plain output."""
         from click.testing import CliRunner
 

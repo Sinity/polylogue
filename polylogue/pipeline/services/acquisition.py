@@ -99,7 +99,8 @@ class AcquisitionService:
                     error=str(exc),
                 )
                 result.counts["errors"] += 1
-                cursor_state["error_count"] = cursor_state.get("error_count", 0) + 1
+                prior_errors = cursor_state.get("error_count", 0)
+                cursor_state["error_count"] = (prior_errors if isinstance(prior_errors, int) else 0) + 1
                 cursor_state["latest_error"] = str(exc)
 
             if cursor_state:
