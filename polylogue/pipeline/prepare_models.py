@@ -15,7 +15,7 @@ from polylogue.storage.store import (
     ConversationRecord,
     MessageRecord,
 )
-from polylogue.types import ConversationId, MessageId
+from polylogue.types import ContentHash, ConversationId, MessageId
 
 if TYPE_CHECKING:
     from polylogue.storage.backends.async_sqlite import SQLiteBackend
@@ -126,7 +126,7 @@ class AttachmentMaterializationPlan:
 class TransformResult:
     bundle: RecordBundle
     materialization_plan: AttachmentMaterializationPlan
-    content_hash: str
+    content_hash: ContentHash
     candidate_cid: ConversationId
     message_id_map: dict[str, MessageId]
 

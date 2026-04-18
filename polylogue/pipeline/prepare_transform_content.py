@@ -2,16 +2,18 @@
 
 from __future__ import annotations
 
+from polylogue.lib.viewport_models import ContentBlock
 from polylogue.schemas.unified import harmonize_parsed_message
-from polylogue.sources.parsers.base import ParsedContentBlock
+from polylogue.sources.parsers.base import ParsedContentBlock, ParsedConversation, ParsedMessage
+from polylogue.types import ContentBlockType
 
 
-def parsed_block_from_harmonized(block) -> ParsedContentBlock | None:
+def parsed_block_from_harmonized(block: ContentBlock) -> ParsedContentBlock | None:
     metadata: dict[str, object] | None = dict(block.raw) if isinstance(block.raw, dict) and block.raw else None
 
     if block.type.name == "TOOL_USE" and block.tool_call is not None:
         return ParsedContentBlock(
-            type="tool_use",
+            type=ContentBlockType.TOOL_USE,
             text=block.text,
             tool_name=block.tool_call.name,
             tool_id=block.tool_call.id,
@@ -24,24 +26,36 @@ def parsed_block_from_harmonized(block) -> ParsedContentBlock | None:
             raw_tool_id = block.raw.get("tool_use_id") or block.raw.get("tool_id")
             if isinstance(raw_tool_id, str) and raw_tool_id:
                 tool_id = raw_tool_id
-        return ParsedContentBlock(type="tool_result", text=block.text, tool_id=tool_id, metadata=metadata)
+        return ParsedContentBlock(
+            type=ContentBlockType.TOOL_RESULT, text=block.text, tool_id=tool_id, metadata=metadata
+        )
     if block.type.name == "CODE":
         if block.language:
             metadata = dict(metadata or {})
             metadata.setdefault("language", block.language)
-        return ParsedContentBlock(type="code", text=block.text, metadata=metadata)
+        return ParsedContentBlock(type=ContentBlockType.CODE, text=block.text, metadata=metadata)
     if block.type.name == "THINKING":
-        return ParsedContentBlock(type="thinking", text=block.text, metadata=metadata)
+        return ParsedContentBlock(type=ContentBlockType.THINKING, text=block.text, metadata=metadata)
     if block.type.name == "IMAGE":
-        return ParsedContentBlock(type="image", text=block.text, media_type=block.mime_type, metadata=metadata)
+        return ParsedContentBlock(
+            type=ContentBlockType.IMAGE,
+            text=block.text,
+            media_type=block.mime_type,
+            metadata=metadata,
+        )
     if block.type.name in {"FILE", "AUDIO", "VIDEO"}:
-        return ParsedContentBlock(type="document", text=block.text, media_type=block.mime_type, metadata=metadata)
+        return ParsedContentBlock(
+            type=ContentBlockType.DOCUMENT,
+            text=block.text,
+            media_type=block.mime_type,
+            metadata=metadata,
+        )
     if block.type.name in {"TEXT", "SYSTEM", "ERROR", "UNKNOWN"}:
-        return ParsedContentBlock(type="text", text=block.text, metadata=metadata)
+        return ParsedContentBlock(type=ContentBlockType.TEXT, text=block.text, metadata=metadata)
     return None
 
 
-def canonicalize_message_content(provider_name: str, message) -> object:
+def canonicalize_message_content(provider_name: str, message: ParsedMessage) -> ParsedMessage:
     harmonized = harmonize_parsed_message(
         provider_name,
         message.provider_meta,
@@ -69,7 +83,7 @@ def canonicalize_message_content(provider_name: str, message) -> object:
     return message.model_copy(update=updates)
 
 
-def canonicalize_conversation_content(convo) -> object:
+def canonicalize_conversation_content(convo: ParsedConversation) -> ParsedConversation:
     messages = [canonicalize_message_content(str(convo.provider_name), message) for message in convo.messages]
     if all(original == updated for original, updated in zip(convo.messages, messages, strict=True)):
         return convo

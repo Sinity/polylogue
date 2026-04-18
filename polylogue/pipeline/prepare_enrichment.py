@@ -7,27 +7,35 @@ from polylogue.pipeline.prepare_models import (
     PrepareCache,
     PreparedBundle,
     RecordBundle,
+    TransformResult,
 )
+from polylogue.sources.parsers.base import ParsedConversation
+from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.state_views import ExistingConversation
 from polylogue.storage.store import AttachmentRecord, ContentBlockRecord, ConversationRecord, MessageRecord
-from polylogue.types import MessageId
+from polylogue.types import ConversationId, MessageId
 
 
 def enrich_bundle_from_db(
-    convo, source_name: str, transform, cache: PrepareCache, *, raw_id: str | None = None
+    convo: ParsedConversation,
+    source_name: str,
+    transform: TransformResult,
+    cache: PrepareCache,
+    *,
+    raw_id: str | None = None,
 ) -> PreparedBundle:
     candidate_cid = transform.candidate_cid
     content_hash = transform.content_hash
 
     existing = cache.existing.get(candidate_cid)
     if existing:
-        cid = existing.conversation_id
+        cid = ConversationId(existing.conversation_id)
         changed = existing.content_hash != content_hash
     else:
         cid = candidate_cid
         changed = False
 
-    parent_conversation_id = None
+    parent_conversation_id: ConversationId | None = None
     if convo.parent_conversation_provider_id:
         candidate_parent = make_conversation_id(convo.provider_name, convo.parent_conversation_provider_id)
         if candidate_parent in cache.known_ids:
@@ -138,7 +146,12 @@ def enrich_bundle_from_db(
     )
 
 
-async def _build_single_cache(backend, convo, candidate_cid, _unused) -> PrepareCache:
+async def _build_single_cache(
+    backend: SQLiteBackend,
+    convo: ParsedConversation,
+    candidate_cid: ConversationId,
+    _unused: object,
+) -> PrepareCache:
     cache = PrepareCache()
 
     async with backend.connection() as conn:
@@ -162,7 +175,7 @@ async def _build_single_cache(backend, convo, candidate_cid, _unused) -> Prepare
             if await cursor.fetchone():
                 cache.known_ids.add(candidate_parent)
 
-    existing_cid = candidate_cid if candidate_cid in cache.known_ids else None
+    existing_cid: ConversationId | None = candidate_cid if candidate_cid in cache.known_ids else None
     if existing_cid:
         async with backend.connection() as conn:
             cursor = await conn.execute(
