@@ -5,9 +5,10 @@ from __future__ import annotations
 import copy
 import gzip
 import json
+from collections.abc import Sequence
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from polylogue.lib.provider_identity import canonical_schema_provider as _canonical_schema_provider
 from polylogue.lib.provider_identity import normalize_provider_token
@@ -114,7 +115,7 @@ class SchemaRegistry:
         self._catalog_cache[provider] = catalog
         return catalog
 
-    def save_package_catalog(self, catalog: SchemaPackageCatalog):
+    def save_package_catalog(self, catalog: SchemaPackageCatalog) -> Path:
         provider_dir = self._provider_dir(catalog.provider)
         provider_dir.mkdir(parents=True, exist_ok=True)
         path = self._catalog_path(catalog.provider)
@@ -166,7 +167,7 @@ class SchemaRegistry:
         if not path.exists():
             self._schema_cache[cache_key] = None
             return None
-        schema = json.loads(gzip.decompress(path.read_bytes()).decode("utf-8"))
+        schema = cast(dict[str, Any], json.loads(gzip.decompress(path.read_bytes()).decode("utf-8")))
         self._schema_cache[cache_key] = schema
         return schema
 
@@ -207,7 +208,7 @@ class SchemaRegistry:
         package: SchemaVersionPackage,
         *,
         element_schemas: dict[str, dict[str, Any]],
-    ):
+    ) -> Path:
         provider_token = str(canonical_schema_provider(package.provider))
         package_dir = self._package_dir(provider_token, package.version)
         elements_dir = package_dir / "elements"
@@ -333,7 +334,7 @@ class SchemaRegistry:
         self.write_schema_version(provider_token, new_version, schema)
         return new_version
 
-    def write_schema_version(self, provider: str, version: str, schema: dict[str, Any]):
+    def write_schema_version(self, provider: str, version: str, schema: dict[str, Any]) -> Path:
         provider_token = str(canonical_schema_provider(provider))
         package, schemas = self._single_element_package(provider_token, version=version, schema=copy.deepcopy(schema))
         catalog = self.load_package_catalog(provider_token) or SchemaPackageCatalog(provider=provider_token)
@@ -365,7 +366,7 @@ class SchemaRegistry:
         config = resolve_provider_config(provider_token)
         units = extract_schema_units_from_payload(
             payload,
-            provider_name=provider_token,
+            provider_name=Provider.from_string(provider_token),
             source_path=source_path,
             raw_id=None,
             observed_at=None,
@@ -484,7 +485,7 @@ class SchemaRegistry:
         self,
         packages: list[SchemaVersionPackage],
         artifact_kind: str,
-        profile_tokens: list[str],
+        profile_tokens: Sequence[str],
         exact_structure_id: str | None,
         bundle_scope: str | None,
         provider: str,

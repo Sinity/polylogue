@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections import Counter
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from polylogue.scenarios import CorpusSpec
 from polylogue.schemas.runtime_registry import SchemaRegistry, canonical_schema_provider
@@ -43,8 +43,9 @@ from polylogue.schemas.synthetic.wire_formats import WireFormat
 
 
 def _sync_selection_patch_surfaces() -> None:
-    _selection.SchemaRegistry = SchemaRegistry
-    _selection.canonical_schema_provider = canonical_schema_provider
+    selection_module = cast(Any, _selection)
+    selection_module.SchemaRegistry = SchemaRegistry
+    selection_module.canonical_schema_provider = canonical_schema_provider
 
 
 class SyntheticCorpus:

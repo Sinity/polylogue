@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 from polylogue.scenarios import CorpusScenario, CorpusSpec, build_corpus_scenarios, build_inferred_corpus_specs
 from polylogue.schemas.audit_models import AuditReport
@@ -19,22 +19,25 @@ from polylogue.schemas.operator_models import (
     SchemaProviderSnapshot,
 )
 from polylogue.schemas.operator_registry import schema_registry
+from polylogue.schemas.packages import SchemaPackageCatalog
+from polylogue.schemas.registry import ClusterManifest
+from polylogue.types import Provider
 
 
-def _registry_catalog(registry, provider: str):
+def _registry_catalog(registry: Any, provider: str) -> SchemaPackageCatalog | None:
     load_catalog = getattr(registry, "load_package_catalog", None)
     if load_catalog is None:
         return None
-    return load_catalog(provider)
+    return cast(SchemaPackageCatalog | None, load_catalog(provider))
 
 
 def _build_inferred_outputs(
     *,
     provider: str,
     package_version: str,
-    manifest=None,
+    manifest: ClusterManifest | None = None,
     sample_count: int = 0,
-    catalog=None,
+    catalog: SchemaPackageCatalog | None = None,
 ) -> tuple[tuple[CorpusSpec, ...], tuple[CorpusScenario, ...]]:
     corpus_specs = build_inferred_corpus_specs(
         provider=provider,
@@ -78,7 +81,8 @@ def infer_schema(request: SchemaInferRequest) -> SchemaInferResult:
             corpus_scenarios=corpus_scenarios if result.success else (),
         )
 
-    config = PROVIDERS.get(request.provider)
+    provider_token = Provider.from_string(request.provider)
+    config = PROVIDERS.get(provider_token)
     if config is None or not config.db_provider_name:
         corpus_specs, corpus_scenarios = _build_inferred_outputs(
             provider=request.provider,
@@ -230,7 +234,8 @@ def promote_schema_cluster(request: SchemaPromoteRequest) -> SchemaPromoteResult
     registry = schema_registry()
     samples: list[dict[str, Any]] | None = None
     if request.with_samples:
-        config = PROVIDERS.get(request.provider)
+        provider_token = Provider.from_string(request.provider)
+        config = PROVIDERS.get(provider_token)
         if config is None:
             raise ValueError(f"Unknown provider: {request.provider}")
         all_samples = (

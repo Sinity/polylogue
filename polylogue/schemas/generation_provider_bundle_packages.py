@@ -11,7 +11,13 @@ from polylogue.schemas.generation_cluster_support import (
     _cluster_profile_tokens,
     _cluster_sort_key,
 )
-from polylogue.schemas.generation_models import GenerationResult, _ProviderBundle, _UnitMembership
+from polylogue.schemas.generation_models import (
+    GenerationResult,
+    _ClusterAccumulator,
+    _PackageAccumulator,
+    _ProviderBundle,
+    _UnitMembership,
+)
 from polylogue.schemas.generation_packages import (
     _element_profile_tokens,
     _membership_observed_window,
@@ -21,6 +27,7 @@ from polylogue.schemas.generation_schema_builder import (
     _apply_schema_metadata,
     _generate_cluster_schema,
 )
+from polylogue.schemas.observation import ProviderConfig
 from polylogue.schemas.packages import (
     SchemaElementManifest,
     SchemaPackageCatalog,
@@ -28,6 +35,7 @@ from polylogue.schemas.packages import (
 )
 from polylogue.schemas.redaction_report import SchemaReport
 from polylogue.schemas.registry import ClusterManifest, SchemaCluster
+from polylogue.types import Provider
 
 
 @dataclass(frozen=True)
@@ -42,12 +50,12 @@ class ProviderCatalogArtifacts:
 
 def build_provider_catalog_artifacts(
     *,
-    provider_token,
-    config,
+    provider_token: Provider,
+    config: ProviderConfig,
     provider: str,
-    clusters: dict[str, object],
+    clusters: dict[str, _ClusterAccumulator],
     memberships: list[_UnitMembership],
-    packages: list[object],
+    packages: list[_PackageAccumulator],
     sample_count: int,
     artifact_counts: dict[str, int],
     orphan_adjunct_counts: dict[str, int],
@@ -202,9 +210,9 @@ def build_provider_catalog_artifacts(
 
 def build_success_provider_bundle(
     *,
-    provider_token,
+    provider_token: Provider,
     sample_count: int,
-    clusters: dict[str, object],
+    clusters: dict[str, _ClusterAccumulator],
     artifact_counts: dict[str, int],
     catalog_artifacts: ProviderCatalogArtifacts,
 ) -> _ProviderBundle:

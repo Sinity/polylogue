@@ -69,6 +69,8 @@ def available_synthetic_providers() -> list[str]:
 
 
 __all__ = [
+    "SchemaRegistry",
     "available_synthetic_providers",
+    "canonical_schema_provider",
     "select_synthetic_schema",
 ]

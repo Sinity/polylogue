@@ -23,7 +23,7 @@ from polylogue.schemas.generation_provider_bundle_packages import (
     build_success_provider_bundle,
 )
 from polylogue.schemas.generation_support import GENSON_AVAILABLE
-from polylogue.schemas.observation import PROVIDERS, resolve_provider_config
+from polylogue.schemas.observation import PROVIDERS, ProviderConfig, resolve_provider_config
 from polylogue.schemas.registry import ClusterManifest, SchemaCluster
 from polylogue.types import Provider
 
@@ -35,7 +35,7 @@ def build_provider_error_bundle(
     sample_count: int = 0,
     cluster_count: int = 0,
     artifact_counts: dict[str, int] | None = None,
-    manifest=None,
+    manifest: ClusterManifest | None = None,
 ) -> _ProviderBundle:
     """Build a provider bundle carrying only an error result."""
     return _ProviderBundle(
@@ -74,7 +74,7 @@ def _build_provider_bundle(
             error="genson not installed",
         )
 
-    config = resolve_provider_config(provider_token)
+    config: ProviderConfig = resolve_provider_config(provider_token)
 
     try:
         clusters, memberships, sample_count, artifact_counts = _collect_cluster_accumulators(
