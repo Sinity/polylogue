@@ -3,25 +3,36 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from pathlib import Path
+from typing import cast
 
 import pytest
 
 from polylogue.config import Source
+from polylogue.lib.branch_type import BranchType
+from polylogue.lib.models import Conversation
+from polylogue.lib.roles import Role
 from polylogue.pipeline.prepare import prepare_records
+from polylogue.pipeline.prepare_models import PersistedConversationResult
 from polylogue.sources import iter_source_conversations
 from polylogue.sources.parsers.base import ParsedConversation, ParsedMessage
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.backends.connection import open_connection
 from polylogue.storage.repository import ConversationRepository
+from polylogue.types import Provider
 from tests.infra.storage_records import ConversationBuilder, db_setup
+
+WorkspaceEnv = dict[str, Path]
+PayloadFactory = Callable[[], object]
+ParsedAssertion = Callable[[ParsedConversation], bool]
 
 
 def _make_repository(db_path: Path) -> ConversationRepository:
     return ConversationRepository(backend=SQLiteBackend(db_path=db_path))
 
 
-def _prepare_fields(result):
+def _prepare_fields(result: PersistedConversationResult) -> tuple[str, dict[str, int], bool]:
     return result.conversation_id, result.counts, result.content_changed
 
 
@@ -31,7 +42,7 @@ def _write_payload(tmp_path: Path, filename: str, payload: object) -> Path:
     return path
 
 
-def _parse_single(source_name: str, source_path: Path):
+def _parse_single(source_name: str, source_path: Path) -> ParsedConversation:
     conversations = list(iter_source_conversations(Source(name=source_name, path=source_path)))
     assert len(conversations) == 1
     return conversations[0]
@@ -109,43 +120,48 @@ def _chatgpt_branch_payload(*, title: str = "Branched Conversation") -> dict[str
 
 
 async def _seed_branch_archive(db_path: Path) -> dict[str, str]:
-    root = await (
-        ConversationBuilder(db_path, "root")
+    root = cast(
+        Conversation,
+        await ConversationBuilder(db_path, "root")
         .provider("codex")
         .title("Root")
         .add_message("root-user", role="user", text="Root")
-        .build()
+        .build(),
     )
-    continuation = await (
-        ConversationBuilder(db_path, "continuation")
+    continuation = cast(
+        Conversation,
+        await ConversationBuilder(db_path, "continuation")
         .provider("codex")
         .title("Continuation")
         .parent_conversation(str(root.id))
         .branch_type("continuation")
         .add_message("cont-user", role="user", text="Continue")
-        .build()
+        .build(),
     )
-    sidechain = await (
-        ConversationBuilder(db_path, "sidechain")
+    sidechain = cast(
+        Conversation,
+        await ConversationBuilder(db_path, "sidechain")
         .provider("claude-code")
         .title("Sidechain")
         .parent_conversation(str(root.id))
         .branch_type("sidechain")
         .add_message("side-user", role="user", text="User")
         .add_message("side-assistant", role="assistant", text="Side answer", provider_meta={"isSidechain": True})
-        .build()
+        .build(),
     )
-    grandchild = await (
-        ConversationBuilder(db_path, "grandchild")
+    grandchild = cast(
+        Conversation,
+        await ConversationBuilder(db_path, "grandchild")
         .provider("codex")
         .title("Grandchild")
         .parent_conversation(str(continuation.id))
         .branch_type("continuation")
         .add_message("grand-user", role="user", text="Grandchild")
-        .build()
+        .build(),
     )
-    branched = await (
-        ConversationBuilder(db_path, "branching")
+    branched = cast(
+        Conversation,
+        await ConversationBuilder(db_path, "branching")
         .provider("chatgpt")
         .title("Branched")
         .add_message("q1", role="user", text="Question", provider_message_id="q1", branch_index=0)
@@ -167,7 +183,7 @@ async def _seed_branch_archive(db_path: Path) -> dict[str, str]:
             parent_message_provider_id="q1",
             branch_index=1,
         )
-        .build()
+        .build(),
     )
     return {
         "root": str(root.id),
@@ -180,7 +196,7 @@ async def _seed_branch_archive(db_path: Path) -> dict[str, str]:
 
 class TestBranchDomainViews:
     @pytest.mark.asyncio
-    async def test_branch_flags_and_message_views_contract(self, workspace_env: Path) -> None:
+    async def test_branch_flags_and_message_views_contract(self, workspace_env: WorkspaceEnv) -> None:
         db_path = db_setup(workspace_env)
         ids = await _seed_branch_archive(db_path)
 
@@ -208,7 +224,7 @@ class TestBranchDomainViews:
 
 class TestBranchRepositoryTraversal:
     @pytest.mark.asyncio
-    async def test_tree_and_filter_contract(self, workspace_env: Path) -> None:
+    async def test_tree_and_filter_contract(self, workspace_env: WorkspaceEnv) -> None:
         db_path = db_setup(workspace_env)
         ids = await _seed_branch_archive(db_path)
 
@@ -237,7 +253,7 @@ class TestBranchRepositoryTraversal:
         assert [str(conv.id) for conv in with_branches] == [ids["branching"]]
 
 
-PARSER_CASES = (
+PARSER_CASES: tuple[tuple[str, str, PayloadFactory, ParsedAssertion], ...] = (
     (
         "codex",
         "codex_child.json",
@@ -271,7 +287,12 @@ class TestBranchParserContracts:
         "source_name,filename,payload_factory,assertion", PARSER_CASES, ids=[case[0] for case in PARSER_CASES]
     )
     def test_source_parser_extracts_branch_metadata(
-        self, tmp_path: Path, source_name: str, filename: str, payload_factory, assertion
+        self,
+        tmp_path: Path,
+        source_name: str,
+        filename: str,
+        payload_factory: PayloadFactory,
+        assertion: ParsedAssertion,
     ) -> None:
         source_path = _write_payload(tmp_path, filename, payload_factory())
         parsed = _parse_single(source_name, source_path)
@@ -280,7 +301,7 @@ class TestBranchParserContracts:
 
 class TestBranchPipelinePersistence:
     @pytest.mark.asyncio
-    async def test_codex_continuation_pipeline_contract(self, workspace_env: Path, tmp_path: Path) -> None:
+    async def test_codex_continuation_pipeline_contract(self, workspace_env: WorkspaceEnv, tmp_path: Path) -> None:
         db_path = db_setup(workspace_env)
         async with _make_repository(db_path) as repo:
             parent_path = _write_payload(
@@ -331,7 +352,7 @@ class TestBranchPipelinePersistence:
         assert child.is_continuation is True
 
     @pytest.mark.asyncio
-    async def test_claude_sidechain_pipeline_contract(self, workspace_env: Path, tmp_path: Path) -> None:
+    async def test_claude_sidechain_pipeline_contract(self, workspace_env: WorkspaceEnv, tmp_path: Path) -> None:
         db_path = db_setup(workspace_env)
         async with _make_repository(db_path) as repo:
             source_path = _write_payload(tmp_path, "claude_code_sidechain.json", _claude_sidechain_payload())
@@ -352,7 +373,9 @@ class TestBranchPipelinePersistence:
 
     @pytest.mark.asyncio
     async def test_chatgpt_branch_pipeline_and_parent_resolution_contract(
-        self, workspace_env: Path, tmp_path: Path
+        self,
+        workspace_env: WorkspaceEnv,
+        tmp_path: Path,
     ) -> None:
         db_path = db_setup(workspace_env)
         async with _make_repository(db_path) as repo:
@@ -379,17 +402,19 @@ class TestBranchPipelinePersistence:
 
     @pytest.mark.asyncio
     async def test_prepare_records_resolves_parent_conversation_and_message_ids(
-        self, workspace_env: Path, tmp_path: Path
+        self,
+        workspace_env: WorkspaceEnv,
+        tmp_path: Path,
     ) -> None:
         db_path = db_setup(workspace_env)
         async with _make_repository(db_path) as repo:
             parent_id, _, _ = _prepare_fields(
                 await prepare_records(
                     ParsedConversation(
-                        provider_name="codex",
+                        provider_name=Provider.CODEX,
                         provider_conversation_id="parent-id",
                         title="Parent Session",
-                        messages=[ParsedMessage(provider_message_id="pm1", role="user", text="Parent message")],
+                        messages=[ParsedMessage(provider_message_id="pm1", role=Role.USER, text="Parent message")],
                     ),
                     source_name="codex",
                     archive_root=tmp_path,
@@ -400,12 +425,12 @@ class TestBranchPipelinePersistence:
             child_id, _, _ = _prepare_fields(
                 await prepare_records(
                     ParsedConversation(
-                        provider_name="codex",
+                        provider_name=Provider.CODEX,
                         provider_conversation_id="child-id",
                         title="Child Session",
-                        messages=[ParsedMessage(provider_message_id="m1", role="user", text="Hello")],
+                        messages=[ParsedMessage(provider_message_id="m1", role=Role.USER, text="Hello")],
                         parent_conversation_provider_id="parent-id",
-                        branch_type="continuation",
+                        branch_type=BranchType.CONTINUATION,
                     ),
                     source_name="codex",
                     archive_root=tmp_path,
@@ -416,21 +441,21 @@ class TestBranchPipelinePersistence:
             branch_id, _, _ = _prepare_fields(
                 await prepare_records(
                     ParsedConversation(
-                        provider_name="chatgpt",
+                        provider_name=Provider.CHATGPT,
                         provider_conversation_id="conv-1",
                         title="Branched Session",
                         messages=[
-                            ParsedMessage(provider_message_id="q1", role="user", text="Question"),
+                            ParsedMessage(provider_message_id="q1", role=Role.USER, text="Question"),
                             ParsedMessage(
                                 provider_message_id="a1",
-                                role="assistant",
+                                role=Role.ASSISTANT,
                                 text="Answer 1",
                                 parent_message_provider_id="q1",
                                 branch_index=0,
                             ),
                             ParsedMessage(
                                 provider_message_id="a2",
-                                role="assistant",
+                                role=Role.ASSISTANT,
                                 text="Answer 2",
                                 parent_message_provider_id="q1",
                                 branch_index=1,

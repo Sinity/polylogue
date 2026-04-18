@@ -3,8 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from pathlib import Path
 
-from polylogue.lib.messages import MessageCollection
-from polylogue.lib.models import Conversation, Message
+from polylogue.lib.models import Conversation
 from polylogue.lib.session_profile import build_session_analysis, build_session_profile
 from polylogue.storage.session_product_profiles import (
     assistant_turn_texts,
@@ -12,50 +11,50 @@ from polylogue.storage.session_product_profiles import (
     session_enrichment_payload,
     user_turn_texts,
 )
+from polylogue.types import Provider
+from tests.infra.builders import make_conv, make_msg
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 APP_PATH = REPO_ROOT / "polylogue" / "facade.py"
 
 
 def _enrichment_conversation() -> Conversation:
-    return Conversation(
+    return make_conv(
         id="conv-enrichment",
-        provider="claude-code",
+        provider=Provider.CLAUDE_CODE,
         title="Enrichment",
         created_at=datetime(2026, 4, 2, 10, 0, tzinfo=timezone.utc),
         updated_at=datetime(2026, 4, 2, 10, 3, tzinfo=timezone.utc),
-        messages=MessageCollection(
-            messages=[
-                Message(
-                    id="u1",
-                    role="user",
-                    provider="claude-code",
-                    text=f"The tests failed with traceback in {APP_PATH}. Please fix it.",
-                    timestamp=datetime(2026, 4, 2, 10, 0, tzinfo=timezone.utc),
-                ),
-                Message(
-                    id="a1",
-                    role="assistant",
-                    provider="claude-code",
-                    text="I inspected app.py and ran pytest.",
-                    timestamp=datetime(2026, 4, 2, 10, 1, tzinfo=timezone.utc),
-                    content_blocks=[
-                        {
-                            "type": "tool_use",
-                            "tool_name": "Read",
-                            "tool_input": {"file_path": str(APP_PATH)},
-                        }
-                    ],
-                ),
-                Message(
-                    id="a2",
-                    role="assistant",
-                    provider="claude-code",
-                    text="Patched it and reran pytest successfully.",
-                    timestamp=datetime(2026, 4, 2, 10, 2, tzinfo=timezone.utc),
-                ),
-            ]
-        ),
+        messages=[
+            make_msg(
+                id="u1",
+                role="user",
+                provider=Provider.CLAUDE_CODE,
+                text=f"The tests failed with traceback in {APP_PATH}. Please fix it.",
+                timestamp=datetime(2026, 4, 2, 10, 0, tzinfo=timezone.utc),
+            ),
+            make_msg(
+                id="a1",
+                role="assistant",
+                provider=Provider.CLAUDE_CODE,
+                text="I inspected app.py and ran pytest.",
+                timestamp=datetime(2026, 4, 2, 10, 1, tzinfo=timezone.utc),
+                content_blocks=[
+                    {
+                        "type": "tool_use",
+                        "tool_name": "Read",
+                        "tool_input": {"file_path": str(APP_PATH)},
+                    }
+                ],
+            ),
+            make_msg(
+                id="a2",
+                role="assistant",
+                provider=Provider.CLAUDE_CODE,
+                text="Patched it and reran pytest successfully.",
+                timestamp=datetime(2026, 4, 2, 10, 2, tzinfo=timezone.utc),
+            ),
+        ],
     )
 
 
@@ -80,7 +79,9 @@ def test_session_enrichment_payload_reuses_text_band_outputs() -> None:
         "touched_paths": 1,
         "repo_names": 1,
     }
-    assert tuple(payload["support_signals"]) == (
+    support_signals = payload["support_signals"]
+    assert isinstance(support_signals, list)
+    assert tuple(support_signals) == (
         "user_turns",
         "action_events",
         "touched_paths",

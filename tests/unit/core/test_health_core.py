@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib
 import sqlite3
+from collections.abc import Mapping
 from pathlib import Path
 from unittest.mock import patch
 
@@ -92,7 +93,11 @@ def test_health_check_dataclass_contract(name: str, status_name: str, detail: st
         ),
     ],
 )
-def test_run_health_core_contract(cli_workspace, deep: bool, expected_checks: set[str]) -> None:
+def test_run_health_core_contract(
+    cli_workspace: Mapping[str, Path],
+    deep: bool,
+    expected_checks: set[str],
+) -> None:
     from polylogue.config import get_config
     from polylogue.health import run_archive_health
 
@@ -112,7 +117,7 @@ def test_run_health_core_contract(cli_workspace, deep: bool, expected_checks: se
     ],
 )
 def test_run_health_embedding_status_contract(
-    cli_workspace,
+    cli_workspace: Mapping[str, Path],
     embedded_conversations: int,
     embedded_messages: int,
     pending_conversations: int,
@@ -230,7 +235,7 @@ def test_run_health_path_contracts(tmp_path: Path, path_name: str, missing: bool
     assert check.status == (VerifyStatus.WARNING if missing else VerifyStatus.OK)
 
 
-def test_run_health_includes_source_checks(cli_workspace) -> None:
+def test_run_health_includes_source_checks(cli_workspace: Mapping[str, Path]) -> None:
     from polylogue.config import get_config
     from polylogue.health import run_archive_health
 
@@ -270,7 +275,10 @@ def test_run_archive_health_reports_busy_archive_with_operator_message(tmp_path:
     )
 
 
-def test_run_archive_health_reports_legacy_inline_raw_layout(tmp_path: Path, monkeypatch) -> None:
+def test_run_archive_health_reports_legacy_inline_raw_layout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     import polylogue.paths
     from polylogue.config import get_config
     from polylogue.health import VerifyStatus, run_archive_health
@@ -319,7 +327,7 @@ def test_run_archive_health_reports_legacy_inline_raw_layout(tmp_path: Path, mon
 
 
 @pytest.mark.parametrize("deep", [False, True])
-def test_get_health_contract(cli_workspace, deep: bool) -> None:
+def test_get_health_contract(cli_workspace: Mapping[str, Path], deep: bool) -> None:
     from polylogue.config import get_config
     from polylogue.health import get_health
 

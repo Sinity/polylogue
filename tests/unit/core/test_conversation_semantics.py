@@ -7,8 +7,10 @@ contracts built on top of those primitives.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Any
 
 import pytest
 
@@ -16,6 +18,7 @@ from polylogue.lib.messages import MessageCollection
 from polylogue.lib.models import Attachment, Conversation, DialoguePair, Message
 from polylogue.lib.pricing import harmonize_session_cost
 from tests.infra.assertions import assert_contains_all, assert_not_contains_any
+from tests.infra.builders import make_conv, make_msg
 
 
 @dataclass(frozen=True)
@@ -39,27 +42,27 @@ class RenderCase:
 @pytest.fixture
 def substantive_pair() -> list[Message]:
     return [
-        Message(id="u1", role="user", text="What is machine learning?"),
-        Message(id="a1", role="assistant", text="Machine learning is a subset of AI."),
+        make_msg(id="u1", role="user", text="What is machine learning?"),
+        make_msg(id="a1", role="assistant", text="Machine learning is a subset of AI."),
     ]
 
 
 @pytest.fixture
 def conversation_with_metadata() -> Conversation:
     messages = [
-        Message(id="u1", role="user", text="Can you help with this?", provider_meta={"costUSD": 0.001}),
-        Message(
+        make_msg(id="u1", role="user", text="Can you help with this?", provider_meta={"costUSD": 0.001}),
+        make_msg(
             id="a1", role="assistant", text="Yes, I can help.", provider_meta={"costUSD": 0.005, "durationMs": 2500}
         ),
-        Message(id="u2", role="user", text="Great, now what?", provider_meta={"costUSD": 0.001}),
-        Message(
+        make_msg(id="u2", role="user", text="Great, now what?", provider_meta={"costUSD": 0.001}),
+        make_msg(
             id="a2",
             role="assistant",
             text="Let me explain further.",
             provider_meta={"costUSD": 0.008, "durationMs": 3000},
         ),
     ]
-    return Conversation(
+    return make_conv(
         id="complex-conv",
         provider="claude-ai",
         title="Complex Conversation",
@@ -73,37 +76,37 @@ def conversation_with_metadata() -> Conversation:
 @pytest.fixture
 def dialogue_noise_mix() -> Conversation:
     messages = [
-        Message(id="u1", role="user", text="Actual question with substance"),
-        Message(id="a1", role="assistant", text="Actual answer with substance"),
-        Message(id="t1", role="tool", text='{"ok": true}'),
-        Message(id="s1", role="system", text="System prompt"),
-        Message(
+        make_msg(id="u1", role="user", text="Actual question with substance"),
+        make_msg(id="a1", role="assistant", text="Actual answer with substance"),
+        make_msg(id="t1", role="tool", text='{"ok": true}'),
+        make_msg(id="s1", role="system", text="System prompt"),
+        make_msg(
             id="a2",
             role="assistant",
             text="<thinking>Reasoning trace</thinking>",
             provider_meta={"content_blocks": [{"type": "thinking", "text": "Reasoning trace"}]},
         ),
-        Message(
+        make_msg(
             id="a3",
             role="assistant",
             text="Calling tool",
             provider_meta={"content_blocks": [{"type": "tool_use"}]},
         ),
     ]
-    return Conversation(id="mixed", provider="claude-ai", messages=MessageCollection(messages=messages))
+    return make_conv(id="mixed", provider="claude-ai", messages=MessageCollection(messages=messages))
 
 
 @pytest.fixture
 def projection_conversation() -> Conversation:
-    return Conversation(
+    return make_conv(
         id="projection",
         provider="test",
         messages=MessageCollection(
             messages=[
-                Message(id="u1", role="user", text="First question here"),
-                Message(id="a1", role="assistant", text="First answer here"),
-                Message(id="u2", role="user", text="Second question here"),
-                Message(id="a2", role="assistant", text="Second answer here"),
+                make_msg(id="u1", role="user", text="First question here"),
+                make_msg(id="a1", role="assistant", text="First answer here"),
+                make_msg(id="u2", role="user", text="Second question here"),
+                make_msg(id="a2", role="assistant", text="Second answer here"),
             ]
         ),
     )
@@ -118,9 +121,15 @@ class TestDialoguePairContracts:
             ("user", "system", False, "assistant message must have assistant role"),
         ],
     )
-    def test_dialogue_pair_role_contract(self, user_role, assistant_role, should_pass, error):
-        user = Message(id="u1", role=user_role, text="Question")
-        assistant = Message(id="a1", role=assistant_role, text="Answer")
+    def test_dialogue_pair_role_contract(
+        self: Any,
+        user_role: str,
+        assistant_role: str,
+        should_pass: bool,
+        error: str | None,
+    ) -> None:
+        user = make_msg(id="u1", role=user_role, text="Question")
+        assistant = make_msg(id="a1", role=assistant_role, text="Answer")
         if should_pass:
             pair = DialoguePair(user=user, assistant=assistant)
             assert pair.user.id == "u1"
@@ -129,10 +138,10 @@ class TestDialoguePairContracts:
             with pytest.raises(ValueError, match=error):
                 DialoguePair(user=user, assistant=assistant)
 
-    def test_dialogue_pair_exchange_and_semantic_payload(self):
+    def test_dialogue_pair_exchange_and_semantic_payload(self: Any) -> None:
         pair = DialoguePair(
-            user=Message(id="u1", role="user", text="Hard problem"),
-            assistant=Message(
+            user=make_msg(id="u1", role="user", text="Hard problem"),
+            assistant=make_msg(
                 id="a1",
                 role="assistant",
                 text="<thinking>Complex reasoning</thinking>\nAnswer",
@@ -160,8 +169,13 @@ class TestMessageSemanticProjection:
         ],
         ids=["content_blocks", "multiple_blocks", "gemini", "chatgpt", "non_thinking"],
     )
-    def test_extract_thinking_projection_contract(self, provider_meta, text, expected):
-        msg = Message(id="m1", role="assistant", text=text, provider_meta=provider_meta)
+    def test_extract_thinking_projection_contract(
+        self: Any,
+        provider_meta: dict[str, object] | None,
+        text: str,
+        expected: str | None,
+    ) -> None:
+        msg = make_msg(id="m1", role="assistant", text=text, provider_meta=provider_meta)
         assert msg.extract_thinking() == expected
 
     @pytest.mark.parametrize(
@@ -174,12 +188,17 @@ class TestMessageSemanticProjection:
             (None, None, None),
         ],
     )
-    def test_message_metadata_projection_contract(self, provider_meta, expected_cost, expected_duration):
-        msg = Message(id="m1", role="assistant", text="Response", provider_meta=provider_meta)
+    def test_message_metadata_projection_contract(
+        self: Any,
+        provider_meta: dict[str, object] | None,
+        expected_cost: float | None,
+        expected_duration: int | None,
+    ) -> None:
+        msg = make_msg(id="m1", role="assistant", text="Response", provider_meta=provider_meta)
         assert msg.cost_usd == expected_cost
         assert msg.duration_ms == expected_duration
 
-    def test_message_attachments_and_classification_contract(self):
+    def test_message_attachments_and_classification_contract(self: Any) -> None:
         attachment = Attachment(
             id="att-1",
             name="doc.pdf",
@@ -187,39 +206,41 @@ class TestMessageSemanticProjection:
             size_bytes=5000,
             provider_meta={"uploaded_by": "user"},
         )
-        thinking = Message(
+        thinking = make_msg(
             id="m-thinking",
             role="assistant",
             text="<thinking>...</thinking>",
             provider_meta={"content_blocks": [{"type": "thinking", "text": "..."}]},
         )
-        tool = Message(
+        tool = make_msg(
             id="m-tool",
             role="assistant",
             text="Calling tool",
             provider_meta={"content_blocks": [{"type": "tool_use"}]},
         )
-        msg = Message(id="m-user", role="user", text="Review this", attachments=[attachment])
+        msg = make_msg(id="m-user", role="user", text="Review this", attachments=[attachment])
 
+        assert msg.attachments[0].provider_meta is not None
+        assert msg.attachments[0].provider_meta is not None
         assert msg.attachments[0].provider_meta["uploaded_by"] == "user"
         assert thinking.is_thinking is True
         assert tool.is_tool_use is True
 
-    def test_context_wrappers_are_context_dumps(self):
-        msg = Message(
+    def test_context_wrappers_are_context_dumps(self: Any) -> None:
+        msg = make_msg(
             id="m1",
             role="user",
             text="<environment_context>\n<cwd>/workspace/polylogue</cwd>\n</environment_context>",
         )
         assert msg.is_context_dump is True
 
-    def test_multiline_context_markers_are_context_dumps(self):
-        contents_dump = Message(
+    def test_multiline_context_markers_are_context_dumps(self: Any) -> None:
+        contents_dump = make_msg(
             id="m2",
             role="user",
             text="Please inspect this.\nContents of /workspace/polylogue/README.md:\nhello",
         )
-        file_path_dump = Message(
+        file_path_dump = make_msg(
             id="m3",
             role="user",
             text="Captured payload:\n<file path=/workspace/polylogue/README.md>\nhello",
@@ -230,7 +251,7 @@ class TestMessageSemanticProjection:
 
 
 class TestConversationMetadataAndAggregation:
-    def test_title_summary_tags_and_display_contract(self, conversation_with_metadata):
+    def test_title_summary_tags_and_display_contract(self: Any, conversation_with_metadata: Conversation) -> None:
         assert conversation_with_metadata.user_title is None
         assert conversation_with_metadata.display_title == "Complex Conversation"
         assert conversation_with_metadata.summary == "A test conversation"
@@ -242,25 +263,25 @@ class TestConversationMetadataAndAggregation:
         assert titled.user_title == "User Override"
         assert titled.display_title == "User Override"
 
-        fallback = Conversation(id="abc123def456", provider="test", messages=MessageCollection(messages=[]))
+        fallback = make_conv(id="abc123def456", provider="test", title=None, messages=MessageCollection(messages=[]))
         assert fallback.display_title == "abc123de"
         assert fallback.tags == []
 
-    def test_cost_duration_branch_and_equality_contract(self, conversation_with_metadata):
+    def test_cost_duration_branch_and_equality_contract(self: Any, conversation_with_metadata: Conversation) -> None:
         assert conversation_with_metadata.total_cost_usd == 0.015
         assert conversation_with_metadata.total_duration_ms == 5500
 
-        branched = Conversation(
+        branched = make_conv(
             id="branchy",
             provider="test",
             messages=MessageCollection(
                 messages=[
-                    Message(id="u1", role="user", text="First question?"),
-                    Message(id="a1", role="assistant", text="First answer."),
-                    Message(id="u2", role="user", text="Second question?"),
-                    Message(id="a2", role="assistant", text="Second answer."),
-                    Message(id="u3", role="user", text="Follow-up?"),
-                    Message(id="a3", role="assistant", text="Follow-up answer."),
+                    make_msg(id="u1", role="user", text="First question?"),
+                    make_msg(id="a1", role="assistant", text="First answer."),
+                    make_msg(id="u2", role="user", text="Second question?"),
+                    make_msg(id="a2", role="assistant", text="Second answer."),
+                    make_msg(id="u3", role="user", text="Follow-up?"),
+                    make_msg(id="a3", role="assistant", text="Follow-up answer."),
                 ]
             ),
         )
@@ -268,14 +289,14 @@ class TestConversationMetadataAndAggregation:
         assert branched.assistant_message_count == 3
         assert conversation_with_metadata.model_copy() == conversation_with_metadata
 
-    def test_cost_duration_fall_back_to_conversation_provider_meta(self):
-        conversation = Conversation(
+    def test_cost_duration_fall_back_to_conversation_provider_meta(self: Any) -> None:
+        conversation = make_conv(
             id="claude-code-session",
             provider="claude-code",
             messages=MessageCollection(
                 messages=[
-                    Message(id="u1", role="user", text="Question"),
-                    Message(id="a1", role="assistant", text="Answer"),
+                    make_msg(id="u1", role="user", text="Question"),
+                    make_msg(id="a1", role="assistant", text="Answer"),
                 ]
             ),
             provider_meta={"total_cost_usd": "0.75", "total_duration_ms": "3200"},
@@ -290,10 +311,10 @@ VIEW_CASES = [
     ViewCase(
         name="dialogue_only",
         messages=[
-            Message(id="u1", role="user", text="Question one with enough detail"),
-            Message(id="a1", role="assistant", text="Answer one with enough detail"),
-            Message(id="s1", role="system", text="System prompt"),
-            Message(id="t1", role="tool", text="tool"),
+            make_msg(id="u1", role="user", text="Question one with enough detail"),
+            make_msg(id="a1", role="assistant", text="Answer one with enough detail"),
+            make_msg(id="s1", role="system", text="System prompt"),
+            make_msg(id="t1", role="tool", text="tool"),
         ],
         view="dialogue_only",
         expected_ids=("u1", "a1"),
@@ -301,9 +322,9 @@ VIEW_CASES = [
     ViewCase(
         name="assistant_only",
         messages=[
-            Message(id="u1", role="user", text="Question one with enough detail"),
-            Message(id="a1", role="assistant", text="Answer one with enough detail"),
-            Message(id="a2", role="assistant", text="Answer two with enough detail"),
+            make_msg(id="u1", role="user", text="Question one with enough detail"),
+            make_msg(id="a1", role="assistant", text="Answer one with enough detail"),
+            make_msg(id="a2", role="assistant", text="Answer two with enough detail"),
         ],
         view="assistant_only",
         expected_ids=("a1", "a2"),
@@ -311,10 +332,10 @@ VIEW_CASES = [
     ViewCase(
         name="without_noise",
         messages=[
-            Message(id="u1", role="user", text="Question one with enough detail"),
-            Message(id="a1", role="assistant", text="Answer one with enough detail"),
-            Message(id="s1", role="system", text="System prompt"),
-            Message(id="t1", role="tool", text="Tool result"),
+            make_msg(id="u1", role="user", text="Question one with enough detail"),
+            make_msg(id="a1", role="assistant", text="Answer one with enough detail"),
+            make_msg(id="s1", role="system", text="System prompt"),
+            make_msg(id="t1", role="tool", text="Tool result"),
         ],
         view="without_noise",
         expected_ids=("u1", "a1"),
@@ -322,15 +343,15 @@ VIEW_CASES = [
     ViewCase(
         name="substantive_only",
         messages=[
-            Message(id="u1", role="user", text="Question one with enough detail"),
-            Message(id="a1", role="assistant", text="Answer one with enough detail"),
-            Message(
+            make_msg(id="u1", role="user", text="Question one with enough detail"),
+            make_msg(id="a1", role="assistant", text="Answer one with enough detail"),
+            make_msg(
                 id="a2",
                 role="assistant",
                 text="<thinking>Reasoning</thinking>",
                 provider_meta={"content_blocks": [{"type": "thinking", "text": "Reasoning"}]},
             ),
-            Message(id="t1", role="tool", text="Tool result"),
+            make_msg(id="t1", role="tool", text="Tool result"),
         ],
         view="substantive_only",
         expected_ids=("u1", "a1"),
@@ -340,12 +361,12 @@ VIEW_CASES = [
 
 class TestConversationViewsAndIteration:
     @pytest.mark.parametrize("case", VIEW_CASES, ids=lambda case: case.name)
-    def test_view_projection_contract(self, case: ViewCase):
-        conversation = Conversation(id="c1", provider="test", messages=MessageCollection(messages=case.messages))
+    def test_view_projection_contract(self: Any, case: ViewCase) -> None:
+        conversation = make_conv(id="c1", provider="test", messages=MessageCollection(messages=case.messages))
         projected = getattr(conversation, case.view)()
         assert tuple(message.id for message in projected.messages) == case.expected_ids
 
-    def test_iterators_share_projection_contract(self, dialogue_noise_mix):
+    def test_iterators_share_projection_contract(self: Any, dialogue_noise_mix: Conversation) -> None:
         assert [message.id for message in dialogue_noise_mix.iter_dialogue()] == ["u1", "a1", "a2", "a3"]
         assert [message.id for message in dialogue_noise_mix.iter_substantive()] == ["u1", "a1"]
         assert list(dialogue_noise_mix.iter_thinking()) == ["Reasoning trace"]
@@ -355,46 +376,50 @@ class TestConversationViewsAndIteration:
         [
             (
                 [
-                    Message(id="u1", role="user", text="First question here"),
-                    Message(id="a1", role="assistant", text="First answer here"),
-                    Message(id="u2", role="user", text="Second question here"),
-                    Message(id="a2", role="assistant", text="Second answer here"),
+                    make_msg(id="u1", role="user", text="First question here"),
+                    make_msg(id="a1", role="assistant", text="First answer here"),
+                    make_msg(id="u2", role="user", text="Second question here"),
+                    make_msg(id="a2", role="assistant", text="Second answer here"),
                 ],
                 [("u1", "a1"), ("u2", "a2")],
             ),
             (
                 [
-                    Message(id="u1", role="user", text="First question here"),
-                    Message(id="a1", role="assistant", text="First answer here"),
-                    Message(id="u2", role="user", text="Second question orphaned no reply"),
+                    make_msg(id="u1", role="user", text="First question here"),
+                    make_msg(id="a1", role="assistant", text="First answer here"),
+                    make_msg(id="u2", role="user", text="Second question orphaned no reply"),
                 ],
                 [("u1", "a1")],
             ),
             (
                 [
-                    Message(id="a1", role="assistant", text="assistant substantive answer"),
-                    Message(id="u1", role="user", text="user substantive question"),
-                    Message(id="a2", role="assistant", text="assistant substantive reply"),
+                    make_msg(id="a1", role="assistant", text="assistant substantive answer"),
+                    make_msg(id="u1", role="user", text="user substantive question"),
+                    make_msg(id="a2", role="assistant", text="assistant substantive reply"),
                 ],
                 [("u1", "a2")],
             ),
         ],
         ids=["paired", "orphan_user", "out_of_order"],
     )
-    def test_iter_pairs_contract(self, messages, expected_pairs):
-        conversation = Conversation(id="c1", provider="test", messages=MessageCollection(messages=messages))
+    def test_iter_pairs_contract(
+        self: Any,
+        messages: list[Message],
+        expected_pairs: list[tuple[str, str]],
+    ) -> None:
+        conversation = make_conv(id="c1", provider="test", messages=MessageCollection(messages=messages))
         assert [(pair.user.id, pair.assistant.id) for pair in conversation.iter_pairs()] == expected_pairs
 
-    def test_iter_branches_contract(self):
-        conversation = Conversation(
+    def test_iter_branches_contract(self: Any) -> None:
+        conversation = make_conv(
             id="c1",
             provider="claude-ai",
             messages=MessageCollection(
                 messages=[
-                    Message(id="m1", role="assistant", text="root", parent_id=None, branch_index=0),
-                    Message(id="m3", role="assistant", text="branch-2", parent_id="m1", branch_index=2),
-                    Message(id="m2", role="assistant", text="branch-1", parent_id="m1", branch_index=1),
-                    Message(id="m4", role="assistant", text="single-child", parent_id="m2", branch_index=0),
+                    make_msg(id="m1", role="assistant", text="root", parent_id=None, branch_index=0),
+                    make_msg(id="m3", role="assistant", text="branch-2", parent_id="m1", branch_index=2),
+                    make_msg(id="m2", role="assistant", text="branch-1", parent_id="m1", branch_index=1),
+                    make_msg(id="m4", role="assistant", text="single-child", parent_id="m2", branch_index=0),
                 ]
             ),
         )
@@ -405,7 +430,7 @@ class TestConversationViewsAndIteration:
 
 
 class TestConversationProjectionContracts:
-    def test_projection_count_and_execute_contract(self, projection_conversation):
+    def test_projection_count_and_execute_contract(self: Any, projection_conversation: Conversation) -> None:
         projection = projection_conversation.project()
         assert projection.count() == 4
         assert [message.id for message in projection.to_list()] == ["u1", "a1", "u2", "a2"]
@@ -422,49 +447,54 @@ class TestConversationProjectionContracts:
             (lambda p: p.user_messages(), ["u1", "u2"]),
         ],
     )
-    def test_projection_window_contract_matrix(self, projection_conversation, projector, expected_ids):
+    def test_projection_window_contract_matrix(
+        self: Any,
+        projection_conversation: Conversation,
+        projector: Callable[[Any], Any],
+        expected_ids: list[str],
+    ) -> None:
         projection = projector(projection_conversation.project())
         assert [message.id for message in projection.to_list()] == expected_ids
 
 
 class TestConversationRendering:
     @pytest.fixture
-    def render_cases(self):
-        unicode_conv = Conversation(
+    def render_cases(self: Any) -> list[RenderCase]:
+        unicode_conv = make_conv(
             id="unicode",
             provider="test",
             messages=MessageCollection(
                 messages=[
-                    Message(id="u1", role="user", text="What's the meaning of 🎯?"),
-                    Message(id="a1", role="assistant", text="It means 目的 in Japanese."),
+                    make_msg(id="u1", role="user", text="What's the meaning of 🎯?"),
+                    make_msg(id="a1", role="assistant", text="It means 目的 in Japanese."),
                 ]
             ),
         )
-        attachment_conv = Conversation(
+        attachment_conv = make_conv(
             id="attachments",
             provider="test",
             messages=MessageCollection(
                 messages=[
-                    Message(
+                    make_msg(
                         id="u1",
                         role="user",
                         text="Here's the document",
                         attachments=[Attachment(id="att1", name="doc.pdf")],
                     ),
-                    Message(id="a1", role="assistant", text="I'll review it"),
+                    make_msg(id="a1", role="assistant", text="I'll review it"),
                 ]
             ),
         )
         return [
             RenderCase(
                 name="to_text_default",
-                conversation=Conversation(
+                conversation=make_conv(
                     id="basic",
                     provider="test",
                     messages=MessageCollection(
                         messages=[
-                            Message(id="u1", role="user", text="Hello"),
-                            Message(id="a1", role="assistant", text="Hi there"),
+                            make_msg(id="u1", role="user", text="Hello"),
+                            make_msg(id="a1", role="assistant", text="Hi there"),
                         ]
                     ),
                 ),
@@ -473,13 +503,13 @@ class TestConversationRendering:
             ),
             RenderCase(
                 name="to_text_without_roles",
-                conversation=Conversation(
+                conversation=make_conv(
                     id="basic-no-role",
                     provider="test",
                     messages=MessageCollection(
                         messages=[
-                            Message(id="u1", role="user", text="Q"),
-                            Message(id="a1", role="assistant", text="A"),
+                            make_msg(id="u1", role="user", text="Q"),
+                            make_msg(id="a1", role="assistant", text="A"),
                         ]
                     ),
                 ),
@@ -490,15 +520,15 @@ class TestConversationRendering:
             ),
             RenderCase(
                 name="to_clean_text_filters_noise",
-                conversation=Conversation(
+                conversation=make_conv(
                     id="clean",
                     provider="test",
                     messages=MessageCollection(
                         messages=[
-                            Message(id="u1", role="user", text="Important question with detail"),
-                            Message(id="s1", role="system", text="System instructions"),
-                            Message(id="a1", role="assistant", text="Important answer with detail"),
-                            Message(id="t1", role="tool", text="Tool output"),
+                            make_msg(id="u1", role="user", text="Important question with detail"),
+                            make_msg(id="s1", role="system", text="System instructions"),
+                            make_msg(id="a1", role="assistant", text="Important answer with detail"),
+                            make_msg(id="t1", role="tool", text="Tool output"),
                         ]
                     ),
                 ),
@@ -516,12 +546,12 @@ class TestConversationRendering:
         ]
 
     @pytest.mark.parametrize("include_empty", [True, False])
-    def test_empty_conversation_rendering_contract(self, include_empty):
-        conversation = Conversation(id="empty", provider="test", messages=MessageCollection(messages=[]))
+    def test_empty_conversation_rendering_contract(self: Any, include_empty: bool) -> None:
+        conversation = make_conv(id="empty", provider="test", messages=MessageCollection(messages=[]))
         assert conversation.to_text() == ""
         assert conversation.to_clean_text() == ""
 
-    def test_render_contract_matrix(self, render_cases):
+    def test_render_contract_matrix(self: Any, render_cases: list[RenderCase]) -> None:
         for case in render_cases:
             rendered = getattr(case.conversation, case.method)(**(case.kwargs or {}))
             assert_contains_all(rendered, *case.expected)

@@ -147,8 +147,7 @@ class TestGeminiMessageTextContent:
         assert traces[0].text == "Thinking..."
 
     def test_role_none_defaults_to_unknown(self: Any) -> None:
-        msg = GeminiMessage(text="hi", role="user")
-        msg.role = None
+        msg = GeminiMessage(text="hi", role="user").model_copy(update={"role": None})
         assert msg.role_normalized == "unknown"
 
 
@@ -244,7 +243,7 @@ class TestClaudeCodeRecordTextContent2:
 
     def test_top_level_content_field_for_summary_records(self: Any) -> None:
         """Summary/system records with top-level content field return it as text."""
-        record = ClaudeCodeRecord(type="summary", content="Compacted conversation context")
+        record = ClaudeCodeRecord.model_validate({"type": "summary", "content": "Compacted conversation context"})
         assert record.text_content == "Compacted conversation context"
 
 

@@ -326,12 +326,13 @@ class TestGenerateSchemaFromSamples:
         # Check for at least some semantic annotations
         has_semantic = False
 
-        def check_schema(s: dict, depth: int = 0) -> bool:
+        def check_schema(s: dict[str, object], depth: int = 0) -> bool:
             nonlocal has_semantic
             if "x-polylogue-semantic-role" in s:
                 has_semantic = True
-            if "properties" in s:
-                for prop_schema in s["properties"].values():
+            properties = s.get("properties")
+            if isinstance(properties, dict):
+                for prop_schema in properties.values():
                     if isinstance(prop_schema, dict):
                         check_schema(prop_schema, depth + 1)
             if "items" in s and isinstance(s["items"], dict):
@@ -559,7 +560,7 @@ class TestFieldStatsCollection:
             {"role": "user"},
             {"role": "assistant"},
         ]
-        conv_ids = ["conv-1", "conv-1"]
+        conv_ids: list[str | None] = ["conv-1", "conv-1"]
         stats = _collect_field_stats(samples, conversation_ids=conv_ids)
         role_stats = stats["$.role"]
         # Both values should map to conv-1
@@ -607,7 +608,7 @@ class TestFieldStatsCollection:
 # =============================================================================
 
 
-def _load_schema(provider: str) -> dict | None:
+def _load_schema(provider: str) -> dict[str, object] | None:
     """Load a packaged provider schema, returning None if absent."""
     try:
         from polylogue.schemas.registry import SCHEMA_DIR, SchemaRegistry
@@ -625,7 +626,10 @@ def _load_schema(provider: str) -> dict | None:
         return None
 
 
-def _find_annotations(schema: dict, prefix: str = "x-polylogue-") -> dict[str, list[tuple[str, Any]]]:
+def _find_annotations(
+    schema: dict[str, object],
+    prefix: str = "x-polylogue-",
+) -> dict[str, list[tuple[str, Any]]]:
     """Walk the schema tree and collect all x-polylogue-* annotations by key."""
     result: dict[str, list[tuple[str, Any]]] = {}
 
@@ -646,19 +650,26 @@ def _find_annotations(schema: dict, prefix: str = "x-polylogue-") -> dict[str, l
     return result
 
 
-def _get_nested(schema: dict, dotpath: str) -> dict | None:
+def _get_nested(schema: dict[str, object], dotpath: str) -> dict[str, object] | None:
     """Navigate a schema by dot-separated property path."""
     current = schema
     for part in dotpath.split("."):
         if part == "additionalProperties":
-            current = current.get("additionalProperties", {})
+            candidate = current.get("additionalProperties", {})
         else:
-            current = current.get("properties", {}).get(part, {})
+            properties = current.get("properties", {})
+            if not isinstance(properties, dict):
+                return None
+            candidate = properties.get(part, {})
+        if not isinstance(candidate, dict):
+            return None
+        current = candidate
         if not current:
             return None
-        if "anyOf" in current:
-            for variant in current["anyOf"]:
-                if variant.get("type") == "object" and "properties" in variant:
+        any_of = current.get("anyOf")
+        if isinstance(any_of, list):
+            for variant in any_of:
+                if isinstance(variant, dict) and variant.get("type") == "object" and "properties" in variant:
                     current = variant
                     break
     return current or None
@@ -667,7 +678,7 @@ def _get_nested(schema: dict, dotpath: str) -> dict | None:
 class TestSchemaAnnotations:
     """Packaged schemas should expose coherent annotation metadata."""
 
-    def test_chatgpt_role_semantic(self):
+    def test_chatgpt_role_semantic(self) -> None:
         schema = _load_schema("chatgpt")
         if schema is None:
             pytest.skip("ChatGPT schema not available")
@@ -678,34 +689,45 @@ class TestSchemaAnnotations:
         # not be populated depending on cross-conversation threshold filtering.
         assert role_schema.get("x-polylogue-semantic-role") == "message_role"
 
-    def test_chatgpt_uuid_format(self):
+    def test_chatgpt_uuid_format(self) -> None:
         schema = _load_schema("chatgpt")
         if schema is None:
             pytest.skip("ChatGPT schema not available")
 
-        assert schema["properties"]["current_node"].get("x-polylogue-format") == "uuid4"
+        properties = schema.get("properties")
+        assert isinstance(properties, dict)
+        current_node = properties.get("current_node")
+        assert isinstance(current_node, dict)
+        assert current_node.get("x-polylogue-format") == "uuid4"
         node_id = _get_nested(schema, "mapping.additionalProperties.id")
         assert node_id is not None
         assert node_id.get("x-polylogue-format") == "uuid4"
 
-    def test_chatgpt_timestamp_format(self):
+    def test_chatgpt_timestamp_format(self) -> None:
         schema = _load_schema("chatgpt")
         if schema is None:
             pytest.skip("ChatGPT schema not available")
 
-        create_time = schema["properties"].get("create_time", {})
+        properties = schema.get("properties")
+        assert isinstance(properties, dict)
+        create_time = properties.get("create_time", {})
+        assert isinstance(create_time, dict)
         fmt = create_time.get("x-polylogue-format")
         rng = create_time.get("x-polylogue-range")
         assert fmt == "unix-epoch" or rng is not None
 
-    def test_chatgpt_reference_detection(self):
+    def test_chatgpt_reference_detection(self) -> None:
         schema = _load_schema("chatgpt")
         if schema is None:
             pytest.skip("ChatGPT schema not available")
 
-        assert schema["properties"]["current_node"].get("x-polylogue-ref") == "$.mapping"
+        properties = schema.get("properties")
+        assert isinstance(properties, dict)
+        current_node = properties.get("current_node")
+        assert isinstance(current_node, dict)
+        assert current_node.get("x-polylogue-ref") == "$.mapping"
 
-    def test_claude_code_has_annotations(self):
+    def test_claude_code_has_annotations(self) -> None:
         schema = _load_schema("claude-code")
         if schema is None:
             pytest.skip("Claude Code schema not available")
@@ -717,25 +739,38 @@ class TestSchemaAnnotations:
         assert "x-polylogue-values" in annotations
         assert "x-polylogue-frequency" in annotations
 
-    def test_claude_code_type_enum(self):
+    def test_claude_code_type_enum(self) -> None:
         schema = _load_schema("claude-code")
         if schema is None:
             pytest.skip("Claude Code schema not available")
 
-        type_values = schema.get("properties", {}).get("type", {}).get("x-polylogue-values", [])
+        properties = schema.get("properties")
+        assert isinstance(properties, dict)
+        type_schema = properties.get("type")
+        assert isinstance(type_schema, dict)
+        type_values = type_schema.get("x-polylogue-values", [])
+        assert isinstance(type_values, list)
         assert any(value in type_values for value in ("user", "assistant", "human"))
 
-    def test_claude_ai_sender_semantic(self):
+    def test_claude_ai_sender_semantic(self) -> None:
         schema = _load_schema("claude-ai")
         if schema is None:
             pytest.skip("Claude AI schema not available")
 
-        messages = schema.get("properties", {}).get("chat_messages", {})
+        properties = schema.get("properties")
+        assert isinstance(properties, dict)
+        messages = properties.get("chat_messages", {})
+        assert isinstance(messages, dict)
         item = messages.get("items", {})
+        assert isinstance(item, dict)
         # Navigate anyOf if present
         if "anyOf" in item:
-            for variant in item["anyOf"]:
+            any_of = item["anyOf"]
+            assert isinstance(any_of, list)
+            for variant in any_of:
+                assert isinstance(variant, dict)
                 sender = variant.get("properties", {}).get("sender", {})
+                assert isinstance(sender, dict)
                 if "x-polylogue-semantic-role" in sender:
                     assert sender["x-polylogue-semantic-role"] == "message_role"
                     return
@@ -743,7 +778,7 @@ class TestSchemaAnnotations:
         assert sender.get("x-polylogue-semantic-role") == "message_role"
 
     @pytest.mark.parametrize("provider", ["chatgpt", "claude-code", "claude-ai", "codex"])
-    def test_frequency_values_in_range(self, provider):
+    def test_frequency_values_in_range(self, provider: str) -> None:
         schema = _load_schema(provider)
         if schema is None:
             pytest.skip(f"{provider} schema not available")
@@ -752,7 +787,7 @@ class TestSchemaAnnotations:
             assert 0.0 < frequency < 1.0, f"{provider} {path}: frequency {frequency} not in (0, 1)"
 
     @pytest.mark.parametrize("provider", ["chatgpt", "claude-code", "claude-ai", "codex"])
-    def test_numeric_ranges_plausible(self, provider):
+    def test_numeric_ranges_plausible(self, provider: str) -> None:
         schema = _load_schema(provider)
         if schema is None:
             pytest.skip(f"{provider} schema not available")
@@ -763,7 +798,7 @@ class TestSchemaAnnotations:
             assert low <= high, f"{provider} {path}: range inverted: {low} > {high}"
 
     @pytest.mark.parametrize("provider", ["chatgpt", "claude-code", "claude-ai", "codex"])
-    def test_format_values_are_known(self, provider):
+    def test_format_values_are_known(self, provider: str) -> None:
         schema = _load_schema(provider)
         if schema is None:
             pytest.skip(f"{provider} schema not available")
@@ -784,7 +819,7 @@ class TestSchemaAnnotations:
             assert fmt in known_formats, f"{provider} {path}: unknown format {fmt!r}"
 
     @pytest.mark.parametrize("provider", ["chatgpt", "claude-code", "claude-ai", "codex"])
-    def test_values_are_nonempty_lists(self, provider):
+    def test_values_are_nonempty_lists(self, provider: str) -> None:
         schema = _load_schema(provider)
         if schema is None:
             pytest.skip(f"{provider} schema not available")

@@ -23,12 +23,17 @@ from polylogue.storage.search_providers.hybrid import (
 # ---------------------------------------------------------------------------
 
 
-def _make_providers(fts_results=None, vec_results=None):
+def _make_providers(
+    fts_results: list[str] | None = None,
+    vec_results: list[tuple[str, float]] | None = None,
+) -> tuple[MagicMock, MagicMock]:
     """Return (fts_mock, vec_mock) with default search results."""
+    fts_results = [] if fts_results is None else fts_results
+    vec_results = [] if vec_results is None else vec_results
     fts = MagicMock()
-    fts.search.return_value = fts_results or []
+    fts.search.return_value = fts_results
     vec = MagicMock()
-    vec.query.return_value = vec_results or []
+    vec.query.return_value = vec_results
     return fts, vec
 
 

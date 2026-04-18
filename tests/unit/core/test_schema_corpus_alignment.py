@@ -265,13 +265,13 @@ class TestProofSurface:
             },
         }
 
-    def test_proof_contains_all_semantic_roles(self, schema_with_roles: dict) -> None:
+    def test_proof_contains_all_semantic_roles(self, schema_with_roles: dict[str, Any]) -> None:
         """Proof has an entry for every semantic role."""
         proof = build_review_proof(schema_with_roles)
         proof_roles = {entry.role for entry in proof.roles}
         assert proof_roles == set(SEMANTIC_ROLES)
 
-    def test_proof_entry_fields(self, schema_with_roles: dict) -> None:
+    def test_proof_entry_fields(self, schema_with_roles: dict[str, Any]) -> None:
         """Each proof entry has required fields."""
         proof = build_review_proof(schema_with_roles)
         for entry in proof.roles:
@@ -281,7 +281,7 @@ class TestProofSurface:
             assert isinstance(entry.competing, list)
             assert isinstance(entry.evidence, dict)
 
-    def test_proof_chosen_path_for_assigned_roles(self, schema_with_roles: dict) -> None:
+    def test_proof_chosen_path_for_assigned_roles(self, schema_with_roles: dict[str, Any]) -> None:
         """Assigned roles have a chosen_path."""
         proof = build_review_proof(schema_with_roles)
         title_entry = next(e for e in proof.roles if e.role == "conversation_title")
@@ -289,7 +289,7 @@ class TestProofSurface:
         assert title_entry.chosen_score == pytest.approx(0.72)
         assert not title_entry.abstained
 
-    def test_proof_abstained_roles(self, schema_with_roles: dict) -> None:
+    def test_proof_abstained_roles(self, schema_with_roles: dict[str, Any]) -> None:
         """Roles with no candidates are marked as abstained."""
         proof = build_review_proof(schema_with_roles)
         # message_container and message_timestamp have no assignment in the fixture
@@ -297,7 +297,7 @@ class TestProofSurface:
         assert container_entry.abstained
         assert container_entry.abstain_reason is not None
 
-    def test_proof_to_dict_roundtrip(self, schema_with_roles: dict) -> None:
+    def test_proof_to_dict_roundtrip(self, schema_with_roles: dict[str, Any]) -> None:
         """to_dict produces JSON-serializable output."""
         import json
 
@@ -312,7 +312,7 @@ class TestProofSurface:
         assert "eligible_roles" in parsed
         assert "ineligible_roles" in parsed
 
-    def test_proof_eligible_roles_for_document(self, schema_with_roles: dict) -> None:
+    def test_proof_eligible_roles_for_document(self, schema_with_roles: dict[str, Any]) -> None:
         """conversation_document has all roles eligible."""
         proof = build_review_proof(schema_with_roles)
         assert proof.eligible_roles == list(SEMANTIC_ROLES)

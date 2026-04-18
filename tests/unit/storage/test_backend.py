@@ -9,7 +9,9 @@ import threading
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Any, cast
 
+import aiosqlite
 import pytest
 
 import polylogue.paths
@@ -25,8 +27,14 @@ from polylogue.storage.backends.schema import SCHEMA_VERSION, _ensure_schema
 from polylogue.storage.embedding_stats_models import EmbeddingStatsSnapshot
 from polylogue.storage.query_models import ConversationRecordQuery
 from polylogue.storage.repository import ConversationRepository
-from polylogue.storage.store import ContentBlockRecord, ConversationRecord, RawConversationRecord
-from tests.infra.storage_records import make_attachment, make_conversation, make_message
+from polylogue.storage.store import ConversationRecord
+from tests.infra.storage_records import (
+    make_attachment,
+    make_content_block,
+    make_conversation,
+    make_message,
+    make_raw_conversation,
+)
 
 
 def _table_names(conn: sqlite3.Connection) -> set[str]:
@@ -34,7 +42,7 @@ def _table_names(conn: sqlite3.Connection) -> set[str]:
 
 
 def _build_record(conversation_id: str = "conv-1") -> ConversationRecord:
-    return ConversationRecord(
+    return make_conversation(
         conversation_id=conversation_id,
         provider_name="claude-ai",
         provider_conversation_id=conversation_id,
@@ -234,7 +242,7 @@ def test_open_connection_thread_isolation(tmp_path: Path) -> None:
     assert len(set(connection_ids)) == 3
 
 
-def test_connection_context_contract(tmp_path: Path, monkeypatch) -> None:
+def test_connection_context_contract(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """connection_context() must support explicit, default, and already-open connections."""
     explicit_path = tmp_path / "explicit.db"
     with connection_context(explicit_path) as explicit_conn:
@@ -268,7 +276,7 @@ def test_connection_context_contract(tmp_path: Path, monkeypatch) -> None:
         assert first_conn.execute("SELECT 1").fetchone()[0] == 1
 
 
-def test_default_db_path_respects_xdg_data_home(tmp_path: Path, monkeypatch) -> None:
+def test_default_db_path_respects_xdg_data_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """polylogue.paths.db_path() must honor XDG_DATA_HOME."""
     xdg_data = tmp_path / "data"
     xdg_data.mkdir()
@@ -280,7 +288,7 @@ def test_default_db_path_respects_xdg_data_home(tmp_path: Path, monkeypatch) -> 
     assert str(xdg_data) in str(polylogue.paths.db_path())
 
 
-async def test_sqlite_backend_init_contract(tmp_path: Path, monkeypatch) -> None:
+async def test_sqlite_backend_init_contract(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """SQLiteBackend init must preserve paths, create parents, and allocate the write lock."""
     custom_path = tmp_path / "custom" / "db.sqlite"
     custom_backend = SQLiteBackend(db_path=custom_path)
@@ -379,7 +387,7 @@ async def test_async_backend_extends_legacy_v1_raw_table(tmp_path: Path) -> None
 
     backend = SQLiteBackend(db_path=db_path)
     await backend.save_raw_conversation(
-        RawConversationRecord(
+        make_raw_conversation(
             raw_id="raw-legacy",
             provider_name="chatgpt",
             source_path="/tmp/legacy.json",
@@ -530,11 +538,17 @@ async def test_async_read_pool_uses_read_connection_settings(tmp_path: Path) -> 
     async with backend.read_pool(size=1):
         async with backend.read_connection() as conn:
             cursor = await conn.execute("PRAGMA busy_timeout")
-            assert (await cursor.fetchone())[0] == 1000
+            busy_timeout_row = await cursor.fetchone()
+            assert busy_timeout_row is not None
+            assert busy_timeout_row[0] == 1000
             cursor = await conn.execute("PRAGMA cache_size")
-            assert (await cursor.fetchone())[0] == -READ_CACHE_SIZE_KIB
+            cache_size_row = await cursor.fetchone()
+            assert cache_size_row is not None
+            assert cache_size_row[0] == -READ_CACHE_SIZE_KIB
             cursor = await conn.execute("SELECT value FROM sentinel")
-            assert (await cursor.fetchone())[0] == 1
+            sentinel_row = await cursor.fetchone()
+            assert sentinel_row is not None
+            assert sentinel_row[0] == 1
             with pytest.raises(Exception) as exc_info:
                 await conn.execute("INSERT INTO sentinel(value) VALUES (2)")
                 await conn.commit()
@@ -556,7 +570,9 @@ async def test_async_read_connection_closes_cleanly_after_pool_teardown(tmp_path
     conn_cm = backend.read_connection()
     conn = await conn_cm.__aenter__()
     cursor = await conn.execute("SELECT 1")
-    assert (await cursor.fetchone())[0] == 1
+    probe_row = await cursor.fetchone()
+    assert probe_row is not None
+    assert probe_row[0] == 1
 
     await pool_cm.__aexit__(None, None, None)
     await conn_cm.__aexit__(None, None, None)
@@ -566,13 +582,13 @@ async def test_async_read_connection_closes_cleanly_after_pool_teardown(tmp_path
     init_count = 0
     original_ensure_schema = backend._ensure_schema
 
-    async def counting_ensure_schema(conn):
+    async def counting_ensure_schema(conn: aiosqlite.Connection) -> None:
         nonlocal init_count
         init_count += 1
-        return await original_ensure_schema(conn)
+        await original_ensure_schema(conn)
 
     backend._schema_ensured = False
-    backend._ensure_schema = counting_ensure_schema
+    cast(Any, backend)._ensure_schema = counting_ensure_schema
     await asyncio.gather(*[backend.queries.list_conversations(ConversationRecordQuery()) for _ in range(20)])
     assert init_count == 0
 
@@ -580,14 +596,14 @@ async def test_async_read_connection_closes_cleanly_after_pool_teardown(tmp_path
     events: list[str] = []
     original_slow = slow_backend._ensure_schema
 
-    async def slow_ensure_schema(conn):
+    async def slow_ensure_schema(conn: aiosqlite.Connection) -> None:
         events.append("start")
         await asyncio.sleep(0.05)
         await original_slow(conn)
         events.append("end")
 
     slow_backend._schema_ensured = False
-    slow_backend._ensure_schema = slow_ensure_schema
+    cast(Any, slow_backend)._ensure_schema = slow_ensure_schema
     await asyncio.gather(slow_backend.get_conversation("a"), slow_backend.get_conversation("b"))
     assert events.count("start") == 1
     assert events.count("end") == 1
@@ -698,7 +714,7 @@ async def test_paged_id_iteration_contract(tmp_path: Path) -> None:
 
     for idx in range(5):
         await backend.save_raw_conversation(
-            RawConversationRecord(
+            make_raw_conversation(
                 raw_id=f"raw-{idx}",
                 provider_name="chatgpt",
                 source_name="inbox-a",
@@ -775,20 +791,18 @@ async def test_save_conversation_replaces_runtime_rows_on_content_change(tmp_pat
         text="first",
         content_hash="msg-hash-v1-1",
         content_blocks=[
-            ContentBlockRecord(
-                block_id="blk-msg-1-0",
+            make_content_block(
                 message_id="msg-1",
                 conversation_id="conv-replace",
                 block_index=0,
-                type="text",
+                block_type="text",
                 text="alpha",
             ),
-            ContentBlockRecord(
-                block_id="blk-msg-1-1",
+            make_content_block(
                 message_id="msg-1",
                 conversation_id="conv-replace",
                 block_index=1,
-                type="text",
+                block_type="text",
                 text="beta",
             ),
         ],
@@ -817,12 +831,11 @@ async def test_save_conversation_replaces_runtime_rows_on_content_change(tmp_pat
         text="first updated",
         content_hash="msg-hash-v2-1",
         content_blocks=[
-            ContentBlockRecord(
-                block_id="blk-msg-1-0-v2",
+            make_content_block(
                 message_id="msg-1",
                 conversation_id="conv-replace",
                 block_index=0,
-                type="text",
+                block_type="text",
                 text="alpha updated",
             )
         ],
@@ -999,7 +1012,9 @@ async def test_get_archive_stats_skips_retrieval_band_status(tmp_path: Path, mon
     repo = ConversationRepository(backend=backend)
     observed: list[bool] = []
 
-    async def fake_read_embedding_stats(conn, *, include_retrieval_bands: bool = True):
+    async def fake_read_embedding_stats(
+        conn: aiosqlite.Connection, *, include_retrieval_bands: bool = True
+    ) -> EmbeddingStatsSnapshot:
         observed.append(include_retrieval_bands)
         return EmbeddingStatsSnapshot(
             embedded_conversations=0,

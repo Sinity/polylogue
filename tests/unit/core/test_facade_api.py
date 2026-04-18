@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
 
@@ -17,11 +17,13 @@ from polylogue.archive_products import (
     WorkThreadProductQuery,
 )
 from polylogue.facade import ArchiveStats
-from polylogue.lib.messages import MessageCollection
-from polylogue.lib.models import Conversation, Message
-from polylogue.storage.store import ConversationRecord, MessageRecord
+from tests.infra.builders import make_conv, make_msg
+from tests.infra.storage_records import ConversationBuilder, make_conversation, make_message
 
-ARCHIVE_STATS_PARAMS = [
+ArchiveStatsCase = tuple[int, int, int, dict[str, int], dict[str, int], str | None]
+ListConversationsCase = tuple[int, str | None, str | None, int | None, int]
+
+ARCHIVE_STATS_PARAMS: list[ArchiveStatsCase] = [
     (10, 50, 1000, {"claude-ai": 7, "chatgpt": 3}, {"test": 2, "work": 3}, None),
     (5, 25, 500, {"claude-ai": 5}, {}, "2025-01-15T12:30:45Z"),
     (0, 0, 0, {}, {}, None),
@@ -36,40 +38,41 @@ ARCHIVE_STATS_PARAMS = [
     ),
 ]
 
-LIST_CONV_FILTERS = [
+LIST_CONV_FILTERS: list[ListConversationsCase] = [
     (0, None, None, None, 0),
     (3, None, None, None, 3),
     (4, "claude-ai", None, None, 2),
-    (5, None, "inbox", None, 5),
     (5, None, "inbox", 3, 3),
 ]
+
+
+def _archive(tmp_path: Path, db_name: str = "test.db") -> Polylogue:
+    return Polylogue(archive_root=tmp_path, db_path=tmp_path / db_name)
 
 
 class TestPolylogueInitialization:
     """Simple constructor and repr behavior stays at unit level."""
 
-    def test_init_with_defaults(self):
+    def test_init_with_defaults(self: object) -> None:
         archive = Polylogue()
-        assert archive is not None
         assert archive.archive_root is not None
         assert archive.config is not None
 
-    def test_init_with_custom_archive_root(self, tmp_path):
+    def test_init_with_custom_archive_root(self: object, tmp_path: Path) -> None:
         custom_root = tmp_path / "custom_archive"
         archive = Polylogue(archive_root=custom_root)
         assert archive.archive_root == custom_root
         assert archive.config.render_root == custom_root / "render"
 
-    def test_init_with_expanduser(self):
+    def test_init_with_expanduser(self: object) -> None:
         archive = Polylogue(archive_root="~/test_polylogue")
         assert "~" not in str(archive.archive_root)
         assert archive.archive_root.is_absolute()
 
-    def test_repr(self, tmp_path):
+    def test_repr(self: object, tmp_path: Path) -> None:
         archive = Polylogue(archive_root=tmp_path / "archive")
-        repr_str = repr(archive)
-        assert "Polylogue" in repr_str
-        assert "archive" in repr_str
+        assert "Polylogue" in repr(archive)
+        assert "archive" in repr(archive)
 
 
 class TestArchiveStatsCreation:
@@ -79,8 +82,15 @@ class TestArchiveStatsCreation:
         "conv_count,msg_count,word_count,providers,tags,last_sync",
         ARCHIVE_STATS_PARAMS,
     )
-    def test_archive_stats_init(self, conv_count, msg_count, word_count, providers, tags, last_sync):
-        """Test ArchiveStats initialization with various parameter combinations."""
+    def test_archive_stats_init(
+        self: object,
+        conv_count: int,
+        msg_count: int,
+        word_count: int,
+        providers: dict[str, int],
+        tags: dict[str, int],
+        last_sync: str | None,
+    ) -> None:
         stats = ArchiveStats(
             conversation_count=conv_count,
             message_count=msg_count,
@@ -98,15 +108,11 @@ class TestArchiveStatsCreation:
         assert stats.last_sync == last_sync
         assert stats.recent == []
 
-    def test_archive_stats_with_recent_conversations(self):
-        """Test ArchiveStats with recent conversations."""
-        recent_msgs = [
-            Message(id="m1", role="user", text="Hello", timestamp=datetime.now(tz=timezone.utc)),
-        ]
-        recent_conv = Conversation(
+    def test_archive_stats_with_recent_conversations(self: object) -> None:
+        recent_conv = make_conv(
             id="conv1",
             provider="claude-ai",
-            messages=MessageCollection(messages=recent_msgs),
+            messages=[make_msg(id="m1", role="user", text="Hello", timestamp="2025-01-01T00:00:00Z")],
         )
         stats = ArchiveStats(
             conversation_count=1,
@@ -121,14 +127,7 @@ class TestArchiveStatsCreation:
         assert stats.recent[0].id == "conv1"
 
 
-# ============================================================================
-# POLYLOGUE INITIALIZATION TESTS
-# ============================================================================
-
-
 class TestPolylogueInit:
-    """Test Polylogue initialization with various configurations."""
-
     @pytest.mark.parametrize(
         "db_path_type,property_name",
         [
@@ -137,77 +136,61 @@ class TestPolylogueInit:
             ("file.db", "archive_root"),
         ],
     )
-    def test_polylogue_init_properties(self, tmp_path, db_path_type, property_name):
-        """Test Polylogue initialization with various db_path types and property access."""
-        db_path = tmp_path / "test.db" if db_path_type == "file.db" else db_path_type
-
+    def test_polylogue_init_properties(
+        self: object,
+        tmp_path: Path,
+        db_path_type: str,
+        property_name: str,
+    ) -> None:
+        db_path: str | Path = tmp_path / "test.db" if db_path_type == "file.db" else db_path_type
         archive = Polylogue(archive_root=tmp_path, db_path=db_path)
 
         if property_name == "archive_root":
             assert archive.archive_root == tmp_path
         elif property_name == "config":
-            cfg = archive.config
-            assert type(cfg).__name__ == "Config"
-            assert cfg.archive_root is not None
-
-
-# ============================================================================
-# POLYLOGUE CONVERSATION RETRIEVAL TESTS
-# ============================================================================
+            assert archive.config.archive_root is not None
 
 
 class TestPolylogueGetConversation:
-    """Test getting single conversations."""
+    @pytest.mark.asyncio
+    async def test_get_conversation_empty_db(self: object, tmp_path: Path) -> None:
+        archive = _archive(tmp_path)
+        assert await archive.get_conversation("nonexistent_id") is None
 
     @pytest.mark.asyncio
-    async def test_get_conversation_empty_db(self, tmp_path):
-        """Test getting conversation from empty database."""
-        db_path = tmp_path / "test.db"
-        archive = Polylogue(archive_root=tmp_path, db_path=db_path)
-        conv = await archive.get_conversation("nonexistent_id")
-        assert conv is None
-
-    @pytest.mark.asyncio
-    async def test_get_conversation_with_seed_data(self, tmp_path):
-        """Test retrieving a conversation after adding data."""
-        db_path = tmp_path / "test.db"
-        archive = Polylogue(archive_root=tmp_path, db_path=db_path)
+    async def test_get_conversation_with_seed_data(self: object, tmp_path: Path) -> None:
+        archive = _archive(tmp_path)
         repository = archive.repository
 
-        # Create and save a conversation
-        conv_record = ConversationRecord(
-            conversation_id="conv-1",
+        conv_record = make_conversation(
+            "conv-1",
             provider_name="claude-ai",
-            provider_conversation_id="provider-1",
             title="Test Conversation",
+            provider_conversation_id="provider-1",
             created_at="2025-01-01T00:00:00Z",
             updated_at="2025-01-01T00:00:00Z",
             content_hash="hash-1",
         )
-
-        # Save messages
         msg_records = [
-            MessageRecord(
-                message_id="msg-1",
-                conversation_id="conv-1",
+            make_message(
+                "msg-1",
+                "conv-1",
                 role="user",
                 text="Hello",
                 timestamp="2025-01-01T00:00:00Z",
                 content_hash="msg-hash-1",
             ),
-            MessageRecord(
-                message_id="msg-2",
-                conversation_id="conv-1",
+            make_message(
+                "msg-2",
+                "conv-1",
                 role="assistant",
                 text="Hi there",
                 timestamp="2025-01-01T00:01:00Z",
                 content_hash="msg-hash-2",
             ),
         ]
-
         await repository.save_conversation(conv_record, msg_records, [])
 
-        # Retrieve by ID
         conv = await archive.get_conversation("conv-1")
         assert conv is not None
         assert conv.id == "conv-1"
@@ -215,74 +198,68 @@ class TestPolylogueGetConversation:
 
 
 class TestPolylogueGetConversations:
-    """Test batch conversation retrieval."""
+    @pytest.mark.asyncio
+    async def test_get_conversations_empty_list(self: object, tmp_path: Path) -> None:
+        archive = _archive(tmp_path)
+        assert await archive.get_conversations([]) == []
 
     @pytest.mark.asyncio
-    async def test_get_conversations_empty_list(self, tmp_path):
-        """Test get_conversations with empty ID list."""
-        db_path = tmp_path / "test.db"
-        archive = Polylogue(archive_root=tmp_path, db_path=db_path)
-        convs = await archive.get_conversations([])
-        assert convs == []
-
-    @pytest.mark.asyncio
-    async def test_get_conversations_batch(self, tmp_path):
-        """Test batch retrieval of multiple conversations."""
-        db_path = tmp_path / "test.db"
-        archive = Polylogue(archive_root=tmp_path, db_path=db_path)
+    async def test_get_conversations_batch(self: object, tmp_path: Path) -> None:
+        archive = _archive(tmp_path)
         repository = archive.repository
 
-        # Create multiple conversations
         for i in range(3):
-            conv_record = ConversationRecord(
-                conversation_id=f"conv-{i}",
-                provider_name="claude-ai",
-                provider_conversation_id=f"provider-{i}",
-                title=f"Conversation {i}",
-                created_at="2025-01-01T00:00:00Z",
-                updated_at="2025-01-01T00:00:00Z",
-                content_hash=f"hash-{i}",
+            await repository.save_conversation(
+                make_conversation(
+                    f"conv-{i}",
+                    provider_name="claude-ai",
+                    provider_conversation_id=f"provider-{i}",
+                    title=f"Conversation {i}",
+                    created_at="2025-01-01T00:00:00Z",
+                    updated_at="2025-01-01T00:00:00Z",
+                    content_hash=f"hash-{i}",
+                ),
+                [],
+                [],
             )
-            await repository.save_conversation(conv_record, [], [])
 
-        # Retrieve batch
         ids = ["conv-0", "conv-1", "conv-2"]
         convs = await archive.get_conversations(ids)
         assert len(convs) == 3
-        assert all(c.id in ids for c in convs)
+        assert all(conv.id in ids for conv in convs)
 
     @pytest.mark.asyncio
-    async def test_get_conversations_partial_match(self, tmp_path):
-        """Test batch retrieval with some missing IDs."""
-        db_path = tmp_path / "test.db"
-        archive = Polylogue(archive_root=tmp_path, db_path=db_path)
+    async def test_get_conversations_partial_match(self: object, tmp_path: Path) -> None:
+        archive = _archive(tmp_path)
         repository = archive.repository
 
-        # Create only conv-1
-        conv_record = ConversationRecord(
-            conversation_id="conv-1",
-            provider_name="claude-ai",
-            provider_conversation_id="provider-1",
-            title="Conversation 1",
-            created_at="2025-01-01T00:00:00Z",
-            updated_at="2025-01-01T00:00:00Z",
-            content_hash="hash-1",
+        await repository.save_conversation(
+            make_conversation(
+                "conv-1",
+                provider_name="claude-ai",
+                provider_conversation_id="provider-1",
+                title="Conversation 1",
+                created_at="2025-01-01T00:00:00Z",
+                updated_at="2025-01-01T00:00:00Z",
+                content_hash="hash-1",
+            ),
+            [],
+            [],
         )
-        await repository.save_conversation(conv_record, [], [])
 
-        # Request multiple IDs but only conv-1 exists
-        ids = ["conv-1", "conv-999"]
-        convs = await archive.get_conversations(ids)
+        convs = await archive.get_conversations(["conv-1", "conv-999"])
         assert len(convs) == 1
         assert convs[0].id == "conv-1"
 
 
 class TestPolylogueArchiveProducts:
     @pytest.mark.asyncio
-    async def test_durable_session_products_are_publicly_queryable(self, cli_workspace):
+    async def test_durable_session_products_are_publicly_queryable(
+        self: object,
+        cli_workspace: dict[str, Path],
+    ) -> None:
         from polylogue.storage.backends.connection import open_connection
         from polylogue.storage.session_product_rebuild import rebuild_session_products_sync
-        from tests.infra.storage_records import ConversationBuilder
 
         db_path = cli_workspace["db_path"]
         (
@@ -393,152 +370,92 @@ class TestPolylogueArchiveProducts:
         assert week_summaries[0].summary["session_count"] == 2
 
 
-# ============================================================================
-# POLYLOGUE LIST CONVERSATIONS TESTS
-# ============================================================================
-
-
 class TestPolylogueListConversations:
-    """Test listing conversations with various filters."""
-
     @pytest.mark.parametrize(
         "setup_count,provider_filter,source_filter,limit,expected_count",
         LIST_CONV_FILTERS,
     )
     @pytest.mark.asyncio
     async def test_list_conversations_with_filters(
-        self, tmp_path, setup_count, provider_filter, source_filter, limit, expected_count
-    ):
-        """Test listing conversations with various filter combinations."""
-        db_path = tmp_path / "test.db"
-        archive = Polylogue(archive_root=tmp_path, db_path=db_path)
+        self: object,
+        tmp_path: Path,
+        setup_count: int,
+        provider_filter: str | None,
+        source_filter: str | None,
+        limit: int | None,
+        expected_count: int,
+    ) -> None:
+        archive = _archive(tmp_path)
         repository = archive.repository
 
-        # Setup conversations
         for i in range(setup_count):
             provider = "claude-ai" if i < 2 else "chatgpt"
-            conv_record = ConversationRecord(
-                conversation_id=f"conv-{i}",
-                provider_name=provider,
-                provider_conversation_id=f"provider-{i}",
-                title=f"Conv {i}",
-                created_at="2025-01-01T00:00:00Z",
-                updated_at="2025-01-01T00:00:00Z",
-                content_hash=f"hash-{i}",
-                provider_meta={"source": source_filter or "inbox"} if source_filter else {},
+            await repository.save_conversation(
+                make_conversation(
+                    f"conv-{i}",
+                    provider_name=provider,
+                    provider_conversation_id=f"provider-{i}",
+                    title=f"Conv {i}",
+                    created_at="2025-01-01T00:00:00Z",
+                    updated_at="2025-01-01T00:00:00Z",
+                    content_hash=f"hash-{i}",
+                    provider_meta={"source": source_filter or "inbox"} if source_filter else {},
+                ),
+                [],
+                [],
             )
-            await repository.save_conversation(conv_record, [], [])
 
-        # Retrieve with filters
-        convs = await archive.list_conversations(
-            provider=provider_filter,
-            limit=limit,
-        )
+        convs = await archive.list_conversations(provider=provider_filter, limit=limit)
         assert len(convs) == expected_count
 
 
-# ============================================================================
-# POLYLOGUE FILTER AND CONTEXT MANAGER TESTS
-# ============================================================================
-
-
 class TestPolylogueFilter:
-    """Test filter builder creation."""
-
-    def test_filter_returns_conversation_filter(self, tmp_path):
-        """Test that filter() returns a ConversationFilter."""
-        db_path = tmp_path / "test.db"
-        archive = Polylogue(archive_root=tmp_path, db_path=db_path)
+    def test_filter_returns_conversation_filter(self: object, tmp_path: Path) -> None:
+        archive = _archive(tmp_path)
         filter_builder = archive.filter()
-        assert filter_builder is not None
-        # ConversationFilter has provider method
         assert hasattr(filter_builder, "provider")
 
-    def test_filter_chaining(self, tmp_path):
-        """Test filter method chaining."""
-        db_path = tmp_path / "test.db"
-        archive = Polylogue(archive_root=tmp_path, db_path=db_path)
-        filter_builder = archive.filter()
-        # Should support chaining
-        result = filter_builder.provider("claude-ai")
-        assert result is not None
+    def test_filter_chaining(self: object, tmp_path: Path) -> None:
+        archive = _archive(tmp_path)
+        assert archive.filter().provider("claude-ai") is not None
 
 
 class TestPolylogueContextManager:
-    """Test Polylogue as async context manager."""
-
     @pytest.mark.asyncio
-    async def test_context_manager_enter_returns_self(self, tmp_path):
-        """Test __aenter__ returns self."""
-        db_path = tmp_path / "test.db"
-        archive = Polylogue(archive_root=tmp_path, db_path=db_path)
+    async def test_context_manager_enter_returns_self(self: object, tmp_path: Path) -> None:
+        archive = _archive(tmp_path)
         async with archive as ctx:
             assert ctx is archive
 
     @pytest.mark.asyncio
-    async def test_context_manager_exit_calls_close(self, tmp_path):
-        """Test __aexit__ calls close."""
-        db_path = tmp_path / "test.db"
-        archive = Polylogue(archive_root=tmp_path, db_path=db_path)
-        # Just verify context manager works without exception
-        async with archive:
+    async def test_context_manager_exit_calls_close(self: object, tmp_path: Path) -> None:
+        async with _archive(tmp_path):
             pass
-        # If we get here without exception, context manager works properly
 
     @pytest.mark.asyncio
-    async def test_context_manager_with_exception(self, tmp_path):
-        """Test context manager properly closes on exception."""
-        db_path = tmp_path / "test.db"
-        archive = Polylogue(archive_root=tmp_path, db_path=db_path)
-
-        try:
+    async def test_context_manager_with_exception(self: object, tmp_path: Path) -> None:
+        archive = _archive(tmp_path)
+        with pytest.raises(ValueError, match="Test error"):
             async with archive:
                 raise ValueError("Test error")
-        except ValueError:
-            pass
-        # If we get here, context manager handled exception properly
 
     @pytest.mark.asyncio
-    async def test_close_method(self, tmp_path):
-        """Test close() method."""
-        db_path = tmp_path / "test.db"
-        archive = Polylogue(archive_root=tmp_path, db_path=db_path)
-        # Should not raise
-        await archive.close()
-
-
-# ============================================================================
-# POLYLOGUE REBUILD INDEX AND STATS TESTS
-# ============================================================================
+    async def test_close_method(self: object, tmp_path: Path) -> None:
+        await _archive(tmp_path).close()
 
 
 class TestPolylogueRebuildIndex:
-    """Test index rebuilding."""
-
     @pytest.mark.asyncio
-    async def test_rebuild_index_lazy_init(self, tmp_path):
-        """Test that rebuild_index can be called."""
-        db_path = tmp_path / "test.db"
-        archive = Polylogue(archive_root=tmp_path, db_path=db_path)
-
-        # Just verify the method exists and can be called
-        assert hasattr(archive, "rebuild_index")
+    async def test_rebuild_index_lazy_init(self: object, tmp_path: Path) -> None:
+        archive = _archive(tmp_path)
         assert callable(archive.rebuild_index)
-        # Can call it (it's async)
-        result = await archive.rebuild_index()
-        assert isinstance(result, bool)
+        assert isinstance(await archive.rebuild_index(), bool)
 
 
 class TestPolylogueStats:
-    """Test statistics generation."""
-
     @pytest.mark.asyncio
-    async def test_stats_empty_db(self, tmp_path):
-        """Test stats() on empty database."""
-        db_path = tmp_path / "test.db"
-        archive = Polylogue(archive_root=tmp_path, db_path=db_path)
-        stats = await archive.stats()
-
+    async def test_stats_empty_db(self: object, tmp_path: Path) -> None:
+        stats = await _archive(tmp_path).stats()
         assert isinstance(stats, ArchiveStats)
         assert stats.conversation_count == 0
         assert stats.message_count == 0
@@ -547,99 +464,88 @@ class TestPolylogueStats:
         assert stats.tags == {}
 
     @pytest.mark.asyncio
-    async def test_stats_with_conversations(self, tmp_path):
-        """Test stats() with conversations in database."""
-        db_path = tmp_path / "test.db"
-        archive = Polylogue(archive_root=tmp_path, db_path=db_path)
+    async def test_stats_with_conversations(self: object, tmp_path: Path) -> None:
+        archive = _archive(tmp_path)
         repository = archive.repository
 
-        # Create conversations with different providers
         for i in range(2):
-            conv_record = ConversationRecord(
-                conversation_id=f"claude-{i}",
-                provider_name="claude-ai",
-                provider_conversation_id=f"p-{i}",
-                title=f"Claude Conv {i}",
-                created_at="2025-01-01T00:00:00Z",
-                updated_at="2025-01-01T00:00:00Z",
-                content_hash=f"h-{i}",
+            await repository.save_conversation(
+                make_conversation(
+                    f"claude-{i}",
+                    provider_name="claude-ai",
+                    provider_conversation_id=f"p-{i}",
+                    title=f"Claude Conv {i}",
+                    created_at="2025-01-01T00:00:00Z",
+                    updated_at="2025-01-01T00:00:00Z",
+                    content_hash=f"h-{i}",
+                ),
+                [
+                    make_message(
+                        f"msg-{i}-0",
+                        f"claude-{i}",
+                        role="user",
+                        text="Hello world",
+                        timestamp="2025-01-01T00:00:00Z",
+                        content_hash=f"mh-{i}-0",
+                    ),
+                    make_message(
+                        f"msg-{i}-1",
+                        f"claude-{i}",
+                        role="assistant",
+                        text="Hi there friend",
+                        timestamp="2025-01-01T00:01:00Z",
+                        content_hash=f"mh-{i}-1",
+                    ),
+                ],
+                [],
             )
 
-            # Add messages
-            msg_records = [
-                MessageRecord(
-                    message_id=f"msg-{i}-0",
-                    conversation_id=f"claude-{i}",
-                    role="user",
-                    text="Hello world",
-                    timestamp="2025-01-01T00:00:00Z",
-                    content_hash=f"mh-{i}-0",
-                ),
-                MessageRecord(
-                    message_id=f"msg-{i}-1",
-                    conversation_id=f"claude-{i}",
-                    role="assistant",
-                    text="Hi there friend",
-                    timestamp="2025-01-01T00:01:00Z",
-                    content_hash=f"mh-{i}-1",
-                ),
-            ]
-            await repository.save_conversation(conv_record, msg_records, [])
-
-        # Add ChatGPT conversation
-        conv_record = ConversationRecord(
-            conversation_id="chatgpt-0",
-            provider_name="chatgpt",
-            provider_conversation_id="p-chatgpt-0",
-            title="ChatGPT Conv",
-            created_at="2025-01-01T00:00:00Z",
-            updated_at="2025-01-01T00:00:00Z",
-            content_hash="h-chatgpt",
-        )
-        msg_records = [
-            MessageRecord(
-                message_id="msg-chatgpt-0",
-                conversation_id="chatgpt-0",
-                role="user",
-                text="Test",
-                timestamp="2025-01-01T00:00:00Z",
-                content_hash="mh-chatgpt",
+        await repository.save_conversation(
+            make_conversation(
+                "chatgpt-0",
+                provider_name="chatgpt",
+                provider_conversation_id="p-chatgpt-0",
+                title="ChatGPT Conv",
+                created_at="2025-01-01T00:00:00Z",
+                updated_at="2025-01-01T00:00:00Z",
+                content_hash="h-chatgpt",
             ),
-        ]
-        await repository.save_conversation(conv_record, msg_records, [])
+            [
+                make_message(
+                    "msg-chatgpt-0",
+                    "chatgpt-0",
+                    role="user",
+                    text="Test",
+                    timestamp="2025-01-01T00:00:00Z",
+                    content_hash="mh-chatgpt",
+                )
+            ],
+            [],
+        )
 
         stats = await archive.stats()
         assert stats.conversation_count == 3
         assert stats.message_count == 5
-        assert "claude-ai" in stats.providers
-        assert "chatgpt" in stats.providers
         assert stats.providers["claude-ai"] == 2
         assert stats.providers["chatgpt"] == 1
 
     @pytest.mark.asyncio
-    async def test_stats_recent_conversations(self, tmp_path):
-        """Test that stats includes recent conversations."""
-        db_path = tmp_path / "test.db"
-        archive = Polylogue(archive_root=tmp_path, db_path=db_path)
-        repository = archive.repository
-
-        # Create a single conversation
-        conv_record = ConversationRecord(
-            conversation_id="conv-1",
-            provider_name="claude-ai",
-            provider_conversation_id="p-1",
-            title="Test Conv",
-            created_at="2025-01-01T00:00:00Z",
-            updated_at="2025-01-15T12:00:00Z",
-            content_hash="h-1",
+    async def test_stats_recent_conversations(self: object, tmp_path: Path) -> None:
+        archive = _archive(tmp_path)
+        await archive.repository.save_conversation(
+            make_conversation(
+                "conv-1",
+                provider_name="claude-ai",
+                provider_conversation_id="p-1",
+                title="Test Conv",
+                created_at="2025-01-01T00:00:00Z",
+                updated_at="2025-01-15T12:00:00Z",
+                content_hash="h-1",
+            ),
+            [],
+            [],
         )
-        await repository.save_conversation(conv_record, [], [])
 
         stats = await archive.stats()
         assert len(stats.recent) == 1
         assert stats.recent[0].id == "conv-1"
-
-
-# ============================================================================
-# CLI HELPERS TESTS: SOURCE STATE MANAGEMENT
-# ============================================================================

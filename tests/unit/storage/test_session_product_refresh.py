@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
@@ -12,9 +14,15 @@ from polylogue.storage.session_product_refresh import (
 from tests.infra.storage_records import make_conversation, make_message, store_records
 
 
+def _chunk_metric(chunk_observation: dict[str, object], key: str) -> float:
+    value = chunk_observation[key]
+    assert isinstance(value, int | float)
+    return float(value)
+
+
 @pytest.mark.asyncio
 async def test_apply_session_product_conversation_updates_async_batches_hydrated_conversations(
-    tmp_path,
+    tmp_path: Path,
 ) -> None:
     db_path = tmp_path / "refresh.db"
     with open_connection(db_path) as conn:
@@ -47,15 +55,15 @@ async def test_apply_session_product_conversation_updates_async_batches_hydrated
     assert update.thread_root_ids == {"conv-refresh"}
     assert update.affected_groups
     assert len(update.chunk_observations) == 1
-    assert float(update.chunk_observations[0]["load_ms"]) >= 0.0
-    assert float(update.chunk_observations[0]["hydrate_ms"]) >= 0.0
-    assert float(update.chunk_observations[0]["build_ms"]) >= 0.0
-    assert float(update.chunk_observations[0]["write_ms"]) >= 0.0
+    assert _chunk_metric(update.chunk_observations[0], "load_ms") >= 0.0
+    assert _chunk_metric(update.chunk_observations[0], "hydrate_ms") >= 0.0
+    assert _chunk_metric(update.chunk_observations[0], "build_ms") >= 0.0
+    assert _chunk_metric(update.chunk_observations[0], "write_ms") >= 0.0
 
 
 @pytest.mark.asyncio
 async def test_apply_session_product_conversation_updates_async_preserves_thread_roots_for_children(
-    tmp_path,
+    tmp_path: Path,
 ) -> None:
     db_path = tmp_path / "refresh-thread.db"
     with open_connection(db_path) as conn:
@@ -93,7 +101,7 @@ async def test_apply_session_product_conversation_updates_async_preserves_thread
 
 @pytest.mark.asyncio
 async def test_apply_session_product_conversation_updates_async_uses_small_default_chunks(
-    tmp_path,
+    tmp_path: Path,
 ) -> None:
     db_path = tmp_path / "refresh-default-chunks.db"
     conversation_ids: list[str] = []
@@ -133,7 +141,7 @@ async def test_apply_session_product_conversation_updates_async_uses_small_defau
 
 @pytest.mark.asyncio
 async def test_apply_session_product_conversation_updates_async_splits_large_message_batches(
-    tmp_path,
+    tmp_path: Path,
 ) -> None:
     db_path = tmp_path / "refresh-message-budget.db"
     conversation_ids: list[str] = []
@@ -190,7 +198,7 @@ async def test_apply_session_product_conversation_updates_async_splits_large_mes
 
 @pytest.mark.asyncio
 async def test_apply_session_product_conversation_updates_async_clears_deleted_conversations(
-    tmp_path,
+    tmp_path: Path,
 ) -> None:
     db_path = tmp_path / "refresh-delete.db"
     with open_connection(db_path) as conn:
@@ -252,7 +260,7 @@ async def test_apply_session_product_conversation_updates_async_clears_deleted_c
 
 @pytest.mark.asyncio
 async def test_refresh_thread_roots_async_batches_root_rebuilds(
-    tmp_path,
+    tmp_path: Path,
 ) -> None:
     db_path = tmp_path / "refresh-thread-roots.db"
     with open_connection(db_path) as conn:
@@ -324,7 +332,7 @@ async def test_refresh_thread_roots_async_batches_root_rebuilds(
 
 @pytest.mark.asyncio
 async def test_refresh_async_provider_day_aggregates_batches_multiple_groups(
-    tmp_path,
+    tmp_path: Path,
 ) -> None:
     db_path = tmp_path / "refresh-provider-day-groups.db"
     with open_connection(db_path) as conn:

@@ -9,8 +9,10 @@ iter_source_raw_data (acquisition path).
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 from polylogue.config import Source
+from polylogue.sources.parsers.base import ParsedConversation, RawConversationData
 from tests.infra.encoding_fixtures import EncodingFixtureBuilder
 
 
@@ -19,7 +21,7 @@ def _make_source(path: Path, name: str = "codex") -> Source:
     return Source(name=name, path=path)
 
 
-def _collect_conversations(source_path: Path, provider: str = "codex"):
+def _collect_conversations(source_path: Path, provider: str = "codex") -> list[ParsedConversation]:
     """Run iter_source_conversations and collect results."""
     from polylogue.sources.source_parsing import iter_source_conversations
 
@@ -27,7 +29,12 @@ def _collect_conversations(source_path: Path, provider: str = "codex"):
     return list(iter_source_conversations(source))
 
 
-def _collect_conversations_with_raw(source_path: Path, provider: str = "codex", *, cursor_state=None):
+def _collect_conversations_with_raw(
+    source_path: Path,
+    provider: str = "codex",
+    *,
+    cursor_state: dict[str, Any] | None = None,
+) -> list[tuple[RawConversationData | None, ParsedConversation]]:
     """Run iter_source_conversations_with_raw and collect results."""
     from polylogue.sources.source_parsing import iter_source_conversations_with_raw
 
@@ -35,7 +42,12 @@ def _collect_conversations_with_raw(source_path: Path, provider: str = "codex", 
     return list(iter_source_conversations_with_raw(source, cursor_state=cursor_state, capture_raw=True))
 
 
-def _collect_raw_data(source_path: Path, provider: str = "codex", *, cursor_state=None):
+def _collect_raw_data(
+    source_path: Path,
+    provider: str = "codex",
+    *,
+    cursor_state: dict[str, Any] | None = None,
+) -> list[RawConversationData]:
     """Run iter_source_raw_data and collect results."""
     from polylogue.sources.source_acquisition import iter_source_raw_data
 
@@ -98,7 +110,7 @@ class TestZipPartialCorruption:
     def test_valid_entries_survive_corrupt_siblings(self, tmp_path: Path) -> None:
         """Valid JSON entries are parsed even when other entries are corrupt."""
         EncodingFixtureBuilder.partial_corruption_zip(tmp_path)
-        cursor_state: dict = {}
+        cursor_state: dict[str, Any] = {}
         results = _collect_conversations_with_raw(tmp_path, provider="chatgpt", cursor_state=cursor_state)
         # At least the valid.json entry should produce a conversation
         # (it's added to the ZIP first, so it's yielded before corrupt.json fails)
@@ -109,7 +121,7 @@ class TestZipPartialCorruption:
     def test_cursor_state_records_corrupt_entries(self, tmp_path: Path) -> None:
         """cursor_state tracks failures for corrupt ZIP entries."""
         EncodingFixtureBuilder.partial_corruption_zip(tmp_path)
-        cursor_state: dict = {}
+        cursor_state: dict[str, Any] = {}
         _results = _collect_conversations_with_raw(tmp_path, provider="chatgpt", cursor_state=cursor_state)
         # The corrupt entry should cause a recorded failure
         # _initialize_cursor_state creates failed_files as a list

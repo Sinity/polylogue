@@ -6,8 +6,36 @@ branch tracking, git context, and edge cases.
 
 from __future__ import annotations
 
+from typing import cast
+
 from polylogue.lib.branch_type import BranchType
-from polylogue.sources.parsers.codex import looks_like, parse, parse_stream
+from polylogue.sources.parsers.base import ParsedConversation
+from polylogue.sources.parsers.codex import looks_like as _looks_like_impl
+from polylogue.sources.parsers.codex import parse as _parse_impl
+from polylogue.sources.parsers.codex import parse_stream
+
+
+def looks_like(payload: object) -> bool:
+    if not isinstance(payload, list):
+        return False
+    return _looks_like_impl(cast(list[object], payload))
+
+
+def parse(payload: object, fallback_id: str) -> ParsedConversation:
+    assert isinstance(payload, list)
+    return _parse_impl(cast(list[object], payload), fallback_id)
+
+
+def _provider_meta(conversation: ParsedConversation) -> dict[str, object]:
+    assert conversation.provider_meta is not None
+    return conversation.provider_meta
+
+
+def _nested_meta(conversation: ParsedConversation, key: str) -> dict[str, object]:
+    value = _provider_meta(conversation).get(key)
+    assert isinstance(value, dict)
+    return cast(dict[str, object], value)
+
 
 # =============================================================================
 # Format Detection (looks_like)
@@ -41,7 +69,7 @@ class TestLooksLike:
         assert not looks_like([])
 
     def test_non_list_rejected(self) -> None:
-        assert not looks_like({"type": "message"})  # type: ignore[arg-type]
+        assert not looks_like({"type": "message"})
 
     def test_unrecognized_records_rejected(self) -> None:
         payload = [{"random": "data", "no_type": True}]
@@ -181,7 +209,7 @@ class TestMessageParsing:
         result = parse(payload, "fallback")
         assert len(result.messages) == 1
         # Text content should contain both parts
-        text = result.messages[0].text
+        text = result.messages[0].text or ""
         assert "Part 1" in text
         assert "Part 2" in text
 
@@ -306,10 +334,9 @@ class TestGitContextAndInstructions:
             },
         ]
         result = parse(payload, "fallback")
-        assert result.provider_meta is not None
-        assert "git" in result.provider_meta
-        assert result.provider_meta["git"]["branch"] == "main"
-        assert result.provider_meta["git"]["commit"] == "abc123"
+        git_meta = _nested_meta(result, "git")
+        assert git_meta["branch"] == "main"
+        assert git_meta["commit"] == "abc123"
 
     def test_instructions_from_session_meta(self) -> None:
         payload = [
@@ -331,8 +358,7 @@ class TestGitContextAndInstructions:
             },
         ]
         result = parse(payload, "fallback")
-        assert result.provider_meta is not None
-        assert result.provider_meta["instructions"] == "You are a helpful assistant."
+        assert _provider_meta(result)["instructions"] == "You are a helpful assistant."
 
     def test_git_context_from_intermediate_metadata(self) -> None:
         """Intermediate format: git context on first line."""
@@ -345,8 +371,7 @@ class TestGitContextAndInstructions:
             {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hello"}]},
         ]
         result = parse(payload, "fallback")
-        assert result.provider_meta is not None
-        assert result.provider_meta["git"]["branch"] == "develop"
+        assert _nested_meta(result, "git")["branch"] == "develop"
 
     def test_git_and_instructions_combined(self) -> None:
         payload = [
@@ -361,9 +386,8 @@ class TestGitContextAndInstructions:
             },
         ]
         result = parse(payload, "fallback")
-        assert result.provider_meta is not None
-        assert result.provider_meta["git"]["branch"] == "feature"
-        assert result.provider_meta["instructions"] == "Be concise."
+        assert _nested_meta(result, "git")["branch"] == "feature"
+        assert _provider_meta(result)["instructions"] == "Be concise."
 
 
 # =============================================================================
@@ -522,8 +546,8 @@ class TestEdgeCases:
         result = parse(payload, "fallback")
         assert result.provider_conversation_id == "prod-session-001"
         assert len(result.messages) == 3
-        assert result.provider_meta["git"]["commit"] == "f1e2d3c"
-        assert result.provider_meta["instructions"] == "You are an expert Python developer."
+        assert _nested_meta(result, "git")["commit"] == "f1e2d3c"
+        assert _provider_meta(result)["instructions"] == "You are an expert Python developer."
         assert result.messages[0].role == "user"
         assert result.messages[1].role == "assistant"
         assert result.messages[2].role == "user"

@@ -14,6 +14,7 @@ import json
 import os
 import sqlite3
 from collections import Counter
+from pathlib import Path
 
 import pytest
 
@@ -27,6 +28,10 @@ from polylogue.sources.providers.codex import CodexRecord
 
 # Default to sparse testing; 0 means exhaustive
 DEFAULT_SAMPLES = 100
+JsonObject = dict[str, object]
+JsonArray = list[object]
+ParsedPayload = JsonObject | JsonArray
+ProviderMessageEnvelope = dict[str, JsonObject]
 
 
 def get_sample_limit() -> int | None:
@@ -53,14 +58,16 @@ def get_provider_message_count(conn: sqlite3.Connection, provider: str) -> int:
         """,
         (provider,),
     )
-    return cur.fetchone()[0]
+    row = cur.fetchone()
+    assert row is not None
+    return int(row[0])
 
 
 def iter_provider_messages(
     conn: sqlite3.Connection,
     provider: str,
     limit: int | None = None,
-) -> list[tuple[str, dict]]:
+) -> list[tuple[str, ProviderMessageEnvelope]]:
     """Iterate raw message records for a provider.
 
     Args:
@@ -71,7 +78,7 @@ def iter_provider_messages(
     Returns:
         List of (message_id, {"raw": provider_raw_message}) tuples.
     """
-    results = []
+    results: list[tuple[str, ProviderMessageEnvelope]] = []
     raw_conversations = iter_raw_conversations(conn, provider)
 
     for raw_id, raw_content, _source_path in raw_conversations:
@@ -84,11 +91,11 @@ def iter_provider_messages(
     return results
 
 
-def _extract_provider_raw_messages(provider: str, payload: list | dict) -> list[dict]:
+def _extract_provider_raw_messages(provider: str, payload: ParsedPayload) -> list[JsonObject]:
     """Extract provider-native raw message records from a raw payload."""
     if provider == "chatgpt":
         conversations = payload if isinstance(payload, list) else [payload]
-        messages: list[dict] = []
+        messages: list[JsonObject] = []
         for conversation in conversations:
             if not isinstance(conversation, dict):
                 continue
@@ -104,7 +111,7 @@ def _extract_provider_raw_messages(provider: str, payload: list | dict) -> list[
         return messages
 
     records = payload if isinstance(payload, list) else [payload]
-    messages = []
+    provider_messages: list[JsonObject] = []
     for record in records:
         if not isinstance(record, dict):
             continue
@@ -116,8 +123,8 @@ def _extract_provider_raw_messages(provider: str, payload: list | dict) -> list[
                 continue
         elif not is_message_record(provider, record):
             continue
-        messages.append(record)
-    return messages
+        provider_messages.append(record)
+    return provider_messages
 
 
 # =============================================================================
@@ -130,7 +137,7 @@ class TestExtractionValidation:
     """Validate extraction works on seeded fixture data."""
 
     @pytest.mark.parametrize("provider", ["claude-code", "chatgpt", "codex"])
-    def test_extraction_succeeds(self, seeded_db, provider):
+    def test_extraction_succeeds(self, seeded_db: Path, provider: str) -> None:
         """Extraction should succeed on seeded synthetic messages.
 
         Sample limit controlled by POLYLOGUE_TEST_SAMPLES env var:
@@ -150,7 +157,7 @@ class TestExtractionValidation:
 
         extracted = 0
         skipped = 0
-        errors = []
+        errors: list[tuple[str, str]] = []
 
         for msg_id, pm in messages:
             raw = pm.get("raw", pm)
@@ -182,15 +189,15 @@ class TestExtractionValidation:
 class TestViewportValidation:
     """Validate viewport extraction produces sensible results."""
 
-    def test_tool_calls_have_valid_categories(self, seeded_db):
+    def test_tool_calls_have_valid_categories(self, seeded_db: Path) -> None:
         """All extracted tool calls should have valid categories."""
         conn = sqlite3.connect(seeded_db)
         limit = get_sample_limit() or 500  # Cap at 500 for viewport tests
         messages = iter_provider_messages(conn, "claude-code", limit=min(limit, 500) if limit else 500)
         conn.close()
 
-        category_counts = Counter()
-        invalid_tools = []
+        category_counts: Counter[str] = Counter()
+        invalid_tools: list[tuple[str, ToolCategory]] = []
 
         for _msg_id, pm in messages:
             raw = pm.get("raw", pm)
@@ -207,7 +214,7 @@ class TestViewportValidation:
 
         assert len(invalid_tools) == 0, f"Invalid tool categories: {invalid_tools}"
 
-    def test_reasoning_traces_have_content(self, seeded_db):
+    def test_reasoning_traces_have_content(self, seeded_db: Path) -> None:
         """Reasoning traces should have non-empty text."""
         conn = sqlite3.connect(seeded_db)
         limit = get_sample_limit() or 500
@@ -245,7 +252,7 @@ class TestViewportValidation:
 class TestDataIntegrity:
     """Validate raw conversation integrity in seeded database."""
 
-    def test_raw_conversations_have_raw_content(self, seeded_db):
+    def test_raw_conversations_have_raw_content(self, seeded_db: Path) -> None:
         """Seeded raw conversations should have blob_size > 0."""
         conn = sqlite3.connect(seeded_db)
         cur = conn.cursor()
@@ -262,14 +269,14 @@ class TestDataIntegrity:
         rows = cur.fetchall()
         conn.close()
 
-        issues = []
+        issues: list[str] = []
         for provider, total, missing_size in rows:
             if missing_size > 0:
                 issues.append(f"{provider}: {missing_size} missing blob sizes (of {total})")
 
         assert not issues, f"Missing blob sizes in seeded database: {issues}"
 
-    def test_provider_coverage(self, seeded_db):
+    def test_provider_coverage(self, seeded_db: Path) -> None:
         """Report provider coverage in database."""
         conn = sqlite3.connect(seeded_db)
         cur = conn.cursor()
@@ -301,7 +308,7 @@ class TestDataIntegrity:
 class TestRegeneration:
     """Test that we can regenerate from raw data."""
 
-    def test_raw_data_is_complete(self, seeded_db):
+    def test_raw_data_is_complete(self, seeded_db: Path) -> None:
         """Raw data should contain all fields needed for extraction."""
         conn = sqlite3.connect(seeded_db)
 
@@ -347,7 +354,9 @@ def iter_raw_conversations(
 
     from polylogue.storage.blob_store import BlobStore
 
-    db_path = conn.execute("PRAGMA database_list").fetchone()[2]
+    row = conn.execute("PRAGMA database_list").fetchone()
+    assert row is not None
+    db_path = str(row[2])
     blob_store = BlobStore(Path(db_path).parent / "blob")
     cur = conn.cursor()
     query = """
@@ -361,8 +370,9 @@ def iter_raw_conversations(
     cur.execute(query, (provider,))
     results = []
     for raw_id, source_path in cur.fetchall():
-        raw_content = blob_store.read_all(raw_id)
-        results.append((raw_id, raw_content, source_path))
+        raw_id_str = str(raw_id)
+        raw_content = blob_store.read_all(raw_id_str)
+        results.append((raw_id_str, raw_content, source_path if isinstance(source_path, str) else None))
     return results
 
 
@@ -370,10 +380,12 @@ def get_raw_conversation_count(conn: sqlite3.Connection, provider: str) -> int:
     """Get total raw conversation count for a provider."""
     cur = conn.cursor()
     cur.execute("SELECT COUNT(*) FROM raw_conversations WHERE provider_name = ?", (provider,))
-    return cur.fetchone()[0]
+    row = cur.fetchone()
+    assert row is not None
+    return int(row[0])
 
 
-def parse_raw_content(raw_content: bytes, provider: str) -> list | dict:
+def parse_raw_content(raw_content: bytes, provider: str) -> ParsedPayload:
     """Parse raw_content bytes into JSON data, handling both JSON and JSONL.
 
     JSONL providers (claude-code, codex, gemini) store entire files as raw_content,
@@ -396,7 +408,9 @@ def parse_raw_content(raw_content: bytes, provider: str) -> list | dict:
                 items.append(json.loads(line))
         return items
 
-    return json.loads(content)
+    parsed = json.loads(content)
+    assert isinstance(parsed, (dict, list))
+    return parsed
 
 
 @pytest.mark.slow
@@ -408,7 +422,7 @@ class TestRawConversationParsing:
     """
 
     @pytest.mark.parametrize("provider", ["chatgpt", "claude-code", "codex"])
-    def test_provider_parses_all_raw_conversations(self, seeded_db, provider):
+    def test_provider_parses_all_raw_conversations(self, seeded_db: Path, provider: str) -> None:
         """Every raw_conversation for this provider parses without error.
 
         This test replaces many spot checks in test_parsers_unit.py by:
@@ -432,7 +446,7 @@ class TestRawConversationParsing:
         conn.close()
 
         parsed_count = 0
-        errors = []
+        errors: list[tuple[str, str]] = []
 
         for raw_id, raw_content, _source_path in raw_convos:
             try:
@@ -440,6 +454,7 @@ class TestRawConversationParsing:
 
                 # Parse based on provider
                 if provider == "chatgpt":
+                    assert isinstance(data, dict)
                     result = chatgpt_parse(data, raw_id)
                 elif provider == "claude-code":
                     result = claude_code_parse(data if isinstance(data, list) else [data], raw_id)
@@ -473,7 +488,7 @@ class TestRawConversationParsing:
         """
 
     @pytest.mark.parametrize("provider", ["chatgpt", "claude-code", "codex"])
-    def test_provider_messages_have_valid_structure(self, seeded_db, provider):
+    def test_provider_messages_have_valid_structure(self, seeded_db: Path, provider: str) -> None:
         """All parsed messages have valid role and text structure.
 
         This validates that parsers produce well-formed ParsedMessage objects,
@@ -494,13 +509,14 @@ class TestRawConversationParsing:
         conn.close()
 
         valid_roles = {"user", "assistant", "system", "tool", "human", "model", "unknown"}
-        issues = []
+        issues: list[tuple[str, str]] = []
 
         for raw_id, raw_content, _ in raw_convos[:20]:  # Check first 20
             try:
                 data = parse_raw_content(raw_content, provider)
 
                 if provider == "chatgpt":
+                    assert isinstance(data, dict)
                     result = chatgpt_parse(data, raw_id)
                 elif provider == "claude-code":
                     result = claude_code_parse(data if isinstance(data, list) else [data], raw_id)
@@ -532,7 +548,7 @@ class TestRawConversationParsing:
 class TestRawConversationCoverage:
     """Coverage and statistics for raw conversation parsing."""
 
-    def test_all_providers_have_raw_conversations(self, seeded_db):
+    def test_all_providers_have_raw_conversations(self, seeded_db: Path) -> None:
         """Every known provider has at least some raw conversations."""
         conn = sqlite3.connect(seeded_db)
         cur = conn.cursor()
@@ -555,7 +571,7 @@ class TestRawConversationCoverage:
         # At least one provider should have data
         assert sum(providers.values()) > 0, "No raw conversations available for any provider"
 
-    def test_raw_to_parsed_link_integrity(self, seeded_db):
+    def test_raw_to_parsed_link_integrity(self, seeded_db: Path) -> None:
         """Conversations parsed from raw should link back to raw_id."""
         conn = sqlite3.connect(seeded_db)
         cur = conn.cursor()

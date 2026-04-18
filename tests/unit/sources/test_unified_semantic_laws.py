@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import datetime
 from types import SimpleNamespace
+from typing import Any, Protocol, cast
 
 import pytest
 from hypothesis import given, settings
@@ -14,6 +16,7 @@ from polylogue.lib.provider_semantics import (
     extract_claude_code_text,
     extract_codex_text,
 )
+from polylogue.lib.roles import Role
 from polylogue.lib.viewports import (
     ContentBlock,
     ContentType,
@@ -49,6 +52,7 @@ from polylogue.sources.providers.claude_ai import ClaudeAIChatMessage
 from polylogue.sources.providers.claude_code import ClaudeCodeRecord
 from polylogue.sources.providers.codex import CodexRecord
 from polylogue.sources.providers.gemini import GeminiMessage
+from polylogue.types import Provider
 from tests.infra.strategies import (
     chatgpt_semantic_message_strategy,
     claude_ai_semantic_message_strategy,
@@ -66,21 +70,54 @@ from tests.infra.strategies import (
 _VALID_VIEWPORT_ROLES = {"user", "assistant", "system", "tool", "unknown", "model"}
 
 
-def _build_viewport_record(provider: str, raw: dict[str, object]) -> object:
+RawPayload = dict[str, object]
+
+
+class ViewportRecord(Protocol):
+    text_content: str
+    role_normalized: str
+    parsed_timestamp: datetime | None
+
+    def to_meta(self) -> MessageMeta: ...
+
+    def extract_content_blocks(self) -> list[ContentBlock]: ...
+
+    def extract_reasoning_traces(self) -> list[ReasoningTrace]: ...
+
+    def extract_tool_calls(self) -> list[ToolCall]: ...
+
+
+def _provider(value: str | Provider) -> Provider:
+    return value if isinstance(value, Provider) else Provider.from_string(value)
+
+
+def _as_dict(value: object) -> RawPayload:
+    return cast(RawPayload, value) if isinstance(value, dict) else {}
+
+
+def _as_list(value: object) -> list[object]:
+    return cast(list[object], value) if isinstance(value, list) else []
+
+
+def _typed_content(value: list[object]) -> list[dict[str, Any]]:
+    return cast(list[dict[str, Any]], value)
+
+
+def _build_viewport_record(provider: str, raw: RawPayload) -> ViewportRecord:
     if provider == "chatgpt":
-        return ChatGPTMessage.model_validate(raw)
+        return cast(ViewportRecord, ChatGPTMessage.model_validate(raw))
     if provider == "claude-ai":
-        return ClaudeAIChatMessage.model_validate(raw)
+        return cast(ViewportRecord, ClaudeAIChatMessage.model_validate(raw))
     if provider == "claude-code":
-        return ClaudeCodeRecord.model_validate(raw)
+        return cast(ViewportRecord, ClaudeCodeRecord.model_validate(raw))
     if provider == "codex":
-        return CodexRecord.model_validate(raw)
+        return cast(ViewportRecord, CodexRecord.model_validate(raw))
     if provider == "gemini":
-        return GeminiMessage.model_validate(raw)
+        return cast(ViewportRecord, GeminiMessage.model_validate(raw))
     raise AssertionError(f"unexpected provider {provider}")
 
 
-def _structured_provider_meta(record: object) -> dict[str, object]:
+def _structured_provider_meta(record: ViewportRecord) -> dict[str, object]:
     meta = record.to_meta()
     provider_meta: dict[str, object] = {
         "content_blocks": [block.model_dump(mode="json") for block in record.extract_content_blocks()],
@@ -98,9 +135,9 @@ def _structured_provider_meta(record: object) -> dict[str, object]:
     return provider_meta
 
 
-def _expected_block_types(provider: str, raw: dict[str, object]) -> list[ContentType]:
+def _expected_block_types(provider: str, raw: RawPayload) -> list[ContentType]:
     if provider == "chatgpt":
-        content_type = raw.get("content", {}).get("content_type")
+        content_type = _as_dict(raw.get("content")).get("content_type")
         if content_type == "text":
             return [ContentType.TEXT]
         if content_type == "code":
@@ -111,7 +148,7 @@ def _expected_block_types(provider: str, raw: dict[str, object]) -> list[Content
     if provider == "claude-ai":
         return [ContentType.TEXT]
     if provider == "claude-code":
-        raw_blocks = raw.get("message", {}).get("content", [])
+        raw_block_items = _as_list(_as_dict(raw.get("message")).get("content"))
         mapping = {
             "text": ContentType.TEXT,
             "thinking": ContentType.THINKING,
@@ -120,41 +157,42 @@ def _expected_block_types(provider: str, raw: dict[str, object]) -> list[Content
             "code": ContentType.CODE,
         }
         return [
-            mapping[block["type"]] for block in raw_blocks if isinstance(block, dict) and block.get("type") in mapping
+            mapping[block["type"]]
+            for block in raw_block_items
+            if isinstance(block, dict) and isinstance(block.get("type"), str) and block["type"] in mapping
         ]
     if provider == "codex":
-        content = (
-            raw.get("payload", {}).get("content") if raw.get("type") == "response_item" else raw.get("content", [])
-        )
+        payload = _as_dict(raw.get("payload"))
+        content = payload.get("content") if raw.get("type") == "response_item" else raw.get("content", [])
         mapping = {"input_text": ContentType.TEXT, "output_text": ContentType.TEXT, "text": ContentType.TEXT}
-        types: list[ContentType] = []
-        for block in content if isinstance(content, list) else []:
+        codex_types: list[ContentType] = []
+        for block in _as_list(content):
             if not isinstance(block, dict):
                 continue
             block_type = block.get("type", "")
             if block_type in mapping:
-                types.append(mapping[block_type])
+                codex_types.append(mapping[block_type])
             elif "code" in block_type:
-                types.append(ContentType.CODE)
+                codex_types.append(ContentType.CODE)
             else:
-                types.append(ContentType.UNKNOWN)
-        return types
+                codex_types.append(ContentType.UNKNOWN)
+        return codex_types
     if provider == "gemini":
-        types: list[ContentType] = []
+        gemini_types: list[ContentType] = []
         if raw.get("isThought"):
-            types.append(ContentType.THINKING)
+            gemini_types.append(ContentType.THINKING)
         elif raw.get("text"):
-            types.append(ContentType.TEXT)
-        for part in raw.get("parts", []):
+            gemini_types.append(ContentType.TEXT)
+        for part in _as_list(raw.get("parts")):
             if isinstance(part, dict) and part.get("text"):
-                types.append(ContentType.TEXT)
+                gemini_types.append(ContentType.TEXT)
             elif isinstance(part, dict) and ("inlineData" in part or "fileData" in part):
-                types.append(ContentType.FILE)
+                gemini_types.append(ContentType.FILE)
         if raw.get("executableCode"):
-            types.append(ContentType.CODE)
+            gemini_types.append(ContentType.CODE)
         if raw.get("codeExecutionResult"):
-            types.append(ContentType.TOOL_RESULT)
-        return types
+            gemini_types.append(ContentType.TOOL_RESULT)
+        return gemini_types
     raise AssertionError(provider)
 
 
@@ -208,7 +246,7 @@ def test_unified_semantic_equivalence_for_rich_provider_cases(case: tuple[str, d
         provider,
         {"raw": raw},
         message_id=meta.id,
-        role=meta.role,
+        role=meta.role.value,
         text=record.text_content,
         timestamp=meta.timestamp,
     )
@@ -216,7 +254,7 @@ def test_unified_semantic_equivalence_for_rich_provider_cases(case: tuple[str, d
         provider,
         _structured_provider_meta(record),
         message_id=meta.id,
-        role=meta.role,
+        role=meta.role.value,
         text=record.text_content,
         timestamp=meta.timestamp,
     )
@@ -237,7 +275,7 @@ def test_harmonize_parsed_message_matches_bulk_harmonize(case: tuple[str, dict[s
     parsed = SimpleNamespace(
         provider_meta={"raw": raw},
         provider_message_id=meta.id,
-        role=meta.role,
+        role=meta.role.value,
         text=record.text_content,
         timestamp=meta.timestamp,
     )
@@ -260,13 +298,13 @@ def test_harmonize_parsed_message_matches_bulk_harmonize(case: tuple[str, dict[s
     st.sampled_from(["user", "assistant", "system", "tool", "unknown", "human", "model", "ASSISTANT", "SYSTEM", "USER"])
 )
 def test_harmonized_message_role_coercion_contract(role_str: str) -> None:
-    msg = HarmonizedMessage(role=role_str, text="test", provider="claude-code")
+    msg = HarmonizedMessage(role=Role.normalize(role_str), text="test", provider=Provider.CLAUDE_CODE)
     assert msg.role.value in _VALID_VIEWPORT_ROLES
 
 
 @given(st.sampled_from(["chatgpt", "claude-ai", "claude-code", "gemini", "codex"]))
 def test_harmonized_message_provider_coercion_contract(provider_str: str) -> None:
-    msg = HarmonizedMessage(role="user", text="test", provider=provider_str)
+    msg = HarmonizedMessage(role=Role.USER, text="test", provider=_provider(provider_str))
     assert msg.provider.value == provider_str
 
 
@@ -311,7 +349,7 @@ def test_extract_reasoning_traces_preserve_reasoning_blocks_contract(
     content: list[object],
     provider: str,
 ) -> None:
-    traces = extract_reasoning_traces(content, provider)
+    traces = extract_reasoning_traces(_typed_content(content), provider)
     assert [trace.text for trace in traces] == _expected_reasoning_texts(content)
     assert all(str(trace.provider) == provider for trace in traces)
 
@@ -331,7 +369,7 @@ def test_extract_tool_calls_preserve_tool_use_blocks_contract(
     content: list[object],
     provider: str,
 ) -> None:
-    calls = extract_tool_calls(content, provider)
+    calls = extract_tool_calls(_typed_content(content), provider)
     expected = _expected_tool_blocks(content)
     assert [call.name for call in calls] == [str(block.get("name", "")) for block in expected]
     assert [call.id for call in calls] == [block.get("id") for block in expected]
@@ -354,7 +392,7 @@ def test_extract_tool_calls_preserve_tool_use_blocks_contract(
 def test_extract_content_blocks_preserve_recognized_block_order_contract(
     content: list[object],
 ) -> None:
-    blocks = extract_content_blocks(content)
+    blocks = extract_content_blocks(_typed_content(content))
     assert [block.type for block in blocks] == _expected_content_types(content)
 
 
@@ -382,7 +420,7 @@ def test_extract_codex_text_prefers_first_available_text_field_contract(content:
         text = block.get("text", "") or block.get("input_text", "") or block.get("output_text", "")
         if isinstance(text, str) and text:
             expected.append(text)
-    assert extract_codex_text(content) == "\n".join(expected)
+    assert extract_codex_text(_typed_content(content)) == "\n".join(expected)
 
 
 @given(
@@ -434,17 +472,17 @@ def test_provider_adapter_viewport_contract(case: tuple[str, dict[str, object]])
     assert isinstance(blocks, list)
     assert isinstance(traces, list)
     assert isinstance(calls, list)
-    assert meta.provider == provider
-    assert meta.role == record.role_normalized
+    assert meta.provider == _provider(provider)
+    assert meta.role.value == record.role_normalized
     assert all(block.raw is not None for block in blocks)
 
-    if provider == "chatgpt":
+    if isinstance(record, ChatGPTMessage):
         assert record.role_normalized in {"user", "assistant", "system", "tool", "unknown"}
         assert record.text_content == extract_chatgpt_text(record.content.model_dump(mode="python"))
         assert blocks == record.to_content_blocks()
         assert not traces
         assert not calls
-    elif provider == "claude-ai":
+    elif isinstance(record, ClaudeAIChatMessage):
         assert record.role_normalized in {"user", "assistant", "system", "tool", "unknown"}
         assert len(blocks) == 1
         assert blocks[0].type == ContentType.TEXT
@@ -452,20 +490,20 @@ def test_provider_adapter_viewport_contract(case: tuple[str, dict[str, object]])
         assert record.parsed_timestamp is None or meta.timestamp is not None
         assert not traces
         assert not calls
-    elif provider == "claude-code":
-        assert meta.role == record.role
+    elif isinstance(record, ClaudeCodeRecord):
+        assert meta.role.value == record.role
         if record.content_blocks_raw:
             assert record.text_content == extract_claude_code_text(record.content_blocks_raw)
         assert blocks == extract_content_blocks(record.content_blocks_raw)
-        assert traces == extract_reasoning_traces(record.content_blocks_raw, "claude-code")
-        assert calls == extract_tool_calls(record.content_blocks_raw, "claude-code")
-    elif provider == "codex":
+        assert traces == extract_reasoning_traces(record.content_blocks_raw, Provider.CLAUDE_CODE)
+        assert calls == extract_tool_calls(record.content_blocks_raw, Provider.CLAUDE_CODE)
+    elif isinstance(record, CodexRecord):
         assert record.role_normalized in {"user", "assistant", "system", "tool", "unknown"}
         assert record.text_content == extract_codex_text(record.effective_content)
         assert len(blocks) == len(record.effective_content)
         assert not traces
         assert not calls
-    elif provider == "gemini":
+    elif isinstance(record, GeminiMessage):
         assert record.role_normalized in {"user", "assistant", "system", "tool", "unknown"}
         if record.tokenCount is None:
             assert meta.tokens is None
@@ -490,13 +528,13 @@ def test_rich_provider_meta_contract(case: tuple[str, dict[str, object]]) -> Non
     record = _build_viewport_record(provider, raw)
     meta = record.to_meta()
 
-    assert meta.provider == provider
+    assert meta.provider == _provider(provider)
     if provider == "chatgpt":
         assert meta.id == raw["id"]
-        assert meta.model == raw.get("metadata", {}).get("model_slug")
+        assert meta.model == _as_dict(raw.get("metadata")).get("model_slug")
     elif provider == "claude-ai":
         assert meta.id == raw["uuid"]
-        assert meta.role in {"assistant", "user"}
+        assert meta.role.value in {"assistant", "user"}
         assert meta.timestamp is not None
     elif provider == "claude-code":
         assert meta.id == raw["uuid"]
@@ -505,8 +543,8 @@ def test_rich_provider_meta_contract(case: tuple[str, dict[str, object]]) -> Non
             assert meta.cost is None
         else:
             assert meta.cost is not None and meta.cost.total_usd == raw.get("costUSD")
-        usage = raw.get("message", {}).get("usage")
-        if usage is None:
+        usage = _as_dict(_as_dict(raw.get("message")).get("usage"))
+        if not usage:
             assert meta.tokens is None
         else:
             assert meta.tokens is not None
@@ -514,7 +552,7 @@ def test_rich_provider_meta_contract(case: tuple[str, dict[str, object]]) -> Non
             assert meta.tokens.output_tokens == usage["output_tokens"]
     elif provider == "codex":
         assert meta.id == raw["id"]
-        assert meta.role in {"assistant", "user"}
+        assert meta.role.value in {"assistant", "user"}
     elif provider == "gemini":
         if raw.get("tokenCount") is None:
             assert meta.tokens is None
@@ -538,13 +576,13 @@ def test_structured_provider_meta_overlay_contract(case: tuple[str, dict[str, ob
         provider,
         structured,
         message_id=meta.id,
-        role=meta.role,
+        role=meta.role.value,
         text=record.text_content,
         timestamp=meta.timestamp,
     )
 
     assert harmonized.id == meta.id
-    assert harmonized.role.value == meta.role
+    assert harmonized.role.value == meta.role.value
     assert harmonized.text == record.text_content
     assert harmonized.timestamp == meta.timestamp
 
@@ -583,7 +621,7 @@ def test_is_message_record_contract(provider: str, raw: dict[str, object], expec
         ),
     ],
 )
-def test_invalid_semantic_surface_contract(label: str, action, match: str) -> None:
+def test_invalid_semantic_surface_contract(label: str, action: Callable[[], object], match: str) -> None:
     with pytest.raises(ValueError, match=match):
         action()
 
@@ -656,26 +694,26 @@ def test_chatgpt_iter_user_assistant_pairs_contract() -> None:
 def test_coercion_and_token_cost_internals_contract() -> None:
     """Consolidated: coerce helpers, extract_token_usage, _extract_generic_tokens/cost."""
     # --- Coercion: skip invalid items, inject provider ---
-    trace = ReasoningTrace(text="kept-trace", provider="claude-code")
-    call = ToolCall(name="Read", input={"path": "README.md"}, provider="claude-code")
+    trace = ReasoningTrace(text="kept-trace", provider=Provider.CLAUDE_CODE)
+    call = ToolCall(name="Read", input={"path": "README.md"}, provider=Provider.CLAUDE_CODE)
     block = ContentBlock(type=ContentType.TEXT, text="kept-block", raw={"text": "kept-block"})
 
     coerced_traces = _coerce_reasoning_traces(
         [trace, {"text": "dict-trace"}, {"text": None}, "ignored"],
-        "claude-code",
+        Provider.CLAUDE_CODE,
     )
     coerced_calls = _coerce_tool_calls(
         [call, {"name": "Write", "input": {"path": "notes.txt"}}, {"name": None}, "ignored"],
-        "claude-code",
+        Provider.CLAUDE_CODE,
     )
     coerced_blocks = _coerce_content_blocks(
         [block, {"type": "text", "text": "dict-block", "raw": {"text": "dict-block"}}, {"type": "text"}, 123]
     )
 
     assert [item.text for item in coerced_traces] == ["kept-trace", "dict-trace"]
-    assert all(item.provider == "claude-code" for item in coerced_traces)
+    assert all(item.provider == Provider.CLAUDE_CODE for item in coerced_traces)
     assert [item.name for item in coerced_calls] == ["Read", "Write"]
-    assert all(item.provider == "claude-code" for item in coerced_calls)
+    assert all(item.provider == Provider.CLAUDE_CODE for item in coerced_calls)
     assert [item.text for item in coerced_blocks] == ["kept-block", "dict-block", None]
 
     # --- extract_token_usage with cache fields ---
@@ -727,7 +765,7 @@ def test_harmonization_pipeline_internals_contract() -> None:
     }
 
     harmonized = _harmonize_extracted_provider_meta(
-        "claude-code",
+        Provider.CLAUDE_CODE,
         provider_meta,
         message_id="msg-1",
         text=None,
@@ -793,9 +831,9 @@ def test_generic_content_extraction_contract() -> None:
         {"type": "code", "code": "print('ok')", "language": "python"},
     ]
 
-    blocks = extract_content_blocks(content)
-    traces = extract_reasoning_traces(content, "claude-code")
-    calls = extract_tool_calls(content, "claude-code")
+    blocks = extract_content_blocks(_typed_content(content))
+    traces = extract_reasoning_traces(_typed_content(content), Provider.CLAUDE_CODE)
+    calls = extract_tool_calls(_typed_content(content), Provider.CLAUDE_CODE)
 
     assert [block.type for block in blocks] == [
         ContentType.TEXT,
@@ -811,14 +849,14 @@ def test_generic_content_extraction_contract() -> None:
     assert calls[0].input == {"path": "README.md"}
 
     # --- Claude Code text: excludes non-text blocks ---
-    cc_content = [
+    cc_content: list[object] = [
         {"type": "text", "text": "hello"},
         {"type": "thinking", "thinking": "reason"},
         {"type": "tool_result", "content": "done"},
         {"type": "text", "text": "world"},
         "ignored",
     ]
-    assert extract_claude_code_text(cc_content) == "hello\nworld"
+    assert extract_claude_code_text(_typed_content(cc_content)) == "hello\nworld"
 
 
 def test_extract_from_provider_meta_integration_contract() -> None:
@@ -884,7 +922,7 @@ def test_extract_from_provider_meta_integration_contract() -> None:
     ]
 
     # --- Multi-provider overlay: DB fields fill in when provider_meta lacks them ---
-    for provider, provider_meta, message_id, role, text, expected_provider in [
+    overlay_cases: list[tuple[str, dict[str, object], str, str, str, str]] = [
         ("claude-ai", {"sender": "human", "text": ""}, "db-message-id", "user", "DB fallback text", "claude-ai"),
         (
             "gemini",
@@ -910,7 +948,8 @@ def test_extract_from_provider_meta_integration_contract() -> None:
             "DB raw fallback text",
             "codex",
         ),
-    ]:
+    ]
+    for provider, provider_meta, message_id, role, text, expected_provider in overlay_cases:
         msg = extract_from_provider_meta(
             provider,
             provider_meta,
@@ -981,7 +1020,7 @@ def test_extract_harmonized_message_fallback_contract() -> None:
     }
     msg_cc = extract_harmonized_message("claude-code", cc_raw)
     assert msg_cc.id == "claude-fallback"
-    assert msg_cc.role == "assistant"
+    assert msg_cc.role.value == "assistant"
     assert msg_cc.text == "hello"
     assert msg_cc.timestamp is not None
     assert msg_cc.duration_ms == 99
@@ -1004,16 +1043,17 @@ def test_extract_harmonized_message_fallback_contract() -> None:
     assert msg_cc.tool_calls[0].input == {"path": "README.md"}
 
     # --- Claude Code: type field fallback for role ---
-    for raw, expected_role in [
+    claude_code_role_fallbacks: list[tuple[dict[str, object], str]] = [
         ({"uuid": "m1", "type": "human", "message": "not-a-dict"}, "user"),
         ({"uuid": "m1", "type": "assistant", "message": "not-a-dict"}, "assistant"),
-    ]:
+    ]
+    for raw, expected_role in claude_code_role_fallbacks:
         msg = extract_harmonized_message("claude-code", raw)
         assert msg.role.value == expected_role
         assert msg.id == "m1"
 
     # --- Malformed payloads across providers ---
-    for provider, raw, expected_role, expected_text, expected_provider, reasoning_text in [
+    malformed_cases: list[tuple[str, dict[str, object], str, str, str, str | None]] = [
         (
             "claude-ai",
             {"sender": "human", "text": "Fallback Claude AI text", "created_at": "2024-01-15T10:30:00Z"},
@@ -1049,7 +1089,8 @@ def test_extract_harmonized_message_fallback_contract() -> None:
             "codex",
             None,
         ),
-    ]:
+    ]
+    for provider, raw, expected_role, expected_text, expected_provider, reasoning_text in malformed_cases:
         msg = extract_harmonized_message(provider, raw)
         assert msg.role.value == expected_role
         assert msg.text == expected_text
@@ -1083,6 +1124,7 @@ def test_provider_content_block_detail_contract() -> None:
         assert len(blocks) == 1
         assert blocks[0].type == expected_type
         assert blocks[0].text == expected_text
+        assert message.content is not None
         assert blocks[0].raw == message.content.model_dump()
         assert blocks[0].language == language
         assert meta.id == "chatgpt-blocks"

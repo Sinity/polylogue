@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.repository import ConversationRepository
 from polylogue.storage.store import PublicationRecord
 
 
-def test_record_and_fetch_latest_publication_roundtrip(tmp_path) -> None:
+def test_record_and_fetch_latest_publication_roundtrip(tmp_path: Path) -> None:
     """Publication records persist and round-trip through the backend query API."""
     db_path = tmp_path / "publications.db"
     backend = SQLiteBackend(db_path=db_path)

@@ -6,16 +6,19 @@ import json
 import os
 import tempfile
 import zipfile
+from collections.abc import Iterable
 from io import BytesIO
 from pathlib import Path
-from typing import Any
+from typing import IO, Any, BinaryIO, TypedDict, cast
 from unittest.mock import MagicMock
 
+import ijson
 import pytest
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
 from polylogue.config import Source
+from polylogue.lib.roles import Role, normalize_role
 from polylogue.sources import decoders as decoders_module
 from polylogue.sources import dispatch as dispatch_module
 from polylogue.sources import source_acquisition
@@ -45,12 +48,27 @@ from polylogue.sources.drive import (
 )
 from polylogue.sources.drive_types import DriveFile
 from polylogue.sources.emitter import _ConversationEmitter
+from polylogue.sources.parsers import chatgpt as chatgpt_parser
+from polylogue.sources.parsers import claude as claude_parser
+from polylogue.sources.parsers import drive as drive_parser
 from polylogue.sources.parsers.base import ParsedConversation, ParsedMessage
 from polylogue.sources.parsers.claude import (
     SessionIndexEntry,
     enrich_conversation_from_index,
     find_sessions_index,
     parse_sessions_index,
+)
+from polylogue.sources.providers.chatgpt import (
+    ChatGPTAuthor,
+    ChatGPTContent,
+    ChatGPTConversation,
+    ChatGPTMessage,
+    ChatGPTNode,
+)
+from polylogue.sources.providers.claude_code import (
+    ClaudeCodeThinkingBlock,
+    ClaudeCodeToolUse,
+    ClaudeCodeUsage,
 )
 from polylogue.sources.source_acquisition import _iter_entry_payloads, iter_source_raw_data
 from polylogue.sources.source_parsing import (
@@ -70,6 +88,51 @@ from tests.infra.strategies import (
     provider_payload_strategy,
     provider_source_case_strategy,
 )
+
+
+class GeneratedSourceCase(TypedDict):
+    path: Path
+    raw: bytes
+    provider: str
+
+
+def _parsed_message(
+    provider_message_id: str,
+    *,
+    role: str | Role,
+    text: str | None,
+) -> ParsedMessage:
+    return ParsedMessage(
+        provider_message_id=provider_message_id,
+        role=Role.normalize(role) if isinstance(role, str) else role,
+        text=text,
+    )
+
+
+def _parsed_conversation(
+    *,
+    provider_name: str | Provider,
+    provider_conversation_id: str,
+    title: str | None,
+    created_at: str | None,
+    updated_at: str | None,
+    messages: list[ParsedMessage],
+    provider_meta: dict[str, object] | None = None,
+) -> ParsedConversation:
+    return ParsedConversation(
+        provider_name=Provider.from_string(provider_name),
+        provider_conversation_id=provider_conversation_id,
+        title=title,
+        created_at=created_at,
+        updated_at=updated_at,
+        messages=messages,
+        provider_meta=provider_meta,
+    )
+
+
+def _failed_files(cursor_state: dict[str, object]) -> list[dict[str, object]]:
+    return cast(list[dict[str, object]], cursor_state.get("failed_files", []))
+
 
 _CANONICAL_PROVIDERS = (
     Provider.CHATGPT.value,
@@ -252,11 +315,12 @@ def test_iter_json_stream_jsonl_invalid_line_logging_contract(monkeypatch: pytes
 def test_iter_json_stream_falls_back_to_full_json_load_when_streaming_fails(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[str] = []
 
-    def broken_items(handle: BytesIO, prefix: str):
+    def broken_items(handle: BytesIO, prefix: str) -> Iterable[object]:
+        del handle
         calls.append(prefix)
-        raise decoders_module.ijson.common.JSONError("boom")
+        raise ijson.common.JSONError("boom")
 
-    monkeypatch.setattr(decoders_module.ijson, "items", broken_items)
+    monkeypatch.setattr(ijson, "items", broken_items)
 
     raw = b'{"conversations":[{"id":"one"},{"id":"two"}]}'
     items = list(_iter_json_stream(BytesIO(raw), "test.json"))
@@ -303,17 +367,18 @@ def _write_generic_conversation(path: Path, conversation_id: str, text: str = "h
 @settings(max_examples=30, deadline=None)
 def test_iter_source_conversations_round_trips_generated_exports(case: dict[str, object], use_zip: bool) -> None:
     """Generated provider exports should stay discoverable through file and ZIP iteration."""
+    generated = cast(GeneratedSourceCase, case)
     with tempfile.TemporaryDirectory() as tmp:
         source = _materialize_generated_source(
             Path(tmp),
-            hint_path=case["path"],
-            raw=case["raw"],
+            hint_path=generated["path"],
+            raw=generated["raw"],
             use_zip=use_zip,
         )
         conversations = list(iter_source_conversations(source))
 
     assert conversations
-    assert all(str(conversation.provider_name) == case["provider"] for conversation in conversations)
+    assert all(str(conversation.provider_name) == generated["provider"] for conversation in conversations)
 
 
 @given(
@@ -336,17 +401,18 @@ def test_iter_source_conversations_with_raw_capture_contract(
     capture_raw: bool,
 ) -> None:
     """Raw iteration must preserve provider parsing while toggling raw payload capture cleanly."""
+    generated = cast(GeneratedSourceCase, case)
     with tempfile.TemporaryDirectory() as tmp:
         source = _materialize_generated_source(
             Path(tmp),
-            hint_path=case["path"],
-            raw=case["raw"],
+            hint_path=generated["path"],
+            raw=generated["raw"],
             use_zip=use_zip,
         )
         items = list(iter_source_conversations_with_raw(source, capture_raw=capture_raw))
 
     assert items
-    assert all(str(conversation.provider_name) == case["provider"] for _, conversation in items)
+    assert all(str(conversation.provider_name) == generated["provider"] for _, conversation in items)
     if capture_raw:
         assert all(raw_data is not None for raw_data, _ in items)
         assert all(raw_data.raw_bytes or raw_data.blob_hash for raw_data, _ in items if raw_data is not None)
@@ -432,7 +498,7 @@ def test_source_iteration_continues_after_invalid_json_contract(tmp_path: Path, 
     assert conversation_ids == ["valid1", "valid2"]
     assert cursor_state["file_count"] == 3
     assert cursor_state["failed_count"] == 1
-    assert any("invalid.json" in item["path"] for item in cursor_state["failed_files"])
+    assert any("invalid.json" in str(item["path"]) for item in _failed_files(cursor_state))
     if iterator == "raw":
         assert all(raw_data is not None for raw_data, _ in raw_items)
 
@@ -445,10 +511,24 @@ def test_iter_source_conversations_tracks_file_disappearance_contract(
     cursor_state: dict[str, object] = {}
     original_open = Path.open
 
-    def flaky_open(path: Path, *args: object, **kwargs: object):
+    def flaky_open(
+        path: Path,
+        mode: str = "r",
+        buffering: int = -1,
+        encoding: str | None = None,
+        errors: str | None = None,
+        newline: str | None = None,
+    ) -> Any:
         if path == second:
             raise FileNotFoundError("deleted")
-        return original_open(path, *args, **kwargs)
+        return original_open(
+            path,
+            mode=mode,
+            buffering=buffering,
+            encoding=encoding,
+            errors=errors,
+            newline=newline,
+        )
 
     monkeypatch.setattr(Path, "open", flaky_open)
 
@@ -456,7 +536,7 @@ def test_iter_source_conversations_tracks_file_disappearance_contract(
 
     assert [conversation.provider_conversation_id for conversation in conversations] == ["first"]
     assert cursor_state["failed_count"] == 1
-    assert any("second.json" in item["path"] for item in cursor_state["failed_files"])
+    assert any("second.json" in str(item["path"]) for item in _failed_files(cursor_state))
     assert first.exists()
 
 
@@ -593,7 +673,7 @@ def test_iter_source_conversations_with_raw_streams_grouped_zip_capture_to_blob_
     write_calls = 0
     original_write_from_fileobj = BlobStore.write_from_fileobj
 
-    def tracking_write_from_fileobj(self: BlobStore, source) -> tuple[str, int]:
+    def tracking_write_from_fileobj(self: BlobStore, source: BinaryIO) -> tuple[str, int]:
         nonlocal write_calls
         write_calls += 1
         return original_write_from_fileobj(self, source)
@@ -644,7 +724,7 @@ def test_iter_source_conversations_with_raw_tracks_unicode_decode_failures_contr
 
     assert results == []
     assert cursor_state["failed_count"] == 1
-    assert any("bad_encoding.json" in item["path"] for item in cursor_state["failed_files"])
+    assert any("bad_encoding.json" in str(item["path"]) for item in _failed_files(cursor_state))
 
 
 def test_source_iteration_ignores_stat_failures_for_optional_mtime_contract(
@@ -656,10 +736,10 @@ def test_source_iteration_ignores_stat_failures_for_optional_mtime_contract(
     source_file = _write_generic_conversation(source_dir / "conv.json", "conv")
     original_stat = Path.stat
 
-    def flaky_stat(path: Path, *args: object, **kwargs: object):
+    def flaky_stat(path: Path, *, follow_symlinks: bool = True) -> os.stat_result:
         if path == source_file:
             raise OSError("no stat")
-        return original_stat(path, *args, **kwargs)
+        return original_stat(path, follow_symlinks=follow_symlinks)
 
     monkeypatch.setattr(Path, "stat", flaky_stat)
 
@@ -709,7 +789,7 @@ def test_parse_drive_payload_contract(
 
 
 def test_parse_payload_generic_messages_contract(monkeypatch: pytest.MonkeyPatch) -> None:
-    sentinel_messages = [ParsedMessage(provider_message_id="m1", role="user", text="hello")]
+    sentinel_messages = [_parsed_message("m1", role="user", text="hello")]
 
     monkeypatch.setattr(dispatch_module, "extract_messages_from_list", lambda messages: sentinel_messages)
 
@@ -731,8 +811,8 @@ def test_parse_payload_dispatches_chatgpt_bundle_items_exactly(monkeypatch: pyte
 
     def fake_parse(payload: object, fallback_id: str) -> ParsedConversation:
         calls.append((payload, fallback_id))
-        return ParsedConversation(
-            provider_name="chatgpt",
+        return _parsed_conversation(
+            provider_name=Provider.CHATGPT,
             provider_conversation_id=fallback_id,
             title=fallback_id,
             created_at=None,
@@ -740,7 +820,7 @@ def test_parse_payload_dispatches_chatgpt_bundle_items_exactly(monkeypatch: pyte
             messages=[],
         )
 
-    monkeypatch.setattr(dispatch_module.chatgpt, "parse", fake_parse)
+    monkeypatch.setattr(chatgpt_parser, "parse", fake_parse)
     payloads = [{"id": "one"}, {"id": "two"}]
 
     conversations = parse_payload(Provider.CHATGPT.value, payloads, "bundle")
@@ -754,8 +834,8 @@ def test_parse_payload_dispatches_claude_code_messages_and_single_records(monkey
 
     def fake_parse_code(payload: object, fallback_id: str) -> ParsedConversation:
         calls.append((payload, fallback_id))
-        return ParsedConversation(
-            provider_name="claude-code",
+        return _parsed_conversation(
+            provider_name=Provider.CLAUDE_CODE,
             provider_conversation_id=fallback_id,
             title=fallback_id,
             created_at=None,
@@ -763,7 +843,7 @@ def test_parse_payload_dispatches_claude_code_messages_and_single_records(monkey
             messages=[],
         )
 
-    monkeypatch.setattr(dispatch_module.claude, "parse_code", fake_parse_code)
+    monkeypatch.setattr(claude_parser, "parse_code", fake_parse_code)
 
     from_messages = parse_payload(
         Provider.CLAUDE_CODE.value,
@@ -790,7 +870,7 @@ def test_parse_drive_payload_recurses_lists_and_detected_payloads(monkeypatch: p
 
     def fake_chunked(provider: str, payload: object, fallback_id: str) -> ParsedConversation:
         drive_calls.append((provider, payload, fallback_id))
-        return ParsedConversation(
+        return _parsed_conversation(
             provider_name=provider,
             provider_conversation_id=fallback_id,
             title=fallback_id,
@@ -799,10 +879,15 @@ def test_parse_drive_payload_recurses_lists_and_detected_payloads(monkeypatch: p
             messages=[],
         )
 
-    def fake_parse_payload(provider: str, payload: object, fallback_id: str, _depth: int = 0):
+    def fake_parse_payload(
+        provider: str,
+        payload: object,
+        fallback_id: str,
+        _depth: int = 0,
+    ) -> list[ParsedConversation]:
         parse_calls.append((provider, payload, fallback_id))
         return [
-            ParsedConversation(
+            _parsed_conversation(
                 provider_name=provider,
                 provider_conversation_id=fallback_id,
                 title=fallback_id,
@@ -812,7 +897,7 @@ def test_parse_drive_payload_recurses_lists_and_detected_payloads(monkeypatch: p
             )
         ]
 
-    monkeypatch.setattr(dispatch_module.drive, "parse_chunked_prompt", fake_chunked)
+    monkeypatch.setattr(drive_parser, "parse_chunked_prompt", fake_chunked)
     monkeypatch.setattr(dispatch_module, "parse_payload", fake_parse_payload)
     monkeypatch.setattr(dispatch_module, "detect_provider", lambda payload, path=None: Provider.CHATGPT)
 
@@ -897,6 +982,8 @@ def test_select_paths_for_processing_skips_known_mtimes_only_when_mtime_enabled(
 
     first_mtime = _get_file_mtime(first)
     second_mtime = _get_file_mtime(second)
+    assert first_mtime is not None
+    assert second_mtime is not None
 
     selected, skipped = _select_paths_for_processing(
         [first, second],
@@ -964,13 +1051,13 @@ def test_find_sessions_index_and_enrichment_contract(tmp_path: Path) -> None:
 
     assert find_sessions_index(session_file) == index_file
 
-    conversation = ParsedConversation(
-        provider_name="claude-code",
+    conversation = _parsed_conversation(
+        provider_name=Provider.CLAUDE_CODE,
         provider_conversation_id="session-1",
         title="session-1",
         created_at="2025-01-01T00:00:00Z",
         updated_at="2025-01-01T00:00:00Z",
-        messages=[ParsedMessage(provider_message_id="m1", role="user", text="hello")],
+        messages=[_parsed_message("m1", role="user", text="hello")],
         provider_meta={"raw": True},
     )
     entry = SessionIndexEntry(
@@ -1072,7 +1159,7 @@ def test_drive_cache_file_path_sanitizes_and_normalizes_suffix_contract(tmp_path
 
 
 def _parse_context(
-    provider_hint: str,
+    provider_hint: str | Provider,
     *,
     should_group: bool,
     source_path: str,
@@ -1081,7 +1168,7 @@ def _parse_context(
     sidecar_data: dict[str, Any] | None = None,
 ) -> _ParseContext:
     return _ParseContext(
-        provider_hint=provider_hint,
+        provider_hint=Provider.from_string(provider_hint),
         should_group=should_group,
         source_path_str=source_path,
         fallback_id=fallback_id,
@@ -1235,8 +1322,8 @@ def test_conversation_emitter_resolves_schema_for_payloads(monkeypatch: pytest.M
     fake_registry = MagicMock()
     fake_registry.resolve_payload.return_value = object()
     fake_parse = MagicMock()
-    fake_message = ParsedMessage(provider_message_id="m1", role="user", text="hello")
-    fake_conversation = ParsedConversation(
+    fake_message = _parsed_message("m1", role="user", text="hello")
+    fake_conversation = _parsed_conversation(
         provider_name=Provider.CLAUDE_CODE,
         provider_conversation_id="session",
         title="session",
@@ -1293,7 +1380,11 @@ def test_conversation_emitter_reuses_jsonl_sniff_payloads_for_grouped_detection(
     parse_calls = 0
     original_iter_json_stream = _iter_json_stream
 
-    def tracking_iter_json_stream(handle: object, path_name: str, unpack_lists: bool = True):
+    def tracking_iter_json_stream(
+        handle: BinaryIO | IO[bytes],
+        path_name: str,
+        unpack_lists: bool = True,
+    ) -> Iterable[object]:
         nonlocal parse_calls
         parse_calls += 1
         yield from original_iter_json_stream(handle, path_name, unpack_lists=unpack_lists)
@@ -1313,7 +1404,7 @@ def test_conversation_emitter_reuses_jsonl_sniff_payloads_for_individual_detecti
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class NoWholeReadBytesIO(BytesIO):
-        def read(self, size: int = -1) -> bytes:
+        def read(self, size: int | None = -1) -> bytes:
             if size == -1:
                 raise AssertionError("unexpected whole-file read")
             return super().read(size)
@@ -1334,7 +1425,11 @@ def test_conversation_emitter_reuses_jsonl_sniff_payloads_for_individual_detecti
     parse_calls = 0
     original_iter_json_stream = _iter_json_stream
 
-    def tracking_iter_json_stream(handle: object, path_name: str, unpack_lists: bool = True):
+    def tracking_iter_json_stream(
+        handle: BinaryIO | IO[bytes],
+        path_name: str,
+        unpack_lists: bool = True,
+    ) -> Iterable[object]:
         nonlocal parse_calls
         parse_calls += 1
         yield from original_iter_json_stream(handle, path_name, unpack_lists=unpack_lists)
@@ -1354,7 +1449,7 @@ def test_conversation_emitter_detects_individual_jsonl_provider_from_payloads(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class NoWholeReadBytesIO(BytesIO):
-        def read(self, size: int = -1) -> bytes:
+        def read(self, size: int | None = -1) -> bytes:
             if size == -1:
                 raise AssertionError("unexpected whole-file read")
             return super().read(size)
@@ -1374,7 +1469,7 @@ def test_conversation_emitter_detects_individual_jsonl_provider_from_payloads(
     )
     original_detect_provider = dispatch_module.detect_provider
 
-    def tracking_detect_provider(payload: object, path: object | None = None):
+    def tracking_detect_provider(payload: object, path: object | None = None) -> Provider | None:
         if isinstance(payload, list):
             raise AssertionError("individual JSONL sniff should not require whole-list provider detection")
         return original_detect_provider(payload, path)
@@ -1412,21 +1507,21 @@ def test_conversation_emitter_only_enriches_matching_claude_code_sessions_contra
         sidecar_data={"session_index": {"session-1": entry}},
     )
     emitter = _ConversationEmitter(ctx)
-    matching = ParsedConversation(
-        provider_name="claude-code",
+    matching = _parsed_conversation(
+        provider_name=Provider.CLAUDE_CODE,
         provider_conversation_id="session-1",
         title="session-1",
         created_at=None,
         updated_at=None,
-        messages=[ParsedMessage(provider_message_id="m1", role="user", text="hello")],
+        messages=[_parsed_message("m1", role="user", text="hello")],
     )
-    other = ParsedConversation(
-        provider_name="chatgpt",
+    other = _parsed_conversation(
+        provider_name=Provider.CHATGPT,
         provider_conversation_id="session-2",
         title="untouched",
         created_at=None,
         updated_at=None,
-        messages=[ParsedMessage(provider_message_id="m2", role="user", text="hello")],
+        messages=[_parsed_message("m2", role="user", text="hello")],
     )
 
     enriched = emitter._maybe_enrich(matching)
@@ -1526,7 +1621,7 @@ def test_zip_entry_validator_policy_contract(
     if expected_failed_fragment is None:
         assert cursor_state["failed_files"] == []
     else:
-        assert expected_failed_fragment in cursor_state["failed_files"][0]["path"]
+        assert expected_failed_fragment in str(_failed_files(cursor_state)[0]["path"])
 
 
 def test_zip_entry_provider_hint_keeps_fallback_contract() -> None:
@@ -1546,7 +1641,8 @@ class _StubDriveRawClient:
     def resolve_folder_id(self, folder_ref: str) -> str:
         return f"folder:{folder_ref}"
 
-    def iter_json_files(self, folder_id: str):
+    def iter_json_files(self, folder_id: str) -> Iterable[DriveFile]:
+        del folder_id
         yield from self.files
 
     def download_bytes(self, file_id: str) -> bytes:
@@ -1554,10 +1650,15 @@ class _StubDriveRawClient:
             raise self.failures[file_id]
         return self.raw_bytes[file_id]
 
-    def download_to_path(self, file_id: str, dest: Path) -> None:
+    def download_json_payload(self, file_id: str, *, name: str) -> object:
+        del name
+        return json.loads(self.download_bytes(file_id))
+
+    def download_to_path(self, file_id: str, dest: Path) -> DriveFile:
         if file_id in self.failures:
             raise self.failures[file_id]
         dest.write_bytes(self.raw_bytes[file_id])
+        return next(file for file in self.files if file.file_id == file_id)
 
 
 def test_iter_drive_raw_data_contract() -> None:
@@ -1677,7 +1778,8 @@ def test_iter_source_raw_data_streams_grouped_zip_entries_into_blob_store(
     with zipfile.ZipFile(archive_path, "w") as zf:
         zf.writestr("nested/session.jsonl", entry_bytes)
 
-    def _fail(*args, **kwargs):
+    def _fail(*args: object, **kwargs: object) -> None:
+        del args, kwargs
         raise AssertionError("Grouped ZIP acquisition should stream into the blob store")
 
     monkeypatch.setattr(BlobStore, "write_from_bytes", _fail)
@@ -1761,7 +1863,8 @@ def test_iter_source_raw_data_avoids_whole_blob_provider_detection_for_zip_entri
             ).encode("utf-8"),
         )
 
-    def _fail(*args, **kwargs):
+    def _fail(*args: object, **kwargs: object) -> None:
+        del args, kwargs
         raise AssertionError("ZIP acquisition should not use whole-blob provider detection")
 
     monkeypatch.setattr(
@@ -1798,17 +1901,17 @@ def test_iter_source_raw_data_reports_split_payload_observations(tmp_path: Path)
 
     assert len(items) == 2
     assert observations
-    peak = max(observations, key=lambda observation: float(observation["peak_rss_self_mb"]))
+    peak = max(observations, key=lambda observation: float(cast(str | int | float, observation["peak_rss_self_mb"])))
     assert peak["phase"] == "zip-entry-split-payload-serialized"
     assert peak["source_path"] == f"{archive_path}:nested/conversations.json"
     assert peak["provider_hint"] == Provider.CHATGPT.value
     assert peak["source_index"] in {0, 1}
-    assert int(peak["blob_size"]) > 0
+    assert int(cast(str | int, peak["blob_size"])) > 0
     assert peak["artifact_kind"]
-    assert float(peak["detect_provider_ms"]) >= 0.0
-    assert float(peak["classify_ms"]) >= 0.0
-    assert float(peak["serialize_ms"]) >= 0.0
-    assert float(peak["peak_rss_self_mb"]) > 0.0
+    assert float(cast(str | int | float, peak["detect_provider_ms"])) >= 0.0
+    assert float(cast(str | int | float, peak["classify_ms"])) >= 0.0
+    assert float(cast(str | int | float, peak["serialize_ms"])) >= 0.0
+    assert float(cast(str | int | float, peak["peak_rss_self_mb"])) > 0.0
 
 
 def test_iter_source_raw_data_streams_preserved_zip_entries_into_blob_store(
@@ -1822,7 +1925,8 @@ def test_iter_source_raw_data_streams_preserved_zip_entries_into_blob_store(
     with zipfile.ZipFile(archive_path, "w") as zf:
         zf.writestr("nested/chatgpt-export.json", entry_bytes)
 
-    def _fail(*args, **kwargs):
+    def _fail(*args: object, **kwargs: object) -> None:
+        del args, kwargs
         raise AssertionError("Preserved ZIP entries should stream into the blob store")
 
     monkeypatch.setattr(BlobStore, "write_from_bytes", _fail)
@@ -1845,7 +1949,7 @@ def test_iter_entry_payloads_locks_provider_after_first_detected_payload(
     detect_calls: list[dict[str, object]] = []
     original_detect_provider = dispatch_module.detect_provider
 
-    def tracking_detect_provider(payload: object, path: object | None = None):
+    def tracking_detect_provider(payload: object, path: object | None = None) -> Provider | None:
         del path
         if isinstance(payload, dict):
             detect_calls.append(payload)
@@ -1896,7 +2000,7 @@ def test_iter_source_raw_data_skips_known_mtimes_without_reading_file(tmp_path: 
     items = list(
         iter_source_raw_data(
             Source(name="chatgpt", path=tmp_path),
-            known_mtimes={str(skipped): _get_file_mtime(skipped)},
+            known_mtimes={str(skipped): cast(str, _get_file_mtime(skipped))},
         )
     )
 
@@ -2005,7 +2109,7 @@ def test_iter_source_raw_data_tracks_read_failures_without_stopping(
         self: BlobStore,
         source: Path,
         *,
-        heartbeat=None,
+        heartbeat: Any = None,
     ) -> tuple[str, int]:
         del heartbeat
         if source == bad:
@@ -2019,7 +2123,7 @@ def test_iter_source_raw_data_tracks_read_failures_without_stopping(
 
     assert [item.source_path for item in items] == [str(good)]
     assert cursor_state["failed_count"] == 1
-    assert any(entry["path"] == str(bad) and entry["error"] == "boom" for entry in cursor_state["failed_files"])
+    assert any(entry["path"] == str(bad) and entry["error"] == "boom" for entry in _failed_files(cursor_state))
 
 
 # =============================================================================
@@ -2072,21 +2176,6 @@ def test_empty_bytes_returns_none() -> None:
 # MERGED FROM test_parse_laws.py (property laws for parser roles)
 # =============================================================================
 
-
-from polylogue.lib.roles import normalize_role
-from polylogue.sources.providers.chatgpt import (
-    ChatGPTAuthor,
-    ChatGPTContent,
-    ChatGPTConversation,
-    ChatGPTMessage,
-    ChatGPTNode,
-)
-from polylogue.sources.providers.claude_code import (
-    ClaudeCodeThinkingBlock,
-    ClaudeCodeToolUse,
-    ClaudeCodeUsage,
-)
-
 # ---------------------------------------------------------------------------
 # Law 1: normalize_role never raises for any non-empty string
 # ---------------------------------------------------------------------------
@@ -2136,7 +2225,7 @@ def test_normalize_role_idempotent_on_canonical(role: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-@given(st.text(min_size=1, max_size=30, alphabet=st.characters(whitelist_categories=("L",))))
+@given(st.text(min_size=1, max_size=30, alphabet="abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"))
 def test_normalize_role_case_insensitive(text: str) -> None:
     """normalize_role gives the same result for any case variant."""
     stripped = text.strip()

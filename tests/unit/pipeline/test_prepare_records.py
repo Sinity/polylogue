@@ -2,38 +2,46 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+from pathlib import Path
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from polylogue.lib.roles import Role
 from polylogue.pipeline.prepare import prepare_records
+from polylogue.pipeline.prepare_models import PersistedConversationResult
 from polylogue.pipeline.services.validation import ValidationService
 from polylogue.sources.parsers.base import ParsedAttachment, ParsedConversation, ParsedMessage
+from polylogue.storage.backends.async_sqlite import SQLiteBackend
+from polylogue.storage.repository import ConversationRepository
+from polylogue.types import Provider
 
 
-def _prepare_fields(result):
+def _prepare_fields(result: PersistedConversationResult) -> tuple[str, dict[str, int], bool]:
     return result.conversation_id, result.counts, result.content_changed
 
 
 @pytest.fixture
-async def async_backend(test_db):
-    from polylogue.storage.backends.async_sqlite import SQLiteBackend
-
+async def async_backend(test_db: Path) -> AsyncIterator[SQLiteBackend]:
     backend = SQLiteBackend(db_path=test_db)
     yield backend
     await backend.close()
 
 
 @pytest.fixture
-async def test_repository(async_backend):
-    from polylogue.storage.repository import ConversationRepository
-
+async def test_repository(async_backend: SQLiteBackend) -> ConversationRepository:
     return ConversationRepository(backend=async_backend)
 
 
-async def test_prepare_records_new_conversation(async_backend, test_repository, tmp_path):
+async def test_prepare_records_new_conversation(
+    async_backend: SQLiteBackend,
+    test_repository: ConversationRepository,
+    tmp_path: Path,
+) -> None:
     conversation = ParsedConversation(
-        provider_name="test",
+        provider_name=Provider.UNKNOWN,
         provider_conversation_id="new-conv-1",
         title="New Conversation",
         created_at="2024-01-01T00:00:00Z",
@@ -41,7 +49,7 @@ async def test_prepare_records_new_conversation(async_backend, test_repository, 
         messages=[
             ParsedMessage(
                 provider_message_id="msg-1",
-                role="user",
+                role=Role.USER,
                 text="Hello",
                 timestamp="2024-01-01T00:00:00Z",
             )
@@ -66,9 +74,13 @@ async def test_prepare_records_new_conversation(async_backend, test_repository, 
     assert conversation_id == "unknown:new-conv-1"
 
 
-async def test_prepare_records_unchanged_conversation_skips(async_backend, test_repository, tmp_path):
+async def test_prepare_records_unchanged_conversation_skips(
+    async_backend: SQLiteBackend,
+    test_repository: ConversationRepository,
+    tmp_path: Path,
+) -> None:
     conversation = ParsedConversation(
-        provider_name="test",
+        provider_name=Provider.UNKNOWN,
         provider_conversation_id="conv-1",
         title="Test Conversation",
         created_at="2024-01-01T00:00:00Z",
@@ -76,7 +88,7 @@ async def test_prepare_records_unchanged_conversation_skips(async_backend, test_
         messages=[
             ParsedMessage(
                 provider_message_id="msg-1",
-                role="user",
+                role=Role.USER,
                 text="Hello",
                 timestamp="2024-01-01T00:00:00Z",
             )
@@ -112,9 +124,13 @@ async def test_prepare_records_unchanged_conversation_skips(async_backend, test_
     assert changed is False
 
 
-async def test_prepare_records_detects_changed_content(async_backend, test_repository, tmp_path):
+async def test_prepare_records_detects_changed_content(
+    async_backend: SQLiteBackend,
+    test_repository: ConversationRepository,
+    tmp_path: Path,
+) -> None:
     original = ParsedConversation(
-        provider_name="test",
+        provider_name=Provider.UNKNOWN,
         provider_conversation_id="conv-1",
         title="Test Conversation",
         created_at="2024-01-01T00:00:00Z",
@@ -122,7 +138,7 @@ async def test_prepare_records_detects_changed_content(async_backend, test_repos
         messages=[
             ParsedMessage(
                 provider_message_id="msg-1",
-                role="user",
+                role=Role.USER,
                 text="Original text",
                 timestamp="2024-01-01T00:00:00Z",
             )
@@ -130,7 +146,7 @@ async def test_prepare_records_detects_changed_content(async_backend, test_repos
         attachments=[],
     )
     modified = ParsedConversation(
-        provider_name="test",
+        provider_name=Provider.UNKNOWN,
         provider_conversation_id="conv-1",
         title="Test Conversation",
         created_at="2024-01-01T00:00:00Z",
@@ -138,7 +154,7 @@ async def test_prepare_records_detects_changed_content(async_backend, test_repos
         messages=[
             ParsedMessage(
                 provider_message_id="msg-1",
-                role="user",
+                role=Role.USER,
                 text="Modified text",
                 timestamp="2024-01-01T00:00:00Z",
             )
@@ -172,17 +188,21 @@ async def test_prepare_records_detects_changed_content(async_backend, test_repos
     assert changed is True
 
 
-async def test_prepare_records_creates_message_records(async_backend, test_repository, tmp_path):
+async def test_prepare_records_creates_message_records(
+    async_backend: SQLiteBackend,
+    test_repository: ConversationRepository,
+    tmp_path: Path,
+) -> None:
     conversation = ParsedConversation(
-        provider_name="test",
+        provider_name=Provider.UNKNOWN,
         provider_conversation_id="conv-1",
         title="Test",
         created_at="2024-01-01T00:00:00Z",
         updated_at="2024-01-01T00:00:00Z",
         messages=[
-            ParsedMessage(provider_message_id="msg-1", role="user", text="Hello", timestamp="2024-01-01T00:00:00Z"),
+            ParsedMessage(provider_message_id="msg-1", role=Role.USER, text="Hello", timestamp="2024-01-01T00:00:00Z"),
             ParsedMessage(
-                provider_message_id="msg-2", role="assistant", text="Hi there", timestamp="2024-01-01T00:00:01Z"
+                provider_message_id="msg-2", role=Role.ASSISTANT, text="Hi there", timestamp="2024-01-01T00:00:01Z"
             ),
         ],
         attachments=[],
@@ -204,23 +224,31 @@ async def test_prepare_records_creates_message_records(async_backend, test_repos
     assert counts["conversations"] == 1
     assert counts["messages"] == 2
     async with async_backend.connection() as conn:
-        rows = await (
-            await conn.execute("SELECT message_id, role FROM messages WHERE conversation_id = ?", (conversation_id,))
-        ).fetchall()
+        rows = list(
+            await (
+                await conn.execute(
+                    "SELECT message_id, role FROM messages WHERE conversation_id = ?", (conversation_id,)
+                )
+            ).fetchall()
+        )
     assert len(rows) == 2
 
 
-async def test_prepare_records_handles_empty_provider_message_ids(async_backend, test_repository, tmp_path):
+async def test_prepare_records_handles_empty_provider_message_ids(
+    async_backend: SQLiteBackend,
+    test_repository: ConversationRepository,
+    tmp_path: Path,
+) -> None:
     conversation = ParsedConversation(
-        provider_name="test",
+        provider_name=Provider.UNKNOWN,
         provider_conversation_id="conv-1",
         title="Test",
         created_at="2024-01-01T00:00:00Z",
         updated_at="2024-01-01T00:00:00Z",
         messages=[
-            ParsedMessage(provider_message_id="", role="user", text="Hello", timestamp="2024-01-01T00:00:00Z"),
+            ParsedMessage(provider_message_id="", role=Role.USER, text="Hello", timestamp="2024-01-01T00:00:00Z"),
             ParsedMessage(
-                provider_message_id="msg-explicit", role="assistant", text="Hi", timestamp="2024-01-01T00:00:01Z"
+                provider_message_id="msg-explicit", role=Role.ASSISTANT, text="Hi", timestamp="2024-01-01T00:00:01Z"
             ),
         ],
         attachments=[],
@@ -252,16 +280,20 @@ async def test_prepare_records_handles_empty_provider_message_ids(async_backend,
     assert "msg-explicit" in provider_ids
 
 
-async def test_prepare_records_stores_source_metadata(async_backend, test_repository, tmp_path):
+async def test_prepare_records_stores_source_metadata(
+    async_backend: SQLiteBackend,
+    test_repository: ConversationRepository,
+    tmp_path: Path,
+) -> None:
     import json
 
     conversation = ParsedConversation(
-        provider_name="chatgpt",
+        provider_name=Provider.CHATGPT,
         provider_conversation_id="ext-1",
         title="Test",
         created_at="2024-01-01T00:00:00Z",
         updated_at="2024-01-01T00:00:00Z",
-        messages=[ParsedMessage(provider_message_id="m1", role="user", text="Hi", timestamp="2024-01-01T00:00:00Z")],
+        messages=[ParsedMessage(provider_message_id="m1", role=Role.USER, text="Hi", timestamp="2024-01-01T00:00:00Z")],
         attachments=[],
     )
 
@@ -290,9 +322,13 @@ async def test_prepare_records_stores_source_metadata(async_backend, test_reposi
     assert meta.get("source") == "my-export"
 
 
-async def test_prepare_records_backfills_structured_blocks_from_provider_meta(async_backend, test_repository, tmp_path):
+async def test_prepare_records_backfills_structured_blocks_from_provider_meta(
+    async_backend: SQLiteBackend,
+    test_repository: ConversationRepository,
+    tmp_path: Path,
+) -> None:
     conversation = ParsedConversation(
-        provider_name="gemini",
+        provider_name=Provider.GEMINI,
         provider_conversation_id="gemini-structured-1",
         title="Structured Gemini",
         created_at="2024-01-01T00:00:00Z",
@@ -300,7 +336,7 @@ async def test_prepare_records_backfills_structured_blocks_from_provider_meta(as
         messages=[
             ParsedMessage(
                 provider_message_id="msg-1",
-                role="assistant",
+                role=Role.ASSISTANT,
                 text=None,
                 timestamp="2024-01-01T00:00:00Z",
                 provider_meta={
@@ -313,7 +349,7 @@ async def test_prepare_records_backfills_structured_blocks_from_provider_meta(as
             ),
             ParsedMessage(
                 provider_message_id="msg-2",
-                role="assistant",
+                role=Role.ASSISTANT,
                 text=None,
                 timestamp="2024-01-01T00:00:01Z",
                 provider_meta={
@@ -371,16 +407,22 @@ async def test_prepare_records_backfills_structured_blocks_from_provider_meta(as
     ]
 
 
-async def test_prepare_records_multiple_messages_get_unique_hashes(async_backend, test_repository, tmp_path):
+async def test_prepare_records_multiple_messages_get_unique_hashes(
+    async_backend: SQLiteBackend,
+    test_repository: ConversationRepository,
+    tmp_path: Path,
+) -> None:
     conversation = ParsedConversation(
-        provider_name="test",
+        provider_name=Provider.UNKNOWN,
         provider_conversation_id="conv-1",
         title="Test",
         created_at="2024-01-01T00:00:00Z",
         updated_at="2024-01-01T00:00:00Z",
         messages=[
-            ParsedMessage(provider_message_id="m1", role="user", text="First", timestamp="2024-01-01T00:00:00Z"),
-            ParsedMessage(provider_message_id="m2", role="assistant", text="Second", timestamp="2024-01-01T00:00:01Z"),
+            ParsedMessage(provider_message_id="m1", role=Role.USER, text="First", timestamp="2024-01-01T00:00:00Z"),
+            ParsedMessage(
+                provider_message_id="m2", role=Role.ASSISTANT, text="Second", timestamp="2024-01-01T00:00:01Z"
+            ),
         ],
         attachments=[],
     )
@@ -399,26 +441,32 @@ async def test_prepare_records_multiple_messages_get_unique_hashes(async_backend
     )
 
     async with async_backend.connection() as conn:
-        rows = await (
-            await conn.execute(
-                "SELECT content_hash FROM messages WHERE conversation_id = ? ORDER BY provider_message_id",
-                (conversation_id,),
-            )
-        ).fetchall()
+        rows = list(
+            await (
+                await conn.execute(
+                    "SELECT content_hash FROM messages WHERE conversation_id = ? ORDER BY provider_message_id",
+                    (conversation_id,),
+                )
+            ).fetchall()
+        )
     assert len(rows) == 2
     assert rows[0]["content_hash"] != rows[1]["content_hash"]
 
 
-async def test_prepare_records_with_attachments(async_backend, test_repository, tmp_path):
+async def test_prepare_records_with_attachments(
+    async_backend: SQLiteBackend,
+    test_repository: ConversationRepository,
+    tmp_path: Path,
+) -> None:
     conversation = ParsedConversation(
-        provider_name="test",
+        provider_name=Provider.UNKNOWN,
         provider_conversation_id="conv-1",
         title="Test",
         created_at="2024-01-01T00:00:00Z",
         updated_at="2024-01-01T00:00:00Z",
         messages=[
             ParsedMessage(
-                provider_message_id="m1", role="user", text="See attachment", timestamp="2024-01-01T00:00:00Z"
+                provider_message_id="m1", role=Role.USER, text="See attachment", timestamp="2024-01-01T00:00:00Z"
             )
         ],
         attachments=[
@@ -447,33 +495,39 @@ async def test_prepare_records_with_attachments(async_backend, test_repository, 
 
     assert counts["attachments"] == 1
     async with async_backend.connection() as conn:
-        attachment_refs = await (
-            await conn.execute(
-                "SELECT ar.*, a.mime_type FROM attachment_refs ar "
-                "JOIN attachments a ON ar.attachment_id = a.attachment_id "
-                "WHERE ar.conversation_id = ?",
-                (conversation_id,),
-            )
-        ).fetchall()
+        attachment_refs = list(
+            await (
+                await conn.execute(
+                    "SELECT ar.*, a.mime_type FROM attachment_refs ar "
+                    "JOIN attachments a ON ar.attachment_id = a.attachment_id "
+                    "WHERE ar.conversation_id = ?",
+                    (conversation_id,),
+                )
+            ).fetchall()
+        )
     assert len(attachment_refs) == 1
     assert attachment_refs[0]["mime_type"] == "application/pdf"
 
 
-async def test_prepare_records_rolls_back_attachment_move_on_save_failure(async_backend, test_repository, tmp_path):
+async def test_prepare_records_rolls_back_attachment_move_on_save_failure(
+    async_backend: SQLiteBackend,
+    test_repository: ConversationRepository,
+    tmp_path: Path,
+) -> None:
     uploads = tmp_path / "uploads"
     uploads.mkdir()
     source_file = uploads / "document.pdf"
     source_file.write_bytes(b"pdf bytes")
 
     conversation = ParsedConversation(
-        provider_name="test",
+        provider_name=Provider.UNKNOWN,
         provider_conversation_id="conv-rollback",
         title="Rollback",
         created_at="2024-01-01T00:00:00Z",
         updated_at="2024-01-01T00:00:00Z",
         messages=[
             ParsedMessage(
-                provider_message_id="m1", role="user", text="See attachment", timestamp="2024-01-01T00:00:00Z"
+                provider_message_id="m1", role=Role.USER, text="See attachment", timestamp="2024-01-01T00:00:00Z"
             )
         ],
         attachments=[
@@ -505,14 +559,18 @@ async def test_prepare_records_rolls_back_attachment_move_on_save_failure(async_
     assert not any(path.is_file() for path in (archive_root / "assets").rglob("*"))
 
 
-async def test_prepare_records_returns_typed_result(async_backend, test_repository, tmp_path):
+async def test_prepare_records_returns_typed_result(
+    async_backend: SQLiteBackend,
+    test_repository: ConversationRepository,
+    tmp_path: Path,
+) -> None:
     conversation = ParsedConversation(
-        provider_name="test",
+        provider_name=Provider.UNKNOWN,
         provider_conversation_id="conv-1",
         title="Test",
         created_at="2024-01-01T00:00:00Z",
         updated_at="2024-01-01T00:00:00Z",
-        messages=[ParsedMessage(provider_message_id="m1", role="user", text="Hi", timestamp="2024-01-01T00:00:00Z")],
+        messages=[ParsedMessage(provider_message_id="m1", role=Role.USER, text="Hi", timestamp="2024-01-01T00:00:00Z")],
         attachments=[],
     )
 
@@ -544,12 +602,15 @@ async def test_prepare_records_returns_typed_result(async_backend, test_reposito
 
 
 class TestValidationService:
-    def test_validation_default_mode_is_strict(self, monkeypatch):
+    def test_validation_default_mode_is_strict(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("POLYLOGUE_SCHEMA_VALIDATION", raising=False)
         service = ValidationService(backend=MagicMock())
         assert service._schema_validation_mode() == "strict"
 
-    async def test_validation_uses_all_record_samples_by_default(self, monkeypatch):
+    async def test_validation_uses_all_record_samples_by_default(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
         from polylogue.schemas import ValidationResult
         from polylogue.storage.blob_store import get_blob_store
 
@@ -575,14 +636,14 @@ class TestValidationService:
         class _CapturingValidator:
             provider = "codex"
 
-            def __init__(self):
-                self.max_samples_seen = None
+            def __init__(self) -> None:
+                self.max_samples_seen: int | None = None
 
-            def validation_samples(self, payload, max_samples=None):
+            def validation_samples(self, payload: object, max_samples: int | None = None) -> list[object]:
                 self.max_samples_seen = max_samples
                 return [item for item in payload if isinstance(item, dict)] if isinstance(payload, list) else [payload]
 
-            def validate(self, _sample):
+            def validate(self, _sample: object) -> Any:
                 return ValidationResult(is_valid=True)
 
         capturing = _CapturingValidator()
@@ -595,7 +656,10 @@ class TestValidationService:
         assert result.parseable_raw_ids == [raw_id]
         assert capturing.max_samples_seen is None
 
-    async def test_validation_strict_detects_malformed_jsonl_beyond_large_prefix(self, monkeypatch):
+    async def test_validation_strict_detects_malformed_jsonl_beyond_large_prefix(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
         from polylogue.schemas import ValidationResult
         from polylogue.storage.blob_store import get_blob_store
 
@@ -619,10 +683,10 @@ class TestValidationService:
         class _AlwaysValidValidator:
             provider = "codex"
 
-            def validation_samples(self, payload, max_samples=16):
+            def validation_samples(self, payload: object, max_samples: int = 16) -> list[object]:
                 return [item for item in payload if isinstance(item, dict)] if isinstance(payload, list) else [payload]
 
-            def validate(self, _sample):
+            def validate(self, _sample: object) -> Any:
                 return ValidationResult(is_valid=True)
 
         monkeypatch.setenv("POLYLOGUE_SCHEMA_VALIDATION", "strict")
@@ -638,7 +702,10 @@ class TestValidationService:
         assert kwargs["status"] == "failed"
         assert "Malformed JSONL lines" in (kwargs.get("error") or "")
 
-    async def test_validation_progress_callback_reports_counts(self, monkeypatch):
+    async def test_validation_progress_callback_reports_counts(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
         from polylogue.schemas import ValidationResult
         from polylogue.storage.blob_store import get_blob_store
 
@@ -650,14 +717,14 @@ class TestValidationService:
             MagicMock(
                 raw_id=raw_id_1,
                 raw_content=b'{"id":"1","mapping":{}}',
-                provider_name="chatgpt",
+                provider_name=Provider.CHATGPT,
                 source_path="/tmp/a.json",
                 blob_size=blob_size_1,
             ),
             MagicMock(
                 raw_id=raw_id_2,
                 raw_content=b'{"id":"2","mapping":{}}',
-                provider_name="chatgpt",
+                provider_name=Provider.CHATGPT,
                 source_path="/tmp/b.json",
                 blob_size=blob_size_2,
             ),
@@ -671,10 +738,10 @@ class TestValidationService:
         class _AlwaysValidValidator:
             provider = "chatgpt"
 
-            def validation_samples(self, payload, max_samples=16):
+            def validation_samples(self, payload: object, max_samples: int = 16) -> list[object]:
                 return [payload]
 
-            def validate(self, _sample):
+            def validate(self, _sample: object) -> Any:
                 return ValidationResult(is_valid=True)
 
         monkeypatch.setattr(
@@ -686,7 +753,10 @@ class TestValidationService:
         callback.assert_any_call(1, desc="Validating: 1/2 raw")
         callback.assert_any_call(1, desc="Validating: 2/2 raw")
 
-    async def test_validation_persists_payload_provider_from_decoded_payload(self, monkeypatch):
+    async def test_validation_persists_payload_provider_from_decoded_payload(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
         from polylogue.schemas import ValidationResult
         from polylogue.storage.blob_store import get_blob_store
 
@@ -711,10 +781,10 @@ class TestValidationService:
         class _AlwaysValidValidator:
             provider = "chatgpt"
 
-            def validation_samples(self, payload, max_samples=16):
+            def validation_samples(self, payload: object, max_samples: int = 16) -> list[object]:
                 return [payload]
 
-            def validate(self, _sample):
+            def validate(self, _sample: object) -> Any:
                 return ValidationResult(is_valid=True)
 
         monkeypatch.setattr(

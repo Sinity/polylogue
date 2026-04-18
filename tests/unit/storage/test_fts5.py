@@ -9,7 +9,9 @@ Extracted from monolithic test_search_index.py.
 from __future__ import annotations
 
 import json
+import sqlite3
 from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 
 import hypothesis.strategies as st
@@ -23,11 +25,12 @@ from polylogue.storage.index import rebuild_index, update_index_for_conversation
 from polylogue.storage.search import escape_fts5_query, search_messages
 from polylogue.storage.search_providers import create_vector_provider
 from polylogue.storage.search_providers.fts5 import FTS5Provider
-from polylogue.storage.store import ACTION_EVENT_MATERIALIZER_VERSION, ContentBlockRecord
+from polylogue.storage.store import ACTION_EVENT_MATERIALIZER_VERSION
 from tests.infra.mutmut import preserved_mutmut_env
 from tests.infra.storage_records import (
     ConversationBuilder,
     DbFactory,
+    make_content_block,
     make_conversation,
     make_message,
     store_records,
@@ -39,7 +42,7 @@ from tests.infra.strategies import fts5_match_text_strategy, search_query_strate
 # ============================================================================
 
 
-async def test_search_respects_limit(workspace_env, storage_repository):
+async def test_search_respects_limit(workspace_env: dict[str, Path], storage_repository: Any) -> None:
     """search_messages() respects limit parameter."""
     for i in range(10):
         conv = make_conversation(f"conv{i}", title=f"Conv {i}")
@@ -54,7 +57,7 @@ async def test_search_respects_limit(workspace_env, storage_repository):
     assert len(results.hits) == 3
 
 
-async def test_search_includes_snippet(workspace_env, storage_repository):
+async def test_search_includes_snippet(workspace_env: dict[str, Path], storage_repository: Any) -> None:
     """search_messages() includes text snippet in results."""
     conv = make_conversation("conv1")
     msg = make_message("msg1", "conv1", text="The quick brown fox jumps over the lazy dog")
@@ -70,7 +73,10 @@ async def test_search_includes_snippet(workspace_env, storage_repository):
     assert isinstance(results.hits[0].snippet, str)
 
 
-async def test_search_includes_conversation_metadata(workspace_env, storage_repository):
+async def test_search_includes_conversation_metadata(
+    workspace_env: dict[str, Path],
+    storage_repository: Any,
+) -> None:
     """search_messages() includes conversation metadata in results."""
     conv = make_conversation(
         "conv1", provider_name="claude-ai", title="My Conversation", provider_meta={"source": "my-source"}
@@ -92,7 +98,10 @@ async def test_search_includes_conversation_metadata(workspace_env, storage_repo
     assert hit.source_name == "my-source"
 
 
-async def test_search_returns_best_message_per_conversation(workspace_env, storage_repository):
+async def test_search_returns_best_message_per_conversation(
+    workspace_env: dict[str, Path],
+    storage_repository: Any,
+) -> None:
     """search_messages() picks the strongest per-conversation hit deterministically."""
     archive_root = workspace_env["archive_root"]
     bundle = RecordBundle(
@@ -137,7 +146,13 @@ SEARCH_WITH_SPECIAL_TEXT_CASES = [
 
 
 @pytest.mark.parametrize("text,search_term,description", SEARCH_WITH_SPECIAL_TEXT_CASES)
-async def test_search_with_special_text(workspace_env, storage_repository, text, search_term, description):
+async def test_search_with_special_text(
+    workspace_env: dict[str, Path],
+    storage_repository: Any,
+    text: str,
+    search_term: str,
+    description: str,
+) -> None:
     """search_messages() handles special text patterns."""
     conv = make_conversation("conv1", title=f"Test {description}")
     msg = make_message("msg1", "conv1", text=text)
@@ -154,7 +169,7 @@ async def test_search_with_special_text(workspace_env, storage_repository, text,
 # ============================================================================
 
 
-def test_rebuild_index_with_empty_database(test_conn):
+def test_rebuild_index_with_empty_database(test_conn: sqlite3.Connection) -> None:
     """rebuild_index() handles empty database gracefully."""
     rebuild_index(test_conn)
 
@@ -164,7 +179,7 @@ def test_rebuild_index_with_empty_database(test_conn):
     assert action_count == 0
 
 
-def test_action_event_status_ignores_orphan_tool_sources(test_conn):
+def test_action_event_status_ignores_orphan_tool_sources(test_conn: sqlite3.Connection) -> None:
     """Action-event readiness should ignore orphaned tool-use blocks outside reachable conversations."""
     from polylogue.storage.action_event_rebuild_runtime import rebuild_action_event_read_model_sync
     from polylogue.storage.action_event_status import action_event_read_model_status_sync
@@ -175,12 +190,11 @@ def test_action_event_status_ignores_orphan_tool_sources(test_conn):
         "conv1",
         text="Read config",
         content_blocks=[
-            ContentBlockRecord(
-                block_id="blk1",
+            make_content_block(
                 message_id="msg1",
                 conversation_id="conv1",
                 block_index=0,
-                type="tool_use",
+                block_type="tool_use",
                 tool_name="Read",
                 semantic_type="file_read",
             )
@@ -213,7 +227,10 @@ def test_action_event_status_ignores_orphan_tool_sources(test_conn):
     assert status["ready"] is False
 
 
-async def test_search_returns_searchresult_object(workspace_env, storage_repository):
+async def test_search_returns_searchresult_object(
+    workspace_env: dict[str, Path],
+    storage_repository: Any,
+) -> None:
     """search_messages() returns SearchResult with hits list."""
     conv = make_conversation("conv1")
     msg = make_message("msg1", "conv1", text="search result")
@@ -237,7 +254,7 @@ async def test_search_returns_searchresult_object(workspace_env, storage_reposit
         assert hasattr(hit, "conversation_path")
 
 
-def test_rebuild_index_with_multiple_messages_per_conversation(test_conn):
+def test_rebuild_index_with_multiple_messages_per_conversation(test_conn: sqlite3.Connection) -> None:
     """rebuild_index() correctly indexes all messages in a conversation."""
     conv = make_conversation("conv1", title="Multi-message Conv")
     messages = [
@@ -258,7 +275,7 @@ def test_rebuild_index_with_multiple_messages_per_conversation(test_conn):
     assert count == 10
 
 
-def test_update_index_deletes_old_entries_from_conversation(test_conn):
+def test_update_index_deletes_old_entries_from_conversation(test_conn: sqlite3.Connection) -> None:
     """update_index_for_conversations() removes old index entries for updated conversations."""
     conv = make_conversation("conv1")
     msg = make_message("msg1", "conv1", text="original message")
@@ -293,7 +310,10 @@ def test_update_index_deletes_old_entries_from_conversation(test_conn):
     assert new_hits == 1
 
 
-async def test_rebuild_index_populates_action_search_rows(workspace_env, storage_repository):
+async def test_rebuild_index_populates_action_search_rows(
+    workspace_env: dict[str, Path],
+    storage_repository: Any,
+) -> None:
     """rebuild_index() also populates persisted action-event search rows."""
     conv = make_conversation("conv-actions", title="Action indexing")
     msg = make_message(
@@ -302,12 +322,11 @@ async def test_rebuild_index_populates_action_search_rows(workspace_env, storage
         role="assistant",
         text="Ran tests",
         content_blocks=[
-            ContentBlockRecord(
-                block_id="blk-actions-0",
+            make_content_block(
                 message_id="msg-actions",
                 conversation_id="conv-actions",
                 block_index=0,
-                type="tool_use",
+                block_type="tool_use",
                 tool_name="Bash",
                 tool_id="tool-actions",
                 tool_input=json.dumps({"command": "pytest -q tests/unit/core/test_semantic_facts.py"}),
@@ -340,7 +359,9 @@ async def test_rebuild_index_populates_action_search_rows(workspace_env, storage
     assert count == 1
 
 
-def test_update_index_refreshes_action_entries_for_updated_tool_blocks(test_conn):
+def test_update_index_refreshes_action_entries_for_updated_tool_blocks(
+    test_conn: sqlite3.Connection,
+) -> None:
     """update_index_for_conversations() refreshes action-search rows from content blocks."""
     conv = make_conversation("conv-action-refresh", title="Action refresh")
     msg = make_message(
@@ -349,12 +370,11 @@ def test_update_index_refreshes_action_entries_for_updated_tool_blocks(test_conn
         role="assistant",
         text="Ran commands",
         content_blocks=[
-            ContentBlockRecord(
-                block_id="blk-refresh-0",
+            make_content_block(
                 message_id="msg-action-refresh",
                 conversation_id="conv-action-refresh",
                 block_index=0,
-                type="tool_use",
+                block_type="tool_use",
                 tool_name="Bash",
                 tool_id="tool-refresh",
                 tool_input=json.dumps({"command": "pytest -q"}),
@@ -408,7 +428,9 @@ def test_update_index_refreshes_action_entries_for_updated_tool_blocks(test_conn
     assert ruff_hits == 1
 
 
-def test_update_index_removes_action_entries_when_tool_blocks_disappear(test_conn):
+def test_update_index_removes_action_entries_when_tool_blocks_disappear(
+    test_conn: sqlite3.Connection,
+) -> None:
     """update_index_for_conversations() drops stale action rows when tool blocks are removed."""
     conv = make_conversation("conv-action-remove", title="Action removal")
     msg = make_message(
@@ -417,12 +439,11 @@ def test_update_index_removes_action_entries_when_tool_blocks_disappear(test_con
         role="assistant",
         text="Ran commands",
         content_blocks=[
-            ContentBlockRecord(
-                block_id="blk-remove-0",
+            make_content_block(
                 message_id="msg-action-remove",
                 conversation_id="conv-action-remove",
                 block_index=0,
-                type="tool_use",
+                block_type="tool_use",
                 tool_name="Bash",
                 tool_id="tool-remove",
                 tool_input=json.dumps({"command": "pytest -q"}),
@@ -457,7 +478,7 @@ def test_update_index_removes_action_entries_when_tool_blocks_disappear(test_con
     assert fts_rows == 0
 
 
-def test_batch_index_10k_messages(test_conn):
+def test_batch_index_10k_messages(test_conn: sqlite3.Connection) -> None:
     """Benchmark: update_index_for_conversations handles 10k messages efficiently."""
     import time
 
@@ -505,7 +526,10 @@ def test_batch_index_10k_messages(test_conn):
     assert elapsed < 5.0, f"Batch indexing 10k messages took too long: {elapsed:.2f}s"
 
 
-async def test_batch_index_search_returns_correct_provider(workspace_env, storage_repository):
+async def test_batch_index_search_returns_correct_provider(
+    workspace_env: dict[str, Path],
+    storage_repository: Any,
+) -> None:
     """Verify batch indexing allows retrieving correct provider_name via search."""
     # Create conversations with different providers
     conv1 = make_conversation("conv1", provider_name="claude-ai", title="Claude Conv")
@@ -548,7 +572,7 @@ async def test_batch_index_search_returns_correct_provider(workspace_env, storag
         ("quoted", True),  # Part of text with quotes
     ],
 )
-def test_search_messages_known_cases(query, should_find, tmp_path):
+def test_search_messages_known_cases(query: str, should_find: bool, tmp_path: Path) -> None:
     """Integration test for known search cases with specific assertions."""
     # Setup database with test data
     db_path = tmp_path / "test.db"
@@ -584,7 +608,7 @@ def test_search_messages_known_cases(query, should_find, tmp_path):
 
 @given(query=search_query_strategy())
 @settings(suppress_health_check=[HealthCheck.function_scoped_fixture], deadline=None)
-def test_search_messages_escaping_never_crashes(query, tmp_path):
+def test_search_messages_escaping_never_crashes(query: str, tmp_path: Path) -> None:
     """Property: search_messages handles any query with controlled error handling.
 
     Tests FTS5 escaping and query handling with arbitrary inputs.
@@ -636,7 +660,7 @@ def test_search_messages_escaping_never_crashes(query, tmp_path):
         ("test; DROP TABLE messages--", True),  # Contains special chars (semicolon, etc.), should be quoted
     ],
 )
-def test_escape_fts5_injection_prevention(special_query, should_quote):
+def test_escape_fts5_injection_prevention(special_query: str, should_quote: bool) -> None:
     """Prevent dangerous operator positions and special characters.
 
     Replaces ~5 security-focused tests.
@@ -667,7 +691,7 @@ def test_escape_fts5_injection_prevention(special_query, should_quote):
         "café",  # Accented
     ],
 )
-def test_escape_fts5_unicode(unicode_query):
+def test_escape_fts5_unicode(unicode_query: str) -> None:
     """Unicode queries are handled correctly.
 
     Unicode-only queries are simple alphanumeric (no special FTS5 chars),
@@ -684,7 +708,7 @@ def test_escape_fts5_unicode(unicode_query):
 # ============================================================================
 
 
-def test_search_messages_returns_valid_structure(tmp_path):
+def test_search_messages_returns_valid_structure(tmp_path: Path) -> None:
     """Search results have expected structure."""
     db_path = tmp_path / "test.db"
     DbFactory(db_path)
@@ -726,13 +750,16 @@ def test_search_messages_returns_valid_structure(tmp_path):
 class TestCreateVectorProvider:
     """Tests for create_vector_provider factory."""
 
-    def test_returns_none_when_no_voyage_key(self):
+    def test_returns_none_when_no_voyage_key(self: object) -> None:
         """Returns None when VOYAGE_API_KEY is not configured."""
         with patch.dict("os.environ", preserved_mutmut_env(), clear=True):
             provider = create_vector_provider()
             assert provider is None
 
-    def test_returns_none_when_sqlite_vec_not_installed(self, monkeypatch):
+    def test_returns_none_when_sqlite_vec_not_installed(
+        self: object,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
         """Returns None when sqlite-vec is not installed."""
         monkeypatch.setenv("VOYAGE_API_KEY", "voyage-key")
 
@@ -743,7 +770,7 @@ class TestCreateVectorProvider:
 
                 original_import = builtins.__import__
 
-                def mock_import(name, *args, **kwargs):
+                def mock_import(name: str, *args: Any, **kwargs: Any) -> Any:
                     if name == "sqlite_vec":
                         raise ImportError("No module named 'sqlite_vec'")
                     return original_import(name, *args, **kwargs)
@@ -752,7 +779,10 @@ class TestCreateVectorProvider:
                     provider = create_vector_provider()
                     assert provider is None
 
-    def test_logs_sqlite_vec_missing_only_once_per_process(self, monkeypatch):
+    def test_logs_sqlite_vec_missing_only_once_per_process(
+        self: object,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
         """Missing sqlite-vec warning is emitted once even if provider creation repeats."""
         import builtins
 
@@ -763,7 +793,7 @@ class TestCreateVectorProvider:
 
         original_import = builtins.__import__
 
-        def mock_import(name, *args, **kwargs):
+        def mock_import(name: str, *args: Any, **kwargs: Any) -> Any:
             if name == "sqlite_vec":
                 raise ImportError("No module named 'sqlite_vec'")
             return original_import(name, *args, **kwargs)
@@ -778,7 +808,11 @@ class TestCreateVectorProvider:
 
         assert mock_warning.call_count == 1
 
-    async def test_config_priority_and_explicit_override(self, monkeypatch, tmp_path):
+    async def test_config_priority_and_explicit_override(
+        self: object,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
         """Config voyage_api_key takes priority; explicit args override both config and env."""
         monkeypatch.setenv("VOYAGE_API_KEY", "env-voyage-key")
 
@@ -791,11 +825,12 @@ class TestCreateVectorProvider:
         )
 
         # Config takes priority over env
+        assert config.index_config is not None
         assert config.index_config.voyage_api_key == "config-voyage-key"
 
         # Explicit args override config
         voyage_key = "explicit-voyage-key"
-        if voyage_key is None and config and config.index_config:
+        if voyage_key is None and config.index_config is not None:
             voyage_key = config.index_config.voyage_api_key
         assert voyage_key == "explicit-voyage-key"
 
@@ -804,13 +839,18 @@ class TestFTS5Provider:
     """Tests for FTS5Provider full-text search implementation."""
 
     @pytest.fixture
-    def fts_provider(self, workspace_env):
+    def fts_provider(self: object, workspace_env: dict[str, Path]) -> FTS5Provider:
         """Create FTS5Provider with test database."""
         db_path = workspace_env["data_root"] / "polylogue" / "polylogue.db"
         return FTS5Provider(db_path=db_path)
 
     @pytest.fixture
-    async def populated_fts(self, workspace_env, storage_repository, fts_provider):
+    async def populated_fts(
+        self: object,
+        workspace_env: dict[str, Path],
+        storage_repository: Any,
+        fts_provider: FTS5Provider,
+    ) -> FTS5Provider:
         """FTS provider with indexed test data."""
         conv = make_conversation(
             "fts-conv-1",
@@ -836,7 +876,11 @@ class TestFTS5Provider:
         fts_provider.index(msgs)
         return fts_provider
 
-    async def test_ensure_index_creates_fts_table(self, workspace_env, fts_provider):
+    async def test_ensure_index_creates_fts_table(
+        self: object,
+        workspace_env: dict[str, Path],
+        fts_provider: FTS5Provider,
+    ) -> None:
         """Ensure index creates FTS5 virtual table."""
         from polylogue.storage.backends.async_sqlite import SQLiteBackend
 
@@ -869,7 +913,12 @@ class TestFTS5Provider:
             assert row is not None
             assert row["name"] == "messages_fts"
 
-    async def test_ensure_index_idempotent(self, workspace_env, fts_provider, storage_repository):
+    async def test_ensure_index_idempotent(
+        self: object,
+        workspace_env: dict[str, Path],
+        fts_provider: FTS5Provider,
+        storage_repository: Any,
+    ) -> None:
         """Calling index multiple times is safe (idempotent)."""
         conv = make_conversation(
             "idem-conv",
@@ -890,7 +939,12 @@ class TestFTS5Provider:
         assert len(results) == 1
         assert results[0] == "idem-msg"
 
-    async def test_index_deletes_old_entries(self, workspace_env, fts_provider, storage_repository):
+    async def test_index_deletes_old_entries(
+        self: object,
+        workspace_env: dict[str, Path],
+        fts_provider: FTS5Provider,
+        storage_repository: Any,
+    ) -> None:
         """Incremental indexing removes old entries before inserting."""
         conv = make_conversation(
             "incr-conv",
@@ -919,7 +973,12 @@ class TestFTS5Provider:
         results = fts_provider.search("oranges")
         assert len(results) == 1
 
-    async def test_index_skips_empty_text(self, workspace_env, fts_provider, storage_repository):
+    async def test_index_skips_empty_text(
+        self: object,
+        workspace_env: dict[str, Path],
+        fts_provider: FTS5Provider,
+        storage_repository: Any,
+    ) -> None:
         """Messages with empty text are not indexed."""
         conv = make_conversation(
             "skip-conv", title="Skip Test", created_at="1000", updated_at="1000", provider_meta={"source": "inbox"}
@@ -936,26 +995,26 @@ class TestFTS5Provider:
         assert len(results) == 1
         assert results[0] == "skip-msg-2"
 
-    def test_search_returns_ranked_results(self, populated_fts):
+    def test_search_returns_ranked_results(self: object, populated_fts: FTS5Provider) -> None:
         """Search returns results ordered by relevance (BM25)."""
         # The populated fixture has messages about quicksort
         results = populated_fts.search("quicksort")
         assert len(results) == 2  # Both messages mention quicksort
         # Results should be in relevance order (checked implicitly by the stable BM25 ordering)
 
-    def test_search_applies_limit_in_sql(self, populated_fts):
+    def test_search_applies_limit_in_sql(self: object, populated_fts: FTS5Provider) -> None:
         """Search should honor LIMIT without materializing extra rows first."""
         results = populated_fts.search("quicksort", limit=1)
         assert len(results) == 1
 
-    def test_search_escapes_fts5_special_chars(self, populated_fts):
+    def test_search_escapes_fts5_special_chars(self: object, populated_fts: FTS5Provider) -> None:
         """Search query escapes FTS5 special characters."""
         # Quotes and asterisks should be escaped
         results = populated_fts.search('"special* query"')
         # Should not raise FTS5 syntax error
         assert isinstance(results, list)
 
-    def test_search_returns_empty_if_no_index(self, workspace_env):
+    def test_search_returns_empty_if_no_index(self: object, workspace_env: dict[str, Path]) -> None:
         """Search returns empty list if FTS index doesn't exist."""
         db_path = workspace_env["data_root"] / "polylogue" / "nonexistent.db"
         provider = FTS5Provider(db_path=db_path)
@@ -965,7 +1024,7 @@ class TestFTS5Provider:
         # Could be empty or match all - depends on FTS5 behavior
         assert isinstance(results, list)
 
-    def test_search_returns_empty_for_blank_query(self, populated_fts):
+    def test_search_returns_empty_for_blank_query(self: object, populated_fts: FTS5Provider) -> None:
         """Blank queries short-circuit instead of issuing empty MATCH searches."""
         assert populated_fts.search("") == []
 
@@ -980,7 +1039,12 @@ INDEX_CHUNKED_CASES = [
 
 
 @pytest.mark.parametrize("input_list,chunk_size,expected_output,description", INDEX_CHUNKED_CASES)
-def test_chunked(input_list, chunk_size, expected_output, description):
+def test_chunked(
+    input_list: list[str],
+    chunk_size: int,
+    expected_output: list[list[str]],
+    description: str,
+) -> None:
     """_chunked utility chunks items correctly."""
     from polylogue.storage.index import _chunked
 
@@ -991,20 +1055,15 @@ def test_chunked(input_list, chunk_size, expected_output, description):
 class TestSearchProviderInit:
     """Tests for search provider factory."""
 
-    async def test_create_fts5_provider(self, cli_workspace):
-        """FTS5 provider should be returned for 'fts5' type and unknown types fallback to FTS5."""
+    async def test_create_fts5_provider(self: object, cli_workspace: dict[str, Path]) -> None:
+        """Search provider factory returns an FTS5 provider."""
         from polylogue.storage.search_providers import create_search_provider
 
-        # Both fts5 explicit and fallback should return FTS5 provider
-        fts5_provider = create_search_provider("fts5")
-        assert fts5_provider is not None
-
-        # Unknown type should also return FTS5 (fallback behavior)
-        fallback_provider = create_search_provider("fts5")
-        assert fallback_provider is not None
+        provider = create_search_provider(db_path=cli_workspace["db_path"])
+        assert isinstance(provider, FTS5Provider)
 
 
-async def _seed_conversation(storage_repository):
+async def _seed_conversation(storage_repository: Any) -> None:
     """Helper to seed a test conversation."""
     await save_bundle(
         RecordBundle(
@@ -1016,7 +1075,7 @@ async def _seed_conversation(storage_repository):
     )
 
 
-async def test_search_after_index(workspace_env, storage_repository):
+async def test_search_after_index(workspace_env: dict[str, Path], storage_repository: Any) -> None:
     """Test searching after building the index."""
     await _seed_conversation(storage_repository)
     rebuild_index()
@@ -1025,7 +1084,7 @@ async def test_search_after_index(workspace_env, storage_repository):
     assert results.hits[0].conversation_id == "conv:hash"
 
 
-def test_health_cached(workspace_env):
+def test_health_cached(workspace_env: dict[str, Path]) -> None:
     """Test that get_health returns a live report."""
     from polylogue.config import get_config
     from polylogue.health import get_health
@@ -1036,23 +1095,27 @@ def test_health_cached(workspace_env):
     assert report.timestamp > 0
 
 
-def test_search_invalid_query_reports_error(monkeypatch, workspace_env):
+def test_search_invalid_query_reports_error(
+    monkeypatch: pytest.MonkeyPatch,
+    workspace_env: dict[str, Path],
+) -> None:
     """Test that invalid search queries report errors."""
     import sqlite3
     from contextlib import contextmanager
 
     class StubCursor:
-        def __init__(self, row=None):
+        def __init__(self, row: object = None) -> None:
             self._row = row
 
-        def fetchone(self):
+        def fetchone(self) -> object:
             return self._row
 
-        def fetchall(self):
+        def fetchall(self) -> list[object]:
             return []
 
     class StubConn:
-        def execute(self, sql, params=()):
+        def execute(self, sql: str, params: object = ()) -> StubCursor:
+            del params
             if "action_events_fts_docsize" in sql:
                 return StubCursor(row=(0,))
             if "action_events_fts" in sql and "sqlite_master" in sql:
@@ -1068,7 +1131,7 @@ def test_search_invalid_query_reports_error(monkeypatch, workspace_env):
             return StubCursor()
 
     @contextmanager
-    def stub_open_connection(_):
+    def stub_open_connection(_: object) -> Any:
         yield StubConn()
 
     monkeypatch.setattr("polylogue.storage.search.open_connection", stub_open_connection)
@@ -1079,7 +1142,10 @@ def test_search_invalid_query_reports_error(monkeypatch, workspace_env):
     assert "Invalid search query" in str(exc_info.value)
 
 
-async def test_search_prefers_legacy_render_when_present(workspace_env, storage_repository):
+async def test_search_prefers_legacy_render_when_present(
+    workspace_env: dict[str, Path],
+    storage_repository: Any,
+) -> None:
     """Test that search returns legacy render paths when they exist."""
     archive_root = workspace_env["archive_root"]
     provider_name = "legacy-provider"
@@ -1109,8 +1175,24 @@ async def test_search_prefers_legacy_render_when_present(workspace_env, storage_
 
 SEARCH_SINCE_VALID_CASES = [
     # (conv_id, old_ts, new_ts, search_term, since_date, expected_msg_id, description)
-    ("conv:iso", "2024-01-10T10:00:00", "2024-01-20T10:00:00", "message", "2024-01-15", "msg:new-iso", "ISO date"),
-    ("conv:numeric", "1704067200.0", "1706227200.0", "numeric", "2024-01-15", "msg:new-num", "numeric timestamp"),
+    (
+        "conv:iso",
+        "2024-01-10T10:00:00",
+        "2024-01-20T10:00:00",
+        "message",
+        "2024-01-15",
+        "conv:iso:new",
+        "ISO date",
+    ),
+    (
+        "conv:numeric",
+        "1704067200.0",
+        "1706227200.0",
+        "numeric",
+        "2024-01-15",
+        "conv:numeric:new",
+        "numeric timestamp",
+    ),
 ]
 
 
@@ -1118,8 +1200,16 @@ SEARCH_SINCE_VALID_CASES = [
     "conv_id,old_ts,new_ts,search_term,since_date,expected_msg_id,description", SEARCH_SINCE_VALID_CASES
 )
 async def test_search_since_filters(
-    workspace_env, storage_repository, conv_id, old_ts, new_ts, search_term, since_date, expected_msg_id, description
-):
+    workspace_env: dict[str, Path],
+    storage_repository: Any,
+    conv_id: str,
+    old_ts: str,
+    new_ts: str,
+    search_term: str,
+    since_date: str,
+    expected_msg_id: str,
+    description: str,
+) -> None:
     """--since filters messages by timestamp (ISO and numeric formats)."""
     archive_root = workspace_env["archive_root"]
     bundle = RecordBundle(
@@ -1135,10 +1225,13 @@ async def test_search_since_filters(
 
     results = search_messages(search_term, archive_root=archive_root, since=since_date, limit=10)
     assert len(results.hits) == 1, f"Failed for {description}"
-    assert results.hits[0].message_id == f"{conv_id}:new"
+    assert results.hits[0].message_id == expected_msg_id
 
 
-async def test_search_since_handles_mixed_timestamp_formats(workspace_env, storage_repository):
+async def test_search_since_handles_mixed_timestamp_formats(
+    workspace_env: dict[str, Path],
+    storage_repository: Any,
+) -> None:
     """--since works with mix of ISO and numeric timestamps in same DB."""
     archive_root = workspace_env["archive_root"]
 
@@ -1190,7 +1283,12 @@ SEARCH_SINCE_ERROR_CASES = [
 
 
 @pytest.mark.parametrize("invalid_date,expected_error", SEARCH_SINCE_ERROR_CASES)
-async def test_search_since_invalid_date_raises_error(workspace_env, storage_repository, invalid_date, expected_error):
+async def test_search_since_invalid_date_raises_error(
+    workspace_env: dict[str, Path],
+    storage_repository: Any,
+    invalid_date: str,
+    expected_error: str,
+) -> None:
     """Invalid --since format raises ValueError with helpful message."""
     archive_root = workspace_env["archive_root"]
     await _seed_conversation(storage_repository)
@@ -1205,7 +1303,10 @@ async def test_search_since_invalid_date_raises_error(workspace_env, storage_rep
         )
 
 
-async def test_search_since_boundary_condition(workspace_env, storage_repository):
+async def test_search_since_boundary_condition(
+    workspace_env: dict[str, Path],
+    storage_repository: Any,
+) -> None:
     """Messages at or after --since timestamp are included, earlier ones excluded."""
     archive_root = workspace_env["archive_root"]
     bundle = RecordBundle(
@@ -1234,7 +1335,11 @@ async def test_search_since_boundary_condition(workspace_env, storage_repository
     assert results.hits[0].message_id == "msg:after-cutoff"
 
 
-def test_search_without_fts_table_raises_descriptive_error(workspace_env, db_without_fts, monkeypatch):
+def test_search_without_fts_table_raises_descriptive_error(
+    workspace_env: dict[str, Path],
+    db_without_fts: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """search() raises DatabaseError mentioning 'polylogue run' when FTS missing."""
     archive_root = workspace_env["archive_root"]
 
@@ -1249,7 +1354,10 @@ def test_search_without_fts_table_raises_descriptive_error(workspace_env, db_wit
     assert "Search index not built" in str(exc_info.value)
 
 
-def test_search_with_empty_fts_rows_raises_descriptive_error(workspace_env, db_path):
+def test_search_with_empty_fts_rows_raises_descriptive_error(
+    workspace_env: dict[str, Path],
+    db_path: Path,
+) -> None:
     """search() rejects archives whose FTS table exists but is not populated."""
     from polylogue.storage.backends.connection import open_connection
 
@@ -1306,13 +1414,17 @@ class TestSearchWithSinceLaws:
         pair=st.one_of(
             # Import inline to avoid circular issues at module level
             st.tuples(
-                st.text(min_size=2, max_size=20, alphabet=st.characters(whitelist_categories=("L",))),
+                st.text(min_size=2, max_size=20, alphabet=st.characters(whitelist_categories=["L"])),
                 st.one_of(st.none(), st.dates().map(lambda d: d.isoformat())),
             ),
         )
     )
     @settings(max_examples=20, deadline=None, suppress_health_check=[HealthCheck.function_scoped_fixture])
-    def test_since_filter_is_monotonic(self, pair, tmp_path):
+    def test_since_filter_is_monotonic(
+        self: object,
+        pair: tuple[str, str | None],
+        tmp_path: Path,
+    ) -> None:
         """Results with --since must be subset of results without --since.
 
         All returned messages must have timestamps >= since when since is set.

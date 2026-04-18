@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Iterable
+from dataclasses import dataclass, field
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -10,10 +11,11 @@ from polylogue.config import Source
 from polylogue.sources import DriveFile, download_drive_files, iter_drive_conversations
 from polylogue.sources.drive import _apply_drive_attachments
 from polylogue.sources.parsers.base import ParsedAttachment, ParsedConversation
+from polylogue.types import Provider
 
 
 def _attachment(
-    provider_attachment_id: str | None,
+    provider_attachment_id: str,
     *,
     name: str | None = None,
     mime_type: str | None = None,
@@ -33,7 +35,7 @@ def _attachment(
 
 def _conversation(*attachments: ParsedAttachment) -> ParsedConversation:
     return ParsedConversation(
-        provider_name="gemini",
+        provider_name=Provider.GEMINI,
         provider_conversation_id="conv-1",
         messages=[],
         attachments=list(attachments),
@@ -44,21 +46,21 @@ def _conversation(*attachments: ParsedAttachment) -> ParsedConversation:
 class _DriveConversationClient:
     files: list[DriveFile]
     payloads: dict[str, object]
-    payload_failures: dict[str, Exception] | None = None
-    attachment_meta: dict[str, DriveFile] | None = None
+    payload_failures: dict[str, Exception] = field(default_factory=dict)
+    attachment_meta: dict[str, DriveFile] = field(default_factory=dict)
+    download_to_path_calls: list[tuple[str, Path]] = field(default_factory=list)
 
     def __post_init__(self) -> None:
-        self.payload_failures = self.payload_failures or {}
-        self.attachment_meta = self.attachment_meta or {}
-        self.download_to_path_calls: list[tuple[str, Path]] = []
+        self.payload_failures = dict(self.payload_failures)
+        self.attachment_meta = dict(self.attachment_meta)
 
     def resolve_folder_id(self, folder_ref: str) -> str:
         return f"folder:{folder_ref}"
 
-    def iter_json_files(self, folder_id: str):
+    def iter_json_files(self, folder_id: str) -> Iterable[DriveFile]:
         yield from self.files
 
-    def download_json_payload(self, file_id: str, *, name: str):
+    def download_json_payload(self, file_id: str, *, name: str) -> object:
         if file_id in self.payload_failures:
             raise self.payload_failures[file_id]
         return self.payloads[file_id]
@@ -75,6 +77,9 @@ class _DriveConversationClient:
                 size_bytes=None,
             ),
         )
+
+    def download_bytes(self, file_id: str) -> bytes:
+        return f"bytes:{file_id}".encode()
 
 
 def test_download_drive_files_contract(tmp_path: Path) -> None:
@@ -100,8 +105,7 @@ def test_download_drive_files_contract(tmp_path: Path) -> None:
 
 
 def test_apply_drive_attachments_contract(tmp_path: Path) -> None:
-    missing_attachment = _attachment("placeholder")
-    missing_attachment.provider_attachment_id = None
+    missing_attachment = _attachment("placeholder").model_copy(update={"provider_attachment_id": None})
     conversation = _conversation(
         _attachment("keep-meta", name="keep.txt", mime_type="text/plain", size_bytes=12),
         _attachment("fill-meta"),

@@ -373,7 +373,7 @@ class TestManifestMembership:
 )
 def test_cluster_count_parametrized(
     tmp_path: Path,
-    samples: list[dict],
+    samples: list[dict[str, object]],
     expected_cluster_count: int,
 ) -> None:
     registry = SchemaRegistry(storage_root=tmp_path / "schemas")

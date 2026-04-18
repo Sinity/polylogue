@@ -5,6 +5,7 @@ from __future__ import annotations
 import gzip
 import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 from jsonschema import Draft202012Validator
@@ -26,7 +27,7 @@ def tmp_registry(tmp_path: Path) -> SchemaRegistry:
 
 
 @pytest.fixture
-def sample_schema_a() -> dict:
+def sample_schema_a() -> dict[str, Any]:
     return {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
@@ -40,7 +41,7 @@ def sample_schema_a() -> dict:
 
 
 @pytest.fixture
-def sample_schema_b() -> dict:
+def sample_schema_b() -> dict[str, Any]:
     return {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
@@ -344,7 +345,10 @@ class TestRegistryPromotion:
 
 class TestEnhancedCompare:
     def test_classified_changes_additive(
-        self, tmp_registry: SchemaRegistry, sample_schema_a: dict, sample_schema_b: dict
+        self,
+        tmp_registry: SchemaRegistry,
+        sample_schema_a: dict[str, Any],
+        sample_schema_b: dict[str, Any],
     ) -> None:
         tmp_registry.register_schema("cmp-prov", sample_schema_a)
         tmp_registry.register_schema("cmp-prov", sample_schema_b)
@@ -356,7 +360,10 @@ class TestEnhancedCompare:
         assert any(c.path == "status" for c in added)
 
     def test_classified_changes_type_mutation(
-        self, tmp_registry: SchemaRegistry, sample_schema_a: dict, sample_schema_b: dict
+        self,
+        tmp_registry: SchemaRegistry,
+        sample_schema_a: dict[str, Any],
+        sample_schema_b: dict[str, Any],
     ) -> None:
         tmp_registry.register_schema("cmp-prov", sample_schema_a)
         tmp_registry.register_schema("cmp-prov", sample_schema_b)
@@ -367,7 +374,10 @@ class TestEnhancedCompare:
         assert any(c.path == "count" for c in type_changes)
 
     def test_classified_changes_requiredness(
-        self, tmp_registry: SchemaRegistry, sample_schema_a: dict, sample_schema_b: dict
+        self,
+        tmp_registry: SchemaRegistry,
+        sample_schema_a: dict[str, Any],
+        sample_schema_b: dict[str, Any],
     ) -> None:
         tmp_registry.register_schema("cmp-prov", sample_schema_a)
         tmp_registry.register_schema("cmp-prov", sample_schema_b)

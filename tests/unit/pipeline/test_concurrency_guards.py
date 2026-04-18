@@ -17,14 +17,19 @@ shared tables from tests/infra/tables.py.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock
 
 import pytest
 
 from polylogue.lib.filters import ConversationFilter
-from polylogue.lib.models import Conversation, Message
+from polylogue.lib.models import Conversation
+from polylogue.lib.roles import Role
+from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.repository import ConversationRepository
+from tests.infra.builders import make_conv, make_msg
+from tests.infra.storage_records import make_conversation, make_message
 
 # =============================================================================
 # Filter state isolation (implicit in CLI routing bugs)
@@ -40,7 +45,7 @@ class TestFilterStateIsolation:
     """
 
     @pytest.fixture
-    def mock_repo(self):
+    def mock_repo(self) -> AsyncMock:
         """Create a mock repository for filter testing."""
         repo = AsyncMock()
         repo.list_by_query = AsyncMock(return_value=[])
@@ -62,16 +67,16 @@ class TestFilterStateIsolation:
         updated_at: datetime,
         provider: str = "chatgpt",
     ) -> Conversation:
-        return Conversation(
+        return make_conv(
             id=conv_id,
             provider=provider,
             title=conv_id,
             updated_at=updated_at,
-            messages=[Message(id=f"{conv_id}:m1", role="user", text=text)],
+            messages=[make_msg(id=f"{conv_id}:m1", role=Role.USER, text=text)],
         )
 
     @pytest.mark.asyncio
-    async def test_separate_filters_have_independent_state(self, mock_repo):
+    async def test_separate_filters_have_independent_state(self, mock_repo: AsyncMock) -> None:
         """Two filters from same repo must not share state."""
         f1 = ConversationFilter(mock_repo)
         f2 = ConversationFilter(mock_repo)
@@ -88,7 +93,7 @@ class TestFilterStateIsolation:
         assert second_query.provider == "claude-ai"
 
     @pytest.mark.asyncio
-    async def test_chained_methods_accumulate_on_same_instance(self, mock_repo):
+    async def test_chained_methods_accumulate_on_same_instance(self, mock_repo: AsyncMock) -> None:
         """Chaining on same filter must accumulate predicates."""
         f = ConversationFilter(mock_repo)
         f.provider("chatgpt").contains("error").limit(10)
@@ -98,7 +103,7 @@ class TestFilterStateIsolation:
         mock_repo.search.assert_awaited_once_with("error", limit=100, providers=["chatgpt"])
 
     @pytest.mark.asyncio
-    async def test_filter_reuse_accumulates_providers(self, mock_repo):
+    async def test_filter_reuse_accumulates_providers(self, mock_repo: AsyncMock) -> None:
         """Reusing a filter adds to existing providers list."""
         f = ConversationFilter(mock_repo)
         f.provider("chatgpt")
@@ -109,7 +114,7 @@ class TestFilterStateIsolation:
         assert query.providers == ("chatgpt", "claude-ai")
 
     @pytest.mark.asyncio
-    async def test_filter_sort_replaces_not_accumulates(self, mock_repo):
+    async def test_filter_sort_replaces_not_accumulates(self, mock_repo: AsyncMock) -> None:
         """sort() should replace the previous sort, not append."""
         newer_short = self._conversation(
             conv_id="test:new-short",
@@ -131,7 +136,7 @@ class TestFilterStateIsolation:
         assert str(results[0].id) == "test:old-long"
 
     @pytest.mark.asyncio
-    async def test_fresh_filter_has_no_predicates(self, mock_repo):
+    async def test_fresh_filter_has_no_predicates(self, mock_repo: AsyncMock) -> None:
         """A brand-new filter should have empty state."""
         f = ConversationFilter(mock_repo)
         await f.list()
@@ -141,7 +146,7 @@ class TestFilterStateIsolation:
         assert query.limit is None
 
     @pytest.mark.asyncio
-    async def test_limit_replaces_previous_limit(self, mock_repo):
+    async def test_limit_replaces_previous_limit(self, mock_repo: AsyncMock) -> None:
         """Calling limit() twice replaces, doesn't stack."""
         f = ConversationFilter(mock_repo)
         f.limit(40)
@@ -162,7 +167,7 @@ class TestConnectionManagement:
     """Batch operations must use O(1) connections, not O(N)."""
 
     @pytest.mark.asyncio
-    async def test_get_conversations_batch_uses_single_connection(self, sqlite_backend):
+    async def test_get_conversations_batch_uses_single_connection(self, sqlite_backend: SQLiteBackend) -> None:
         """get_conversations_batch must use 1 query, not N queries."""
         backend = sqlite_backend
 
@@ -183,7 +188,7 @@ class TestConnectionManagement:
         assert len(records) == 20
 
     @pytest.mark.asyncio
-    async def test_get_messages_batch_groups_by_conversation(self, sqlite_backend):
+    async def test_get_messages_batch_groups_by_conversation(self, sqlite_backend: SQLiteBackend) -> None:
         """get_messages_batch must return messages grouped by conversation_id."""
         backend = sqlite_backend
 
@@ -214,14 +219,14 @@ class TestConnectionManagement:
             assert all(m.conversation_id == conv_id for m in msgs)
 
     @pytest.mark.asyncio
-    async def test_batch_with_empty_ids_returns_empty(self, sqlite_backend):
+    async def test_batch_with_empty_ids_returns_empty(self, sqlite_backend: SQLiteBackend) -> None:
         """Passing empty list of IDs should return empty, not error."""
         backend = sqlite_backend
         records = await backend.get_conversations_batch([])
         assert records == []
 
     @pytest.mark.asyncio
-    async def test_batch_with_nonexistent_ids_returns_partial(self, sqlite_backend):
+    async def test_batch_with_nonexistent_ids_returns_partial(self, sqlite_backend: SQLiteBackend) -> None:
         """Requesting nonexistent IDs should return only existing ones."""
         backend = sqlite_backend
 
@@ -247,15 +252,13 @@ class TestConcurrentSaveGuards:
     """Multiple concurrent saves must not corrupt data."""
 
     @pytest.mark.asyncio
-    async def test_concurrent_saves_dont_crash(self, sqlite_backend):
+    async def test_concurrent_saves_dont_crash(self, sqlite_backend: SQLiteBackend) -> None:
         """Concurrent saves to different conversations must not error."""
-        from polylogue.storage.store import ConversationRecord, MessageRecord
-
         backend = sqlite_backend
         repo = ConversationRepository(backend=backend)
 
         async def _save_one(idx: int) -> None:
-            conv = ConversationRecord(
+            conv = make_conversation(
                 conversation_id=f"test:conv-{idx}",
                 provider_name="test",
                 provider_conversation_id=f"conv-{idx}",
@@ -263,7 +266,7 @@ class TestConcurrentSaveGuards:
                 content_hash=f"hash-{idx}",
                 version=1,
             )
-            msg = MessageRecord(
+            msg = make_message(
                 message_id=f"msg-{idx}",
                 conversation_id=f"test:conv-{idx}",
                 role="user",
@@ -280,18 +283,17 @@ class TestConcurrentSaveGuards:
         async with backend.connection() as conn:
             cursor = await conn.execute("SELECT COUNT(*) FROM conversations")
             row = await cursor.fetchone()
+            assert row is not None
             assert row[0] == 10
 
     @pytest.mark.asyncio
-    async def test_concurrent_saves_to_same_conversation(self, sqlite_backend):
+    async def test_concurrent_saves_to_same_conversation(self, sqlite_backend: SQLiteBackend) -> None:
         """Concurrent upserts to the same conversation must not corrupt."""
-        from polylogue.storage.store import ConversationRecord, MessageRecord
-
         backend = sqlite_backend
         repo = ConversationRepository(backend=backend)
 
         async def _upsert(version: int) -> None:
-            conv = ConversationRecord(
+            conv = make_conversation(
                 conversation_id="test:same-conv",
                 provider_name="test",
                 provider_conversation_id="same",
@@ -299,7 +301,7 @@ class TestConcurrentSaveGuards:
                 content_hash=f"hash-v{version}",
                 version=version,
             )
-            msg = MessageRecord(
+            msg = make_message(
                 message_id=f"msg-v{version}",
                 conversation_id="test:same-conv",
                 role="user",
@@ -316,18 +318,17 @@ class TestConcurrentSaveGuards:
         async with backend.connection() as conn:
             cursor = await conn.execute("SELECT COUNT(*) FROM conversations")
             row = await cursor.fetchone()
+            assert row is not None
             assert row[0] == 1
 
     @pytest.mark.asyncio
-    async def test_concurrent_reads_during_writes(self, sqlite_backend):
+    async def test_concurrent_reads_during_writes(self, sqlite_backend: SQLiteBackend) -> None:
         """Reads during concurrent writes must not error or return garbage."""
-        from polylogue.storage.store import ConversationRecord
-
         backend = sqlite_backend
         repo = ConversationRepository(backend=backend)
 
         async def _write(idx: int) -> None:
-            conv = ConversationRecord(
+            conv = make_conversation(
                 conversation_id=f"test:conv-{idx}",
                 provider_name="test",
                 provider_conversation_id=f"conv-{idx}",
@@ -341,10 +342,11 @@ class TestConcurrentSaveGuards:
             async with backend.connection() as conn:
                 cursor = await conn.execute("SELECT COUNT(*) FROM conversations")
                 row = await cursor.fetchone()
-                return row[0]
+                assert row is not None
+                return int(row[0])
 
         # Interleave writes and reads
-        tasks = []
+        tasks: list[Awaitable[object]] = []
         for i in range(10):
             tasks.append(_write(i))
             tasks.append(_read())
