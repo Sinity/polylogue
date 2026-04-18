@@ -13,11 +13,13 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
+from typing import cast
 
 from polylogue.lib.attachment_models import Attachment
 from polylogue.lib.conversation_models import Conversation, ConversationSummary
 from polylogue.lib.message_models import Message
 from polylogue.lib.messages import MessageCollection
+from polylogue.lib.roles import Role
 from polylogue.lib.timestamps import parse_timestamp
 from polylogue.storage.store import (
     AttachmentRecord,
@@ -40,7 +42,7 @@ def _parse_json_blob(raw: object) -> object | None:
     if not isinstance(raw, str):
         return raw
     try:
-        return json.loads(raw)
+        return cast(object, json.loads(raw))
     except json.JSONDecodeError:
         return raw
 
@@ -88,12 +90,16 @@ def message_from_record(
         for b in record.content_blocks
     ]
 
+    normalized_provider = None
+    if provider is not None:
+        normalized_provider = provider if isinstance(provider, Provider) else Provider.from_string(provider)
+
     return Message(
         id=record.message_id,
-        role=(record.role or "").strip() or "unknown",
+        role=Role.normalize((record.role or "").strip() or "unknown"),
         text=record.text,
         timestamp=ts,
-        provider=provider,
+        provider=normalized_provider,
         attachments=[attachment_from_record(a) for a in attachments],
         provider_meta=None,  # Canonical storage keeps message semantics in content_blocks, not message-level provider_meta.
         content_blocks=blocks,
@@ -106,7 +112,7 @@ def conversation_summary_from_record(record: ConversationRecord) -> Conversation
     """Hydrate a ConversationSummary domain model from a ConversationRecord."""
     return ConversationSummary(
         id=record.conversation_id,
-        provider=record.provider_name,
+        provider=Provider.from_string(record.provider_name),
         title=record.title,
         created_at=parse_timestamp(record.created_at),
         updated_at=parse_timestamp(record.updated_at),

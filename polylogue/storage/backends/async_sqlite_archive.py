@@ -7,6 +7,7 @@ from collections.abc import AsyncIterator
 from polylogue.storage.backends.queries import attachments as attachments_q
 from polylogue.storage.backends.queries import conversations as conversations_q
 from polylogue.storage.backends.queries import messages as messages_q
+from polylogue.storage.backends.queries.stats import AggregateMessageStats
 from polylogue.storage.store import AttachmentRecord, ContentBlockRecord, ConversationRecord, MessageRecord
 
 
@@ -27,7 +28,7 @@ class SQLiteArchiveMixin:
     async def aggregate_message_stats(
         self,
         conversation_ids: list[str] | None = None,
-    ) -> dict[str, int]:
+    ) -> AggregateMessageStats:
         """Compute aggregate message statistics via SQL."""
         return await self.queries.aggregate_message_stats(conversation_ids)
 

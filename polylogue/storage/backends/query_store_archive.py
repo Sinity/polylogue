@@ -8,6 +8,7 @@ from polylogue.storage.backends.queries import attachments as attachments_q
 from polylogue.storage.backends.queries import conversations as conversations_q
 from polylogue.storage.backends.queries import messages as messages_q
 from polylogue.storage.backends.queries import stats as stats_q
+from polylogue.storage.backends.queries.stats import AggregateMessageStats
 from polylogue.storage.query_models import ConversationRecordQuery
 from polylogue.storage.store import (
     AttachmentRecord,
@@ -131,7 +132,7 @@ class SQLiteQueryStoreArchiveMixin:
         async with self._connection_factory() as conn:
             return await messages_q.get_message_counts_batch(conn, conversation_ids)
 
-    async def aggregate_message_stats(self, conversation_ids: list[str] | None = None) -> dict[str, int]:
+    async def aggregate_message_stats(self, conversation_ids: list[str] | None = None) -> AggregateMessageStats:
         async with self._connection_factory() as conn:
             return await stats_q.aggregate_message_stats(conn, conversation_ids)
 
