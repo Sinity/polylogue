@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TypeAlias
 
 from polylogue.scenarios import CorpusScenario, CorpusSpec
 from polylogue.schemas.generation_models import GenerationResult
@@ -14,13 +15,22 @@ from polylogue.schemas.verification_models import ArtifactProofReport
 from polylogue.storage.state_views import ArtifactCohortSummary
 from polylogue.storage.store import ArtifactObservationRecord
 
+JSONPrimitive: TypeAlias = str | int | float | bool | None
+JSONValue: TypeAlias = JSONPrimitive | list["JSONValue"] | Mapping[str, "JSONValue"]
+
+
+def _as_dict_payload(payload: dict[str, JSONValue] | None) -> dict[str, JSONValue] | None:
+    if payload is None:
+        return None
+    return payload
+
 
 @dataclass(frozen=True)
 class SchemaInferRequest:
     provider: str
     db_path: Path
     max_samples: int | None = None
-    privacy_config: Any | None = None
+    privacy_config: dict[str, JSONValue] | None = None
     cluster: bool = False
     cluster_sample_limit: int = 500
     full_corpus: bool = False
@@ -50,8 +60,8 @@ class SchemaProviderSnapshot:
     corpus_specs: tuple[CorpusSpec, ...] = ()
     corpus_scenarios: tuple[CorpusScenario, ...] = ()
 
-    def to_dict(self) -> dict[str, Any]:
-        payload: dict[str, Any] = {"provider": self.provider, "versions": list(self.versions)}
+    def to_dict(self) -> dict[str, object]:
+        payload: dict[str, object] = {"provider": self.provider, "versions": list(self.versions)}
         if self.catalog is not None:
             payload["catalog"] = self.catalog.to_dict()
         if self.manifest is not None:
@@ -69,7 +79,7 @@ class SchemaProviderSnapshot:
             ]
         return payload
 
-    def to_list_item_dict(self) -> dict[str, Any]:
+    def to_list_item_dict(self) -> dict[str, object]:
         return {
             "provider": self.provider,
             "versions": list(self.versions),
@@ -88,7 +98,7 @@ class SchemaListResult:
     selected: SchemaProviderSnapshot | None = None
     providers: list[SchemaProviderSnapshot] = field(default_factory=list)
 
-    def to_dict(self) -> dict[str, Any] | list[dict[str, Any]]:
+    def to_dict(self) -> dict[str, object] | list[dict[str, object]]:
         if self.provider is not None:
             if self.selected is None:
                 return {"provider": self.provider, "versions": []}
@@ -108,7 +118,7 @@ class SchemaCompareRequest:
 class SchemaCompareResult:
     diff: SchemaDiff
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> dict[str, object]:
         return self.diff.to_dict()
 
 
@@ -127,10 +137,10 @@ class SchemaPromoteResult:
     cluster_id: str
     package_version: str
     package: SchemaVersionPackage | None
-    schema: dict[str, Any] | None
+    schema: dict[str, JSONValue] | None
     versions: list[str]
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> dict[str, object]:
         return {
             "provider": self.provider,
             "cluster_id": self.cluster_id,
@@ -145,9 +155,9 @@ class SchemaRoleAssignment:
     path: str
     role: str
     confidence: float
-    evidence: dict[str, Any]
+    evidence: dict[str, JSONValue]
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> dict[str, object]:
         return {
             "path": self.path,
             "role": self.role,
@@ -163,7 +173,7 @@ class SchemaCoverageSummary:
     with_values: int
     with_role: int
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> dict[str, object]:
         return {
             "total_fields": self.total_fields,
             "with_format": self.with_format,
@@ -181,7 +191,7 @@ class SchemaAnnotationSummary:
     roles: list[SchemaRoleAssignment]
     coverage: SchemaCoverageSummary
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> dict[str, object]:
         return {
             "semantic_count": self.semantic_count,
             "format_count": self.format_count,
@@ -199,12 +209,12 @@ class SchemaRoleProofEntry:
     role: str
     chosen_path: str | None
     chosen_score: float
-    competing: list[dict[str, Any]]
-    evidence: dict[str, Any]
+    competing: list[dict[str, JSONValue]]
+    evidence: dict[str, JSONValue]
     abstained: bool
     abstain_reason: str | None = None
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> dict[str, object]:
         return {
             "role": self.role,
             "chosen_path": self.chosen_path,
@@ -225,7 +235,7 @@ class SchemaReviewProof:
     eligible_roles: list[str]
     ineligible_roles: list[str]
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> dict[str, object]:
         return {
             "roles": [entry.to_dict() for entry in self.roles],
             "artifact_kind": self.artifact_kind,
@@ -248,12 +258,12 @@ class SchemaExplainResult:
     version: str
     element_kind: str | None
     package: SchemaVersionPackage | None
-    schema: dict[str, Any]
+    schema: dict[str, JSONValue]
     annotations: SchemaAnnotationSummary
     review_proof: SchemaReviewProof | None = None
 
-    def to_dict(self) -> dict[str, Any]:
-        payload = {"schema": self.schema, "annotations": self.annotations.to_dict()}
+    def to_dict(self) -> dict[str, object]:
+        payload: dict[str, object] = {"schema": self.schema, "annotations": self.annotations.to_dict()}
         if self.package is not None:
             payload["package"] = self.package.to_dict()
         if self.review_proof is not None:
@@ -284,7 +294,7 @@ class ArtifactProofResult:
 @dataclass(frozen=True)
 class SchemaPayloadResolveRequest:
     provider: str
-    payload: dict[str, Any]
+    payload: dict[str, JSONValue]
     source_path: str | None = None
 
 

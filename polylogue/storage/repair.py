@@ -6,8 +6,9 @@ import sqlite3
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TypeAlias
 
+from polylogue.config import Config
 from polylogue.logging import get_logger
 from polylogue.maintenance_models import DerivedModelStatus, MaintenanceCategory
 from polylogue.maintenance_targets import (
@@ -21,6 +22,9 @@ from polylogue.storage.action_event_artifacts import ActionEventArtifactState
 
 logger = get_logger(__name__)
 _MAINTENANCE_TARGET_CATALOG = build_maintenance_target_catalog()
+
+JSONScalar: TypeAlias = str | int | float | bool | None
+JSONValue: TypeAlias = JSONScalar | list["JSONValue"] | dict[str, "JSONValue"]
 
 
 # ---------------------------------------------------------------------------
@@ -39,7 +43,7 @@ class RepairResult:
     success: bool
     detail: str = ""
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> dict[str, object]:
         return {
             "name": self.name,
             "category": self.category.value,
@@ -231,7 +235,7 @@ class ArchiveDebtStatus:
     def healthy(self) -> bool:
         return self.issue_count == 0
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> dict[str, object]:
         return {
             "name": self.name,
             "category": self.category.value,
@@ -429,7 +433,7 @@ def _run_sql_repair(
 # ---------------------------------------------------------------------------
 
 
-def repair_orphaned_messages(config: Any, dry_run: bool = False) -> RepairResult:
+def repair_orphaned_messages(config: Config, dry_run: bool = False) -> RepairResult:
     from polylogue.storage.backends.connection import connection_context
 
     with connection_context(None) as conn:
@@ -481,7 +485,7 @@ def preview_orphaned_messages(*, count: int) -> RepairResult:
     )
 
 
-def repair_empty_conversations(config: Any, dry_run: bool = False) -> RepairResult:
+def repair_empty_conversations(config: Config, dry_run: bool = False) -> RepairResult:
     from polylogue.storage.backends.connection import connection_context
 
     with connection_context(None) as conn:
@@ -503,7 +507,7 @@ def preview_empty_conversations(*, count: int) -> RepairResult:
     )
 
 
-def repair_orphaned_content_blocks(config: Any, dry_run: bool = False) -> RepairResult:
+def repair_orphaned_content_blocks(config: Config, dry_run: bool = False) -> RepairResult:
     from polylogue.storage.backends.connection import connection_context
 
     with connection_context(None) as conn:
@@ -536,7 +540,7 @@ def preview_orphaned_content_blocks(*, count: int) -> RepairResult:
     )
 
 
-def repair_orphaned_attachments(config: Any, dry_run: bool = False) -> RepairResult:
+def repair_orphaned_attachments(config: Config, dry_run: bool = False) -> RepairResult:
     from polylogue.storage.backends.connection import connection_context
 
     try:
@@ -591,7 +595,7 @@ def preview_orphaned_attachments(*, count: int) -> RepairResult:
 
 
 def repair_session_products(
-    config: Any,
+    config: Config,
     dry_run: bool = False,
     *,
     progress_callback: ProgressCallback | None = None,
@@ -717,7 +721,7 @@ def preview_session_products(*, count: int) -> RepairResult:
     )
 
 
-def repair_action_event_read_model(config: Any, dry_run: bool = False) -> RepairResult:
+def repair_action_event_read_model(config: Config, dry_run: bool = False) -> RepairResult:
     from polylogue.storage.action_event_rebuild_runtime import (
         action_event_repair_candidates_sync,
         rebuild_action_event_read_model_sync,
@@ -781,7 +785,7 @@ def preview_action_event_read_model(*, count: int) -> RepairResult:
     )
 
 
-def repair_dangling_fts(config: Any, dry_run: bool = False) -> RepairResult:
+def repair_dangling_fts(config: Config, dry_run: bool = False) -> RepairResult:
     from polylogue.storage.backends.connection import connection_context
     from polylogue.storage.fts_lifecycle_sql import FTS_INDEXABLE_MESSAGE_COUNT_SQL
 
@@ -848,7 +852,7 @@ def preview_dangling_fts(*, count: int) -> RepairResult:
     )
 
 
-def repair_wal_checkpoint(config: Any, dry_run: bool = False) -> RepairResult:
+def repair_wal_checkpoint(config: Config, dry_run: bool = False) -> RepairResult:
     from polylogue.paths import db_path
     from polylogue.storage.backends.connection import connection_context
 
@@ -924,7 +928,7 @@ _REPAIR_HANDLERS: dict[str, Callable[..., RepairResult]] = {
 
 
 def run_safe_repairs(
-    config: Any,
+    config: Config,
     dry_run: bool = False,
     *,
     preview_counts: dict[str, int] | None = None,
@@ -959,7 +963,7 @@ def run_safe_repairs(
 
 
 def run_archive_cleanup(
-    config: Any,
+    config: Config,
     dry_run: bool = False,
     *,
     preview_counts: dict[str, int] | None = None,
@@ -979,7 +983,7 @@ def run_archive_cleanup(
 
 
 def run_selected_maintenance(
-    config: Any,
+    config: Config,
     *,
     repair: bool,
     cleanup: bool,
