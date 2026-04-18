@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+from typing import cast
+
 from polylogue.pipeline.services.process_pool import process_pool_context, process_pool_executor
 
 
 def _worker_wrapper_class_name() -> str:
     import structlog
 
-    return structlog.get_config()["wrapper_class"].__name__
+    wrapper_class = structlog.get_config()["wrapper_class"]
+    return cast(str, getattr(wrapper_class, "__name__", str(wrapper_class)))
 
 
 def test_process_pool_context_avoids_fork() -> None:

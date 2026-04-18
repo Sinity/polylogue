@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from typing import Any, cast
 from unittest.mock import MagicMock
 
 import pytest
@@ -136,7 +137,7 @@ def test_service_handle_returns_cached_service_when_not_expired(monkeypatch: pyt
     gw = _gateway()
     service = MagicMock()
     service._http.credentials.expired = False
-    gw._service = service
+    cast(Any, gw)._service = service
     assert gw._service_handle() is service
 
 
@@ -144,13 +145,13 @@ def test_service_handle_rebuilds_on_expired_credentials(monkeypatch: pytest.Monk
     gw = _gateway()
     expired = MagicMock()
     expired._http.credentials.expired = True
-    gw._service = expired
+    cast(Any, gw)._service = expired
     creds = object()
     rebuilt = object()
     gw._auth_manager.load_credentials.return_value = creds
     build = MagicMock(return_value=rebuilt)
 
-    def fake_import(name: str):
+    def fake_import(name: str) -> Any:
         if name == "googleapiclient.discovery":
             return MagicMock(build=build)
         raise AssertionError(name)
@@ -168,7 +169,7 @@ def test_service_handle_builds_and_caches_service(monkeypatch: pytest.MonkeyPatc
     gw._auth_manager.load_credentials.return_value = creds
     build = MagicMock(return_value=built)
 
-    def fake_import(name: str):
+    def fake_import(name: str) -> Any:
         if name == "googleapiclient.discovery":
             return MagicMock(build=build)
         raise AssertionError(name)
@@ -193,7 +194,7 @@ def test_download_file_writes_content(monkeypatch: pytest.MonkeyPatch) -> None:
     import io
 
     gw = _gateway()
-    gw._service = MockDriveService(file_content={"file-1": b"hello-bytes"})
+    cast(Any, gw)._service = MockDriveService(file_content={"file-1": b"hello-bytes"})
 
     monkeypatch.setattr(
         "polylogue.sources.drive_gateway._import_module",
