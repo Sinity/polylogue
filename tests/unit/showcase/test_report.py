@@ -10,6 +10,7 @@ Laws that hold regardless of exercise content:
 from __future__ import annotations
 
 import json
+from typing import Any
 from unittest.mock import MagicMock
 
 from hypothesis import given, settings
@@ -39,7 +40,7 @@ from polylogue.showcase.showcase_report_payloads import (
 # ---------------------------------------------------------------------------
 
 
-def _make_exercise(name: str = "ex", group: str = "structural", tier: int = 1):
+def _make_exercise(name: str = "ex", group: str = "structural", tier: int = 1) -> Any:
     ex = MagicMock()
     ex.name = name
     ex.group = group
@@ -81,7 +82,7 @@ def _make_showcase(results: list[ExerciseResult]) -> ShowcaseResult:
     n_skipped=st.integers(min_value=0, max_value=20),
 )
 @settings(max_examples=50)
-def test_qa_session_always_has_required_keys(n_passed, n_failed, n_skipped):
+def test_qa_session_always_has_required_keys(n_passed: Any, n_failed: Any, n_skipped: Any) -> None:
     """generate_showcase_session always returns the mandatory schema fields."""
     results = (
         [_make_result(passed=True) for _ in range(n_passed)]
@@ -108,7 +109,7 @@ def test_qa_session_always_has_required_keys(n_passed, n_failed, n_skipped):
     n_skipped=st.integers(min_value=0, max_value=15),
 )
 @settings(max_examples=50)
-def test_qa_session_summary_counts_consistent(n_passed, n_failed, n_skipped):
+def test_qa_session_summary_counts_consistent(n_passed: Any, n_failed: Any, n_skipped: Any) -> None:
     """Summary passed+failed+skipped must equal total and match exercise list."""
     results = (
         [_make_result(passed=True) for _ in range(n_passed)]
@@ -133,7 +134,7 @@ def test_qa_session_summary_counts_consistent(n_passed, n_failed, n_skipped):
 
 @given(n=st.integers(min_value=0, max_value=30))
 @settings(max_examples=40)
-def test_qa_session_serializes_to_valid_json(n):
+def test_qa_session_serializes_to_valid_json(n: Any) -> None:
     """generate_showcase_session output round-trips through JSON without error."""
     results = [_make_result(passed=i % 3 != 0) for i in range(n)]
     session = generate_showcase_session(_make_showcase(results))
@@ -149,7 +150,7 @@ def test_qa_session_serializes_to_valid_json(n):
 
 @given(n=st.integers(min_value=0, max_value=10))
 @settings(max_examples=20)
-def test_qa_session_schema_version_is_always_one(n):
+def test_qa_session_schema_version_is_always_one(n: Any) -> None:
     """schema_version field is always 1 regardless of result set."""
     results = [_make_result() for _ in range(n)]
     session = generate_showcase_session(_make_showcase(results))
@@ -163,7 +164,7 @@ def test_qa_session_schema_version_is_always_one(n):
 
 @given(n=st.integers(min_value=0, max_value=20))
 @settings(max_examples=40)
-def test_generate_json_report_always_valid_json(n):
+def test_generate_json_report_always_valid_json(n: Any) -> None:
     """generate_json_report always returns a valid JSON string."""
     results = [_make_result(passed=i % 2 == 0) for i in range(n)]
     raw = generate_json_report(_make_showcase(results))
@@ -178,7 +179,7 @@ def test_generate_json_report_always_valid_json(n):
 # ---------------------------------------------------------------------------
 
 
-def test_write_qa_session_creates_one_file(tmp_path):
+def test_write_qa_session_creates_one_file(tmp_path: Any) -> None:
     """write_showcase_session writes exactly one JSON file to the audit dir."""
     results = [_make_result(passed=True), _make_result(passed=False, error="boom")]
     sr = _make_showcase(results)
@@ -191,7 +192,7 @@ def test_write_qa_session_creates_one_file(tmp_path):
     assert data["summary"]["failed"] == 1
 
 
-def test_write_qa_session_creates_audit_dir_if_missing(tmp_path):
+def test_write_qa_session_creates_audit_dir_if_missing(tmp_path: Any) -> None:
     """write_showcase_session creates the audit directory if it does not exist."""
     audit_dir = tmp_path / "deep" / "nested" / "audit"
     assert not audit_dir.exists()
@@ -205,7 +206,7 @@ def test_write_qa_session_creates_audit_dir_if_missing(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_qa_session_exercise_tier_preserved():
+def test_qa_session_exercise_tier_preserved() -> None:
     """Each exercise entry in qa_session carries the tier from the Exercise."""
     ex1 = _make_exercise(name="e1", tier=1)
     ex2 = _make_exercise(name="e2", tier=2)
@@ -221,7 +222,7 @@ def test_qa_session_exercise_tier_preserved():
     assert tiers == {"e1": 1, "e2": 2, "e3": 3}
 
 
-def test_generate_json_report_preserves_exercise_corpus_specs():
+def test_generate_json_report_preserves_exercise_corpus_specs() -> None:
     exercise = Exercise(
         name="seeded-query",
         group="query-read",
@@ -245,7 +246,7 @@ def test_generate_json_report_preserves_exercise_corpus_specs():
     assert payload["exercises"][0]["corpus_specs"][0]["provider"] == "chatgpt"
 
 
-def test_full_qa_session_contains_composed_stage_payloads():
+def test_full_qa_session_contains_composed_stage_payloads() -> None:
     """generate_qa_session preserves audit/showcase/invariant truth in one payload."""
     showcase = _make_showcase([_make_result(passed=True), _make_result(passed=False, error="boom")])
     audit = AuditReport(
@@ -296,7 +297,7 @@ def test_full_qa_session_contains_composed_stage_payloads():
     assert session["overall_status"] == "error"
 
 
-def test_generate_qa_summary_reports_stage_statuses():
+def test_generate_qa_summary_reports_stage_statuses() -> None:
     """generate_qa_summary renders the composed session instead of hand-built counts."""
     qa_result = QAResult(
         audit_report=AuditReport(
@@ -331,7 +332,7 @@ def test_generate_qa_summary_reports_stage_statuses():
     assert "Invariants: SKIPPED" in summary
 
 
-def test_generate_qa_markdown_includes_artifact_proof_section():
+def test_generate_qa_markdown_includes_artifact_proof_section() -> None:
     qa_result = QAResult(
         audit_report=AuditReport(
             checks=[

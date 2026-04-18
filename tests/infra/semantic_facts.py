@@ -73,7 +73,7 @@ class ConversationFacts:
         )
 
     @classmethod
-    def from_records(cls, conv_record: Any, msg_records: list) -> ConversationFacts:
+    def from_records(cls, conv_record: Any, msg_records: list[Any]) -> ConversationFacts:
         """Extract facts from storage records (ConversationRecord + MessageRecords)."""
         roles = Counter(str(m.role) for m in msg_records)
         has_tool_use = any(getattr(m, "has_tool_use", 0) for m in msg_records)
@@ -99,7 +99,7 @@ class ArchiveFacts:
     total_messages: int
 
     @classmethod
-    def from_db_connection(cls, conn) -> ArchiveFacts:
+    def from_db_connection(cls, conn: Any) -> ArchiveFacts:
         total_convs = conn.execute("SELECT COUNT(*) FROM conversations").fetchone()[0]
         provider_rows = conn.execute(
             "SELECT provider_name, COUNT(*) as cnt FROM conversations GROUP BY provider_name"

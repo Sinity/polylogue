@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from polylogue.scenarios import polylogue_execution
 from polylogue.showcase.exercises import Exercise, vhs_exercises
 from polylogue.showcase.vhs import generate_all_tapes, generate_tape
@@ -10,7 +12,7 @@ from polylogue.showcase.vhs import generate_all_tapes, generate_tape
 class TestGenerateTape:
     """generate_tape produces valid tape content."""
 
-    def test_basic_tape_has_output_directive(self):
+    def test_basic_tape_has_output_directive(self) -> None:
         ex = Exercise(
             name="test-ex",
             group="structural",
@@ -21,7 +23,7 @@ class TestGenerateTape:
         tape = generate_tape(ex)
         assert "Output test-ex.gif" in tape
 
-    def test_tape_has_set_directives(self):
+    def test_tape_has_set_directives(self) -> None:
         ex = Exercise(
             name="test-ex",
             group="structural",
@@ -35,7 +37,7 @@ class TestGenerateTape:
         assert "Set Height" in tape
         assert "Set Padding" in tape
 
-    def test_tape_includes_correct_command(self):
+    def test_tape_includes_correct_command(self) -> None:
         ex = Exercise(
             name="test-cmd",
             group="structural",
@@ -47,7 +49,7 @@ class TestGenerateTape:
         assert 'Type "polylogue run --preview"' in tape
         assert "Enter" in tape
 
-    def test_tape_with_no_args(self):
+    def test_tape_with_no_args(self) -> None:
         ex = Exercise(
             name="default",
             group="structural",
@@ -57,7 +59,7 @@ class TestGenerateTape:
         tape = generate_tape(ex)
         assert 'Type "polylogue"' in tape
 
-    def test_tape_with_capture_steps(self):
+    def test_tape_with_capture_steps(self) -> None:
         ex = Exercise(
             name="custom",
             group="structural",
@@ -81,7 +83,7 @@ class TestGenerateTape:
         type_lines = [line for line in lines if line.startswith("Type")]
         assert len(type_lines) == 2
 
-    def test_custom_dimensions(self):
+    def test_custom_dimensions(self) -> None:
         ex = Exercise(
             name="dim",
             group="structural",
@@ -93,7 +95,7 @@ class TestGenerateTape:
         assert "Set FontSize 22" in tape
         assert "Set Padding 30" in tape
 
-    def test_tape_has_exercise_description_comment(self):
+    def test_tape_has_exercise_description_comment(self) -> None:
         ex = Exercise(
             name="desc",
             group="structural",
@@ -108,7 +110,7 @@ class TestGenerateTape:
 class TestGenerateAllTapes:
     """generate_all_tapes returns expected exercises."""
 
-    def test_returns_dict_of_tape_content(self):
+    def test_returns_dict_of_tape_content(self) -> None:
         tapes = generate_all_tapes()
         assert isinstance(tapes, dict)
         assert len(tapes) > 0
@@ -117,12 +119,12 @@ class TestGenerateAllTapes:
             assert isinstance(content, str)
             assert "Output" in content
 
-    def test_only_vhs_capture_exercises(self):
+    def test_only_vhs_capture_exercises(self) -> None:
         vhs_names = {e.name for e in vhs_exercises()}
         tapes = generate_all_tapes()
         assert set(tapes.keys()) == vhs_names
 
-    def test_skips_non_capturable_in_explicit_list(self):
+    def test_skips_non_capturable_in_explicit_list(self) -> None:
         exs = [
             Exercise(name="cap", group="g", description="C", vhs_capture=True),
             Exercise(name="nocap", group="g", description="N", vhs_capture=False),
@@ -131,7 +133,7 @@ class TestGenerateAllTapes:
         assert "cap" in tapes
         assert "nocap" not in tapes
 
-    def test_writes_to_output_dir(self, tmp_path):
+    def test_writes_to_output_dir(self, tmp_path: Any) -> None:
         exs = [
             Exercise(
                 name="write-test",
@@ -150,13 +152,13 @@ class TestGenerateAllTapes:
 class TestTapeContentCorrectness:
     """Tape content includes correct commands for real exercises."""
 
-    def test_help_main_tape(self):
+    def test_help_main_tape(self) -> None:
         exs = [e for e in vhs_exercises() if e.name == "help-main"]
         assert len(exs) == 1
         tape = generate_tape(exs[0])
         assert 'Type "polylogue --help"' in tape
 
-    def test_stats_default_tape(self):
+    def test_stats_default_tape(self) -> None:
         exs = [e for e in vhs_exercises() if e.name == "stats-default"]
         assert len(exs) == 1
         tape = generate_tape(exs[0])

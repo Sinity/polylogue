@@ -62,7 +62,7 @@ def _make_raw_record(
     )
 
 
-def _make_parsing_service(tmp_path: Path):
+def _make_parsing_service(tmp_path: Path) -> Any:
     from polylogue.config import Config
     from polylogue.pipeline.services.parsing import ParsingService
     from polylogue.storage.backends.async_sqlite import SQLiteBackend
@@ -102,7 +102,7 @@ class TestLargeBatchMalformedJson:
     BATCH_SIZE = 500
     CORRUPT_INDEX = 250
 
-    def test_malformed_json_skipped_rest_processed(self):
+    def test_malformed_json_skipped_rest_processed(self) -> None:
         """Pipeline skips the 1 malformed line, processes the other 499."""
         lines = generate_large_jsonl(self.BATCH_SIZE, provider="codex")
         corrupted = corrupt_line_malformed_json(lines, self.CORRUPT_INDEX)
@@ -111,7 +111,7 @@ class TestLargeBatchMalformedJson:
         parsed = _iter_jsonl_stream(data)
         assert len(parsed) == self.BATCH_SIZE - 1
 
-    def test_malformed_json_records_are_valid_dicts(self):
+    def test_malformed_json_records_are_valid_dicts(self) -> None:
         """Every parsed record from the surviving lines is a valid dict."""
         lines = generate_large_jsonl(self.BATCH_SIZE, provider="codex")
         corrupted = corrupt_line_malformed_json(lines, self.CORRUPT_INDEX)
@@ -120,7 +120,7 @@ class TestLargeBatchMalformedJson:
         parsed = _iter_jsonl_stream(data)
         assert all(isinstance(record, dict) for record in parsed)
 
-    def test_malformed_json_all_records_have_type_field(self):
+    def test_malformed_json_all_records_have_type_field(self) -> None:
         """Non-corrupted records retain their 'type' field."""
         lines = generate_large_jsonl(self.BATCH_SIZE, provider="codex")
         corrupted = corrupt_line_malformed_json(lines, self.CORRUPT_INDEX)
@@ -136,7 +136,7 @@ class TestLargeBatchTruncatedLine:
     BATCH_SIZE = 500
     CORRUPT_INDEX = 100
 
-    def test_truncated_line_skipped_rest_processed(self):
+    def test_truncated_line_skipped_rest_processed(self) -> None:
         """Pipeline skips the truncated line, processes the other 499."""
         lines = generate_large_jsonl(self.BATCH_SIZE, provider="codex")
         corrupted = corrupt_line_truncated(lines, self.CORRUPT_INDEX)
@@ -145,7 +145,7 @@ class TestLargeBatchTruncatedLine:
         parsed = _iter_jsonl_stream(data)
         assert len(parsed) == self.BATCH_SIZE - 1
 
-    def test_truncated_produces_valid_records(self):
+    def test_truncated_produces_valid_records(self) -> None:
         """All surviving records are structurally valid."""
         lines = generate_large_jsonl(self.BATCH_SIZE, provider="codex")
         corrupted = corrupt_line_truncated(lines, self.CORRUPT_INDEX)
@@ -161,7 +161,7 @@ class TestLargeBatchBadUtf8:
     BATCH_SIZE = 500
     CORRUPT_INDEX = 350
 
-    def test_bad_utf8_skipped_rest_processed(self, tmp_path):
+    def test_bad_utf8_skipped_rest_processed(self, tmp_path: Any) -> None:
         """Pipeline skips the bad UTF-8 line, processes the rest."""
         lines = generate_large_jsonl(self.BATCH_SIZE, provider="codex")
         corrupted = corrupt_line_bad_utf8(lines, self.CORRUPT_INDEX)
@@ -179,7 +179,7 @@ class TestLargeBatchBadUtf8:
         # at least the valid lines.
         assert len(parsed) >= self.BATCH_SIZE - 1
 
-    def test_bad_utf8_no_crash(self, tmp_path):
+    def test_bad_utf8_no_crash(self, tmp_path: Any) -> None:
         """No exception propagates from bad UTF-8 lines."""
         lines = generate_large_jsonl(self.BATCH_SIZE, provider="codex")
         corrupted = corrupt_line_bad_utf8(lines, self.CORRUPT_INDEX)
@@ -197,7 +197,7 @@ class TestLargeBatchWrongEnvelope:
     BATCH_SIZE = 500
     CORRUPT_INDEX = 450
 
-    def test_wrong_envelope_still_parsed_as_json(self):
+    def test_wrong_envelope_still_parsed_as_json(self) -> None:
         """Wrong envelope is valid JSON, so _iter_json_stream yields it.
 
         The wrong-envelope record IS valid JSON — it just has the wrong
@@ -214,7 +214,7 @@ class TestLargeBatchWrongEnvelope:
         # Wrong envelope IS valid JSON, so all 500 lines parse
         assert len(parsed) == self.BATCH_SIZE
 
-    def test_wrong_envelope_record_has_different_structure(self):
+    def test_wrong_envelope_record_has_different_structure(self) -> None:
         """The wrong-envelope record is structurally distinct from valid records."""
         lines = generate_large_jsonl(self.BATCH_SIZE, provider="codex")
         corrupted = corrupt_line_wrong_envelope(lines, self.CORRUPT_INDEX)
@@ -231,7 +231,7 @@ class TestMultipleCorruptionsInBatch:
 
     BATCH_SIZE = 500
 
-    def test_multiple_malformed_lines(self):
+    def test_multiple_malformed_lines(self) -> None:
         """Multiple malformed lines are all skipped."""
         lines = generate_large_jsonl(self.BATCH_SIZE, provider="codex")
         corrupt_indices = [10, 100, 200, 300, 400]
@@ -242,7 +242,7 @@ class TestMultipleCorruptionsInBatch:
         parsed = _iter_jsonl_stream(data)
         assert len(parsed) == self.BATCH_SIZE - len(corrupt_indices)
 
-    def test_mixed_corruption_types(self, tmp_path):
+    def test_mixed_corruption_types(self, tmp_path: Any) -> None:
         """Different corruption types at different positions all handled."""
         lines = generate_large_jsonl(self.BATCH_SIZE, provider="codex")
         # Apply corruptions in reverse to preserve indices
@@ -261,7 +261,7 @@ class TestCorruptionAtBoundaries:
 
     BATCH_SIZE = 500
 
-    def test_first_line_corrupted(self):
+    def test_first_line_corrupted(self) -> None:
         """Corruption at index 0 is handled gracefully."""
         lines = generate_large_jsonl(self.BATCH_SIZE, provider="codex")
         corrupted = corrupt_line_malformed_json(lines, 0)
@@ -270,7 +270,7 @@ class TestCorruptionAtBoundaries:
         parsed = _iter_jsonl_stream(data)
         assert len(parsed) == self.BATCH_SIZE - 1
 
-    def test_last_line_corrupted(self):
+    def test_last_line_corrupted(self) -> None:
         """Corruption at the last index is handled gracefully."""
         lines = generate_large_jsonl(self.BATCH_SIZE, provider="codex")
         corrupted = corrupt_line_malformed_json(lines, self.BATCH_SIZE - 1)
@@ -288,7 +288,7 @@ class TestCorruptionAtBoundaries:
 class TestParsingServiceCorruption:
     """ingest_record handles partial corruption."""
 
-    def test_malformed_jsonl_line_in_codex_raw(self, tmp_path):
+    def test_malformed_jsonl_line_in_codex_raw(self, tmp_path: Any) -> None:
         """Codex JSONL with 1 bad line: parsing succeeds with fewer messages."""
         from polylogue.pipeline.services.ingest_worker import ingest_record
 
@@ -302,7 +302,7 @@ class TestParsingServiceCorruption:
         if result.conversations:
             assert result.conversations[0].provider_name in ("codex", "codex-cli")
 
-    def test_truncated_jsonl_line_in_codex_raw(self, tmp_path):
+    def test_truncated_jsonl_line_in_codex_raw(self, tmp_path: Any) -> None:
         """Codex JSONL with 1 truncated line: parsing succeeds."""
         from polylogue.pipeline.services.ingest_worker import ingest_record
 
@@ -314,7 +314,7 @@ class TestParsingServiceCorruption:
         result = ingest_record(record, str(tmp_path / "archive"), "off")
         assert result.error is None
 
-    def test_wrong_envelope_in_codex_raw(self, tmp_path):
+    def test_wrong_envelope_in_codex_raw(self, tmp_path: Any) -> None:
         """Codex JSONL with 1 wrong-envelope line: parsing still works."""
         from polylogue.pipeline.services.ingest_worker import ingest_record
 
@@ -335,7 +335,7 @@ class TestParsingServiceCorruption:
 class TestDecodeRawPayloadCorruption:
     """raw_payload.build_raw_payload_envelope handles JSONL corruption."""
 
-    def test_malformed_line_counted_in_envelope(self):
+    def test_malformed_line_counted_in_envelope(self) -> None:
         """malformed_jsonl_lines reflects the number of bad lines."""
         from polylogue.lib.raw_payload import build_raw_payload_envelope
 
@@ -354,7 +354,7 @@ class TestDecodeRawPayloadCorruption:
         assert isinstance(envelope.payload, list)
         assert len(envelope.payload) == 99
 
-    def test_multiple_malformed_lines_counted(self):
+    def test_multiple_malformed_lines_counted(self) -> None:
         """All malformed lines are counted."""
         from polylogue.lib.raw_payload import build_raw_payload_envelope
 
@@ -371,7 +371,7 @@ class TestDecodeRawPayloadCorruption:
         assert envelope.malformed_jsonl_lines == 5
         assert len(envelope.payload) == 95
 
-    def test_bad_utf8_lines_are_counted_and_salvaged(self, tmp_path):
+    def test_bad_utf8_lines_are_counted_and_salvaged(self, tmp_path: Any) -> None:
         """Invalid UTF-8 lines count as malformed JSONL but do not poison the whole file."""
         from polylogue.lib.raw_payload import build_raw_payload_envelope
 
@@ -402,7 +402,7 @@ class TestDecodeRawPayloadCorruption:
 class TestTimestampEpochNearZero:
     """1970-adjacent timestamps parse correctly."""
 
-    def test_epoch_near_zero_records_parse(self):
+    def test_epoch_near_zero_records_parse(self) -> None:
         """All epoch-near-zero records from generate_timestamp_patterns parse."""
         patterns = generate_timestamp_patterns()
         records = patterns["epoch_near_zero"]
@@ -414,7 +414,7 @@ class TestTimestampEpochNearZero:
             # Should be within a day of epoch (86400 seconds into 1970)
             assert result.year == 1970
 
-    def test_epoch_one_day(self):
+    def test_epoch_one_day(self) -> None:
         """Timestamp 86400 (1970-01-02) parses correctly."""
         result = parse_timestamp(86400)
         assert result is not None
@@ -422,7 +422,7 @@ class TestTimestampEpochNearZero:
         assert result.month == 1
         assert result.day == 2
 
-    def test_epoch_one_day_as_string(self):
+    def test_epoch_one_day_as_string(self) -> None:
         """Timestamp '86400' as string parses correctly."""
         result = parse_timestamp("86400")
         assert result is not None
@@ -432,7 +432,7 @@ class TestTimestampEpochNearZero:
 class TestTimestampY2K38:
     """Y2K38-adjacent timestamps (near 2^31 - 1) parse correctly."""
 
-    def test_y2038_records_parse(self):
+    def test_y2038_records_parse(self) -> None:
         """All y2038-adjacent records from generate_timestamp_patterns parse."""
         patterns = generate_timestamp_patterns()
         records = patterns["y2038_adjacent"]
@@ -442,7 +442,7 @@ class TestTimestampY2K38:
             assert result is not None, f"Failed to parse timestamp: {ts}"
             assert isinstance(result, datetime)
 
-    def test_exact_y2038_boundary(self):
+    def test_exact_y2038_boundary(self) -> None:
         """The exact Y2K38 value (2147483647) parses correctly."""
         result = parse_timestamp(2147483647)
         assert result is not None
@@ -450,13 +450,13 @@ class TestTimestampY2K38:
         assert result.month == 1
         assert result.day == 19
 
-    def test_y2038_as_string(self):
+    def test_y2038_as_string(self) -> None:
         """Y2K38 value as string parses correctly."""
         result = parse_timestamp("2147483647")
         assert result is not None
         assert result.year == 2038
 
-    def test_just_past_y2038(self):
+    def test_just_past_y2038(self) -> None:
         """Value just past Y2K38 (32-bit overflow) still parses on 64-bit systems."""
         result = parse_timestamp(2147483648)
         assert result is not None
@@ -466,7 +466,7 @@ class TestTimestampY2K38:
 class TestTimestampFarFuture:
     """Far-future timestamps parse correctly."""
 
-    def test_far_future_records_parse(self):
+    def test_far_future_records_parse(self) -> None:
         """All far-future records from generate_timestamp_patterns parse."""
         patterns = generate_timestamp_patterns()
         records = patterns["far_future"]
@@ -478,14 +478,14 @@ class TestTimestampFarFuture:
             # 3000000000 is year 2065
             assert result.year >= 2065
 
-    def test_year_2100_timestamp(self):
+    def test_year_2100_timestamp(self) -> None:
         """Timestamp in year 2100 parses correctly."""
         # 2100-01-01 00:00:00 UTC = 4102444800
         result = parse_timestamp(4102444800)
         assert result is not None
         assert result.year == 2100
 
-    def test_far_future_iso_string(self):
+    def test_far_future_iso_string(self) -> None:
         """Far-future ISO timestamp parses correctly."""
         result = parse_timestamp("2100-01-01T00:00:00+00:00")
         assert result is not None
@@ -495,7 +495,7 @@ class TestTimestampFarFuture:
 class TestTimestampMixedFormats:
     """Mixed timestamp formats in same batch all parse correctly."""
 
-    def test_mixed_format_records_all_parse(self):
+    def test_mixed_format_records_all_parse(self) -> None:
         """All mixed-format records from generate_timestamp_patterns parse."""
         patterns = generate_timestamp_patterns()
         records = patterns["mixed_formats"]
@@ -507,7 +507,7 @@ class TestTimestampMixedFormats:
             parsed_timestamps.append(result)
         assert len(parsed_timestamps) == 3
 
-    def test_iso_with_timezone_offset(self):
+    def test_iso_with_timezone_offset(self) -> None:
         """ISO 8601 with +00:00 timezone offset."""
         result = parse_timestamp("2024-01-15T10:30:00+00:00")
         assert result is not None
@@ -515,25 +515,25 @@ class TestTimestampMixedFormats:
         assert result.month == 1
         assert result.day == 15
 
-    def test_epoch_float(self):
+    def test_epoch_float(self) -> None:
         """Epoch as float (1705312200.0)."""
         result = parse_timestamp(1705312200.0)
         assert result is not None
         assert result.year == 2024
 
-    def test_epoch_string(self):
+    def test_epoch_string(self) -> None:
         """Epoch as string ('1705312260')."""
         result = parse_timestamp("1705312260")
         assert result is not None
         assert result.year == 2024
 
-    def test_iso_with_z_suffix(self):
+    def test_iso_with_z_suffix(self) -> None:
         """ISO 8601 with Z suffix."""
         result = parse_timestamp("2024-01-15T10:30:00Z")
         assert result is not None
         assert result.year == 2024
 
-    def test_bare_iso_date(self):
+    def test_bare_iso_date(self) -> None:
         """Bare ISO date without time component."""
         result = parse_timestamp("2024-01-15")
         assert result is not None
@@ -545,11 +545,11 @@ class TestTimestampMixedFormats:
 class TestTimestampMissing:
     """Missing/None timestamps handled gracefully."""
 
-    def test_none_returns_none(self):
+    def test_none_returns_none(self) -> None:
         """None input returns None."""
         assert parse_timestamp(None) is None
 
-    def test_missing_timestamp_records_have_none_for_absent(self):
+    def test_missing_timestamp_records_have_none_for_absent(self) -> None:
         """Records with missing timestamps: timestamp key absent -> parse_timestamp(None)."""
         patterns = generate_timestamp_patterns()
         records = patterns["missing_timestamps"]
@@ -565,11 +565,11 @@ class TestTimestampMissing:
         # Third record has timestamp
         assert results[2] is not None
 
-    def test_empty_string_returns_none(self):
+    def test_empty_string_returns_none(self) -> None:
         """Empty string returns None (not parseable)."""
         assert parse_timestamp("") is None
 
-    def test_whitespace_returns_none(self):
+    def test_whitespace_returns_none(self) -> None:
         """Whitespace-only string returns None."""
         assert parse_timestamp("   ") is None
 
@@ -577,23 +577,23 @@ class TestTimestampMissing:
 class TestTimestampExtremes:
     """Edge cases for timestamp parsing."""
 
-    def test_negative_epoch_returns_none_or_valid(self):
+    def test_negative_epoch_returns_none_or_valid(self) -> None:
         """Negative epoch (before 1970) should return None or valid datetime."""
         result = parse_timestamp(-1)
         # Implementation returns None for negative epochs due to OSError on some platforms
         # On Linux 64-bit, it may succeed. Either way, no crash.
         assert result is None or isinstance(result, datetime)
 
-    def test_very_large_epoch_returns_none(self):
+    def test_very_large_epoch_returns_none(self) -> None:
         """Extremely large epoch (overflow) returns None gracefully."""
         result = parse_timestamp(99999999999999)
         assert result is None
 
-    def test_non_numeric_string_returns_none(self):
+    def test_non_numeric_string_returns_none(self) -> None:
         """Non-numeric, non-ISO string returns None."""
         assert parse_timestamp("not-a-timestamp") is None
 
-    def test_float_with_microseconds(self):
+    def test_float_with_microseconds(self) -> None:
         """Float with microseconds parses correctly."""
         result = parse_timestamp(1700000000.123456)
         assert result is not None
@@ -608,7 +608,7 @@ class TestTimestampExtremes:
 class TestTimestampPatternsInJsonl:
     """Verify timestamp patterns survive full JSONL -> stream -> parse round-trip."""
 
-    def test_epoch_near_zero_through_stream(self):
+    def test_epoch_near_zero_through_stream(self) -> None:
         """Epoch-near-zero timestamps survive JSONL round-trip."""
         patterns = generate_timestamp_patterns()
         records = patterns["epoch_near_zero"]
@@ -622,7 +622,7 @@ class TestTimestampPatternsInJsonl:
             assert ts is not None
             assert ts.year == 1970
 
-    def test_y2038_through_stream(self):
+    def test_y2038_through_stream(self) -> None:
         """Y2K38-adjacent timestamps survive JSONL round-trip."""
         patterns = generate_timestamp_patterns()
         records = patterns["y2038_adjacent"]
@@ -636,7 +636,7 @@ class TestTimestampPatternsInJsonl:
             assert ts is not None
             assert ts.year == 2038
 
-    def test_far_future_through_stream(self):
+    def test_far_future_through_stream(self) -> None:
         """Far-future timestamps survive JSONL round-trip."""
         patterns = generate_timestamp_patterns()
         records = patterns["far_future"]
@@ -649,7 +649,7 @@ class TestTimestampPatternsInJsonl:
             ts = parse_timestamp(record["timestamp"])
             assert ts is not None
 
-    def test_mixed_formats_through_stream(self):
+    def test_mixed_formats_through_stream(self) -> None:
         """Mixed timestamp formats all survive JSONL round-trip and parse."""
         patterns = generate_timestamp_patterns()
         records = patterns["mixed_formats"]
@@ -662,7 +662,7 @@ class TestTimestampPatternsInJsonl:
             ts = parse_timestamp(record["timestamp"])
             assert ts is not None
 
-    def test_missing_timestamps_through_stream(self):
+    def test_missing_timestamps_through_stream(self) -> None:
         """Records with missing timestamps survive JSONL round-trip."""
         patterns = generate_timestamp_patterns()
         records = patterns["missing_timestamps"]
@@ -686,7 +686,7 @@ class TestTimestampPatternsInJsonl:
 class TestRerunIdempotency:
     """Running the same batch twice produces identical records, no duplicates."""
 
-    def test_same_batch_twice_produces_same_records(self, tmp_path):
+    def test_same_batch_twice_produces_same_records(self, tmp_path: Any) -> None:
         """Parsing the same raw record twice yields identical results."""
         from polylogue.pipeline.services.ingest_worker import ingest_record
 
@@ -704,7 +704,7 @@ class TestRerunIdempotency:
             assert conv1.provider_name == conv2.provider_name
             assert len(conv1.message_tuples) == len(conv2.message_tuples)
 
-    def test_reparse_with_corruption_then_clean(self, tmp_path):
+    def test_reparse_with_corruption_then_clean(self, tmp_path: Any) -> None:
         """First parse with corruption, second with clean data — both succeed."""
         from polylogue.pipeline.services.ingest_worker import ingest_record
 
@@ -728,7 +728,7 @@ class TestRerunIdempotency:
         # Clean parse should have all conversations
         assert len(result_clean.conversations) >= len(result_corrupt.conversations)
 
-    def test_iter_json_stream_idempotent(self):
+    def test_iter_json_stream_idempotent(self) -> None:
         """_iter_json_stream produces identical output on repeated calls."""
         lines = generate_large_jsonl(100, provider="codex")
         data = _jsonl_bytes(lines)
@@ -740,7 +740,7 @@ class TestRerunIdempotency:
         for r1, r2 in zip(parsed_1, parsed_2, strict=True):
             assert r1 == r2
 
-    def test_idempotency_with_timestamp_patterns(self):
+    def test_idempotency_with_timestamp_patterns(self) -> None:
         """Timestamp pattern records produce identical results on re-parse."""
         patterns = generate_timestamp_patterns()
         for pattern_name, records in patterns.items():

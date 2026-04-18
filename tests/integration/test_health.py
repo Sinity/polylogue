@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+from typing import Any
 
 RUN_ALL_REPAIRS_EXPECTED = {
     "session_products",
@@ -16,7 +17,7 @@ RUN_ALL_REPAIRS_EXPECTED = {
 }
 
 
-def _insert_conversation(conn, conversation_id: str, provider_name: str = "test", title: str = "Test"):
+def _insert_conversation(conn: Any, conversation_id: str, provider_name: str = "test", title: str = "Test") -> None:
     """Helper to insert a conversation with all required fields."""
     content_hash = hashlib.sha256(f"{provider_name}:{conversation_id}".encode()).hexdigest()
     conn.execute(
@@ -26,13 +27,13 @@ def _insert_conversation(conn, conversation_id: str, provider_name: str = "test"
 
 
 def _insert_message(
-    conn,
+    conn: Any,
     message_id: str,
     conversation_id: str,
     role: str = "user",
     text: str = "Text",
     allow_orphaned: bool = False,
-):
+) -> None:
     """Helper to insert a message with all required fields."""
     content_hash = hashlib.sha256(f"{message_id}:{text}".encode()).hexdigest()
     if allow_orphaned:
@@ -53,7 +54,7 @@ def _insert_message(
 
 
 def _insert_content_block(
-    conn,
+    conn: Any,
     block_id: str,
     message_id: str,
     conversation_id: str,
@@ -62,7 +63,7 @@ def _insert_content_block(
     type: str = "tool_use",
     tool_name: str | None = "Read",
     text: str | None = None,
-):
+) -> None:
     """Helper to insert a content block with optional broken parent references."""
     if allow_orphaned:
         conn.execute("PRAGMA foreign_keys = OFF")
@@ -93,7 +94,7 @@ def _insert_content_block(
 class TestRepairOrphanedMessages:
     """Tests for repair_orphaned_messages function."""
 
-    def test_clean_state_no_orphaned_messages(self, cli_workspace):
+    def test_clean_state_no_orphaned_messages(self, cli_workspace: Any) -> None:
         """repair_orphaned_messages should return 0 when no orphans exist."""
         from polylogue.config import get_config
         from polylogue.storage.backends.connection import connection_context
@@ -115,7 +116,7 @@ class TestRepairOrphanedMessages:
         assert result.success is True
         assert "No orphaned" in result.detail
 
-    def test_orphaned_messages_found_and_deleted(self, cli_workspace):
+    def test_orphaned_messages_found_and_deleted(self, cli_workspace: Any) -> None:
         """repair_orphaned_messages should find and delete orphaned messages."""
         from polylogue.config import get_config
         from polylogue.storage.backends.connection import connection_context
@@ -141,7 +142,7 @@ class TestRepairOrphanedMessages:
             remaining = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
             assert remaining == 0
 
-    def test_orphaned_messages_dry_run_counts_but_doesnt_delete(self, cli_workspace):
+    def test_orphaned_messages_dry_run_counts_but_doesnt_delete(self, cli_workspace: Any) -> None:
         """repair_orphaned_messages with dry_run=True should count but not delete."""
         from polylogue.config import get_config
         from polylogue.storage.backends.connection import connection_context
@@ -165,7 +166,7 @@ class TestRepairOrphanedMessages:
             remaining = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
             assert remaining == 1
 
-    def test_orphaned_messages_idempotency(self, cli_workspace):
+    def test_orphaned_messages_idempotency(self, cli_workspace: Any) -> None:
         """Running repair twice should find 0 on second run."""
         from polylogue.config import get_config
         from polylogue.storage.backends.connection import connection_context
@@ -188,7 +189,7 @@ class TestRepairOrphanedMessages:
 class TestRepairOrphanedContentBlocks:
     """Tests for repair_orphaned_content_blocks function."""
 
-    def test_clean_state_no_orphaned_content_blocks(self, cli_workspace):
+    def test_clean_state_no_orphaned_content_blocks(self, cli_workspace: Any) -> None:
         from polylogue.config import get_config
         from polylogue.storage.backends.connection import connection_context
         from polylogue.storage.repair import repair_orphaned_content_blocks
@@ -206,7 +207,7 @@ class TestRepairOrphanedContentBlocks:
         assert result.repaired_count == 0
         assert result.success is True
 
-    def test_orphaned_content_blocks_found_and_deleted(self, cli_workspace):
+    def test_orphaned_content_blocks_found_and_deleted(self, cli_workspace: Any) -> None:
         from polylogue.config import get_config
         from polylogue.storage.backends.connection import connection_context
         from polylogue.storage.repair import repair_orphaned_content_blocks
@@ -240,7 +241,7 @@ class TestRepairOrphanedContentBlocks:
             remaining = conn.execute("SELECT COUNT(*) FROM content_blocks").fetchone()[0]
             assert remaining == 0
 
-    def test_orphaned_content_blocks_dry_run_counts_but_doesnt_delete(self, cli_workspace):
+    def test_orphaned_content_blocks_dry_run_counts_but_doesnt_delete(self, cli_workspace: Any) -> None:
         from polylogue.config import get_config
         from polylogue.storage.backends.connection import connection_context
         from polylogue.storage.repair import repair_orphaned_content_blocks
@@ -266,7 +267,7 @@ class TestRepairOrphanedContentBlocks:
             remaining = conn.execute("SELECT COUNT(*) FROM content_blocks").fetchone()[0]
             assert remaining == 1
 
-    def test_orphaned_content_blocks_idempotency(self, cli_workspace):
+    def test_orphaned_content_blocks_idempotency(self, cli_workspace: Any) -> None:
         from polylogue.config import get_config
         from polylogue.storage.backends.connection import connection_context
         from polylogue.storage.repair import repair_orphaned_content_blocks
@@ -293,7 +294,7 @@ class TestRepairOrphanedContentBlocks:
 class TestRepairEmptyConversations:
     """Tests for repair_empty_conversations function."""
 
-    def test_clean_state_no_empty_conversations(self, cli_workspace):
+    def test_clean_state_no_empty_conversations(self, cli_workspace: Any) -> None:
         """repair_empty_conversations should return 0 when no empty convos exist."""
         from polylogue.config import get_config
         from polylogue.storage.backends.connection import connection_context
@@ -314,7 +315,7 @@ class TestRepairEmptyConversations:
         assert result.repaired_count == 0
         assert result.success is True
 
-    def test_empty_conversations_found_and_deleted(self, cli_workspace):
+    def test_empty_conversations_found_and_deleted(self, cli_workspace: Any) -> None:
         """repair_empty_conversations should find and delete empty conversations."""
         from polylogue.config import get_config
         from polylogue.storage.backends.connection import connection_context
@@ -340,7 +341,7 @@ class TestRepairEmptyConversations:
             remaining = conn.execute("SELECT COUNT(*) FROM conversations").fetchone()[0]
             assert remaining == 0
 
-    def test_empty_conversations_dry_run_counts_but_doesnt_delete(self, cli_workspace):
+    def test_empty_conversations_dry_run_counts_but_doesnt_delete(self, cli_workspace: Any) -> None:
         """repair_empty_conversations with dry_run=True should count but not delete."""
         from polylogue.config import get_config
         from polylogue.storage.backends.connection import connection_context
@@ -363,7 +364,7 @@ class TestRepairEmptyConversations:
             remaining = conn.execute("SELECT COUNT(*) FROM conversations").fetchone()[0]
             assert remaining == 1
 
-    def test_empty_conversations_idempotency(self, cli_workspace):
+    def test_empty_conversations_idempotency(self, cli_workspace: Any) -> None:
         """Running repair twice should find 0 on second run."""
         from polylogue.config import get_config
         from polylogue.storage.backends.connection import connection_context
@@ -386,7 +387,7 @@ class TestRepairEmptyConversations:
 class TestRepairDanglingFts:
     """Tests for repair_dangling_fts function."""
 
-    def test_clean_fts_state(self, cli_workspace):
+    def test_clean_fts_state(self, cli_workspace: Any) -> None:
         """repair_dangling_fts should return 0 when FTS is in sync."""
         from polylogue.config import get_config
         from polylogue.storage.backends.connection import connection_context
@@ -407,7 +408,7 @@ class TestRepairDanglingFts:
         assert result.repaired_count == 0
         assert result.success is True
 
-    def test_dangling_fts_orphaned_entry(self, cli_workspace):
+    def test_dangling_fts_orphaned_entry(self, cli_workspace: Any) -> None:
         """repair_dangling_fts should find and delete FTS entries without messages."""
         from polylogue.config import get_config
         from polylogue.storage.backends.connection import connection_context
@@ -441,7 +442,7 @@ class TestRepairDanglingFts:
         assert result.repaired_count == 1
         assert result.success is True
 
-    def test_dangling_fts_missing_entry(self, cli_workspace):
+    def test_dangling_fts_missing_entry(self, cli_workspace: Any) -> None:
         """repair_dangling_fts should insert missing FTS entries for messages."""
         from polylogue.config import get_config
         from polylogue.storage.backends.connection import connection_context
@@ -475,7 +476,7 @@ class TestRepairDanglingFts:
         assert result.repaired_count == 1
         assert result.success is True
 
-    def test_dangling_fts_dry_run_counts_but_doesnt_modify(self, cli_workspace):
+    def test_dangling_fts_dry_run_counts_but_doesnt_modify(self, cli_workspace: Any) -> None:
         """repair_dangling_fts with dry_run=True should count but not modify."""
         from polylogue.config import get_config
         from polylogue.storage.backends.connection import connection_context
@@ -504,7 +505,7 @@ class TestRepairDanglingFts:
             fts_count = conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0]
             assert abs(msg_count - fts_count) == initial_diff
 
-    def test_dangling_fts_ignores_null_text_messages(self, cli_workspace):
+    def test_dangling_fts_ignores_null_text_messages(self, cli_workspace: Any) -> None:
         """Null-text messages should not count as missing FTS rows."""
         from polylogue.config import get_config
         from polylogue.storage.backends.connection import connection_context
@@ -531,7 +532,7 @@ class TestRepairDanglingFts:
 class TestRepairActionEventReadModel:
     """Tests for repair_action_event_read_model function."""
 
-    def test_clean_action_event_state(self, cli_workspace):
+    def test_clean_action_event_state(self, cli_workspace: Any) -> None:
         from polylogue.config import get_config
         from polylogue.storage.backends.connection import connection_context
         from polylogue.storage.repair import repair_action_event_read_model
@@ -552,7 +553,7 @@ class TestRepairActionEventReadModel:
             assert conn.execute("SELECT COUNT(*) FROM action_events").fetchone()[0] > 0
             assert conn.execute("SELECT COUNT(*) FROM action_events_fts").fetchone()[0] > 0
 
-    def test_action_event_read_model_dry_run(self, cli_workspace):
+    def test_action_event_read_model_dry_run(self, cli_workspace: Any) -> None:
         from polylogue.config import get_config
         from polylogue.storage.backends.connection import connection_context
         from polylogue.storage.repair import repair_action_event_read_model
@@ -574,7 +575,7 @@ class TestRepairActionEventReadModel:
 class TestRepairOrphanedAttachments:
     """Tests for repair_orphaned_attachments function."""
 
-    def test_clean_attachments_state(self, cli_workspace):
+    def test_clean_attachments_state(self, cli_workspace: Any) -> None:
         """repair_orphaned_attachments should return 0 when all attachments are referenced."""
         from polylogue.config import get_config
         from polylogue.storage.backends.connection import connection_context
@@ -603,7 +604,7 @@ class TestRepairOrphanedAttachments:
         assert result.repaired_count == 0
         assert result.success is True
 
-    def test_orphaned_attachments_orphaned_refs(self, cli_workspace):
+    def test_orphaned_attachments_orphaned_refs(self, cli_workspace: Any) -> None:
         """repair_orphaned_attachments should detect orphaned attachment refs in dry-run."""
         from polylogue.config import get_config
         from polylogue.storage.backends.connection import connection_context
@@ -637,7 +638,7 @@ class TestRepairOrphanedAttachments:
         # Should delete at least the unreferenced attachment
         assert result.repaired_count >= 1
 
-    def test_orphaned_attachments_unreferenced_attachment(self, cli_workspace):
+    def test_orphaned_attachments_unreferenced_attachment(self, cli_workspace: Any) -> None:
         """repair_orphaned_attachments should delete unreferenced attachments."""
         from polylogue.config import get_config
         from polylogue.storage.backends.connection import connection_context
@@ -659,7 +660,7 @@ class TestRepairOrphanedAttachments:
         assert result.name == "orphaned_attachments"
         assert result.repaired_count >= 1  # Should delete the unreferenced attachment
 
-    def test_orphaned_attachments_dry_run(self, cli_workspace):
+    def test_orphaned_attachments_dry_run(self, cli_workspace: Any) -> None:
         """repair_orphaned_attachments with dry_run=True should count but not delete."""
         from polylogue.config import get_config
         from polylogue.storage.backends.connection import connection_context
@@ -688,7 +689,7 @@ class TestRepairOrphanedAttachments:
 class TestRepairWalCheckpoint:
     """Tests for repair_wal_checkpoint function."""
 
-    def test_wal_checkpoint_succeeds(self, cli_workspace):
+    def test_wal_checkpoint_succeeds(self, cli_workspace: Any) -> None:
         """repair_wal_checkpoint should execute without crashing."""
         from polylogue.config import get_config
         from polylogue.storage.repair import repair_wal_checkpoint
@@ -703,7 +704,7 @@ class TestRepairWalCheckpoint:
         assert result.success is True
         # repaired_count and detail depend on WAL file state; just verify no crash
 
-    def test_wal_checkpoint_dry_run(self, cli_workspace):
+    def test_wal_checkpoint_dry_run(self, cli_workspace: Any) -> None:
         """repair_wal_checkpoint with dry_run=True should inspect WAL without modifying."""
         from polylogue.config import get_config
         from polylogue.storage.repair import repair_wal_checkpoint
@@ -722,7 +723,7 @@ class TestRepairWalCheckpoint:
 class TestMaintenanceSelection:
     """Tests for safe repair and archive cleanup orchestration."""
 
-    def test_run_safe_repairs_returns_safe_results(self, cli_workspace):
+    def test_run_safe_repairs_returns_safe_results(self, cli_workspace: Any) -> None:
         """run_safe_repairs should return only non-destructive maintenance functions."""
         from polylogue.config import get_config
         from polylogue.storage.repair import run_safe_repairs
@@ -741,7 +742,7 @@ class TestMaintenanceSelection:
         assert all(r.destructive is False for r in results)
         assert all(r.category.value in {"derived_repair", "database_maintenance"} for r in results)
 
-    def test_run_archive_cleanup_returns_destructive_results(self, cli_workspace):
+    def test_run_archive_cleanup_returns_destructive_results(self, cli_workspace: Any) -> None:
         """run_archive_cleanup should return only destructive cleanup functions."""
         from polylogue.config import get_config
         from polylogue.storage.repair import run_archive_cleanup
@@ -757,7 +758,7 @@ class TestMaintenanceSelection:
         assert all(r.destructive is True for r in results)
         assert all(r.category.value == "archive_cleanup" for r in results)
 
-    def test_run_selected_maintenance_dry_run_all_have_would(self, cli_workspace):
+    def test_run_selected_maintenance_dry_run_all_have_would(self, cli_workspace: Any) -> None:
         """Selected maintenance dry run should describe pending work explicitly."""
         from polylogue.config import get_config
         from polylogue.storage.backends.connection import connection_context
@@ -774,7 +775,7 @@ class TestMaintenanceSelection:
 
         assert any("Would:" in r.detail for r in results), "Expected at least one 'Would:' in dry-run results"
 
-    def test_run_selected_maintenance_uses_preview_counts(self, cli_workspace):
+    def test_run_selected_maintenance_uses_preview_counts(self, cli_workspace: Any) -> None:
         """Dry-run maintenance can reuse known counts instead of rescanning the archive."""
         from polylogue.config import get_config
         from polylogue.storage.repair import run_selected_maintenance
@@ -803,7 +804,7 @@ class TestMaintenanceSelection:
         assert by_name["orphaned_content_blocks"].repaired_count == 11
         assert by_name["empty_conversations"].repaired_count == 5
 
-    def test_run_selected_maintenance_can_scope_to_session_products(self, cli_workspace):
+    def test_run_selected_maintenance_can_scope_to_session_products(self, cli_workspace: Any) -> None:
         """Scoped maintenance should repair only the durable session-product layer."""
         from polylogue.config import get_config
         from polylogue.storage.backends.connection import connection_context
@@ -835,7 +836,7 @@ class TestMaintenanceSelection:
         assert profile_count == 1
         assert thread_count == 1
 
-    def test_run_selected_maintenance_idempotency_after_full_run(self, cli_workspace):
+    def test_run_selected_maintenance_idempotency_after_full_run(self, cli_workspace: Any) -> None:
         """Selected maintenance twice should find 0 issues on second run."""
         from polylogue.config import get_config
         from polylogue.storage.backends.connection import connection_context
