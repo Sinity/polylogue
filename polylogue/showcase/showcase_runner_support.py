@@ -7,8 +7,9 @@ import subprocess
 import time
 from collections.abc import Callable
 from pathlib import Path
+from typing import TYPE_CHECKING, Protocol
 
-from polylogue.scenarios import CorpusRequest, CorpusSpec
+from polylogue.scenarios import CorpusRequest, CorpusSpec, ExecutionSpec
 from polylogue.showcase.corpus_requests import showcase_corpus_request
 from polylogue.showcase.exercises import EXERCISES, Exercise, topological_order
 from polylogue.showcase.showcase_runner_models import ExerciseResult
@@ -20,6 +21,20 @@ from polylogue.showcase.workspace import (
     seed_workspace_from_scenarios,
     seed_workspace_from_specs,
 )
+
+if TYPE_CHECKING:
+    from polylogue.showcase.cli_boundary import ShowcaseCliResult
+
+
+class _ShowcaseCliInvoker(Protocol):
+    def __call__(
+        self,
+        execution: ExecutionSpec,
+        *,
+        env: dict[str, str] | None = None,
+        cwd: Path | None = None,
+        timeout: float = 60.0,
+    ) -> ShowcaseCliResult: ...
 
 
 def select_exercises(
@@ -106,7 +121,7 @@ def run_exercise(
     exercise: Exercise,
     *,
     env_vars: dict[str, str],
-    invoke_showcase_cli_fn: Callable[..., object],
+    invoke_showcase_cli_fn: _ShowcaseCliInvoker,
 ) -> ExerciseResult:
     """Run one showcase exercise and capture its result."""
     started = time.monotonic()

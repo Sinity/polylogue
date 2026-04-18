@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from polylogue.site.conversation_pages import write_template_stream
@@ -12,13 +14,13 @@ if TYPE_CHECKING:
     from jinja2 import Template
 
     from polylogue.site.builder import SiteBuilder
-    from polylogue.site.models import ArchiveIndexStats
+    from polylogue.site.models import ArchiveIndexStats, ConversationIndex
 
 
 async def write_template_stream_for_builder(
     builder: SiteBuilder,
     template: Template,
-    output_path,
+    output_path: Path,
     **context: object,
 ) -> None:
     del builder
@@ -47,13 +49,17 @@ async def generate_provider_indexes_for_builder(
     *,
     generated_at: str,
 ) -> int:
+    async def _conversation_iter(provider: str | None) -> AsyncIterator[ConversationIndex]:
+        async for conversation in builder._iter_conversation_indexes(provider=provider):
+            yield conversation
+
     return await generate_provider_indexes(
         output_dir=builder.output_dir,
         env=builder.env,
         config=builder.config,
         archive_stats=archive_stats,
         generated_at=generated_at,
-        conversation_iter_factory=lambda provider=None: builder._iter_conversation_indexes(provider=provider),
+        conversation_iter_factory=_conversation_iter,
         write_stream=builder._write_template_stream,
     )
 
