@@ -124,6 +124,10 @@ class SQLiteArchiveMixin:
         async for cid in self.queries.iter_conversation_ids(source_names=source_names, page_size=page_size):
             yield cid
 
+    async def get_session_product_status(self) -> dict[str, int | bool]:
+        """Return materialized session-product coverage counters."""
+        return await self.queries.get_session_product_status()
+
     async def search_conversations(self, query: str, limit: int = 100, providers: list[str] | None = None) -> list[str]:
         """Search conversations using the canonical ranked FTS conversation query."""
         return await self.queries.search_conversations(query, limit, providers)

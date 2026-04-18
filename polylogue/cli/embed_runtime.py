@@ -2,20 +2,44 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol, cast
 
 import click
 
 if TYPE_CHECKING:
-    from polylogue.cli.types import AppEnv
     from polylogue.lib.models import Conversation
     from polylogue.protocols import VectorProvider
     from polylogue.storage.repository import ConversationRepository
     from polylogue.storage.store import MessageRecord
 
 
+class _ProgressHandle(Protocol):
+    def update(self, **kwargs: object) -> None: ...
+
+    def advance(self, advance: float = 1) -> None: ...
+
+    def __enter__(self) -> _ProgressHandle: ...
+
+    def __exit__(self, *args: object) -> None: ...
+
+
+class _ConsoleLike(Protocol):
+    def print(self, *args: object, **kwargs: object) -> None: ...
+
+
+class _EmbedUI(Protocol):
+    plain: bool
+    console: _ConsoleLike
+
+    def progress(self, description: str, total: int = 0) -> _ProgressHandle: ...
+
+
+class _HasUI(Protocol):
+    ui: _EmbedUI
+
+
 def embed_single(
-    env: AppEnv,
+    env: object,
     repo: ConversationRepository,
     vec_provider: VectorProvider,
     conversation_id: str,
@@ -52,7 +76,7 @@ def embed_single(
 
 
 def embed_batch(
-    env: AppEnv,
+    env: object,
     repo: ConversationRepository,
     vec_provider: VectorProvider,
     *,
@@ -63,6 +87,7 @@ def embed_batch(
     from polylogue.storage.backends.connection import open_read_connection
     from polylogue.sync_bridge import run_coroutine_sync
 
+    ui = cast(_HasUI, env).ui
     backend = repo.backend
     conv_ids: list[tuple[str, str | None]] = []
     with open_read_connection(backend.db_path) as conn:
@@ -105,9 +130,9 @@ def embed_batch(
             return True
         return False
 
-    with env.ui.progress("Embedding conversations", total=len(conv_ids)) as progress:
+    with ui.progress("Embedding conversations", total=len(conv_ids)) as progress:
         for i, (conv_id, title) in enumerate(conv_ids, 1):
-            if not env.ui.plain:
+            if not ui.plain:
                 progress.update(description=f"Embedding {title or conv_id[:12]}...")
             try:
                 if _embed_one(conv_id):
@@ -115,7 +140,7 @@ def embed_batch(
             except Exception as exc:
                 error_count += 1
                 label = title or conv_id[:12]
-                env.ui.console.print(f"Warning: [{i}/{len(conv_ids)}] {label}: {exc}")
+                ui.console.print(f"Warning: [{i}/{len(conv_ids)}] {label}: {exc}")
             progress.advance()
 
     click.echo(f"\n✓ Embedded {embedded_count} conversations" + (f" ({error_count} errors)" if error_count else ""))

@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import AsyncIterable, AsyncIterator, Iterable
-from typing import TYPE_CHECKING
+from collections.abc import AsyncIterable, AsyncIterator, Callable, Iterable
+from typing import TYPE_CHECKING, TypedDict
+
+import aiosqlite
 
 from polylogue.logging import get_logger
 from polylogue.storage.action_event_rebuild_runtime import (
@@ -29,6 +31,26 @@ logger = get_logger(__name__)
 __all__ = ["IndexService"]
 
 
+class IndexStatus(TypedDict):
+    exists: bool
+    count: int
+
+
+def _status_int(value: object) -> int:
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        try:
+            return int(value)
+        except ValueError:
+            return 0
+    return 0
+
+
 async def ensure_index(backend: SQLiteBackend) -> None:
     """Ensure the FTS5 table exists on the archive backend."""
     async with backend.connection() as conn:
@@ -46,7 +68,7 @@ async def rebuild_index(
     conversation_id_list = (
         conversation_ids
         if conversation_ids is not None
-        else [conversation_id async for conversation_id in backend.queries.iter_conversation_ids()]
+        else [conversation_id async for conversation_id in backend.iter_conversation_ids()]
     )
     async with backend.connection() as conn:
         action_targets = await _action_event_repair_targets(conn, conversation_id_list)
@@ -135,7 +157,7 @@ async def _iter_ids(items: Iterable[str] | AsyncIterable[str]) -> AsyncIterator[
         yield item
 
 
-def _action_progress_desc_factory(phase_total: int):
+def _action_progress_desc_factory(phase_total: int) -> Callable[[int, int], str]:
     def describe(processed: int, total: int) -> str:
         del total
         return f"Indexing: action events {processed:,}/{phase_total:,}"
@@ -143,7 +165,7 @@ def _action_progress_desc_factory(phase_total: int):
     return describe
 
 
-def _fts_progress_desc_factory(*, offset: int, phase_total: int):
+def _fts_progress_desc_factory(*, offset: int, phase_total: int) -> Callable[[int, int], str]:
     def describe(processed: int, total: int) -> str:
         del total
         return f"Indexing: full-text search {offset + processed:,}/{phase_total:,}"
@@ -152,7 +174,7 @@ def _fts_progress_desc_factory(*, offset: int, phase_total: int):
 
 
 async def _action_event_repair_targets(
-    conn,
+    conn: aiosqlite.Connection,
     conversation_id_list: list[str],
 ) -> list[str]:
     if not conversation_id_list:
@@ -164,10 +186,14 @@ async def _action_event_repair_targets(
     return [conversation_id for conversation_id in candidate_ids if conversation_id in allowed]
 
 
-async def index_status(backend: SQLiteBackend) -> dict[str, object]:
+async def index_status(backend: SQLiteBackend) -> IndexStatus:
     """Return whether the FTS5 index exists and how many docs it contains."""
     async with backend.connection() as conn:
-        return await fts_index_status_async(conn)
+        raw_status = await fts_index_status_async(conn)
+    return {
+        "exists": bool(raw_status.get("exists", False)),
+        "count": _status_int(raw_status.get("count", 0)),
+    }
 
 
 class IndexService:
@@ -177,7 +203,7 @@ class IndexService:
         self,
         config: Config,
         backend: SQLiteBackend | None = None,
-    ):
+    ) -> None:
         """Initialize the async indexing service.
 
         Args:
@@ -238,9 +264,7 @@ class IndexService:
             return False
 
         try:
-            conversation_id_list = [
-                conversation_id async for conversation_id in self.backend.queries.iter_conversation_ids()
-            ]
+            conversation_id_list = [conversation_id async for conversation_id in self.backend.iter_conversation_ids()]
             if progress_callback is None:
                 await rebuild_index(
                     self.backend,
@@ -271,7 +295,7 @@ class IndexService:
             logger.error("Failed to ensure index exists", error=str(exc), exc_info=True)
             return False
 
-    async def get_index_status(self) -> dict[str, object]:
+    async def get_index_status(self) -> IndexStatus:
         """Get the current status of the search index.
 
         Returns:

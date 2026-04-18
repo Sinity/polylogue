@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING, TypedDict
+from typing import TYPE_CHECKING, Protocol, TypedDict
 
 import click
 
 if TYPE_CHECKING:
-    from polylogue.cli.types import AppEnv
+    from polylogue.config import Config
+
+
+class _HasConfig(Protocol):
+    @property
+    def config(self) -> Config: ...
 
 
 class RetrievalBandPayload(TypedDict, total=False):
@@ -43,7 +48,7 @@ def _payload_int(value: object) -> int:
     return int(value) if isinstance(value, bool | int | float | str) else 0
 
 
-def embedding_status_payload(env: AppEnv) -> EmbeddingStatusPayload:
+def embedding_status_payload(env: _HasConfig) -> EmbeddingStatusPayload:
     """Read canonical embedding-status statistics for operator surfaces."""
     from polylogue.storage.backends.connection import open_read_connection
     from polylogue.storage.embedding_stats import read_embedding_stats_sync
@@ -129,6 +134,6 @@ def render_embedding_stats(payload: EmbeddingStatusPayload, *, json_output: bool
             )
 
 
-def show_embedding_stats(env: AppEnv, *, json_output: bool = False) -> None:
+def show_embedding_stats(env: _HasConfig, *, json_output: bool = False) -> None:
     """Display embedding statistics."""
     render_embedding_stats(embedding_status_payload(env), json_output=json_output)

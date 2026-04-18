@@ -1,16 +1,21 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import AsyncIterator, Iterable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from pathlib import Path
+from typing import TYPE_CHECKING, TypedDict
 
 from polylogue.config import Config
 from polylogue.pipeline.run_support import PARSE_STAGES
+from polylogue.types import SearchProvider
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
+    from polylogue.config import Source
     from polylogue.pipeline.services.parsing import IngestResult
+    from polylogue.pipeline.stage_models import AcquireResult
     from polylogue.protocols import ProgressCallback
     from polylogue.storage.backends.async_sqlite import SQLiteBackend
     from polylogue.storage.repository import ConversationRepository
@@ -59,14 +64,54 @@ class EmbedStageOutcome:
     stats_only: bool = False
 
 
+class _SiteOptions(TypedDict, total=False):
+    output: Path
+    title: str
+    search: bool
+    search_provider: str | SearchProvider
+    dashboard: bool
+
+
+def _site_option_path(options: dict[str, object], key: str, *, default: Path) -> Path:
+    value = options.get(key)
+    if isinstance(value, Path):
+        return value
+    if isinstance(value, str) and value.strip():
+        return Path(value)
+    return default
+
+
+def _site_option_str(options: dict[str, object], key: str, *, default: str) -> str:
+    value = options.get(key)
+    return value if isinstance(value, str) and value.strip() else default
+
+
+def _site_option_bool(options: dict[str, object], key: str, *, default: bool) -> bool:
+    value = options.get(key)
+    return value if isinstance(value, bool) else default
+
+
+def _site_option_search_provider(
+    options: dict[str, object],
+    *,
+    default: SearchProvider,
+) -> SearchProvider:
+    value = options.get("search_provider")
+    if isinstance(value, SearchProvider):
+        return value
+    if isinstance(value, str) and value.strip():
+        return SearchProvider.from_string(value)
+    return default
+
+
 async def execute_acquire_stage(
     *,
     config: Config,
     backend: SQLiteBackend,
-    sources,
+    sources: list[Source],
     ui: object | None = None,
     progress_callback: ProgressCallback | None = None,
-):
+) -> AcquireResult:
     from polylogue.pipeline.services.acquisition import AcquisitionService
 
     acquire_service = AcquisitionService(backend=backend)
@@ -82,8 +127,8 @@ async def execute_ingest_stage(
     *,
     config: Config,
     repository: ConversationRepository,
-    archive_root,
-    sources,
+    archive_root: Path,
+    sources: list[Source],
     stage: str,
     skip_acquire: bool = False,
     ui: object | None = None,
@@ -143,12 +188,14 @@ async def execute_materialize_stage(
         conversation_ids = sorted(processed_ids)
         if not conversation_ids:
             return MaterializeStageOutcome(item_count=0, rebuilt=False)
-        status = await backend.queries.get_session_product_status()
+
+        status = await backend.get_session_product_status()
         total_conversations = int(status.get("total_conversations", 0) or 0)
         profile_row_count = int(status.get("profile_row_count", 0) or 0)
         use_bounded_rebuild = profile_row_count == 0 and total_conversations == len(conversation_ids)
         if progress_callback is not None:
             progress_callback(0, desc=f"Materializing: 0/{len(conversation_ids)}")
+
         if use_bounded_rebuild:
             async with backend.connection() as conn:
                 counts = await rebuild_session_products_async(
@@ -158,12 +205,12 @@ async def execute_materialize_stage(
                     progress_total=len(conversation_ids),
                 )
                 await conn.commit()
-            observation = {"mode": "rebuild-from-empty", **counts}
             return MaterializeStageOutcome(
                 item_count=len(conversation_ids),
                 rebuilt=True,
-                observation=observation,
+                observation={"mode": "rebuild-from-empty", **counts},
             )
+
         observation = await refresh_session_products_bulk(backend, conversation_ids)
         return MaterializeStageOutcome(
             item_count=len(conversation_ids),
@@ -175,12 +222,12 @@ async def execute_materialize_stage(
         return MaterializeStageOutcome(item_count=0, rebuilt=False)
 
     if source_names:
-        materialize_total = await backend.queries.count_conversation_ids(source_names=list(source_names))
+        scoped_source_names = list(source_names)
+        materialize_total = await backend.count_conversation_ids(source_names=scoped_source_names)
         if not materialize_total:
             return MaterializeStageOutcome(item_count=0, rebuilt=False)
         conversation_ids = [
-            conversation_id
-            async for conversation_id in backend.queries.iter_conversation_ids(source_names=list(source_names))
+            conversation_id async for conversation_id in backend.iter_conversation_ids(source_names=scoped_source_names)
         ]
         if progress_callback is not None:
             progress_callback(0, desc=f"Materializing: 0/{materialize_total}")
@@ -192,7 +239,8 @@ async def execute_materialize_stage(
         )
 
     async with backend.connection() as conn:
-        total_conversations = int((await (await conn.execute("SELECT COUNT(*) FROM conversations")).fetchone())[0] or 0)
+        total_row = await (await conn.execute("SELECT COUNT(*) FROM conversations")).fetchone()
+        total_conversations = int(total_row[0]) if total_row is not None else 0
         if progress_callback is not None:
             progress_callback(0, desc=f"Materializing: 0/{total_conversations}")
         counts = await rebuild_session_products_async(
@@ -201,11 +249,10 @@ async def execute_materialize_stage(
             progress_total=total_conversations,
         )
         await conn.commit()
-    observation = {"mode": "rebuild", **counts}
     return MaterializeStageOutcome(
         item_count=int(counts.get("profiles", 0)),
         rebuilt=True,
-        observation=observation,
+        observation={"mode": "rebuild", **counts},
     )
 
 
@@ -222,15 +269,10 @@ async def execute_render_stage(
     from polylogue.pipeline.services.rendering import RenderService
     from polylogue.rendering.renderers import create_renderer
 
-    render_ids = None
-    render_total = 0
     if stage == "render":
-        render_total = await backend.queries.count_conversation_ids(
-            source_names=list(source_names) if source_names is not None else None
-        )
-        render_ids = backend.queries.iter_conversation_ids(
-            source_names=list(source_names) if source_names is not None else None
-        )
+        scoped_source_names = list(source_names) if source_names is not None else None
+        render_total = await backend.count_conversation_ids(source_names=scoped_source_names)
+        render_ids: Iterable[str] | AsyncIterator[str] = backend.iter_conversation_ids(source_names=scoped_source_names)
     else:
         render_ids = processed_ids
         render_total = len(processed_ids)
@@ -296,14 +338,15 @@ async def execute_index_stage(
 
         if stage == "index":
             if source_names:
-                total = await backend.queries.count_conversation_ids(source_names=list(source_names))
+                scoped_source_names = list(source_names)
+                total = await backend.count_conversation_ids(source_names=scoped_source_names)
                 index_kwargs = {"progress_callback": progress_callback} if progress_callback is not None else {}
                 success = await index_service.update_index(
-                    backend.queries.iter_conversation_ids(source_names=list(source_names)),
+                    backend.iter_conversation_ids(source_names=scoped_source_names),
                     **index_kwargs,
                 )
                 return IndexStageOutcome(indexed=success, item_count=total)
-            total = await backend.queries.count_conversation_ids()
+            total = await backend.count_conversation_ids()
             rebuild_kwargs = {"progress_callback": progress_callback} if progress_callback is not None else {}
             return IndexStageOutcome(
                 indexed=await index_service.rebuild_index(**rebuild_kwargs),
@@ -311,8 +354,8 @@ async def execute_index_stage(
             )
 
         if stage in {"all", "reprocess"}:
-            idx = await index_service.get_index_status()
-            if not idx["exists"]:
+            status = await index_service.get_index_status()
+            if not status["exists"]:
                 rebuild_kwargs = {"progress_callback": progress_callback} if progress_callback is not None else {}
                 return IndexStageOutcome(
                     indexed=await index_service.rebuild_index(**rebuild_kwargs),
@@ -341,18 +384,16 @@ async def execute_site_stage(
     progress_callback: ProgressCallback | None = None,
 ) -> SiteStageOutcome:
     """Build a static HTML site from the archive."""
-    from pathlib import Path
-
     from polylogue.paths import data_home
     from polylogue.site.builder import SiteBuilder, SiteConfig
 
     opts = site_options or {}
-    output_path: Path = opts.get("output") or (data_home() / "site")  # type: ignore[assignment]
+    output_path = _site_option_path(opts, "output", default=data_home() / "site")
     config = SiteConfig(
-        title=opts.get("title", "Polylogue Archive"),  # type: ignore[arg-type]
-        enable_search=opts.get("search", True),  # type: ignore[arg-type]
-        search_provider=opts.get("search_provider", "pagefind"),  # type: ignore[arg-type]
-        include_dashboard=opts.get("dashboard", True),  # type: ignore[arg-type]
+        title=_site_option_str(opts, "title", default="Polylogue Archive"),
+        enable_search=_site_option_bool(opts, "search", default=True),
+        search_provider=_site_option_search_provider(opts, default=SearchProvider.PAGEFIND),
+        include_dashboard=_site_option_bool(opts, "dashboard", default=True),
     )
 
     builder = SiteBuilder(
@@ -364,8 +405,6 @@ async def execute_site_stage(
     )
 
     try:
-        import asyncio
-
         result = await asyncio.to_thread(builder.build)
         return SiteStageOutcome(
             conversations=result.archive.total_conversations,
@@ -394,6 +433,8 @@ async def execute_embed_stage(
     progress_callback: ProgressCallback | None = None,
 ) -> EmbedStageOutcome:
     """Execute the embedding stage using embed_runtime/embed_stats helpers."""
+    del progress_callback
+
     import os
 
     import click
@@ -401,10 +442,13 @@ async def execute_embed_stage(
     if stats_only:
         from polylogue.cli.embed_stats import show_embedding_stats
 
-        # Build a minimal env-like object for the stats helpers
         class _StatsEnv:
             def __init__(self, cfg: Config) -> None:
-                self.config = cfg
+                self._config = cfg
+
+            @property
+            def config(self) -> Config:
+                return self._config
 
         show_embedding_stats(_StatsEnv(config), json_output=json_output)
         return EmbedStageOutcome(embedded_count=0, error_count=0, stats_only=True)
@@ -430,42 +474,40 @@ async def execute_embed_stage(
 
     repo = _Repo(backend=backend)
 
-    # Build a minimal env-like object for the embed helpers
-    class _EmbedEnv:
-        def __init__(self, cfg: Config, ui_obj: object) -> None:
-            self.config = cfg
-            self.ui = ui_obj
-            self.repository = repo
-
-    # Construct a plain UI stub
     class _PlainUI:
         plain = True
 
         class _Console:
             @staticmethod
             def print(*args: object, **kwargs: object) -> None:
+                del kwargs
                 click.echo(" ".join(str(a) for a in args))
 
         console = _Console()
 
         class _NullProgress:
             def update(self, **kwargs: object) -> None:
-                pass
+                del kwargs
 
-            def advance(self) -> None:
-                pass
+            def advance(self, advance: float = 1) -> None:
+                del advance
 
             def __enter__(self) -> _PlainUI._NullProgress:
                 return self
 
             def __exit__(self, *args: object) -> None:
-                pass
+                del args
 
         @staticmethod
-        def progress(desc: str, total: int = 0) -> _PlainUI._NullProgress:
+        def progress(description: str, total: int = 0) -> _PlainUI._NullProgress:
+            del description, total
             return _PlainUI._NullProgress()
 
-    env = _EmbedEnv(config, _PlainUI())
+    class _EmbedEnv:
+        def __init__(self, ui_obj: _PlainUI) -> None:
+            self.ui = ui_obj
+
+    env = _EmbedEnv(_PlainUI())
 
     if conversation_id:
         embed_single(env, repo, vec_provider, conversation_id)
