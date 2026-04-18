@@ -19,7 +19,7 @@ from polylogue.showcase.runner import ExerciseResult
 SKIP = "SKIP"
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class Invariant:
     """A universal invariant that must hold across showcase exercises."""
 
@@ -32,7 +32,7 @@ class Invariant:
         return True  # Default: applies to all
 
 
-@dataclass
+@dataclass(slots=True)
 class InvariantResult:
     """Result of checking one invariant against one exercise."""
 

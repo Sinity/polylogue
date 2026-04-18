@@ -20,17 +20,18 @@ def populate_proof(result: QAResult, *, workspace_env: dict[str, str] | None) ->
     from polylogue.schemas.verification_artifacts import prove_raw_artifact_coverage
     from polylogue.schemas.verification_requests import ArtifactProofRequest
 
+    request = ArtifactProofRequest()
     try:
         if workspace_env:
             with override_workspace_env(workspace_env):
                 result.proof_report = prove_raw_artifact_coverage(
                     db_path=db_path(),
-                    request=ArtifactProofRequest(),
+                    request=request,
                 )
         else:
             result.proof_report = prove_raw_artifact_coverage(
                 db_path=db_path(),
-                request=ArtifactProofRequest(),
+                request=request,
             )
     except Exception as exc:
         result.proof_error = str(exc)

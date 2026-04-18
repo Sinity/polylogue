@@ -11,12 +11,16 @@ from polylogue.showcase.generators import (
 )
 
 _CATALOG = load_exercise_catalog()
-_GENERATED_COMMAND_HELP_SCENARIOS = generate_command_help_scenarios()
-_GENERATED_COMMAND_HELP_NAMES = {scenario.name for scenario in _GENERATED_COMMAND_HELP_SCENARIOS}
-_GENERATED_JSON_CONTRACT_SCENARIOS = generate_json_contract_scenarios()
-_GENERATED_JSON_CONTRACT_NAMES = {scenario.name for scenario in _GENERATED_JSON_CONTRACT_SCENARIOS}
-_GENERATED_EXERCISE_NAMES = _GENERATED_COMMAND_HELP_NAMES | _GENERATED_JSON_CONTRACT_NAMES
-_GENERATED_EXERCISE_SCENARIOS = _GENERATED_COMMAND_HELP_SCENARIOS + _GENERATED_JSON_CONTRACT_SCENARIOS
+
+
+def _generated_exercise_scenarios() -> tuple[Exercise, ...]:
+    command_help_scenarios = generate_command_help_scenarios()
+    json_contract_scenarios = generate_json_contract_scenarios()
+    return command_help_scenarios + json_contract_scenarios
+
+
+_GENERATED_EXERCISE_SCENARIOS = _generated_exercise_scenarios()
+_GENERATED_EXERCISE_NAMES = {scenario.name for scenario in _GENERATED_EXERCISE_SCENARIOS}
 
 EXERCISE_SCENARIOS: tuple[Exercise, ...] = (
     tuple(exercise for exercise in _CATALOG.exercises if exercise.name not in _GENERATED_EXERCISE_NAMES)

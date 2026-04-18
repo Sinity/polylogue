@@ -16,7 +16,29 @@ class QAStage(str, Enum):
     INVARIANTS = "invariants"
 
 
-@dataclass
+class QAWorkspaceMode(str, Enum):
+    NONE = "none"
+    SEEDED_CORPUS = "seeded_corpus"
+    CONFIGURED_SOURCES = "configured_sources"
+    LIVE_INGEST = "live_ingest"
+
+
+@dataclass(frozen=True, slots=True)
+class QASessionPlan:
+    """Normalized execution plan derived from a QA session request."""
+
+    workspace_mode: QAWorkspaceMode
+    run_audit: bool
+    run_proof: bool
+    run_exercises: bool
+    run_invariants: bool
+
+    @property
+    def needs_workspace(self) -> bool:
+        return self.workspace_mode is not QAWorkspaceMode.NONE
+
+
+@dataclass(slots=True)
 class QASessionRequest:
     """Canonical request for one QA workflow run."""
 
@@ -40,7 +62,25 @@ class QASessionRequest:
 
     @property
     def needs_workspace(self) -> bool:
-        return not self.skip_exercises
+        return self.execution_plan.needs_workspace
+
+    @property
+    def execution_plan(self) -> QASessionPlan:
+        if not self.skip_exercises and self.fresh and not self.live:
+            workspace_mode = QAWorkspaceMode.SEEDED_CORPUS
+        elif not self.skip_exercises and self.fresh and self.live:
+            workspace_mode = QAWorkspaceMode.CONFIGURED_SOURCES
+        elif self.live and self.ingest:
+            workspace_mode = QAWorkspaceMode.LIVE_INGEST
+        else:
+            workspace_mode = QAWorkspaceMode.NONE
+        return QASessionPlan(
+            workspace_mode=workspace_mode,
+            run_audit=not self.skip_audit,
+            run_proof=not self.skip_proof,
+            run_exercises=not self.skip_exercises,
+            run_invariants=not self.skip_invariants,
+        )
 
 
 def build_qa_session_request(
@@ -109,4 +149,10 @@ def build_qa_session_request(
     )
 
 
-__all__ = ["QAStage", "QASessionRequest", "build_qa_session_request"]
+__all__ = [
+    "QAStage",
+    "QASessionPlan",
+    "QASessionRequest",
+    "QAWorkspaceMode",
+    "build_qa_session_request",
+]

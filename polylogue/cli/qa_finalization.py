@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 
 import click
 
@@ -20,7 +20,7 @@ if TYPE_CHECKING:
 def render_qa_session(result: QAResult) -> dict[str, object]:
     from polylogue.showcase.qa_report import generate_qa_session
 
-    return cast(dict[str, object], generate_qa_session(result))
+    return generate_qa_session(result)
 
 
 def render_qa_summary(result: QAResult) -> str:

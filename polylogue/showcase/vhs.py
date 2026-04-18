@@ -8,9 +8,22 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+from dataclasses import dataclass
 from pathlib import Path
 
 from polylogue.showcase.exercises import Exercise, vhs_exercises
+
+
+@dataclass(frozen=True, slots=True)
+class VHSTape:
+    """Renderable VHS tape artifact for one showcase exercise."""
+
+    exercise_name: str
+    content: str
+
+    @property
+    def filename(self) -> str:
+        return f"{self.exercise_name}.tape"
 
 
 def generate_tape(
@@ -58,7 +71,7 @@ def generate_tape(
     lines.append("Sleep 1s")
     lines.append("")
 
-    return "\n".join(lines)
+    return VHSTape(exercise_name=exercise.name, content="\n".join(lines)).content
 
 
 def generate_all_tapes(
@@ -77,12 +90,12 @@ def generate_all_tapes(
     for ex in targets:
         if not ex.vhs_capture:
             continue
-        content = generate_tape(ex)
-        tapes[ex.name] = content
+        tape = VHSTape(exercise_name=ex.name, content=generate_tape(ex))
+        tapes[ex.name] = tape.content
 
         if output_dir is not None:
             output_dir.mkdir(parents=True, exist_ok=True)
-            (output_dir / f"{ex.name}.tape").write_text(content)
+            (output_dir / tape.filename).write_text(tape.content)
 
     return tapes
 

@@ -2,24 +2,57 @@
 
 from __future__ import annotations
 
-from typing import Any
+from collections.abc import Mapping
+from typing import cast
 
-from polylogue.lib.outcomes import OutcomeStatus
 from polylogue.showcase.qa_runner_models import QAResult
 from polylogue.showcase.report_common import (
     format_count_mapping,
     status_label,
 )
+from polylogue.showcase.report_models import QASessionRecord
 
 
-def generate_qa_summary(result: QAResult, *, session: dict[str, Any] | None = None) -> str:
+def _payload_mapping(value: object) -> Mapping[str, object]:
+    if not isinstance(value, Mapping):
+        raise TypeError("Expected mapping payload")
+    return cast(Mapping[str, object], value)
+
+
+def _count_value(value: object) -> int:
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float | str):
+        return int(value)
+    raise TypeError(f"Expected count-like value, got {type(value).__name__}")
+
+
+def generate_qa_summary(result: QAResult, *, session: QASessionRecord | None = None) -> str:
     """Generate a human-readable summary for a full QA run."""
-    from polylogue.showcase.qa_session_payload import generate_qa_session
+    from datetime import datetime, timezone
+
+    from polylogue.showcase.qa_session_payload import build_qa_session_record
+    from polylogue.showcase.showcase_report_payloads import build_showcase_session_record
 
     if session is None:
-        session = generate_qa_session(result)
+        showcase_session = (
+            build_showcase_session_record(
+                result.showcase_result,
+                timestamp=datetime.now(timezone.utc).isoformat(),
+            )
+            if result.showcase_result is not None
+            else None
+        )
+        session = build_qa_session_record(
+            result,
+            timestamp=datetime.now(timezone.utc).isoformat(),
+            showcase_session=showcase_session,
+        )
     lines: list[str] = []
-    proof_summary = session["proof"].get("report", {}).get("summary")
+    proof_report = session.proof.report
+    proof_summary = _payload_mapping(proof_report["summary"]) if proof_report is not None else None
 
     lines.append(f"Schema Audit: {status_label(result.audit_status)}")
     if result.proof_error:
@@ -33,43 +66,45 @@ def generate_qa_summary(result: QAResult, *, session: dict[str, Any] | None = No
             f"unknown={proof_summary['unknown_records']}, "
             f"decode_errors={proof_summary['decode_errors']}"
         )
-        if proof_summary["package_versions"]:
-            lines.append(f"  Packages: {format_count_mapping(proof_summary['package_versions'])}")
-        if proof_summary["element_kinds"]:
-            lines.append(f"  Elements: {format_count_mapping(proof_summary['element_kinds'])}")
-        if proof_summary["resolution_reasons"]:
-            lines.append(f"  Reasons: {format_count_mapping(proof_summary['resolution_reasons'])}")
-    if result.audit_status is OutcomeStatus.ERROR:
-        if result.audit_error:
-            lines.append(f"  Error: {result.audit_error}")
-        elif result.audit_report is not None:
-            summary = result.audit_report.to_json()["summary"]
-            lines.append(f"  Checks: {summary['passed']} pass, {summary['warned']} warn, {summary['failed']} fail")
-        lines.append("Overall: FAIL")
-        if result.report_dir:
-            lines.append(f"Reports: {result.report_dir}")
-        return "\n".join(lines)
+        package_versions = {
+            key: _count_value(value)
+            for key, value in _payload_mapping(proof_summary.get("package_versions", {})).items()
+        }
+        element_kinds = {
+            key: _count_value(value) for key, value in _payload_mapping(proof_summary.get("element_kinds", {})).items()
+        }
+        resolution_reasons = {
+            key: _count_value(value)
+            for key, value in _payload_mapping(proof_summary.get("resolution_reasons", {})).items()
+        }
+        if package_versions:
+            lines.append(f"  Packages: {format_count_mapping(package_versions)}")
+        if element_kinds:
+            lines.append(f"  Elements: {format_count_mapping(element_kinds)}")
+        if resolution_reasons:
+            lines.append(f"  Reasons: {format_count_mapping(resolution_reasons)}")
 
-    showcase_summary = session["showcase"]["summary"]
     if result.exercises_skipped:
         lines.append("Exercises: SKIPPED")
-    elif showcase_summary is not None:
+    elif session.showcase.summary is not None:
+        showcase_summary = session.showcase.summary
         lines.append(
             "Exercises: "
-            f"{showcase_summary['passed']}/{showcase_summary['total']} passed, "
-            f"{showcase_summary['failed']} failed, {showcase_summary['skipped']} skipped "
-            f"({showcase_summary['total_duration_ms'] / 1000:.1f}s)"
+            f"{showcase_summary.passed}/{showcase_summary.total} passed, "
+            f"{showcase_summary.failed} failed, "
+            f"{showcase_summary.skipped} skipped "
+            f"({showcase_summary.total_duration_ms / 1000:.1f}s)"
         )
 
-    invariant_summary = session["invariants"]["summary"]
-    if session["invariants"]["skipped"]:
+    if session.invariants.skipped:
         lines.append("Invariants: SKIPPED")
     else:
+        invariant_summary = session.invariants.summary
         lines.append(
             "Invariants: "
-            f"{invariant_summary['passed']} pass, "
-            f"{invariant_summary['failed']} fail, "
-            f"{invariant_summary['skipped']} skip"
+            f"{invariant_summary.passed} pass, "
+            f"{invariant_summary.failed} fail, "
+            f"{invariant_summary.skipped} skip"
         )
 
     lines.append("")

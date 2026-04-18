@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
+import tempfile
 import time
 from pathlib import Path
-from typing import Any
 
 from polylogue.scenarios import CorpusRequest
 from polylogue.showcase.cli_boundary import invoke_showcase_cli
@@ -44,13 +44,10 @@ class ShowcaseRunner:
         self.extra_exercises = extra_exercises or []
         self._env_vars: dict[str, str] = {}
         self._workspace_dir: Path | None = None
-        self._shared_state: dict[str, Any] = {}
         self._workspace_env = workspace_env
 
     def run(self) -> ShowcaseResult:
         """Execute all applicable exercises and return results."""
-        import tempfile
-
         started = time.monotonic()
         result = ShowcaseResult()
 

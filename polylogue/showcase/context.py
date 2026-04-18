@@ -16,8 +16,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from polylogue.showcase.corpus_requests import showcase_corpus_request
+
+if TYPE_CHECKING:
+    from polylogue.showcase.workspace import VerificationWorkspace
 
 
 @dataclass(frozen=True, slots=True)
@@ -27,6 +31,14 @@ class ShowcaseContext:
     db_path: Path
     archive_root: Path
     env_vars: dict[str, str] = field(default_factory=dict)
+
+    @classmethod
+    def _from_workspace(cls, workspace: VerificationWorkspace) -> ShowcaseContext:
+        return cls(
+            db_path=workspace.db_path,
+            archive_root=workspace.archive_root,
+            env_vars=dict(workspace.env_vars),
+        )
 
     @classmethod
     def synthetic(
@@ -47,11 +59,7 @@ class ShowcaseContext:
             workspace,
             request=showcase_corpus_request(count=count, style=style),
         )
-        return cls(
-            db_path=workspace.db_path,
-            archive_root=workspace.archive_root,
-            env_vars=dict(workspace.env_vars),
-        )
+        return cls._from_workspace(workspace)
 
     @classmethod
     def live(cls) -> ShowcaseContext:
@@ -84,11 +92,7 @@ class ShowcaseContext:
             source_names=names,
             regenerate_schemas=regenerate_schemas,
         )
-        return cls(
-            db_path=workspace.db_path,
-            archive_root=workspace.archive_root,
-            env_vars=dict(workspace.env_vars),
-        )
+        return cls._from_workspace(workspace)
 
     @classmethod
     def existing(

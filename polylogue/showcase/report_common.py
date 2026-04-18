@@ -2,29 +2,17 @@
 
 from __future__ import annotations
 
-from typing import Any
-
 from polylogue.lib.outcomes import OutcomeStatus
 from polylogue.showcase.invariants import InvariantResult
+from polylogue.showcase.report_models import InvariantCheckRecord, InvariantSummary
 
 
-def serialize_invariant_result(result: InvariantResult) -> dict[str, Any]:
-    entry: dict[str, Any] = {
-        "invariant": result.invariant_name,
-        "exercise": result.exercise_name,
-        "status": result.status.value,
-    }
-    if result.error:
-        entry["error"] = result.error
-    return entry
+def serialize_invariant_result(result: InvariantResult) -> dict[str, object]:
+    return InvariantCheckRecord.from_result(result).to_payload()
 
 
 def summarize_invariants(results: list[InvariantResult]) -> dict[str, int]:
-    return {
-        "passed": sum(1 for result in results if result.status is OutcomeStatus.OK),
-        "failed": sum(1 for result in results if result.status is OutcomeStatus.ERROR),
-        "skipped": sum(1 for result in results if result.status is OutcomeStatus.SKIP),
-    }
+    return InvariantSummary.from_results(results).to_payload()
 
 
 def status_label(status: OutcomeStatus) -> str:
