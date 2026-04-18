@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import webbrowser
+from datetime import datetime
 from html import escape as html_escape
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -59,7 +60,7 @@ def format_list(
     if output_format == "json":
         return json.dumps([_conv_to_dict(c, fields) for c in results], indent=2)
     if output_format == "yaml":
-        import yaml  # type: ignore[import-untyped]
+        import yaml
 
         return str(yaml.dump([_conv_to_dict(c, fields) for c in results], default_flow_style=False, allow_unicode=True))
     if output_format == "csv":
@@ -434,11 +435,13 @@ def render_stream_message(message: Message | MessageRecord, output_format: str) 
         return f"## {role_label}\n\n{message.text}\n\n"
 
     if output_format == "json-lines":
+        raw_timestamp = getattr(message, "timestamp", None)
+        timestamp = raw_timestamp.isoformat() if isinstance(raw_timestamp, datetime) else None
         record = {
             "type": "message",
             "id": getattr(message, "id", getattr(message, "message_id", None)),
             "role": message.role,
-            "timestamp": message.timestamp.isoformat() if getattr(message, "timestamp", None) else None,
+            "timestamp": timestamp,
             "text": message.text,
             "word_count": message.word_count,
         }
