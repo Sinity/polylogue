@@ -161,7 +161,6 @@ plugins = []
 # confirm the gate still passes.
 exclude = [
   "tests/",
-  "polylogue/sources/providers/",
 ]
 files = [
   "polylogue",

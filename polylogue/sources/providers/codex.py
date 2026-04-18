@@ -17,7 +17,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict
 
 from polylogue.lib.provider_semantics import extract_codex_text
-from polylogue.lib.roles import normalize_role
+from polylogue.lib.roles import Role, normalize_role
 from polylogue.lib.timestamps import parse_timestamp
 from polylogue.lib.viewports import (
     ContentBlock,
@@ -26,6 +26,7 @@ from polylogue.lib.viewports import (
     ReasoningTrace,
     ToolCall,
 )
+from polylogue.types import Provider
 
 
 class CodexContentBlock(BaseModel):
@@ -194,15 +195,15 @@ class CodexRecord(BaseModel):
         """Convert to harmonized MessageMeta."""
         role = self.effective_role
         try:
-            role_normalized = normalize_role(role)
+            role_normalized = Role.normalize(role)
         except ValueError:
-            role_normalized = "unknown"
+            role_normalized = Role.UNKNOWN
 
         return MessageMeta(
             id=self.id,
             timestamp=self.parsed_timestamp,
             role=role_normalized,
-            provider="codex",
+            provider=Provider.CODEX,
         )
 
     def extract_content_blocks(self) -> list[ContentBlock]:

@@ -13,7 +13,7 @@ from polylogue.lib.provider_semantics import (
     extract_reasoning_traces,
     extract_tool_calls,
 )
-from polylogue.lib.roles import normalize_role
+from polylogue.lib.roles import Role, normalize_role
 from polylogue.lib.timestamps import parse_timestamp
 from polylogue.lib.viewports import (
     ContentBlock,
@@ -23,6 +23,7 @@ from polylogue.lib.viewports import (
     TokenUsage,
     ToolCall,
 )
+from polylogue.types import Provider
 
 from .claude_code_models import ClaudeCodeMessageContent, ClaudeCodeUserMessage
 
@@ -154,12 +155,12 @@ class ClaudeCodeRecord(BaseModel):
         return MessageMeta(
             id=self.uuid,
             timestamp=self.parsed_timestamp,
-            role=self.role,
+            role=Role.normalize(self.role) if self.role else Role.UNKNOWN,
             model=model,
             tokens=tokens,
             cost=cost,
             duration_ms=self.durationMs,
-            provider="claude-code",
+            provider=Provider.CLAUDE_CODE,
         )
 
     @property
