@@ -11,11 +11,13 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from hypothesis import HealthCheck, given, settings
 
 from polylogue.config import Source
+from polylogue.lib.roles import Role
 from polylogue.pipeline.services.acquisition import AcquisitionService
 from polylogue.pipeline.services.parsing import ParseResult
 from polylogue.pipeline.services.validation import ValidationService
@@ -27,7 +29,7 @@ from polylogue.sources.parsers.base import (
 )
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.store import RawConversationRecord
-from polylogue.types import ValidationStatus
+from polylogue.types import ContentBlockType, Provider, ValidationStatus
 from tests.infra.strategies import (
     acquisition_input_batch_strategy,
     build_acquisition_raw_bytes,
@@ -64,7 +66,7 @@ def _make_raw_record(
     )
 
 
-def _make_parsing_service(tmp_path: Path):
+def _make_parsing_service(tmp_path: Path) -> Any:
     """Shared factory to avoid boilerplate in each test."""
     from polylogue.config import Config
     from polylogue.pipeline.services.parsing import ParsingService
@@ -89,7 +91,7 @@ def _make_parsing_service(tmp_path: Path):
 # ---------------------------------------------------------------------------
 
 
-def test_parse_unknown_chatgpt_structure_returns_empty(tmp_path):
+def test_parse_unknown_chatgpt_structure_returns_empty(tmp_path: Any) -> None:
     """Valid JSON but missing chatgpt mapping field returns empty, not an exception."""
     from polylogue.pipeline.services.ingest_worker import ingest_record
 
@@ -104,7 +106,7 @@ def test_parse_unknown_chatgpt_structure_returns_empty(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_parse_chatgpt_no_messages_returns_empty(tmp_path):
+def test_parse_chatgpt_no_messages_returns_empty(tmp_path: Any) -> None:
     """ChatGPT payload with empty mapping returns empty list."""
     from polylogue.pipeline.services.ingest_worker import ingest_record
 
@@ -126,7 +128,7 @@ def test_parse_chatgpt_no_messages_returns_empty(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_parse_jsonl_all_invalid_lines_surfaces_error(tmp_path):
+def test_parse_jsonl_all_invalid_lines_surfaces_error(tmp_path: Any) -> None:
     """JSONL where every line is invalid surfaces an error (by design).
 
     ingest_worker catches all exceptions and returns them in result.error.
@@ -145,7 +147,7 @@ def test_parse_jsonl_all_invalid_lines_surfaces_error(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_parse_mixed_valid_invalid_jsonl_lines(tmp_path):
+def test_parse_mixed_valid_invalid_jsonl_lines(tmp_path: Any) -> None:
     """JSONL with some valid lines: valid lines parsed, invalid lines skipped."""
     from polylogue.pipeline.services.ingest_worker import ingest_record
 
@@ -169,7 +171,7 @@ def test_parse_mixed_valid_invalid_jsonl_lines(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_parse_unknown_provider_name(tmp_path):
+def test_parse_unknown_provider_name(tmp_path: Any) -> None:
     """Unknown provider name falls back gracefully."""
     from polylogue.pipeline.services.ingest_worker import ingest_record
 
@@ -187,7 +189,7 @@ def test_parse_unknown_provider_name(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_parse_claude_code_jsonl_with_null_fields(tmp_path):
+def test_parse_claude_code_jsonl_with_null_fields(tmp_path: Any) -> None:
     """Claude-code JSONL with null fields in messages is handled gracefully."""
     from polylogue.pipeline.services.ingest_worker import ingest_record
 
@@ -205,12 +207,12 @@ def test_parse_claude_code_jsonl_with_null_fields(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_parse_very_large_conversation_does_not_crash(tmp_path):
+def test_parse_very_large_conversation_does_not_crash(tmp_path: Any) -> None:
     """Very large valid chatgpt payload is handled without crashing."""
     from polylogue.pipeline.services.ingest_worker import ingest_record
 
-    messages: dict = {}
-    prev_id = None
+    messages: dict[str, Any] = {}
+    prev_id: str | None = None
     for i in range(50):
         node_id = f"node-{i}"
         messages[node_id] = {
@@ -247,7 +249,7 @@ def test_parse_very_large_conversation_does_not_crash(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_parse_chatgpt_deeply_nested_malformed_nodes(tmp_path):
+def test_parse_chatgpt_deeply_nested_malformed_nodes(tmp_path: Any) -> None:
     """ChatGPT payload with malformed node structure returns empty, not exception."""
     from polylogue.pipeline.services.ingest_worker import ingest_record
 
@@ -273,7 +275,7 @@ def test_parse_chatgpt_deeply_nested_malformed_nodes(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_parse_chatgpt_bundle_with_one_invalid_item(tmp_path):
+def test_parse_chatgpt_bundle_with_one_invalid_item(tmp_path: Any) -> None:
     """ChatGPT bundle list with one invalid item: valid items parsed, invalid skipped."""
     from polylogue.pipeline.services.ingest_worker import ingest_record
 
@@ -310,7 +312,7 @@ def test_parse_chatgpt_bundle_with_one_invalid_item(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_parse_gemini_missing_text_fields(tmp_path):
+def test_parse_gemini_missing_text_fields(tmp_path: Any) -> None:
     """Gemini payload with messages missing text fields is handled gracefully."""
     from polylogue.pipeline.services.ingest_worker import ingest_record
 
@@ -338,7 +340,7 @@ def test_parse_gemini_missing_text_fields(tmp_path):
 
 @settings(max_examples=25, deadline=None, suppress_health_check=[HealthCheck.too_slow])
 @given(acquisition_input_batch_strategy())
-async def test_acquisition_law_counts_unique_raws_and_normalizes_provider_hints(batch) -> None:
+async def test_acquisition_law_counts_unique_raws_and_normalizes_provider_hints(batch: Any) -> None:
     """Acquisition should store each unique raw payload once and keep raw provider hints canonical."""
     with TemporaryDirectory() as tempdir:
         backend = SQLiteBackend(db_path=Path(tempdir) / "acquire.db")
@@ -384,7 +386,7 @@ async def test_acquisition_law_counts_unique_raws_and_normalizes_provider_hints(
 
 @settings(max_examples=30, deadline=None)
 @given(validation_case_strategy())
-async def test_validation_law_matches_mode_and_payload_contract(case) -> None:
+async def test_validation_law_matches_mode_and_payload_contract(case: Any) -> None:
     """Validation mode, malformed JSONL, and schema verdicts must produce one stable persisted contract."""
     from polylogue.schemas import ValidationResult
     from polylogue.storage.blob_store import get_blob_store
@@ -402,6 +404,7 @@ async def test_validation_law_matches_mode_and_payload_contract(case) -> None:
         blob_size=blob_size,
     )
     backend = MagicMock(spec=SQLiteBackend)
+    backend.queries = MagicMock()
     service = ValidationService(backend=backend)
     service.repository.get_raw_conversations_batch = AsyncMock(return_value=[raw_record])  # type: ignore[method-assign]
     service.repository.mark_raw_validated = AsyncMock()  # type: ignore[method-assign]
@@ -410,16 +413,16 @@ async def test_validation_law_matches_mode_and_payload_contract(case) -> None:
     class _SyntheticValidator:
         provider = provider_name
 
-        def __init__(self) -> None:
+        def __init__(self: Any) -> None:
             self.max_samples_seen = "unset"
 
-        def validation_samples(self, payload, max_samples=None):
+        def validation_samples(self: Any, payload: Any, max_samples: Any = None) -> Any:
             self.max_samples_seen = max_samples
             if isinstance(payload, list):
                 return [item for item in payload if isinstance(item, dict)]
             return [payload]
 
-        def validate(self, _sample):
+        def validate(self: Any, _sample: Any) -> Any:
             return ValidationResult(
                 is_valid=case.invalid_sample_count == 0,
                 errors=["schema error"] if case.invalid_sample_count else [],
@@ -460,7 +463,7 @@ async def test_validation_law_matches_mode_and_payload_contract(case) -> None:
 
 @settings(max_examples=30, deadline=None, suppress_health_check=[HealthCheck.too_slow])
 @given(parse_merge_events_strategy())
-async def test_parse_result_merge_law_accumulates_counts_and_processed_ids(events) -> None:
+async def test_parse_result_merge_law_accumulates_counts_and_processed_ids(events: Any) -> None:
     """ParseResult.merge_result should be componentwise additive with processed-id union semantics."""
     result = ParseResult()
     for event in events:
@@ -510,7 +513,7 @@ def test_ingest_worker_decodes_and_dispatches_provider(tmp_path: Path) -> None:
     assert result.error is None
 
 
-def test_ingest_worker_reuses_schema_resolution_and_skips_drift_walk(tmp_path: Path, monkeypatch) -> None:
+def test_ingest_worker_reuses_schema_resolution_and_skips_drift_walk(tmp_path: Path, monkeypatch: Any) -> None:
     """Parse-path validation should reuse one schema resolution and avoid unused drift traversal."""
     from polylogue.pipeline.services.ingest_worker import ingest_record
     from polylogue.schemas import ValidationResult
@@ -543,10 +546,10 @@ def test_ingest_worker_reuses_schema_resolution_and_skips_drift_walk(tmp_path: P
     observed: dict[str, object] = {}
 
     class _CapturingRegistry:
-        def __init__(self) -> None:
+        def __init__(self: Any) -> None:
             self.calls = 0
 
-        def resolve_payload(self, provider, payload, *, source_path=None):
+        def resolve_payload(self: Any, provider: Any, payload: Any, *, source_path: Any = None) -> Any:
             self.calls += 1
             observed["registry_provider"] = provider
             observed["registry_source_path"] = source_path
@@ -559,14 +562,16 @@ def test_ingest_worker_reuses_schema_resolution_and_skips_drift_walk(tmp_path: P
     class _CapturingValidator:
         provider = "chatgpt"
 
-        def validation_samples(self, payload, max_samples=None):
+        def validation_samples(self: Any, payload: Any, max_samples: Any = None) -> Any:
             return [payload]
 
-        def validate(self, _sample, *, include_drift=None):
+        def validate(self: Any, _sample: Any, *, include_drift: Any = None) -> Any:
             observed["include_drift"] = include_drift
             return ValidationResult(is_valid=True)
 
-    def _fake_for_payload(provider, payload, *, source_path=None, schema_resolution=None, strict=True):
+    def _fake_for_payload(
+        provider: Any, payload: Any, *, source_path: Any = None, schema_resolution: Any = None, strict: Any = True
+    ) -> Any:
         observed["validator_provider"] = provider
         observed["validator_source_path"] = source_path
         observed["validator_payload"] = payload
@@ -574,7 +579,9 @@ def test_ingest_worker_reuses_schema_resolution_and_skips_drift_walk(tmp_path: P
         observed["validator_strict"] = strict
         return _CapturingValidator()
 
-    def _fake_parse_payload(provider, payload, fallback_id, _depth=0, *, schema_resolution=None):
+    def _fake_parse_payload(
+        provider: Any, payload: Any, fallback_id: Any, _depth: Any = 0, *, schema_resolution: Any = None
+    ) -> Any:
         observed["parse_provider"] = provider
         observed["parse_schema_resolution"] = schema_resolution
         observed["parse_fallback_id"] = fallback_id
@@ -596,7 +603,7 @@ def test_transform_with_tool_use_message_keeps_non_empty_message_hash(tmp_path: 
     from polylogue.pipeline.services.ingest_worker import _transform_to_tuples
 
     conversation = ParsedConversation(
-        provider_name="codex",
+        provider_name=Provider.CODEX,
         provider_conversation_id="tool-conv-1",
         title="Tool Conversation",
         created_at="2026-04-02T00:00:00Z",
@@ -604,12 +611,12 @@ def test_transform_with_tool_use_message_keeps_non_empty_message_hash(tmp_path: 
         messages=[
             ParsedMessage(
                 provider_message_id="msg-1",
-                role="assistant",
+                role=Role.ASSISTANT,
                 text="Running a shell command.",
                 timestamp="2026-04-02T00:00:01Z",
                 content_blocks=[
                     ParsedContentBlock(
-                        type="tool_use",
+                        type=ContentBlockType.TOOL_USE,
                         tool_name="bash",
                         tool_id="tool-1",
                         tool_input={"command": "ls /tmp"},

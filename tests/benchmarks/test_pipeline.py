@@ -53,14 +53,14 @@ def _make_diverse_tool_inputs(n: int) -> list[tuple[str, dict[str, Any]]]:
 
 @pytest.mark.benchmark
 @pytest.mark.parametrize("n_tools", [10, 100, 1000])
-def test_bench_classify_tool_calls(benchmark, n_tools: int) -> None:
+def test_bench_classify_tool_calls(benchmark: Any, n_tools: int) -> None:
     """classify_tool() throughput across ToolCategory variants."""
     tool_inputs = _make_diverse_tool_inputs(n_tools)
     benchmark(lambda: [classify_tool(name, inp) for name, inp in tool_inputs])
 
 
 @pytest.mark.benchmark
-def test_bench_extract_tool_metadata(benchmark) -> None:
+def test_bench_extract_tool_metadata(benchmark: Any) -> None:
     """extract_tool_metadata() for git, file, subagent variants."""
     inputs: list[tuple[str, dict[str, Any]]] = [
         ("Bash", {"command": "git commit -m 'fix: update schema'"}),
@@ -74,20 +74,20 @@ def test_bench_extract_tool_metadata(benchmark) -> None:
 
 
 @pytest.mark.benchmark
-def test_bench_fts_rebuild_1k(benchmark, bench_db_1k: Path) -> None:
+def test_bench_fts_rebuild_1k(benchmark: Any, bench_db_1k: Path) -> None:
     """FTS5 full rebuild on 1k messages."""
     benchmark_connection_call(benchmark, bench_db_1k, rebuild_index)
 
 
 @pytest.mark.benchmark
-def test_bench_fts_rebuild_5k(benchmark, bench_db_5k: Path) -> None:
+def test_bench_fts_rebuild_5k(benchmark: Any, bench_db_5k: Path) -> None:
     """FTS5 full rebuild on 5k messages — shows O(N) scaling."""
     benchmark_connection_call(benchmark, bench_db_5k, rebuild_index)
 
 
 @pytest.mark.benchmark
 @pytest.mark.parametrize("n", [1, 10, 50])
-def test_bench_fts_incremental_update(benchmark, bench_db_5k: Path, n: int) -> None:
+def test_bench_fts_incremental_update(benchmark: Any, bench_db_5k: Path, n: int) -> None:
     """update_index_for_conversations() for 1, 10, 50 conversations."""
     ids = [f"bench-conv-{i:05d}" for i in range(n)]
     benchmark_connection_call(
@@ -98,10 +98,10 @@ def test_bench_fts_incremental_update(benchmark, bench_db_5k: Path, n: int) -> N
 
 
 @pytest.mark.benchmark
-def test_bench_action_event_repair_rebuild(benchmark, bench_db_5k: Path) -> None:
+def test_bench_action_event_repair_rebuild(benchmark: Any, bench_db_5k: Path) -> None:
     """Action-event repair loop over a realistic seeded archive."""
 
-    def repair_action_events(conn) -> int:
+    def repair_action_events(conn: Any) -> int:
         targets = valid_action_event_source_ids_sync(conn)
         conn.execute("DELETE FROM action_events")
         conn.execute("DELETE FROM action_events_fts")
@@ -117,7 +117,7 @@ def test_bench_action_event_repair_rebuild(benchmark, bench_db_5k: Path) -> None
 
 @pytest.mark.benchmark
 @pytest.mark.parametrize("size", [100, 1_000, 10_000])
-def test_bench_hash_text(benchmark, size: int) -> None:
+def test_bench_hash_text(benchmark: Any, size: int) -> None:
     """hash_text() throughput — NFC normalization + SHA-256. Tests text sizes."""
     text = "α" * size  # NFC normalization-heavy Unicode
     benchmark(lambda: hash_text(text))
@@ -125,11 +125,11 @@ def test_bench_hash_text(benchmark, size: int) -> None:
 
 @pytest.mark.benchmark
 @pytest.mark.parametrize("depth", [1, 10, 50])
-def test_bench_hash_payload(benchmark, depth: int) -> None:
+def test_bench_hash_payload(benchmark: Any, depth: int) -> None:
     """hash_payload() — JSON serialization + SHA-256 for varying object complexity."""
 
-    def _make_nested_payload(d: int) -> dict:
-        node: dict = {"value": "leaf", "index": d}
+    def _make_nested_payload(d: int) -> dict[str, object]:
+        node: dict[str, object] = {"value": "leaf", "index": d}
         for level in range(d):
             node = {"level": level, "child": node, "data": list(range(10))}
         return node
@@ -140,7 +140,7 @@ def test_bench_hash_payload(benchmark, depth: int) -> None:
 
 @pytest.mark.benchmark
 @pytest.mark.parametrize("n", [100, 500])
-def test_bench_prepare_cache_load(benchmark, bench_db_5k: Path, n: int) -> None:
+def test_bench_prepare_cache_load(benchmark: Any, bench_db_5k: Path, n: int) -> None:
     """PrepareCache.load() — bulk-loads N existing conversations in 2 queries."""
     cids = {f"bench-conv-{i:05d}" for i in range(n)}
     benchmark_store_call(
