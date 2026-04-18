@@ -7,7 +7,6 @@ from typing import TYPE_CHECKING
 
 from polylogue.site.conversation_pages import generate_conversation_page
 from polylogue.site.scan import iter_conversation_indexes, scan_archive
-from polylogue.site.search import build_search_document
 
 if TYPE_CHECKING:
     from polylogue.site.builder import SiteBuilder
@@ -33,11 +32,6 @@ async def iter_conversation_indexes_for_builder(
         provider=provider,
     ):
         yield conversation
-
-
-def search_document_for_builder(builder: SiteBuilder, conversation: ConversationIndex) -> dict[str, str]:
-    del builder
-    return build_search_document(conversation)
 
 
 async def scan_archive_for_builder(
@@ -86,5 +80,4 @@ __all__ = [
     "generate_conversation_page_for_builder",
     "iter_conversation_indexes_for_builder",
     "scan_archive_for_builder",
-    "search_document_for_builder",
 ]

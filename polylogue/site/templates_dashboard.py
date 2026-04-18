@@ -2,13 +2,7 @@
 
 from __future__ import annotations
 
-DASHBOARD_TEMPLATE = """<!DOCTYPE html>
-<html lang="en" data-theme="dark">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Dashboard | {{ title }}</title>
-    <style>
+DASHBOARD_STYLE = """
         :root {
             --bg-primary: #0a0a0c;
             --bg-secondary: #16161a;
@@ -122,6 +116,18 @@ DASHBOARD_TEMPLATE = """<!DOCTYPE html>
             text-align: right;
             color: var(--text-secondary);
         }
+"""
+
+
+def _build_dashboard_template() -> str:
+    return f"""<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dashboard | {{{{ title }}}}</title>
+    <style>
+{DASHBOARD_STYLE}
     </style>
 </head>
 <body>
@@ -131,40 +137,43 @@ DASHBOARD_TEMPLATE = """<!DOCTYPE html>
 
         <div class="stats-grid">
             <div class="stat-card">
-                <div class="value">{{ total_conversations }}</div>
+                <div class="value">{{{{ total_conversations }}}}</div>
                 <div class="label">Total Conversations</div>
             </div>
             <div class="stat-card">
-                <div class="value">{{ total_messages }}</div>
+                <div class="value">{{{{ total_messages }}}}</div>
                 <div class="label">Total Messages</div>
             </div>
             <div class="stat-card">
-                <div class="value">{{ provider_count }}</div>
+                <div class="value">{{{{ provider_count }}}}</div>
                 <div class="label">Providers</div>
             </div>
-            {% if embedding_coverage is defined %}
+            {{% if embedding_coverage is defined %}}
             <div class="stat-card">
-                <div class="value">{{ embedding_coverage }}%</div>
+                <div class="value">{{{{ embedding_coverage }}}}%</div>
                 <div class="label">Embedding Coverage</div>
             </div>
-            {% endif %}
+            {{% endif %}}
         </div>
 
         <div class="provider-breakdown">
             <h2>By Provider</h2>
-            {% for provider, count in providers.items() %}
+            {{% for provider in providers %}}
             <div class="provider-bar">
-                <span class="provider-name">{{ provider }}</span>
+                <span class="provider-name">{{{{ provider.name }}}}</span>
                 <div class="bar-container">
-                    <div class="bar-fill" style="width: {{ (count / max_count * 100)|round }}%"></div>
+                    <div class="bar-fill" style="width: {{{{ (provider.conversation_count / max_count * 100)|round }}}}%"></div>
                 </div>
-                <span class="provider-count">{{ count }}</span>
+                <span class="provider-count">{{{{ provider.conversation_count }}}}</span>
             </div>
-            {% endfor %}
+            {{% endfor %}}
         </div>
     </div>
 </body>
 </html>
 """
 
-__all__ = ["DASHBOARD_TEMPLATE"]
+
+DASHBOARD_TEMPLATE = _build_dashboard_template()
+
+__all__ = ["DASHBOARD_STYLE", "DASHBOARD_TEMPLATE"]

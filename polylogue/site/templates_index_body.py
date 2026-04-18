@@ -28,8 +28,8 @@ INDEX_BODY = """
         {% if providers %}
         <div class="sidebar">
             <ul class="provider-list">
-                {% for provider, count in providers.items() %}
-                <li><a href="{{ provider }}/index.html">{{ provider }} ({{ count }})</a></li>
+                {% for provider in providers %}
+                <li><a href="{{ provider.path }}">{{ provider.name }} ({{ provider.conversation_count }})</a></li>
                 {% endfor %}
                 <li><a href="dashboard.html">Dashboard</a></li>
             </ul>

@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 
 from polylogue.site.conversation_pages import write_template_stream
 from polylogue.site.index_pages import generate_dashboard, generate_provider_indexes, generate_root_index
-from polylogue.site.search import generate_pagefind_config, render_search_markup
+from polylogue.site.search import SearchBuildStatus, generate_pagefind_config, render_search_markup
 
 if TYPE_CHECKING:
     from jinja2 import Template
@@ -84,7 +84,7 @@ def search_markup_for_builder(builder: SiteBuilder) -> str:
     return render_search_markup(builder.config)
 
 
-def generate_pagefind_config_for_builder(builder: SiteBuilder) -> str:
+def generate_pagefind_config_for_builder(builder: SiteBuilder) -> SearchBuildStatus:
     return generate_pagefind_config(builder.output_dir)
 
 

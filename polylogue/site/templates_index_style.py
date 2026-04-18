@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-INDEX_STYLE = """
+_INDEX_THEME_CSS = """
         :root {
             --bg-primary: #0a0a0c;
             --bg-secondary: #16161a;
@@ -26,7 +26,9 @@ INDEX_STYLE = """
                 --border: #e5e7eb;
             }
         }
+"""
 
+_INDEX_LAYOUT_CSS = """
         * { box-sizing: border-box; margin: 0; padding: 0; }
 
         body {
@@ -194,5 +196,7 @@ INDEX_STYLE = """
             .stats { gap: 1rem; }
         }
 """
+
+INDEX_STYLE = _INDEX_THEME_CSS + _INDEX_LAYOUT_CSS
 
 __all__ = ["INDEX_STYLE"]

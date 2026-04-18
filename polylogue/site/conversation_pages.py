@@ -10,7 +10,9 @@ from typing import TYPE_CHECKING
 from jinja2 import Environment, Template
 
 from polylogue.logging import get_logger
-from polylogue.rendering.core import build_rendered_message_payload
+from polylogue.rendering.block_models import coerce_renderable_blocks
+from polylogue.rendering.core import build_rendered_message
+from polylogue.rendering.core_messages import RenderedMessage
 from polylogue.site.models import ConversationIndex
 
 if TYPE_CHECKING:
@@ -36,16 +38,17 @@ async def iter_conversation_page_messages(
     conversation_id: str,
     *,
     render_html: Callable[[str], str],
-) -> AsyncIterator[dict[str, object]]:
+) -> AsyncIterator[RenderedMessage]:
     """Yield site message payloads lazily for a conversation page."""
     async for msg in repository.iter_messages(conversation_id):
         if not msg.text:
             continue
-        yield build_rendered_message_payload(
+        yield build_rendered_message(
             message_id=msg.id,
             role=msg.role or "unknown",
             text=msg.text,
             timestamp=msg.timestamp,
+            content_blocks=coerce_renderable_blocks(msg.content_blocks),
             parent_message_id=msg.parent_id,
             branch_index=msg.branch_index,
             render_html=render_html,
