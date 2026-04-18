@@ -13,6 +13,7 @@ import pickle
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from polylogue.lib.artifact_taxonomy import classify_artifact
 from polylogue.lib.json import dumps as json_dumps
@@ -31,10 +32,22 @@ from polylogue.sources.decoders import _iter_json_stream
 from polylogue.sources.dispatch import STREAM_RECORD_PROVIDERS
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.store import RawConversationRecord, _json_or_none
-from polylogue.types import Provider, ValidationMode, ValidationStatus
+from polylogue.types import ContentHash, ConversationId, Provider, ValidationMode, ValidationStatus
+
+if TYPE_CHECKING:
+    from polylogue.schemas.runtime_registry import SchemaRegistry
+    from polylogue.sources.parsers.base_models import ParsedConversation, ParsedMessage
 
 _SOURCE_HASH_SUFFIX = re.compile(r"-(?:[0-9a-f]{16,64})$", re.IGNORECASE)
-_SCHEMA_REGISTRY = None
+_SCHEMA_REGISTRY: SchemaRegistry | None = None
+
+ConversationTuple = tuple[object, ...]
+MessageTuple = tuple[object, ...]
+ContentBlockTuple = tuple[object, ...]
+ActionEventTuple = tuple[object, ...]
+StatsTuple = tuple[object, ...]
+AttachmentTuple = tuple[object, ...]
+AttachmentRefTuple = tuple[object, ...]
 
 
 def _format_malformed_jsonl_error(*, malformed_lines: int, malformed_detail: str | None) -> str:
@@ -58,24 +71,24 @@ class ConversationData:
     provider_name: str
 
     # Tuple matching INSERT INTO conversations column order
-    conversation_tuple: tuple
+    conversation_tuple: ConversationTuple
 
     # list[tuple] matching INSERT INTO messages column order
-    message_tuples: list[tuple] = field(default_factory=list)
+    message_tuples: list[MessageTuple] = field(default_factory=list)
 
     # list[tuple] matching INSERT INTO content_blocks column order
-    block_tuples: list[tuple] = field(default_factory=list)
+    block_tuples: list[ContentBlockTuple] = field(default_factory=list)
 
     # list[tuple] matching INSERT INTO action_events column order
-    action_event_tuples: list[tuple] = field(default_factory=list)
+    action_event_tuples: list[ActionEventTuple] = field(default_factory=list)
 
     # (conversation_id, provider_name, msg_count, word_count, tool_use_count, thinking_count)
-    stats_tuple: tuple = ()
+    stats_tuple: StatsTuple = ()
 
     # Attachments are rare; keep as list of simple tuples
     # Each: (attachment_id, conversation_id, message_id, mime_type, size_bytes, path, provider_meta_json)
-    attachment_tuples: list[tuple] = field(default_factory=list)
-    attachment_ref_tuples: list[tuple] = field(default_factory=list)
+    attachment_tuples: list[AttachmentTuple] = field(default_factory=list)
+    attachment_ref_tuples: list[AttachmentRefTuple] = field(default_factory=list)
 
     # Source metadata
     source_name: str = ""
@@ -147,12 +160,13 @@ def _make_ref_id(
     return sha256(key.encode()).hexdigest()[:32]
 
 
-def _runtime_schema_registry():
+def _runtime_schema_registry() -> SchemaRegistry:
     global _SCHEMA_REGISTRY
     if _SCHEMA_REGISTRY is None:
         from polylogue.schemas.runtime_registry import SchemaRegistry
 
         _SCHEMA_REGISTRY = SchemaRegistry()
+    assert _SCHEMA_REGISTRY is not None
     return _SCHEMA_REGISTRY
 
 
@@ -579,7 +593,7 @@ def ingest_record(
 
 
 def _transform_to_tuples(
-    convo,
+    convo: ParsedConversation,
     *,
     source_name: str,
     archive_root: Path,
@@ -635,8 +649,8 @@ def _transform_to_tuples(
         message_id_map[str(provider_message_id)] = make_message_id(cid, provider_message_id)
 
     # Message tuples + content block tuples
-    msg_tuples: list[tuple] = []
-    block_tuples: list[tuple] = []
+    msg_tuples: list[MessageTuple] = []
+    block_tuples: list[ContentBlockTuple] = []
     total_word_count = 0
     total_tool_use = 0
     total_thinking = 0
@@ -682,7 +696,7 @@ def _transform_to_tuples(
         for block_idx, block in enumerate(msg.content_blocks):
             tool_input_json = json_dumps(block.tool_input) if block.tool_input is not None else None
             semantic_type: str | None = None
-            semantic_metadata: dict | None = block.metadata
+            semantic_metadata: dict[str, object] | None = block.metadata
 
             if block.type == "tool_use" and block.tool_name:
                 category = classify_tool(block.tool_name, block.tool_input or {})
@@ -741,8 +755,8 @@ def _transform_to_tuples(
     )
 
     # Attachments
-    attachment_tuples: list[tuple] = []
-    attachment_ref_tuples: list[tuple] = []
+    attachment_tuples: list[AttachmentTuple] = []
+    attachment_ref_tuples: list[AttachmentRefTuple] = []
     for att in convo.attachments:
         aid, updated_meta, updated_path = attachment_content_id(
             convo.provider_name,
@@ -795,10 +809,10 @@ def _transform_to_tuples(
 def _build_action_event_tuples(
     conversation_id: str,
     provider_name: str,
-    messages: list,
+    messages: list[ParsedMessage],
     message_id_map: dict[str, str],
-    msg_tuples: list[tuple],
-) -> list[tuple]:
+    msg_tuples: list[MessageTuple],
+) -> list[ActionEventTuple]:
     """Build action event tuples for all messages in a conversation.
 
     Uses the lightweight action event builder that works from content blocks
@@ -814,13 +828,15 @@ def _build_action_event_tuples(
     from polylogue.types import MessageId, Provider
 
     provider = Provider.from_string(provider_name)
-    action_tuples: list[tuple] = []
+    action_tuples: list[ActionEventTuple] = []
+    conversation_id_token = ConversationId(conversation_id)
 
     for idx, msg in enumerate(messages, start=1):
         provider_message_id = msg.provider_message_id or f"msg-{idx}"
         mid = message_id_map[str(provider_message_id)]
         msg_tuple = msg_tuples[idx - 1]
-        msg_sort_key = msg_tuple[5]  # sort_key is at index 5
+        msg_sort_key = msg_tuple[5] if isinstance(msg_tuple[5], float) else None  # sort_key is at index 5
+        msg_content_hash = ContentHash(str(msg_tuple[6]))
 
         # Build lightweight domain message for action event extraction
         block_types = {blk.type for blk in msg.content_blocks}
@@ -833,12 +849,12 @@ def _build_action_event_tuples(
         has_thinking = 1 if "thinking" in block_types else 0
         msg_record = MessageRecord(
             message_id=MessageId(mid),
-            conversation_id=conversation_id,
+            conversation_id=conversation_id_token,
             provider_message_id=provider_message_id,
             role=msg.role,
             text=msg.text,
             sort_key=msg_sort_key,
-            content_hash=msg_tuple[6],
+            content_hash=msg_content_hash,
             provider_name=provider_name,
             word_count=word_count,
             has_tool_use=has_tool_use,
@@ -847,7 +863,7 @@ def _build_action_event_tuples(
                 ContentBlockRecord(
                     block_id=ContentBlockRecord.make_id(mid, bi),
                     message_id=MessageId(mid),
-                    conversation_id=conversation_id,
+                    conversation_id=conversation_id_token,
                     block_index=bi,
                     type=blk.type,
                     text=blk.text,

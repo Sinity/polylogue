@@ -432,6 +432,7 @@ async def _apply_session_product_conversation_updates_async(
 
 __all__ = [
     "delete_session_products_for_conversation_async",
+    "refresh_async_provider_day_aggregates",
     "refresh_session_products_for_conversation_async",
     "refresh_thread_after_conversation_delete_async",
 ]
