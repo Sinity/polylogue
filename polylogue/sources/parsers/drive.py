@@ -39,15 +39,16 @@ from .drive_support import (
 _logger = get_logger(__name__)
 
 
-def _collect_drive_docs(payload: object):
+def _collect_drive_docs(payload: object) -> list[dict[str, object] | str]:
     return _collect_drive_docs_impl(payload)
 
 
-def _attachment_from_doc(doc: dict[str, object] | str, message_id: str | None):
+def _attachment_from_doc(doc: dict[str, object] | str, message_id: str | None) -> ParsedAttachment | None:
     return _attachment_from_doc_impl(doc, message_id)
 
 
 def parse_chunked_prompt(provider: Provider | str, payload: dict[str, object], fallback_id: str) -> ParsedConversation:
+    runtime_provider = Provider.from_string(provider)
     prompt = payload.get("chunkedPrompt")
     chunks: list[str | dict[str, object]] = []
     if isinstance(prompt, dict):
@@ -120,15 +121,17 @@ def parse_chunked_prompt(provider: Provider | str, payload: dict[str, object], f
                 meta["isEdited"] = True
 
             # Extract structured content blocks via the typed model
-            content_blocks = [
+            content_block_payloads = [
                 block_payload
                 for cb in gem.extract_content_blocks()
                 if (block_payload := _viewport_block_payload(cb)) is not None
             ]
-            if not content_blocks:
+            if not content_block_payloads:
                 # Fallback: basic block from text
-                content_blocks = [{"type": "thinking" if gem.isThought else "text", "text": text}] if text else []
-            meta["content_blocks"] = content_blocks
+                content_block_payloads = (
+                    [{"type": "thinking" if gem.isThought else "text", "text": text}] if text else []
+                )
+            meta["content_blocks"] = content_block_payloads
 
             # Extract reasoning traces if present
             traces = gem.extract_reasoning_traces()
@@ -143,29 +146,29 @@ def parse_chunked_prompt(provider: Provider | str, payload: dict[str, object], f
             token_count = chunk_obj.get("tokenCount")
             if token_count:
                 meta["tokenCount"] = token_count
-            content_blocks: list[dict[str, object]] = []
+            fallback_content_blocks: list[dict[str, object]] = []
             if text:
                 block_type = "thinking" if chunk_obj.get("isThought") else "text"
-                content_blocks.append({"type": block_type, "text": text})
+                fallback_content_blocks.append({"type": block_type, "text": text})
             exec_code = chunk_obj.get("executableCode")
             if isinstance(exec_code, dict) and exec_code:
                 meta["executableCode"] = exec_code
                 code = exec_code.get("code")
                 if isinstance(code, str) and code:
-                    content_blocks.append({"type": "code", "text": code})
+                    fallback_content_blocks.append({"type": "code", "text": code})
             exec_result = chunk_obj.get("codeExecutionResult")
             if isinstance(exec_result, dict) and exec_result:
                 meta["codeExecutionResult"] = exec_result
                 output = exec_result.get("output")
                 outcome = exec_result.get("outcome")
                 if isinstance(output, str) and output:
-                    content_blocks.append({"type": "tool_result", "text": output})
+                    fallback_content_blocks.append({"type": "tool_result", "text": output})
                 elif isinstance(outcome, str) and outcome:
-                    content_blocks.append({"type": "tool_result", "text": f"[{outcome}]"})
+                    fallback_content_blocks.append({"type": "tool_result", "text": f"[{outcome}]"})
             error_msg = chunk_obj.get("errorMessage")
             if isinstance(error_msg, str) and error_msg:
                 meta["errorMessage"] = error_msg
-            meta["content_blocks"] = content_blocks
+            meta["content_blocks"] = fallback_content_blocks
 
         if chunk_attachments and not used_typed_model:
             meta_blocks = meta.get("content_blocks")
@@ -203,7 +206,7 @@ def parse_chunked_prompt(provider: Provider | str, payload: dict[str, object], f
         else _select_timestamp(observed_timestamps, latest=True)
     )
     return ParsedConversation(
-        provider_name=provider,
+        provider_name=runtime_provider,
         provider_conversation_id=str(payload.get("id") or fallback_id),
         title=title,
         created_at=create_time_str,
