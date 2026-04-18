@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import cast
+
 from polylogue.scenarios import CorpusSpec, ScenarioProjectionSourceKind, ScenarioSpec
 
 
@@ -40,7 +42,9 @@ def test_scenario_spec_projection_payload_includes_corpus_specs() -> None:
     assert projection.name == "fixture"
     assert projection.description == "fixture scenario"
     assert projection.origin == "compiled.synthetic-corpus-scenario"
-    assert projection.source_payload["corpus_specs"][0]["provider"] == "chatgpt"
+    source_payload = projection.source_payload
+    corpus_specs = cast(list[dict[str, object]], source_payload["corpus_specs"])
+    assert corpus_specs[0]["provider"] == "chatgpt"
     assert projection.tags == ("synthetic", "scenario")
 
 

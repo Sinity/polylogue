@@ -19,7 +19,9 @@ def test_assertion_spec_validates_json_contracts() -> None:
     assertion = AssertionSpec(stdout_is_valid_json=True)
 
     assert assertion.validate_process('{"ok": true}', 0) is None
-    assert assertion.validate_process("not-json", 0).startswith("invalid JSON:")
+    error = assertion.validate_process("not-json", 0)
+    assert error is not None
+    assert error.startswith("invalid JSON:")
 
 
 def test_assertion_spec_resolves_benchmark_thresholds() -> None:

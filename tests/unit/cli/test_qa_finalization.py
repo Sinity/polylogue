@@ -2,14 +2,20 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import cast
 from unittest.mock import MagicMock
+
+import pytest
 
 from polylogue.cli.qa_finalization import finalize_qa_run
 from polylogue.cli.qa_requests import QACaptureMode, QAFinalizationPlan, QASnapshotPlan
 from polylogue.showcase.qa_runner import QAResult
 
 
-def test_finalize_qa_run_emits_json_and_executes_snapshot(monkeypatch, tmp_path: Path) -> None:
+def test_finalize_qa_run_emits_json_and_executes_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
     emitted: dict[str, object] = {}
 
     monkeypatch.setattr(
@@ -50,7 +56,7 @@ def test_finalize_qa_run_emits_json_and_executes_snapshot(monkeypatch, tmp_path:
 
     finalize_qa_run(result, plan=plan, archive_root=tmp_path / "archive", env=env)
 
-    assert json.loads(emitted["json_payload"])["overall_status"] == "ok"
+    assert json.loads(cast(str, emitted["json_payload"]))["overall_status"] == "ok"
     assert emitted["capture_showcase_result"] is showcase_result
     assert emitted["capture_json_output"] is True
     assert emitted["fallback_source_dir"] == tmp_path / "report"
@@ -58,7 +64,10 @@ def test_finalize_qa_run_emits_json_and_executes_snapshot(monkeypatch, tmp_path:
     assert emitted["snapshot_json_output"] is True
 
 
-def test_finalize_qa_run_prints_summary_without_capture_or_snapshot(monkeypatch, tmp_path: Path) -> None:
+def test_finalize_qa_run_prints_summary_without_capture_or_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
     monkeypatch.setattr("polylogue.cli.qa_finalization.render_qa_summary", lambda result: "qa-summary")
     capture = MagicMock()
     snapshot = MagicMock()

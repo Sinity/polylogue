@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
+from pathlib import Path
 
 from click.testing import CliRunner
 
@@ -12,7 +14,7 @@ from polylogue.storage.store import RunRecord
 from tests.infra.storage_records import ConversationBuilder, record_run
 
 
-def _seed_latest_run(db_path) -> None:
+def _seed_latest_run(db_path: Path) -> None:
     with open_connection(db_path) as conn:
         record_run(
             conn,
@@ -27,7 +29,7 @@ def _seed_latest_run(db_path) -> None:
         conn.commit()
 
 
-def test_run_site_builds_manifest(cli_workspace) -> None:
+def test_run_site_builds_manifest(cli_workspace: Mapping[str, Path]) -> None:
     """`polylogue run site` builds the site and writes the manifest."""
     (
         ConversationBuilder(cli_workspace["db_path"], "site-cli-1")
@@ -53,7 +55,7 @@ def test_run_site_builds_manifest(cli_workspace) -> None:
     assert manifest["archive"]["total_conversations"] == 1
 
 
-def test_run_site_help(cli_workspace) -> None:
+def test_run_site_help(cli_workspace: Mapping[str, Path]) -> None:
     """`polylogue run site --help` shows site-specific options."""
     runner = CliRunner()
     result = runner.invoke(cli, ["run", "site", "--help"])

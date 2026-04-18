@@ -7,9 +7,11 @@ import csv
 import io
 import json
 import tempfile
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -43,10 +45,13 @@ from polylogue.cli.query_output import (
     output_stats_sql,
 )
 from polylogue.cli.types import AppEnv
-from polylogue.lib.models import Conversation, Message
+from polylogue.lib.models import Conversation
 from polylogue.lib.query_spec import ConversationQuerySpec, QuerySpecError
+from polylogue.lib.roles import Role
 from polylogue.services import build_runtime_services
 from polylogue.storage.store import ContentBlockRecord, ConversationRecord, MessageRecord
+from polylogue.types import ContentBlockType, ContentHash, ConversationId, MessageId, Provider, SemanticBlockType
+from tests.infra.builders import make_conv, make_msg
 from tests.infra.strategies import (
     ConversationSummarySpec,
     build_conversation_summary,
@@ -59,6 +64,7 @@ from tests.infra.strategies import (
 )
 
 pytestmark = pytest.mark.query_routing
+SearchWorkspace = dict[str, Path]
 
 
 def _make_env(*, repo: MagicMock | None = None, config: MagicMock | None = None) -> AppEnv:
@@ -80,7 +86,7 @@ def _make_env(*, repo: MagicMock | None = None, config: MagicMock | None = None)
 
 
 @asynccontextmanager
-async def _async_connection(conn: object):
+async def _async_connection(conn: object) -> AsyncIterator[object]:
     yield conn
 
 
@@ -90,7 +96,7 @@ class _SnapshotConn:
         self.execute = AsyncMock(side_effect=self._execute)
         self.rollback = AsyncMock(side_effect=self._rollback)
 
-    async def _execute(self, sql: str, *args, **kwargs) -> None:
+    async def _execute(self, sql: str, *args: object, **kwargs: object) -> None:
         del args, kwargs
         if sql == "BEGIN":
             self.in_transaction = True
@@ -103,7 +109,7 @@ def _fields_arg(fields: tuple[str, ...] | None) -> str | None:
     return None if not fields else ",".join(fields)
 
 
-def _structured_rows(case) -> list[dict[str, object]]:
+def _structured_rows(case: Any) -> list[dict[str, object]]:
     rows = [summary_to_dict(build_conversation_summary(spec), spec.message_count) for spec in case.summaries]
     if case.selected_fields:
         selected = set(case.selected_fields)
@@ -111,7 +117,7 @@ def _structured_rows(case) -> list[dict[str, object]]:
     return rows
 
 
-def _csv_rows(case) -> list[dict[str, str]]:
+def _csv_rows(case: Any) -> list[dict[str, str]]:
     rows: list[dict[str, str]] = []
     for spec in case.summaries:
         summary = build_conversation_summary(spec)
@@ -187,46 +193,46 @@ def _build_plan(case: str) -> QueryExecutionPlan:
 
 
 def _sample_conversation() -> Conversation:
-    return Conversation(
+    return make_conv(
         id="conv-transform",
-        provider="claude-ai",
+        provider=Provider.CLAUDE_AI,
         title="Transform Contract",
         messages=[
-            Message(id="m-user", role="user", text="hello"),
-            Message(
+            make_msg(id="m-user", role=Role.USER, text="hello"),
+            make_msg(
                 id="m-thinking",
-                role="assistant",
+                role=Role.ASSISTANT,
                 text="chain",
                 content_blocks=[{"type": "thinking", "text": "chain"}],
             ),
-            Message(id="m-tool", role="tool", text="tool output"),
-            Message(id="m-assistant", role="assistant", text="answer"),
+            make_msg(id="m-tool", role=Role.TOOL, text="tool output"),
+            make_msg(id="m-assistant", role=Role.ASSISTANT, text="answer"),
         ],
     )
 
 
 def _sample_output_conversation(conversation_id: str = "conv-output") -> Conversation:
-    return Conversation(
+    return make_conv(
         id=conversation_id,
-        provider="claude-ai",
+        provider=Provider.CLAUDE_AI,
         title="Output Contract",
         messages=[
-            Message(id=f"{conversation_id}-user", role="user", text="hello"),
-            Message(id=f"{conversation_id}-assistant", role="assistant", text="world"),
+            make_msg(id=f"{conversation_id}-user", role=Role.USER, text="hello"),
+            make_msg(id=f"{conversation_id}-assistant", role=Role.ASSISTANT, text="world"),
         ],
     )
 
 
 def _sample_semantic_conversation() -> Conversation:
-    return Conversation(
+    return make_conv(
         id="conv-semantic",
-        provider="claude-code",
+        provider=Provider.CLAUDE_CODE,
         title="Semantic Slice Contract",
         messages=[
-            Message(id="m-user", role="user", text="inspect the repo"),
-            Message(
+            make_msg(id="m-user", role=Role.USER, text="inspect the repo"),
+            make_msg(
                 id="m-other",
-                role="assistant",
+                role=Role.ASSISTANT,
                 text="mystery tool",
                 content_blocks=[
                     {
@@ -237,9 +243,9 @@ def _sample_semantic_conversation() -> Conversation:
                     }
                 ],
             ),
-            Message(
+            make_msg(
                 id="m-edit",
-                role="assistant",
+                role=Role.ASSISTANT,
                 text="edit models",
                 content_blocks=[
                     {
@@ -250,9 +256,9 @@ def _sample_semantic_conversation() -> Conversation:
                     }
                 ],
             ),
-            Message(
+            make_msg(
                 id="m-search",
-                role="assistant",
+                role=Role.ASSISTANT,
                 text="search docs",
                 content_blocks=[
                     {
@@ -274,6 +280,74 @@ def _make_recording_env() -> tuple[AppEnv, io.StringIO]:
     return env, buffer
 
 
+def _conversation_record(
+    conversation_id: str,
+    *,
+    provider_name: str,
+    provider_conversation_id: str,
+    title: str,
+    created_at: str,
+    updated_at: str,
+    sort_key: float,
+    content_hash: str,
+) -> ConversationRecord:
+    return ConversationRecord(
+        conversation_id=ConversationId(conversation_id),
+        provider_name=provider_name,
+        provider_conversation_id=provider_conversation_id,
+        title=title,
+        created_at=created_at,
+        updated_at=updated_at,
+        sort_key=sort_key,
+        content_hash=ContentHash(content_hash),
+    )
+
+
+def _content_block_record(
+    block_id: str,
+    *,
+    message_id: str,
+    conversation_id: str,
+    block_index: int,
+    block_type: str,
+    tool_name: str,
+    tool_input: dict[str, object],
+    semantic_type: str,
+) -> ContentBlockRecord:
+    return ContentBlockRecord(
+        block_id=block_id,
+        message_id=MessageId(message_id),
+        conversation_id=ConversationId(conversation_id),
+        block_index=block_index,
+        type=ContentBlockType.from_string(block_type),
+        text=None,
+        tool_name=tool_name,
+        tool_id=None,
+        tool_input=json.dumps(tool_input),
+        semantic_type=SemanticBlockType.from_string(semantic_type),
+    )
+
+
+def _message_record(
+    message_id: str,
+    *,
+    conversation_id: str,
+    text: str,
+    sort_key: float,
+    content_hash: str,
+    content_blocks: list[ContentBlockRecord],
+) -> MessageRecord:
+    return MessageRecord(
+        message_id=MessageId(message_id),
+        conversation_id=ConversationId(conversation_id),
+        role=Role.ASSISTANT,
+        text=text,
+        sort_key=sort_key,
+        content_hash=ContentHash(content_hash),
+        content_blocks=content_blocks,
+    )
+
+
 def _summary_group_key(spec: ConversationSummarySpec, dimension: str) -> str:
     if dimension == "provider":
         return spec.provider or "unknown"
@@ -291,12 +365,14 @@ def _summary_group_key(spec: ConversationSummarySpec, dimension: str) -> str:
 
 @settings(max_examples=60, deadline=None)
 @given(case=query_mutation_case_strategy())
-def test_apply_modifiers_contract(case) -> None:
+def test_apply_modifiers_contract(case: Any) -> None:
     repo = MagicMock()
     repo.update_metadata = AsyncMock()
     repo.add_tag = AsyncMock()
     env = _make_env(repo=repo)
-    env.ui.confirm.return_value = case.confirm
+    mock_confirm = cast(MagicMock, env.ui.confirm)
+    mock_print = cast(MagicMock, env.ui.console.print)
+    mock_confirm.return_value = case.confirm
     results = [build_conversation_summary(spec) for spec in case.summaries]
     params = {
         "set_meta": list(case.set_meta),
@@ -306,13 +382,14 @@ def test_apply_modifiers_contract(case) -> None:
     }
 
     with patch("click.echo") as mock_echo:
+        mock_echo = cast(MagicMock, mock_echo)
         asyncio.run(apply_modifiers(env, results, params, repo))
 
     should_confirm = len(results) > 10 and not case.force and not case.dry_run
     if should_confirm:
-        env.ui.confirm.assert_called_once_with("Proceed?", default=False)
+        mock_confirm.assert_called_once_with("Proceed?", default=False)
     else:
-        env.ui.confirm.assert_not_called()
+        mock_confirm.assert_not_called()
 
     should_apply = not case.dry_run and (not should_confirm or case.confirm)
     expected_meta_calls = len(results) * len(case.set_meta) if should_apply else 0
@@ -322,7 +399,7 @@ def test_apply_modifiers_contract(case) -> None:
     assert repo.add_tag.await_count == expected_tag_calls
 
     if case.dry_run:
-        printed = " ".join(call.args[0] for call in env.ui.console.print.call_args_list if call.args)
+        printed = " ".join(call.args[0] for call in mock_print.call_args_list if call.args)
         assert "Sample of affected conversations" in printed
         assert any(spec.conversation_id[:24] in printed for spec in case.summaries[:5])
     elif should_apply:
@@ -335,22 +412,24 @@ def test_apply_modifiers_contract(case) -> None:
 
 @settings(max_examples=60, deadline=None)
 @given(case=query_delete_case_strategy())
-def test_delete_conversations_contract(case) -> None:
+def test_delete_conversations_contract(case: Any) -> None:
     repo = MagicMock()
     repo.delete_conversation = AsyncMock(side_effect=list(case.delete_results))
     env = _make_env(repo=repo)
-    env.ui.confirm.return_value = case.confirm
+    mock_confirm = cast(MagicMock, env.ui.confirm)
+    mock_confirm.return_value = case.confirm
     results = [build_conversation_summary(spec) for spec in case.summaries]
     params = {"dry_run": case.dry_run, "force": case.force}
 
     with patch("click.echo") as mock_echo:
+        mock_echo = cast(MagicMock, mock_echo)
         asyncio.run(delete_conversations(env, results, params, repo))
 
     should_confirm = not case.force and not case.dry_run
     if should_confirm:
-        env.ui.confirm.assert_called_once_with("Proceed?", default=False)
+        mock_confirm.assert_called_once_with("Proceed?", default=False)
     else:
-        env.ui.confirm.assert_not_called()
+        mock_confirm.assert_not_called()
 
     should_delete = not case.dry_run and (case.force or case.confirm)
     assert repo.delete_conversation.await_count == (len(results) if should_delete else 0)
@@ -382,17 +461,18 @@ def test_delete_conversations_contract(case) -> None:
 @settings(max_examples=40, deadline=None)
 @given(case=summary_output_case_strategy())
 @pytest.mark.parametrize("output_format", ["json", "yaml", "csv", "text"])
-def test_output_summary_list_contract(case, output_format: str) -> None:
+def test_output_summary_list_contract(case: Any, output_format: str) -> None:
     repo = MagicMock()
     repo.queries.get_message_counts_batch = AsyncMock(return_value=build_message_counts(case.summaries))
     env = _make_env(repo=repo)
     summaries = [build_conversation_summary(spec) for spec in case.summaries]
-    params = {"output_format": output_format}
+    params: dict[str, object] = {"output_format": output_format}
     if output_format in {"json", "yaml"}:
         params["fields"] = _fields_arg(case.selected_fields)
-    env.ui.plain = output_format == "text"
+    cast(Any, env.ui).plain = output_format == "text"
 
     with patch("click.echo") as mock_echo:
+        mock_echo = cast(MagicMock, mock_echo)
         asyncio.run(_output_summary_list(env, summaries, params, repo))
 
     if output_format == "json":
@@ -414,7 +494,7 @@ def test_output_summary_list_contract(case, output_format: str) -> None:
     suppress_health_check=[HealthCheck.function_scoped_fixture],
 )
 @given(case=send_output_case_strategy())
-def test_send_output_routes_destination_contract(case) -> None:
+def test_send_output_routes_destination_contract(case: Any) -> None:
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)
         env = _make_env()
@@ -435,6 +515,9 @@ def test_send_output_routes_destination_contract(case) -> None:
             patch("polylogue.cli.query_output._open_in_browser") as mock_browser,
             patch("polylogue.cli.query_output._copy_to_clipboard") as mock_clipboard,
         ):
+            mock_echo = cast(MagicMock, mock_echo)
+            mock_browser = cast(MagicMock, mock_browser)
+            mock_clipboard = cast(MagicMock, mock_clipboard)
             _send_output(env, content, destinations, case.output_format, None)
 
         assert mock_echo.call_count == (1 if case.to_stdout else 0)
@@ -494,7 +577,7 @@ def test_resolve_query_route_uses_full_stats_for_tool_dimension() -> None:
 
 @settings(max_examples=40, deadline=None)
 @given(case=summary_stats_case_strategy())
-def test_output_stats_by_summaries_contract(case) -> None:
+def test_output_stats_by_summaries_contract(case: Any) -> None:
     env, buffer = _make_recording_env()
     summaries = [build_conversation_summary(spec) for spec in case.summaries]
     msg_counts = build_message_counts(case.summaries)
@@ -551,10 +634,11 @@ def test_output_stats_by_summaries_json_contract() -> None:
     msg_counts = {"conv-a": 3, "conv-b": 4}
 
     with patch("click.echo") as mock_echo:
+        mock_echo = cast(MagicMock, mock_echo)
         output_stats_by_summaries(env, summaries, msg_counts, "provider", output_format="json")
 
     payload = json.loads(mock_echo.call_args.args[0])
-    env.ui.console.print.assert_not_called()
+    cast(MagicMock, env.ui.console.print).assert_not_called()
     assert payload == {
         "dimension": "provider",
         "multi_membership": False,
@@ -566,7 +650,7 @@ def test_output_stats_by_summaries_json_contract() -> None:
     }
 
 
-def test_output_stats_by_summaries_empty_json_contract(capsys) -> None:
+def test_output_stats_by_summaries_empty_json_contract(capsys: pytest.CaptureFixture[str]) -> None:
     env = _make_env()
     selection = ConversationQuerySpec.from_params({"provider": "claude-ai"})
 
@@ -596,26 +680,26 @@ async def test_output_stats_by_semantic_summaries_json_contract() -> None:
         side_effect=[
             [
                 ConversationRecord(
-                    conversation_id="conv-law-1",
+                    conversation_id=ConversationId("conv-law-1"),
                     provider_name="claude-code",
                     provider_conversation_id="ext-conv-law-1",
                     title="Read contract",
                     created_at="2025-01-01T00:00:00Z",
                     updated_at="2025-01-01T00:00:00Z",
                     sort_key=1735689600,
-                    content_hash="hash-read",
+                    content_hash=ContentHash("hash-read"),
                 )
             ],
             [
                 ConversationRecord(
-                    conversation_id="conv-b",
+                    conversation_id=ConversationId("conv-b"),
                     provider_name="claude-code",
                     provider_conversation_id="ext-conv-b",
                     title="Shell contract",
                     created_at="2025-01-01T00:00:00Z",
                     updated_at="2025-01-01T00:00:00Z",
                     sort_key=1735689600,
-                    content_hash="hash-shell",
+                    content_hash=ContentHash("hash-shell"),
                 )
             ],
         ]
@@ -624,24 +708,21 @@ async def test_output_stats_by_semantic_summaries_json_contract() -> None:
         side_effect=[
             {
                 "conv-law-1": [
-                    MessageRecord(
-                        message_id="m-read",
+                    _message_record(
+                        "m-read",
                         conversation_id="conv-law-1",
-                        role="assistant",
                         text="read file",
                         sort_key=1735689600,
                         content_hash="msg-hash-read",
                         content_blocks=[
-                            ContentBlockRecord(
-                                block_id="blk-read",
+                            _content_block_record(
+                                "blk-read",
                                 message_id="m-read",
                                 conversation_id="conv-law-1",
                                 block_index=0,
-                                type="tool_use",
-                                text=None,
+                                block_type="tool_use",
                                 tool_name="Read",
-                                tool_id=None,
-                                tool_input=json.dumps({"file_path": "/tmp/a.py"}),
+                                tool_input={"file_path": "/tmp/a.py"},
                                 semantic_type="file_read",
                             )
                         ],
@@ -650,24 +731,21 @@ async def test_output_stats_by_semantic_summaries_json_contract() -> None:
             },
             {
                 "conv-b": [
-                    MessageRecord(
-                        message_id="m-shell",
+                    _message_record(
+                        "m-shell",
                         conversation_id="conv-b",
-                        role="assistant",
                         text="run tests",
                         sort_key=1735689600,
                         content_hash="msg-hash-shell",
                         content_blocks=[
-                            ContentBlockRecord(
-                                block_id="blk-shell",
+                            _content_block_record(
+                                "blk-shell",
                                 message_id="m-shell",
                                 conversation_id="conv-b",
                                 block_index=0,
-                                type="tool_use",
-                                text=None,
+                                block_type="tool_use",
                                 tool_name="Bash",
-                                tool_id=None,
-                                tool_input=json.dumps({"command": "pytest -q"}),
+                                tool_input={"command": "pytest -q"},
                                 semantic_type="shell",
                             )
                         ],
@@ -693,6 +771,7 @@ async def test_output_stats_by_semantic_summaries_json_contract() -> None:
     ]
 
     with patch("click.echo") as mock_echo:
+        mock_echo = cast(MagicMock, mock_echo)
         await output_stats_by_semantic_summaries(
             env,
             summaries,
@@ -704,7 +783,7 @@ async def test_output_stats_by_semantic_summaries_json_contract() -> None:
         )
 
     payload = json.loads(mock_echo.call_args.args[0])
-    env.ui.console.print.assert_not_called()
+    cast(MagicMock, env.ui.console.print).assert_not_called()
     assert payload == {
         "dimension": "action",
         "multi_membership": True,
@@ -719,7 +798,7 @@ async def test_output_stats_by_semantic_summaries_json_contract() -> None:
 
 
 @pytest.mark.asyncio
-async def test_output_stats_by_profile_ids_empty_json_contract(capsys) -> None:
+async def test_output_stats_by_profile_ids_empty_json_contract(capsys: pytest.CaptureFixture[str]) -> None:
     env = _make_env()
     selection = ConversationQuerySpec.from_params({"provider": "claude-ai"})
 
@@ -741,7 +820,7 @@ async def test_output_stats_by_profile_ids_empty_json_contract(capsys) -> None:
     assert payload["details"]["filters"] == ["provider: claude-ai"]
 
 
-def test_output_stats_by_conversations_empty_json_contract(capsys) -> None:
+def test_output_stats_by_conversations_empty_json_contract(capsys: pytest.CaptureFixture[str]) -> None:
     env = _make_env()
     selection = ConversationQuerySpec.from_params({"provider": "claude-ai"})
 
@@ -847,6 +926,10 @@ def test_output_results_no_results_contract() -> None:
         patch("polylogue.cli.query_output.format_conversation") as mock_format,
         pytest.raises(SystemExit) as exc_info,
     ):
+        mock_no_results = cast(MagicMock, mock_no_results)
+        mock_render = cast(MagicMock, mock_render)
+        mock_send = cast(MagicMock, mock_send)
+        mock_format = cast(MagicMock, mock_format)
         output_results(env, [], {})
 
     assert exc_info.value.code == 2
@@ -885,8 +968,9 @@ def test_output_results_no_results_contract() -> None:
 def test_output_results_projection_contract(
     label: str, plain: bool, conversations: list[Conversation], params: dict[str, object], expected: str
 ) -> None:
+    del label
     env = _make_env()
-    env.ui.plain = plain
+    cast(Any, env.ui).plain = plain
 
     with (
         patch("polylogue.cli.query_output._render_conversation_rich") as mock_render,
@@ -894,6 +978,10 @@ def test_output_results_projection_contract(
         patch("polylogue.cli.query_output.format_conversation", return_value="<html>ok</html>") as mock_format,
         patch("polylogue.cli.query_output._format_list", return_value="formatted-list") as mock_format_list,
     ):
+        mock_render = cast(MagicMock, mock_render)
+        mock_send = cast(MagicMock, mock_send)
+        mock_format = cast(MagicMock, mock_format)
+        mock_format_list = cast(MagicMock, mock_format_list)
         output_results(env, conversations, params)
 
     if expected == "render-rich":
@@ -915,19 +1003,19 @@ def test_output_results_projection_contract(
 
 def test_render_conversation_rich_contract() -> None:
     env, buffer = _make_recording_env()
-    conversation = Conversation(
+    conversation = make_conv(
         id="conv-rich",
-        provider="claude-ai",
+        provider=Provider.CLAUDE_AI,
         title="Rich Contract",
         messages=[
-            Message(id="m-user", role="user", text="**Hello** world"),
-            Message(
+            make_msg(id="m-user", role=Role.USER, text="**Hello** world"),
+            make_msg(
                 id="m-thinking",
-                role="assistant",
+                role=Role.ASSISTANT,
                 text="x" * 620,
                 content_blocks=[{"type": "thinking"}],
             ),
-            Message(id="m-empty", role="assistant", text=""),
+            make_msg(id="m-empty", role=Role.ASSISTANT, text=""),
         ],
     )
 
@@ -978,9 +1066,9 @@ def test_project_query_results_contract() -> None:
         ("show", "show"),
     ],
 )
-def test_async_execute_query_action_routing_contract(case, expected_helper) -> None:
+def test_async_execute_query_action_routing_contract(case: str, expected_helper: str) -> None:
     env = _make_env(repo=MagicMock(), config=MagicMock())
-    repo = env.repository
+    repo = cast(MagicMock, env.repository)
     summary = build_conversation_summary(_sample_summary_spec())
     plan = _build_plan(case)
     filter_chain = MagicMock()
@@ -988,7 +1076,8 @@ def test_async_execute_query_action_routing_contract(case, expected_helper) -> N
     filter_chain.can_use_summaries.return_value = True
     filter_chain.list_summaries = AsyncMock(return_value=[summary])
     filter_chain.list = AsyncMock(return_value=[MagicMock()])
-    plan.selection.build_filter.return_value = filter_chain
+    selection = cast(MagicMock, plan.selection)
+    selection.build_filter.return_value = filter_chain
 
     with (
         patch("polylogue.cli.helpers.load_effective_config", return_value=MagicMock()),
@@ -1014,10 +1103,15 @@ def test_async_execute_query_action_routing_contract(case, expected_helper) -> N
         ) as mock_stream_target,
         patch("polylogue.cli.query_output.stream_conversation", new_callable=AsyncMock) as mock_stream_conversation,
     ):
+        mock_echo = cast(MagicMock, mock_echo)
+        mock_output_stats_by_summaries = cast(MagicMock, mock_output_stats_by_summaries)
+        mock_output_stats_by = cast(MagicMock, mock_output_stats_by)
+        mock_open_result = cast(MagicMock, mock_open_result)
+        mock_output_results = cast(MagicMock, mock_output_results)
         repo.queries.get_message_counts_batch = AsyncMock(return_value={str(summary.id): 2})
         asyncio.run(async_execute_query(env, {"limit": 7}))
 
-    plan.selection.build_filter.assert_called_once_with(repo, vector_provider=None)
+    selection.build_filter.assert_called_once_with(repo, vector_provider=None)
 
     if expected_helper == "count":
         filter_chain.count.assert_awaited_once()
@@ -1092,7 +1186,8 @@ def test_async_execute_query_open_falls_back_to_full_results_without_summaries_c
     filter_chain.can_use_summaries.return_value = False
     filter_chain.list_summaries = AsyncMock(return_value=[])
     filter_chain.list = AsyncMock(return_value=[MagicMock()])
-    plan.selection.build_filter.return_value = filter_chain
+    selection = cast(MagicMock, plan.selection)
+    selection.build_filter.return_value = filter_chain
 
     with (
         patch("polylogue.cli.helpers.load_effective_config", return_value=MagicMock()),
@@ -1114,7 +1209,8 @@ def test_async_execute_query_stats_by_falls_back_to_full_results_without_summari
     filter_chain.can_use_summaries.return_value = False
     filter_chain.list = AsyncMock(return_value=[_sample_conversation()])
     filter_chain.list_summaries = AsyncMock(return_value=[build_conversation_summary(_sample_summary_spec())])
-    plan.selection.build_filter.return_value = filter_chain
+    selection = cast(MagicMock, plan.selection)
+    selection.build_filter.return_value = filter_chain
 
     with (
         patch("polylogue.cli.helpers.load_effective_config", return_value=MagicMock()),
@@ -1139,7 +1235,8 @@ def test_async_execute_query_semantic_stats_by_uses_summary_batches_contract() -
     filter_chain.can_use_summaries.return_value = True
     filter_chain.list = AsyncMock(return_value=[_sample_conversation()])
     filter_chain.list_summaries = AsyncMock(return_value=[build_conversation_summary(_sample_summary_spec())])
-    plan.selection.build_filter.return_value = filter_chain
+    selection = cast(MagicMock, plan.selection)
+    selection.build_filter.return_value = filter_chain
 
     with (
         patch("polylogue.cli.helpers.load_effective_config", return_value=MagicMock()),
@@ -1165,7 +1262,8 @@ def test_async_execute_query_semantic_stats_by_falls_back_without_summaries_cont
     filter_chain.can_use_summaries.return_value = False
     filter_chain.list = AsyncMock(return_value=[_sample_conversation()])
     filter_chain.list_summaries = AsyncMock(return_value=[build_conversation_summary(_sample_summary_spec())])
-    plan.selection.build_filter.return_value = filter_chain
+    selection = cast(MagicMock, plan.selection)
+    selection.build_filter.return_value = filter_chain
 
     with (
         patch("polylogue.cli.helpers.load_effective_config", return_value=MagicMock()),
@@ -1191,7 +1289,8 @@ def test_async_execute_query_profile_stats_by_uses_summary_batches_contract() ->
     filter_chain.can_use_summaries.return_value = True
     filter_chain.list = AsyncMock(return_value=[_sample_conversation()])
     filter_chain.list_summaries = AsyncMock(return_value=[build_conversation_summary(_sample_summary_spec())])
-    plan.selection.build_filter.return_value = filter_chain
+    selection = cast(MagicMock, plan.selection)
+    selection.build_filter.return_value = filter_chain
 
     with (
         patch("polylogue.cli.helpers.load_effective_config", return_value=MagicMock()),
@@ -1216,7 +1315,8 @@ def test_async_execute_query_summary_list_no_results_contract() -> None:
     filter_chain = MagicMock()
     filter_chain.can_use_summaries.return_value = True
     filter_chain.list_summaries = AsyncMock(return_value=[])
-    plan.selection.build_filter.return_value = filter_chain
+    selection = cast(MagicMock, plan.selection)
+    selection.build_filter.return_value = filter_chain
 
     with (
         patch("polylogue.cli.helpers.load_effective_config", return_value=MagicMock()),
@@ -1234,7 +1334,8 @@ def test_async_execute_query_summary_list_no_results_contract() -> None:
 def test_async_execute_query_query_spec_error_contract() -> None:
     env = _make_env(repo=MagicMock(), config=MagicMock())
     plan = _build_plan("show")
-    plan.selection.build_filter.side_effect = QuerySpecError("since", "not-a-date")
+    selection = cast(MagicMock, plan.selection)
+    selection.build_filter.side_effect = QuerySpecError("since", "not-a-date")
 
     with (
         patch("polylogue.cli.helpers.load_effective_config", return_value=MagicMock()),
@@ -1243,6 +1344,7 @@ def test_async_execute_query_query_spec_error_contract() -> None:
         patch("click.echo") as mock_echo,
         pytest.raises(SystemExit) as exc_info,
     ):
+        mock_echo = cast(MagicMock, mock_echo)
         asyncio.run(async_execute_query(env, {}))
 
     assert exc_info.value.code == 1
@@ -1297,10 +1399,11 @@ def test_async_execute_query_show_projects_results_before_output_contract() -> N
         ),
     ],
 )
-def test_no_results_contract(params, expected_lines) -> None:
+def test_no_results_contract(params: dict[str, object] | ConversationQuerySpec, expected_lines: list[str]) -> None:
     env = _make_env()
 
     with patch("click.echo") as mock_echo, pytest.raises(SystemExit) as exc_info:
+        mock_echo = cast(MagicMock, mock_echo)
         no_results(env, params)
 
     assert exc_info.value.code == 2
@@ -1309,7 +1412,7 @@ def test_no_results_contract(params, expected_lines) -> None:
     assert all(call.kwargs.get("err") is True for call in mock_echo.call_args_list)
 
 
-def test_no_results_contract_json_emits_machine_envelope(capsys) -> None:
+def test_no_results_contract_json_emits_machine_envelope(capsys: pytest.CaptureFixture[str]) -> None:
     env = _make_env()
 
     with pytest.raises(SystemExit) as exc_info:
@@ -1395,7 +1498,7 @@ async def test_output_stats_sql_uses_summary_pushdown_contract() -> None:
     filter_chain.list_summaries.assert_awaited_once()
     filter_chain.count.assert_not_called()
     repo.queries.aggregate_message_stats.assert_awaited_once_with(["conv-a", "conv-b"])
-    printed = [call.args[0] for call in env.ui.console.print.call_args_list if call.args]
+    printed = [call.args[0] for call in cast(MagicMock, env.ui.console.print).call_args_list if call.args]
     assert printed == [
         "\nConversations: 2\n",
         "Messages: 9 total (4 user, 5 assistant)",
@@ -1433,7 +1536,7 @@ async def test_output_stats_sql_empty_paths_contract(
 
     await output_stats_sql(env, filter_chain, repo)
 
-    env.ui.console.print.assert_called_once_with(expected_message)
+    cast(MagicMock, env.ui.console.print).assert_called_once_with(expected_message)
 
 
 @pytest.mark.asyncio
@@ -1449,7 +1552,7 @@ async def test_output_stats_sql_empty_paths_json_contract(
     can_use_summaries: bool,
     expected_message: str,
     expected_filters: list[str] | None,
-    capsys,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     env = _make_env()
     repo = MagicMock()
@@ -1521,7 +1624,7 @@ async def test_output_stats_sql_archive_scope_includes_embedding_state() -> None
     mock_aggregate.assert_awaited_once_with(conn, None)
     conn.execute.assert_awaited_once_with("BEGIN")
     conn.rollback.assert_awaited_once()
-    printed = [call.args[0] for call in env.ui.console.print.call_args_list if call.args]
+    printed = [call.args[0] for call in cast(MagicMock, env.ui.console.print).call_args_list if call.args]
     assert printed == [
         "\nConversations: 2\n",
         "Messages: 9 total (4 user, 5 assistant)",
@@ -1575,9 +1678,10 @@ async def test_output_stats_sql_json_contract() -> None:
         ) as mock_aggregate,
         patch("click.echo") as mock_echo,
     ):
+        mock_echo = cast(MagicMock, mock_echo)
         await output_stats_sql(env, filter_chain, repo, output_format="json")
 
-    env.ui.console.print.assert_not_called()
+    cast(MagicMock, env.ui.console.print).assert_not_called()
     repo.get_archive_stats.assert_awaited_once_with(conn=conn)
     mock_aggregate.assert_awaited_once_with(conn, None)
     conn.execute.assert_awaited_once_with("BEGIN")
@@ -1626,9 +1730,18 @@ class TestSearchQueryContracts:
         "case_id,args,expected_exit,error_hint",
         SEARCH_FILTER_CASES,
     )
-    def test_filter_contract(self, search_workspace, case_id, args, expected_exit, error_hint):
+    def test_filter_contract(
+        self,
+        search_workspace: SearchWorkspace,
+        case_id: str,
+        args: list[str],
+        expected_exit: int,
+        error_hint: str | None,
+    ) -> None:
         """Filter flags produce expected status codes and validation behavior."""
         from polylogue.cli import cli
+
+        del search_workspace
 
         runner = CliRunner()
         resolved_args = list(args)
@@ -1647,9 +1760,13 @@ class TestSearchQueryContracts:
         "case_id,args,expectation",
         SEARCH_FORMAT_CASES,
     )
-    def test_output_contract(self, search_workspace, case_id, args, expectation):
+    def test_output_contract(
+        self, search_workspace: SearchWorkspace, case_id: str, args: list[str], expectation: str
+    ) -> None:
         """Output format combinations produce parseable and mode-consistent output."""
         from polylogue.cli import cli
+
+        del search_workspace
 
         runner = CliRunner()
         result = runner.invoke(cli, ["--plain", *args])
@@ -1671,9 +1788,11 @@ class TestSearchQueryContracts:
 class TestSearchEdgeCases:
     """Tests for edge cases and error handling."""
 
-    def test_search_no_results(self, search_workspace):
+    def test_search_no_results(self, search_workspace: SearchWorkspace) -> None:
         """Handle query with no matching results."""
         from polylogue.cli import cli
+
+        del search_workspace
 
         runner = CliRunner()
         # Query mode with non-matching term
@@ -1682,7 +1801,7 @@ class TestSearchEdgeCases:
         assert result.exit_code == 2
         assert "no conversation" in result.output.lower() or "matched" in result.output.lower()
 
-    def test_stats_mode_no_filters(self, cli_workspace, monkeypatch):
+    def test_stats_mode_no_filters(self, cli_workspace: dict[str, Path], monkeypatch: pytest.MonkeyPatch) -> None:
         """Stats mode when no query terms or filters provided."""
         from polylogue.cli import cli
 
@@ -1694,9 +1813,11 @@ class TestSearchEdgeCases:
         assert result.exit_code == 0
         # Should show stats, not require query
 
-    def test_search_case_insensitive(self, search_workspace):
+    def test_search_case_insensitive(self, search_workspace: SearchWorkspace) -> None:
         """Search is case-insensitive."""
         from polylogue.cli import cli
+
+        del search_workspace
 
         runner = CliRunner()
         # Query mode with --list to ensure consistent output
@@ -1713,9 +1834,11 @@ class TestSearchEdgeCases:
             assert len(data_lower) > 0
             assert len(data_upper) > 0
 
-    def test_search_multiple_terms(self, search_workspace):
+    def test_search_multiple_terms(self, search_workspace: SearchWorkspace) -> None:
         """Search with multiple query terms."""
         from polylogue.cli import cli
+
+        del search_workspace
 
         runner = CliRunner()
         # Query mode: multiple positional args = multiple query terms
@@ -1729,7 +1852,9 @@ class TestSearchEdgeCases:
 class TestSearchIndexRebuild:
     """Tests for automatic index rebuild on missing index."""
 
-    def test_search_handles_missing_index(self, cli_workspace, monkeypatch):
+    def test_search_handles_missing_index(
+        self, cli_workspace: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Search handles missing index gracefully."""
         from polylogue.cli import cli
         from tests.infra.storage_records import DbFactory

@@ -18,8 +18,8 @@ Findings addressed:
 from __future__ import annotations
 
 import inspect
+from collections.abc import Callable, Coroutine
 from pathlib import Path
-from unittest.mock import MagicMock
 
 import pytest
 
@@ -28,7 +28,21 @@ from polylogue.rendering.renderers.html import HTMLRenderer
 from polylogue.rendering.renderers.markdown import MarkdownRenderer
 from polylogue.storage.search_providers.fts5 import FTS5Provider
 from polylogue.storage.search_providers.hybrid import HybridSearchProvider
+from polylogue.storage.store import MessageRecord
 from polylogue.ui.facade import ConsoleLike, PlainConsole
+from tests.infra.storage_records import make_conversation, make_message, upsert_conversation, upsert_message
+
+
+class _VectorStub:
+    model = "stub"
+
+    def upsert(self, conversation_id: str, messages: list[MessageRecord]) -> None:
+        del conversation_id, messages
+
+    def query(self, text: str, limit: int = 10) -> list[tuple[str, float]]:
+        del text, limit
+        return []
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -41,9 +55,7 @@ def _fts5(tmp_path: Path) -> FTS5Provider:
 
 def _hybrid(tmp_path: Path) -> HybridSearchProvider:
     fts5 = _fts5(tmp_path)
-    vector_mock: VectorProvider = MagicMock(spec=VectorProvider)
-    vector_mock.query.return_value = []
-    return HybridSearchProvider(fts_provider=fts5, vector_provider=vector_mock)
+    return HybridSearchProvider(fts_provider=fts5, vector_provider=_VectorStub())
 
 
 # ---------------------------------------------------------------------------
@@ -55,7 +67,7 @@ class TestSearchProviderConformance:
     """FTS5Provider and HybridSearchProvider must satisfy the SearchProvider protocol."""
 
     @pytest.mark.parametrize("factory", [_fts5, _hybrid], ids=["fts5", "hybrid"])
-    def test_isinstance(self, factory, tmp_path: Path) -> None:
+    def test_isinstance(self, factory: Callable[[Path], SearchProvider], tmp_path: Path) -> None:
         assert isinstance(factory(tmp_path), SearchProvider)
 
     def test_fts5_search_returns_list(self, tmp_path: Path) -> None:
@@ -120,7 +132,12 @@ class TestOutputRendererConformance:
         [(MarkdownRenderer, "markdown"), (HTMLRenderer, "html")],
         ids=["markdown", "html"],
     )
-    def test_isinstance(self, cls, expected_format, tmp_path: Path) -> None:
+    def test_isinstance(
+        self,
+        cls: type[MarkdownRenderer] | type[HTMLRenderer],
+        expected_format: str,
+        tmp_path: Path,
+    ) -> None:
         renderer = cls(archive_root=tmp_path)
         assert isinstance(renderer, OutputRenderer)
 
@@ -129,23 +146,30 @@ class TestOutputRendererConformance:
         [(MarkdownRenderer, "markdown"), (HTMLRenderer, "html")],
         ids=["markdown", "html"],
     )
-    def test_supports_format(self, cls, expected_format, tmp_path: Path) -> None:
+    def test_supports_format(
+        self,
+        cls: type[MarkdownRenderer] | type[HTMLRenderer],
+        expected_format: str,
+        tmp_path: Path,
+    ) -> None:
         assert cls(archive_root=tmp_path).supports_format() == expected_format
 
     @pytest.mark.parametrize("cls", [MarkdownRenderer, HTMLRenderer], ids=["markdown", "html"])
-    def test_render_returns_awaitable(self, cls, tmp_path: Path) -> None:
+    def test_render_returns_awaitable(self, cls: type[MarkdownRenderer] | type[HTMLRenderer], tmp_path: Path) -> None:
         """OutputRenderer.render() must return an awaitable when called."""
         renderer = cls(archive_root=tmp_path)
         result = renderer.render("test-conv", tmp_path)
         assert inspect.isawaitable(result)
-        result.close()
+        inspect_result = result
+        assert isinstance(inspect_result, Coroutine)
+        inspect_result.close()
 
     @pytest.mark.parametrize("cls", [MarkdownRenderer, HTMLRenderer], ids=["markdown", "html"])
-    async def test_render_produces_output(self, cls, tmp_path: Path) -> None:
+    async def test_render_produces_output(
+        self, cls: type[MarkdownRenderer] | type[HTMLRenderer], tmp_path: Path
+    ) -> None:
         """render() must write a non-empty output file for a seeded conversation."""
         from polylogue.storage.backends.connection import open_connection
-        from polylogue.storage.store import ConversationRecord, MessageRecord
-        from tests.infra.storage_records import upsert_conversation, upsert_message
 
         db_path = tmp_path / "test.db"
         conv_id = "smoke-conv-0001"
@@ -153,7 +177,7 @@ class TestOutputRendererConformance:
         with open_connection(db_path) as conn:
             upsert_conversation(
                 conn,
-                ConversationRecord(
+                make_conversation(
                     conversation_id=conv_id,
                     provider_name="chatgpt",
                     provider_conversation_id=conv_id,
@@ -163,7 +187,7 @@ class TestOutputRendererConformance:
             )
             upsert_message(
                 conn,
-                MessageRecord(
+                make_message(
                     message_id="smoke-msg-001",
                     conversation_id=conv_id,
                     role="user",
@@ -173,7 +197,7 @@ class TestOutputRendererConformance:
             )
             upsert_message(
                 conn,
-                MessageRecord(
+                make_message(
                     message_id="smoke-msg-002",
                     conversation_id=conv_id,
                     role="assistant",
@@ -189,9 +213,9 @@ class TestOutputRendererConformance:
         backend = SQLiteBackend(db_path=db_path)
 
         if cls is HTMLRenderer:
-            renderer = cls(archive_root=output_dir, backend=backend)
+            renderer: OutputRenderer = HTMLRenderer(archive_root=output_dir, backend=backend)
         else:
-            renderer = cls(archive_root=output_dir)
+            renderer = MarkdownRenderer(archive_root=output_dir)
             renderer.formatter.db_path = db_path
 
         result_path = await renderer.render(conv_id, output_dir)
@@ -262,7 +286,7 @@ class TestParserModuleInterface:
         import polylogue.sources.parsers.codex as codex
         import polylogue.sources.parsers.drive as drive
 
-        parse_functions = [
+        parse_functions: list[Callable[..., object]] = [
             chatgpt.parse,
             codex.parse,
             claude.parse_code,
@@ -282,7 +306,7 @@ class TestParserModuleInterface:
         import polylogue.sources.parsers.drive as drive
         from polylogue.sources.parsers.base import ParsedConversation
 
-        cases = [
+        cases: list[tuple[Callable[..., ParsedConversation], tuple[object, ...]]] = [
             (chatgpt.parse, ({"mapping": {}}, "fallback-id")),
             (codex.parse, ([], "fallback-id")),
             (claude.parse_code, ([], "fallback-id")),

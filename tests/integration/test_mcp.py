@@ -4,14 +4,15 @@ from __future__ import annotations
 
 import asyncio
 import json
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.repository import ConversationRepository
-from polylogue.storage.store import ConversationRecord, MessageRecord
 from tests.infra.mcp import invoke_surface, invoke_surface_async
+from tests.infra.storage_records import make_conversation, make_message
 
 
 async def _insert_conversation(
@@ -22,19 +23,18 @@ async def _insert_conversation(
     provider_conversation_id: str,
     text: str,
 ) -> None:
-    conversation = ConversationRecord(
+    conversation = make_conversation(
         conversation_id=conversation_id,
         provider_name=provider,
         provider_conversation_id=provider_conversation_id,
         title=f"{provider} conversation",
-        content_hash=f"hash-{conversation_id}",
     )
-    message = MessageRecord(
+    message = make_message(
         message_id=f"{conversation_id}:m1",
         conversation_id=conversation_id,
         role="user",
         text=text,
-        content_hash=f"hash-{conversation_id}:m1",
+        provider_name=provider,
     )
     await repo.save_conversation(conversation, [message], [])
 
@@ -43,7 +43,7 @@ class TestMCPRealRepositoryPaths:
     """Exercise MCP server tools against a real temporary repository."""
 
     @pytest.mark.asyncio
-    async def test_search_uses_real_repository_and_filter_stack(self, tmp_path):
+    async def test_search_uses_real_repository_and_filter_stack(self, tmp_path: Path) -> None:
         from polylogue.mcp.server import build_server
 
         backend = SQLiteBackend(db_path=tmp_path / "mcp-search.db")
@@ -77,7 +77,7 @@ class TestMCPRealRepositoryPaths:
             await backend.close()
 
     @pytest.mark.asyncio
-    async def test_list_applies_provider_filter_on_real_repository(self, tmp_path):
+    async def test_list_applies_provider_filter_on_real_repository(self, tmp_path: Path) -> None:
         from polylogue.mcp.server import build_server
 
         backend = SQLiteBackend(db_path=tmp_path / "mcp-list.db")
@@ -115,7 +115,7 @@ class TestMCPRealRepositoryPaths:
             await backend.close()
 
     @pytest.mark.asyncio
-    async def test_list_with_invalid_limit_clamps_on_real_repository(self, tmp_path):
+    async def test_list_with_invalid_limit_clamps_on_real_repository(self, tmp_path: Path) -> None:
         from polylogue.mcp.server import build_server
 
         backend = SQLiteBackend(db_path=tmp_path / "mcp-invalid-limit.db")
@@ -147,7 +147,7 @@ class TestMCPRealRepositoryPaths:
         finally:
             await backend.close()
 
-    def test_add_list_remove_tag_roundtrip(self, tmp_path):
+    def test_add_list_remove_tag_roundtrip(self, tmp_path: Path) -> None:
         from polylogue.mcp.server import build_server
 
         backend = SQLiteBackend(db_path=tmp_path / "mcp-mutations-real.db")

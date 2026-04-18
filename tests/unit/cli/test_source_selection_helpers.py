@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Iterable
 from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
+from typing import TypedDict, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import click
@@ -15,6 +17,7 @@ from polylogue.cli import helpers
 from polylogue.cli.types import AppEnv
 from polylogue.config import Config, Source
 from polylogue.services import build_runtime_services
+from polylogue.ui import UI
 
 
 @pytest.fixture
@@ -130,11 +133,12 @@ def test_complete_run_source_names_includes_last(tmp_path: Path) -> None:
     config = _config_with_sources(tmp_path, ["chatgpt", "claude-ai"])
     ctx = click.Context(click.Command("run"))
     ctx.obj = SimpleNamespace(config=config)
+    param = click.Option(["--source"])
 
-    items = helpers.complete_run_source_names(ctx, ctx.command.params[0] if ctx.command.params else None, "cl")
+    items = helpers.complete_run_source_names(ctx, param, "cl")
 
     assert [item.value for item in items] == ["claude-ai"]
-    all_items = helpers.complete_run_source_names(ctx, ctx.command.params[0] if ctx.command.params else None, "")
+    all_items = helpers.complete_run_source_names(ctx, param, "")
     assert [item.value for item in all_items] == ["last", "chatgpt", "claude-ai"]
 
 
@@ -142,8 +146,9 @@ def test_complete_configured_source_names_excludes_last(tmp_path: Path) -> None:
     config = _config_with_sources(tmp_path, ["chatgpt", "claude-ai"])
     ctx = click.Context(click.Command("qa"))
     ctx.obj = SimpleNamespace(config=config)
+    param = click.Option(["--source"])
 
-    items = helpers.complete_configured_source_names(ctx, ctx.command.params[0] if ctx.command.params else None, "")
+    items = helpers.complete_configured_source_names(ctx, param, "")
 
     assert [item.value for item in items] == ["chatgpt", "claude-ai"]
 
@@ -281,7 +286,7 @@ def test_latest_render_path_contract(tmp_path: Path, case_id: str) -> None:
         expected.write_text("# Existing", encoding="utf-8")
         original_rglob = Path.rglob
 
-        def fake_rglob(self: Path, pattern: str):
+        def fake_rglob(self: Path, pattern: str) -> Iterable[Path]:
             if self == render_root and pattern in {"conversation.md", "conversation.html"}:
                 missing = render_root / "deleted" / pattern
                 return list(original_rglob(self, pattern)) + [missing]
@@ -308,25 +313,33 @@ def config() -> Config:
     )
 
 
-def _make_env(config: Config, *, plain: bool) -> tuple[AppEnv, StringIO]:
+class SummaryRunResult(TypedDict):
+    title: str
+    lines: list[str]
+    console: str
+    mock_quick: MagicMock
+    mock_get_health: MagicMock
+
+
+def _make_env(config: Config, *, plain: bool) -> tuple[AppEnv, StringIO, MagicMock]:
     from rich.console import Console
 
     buffer = StringIO()
     ui = MagicMock()
     ui.plain = plain
     ui.console = Console(file=buffer, width=120, force_terminal=False, color_system=None)
-    env = AppEnv(ui=ui, services=build_runtime_services(config=config, backend=MagicMock()))
-    return env, buffer
+    env = AppEnv(ui=cast(UI, ui), services=build_runtime_services(config=config, backend=MagicMock()))
+    return env, buffer, ui
 
 
-def _health_report(*, source="live", checks=None):
+def _health_report(*, source: str = "live", checks: list[SimpleNamespace] | None = None) -> SimpleNamespace:
     return SimpleNamespace(
         provenance=SimpleNamespace(source=source),
         checks=checks or [],
     )
 
 
-def _check(name: str, status: str, detail: str):
+def _check(name: str, status: str, detail: str) -> SimpleNamespace:
     return SimpleNamespace(name=name, status=status, detail=detail)
 
 
@@ -341,7 +354,7 @@ def _metric(
     tool_use_percentage: float = 0.0,
     thinking_count: int = 0,
     thinking_percentage: float = 0.0,
-):
+) -> SimpleNamespace:
     return SimpleNamespace(
         provider_name=provider_name,
         conversation_count=conversation_count,
@@ -361,17 +374,17 @@ def _run_summary(
     *,
     verbose: bool,
     plain: bool,
-    last_run=None,
+    last_run: object | None = None,
     quick_health: str = "OK",
-    health=None,
-    counts=None,
-    metrics=None,
-    archive_stats=None,
+    health: SimpleNamespace | None = None,
+    counts: list[tuple[str, int]] | None = None,
+    metrics: list[SimpleNamespace] | None = None,
+    archive_stats: SimpleNamespace | None = None,
     analytics_error: Exception | None = None,
-):
+) -> SummaryRunResult:
     from polylogue.cli.helpers import print_summary
 
-    env, buffer = _make_env(config, plain=plain)
+    env, buffer, ui = _make_env(config, plain=plain)
     total_conversations = sum(count for _, count in counts or [])
     if archive_stats is None:
         archive_stats = SimpleNamespace(
@@ -383,33 +396,26 @@ def _run_summary(
             messages_missing_embedding_provenance=0,
             embedding_coverage=0.0,
         )
-    env.repository.get_archive_stats = AsyncMock(return_value=archive_stats)
-    analytics_patches = {
-        "polylogue.cli.helpers.list_provider_analytics_products": AsyncMock(return_value=metrics),
-        "polylogue.cli.helpers.get_provider_counts": AsyncMock(return_value=counts),
-    }
+    metrics_mock = AsyncMock(return_value=metrics)
+    counts_mock = AsyncMock(return_value=counts)
     if analytics_error is not None:
-        analytics_patches["polylogue.cli.helpers.list_provider_analytics_products"] = AsyncMock(
-            side_effect=analytics_error
-        )
-        analytics_patches["polylogue.cli.helpers.get_provider_counts"] = AsyncMock(side_effect=analytics_error)
+        metrics_mock = AsyncMock(side_effect=analytics_error)
+        counts_mock = AsyncMock(side_effect=analytics_error)
 
     with (
+        patch.object(env.repository, "get_archive_stats", new=AsyncMock(return_value=archive_stats)),
         patch("polylogue.cli.helpers.latest_run", new_callable=AsyncMock, return_value=last_run),
         patch("polylogue.cli.helpers.quick_health_summary", return_value=quick_health) as mock_quick,
         patch("polylogue.cli.helpers.get_health", return_value=health) as mock_get_health,
         patch("polylogue.cli.helpers.format_sources_summary", return_value="inbox"),
-        patch(
-            "polylogue.cli.helpers.list_provider_analytics_products",
-            analytics_patches["polylogue.cli.helpers.list_provider_analytics_products"],
-        ),
-        patch(
-            "polylogue.cli.helpers.get_provider_counts", analytics_patches["polylogue.cli.helpers.get_provider_counts"]
-        ),
+        patch("polylogue.cli.helpers.list_provider_analytics_products", metrics_mock),
+        patch("polylogue.cli.helpers.get_provider_counts", counts_mock),
     ):
         print_summary(env, verbose=verbose)
 
-    title, lines = env.ui.summary.call_args.args
+    summary_mock = cast(MagicMock, ui.summary)
+    title = cast(str, summary_mock.call_args.args[0])
+    lines = cast(list[str], summary_mock.call_args.args[1])
     return {
         "title": title,
         "lines": lines,
