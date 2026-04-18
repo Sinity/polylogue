@@ -7,6 +7,8 @@ Conversation. Example-heavy semantic projections live in
 
 from __future__ import annotations
 
+from typing import Any
+
 from hypothesis import given
 
 from polylogue.lib.roles import Role
@@ -14,102 +16,102 @@ from tests.infra.strategies.messages import conversation_model_strategy, message
 
 
 @given(message_model_strategy())
-def test_message_role_is_typed_enum(msg) -> None:
+def test_message_role_is_typed_enum(msg: Any) -> None:
     assert isinstance(msg.role, Role)
 
 
 @given(message_model_strategy())
-def test_word_count_matches_text_split(msg) -> None:
+def test_word_count_matches_text_split(msg: Any) -> None:
     assert msg.word_count == len((msg.text or "").split())
 
 
 @given(message_model_strategy())
-def test_noise_and_substantive_mutually_exclusive(msg) -> None:
+def test_noise_and_substantive_mutually_exclusive(msg: Any) -> None:
     assert not (msg.is_noise and msg.is_substantive)
 
 
 @given(message_model_strategy())
-def test_thinking_and_substantive_mutually_exclusive(msg) -> None:
+def test_thinking_and_substantive_mutually_exclusive(msg: Any) -> None:
     assert not (msg.is_thinking and msg.is_substantive)
 
 
 @given(message_model_strategy())
-def test_tool_use_implies_noise(msg) -> None:
+def test_tool_use_implies_noise(msg: Any) -> None:
     if msg.is_tool_use:
         assert msg.is_noise
 
 
 @given(message_model_strategy())
-def test_context_dump_implies_noise(msg) -> None:
+def test_context_dump_implies_noise(msg: Any) -> None:
     if msg.is_context_dump:
         assert msg.is_noise
 
 
 @given(message_model_strategy())
-def test_substantive_implies_dialogue(msg) -> None:
+def test_substantive_implies_dialogue(msg: Any) -> None:
     if msg.is_substantive:
         assert msg.is_dialogue
 
 
 @given(message_model_strategy())
-def test_dialogue_implies_user_or_assistant(msg) -> None:
+def test_dialogue_implies_user_or_assistant(msg: Any) -> None:
     if msg.is_dialogue:
         assert msg.is_user or msg.is_assistant
 
 
 @given(conversation_model_strategy())
-def test_without_noise_removes_all_noise(conv) -> None:
+def test_without_noise_removes_all_noise(conv: Any) -> None:
     clean = conv.without_noise()
     assert all(not msg.is_noise for msg in clean.messages)
 
 
 @given(conversation_model_strategy())
-def test_substantive_only_all_substantive(conv) -> None:
+def test_substantive_only_all_substantive(conv: Any) -> None:
     filtered = conv.substantive_only()
     assert all(msg.is_substantive for msg in filtered.messages)
 
 
 @given(conversation_model_strategy())
-def test_without_noise_preserves_non_noise_count(conv) -> None:
+def test_without_noise_preserves_non_noise_count(conv: Any) -> None:
     expected_ids = [msg.id for msg in conv.messages if not msg.is_noise]
     clean = conv.without_noise()
     assert [msg.id for msg in clean.messages] == expected_ids
 
 
 @given(conversation_model_strategy())
-def test_substantive_only_preserves_count(conv) -> None:
+def test_substantive_only_preserves_count(conv: Any) -> None:
     expected_ids = [msg.id for msg in conv.messages if msg.is_substantive]
     filtered = conv.substantive_only()
     assert [msg.id for msg in filtered.messages] == expected_ids
 
 
 @given(conversation_model_strategy())
-def test_user_only_preserves_count(conv) -> None:
+def test_user_only_preserves_count(conv: Any) -> None:
     expected_ids = [msg.id for msg in conv.messages if msg.is_user]
     filtered = conv.user_only()
     assert [msg.id for msg in filtered.messages] == expected_ids
 
 
 @given(conversation_model_strategy())
-def test_without_noise_idempotent(conv) -> None:
+def test_without_noise_idempotent(conv: Any) -> None:
     once = conv.without_noise()
     twice = once.without_noise()
     assert [msg.id for msg in once.messages] == [msg.id for msg in twice.messages]
 
 
 @given(message_model_strategy())
-def test_extract_thinking_never_empty_string(msg) -> None:
+def test_extract_thinking_never_empty_string(msg: Any) -> None:
     result = msg.extract_thinking()
     assert result is None or (isinstance(result, str) and len(result.strip()) > 0)
 
 
 @given(message_model_strategy())
-def test_cost_usd_none_or_positive(msg) -> None:
+def test_cost_usd_none_or_positive(msg: Any) -> None:
     if msg.cost_usd is not None:
         assert msg.cost_usd > 0
 
 
 @given(message_model_strategy())
-def test_duration_ms_none_or_positive(msg) -> None:
+def test_duration_ms_none_or_positive(msg: Any) -> None:
     if msg.duration_ms is not None:
         assert msg.duration_ms > 0

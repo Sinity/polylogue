@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from types import SimpleNamespace
+from types import TracebackType
+from typing import Literal
+
+from pytest import MonkeyPatch
 
 from devtools.benchmark_campaign import (
     BenchmarkStat,
@@ -19,7 +22,14 @@ from devtools.benchmark_scenario_catalog import (
     BENCHMARK_SCENARIOS,
     compile_benchmark_campaigns,
 )
-from polylogue.scenarios import AssertionSpec, ExecutionKind, ScenarioProjectionSourceKind, pytest_execution
+from polylogue.scenarios import (
+    AssertionSpec,
+    ExecutionKind,
+    ExecutionResult,
+    ExecutionSpec,
+    ScenarioProjectionSourceKind,
+    pytest_execution,
+)
 
 
 def test_compare_results_orders_regressions_by_worst_delta() -> None:
@@ -104,7 +114,7 @@ def test_compare_artifacts_fails_when_threshold_is_exceeded(tmp_path: Path) -> N
     assert compare_artifacts(baseline_path, candidate_path, 20.0) == 1
 
 
-def test_render_index_lists_saved_artifacts(tmp_path: Path, monkeypatch) -> None:
+def test_render_index_lists_saved_artifacts(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
     artifact_dir = tmp_path / ".local" / "benchmark-campaigns"
     artifact_dir.mkdir(parents=True)
     result = CampaignResult(
@@ -230,7 +240,10 @@ def test_benchmark_entry_compiles_its_own_projection_entry() -> None:
     assert projection.operation_targets == ("project-archive-health", "health.startup.synthetic")
 
 
-def test_run_campaign_executes_authored_pytest_through_shared_runtime(tmp_path: Path, monkeypatch) -> None:
+def test_run_campaign_executes_authored_pytest_through_shared_runtime(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
     class _TmpDir:
         def __init__(self, path: Path) -> None:
             self.path = path
@@ -239,10 +252,16 @@ def test_run_campaign_executes_authored_pytest_through_shared_runtime(tmp_path: 
             self.path.mkdir(parents=True, exist_ok=True)
             return str(self.path)
 
-        def __exit__(self, exc_type, exc, tb) -> bool:
+        def __exit__(
+            self,
+            exc_type: type[BaseException] | None,
+            exc: BaseException | None,
+            tb: TracebackType | None,
+        ) -> Literal[False]:
             return False
 
-    captured: dict[str, object] = {}
+    captured_execution: ExecutionSpec | None = None
+    captured_cwd: Path | None = None
     artifact_json = tmp_path / "candidate.json"
     artifact_md = tmp_path / "candidate.md"
     benchmark_dir = tmp_path / "bench-tmp"
@@ -255,9 +274,10 @@ def test_run_campaign_executes_authored_pytest_through_shared_runtime(tmp_path: 
         lambda prefix: _TmpDir(benchmark_dir),
     )
 
-    def fake_run_execution(execution, *, cwd):
-        captured["execution"] = execution
-        captured["cwd"] = cwd
+    def fake_run_execution(execution: ExecutionSpec, *, cwd: Path | None) -> ExecutionResult:
+        nonlocal captured_execution, captured_cwd
+        captured_execution = execution
+        captured_cwd = cwd
         benchmark_json_flag = next(
             target for target in execution.pytest_targets if target.startswith("--benchmark-json=")
         )
@@ -284,7 +304,11 @@ def test_run_campaign_executes_authored_pytest_through_shared_runtime(tmp_path: 
             ),
             encoding="utf-8",
         )
-        return SimpleNamespace(command=("pytest", *execution.pytest_targets), exit_code=0)
+        return ExecutionResult(
+            execution=execution,
+            command=("pytest", *execution.pytest_targets),
+            exit_code=0,
+        )
 
     monkeypatch.setattr("devtools.benchmark_campaign.run_execution", fake_run_execution)
 
@@ -305,10 +329,11 @@ def test_run_campaign_executes_authored_pytest_through_shared_runtime(tmp_path: 
         fail_pct=None,
     )
 
-    assert captured["cwd"] == tmp_path
-    assert captured["execution"].kind is ExecutionKind.PYTEST
-    assert "--benchmark-enable" in captured["execution"].pytest_targets
-    assert "tests/benchmarks/test_search_filters.py" in captured["execution"].pytest_targets
+    assert captured_cwd == tmp_path
+    assert captured_execution is not None
+    assert captured_execution.kind is ExecutionKind.PYTEST
+    assert "--benchmark-enable" in captured_execution.pytest_targets
+    assert "tests/benchmarks/test_search_filters.py" in captured_execution.pytest_targets
     assert result.exit_code == 0
     assert result.warn_pct == 10.0
     assert result.fail_pct == 20.0

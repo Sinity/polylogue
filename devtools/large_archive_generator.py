@@ -342,7 +342,7 @@ async def generate_archive(
                             provider_name=provider,
                             source_name=provider,
                             source_path=str(file_path),
-                            raw_content=raw_bytes,
+                            blob_size=len(raw_bytes),
                             acquired_at=datetime.now(timezone.utc).isoformat(),
                         )
                         await backend.save_raw_conversation(raw_record)

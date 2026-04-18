@@ -10,15 +10,12 @@ fetching of conversations, messages, and attachments together.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
-from polylogue.protocols import ConversationReader, SearchStore, TagStore
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
 
 if TYPE_CHECKING:
     from pathlib import Path
-
-    from polylogue.storage.backends.query_store import SQLiteQueryStore
 
 from polylogue.storage.repository_action_reads import RepositoryActionReadMixin
 from polylogue.storage.repository_archive_reads import RepositoryArchiveReadMixin
@@ -49,9 +46,6 @@ class ConversationRepository(
     RepositoryRawMixin,
     RepositoryWriteMixin,
     RepositoryVectorMixin,
-    ConversationReader,
-    SearchStore,
-    TagStore,
 ):
     """Async repository for conversation storage operations.
 
@@ -83,10 +77,9 @@ class ConversationRepository(
             backend: Optional SQLiteBackend instance. If provided, db_path is ignored.
             db_path: Optional path to database file. Used if backend is None.
         """
-        if backend is not None:
-            self._backend = backend
-        else:
-            self._backend = SQLiteBackend(db_path=db_path)
+        active_backend = backend if backend is not None else SQLiteBackend(db_path=db_path)
+        self._backend = active_backend
+        self.queries = active_backend.queries
 
     async def __aenter__(self) -> ConversationRepository:
         """Enter async context manager."""
@@ -99,12 +92,7 @@ class ConversationRepository(
     @property
     def backend(self) -> SQLiteBackend:
         """Access the underlying async storage backend."""
-        return self._backend
-
-    @property
-    def queries(self) -> SQLiteQueryStore:
-        """Access the canonical low-level query surface."""
-        return self._backend.queries
+        return cast(SQLiteBackend, self._backend)
 
     async def close(self) -> None:
         """Close database connections and release resources."""

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -48,7 +49,7 @@ def _each_line_valid_json(output: str, _exit_code: int) -> str | None:
     return None
 
 
-def _json_only_fields(*allowed: str):
+def _json_only_fields(*allowed: str) -> Callable[[str, int], str | None]:
     """Validate JSON array entries contain only the specified keys."""
     allowed_set = set(allowed)
 
@@ -68,6 +69,30 @@ def _json_only_fields(*allowed: str):
         return None
 
     return check
+
+
+def _payload_str_sequence(value: object) -> tuple[str, ...]:
+    if isinstance(value, list):
+        return tuple(str(item) for item in value)
+    return ()
+
+
+def _payload_int(value: object, default: int) -> int:
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        return int(value)
+    return default
+
+
+def _payload_float(value: object, default: float) -> float:
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value)
+    if isinstance(value, str):
+        return float(value)
+    return default
 
 
 def _search_exit_ok(_output: str, exit_code: int) -> str | None:
@@ -91,11 +116,10 @@ class ExerciseCatalog:
     exercises: tuple[Exercise, ...]
 
 
-def _load_custom_validator(payload: dict[str, object]):
+def _load_custom_validator(payload: dict[str, object]) -> Callable[[str, int], str | None]:
     kind = str(payload["kind"])
     if kind == "json_only_fields":
-        allowed = payload.get("allowed") or ()
-        return _json_only_fields(*[str(item) for item in allowed])
+        return _json_only_fields(*_payload_str_sequence(payload.get("allowed")))
     validator = _CUSTOM_VALIDATORS.get(kind)
     if validator is None:
         raise ValueError(f"Unsupported showcase custom validator: {kind}")
@@ -110,11 +134,13 @@ def _load_assertion(payload: dict[str, object] | None) -> AssertionSpec:
     if isinstance(custom_payload, dict):
         custom = _load_custom_validator(custom_payload)
     return AssertionSpec(
-        exit_code=payload.get("exit_code", 0),  # type: ignore[arg-type]
-        stdout_contains=tuple(str(item) for item in payload.get("stdout_contains", ())),
-        stdout_not_contains=tuple(str(item) for item in payload.get("stdout_not_contains", ())),
+        exit_code=_payload_int(payload.get("exit_code"), 0),
+        stdout_contains=_payload_str_sequence(payload.get("stdout_contains")),
+        stdout_not_contains=_payload_str_sequence(payload.get("stdout_not_contains")),
         stdout_is_valid_json=bool(payload.get("stdout_is_valid_json", False)),
-        stdout_min_lines=int(payload["stdout_min_lines"]) if payload.get("stdout_min_lines") is not None else None,
+        stdout_min_lines=_payload_int(payload.get("stdout_min_lines"), 0)
+        if payload.get("stdout_min_lines") is not None
+        else None,
         custom=custom,
     )
 
@@ -125,28 +151,29 @@ def _load_exercise(payload: dict[str, object]) -> Exercise:
     if not isinstance(execution_payload, dict):
         raise ValueError("Serialized showcase exercises must declare execution payloads")
     corpus_payloads = payload.get("corpus_specs")
-    corpus_specs = ()
+    corpus_specs: tuple[CorpusSpec, ...] = ()
     if isinstance(corpus_payloads, list):
         corpus_specs = tuple(
             CorpusSpec.from_payload(spec_payload) for spec_payload in corpus_payloads if isinstance(spec_payload, dict)
         )
+    assertion_payload = payload.get("assertion")
     return Exercise(
         name=str(payload["name"]),
         group=str(payload["group"]),
         description=str(payload["description"]),
         execution=ExecutionSpec.from_payload(execution_payload),
         corpus_specs=corpus_specs,
-        assertion=_load_assertion(payload.get("assertion") if isinstance(payload.get("assertion"), dict) else None),
+        assertion=_load_assertion(assertion_payload if isinstance(assertion_payload, dict) else None),
         needs_data=bool(payload.get("needs_data", False)),
         writes=bool(payload.get("writes", False)),
         depends_on=str(payload["depends_on"]) if payload.get("depends_on") is not None else None,
         output_ext=str(payload.get("output_ext", ".txt")),
-        tier=int(payload.get("tier", 1)),
+        tier=_payload_int(payload.get("tier"), 1),
         env=str(payload.get("env", "any")),
-        timeout_s=float(payload.get("timeout_s", 120.0)),
+        timeout_s=_payload_float(payload.get("timeout_s"), 120.0),
         vhs_capture=bool(payload.get("vhs_capture", False)),
         artifact_class=str(payload.get("artifact_class", "text")),
-        capture_steps=tuple(str(item) for item in payload.get("capture_steps", ())),
+        capture_steps=_payload_str_sequence(payload.get("capture_steps")),
         origin=metadata.origin,
         path_targets=metadata.path_targets,
         artifact_targets=metadata.artifact_targets,

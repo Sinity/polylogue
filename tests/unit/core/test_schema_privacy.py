@@ -11,6 +11,8 @@ Tests are grouped by guard type so failures pinpoint which heuristic regressed.
 
 from __future__ import annotations
 
+from typing import Any, cast
+
 import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
@@ -209,7 +211,7 @@ class TestCrossConversationThreshold:
         values_by_conv: dict[str, list[str]],
         *,
         min_conversation_count: int = 3,
-    ) -> dict:
+    ) -> dict[str, Any]:
         """Build schema annotations from samples grouped by conversation ID."""
         samples = []
         conv_ids = []
@@ -221,12 +223,12 @@ class TestCrossConversationThreshold:
         # _collect_field_stats expects flat dicts with the actual field as a key
         # Use a simple structure: {"status": value}
         flat_samples = [{"status": v} for v in [v for vals in values_by_conv.values() for v in vals]]
-        flat_conv_ids = [cid for cid, vals in values_by_conv.items() for _ in vals]
+        flat_conv_ids: list[str | None] = [cid for cid, vals in values_by_conv.items() for _ in vals]
 
         stats = _collect_field_stats(flat_samples, conversation_ids=flat_conv_ids)
-        schema = {"type": "object", "properties": {"status": {"type": "string"}}}
+        schema: dict[str, Any] = {"type": "object", "properties": {"status": {"type": "string"}}}
         annotated = _annotate_schema(schema, stats, min_conversation_count=min_conversation_count)
-        return annotated.get("properties", {}).get("status", {})
+        return cast(dict[str, Any], annotated.get("properties", {}).get("status", {}))
 
     def test_value_in_one_conv_excluded_at_threshold_3(self) -> None:
         """A value seen in only 1 conversation is excluded when threshold=3."""

@@ -7,11 +7,12 @@ and concurrent access patterns.
 from __future__ import annotations
 
 import json
+from typing import Any
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from polylogue.mcp.server import _clamp_limit, _safe_call
+from polylogue.mcp.server_support import _clamp_limit, _safe_call
 
 # =============================================================================
 # _clamp_limit boundary tests
@@ -57,7 +58,7 @@ class TestSafeCall:
         assert '"ok"' in result
 
     def test_exception_returns_json_error(self) -> None:
-        def failing():
+        def failing() -> None:
             raise RuntimeError("DB connection lost")
 
         result = _safe_call("test_tool", failing)
@@ -67,7 +68,7 @@ class TestSafeCall:
         assert data["tool"] == "test_tool"
 
     def test_traceback_not_in_output(self) -> None:
-        def failing():
+        def failing() -> None:
             raise ValueError("secret internal path /home/user/.db")
 
         result = _safe_call("test_tool", failing)
@@ -80,7 +81,7 @@ class TestSafeCall:
 # =============================================================================
 
 
-def _invoke_tool(mcp_server, tool_name: str, **kwargs):
+def _invoke_tool(mcp_server: Any, tool_name: str, **kwargs: object) -> Any:
     """Invoke a registered MCP tool by name, matching the existing test pattern."""
     tool = mcp_server._tool_manager._tools[tool_name]
     return tool.fn(**kwargs)
@@ -88,7 +89,7 @@ def _invoke_tool(mcp_server, tool_name: str, **kwargs):
 
 class TestUnicodeHandling:
     @pytest.mark.asyncio
-    async def test_unicode_tag(self, mcp_server) -> None:
+    async def test_unicode_tag(self, mcp_server: Any) -> None:
         """Unicode characters in tag names don't crash the server."""
         from tests.infra.mcp import make_repo_mock
 
@@ -108,7 +109,7 @@ class TestUnicodeHandling:
                 assert isinstance(result, str)
 
     @pytest.mark.asyncio
-    async def test_empty_query(self, mcp_server) -> None:
+    async def test_empty_query(self, mcp_server: Any) -> None:
         """Empty query string doesn't crash search."""
         from tests.infra.mcp import make_mock_filter, make_repo_mock
 
@@ -137,7 +138,7 @@ class TestUnicodeHandling:
 
 class TestBoundaryParameters:
     @pytest.mark.asyncio
-    async def test_limit_zero(self, mcp_server) -> None:
+    async def test_limit_zero(self, mcp_server: Any) -> None:
         """limit=0 is clamped to 1 (returns minimal results)."""
         from tests.infra.mcp import make_mock_filter, make_repo_mock
 
@@ -158,7 +159,7 @@ class TestBoundaryParameters:
             assert isinstance(result, str)
 
     @pytest.mark.asyncio
-    async def test_limit_negative(self, mcp_server) -> None:
+    async def test_limit_negative(self, mcp_server: Any) -> None:
         """Negative limit is clamped to 1."""
         from tests.infra.mcp import make_mock_filter, make_repo_mock
 

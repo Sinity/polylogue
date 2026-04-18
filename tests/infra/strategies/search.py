@@ -6,11 +6,22 @@ unicode handling, operator injection, and ranking edge cases.
 
 from __future__ import annotations
 
+from typing import Literal, cast
+
 from hypothesis import strategies as st
 
 from tests.infra.adversarial_cases import FTS5_OPERATORS, SQL_INJECTION_PAYLOADS
 
 # See also: adversarial.fts5_operator_strategy() which draws from the same FTS5_OPERATORS
+
+_LETTER_NUMBER_CATEGORIES: tuple[Literal["L"], Literal["N"]] = ("L", "N")
+_LETTER_NUMBER_PUNCT_SPACE_CATEGORIES: tuple[Literal["L"], Literal["N"], Literal["P"], Literal["Z"]] = (
+    "L",
+    "N",
+    "P",
+    "Z",
+)
+_LETTER_ONLY_CATEGORIES: tuple[Literal["L"]] = ("L",)
 
 # =============================================================================
 # Search Query Strategies
@@ -29,46 +40,45 @@ def search_query_strategy(draw: st.DrawFn) -> str:
     - SQL injection payloads
     - Empty/whitespace
     """
-    return draw(
-        st.one_of(
-            # Simple terms
-            st.text(
-                min_size=1,
-                max_size=50,
-                alphabet=st.characters(whitelist_categories=("L", "N")),
-            ),
-            # FTS5 operators as literals
-            st.sampled_from(FTS5_OPERATORS),
-            # SQL injection payloads
-            st.sampled_from(SQL_INJECTION_PAYLOADS),
-            # Unicode text
-            st.text(min_size=1, max_size=30),
-            # Quoted strings with internal quotes
-            st.builds(
-                lambda t: f'"{t}"',
+    return cast(
+        str,
+        draw(
+            st.one_of(
+                # Simple terms
                 st.text(
                     min_size=1,
-                    max_size=20,
-                    alphabet=st.characters(
-                        whitelist_categories=("L", "N", "P", "Z"),
+                    max_size=50,
+                    alphabet=st.characters(whitelist_categories=_LETTER_NUMBER_CATEGORIES),
+                ),
+                # FTS5 operators as literals
+                st.sampled_from(FTS5_OPERATORS),
+                # SQL injection payloads
+                st.sampled_from(SQL_INJECTION_PAYLOADS),
+                # Unicode text
+                st.text(min_size=1, max_size=30),
+                # Quoted strings with internal quotes
+                st.builds(
+                    lambda t: f'"{t}"',
+                    st.text(
+                        min_size=1,
+                        max_size=20,
+                        alphabet=st.characters(whitelist_categories=_LETTER_NUMBER_PUNCT_SPACE_CATEGORIES),
                     ),
                 ),
-            ),
-            # Operator-prefix patterns (e.g. "NOT foo", "NEAR bar")
-            st.builds(
-                lambda op, term: f"{op} {term}",
-                st.sampled_from(["NOT", "NEAR", "AND", "OR"]),
-                st.text(
-                    min_size=1,
-                    max_size=20,
-                    alphabet=st.characters(
-                        whitelist_categories=("L", "N"),
+                # Operator-prefix patterns (e.g. "NOT foo", "NEAR bar")
+                st.builds(
+                    lambda op, term: f"{op} {term}",
+                    st.sampled_from(["NOT", "NEAR", "AND", "OR"]),
+                    st.text(
+                        min_size=1,
+                        max_size=20,
+                        alphabet=st.characters(whitelist_categories=_LETTER_NUMBER_CATEGORIES),
                     ),
                 ),
-            ),
-            # Empty and whitespace
-            st.sampled_from(["", " ", "  \t  ", "\n"]),
-        )
+                # Empty and whitespace
+                st.sampled_from(["", " ", "  \t  ", "\n"]),
+            )
+        ),
     )
 
 
@@ -84,7 +94,7 @@ def fts5_match_text_strategy(draw: st.DrawFn) -> str:
             st.text(
                 min_size=2,
                 max_size=15,
-                alphabet=st.characters(whitelist_categories=("L",)),
+                alphabet=st.characters(whitelist_categories=_LETTER_ONLY_CATEGORIES),
             ),
             min_size=1,
             max_size=20,
@@ -105,7 +115,7 @@ def search_with_since_strategy(
         st.text(
             min_size=1,
             max_size=30,
-            alphabet=st.characters(whitelist_categories=("L", "N")),
+            alphabet=st.characters(whitelist_categories=_LETTER_NUMBER_CATEGORIES),
         )
     )
     since = draw(

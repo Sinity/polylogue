@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import AsyncIterator, Callable, Iterator
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -13,9 +15,9 @@ from polylogue.types import Provider
 
 async def test_iter_raw_record_stream_logs_make_raw_record_value_errors(
     tmp_path: Path,
-    monkeypatch,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    async def _raw_stream(*args, **kwargs):
+    async def _raw_stream(*args: object, **kwargs: object) -> AsyncIterator[RawConversationData]:
         del args, kwargs
         yield RawConversationData(
             raw_bytes=b'{"id":"broken"}',
@@ -23,7 +25,7 @@ async def test_iter_raw_record_stream_logs_make_raw_record_value_errors(
             provider_hint=Provider.CHATGPT,
         )
 
-    def _raise(*args, **kwargs):
+    def _raise(*args: object, **kwargs: object) -> None:
         del args, kwargs
         raise ValueError("boom")
 
@@ -54,13 +56,13 @@ async def test_iter_raw_record_stream_logs_make_raw_record_value_errors(
 @pytest.mark.asyncio
 async def test_iter_raw_record_stream_forwards_source_status_progress(
     tmp_path: Path,
-    monkeypatch,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from polylogue.pipeline.services import acquisition as acquisition_module
 
-    def _iter_source_raw_data(*args, **kwargs):
+    def _iter_source_raw_data(*args: object, **kwargs: object) -> Iterator[RawConversationData]:
         del args
-        status_callback = kwargs["status_callback"]
+        status_callback = cast(Callable[[str], None], kwargs["status_callback"])
         status_callback("Scanning [chatgpt] reading export.json")
         yield RawConversationData(
             raw_bytes=b'{"mapping": {}, "id": "ok"}',

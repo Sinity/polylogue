@@ -8,7 +8,9 @@ lookups) are registered directly.
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
+
+from pydantic import BaseModel
 
 from polylogue.mcp.payloads import MCPRootPayload
 from polylogue.products.registry import (
@@ -33,7 +35,7 @@ def _register_list_tool(
     # Build the set of accepted query field names from the query class
     from polylogue.products.registry import _resolve_query_class
 
-    query_cls = _resolve_query_class(pt.query_class_path)
+    query_cls = cast(type[BaseModel], _resolve_query_class(pt.query_class_path))
     query_fields = set(query_cls.model_fields)
 
     # Determine parameter defaults from the query class

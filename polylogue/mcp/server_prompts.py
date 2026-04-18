@@ -174,7 +174,7 @@ Conversation 2:
 
         summaries = []
         for conv in convs:
-            first_msgs = [m.text[:150] for m in conv.messages[:3] if m.text]
+            first_msgs = [m.text[:150] for m in conv.messages.to_list()[:3] if m.text]
             summaries.append(
                 {
                     "id": str(conv.id)[:20],

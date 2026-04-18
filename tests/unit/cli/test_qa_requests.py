@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock
+
+import pytest
 
 from polylogue.cli.qa_requests import (
     QACaptureMode,
@@ -110,10 +113,20 @@ def test_build_qa_invocation_plan_builds_session_request_for_regular_run() -> No
     assert plan.finalization_plan.snapshot_plan is not None
 
 
-def test_execute_snapshot_plan_uses_fallback_report_dir(tmp_path: Path, monkeypatch) -> None:
+def test_execute_snapshot_plan_uses_fallback_report_dir(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     captured: dict[str, object] = {}
 
-    def _fake_snapshot_results(source_dir, *, label, output_root, json_output, env) -> None:
+    def _fake_snapshot_results(
+        source_dir: Path,
+        *,
+        label: str,
+        output_root: Path,
+        json_output: bool,
+        env: Any,
+    ) -> None:
         captured.update(
             source_dir=source_dir,
             label=label,

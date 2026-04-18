@@ -15,6 +15,7 @@ from __future__ import annotations
 import os
 import sys
 import time
+from typing import Any
 
 # Check if atheris is available
 try:
@@ -203,21 +204,21 @@ class TestTimestampFuzz:
     """Pytest-compatible fuzz tests using seed corpus."""
 
     @pytest.mark.parametrize("data", TIMESTAMP_CORPUS)
-    def test_parse_timestamp_corpus(self, data: bytes):
+    def test_parse_timestamp_corpus(self: Any, data: bytes) -> None:
         """Run parse_timestamp fuzz with seed corpus."""
         fuzz_parse_timestamp(data)
 
     @pytest.mark.parametrize("data", TIMESTAMP_CORPUS)
-    def test_normalize_timestamp_corpus(self, data: bytes):
+    def test_normalize_timestamp_corpus(self: Any, data: bytes) -> None:
         """Run normalize_timestamp fuzz with seed corpus."""
         fuzz_normalize_timestamp(data)
 
     @pytest.mark.parametrize("data", TIMESTAMP_CORPUS)
-    def test_format_timestamp_corpus(self, data: bytes):
+    def test_format_timestamp_corpus(self: Any, data: bytes) -> None:
         """Run format_timestamp fuzz with seed corpus."""
         fuzz_format_timestamp(data)
 
-    def test_parse_timestamp_random(self):
+    def test_parse_timestamp_random(self: Any) -> None:
         """Run parse_timestamp with random bytes."""
         import random
 
@@ -226,7 +227,7 @@ class TestTimestampFuzz:
             data = bytes(random.randint(0, 255) for _ in range(length))
             fuzz_parse_timestamp(data)
 
-    def test_parse_timestamp_numeric_strings(self):
+    def test_parse_timestamp_numeric_strings(self: Any) -> None:
         """Run parse_timestamp with random numeric strings."""
         import random
 
@@ -243,7 +244,7 @@ class TestTimestampFuzz:
 
             fuzz_parse_timestamp(digits.encode("utf-8"))
 
-    def test_parse_timestamp_date_strings(self):
+    def test_parse_timestamp_date_strings(self: Any) -> None:
         """Run parse_timestamp with random date-like strings."""
         import random
 
@@ -268,7 +269,7 @@ class TestTimestampFuzz:
 # =============================================================================
 
 
-def main():
+def main() -> None:
     """Run atheris fuzzer with libFuzzer engine."""
     if not HAS_ATHERIS:
         print("atheris not installed, running pytest-compatible tests instead")

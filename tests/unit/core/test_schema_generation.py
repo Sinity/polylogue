@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Generator
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import patch
 
 import pytest
@@ -29,14 +31,14 @@ from polylogue.schemas.schema_inference import (
 class TestProviderSchemaGeneration:
     """Provider-level schema generation entrypoints."""
 
-    def test_known_providers(self):
+    def test_known_providers(self) -> None:
         expected_core = {"chatgpt", "claude-code", "claude-ai", "gemini", "codex"}
         assert expected_core.issubset(PROVIDERS.keys())
         assert all(name.strip() for name in PROVIDERS)
 
     @pytest.mark.slow
     @pytest.mark.parametrize("provider", ["chatgpt", "claude-code", "codex"])
-    def test_generate_schema_from_db(self, seeded_db, provider):
+    def test_generate_schema_from_db(self, seeded_db: Any, provider: Any) -> None:
         result = generate_provider_schema(provider, db_path=seeded_db, max_samples=100)
         if result.sample_count > 0:
             assert result.success, f"Failed: {result.error}"
@@ -44,12 +46,12 @@ class TestProviderSchemaGeneration:
             assert result.schema.get("type") == "object"
             assert "properties" in result.schema
 
-    def test_unknown_provider_returns_error(self):
+    def test_unknown_provider_returns_error(self) -> None:
         result = generate_provider_schema("unknown-provider")
         assert not result.success
         assert "Unknown provider" in (result.error or "")
 
-    def test_result_dataclass(self):
+    def test_result_dataclass(self) -> None:
         success = GenerationResult(provider="test", schema={"type": "object"}, sample_count=10)
         assert success.success
         assert success.provider == "test"
@@ -62,18 +64,20 @@ class TestProviderSchemaGeneration:
 class TestLoadSamples:
     """Database-backed sample loading behavior."""
 
-    def test_load_limited_samples(self, seeded_db):
+    def test_load_limited_samples(self, seeded_db: Any) -> None:
         samples = load_samples_from_db("chatgpt", db_path=seeded_db, max_samples=10)
         assert len(samples) <= 10
 
-    def test_load_nonexistent_provider(self, seeded_db):
+    def test_load_nonexistent_provider(self, seeded_db: Any) -> None:
         assert load_samples_from_db("nonexistent-provider", db_path=seeded_db) == []
 
-    def test_load_limited_document_samples_stops_without_full_materialization(self, monkeypatch, tmp_path):
+    def test_load_limited_document_samples_stops_without_full_materialization(
+        self, monkeypatch: Any, tmp_path: Any
+    ) -> None:
         db_path = tmp_path / "samples.db"
         db_path.write_text("")
 
-        def _iter(*args, **kwargs):
+        def _iter(*args: Any, **kwargs: Any) -> Generator[dict[str, str], None, None]:
             yield {"id": "one"}
             yield {"id": "two"}
             raise AssertionError("iterator should not be exhausted past the limit")
@@ -83,7 +87,7 @@ class TestLoadSamples:
         assert samples == [{"id": "one"}, {"id": "two"}]
 
 
-def test_remove_nested_required_non_dict_returns_unchanged():
+def test_remove_nested_required_non_dict_returns_unchanged() -> None:
     """Non-dict values should pass through recursive cleanup unchanged."""
     assert _remove_nested_required("string", 0) == "string"
     assert _remove_nested_required(42, 0) == 42
@@ -93,15 +97,15 @@ def test_remove_nested_required_non_dict_returns_unchanged():
 class TestLoadSamplesFromSessions:
     """Session-dir sample loading edge cases."""
 
-    def test_nonexistent_dir_returns_empty(self, tmp_path):
+    def test_nonexistent_dir_returns_empty(self, tmp_path: Any) -> None:
         assert load_samples_from_sessions(tmp_path / "does_not_exist") == []
 
-    def test_empty_dir_returns_empty(self, tmp_path):
+    def test_empty_dir_returns_empty(self, tmp_path: Any) -> None:
         session_dir = tmp_path / "empty"
         session_dir.mkdir()
         assert load_samples_from_sessions(session_dir) == []
 
-    def test_max_sessions_limits_files(self, tmp_path):
+    def test_max_sessions_limits_files(self, tmp_path: Any) -> None:
         session_dir = tmp_path / "sessions"
         session_dir.mkdir()
         for i in range(10):
@@ -114,10 +118,10 @@ class TestLoadSamplesFromSessions:
 class TestGetSampleCountFromDb:
     """Sample-count queries against persisted conversations."""
 
-    def test_nonexistent_db_returns_zero(self, tmp_path):
+    def test_nonexistent_db_returns_zero(self, tmp_path: Any) -> None:
         assert get_sample_count_from_db("chatgpt", db_path=tmp_path / "missing.db") == 0
 
-    def test_empty_db_returns_zero(self, tmp_path):
+    def test_empty_db_returns_zero(self, tmp_path: Any) -> None:
         from polylogue.storage.backends.connection import open_connection
 
         db_path = tmp_path / "empty.db"
@@ -125,7 +129,7 @@ class TestGetSampleCountFromDb:
             pass
         assert get_sample_count_from_db("chatgpt", db_path=db_path) == 0
 
-    def test_matching_provider_returns_count(self, tmp_path):
+    def test_matching_provider_returns_count(self, tmp_path: Any) -> None:
         from polylogue.storage.backends.connection import open_connection
 
         db_path = tmp_path / "test.db"
@@ -165,7 +169,7 @@ class TestGetSampleCountFromDb:
 
         assert get_sample_count_from_db("chatgpt", db_path=db_path) == 1
 
-    def test_wrong_provider_returns_zero(self, tmp_path):
+    def test_wrong_provider_returns_zero(self, tmp_path: Any) -> None:
         from polylogue.storage.backends.connection import open_connection
 
         db_path = tmp_path / "test.db"
@@ -196,22 +200,22 @@ class TestGenerateSchemaFromSamples:
     """Focused schema-generation edge cases beyond the general laws."""
 
     @pytest.fixture(autouse=True)
-    def _check_genson(self):
+    def _check_genson(self) -> None:
         pytest.importorskip("genson")
 
-    def test_empty_samples(self):
+    def test_empty_samples(self) -> None:
         result = generate_schema_from_samples([])
         assert result["type"] == "object"
         assert "description" in result
 
-    def test_single_sample(self):
+    def test_single_sample(self) -> None:
         result = generate_schema_from_samples([{"id": "abc", "count": 42}])
         assert result["type"] == "object"
         assert "properties" in result
         assert "id" in result["properties"]
         assert "count" in result["properties"]
 
-    def test_identifier_fields_do_not_emit_value_enums(self):
+    def test_identifier_fields_do_not_emit_value_enums(self) -> None:
         result = generate_schema_from_samples(
             [
                 {"resourceId": "1csAnmQr_ThZWh285_IH8hg50f-mLpS1r", "category": "HARM_CATEGORY_HATE_SPEECH"},
@@ -221,7 +225,7 @@ class TestGenerateSchemaFromSamples:
         assert "x-polylogue-values" not in result["properties"]["resourceId"]
         assert "x-polylogue-values" in result["properties"]["category"]
 
-    def test_high_entropy_tail_segments_are_filtered(self):
+    def test_high_entropy_tail_segments_are_filtered(self) -> None:
         result = generate_schema_from_samples(
             [
                 {"promptId": "prompts/15BHmKFY05bDKHrhyk4We29IUInZjKq0p", "model": "models/gemini-2.5-pro"},
@@ -231,7 +235,7 @@ class TestGenerateSchemaFromSamples:
         assert "x-polylogue-values" not in result["properties"]["promptId"]
         assert result["properties"]["model"].get("x-polylogue-values") == ["models/gemini-2.5-pro"]
 
-    def test_high_entropy_values_filtered_even_without_identifier_field_name(self):
+    def test_high_entropy_values_filtered_even_without_identifier_field_name(self) -> None:
         result = generate_schema_from_samples(
             [
                 {"channel": "1csAnmQr_ThZWh285_IH8hg50f-mLpS1r", "role": "assistant"},
@@ -245,7 +249,7 @@ class TestGenerateSchemaFromSamples:
 class TestGenerateAllSchemas:
     """Filesystem effects of schema bundle generation."""
 
-    def test_creates_output_directory(self, tmp_path):
+    def test_creates_output_directory(self, tmp_path: Any) -> None:
         output_dir = tmp_path / "schemas" / "nested"
         package = SchemaVersionPackage(
             provider="chatgpt",
@@ -306,7 +310,7 @@ class TestGenerateAllSchemas:
             output_dir / "chatgpt" / "versions" / "v1" / "elements" / "conversation_document.schema.json.gz"
         ).exists()
 
-    def test_skips_failed_schemas(self, tmp_path):
+    def test_skips_failed_schemas(self, tmp_path: Any) -> None:
         failed_result = GenerationResult(provider="broken", sample_count=0, schema=None, error="No samples")
 
         with patch("polylogue.schemas.generation_workflow.generate_provider_schema", return_value=failed_result):
@@ -317,7 +321,7 @@ class TestGenerateAllSchemas:
 
 
 class TestProfileClustering:
-    def test_collect_cluster_accumulators_merges_same_profile_documents(self, monkeypatch, tmp_path):
+    def test_collect_cluster_accumulators_merges_same_profile_documents(self, monkeypatch: Any, tmp_path: Any) -> None:
         units = [
             SchemaUnit(
                 cluster_payload={"id": "1", "mapping": {"node-1": {"message": {"id": "m1"}}}},
@@ -356,7 +360,9 @@ class TestProfileClustering:
         acc = next(iter(clusters.values()))
         assert acc.sample_count == 2
 
-    def test_build_provider_bundle_captures_element_windows_and_bundle_scopes(self, monkeypatch, tmp_path):
+    def test_build_provider_bundle_captures_element_windows_and_bundle_scopes(
+        self, monkeypatch: Any, tmp_path: Any
+    ) -> None:
         units = [
             SchemaUnit(
                 cluster_payload={"id": "1", "mapping": {"node-1": {"message": {"id": "m1"}}}},
@@ -414,7 +420,7 @@ class TestProfileClustering:
 class TestCliMain:
     """CLI entry point behavior."""
 
-    def test_cli_with_no_db(self, tmp_path):
+    def test_cli_with_no_db(self, tmp_path: Any) -> None:
         exit_code = cli_main(
             [
                 "--provider",

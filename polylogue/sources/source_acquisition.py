@@ -6,14 +6,14 @@ import time
 import zipfile
 from collections.abc import Callable, Iterable
 from pathlib import Path
-from typing import Any
+from typing import IO, Any, BinaryIO, cast
 
 from polylogue.config import Source
 from polylogue.lib.artifact_taxonomy import classify_artifact
 from polylogue.lib.json import dumps_bytes as json_dumps_bytes
 from polylogue.lib.metrics import read_current_rss_mb, read_peak_rss_self_mb
 from polylogue.logging import get_logger
-from polylogue.storage.blob_store import get_blob_store
+from polylogue.storage.blob_store import BlobStore, get_blob_store
 from polylogue.types import Provider
 
 from . import cursor as _cursor
@@ -93,7 +93,7 @@ def _observe_acquisition(
 
 
 def _iter_entry_payloads(
-    handle,
+    handle: BinaryIO | IO[bytes],
     *,
     stream_name: str,
     provider_hint: Provider,
@@ -122,7 +122,7 @@ def _iter_entry_payloads(
 
 def _make_split_entry_raw_data(
     *,
-    blob_store,
+    blob_store: BlobStore,
     payload_bytes: bytes,
     source_path: str,
     source_index: int,
@@ -207,7 +207,7 @@ def iter_source_raw_data(
                                 heartbeat()
                             with zf.open(info.filename) as handle:
                                 blob_hash, blob_size = blob_store.write_from_fileobj(
-                                    handle,
+                                    cast(BinaryIO, handle),
                                     heartbeat=heartbeat,
                                 )
                             _observe_acquisition(
@@ -235,7 +235,7 @@ def iter_source_raw_data(
 
                         with zf.open(info.filename) as handle:
                             for payload_provider, payload, detect_provider_ms in _iter_entry_payloads(
-                                handle,
+                                cast(BinaryIO, handle),
                                 stream_name=info.filename,
                                 provider_hint=entry_provider_hint,
                             ):
@@ -309,7 +309,7 @@ def iter_source_raw_data(
                             heartbeat()
                         with zf.open(info.filename) as handle:
                             blob_hash, blob_size = blob_store.write_from_fileobj(
-                                handle,
+                                cast(BinaryIO, handle),
                                 heartbeat=heartbeat,
                             )
                         _observe_acquisition(

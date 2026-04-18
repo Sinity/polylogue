@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import sqlite3
 
+import pytest
 
-def test_rebuild_index_skips_action_rebuild_when_candidates_are_current(monkeypatch) -> None:
+
+def test_rebuild_index_skips_action_rebuild_when_candidates_are_current(monkeypatch: pytest.MonkeyPatch) -> None:
     from polylogue.storage import index as index_mod
 
     conn = sqlite3.connect(":memory:")
@@ -11,7 +13,7 @@ def test_rebuild_index_skips_action_rebuild_when_candidates_are_current(monkeypa
 
     monkeypatch.setattr(index_mod, "action_event_repair_candidates_sync", lambda db_conn: [])
 
-    def fail_rebuild(*args, **kwargs):
+    def fail_rebuild(*args: object, **kwargs: object) -> None:
         raise AssertionError("action-event rebuild should have been skipped")
 
     monkeypatch.setattr(index_mod, "rebuild_action_event_read_model_sync", fail_rebuild)
@@ -23,7 +25,7 @@ def test_rebuild_index_skips_action_rebuild_when_candidates_are_current(monkeypa
     assert fts_calls == [conn]
 
 
-def test_update_index_repairs_only_candidate_subset(monkeypatch) -> None:
+def test_update_index_repairs_only_candidate_subset(monkeypatch: pytest.MonkeyPatch) -> None:
     from polylogue.storage import index as index_mod
 
     conn = sqlite3.connect(":memory:")

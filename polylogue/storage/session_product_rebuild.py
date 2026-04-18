@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import sqlite3
 from collections import defaultdict
-from collections.abc import Iterable, Sequence
+from collections.abc import AsyncIterator, Iterable, Iterator, Sequence
 
 import aiosqlite
 
-from polylogue.lib.session_profile import build_session_analysis, build_session_profile
+from polylogue.lib.conversation_models import Conversation
+from polylogue.lib.session_profile import SessionProfile, build_session_analysis, build_session_profile
 from polylogue.protocols import ProgressCallback
 from polylogue.storage.action_event_rows import attach_blocks_to_messages
 from polylogue.storage.backends.queries.attachments import get_attachments_batch
@@ -52,7 +53,11 @@ from polylogue.storage.store import (
     ContentBlockRecord,
     ConversationRecord,
     MessageRecord,
+    SessionPhaseRecord,
+    SessionProfileRecord,
+    SessionWorkEventRecord,
 )
+from polylogue.types import ConversationId
 
 _ALL_CONVERSATION_IDS_SQL = (
     "SELECT conversation_id FROM conversations ORDER BY COALESCE(sort_key, 0) DESC, conversation_id"
@@ -112,7 +117,7 @@ def iter_hydrated_session_profiles_sync(
     conn: sqlite3.Connection,
     *,
     page_size: int,
-):
+) -> Iterator[SessionProfile]:
     cursor = conn.execute(_ALL_SESSION_PROFILE_ROWS_SQL)
     while True:
         rows = cursor.fetchmany(page_size)
@@ -126,7 +131,7 @@ async def iter_conversation_id_pages_async(
     conn: aiosqlite.Connection,
     *,
     page_size: int,
-):
+) -> AsyncIterator[list[str]]:
     cursor = await conn.execute(_ALL_CONVERSATION_IDS_SQL)
     while True:
         rows = await cursor.fetchmany(page_size)
@@ -198,7 +203,7 @@ def sync_attachment_batch(
         result.setdefault(conversation_id, []).append(
             AttachmentRecord(
                 attachment_id=row["attachment_id"],
-                conversation_id=conversation_id,
+                conversation_id=ConversationId(conversation_id),
                 message_id=row["message_id"],
                 mime_type=row["mime_type"],
                 size_bytes=row["size_bytes"],
@@ -299,7 +304,7 @@ def hydrate_conversations(
     messages: list[MessageRecord],
     attachments_by_conversation: dict[str, list[AttachmentRecord]],
     blocks: list[ContentBlockRecord],
-) -> list[object]:
+) -> list[Conversation]:
     messages_by_conversation: dict[str, list[MessageRecord]] = defaultdict(list)
     blocks_by_conversation: dict[str, list[ContentBlockRecord]] = defaultdict(list)
     for message in messages:
@@ -307,7 +312,7 @@ def hydrate_conversations(
     for block in blocks:
         blocks_by_conversation[str(block.conversation_id)].append(block)
 
-    hydrated: list[object] = []
+    hydrated: list[Conversation] = []
     for conversation in conversations:
         conversation_id = str(conversation.conversation_id)
         attached_messages = attach_blocks_to_messages(
@@ -325,8 +330,8 @@ def hydrate_conversations(
 
 
 def build_session_product_records(
-    conversation,
-) -> tuple[object, list[object], list[object]]:
+    conversation: Conversation,
+) -> tuple[SessionProfileRecord, list[SessionWorkEventRecord], list[SessionPhaseRecord]]:
     analysis = build_session_analysis(conversation)
     profile = build_session_profile(conversation, analysis=analysis)
     materialized_at = now_iso()
@@ -479,8 +484,8 @@ async def rebuild_session_products_async(
                 )
                 progress_callback(chunk_profiles, desc=desc)
     else:
-        for chunk in chunked(list(conversation_ids), size=page_size):
-            conversations, messages, attachments, blocks = await load_async_batch(conn, chunk)
+        for chunk_ids in chunked(list(conversation_ids), size=page_size):
+            conversations, messages, attachments, blocks = await load_async_batch(conn, chunk_ids)
             chunk_profiles = 0
             for conversation in hydrate_conversations(conversations, messages, attachments, blocks):
                 profile_record, event_records, phase_records = build_session_product_records(conversation)
@@ -519,8 +524,10 @@ async def rebuild_session_products_async(
         provider_day_groups,
         transaction_depth=transaction_depth,
     )
-    tag_rollup_count = (await (await conn.execute("SELECT COUNT(*) FROM session_tag_rollups")).fetchone())[0]
-    day_summary_count = (await (await conn.execute("SELECT COUNT(*) FROM day_session_summaries")).fetchone())[0]
+    tag_rollup_row = await (await conn.execute("SELECT COUNT(*) FROM session_tag_rollups")).fetchone()
+    day_summary_row = await (await conn.execute("SELECT COUNT(*) FROM day_session_summaries")).fetchone()
+    tag_rollup_count = int(tag_rollup_row[0]) if tag_rollup_row is not None else 0
+    day_summary_count = int(day_summary_row[0]) if day_summary_row is not None else 0
     return {
         "profiles": profile_count,
         "work_events": work_event_count,

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from typing import Any, cast
 
 import pytest
 
@@ -37,7 +38,7 @@ PROVIDER_FORMAT_DETECTION_CASES = [
 
 
 @pytest.mark.parametrize("data,expected,check_fn,desc", PROVIDER_FORMAT_DETECTION_CASES)
-def test_provider_format_detection(data, expected, check_fn, desc):
+def test_provider_format_detection(data: Any, expected: Any, check_fn: Any, desc: Any) -> None:
     """Unified format detection across all providers."""
     result = check_fn(data)
     assert result == expected, f"Failed {desc}"
@@ -55,7 +56,7 @@ COERCE_FLOAT_CASES = [
 
 
 @pytest.mark.parametrize("input_val,expected,desc", COERCE_FLOAT_CASES)
-def test_coerce_float(input_val, expected, desc):
+def test_coerce_float(input_val: Any, expected: Any, desc: Any) -> None:
     """Test _coerce_float conversion."""
     result = _coerce_float(input_val)
     assert result == expected, f"Failed {desc}"
@@ -83,7 +84,7 @@ CHATGPT_EXTRACT_MESSAGES_CASES = [
     ),
     # Content variants
     ({"node1": make_chatgpt_node("msg1", "user", ["Part1", "Part2"])}, 1, "multiple parts"),
-    ({"node1": make_chatgpt_node("msg1", "user", [None, "Valid"])}, 1, "parts with None"),
+    ({"node1": make_chatgpt_node("msg1", "user", cast(Any, [None, "Valid"]))}, 1, "parts with None"),
     ({"node1": {"message": {"id": "1", "author": {"role": "user"}, "content": {"parts": []}}}}, 0, "empty parts"),
     # Role normalization
     ({"node1": make_chatgpt_node("msg1", "human", ["Hi"])}, 1, "human role alias"),
@@ -102,7 +103,7 @@ CHATGPT_EXTRACT_MESSAGES_CASES = [
 
 
 @pytest.mark.parametrize("mapping,expected_count,desc", CHATGPT_EXTRACT_MESSAGES_CASES)
-def test_chatgpt_extract_messages_comprehensive(mapping, expected_count, desc):
+def test_chatgpt_extract_messages_comprehensive(mapping: Any, expected_count: Any, desc: Any) -> None:
     """Comprehensive message extraction test.
 
     Replaces 17 individual extraction tests.
@@ -183,7 +184,9 @@ CHATGPT_PARENT_BRANCH_CASES = [
 
 
 @pytest.mark.parametrize("mapping,expected_parents,expected_indexes,desc", CHATGPT_PARENT_BRANCH_CASES)
-def test_chatgpt_extract_parent_and_branch_index(mapping, expected_parents, expected_indexes, desc):
+def test_chatgpt_extract_parent_and_branch_index(
+    mapping: Any, expected_parents: Any, expected_indexes: Any, desc: Any
+) -> None:
     """Test extraction of parent_message_provider_id and branch_index.
 
     Validates parent message references and branch position calculation.
@@ -212,8 +215,8 @@ def test_chatgpt_extract_parent_and_branch_index(mapping, expected_parents, expe
 
 CHATGPT_METADATA_CASES = [
     # Attachments
-    ({"attachments": [{"id": "att1", "name": "file.pdf"}]}, True, "attachments field"),
-    ({"image_asset_pointer": "asset_123"}, True, "image asset pointer"),
+    ({"attachments": [{"id": "att1", "name": "file.pdf"}]}, "attachments", "attachments field"),
+    ({"image_asset_pointer": "asset_123"}, None, "image asset pointer metadata ignored"),
     # Cost/duration
     ({"costUSD": 0.005}, "cost", "cost metadata"),
     ({"durationMs": 2500}, "duration", "duration metadata"),
@@ -227,12 +230,12 @@ CHATGPT_METADATA_CASES = [
 
 
 @pytest.mark.parametrize("metadata,expected_type,desc", CHATGPT_METADATA_CASES)
-def test_chatgpt_metadata_extraction(metadata, expected_type, desc):
+def test_chatgpt_metadata_extraction(metadata: Any, expected_type: Any, desc: Any) -> None:
     """Test metadata extraction from message metadata field.
 
     Explicit tests for attachment/cost/thinking metadata.
     """
-    mapping = {
+    mapping: dict[str, object] = {
         "node1": {
             "message": {
                 "id": "msg1",
@@ -247,7 +250,7 @@ def test_chatgpt_metadata_extraction(metadata, expected_type, desc):
 
     if expected_type == "attachments":
         # Should have attachment records
-        assert len(attachments) > 0 or len(messages[0].attachments) > 0
+        assert len(attachments) > 0
     elif expected_type == "cost":
         # Should preserve cost in provider_meta
         assert messages[0].provider_meta is not None
@@ -274,7 +277,7 @@ PARSE_CONVERSATION_CASES = [
 
 
 @pytest.mark.parametrize("parse_fn,conv_data,check_type,desc", PARSE_CONVERSATION_CASES)
-def test_parse_conversation(parse_fn, conv_data, check_type, desc):
+def test_parse_conversation(parse_fn: Any, conv_data: Any, check_type: Any, desc: Any) -> None:
     """Unified conversation parsing across providers."""
     result = parse_fn(conv_data, "fallback-id")
 
@@ -293,7 +296,7 @@ def test_parse_conversation(parse_fn, conv_data, check_type, desc):
 # -----------------------------------------------------------------------------
 
 
-def test_chatgpt_parse_synthetic_simple():
+def test_chatgpt_parse_synthetic_simple() -> None:
     """Parse synthetic ChatGPT export."""
     from polylogue.schemas.synthetic import SyntheticCorpus
 
@@ -317,7 +320,7 @@ def test_chatgpt_parse_synthetic_simple():
     assert all(m.text is not None for m in result.messages)
 
 
-def test_chatgpt_parse_synthetic_branching():
+def test_chatgpt_parse_synthetic_branching() -> None:
     """Parse synthetic ChatGPT conversation with many messages (branching structure)."""
     from polylogue.schemas.synthetic import SyntheticCorpus
 

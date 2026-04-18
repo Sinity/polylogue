@@ -7,22 +7,22 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
+from typing import cast
 
-from polylogue.lib.messages import MessageCollection
-from polylogue.lib.models import (
-    Conversation,
-    ConversationSummary,
-    Message,
-)
+from polylogue.lib.models import Conversation, ConversationSummary, Message
 from polylogue.rendering.core import format_conversation_markdown
 from polylogue.rendering.renderers.html import (
     _attach_branches,
     render_conversation_html,
 )
+from polylogue.types import ConversationId, Provider
+from tests.infra.builders import make_conv, make_msg
 
 # =============================================================================
 # Branch rendering helpers (from test_branch_rendering.py)
 # =============================================================================
+
+MessagePayload = dict[str, object]
 
 
 def _make_msg(
@@ -32,7 +32,7 @@ def _make_msg(
     parent_id: str | None = None,
     branch_index: int = 0,
 ) -> Message:
-    return Message(
+    return make_msg(
         id=id,
         role=role,
         text=text,
@@ -41,21 +41,21 @@ def _make_msg(
     )
 
 
-def _make_conv(messages: list[Message], title: str = "Branch Test") -> Conversation:
-    return Conversation(
+def _make_conv(messages: list[Message], title: str | None = "Branch Test") -> Conversation:
+    return make_conv(
         id="test-conv",
-        provider="chatgpt",
+        provider=Provider.CHATGPT,
         title=title,
-        messages=MessageCollection(messages=messages),
+        messages=messages,
     )
 
 
 class TestAttachBranches:
     """Tests for the _attach_branches helper."""
 
-    def test_no_branches_passthrough(self):
+    def test_no_branches_passthrough(self) -> None:
         """Messages without branches are returned unchanged."""
-        msgs = [
+        msgs: list[MessagePayload] = [
             {"id": "m1", "role": "user", "branch_index": 0, "text": "Q"},
             {"id": "m2", "role": "assistant", "branch_index": 0, "text": "A"},
         ]
@@ -64,9 +64,9 @@ class TestAttachBranches:
         assert "branches" not in result[0]
         assert "branches" not in result[1]
 
-    def test_branch_attached_to_mainline_sibling(self):
+    def test_branch_attached_to_mainline_sibling(self) -> None:
         """Branch messages are attached to the mainline sibling sharing the same parent."""
-        msgs = [
+        msgs: list[MessagePayload] = [
             {"id": "m1", "role": "user", "branch_index": 0, "parent_message_id": None, "text": "Q"},
             {"id": "m2", "role": "assistant", "branch_index": 0, "parent_message_id": "m1", "text": "A1"},
             {"id": "m3", "role": "assistant", "branch_index": 1, "parent_message_id": "m1", "text": "A2"},
@@ -75,12 +75,13 @@ class TestAttachBranches:
         assert len(result) == 2
         m2 = next(m for m in result if m["id"] == "m2")
         assert "branches" in m2
-        assert len(m2["branches"]) == 1
-        assert m2["branches"][0]["id"] == "m3"
+        branches = cast(list[MessagePayload], m2["branches"])
+        assert len(branches) == 1
+        assert branches[0]["id"] == "m3"
 
-    def test_multiple_branches(self):
+    def test_multiple_branches(self) -> None:
         """Multiple branch messages attach to same mainline sibling."""
-        msgs = [
+        msgs: list[MessagePayload] = [
             {"id": "m1", "role": "user", "branch_index": 0, "parent_message_id": None, "text": "Q"},
             {"id": "m2", "role": "assistant", "branch_index": 0, "parent_message_id": "m1", "text": "A1"},
             {"id": "m3", "role": "assistant", "branch_index": 1, "parent_message_id": "m1", "text": "A2"},
@@ -89,11 +90,11 @@ class TestAttachBranches:
         result = _attach_branches(msgs)
         assert len(result) == 2
         m2 = next(m for m in result if m["id"] == "m2")
-        assert len(m2["branches"]) == 2
+        assert len(cast(list[MessagePayload], m2["branches"])) == 2
 
-    def test_orphan_branch_becomes_standalone(self):
+    def test_orphan_branch_becomes_standalone(self) -> None:
         """Branch without mainline sibling is included as standalone."""
-        msgs = [
+        msgs: list[MessagePayload] = [
             {"id": "m1", "role": "user", "branch_index": 0, "parent_message_id": None, "text": "Q"},
             {"id": "m3", "role": "assistant", "branch_index": 1, "parent_message_id": "orphan", "text": "A2"},
         ]
@@ -104,7 +105,7 @@ class TestAttachBranches:
 class TestBranchRendering:
     """Tests for branch-aware HTML rendering."""
 
-    def test_linear_conversation_no_branches_section(self):
+    def test_linear_conversation_no_branches_section(self) -> None:
         """Linear conversations should not have branch markup."""
         msgs = [_make_msg("m1", "user", "Hello"), _make_msg("m2", "assistant", "Hi")]
         conv = _make_conv(msgs)
@@ -112,7 +113,7 @@ class TestBranchRendering:
         assert "<details" not in html
         assert "branches" not in html or "branches" in html
 
-    def test_branching_conversation_has_details(self):
+    def test_branching_conversation_has_details(self) -> None:
         """Branching conversations should render <details> sections."""
         msgs = [
             _make_msg("m1", "user", "Question", parent_id=None, branch_index=0),
@@ -126,7 +127,7 @@ class TestBranchRendering:
         assert "1 alternative" in html
         assert "Branch 1" in html
 
-    def test_branch_content_rendered(self):
+    def test_branch_content_rendered(self) -> None:
         """Branch message content should appear in the HTML."""
         msgs = [
             _make_msg("m1", "user", "Question"),
@@ -138,7 +139,7 @@ class TestBranchRendering:
         assert "Answer 1" in html
         assert "Answer 2 (edited)" in html
 
-    def test_multiple_alternatives_label(self):
+    def test_multiple_alternatives_label(self) -> None:
         """Multiple branches should use plural label."""
         msgs = [
             _make_msg("m1", "user", "Q"),
@@ -150,7 +151,7 @@ class TestBranchRendering:
         html = render_conversation_html(conv)
         assert "2 alternatives" in html
 
-    def test_branch_css_present(self):
+    def test_branch_css_present(self) -> None:
         """Branch CSS classes should be in the output."""
         msgs = [
             _make_msg("m1", "user", "Q"),
@@ -162,7 +163,7 @@ class TestBranchRendering:
         assert "branch-message" in html
         assert "branch-label" in html
 
-    def test_mainline_only_in_top_level(self):
+    def test_mainline_only_in_top_level(self) -> None:
         """Only mainline messages should be in the top-level message list."""
         msgs = [
             _make_msg("m1", "user", "Q"),
@@ -186,92 +187,92 @@ class TestBranchRendering:
 class TestFormatConversationMarkdownNoneGuards:
     """format_conversation_markdown must handle None text, None role, etc."""
 
-    def _make_conv(self, messages: list[Message], title: str = "Test") -> Conversation:
-        return Conversation(
+    def _make_conv(self, messages: list[Message], title: str | None = "Test") -> Conversation:
+        return make_conv(
             id="test-conv",
-            provider="test",
+            provider=Provider.UNKNOWN,
             title=title,
-            messages=MessageCollection(messages=messages),
+            messages=messages,
         )
 
-    def test_none_text_message_skipped(self):
+    def test_none_text_message_skipped(self) -> None:
         """Message with None text should be skipped, not crash."""
         conv = self._make_conv(
             [
-                Message(id="m1", role="user", text=None),
-                Message(id="m2", role="assistant", text="Hello!"),
+                make_msg(id="m1", role="user", text=None),
+                make_msg(id="m2", role="assistant", text="Hello!"),
             ]
         )
         md = format_conversation_markdown(conv)
         assert "Hello!" in md
         assert md.count("## ") == 1
 
-    def test_empty_text_message_skipped(self):
+    def test_empty_text_message_skipped(self) -> None:
         """Message with empty text should be skipped."""
         conv = self._make_conv(
             [
-                Message(id="m1", role="user", text=""),
-                Message(id="m2", role="assistant", text="Response"),
+                make_msg(id="m1", role="user", text=""),
+                make_msg(id="m2", role="assistant", text="Response"),
             ]
         )
         md = format_conversation_markdown(conv)
         assert "Response" in md
 
-    def test_whitespace_only_text_skipped(self):
+    def test_whitespace_only_text_skipped(self) -> None:
         """Message with whitespace-only text should be skipped."""
         conv = self._make_conv(
             [
-                Message(id="m1", role="user", text="   \n\t  "),
-                Message(id="m2", role="assistant", text="Answer"),
+                make_msg(id="m1", role="user", text="   \n\t  "),
+                make_msg(id="m2", role="assistant", text="Answer"),
             ]
         )
         md = format_conversation_markdown(conv)
         assert "Answer" in md
 
-    def test_none_role_renders_as_unknown(self):
+    def test_none_role_renders_as_unknown(self) -> None:
         """None role should render as 'unknown', not crash (45c8578)."""
         conv = self._make_conv(
             [
-                Message(id="m1", role="unknown", text="Message with unknown role"),
+                make_msg(id="m1", role="unknown", text="Message with unknown role"),
             ]
         )
         md = format_conversation_markdown(conv)
         assert "unknown" in md
         assert "Message with unknown role" in md
 
-    def test_none_title_renders_as_untitled(self):
+    def test_none_title_renders_as_untitled(self) -> None:
         """None title should render as 'Untitled'."""
         conv = self._make_conv(
-            [Message(id="m1", role="user", text="Hello")],
+            [make_msg(id="m1", role="user", text="Hello")],
             title=None,
         )
         md = format_conversation_markdown(conv)
         assert "Untitled" in md
 
-    def test_json_text_wrapped_in_code_block(self):
+    def test_json_text_wrapped_in_code_block(self) -> None:
         """JSON text should be wrapped in code blocks."""
         json_text = json.dumps({"key": "value"})
         conv = self._make_conv(
             [
-                Message(id="m1", role="assistant", text=json_text),
+                make_msg(id="m1", role="assistant", text=json_text),
             ]
         )
         md = format_conversation_markdown(conv)
         assert "```json" in md
 
-    def test_all_messages_none_text(self):
+    def test_all_messages_none_text(self) -> None:
         """All messages with None text should produce header-only markdown."""
         conv = self._make_conv(
             [
-                Message(id="m1", role="user", text=None),
-                Message(id="m2", role="assistant", text=None),
+                make_msg(id="m1", role="user", text=None),
+                make_msg(id="m2", role="assistant", text=None),
             ]
         )
         md = format_conversation_markdown(conv)
         assert "# Test" in md
         assert "## " not in md
 
-    def test_empty_messages_list(self):
+    def test_empty_messages_list(self) -> None:
         """Conversation with no messages should not crash."""
         conv = self._make_conv([])
         md = format_conversation_markdown(conv)
@@ -281,58 +282,58 @@ class TestFormatConversationMarkdownNoneGuards:
 class TestConversationSummaryDisplayDate:
     """ConversationSummary.display_date must handle None timestamps (f9c88e2)."""
 
-    def test_both_none_returns_none(self):
+    def test_both_none_returns_none(self) -> None:
         summary = ConversationSummary(
-            id="test",
-            provider="test",
+            id=ConversationId("test"),
+            provider=Provider.UNKNOWN,
             created_at=None,
             updated_at=None,
         )
         assert summary.display_date is None
 
-    def test_only_created_at(self):
+    def test_only_created_at(self) -> None:
         dt = datetime(2024, 6, 15, tzinfo=timezone.utc)
         summary = ConversationSummary(
-            id="test",
-            provider="test",
+            id=ConversationId("test"),
+            provider=Provider.UNKNOWN,
             created_at=dt,
             updated_at=None,
         )
         assert summary.display_date == dt
 
-    def test_only_updated_at(self):
+    def test_only_updated_at(self) -> None:
         dt = datetime(2024, 6, 15, tzinfo=timezone.utc)
         summary = ConversationSummary(
-            id="test",
-            provider="test",
+            id=ConversationId("test"),
+            provider=Provider.UNKNOWN,
             created_at=None,
             updated_at=dt,
         )
         assert summary.display_date == dt
 
-    def test_both_present_prefers_updated(self):
+    def test_both_present_prefers_updated(self) -> None:
         created = datetime(2024, 1, 1, tzinfo=timezone.utc)
         updated = datetime(2024, 6, 15, tzinfo=timezone.utc)
         summary = ConversationSummary(
-            id="test",
-            provider="test",
+            id=ConversationId("test"),
+            provider=Provider.UNKNOWN,
             created_at=created,
             updated_at=updated,
         )
         assert summary.display_date == updated
 
-    def test_display_title_none_title_uses_id(self):
-        summary = ConversationSummary(id="abcdef12", provider="test", title=None)
+    def test_display_title_none_title_uses_id(self) -> None:
+        summary = ConversationSummary(id=ConversationId("abcdef12"), provider=Provider.UNKNOWN, title=None)
         assert summary.display_title == "abcdef12"
 
-    def test_display_title_empty_title_uses_id(self):
-        summary = ConversationSummary(id="abcdef12", provider="test", title="")
+    def test_display_title_empty_title_uses_id(self) -> None:
+        summary = ConversationSummary(id=ConversationId("abcdef12"), provider=Provider.UNKNOWN, title="")
         assert summary.display_title == "abcdef12"
 
-    def test_display_title_from_metadata(self):
+    def test_display_title_from_metadata(self) -> None:
         summary = ConversationSummary(
-            id="test",
-            provider="test",
+            id=ConversationId("test"),
+            provider=Provider.UNKNOWN,
             title="Original",
             metadata={"title": "User Title"},
         )

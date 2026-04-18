@@ -11,7 +11,9 @@ from __future__ import annotations
 
 import copy
 import json
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
@@ -32,7 +34,7 @@ EXPECTED_ANNOTATIONS: dict[str, list[str]] = {
 }
 
 
-def _collect_semantic_roles(schema: dict, *, roles: list[str] | None = None) -> list[str]:
+def _collect_semantic_roles(schema: dict[str, Any], *, roles: list[str] | None = None) -> list[str]:
     """Recursively collect all x-polylogue-semantic-role values from a schema."""
     if roles is None:
         roles = []
@@ -50,7 +52,7 @@ def _collect_semantic_roles(schema: dict, *, roles: list[str] | None = None) -> 
     return roles
 
 
-def _bundled_schema(provider: str) -> dict:
+def _bundled_schema(provider: str) -> dict[str, Any]:
     package = _BUNDLED_REGISTRY.get_package(provider, version="default")
     assert package is not None, f"No bundled package for provider {provider}"
     schema = _BUNDLED_REGISTRY.get_element_schema(
@@ -117,8 +119,9 @@ class TestSemanticGeneratorActivation:
         corpus = SyntheticCorpus.for_provider(provider)
         corpus.generate(count=1, seed=42, messages_per_conversation=range(3, 5))
 
-        assert hasattr(corpus, "_semantic_gen"), f"_semantic_gen not set after generation for {provider}"
-        assert isinstance(corpus._semantic_gen, SemanticValueGenerator)
+        semantic_gen = getattr(corpus, "_semantic_gen", None)
+        assert semantic_gen is not None, f"_semantic_gen not set after generation for {provider}"
+        assert isinstance(semantic_gen, SemanticValueGenerator)
 
     @pytest.mark.parametrize("provider", SyntheticCorpus.available_providers())
     def test_semantic_gen_has_correct_role_cycle(self, provider: str) -> None:
@@ -127,7 +130,9 @@ class TestSemanticGeneratorActivation:
         corpus.generate(count=1, seed=42, messages_per_conversation=range(3, 5))
 
         expected_roles = corpus._role_cycle()
-        assert corpus._semantic_gen.role_cycle == expected_roles
+        semantic_gen = getattr(corpus, "_semantic_gen", None)
+        assert isinstance(semantic_gen, SemanticValueGenerator)
+        assert semantic_gen.role_cycle == expected_roles
 
 
 # =============================================================================
@@ -139,20 +144,30 @@ class TestSemanticRoundtrip:
     """Verify roundtrip still works with semantic generation active."""
 
     @pytest.mark.parametrize("provider", SyntheticCorpus.available_providers())
-    def test_roundtrip_with_annotations(self, provider: str, synthetic_source) -> None:
+    def test_roundtrip_with_annotations(
+        self,
+        provider: str,
+        synthetic_source: Callable[..., object],
+    ) -> None:
         """Synthetic data with semantic annotations roundtrips through parsers."""
+        from polylogue.paths import Source
         from polylogue.sources import iter_source_conversations
 
-        source = synthetic_source(provider, count=3, seed=42)
+        source = cast(Source, synthetic_source(provider, count=3, seed=42))
         convos = list(iter_source_conversations(source))
         assert convos, f"No conversations parsed for {provider}"
 
     @pytest.mark.parametrize("provider", SyntheticCorpus.available_providers())
-    def test_roundtrip_different_seed(self, provider: str, synthetic_source) -> None:
+    def test_roundtrip_different_seed(
+        self,
+        provider: str,
+        synthetic_source: Callable[..., object],
+    ) -> None:
         """Roundtrip with a different seed to catch seed-dependent issues."""
+        from polylogue.paths import Source
         from polylogue.sources import iter_source_conversations
 
-        source = synthetic_source(provider, count=2, seed=99)
+        source = cast(Source, synthetic_source(provider, count=2, seed=99))
         convos = list(iter_source_conversations(source))
         assert convos, f"No conversations parsed for {provider} (seed=99)"
 
@@ -191,7 +206,7 @@ class TestWireFormatFallback:
         assert convos, f"No conversations parsed without annotations for {provider}"
 
 
-def _strip_semantic_roles(schema: dict) -> None:
+def _strip_semantic_roles(schema: dict[str, Any]) -> None:
     """Recursively remove all x-polylogue-semantic-role annotations."""
     if not isinstance(schema, dict):
         return

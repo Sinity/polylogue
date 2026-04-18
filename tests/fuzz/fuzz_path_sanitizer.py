@@ -120,16 +120,16 @@ class TestPathSanitizerFuzz:
     """Pytest-compatible fuzz tests using seed corpus."""
 
     @pytest.mark.parametrize("data", PATH_TRAVERSAL_CORPUS_BYTES)
-    def test_path_sanitizer_corpus(self, data: bytes):
+    def test_path_sanitizer_corpus(self, data: bytes) -> None:
         """Run path sanitizer fuzz with seed corpus."""
         fuzz_path_sanitizer(data)
 
     @pytest.mark.parametrize("data", PATH_TRAVERSAL_CORPUS_BYTES)
-    def test_name_sanitizer_corpus(self, data: bytes):
+    def test_name_sanitizer_corpus(self, data: bytes) -> None:
         """Run name sanitizer fuzz with seed corpus."""
         fuzz_name_sanitizer(data)
 
-    def test_path_sanitizer_random(self):
+    def test_path_sanitizer_random(self) -> None:
         """Run path sanitizer with random bytes (limited iterations)."""
         import random
 
@@ -138,7 +138,7 @@ class TestPathSanitizerFuzz:
             data = bytes(random.randint(0, 255) for _ in range(length))
             fuzz_path_sanitizer(data)
 
-    def test_name_sanitizer_random(self):
+    def test_name_sanitizer_random(self) -> None:
         """Run name sanitizer with random bytes (limited iterations)."""
         import random
 
@@ -153,7 +153,7 @@ class TestPathSanitizerFuzz:
 # =============================================================================
 
 
-def main():
+def main() -> None:
     """Run atheris fuzzer with libFuzzer engine."""
     if not HAS_ATHERIS:
         print("atheris not installed, running pytest-compatible tests instead")

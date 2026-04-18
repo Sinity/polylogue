@@ -15,6 +15,8 @@ from pathlib import Path
 import pytest
 
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
+from polylogue.storage.store import RawConversationRecord
+from tests.infra.storage_records import make_conversation, make_raw_conversation
 
 # test_db and test_conn fixtures are in conftest.py
 
@@ -32,17 +34,13 @@ class TestRawConversationStorage:
 
     async def test_save_raw_conversation_new(self, backend: SQLiteBackend) -> None:
         """Saving a new raw conversation returns True."""
-        from datetime import datetime, timezone
-
-        from polylogue.storage.store import RawConversationRecord
-
-        record = RawConversationRecord(
+        record = make_raw_conversation(
             raw_id="abc123",
             provider_name="test-provider",
             source_path="/tmp/test.json",
             source_index=0,
             blob_size=len(b'{"test": "data"}'),
-            acquired_at=datetime.now(timezone.utc).isoformat(),
+            acquired_at="2026-02-02T12:00:00+00:00",
             file_mtime=None,
         )
 
@@ -52,17 +50,13 @@ class TestRawConversationStorage:
 
     async def test_save_raw_conversation_duplicate(self, backend: SQLiteBackend) -> None:
         """Saving a duplicate raw_id returns False (INSERT OR IGNORE)."""
-        from datetime import datetime, timezone
-
-        from polylogue.storage.store import RawConversationRecord
-
-        record = RawConversationRecord(
+        record = make_raw_conversation(
             raw_id="abc123",
             provider_name="test-provider",
             source_path="/tmp/test.json",
             source_index=0,
             blob_size=len(b'{"test": "data"}'),
-            acquired_at=datetime.now(timezone.utc).isoformat(),
+            acquired_at="2026-02-02T12:00:00+00:00",
         )
 
         # First save succeeds
@@ -73,9 +67,7 @@ class TestRawConversationStorage:
 
     async def test_get_raw_conversation(self, backend: SQLiteBackend) -> None:
         """Retrieve a saved raw conversation by ID."""
-        from polylogue.storage.store import RawConversationRecord
-
-        original = RawConversationRecord(
+        original = make_raw_conversation(
             raw_id="xyz789",
             provider_name="chatgpt",
             source_path="/path/to/export.json",
@@ -105,17 +97,13 @@ class TestRawConversationStorage:
 
     async def test_iter_raw_conversations(self, backend: SQLiteBackend) -> None:
         """Iterate over all raw conversations."""
-        from datetime import datetime, timezone
-
-        from polylogue.storage.store import RawConversationRecord
-
         records = [
-            RawConversationRecord(
+            make_raw_conversation(
                 raw_id=f"raw-{i}",
                 provider_name="test" if i < 2 else "other",
                 source_path=f"/path/{i}.json",
                 blob_size=len(b"{}"),
-                acquired_at=datetime.now(timezone.utc).isoformat(),
+                acquired_at="2026-02-02T12:00:00+00:00",
             )
             for i in range(5)
         ]
@@ -128,17 +116,13 @@ class TestRawConversationStorage:
 
     async def test_iter_raw_conversations_by_provider(self, backend: SQLiteBackend) -> None:
         """Filter iteration by provider name."""
-        from datetime import datetime, timezone
-
-        from polylogue.storage.store import RawConversationRecord
-
         records = [
-            RawConversationRecord(
+            make_raw_conversation(
                 raw_id=f"raw-{i}",
                 provider_name="chatgpt" if i % 2 == 0 else "claude-ai",
                 source_path=f"/path/{i}.json",
                 blob_size=len(b"{}"),
-                acquired_at=datetime.now(timezone.utc).isoformat(),
+                acquired_at="2026-02-02T12:00:00+00:00",
             )
             for i in range(6)
         ]
@@ -154,17 +138,13 @@ class TestRawConversationStorage:
 
     async def test_iter_raw_ids_by_provider_name(self, backend: SQLiteBackend) -> None:
         """ID iteration can filter by exact provider name without hydrating raw blobs."""
-        from datetime import datetime, timezone
-
-        from polylogue.storage.store import RawConversationRecord
-
         records = [
-            RawConversationRecord(
+            make_raw_conversation(
                 raw_id=f"raw-id-{i}",
                 provider_name="chatgpt" if i % 2 == 0 else "claude-ai",
                 source_path=f"/path/{i}.json",
                 blob_size=len(b"{}"),
-                acquired_at=datetime.now(timezone.utc).isoformat(),
+                acquired_at="2026-02-02T12:00:00+00:00",
             )
             for i in range(6)
         ]
@@ -181,17 +161,13 @@ class TestRawConversationStorage:
 
     async def test_iter_raw_headers_by_provider_name(self, backend: SQLiteBackend) -> None:
         """Header iteration exposes blob sizes without hydrating full raw records."""
-        from datetime import datetime, timezone
-
-        from polylogue.storage.store import RawConversationRecord
-
         records = [
-            RawConversationRecord(
+            make_raw_conversation(
                 raw_id=f"raw-header-{i}",
                 provider_name="chatgpt" if i % 2 == 0 else "claude-ai",
                 source_path=f"/path/{i}.json",
                 blob_size=(i + 1) * 10,
-                acquired_at=datetime.now(timezone.utc).isoformat(),
+                acquired_at=f"2026-02-02T12:00:0{i}+00:00",
             )
             for i in range(4)
         ]
@@ -205,18 +181,14 @@ class TestRawConversationStorage:
 
     async def test_get_raw_blob_sizes_preserves_requested_order(self, backend: SQLiteBackend) -> None:
         """Blob-size lookups should preserve caller order for batch shaping."""
-        from datetime import datetime, timezone
-
-        from polylogue.storage.store import RawConversationRecord
-
         for raw_id, blob_size in (("raw-a", 10), ("raw-b", 20), ("raw-c", 30)):
             await backend.save_raw_conversation(
-                RawConversationRecord(
+                make_raw_conversation(
                     raw_id=raw_id,
                     provider_name="chatgpt",
                     source_path=f"/path/{raw_id}.json",
                     blob_size=blob_size,
-                    acquired_at=datetime.now(timezone.utc).isoformat(),
+                    acquired_at="2026-02-02T12:00:00+00:00",
                 )
             )
 
@@ -226,19 +198,15 @@ class TestRawConversationStorage:
 
     async def test_raw_provider_filters_prefer_payload_provider_when_present(self, backend: SQLiteBackend) -> None:
         """Raw provider filtering should use payload_provider when validation/parsing has classified the payload."""
-        from datetime import datetime, timezone
-
-        from polylogue.storage.store import RawConversationRecord
-
         await backend.save_raw_conversation(
-            RawConversationRecord(
+            make_raw_conversation(
                 raw_id="raw-generic",
                 provider_name="unknown",
                 payload_provider="chatgpt",
                 source_name="inbox",
                 source_path="/path/raw.json",
                 blob_size=len(b"{}"),
-                acquired_at=datetime.now(timezone.utc).isoformat(),
+                acquired_at="2026-02-02T12:00:00+00:00",
             )
         )
 
@@ -252,18 +220,14 @@ class TestRawConversationStorage:
 
     async def test_iter_raw_conversations_with_limit(self, backend: SQLiteBackend) -> None:
         """Limit the number of records returned."""
-        from datetime import datetime, timezone
-
-        from polylogue.storage.store import RawConversationRecord
-
         for i in range(10):
             await backend.save_raw_conversation(
-                RawConversationRecord(
+                make_raw_conversation(
                     raw_id=f"raw-{i}",
                     provider_name="test",
                     source_path=f"/path/{i}.json",
                     blob_size=len(b"{}"),
-                    acquired_at=datetime.now(timezone.utc).isoformat(),
+                    acquired_at="2026-02-02T12:00:00+00:00",
                 )
             )
 
@@ -276,22 +240,18 @@ class TestRawConversationStorage:
         The link goes: conversations.raw_id → raw_conversations.raw_id
         (data flows from raw to parsed, FK points backward to origin)
         """
-        from datetime import datetime, timezone
-
-        from polylogue.storage.store import ConversationRecord, RawConversationRecord
-
         # First store the raw conversation
-        raw_record = RawConversationRecord(
+        raw_record = make_raw_conversation(
             raw_id="raw-abc123",
             provider_name="test",
             source_path="/test.json",
             blob_size=len(b'{"id": "test-conv"}'),
-            acquired_at=datetime.now(timezone.utc).isoformat(),
+            acquired_at="2026-02-02T12:00:00+00:00",
         )
         await backend.save_raw_conversation(raw_record)
 
         # Then store parsed conversation with link to raw
-        conv = ConversationRecord(
+        conv = make_conversation(
             conversation_id="conv-link-test",
             provider_name="test",
             provider_conversation_id="test-123",
@@ -302,20 +262,18 @@ class TestRawConversationStorage:
 
         # Verify the link exists in database
         async with backend.connection() as conn:
-            row = await conn.execute(
+            cursor = await conn.execute(
                 "SELECT raw_id FROM conversations WHERE conversation_id = ?",
                 ("conv-link-test",),
             )
-            row = await row.fetchone()
+            row = await cursor.fetchone()
 
         assert row is not None
         assert row["raw_id"] == "raw-abc123"
 
     async def test_conversation_without_raw_id(self, backend: SQLiteBackend) -> None:
         """Conversations can be saved without raw_id (e.g., direct file ingest)."""
-        from polylogue.storage.store import ConversationRecord
-
-        conv = ConversationRecord(
+        conv = make_conversation(
             conversation_id="conv-no-raw",
             provider_name="test",
             provider_conversation_id="test-456",
@@ -326,33 +284,29 @@ class TestRawConversationStorage:
 
         # Verify it saved correctly
         async with backend.connection() as conn:
-            row = await conn.execute(
+            cursor = await conn.execute(
                 "SELECT raw_id FROM conversations WHERE conversation_id = ?",
                 ("conv-no-raw",),
             )
-            row = await row.fetchone()
+            row = await cursor.fetchone()
 
         assert row is not None
         assert row["raw_id"] is None
 
     async def test_get_raw_conversation_count(self, backend: SQLiteBackend) -> None:
         """Count raw conversations."""
-        from datetime import datetime, timezone
-
-        from polylogue.storage.store import RawConversationRecord
-
         # Initially empty
         assert await backend.get_raw_conversation_count() == 0
 
         # Add some records
         for i in range(5):
             await backend.save_raw_conversation(
-                RawConversationRecord(
+                make_raw_conversation(
                     raw_id=f"count-{i}",
                     provider_name="chatgpt" if i < 3 else "claude-ai",
                     source_path=f"/path/{i}.json",
                     blob_size=len(b"{}"),
-                    acquired_at=datetime.now(timezone.utc).isoformat(),
+                    acquired_at="2026-02-02T12:00:00+00:00",
                 )
             )
 
@@ -366,19 +320,15 @@ class TestRawConversationStorage:
 
     async def test_iter_raw_conversations_without_limit_returns_all(self, backend: SQLiteBackend) -> None:
         """Iterating without limit returns all records."""
-        from datetime import datetime, timezone
-
-        from polylogue.storage.store import RawConversationRecord
-
         # Save 7 records
         for i in range(7):
-            record = RawConversationRecord(
+            record = make_raw_conversation(
                 raw_id=f"raw-all-{i}",
                 provider_name="test",
                 source_path=f"/tmp/test-{i}.json",
                 source_index=i,
                 blob_size=len(f'{{"idx": {i}}}'.encode()),
-                acquired_at=datetime.now(timezone.utc).isoformat(),
+                acquired_at="2026-02-02T12:00:00+00:00",
                 file_mtime=None,
             )
             await backend.save_raw_conversation(record)
@@ -397,9 +347,7 @@ class TestRawConversationRecordValidation:
 
     def test_valid_record(self) -> None:
         """Valid record passes validation."""
-        from polylogue.storage.store import RawConversationRecord
-
-        record = RawConversationRecord(
+        record = make_raw_conversation(
             raw_id="valid-id",
             provider_name="chatgpt",
             source_path="/path/to/file.json",
@@ -412,10 +360,8 @@ class TestRawConversationRecordValidation:
 
     def test_empty_raw_id_fails(self) -> None:
         """Empty raw_id fails validation."""
-        from polylogue.storage.store import RawConversationRecord
-
         with pytest.raises(ValueError, match="cannot be empty"):
-            RawConversationRecord(
+            make_raw_conversation(
                 raw_id="",
                 provider_name="test",
                 source_path="/test.json",
@@ -425,10 +371,8 @@ class TestRawConversationRecordValidation:
 
     def test_empty_provider_name_fails(self) -> None:
         """Empty provider_name fails validation."""
-        from polylogue.storage.store import RawConversationRecord
-
         with pytest.raises(ValueError, match="cannot be empty"):
-            RawConversationRecord(
+            make_raw_conversation(
                 raw_id="test-id",
                 provider_name="",
                 source_path="/test.json",
@@ -438,10 +382,8 @@ class TestRawConversationRecordValidation:
 
     def test_blob_size_is_persisted(self) -> None:
         """blob_size can be any non-negative integer."""
-        from polylogue.storage.store import RawConversationRecord
-
         # blob_size is just an int, no bounds checking
-        record = RawConversationRecord(
+        record = make_raw_conversation(
             raw_id="test-id",
             provider_name="test",
             source_path="/test.json",
@@ -458,13 +400,13 @@ class TestContentHashing:
     For parsing tests, see test_fixtures_contract.py.
     """
 
-    def test_raw_ids_are_sha256(self, raw_synthetic_samples: list) -> None:
+    def test_raw_ids_are_sha256(self, raw_synthetic_samples: list[RawConversationRecord]) -> None:
         """Raw IDs are valid SHA256 hashes."""
         for sample in raw_synthetic_samples:
             assert len(sample.raw_id) == 64, f"Invalid hash length: {sample.raw_id}"
             assert all(c in "0123456789abcdef" for c in sample.raw_id)
 
-    def test_content_matches_hash(self, raw_synthetic_samples: list) -> None:
+    def test_content_matches_hash(self, raw_synthetic_samples: list[RawConversationRecord]) -> None:
         """Raw IDs are valid SHA256 hashes (constructed during fixture generation)."""
         # Note: raw_content is no longer stored on RawConversationRecord;
         # content is in the blob store keyed by raw_id. The fixture constructs

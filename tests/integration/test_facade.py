@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from typing import Any
 
 import pytest
 
@@ -11,7 +12,7 @@ from polylogue.config import Source
 
 
 @pytest.fixture
-def sample_chatgpt_file(tmp_path):
+def sample_chatgpt_file(tmp_path: Any) -> Any:
     """Create a sample ChatGPT export file."""
     export = {
         "title": "Python Help",
@@ -58,7 +59,7 @@ def sample_chatgpt_file(tmp_path):
 
 
 @pytest.fixture
-def sample_claude_file(tmp_path):
+def sample_claude_file(tmp_path: Any) -> Any:
     """Create a sample Claude AI export file."""
     # Claude AI exports are JSONL with chat_messages array
     export = {
@@ -91,7 +92,7 @@ class TestPolylogueParsing:
     """Test ingestion functionality."""
 
     @pytest.mark.asyncio
-    async def test_ingest_chatgpt_file(self, workspace_env, sample_chatgpt_file):
+    async def test_ingest_chatgpt_file(self, workspace_env: Any, sample_chatgpt_file: Any) -> None:
         """Test ingesting a ChatGPT export file."""
         archive = Polylogue(
             archive_root=workspace_env["archive_root"],
@@ -110,7 +111,7 @@ class TestPolylogueParsing:
         assert conversations[0].title == "Python Help"
 
     @pytest.mark.asyncio
-    async def test_ingest_claude_file(self, workspace_env, sample_claude_file):
+    async def test_ingest_claude_file(self, workspace_env: Any, sample_claude_file: Any) -> None:
         """Test ingesting a Claude AI export file."""
         archive = Polylogue(
             archive_root=workspace_env["archive_root"],
@@ -128,7 +129,7 @@ class TestPolylogueParsing:
         assert len(conversations) > 0
 
     @pytest.mark.asyncio
-    async def test_ingest_duplicate_is_idempotent(self, workspace_env, sample_chatgpt_file):
+    async def test_ingest_duplicate_is_idempotent(self, workspace_env: Any, sample_chatgpt_file: Any) -> None:
         """Test that re-ingesting the same file skips duplicates.
 
         With stage-based ingestion (acquire → parse), duplicates are skipped
@@ -155,7 +156,7 @@ class TestPolylogueParsing:
         assert len(conversations) == first_count
 
     @pytest.mark.asyncio
-    async def test_ingest_with_custom_source_name(self, workspace_env, sample_chatgpt_file):
+    async def test_ingest_with_custom_source_name(self, workspace_env: Any, sample_chatgpt_file: Any) -> None:
         """Test ingesting with a custom source name."""
         archive = Polylogue(
             archive_root=workspace_env["archive_root"],
@@ -166,7 +167,7 @@ class TestPolylogueParsing:
         assert result.counts["conversations"] > 0
 
     @pytest.mark.asyncio
-    async def test_parse_sources(self, workspace_env, sample_chatgpt_file, sample_claude_file):
+    async def test_parse_sources(self, workspace_env: Any, sample_chatgpt_file: Any, sample_claude_file: Any) -> None:
         """Test ingesting multiple sources."""
         db_path = workspace_env["data_root"] / "polylogue.db"
 
@@ -202,7 +203,7 @@ class TestPolylogueQuery:
     """Test query functionality."""
 
     @pytest.mark.asyncio
-    async def test_get_conversation_by_full_id(self, workspace_env, sample_chatgpt_file):
+    async def test_get_conversation_by_full_id(self, workspace_env: Any, sample_chatgpt_file: Any) -> None:
         """Test getting a conversation by full ID."""
         archive = Polylogue(
             archive_root=workspace_env["archive_root"],
@@ -221,7 +222,7 @@ class TestPolylogueQuery:
         assert conv.title == "Python Help"
 
     @pytest.mark.asyncio
-    async def test_get_conversation_by_partial_id(self, workspace_env, sample_chatgpt_file):
+    async def test_get_conversation_by_partial_id(self, workspace_env: Any, sample_chatgpt_file: Any) -> None:
         """Test getting a conversation by partial ID (prefix match)."""
         archive = Polylogue(
             archive_root=workspace_env["archive_root"],
@@ -240,7 +241,7 @@ class TestPolylogueQuery:
         assert conv.id == conv_id
 
     @pytest.mark.asyncio
-    async def test_get_conversation_nonexistent(self, workspace_env):
+    async def test_get_conversation_nonexistent(self, workspace_env: Any) -> None:
         """Test getting a non-existent conversation returns None."""
         archive = Polylogue(
             archive_root=workspace_env["archive_root"],
@@ -251,7 +252,9 @@ class TestPolylogueQuery:
         assert conv is None
 
     @pytest.mark.asyncio
-    async def test_list_conversations_all(self, workspace_env, sample_chatgpt_file, sample_claude_file):
+    async def test_list_conversations_all(
+        self, workspace_env: Any, sample_chatgpt_file: Any, sample_claude_file: Any
+    ) -> None:
         """Test listing all conversations."""
         archive = Polylogue(
             archive_root=workspace_env["archive_root"],
@@ -267,7 +270,9 @@ class TestPolylogueQuery:
         assert len(all_convs) >= 2
 
     @pytest.mark.asyncio
-    async def test_list_conversations_filter_by_provider(self, workspace_env, sample_chatgpt_file, sample_claude_file):
+    async def test_list_conversations_filter_by_provider(
+        self, workspace_env: Any, sample_chatgpt_file: Any, sample_claude_file: Any
+    ) -> None:
         """Test filtering conversations by provider."""
         archive = Polylogue(
             archive_root=workspace_env["archive_root"],
@@ -288,7 +293,7 @@ class TestPolylogueQuery:
         assert all(c.provider == "claude-ai" for c in claude_convs)
 
     @pytest.mark.asyncio
-    async def test_list_conversations_with_limit(self, workspace_env, sample_chatgpt_file):
+    async def test_list_conversations_with_limit(self, workspace_env: Any, sample_chatgpt_file: Any) -> None:
         """Test limiting the number of conversations returned."""
         archive = Polylogue(
             archive_root=workspace_env["archive_root"],
@@ -306,7 +311,7 @@ class TestPolylogueSemanticProjections:
     """Test semantic projections on retrieved conversations."""
 
     @pytest.mark.asyncio
-    async def test_conversation_substantive_only(self, workspace_env, sample_chatgpt_file):
+    async def test_conversation_substantive_only(self, workspace_env: Any, sample_chatgpt_file: Any) -> None:
         """Test getting substantive messages only."""
         archive = Polylogue(
             archive_root=workspace_env["archive_root"],
@@ -325,7 +330,7 @@ class TestPolylogueSemanticProjections:
         assert all(msg.is_substantive for msg in substantive)
 
     @pytest.mark.asyncio
-    async def test_conversation_iter_pairs(self, workspace_env, sample_chatgpt_file):
+    async def test_conversation_iter_pairs(self, workspace_env: Any, sample_chatgpt_file: Any) -> None:
         """Test iterating user/assistant pairs."""
         archive = Polylogue(
             archive_root=workspace_env["archive_root"],
@@ -345,7 +350,7 @@ class TestPolylogueSemanticProjections:
             assert pair.assistant.role == "assistant"
 
     @pytest.mark.asyncio
-    async def test_conversation_without_noise(self, workspace_env, sample_chatgpt_file):
+    async def test_conversation_without_noise(self, workspace_env: Any, sample_chatgpt_file: Any) -> None:
         """Test filtering out noise messages."""
         archive = Polylogue(
             archive_root=workspace_env["archive_root"],
@@ -366,7 +371,7 @@ class TestPolylogueSearch:
     """Test search functionality."""
 
     @pytest.mark.asyncio
-    async def test_search_basic(self, workspace_env, sample_chatgpt_file):
+    async def test_search_basic(self, workspace_env: Any, sample_chatgpt_file: Any) -> None:
         """Test basic search functionality."""
         archive = Polylogue(
             archive_root=workspace_env["archive_root"],
@@ -389,7 +394,7 @@ class TestPolylogueSearch:
         assert first_hit.conversation_path.name == "conversation.md"
 
     @pytest.mark.asyncio
-    async def test_search_with_limit(self, workspace_env, sample_chatgpt_file):
+    async def test_search_with_limit(self, workspace_env: Any, sample_chatgpt_file: Any) -> None:
         """Test search with result limit."""
         archive = Polylogue(
             archive_root=workspace_env["archive_root"],
@@ -414,7 +419,7 @@ class TestPolylogueEdgeCases:
     """Test edge cases and error handling."""
 
     @pytest.mark.asyncio
-    async def test_empty_archive(self, workspace_env):
+    async def test_empty_archive(self, workspace_env: Any) -> None:
         """Test operations on an empty archive."""
         archive = Polylogue(
             archive_root=workspace_env["archive_root"],
@@ -430,7 +435,7 @@ class TestPolylogueEdgeCases:
         assert conv is None
 
     @pytest.mark.asyncio
-    async def test_ingest_nonexistent_file(self, workspace_env, tmp_path):
+    async def test_ingest_nonexistent_file(self, workspace_env: Any, tmp_path: Any) -> None:
         """Test ingesting a non-existent file."""
         archive = Polylogue(
             archive_root=workspace_env["archive_root"],

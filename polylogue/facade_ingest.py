@@ -3,23 +3,41 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from polylogue.config import Source
 
+if TYPE_CHECKING:
+    from polylogue.config import Config
+    from polylogue.pipeline.services.parsing_models import ParseResult
+    from polylogue.storage.backends.async_sqlite import SQLiteBackend
+    from polylogue.storage.repository import ConversationRepository
+
 
 class PolylogueIngestMixin:
+    if TYPE_CHECKING:
+
+        @property
+        def config(self) -> Config: ...
+
+        @property
+        def backend(self) -> SQLiteBackend: ...
+
+        @property
+        def repository(self) -> ConversationRepository: ...
+
     async def parse_file(
         self,
         path: str | Path,
         *,
         source_name: str | None = None,
-    ):
+    ) -> ParseResult:
         from polylogue.pipeline.services.parsing import ParsingService
 
         parsing_service = ParsingService(
             repository=self.repository,
-            archive_root=self._config.archive_root,
-            config=self._config,
+            archive_root=self.config.archive_root,
+            config=self.config,
         )
 
         file_path = Path(path).expanduser().resolve()
@@ -38,17 +56,17 @@ class PolylogueIngestMixin:
         sources: list[Source] | None = None,
         *,
         download_assets: bool = True,
-    ):
+    ) -> ParseResult:
         from polylogue.pipeline.services.parsing import ParsingService
 
         parsing_service = ParsingService(
             repository=self.repository,
-            archive_root=self._config.archive_root,
-            config=self._config,
+            archive_root=self.config.archive_root,
+            config=self.config,
         )
 
         if sources is None:
-            sources = self._config.sources
+            sources = self.config.sources
 
         return await parsing_service.parse_sources(
             sources=sources,
@@ -59,5 +77,5 @@ class PolylogueIngestMixin:
     async def rebuild_index(self) -> bool:
         from polylogue.pipeline.services.indexing import IndexService
 
-        index_service = IndexService(config=self._config, backend=self.backend)
+        index_service = IndexService(config=self.config, backend=self.backend)
         return await index_service.rebuild_index()

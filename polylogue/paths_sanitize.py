@@ -10,7 +10,7 @@ from pathlib import Path
 _SAFE_PATH_COMPONENT_RE = re.compile(r"[^A-Za-z0-9._-]")
 
 
-def safe_path_component(raw: str, *, fallback: str = "item") -> str:
+def safe_path_component(raw: object | None, *, fallback: str = "item") -> str:
     """Return a filesystem-safe path component derived from raw input."""
     if raw is None:
         raw = ""

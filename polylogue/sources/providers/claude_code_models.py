@@ -7,6 +7,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from polylogue.lib.viewports import ReasoningTrace, TokenUsage, ToolCall, classify_tool
+from polylogue.types import Provider
 
 
 class ClaudeCodeToolUse(BaseModel):
@@ -25,7 +26,7 @@ class ClaudeCodeToolUse(BaseModel):
             id=self.id,
             input=self.input,
             category=classify_tool(self.name, self.input),
-            provider="claude-code",
+            provider=Provider.CLAUDE_CODE,
             raw=self.model_dump(),
         )
 
@@ -61,7 +62,7 @@ class ClaudeCodeThinkingBlock(BaseModel):
     def to_reasoning_trace(self) -> ReasoningTrace:
         return ReasoningTrace(
             text=self.thinking,
-            provider="claude-code",
+            provider=Provider.CLAUDE_CODE,
             raw=self.model_dump(),
         )
 

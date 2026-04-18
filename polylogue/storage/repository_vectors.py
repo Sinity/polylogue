@@ -9,9 +9,14 @@ from typing import TYPE_CHECKING
 from polylogue.logging import get_logger
 from polylogue.protocols import VectorProvider
 from polylogue.storage.embedding_stats import read_embedding_stats_async
+from polylogue.storage.repository_contracts import RepositoryBackendProtocol
 
 if TYPE_CHECKING:
     import aiosqlite
+
+    from polylogue.lib.conversation_models import Conversation
+    from polylogue.lib.stats import ArchiveStats
+    from polylogue.storage.backends.query_store import SQLiteQueryStore
 
 
 def resolve_optional_vector_provider(
@@ -30,12 +35,18 @@ logger = get_logger(__name__)
 
 
 class RepositoryVectorMixin:
+    if TYPE_CHECKING:
+        _backend: RepositoryBackendProtocol
+        queries: SQLiteQueryStore
+
+        async def get_many(self, conversation_ids: builtins.list[str]) -> builtins.list[Conversation]: ...
+
     async def search_similar(
         self,
         text: str,
         limit: int = 10,
         vector_provider: VectorProvider | None = None,
-    ) -> builtins.list[object]:
+    ) -> builtins.list[Conversation]:
         if not vector_provider:
             raise ValueError("Semantic search requires a vector provider.")
 
@@ -121,7 +132,7 @@ class RepositoryVectorMixin:
 
         return [(msg_to_conv[msg_id], msg_id, distance) for msg_id, distance in results if msg_id in msg_to_conv]
 
-    async def get_archive_stats(self, *, conn: aiosqlite.Connection | None = None):
+    async def get_archive_stats(self, *, conn: aiosqlite.Connection | None = None) -> ArchiveStats:
         from polylogue.lib.stats import ArchiveStats
 
         if conn is None:
@@ -135,13 +146,16 @@ class RepositoryVectorMixin:
 
         try:
             cursor = await conn.execute("SELECT COUNT(*) FROM conversations")
-            conv_count = (await cursor.fetchone())[0]
+            conv_row = await cursor.fetchone()
+            conv_count = int(conv_row[0]) if conv_row is not None else 0
 
             cursor = await conn.execute("SELECT COUNT(*) FROM messages")
-            msg_count = (await cursor.fetchone())[0]
+            msg_row = await cursor.fetchone()
+            msg_count = int(msg_row[0]) if msg_row is not None else 0
 
             cursor = await conn.execute("SELECT COUNT(*) FROM attachments")
-            att_count = (await cursor.fetchone())[0]
+            att_row = await cursor.fetchone()
+            att_count = int(att_row[0]) if att_row is not None else 0
 
             cursor = await conn.execute(
                 """

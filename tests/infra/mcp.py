@@ -3,10 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
+from collections.abc import Awaitable, Callable, Coroutine, Sequence
 from datetime import datetime, timezone
+from typing import Any, TypeVar, cast
 from unittest.mock import AsyncMock, MagicMock
 
-from polylogue.lib.models import Conversation, Message
+from polylogue.lib.models import Conversation
+from polylogue.types import Provider
+from tests.infra.builders import make_conv, make_msg
 
 EXPECTED_TOOL_NAMES = {
     "search",
@@ -57,20 +62,32 @@ EXPECTED_PROMPT_NAMES = {
     "extract_patterns",
 }
 
+SurfaceResult = TypeVar("SurfaceResult")
 
-def invoke_surface(fn, /, *args, **kwargs):
+
+def invoke_surface(
+    fn: Callable[..., SurfaceResult | Awaitable[SurfaceResult]],
+    /,
+    *args: object,
+    **kwargs: object,
+) -> SurfaceResult:
     """Call an MCP surface whether it is sync or async."""
     result = fn(*args, **kwargs)
-    if asyncio.iscoroutine(result):
-        return asyncio.run(result)
-    return result
+    if inspect.iscoroutine(result):
+        return asyncio.run(cast(Coroutine[Any, Any, SurfaceResult], result))
+    return cast(SurfaceResult, result)
 
 
-async def invoke_surface_async(fn, /, *args, **kwargs):
+async def invoke_surface_async(
+    fn: Callable[..., SurfaceResult | Awaitable[SurfaceResult]],
+    /,
+    *args: object,
+    **kwargs: object,
+) -> SurfaceResult:
     """Await an MCP surface from async tests."""
     result = fn(*args, **kwargs)
-    if asyncio.iscoroutine(result):
-        return await result
+    if inspect.isawaitable(result):
+        return await cast(Awaitable[SurfaceResult], result)
     return result
 
 
@@ -99,7 +116,7 @@ def make_repo_mock() -> MagicMock:
     return repo
 
 
-def make_mock_filter(results=None, **method_overrides):
+def make_mock_filter(results: Sequence[object] | None = None, **method_overrides: object) -> MagicMock:
     """Create a chaining-capable ConversationFilter mock."""
     filt = MagicMock()
     for method in (
@@ -135,18 +152,18 @@ def make_mock_filter(results=None, **method_overrides):
 
 def make_simple_conversation() -> Conversation:
     """Return a representative conversation for MCP surface tests."""
-    return Conversation(
+    return make_conv(
         id="test:conv-123",
-        provider="chatgpt",
+        provider=Provider.CHATGPT,
         title="Test Conversation",
         messages=[
-            Message(
+            make_msg(
                 id="msg-1",
                 role="user",
                 text="Hello, how are you?",
                 timestamp=datetime(2024, 1, 15, 10, 30, 0, tzinfo=timezone.utc),
             ),
-            Message(
+            make_msg(
                 id="msg-2",
                 role="assistant",
                 text="I'm doing well, thank you!",

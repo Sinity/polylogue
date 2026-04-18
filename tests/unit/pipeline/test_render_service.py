@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import AsyncGenerator
 from pathlib import Path
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -18,7 +20,7 @@ from polylogue.pipeline.services.rendering import (
 class TestRenderResult:
     """Tests for RenderResult data class."""
 
-    def test_initial_state(self):
+    def test_initial_state(self) -> None:
         """Fresh result has zero count and empty failures."""
         result = RenderResult()
         assert result.rendered_count == 0
@@ -26,14 +28,14 @@ class TestRenderResult:
         assert result.worker_count == 0
         assert result.max_current_rss_mb is None
 
-    def test_record_success(self):
+    def test_record_success(self) -> None:
         """record_success increments count."""
         result = RenderResult()
         result.record_success()
         result.record_success()
         assert result.rendered_count == 2
 
-    def test_record_failure(self):
+    def test_record_failure(self) -> None:
         """record_failure appends failure info."""
         result = RenderResult()
         result.record_failure("conv-1", "boom")
@@ -45,7 +47,7 @@ class TestRenderService:
     """Tests for RenderService."""
 
     @pytest.mark.asyncio
-    async def test_render_empty_ids(self):
+    async def test_render_empty_ids(self) -> None:
         """No IDs returns zero rendered."""
         renderer = MagicMock()
         service = RenderService(renderer=renderer, render_root=Path("/tmp/render"))
@@ -57,7 +59,7 @@ class TestRenderService:
         renderer.render.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_render_success(self):
+    async def test_render_success(self) -> None:
         """Renders conversations, increments count."""
         renderer = AsyncMock()
         renderer.render.return_value = None  # Success
@@ -70,13 +72,13 @@ class TestRenderService:
         assert renderer.render.call_count == 3
 
     @pytest.mark.asyncio
-    async def test_render_async_iterable_source(self):
+    async def test_render_async_iterable_source(self) -> None:
         """Streaming conversation IDs are accepted without prior list materialization."""
         renderer = AsyncMock()
         renderer.render.return_value = None
         service = RenderService(renderer=renderer, render_root=Path("/tmp/render"))
 
-        async def conversation_ids():
+        async def conversation_ids() -> AsyncGenerator[str, None]:
             for convo_id in ("conv-1", "conv-2"):
                 yield convo_id
 
@@ -87,11 +89,11 @@ class TestRenderService:
         assert renderer.render.call_count == 2
 
     @pytest.mark.asyncio
-    async def test_render_failure_tracked(self):
+    async def test_render_failure_tracked(self) -> None:
         """Render errors collected in failures list."""
         renderer = AsyncMock()
 
-        async def render_side_effect(conv_id, root):
+        async def render_side_effect(conv_id: Any, root: Any) -> None:
             if conv_id == "conv-bad":
                 raise ValueError("render exploded")
 
@@ -106,7 +108,7 @@ class TestRenderService:
         assert "render exploded" in result.failures[0]["error"]
 
     @pytest.mark.asyncio
-    async def test_render_concurrency_limit(self):
+    async def test_render_concurrency_limit(self) -> None:
         """Semaphore limits concurrent renders."""
         max_concurrent = 0
         current_concurrent = 0
@@ -114,7 +116,7 @@ class TestRenderService:
 
         renderer = AsyncMock()
 
-        async def tracked_render(conv_id, root):
+        async def tracked_render(conv_id: Any, root: Any) -> None:
             nonlocal max_concurrent, current_concurrent
             async with lock:
                 current_concurrent += 1
@@ -133,7 +135,7 @@ class TestRenderService:
         assert max_concurrent <= 2
 
     @pytest.mark.asyncio
-    async def test_progress_callback_called_for_each_conversation(self):
+    async def test_progress_callback_called_for_each_conversation(self) -> None:
         """progress_callback is invoked once per rendered conversation."""
         renderer = AsyncMock()
         renderer.render = AsyncMock()
@@ -149,14 +151,14 @@ class TestRenderService:
         assert callback.call_count == 3
 
     @pytest.mark.asyncio
-    async def test_progress_callback_desc_format(self):
+    async def test_progress_callback_desc_format(self) -> None:
         """progress_callback descriptions should track rendered totals."""
         renderer = AsyncMock()
         renderer.render = AsyncMock()
         service = RenderService(renderer=renderer, render_root=Path("/tmp/render"))
         descriptions: list[str | None] = []
 
-        def capture(amount, desc=None):
+        def capture(amount: Any, desc: Any = None) -> None:
             descriptions.append(desc)
 
         await service.render_conversations(
@@ -165,10 +167,12 @@ class TestRenderService:
         )
 
         assert all(description is not None and description.startswith("Rendering:") for description in descriptions)
-        assert "2/2" in descriptions[-1]
+        last_description = descriptions[-1]
+        assert last_description is not None
+        assert "2/2" in last_description
 
     @pytest.mark.asyncio
-    async def test_progress_callback_fires_on_failure_too(self):
+    async def test_progress_callback_fires_on_failure_too(self) -> None:
         """Failures should still advance render progress callbacks."""
         renderer = AsyncMock()
         renderer.render = AsyncMock(side_effect=[None, RuntimeError("render failed"), None])
@@ -185,7 +189,7 @@ class TestRenderService:
         assert len(result.failures) == 1
 
     @pytest.mark.asyncio
-    async def test_render_without_progress_callback_is_safe(self):
+    async def test_render_without_progress_callback_is_safe(self) -> None:
         """RenderService should not require a callback."""
         renderer = AsyncMock()
         renderer.render = AsyncMock()
@@ -195,14 +199,14 @@ class TestRenderService:
         assert result.rendered_count == 1
 
     @pytest.mark.asyncio
-    async def test_progress_callback_amount_is_one(self):
+    async def test_progress_callback_amount_is_one(self) -> None:
         """Each render callback increments by one completed conversation."""
         renderer = AsyncMock()
         renderer.render = AsyncMock()
         service = RenderService(renderer=renderer, render_root=Path("/tmp/render"))
         amounts: list[int] = []
 
-        def capture(amount, desc=None):
+        def capture(amount: Any, desc: Any = None) -> None:
             amounts.append(amount)
 
         await service.render_conversations(

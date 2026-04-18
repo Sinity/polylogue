@@ -51,7 +51,7 @@ class SchemaProviderSnapshot:
     corpus_scenarios: tuple[CorpusScenario, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
-        payload = {"provider": self.provider, "versions": list(self.versions)}
+        payload: dict[str, Any] = {"provider": self.provider, "versions": list(self.versions)}
         if self.catalog is not None:
             payload["catalog"] = self.catalog.to_dict()
         if self.manifest is not None:

@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any, NoReturn, cast
 from unittest.mock import AsyncMock
 
 import pytest
@@ -24,10 +26,23 @@ from polylogue.pipeline.services.ingest_batch import (
     _write_conversation,
     refresh_session_products_bulk,
 )
-from polylogue.pipeline.services.ingest_worker import ConversationData, IngestRecordResult
+from polylogue.pipeline.services.ingest_worker import (
+    AttachmentRefTuple,
+    AttachmentTuple,
+    ContentBlockTuple,
+    ConversationData,
+    ConversationTuple,
+    IngestRecordResult,
+    MessageTuple,
+    StatsTuple,
+    _make_ref_id,
+)
 from polylogue.storage.backends.connection import open_connection
 from polylogue.storage.state_views import RawConversationStateUpdate
-from polylogue.storage.store import _make_ref_id
+
+
+def _float_value(value: object) -> float:
+    return float(cast(float | int | str, value))
 
 
 def _conversation_data(
@@ -35,13 +50,13 @@ def _conversation_data(
     *,
     content_hash: str,
     parent_conversation_id: str | None = None,
-    message_tuples: list[tuple] | None = None,
-    block_tuples: list[tuple] | None = None,
-    stats_tuple: tuple | None = None,
-    attachment_tuples: list[tuple] | None = None,
-    attachment_ref_tuples: list[tuple] | None = None,
+    message_tuples: list[MessageTuple] | None = None,
+    block_tuples: list[ContentBlockTuple] | None = None,
+    stats_tuple: StatsTuple | None = None,
+    attachment_tuples: list[AttachmentTuple] | None = None,
+    attachment_ref_tuples: list[AttachmentRefTuple] | None = None,
 ) -> ConversationData:
-    conversation_tuple = (
+    conversation_tuple: ConversationTuple = (
         conversation_id,
         "codex",
         conversation_id.split(":", 1)[-1],
@@ -78,7 +93,7 @@ def _message_tuple(
     text: str,
     content_hash: str,
     sort_key: float,
-) -> tuple:
+) -> MessageTuple:
     return (
         message_id,
         conversation_id,
@@ -104,7 +119,7 @@ def _block_tuple(
     conversation_id: str,
     block_index: int,
     text: str,
-) -> tuple:
+) -> ContentBlockTuple:
     return (
         block_id,
         message_id,
@@ -121,7 +136,7 @@ def _block_tuple(
     )
 
 
-def _attachment_tuple(attachment_id: str, *, mime_type: str = "image/png") -> tuple:
+def _attachment_tuple(attachment_id: str, *, mime_type: str = "image/png") -> AttachmentTuple:
     return (
         attachment_id,
         mime_type,
@@ -136,7 +151,7 @@ def _attachment_ref_tuple(
     attachment_id: str,
     conversation_id: str,
     message_id: str,
-) -> tuple:
+) -> AttachmentRefTuple:
     return (
         _make_ref_id(attachment_id, conversation_id, message_id),
         attachment_id,
@@ -337,14 +352,14 @@ def test_write_conversation_replaces_runtime_rows_on_content_change(tmp_path: Pa
 def test_iter_ingest_results_sync_runs_inline_for_single_worker(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    raw_records = [
+    raw_records: list[Any] = [
         SimpleNamespace(raw_id="raw-1"),
         SimpleNamespace(raw_id="raw-2"),
     ]
     seen: list[str] = []
 
     def fake_ingest_record(
-        raw_record,
+        raw_record: SimpleNamespace,
         archive_root_str: str,
         validation_mode: str = "strict",
         measure_ingest_result_size: bool = False,
@@ -355,7 +370,7 @@ def test_iter_ingest_results_sync_runs_inline_for_single_worker(
         seen.append(raw_record.raw_id)
         return IngestRecordResult(raw_id=raw_record.raw_id)
 
-    def fail_process_pool_executor(*, max_workers: int):
+    def fail_process_pool_executor(*, max_workers: int) -> NoReturn:
         raise AssertionError(f"process pool should not be used for single-worker batches: {max_workers}")
 
     monkeypatch.setattr("polylogue.pipeline.services.ingest_batch.ingest_record", fake_ingest_record)
@@ -445,12 +460,12 @@ async def test_refresh_session_products_bulk_dedupes_related_refreshes(
     fake_conn = SimpleNamespace(commit=AsyncMock())
 
     @asynccontextmanager
-    async def _connection():
+    async def _connection() -> AsyncIterator[SimpleNamespace]:
         yield fake_conn
 
-    fake_backend = SimpleNamespace(connection=_connection)
+    fake_backend = cast(Any, SimpleNamespace(connection=_connection))
 
-    async def _fake_apply(conn, conversation_ids: list[str], *, transaction_depth: int):
+    async def _fake_apply(conn: object, conversation_ids: list[str], *, transaction_depth: int) -> object:
         del conn, transaction_depth
         assert conversation_ids == ["conv-1", "conv-2", "conv-3"]
         return SimpleNamespace(
@@ -506,11 +521,13 @@ async def test_refresh_session_products_bulk_dedupes_related_refreshes(
 
     refresh_thread_roots.assert_awaited_once()
     thread_args = refresh_thread_roots.await_args
+    assert thread_args is not None
     assert thread_args.args[0] is fake_conn
     assert thread_args.args[1] == ["root-a", "root-b"]
     assert thread_args.kwargs["transaction_depth"] == 1
     refresh_aggregates.assert_awaited_once()
     aggregate_args = refresh_aggregates.await_args
+    assert aggregate_args is not None
     assert aggregate_args.args[0] is fake_conn
     assert aggregate_args.args[1] == {
         ("chatgpt", "2026-04-02"),
@@ -522,10 +539,10 @@ async def test_refresh_session_products_bulk_dedupes_related_refreshes(
     assert observation["conversations"] == 3
     assert observation["unique_thread_roots"] == 2
     assert observation["unique_provider_days"] == 2
-    assert float(observation["elapsed_ms"]) >= 0.0
-    assert float(observation["update_ms"]) >= 0.0
-    assert float(observation["thread_refresh_ms"]) >= 0.0
-    assert float(observation["aggregate_refresh_ms"]) >= 0.0
+    assert _float_value(observation["elapsed_ms"]) >= 0.0
+    assert _float_value(observation["update_ms"]) >= 0.0
+    assert _float_value(observation["thread_refresh_ms"]) >= 0.0
+    assert _float_value(observation["aggregate_refresh_ms"]) >= 0.0
     assert observation["update_chunk_count"] == 1
     assert observation["update_slow_chunk_count"] == 0
     assert observation["update_max_chunk_ms"] == 33.2
@@ -658,13 +675,13 @@ def test_build_batch_memory_observation_separates_lifetime_peak_from_batch_growt
 async def test_persist_batch_raw_state_updates_uses_one_typed_update_per_raw() -> None:
     update_raw_state = AsyncMock()
     repository = SimpleNamespace(update_raw_state=update_raw_state)
-    service = SimpleNamespace(repository=repository)
+    service = cast(Any, SimpleNamespace(repository=repository))
 
     @asynccontextmanager
-    async def _bulk_connection():
+    async def _bulk_connection() -> AsyncIterator[None]:
         yield
 
-    backend = SimpleNamespace(bulk_connection=_bulk_connection)
+    backend = cast(Any, SimpleNamespace(bulk_connection=_bulk_connection))
     outcomes = {
         "raw-success": _RawIngestOutcome(
             raw_id="raw-success",
@@ -711,13 +728,13 @@ async def test_persist_batch_raw_state_updates_uses_one_typed_update_per_raw() -
 async def test_persist_batch_raw_state_updates_preserves_validation_only_failure_without_quarantine() -> None:
     update_raw_state = AsyncMock()
     repository = SimpleNamespace(update_raw_state=update_raw_state)
-    service = SimpleNamespace(repository=repository)
+    service = cast(Any, SimpleNamespace(repository=repository))
 
     @asynccontextmanager
-    async def _bulk_connection():
+    async def _bulk_connection() -> AsyncIterator[None]:
         yield
 
-    backend = SimpleNamespace(bulk_connection=_bulk_connection)
+    backend = cast(Any, SimpleNamespace(bulk_connection=_bulk_connection))
     outcomes = {
         "raw-schema-invalid": _RawIngestOutcome(
             raw_id="raw-schema-invalid",
@@ -742,7 +759,9 @@ async def test_persist_batch_raw_state_updates_preserves_validation_only_failure
 
     assert elapsed_s >= 0.0
     update_raw_state.assert_awaited_once()
-    state = update_raw_state.await_args.kwargs["state"]
+    await_args = update_raw_state.await_args
+    assert await_args is not None
+    state = await_args.kwargs["state"]
     assert state.parse_error is None
     assert state.validation_error == "bad schema"
     assert state.validation_status == "failed"

@@ -25,7 +25,7 @@ class TestInferRelations:
     """infer_relations() orchestrates all relation detectors."""
 
     def test_returns_relational_annotations_object(self) -> None:
-        stats = {}
+        stats: dict[str, FieldStats] = {}
         result = infer_relations(stats)
         assert isinstance(result, RelationalAnnotations)
         assert isinstance(result.foreign_keys, list)

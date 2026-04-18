@@ -10,7 +10,7 @@ from polylogue.paths import blob_store_root
 from polylogue.pipeline.services.process_pool import process_pool_executor
 from polylogue.pipeline.services.validation_runtime import _validate_record_sync, _ValidationOutcome
 from polylogue.pipeline.stage_models import ValidatedRawRecord, ValidateResult
-from polylogue.protocols import ProgressCallback
+from polylogue.protocols import ProgressCallback, RawValidationStore
 from polylogue.storage.store import RawConversationRecord
 from polylogue.types import Provider, ValidationMode, ValidationStatus
 
@@ -43,7 +43,7 @@ def validation_progress_desc(processed: int, total: int) -> str:
 
 async def validate_raw_ids(
     *,
-    repository: object,
+    repository: RawValidationStore,
     raw_ids: list[str],
     progress_callback: ProgressCallback | None = None,
     persist: bool = True,
@@ -123,7 +123,7 @@ async def validate_raw_ids(
 
 async def evaluate_raw_records(
     *,
-    repository: object,
+    repository: RawValidationStore,
     raw_records: list[RawConversationRecord],
     progress_callback: ProgressCallback | None = None,
     persist: bool = False,
@@ -175,7 +175,7 @@ async def evaluate_raw_records(
     blob_root_str = str(blob_store_root())
     t_batch = _time.perf_counter()
 
-    def _run_batch():
+    def _run_batch() -> list[_ValidationOutcome]:
         try:
             with process_pool_executor(max_workers=worker_count) as executor:
                 return list(

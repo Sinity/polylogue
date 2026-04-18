@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 from hypothesis import strategies as st
 
 from polylogue.lib.models import ConversationSummary
+from polylogue.types import ConversationId, Provider
 
 _PROVIDERS = ("claude-ai", "chatgpt", "gemini", "codex", "claude-code")
 _SLUG_ALPHABET = "abcdefghijklmnopqrstuvwxyz0123456789-"
@@ -108,8 +109,8 @@ def conversation_summary_batch_strategy(
 def build_conversation_summary(spec: ConversationSummarySpec) -> ConversationSummary:
     """Materialize a generated summary spec into a real model."""
     return ConversationSummary(
-        id=spec.conversation_id,
-        provider=spec.provider,
+        id=ConversationId(spec.conversation_id),
+        provider=Provider.from_string(spec.provider),
         title=spec.title,
         created_at=spec.created_at,
         updated_at=spec.updated_at,

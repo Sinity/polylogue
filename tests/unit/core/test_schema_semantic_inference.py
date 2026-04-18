@@ -12,11 +12,8 @@ from __future__ import annotations
 from collections import Counter
 
 from polylogue.schemas.field_stats import FieldStats
-from polylogue.schemas.semantic_inference_runtime import (
-    SemanticCandidate,
-    infer_semantic_roles,
-    select_best_roles,
-)
+from polylogue.schemas.semantic_inference_models import SemanticCandidate
+from polylogue.schemas.semantic_inference_runtime import infer_semantic_roles, select_best_roles
 
 
 class TestInferSemanticRoles:

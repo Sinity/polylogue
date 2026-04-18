@@ -15,6 +15,7 @@ from hypothesis import strategies as st
 
 from polylogue.lib.roles import Role
 from polylogue.sources.dispatch import detect_provider, parse_payload
+from polylogue.sources.parsers.base import ParsedConversation
 from polylogue.sources.parsers.base_models import ParsedProviderEvent
 from polylogue.types import ContentBlockType
 from tests.infra.strategies.schema_driven import schema_conformant_payload
@@ -24,7 +25,7 @@ VALID_ROLES = frozenset(Role)
 _HEALTH_SUPPRESS = [HealthCheck.too_slow, HealthCheck.data_too_large, HealthCheck.filter_too_much]
 
 
-def _try_parse(provider: str, payload: object):
+def _try_parse(provider: str, payload: object) -> list[ParsedConversation] | None:
     """Attempt to parse, returning parsed conversations or None on expected failures."""
     try:
         detected = detect_provider(payload)
@@ -38,7 +39,7 @@ def _try_parse(provider: str, payload: object):
 @pytest.mark.parametrize("provider", PARSEABLE_PROVIDERS)
 @given(data=st.data())
 @settings(max_examples=15, deadline=None, suppress_health_check=_HEALTH_SUPPRESS)
-def test_parse_produces_valid_roles(provider: str, data) -> None:
+def test_parse_produces_valid_roles(provider: str, data: st.DataObject) -> None:
     """Successfully parsed conversations always have valid roles."""
     payload = data.draw(schema_conformant_payload(provider))
     conversations = _try_parse(provider, payload)
@@ -52,7 +53,7 @@ def test_parse_produces_valid_roles(provider: str, data) -> None:
 @pytest.mark.parametrize("provider", PARSEABLE_PROVIDERS)
 @given(data=st.data())
 @settings(max_examples=15, deadline=None, suppress_health_check=_HEALTH_SUPPRESS)
-def test_parse_produces_valid_content_block_types(provider: str, data) -> None:
+def test_parse_produces_valid_content_block_types(provider: str, data: st.DataObject) -> None:
     """Content blocks always have valid ContentBlockType values."""
     payload = data.draw(schema_conformant_payload(provider))
     conversations = _try_parse(provider, payload)
@@ -68,7 +69,7 @@ def test_parse_produces_valid_content_block_types(provider: str, data) -> None:
 @pytest.mark.parametrize("provider", PARSEABLE_PROVIDERS)
 @given(data=st.data())
 @settings(max_examples=10, deadline=None, suppress_health_check=_HEALTH_SUPPRESS)
-def test_parse_title_is_stable(provider: str, data) -> None:
+def test_parse_title_is_stable(provider: str, data: st.DataObject) -> None:
     """Parsing the same payload twice produces the same title."""
     payload = data.draw(schema_conformant_payload(provider))
     conversations1 = _try_parse(provider, payload)
@@ -83,7 +84,7 @@ def test_parse_title_is_stable(provider: str, data) -> None:
 class TestProviderEventRoundtrip:
     """ParsedProviderEvent serialization round-trips correctly."""
 
-    def test_compaction_event_roundtrips(self):
+    def test_compaction_event_roundtrips(self) -> None:
         event = ParsedProviderEvent(
             event_type="compaction",
             timestamp="2026-01-01T00:00:00Z",
@@ -95,7 +96,7 @@ class TestProviderEventRoundtrip:
         assert restored.timestamp == event.timestamp
         assert restored.payload == event.payload
 
-    def test_empty_event_roundtrips(self):
+    def test_empty_event_roundtrips(self) -> None:
         event = ParsedProviderEvent(event_type="turn_context")
         data = event.model_dump()
         restored = ParsedProviderEvent.model_validate(data)

@@ -36,6 +36,7 @@ def extract_reasoning_traces(content: list[dict[str, Any]] | None, provider: Pro
     if not content:
         return []
 
+    normalized_provider = provider if isinstance(provider, Provider) else Provider.from_string(provider)
     traces: list[ReasoningTrace] = []
     for block in content:
         if not isinstance(block, dict):
@@ -49,7 +50,7 @@ def extract_reasoning_traces(content: list[dict[str, Any]] | None, provider: Pro
             text = block.get("text")
 
         if text:
-            traces.append(ReasoningTrace(text=text, provider=provider, raw=block))
+            traces.append(ReasoningTrace(text=text, provider=normalized_provider, raw=block))
 
     return traces
 
@@ -59,6 +60,7 @@ def extract_tool_calls(content: list[dict[str, Any]] | None, provider: Provider 
     if not content:
         return []
 
+    normalized_provider = provider if isinstance(provider, Provider) else Provider.from_string(provider)
     calls: list[ToolCall] = []
     for block in content:
         if not isinstance(block, dict) or block.get("type") != "tool_use":
@@ -73,7 +75,7 @@ def extract_tool_calls(content: list[dict[str, Any]] | None, provider: Provider 
                 id=block.get("id"),
                 input=normalized_input,
                 category=classify_tool(name, normalized_input),
-                provider=provider,
+                provider=normalized_provider,
                 raw=block,
             )
         )

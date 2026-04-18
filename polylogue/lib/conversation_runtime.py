@@ -1,17 +1,51 @@
-"""Runtime behavior mixin for conversations."""
+"""Runtime behavior helpers for ``Conversation`` models."""
 
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Callable, Iterator, Mapping
+from datetime import datetime
+from typing import TYPE_CHECKING, Any, Self, cast
 
 from polylogue.lib.branch_type import BranchType
-from polylogue.lib.message_models import DialoguePair
+from polylogue.lib.message_models import DialoguePair, Message
 from polylogue.lib.messages import MessageCollection
+from polylogue.types import ConversationId
+
+if TYPE_CHECKING:
+    from polylogue.lib.conversation_models import Conversation
+    from polylogue.lib.projections import ConversationProjection
+
+
+def _metadata_string(metadata: dict[str, object], key: str) -> str | None:
+    value = metadata.get(key)
+    return str(value) if value is not None else None
+
+
+def _metadata_tags(metadata: dict[str, object]) -> list[str]:
+    raw_tags = metadata.get("tags", [])
+    if not isinstance(raw_tags, list):
+        return []
+    return [str(tag) for tag in raw_tags]
 
 
 class ConversationRuntimeMixin:
+    id: ConversationId
+    title: str | None
+    messages: MessageCollection
+    created_at: datetime | None
+    updated_at: datetime | None
+    provider_meta: dict[str, object] | None
+    metadata: dict[str, object]
+    parent_id: ConversationId | None
+    branch_type: BranchType | None
+
+    if TYPE_CHECKING:
+
+        def model_copy(self, *, update: Mapping[str, Any] | None = None, deep: bool = False) -> Self: ...
+
     @property
-    def display_date(self):
+    def display_date(self) -> datetime | None:
         return self.updated_at or self.created_at
 
     @property
@@ -28,80 +62,79 @@ class ConversationRuntimeMixin:
 
     @property
     def user_title(self) -> str | None:
-        title = self.metadata.get("title")
-        return str(title) if title is not None else None
+        return _metadata_string(self.metadata, "title")
 
     @property
     def display_title(self) -> str:
-        if self.user_title:
-            return self.user_title
+        user_title = self.user_title
+        if user_title:
+            return user_title
         if self.title:
             return self.title
         return self.id[:8]
 
     @property
     def summary(self) -> str | None:
-        summary = self.metadata.get("summary")
-        return str(summary) if summary is not None else None
+        return _metadata_string(self.metadata, "summary")
 
     @property
     def tags(self) -> list[str]:
-        tags = self.metadata.get("tags", [])
-        if isinstance(tags, list):
-            return [str(tag) for tag in tags]
-        return []
+        return _metadata_tags(self.metadata)
 
-    def filter(self, predicate):
-        filtered = [message for message in self.messages if predicate(message)]
-        return self.model_copy(update={"messages": MessageCollection(messages=filtered)})
+    def filter(self, predicate: Callable[[Message], bool]) -> Self:
+        filtered_messages = [message for message in self.messages if predicate(message)]
+        return self.model_copy(update={"messages": MessageCollection(messages=filtered_messages)})
 
-    def user_only(self):
+    def user_only(self) -> Self:
         return self.filter(lambda message: message.is_user)
 
-    def assistant_only(self):
+    def assistant_only(self) -> Self:
         return self.filter(lambda message: message.is_assistant)
 
-    def dialogue_only(self):
+    def dialogue_only(self) -> Self:
         return self.filter(lambda message: message.is_dialogue)
 
-    def without_noise(self):
+    def without_noise(self) -> Self:
         return self.filter(lambda message: not message.is_noise)
 
-    def substantive_only(self):
+    def substantive_only(self) -> Self:
         return self.filter(lambda message: message.is_substantive)
 
-    def mainline_messages(self):
+    def mainline_messages(self) -> list[Message]:
         return [message for message in self.messages if message.branch_index == 0]
 
-    def iter_dialogue(self):
+    def iter_dialogue(self) -> Iterator[Message]:
         for message in self.messages:
             if message.is_dialogue:
                 yield message
 
-    def iter_substantive(self):
+    def iter_substantive(self) -> Iterator[Message]:
         for message in self.messages:
             if message.is_substantive:
                 yield message
 
-    def iter_pairs(self):
-        substantive = [message for message in self.messages if message.is_substantive]
+    def iter_pairs(self) -> Iterator[DialoguePair]:
+        substantive_messages = [message for message in self.messages if message.is_substantive]
         index = 0
-        while index < len(substantive) - 1:
-            if substantive[index].is_user and substantive[index + 1].is_assistant:
-                yield DialoguePair(user=substantive[index], assistant=substantive[index + 1])
+        while index < len(substantive_messages) - 1:
+            current = substantive_messages[index]
+            next_message = substantive_messages[index + 1]
+            if current.is_user and next_message.is_assistant:
+                yield DialoguePair(user=current, assistant=next_message)
                 index += 2
             else:
                 index += 1
 
-    def iter_thinking(self):
+    def iter_thinking(self) -> Iterator[str]:
         for message in self.messages:
-            if message.is_thinking:
-                thinking = message.extract_thinking()
-                if thinking:
-                    yield thinking
+            if not message.is_thinking:
+                continue
+            thinking = message.extract_thinking()
+            if thinking:
+                yield thinking
 
-    def iter_branches(self):
-        by_parent: dict[str, list] = defaultdict(list)
+    def iter_branches(self) -> Iterator[tuple[str, list[Message]]]:
+        by_parent: dict[str, list[Message]] = defaultdict(list)
         for message in self.messages:
             if message.parent_id:
                 by_parent[message.parent_id].append(message)
@@ -111,7 +144,7 @@ class ConversationRuntimeMixin:
                 yield parent_id, sorted(children, key=lambda message: message.branch_index)
 
     def to_text(self, include_role: bool = True) -> str:
-        lines = []
+        lines: list[str] = []
         for message in self.messages:
             if not message.text:
                 continue
@@ -141,10 +174,10 @@ class ConversationRuntimeMixin:
     def total_cost_usd(self) -> float:
         from polylogue.lib.message_model_runtime import _coerce_optional_float
 
-        message_total = sum(message.cost_usd or 0.0 for message in self.messages)
+        message_total = sum((message.cost_usd or 0.0) for message in self.messages)
         if message_total > 0.0:
             return message_total
-        if not self.provider_meta:
+        if self.provider_meta is None:
             return 0.0
         return _coerce_optional_float(self.provider_meta.get("total_cost_usd")) or 0.0
 
@@ -152,17 +185,17 @@ class ConversationRuntimeMixin:
     def total_duration_ms(self) -> int:
         from polylogue.lib.message_model_runtime import _coerce_optional_int
 
-        message_total = sum(message.duration_ms or 0 for message in self.messages)
+        message_total = sum((message.duration_ms or 0) for message in self.messages)
         if message_total > 0:
             return message_total
-        if not self.provider_meta:
+        if self.provider_meta is None:
             return 0
         return _coerce_optional_int(self.provider_meta.get("total_duration_ms")) or 0
 
-    def project(self):
+    def project(self) -> ConversationProjection:
         from polylogue.lib.projections import ConversationProjection
 
-        return ConversationProjection(self)
+        return ConversationProjection(cast("Conversation", self))
 
 
 __all__ = ["ConversationRuntimeMixin"]

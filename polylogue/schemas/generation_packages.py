@@ -40,17 +40,15 @@ def _update_observed_window(acc: _ClusterAccumulator | _PackageAccumulator, obse
     if parsed is None:
         return
     iso = parsed.astimezone(timezone.utc).isoformat()
-    if (
-        acc.first_seen is None
-        or _parse_observed_at(acc.first_seen) is None
-        or parsed < _parse_observed_at(acc.first_seen)
-    ):
+    first_seen = _parse_observed_at(acc.first_seen)
+    if acc.first_seen is None or first_seen is None or parsed < first_seen:
         acc.first_seen = iso
-    if acc.last_seen is None or _parse_observed_at(acc.last_seen) is None or parsed > _parse_observed_at(acc.last_seen):
+    last_seen = _parse_observed_at(acc.last_seen)
+    if acc.last_seen is None or last_seen is None or parsed > last_seen:
         acc.last_seen = iso
 
 
-def _membership_observed_window(memberships: list[_UnitMembership]) -> tuple[str, str] | tuple[None, None]:
+def _membership_observed_window(memberships: list[_UnitMembership]) -> tuple[str | None, str | None]:
     first_seen: str | None = None
     last_seen: str | None = None
     for membership in memberships:
@@ -58,9 +56,11 @@ def _membership_observed_window(memberships: list[_UnitMembership]) -> tuple[str
         if parsed is None:
             continue
         iso = parsed.astimezone(timezone.utc).isoformat()
-        if first_seen is None or parsed < _parse_observed_at(first_seen):
+        parsed_first_seen = _parse_observed_at(first_seen)
+        if first_seen is None or parsed_first_seen is None or parsed < parsed_first_seen:
             first_seen = iso
-        if last_seen is None or parsed > _parse_observed_at(last_seen):
+        parsed_last_seen = _parse_observed_at(last_seen)
+        if last_seen is None or parsed_last_seen is None or parsed > parsed_last_seen:
             last_seen = iso
     return first_seen, last_seen
 

@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import TypeAlias
+
+JsonObject: TypeAlias = dict[str, object]
+JsonObjectList: TypeAlias = list[JsonObject]
 
 
 def make_chatgpt_node(
@@ -12,26 +15,27 @@ def make_chatgpt_node(
     content_parts: list[str],
     children: list[str] | None = None,
     timestamp: float | None = None,
-    metadata: dict | None = None,
+    metadata: JsonObject | None = None,
     parent: str | None = None,
-) -> dict[str, Any]:
+) -> JsonObject:
     """Generate a ChatGPT export mapping node for parser tests."""
-    node = {
+    message: JsonObject = {
         "id": msg_id,
-        "message": {
-            "id": msg_id,
-            "author": {"role": role},
-            "content": {"parts": content_parts},
-        },
+        "author": {"role": role},
+        "content": {"parts": content_parts},
+    }
+    node: JsonObject = {
+        "id": msg_id,
+        "message": message,
     }
     if children:
         node["children"] = children
     if parent:
         node["parent"] = parent
     if timestamp:
-        node["message"]["create_time"] = timestamp
+        message["create_time"] = timestamp
     if metadata:
-        node["message"]["metadata"] = metadata
+        message["metadata"] = metadata
     return node
 
 
@@ -39,12 +43,12 @@ def make_claude_chat_message(
     uuid: str,
     sender: str,
     text: str,
-    attachments: list[dict] | None = None,
-    files: list[dict] | None = None,
+    attachments: JsonObjectList | None = None,
+    files: JsonObjectList | None = None,
     timestamp: str | None = None,
-) -> dict[str, Any]:
+) -> JsonObject:
     """Generate a Claude AI chat_messages entry for parser tests."""
-    msg = {"uuid": uuid, "text": text}
+    msg: JsonObject = {"uuid": uuid, "text": text}
     if sender:
         msg["sender"] = sender
     if attachments:
@@ -62,7 +66,7 @@ class ChatGPTExportBuilder:
     def __init__(self, conv_id: str):
         self.conv_id = conv_id
         self._title: str | None = None
-        self._nodes: list[dict[str, Any]] = []
+        self._nodes: JsonObjectList = []
         self._node_counter = 0
         self._timestamp = 1704067200.0
 
@@ -75,13 +79,13 @@ class ChatGPTExportBuilder:
         role: str,
         *content_parts: str,
         node_id: str | None = None,
-        metadata: dict | None = None,
+        metadata: JsonObject | None = None,
         model_slug: str | None = None,
     ) -> ChatGPTExportBuilder:
         self._node_counter += 1
         nid = node_id or f"node-{self._node_counter}"
 
-        meta = metadata or {}
+        meta: JsonObject = dict(metadata or {})
         if model_slug:
             meta["model_slug"] = model_slug
 
@@ -108,10 +112,10 @@ class ChatGPTExportBuilder:
     ) -> ChatGPTExportBuilder:
         return self.add_node("tool", result, node_id=node_id, metadata={"name": tool_name})
 
-    def build(self) -> dict[str, Any]:
-        result: dict[str, Any] = {
+    def build(self) -> JsonObject:
+        result: JsonObject = {
             "id": self.conv_id,
-            "mapping": {node["id"]: node for node in self._nodes},
+            "mapping": {str(node["id"]): node for node in self._nodes},
         }
         if self._title:
             result["title"] = self._title
@@ -131,7 +135,7 @@ class GenericConversationBuilder:
     def __init__(self, conv_id: str):
         self.conv_id = conv_id
         self._title: str | None = None
-        self._messages: list[dict[str, Any]] = []
+        self._messages: JsonObjectList = []
         self._msg_counter = 0
 
     def title(self, title: str) -> GenericConversationBuilder:
@@ -147,7 +151,7 @@ class GenericConversationBuilder:
     ) -> GenericConversationBuilder:
         self._msg_counter += 1
         msg_id = message_id or f"m{self._msg_counter}"
-        msg: dict[str, Any] = {"id": msg_id, "role": role}
+        msg: JsonObject = {"id": msg_id, "role": role}
         if text is not None:
             msg["text"] = text
         else:
@@ -155,14 +159,14 @@ class GenericConversationBuilder:
         self._messages.append(msg)
         return self
 
-    def add_user(self, content: str, **kwargs) -> GenericConversationBuilder:
+    def add_user(self, content: str, **kwargs: str | None) -> GenericConversationBuilder:
         return self.add_message("user", content, **kwargs)
 
-    def add_assistant(self, content: str, **kwargs) -> GenericConversationBuilder:
+    def add_assistant(self, content: str, **kwargs: str | None) -> GenericConversationBuilder:
         return self.add_message("assistant", content, **kwargs)
 
-    def build(self) -> dict[str, Any]:
-        result: dict[str, Any] = {"id": self.conv_id, "messages": self._messages}
+    def build(self) -> JsonObject:
+        result: JsonObject = {"id": self.conv_id, "messages": self._messages}
         if self._title:
             result["title"] = self._title
         return result
@@ -183,14 +187,14 @@ class InboxBuilder:
         self.base_path.mkdir(parents=True, exist_ok=True)
         self.files: list[tuple[Path, str]] = []
 
-    def add_json_file(self, filename: str, data: Any) -> InboxBuilder:
+    def add_json_file(self, filename: str, data: object) -> InboxBuilder:
         import json
 
         path = self.base_path / filename
         self.files.append((path, json.dumps(data, indent=2)))
         return self
 
-    def add_jsonl_file(self, filename: str, entries: list[Any]) -> InboxBuilder:
+    def add_jsonl_file(self, filename: str, entries: list[object]) -> InboxBuilder:
         import json
 
         path = self.base_path / filename
@@ -216,9 +220,10 @@ class InboxBuilder:
         self,
         conv_id: str,
         title: str | None = None,
-        nodes: list[dict] | None = None,
+        nodes: JsonObjectList | None = None,
         filename: str | None = None,
     ) -> InboxBuilder:
+        payload: JsonObject
         if nodes is None:
             builder = ChatGPTExportBuilder(conv_id)
             if title:
@@ -228,7 +233,7 @@ class InboxBuilder:
         else:
             payload = {
                 "id": conv_id,
-                "mapping": {node["id"]: node for node in nodes},
+                "mapping": {str(node["id"]): node for node in nodes},
             }
             if title:
                 payload["title"] = title
@@ -238,11 +243,11 @@ class InboxBuilder:
         self,
         conv_id: str,
         name: str | None = None,
-        chat_messages: list[dict] | None = None,
+        chat_messages: JsonObjectList | None = None,
         filename: str | None = None,
         wrap_in_conversations: bool = True,
     ) -> InboxBuilder:
-        conversation = {
+        conversation: JsonObject = {
             "id": conv_id,
             "chat_messages": chat_messages
             or [

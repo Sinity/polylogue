@@ -1,16 +1,18 @@
 from __future__ import annotations
 
+import pytest
+
 from devtools import render_all
 
 
-def test_render_all_runs_selected_surfaces(monkeypatch):
+def test_render_all_runs_selected_surfaces(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[tuple[str, tuple[str, ...]]] = []
 
     class FakeSurface:
         def __init__(self, name: str):
             self.name = name
 
-        def main(self, argv):
+        def main(self, argv: list[str] | None) -> int:
             calls.append((self.name, tuple(argv or ())))
             return 0
 
@@ -24,14 +26,14 @@ def test_render_all_runs_selected_surfaces(monkeypatch):
     assert calls == [("docs-surface", ())]
 
 
-def test_render_all_check_passes_flag(monkeypatch):
+def test_render_all_check_passes_flag(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[tuple[str, ...]] = []
 
     class FakeSurface:
         name = "agents"
 
         @staticmethod
-        def main(argv):
+        def main(argv: list[str] | None) -> int:
             calls.append(tuple(argv or ()))
             return 0
 
@@ -41,12 +43,15 @@ def test_render_all_check_passes_flag(monkeypatch):
     assert calls == [("--check",)]
 
 
-def test_render_all_reports_surface_progress(monkeypatch, capsys):
+def test_render_all_reports_surface_progress(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     class FakeSurface:
         name = "agents"
 
         @staticmethod
-        def main(argv):
+        def main(argv: list[str] | None) -> int:
             del argv
             return 0
 

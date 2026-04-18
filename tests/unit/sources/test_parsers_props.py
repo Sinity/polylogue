@@ -18,16 +18,21 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
+from polylogue.paths import Source
 from polylogue.schemas.synthetic import SyntheticCorpus
 from polylogue.sources import iter_source_conversations
 from polylogue.sources.parsers import chatgpt, claude, codex, drive
-from polylogue.sources.parsers.base import ParsedConversation, attachment_from_meta, extract_messages_from_list
+from polylogue.sources.parsers.base import (
+    ParsedConversation,
+    attachment_from_meta,
+    extract_messages_from_list,
+)
 from tests.infra.strategies import (
     chatgpt_export_strategy,
     chatgpt_message_node_strategy,
@@ -38,6 +43,8 @@ from tests.infra.strategies import (
     message_strategy,
 )
 from tests.infra.strategies.providers import claude_code_session_strategy, codex_session_strategy
+
+NormalizedTimestampInput = int | float | str | None
 
 
 def _chatgpt_message_node_count(export: dict[str, Any]) -> int:
@@ -192,7 +199,7 @@ def test_provider_looks_like_accepts_generated_payloads(case: ParserCase, data: 
 @given(st.lists(message_strategy(), min_size=0, max_size=20))
 @settings(max_examples=50)
 def test_extract_messages_from_list_never_invents_messages(messages: list[dict[str, Any]]) -> None:
-    result = extract_messages_from_list(messages)
+    result = extract_messages_from_list(cast(list[object], messages))
     expected = sum(1 for msg in messages if isinstance(msg, dict) and (msg.get("text") or msg.get("content")))
     assert len(result) <= expected
 
@@ -200,7 +207,7 @@ def test_extract_messages_from_list_never_invents_messages(messages: list[dict[s
 @given(message_strategy())
 @settings(max_examples=50)
 def test_extract_messages_from_list_normalizes_role(msg: dict[str, Any]) -> None:
-    result = extract_messages_from_list([msg])
+    result = extract_messages_from_list(cast(list[object], [msg]))
     if result:
         assert result[0].role in {"user", "assistant", "system", "tool", "message"}
 
@@ -208,7 +215,7 @@ def test_extract_messages_from_list_normalizes_role(msg: dict[str, Any]) -> None
 @given(chatgpt_message_node_strategy())
 @settings(max_examples=30)
 def test_chatgpt_node_contract(node: dict[str, Any]) -> None:
-    export = {"mapping": {node["id"]: node}, "id": "test"}
+    export: dict[str, object] = {"mapping": {str(node["id"]): node}, "id": "test"}
     result = chatgpt.parse(export, "fallback")
     assert all(message.role in {"user", "assistant", "system", "tool", "message"} for message in result.messages)
 
@@ -216,7 +223,7 @@ def test_chatgpt_node_contract(node: dict[str, Any]) -> None:
 @given(claude_code_message_strategy())
 @settings(max_examples=30)
 def test_claude_code_message_type_contract(msg: dict[str, Any]) -> None:
-    result = claude.parse_code([msg], "fallback")
+    result = claude.parse_code(cast(list[object], [msg]), "fallback")
     if not result.messages:
         return
     parsed = result.messages[0]
@@ -236,10 +243,13 @@ def test_claude_code_message_type_contract(msg: dict[str, Any]) -> None:
 @given(codex_message_strategy())
 @settings(max_examples=30)
 def test_codex_message_text_contract(msg: dict[str, Any]) -> None:
-    session = [
-        {"type": "session_meta", "payload": {"id": "test", "timestamp": "2024-01-01"}},
-        {"type": "response_item", "payload": msg},
-    ]
+    session = cast(
+        list[object],
+        [
+            {"type": "session_meta", "payload": {"id": "test", "timestamp": "2024-01-01"}},
+            {"type": "response_item", "payload": msg},
+        ],
+    )
     result = codex.parse(session, "fallback")
     if not result.messages:
         return
@@ -260,7 +270,7 @@ def test_codex_message_text_contract(msg: dict[str, Any]) -> None:
         st.none(),
     )
 )
-def test_timestamp_normalization_never_crashes(timestamp: object) -> None:
+def test_timestamp_normalization_never_crashes(timestamp: NormalizedTimestampInput) -> None:
     result = claude.normalize_timestamp(timestamp)
     assert result is None or isinstance(result, str)
 
@@ -317,11 +327,14 @@ def test_attachment_extraction_preserves_metadata(attachment_meta: dict[str, Any
 
 
 @pytest.fixture(params=sorted(SyntheticCorpus.available_providers()) or ["chatgpt"])
-def provider_conversations(request, synthetic_source):
+def provider_conversations(
+    request: pytest.FixtureRequest,
+    synthetic_source: Callable[..., Any],
+) -> tuple[str, list[ParsedConversation]]:
     """Parse synthetic data for each available provider."""
-    provider = request.param
+    provider = str(request.param)
     try:
-        source = synthetic_source(provider, count=3, seed=42)
+        source = cast(Source, synthetic_source(provider, count=3, seed=42))
     except FileNotFoundError:
         pytest.skip(f"No schema for {provider}")
 
@@ -335,7 +348,10 @@ def provider_conversations(request, synthetic_source):
 class TestTimestampParseability:
     """All parsed timestamps should be valid ISO 8601 or epoch values."""
 
-    def test_message_timestamps_are_parseable(self, provider_conversations):
+    def test_message_timestamps_are_parseable(
+        self: object,
+        provider_conversations: tuple[str, list[ParsedConversation]],
+    ) -> None:
         """Every message with a timestamp has a parseable value."""
         from polylogue.lib.timestamps import parse_timestamp
 
@@ -355,7 +371,10 @@ class TestTimestampParseability:
 class TestConversationIdUniqueness:
     """Parsed conversations should have unique IDs within a provider."""
 
-    def test_conversation_ids_are_unique(self, provider_conversations):
+    def test_conversation_ids_are_unique(
+        self: object,
+        provider_conversations: tuple[str, list[ParsedConversation]],
+    ) -> None:
         """No duplicate provider_conversation_id within one parse run."""
         provider, convos = provider_conversations
         ids = [c.provider_conversation_id for c in convos]
@@ -367,7 +386,10 @@ class TestConversationIdUniqueness:
 class TestMessageOrderConsistency:
     """Messages within a conversation should maintain insertion order."""
 
-    def test_messages_have_consistent_roles(self, provider_conversations):
+    def test_messages_have_consistent_roles(
+        self: object,
+        provider_conversations: tuple[str, list[ParsedConversation]],
+    ) -> None:
         """Messages alternate between user-like and assistant-like roles."""
         provider, convos = provider_conversations
         user_roles = {"user", "human"}
@@ -388,7 +410,10 @@ class TestMessageOrderConsistency:
 class TestNonEmptyContent:
     """Parsed conversations should have meaningful content."""
 
-    def test_at_least_one_message_has_text(self, provider_conversations):
+    def test_at_least_one_message_has_text(
+        self: object,
+        provider_conversations: tuple[str, list[ParsedConversation]],
+    ) -> None:
         """Every conversation has at least one message with non-empty text."""
         provider, convos = provider_conversations
         for conv in convos:

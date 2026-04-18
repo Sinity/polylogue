@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import sqlite3
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import patch
@@ -17,6 +18,8 @@ from unittest.mock import patch
 import pytest
 
 from polylogue.assets import asset_path, write_asset
+from polylogue.lib.branch_type import BranchType
+from polylogue.sources.parsers.base_models import ParsedConversation
 from polylogue.sources.parsers.claude import (
     SessionIndexEntry,
     enrich_conversation_from_index,
@@ -26,14 +29,13 @@ from polylogue.sources.parsers.claude import (
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.backends.connection import connection_context
 from polylogue.storage.backends.schema import _ensure_schema
-from polylogue.storage.store import ConversationRecord
-from tests.infra.storage_records import make_hash
+from tests.infra.storage_records import make_conversation, make_hash
 
 
 class TestEnsureVec0Table:
     """Tests that the schema includes a vec0 virtual table for embeddings."""
 
-    def test_fresh_schema_creates_vec0_table_when_available(self, tmp_path):
+    def test_fresh_schema_creates_vec0_table_when_available(self, tmp_path: Path) -> None:
         """Fresh schema creates message_embeddings vec0 table when sqlite-vec is loaded."""
         db_path = tmp_path / "test.db"
         conn = sqlite3.connect(str(db_path))
@@ -96,7 +98,13 @@ class TestAssetPath:
             ),
         ],
     )
-    def test_asset_path_behavior(self, tmp_path, asset_id, verify_fn, description):
+    def test_asset_path_behavior(
+        self,
+        tmp_path: Path,
+        asset_id: str,
+        verify_fn: Callable[[Path], bool],
+        description: str,
+    ) -> None:
         """Parametrized test for asset_path with various inputs and expectations."""
         path = asset_path(tmp_path, asset_id)
         assert verify_fn(path), f"Failed for {description}: {asset_id}"
@@ -105,7 +113,7 @@ class TestAssetPath:
 class TestWriteAsset:
     """Tests for write_asset function."""
 
-    def test_write_asset_success(self, tmp_path):
+    def test_write_asset_success(self, tmp_path: Path) -> None:
         """write_asset successfully writes content to disk."""
         asset_id = "test-asset"
         content = b"test content"
@@ -115,10 +123,10 @@ class TestWriteAsset:
         assert result_path.exists()
         assert result_path.read_bytes() == content
 
-    def test_write_asset_error_cleans_up_on_failures(self, tmp_path):
+    def test_write_asset_error_cleans_up_on_failures(self, tmp_path: Path) -> None:
         """write_asset cleans up temp files on replace or write errors."""
 
-        def mock_replace(src, dst):
+        def mock_replace(src: str | os.PathLike[str], dst: str | os.PathLike[str]) -> None:
             if os.path.exists(src):
                 os.unlink(src)
             raise OSError("Simulated replace error")
@@ -131,7 +139,7 @@ class TestWriteAsset:
         assert len(temp_files) == 0
 
         # Test write error cleanup
-        def mock_write(fd, data):
+        def mock_write(fd: int, data: bytes) -> int:
             raise OSError("Write failed")
 
         with patch("os.write", side_effect=mock_write):
@@ -142,13 +150,13 @@ class TestWriteAsset:
             temp_files = list(asset_dir.glob("**/.test-asset.*"))
             assert len(temp_files) == 0
 
-    def test_write_asset_atomic_rename(self, tmp_path):
+    def test_write_asset_atomic_rename(self, tmp_path: Path) -> None:
         """write_asset uses atomic rename (os.replace)."""
         with patch("os.replace") as mock_replace:
             write_asset(tmp_path, "test-asset", b"test content")
             assert mock_replace.called
 
-    def test_write_asset_creates_nested_dirs(self, tmp_path):
+    def test_write_asset_creates_nested_dirs(self, tmp_path: Path) -> None:
         """write_asset creates all needed nested directories."""
         result_path = write_asset(tmp_path, "very-long-asset-id-that-should-get-hashed", b"content")
         assert result_path.parent.exists()
@@ -159,7 +167,7 @@ class TestWriteAsset:
 class TestRawConversationEdgeCases:
     """Tests for raw conversation storage and edge cases."""
 
-    async def test_raw_conversation_with_all_fields(self, tmp_path):
+    async def test_raw_conversation_with_all_fields(self, tmp_path: Path) -> None:
         """Raw conversation records can be saved with all optional fields."""
         backend = SQLiteBackend(db_path=tmp_path / "test.db")
 
@@ -181,7 +189,7 @@ class TestRawConversationEdgeCases:
             conn.commit()
 
         # Create conversation linked to raw data
-        conv = ConversationRecord(
+        conv = make_conversation(
             conversation_id="conv-with-raw",
             provider_name="claude-ai",
             provider_conversation_id="claude-123",
@@ -202,11 +210,11 @@ class TestRawConversationEdgeCases:
 
         await backend.close()
 
-    async def test_list_conversations_with_branch_type(self, tmp_path):
+    async def test_list_conversations_with_branch_type(self, tmp_path: Path) -> None:
         """List conversations by parent respects branch_type field."""
         backend = SQLiteBackend(db_path=tmp_path / "test.db")
 
-        parent = ConversationRecord(
+        parent = make_conversation(
             conversation_id="parent",
             provider_name="test",
             provider_conversation_id="p",
@@ -218,7 +226,7 @@ class TestRawConversationEdgeCases:
         await backend.save_conversation_record(parent)
 
         # Create child with branch_type
-        child = ConversationRecord(
+        child = make_conversation(
             conversation_id="child",
             provider_name="test",
             provider_conversation_id="c",
@@ -227,7 +235,7 @@ class TestRawConversationEdgeCases:
             created_at="2024-01-02T00:00:00Z",
             updated_at="2024-01-02T00:00:00Z",
             parent_conversation_id="parent",
-            branch_type="sidechain",
+            branch_type=BranchType.SIDECHAIN,
         )
         await backend.save_conversation_record(child)
 
@@ -242,12 +250,12 @@ class TestRawConversationEdgeCases:
 class TestConcurrentAssetWrite:
     """Tests for concurrent asset writing safety."""
 
-    def test_concurrent_write_same_asset_no_corruption(self, tmp_path: Path):
+    def test_concurrent_write_same_asset_no_corruption(self, tmp_path: Path) -> None:
         """Concurrent writes to same asset should not corrupt file."""
         asset_id = "concurrent-test-asset"
         content = b"x" * 10000  # 10KB of data
 
-        def write_asset_thread(thread_id: int):
+        def write_asset_thread(thread_id: int) -> None:
             # Each thread writes the same content to the same asset
             write_asset(tmp_path, asset_id, content)
 
@@ -260,7 +268,7 @@ class TestConcurrentAssetWrite:
         assert final_path.exists(), "Asset file should exist"
         assert final_path.read_bytes() == content, "Asset content should not be corrupted"
 
-    def test_write_asset_atomic(self, tmp_path: Path):
+    def test_write_asset_atomic(self, tmp_path: Path) -> None:
         """write_asset should use atomic write (write to temp, then rename)."""
         asset_id = "atomic-test"
         content = b"test content"
@@ -271,7 +279,7 @@ class TestConcurrentAssetWrite:
         assert final_path.exists()
         assert final_path.read_bytes() == content
 
-    def test_write_asset_creates_parent_directories(self, tmp_path: Path):
+    def test_write_asset_creates_parent_directories(self, tmp_path: Path) -> None:
         """write_asset should create necessary parent directories."""
         asset_id = "deeply-nested-asset-id-with-hash-prefix"
         content = b"nested content"
@@ -283,7 +291,7 @@ class TestConcurrentAssetWrite:
         assert final_path.read_bytes() == content
         assert final_path.parent.exists()
 
-    def test_write_asset_overwrites_existing(self, tmp_path: Path):
+    def test_write_asset_overwrites_existing(self, tmp_path: Path) -> None:
         """write_asset should overwrite existing file atomically."""
         asset_id = "overwrite-test"
         old_content = b"old content"
@@ -298,7 +306,7 @@ class TestConcurrentAssetWrite:
         write_asset(tmp_path, asset_id, new_content)
         assert final_path.read_bytes() == new_content
 
-    def test_write_asset_empty_content(self, tmp_path: Path):
+    def test_write_asset_empty_content(self, tmp_path: Path) -> None:
         """write_asset should handle empty content correctly."""
         asset_id = "empty-asset"
         content = b""
@@ -313,7 +321,7 @@ class TestConcurrentAssetWrite:
 class TestParseSessionsIndex:
     """Tests for parse_sessions_index function."""
 
-    def test_parses_valid_index(self, sample_sessions_index):
+    def test_parses_valid_index(self, sample_sessions_index: Path) -> None:
         """Parses valid sessions-index.json file."""
         entries = parse_sessions_index(sample_sessions_index)
 
@@ -322,7 +330,7 @@ class TestParseSessionsIndex:
         assert "ghi789-jkl012" in entries
         assert "sidechain-test" in entries
 
-    def test_extracts_all_fields(self, sample_sessions_index):
+    def test_extracts_all_fields(self, sample_sessions_index: Path) -> None:
         """Extracts all expected fields from index entries."""
         entries = parse_sessions_index(sample_sessions_index)
         entry = entries["abc123-def456"]
@@ -337,12 +345,12 @@ class TestParseSessionsIndex:
         assert entry.project_path == "/home/user/myproject"
         assert entry.is_sidechain is False
 
-    def test_returns_empty_on_missing_file(self, tmp_path):
+    def test_returns_empty_on_missing_file(self, tmp_path: Path) -> None:
         """Returns empty dict when file doesn't exist."""
         entries = parse_sessions_index(tmp_path / "nonexistent.json")
         assert entries == {}
 
-    def test_returns_empty_on_invalid_json(self, tmp_path):
+    def test_returns_empty_on_invalid_json(self, tmp_path: Path) -> None:
         """Returns empty dict on invalid JSON."""
         index_path = tmp_path / "sessions-index.json"
         index_path.write_text("not valid json")
@@ -350,7 +358,7 @@ class TestParseSessionsIndex:
         entries = parse_sessions_index(index_path)
         assert entries == {}
 
-    def test_returns_empty_on_missing_entries(self, tmp_path):
+    def test_returns_empty_on_missing_entries(self, tmp_path: Path) -> None:
         """Returns empty dict when entries key is missing."""
         index_path = tmp_path / "sessions-index.json"
         index_path.write_text('{"version": 1}')
@@ -362,7 +370,7 @@ class TestParseSessionsIndex:
 class TestSessionIndexEntry:
     """Tests for SessionIndexEntry dataclass."""
 
-    def test_from_dict_creates_entry(self):
+    def test_from_dict_creates_entry(self) -> None:
         """Creates entry from dictionary."""
         data = {
             "sessionId": "test-123",
@@ -383,7 +391,7 @@ class TestSessionIndexEntry:
         assert entry.summary == "Test session"
         assert entry.message_count == 5
 
-    def test_from_dict_handles_missing_optional_fields(self):
+    def test_from_dict_handles_missing_optional_fields(self) -> None:
         """Handles missing optional fields gracefully."""
         data = {"sessionId": "test-123", "fullPath": "/path/to/session.jsonl"}
 
@@ -398,7 +406,9 @@ class TestSessionIndexEntry:
 class TestEnrichConversationFromIndex:
     """Tests for enrich_conversation_from_index function."""
 
-    def test_enriches_title_with_summary(self, sample_conversation, sample_sessions_index):
+    def test_enriches_title_with_summary(
+        self, sample_conversation: ParsedConversation, sample_sessions_index: Path
+    ) -> None:
         """Uses summary as title when available."""
         entries = parse_sessions_index(sample_sessions_index)
         entry = entries["abc123-def456"]
@@ -407,7 +417,7 @@ class TestEnrichConversationFromIndex:
 
         assert enriched.title == "Fixed authentication bug in login flow"
 
-    def test_enriches_timestamps(self, sample_conversation, sample_sessions_index):
+    def test_enriches_timestamps(self, sample_conversation: ParsedConversation, sample_sessions_index: Path) -> None:
         """Uses index timestamps when conversation lacks them."""
         entries = parse_sessions_index(sample_sessions_index)
         entry = entries["abc123-def456"]
@@ -417,18 +427,21 @@ class TestEnrichConversationFromIndex:
         assert enriched.created_at == "2024-01-15T10:30:00.000Z"
         assert enriched.updated_at == "2024-01-15T11:45:00.000Z"
 
-    def test_enriches_provider_meta(self, sample_conversation, sample_sessions_index):
+    def test_enriches_provider_meta(self, sample_conversation: ParsedConversation, sample_sessions_index: Path) -> None:
         """Adds git branch and project path to provider_meta."""
         entries = parse_sessions_index(sample_sessions_index)
         entry = entries["abc123-def456"]
 
         enriched = enrich_conversation_from_index(sample_conversation, entry)
 
+        assert enriched.provider_meta is not None
         assert enriched.provider_meta["gitBranch"] == "feature/auth-fix"
         assert enriched.provider_meta["projectPath"] == "/home/user/myproject"
         assert enriched.provider_meta["isSidechain"] is False
 
-    def test_uses_first_prompt_when_no_summary(self, sample_conversation, sample_sessions_index):
+    def test_uses_first_prompt_when_no_summary(
+        self, sample_conversation: ParsedConversation, sample_sessions_index: Path
+    ) -> None:
         """Falls back to firstPrompt when summary is generic."""
         entries = parse_sessions_index(sample_sessions_index)
         entry = entries["ghi789-jkl012"]
@@ -438,7 +451,7 @@ class TestEnrichConversationFromIndex:
         # "User Exits CLI Session" is filtered out, falls back to firstPrompt
         # But "No prompt" is also filtered, so keeps original title
 
-    def test_truncates_long_first_prompt(self, sample_conversation):
+    def test_truncates_long_first_prompt(self, sample_conversation: ParsedConversation) -> None:
         """Truncates firstPrompt if longer than 80 chars."""
         long_prompt = "A" * 100
         entry = SessionIndexEntry(
@@ -456,6 +469,7 @@ class TestEnrichConversationFromIndex:
 
         enriched = enrich_conversation_from_index(sample_conversation, entry)
 
+        assert enriched.title is not None
         assert len(enriched.title) == 83  # 80 + "..."
         assert enriched.title.endswith("...")
 
@@ -463,7 +477,7 @@ class TestEnrichConversationFromIndex:
 class TestFindSessionsIndex:
     """Tests for find_sessions_index function."""
 
-    def test_finds_index_in_same_directory(self, sample_sessions_index, tmp_path):
+    def test_finds_index_in_same_directory(self, sample_sessions_index: Path, tmp_path: Path) -> None:
         """Finds sessions-index.json in session file directory."""
         session_file = tmp_path / "test-session.jsonl"
         session_file.touch()
@@ -473,7 +487,7 @@ class TestFindSessionsIndex:
         assert index_path is not None
         assert index_path.name == "sessions-index.json"
 
-    def test_returns_none_when_no_index(self, tmp_path):
+    def test_returns_none_when_no_index(self, tmp_path: Path) -> None:
         """Returns None when no sessions-index.json exists."""
         session_file = tmp_path / "test-session.jsonl"
         session_file.touch()

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from devtools import project_motd
 
 
@@ -12,7 +14,10 @@ def test_read_version_extracts_project_version(tmp_path: Path) -> None:
     assert project_motd.read_version(pyproject) == "1.2.3"
 
 
-def test_render_motd_contains_expected_sections(monkeypatch, tmp_path: Path) -> None:
+def test_render_motd_contains_expected_sections(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
     (tmp_path / "pyproject.toml").write_text('[project]\nversion = "0.1.0"\n', encoding="utf-8")
 
     monkeypatch.setattr(project_motd, "git_status_summary", lambda cwd: ("feature/docs/test", 1, 2, 3))
@@ -27,12 +32,16 @@ def test_render_motd_contains_expected_sections(monkeypatch, tmp_path: Path) -> 
     assert "worktree   dirty · 1 staged · 2 modified · 3 untracked" in rendered
     assert "generated  5/5 generated unchecked" in rendered
     assert "head       docs: tighten repo guides" in rendered
-    assert "run        devtools render-all --check" in rendered
+    assert "ready      devtools render-all --check · devtools verify --quick · devtools build-package" in rendered
     assert "test       pytest -q --ignore=tests/integration" in rendered
+    assert "roots      keep .venv/ .direnv/ · cache .cache/ · outputs .local/ · build .local/result" in rendered
     assert "dirty · 1 staged · 2 modified · 3 untracked" in rendered
 
 
-def test_status_snapshot_includes_machine_readable_commands(monkeypatch, tmp_path: Path) -> None:
+def test_status_snapshot_includes_machine_readable_commands(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
     (tmp_path / "pyproject.toml").write_text('[project]\nversion = "0.1.0"\n', encoding="utf-8")
 
     monkeypatch.setattr(project_motd, "git_status_summary", lambda cwd: ("feature/docs/test", 1, 2, 3))
@@ -46,6 +55,8 @@ def test_status_snapshot_includes_machine_readable_commands(monkeypatch, tmp_pat
     assert snapshot["revision"] == "deadbeef"
     assert snapshot["commands"]["discover"] == "devtools --list-commands --json"
     assert snapshot["commands"]["status"] == "devtools status --json"
+    assert snapshot["commands"]["verify_quick"] == "devtools verify --quick"
+    assert snapshot["commands"]["build_package"] == "devtools build-package"
     assert snapshot["generated_surfaces"]
     assert snapshot["generated_checked"] is False
     assert set(snapshot["generated_surfaces"].values()) == {"unchecked"}
@@ -55,7 +66,10 @@ def test_status_snapshot_includes_machine_readable_commands(monkeypatch, tmp_pat
     assert snapshot["local_state"]["preferred_build_out_link"] == ".local/result"
 
 
-def test_render_motd_can_verify_generated_surfaces(monkeypatch, tmp_path: Path) -> None:
+def test_render_motd_can_verify_generated_surfaces(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
     (tmp_path / "pyproject.toml").write_text('[project]\nversion = "0.1.0"\n', encoding="utf-8")
 
     monkeypatch.setattr(project_motd, "git_status_summary", lambda cwd: ("feature/docs/test", 0, 0, 0))
@@ -69,7 +83,11 @@ def test_render_motd_can_verify_generated_surfaces(monkeypatch, tmp_path: Path) 
     assert "5/5 generated clean" in rendered
 
 
-def test_main_can_write_motd_to_stderr(monkeypatch, tmp_path: Path, capsys) -> None:
+def test_main_can_write_motd_to_stderr(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     (tmp_path / "pyproject.toml").write_text('[project]\nversion = "0.1.0"\n', encoding="utf-8")
 
     monkeypatch.setattr(project_motd, "git_status_summary", lambda cwd: ("feature/docs/test", 0, 0, 0))

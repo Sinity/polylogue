@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import tempfile
 import time
+from collections.abc import Iterator
 from contextlib import contextmanager
 from io import StringIO
 from pathlib import Path
@@ -16,11 +17,7 @@ from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 from rich.console import Console
 
-from polylogue.cli.commands.run import (
-    _display_result,
-    _run_sync_once,
-    run_command,
-)
+from polylogue.cli.commands.run import run_command
 from polylogue.cli.run_observers import (
     PlainProgressObserver as _PlainProgressObserver,
 )
@@ -30,6 +27,8 @@ from polylogue.cli.run_observers import (
 from polylogue.cli.run_observers import (
     _format_elapsed,
 )
+from polylogue.cli.run_workflow import display_result as _display_result
+from polylogue.cli.run_workflow import run_sync_once as _run_sync_once
 from polylogue.config import Config, get_config
 from polylogue.storage.state_views import RunResult
 
@@ -69,7 +68,7 @@ def _run_result(*, conversations: int = 1, index_error: str | None = None) -> Ru
 
 
 @contextmanager
-def _workspace_paths() -> tuple[Config, Path]:
+def _workspace_paths() -> Iterator[tuple[Config, Path]]:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         archive_root = root / "archive"
@@ -250,7 +249,7 @@ async def test_run_rerenders_when_title_or_content_changes_contract(
     from polylogue.pipeline.runner import run_sources
     from tests.infra.source_builders import GenericConversationBuilder
 
-    with _workspace_paths() as (config, root):
+    with _workspace_paths() as (_config, root):
         inbox = root / "inbox"
         source_file = inbox / "conversation.json"
 

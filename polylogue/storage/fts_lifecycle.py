@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 from collections.abc import Callable, Sequence
+from typing import TypeAlias
 
 import aiosqlite
 
@@ -26,6 +27,39 @@ from polylogue.storage.fts_lifecycle_sql import (
 )
 
 _chunked = chunked
+IndexedMessageLike: TypeAlias = tuple[str, str, str | None] | IndexedMessage
+
+
+def _indexed_message_parts(message: IndexedMessageLike) -> tuple[str, str, str | None]:
+    if isinstance(message, tuple):
+        return message
+    return message.message_id, message.conversation_id, message.text
+
+
+def _row_int(row: sqlite3.Row | None, key: int | str) -> int:
+    if row is None:
+        return 0
+    try:
+        return int(row[key])
+    except (TypeError, ValueError):
+        return 0
+
+
+def _status_int(status: dict[str, object], key: str) -> int:
+    value = status.get(key, 0)
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        try:
+            return int(value)
+        except ValueError:
+            return 0
+    return 0
+
 
 # ---------------------------------------------------------------------------
 # Trigger suspension for bulk writes
@@ -186,27 +220,18 @@ async def repair_fts_index_async(
 
 def replace_fts_rows_for_messages_sync(
     conn: sqlite3.Connection,
-    messages: Sequence[tuple[str, str, str | None]] | Sequence[IndexedMessage],
+    messages: Sequence[IndexedMessageLike],
 ) -> None:
     """Replace FTS rows for the supplied message payloads."""
     ensure_fts_index_sync(conn)
     if not messages:
         return
 
-    def message_id(message: IndexedMessage) -> str:
-        return message.message_id
-
-    def conversation_id(message: IndexedMessage) -> str:
-        return message.conversation_id
-
-    def text(message: IndexedMessage) -> str | None:
-        return message.text
-
-    conversation_ids = sorted({conversation_id(message) for message in messages})
+    conversation_ids = sorted({_indexed_message_parts(message)[1] for message in messages})
     for chunk in chunked(conversation_ids, size=500):
         conn.execute(delete_conversation_rows_sql(len(chunk)), tuple(chunk))
 
-    message_ids = [message_id(message) for message in messages]
+    message_ids = [_indexed_message_parts(message)[0] for message in messages]
     rowids_by_message_id: dict[str, int] = {}
     for chunk in chunked(message_ids, size=500):
         placeholders = ", ".join("?" for _ in chunk)
@@ -219,11 +244,9 @@ def replace_fts_rows_for_messages_sync(
     with_rowid: list[tuple[int, str, str, str]] = []
     without_rowid: list[tuple[str, str, str]] = []
     for message in messages:
-        payload_text = text(message)
+        payload_message_id, payload_conversation_id, payload_text = _indexed_message_parts(message)
         if not payload_text:
             continue
-        payload_message_id = message_id(message)
-        payload_conversation_id = conversation_id(message)
         rowid = rowids_by_message_id.get(payload_message_id)
         if rowid is not None:
             with_rowid.append((rowid, payload_message_id, payload_conversation_id, payload_text))
@@ -255,10 +278,10 @@ def fts_index_status_sync(conn: sqlite3.Connection) -> dict[str, object]:
     count = 0
     action_count = 0
     if exists:
-        count = conn.execute(FTS_INDEX_DOC_COUNT_SQL).fetchone()[0]
+        count = _row_int(conn.execute(FTS_INDEX_DOC_COUNT_SQL).fetchone(), 0)
         action_row = conn.execute(ACTION_FTS_INDEX_EXISTS_SQL).fetchone()
         if action_row:
-            action_count = conn.execute(ACTION_FTS_INDEX_DOC_COUNT_SQL).fetchone()[0]
+            action_count = _row_int(conn.execute(ACTION_FTS_INDEX_DOC_COUNT_SQL).fetchone(), 0)
     return {"exists": exists, "count": int(count), "action_count": int(action_count)}
 
 
@@ -286,9 +309,9 @@ def message_fts_readiness_sync(
     """Return whether the message FTS index is present and fully populated."""
     if verify_total_rows:
         status = fts_index_status_sync(conn)
-        indexed_rows = int(status.get("count", 0) or 0)
+        indexed_rows = _status_int(status, "count")
         exists = bool(status.get("exists", False))
-        total_messages = int(conn.execute(FTS_INDEXABLE_MESSAGE_COUNT_SQL).fetchone()[0] or 0)
+        total_messages = _row_int(conn.execute(FTS_INDEXABLE_MESSAGE_COUNT_SQL).fetchone(), 0)
         ready = exists and indexed_rows == total_messages
     else:
         exists = bool(conn.execute(FTS_INDEX_EXISTS_SQL).fetchone())
@@ -313,10 +336,10 @@ async def message_fts_readiness_async(
     """Return whether the message FTS index is present and fully populated."""
     if verify_total_rows:
         status = await fts_index_status_async(conn)
-        indexed_rows = int(status.get("count", 0) or 0)
+        indexed_rows = _status_int(status, "count")
         exists = bool(status.get("exists", False))
         row = await (await conn.execute(FTS_INDEXABLE_MESSAGE_COUNT_SQL)).fetchone()
-        total_messages = int(row[0] or 0) if row else 0
+        total_messages = _row_int(row, 0)
         ready = exists and indexed_rows == total_messages
     else:
         exists = bool(await (await conn.execute(FTS_INDEX_EXISTS_SQL)).fetchone())

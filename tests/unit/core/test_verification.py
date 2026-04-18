@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 import orjson
 import pytest
@@ -70,7 +71,7 @@ def _insert_raw_record(
 
 
 class TestProviderSchemaVerification:
-    def test_to_dict(self) -> None:
+    def test_to_dict(self: Any) -> None:
         v = ProviderSchemaVerification(
             provider="chatgpt",
             total_records=100,
@@ -89,7 +90,7 @@ class TestProviderSchemaVerification:
         assert d["decode_errors"] == 2
         assert d["skipped_no_schema"] == 0
 
-    def test_to_dict_quarantined(self) -> None:
+    def test_to_dict_quarantined(self: Any) -> None:
         v = ProviderSchemaVerification(
             provider="test",
             total_records=10,
@@ -98,7 +99,7 @@ class TestProviderSchemaVerification:
         d = v.to_dict()
         assert d["quarantined_records"] == 2
 
-    def test_default_zeros(self) -> None:
+    def test_default_zeros(self: Any) -> None:
         v = ProviderSchemaVerification(provider="test")
         d = v.to_dict()
         assert d["total_records"] == 0
@@ -107,7 +108,7 @@ class TestProviderSchemaVerification:
         assert d["decode_errors"] == 0
         assert d["quarantined_records"] == 0
 
-    def test_partial_specification(self) -> None:
+    def test_partial_specification(self: Any) -> None:
         v = ProviderSchemaVerification(
             provider="partial",
             total_records=50,
@@ -120,7 +121,7 @@ class TestProviderSchemaVerification:
 
 
 class TestSchemaVerificationReport:
-    def test_to_dict_structure(self) -> None:
+    def test_to_dict_structure(self: Any) -> None:
         report = SchemaVerificationReport(
             providers={
                 "chatgpt": ProviderSchemaVerification(provider="chatgpt", total_records=10),
@@ -135,7 +136,7 @@ class TestSchemaVerificationReport:
         assert d["record_limit"] == "all"
         assert d["record_offset"] == 0
 
-    def test_to_dict_with_limits(self) -> None:
+    def test_to_dict_with_limits(self: Any) -> None:
         report = SchemaVerificationReport(
             providers={},
             max_samples=5,
@@ -148,7 +149,7 @@ class TestSchemaVerificationReport:
         assert d["record_limit"] == 100
         assert d["record_offset"] == 10
 
-    def test_to_dict_multiple_providers(self) -> None:
+    def test_to_dict_multiple_providers(self: Any) -> None:
         report = SchemaVerificationReport(
             providers={
                 "chatgpt": ProviderSchemaVerification(provider="chatgpt", total_records=10),
@@ -162,7 +163,7 @@ class TestSchemaVerificationReport:
         assert "chatgpt" in d["providers"]
         assert "claude-ai" in d["providers"]
 
-    def test_to_dict_sorts_providers(self) -> None:
+    def test_to_dict_sorts_providers(self: Any) -> None:
         report = SchemaVerificationReport(
             providers={
                 "zebra": ProviderSchemaVerification(provider="zebra", total_records=1),
@@ -176,7 +177,7 @@ class TestSchemaVerificationReport:
         provider_names = list(d["providers"].keys())
         assert provider_names == ["alpha", "beta", "zebra"]
 
-    def test_max_samples_none_displays_as_all(self) -> None:
+    def test_max_samples_none_displays_as_all(self: Any) -> None:
         report = SchemaVerificationReport(
             providers={},
             max_samples=None,
@@ -185,7 +186,7 @@ class TestSchemaVerificationReport:
         d = report.to_dict()
         assert d["max_samples"] == "all"
 
-    def test_record_limit_none_displays_as_all(self) -> None:
+    def test_record_limit_none_displays_as_all(self: Any) -> None:
         report = SchemaVerificationReport(
             providers={},
             max_samples=None,
@@ -197,7 +198,7 @@ class TestSchemaVerificationReport:
 
 
 class TestProviderArtifactProof:
-    def test_to_dict(self) -> None:
+    def test_to_dict(self: Any) -> None:
         report = ProviderArtifactProof(
             provider="claude-code",
             total_records=4,
@@ -226,7 +227,7 @@ class TestProviderArtifactProof:
 
 
 class TestArtifactProofReport:
-    def test_to_dict_structure(self) -> None:
+    def test_to_dict_structure(self: Any) -> None:
         report = ArtifactProofReport(
             providers={
                 "chatgpt": ProviderArtifactProof(
@@ -253,12 +254,12 @@ class TestArtifactProofReport:
 
 
 class TestVerifyRawCorpus:
-    def test_nonexistent_db_returns_empty(self, tmp_path: Path) -> None:
+    def test_nonexistent_db_returns_empty(self: Any, tmp_path: Path) -> None:
         report = verify_raw_corpus(db_path=tmp_path / "nope.db", request=SchemaVerificationRequest())
         assert report.total_records == 0
         assert report.providers == {}
 
-    def test_empty_db(self, tmp_path: Path) -> None:
+    def test_empty_db(self: Any, tmp_path: Path) -> None:
         from polylogue.storage.backends.connection import open_connection
 
         db = tmp_path / "empty.db"
@@ -268,7 +269,7 @@ class TestVerifyRawCorpus:
         assert report.total_records == 0
         assert report.providers == {}
 
-    def test_provider_filter_empty(self, tmp_path: Path) -> None:
+    def test_provider_filter_empty(self: Any, tmp_path: Path) -> None:
         from polylogue.storage.backends.connection import open_connection
 
         db = tmp_path / "empty.db"
@@ -280,7 +281,7 @@ class TestVerifyRawCorpus:
         )
         assert report.total_records == 0
 
-    def test_max_samples_preserved_in_report(self, tmp_path: Path) -> None:
+    def test_max_samples_preserved_in_report(self: Any, tmp_path: Path) -> None:
         from polylogue.storage.backends.connection import open_connection
 
         db = tmp_path / "empty.db"
@@ -292,7 +293,7 @@ class TestVerifyRawCorpus:
         )
         assert report.max_samples == 100
 
-    def test_record_limit_preserved_in_report(self, tmp_path: Path) -> None:
+    def test_record_limit_preserved_in_report(self: Any, tmp_path: Path) -> None:
         from polylogue.storage.backends.connection import open_connection
 
         db = tmp_path / "empty.db"
@@ -304,7 +305,7 @@ class TestVerifyRawCorpus:
         )
         assert report.record_limit == 50
 
-    def test_record_offset_preserved_in_report(self, tmp_path: Path) -> None:
+    def test_record_offset_preserved_in_report(self: Any, tmp_path: Path) -> None:
         from polylogue.storage.backends.connection import open_connection
 
         db = tmp_path / "empty.db"
@@ -316,7 +317,7 @@ class TestVerifyRawCorpus:
         )
         assert report.record_offset == 25
 
-    def test_offset_negative_becomes_zero(self, tmp_path: Path) -> None:
+    def test_offset_negative_becomes_zero(self: Any, tmp_path: Path) -> None:
         from polylogue.storage.backends.connection import open_connection
 
         db = tmp_path / "empty.db"
@@ -328,7 +329,7 @@ class TestVerifyRawCorpus:
         )
         assert report.record_offset == 0
 
-    def test_quarantine_malformed_flag_preserved(self, tmp_path: Path) -> None:
+    def test_quarantine_malformed_flag_preserved(self: Any, tmp_path: Path) -> None:
         from polylogue.storage.backends.connection import open_connection
 
         db = tmp_path / "empty.db"
@@ -341,7 +342,7 @@ class TestVerifyRawCorpus:
         )
         assert report.total_records == 0
 
-    def test_report_structure_matches_schema(self, tmp_path: Path) -> None:
+    def test_report_structure_matches_schema(self: Any, tmp_path: Path) -> None:
         from polylogue.storage.backends.connection import open_connection
 
         db = tmp_path / "empty.db"
@@ -354,7 +355,7 @@ class TestVerifyRawCorpus:
         assert hasattr(report, "record_limit")
         assert hasattr(report, "record_offset")
 
-    def test_provider_stats_have_required_fields(self, tmp_path: Path) -> None:
+    def test_provider_stats_have_required_fields(self: Any, tmp_path: Path) -> None:
         from polylogue.storage.backends.connection import open_connection
 
         db = tmp_path / "empty.db"
@@ -373,7 +374,7 @@ class TestVerifyRawCorpus:
 
 
 class TestProveRawArtifactCoverage:
-    def test_nonexistent_db_returns_empty(self, tmp_path: Path) -> None:
+    def test_nonexistent_db_returns_empty(self: Any, tmp_path: Path) -> None:
         report = prove_raw_artifact_coverage(
             db_path=tmp_path / "missing.db",
             request=ArtifactProofRequest(),
@@ -382,7 +383,7 @@ class TestProveRawArtifactCoverage:
         assert report.providers == {}
 
     def test_reports_contracts_sidecars_unknowns_and_decode_errors(
-        self,
+        self: Any,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
@@ -455,7 +456,7 @@ class TestProveRawArtifactCoverage:
             ],
         )
 
-        def _resolve_payload(self, provider, payload, *, source_path=None):
+        def _resolve_payload(self: Any, provider: Any, payload: Any, *, source_path: Any = None) -> Any:
             if str(provider) == "chatgpt":
                 return SchemaResolution(
                     provider="chatgpt",
@@ -467,7 +468,7 @@ class TestProveRawArtifactCoverage:
                 )
             return None
 
-        def _get_package(self, provider, version="default"):
+        def _get_package(self: Any, provider: Any, version: Any = "default") -> Any:
             if str(provider) == "chatgpt" and version == "v1":
                 return package
             return None
@@ -504,7 +505,7 @@ class TestProveRawArtifactCoverage:
         assert observation_count == 5
 
     def test_refreshes_stale_existing_observation_resolution(
-        self,
+        self: Any,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
@@ -607,7 +608,7 @@ class TestProveRawArtifactCoverage:
             ],
         )
 
-        def _resolve_payload(self, provider, payload, *, source_path=None):
+        def _resolve_payload(self: Any, provider: Any, payload: Any, *, source_path: Any = None) -> Any:
             if str(provider) == "chatgpt":
                 return SchemaResolution(
                     provider="chatgpt",
@@ -619,7 +620,7 @@ class TestProveRawArtifactCoverage:
                 )
             return None
 
-        def _get_package(self, provider, version="default"):
+        def _get_package(self: Any, provider: Any, version: Any = "default") -> Any:
             if str(provider) == "chatgpt" and version == "v1":
                 return package
             return None
@@ -651,7 +652,7 @@ class TestProveRawArtifactCoverage:
         assert refreshed["resolution_reason"] == "exact_structure"
 
     def test_lists_artifact_rows_and_cohorts_from_durable_control_plane(
-        self,
+        self: Any,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
@@ -703,7 +704,7 @@ class TestProveRawArtifactCoverage:
             ],
         )
 
-        def _resolve_payload(self, provider, payload, *, source_path=None):
+        def _resolve_payload(self: Any, provider: Any, payload: Any, *, source_path: Any = None) -> Any:
             if str(provider) == "chatgpt":
                 return SchemaResolution(
                     provider="chatgpt",
@@ -715,7 +716,7 @@ class TestProveRawArtifactCoverage:
                 )
             return None
 
-        def _get_package(self, provider, version="default"):
+        def _get_package(self: Any, provider: Any, version: Any = "default") -> Any:
             if str(provider) == "chatgpt" and version == "v1":
                 return package
             return None
@@ -753,7 +754,7 @@ class TestProveRawArtifactCoverage:
         assert sidecar_cohort.linked_sidecar_count == 1
 
     def test_large_json_documents_use_bounded_full_read_fallback(
-        self,
+        self: Any,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
@@ -801,7 +802,7 @@ class TestProveRawArtifactCoverage:
             ],
         )
 
-        def _resolve_payload(self, provider, payload, *, source_path=None):
+        def _resolve_payload(self: Any, provider: Any, payload: Any, *, source_path: Any = None) -> Any:
             if str(provider) == "claude-ai":
                 return SchemaResolution(
                     provider="claude-ai",
@@ -813,7 +814,7 @@ class TestProveRawArtifactCoverage:
                 )
             return None
 
-        def _get_package(self, provider, version="default"):
+        def _get_package(self: Any, provider: Any, version: Any = "default") -> Any:
             if str(provider) == "claude-ai" and version == "v1":
                 return package
             return None

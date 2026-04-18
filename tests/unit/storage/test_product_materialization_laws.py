@@ -7,13 +7,16 @@ agrees, no phantom products for non-existent conversations.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from pathlib import Path
+
 import pytest
 
 from tests.infra.storage_records import ConversationBuilder, db_setup
 
 
 @pytest.fixture()
-def materialized_db(workspace_env):
+def materialized_db(workspace_env: Mapping[str, Path]) -> Path:
     """Create a DB with conversations and run session product materialization."""
     db_path = db_setup(workspace_env)
 
@@ -44,7 +47,7 @@ def materialized_db(workspace_env):
 class TestProfileConversationAgreement:
     """Every session profile must correspond to exactly one real conversation."""
 
-    def test_profile_count_matches_conversation_count(self, materialized_db):
+    def test_profile_count_matches_conversation_count(self, materialized_db: Path) -> None:
         from polylogue.storage.backends.connection import open_connection
 
         with open_connection(materialized_db) as conn:
@@ -57,7 +60,7 @@ class TestProfileConversationAgreement:
             profile_count = conn.execute("SELECT COUNT(*) FROM session_profiles").fetchone()[0]
             assert profile_count == conv_count, f"Profile count ({profile_count}) != conversation count ({conv_count})"
 
-    def test_no_phantom_profiles(self, materialized_db):
+    def test_no_phantom_profiles(self, materialized_db: Path) -> None:
         """No profile should reference a non-existent conversation."""
         from polylogue.storage.backends.connection import open_connection
 
@@ -74,7 +77,7 @@ class TestProfileConversationAgreement:
             ).fetchone()[0]
             assert phantom_count == 0, f"Found {phantom_count} phantom profiles"
 
-    def test_profile_provider_matches_conversation(self, materialized_db):
+    def test_profile_provider_matches_conversation(self, materialized_db: Path) -> None:
         """Profile provider_name must match source conversation provider_name."""
         from polylogue.storage.backends.connection import open_connection
 
@@ -97,7 +100,7 @@ class TestProfileConversationAgreement:
 class TestProductMaterializationIdempotence:
     """Running materialization twice produces the same profile set."""
 
-    def test_rebuild_is_idempotent(self, materialized_db):
+    def test_rebuild_is_idempotent(self, materialized_db: Path) -> None:
         from polylogue.storage.backends.connection import open_connection
         from polylogue.storage.session_product_rebuild import rebuild_session_products_sync
 
@@ -125,7 +128,7 @@ class TestProductMaterializationIdempotence:
 class TestWorkEventAgreement:
     """Work events must reference valid profiles."""
 
-    def test_no_orphan_work_events(self, materialized_db):
+    def test_no_orphan_work_events(self, materialized_db: Path) -> None:
         from polylogue.storage.backends.connection import open_connection
 
         with open_connection(materialized_db) as conn:
@@ -145,7 +148,7 @@ class TestWorkEventAgreement:
 class TestPhaseAgreement:
     """Phases must reference valid profiles."""
 
-    def test_no_orphan_phases(self, materialized_db):
+    def test_no_orphan_phases(self, materialized_db: Path) -> None:
         from polylogue.storage.backends.connection import open_connection
 
         with open_connection(materialized_db) as conn:

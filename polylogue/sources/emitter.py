@@ -108,7 +108,12 @@ class _ConversationEmitter:
             if sniff_provider in GROUP_PROVIDERS:
                 grouped_bytes = pre_read_bytes
                 grouped_handle = sniff_handle
-                if grouped_bytes is None and self._ctx.capture_raw and precomputed_raw is None:
+                if (
+                    grouped_bytes is None
+                    and self._ctx.capture_raw
+                    and precomputed_raw is None
+                    and stream_start is not None
+                ):
                     self._restore_stream_start(handle, stream_start)
                     grouped_bytes = handle.read()
                     grouped_handle = BytesIO(grouped_bytes)
@@ -142,11 +147,11 @@ class _ConversationEmitter:
             raw_bytes = None
         elif self._ctx.capture_raw and pre_read_bytes is None:
             raw_bytes = handle.read()
-            handle = BytesIO(raw_bytes)  # type: ignore[assignment]
+            handle = BytesIO(raw_bytes)
         else:
             raw_bytes = pre_read_bytes
             if raw_bytes is not None:
-                handle = BytesIO(raw_bytes)  # type: ignore[assignment]
+                handle = BytesIO(raw_bytes)
 
         payloads = (
             precomputed_payloads if precomputed_payloads is not None else list(_iter_json_stream(handle, stream_name))

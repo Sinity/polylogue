@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 from collections import Counter
+from typing import Any
 
 from hypothesis import given, settings
 
@@ -20,7 +21,7 @@ from tests.infra.strategies.messages import conversation_strategy
 # ---------------------------------------------------------------------------
 
 
-def _markdown_facts(md: str) -> dict:
+def _markdown_facts(md: str) -> dict[str, object]:
     """Extract semantic facts from rendered markdown."""
     message_sections = 0
     timestamp_lines = 0
@@ -46,7 +47,7 @@ def _markdown_facts(md: str) -> dict:
     }
 
 
-def _json_facts(json_str: str) -> dict:
+def _json_facts(json_str: str) -> dict[str, object]:
     """Extract semantic facts from JSON export."""
     data = json.loads(json_str)
     messages = data.get("messages", [])
@@ -67,7 +68,7 @@ def _json_facts(json_str: str) -> dict:
     }
 
 
-def _csv_facts(csv_str: str) -> dict:
+def _csv_facts(csv_str: str) -> dict[str, object]:
     """Extract semantic facts from CSV export."""
     import csv
     import io
@@ -94,7 +95,7 @@ def _csv_facts(csv_str: str) -> dict:
 
 @given(conv_data=conversation_strategy(min_messages=1, max_messages=10))
 @settings(max_examples=30, deadline=5000)
-def test_markdown_preserves_message_count(conv_data: dict) -> None:
+def test_markdown_preserves_message_count(conv_data: dict[str, Any]) -> None:
     """Every non-empty message must produce a ## section in markdown."""
     from polylogue.lib.messages import MessageCollection
     from polylogue.lib.models import Conversation, Message
@@ -131,7 +132,7 @@ def test_markdown_preserves_message_count(conv_data: dict) -> None:
 
 @given(conv_data=conversation_strategy(min_messages=2, max_messages=8))
 @settings(max_examples=30, deadline=5000)
-def test_markdown_preserves_role_distribution(conv_data: dict) -> None:
+def test_markdown_preserves_role_distribution(conv_data: dict[str, Any]) -> None:
     """Markdown role sections match the input role distribution."""
     from polylogue.lib.messages import MessageCollection
     from polylogue.lib.models import Conversation, Message
@@ -172,7 +173,7 @@ def test_markdown_preserves_role_distribution(conv_data: dict) -> None:
 
 @given(conv_data=conversation_strategy(min_messages=1, max_messages=10))
 @settings(max_examples=30, deadline=5000)
-def test_json_export_preserves_conversation_identity(conv_data: dict) -> None:
+def test_json_export_preserves_conversation_identity(conv_data: dict[str, Any]) -> None:
     """JSON export must preserve conversation ID, provider, title."""
     from polylogue.lib.messages import MessageCollection
     from polylogue.lib.models import Conversation, Message
@@ -203,7 +204,7 @@ def test_json_export_preserves_conversation_identity(conv_data: dict) -> None:
 
 @given(conv_data=conversation_strategy(min_messages=1, max_messages=10))
 @settings(max_examples=30, deadline=5000)
-def test_json_export_preserves_message_count(conv_data: dict) -> None:
+def test_json_export_preserves_message_count(conv_data: dict[str, Any]) -> None:
     """JSON export must have one message entry per input message."""
     from polylogue.lib.messages import MessageCollection
     from polylogue.lib.models import Conversation, Message
@@ -237,7 +238,7 @@ def test_json_export_preserves_message_count(conv_data: dict) -> None:
 
 @given(conv_data=conversation_strategy(min_messages=1, max_messages=5))
 @settings(max_examples=20, deadline=5000)
-def test_json_yaml_agree_on_message_count(conv_data: dict) -> None:
+def test_json_yaml_agree_on_message_count(conv_data: dict[str, Any]) -> None:
     """JSON and YAML exports of the same conversation have the same message count."""
     import yaml
 
@@ -274,7 +275,7 @@ def test_json_yaml_agree_on_message_count(conv_data: dict) -> None:
 
 @given(conv_data=conversation_strategy(min_messages=1, max_messages=5))
 @settings(max_examples=20, deadline=5000)
-def test_json_yaml_agree_on_identity(conv_data: dict) -> None:
+def test_json_yaml_agree_on_identity(conv_data: dict[str, Any]) -> None:
     """JSON and YAML agree on conversation_id, provider, title."""
     import yaml
     from hypothesis import assume
@@ -316,14 +317,14 @@ def test_json_yaml_agree_on_identity(conv_data: dict) -> None:
 
 @given(conv_data=conversation_strategy(min_messages=2, max_messages=5))
 @settings(max_examples=20, deadline=5000)
-def test_content_blocks_produce_structured_markdown(conv_data: dict) -> None:
+def test_content_blocks_produce_structured_markdown(conv_data: dict[str, Any]) -> None:
     """When content blocks are present, markdown should contain structural markers."""
     from polylogue.lib.messages import MessageCollection
     from polylogue.lib.models import Conversation, Message
     from polylogue.rendering.core_markdown import format_conversation_markdown
 
     # Add content blocks to the first message
-    blocks = [
+    blocks: list[dict[str, Any]] = [
         {"type": "thinking", "thinking": "Let me analyze this..."},
         {"type": "tool_use", "name": "Read", "id": "tool-1", "input": {"file_path": "/tmp/test.py"}},
         {"type": "text", "text": "Here's what I found."},

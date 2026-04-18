@@ -11,7 +11,7 @@ example tests.
 from __future__ import annotations
 
 from decimal import Decimal
-from typing import Any
+from typing import Any, Literal
 
 import orjson
 import pytest
@@ -22,6 +22,8 @@ from polylogue.lib import json as core_json
 from polylogue.lib.provider_identity import normalize_provider_token
 from polylogue.types import AttachmentId, ContentHash, ConversationId, MessageId, Provider
 
+SURROGATE_CATEGORY: tuple[Literal["Cs"], ...] = ("Cs",)
+
 # ---------------------------------------------------------------------------
 # Serializable value strategy
 # ---------------------------------------------------------------------------
@@ -31,7 +33,7 @@ _scalar = st.one_of(
     st.booleans(),
     st.integers(min_value=-(2**53), max_value=2**53),
     st.floats(allow_nan=False, allow_infinity=False, allow_subnormal=False),
-    st.text(alphabet=st.characters(blacklist_categories=("Cs",))),
+    st.text(alphabet=st.characters(blacklist_categories=SURROGATE_CATEGORY)),
 )
 
 _json_value = st.recursive(
@@ -39,7 +41,7 @@ _json_value = st.recursive(
     lambda children: st.one_of(
         st.lists(children, max_size=6),
         st.dictionaries(
-            st.text(alphabet=st.characters(blacklist_categories=("Cs",)), max_size=20), children, max_size=6
+            st.text(alphabet=st.characters(blacklist_categories=SURROGATE_CATEGORY), max_size=20), children, max_size=6
         ),
     ),
     max_leaves=20,
@@ -159,11 +161,11 @@ def test_provider_from_string_idempotent(value: str) -> None:
 # =============================================================================
 
 
-def test_dumps_custom_type_default_handler():
+def test_dumps_custom_type_default_handler() -> Any:
     """Custom default handler serializes custom types."""
 
     class CustomType:
-        def __init__(self, value):
+        def __init__(self: Any, value: Any) -> None:
             self.value = value
 
     def custom_handler(obj: Any) -> Any:
@@ -177,7 +179,7 @@ def test_dumps_custom_type_default_handler():
     assert data == {"custom": 42}
 
 
-def test_dumps_custom_fallback_to_encoder():
+def test_dumps_custom_fallback_to_encoder() -> None:
     """When custom handler raises, built-in encoder handles known types like Decimal."""
 
     def custom_handler(obj: Any) -> Any:
@@ -189,7 +191,7 @@ def test_dumps_custom_fallback_to_encoder():
     assert data["decimal"] == 1.5
 
 
-def test_dumps_custom_handler_takes_precedence_for_decimal():
+def test_dumps_custom_handler_takes_precedence_for_decimal() -> Any:
     """Custom handlers can override Decimal serialization instead of falling through."""
 
     def custom_handler(obj: Any) -> Any:
@@ -202,7 +204,7 @@ def test_dumps_custom_handler_takes_precedence_for_decimal():
     assert data["decimal"] == "decimal:1.5"
 
 
-def test_dumps_preserves_non_type_errors_from_custom_handler():
+def test_dumps_preserves_non_type_errors_from_custom_handler() -> None:
     """Only TypeError falls through to built-in encoding."""
 
     def custom_handler(obj: Any) -> Any:
@@ -212,14 +214,14 @@ def test_dumps_preserves_non_type_errors_from_custom_handler():
         core_json.dumps({"decimal": Decimal("1.5")}, default=custom_handler)
 
 
-def test_dumps_forwards_orjson_options():
+def test_dumps_forwards_orjson_options() -> None:
     """Options are forwarded to orjson when the fast path succeeds."""
     payload = {"b": 1, "a": 2}
     output = core_json.dumps(payload, option=orjson.OPT_SORT_KEYS)
     assert output == '{"a":2,"b":1}'
 
 
-def test_dumps_bytes_roundtrips_as_utf8_json():
+def test_dumps_bytes_roundtrips_as_utf8_json() -> None:
     """dumps_bytes returns UTF-8 bytes with the same semantic content as dumps."""
     payload = {"b": 1, "a": Decimal("2.5")}
 
@@ -230,11 +232,11 @@ def test_dumps_bytes_roundtrips_as_utf8_json():
     assert core_json.loads(output) == {"a": 2.5, "b": 1}
 
 
-def test_dumps_fallback_uses_stdlib_encoder_when_orjson_option_rejects_object():
+def test_dumps_fallback_uses_stdlib_encoder_when_orjson_option_rejects_object() -> Any:
     """The stdlib fallback still uses the combined encoder contract."""
 
     class CustomType:
-        def __init__(self, value: int):
+        def __init__(self: Any, value: int) -> None:
             self.value = value
 
     def custom_handler(obj: Any) -> Any:
@@ -251,11 +253,11 @@ def test_dumps_fallback_uses_stdlib_encoder_when_orjson_option_rejects_object():
     assert data == {"payload": {"custom": 7}}
 
 
-def test_dumps_bytes_fallback_uses_stdlib_encoder_when_orjson_option_rejects_object():
+def test_dumps_bytes_fallback_uses_stdlib_encoder_when_orjson_option_rejects_object() -> Any:
     """dumps_bytes preserves the same semantic encoder contract as dumps."""
 
     class CustomType:
-        def __init__(self, value: int):
+        def __init__(self: Any, value: int) -> None:
             self.value = value
 
     def custom_handler(obj: Any) -> Any:
@@ -282,7 +284,7 @@ def test_dumps_bytes_fallback_uses_stdlib_encoder_when_orjson_option_rejects_obj
 # =============================================================================
 
 
-def test_encoder_unhandled_type_raises_type_error():
+def test_encoder_unhandled_type_raises_type_error() -> None:
     """dumps raises TypeError when custom handler cannot handle the object."""
 
     class UnhandledType:
@@ -296,7 +298,7 @@ def test_encoder_unhandled_type_raises_type_error():
         core_json.dumps(obj, default=custom_handler)
 
 
-def test_encoder_decimal_serialized_when_custom_fails():
+def test_encoder_decimal_serialized_when_custom_fails() -> Any:
     """Built-in encoder handles Decimal even when custom handler raises for other types."""
 
     def custom_handler(obj: Any) -> Any:
@@ -322,7 +324,7 @@ NEWTYPE_IDS = ["ConversationId", "MessageId", "AttachmentId", "ContentHash"]
 
 @pytest.mark.parametrize("wrapper", NEWTYPE_WRAPPERS, ids=NEWTYPE_IDS)
 @given(st.text())
-def test_newtype_preserves_string_semantics(wrapper, text: str) -> None:
+def test_newtype_preserves_string_semantics(wrapper: Any, text: str) -> None:
     """NewType wrappers are str at runtime - all string operations work."""
     wrapped = wrapper(text)
 
@@ -338,7 +340,7 @@ def test_newtype_preserves_string_semantics(wrapper, text: str) -> None:
 
 @pytest.mark.parametrize("wrapper", NEWTYPE_WRAPPERS, ids=NEWTYPE_IDS)
 @given(st.text(), st.text())
-def test_newtype_equality_reflects_string(wrapper, a: str, b: str) -> None:
+def test_newtype_equality_reflects_string(wrapper: Any, a: str, b: str) -> None:
     """Equality between wrapped values reflects underlying string equality."""
     wrapped_a = wrapper(a)
     wrapped_b = wrapper(b)
@@ -349,7 +351,7 @@ def test_newtype_equality_reflects_string(wrapper, a: str, b: str) -> None:
 
 @pytest.mark.parametrize("wrapper", NEWTYPE_WRAPPERS, ids=NEWTYPE_IDS)
 @given(st.text())
-def test_newtype_hashable_as_string(wrapper, text: str) -> None:
+def test_newtype_hashable_as_string(wrapper: Any, text: str) -> None:
     """NewType values hash identically to their underlying string."""
     wrapped = wrapper(text)
 
@@ -366,7 +368,7 @@ def test_newtype_hashable_as_string(wrapper, text: str) -> None:
 
 @pytest.mark.parametrize("wrapper", NEWTYPE_WRAPPERS, ids=NEWTYPE_IDS)
 @given(st.lists(st.text(), min_size=0, max_size=20))
-def test_newtype_set_deduplication(wrapper, texts: list[str]) -> None:
+def test_newtype_set_deduplication(wrapper: Any, texts: list[str]) -> None:
     """Set deduplication works correctly with NewType values."""
     wrapped_values = [wrapper(t) for t in texts]
     wrapped_set = set(wrapped_values)
@@ -427,13 +429,13 @@ def test_provider_from_string_unknown_fallback(value: str) -> None:
 
 
 @pytest.mark.parametrize("empty_value", [None, "", "   ", "\t\n"])
-def test_provider_from_string_empty_returns_unknown(empty_value) -> None:
+def test_provider_from_string_empty_returns_unknown(empty_value: Any) -> None:
     """Empty/None values return UNKNOWN."""
     assert Provider.from_string(empty_value) == Provider.UNKNOWN
 
 
 @given(st.data())
-def test_all_id_types_as_dict_keys(data) -> None:
+def test_all_id_types_as_dict_keys(data: Any) -> None:
     """All ID types work together as dict keys."""
     conv_str = data.draw(st.text(min_size=1, max_size=50), label="conv_str")
     msg_str = data.draw(st.text(min_size=1, max_size=50), label="msg_str")
@@ -445,13 +447,13 @@ def test_all_id_types_as_dict_keys(data) -> None:
     aid = AttachmentId(att_str)
     ch = ContentHash(hash_str)
 
-    d = {
+    conversation_index: dict[ConversationId, dict[str, list[str]]] = {
         cid: {"messages": [mid], "attachments": [aid]},
-        ch: "dedup-info",
     }
+    dedupe_index: dict[ContentHash, str] = {ch: "dedup-info"}
 
-    assert d[cid]["messages"][0] == mid
-    assert d[ch] == "dedup-info"
+    assert conversation_index[cid]["messages"][0] == mid
+    assert dedupe_index[ch] == "dedup-info"
 
 
 @given(st.lists(st.text(), min_size=1, max_size=10))

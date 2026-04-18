@@ -2,11 +2,36 @@
 
 from __future__ import annotations
 
+from typing import TypedDict
+
 import aiosqlite
 
 from polylogue.storage.store import MessageRecord
 
+
+class AggregateMessageStats(TypedDict):
+    total: int
+    user: int
+    assistant: int
+    system: int
+    words_approx: int
+    attachment_refs: int
+    distinct_attachments: int
+    min_sort_key: float | None
+    max_sort_key: float | None
+    providers: dict[str, int]
+
+
+class _MessageAggregate(TypedDict):
+    total: int
+    user: int
+    assistant: int
+    system: int
+    words_approx: int
+
+
 __all__ = [
+    "AggregateMessageStats",
     "aggregate_message_stats",
     "upsert_conversation_stats",
     "get_stats_by",
@@ -18,10 +43,29 @@ __all__ = [
 async def aggregate_message_stats(
     conn: aiosqlite.Connection,
     conversation_ids: list[str] | None = None,
-) -> dict[str, int]:
+) -> AggregateMessageStats:
     """Compute aggregate message statistics via SQL."""
 
-    async def _message_aggregate(where_clause: str = "", params: tuple[object, ...] = ()) -> dict[str, int]:
+    def _row_int(row: aiosqlite.Row | None, key: int | str) -> int:
+        if row is None:
+            return 0
+        try:
+            return int(row[key])
+        except (TypeError, ValueError):
+            return 0
+
+    def _row_float(row: aiosqlite.Row | None, key: int | str) -> float | None:
+        if row is None:
+            return None
+        value = row[key]
+        if value is None:
+            return None
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    async def _message_aggregate(where_clause: str = "", params: tuple[object, ...] = ()) -> _MessageAggregate:
         row = await (
             await conn.execute(
                 f"""
@@ -38,11 +82,11 @@ async def aggregate_message_stats(
             )
         ).fetchone()
         return {
-            "total": row["total"] or 0,
-            "user": row["user_count"] or 0,
-            "assistant": row["assistant_count"] or 0,
-            "system": row["system_count"] or 0,
-            "words_approx": row["words_approx"] or 0,
+            "total": _row_int(row, "total"),
+            "user": _row_int(row, "user_count"),
+            "assistant": _row_int(row, "assistant_count"),
+            "system": _row_int(row, "system_count"),
+            "words_approx": _row_int(row, "words_approx"),
         }
 
     if conversation_ids is not None:
@@ -69,7 +113,7 @@ async def aggregate_message_stats(
             GROUP BY provider_name ORDER BY cnt DESC
         """)
         ).fetchall()
-        providers = {r["provider_name"]: r["cnt"] for r in prov_rows}
+        providers = {str(r["provider_name"]): _row_int(r, "cnt") for r in prov_rows}
 
         att_row = await (
             await conn.execute("""
@@ -81,12 +125,12 @@ async def aggregate_message_stats(
         """)
         ).fetchone()
 
-        result = {
+        result: AggregateMessageStats = {
             **message_stats,
-            "attachment_refs": att_row["attachment_ref_count"] or 0,
-            "distinct_attachments": att_row["distinct_attachment_count"] or 0,
-            "min_sort_key": date_row["min_sk"],
-            "max_sort_key": date_row["max_sk"],
+            "attachment_refs": _row_int(att_row, "attachment_ref_count"),
+            "distinct_attachments": _row_int(att_row, "distinct_attachment_count"),
+            "min_sort_key": _row_float(date_row, "min_sk"),
+            "max_sort_key": _row_float(date_row, "max_sk"),
             "providers": providers,
         }
         await conn.execute("DROP TABLE IF EXISTS _stat_ids")
@@ -104,7 +148,7 @@ async def aggregate_message_stats(
             "SELECT provider_name, COUNT(*) as cnt FROM conversations GROUP BY provider_name ORDER BY cnt DESC"
         )
     ).fetchall()
-    providers = {r["provider_name"]: r["cnt"] for r in prov_rows}
+    providers = {str(r["provider_name"]): _row_int(r, "cnt") for r in prov_rows}
 
     att_row = await (
         await conn.execute("""
@@ -117,10 +161,10 @@ async def aggregate_message_stats(
 
     return {
         **message_stats,
-        "attachment_refs": att_row["attachment_ref_count"] or 0,
-        "distinct_attachments": att_row["distinct_attachment_count"] or 0,
-        "min_sort_key": date_row["min_sk"],
-        "max_sort_key": date_row["max_sk"],
+        "attachment_refs": _row_int(att_row, "attachment_ref_count"),
+        "distinct_attachments": _row_int(att_row, "distinct_attachment_count"),
+        "min_sort_key": _row_float(date_row, "min_sk"),
+        "max_sort_key": _row_float(date_row, "max_sk"),
         "providers": providers,
     }
 

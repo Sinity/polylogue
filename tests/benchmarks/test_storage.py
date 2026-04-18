@@ -11,12 +11,13 @@ from __future__ import annotations
 
 import hashlib
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from polylogue.storage.query_models import ConversationRecordQuery
-from polylogue.storage.store import ContentBlockRecord, ConversationRecord, MessageRecord
 from tests.benchmarks.helpers import benchmark_store_call, open_bench_store
+from tests.infra.storage_records import make_content_block, make_conversation, make_message
 
 
 def _make_hash(s: str) -> str:
@@ -24,7 +25,7 @@ def _make_hash(s: str) -> str:
 
 
 @pytest.mark.benchmark
-def test_bench_list_conversations_no_filter(benchmark, bench_db_5k: Path) -> None:
+def test_bench_list_conversations_no_filter(benchmark: Any, bench_db_5k: Path) -> None:
     """list_conversations(limit=50) on 5k-message DB — baseline query cost."""
     benchmark_store_call(
         benchmark,
@@ -34,7 +35,7 @@ def test_bench_list_conversations_no_filter(benchmark, bench_db_5k: Path) -> Non
 
 
 @pytest.mark.benchmark
-def test_bench_list_conversations_provider_filter(benchmark, bench_db_5k: Path) -> None:
+def test_bench_list_conversations_provider_filter(benchmark: Any, bench_db_5k: Path) -> None:
     """list with provider=chatgpt — tests simple WHERE on indexed column."""
     benchmark_store_call(
         benchmark,
@@ -44,7 +45,7 @@ def test_bench_list_conversations_provider_filter(benchmark, bench_db_5k: Path) 
 
 
 @pytest.mark.benchmark
-def test_bench_list_conversations_has_tool_use(benchmark, bench_db_5k: Path) -> None:
+def test_bench_list_conversations_has_tool_use(benchmark: Any, bench_db_5k: Path) -> None:
     """list with has_tool_use=True — tests stats LEFT JOIN path."""
     benchmark_store_call(
         benchmark,
@@ -54,7 +55,7 @@ def test_bench_list_conversations_has_tool_use(benchmark, bench_db_5k: Path) -> 
 
 
 @pytest.mark.benchmark
-def test_bench_list_conversations_semantic_filter(benchmark, bench_db_5k: Path) -> None:
+def test_bench_list_conversations_semantic_filter(benchmark: Any, bench_db_5k: Path) -> None:
     """list with action_terms=file_read — tests semantic EXISTS subquery path."""
     benchmark_store_call(
         benchmark,
@@ -66,7 +67,7 @@ def test_bench_list_conversations_semantic_filter(benchmark, bench_db_5k: Path) 
 
 
 @pytest.mark.benchmark
-def test_bench_list_conversations_combined_filter(benchmark, bench_db_10k: Path) -> None:
+def test_bench_list_conversations_combined_filter(benchmark: Any, bench_db_10k: Path) -> None:
     """provider + has_tool_use + min_messages — combined filter stack."""
     benchmark_store_call(
         benchmark,
@@ -83,7 +84,7 @@ def test_bench_list_conversations_combined_filter(benchmark, bench_db_10k: Path)
 
 
 @pytest.mark.benchmark
-def test_bench_get_many_100(benchmark, bench_db_5k: Path) -> None:
+def test_bench_get_many_100(benchmark: Any, bench_db_5k: Path) -> None:
     """get_many() with 100 IDs — parallel batch fetch cost."""
     ids = [f"bench-conv-{i:05d}" for i in range(100)]
     benchmark_store_call(
@@ -95,11 +96,11 @@ def test_bench_get_many_100(benchmark, bench_db_5k: Path) -> None:
 
 @pytest.mark.benchmark
 @pytest.mark.parametrize("n", [100, 500, 1000])
-def test_bench_save_messages_batch(benchmark, tmp_path: Path, n: int) -> None:
+def test_bench_save_messages_batch(benchmark: Any, tmp_path: Path, n: int) -> None:
     """save_messages() batch insert — measures executemany throughput."""
     db_path = tmp_path / f"save_bench_{n}.db"
     with open_bench_store(db_path) as store:
-        conv = ConversationRecord(
+        conv = make_conversation(
             conversation_id="bench-save-conv",
             provider_name="chatgpt",
             provider_conversation_id="prov-save",
@@ -111,7 +112,7 @@ def test_bench_save_messages_batch(benchmark, tmp_path: Path, n: int) -> None:
         store.run(store.backend.save_conversation_record(conv))
 
         msgs = [
-            MessageRecord(
+            make_message(
                 message_id=f"bench-save-conv-m{j}",
                 conversation_id="bench-save-conv",
                 role="user" if j % 2 == 0 else "assistant",
@@ -129,11 +130,11 @@ def test_bench_save_messages_batch(benchmark, tmp_path: Path, n: int) -> None:
 
 @pytest.mark.benchmark
 @pytest.mark.parametrize("n_msgs", [100, 500])
-def test_bench_save_content_blocks(benchmark, tmp_path: Path, n_msgs: int) -> None:
+def test_bench_save_content_blocks(benchmark: Any, tmp_path: Path, n_msgs: int) -> None:
     """save_content_blocks() — 5 blocks per message (tool_use + thinking mix)."""
     db_path = tmp_path / f"blocks_bench_{n_msgs}.db"
     with open_bench_store(db_path) as store:
-        conv = ConversationRecord(
+        conv = make_conversation(
             conversation_id="bench-blocks-conv",
             provider_name="chatgpt",
             provider_conversation_id="prov-blocks",
@@ -144,7 +145,7 @@ def test_bench_save_content_blocks(benchmark, tmp_path: Path, n_msgs: int) -> No
         )
         store.run(store.backend.save_conversation_record(conv))
         msgs = [
-            MessageRecord(
+            make_message(
                 message_id=f"bench-blocks-conv-m{j}",
                 conversation_id="bench-blocks-conv",
                 role="user" if j % 2 == 0 else "assistant",
@@ -162,12 +163,11 @@ def test_bench_save_content_blocks(benchmark, tmp_path: Path, n_msgs: int) -> No
 
         _BLOCK_TYPES = ["tool_use", "tool_use", "tool_use", "tool_result", "thinking"]
         blocks = [
-            ContentBlockRecord(
-                block_id=ContentBlockRecord.make_id(f"bench-blocks-conv-m{j}", k),
+            make_content_block(
                 message_id=f"bench-blocks-conv-m{j}",
                 conversation_id="bench-blocks-conv",
                 block_index=k,
-                type=_BLOCK_TYPES[k],
+                block_type=_BLOCK_TYPES[k],
             )
             for j in range(n_msgs)
             for k in range(5)

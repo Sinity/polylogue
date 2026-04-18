@@ -5,10 +5,11 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from polylogue.storage.backends.queries import conversations as conversations_q
+from polylogue.storage.repository_contracts import RepositoryBackendProtocol
 
 
 async def metadata_read_modify_write(
-    backend,
+    backend: RepositoryBackendProtocol,
     conversation_id: str,
     mutator: Callable[[dict[str, object]], bool],
 ) -> None:

@@ -3,10 +3,18 @@
 from __future__ import annotations
 
 from collections import Counter, defaultdict
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
 
+from polylogue.lib.payload_coercion import (
+    coerce_float,
+    coerce_int,
+    optional_datetime,
+    optional_string,
+    string_int_mapping,
+    string_sequence,
+)
 from polylogue.lib.repo_identity import normalize_repo_names
 from polylogue.lib.session_profile import SessionProfile
 
@@ -46,25 +54,21 @@ class WorkThread:
         }
 
     @classmethod
-    def from_dict(cls, payload: dict[str, object]) -> WorkThread:
+    def from_dict(cls, payload: Mapping[str, object]) -> WorkThread:
         return cls(
             thread_id=str(payload["thread_id"]),
             root_id=str(payload["root_id"]),
-            session_ids=tuple(str(item) for item in payload.get("session_ids", []) or []),
-            depth=int(payload.get("depth", 0) or 0),
-            branch_count=int(payload.get("branch_count", 0) or 0),
-            start_time=datetime.fromisoformat(str(payload["start_time"])) if payload.get("start_time") else None,
-            end_time=datetime.fromisoformat(str(payload["end_time"])) if payload.get("end_time") else None,
-            wall_duration_ms=int(payload.get("wall_duration_ms", 0) or 0),
-            total_messages=int(payload.get("total_messages", 0) or 0),
-            total_cost_usd=float(payload.get("total_cost_usd", 0.0) or 0.0),
-            dominant_repo=str(payload["dominant_repo"]) if payload.get("dominant_repo") is not None else None,
-            provider_breakdown={
-                str(key): int(value or 0) for key, value in (payload.get("provider_breakdown", {}) or {}).items()
-            },
-            work_event_breakdown={
-                str(key): int(value or 0) for key, value in (payload.get("work_event_breakdown", {}) or {}).items()
-            },
+            session_ids=string_sequence(payload.get("session_ids")),
+            depth=coerce_int(payload.get("depth"), 0),
+            branch_count=coerce_int(payload.get("branch_count"), 0),
+            start_time=optional_datetime(payload.get("start_time")),
+            end_time=optional_datetime(payload.get("end_time")),
+            wall_duration_ms=coerce_int(payload.get("wall_duration_ms"), 0),
+            total_messages=coerce_int(payload.get("total_messages"), 0),
+            total_cost_usd=coerce_float(payload.get("total_cost_usd"), 0.0),
+            dominant_repo=optional_string(payload.get("dominant_repo")),
+            provider_breakdown=string_int_mapping(payload.get("provider_breakdown")),
+            work_event_breakdown=string_int_mapping(payload.get("work_event_breakdown")),
         )
 
 
@@ -73,7 +77,7 @@ def _bfs_depth(adjacency: dict[str, list[str]], root: str) -> int:
     frontier = [root]
     depth = 0
     while frontier:
-        next_frontier = []
+        next_frontier: list[str] = []
         for node in frontier:
             for child in adjacency.get(node, []):
                 if child not in visited:
@@ -101,7 +105,7 @@ def build_session_threads(profiles: Iterable[SessionProfile]) -> list[WorkThread
         thread_ids: list[str] = []
         frontier = [root.conversation_id]
         while frontier:
-            next_frontier = []
+            next_frontier: list[str] = []
             for conversation_id in frontier:
                 thread_ids.append(conversation_id)
                 next_frontier.extend(children.get(conversation_id, []))
@@ -113,7 +117,7 @@ def build_session_threads(profiles: Iterable[SessionProfile]) -> list[WorkThread
         start_time = min(timestamps_start) if timestamps_start else None
         end_time = max(timestamps_end) if timestamps_end else None
         wall_ms = 0
-        if start_time and end_time:
+        if start_time is not None and end_time is not None:
             wall_ms = max(int((end_time - start_time).total_seconds() * 1000), 0)
 
         repo_counter: Counter[str] = Counter()

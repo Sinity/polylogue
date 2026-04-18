@@ -9,6 +9,7 @@ from polylogue.config import Config
 from polylogue.paths import Source
 from polylogue.scenarios import CorpusProfile, CorpusRequest, CorpusSpec
 from polylogue.showcase.corpus_requests import showcase_corpus_request
+from polylogue.showcase.exercises import Exercise
 from polylogue.showcase.showcase_runner_support import seed_workspace_with
 from polylogue.showcase.workspace import (
     build_synthetic_corpus_scenarios,
@@ -24,7 +25,7 @@ from polylogue.showcase.workspace import (
 )
 
 
-def test_create_verification_workspace_exposes_full_xdg_layout(tmp_path):
+def test_create_verification_workspace_exposes_full_xdg_layout(tmp_path: Path) -> None:
     workspace = create_verification_workspace(tmp_path / "workspace")
 
     assert workspace.config_home == tmp_path / "workspace" / "config"
@@ -34,7 +35,7 @@ def test_create_verification_workspace_exposes_full_xdg_layout(tmp_path):
     assert workspace.env_vars["XDG_CACHE_HOME"] == str(workspace.cache_home)
 
 
-def test_run_pipeline_for_configured_sources_uses_all_sources(tmp_path):
+def test_run_pipeline_for_configured_sources_uses_all_sources(tmp_path: Path) -> None:
     workspace = create_verification_workspace(tmp_path / "workspace")
     sources = [
         Source(name="chatgpt", path=tmp_path / "chatgpt"),
@@ -50,11 +51,13 @@ def test_run_pipeline_for_configured_sources_uses_all_sources(tmp_path):
         with patch("polylogue.pipeline.runner.run_sources", new_callable=AsyncMock) as mock_run:
             run_pipeline_for_configured_sources(workspace)
 
-    selected = mock_run.await_args.kwargs["config"].sources
+    await_args = mock_run.await_args
+    assert await_args is not None
+    selected = await_args.kwargs["config"].sources
     assert [source.name for source in selected] == ["chatgpt", "codex"]
 
 
-def test_run_pipeline_for_configured_sources_filters_named_sources(tmp_path):
+def test_run_pipeline_for_configured_sources_filters_named_sources(tmp_path: Path) -> None:
     workspace = create_verification_workspace(tmp_path / "workspace")
     sources = [
         Source(name="chatgpt", path=tmp_path / "chatgpt"),
@@ -70,11 +73,13 @@ def test_run_pipeline_for_configured_sources_filters_named_sources(tmp_path):
         with patch("polylogue.pipeline.runner.run_sources", new_callable=AsyncMock) as mock_run:
             run_pipeline_for_configured_sources(workspace, source_names=["codex"])
 
-    selected = mock_run.await_args.kwargs["config"].sources
+    await_args = mock_run.await_args
+    assert await_args is not None
+    selected = await_args.kwargs["config"].sources
     assert [source.name for source in selected] == ["codex"]
 
 
-def test_run_pipeline_for_fixture_workspace_mirrors_fixtures_to_inbox(tmp_path):
+def test_run_pipeline_for_fixture_workspace_mirrors_fixtures_to_inbox(tmp_path: Path) -> None:
     workspace = create_verification_workspace(tmp_path / "workspace")
     fixture_dir = workspace.fixture_dir / "claude-ai"
     fixture_dir.mkdir(parents=True, exist_ok=True)
@@ -84,12 +89,14 @@ def test_run_pipeline_for_fixture_workspace_mirrors_fixtures_to_inbox(tmp_path):
         run_pipeline_for_fixture_workspace(workspace)
 
     assert (workspace.inbox_dir / "claude-ai" / "sample.json").exists()
-    selected = mock_run.await_args.kwargs["config"].sources
+    await_args = mock_run.await_args
+    assert await_args is not None
+    selected = await_args.kwargs["config"].sources
     assert [source.name for source in selected] == ["claude-ai"]
     assert [source.path for source in selected] == [fixture_dir]
 
 
-def test_generate_synthetic_fixtures_supports_inferred_corpus_specs(tmp_path):
+def test_generate_synthetic_fixtures_supports_inferred_corpus_specs(tmp_path: Path) -> None:
     inferred = (
         CorpusSpec(
             provider="chatgpt",
@@ -171,7 +178,7 @@ def test_build_synthetic_corpus_scenarios_supports_inferred_source() -> None:
     assert scenarios[0].corpus_specs[0].origin == "generated.synthetic-inferred"
 
 
-def test_generate_synthetic_fixtures_from_scenarios_writes_grouped_specs(tmp_path) -> None:
+def test_generate_synthetic_fixtures_from_scenarios_writes_grouped_specs(tmp_path: Path) -> None:
     scenario = build_synthetic_corpus_scenarios(
         providers=("chatgpt",),
         count=1,
@@ -190,7 +197,7 @@ def test_generate_synthetic_fixtures_from_scenarios_writes_grouped_specs(tmp_pat
     assert (tmp_path / "fixtures" / "chatgpt" / "scenario-00.json").exists()
 
 
-def test_seed_workspace_from_corpus_request_routes_through_pipeline(tmp_path):
+def test_seed_workspace_from_corpus_request_routes_through_pipeline(tmp_path: Path) -> None:
     workspace = create_verification_workspace(tmp_path / "workspace")
 
     with patch("polylogue.pipeline.runner.run_sources", new_callable=AsyncMock) as mock_run:
@@ -200,22 +207,26 @@ def test_seed_workspace_from_corpus_request_routes_through_pipeline(tmp_path):
         )
 
     assert (workspace.inbox_dir / "chatgpt").exists()
-    selected = mock_run.await_args.kwargs["config"].sources
+    await_args = mock_run.await_args
+    assert await_args is not None
+    selected = await_args.kwargs["config"].sources
     assert [source.name for source in selected] == ["chatgpt"]
 
 
-def test_seed_workspace_from_corpus_options_builds_request_routes_through_pipeline(tmp_path):
+def test_seed_workspace_from_corpus_options_builds_request_routes_through_pipeline(tmp_path: Path) -> None:
     workspace = create_verification_workspace(tmp_path / "workspace")
 
     with patch("polylogue.pipeline.runner.run_sources", new_callable=AsyncMock) as mock_run:
         seed_workspace_from_corpus_options(workspace, providers=("chatgpt",), count=1, style="showcase")
 
     assert (workspace.inbox_dir / "chatgpt").exists()
-    selected = mock_run.await_args.kwargs["config"].sources
+    await_args = mock_run.await_args
+    assert await_args is not None
+    selected = await_args.kwargs["config"].sources
     assert [source.name for source in selected] == ["chatgpt"]
 
 
-def test_seed_workspace_from_scenarios_routes_through_pipeline(tmp_path):
+def test_seed_workspace_from_scenarios_routes_through_pipeline(tmp_path: Path) -> None:
     workspace = create_verification_workspace(tmp_path / "workspace")
     scenario = build_synthetic_corpus_scenarios(
         providers=("chatgpt",),
@@ -230,28 +241,32 @@ def test_seed_workspace_from_scenarios_routes_through_pipeline(tmp_path):
         seed_workspace_from_scenarios(workspace, corpus_scenarios=(scenario,), prefix="demo")
 
     assert (workspace.inbox_dir / "chatgpt").exists()
-    selected = mock_run.await_args.kwargs["config"].sources
+    await_args = mock_run.await_args
+    assert await_args is not None
+    selected = await_args.kwargs["config"].sources
     assert [source.name for source in selected] == ["chatgpt"]
 
 
-def test_seed_workspace_with_uses_compiled_corpus_specs(tmp_path):
+def _unexpected_generate_fixtures(_fixture_dir: Path, _request: CorpusRequest) -> None:
+    raise AssertionError("should not generate fixtures")
+
+
+def test_seed_workspace_with_uses_compiled_corpus_specs(tmp_path: Path) -> None:
     workspace_dir = tmp_path / "workspace"
     corpus_spec = CorpusSpec.for_provider("chatgpt", count=2, messages_min=4, messages_max=4)
+    exercise = Exercise(
+        name="stub",
+        group="structural",
+        description="stub",
+        corpus_specs=(corpus_spec,),
+    )
 
     with patch("polylogue.showcase.showcase_runner_support.seed_workspace_from_specs") as mock_seed_from_specs:
         seed_workspace_with(
             workspace_dir,
             corpus_request=showcase_corpus_request(count=3),
-            exercises=(
-                type(
-                    "ExerciseStub",
-                    (),
-                    {"corpus_specs": (corpus_spec,)},
-                )(),
-            ),
-            generate_fixtures=lambda _fixture_dir, _request: (_ for _ in ()).throw(
-                AssertionError("should not generate fixtures")
-            ),
+            exercises=(exercise,),
+            generate_fixtures=_unexpected_generate_fixtures,
         )
 
     mock_seed_from_specs.assert_called_once()

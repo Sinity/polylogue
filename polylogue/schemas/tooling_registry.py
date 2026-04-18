@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
-from typing import Any
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 from polylogue.schemas.observation import schema_cluster_id
-from polylogue.schemas.packages import SchemaPackageCatalog
+from polylogue.schemas.packages import SchemaPackageCatalog, SchemaVersionPackage
 from polylogue.schemas.runtime_registry import canonical_schema_provider
 from polylogue.schemas.tooling_diff import diff_schemas
 from polylogue.schemas.tooling_models import (
@@ -32,13 +33,47 @@ def _dominant_keys(sample: Any) -> list[str]:
 class SchemaRegistryToolingMixin:
     """Tooling mixin layered on top of the runtime registry base."""
 
+    storage_root: Path
+
+    if TYPE_CHECKING:
+
+        def _single_element_package(
+            self,
+            provider: str,
+            *,
+            version: str,
+            schema: dict[str, Any],
+            element_kind: str = "conversation_document",
+            first_seen: str | None = None,
+            last_seen: str | None = None,
+        ) -> tuple[SchemaVersionPackage, dict[str, dict[str, Any]]]: ...
+
+        def replace_provider_packages(
+            self,
+            provider: str,
+            catalog: SchemaPackageCatalog,
+            package_schemas: dict[str, dict[str, dict[str, Any]]],
+        ) -> None: ...
+
+        def _catalog_path(self, provider: str) -> Path: ...
+
+        def get_element_schema(
+            self,
+            provider: str,
+            *,
+            version: str = "default",
+            element_kind: str | None = None,
+        ) -> dict[str, Any] | None: ...
+
+        def register_schema(self, provider: str, schema: dict[str, Any]) -> str: ...
+
     def replace_provider_schemas(
         self,
         provider: str | Provider,
         versioned_schemas: list[tuple[str, dict[str, Any]]],
         *,
         manifest: ClusterManifest | None = None,
-    ):
+    ) -> Path:
         provider_token = canonical_schema_provider(provider)
         packages = []
         package_schemas: dict[str, dict[str, dict[str, Any]]] = {}
@@ -131,14 +166,17 @@ class SchemaRegistryToolingMixin:
             provider=provider_token, clusters=clusters, generated_at=now, artifact_counts=artifact_counts
         )
 
-    def save_cluster_manifest(self, manifest: ClusterManifest):
+    def save_cluster_manifest(self, manifest: ClusterManifest) -> Path:
         provider_dir = self.storage_root / str(canonical_schema_provider(manifest.provider))
         provider_dir.mkdir(parents=True, exist_ok=True)
         path = provider_dir / "manifest.json"
         path.write_text(json.dumps(manifest.to_dict(), indent=2), encoding="utf-8")
         return path
 
-    def load_cluster_manifest(self, provider: str | Provider) -> ClusterManifest | None:
+    def load_cluster_manifest(
+        self,
+        provider: str | Provider,
+    ) -> ClusterManifest | None:
         provider_token = canonical_schema_provider(provider)
         path = self.storage_root / str(provider_token) / "manifest.json"
         if not path.exists():

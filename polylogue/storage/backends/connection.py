@@ -7,10 +7,14 @@ import threading
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager, suppress
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import polylogue.paths as _paths
 from polylogue.logging import get_logger
 from polylogue.storage.backends.schema import _ensure_schema
+
+if TYPE_CHECKING:
+    from polylogue.storage.backends.async_sqlite import SQLiteBackend
 
 logger = get_logger(__name__)
 
@@ -183,7 +187,7 @@ def open_read_connection(db_path: Path | str | None = None) -> Iterator[sqlite3.
         conn.close()
 
 
-def create_default_backend() -> object:
+def create_default_backend() -> SQLiteBackend:
     """Create a SQLiteBackend with the default database path.
 
     This is a convenience function for creating backends when

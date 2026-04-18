@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import TYPE_CHECKING, cast
 
 import click
 
@@ -11,20 +12,30 @@ from polylogue.cli.qa_capture import run_vhs_capture
 from polylogue.cli.qa_requests import QACaptureMode, QAFinalizationPlan
 from polylogue.cli.qa_snapshot import execute_snapshot_plan
 
+if TYPE_CHECKING:
+    from polylogue.cli.types import AppEnv
+    from polylogue.showcase.qa_runner_models import QAResult
 
-def render_qa_session(result):
+
+def render_qa_session(result: QAResult) -> dict[str, object]:
     from polylogue.showcase.qa_report import generate_qa_session
 
-    return generate_qa_session(result)
+    return cast(dict[str, object], generate_qa_session(result))
 
 
-def render_qa_summary(result):
+def render_qa_summary(result: QAResult) -> str:
     from polylogue.showcase.qa_runner import format_qa_summary
 
     return format_qa_summary(result)
 
 
-def finalize_qa_run(result, *, plan: QAFinalizationPlan, archive_root: Path, env) -> None:
+def finalize_qa_run(
+    result: QAResult,
+    *,
+    plan: QAFinalizationPlan,
+    archive_root: Path,
+    env: AppEnv,
+) -> None:
     """Emit all post-run QA side effects from the normalized finalization plan."""
     if (
         plan.capture_mode is QACaptureMode.VHS

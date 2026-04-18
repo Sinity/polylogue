@@ -6,6 +6,7 @@ import re
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
+from typing import Any, Protocol
 
 from polylogue.cli.formatting import format_counts
 from polylogue.cli.types import AppEnv
@@ -13,6 +14,19 @@ from polylogue.pipeline.observers import RunObserver
 from polylogue.storage.state_views import RunResult
 
 _PROGRESS_FRACTION_RE = re.compile(r"(?P<completed>\d[\d,]*)/(?P<total>\d[\d,]*)")
+
+
+class _ProgressHandle(Protocol):
+    def update(
+        self,
+        task_id: Any,
+        *,
+        description: str | None = None,
+        total: float | None = None,
+        completed: float | None = None,
+        advance: float | None = None,
+        **fields: Any,
+    ) -> None: ...
 
 
 def _format_elapsed(seconds: float) -> str:
@@ -85,7 +99,7 @@ class RichProgressObserver(RunObserver):
 
     __slots__ = ("_progress", "_task_id")
 
-    def __init__(self, progress: object, task_id: object) -> None:
+    def __init__(self, progress: _ProgressHandle, task_id: object) -> None:
         self._progress = progress
         self._task_id = task_id
 

@@ -140,38 +140,43 @@ ANNOTATION_MAP: dict[str, list[tuple[list[str], str]]] = {
 
 def _navigate(schema: dict[str, Any], path_segments: list[str]) -> dict[str, Any] | None:
     """Navigate a schema using path segments, returning the target node."""
-    node = schema
+    node: object = schema
     for segment in path_segments:
         if not isinstance(node, dict):
             return None
 
+        mapping = node
+
         if segment.startswith("properties."):
             key = segment[len("properties.") :]
-            node = node.get("properties", {}).get(key)
+            properties = mapping.get("properties")
+            if not isinstance(properties, dict):
+                return None
+            node = properties.get(key)
         elif segment == "items":
-            node = node.get("items")
+            node = mapping.get("items")
         elif segment == "additionalProperties":
-            node = node.get("additionalProperties")
+            node = mapping.get("additionalProperties")
         elif segment == "anyOf:props":
             # Find the anyOf variant that has "properties"
-            variants = node.get("anyOf", [])
+            variants = mapping.get("anyOf", [])
             found = None
             for v in variants:
-                if "properties" in v:
+                if isinstance(v, dict) and "properties" in v:
                     found = v
                     break
             node = found
         elif segment == "anyOf:array":
             # Find the anyOf variant with type="array"
-            variants = node.get("anyOf", [])
+            variants = mapping.get("anyOf", [])
             found = None
             for v in variants:
-                if v.get("type") == "array":
+                if isinstance(v, dict) and v.get("type") == "array":
                     found = v
                     break
             node = found
         else:
-            node = node.get(segment)
+            node = mapping.get(segment)
 
         if node is None:
             return None

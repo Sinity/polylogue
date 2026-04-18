@@ -11,6 +11,7 @@ from polylogue.site.models import ArchiveIndexStats, ConversationIndex, Conversa
 from polylogue.site.search import build_search_document
 
 if TYPE_CHECKING:
+    from polylogue.protocols import ProgressCallback
     from polylogue.storage.backends.async_sqlite import SQLiteBackend
     from polylogue.storage.repository import ConversationRepository
 
@@ -27,8 +28,9 @@ async def iter_conversation_indexes(
         page_size=page_size,
         provider=provider,
     ):
-        message_counts = await backend.queries.get_message_counts_batch([str(summary.id) for summary in summaries])
-        for summary in summaries:
+        summary_page = list(summaries)
+        message_counts = await backend.get_message_counts_batch([str(summary.id) for summary in summary_page])
+        for summary in summary_page:
             yield ConversationIndex.from_summary(
                 summary,
                 message_counts.get(str(summary.id), 0),
@@ -42,7 +44,7 @@ async def scan_archive(
     conversation_iter: Callable[[], AsyncIterator[ConversationIndex]],
     generate_conversation_page: Callable[[ConversationIndex, bool], Awaitable[str]],
     incremental: bool,
-    progress_callback: Callable[[int, str | None], None] | None = None,
+    progress_callback: ProgressCallback | None = None,
 ) -> tuple[ArchiveIndexStats, ConversationPageBuildStats]:
     """Scan archive summaries once and drive streaming site outputs from that pass."""
     stats = ArchiveIndexStats()

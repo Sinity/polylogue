@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import click
@@ -24,7 +25,7 @@ def runner() -> CliRunner:
 
 
 @pytest.fixture
-def mock_env():
+def mock_env() -> Any:
     from rich.console import Console
 
     env = MagicMock()
@@ -39,7 +40,7 @@ def mock_env():
 
 
 @pytest.fixture
-def mock_env_rich():
+def mock_env_rich() -> Any:
     from rich.console import Console
 
     env = MagicMock()
@@ -54,7 +55,7 @@ def mock_env_rich():
 
 
 @pytest.fixture
-def mock_conversation():
+def mock_conversation() -> Any:
     conv = MagicMock()
     conv.id = "conv-123"
     conv.title = "Test Conversation"
@@ -68,7 +69,7 @@ _MOCK_MESSAGES = [
 
 
 @pytest.fixture
-def mock_repository():
+def mock_repository() -> Any:
     repo = MagicMock()
     repo.backend = MagicMock()
     repo.backend.queries = MagicMock()
@@ -77,7 +78,7 @@ def mock_repository():
 
 
 @pytest.fixture
-def mock_repository_async(mock_conversation):
+def mock_repository_async(mock_conversation: Any) -> Any:
     repo = MagicMock()
     repo.view = AsyncMock(return_value=mock_conversation)
     repo.queries = MagicMock()
@@ -94,7 +95,9 @@ class TestShowEmbeddingStats:
             ([(200,), (100,), (500,), (100,)], "50.0%", "100"),
         ],
     )
-    def test_show_stats_variants(self, mock_env, capsys, query_results, expected_coverage, expected_pending):
+    def test_show_stats_variants(
+        self, mock_env: Any, capsys: Any, query_results: Any, expected_coverage: Any, expected_pending: Any
+    ) -> None:
         mock_conn = MagicMock()
         mock_conn.execute.return_value.fetchone.return_value = query_results[0]
 
@@ -119,7 +122,7 @@ class TestShowEmbeddingStats:
         assert f"Pending:               {expected_pending}" in captured.out
         assert "Retrieval ready:" in captured.out
 
-    def test_show_stats_embedding_status_missing(self, mock_env, capsys):
+    def test_show_stats_embedding_status_missing(self, mock_env: Any, capsys: Any) -> None:
         mock_conn = MagicMock()
         mock_conn.execute.return_value.fetchone.return_value = (100,)
 
@@ -137,7 +140,7 @@ class TestShowEmbeddingStats:
         captured = capsys.readouterr()
         assert "Embedding Statistics" in captured.out
 
-    def test_show_stats_json_output(self, mock_env, capsys):
+    def test_show_stats_json_output(self, mock_env: Any, capsys: Any) -> None:
         mock_conn = MagicMock()
         mock_conn.execute.side_effect = [
             MagicMock(fetchone=MagicMock(return_value=(100,))),
@@ -171,7 +174,7 @@ class TestShowEmbeddingStats:
 
 
 class TestEmbedSingle:
-    def test_embed_single_success(self, mock_env, mock_repository_async, capsys):
+    def test_embed_single_success(self, mock_env: Any, mock_repository_async: Any, capsys: Any) -> None:
         mock_vec_provider = MagicMock()
         _embed_single(mock_env, mock_repository_async, mock_vec_provider, "conv-123")
         mock_vec_provider.upsert.assert_called_once_with(
@@ -181,19 +184,19 @@ class TestEmbedSingle:
         assert "Embedding 2 messages" in captured.out
         assert "✓ Embedded" in captured.out
 
-    def test_embed_single_conversation_not_found(self, mock_env, mock_repository_async):
+    def test_embed_single_conversation_not_found(self, mock_env: Any, mock_repository_async: Any) -> None:
         mock_repository_async.view = AsyncMock(return_value=None)
         with pytest.raises(click.Abort):
             _embed_single(mock_env, mock_repository_async, MagicMock(), "nonexistent")
 
-    def test_embed_single_no_messages(self, mock_env, mock_repository_async, capsys):
+    def test_embed_single_no_messages(self, mock_env: Any, mock_repository_async: Any, capsys: Any) -> None:
         mock_repository_async.queries.get_messages = AsyncMock(return_value=[])
         mock_vec_provider = MagicMock()
         _embed_single(mock_env, mock_repository_async, mock_vec_provider, "conv-123")
         mock_vec_provider.upsert.assert_not_called()
         assert "No messages to embed" in capsys.readouterr().out
 
-    def test_embed_single_upsert_exception(self, mock_env, mock_repository_async):
+    def test_embed_single_upsert_exception(self, mock_env: Any, mock_repository_async: Any) -> None:
         mock_vec_provider = MagicMock()
         mock_vec_provider.upsert.side_effect = ValueError("API error")
         with pytest.raises(click.Abort):
@@ -210,7 +213,16 @@ class TestEmbedBatch:
             (3, None, True, "Embedding 3 conversations"),
         ],
     )
-    def test_embed_batch_variants(self, mock_env, mock_repository, capsys, num_convs, limit, rebuild, expected_output):
+    def test_embed_batch_variants(
+        self,
+        mock_env: Any,
+        mock_repository: Any,
+        capsys: Any,
+        num_convs: Any,
+        limit: Any,
+        rebuild: Any,
+        expected_output: Any,
+    ) -> None:
         mock_env.ui.console = MagicMock()
         mock_vec_provider = MagicMock()
         convs = [{"conversation_id": f"conv-{i}", "title": f"Test {i}"} for i in range(1, num_convs + 1)]
@@ -225,7 +237,7 @@ class TestEmbedBatch:
 
         assert expected_output in capsys.readouterr().out
 
-    def test_embed_batch_rebuild_flag(self, mock_env, mock_repository):
+    def test_embed_batch_rebuild_flag(self, mock_env: Any, mock_repository: Any) -> None:
         mock_vec_provider = MagicMock()
         with patch("polylogue.storage.backends.connection.open_connection") as mock_open:
             mock_conn = MagicMock()
@@ -235,7 +247,7 @@ class TestEmbedBatch:
             _embed_batch(mock_env, mock_repository, mock_vec_provider, rebuild=True)
         assert any("ORDER BY updated_at DESC" in str(call) for call in mock_conn.execute.call_args_list)
 
-    def test_embed_batch_error_handling(self, mock_env, mock_repository, capsys):
+    def test_embed_batch_error_handling(self, mock_env: Any, mock_repository: Any, capsys: Any) -> None:
         mock_vec_provider = MagicMock()
         mock_repository.backend.queries.get_messages = AsyncMock(
             side_effect=[[{"message_id": "m1"}], ValueError("Embed failed"), [{"message_id": "m3"}]]
@@ -255,23 +267,23 @@ class TestEmbedBatch:
 
 
 class TestEmbedCommand:
-    def test_embed_command_missing_api_key(self, runner, cli_workspace):
+    def test_embed_command_missing_api_key(self, runner: Any, cli_workspace: Any) -> None:
         with patch.dict("os.environ", {"VOYAGE_API_KEY": ""}, clear=False):
             result = runner.invoke(cli, ["--plain", "run", "embed"])
         assert result.exit_code != 0
         assert "VOYAGE_API_KEY" in result.output or "Error" in result.output
 
-    def test_embed_command_help(self, runner, cli_workspace):
+    def test_embed_command_help(self, runner: Any, cli_workspace: Any) -> None:
         result = runner.invoke(cli, ["run", "embed", "--help"])
         assert result.exit_code == 0
         assert "embed" in result.output.lower()
 
     @pytest.mark.parametrize("option", ["--stats", "--json", "--model", "--rebuild", "--limit", "--conversation"])
-    def test_embed_command_help_lists_options(self, runner, cli_workspace, option):
+    def test_embed_command_help_lists_options(self, runner: Any, cli_workspace: Any, option: Any) -> None:
         result = runner.invoke(cli, ["run", "embed", "--help"])
         assert option in result.output
 
-    def test_embed_command_stats_short_circuit(self, runner, cli_workspace):
+    def test_embed_command_stats_short_circuit(self, runner: Any, cli_workspace: Any) -> None:
         with patch("polylogue.cli.commands.run._run_embed_standalone") as mock_standalone:
             result = runner.invoke(cli, ["--plain", "run", "embed", "--stats"])
         assert result.exit_code == 0
@@ -279,12 +291,12 @@ class TestEmbedCommand:
         opts = mock_standalone.call_args[0][1]
         assert opts.stats is True
 
-    def test_embed_command_json_requires_stats(self, runner, cli_workspace):
+    def test_embed_command_json_requires_stats(self, runner: Any, cli_workspace: Any) -> None:
         result = runner.invoke(cli, ["--plain", "run", "embed", "--json"])
         assert result.exit_code != 0
         assert "--json requires --stats" in result.output
 
-    def test_embed_command_stats_json_short_circuit(self, runner, cli_workspace):
+    def test_embed_command_stats_json_short_circuit(self, runner: Any, cli_workspace: Any) -> None:
         with patch("polylogue.cli.commands.run._run_embed_standalone") as mock_standalone:
             result = runner.invoke(cli, ["--plain", "run", "embed", "--stats", "--json"])
         assert result.exit_code == 0
@@ -293,7 +305,7 @@ class TestEmbedCommand:
         assert opts.stats is True
         assert opts.json_output is True
 
-    def test_embed_command_single_conversation_dispatches(self, runner, cli_workspace):
+    def test_embed_command_single_conversation_dispatches(self, runner: Any, cli_workspace: Any) -> None:
         with patch("polylogue.cli.commands.run._run_embed_standalone") as mock_standalone:
             result = runner.invoke(cli, ["--plain", "run", "embed", "--conversation", "conv-123"])
         assert result.exit_code == 0
@@ -301,7 +313,7 @@ class TestEmbedCommand:
         opts = mock_standalone.call_args[0][1]
         assert opts.conversation == "conv-123"
 
-    def test_embed_command_batch_dispatches_limit_and_rebuild(self, runner, cli_workspace):
+    def test_embed_command_batch_dispatches_limit_and_rebuild(self, runner: Any, cli_workspace: Any) -> None:
         with patch("polylogue.cli.commands.run._run_embed_standalone") as mock_standalone:
             result = runner.invoke(cli, ["--plain", "run", "embed", "--rebuild", "--limit", "5"])
         assert result.exit_code == 0
@@ -310,7 +322,7 @@ class TestEmbedCommand:
         assert opts.rebuild is True
         assert opts.limit == 5
 
-    def test_embed_command_sets_non_default_model(self, runner, cli_workspace):
+    def test_embed_command_sets_non_default_model(self, runner: Any, cli_workspace: Any) -> None:
         with patch("polylogue.cli.commands.run._run_embed_standalone") as mock_standalone:
             result = runner.invoke(cli, ["--plain", "run", "embed", "--model", "voyage-4-lite"])
         assert result.exit_code == 0
@@ -329,8 +341,14 @@ class TestEmbedBatchRichMode:
         ],
     )
     def test_embed_batch_rich_mode_variants(
-        self, mock_env_rich, mock_repository, capsys, num_convs, messages_side_effect, exception_type
-    ):
+        self,
+        mock_env_rich: Any,
+        mock_repository: Any,
+        capsys: Any,
+        num_convs: Any,
+        messages_side_effect: Any,
+        exception_type: Any,
+    ) -> None:
         mock_vec_provider = MagicMock()
         if exception_type:
             mock_vec_provider.upsert.side_effect = exception_type("API timeout")

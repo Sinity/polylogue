@@ -7,7 +7,10 @@ after arbitrary interleaving.
 
 from __future__ import annotations
 
+import shutil
 import sqlite3
+import tempfile
+from pathlib import Path
 
 from hypothesis import settings
 from hypothesis.stateful import Bundle, RuleBasedStateMachine, rule
@@ -28,10 +31,8 @@ class ArchiveLifecycleStateMachine(RuleBasedStateMachine):
     - List result set matches expected IDs
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
-        import tempfile
-        from pathlib import Path
 
         from polylogue.storage.backends.schema import _ensure_schema
 
@@ -50,7 +51,7 @@ class ArchiveLifecycleStateMachine(RuleBasedStateMachine):
     saved_conversations = Bundle("saved_conversations")
 
     @rule(target=saved_conversations)
-    def save_new_conversation(self):
+    def save_new_conversation(self) -> str:
         cid = f"sm-conv-{self._next_id}"
         self._next_id += 1
 
@@ -69,7 +70,7 @@ class ArchiveLifecycleStateMachine(RuleBasedStateMachine):
         return cid
 
     @rule(cid=saved_conversations)
-    def re_save_same_conversation(self, cid):
+    def re_save_same_conversation(self, cid: str) -> None:
         """Re-import should be idempotent if present, or resurrect if deleted."""
         conv = make_conversation(conversation_id=cid, provider_name="chatgpt", title=f"Conv {cid}")
         msgs = [
@@ -85,7 +86,7 @@ class ArchiveLifecycleStateMachine(RuleBasedStateMachine):
         self._check_invariants()
 
     @rule(cid=saved_conversations)
-    def delete_conversation(self, cid):
+    def delete_conversation(self, cid: str) -> None:
         if cid not in self._expected_ids:
             return
 
@@ -99,7 +100,7 @@ class ArchiveLifecycleStateMachine(RuleBasedStateMachine):
 
         self._check_invariants()
 
-    def _check_invariants(self):
+    def _check_invariants(self) -> None:
         actual_count = self._conn.execute("SELECT COUNT(*) FROM conversations").fetchone()[0]
         assert actual_count == len(self._expected_ids), (
             f"Conversation count: expected {len(self._expected_ids)}, got {actual_count}"
@@ -124,10 +125,8 @@ class ArchiveLifecycleStateMachine(RuleBasedStateMachine):
                 f"Messages for {cid}: expected {expected_msg_count}, got {actual_msg_count}"
             )
 
-    def teardown(self):
+    def teardown(self) -> None:
         self._conn.close()
-        import shutil
-
         shutil.rmtree(self._tmpdir, ignore_errors=True)
 
 

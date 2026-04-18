@@ -7,12 +7,14 @@ import os
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
+from typing import cast
 from unittest.mock import MagicMock
 
 import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
+from polylogue.sources.drive_gateway import DriveServiceGateway
 from polylogue.sources.drive_source import (
     DriveSourceClient,
     _build_folder_lookup_query,
@@ -38,7 +40,7 @@ from tests.infra.strategies import json_document_strategy
 
 def _source_client(
     mock_service: MockDriveService | None = None,
-    file_content: dict[str, bytes] | None = None,
+    file_content: dict[str, bytes | str] | None = None,
     download_error: Exception | None = None,
 ) -> DriveSourceClient:
     gw = FakeDriveServiceGateway(
@@ -46,7 +48,7 @@ def _source_client(
         file_content=file_content,
         download_error=download_error,
     )
-    return DriveSourceClient(gateway=gw)
+    return DriveSourceClient(gateway=cast(DriveServiceGateway, gw))
 
 
 # ---------------------------------------------------------------------------
@@ -280,7 +282,7 @@ def test_resolve_folder_id_contract(
     expect_error: type[Exception] | None,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from googleapiclient.errors import HttpError  # type: ignore[import]
+    from googleapiclient.errors import HttpError
 
     class _FakeHttpError(HttpError):
         def __init__(self, status: int) -> None:
@@ -289,12 +291,17 @@ def test_resolve_folder_id_contract(
 
     service = MockDriveService()
     resource = service._files_resource
+    get_mock = (
+        MagicMock(return_value=SimpleNamespace(execute=lambda: get_result))
+        if expect_get
+        else MagicMock(side_effect=_FakeHttpError(404))
+    )
+    list_mock = MagicMock(return_value=SimpleNamespace(execute=lambda: {"files": list_result}))
     if expect_get:
-        resource.get = MagicMock(return_value=SimpleNamespace(execute=lambda: get_result))
+        monkeypatch.setattr(resource, "get", get_mock)
     else:
-        resource.get = MagicMock(side_effect=_FakeHttpError(404))
-    resource.list = MagicMock(return_value=SimpleNamespace(execute=lambda: {"files": list_result}))
-    service._http = None
+        monkeypatch.setattr(resource, "get", get_mock)
+    monkeypatch.setattr(resource, "list", list_mock)
 
     client = _source_client(mock_service=service)
 
@@ -305,21 +312,23 @@ def test_resolve_folder_id_contract(
         assert client.resolve_folder_id(folder_ref) == expected
 
 
-def test_resolve_folder_helper_contracts() -> None:
+def test_resolve_folder_helper_contracts(monkeypatch: pytest.MonkeyPatch) -> None:
     service = MockDriveService()
-    service._files_resource.get = MagicMock(
+    get_mock = MagicMock(
         return_value=SimpleNamespace(
             execute=lambda: {"id": "folder-1", "mimeType": "application/vnd.google-apps.folder"}
         )
     )
-    service._files_resource.list = MagicMock(
+    list_mock = MagicMock(
         return_value=SimpleNamespace(execute=lambda: {"files": [{"id": "folder-2", "name": "Inbox"}]})
     )
+    monkeypatch.setattr(service._files_resource, "get", get_mock)
+    monkeypatch.setattr(service._files_resource, "list", list_mock)
     client = _source_client(mock_service=service)
 
     assert client._resolve_folder_by_id("folder-1") == "folder-1"
     assert client._resolve_folder_by_name("Inbox") == "folder-2"
-    assert service._files_resource.list.call_args.kwargs["q"] == (
+    assert list_mock.call_args.kwargs["q"] == (
         "name = 'Inbox' and mimeType = 'application/vnd.google-apps.folder' and trashed = false"
     )
 
@@ -405,12 +414,12 @@ def test_download_to_path_cleans_up_temp_file_when_download_fails(tmp_path: Path
 # ---------------------------------------------------------------------------
 
 
-def test_get_metadata_and_iteration_cache_contract() -> None:
+def test_get_metadata_and_iteration_cache_contract(monkeypatch: pytest.MonkeyPatch) -> None:
     service = MockDriveService(
         files_data={"file-1": mock_drive_file(file_id="file-1", name="", mime_type="application/json", size=0)}
     )
-    service._files_resource.get = MagicMock(wraps=service._files_resource.get)
-    service._files_resource.list = MagicMock(
+    get_mock = MagicMock(wraps=service._files_resource.get)
+    list_mock = MagicMock(
         side_effect=[
             SimpleNamespace(
                 execute=lambda: {
@@ -455,7 +464,8 @@ def test_get_metadata_and_iteration_cache_contract() -> None:
             ),
         ]
     )
-    service._http = None
+    monkeypatch.setattr(service._files_resource, "get", get_mock)
+    monkeypatch.setattr(service._files_resource, "list", list_mock)
     client = _source_client(mock_service=service)
 
     first = client.get_metadata("file-1")
@@ -472,7 +482,6 @@ def test_get_metadata_builds_file_with_fallback_id() -> None:
     service = MockDriveService(
         files_data={"file-9": mock_drive_file(file_id="file-9", name="", mime_type="application/json", size=7)}
     )
-    service._http = None
     client = _source_client(mock_service=service)
 
     meta = client.get_metadata("file-9")

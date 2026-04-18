@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable, Mapping
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypeVar
 
 import structlog
 
@@ -42,6 +43,7 @@ from polylogue.services import RuntimeServices, build_runtime_services
 from polylogue.storage.backends.connection import connection_context
 from polylogue.storage.repair import collect_archive_debt_statuses_sync
 from polylogue.storage.search import SearchHit, SearchResult
+from polylogue.types import Provider
 
 logger = structlog.get_logger(__name__)
 _MAINTENANCE_TARGET_CATALOG = build_maintenance_target_catalog()
@@ -56,8 +58,11 @@ _PROFILE_FTS_STATUS_BY_TIER = {
 if TYPE_CHECKING:
     from polylogue.config import Config
     from polylogue.lib.conversation_models import Conversation
+    from polylogue.lib.stats import ArchiveStats as StorageArchiveStats
     from polylogue.storage.backends.async_sqlite import SQLiteBackend
     from polylogue.storage.repository import ConversationRepository
+
+_ResultT = TypeVar("_ResultT")
 
 
 def _build_search_snippet(text: str, query: str) -> str:
@@ -109,31 +114,53 @@ def _conversation_search_hit(
     )
 
 
-def provider_analytics_product(row) -> ProviderAnalyticsProduct:
-    conversation_count = row["conversation_count"]
-    user_message_count = row["user_message_count"]
-    assistant_message_count = row["assistant_message_count"]
-    user_word_sum = row["user_word_sum"] or 0
-    assistant_word_sum = row["assistant_word_sum"] or 0
-    tool_use_percentage = (
-        (row["conversations_with_tools"] / conversation_count) * 100 if conversation_count > 0 else 0.0
-    )
-    thinking_percentage = (
-        (row["conversations_with_thinking"] / conversation_count) * 100 if conversation_count > 0 else 0.0
-    )
+def _row_int(row: Mapping[str, object], key: str) -> int:
+    value = row.get(key, 0)
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        try:
+            return int(value)
+        except ValueError:
+            return 0
+    return 0
+
+
+def _row_str(row: Mapping[str, object], key: str, *, default: str = "") -> str:
+    value = row.get(key)
+    return str(value) if value is not None else default
+
+
+def provider_analytics_product(row: Mapping[str, object]) -> ProviderAnalyticsProduct:
+    conversation_count = _row_int(row, "conversation_count")
+    user_message_count = _row_int(row, "user_message_count")
+    assistant_message_count = _row_int(row, "assistant_message_count")
+    message_count = _row_int(row, "message_count")
+    user_word_sum = _row_int(row, "user_word_sum")
+    assistant_word_sum = _row_int(row, "assistant_word_sum")
+    tool_use_count = _row_int(row, "tool_use_count")
+    thinking_count = _row_int(row, "thinking_count")
+    conversations_with_tools = _row_int(row, "conversations_with_tools")
+    conversations_with_thinking = _row_int(row, "conversations_with_thinking")
+    tool_use_percentage = (conversations_with_tools / conversation_count) * 100 if conversation_count > 0 else 0.0
+    thinking_percentage = (conversations_with_thinking / conversation_count) * 100 if conversation_count > 0 else 0.0
     return ProviderAnalyticsProduct(
-        provider_name=row["provider_name"] or "unknown",
+        provider_name=_row_str(row, "provider_name", default="unknown") or "unknown",
         conversation_count=conversation_count,
-        message_count=row["message_count"],
+        message_count=message_count,
         user_message_count=user_message_count,
         assistant_message_count=assistant_message_count,
-        avg_messages_per_conversation=(row["message_count"] / conversation_count if conversation_count > 0 else 0.0),
+        avg_messages_per_conversation=(message_count / conversation_count if conversation_count > 0 else 0.0),
         avg_user_words=(user_word_sum / user_message_count if user_message_count > 0 else 0.0),
         avg_assistant_words=(assistant_word_sum / assistant_message_count if assistant_message_count > 0 else 0.0),
-        tool_use_count=row["tool_use_count"],
-        thinking_count=row["thinking_count"],
-        total_conversations_with_tools=row["conversations_with_tools"],
-        total_conversations_with_thinking=row["conversations_with_thinking"],
+        tool_use_count=tool_use_count,
+        thinking_count=thinking_count,
+        total_conversations_with_tools=conversations_with_tools,
+        total_conversations_with_thinking=conversations_with_thinking,
         tool_use_percentage=tool_use_percentage,
         thinking_percentage=thinking_percentage,
     )
@@ -149,17 +176,25 @@ def _require_ready_flag(
     raise ArchiveProductUnavailableError(f"{detail} {_SESSION_PRODUCT_REPAIR_HINT}")
 
 
-async def _read_session_product_status(repository: ConversationRepository) -> dict[str, int | bool]:
-    return await repository.queries.get_session_product_status()
+async def _read_session_product_status(backend: SQLiteBackend) -> dict[str, int | bool]:
+    return await backend.get_session_product_status()
 
 
 class ArchiveSearchMixin:
     """Conversation retrieval and search methods for archive operations."""
 
-    async def get_conversation(self, conversation_id: str):
+    if TYPE_CHECKING:
+
+        @property
+        def repository(self) -> ConversationRepository: ...
+
+        @property
+        def config(self) -> Config: ...
+
+    async def get_conversation(self, conversation_id: str) -> Conversation | None:
         return await self.repository.view(conversation_id)
 
-    async def get_conversations(self, conversation_ids: list[str]):
+    async def get_conversations(self, conversation_ids: list[str]) -> list[Conversation]:
         return await self.repository.get_many(conversation_ids)
 
     async def list_conversations(
@@ -167,10 +202,10 @@ class ArchiveSearchMixin:
         *,
         provider: str | None = None,
         limit: int | None = None,
-    ):
+    ) -> list[Conversation]:
         return await self.repository.list(provider=provider, limit=limit)
 
-    async def query_conversations(self, spec: ConversationQuerySpec):
+    async def query_conversations(self, spec: ConversationQuerySpec) -> list[Conversation]:
         return await spec.list(self.repository)
 
     async def search(
@@ -183,7 +218,7 @@ class ArchiveSearchMixin:
     ) -> SearchResult:
         spec = ConversationQuerySpec(
             query_terms=(query,),
-            providers=(source,) if source else (),
+            providers=(Provider.from_string(source),) if source else (),
             since=since,
             limit=limit,
         )
@@ -211,8 +246,8 @@ class ArchiveStats:
         providers: dict[str, int],
         tags: dict[str, int],
         last_sync: str | None,
-        recent,
-    ):
+        recent: list[Conversation],
+    ) -> None:
         self.conversation_count = conversation_count
         self.message_count = message_count
         self.word_count = word_count
@@ -231,42 +266,68 @@ class ArchiveStats:
 class ArchiveStatsMixin:
     """Archive summary, status, and provider-count helpers."""
 
-    async def storage_stats(self):
+    if TYPE_CHECKING:
+
+        @property
+        def repository(self) -> ConversationRepository: ...
+
+        @property
+        def backend(self) -> SQLiteBackend: ...
+
+        async def list_conversations(
+            self,
+            *,
+            provider: str | None = None,
+            limit: int | None = None,
+        ) -> list[Conversation]: ...
+
+    async def storage_stats(self) -> StorageArchiveStats:
         return await self.repository.get_archive_stats()
 
     async def summary_stats(self) -> ArchiveStats:
-        storage_stats = await self.storage_stats()
+        storage_snapshot = await self.storage_stats()
         aggregate_stats = await self.repository.queries.aggregate_message_stats()
         tags = await self.repository.list_tags()
         recent = await self.list_conversations(limit=5)
 
         last_sync = None
         try:
-            last_sync = await self.backend.queries.get_last_sync_timestamp()
+            last_sync = await self.backend.get_last_sync_timestamp()
         except Exception as exc:  # pragma: no cover - defensive debug path
             logger.debug("failed to query last sync timestamp", error=str(exc))
 
         return ArchiveStats(
-            conversation_count=storage_stats.total_conversations,
-            message_count=storage_stats.total_messages,
+            conversation_count=storage_snapshot.total_conversations,
+            message_count=storage_snapshot.total_messages,
             word_count=int(aggregate_stats.get("words_approx", 0)),
-            providers=storage_stats.providers,
+            providers=storage_snapshot.providers,
             tags=tags,
             last_sync=last_sync,
             recent=recent,
         )
 
     async def provider_counts(self) -> list[tuple[str, int]]:
-        rows = await self.backend.queries.get_provider_conversation_counts()
-        return [(row["provider_name"] or "unknown", row["conversation_count"]) for row in rows]
+        rows = await self.backend.get_provider_conversation_counts()
+        return [
+            (_row_str(row, "provider_name", default="unknown") or "unknown", _row_int(row, "conversation_count"))
+            for row in rows
+        ]
 
     async def get_session_product_status(self) -> dict[str, int | bool]:
-        return await self.repository.get_session_product_status()
+        return await self.backend.get_session_product_status()
 
 
 class ArchiveProductSessionMixin:
+    if TYPE_CHECKING:
+
+        @property
+        def repository(self) -> ConversationRepository: ...
+
+        @property
+        def backend(self) -> SQLiteBackend: ...
+
     async def _session_product_status(self) -> dict[str, int | bool]:
-        return await _read_session_product_status(self.repository)
+        return await _read_session_product_status(self.backend)
 
     async def get_session_profile_product(
         self,
@@ -430,12 +491,20 @@ class ArchiveProductSessionMixin:
 
 
 class ArchiveProductAggregateMixin:
+    if TYPE_CHECKING:
+
+        @property
+        def repository(self) -> ConversationRepository: ...
+
+        @property
+        def backend(self) -> SQLiteBackend: ...
+
     async def list_session_tag_rollup_products(
         self,
         query: SessionTagRollupQuery | None = None,
     ) -> list[SessionTagRollupProduct]:
         request = query or SessionTagRollupQuery()
-        status = await _read_session_product_status(self.repository)
+        status = await _read_session_product_status(self.backend)
         _require_ready_flag(status, "tag_rollups_ready", "Session tag rollups are incomplete.")
         rows = await self.repository.list_session_tag_rollup_records(
             provider=request.provider,
@@ -455,7 +524,7 @@ class ArchiveProductAggregateMixin:
         query: DaySessionSummaryProductQuery | None = None,
     ) -> list[DaySessionSummaryProduct]:
         request = query or DaySessionSummaryProductQuery()
-        status = await _read_session_product_status(self.repository)
+        status = await _read_session_product_status(self.backend)
         _require_ready_flag(status, "day_summaries_ready", "Day session summaries are incomplete.")
         rows = await self.repository.list_day_session_summary_records(
             provider=request.provider,
@@ -474,7 +543,7 @@ class ArchiveProductAggregateMixin:
         query: WeekSessionSummaryProductQuery | None = None,
     ) -> list[WeekSessionSummaryProduct]:
         request = query or WeekSessionSummaryProductQuery()
-        status = await _read_session_product_status(self.repository)
+        status = await _read_session_product_status(self.backend)
         _require_ready_flag(status, "week_summaries_ready", "Week session summaries are incomplete.")
         rows = await self.repository.list_day_session_summary_records(
             provider=request.provider,
@@ -492,7 +561,7 @@ class ArchiveProductAggregateMixin:
         self,
         query: ProviderAnalyticsProductQuery | None = None,
     ) -> list[ProviderAnalyticsProduct]:
-        rows = await self.backend.queries.get_provider_metrics_rows()
+        rows = await self.backend.get_provider_metrics_rows()
         products = [provider_analytics_product(row) for row in rows]
         request = query or ProviderAnalyticsProductQuery()
         if request.provider:
@@ -505,6 +574,11 @@ class ArchiveProductAggregateMixin:
 
 
 class ArchiveProductDebtMixin:
+    if TYPE_CHECKING:
+
+        @property
+        def config(self) -> Config: ...
+
     async def list_archive_debt_products(
         self,
         query: ArchiveDebtProductQuery | None = None,
@@ -580,11 +654,11 @@ class ArchiveOperations(ArchiveSearchMixin, ArchiveStatsMixin, ArchiveProductMix
 
 
 async def _with_operations(
-    action,
+    action: Callable[[ArchiveOperations], Awaitable[_ResultT]],
     *,
     services: RuntimeServices | None = None,
     db_path: Path | None = None,
-):
+) -> _ResultT:
     owns_services = services is None
     runtime_services = services or build_runtime_services(db_path=db_path)
     operations = ArchiveOperations.from_services(runtime_services)

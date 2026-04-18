@@ -616,7 +616,7 @@ def cmd_index(args: argparse.Namespace) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
-    return args.command_fn(args)
+    return int(args.command_fn(args))
 
 
 if __name__ == "__main__":

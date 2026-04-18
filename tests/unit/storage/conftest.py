@@ -7,14 +7,17 @@ fixtures used across storage test files.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
+from polylogue.lib.roles import Role
 from polylogue.sources.parsers.base import ParsedConversation, ParsedMessage
+from polylogue.types import Provider
 
 
 @pytest.fixture
-def archive_root(tmp_path):
+def archive_root(tmp_path: Path) -> Path:
     """Create an archive root directory with render subdirectory."""
     archive = tmp_path / "archive"
     archive.mkdir()
@@ -23,7 +26,7 @@ def archive_root(tmp_path):
 
 
 @pytest.fixture
-def sample_sessions_index(tmp_path):
+def sample_sessions_index(tmp_path: Path) -> Path:
     """Create a sample sessions-index.json file."""
     index_data = {
         "version": 1,
@@ -74,10 +77,10 @@ def sample_sessions_index(tmp_path):
 
 
 @pytest.fixture
-def sample_conversation():
+def sample_conversation() -> ParsedConversation:
     """Create a sample parsed conversation."""
     return ParsedConversation(
-        provider_name="claude-code",
+        provider_name=Provider.CLAUDE_CODE,
         provider_conversation_id="abc123-def456",
         title="abc123-def456",  # Default title is session ID
         created_at=None,
@@ -85,13 +88,13 @@ def sample_conversation():
         messages=[
             ParsedMessage(
                 provider_message_id="msg-1",
-                role="user",
+                role=Role.normalize("user"),
                 text="How do I fix the bug?",
                 timestamp="1700000000",
             ),
             ParsedMessage(
                 provider_message_id="msg-2",
-                role="assistant",
+                role=Role.normalize("assistant"),
                 text="Let me help you fix that bug.",
                 timestamp="1700000001",
             ),

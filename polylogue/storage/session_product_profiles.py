@@ -16,6 +16,7 @@ from polylogue.storage.store import (
     SESSION_PRODUCT_MATERIALIZER_VERSION,
     SessionProfileRecord,
 )
+from polylogue.types import ConversationId
 
 # ---------------------------------------------------------------------------
 # Search-text builders
@@ -64,9 +65,15 @@ def profile_search_text(profile: SessionProfile) -> str:
     )
 
 
+def _payload_strings(value: object) -> tuple[str, ...]:
+    if not isinstance(value, list):
+        return ()
+    return tuple(str(item) for item in value)
+
+
 def profile_enrichment_search_text(profile: SessionProfile, enrichment_payload: dict[str, object]) -> str:
-    blockers = tuple(str(item) for item in enrichment_payload.get("blockers", []) or [])
-    support_signals_list = tuple(str(item) for item in enrichment_payload.get("support_signals", []) or [])
+    blockers = _payload_strings(enrichment_payload.get("blockers"))
+    support_signals_list = _payload_strings(enrichment_payload.get("support_signals"))
     parts = [
         profile.provider,
         profile.title or "",
@@ -210,7 +217,7 @@ def build_session_profile_record(
     evidence_search_text = profile_evidence_search_text(profile)
     inference_search_text = profile_inference_search_text(profile)
     return SessionProfileRecord(
-        conversation_id=profile.conversation_id,
+        conversation_id=ConversationId(profile.conversation_id),
         materializer_version=SESSION_PRODUCT_MATERIALIZER_VERSION,
         materialized_at=built_at,
         source_updated_at=profile.updated_at.isoformat() if profile.updated_at else None,

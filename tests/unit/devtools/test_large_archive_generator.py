@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from devtools.large_archive_generator import ArchiveSpec, ScaleLevel
 from polylogue.scenarios import CorpusScenario, CorpusSourceKind, CorpusSpec
 
@@ -48,12 +50,11 @@ def test_archive_spec_flattens_scenario_compilation_into_corpus_specs() -> None:
     assert corpus_specs == tuple(spec for scenario in corpus_scenarios for spec in scenario.corpus_specs)
 
 
-def test_archive_spec_can_scale_inferred_corpus_scenarios(monkeypatch) -> None:
+def test_archive_spec_can_scale_inferred_corpus_scenarios(monkeypatch: pytest.MonkeyPatch) -> None:
     spec = _build_archive_spec()
 
-    monkeypatch.setattr(
-        "devtools.large_archive_generator.list_inferred_corpus_scenarios",
-        lambda: (
+    def _list_inferred_corpus_scenarios() -> tuple[CorpusScenario, ...]:
+        return (
             CorpusScenario(
                 provider="chatgpt",
                 package_version="v1",
@@ -71,7 +72,11 @@ def test_archive_spec_can_scale_inferred_corpus_scenarios(monkeypatch) -> None:
                 origin="compiled.inferred-corpus-scenario",
                 tags=("inferred",),
             ),
-        ),
+        )
+
+    monkeypatch.setattr(
+        "devtools.large_archive_generator.list_inferred_corpus_scenarios",
+        _list_inferred_corpus_scenarios,
     )
 
     corpus_scenarios = spec.corpus_scenarios(

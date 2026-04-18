@@ -28,6 +28,7 @@ visible at PR time, not after a live archive run silently drops data.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -37,15 +38,14 @@ from polylogue.pipeline.services.ingest_worker import ingest_record
 from polylogue.storage.blob_store import get_blob_store
 from polylogue.storage.raw_ingest_artifacts import RawIngestArtifactState
 from polylogue.storage.state_views import RawConversationState
+from polylogue.storage.store import RawConversationRecord
 from polylogue.types import ValidationStatus
 
 EMPTY_SHA256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 
 
-def _make_raw_record(content: bytes, provider: str, path: str):
+def _make_raw_record(content: bytes, provider: str, path: str) -> RawConversationRecord:
     """Store ``content`` in the blob store and wrap a RawConversationRecord."""
-    from polylogue.storage.store import RawConversationRecord
-
     raw_id, size = get_blob_store().write_from_bytes(content)
     now = datetime.now(timezone.utc).isoformat()
     return RawConversationRecord(
@@ -180,7 +180,11 @@ def test_zero_length_blob_quarantine_survives_non_strict_mode(tmp_path: Path) ->
         ("codex", codex_malformed_jsonl_bytes),
     ],
 )
-def test_malformed_jsonl_mid_stream_quarantines_in_strict_mode(tmp_path: Path, provider: str, fixture) -> None:
+def test_malformed_jsonl_mid_stream_quarantines_in_strict_mode(
+    tmp_path: Path,
+    provider: str,
+    fixture: Callable[[], bytes],
+) -> None:
     """Stream-record providers quarantine a single malformed JSONL record.
 
     Under STRICT validation, even a single bad line triggers the

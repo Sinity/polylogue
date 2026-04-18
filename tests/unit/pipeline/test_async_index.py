@@ -12,14 +12,14 @@ import pytest
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.query_models import ConversationRecordQuery
 from polylogue.storage.repository import ConversationRepository
-from polylogue.storage.store import ConversationRecord, MessageRecord
+from tests.infra.storage_records import make_conversation, make_message
 
 
 class TestAsyncEnsureIndex:
     """Tests for ensure_index."""
 
     @pytest.mark.asyncio
-    async def test_creates_fts_table(self):
+    async def test_creates_fts_table(self) -> None:
         from polylogue.pipeline.services.indexing import ensure_index, index_status
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -31,7 +31,7 @@ class TestAsyncEnsureIndex:
             await backend.close()
 
     @pytest.mark.asyncio
-    async def test_idempotent(self):
+    async def test_idempotent(self) -> None:
         from polylogue.pipeline.services.indexing import ensure_index
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -46,14 +46,14 @@ class TestAsyncRebuildIndex:
     """Tests for rebuild_index."""
 
     @pytest.mark.asyncio
-    async def test_populates_from_messages(self):
+    async def test_populates_from_messages(self) -> None:
         from polylogue.pipeline.services.indexing import index_status, rebuild_index
 
         with tempfile.TemporaryDirectory() as tmpdir:
             backend = SQLiteBackend(db_path=Path(tmpdir) / "test.db")
             repo = ConversationRepository(backend=backend)
             now = datetime.now(timezone.utc).isoformat()
-            conversation = ConversationRecord(
+            conversation = make_conversation(
                 conversation_id="test:rebuild",
                 provider_name="test",
                 provider_conversation_id="ext-1",
@@ -63,7 +63,7 @@ class TestAsyncRebuildIndex:
                 content_hash=uuid4().hex,
             )
             messages = [
-                MessageRecord(
+                make_message(
                     message_id=f"m{i}",
                     conversation_id="test:rebuild",
                     role="user",
@@ -81,14 +81,14 @@ class TestAsyncRebuildIndex:
             await backend.close()
 
     @pytest.mark.asyncio
-    async def test_rebuild_clears_stale_entries(self):
+    async def test_rebuild_clears_stale_entries(self) -> None:
         from polylogue.pipeline.services.indexing import index_status, rebuild_index
 
         with tempfile.TemporaryDirectory() as tmpdir:
             backend = SQLiteBackend(db_path=Path(tmpdir) / "test.db")
             repo = ConversationRepository(backend=backend)
             now = datetime.now(timezone.utc).isoformat()
-            conversation = ConversationRecord(
+            conversation = make_conversation(
                 conversation_id="test:stale",
                 provider_name="test",
                 provider_conversation_id="ext-stale",
@@ -98,7 +98,7 @@ class TestAsyncRebuildIndex:
                 content_hash=uuid4().hex,
             )
             messages = [
-                MessageRecord(
+                make_message(
                     message_id=f"stale-m{i}",
                     conversation_id="test:stale",
                     role="user",
@@ -123,7 +123,7 @@ class TestAsyncUpdateIndex:
     """Tests for update_index_for_conversations."""
 
     @pytest.mark.asyncio
-    async def test_incremental_update(self):
+    async def test_incremental_update(self) -> None:
         from polylogue.pipeline.services.indexing import index_status, update_index_for_conversations
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -131,7 +131,7 @@ class TestAsyncUpdateIndex:
             repo = ConversationRepository(backend=backend)
             now = datetime.now(timezone.utc).isoformat()
             for conversation_id in ["test:a", "test:b"]:
-                conversation = ConversationRecord(
+                conversation = make_conversation(
                     conversation_id=conversation_id,
                     provider_name="test",
                     provider_conversation_id=conversation_id.split(":")[1],
@@ -141,7 +141,7 @@ class TestAsyncUpdateIndex:
                     content_hash=uuid4().hex,
                 )
                 messages = [
-                    MessageRecord(
+                    make_message(
                         message_id=f"{conversation_id}-m1",
                         conversation_id=conversation_id,
                         role="user",
@@ -160,7 +160,7 @@ class TestAsyncUpdateIndex:
             await backend.close()
 
     @pytest.mark.asyncio
-    async def test_update_empty_list(self):
+    async def test_update_empty_list(self) -> None:
         from polylogue.pipeline.services.indexing import update_index_for_conversations
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -174,7 +174,7 @@ class TestAsyncIndexStatus:
     """Tests for index_status."""
 
     @pytest.mark.asyncio
-    async def test_reports_exists_and_count(self):
+    async def test_reports_exists_and_count(self) -> None:
         from polylogue.pipeline.services.indexing import index_status
 
         with tempfile.TemporaryDirectory() as tmpdir:

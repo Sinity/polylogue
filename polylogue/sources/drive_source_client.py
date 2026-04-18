@@ -6,6 +6,7 @@ import os
 import tempfile
 from collections.abc import Iterable
 from pathlib import Path
+from typing import BinaryIO, cast
 
 from polylogue.logging import get_logger
 
@@ -121,7 +122,7 @@ class DriveSourceClient:
                 try:
                     with tempfile.NamedTemporaryFile(dir=dest.parent, delete=False) as handle:
                         tmp_path = Path(handle.name)
-                        self._gateway.download_file(file_id, handle)
+                        self._gateway.download_file(file_id, cast(BinaryIO, handle))
                     tmp_path.replace(dest)
                 except Exception:
                     if tmp_path is not None:

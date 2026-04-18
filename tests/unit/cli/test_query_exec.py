@@ -8,48 +8,58 @@ clearest specification.
 from __future__ import annotations
 
 import json
+from collections.abc import AsyncIterator
 from datetime import datetime, timezone
 from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Literal, TextIO, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from polylogue.cli.query import QueryAction, QueryRoute
 from polylogue.cli.types import AppEnv
-from polylogue.lib.messages import MessageCollection
-from polylogue.lib.models import Conversation, ConversationSummary, Message
+from polylogue.lib.models import Conversation as ConversationModel
+from polylogue.lib.models import ConversationSummary
+from polylogue.lib.models import Message as MessageModel
 from polylogue.paths import conversation_render_root
 from polylogue.services import build_runtime_services
+from polylogue.types import ConversationId, Provider
+from tests.infra.builders import make_conv, make_msg
 
 pytestmark = pytest.mark.query_routing
 
 
-def _make_msg(id: str, role: str, text: str, *, timestamp=None, provider_meta=None) -> Message:
-    return Message(id=id, role=role, text=text, timestamp=timestamp, provider_meta=provider_meta)
+def _make_msg(
+    id: str,
+    role: str,
+    text: str,
+    *,
+    timestamp: object | None = None,
+    provider_meta: dict[str, object] | None = None,
+) -> MessageModel:
+    return make_msg(id=id, role=role, text=text, timestamp=timestamp, provider_meta=provider_meta)
 
 
 def _make_conv(
     id: str = "conv-1",
     provider: str = "claude-ai",
     title: str = "Test Conversation",
-    messages: list[Message] | None = None,
-) -> Conversation:
-    return Conversation(
+    messages: list[MessageModel] | None = None,
+) -> ConversationModel:
+    return make_conv(
         id=id,
         provider=provider,
         title=title,
-        messages=MessageCollection(
-            messages=messages or [_make_msg("m1", "user", "Hello"), _make_msg("m2", "assistant", "Hi")]
-        ),
+        messages=messages or [_make_msg("m1", "user", "Hello"), _make_msg("m2", "assistant", "Hi")],
     )
 
 
 def _make_summary(id: str = "conv-1") -> ConversationSummary:
     return ConversationSummary(
-        id=id,
-        provider="claude-ai",
+        id=ConversationId(id),
+        provider=Provider.CLAUDE_AI,
         title="Test",
         created_at=datetime(2025, 1, 1, tzinfo=timezone.utc),
         updated_at=datetime(2025, 1, 15, tzinfo=timezone.utc),
@@ -75,8 +85,8 @@ def _make_env(*, repo: MagicMock | None = None, config: MagicMock | None = None)
     return AppEnv(ui=ui, services=build_runtime_services(config=config, repository=repo))
 
 
-def _make_params(**overrides) -> dict:
-    params = {
+def _make_params(**overrides: object) -> dict[str, object]:
+    params: dict[str, object] = {
         "conv_id": None,
         "query": (),
         "contains": (),
@@ -133,7 +143,10 @@ def _make_params(**overrides) -> dict:
     ids=["latest", "conv-id", "warning", "missing-target"],
 )
 def test_execute_query_stream_target_resolution_contract(
-    param_overrides, resolved_id, expect_exit, expect_warning
+    param_overrides: dict[str, object],
+    resolved_id: str | None,
+    expect_exit: int | None,
+    expect_warning: bool,
 ) -> None:
     from polylogue.cli.query import execute_query
 
@@ -246,88 +259,84 @@ async def test_async_execute_query_reports_non_date_query_spec_errors() -> None:
 async def test_query_plan_filters_ordered_action_sequence() -> None:
     from polylogue.lib.query_spec import ConversationQuerySpec
 
-    matching = Conversation(
+    matching = make_conv(
         id="conv-sequence-match",
         provider="claude-code",
         title="Matching sequence",
-        messages=MessageCollection(
-            messages=[
-                Message(
-                    id="m1",
-                    role="assistant",
-                    provider="claude-code",
-                    content_blocks=[
-                        {
-                            "type": "tool_use",
-                            "tool_name": "Read",
-                            "tool_input": {"file_path": "/tmp/a.py"},
-                            "semantic_type": "file_read",
-                        },
-                    ],
-                ),
-                Message(
-                    id="m2",
-                    role="assistant",
-                    provider="claude-code",
-                    content_blocks=[
-                        {
-                            "type": "tool_use",
-                            "tool_name": "Edit",
-                            "tool_input": {"file_path": "/tmp/a.py"},
-                            "semantic_type": "file_edit",
-                        },
-                    ],
-                ),
-                Message(
-                    id="m3",
-                    role="assistant",
-                    provider="claude-code",
-                    content_blocks=[
-                        {
-                            "type": "tool_use",
-                            "tool_name": "Bash",
-                            "tool_input": {"command": "pytest -q"},
-                            "semantic_type": "shell",
-                        },
-                    ],
-                ),
-            ]
-        ),
+        messages=[
+            make_msg(
+                id="m1",
+                role="assistant",
+                provider="claude-code",
+                content_blocks=[
+                    {
+                        "type": "tool_use",
+                        "tool_name": "Read",
+                        "tool_input": {"file_path": "/tmp/a.py"},
+                        "semantic_type": "file_read",
+                    },
+                ],
+            ),
+            make_msg(
+                id="m2",
+                role="assistant",
+                provider="claude-code",
+                content_blocks=[
+                    {
+                        "type": "tool_use",
+                        "tool_name": "Edit",
+                        "tool_input": {"file_path": "/tmp/a.py"},
+                        "semantic_type": "file_edit",
+                    },
+                ],
+            ),
+            make_msg(
+                id="m3",
+                role="assistant",
+                provider="claude-code",
+                content_blocks=[
+                    {
+                        "type": "tool_use",
+                        "tool_name": "Bash",
+                        "tool_input": {"command": "pytest -q"},
+                        "semantic_type": "shell",
+                    },
+                ],
+            ),
+        ],
     )
-    non_matching = Conversation(
+    non_matching = make_conv(
         id="conv-sequence-miss",
         provider="claude-code",
         title="Non matching sequence",
-        messages=MessageCollection(
-            messages=[
-                Message(
-                    id="x1",
-                    role="assistant",
-                    provider="claude-code",
-                    content_blocks=[
-                        {
-                            "type": "tool_use",
-                            "tool_name": "Bash",
-                            "tool_input": {"command": "pytest -q"},
-                            "semantic_type": "shell",
-                        },
-                    ],
-                ),
-                Message(
-                    id="x2",
-                    role="assistant",
-                    provider="claude-code",
-                    content_blocks=[
-                        {
-                            "type": "tool_use",
-                            "tool_name": "Edit",
-                            "tool_input": {"file_path": "/tmp/a.py"},
-                            "semantic_type": "file_edit",
-                        },
-                    ],
-                ),
-            ]
-        ),
+        messages=[
+            make_msg(
+                id="x1",
+                role="assistant",
+                provider="claude-code",
+                content_blocks=[
+                    {
+                        "type": "tool_use",
+                        "tool_name": "Bash",
+                        "tool_input": {"command": "pytest -q"},
+                        "semantic_type": "shell",
+                    },
+                ],
+            ),
+            make_msg(
+                id="x2",
+                role="assistant",
+                provider="claude-code",
+                content_blocks=[
+                    {
+                        "type": "tool_use",
+                        "tool_name": "Edit",
+                        "tool_input": {"file_path": "/tmp/a.py"},
+                        "semantic_type": "file_edit",
+                    },
+                ],
+            ),
+        ],
     )
 
     repo = MagicMock()
@@ -343,49 +352,45 @@ async def test_query_plan_filters_ordered_action_sequence() -> None:
 async def test_query_plan_filters_action_text_terms() -> None:
     from polylogue.lib.query_spec import ConversationQuerySpec
 
-    matching = Conversation(
+    matching = make_conv(
         id="conv-action-text-match",
         provider="claude-code",
         title="Action text match",
-        messages=MessageCollection(
-            messages=[
-                Message(
-                    id="m1",
-                    role="assistant",
-                    provider="claude-code",
-                    content_blocks=[
-                        {
-                            "type": "tool_use",
-                            "tool_name": "Bash",
-                            "tool_input": {"command": "pytest -q tests/unit/core/test_semantic_facts.py"},
-                            "semantic_type": "shell",
-                        },
-                    ],
-                ),
-            ]
-        ),
+        messages=[
+            make_msg(
+                id="m1",
+                role="assistant",
+                provider="claude-code",
+                content_blocks=[
+                    {
+                        "type": "tool_use",
+                        "tool_name": "Bash",
+                        "tool_input": {"command": "pytest -q tests/unit/core/test_semantic_facts.py"},
+                        "semantic_type": "shell",
+                    },
+                ],
+            ),
+        ],
     )
-    non_matching = Conversation(
+    non_matching = make_conv(
         id="conv-action-text-miss",
         provider="claude-code",
         title="Action text miss",
-        messages=MessageCollection(
-            messages=[
-                Message(
-                    id="x1",
-                    role="assistant",
-                    provider="claude-code",
-                    content_blocks=[
-                        {
-                            "type": "tool_use",
-                            "tool_name": "Bash",
-                            "tool_input": {"command": "ruff check polylogue/lib/action_events.py"},
-                            "semantic_type": "shell",
-                        },
-                    ],
-                ),
-            ]
-        ),
+        messages=[
+            make_msg(
+                id="x1",
+                role="assistant",
+                provider="claude-code",
+                content_blocks=[
+                    {
+                        "type": "tool_use",
+                        "tool_name": "Bash",
+                        "tool_input": {"command": "ruff check polylogue/lib/action_events.py"},
+                        "semantic_type": "shell",
+                    },
+                ],
+            ),
+        ],
     )
 
     repo = MagicMock()
@@ -401,33 +406,31 @@ async def test_query_plan_filters_action_text_terms() -> None:
 async def test_query_plan_batches_post_filter_candidate_fetches() -> None:
     from polylogue.lib.query_spec import ConversationQuerySpec
 
-    matching = Conversation(
+    matching = make_conv(
         id="conv-batched-match",
         provider="claude-code",
         title="Batched match",
-        messages=MessageCollection(
-            messages=[
-                Message(
-                    id="m1",
-                    role="assistant",
-                    provider="claude-code",
-                    content_blocks=[
-                        {
-                            "type": "tool_use",
-                            "tool_name": "Read",
-                            "tool_input": {"file_path": "/tmp/a.py"},
-                            "semantic_type": "file_read",
-                        },
-                        {
-                            "type": "tool_use",
-                            "tool_name": "Edit",
-                            "tool_input": {"file_path": "/tmp/a.py"},
-                            "semantic_type": "file_edit",
-                        },
-                    ],
-                ),
-            ]
-        ),
+        messages=[
+            make_msg(
+                id="m1",
+                role="assistant",
+                provider="claude-code",
+                content_blocks=[
+                    {
+                        "type": "tool_use",
+                        "tool_name": "Read",
+                        "tool_input": {"file_path": "/tmp/a.py"},
+                        "semantic_type": "file_read",
+                    },
+                    {
+                        "type": "tool_use",
+                        "tool_name": "Edit",
+                        "tool_input": {"file_path": "/tmp/a.py"},
+                        "semantic_type": "file_edit",
+                    },
+                ],
+            ),
+        ],
     )
 
     repo = MagicMock()
@@ -446,27 +449,25 @@ async def test_query_plan_batches_post_filter_candidate_fetches() -> None:
 async def test_query_plan_action_retrieval_lane_matches_tool_command_text() -> None:
     from polylogue.lib.query_spec import ConversationQuerySpec
 
-    matching = Conversation(
+    matching = make_conv(
         id="conv-actions-lane-match",
         provider="claude-code",
         title="Action lane match",
-        messages=MessageCollection(
-            messages=[
-                Message(
-                    id="m1",
-                    role="assistant",
-                    provider="claude-code",
-                    content_blocks=[
-                        {
-                            "type": "tool_use",
-                            "tool_name": "Bash",
-                            "tool_input": {"command": "pytest -q tests/unit/core/test_semantic_facts.py"},
-                            "semantic_type": "shell",
-                        },
-                    ],
-                ),
-            ]
-        ),
+        messages=[
+            make_msg(
+                id="m1",
+                role="assistant",
+                provider="claude-code",
+                content_blocks=[
+                    {
+                        "type": "tool_use",
+                        "tool_name": "Bash",
+                        "tool_input": {"command": "pytest -q tests/unit/core/test_semantic_facts.py"},
+                        "semantic_type": "shell",
+                    },
+                ],
+            ),
+        ],
     )
     repo = MagicMock()
     repo.search = AsyncMock(return_value=[])
@@ -485,27 +486,25 @@ async def test_query_plan_action_retrieval_lane_matches_tool_command_text() -> N
 async def test_query_plan_action_retrieval_lane_falls_back_when_action_read_model_unready() -> None:
     from polylogue.lib.query_spec import ConversationQuerySpec
 
-    matching = Conversation(
+    matching = make_conv(
         id="conv-actions-lane-fallback",
         provider="claude-code",
         title="Action lane fallback",
-        messages=MessageCollection(
-            messages=[
-                Message(
-                    id="m1",
-                    role="assistant",
-                    provider="claude-code",
-                    content_blocks=[
-                        {
-                            "type": "tool_use",
-                            "tool_name": "Bash",
-                            "tool_input": {"command": "pytest -q tests/unit/core/test_semantic_facts.py"},
-                            "semantic_type": "shell",
-                        },
-                    ],
-                ),
-            ]
-        ),
+        messages=[
+            make_msg(
+                id="m1",
+                role="assistant",
+                provider="claude-code",
+                content_blocks=[
+                    {
+                        "type": "tool_use",
+                        "tool_name": "Bash",
+                        "tool_input": {"command": "pytest -q tests/unit/core/test_semantic_facts.py"},
+                        "semantic_type": "shell",
+                    },
+                ],
+            ),
+        ],
     )
     repo = MagicMock()
     repo.get_action_event_read_model_status = AsyncMock(return_value={"ready": False})
@@ -526,37 +525,33 @@ async def test_query_plan_action_retrieval_lane_falls_back_when_action_read_mode
 async def test_query_plan_hybrid_retrieval_lane_combines_text_and_action_hits() -> None:
     from polylogue.lib.query_spec import ConversationQuerySpec
 
-    text_hit = Conversation(
+    text_hit = make_conv(
         id="conv-text-hit",
         provider="claude-code",
         title="Text hit",
-        messages=MessageCollection(
-            messages=[
-                Message(id="t1", role="assistant", provider="claude-code", text="pytest failure in semantic facts test")
-            ]
-        ),
+        messages=[
+            make_msg(id="t1", role="assistant", provider="claude-code", text="pytest failure in semantic facts test")
+        ],
     )
-    action_hit = Conversation(
+    action_hit = make_conv(
         id="conv-action-hit",
         provider="claude-code",
         title="Action hit",
-        messages=MessageCollection(
-            messages=[
-                Message(
-                    id="a1",
-                    role="assistant",
-                    provider="claude-code",
-                    content_blocks=[
-                        {
-                            "type": "tool_use",
-                            "tool_name": "Bash",
-                            "tool_input": {"command": "pytest -q tests/unit/core/test_semantic_facts.py"},
-                            "semantic_type": "shell",
-                        },
-                    ],
-                ),
-            ]
-        ),
+        messages=[
+            make_msg(
+                id="a1",
+                role="assistant",
+                provider="claude-code",
+                content_blocks=[
+                    {
+                        "type": "tool_use",
+                        "tool_name": "Bash",
+                        "tool_input": {"command": "pytest -q tests/unit/core/test_semantic_facts.py"},
+                        "semantic_type": "shell",
+                    },
+                ],
+            ),
+        ],
     )
 
     repo = MagicMock()
@@ -577,49 +572,45 @@ async def test_query_plan_hybrid_retrieval_lane_combines_text_and_action_hits() 
 async def test_query_plan_path_filters_fall_back_to_full_list_when_action_read_model_unready() -> None:
     from polylogue.lib.query_spec import ConversationQuerySpec
 
-    matching = Conversation(
+    matching = make_conv(
         id="conv-summary-path-match",
         provider="claude-code",
         title="Summary path match",
-        messages=MessageCollection(
-            messages=[
-                Message(
-                    id="m1",
-                    role="assistant",
-                    provider="claude-code",
-                    content_blocks=[
-                        {
-                            "type": "tool_use",
-                            "tool_name": "Read",
-                            "tool_input": {"file_path": "/tmp/a.py"},
-                            "semantic_type": "file_read",
-                        },
-                    ],
-                ),
-            ]
-        ),
+        messages=[
+            make_msg(
+                id="m1",
+                role="assistant",
+                provider="claude-code",
+                content_blocks=[
+                    {
+                        "type": "tool_use",
+                        "tool_name": "Read",
+                        "tool_input": {"file_path": "/tmp/a.py"},
+                        "semantic_type": "file_read",
+                    },
+                ],
+            ),
+        ],
     )
-    non_matching = Conversation(
+    non_matching = make_conv(
         id="conv-summary-path-miss",
         provider="claude-code",
         title="Summary path miss",
-        messages=MessageCollection(
-            messages=[
-                Message(
-                    id="m2",
-                    role="assistant",
-                    provider="claude-code",
-                    content_blocks=[
-                        {
-                            "type": "tool_use",
-                            "tool_name": "Read",
-                            "tool_input": {"file_path": "/tmp/b.py"},
-                            "semantic_type": "file_read",
-                        },
-                    ],
-                ),
-            ]
-        ),
+        messages=[
+            make_msg(
+                id="m2",
+                role="assistant",
+                provider="claude-code",
+                content_blocks=[
+                    {
+                        "type": "tool_use",
+                        "tool_name": "Read",
+                        "tool_input": {"file_path": "/tmp/b.py"},
+                        "semantic_type": "file_read",
+                    },
+                ],
+            ),
+        ],
     )
 
     repo = MagicMock()
@@ -725,7 +716,7 @@ async def test_stream_conversation_output_contract(
     repo.queries.get_conversation = AsyncMock(return_value=SimpleNamespace(title="Test Title"))
     repo.queries.get_conversation_stats = AsyncMock(return_value={"dialogue_messages": 1, "total_messages": 2})
 
-    async def _iter_messages(*_args, **_kwargs):
+    async def _iter_messages(*_args: object, **_kwargs: object) -> AsyncIterator[MessageModel]:
         messages = [_make_msg("m1", "user", "Hello"), _make_msg("m2", "assistant", "Hi")]
         if limit is not None:
             messages[:] = messages[:limit]
@@ -772,21 +763,22 @@ async def test_stream_conversation_errors_for_missing_conversation() -> None:
     ids=["html-pass-through", "wrapped-non-html", "conversation-html"],
 )
 def test_open_in_browser_contract(
-    content: str, output_format: str, conv: Conversation | None, expected_in_file: str, tmp_path: Path
+    content: str, output_format: str, conv: ConversationModel | None, expected_in_file: str, tmp_path: Path
 ) -> None:
     from polylogue.cli.query_output import _open_in_browser
 
     env = _make_env(config=MagicMock())
+    mock_print = cast(MagicMock, env.ui.console.print)
     created_file = tmp_path / "output.html"
 
     class _TempFile:
         name = str(created_file)
 
-        def __enter__(self):
+        def __enter__(self) -> TextIO:
             self.handle = created_file.open("w", encoding="utf-8")
             return self.handle
 
-        def __exit__(self, exc_type, exc, tb):
+        def __exit__(self, exc_type: object, exc: object, tb: object) -> Literal[False]:
             self.handle.close()
             return False
 
@@ -794,11 +786,12 @@ def test_open_in_browser_contract(
         patch("tempfile.NamedTemporaryFile", return_value=_TempFile()),
         patch("webbrowser.open") as mock_open,
     ):
+        mock_open = cast(MagicMock, mock_open)
         _open_in_browser(env, content, output_format, conv)
 
     assert expected_in_file in created_file.read_text(encoding="utf-8")
     mock_open.assert_called_once()
-    env.ui.console.print.assert_called_once()
+    mock_print.assert_called_once()
 
 
 @pytest.mark.parametrize(
@@ -809,15 +802,21 @@ def test_open_in_browser_contract(
     ],
     ids=["success", "failure"],
 )
-def test_copy_to_clipboard_contract(side_effects, expect_console: bool, expect_echo: bool) -> None:
+def test_copy_to_clipboard_contract(
+    side_effects: list[object],
+    expect_console: bool,
+    expect_echo: bool,
+) -> None:
     from polylogue.cli.query_output import _copy_to_clipboard
 
     env = _make_env(config=MagicMock())
+    mock_print = cast(MagicMock, env.ui.console.print)
 
     with patch("subprocess.run", side_effect=side_effects), patch("click.echo") as mock_echo:
+        mock_echo = cast(MagicMock, mock_echo)
         _copy_to_clipboard(env, "hello")
 
-    assert env.ui.console.print.called is expect_console
+    assert mock_print.called is expect_console
     assert mock_echo.called is expect_echo
 
 
@@ -870,7 +869,7 @@ def test_copy_to_clipboard_contract(side_effects, expect_console: bool, expect_e
     ],
 )
 def test_open_result_contract(
-    results,
+    results: list[ConversationModel | ConversationSummary],
     params: dict[str, object],
     render_root_exists: bool,
     html_exists: bool,
@@ -899,12 +898,15 @@ def test_open_result_contract(
         fallback.write_text("<html></html>", encoding="utf-8")
 
     env = _make_env(config=MagicMock(render_root=render_root))
+    mock_print = cast(MagicMock, env.ui.console.print)
     with (
         patch("polylogue.cli.helpers.load_effective_config", return_value=MagicMock(render_root=render_root)),
         patch("polylogue.cli.helpers.latest_render_path", return_value=fallback if latest_exists else None),
         patch("webbrowser.open") as mock_open,
         patch("click.echo") as mock_echo,
     ):
+        mock_open = cast(MagicMock, mock_open)
+        mock_echo = cast(MagicMock, mock_echo)
         if expected_exit is not None:
             with pytest.raises(SystemExit) as exc_info:
                 _open_result(env, results, params)
@@ -914,17 +916,17 @@ def test_open_result_contract(
             _open_result(env, results, params)
             if expected_stdout is not None:
                 mock_open.assert_not_called()
-                env.ui.console.print.assert_not_called()
+                mock_print.assert_not_called()
                 echoed = "\n".join(call.args[0] for call in mock_echo.call_args_list if call.args)
                 assert expected_stdout in echoed
             else:
                 opened = mock_open.call_args.args[0]
                 assert expected_open_name in opened
-                env.ui.console.print.assert_called_once()
+                mock_print.assert_called_once()
                 mock_echo.assert_not_called()
 
 
-def test_open_result_no_results_json_contract(capsys, tmp_path: Path) -> None:
+def test_open_result_no_results_json_contract(capsys: pytest.CaptureFixture[str], tmp_path: Path) -> None:
     from polylogue.cli.query_output import _open_result
 
     render_root = tmp_path / "rendered"
@@ -936,6 +938,7 @@ def test_open_result_no_results_json_contract(capsys, tmp_path: Path) -> None:
         patch("polylogue.cli.helpers.latest_render_path", return_value=None),
         patch("webbrowser.open") as mock_open,
     ):
+        mock_open = cast(MagicMock, mock_open)
         with pytest.raises(SystemExit) as exc_info:
             _open_result(env, [], {"output_format": "json"})
 

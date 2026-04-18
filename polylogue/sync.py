@@ -18,11 +18,16 @@ from __future__ import annotations
 
 from collections.abc import Awaitable
 from pathlib import Path
-from typing import TypeVar
+from types import TracebackType
+from typing import TYPE_CHECKING, TypeVar
 
 from polylogue.sync_bridge import run_coroutine_sync
 from polylogue.sync_conversation_queries import SyncConversationQueriesMixin
 from polylogue.sync_product_queries import SyncProductQueriesMixin
+
+if TYPE_CHECKING:
+    from polylogue.facade import Polylogue
+    from polylogue.lib.filters import ConversationFilter
 
 T = TypeVar("T")
 
@@ -35,11 +40,13 @@ def _run(coro: Awaitable[T]) -> T:
 class SyncPolylogue(SyncConversationQueriesMixin, SyncProductQueriesMixin):
     """Synchronous wrapper around the async ``Polylogue`` facade."""
 
+    _facade: Polylogue
+
     def __init__(
         self,
         archive_root: str | Path | None = None,
         db_path: str | Path | None = None,
-    ):
+    ) -> None:
         from polylogue.facade import Polylogue
 
         self._facade = Polylogue(archive_root=archive_root, db_path=db_path)
@@ -51,10 +58,15 @@ class SyncPolylogue(SyncConversationQueriesMixin, SyncProductQueriesMixin):
     def __enter__(self) -> SyncPolylogue:
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> None:
         self.close()
 
-    def filter(self):
+    def filter(self) -> ConversationFilter:
         """Create a fluent filter builder (terminal methods are still async)."""
         return self._facade.filter()
 

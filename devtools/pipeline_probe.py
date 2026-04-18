@@ -15,14 +15,14 @@ import tempfile
 from collections.abc import Iterator
 from contextlib import contextmanager, redirect_stdout
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from polylogue.config import Config, Source
 from polylogue.paths import blob_store_root, db_path
 from polylogue.pipeline.runner import RUN_STAGE_CHOICES, run_sources
 from polylogue.scenarios import CorpusRequest, CorpusSourceKind
 from polylogue.schemas.synthetic import SyntheticCorpus
-from polylogue.storage.backends import create_backend
+from polylogue.storage.backends import SQLiteBackend, create_backend
 from polylogue.storage.backends.connection import (
     _build_provider_scope_filter,
     _build_source_scope_filter,
@@ -245,11 +245,11 @@ def _isolated_env(workdir: Path) -> Iterator[None]:
         yield
     finally:
         reset_blob_store()
-        for key, value in previous.items():
-            if value is None:
+        for key, previous_value in previous.items():
+            if previous_value is None:
                 os.environ.pop(key, None)
             else:
-                os.environ[key] = value
+                os.environ[key] = previous_value
 
 
 def _db_row_counts(db_path: Path) -> dict[str, int]:
@@ -603,7 +603,7 @@ def _persist_manifest(manifest: dict[str, Any], destination: Path) -> Path:
 
 
 def _load_manifest(manifest_path: Path) -> dict[str, Any]:
-    return json.loads(manifest_path.read_text(encoding="utf-8"))
+    return cast(dict[str, Any], json.loads(manifest_path.read_text(encoding="utf-8")))
 
 
 def _build_archive_manifest(
@@ -766,7 +766,7 @@ def _probe_mode(args: argparse.Namespace) -> str:
 def _load_run_payload(run_path: str | None) -> dict[str, Any]:
     if not run_path:
         return {}
-    return json.loads(Path(run_path).read_text(encoding="utf-8"))
+    return cast(dict[str, Any], json.loads(Path(run_path).read_text(encoding="utf-8")))
 
 
 def _path_size_bytes(path: Path) -> int:
@@ -837,8 +837,8 @@ async def _run_probe_pipeline(
     raw_batch_size: int | None,
     ingest_workers: int | None,
     measure_ingest_result_size: bool,
-    backend=None,
-    repository=None,
+    backend: SQLiteBackend | None = None,
+    repository: ConversationRepository | None = None,
 ) -> tuple[Any, dict[str, Any]]:
     result = await run_sources(
         config=config,

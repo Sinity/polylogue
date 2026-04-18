@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from polylogue.lib.roles import Role
 from polylogue.sources.assembly import get_assembly_spec
 from polylogue.sources.assembly_claude_code import ClaudeCodeAssemblySpec
 from polylogue.sources.assembly_codex import CodexAssemblySpec, _parse_codex_session_index
@@ -16,6 +17,46 @@ from polylogue.sources.parsers.claude_index import (
     _looks_like_git_branch,
 )
 from polylogue.types import Provider
+
+
+def _parsed_message(provider_message_id: str, role: str, text: str) -> ParsedMessage:
+    return ParsedMessage(
+        provider_message_id=provider_message_id,
+        role=Role.normalize(role),
+        text=text,
+    )
+
+
+def _parsed_conversation(
+    provider_name: Provider,
+    provider_conversation_id: str,
+    title: str,
+    messages: list[ParsedMessage],
+) -> ParsedConversation:
+    return ParsedConversation(
+        provider_name=provider_name,
+        provider_conversation_id=provider_conversation_id,
+        title=title,
+        created_at=None,
+        updated_at=None,
+        messages=messages,
+    )
+
+
+def _provider_meta(conversation: ParsedConversation) -> dict[str, object]:
+    assert conversation.provider_meta is not None
+    return conversation.provider_meta
+
+
+def _thread_sidecars(thread_names: dict[str, str] | None = None) -> dict[str, dict[str, str]]:
+    return {"thread_names": {} if thread_names is None else thread_names}
+
+
+def _session_sidecars(
+    session_index: dict[str, SessionIndexEntry] | None = None,
+) -> dict[str, dict[str, SessionIndexEntry]]:
+    return {"session_index": {} if session_index is None else session_index}
+
 
 # ---------------------------------------------------------------------------
 # Registry
@@ -93,13 +134,11 @@ class TestClaudeCodeAssemblySpec:
     def test_enrich_conversation_updates_title_from_summary(self) -> None:
         """Enriches conversation title from session index summary."""
         spec = ClaudeCodeAssemblySpec()
-        conv = ParsedConversation(
-            provider_name="claude-code",
-            provider_conversation_id="sess-1",
-            title="sess-1",
-            created_at=None,
-            updated_at=None,
-            messages=[ParsedMessage(provider_message_id="m1", role="user", text="hello")],
+        conv = _parsed_conversation(
+            Provider.CLAUDE_CODE,
+            "sess-1",
+            "sess-1",
+            [_parsed_message("m1", "user", "hello")],
         )
         entry = SessionIndexEntry(
             session_id="sess-1",
@@ -113,25 +152,18 @@ class TestClaudeCodeAssemblySpec:
             project_path="/project",
             is_sidechain=False,
         )
-        sidecar_data = {"session_index": {"sess-1": entry}}
+        sidecar_data = _session_sidecars({"sess-1": entry})
 
         enriched = spec.enrich_conversation(conv, sidecar_data)
 
         assert enriched.title == "Build the parser"
-        assert enriched.provider_meta["title_source"] == "session-index:summary"
+        assert _provider_meta(enriched)["title_source"] == "session-index:summary"
 
     def test_enrich_conversation_no_match_returns_original(self) -> None:
         """Returns original conversation when no session index match."""
         spec = ClaudeCodeAssemblySpec()
-        conv = ParsedConversation(
-            provider_name="claude-code",
-            provider_conversation_id="sess-99",
-            title="original",
-            created_at=None,
-            updated_at=None,
-            messages=[],
-        )
-        sidecar_data = {"session_index": {}}
+        conv = _parsed_conversation(Provider.CLAUDE_CODE, "sess-99", "original", [])
+        sidecar_data = _session_sidecars()
 
         result = spec.enrich_conversation(conv, sidecar_data)
 
@@ -185,56 +217,43 @@ class TestCodexAssemblySpec:
     def test_enrich_conversation_uses_thread_name(self) -> None:
         """Enriches conversation title from thread name in sidecar data."""
         spec = CodexAssemblySpec()
-        conv = ParsedConversation(
-            provider_name="codex",
-            provider_conversation_id="thread-1",
-            title="thread-1",
-            created_at=None,
-            updated_at=None,
-            messages=[ParsedMessage(provider_message_id="m1", role="user", text="build client")],
+        conv = _parsed_conversation(
+            Provider.CODEX, "thread-1", "thread-1", [_parsed_message("m1", "user", "build client")]
         )
-        sidecar_data = {"thread_names": {"thread-1": "Build API client"}}
+        sidecar_data = _thread_sidecars({"thread-1": "Build API client"})
 
         enriched = spec.enrich_conversation(conv, sidecar_data)
 
         assert enriched.title == "Build API client"
-        assert enriched.provider_meta["title_source"] == "session-index:thread-name"
-        assert enriched.provider_meta["thread_name"] == "Build API client"
+        metadata = _provider_meta(enriched)
+        assert metadata["title_source"] == "session-index:thread-name"
+        assert metadata["thread_name"] == "Build API client"
 
     def test_enrich_conversation_falls_back_to_first_user_message(self) -> None:
         """Falls back to first user message when no thread name available."""
         spec = CodexAssemblySpec()
-        conv = ParsedConversation(
-            provider_name="codex",
-            provider_conversation_id="thread-1",
-            title="thread-1",
-            created_at=None,
-            updated_at=None,
-            messages=[
-                ParsedMessage(provider_message_id="m1", role="user", text="Implement the payment gateway"),
-                ParsedMessage(provider_message_id="m2", role="assistant", text="Sure, here is the code"),
+        conv = _parsed_conversation(
+            Provider.CODEX,
+            "thread-1",
+            "thread-1",
+            [
+                _parsed_message("m1", "user", "Implement the payment gateway"),
+                _parsed_message("m2", "assistant", "Sure, here is the code"),
             ],
         )
-        sidecar_data = {"thread_names": {}}
+        sidecar_data = _thread_sidecars()
 
         enriched = spec.enrich_conversation(conv, sidecar_data)
 
         assert enriched.title == "Implement the payment gateway"
-        assert enriched.provider_meta["title_source"] == "first-user-message"
+        assert _provider_meta(enriched)["title_source"] == "first-user-message"
 
     def test_enrich_conversation_truncates_long_first_message(self) -> None:
         """Truncates first user message to 80 chars + ellipsis."""
         spec = CodexAssemblySpec()
         long_text = "A" * 100
-        conv = ParsedConversation(
-            provider_name="codex",
-            provider_conversation_id="thread-1",
-            title="thread-1",
-            created_at=None,
-            updated_at=None,
-            messages=[ParsedMessage(provider_message_id="m1", role="user", text=long_text)],
-        )
-        sidecar_data = {"thread_names": {}}
+        conv = _parsed_conversation(Provider.CODEX, "thread-1", "thread-1", [_parsed_message("m1", "user", long_text)])
+        sidecar_data = _thread_sidecars()
 
         enriched = spec.enrich_conversation(conv, sidecar_data)
 
@@ -244,15 +263,10 @@ class TestCodexAssemblySpec:
     def test_enrich_conversation_no_match_no_user_messages(self) -> None:
         """Returns original conversation when no enrichment possible."""
         spec = CodexAssemblySpec()
-        conv = ParsedConversation(
-            provider_name="codex",
-            provider_conversation_id="thread-1",
-            title="thread-1",
-            created_at=None,
-            updated_at=None,
-            messages=[ParsedMessage(provider_message_id="m1", role="assistant", text="response")],
+        conv = _parsed_conversation(
+            Provider.CODEX, "thread-1", "thread-1", [_parsed_message("m1", "assistant", "response")]
         )
-        sidecar_data = {"thread_names": {}}
+        sidecar_data = _thread_sidecars()
 
         result = spec.enrich_conversation(conv, sidecar_data)
 
@@ -261,19 +275,17 @@ class TestCodexAssemblySpec:
     def test_enrich_conversation_skips_empty_user_messages(self) -> None:
         """Skips empty user messages when looking for first-user-message fallback."""
         spec = CodexAssemblySpec()
-        conv = ParsedConversation(
-            provider_name="codex",
-            provider_conversation_id="thread-1",
-            title="thread-1",
-            created_at=None,
-            updated_at=None,
-            messages=[
-                ParsedMessage(provider_message_id="m1", role="user", text=""),
-                ParsedMessage(provider_message_id="m2", role="user", text="   "),
-                ParsedMessage(provider_message_id="m3", role="user", text="Real message here"),
+        conv = _parsed_conversation(
+            Provider.CODEX,
+            "thread-1",
+            "thread-1",
+            [
+                _parsed_message("m1", "user", ""),
+                _parsed_message("m2", "user", "   "),
+                _parsed_message("m3", "user", "Real message here"),
             ],
         )
-        sidecar_data = {"thread_names": {}}
+        sidecar_data = _thread_sidecars()
 
         enriched = spec.enrich_conversation(conv, sidecar_data)
 
@@ -282,15 +294,13 @@ class TestCodexAssemblySpec:
     def test_enrich_conversation_does_not_override_different_title(self) -> None:
         """Does not fall back to first-user-message when title differs from conv ID."""
         spec = CodexAssemblySpec()
-        conv = ParsedConversation(
-            provider_name="codex",
-            provider_conversation_id="thread-1",
-            title="Already has a title",
-            created_at=None,
-            updated_at=None,
-            messages=[ParsedMessage(provider_message_id="m1", role="user", text="some message")],
+        conv = _parsed_conversation(
+            Provider.CODEX,
+            "thread-1",
+            "Already has a title",
+            [_parsed_message("m1", "user", "some message")],
         )
-        sidecar_data = {"thread_names": {}}
+        sidecar_data = _thread_sidecars()
 
         result = spec.enrich_conversation(conv, sidecar_data)
 
@@ -415,13 +425,11 @@ class TestLooksLikeGitBranch:
         """enrich_conversation_from_index skips summary that looks like a git branch."""
         from polylogue.sources.parsers.claude_index import enrich_conversation_from_index
 
-        conv = ParsedConversation(
-            provider_name="claude-code",
-            provider_conversation_id="sess-1",
-            title="sess-1",
-            created_at=None,
-            updated_at=None,
-            messages=[ParsedMessage(provider_message_id="m1", role="user", text="hello")],
+        conv = _parsed_conversation(
+            Provider.CLAUDE_CODE,
+            "sess-1",
+            "sess-1",
+            [_parsed_message("m1", "user", "hello")],
         )
         entry = SessionIndexEntry(
             session_id="sess-1",
@@ -440,19 +448,17 @@ class TestLooksLikeGitBranch:
 
         # Should fall back to first_prompt since summary looks like a git branch
         assert enriched.title == "Fix the bug"
-        assert enriched.provider_meta["title_source"] == "session-index:first-prompt"
+        assert _provider_meta(enriched)["title_source"] == "session-index:first-prompt"
 
     def test_git_branch_exact_match_skipped(self) -> None:
         """Exact branch names like 'main' are rejected as summaries."""
         from polylogue.sources.parsers.claude_index import enrich_conversation_from_index
 
-        conv = ParsedConversation(
-            provider_name="claude-code",
-            provider_conversation_id="sess-1",
-            title="sess-1",
-            created_at=None,
-            updated_at=None,
-            messages=[ParsedMessage(provider_message_id="m1", role="user", text="hello")],
+        conv = _parsed_conversation(
+            Provider.CLAUDE_CODE,
+            "sess-1",
+            "sess-1",
+            [_parsed_message("m1", "user", "hello")],
         )
         entry = SessionIndexEntry(
             session_id="sess-1",
@@ -470,4 +476,4 @@ class TestLooksLikeGitBranch:
         enriched = enrich_conversation_from_index(conv, entry)
 
         assert enriched.title == "Hello world"
-        assert enriched.provider_meta["title_source"] == "session-index:first-prompt"
+        assert _provider_meta(enriched)["title_source"] == "session-index:first-prompt"

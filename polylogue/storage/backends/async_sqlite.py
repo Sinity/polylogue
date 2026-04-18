@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager, suppress
+from contextlib import AbstractAsyncContextManager, asynccontextmanager, suppress
 from pathlib import Path
 
 import aiosqlite
@@ -369,6 +369,17 @@ class SQLiteBackend(
     true concurrency for read operations while maintaining write safety.
     """
 
+    _db_path: Path
+    _write_lock: asyncio.Lock
+    _schema_lock: asyncio.Lock
+    _schema_ensured: bool
+    _transaction_depth: int
+    _txn_conn: aiosqlite.Connection | None
+    _bulk_conn: aiosqlite.Connection | None
+    _read_pool: asyncio.Queue[aiosqlite.Connection] | None
+    queries: SQLiteQueryStore
+    _shared_schema_ddl: str
+
     def __init__(self, db_path: Path | None = None) -> None:
         initialize_backend_state(self, db_path)
 
@@ -384,11 +395,11 @@ class SQLiteBackend(
 
     # -- Connection lifecycle -----------------------------------------------
 
-    def connection(self):
+    def connection(self) -> AbstractAsyncContextManager[aiosqlite.Connection]:
         """Public connection context for read/query helpers."""
         return _backend_connection(self)
 
-    def read_connection(self):
+    def read_connection(self) -> AbstractAsyncContextManager[aiosqlite.Connection]:
         """Public read-oriented connection context for query/report helpers."""
         return _get_read_connection(self)
 
@@ -396,7 +407,7 @@ class SQLiteBackend(
         """Ensure schema is initialized exactly once (thread-safe via asyncio lock)."""
         await ensure_schema_once(self)
 
-    def bulk_connection(self):
+    def bulk_connection(self) -> AbstractAsyncContextManager[None]:
         """Keep a single connection alive for many sequential operations."""
         return _bulk_connection(self)
 
@@ -404,25 +415,25 @@ class SQLiteBackend(
         """Commit the current bulk transaction and start a new one."""
         await _bulk_flush(self)
 
-    def read_pool(self, size: int = 4):
+    def read_pool(self, size: int = 4) -> AbstractAsyncContextManager[None]:
         """Open a pool of reusable read connections for concurrent operations."""
         return _read_pool(self, size=size)
 
-    def _get_connection(self):
+    def _get_connection(self) -> AbstractAsyncContextManager[aiosqlite.Connection]:
         """Get async database connection with schema ensured."""
         return _get_connection(self)
 
-    def _get_read_connection(self):
+    def _get_read_connection(self) -> AbstractAsyncContextManager[aiosqlite.Connection]:
         """Get async read connection with read-only semantics when possible."""
         return _get_read_connection(self)
 
-    async def _ensure_schema(self, conn) -> None:
+    async def _ensure_schema(self, conn: aiosqlite.Connection) -> None:
         """Ensure database schema exists and is at the current schema version."""
         await ensure_schema_async(conn)
 
     # -- Transaction management ---------------------------------------------
 
-    def transaction(self):
+    def transaction(self) -> AbstractAsyncContextManager[None]:
         """Context manager for database transactions."""
         return _backend_transaction(self)
 

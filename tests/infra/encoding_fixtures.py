@@ -10,9 +10,11 @@ import json
 import zipfile
 from pathlib import Path
 
+JsonObject = dict[str, object]
+
 
 # Minimal valid Codex JSONL records for realistic content
-def _valid_codex_record(index: int = 0, role: str = "user") -> dict:
+def _valid_codex_record(index: int = 0, role: str = "user") -> JsonObject:
     """Generate a minimal valid Codex message record."""
     return {
         "type": "message",
@@ -23,12 +25,12 @@ def _valid_codex_record(index: int = 0, role: str = "user") -> dict:
     }
 
 
-def _valid_codex_session_header() -> dict:
+def _valid_codex_session_header() -> JsonObject:
     """Session header record for Codex JSONL."""
     return {"id": "session-encoding-test", "timestamp": "2025-01-01T00:00:00Z"}
 
 
-def _valid_chatgpt_conversation() -> dict:
+def _valid_chatgpt_conversation() -> JsonObject:
     """Minimal valid ChatGPT conversation JSON."""
     return {
         "title": "Encoding Test",

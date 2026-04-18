@@ -7,6 +7,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import TypeVar
 
 
 @dataclass
@@ -26,6 +27,11 @@ class CampaignResult:
 
 
 SyntheticBenchmarkRunner = Callable[[Path], CampaignResult | Awaitable[CampaignResult]]
+_T = TypeVar("_T")
+
+
+def _row_count(value: object) -> int:
+    return int(value) if isinstance(value, int) else 0
 
 
 def _db_row_counts(db_path: Path) -> dict[str, int]:
@@ -40,30 +46,30 @@ def _db_row_counts(db_path: Path) -> dict[str, int]:
         for table in ("conversations", "messages", "content_blocks", "raw_conversations", "action_events"):
             try:
                 row = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()
-                stats[f"{table}_count"] = row[0] if row else 0
+                stats[f"{table}_count"] = _row_count(row[0]) if row else 0
             except Exception:
                 stats[f"{table}_count"] = 0
         try:
             row = conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()
-            stats["fts_rows"] = row[0] if row else 0
+            stats["fts_rows"] = _row_count(row[0]) if row else 0
         except Exception:
             stats["fts_rows"] = 0
         try:
             row = conn.execute("SELECT COUNT(*) FROM action_events_fts").fetchone()
-            stats["action_fts_rows"] = row[0] if row else 0
+            stats["action_fts_rows"] = _row_count(row[0]) if row else 0
         except Exception:
             stats["action_fts_rows"] = 0
     return stats
 
 
-def _measure(fn, *args, **kwargs) -> tuple[float, object]:
+def _measure(fn: Callable[..., _T], *args: object, **kwargs: object) -> tuple[float, _T]:
     """Call fn(*args, **kwargs), return (elapsed_seconds, result)."""
     t0 = time.monotonic()
     result = fn(*args, **kwargs)
     return time.monotonic() - t0, result
 
 
-async def _ameasure(coro) -> tuple[float, object]:
+async def _ameasure(coro: Awaitable[_T]) -> tuple[float, _T]:
     """Await coro, return (elapsed_seconds, result)."""
     t0 = time.monotonic()
     result = await coro
@@ -92,7 +98,7 @@ def _session_product_table_counts(db_path: Path) -> dict[str, int]:
         ):
             try:
                 row = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()
-                stats[f"{table}_count"] = row[0] if row else 0
+                stats[f"{table}_count"] = _row_count(row[0]) if row else 0
             except Exception:
                 stats[f"{table}_count"] = 0
     return stats
@@ -148,7 +154,7 @@ async def run_incremental_index_campaign(db_path: Path, batch_size: int = 100) -
             if not convs:
                 break
 
-            conv_ids = [c.conversation_id for c in convs]
+            conv_ids = [str(c.conversation_id) for c in convs]
             messages_by_conv = await backend.get_messages_batch(conv_ids)
             all_messages = [msg for msgs in messages_by_conv.values() for msg in msgs]
 

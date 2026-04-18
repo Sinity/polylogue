@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import json
 import time
+from importlib import import_module
 from pathlib import Path
+from typing import Any, cast
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from polylogue.cli.commands.run import _display_result
 from polylogue.config import Source, get_config
 from polylogue.pipeline.observers import ExecObserver, NotificationObserver, WebhookObserver
 from polylogue.pipeline.runner import latest_run, plan_sources, run_sources
@@ -15,9 +16,11 @@ from polylogue.storage.backends.connection import open_connection
 from polylogue.storage.state_views import RunResult
 from tests.infra.source_builders import ChatGPTExportBuilder, GenericConversationBuilder, InboxBuilder
 
+run_command = cast(Any, import_module("polylogue.cli.commands.run"))
+
 
 @pytest.fixture
-def mock_env():
+def mock_env() -> Any:
     from rich.console import Console
 
     env = MagicMock()
@@ -30,7 +33,7 @@ def mock_env():
 
 
 @pytest.mark.parametrize("with_plan", [True, False])
-async def test_plan_and_run_sources(workspace_env, tmp_path, with_plan):
+async def test_plan_and_run_sources(workspace_env: Any, tmp_path: Any, with_plan: Any) -> None:
     inbox = tmp_path / "inbox"
     source_file = (
         GenericConversationBuilder("conv1")
@@ -64,13 +67,13 @@ async def test_plan_and_run_sources(workspace_env, tmp_path, with_plan):
     ],
 )
 async def test_run_sources_filtered_by_stage(
-    workspace_env,
-    tmp_path,
-    setup_type,
-    stage,
-    expected_conv_count,
-    check_render,
-):
+    workspace_env: Any,
+    tmp_path: Any,
+    setup_type: Any,
+    stage: Any,
+    expected_conv_count: Any,
+    check_render: Any,
+) -> None:
     if setup_type == "multi_source_filter":
         inbox = (
             InboxBuilder(tmp_path / "inbox")
@@ -102,7 +105,7 @@ async def test_run_sources_filtered_by_stage(
         assert any(config.render_root.rglob("conversation.md"))
 
 
-async def test_run_index_filters_selected_sources(workspace_env, tmp_path, monkeypatch):
+async def test_run_index_filters_selected_sources(workspace_env: Any, tmp_path: Any, monkeypatch: Any) -> Any:
     inbox = (
         InboxBuilder(tmp_path / "inbox")
         .add_json_file("a.json", {"id": "conv-a", "messages": [{"id": "m1", "role": "user", "text": "alpha"}]})
@@ -131,7 +134,7 @@ async def test_run_index_filters_selected_sources(workspace_env, tmp_path, monke
     update_calls = []
     from polylogue.pipeline.services.indexing import IndexService
 
-    async def fake_update_method(self, ids):
+    async def fake_update_method(self: Any, ids: Any) -> Any:
         if hasattr(ids, "__aiter__"):
             update_calls.append([conversation_id async for conversation_id in ids])
         else:
@@ -143,7 +146,7 @@ async def test_run_index_filters_selected_sources(workspace_env, tmp_path, monke
     assert update_calls == [[id_by_source["source-b"]]]
 
 
-async def test_run_writes_unique_report_files(workspace_env, tmp_path, monkeypatch):
+async def test_run_writes_unique_report_files(workspace_env: Any, tmp_path: Any, monkeypatch: Any) -> None:
     inbox = tmp_path / "inbox"
     source_file = GenericConversationBuilder("conv1").add_user("hello").write_to(inbox / "conversation.json")
 
@@ -169,7 +172,7 @@ async def test_run_writes_unique_report_files(workspace_env, tmp_path, monkeypat
 
 
 @pytest.mark.parametrize("setup_type", ["parsed_json", "null_columns"])
-async def test_latest_run_parsing(workspace_env, tmp_path, setup_type):
+async def test_latest_run_parsing(workspace_env: Any, tmp_path: Any, setup_type: Any) -> None:
     if setup_type == "parsed_json":
         inbox = tmp_path / "inbox"
         GenericConversationBuilder("conv-latest-run").add_user("test").write_to(inbox / "conversation.json")
@@ -201,7 +204,7 @@ async def test_latest_run_parsing(workspace_env, tmp_path, setup_type):
         assert result.drift is None
 
 
-def test_display_result_reports_render_failures(mock_env, capsys):
+def test_display_result_reports_render_failures(mock_env: Any, capsys: Any) -> None:
     mock_config = MagicMock(render_root=Path("/tmp/render"))
     failures = [{"conversation_id": f"conv-{index}", "error": f"error {index}"} for index in range(15)]
     result = RunResult(
@@ -215,7 +218,7 @@ def test_display_result_reports_render_failures(mock_env, capsys):
     )
 
     with patch("polylogue.cli.helpers.latest_render_path", return_value=None):
-        _display_result(mock_env, mock_config, result, "all", None)
+        run_command._display_result(mock_env, mock_config, result, "all", None)
 
     captured = capsys.readouterr()
     assert "Render failures (15)" in captured.err
@@ -223,7 +226,7 @@ def test_display_result_reports_render_failures(mock_env, capsys):
     assert "re-run with `polylogue run render`" in captured.err
 
 
-def test_display_result_reports_index_error_hint(mock_env, capsys):
+def test_display_result_reports_index_error_hint(mock_env: Any, capsys: Any) -> None:
     mock_config = MagicMock(render_root=Path("/tmp/render"))
     result = RunResult(
         run_id="run-123",
@@ -235,7 +238,7 @@ def test_display_result_reports_index_error_hint(mock_env, capsys):
         render_failures=[],
     )
 
-    _display_result(mock_env, mock_config, result, "index", None)
+    run_command._display_result(mock_env, mock_config, result, "index", None)
 
     captured = capsys.readouterr()
     assert "Index error: Database locked" in captured.err
@@ -243,7 +246,7 @@ def test_display_result_reports_index_error_hint(mock_env, capsys):
 
 
 class TestWatchModeCallbacks:
-    def test_notify_callback_executes_with_count(self):
+    def test_notify_callback_executes_with_count(self) -> None:
         with patch("subprocess.run") as mock_run:
             NotificationObserver().on_completed(
                 MagicMock(
@@ -254,12 +257,12 @@ class TestWatchModeCallbacks:
         assert "notify-send" in mock_run.call_args[0][0]
         assert "5" in str(mock_run.call_args[0][0])
 
-    def test_notify_zero_is_noop(self):
+    def test_notify_zero_is_noop(self) -> None:
         with patch("subprocess.run") as mock_run:
             NotificationObserver().on_completed(MagicMock(counts={"conversations": 0}, drift={}))
         mock_run.assert_not_called()
 
-    def test_notify_missing_binary_is_ignored(self):
+    def test_notify_missing_binary_is_ignored(self) -> None:
         with patch("subprocess.run", side_effect=FileNotFoundError()):
             NotificationObserver().on_completed(
                 MagicMock(
@@ -268,7 +271,7 @@ class TestWatchModeCallbacks:
                 )
             )
 
-    def test_exec_callback_executes_with_count(self):
+    def test_exec_callback_executes_with_count(self) -> None:
         with patch("subprocess.run") as mock_run:
             ExecObserver("echo $POLYLOGUE_ACTIVITY_COUNT").on_completed(
                 MagicMock(
@@ -290,11 +293,11 @@ class TestWatchModeCallbacks:
             "echo $(id)",
         ],
     )
-    def test_exec_callback_rejects_dangerous_commands(self, dangerous_command):
+    def test_exec_callback_rejects_dangerous_commands(self, dangerous_command: Any) -> None:
         with pytest.raises(ValueError, match="unsafe"):
             ExecObserver(dangerous_command)
 
-    def test_webhook_callback_executes_with_count(self):
+    def test_webhook_callback_executes_with_count(self) -> None:
         fake_addrinfo = [(2, 1, 6, "", ("93.184.216.34", 80))]
         with (
             patch("polylogue.pipeline.observers.socket.getaddrinfo", return_value=fake_addrinfo),
@@ -311,7 +314,7 @@ class TestWatchModeCallbacks:
         assert call_args.get_method() == "POST"
         assert mock_urlopen.call_args.kwargs["timeout"] == 10
 
-    def test_webhook_payload_format(self):
+    def test_webhook_payload_format(self) -> None:
         fake_addrinfo = [(2, 1, 6, "", ("93.184.216.34", 80))]
         with (
             patch("polylogue.pipeline.observers.socket.getaddrinfo", return_value=fake_addrinfo),
@@ -332,7 +335,7 @@ class TestWatchModeCallbacks:
             "changed_conversations": 0,
         }
 
-    def test_webhook_errors_do_not_raise(self):
+    def test_webhook_errors_do_not_raise(self) -> None:
         fake_addrinfo = [(2, 1, 6, "", ("93.184.216.34", 80))]
         with (
             patch("polylogue.pipeline.observers.socket.getaddrinfo", return_value=fake_addrinfo),

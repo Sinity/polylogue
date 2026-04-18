@@ -20,9 +20,20 @@ from polylogue.scenarios import CorpusSpec
 from polylogue.sources.parsers.drive import (
     _attachment_from_doc,
     _collect_drive_docs,
-    extract_text_from_chunk,
     parse_chunked_prompt,
 )
+from polylogue.sources.parsers.drive_support import extract_text_from_chunk
+
+
+def _provider_content_blocks(
+    message_index: int, result_provider_meta: dict[str, object] | None
+) -> list[dict[str, object]]:
+    assert isinstance(result_provider_meta, dict), f"message {message_index} is missing provider_meta"
+    blocks = result_provider_meta.get("content_blocks")
+    assert isinstance(blocks, list), f"message {message_index} has no structured content_blocks"
+    typed_blocks = [block for block in blocks if isinstance(block, dict)]
+    assert len(typed_blocks) == len(blocks), f"message {message_index} content_blocks should all be dict payloads"
+    return typed_blocks
 
 
 @pytest.fixture
@@ -40,7 +51,9 @@ def synthetic_gemini_payload() -> dict[str, Any]:
             tags=("synthetic", "test", "drive-parser"),
         )
     )[0]
-    return json.loads(raw)
+    payload = json.loads(raw)
+    assert isinstance(payload, dict)
+    return payload
 
 
 @pytest.mark.parametrize(
@@ -99,7 +112,7 @@ def test_collect_drive_docs_contract(payload: object, expected: list[object]) ->
     ids=["string-doc", "size-bytes-string", "file-id-int-size", "invalid-type", "missing-id"],
 )
 def test_attachment_from_doc_contract(doc: object, expected_id: str | None, expected_size: int | None) -> None:
-    attachment = _attachment_from_doc(doc, "msg-1")
+    attachment = _attachment_from_doc(doc if isinstance(doc, dict | str) else {}, "msg-1")
     if expected_id is None:
         assert attachment is None
     else:
@@ -110,7 +123,7 @@ def test_attachment_from_doc_contract(doc: object, expected_id: str | None, expe
 
 
 def test_parse_chunked_prompt_preserves_core_conversation_metadata() -> None:
-    payload = {
+    payload: dict[str, object] = {
         "id": "gemini-conv",
         "displayName": "Gemini Session",
         "createTime": "2024-01-15T10:30:00Z",
@@ -136,7 +149,7 @@ def test_parse_chunked_prompt_preserves_core_conversation_metadata() -> None:
 
 
 def test_parse_chunked_prompt_preserves_reasoning_code_tool_results_and_attachments() -> None:
-    payload = {
+    payload: dict[str, object] = {
         "id": "gemini-rich",
         "displayName": "Gemini Rich",
         "chunkedPrompt": {
@@ -180,19 +193,24 @@ def test_parse_chunked_prompt_preserves_reasoning_code_tool_results_and_attachme
     assert [block.type for block in result.messages[0].content_blocks] == ["text", "document"]
     assert [block.type for block in result.messages[1].content_blocks] == ["thinking"]
     assert [block.type for block in result.messages[2].content_blocks] == ["text", "code", "tool_result"]
-    user_blocks = result.messages[0].provider_meta["content_blocks"]
+    user_blocks = _provider_content_blocks(0, result.messages[0].provider_meta)
     assert user_blocks[0]["type"] == "text"
     assert user_blocks[0]["text"] == "question"
     assert user_blocks[1]["type"] == "document"
-    assert user_blocks[1]["metadata"]["driveDocument"]["id"] == "doc-1"
+    metadata = user_blocks[1].get("metadata")
+    assert isinstance(metadata, dict)
+    drive_document = metadata.get("driveDocument")
+    assert isinstance(drive_document, dict)
+    assert drive_document["id"] == "doc-1"
 
-    thought_blocks = result.messages[1].provider_meta["content_blocks"]
+    thought_blocks = _provider_content_blocks(1, result.messages[1].provider_meta)
     assert thought_blocks[0]["type"] == "thinking"
     assert thought_blocks[0]["text"] == "reasoning"
-    assert result.messages[1].provider_meta["reasoning_traces"] == [
-        {"text": "reasoning", "token_count": 32, "provider": "gemini"}
-    ]
-    code_blocks = result.messages[2].provider_meta["content_blocks"]
+    thought_meta = result.messages[1].provider_meta
+    assert isinstance(thought_meta, dict)
+    reasoning_traces = thought_meta.get("reasoning_traces")
+    assert reasoning_traces == [{"text": "reasoning", "token_count": 32, "provider": "gemini"}]
+    code_blocks = _provider_content_blocks(2, result.messages[2].provider_meta)
     assert [block["type"] for block in code_blocks] == ["text", "code", "tool_result"]
     assert code_blocks[0]["text"] == "inline"
     assert code_blocks[1]["text"] == "print('ok')"
@@ -204,7 +222,7 @@ def test_parse_chunked_prompt_preserves_reasoning_code_tool_results_and_attachme
 
 
 def test_parse_chunked_prompt_preserves_attachment_only_chunks_and_chunk_timestamps() -> None:
-    payload = {
+    payload: dict[str, object] = {
         "chunkedPrompt": {
             "chunks": [
                 {
@@ -251,7 +269,7 @@ def test_parse_chunked_prompt_preserves_attachment_only_chunks_and_chunk_timesta
 
 
 def test_parse_chunked_prompt_skips_chunks_without_text_or_role() -> None:
-    payload = {
+    payload: dict[str, object] = {
         "chunkedPrompt": {
             "chunks": [
                 "string chunk without role",

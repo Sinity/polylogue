@@ -10,6 +10,9 @@ Unacceptable: AttributeError, IndexError, RecursionError (bugs).
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from typing import TypedDict, cast
+
 import pytest
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
@@ -17,28 +20,56 @@ from hypothesis import strategies as st
 from polylogue.sources.parsers import chatgpt, claude, codex, drive
 from tests.infra.strategies.schema_driven import schema_conformant_payload
 
-# Map provider names to their parser functions
-PROVIDER_PARSERS = {
-    "chatgpt": {
-        "looks_like": chatgpt.looks_like,
-        "parse": lambda payload: chatgpt.parse(payload, "crashtest"),
-    },
-    "claude-ai": {
-        "looks_like": claude.looks_like_ai,
-        "parse": lambda payload: claude.parse_ai(payload, "crashtest"),
-    },
-    "claude-code": {
-        "looks_like": claude.looks_like_code,
-        "parse": lambda payload: claude.parse_code(payload, "crashtest"),
-    },
-    "codex": {
-        "looks_like": codex.looks_like,
-        "parse": lambda payload: codex.parse(payload, "crashtest"),
-    },
-    "gemini": {
-        "looks_like": drive.looks_like,
-        "parse": lambda payload: drive.parse_chunked_prompt("gemini", payload, "crashtest"),
-    },
+
+class ProviderParser(TypedDict):
+    looks_like: Callable[[object], bool]
+    parse: Callable[[object], object]
+
+
+def _payload_dict(payload: object) -> dict[str, object]:
+    assert isinstance(payload, dict)
+    return cast(dict[str, object], payload)
+
+
+def _payload_list(payload: object) -> list[object]:
+    assert isinstance(payload, list)
+    return cast(list[object], payload)
+
+
+def _parse_chatgpt(payload: object) -> object:
+    return chatgpt.parse(_payload_dict(payload), "crashtest")
+
+
+def _parse_claude_ai(payload: object) -> object:
+    return claude.parse_ai(_payload_dict(payload), "crashtest")
+
+
+def _parse_claude_code(payload: object) -> object:
+    return claude.parse_code(_payload_list(payload), "crashtest")
+
+
+def _looks_like_claude_code(payload: object) -> bool:
+    return claude.looks_like_code(_payload_list(payload))
+
+
+def _looks_like_codex(payload: object) -> bool:
+    return codex.looks_like(_payload_list(payload))
+
+
+def _parse_codex(payload: object) -> object:
+    return codex.parse(_payload_list(payload), "crashtest")
+
+
+def _parse_gemini(payload: object) -> object:
+    return drive.parse_chunked_prompt("gemini", _payload_dict(payload), "crashtest")
+
+
+PROVIDER_PARSERS: dict[str, ProviderParser] = {
+    "chatgpt": {"looks_like": chatgpt.looks_like, "parse": _parse_chatgpt},
+    "claude-ai": {"looks_like": claude.looks_like_ai, "parse": _parse_claude_ai},
+    "claude-code": {"looks_like": _looks_like_claude_code, "parse": _parse_claude_code},
+    "codex": {"looks_like": _looks_like_codex, "parse": _parse_codex},
+    "gemini": {"looks_like": drive.looks_like, "parse": _parse_gemini},
 }
 
 # Exceptions that indicate real bugs in parser code
@@ -52,7 +83,7 @@ CRASH_EXCEPTIONS = (IndexError, RecursionError)
     deadline=None,
     suppress_health_check=[HealthCheck.too_slow, HealthCheck.filter_too_much],
 )
-def test_looks_like_never_crashes(provider: str, data) -> None:
+def test_looks_like_never_crashes(provider: str, data: st.DataObject) -> None:
     """looks_like() never raises crash exceptions on schema-conformant input."""
     if provider not in PROVIDER_PARSERS:
         pytest.skip(f"Provider {provider} not configured")
@@ -77,7 +108,7 @@ def test_looks_like_never_crashes(provider: str, data) -> None:
     deadline=None,
     suppress_health_check=[HealthCheck.too_slow, HealthCheck.filter_too_much],
 )
-def test_parse_never_crashes(provider: str, data) -> None:
+def test_parse_never_crashes(provider: str, data: st.DataObject) -> None:
     """parse() never raises crash exceptions on schema-conformant input.
 
     We feed schema-conformant payloads to parse(). Even if looks_like()

@@ -11,9 +11,13 @@ Tests cover complete workflows:
 - Format conversion workflows
 """
 
+from __future__ import annotations
+
 import json
 import tempfile
+from collections.abc import AsyncGenerator
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -31,7 +35,9 @@ pytestmark = pytest.mark.slow
 
 
 @pytest.fixture
-async def temp_config_and_repo(tmp_path, monkeypatch):
+async def temp_config_and_repo(
+    tmp_path: Any, monkeypatch: Any
+) -> AsyncGenerator[tuple[Config, ConversationRepository, ConversationRepository, Path, Path], None]:
     """Create temporary config and storage repositories for testing."""
     monkeypatch.setenv("POLYLOGUE_SCHEMA_VALIDATION", "off")
     archive_root = tmp_path / "archive"
@@ -64,13 +70,13 @@ async def temp_config_and_repo(tmp_path, monkeypatch):
 
 
 @pytest.fixture
-def chatgpt_sample_source(synthetic_source):
+def chatgpt_sample_source(synthetic_source: Any) -> Any:
     """Source with synthetic ChatGPT data."""
     return synthetic_source("chatgpt")
 
 
 @pytest.fixture
-def gemini_sample_source(synthetic_source):
+def gemini_sample_source(synthetic_source: Any) -> Any:
     """Source with synthetic Gemini data."""
     return synthetic_source("gemini")
 
@@ -81,7 +87,7 @@ def gemini_sample_source(synthetic_source):
 
 
 @pytest.mark.parametrize("provider", ["chatgpt", "claude-ai", "claude-code", "codex", "gemini"])
-async def test_full_workflow_per_provider(provider, synthetic_source, temp_config_and_repo):
+async def test_full_workflow_per_provider(provider: Any, synthetic_source: Any, temp_config_and_repo: Any) -> None:
     """Import → Store → Query → Render for each provider."""
     config, storage_repo, conv_repo, archive_root, db_path = temp_config_and_repo
 
@@ -93,18 +99,18 @@ async def test_full_workflow_per_provider(provider, synthetic_source, temp_confi
         archive_root=archive_root,
         config=config,
     )
-    result = await service.parse_sources([source])
+    parse_result = await service.parse_sources([source])
 
     # Build FTS index for search tests (INDEX stage of pipeline)
     from polylogue.storage.backends.connection import open_connection
     from polylogue.storage.index import update_index_for_conversations
 
     with open_connection(db_path) as conn:
-        update_index_for_conversations(list(result.processed_ids), conn)
+        update_index_for_conversations(list(parse_result.processed_ids), conn)
 
     # Verify import
-    assert result.counts["conversations"] > 0, f"No conversations imported from {provider}"
-    assert result.counts["messages"] > 0, f"No messages imported from {provider}"
+    assert parse_result.counts["conversations"] > 0, f"No conversations imported from {provider}"
+    assert parse_result.counts["messages"] > 0, f"No messages imported from {provider}"
 
     # 2. STORE: Query back from database
     from polylogue.storage.search import search_messages
@@ -134,13 +140,13 @@ async def test_full_workflow_per_provider(provider, synthetic_source, temp_confi
     first_words = conv.messages[0].text.split()[:3]
     if first_words:
         search_term = " ".join(first_words)
-        result = search_messages(
+        search_result = search_messages(
             search_term,
             archive_root=archive_root,
             render_root_path=config.render_root,
             db_path=db_path,
         )
-        found_ids = {r.conversation_id for r in result.hits}
+        found_ids = {r.conversation_id for r in search_result.hits}
         assert conv.id in found_ids, f"Search failed for '{search_term}'"
 
 
@@ -150,7 +156,7 @@ async def test_full_workflow_per_provider(provider, synthetic_source, temp_confi
 
 
 @pytest.mark.parametrize("format", ["markdown", "html"])
-async def test_render_formats(format, temp_config_and_repo, chatgpt_sample_source):
+async def test_render_formats(format: Any, temp_config_and_repo: Any, chatgpt_sample_source: Any) -> None:
     """Verify each output format works end-to-end."""
     config, storage_repo, conv_repo, archive_root, db_path = temp_config_and_repo
 
@@ -198,7 +204,7 @@ async def test_render_formats(format, temp_config_and_repo, chatgpt_sample_sourc
 # =============================================================================
 
 
-async def test_incremental_sync_no_duplicates(temp_config_and_repo, chatgpt_sample_source):
+async def test_incremental_sync_no_duplicates(temp_config_and_repo: Any, chatgpt_sample_source: Any) -> None:
     """Syncing same source twice doesn't create duplicates."""
     config, storage_repo, conv_repo, archive_root, db_path = temp_config_and_repo
 
@@ -224,13 +230,13 @@ async def test_incremental_sync_no_duplicates(temp_config_and_repo, chatgpt_samp
     assert len(all_convs) == count1
 
 
-async def test_incremental_sync_with_updates(temp_config_and_repo):
+async def test_incremental_sync_with_updates(temp_config_and_repo: Any) -> None:
     """Modified conversations are updated, not duplicated."""
     config, storage_repo, conv_repo, archive_root, db_path = temp_config_and_repo
 
     # Create initial source with 1 conversation
     with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
-        conv_v1 = {
+        conv_v1: dict[str, Any] = {
             "id": "test-conv-1",
             "title": "Version 1",
             "mapping": {
@@ -269,7 +275,7 @@ async def test_incremental_sync_with_updates(temp_config_and_repo):
 
         # Modify conversation
         with open(source_path_v1, "w") as f:
-            conv_v2 = conv_v1.copy()
+            conv_v2: dict[str, Any] = conv_v1.copy()
             conv_v2["title"] = "Version 2"
             conv_v2["mapping"]["node2"]["message"]["content"]["parts"] = ["Updated answer"]
             json.dump(conv_v2, f)
@@ -290,7 +296,7 @@ async def test_incremental_sync_with_updates(temp_config_and_repo):
         source_path_v1.unlink()
 
 
-async def test_sync_handles_deleted_conversations(temp_config_and_repo):
+async def test_sync_handles_deleted_conversations(temp_config_and_repo: Any) -> None:
     """Conversations removed from source are NOT deleted from archive.
 
     This is expected behavior - archive is append-only.
@@ -360,7 +366,9 @@ async def test_sync_handles_deleted_conversations(temp_config_and_repo):
 # =============================================================================
 
 
-async def test_multi_source_concurrent_sync(temp_config_and_repo, chatgpt_sample_source, gemini_sample_source):
+async def test_multi_source_concurrent_sync(
+    temp_config_and_repo: Any, chatgpt_sample_source: Any, gemini_sample_source: Any
+) -> None:
     """Multiple sources can sync concurrently."""
     config, storage_repo, conv_repo, archive_root, db_path = temp_config_and_repo
 
@@ -383,7 +391,7 @@ async def test_multi_source_concurrent_sync(temp_config_and_repo, chatgpt_sample
     assert len(providers) >= 2
 
 
-async def test_multi_source_isolated_namespaces(temp_config_and_repo):
+async def test_multi_source_isolated_namespaces(temp_config_and_repo: Any) -> None:
     """Each source can have different conversations."""
     config, storage_repo, conv_repo, archive_root, db_path = temp_config_and_repo
 
@@ -453,7 +461,7 @@ async def test_multi_source_isolated_namespaces(temp_config_and_repo):
 # =============================================================================
 
 
-async def test_sync_with_malformed_file_skips_gracefully(temp_config_and_repo):
+async def test_sync_with_malformed_file_skips_gracefully(temp_config_and_repo: Any) -> None:
     """Malformed files are skipped, don't crash entire sync."""
     config, storage_repo, conv_repo, archive_root, db_path = temp_config_and_repo
 
@@ -480,7 +488,7 @@ async def test_sync_with_malformed_file_skips_gracefully(temp_config_and_repo):
         bad_path.unlink()
 
 
-async def test_sync_with_missing_file_reports_error(temp_config_and_repo):
+async def test_sync_with_missing_file_reports_error(temp_config_and_repo: Any) -> None:
     """Missing source files are reported, don't crash."""
     config, storage_repo, conv_repo, archive_root, db_path = temp_config_and_repo
 
@@ -498,7 +506,7 @@ async def test_sync_with_missing_file_reports_error(temp_config_and_repo):
     assert result.counts["conversations"] == 0
 
 
-async def test_sync_partial_success_with_mixed_sources(temp_config_and_repo, chatgpt_sample_source):
+async def test_sync_partial_success_with_mixed_sources(temp_config_and_repo: Any, chatgpt_sample_source: Any) -> None:
     """If some sources fail, successful ones still sync."""
     config, storage_repo, conv_repo, archive_root, db_path = temp_config_and_repo
 
@@ -529,7 +537,7 @@ async def test_sync_partial_success_with_mixed_sources(temp_config_and_repo, cha
 # =============================================================================
 
 
-async def test_search_accuracy_basic_terms(temp_config_and_repo, chatgpt_sample_source):
+async def test_search_accuracy_basic_terms(temp_config_and_repo: Any, chatgpt_sample_source: Any) -> None:
     """Search returns correct conversations for basic queries."""
     config, storage_repo, conv_repo, archive_root, db_path = temp_config_and_repo
 
@@ -574,7 +582,7 @@ async def test_search_accuracy_basic_terms(temp_config_and_repo, chatgpt_sample_
     assert target_conv.id in result_ids, f"Failed to find conversation with '{search_term}'"
 
 
-async def test_search_with_special_characters(temp_config_and_repo):
+async def test_search_with_special_characters(temp_config_and_repo: Any) -> None:
     """Search handles special FTS5 characters correctly."""
     config, storage_repo, conv_repo, archive_root, db_path = temp_config_and_repo
 
@@ -650,7 +658,7 @@ async def test_search_with_special_characters(temp_config_and_repo):
     "stage",
     ["all", "parse"],
 )
-async def test_pipeline_runner_stage_matrix(workspace_env, chatgpt_sample_source, stage):
+async def test_pipeline_runner_stage_matrix(workspace_env: Any, chatgpt_sample_source: Any, stage: Any) -> None:
     """run_sources handles both full and parse-only execution modes."""
     from polylogue.config import get_config
 

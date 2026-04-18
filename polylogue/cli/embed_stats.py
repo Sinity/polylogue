@@ -3,11 +3,52 @@
 from __future__ import annotations
 
 import json
+from typing import TYPE_CHECKING, Protocol, TypedDict
 
 import click
 
+if TYPE_CHECKING:
+    from polylogue.config import Config
 
-def embedding_status_payload(env) -> dict[str, object]:
+
+class _HasConfig(Protocol):
+    @property
+    def config(self) -> Config: ...
+
+
+class RetrievalBandPayload(TypedDict, total=False):
+    ready: bool
+    status: str
+    materialized_rows: int
+    source_rows: int
+    materialized_documents: int
+    source_documents: int
+
+
+class EmbeddingStatusPayload(TypedDict):
+    status: str
+    total_conversations: int
+    embedded_conversations: int
+    embedded_messages: int
+    pending_conversations: int
+    embedding_coverage_percent: float
+    retrieval_ready: bool
+    freshness_status: str
+    stale_messages: int
+    messages_missing_provenance: int
+    oldest_embedded_at: str | None
+    newest_embedded_at: str | None
+    embedding_models: dict[str, int]
+    embedding_dimensions: dict[int, int]
+    retrieval_bands: dict[str, dict[str, object]]
+
+
+def _payload_int(value: object) -> int:
+    """Coerce loosely typed payload counters to ints for display."""
+    return int(value) if isinstance(value, bool | int | float | str) else 0
+
+
+def embedding_status_payload(env: _HasConfig) -> EmbeddingStatusPayload:
     """Read canonical embedding-status statistics for operator surfaces."""
     from polylogue.storage.backends.connection import open_read_connection
     from polylogue.storage.embedding_stats import read_embedding_stats_sync
@@ -53,7 +94,7 @@ def embedding_status_payload(env) -> dict[str, object]:
     }
 
 
-def render_embedding_stats(payload: dict[str, object], *, json_output: bool = False) -> None:
+def render_embedding_stats(payload: EmbeddingStatusPayload, *, json_output: bool = False) -> None:
     """Render an embedding statistics payload."""
     if json_output:
         click.echo(json.dumps(payload, indent=2, sort_keys=True))
@@ -88,11 +129,11 @@ def render_embedding_stats(payload: dict[str, object], *, json_output: bool = Fa
             status_text = "ready" if band.get("ready") else str(band.get("status", "pending"))
             click.echo(
                 f"    {band_name}: {status_text}; "
-                f"rows={int(band.get('materialized_rows', 0)):,}/{int(band.get('source_rows', 0) or 0):,}; "
-                f"docs={int(band.get('materialized_documents', 0)):,}/{int(band.get('source_documents', 0) or 0):,}"
+                f"rows={_payload_int(band.get('materialized_rows', 0)):,}/{_payload_int(band.get('source_rows', 0)):,}; "
+                f"docs={_payload_int(band.get('materialized_documents', 0)):,}/{_payload_int(band.get('source_documents', 0)):,}"
             )
 
 
-def show_embedding_stats(env, *, json_output: bool = False) -> None:
+def show_embedding_stats(env: _HasConfig, *, json_output: bool = False) -> None:
     """Display embedding statistics."""
     render_embedding_stats(embedding_status_payload(env), json_output=json_output)

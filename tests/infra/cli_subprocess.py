@@ -16,7 +16,7 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal
+from typing import Literal, TypedDict
 
 
 @dataclass
@@ -31,6 +31,21 @@ class CliResult:
     @property
     def success(self) -> bool:
         return self.exit_code == 0
+
+
+class WorkspacePaths(TypedDict):
+    home: Path
+    archive_root: Path
+    render_root: Path
+    inbox: Path
+    data_dir: Path
+    state_dir: Path
+    db_path: Path
+
+
+class IsolatedWorkspace(TypedDict):
+    env: dict[str, str]
+    paths: WorkspacePaths
 
 
 def run_cli(
@@ -142,7 +157,7 @@ def run_cli(
     )
 
 
-def setup_isolated_workspace(tmp_path: Path) -> dict[str, Any]:
+def setup_isolated_workspace(tmp_path: Path) -> IsolatedWorkspace:
     """Create an isolated workspace for subprocess CLI tests.
 
     The key to isolation is setting HOME to a temp directory. This ensures:
@@ -187,7 +202,7 @@ def setup_isolated_workspace(tmp_path: Path) -> dict[str, Any]:
         "VOYAGE_API_KEY": "",
     }
 
-    paths = {
+    paths: WorkspacePaths = {
         "home": fake_home,
         "archive_root": polylogue_data,
         "render_root": render_root,

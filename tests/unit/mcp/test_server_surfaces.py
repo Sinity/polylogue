@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from datetime import datetime, timezone
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from polylogue.lib.models import Conversation, Message
+from polylogue.lib.models import Conversation
+from polylogue.lib.roles import Role
+from polylogue.types import Provider
+from tests.infra.builders import make_conv, make_msg
 from tests.infra.mcp import (
     EXPECTED_PROMPT_NAMES,
     EXPECTED_RESOURCE_TEMPLATE_URIS,
@@ -21,59 +26,61 @@ from tests.infra.mcp import (
     make_simple_conversation,
 )
 
-SERIALIZATION_CASES = [
+SerializationCase = tuple[str, Conversation, dict[str, object], str]
+
+SERIALIZATION_CASES: list[SerializationCase] = [
     (
         "no_timestamps",
-        Conversation(id="t1", provider="test", title="No Times", messages=[]),
+        make_conv(id="t1", provider=Provider.UNKNOWN, title="No Times", messages=[]),
         {"created_at": None, "updated_at": None, "message_count": 0},
         "summary",
     ),
     (
         "empty_messages",
-        Conversation(id="t2", provider="test", title="Empty", messages=[]),
+        make_conv(id="t2", provider=Provider.UNKNOWN, title="Empty", messages=[]),
         {"messages": []},
         "detail",
     ),
     (
         "empty_role",
-        Conversation(
+        make_conv(
             id="t3",
-            provider="test",
+            provider=Provider.UNKNOWN,
             title="Empty Role",
-            messages=[Message(id="m1", role="", text="test")],
+            messages=[make_msg(id="m1", role=Role.UNKNOWN, text="test")],
         ),
         {"messages": [{"role": "unknown"}]},
         "detail",
     ),
     (
         "null_text",
-        Conversation(
+        make_conv(
             id="t4",
-            provider="test",
+            provider=Provider.UNKNOWN,
             title="Null Text",
-            messages=[Message(id="m1", role="user", text=None)],
+            messages=[make_msg(id="m1", role=Role.USER, text=None)],
         ),
         {"messages": [{"text": ""}]},
         "detail",
     ),
     (
         "null_timestamp",
-        Conversation(
+        make_conv(
             id="t5",
-            provider="test",
+            provider=Provider.UNKNOWN,
             title="No TS",
-            messages=[Message(id="m1", role="user", text="hi")],
+            messages=[make_msg(id="m1", role=Role.USER, text="hi")],
         ),
         {"messages": [{"timestamp": None}]},
         "detail",
     ),
     (
         "unusual_role",
-        Conversation(
+        make_conv(
             id="t6",
-            provider="test",
+            provider=Provider.UNKNOWN,
             title="Unusual Role",
-            messages=[Message(id="m1", role="tool", text="test")],
+            messages=[make_msg(id="m1", role=Role.TOOL, text="test")],
         ),
         {"messages": [{"role": "tool"}]},
         "detail",
@@ -89,7 +96,7 @@ def simple_conversation() -> Conversation:
 class TestServerSurfaceRegistration:
     """Server registration should expose the documented MCP surfaces."""
 
-    def testbuild_server_exposes_managers(self, mcp_server):
+    def testbuild_server_exposes_managers(self: object, mcp_server: Any) -> None:
         assert mcp_server is not None
         assert hasattr(mcp_server, "_tool_manager")
         assert hasattr(mcp_server, "_resource_manager")
@@ -108,14 +115,20 @@ class TestServerSurfaceRegistration:
             ("prompts", lambda server: set(server._prompt_manager._prompts.keys()), EXPECTED_PROMPT_NAMES),
         ],
     )
-    def test_server_surface_contract(self, surface_attr, actual_getter, expected, mcp_server):
+    def test_server_surface_contract(
+        self: object,
+        surface_attr: str,
+        actual_getter: Callable[[Any], set[str]],
+        expected: set[str],
+        mcp_server: Any,
+    ) -> None:
         actual = actual_getter(mcp_server)
         missing = expected - actual
         assert not missing, f"Missing {surface_attr}: {sorted(missing)}"
 
 
 class TestResourceSurfaces:
-    def test_stats_returns_archive_statistics(self, mcp_server):
+    def test_stats_returns_archive_statistics(self: object, mcp_server: Any) -> None:
         from polylogue.lib.stats import ArchiveStats
 
         with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
@@ -136,7 +149,11 @@ class TestResourceSurfaces:
         assert stats["total_messages"] == 4
 
     @pytest.mark.asyncio
-    async def test_conversations_resource_returns_list(self, simple_conversation, mcp_server):
+    async def test_conversations_resource_returns_list(
+        self: object,
+        simple_conversation: Conversation,
+        mcp_server: Any,
+    ) -> None:
         with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
             mock_repo = MagicMock()
             mock_repo.list.return_value = [simple_conversation]
@@ -153,7 +170,11 @@ class TestResourceSurfaces:
         assert len(convs) == 1
         assert convs[0]["id"] == simple_conversation.id
 
-    def test_single_conversation_resource(self, simple_conversation, mcp_server):
+    def test_single_conversation_resource(
+        self: object,
+        simple_conversation: Conversation,
+        mcp_server: Any,
+    ) -> None:
         with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
             mock_repo = MagicMock()
             mock_repo.get = AsyncMock(return_value=simple_conversation)
@@ -168,7 +189,7 @@ class TestResourceSurfaces:
         assert conv["id"] == "test:conv-123"
         assert "messages" in conv
 
-    def test_conversation_resource_not_found(self, mcp_server):
+    def test_conversation_resource_not_found(self: object, mcp_server: Any) -> None:
         with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
             mock_repo = MagicMock()
             mock_repo.get = AsyncMock(return_value=None)
@@ -182,7 +203,7 @@ class TestResourceSurfaces:
         result_dict = json.loads(result)
         assert "error" in result_dict
 
-    def test_tags_resource(self, mcp_server):
+    def test_tags_resource(self: object, mcp_server: Any) -> None:
         with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
             mock_repo = make_repo_mock()
             mock_repo.list_tags.return_value = {"feature": 10, "bug": 5}
@@ -193,7 +214,7 @@ class TestResourceSurfaces:
         parsed = json.loads(result)
         assert parsed == {"feature": 10, "bug": 5}
 
-    def test_health_resource(self, mcp_server):
+    def test_health_resource(self: object, mcp_server: Any) -> None:
         mock_check = MagicMock()
         mock_check.name = "database"
         mock_check.status.value = "ok"
@@ -218,8 +239,12 @@ class TestResourceSurfaces:
 
 class TestPromptSurfaces:
     @pytest.mark.asyncio
-    async def test_analyze_errors_with_conversations(self, simple_conversation, mcp_server):
-        simple_conversation.messages[0].text = "Got an error while running"
+    async def test_analyze_errors_with_conversations(
+        self: object,
+        simple_conversation: Conversation,
+        mcp_server: Any,
+    ) -> None:
+        simple_conversation.messages.to_list()[0].text = "Got an error while running"
 
         with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
             mock_repo = MagicMock()
@@ -235,17 +260,17 @@ class TestPromptSurfaces:
         assert "error" in result.lower()
 
     @pytest.mark.asyncio
-    async def test_analyze_errors_limits_error_contexts_to_20(self, mcp_server):
+    async def test_analyze_errors_limits_error_contexts_to_20(self: object, mcp_server: Any) -> None:
         msgs = [
-            Message(
+            make_msg(
                 id=f"m{i}",
-                role="user",
+                role=Role.USER,
                 text=f"error #{i} occurred",
                 timestamp=datetime(2024, 1, 15, tzinfo=timezone.utc),
             )
             for i in range(30)
         ]
-        big_conv = Conversation(id="big", provider="test", title="Errors", messages=msgs)
+        big_conv = make_conv(id="big", provider=Provider.UNKNOWN, title="Errors", messages=msgs)
 
         with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
             mock_repo = MagicMock()
@@ -260,7 +285,7 @@ class TestPromptSurfaces:
         assert "20 error instances" in result
 
     @pytest.mark.asyncio
-    async def test_analyze_errors_no_matches(self, mcp_server):
+    async def test_analyze_errors_no_matches(self: object, mcp_server: Any) -> None:
         with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
             mock_repo = MagicMock()
             mock_repo.list.return_value = []
@@ -274,7 +299,7 @@ class TestPromptSurfaces:
         assert "0 conversations" in result
 
     @pytest.mark.asyncio
-    async def test_summarize_week_empty(self, mcp_server):
+    async def test_summarize_week_empty(self: object, mcp_server: Any) -> None:
         with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
             mock_repo = MagicMock()
             mock_repo.list.return_value = []
@@ -289,12 +314,12 @@ class TestPromptSurfaces:
         assert "0 messages" in result
 
     @pytest.mark.asyncio
-    async def test_extract_code_no_code_blocks(self, mcp_server):
-        conv = Conversation(
+    async def test_extract_code_no_code_blocks(self: object, mcp_server: Any) -> None:
+        conv = make_conv(
             id="nocode",
-            provider="test",
+            provider=Provider.UNKNOWN,
             title="No Code",
-            messages=[Message(id="m1", role="user", text="Just text, no code")],
+            messages=[make_msg(id="m1", role=Role.USER, text="Just text, no code")],
         )
 
         with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
@@ -310,15 +335,15 @@ class TestPromptSurfaces:
         assert "0 code blocks" in result
 
     @pytest.mark.asyncio
-    async def test_extract_code_with_language_filter(self, mcp_server):
-        conv = Conversation(
+    async def test_extract_code_with_language_filter(self: object, mcp_server: Any) -> None:
+        conv = make_conv(
             id="code",
-            provider="test",
+            provider=Provider.UNKNOWN,
             title="Code",
             messages=[
-                Message(
+                make_msg(
                     id="m1",
-                    role="assistant",
+                    role=Role.ASSISTANT,
                     text="```python\nprint('hi')\n```\n```javascript\nconsole.log('hi')\n```",
                 )
             ],
@@ -337,12 +362,12 @@ class TestPromptSurfaces:
         assert "python" in result.lower()
 
     @pytest.mark.asyncio
-    async def test_extract_code_null_message_text(self, mcp_server):
-        conv = Conversation(
+    async def test_extract_code_null_message_text(self: object, mcp_server: Any) -> None:
+        conv = make_conv(
             id="nulltext",
-            provider="test",
+            provider=Provider.UNKNOWN,
             title="Null",
-            messages=[Message(id="m1", role="assistant", text=None)],
+            messages=[make_msg(id="m1", role=Role.ASSISTANT, text=None)],
         )
 
         with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
@@ -357,7 +382,11 @@ class TestPromptSurfaces:
 
         assert isinstance(result, str)
 
-    def test_compare_conversations_prompt(self, simple_conversation, mcp_server):
+    def test_compare_conversations_prompt(
+        self: object,
+        simple_conversation: Conversation,
+        mcp_server: Any,
+    ) -> None:
         with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
             mock_repo = make_repo_mock()
             mock_repo.view.side_effect = [simple_conversation, simple_conversation]
@@ -374,7 +403,11 @@ class TestPromptSurfaces:
         assert "Conversation 2" in result
 
     @pytest.mark.asyncio
-    async def test_extract_patterns_prompt(self, simple_conversation, mcp_server):
+    async def test_extract_patterns_prompt(
+        self: object,
+        simple_conversation: Conversation,
+        mcp_server: Any,
+    ) -> None:
         with (
             patch("polylogue.mcp.server._get_repo") as mock_get_repo,
             patch("polylogue.lib.filters.ConversationFilter") as mock_filter_cls,
@@ -390,7 +423,7 @@ class TestPromptSurfaces:
 
 
 class TestExportConversationTool:
-    def test_export_markdown(self, simple_conversation, mcp_server):
+    def test_export_markdown(self: object, simple_conversation: Conversation, mcp_server: Any) -> None:
         with (
             patch("polylogue.mcp.server._get_repo") as mock_get_repo,
             patch("polylogue.rendering.formatting.format_conversation") as mock_format,
@@ -412,7 +445,7 @@ class TestExportConversationTool:
         assert call_args[0][0] == simple_conversation
         assert call_args[0][1] == "markdown"
 
-    def test_export_not_found(self, mcp_server):
+    def test_export_not_found(self: object, mcp_server: Any) -> None:
         with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
             mock_repo = make_repo_mock()
             mock_repo.view.return_value = None
@@ -424,7 +457,11 @@ class TestExportConversationTool:
         assert "error" in parsed
         assert "not found" in parsed["error"].lower()
 
-    def test_export_invalid_format_falls_back_to_markdown(self, simple_conversation, mcp_server):
+    def test_export_invalid_format_falls_back_to_markdown(
+        self: object,
+        simple_conversation: Conversation,
+        mcp_server: Any,
+    ) -> None:
         with (
             patch("polylogue.mcp.server._get_repo") as mock_get_repo,
             patch("polylogue.rendering.formatting.format_conversation") as mock_format,
@@ -444,7 +481,7 @@ class TestExportConversationTool:
 
 
 class TestTypedPayloads:
-    def test_conversation_to_summary_dict(self, simple_conversation):
+    def test_conversation_to_summary_dict(self: object, simple_conversation: Conversation) -> None:
         from polylogue.mcp.payloads import MCPConversationSummaryPayload
 
         result = MCPConversationSummaryPayload.from_conversation(simple_conversation).model_dump(mode="json")
@@ -455,7 +492,7 @@ class TestTypedPayloads:
         assert "created_at" in result
         assert "updated_at" in result
 
-    def test_conversation_to_full_dict(self, simple_conversation):
+    def test_conversation_to_full_dict(self: object, simple_conversation: Conversation) -> None:
         from polylogue.mcp.payloads import MCPConversationDetailPayload
 
         result = MCPConversationDetailPayload.from_conversation(simple_conversation).model_dump(mode="json")
@@ -466,7 +503,13 @@ class TestTypedPayloads:
         assert {"id", "role", "text", "timestamp"} <= msg.keys()
 
     @pytest.mark.parametrize(("case_id", "conv", "expected_fields", "payload_kind"), SERIALIZATION_CASES)
-    def test_serialization_edge_cases(self, case_id, conv, expected_fields, payload_kind):
+    def test_serialization_edge_cases(
+        self: object,
+        case_id: str,
+        conv: Conversation,
+        expected_fields: dict[str, object],
+        payload_kind: str,
+    ) -> None:
         if payload_kind == "summary":
             from polylogue.mcp.payloads import MCPConversationSummaryPayload
 
@@ -480,7 +523,9 @@ class TestTypedPayloads:
             if key == "messages":
                 assert key in result
                 if expected_value:
+                    assert isinstance(expected_value, list)
                     for index, expected_msg in enumerate(expected_value):
+                        assert isinstance(expected_msg, dict)
                         for msg_key, msg_val in expected_msg.items():
                             assert result[key][index][msg_key] == msg_val, f"Failed for case {case_id}: {msg_key}"
                 else:
@@ -505,7 +550,7 @@ class TestClampLimit:
             ([1, 2], 10),
         ],
     )
-    def test_clamp_limit_contract(self, raw_limit, expected):
-        from polylogue.mcp.server import _clamp_limit
+    def test_clamp_limit_contract(self: object, raw_limit: object, expected: int) -> None:
+        from polylogue.mcp.server_support import _clamp_limit
 
         assert _clamp_limit(raw_limit) == expected

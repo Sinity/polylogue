@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 from collections.abc import Callable, Iterable
 from types import TracebackType
+from typing import TypeVar
 
 from rich.console import Console
 from rich.progress import (
@@ -16,6 +17,8 @@ from rich.progress import (
 )
 
 from .facade import ConsoleFacade, ConsoleLike, UIError, create_console_facade
+
+_PromptResult = TypeVar("_PromptResult")
 
 __all__ = [
     "UI",
@@ -42,11 +45,11 @@ class UI:
 
     @property
     def console(self) -> ConsoleLike:
-        return self._facade.console  # type: ignore[return-value]
+        return self._facade.console
 
     @console.setter
     def console(self, value: ConsoleLike) -> None:
-        self._facade.console = value  # type: ignore[assignment]
+        self._facade.console = value
 
     # Presentation helpers -------------------------------------------------
     def banner(self, title: str, subtitle: str | None = None) -> None:
@@ -76,7 +79,7 @@ class UI:
     def input(self, prompt: str, *, default: str | None = None) -> str | None:
         return self._call_prompt(lambda: self._facade.input(prompt, default=default))
 
-    def _call_prompt(self, operation: Callable[[], object]) -> object:
+    def _call_prompt(self, operation: Callable[[], _PromptResult]) -> _PromptResult:
         try:
             return operation()
         except UIError as exc:

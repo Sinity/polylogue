@@ -2,31 +2,83 @@
 
 from __future__ import annotations
 
+import random
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from polylogue.schemas.synthetic.relations import (
+        ForeignKeyGraph,
+        MutualExclusionGroup,
+        StringLengthConstraint,
+        TimeDeltaConstraint,
+    )
+
+
+def _mapping_items(schema: dict[str, object], key: str) -> tuple[dict[str, object], ...]:
+    value = schema.get(key)
+    if not isinstance(value, list | tuple):
+        return ()
+    return tuple(item for item in value if isinstance(item, dict))
+
+
+def _string_tuple(value: object) -> tuple[str, ...]:
+    if not isinstance(value, list | tuple):
+        return ()
+    return tuple(str(item) for item in value)
+
+
+def _int_value(value: object, default: int) -> int:
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float | str):
+        return int(value)
+    return default
+
+
+def _float_value(value: object, default: float) -> float:
+    if isinstance(value, bool):
+        return float(value)
+    if isinstance(value, int | float):
+        return float(value)
+    if isinstance(value, str):
+        return float(value)
+    return default
+
 
 class RelationConstraintSolverRuntimeMixin:
+    fk_graph: ForeignKeyGraph
+    time_deltas: list[TimeDeltaConstraint]
+    mutual_exclusions: list[MutualExclusionGroup]
+    string_lengths: dict[str, StringLengthConstraint]
+    _time_delta_cls: type[TimeDeltaConstraint]
+    _mutual_exclusion_cls: type[MutualExclusionGroup]
+    _string_length_cls: type[StringLengthConstraint]
+
     def _parse_foreign_keys(self, schema: dict[str, object]) -> None:
-        for fk in schema.get("x-polylogue-foreign-keys", []):
-            source = fk.get("source", "")
-            target = fk.get("target", "")
+        for fk in _mapping_items(schema, "x-polylogue-foreign-keys"):
+            source = str(fk.get("source", "")).strip()
+            target = str(fk.get("target", "")).strip()
             if source and target:
                 self.fk_graph.references[source] = target
 
     def _parse_time_deltas(self, schema: dict[str, object]) -> None:
-        for td in schema.get("x-polylogue-time-deltas", []):
+        for td in _mapping_items(schema, "x-polylogue-time-deltas"):
             self.time_deltas.append(
                 self._time_delta_cls(
-                    field_a=td.get("field_a", ""),
-                    field_b=td.get("field_b", ""),
-                    min_delta=td.get("min_delta", 0.0),
-                    max_delta=td.get("max_delta", 0.0),
-                    avg_delta=td.get("avg_delta", 0.0),
+                    field_a=str(td.get("field_a", "")),
+                    field_b=str(td.get("field_b", "")),
+                    min_delta=_float_value(td.get("min_delta"), 0.0),
+                    max_delta=_float_value(td.get("max_delta"), 0.0),
+                    avg_delta=_float_value(td.get("avg_delta"), 0.0),
                 )
             )
 
     def _parse_mutual_exclusions(self, schema: dict[str, object]) -> None:
-        for me in schema.get("x-polylogue-mutually-exclusive", []):
-            parent = me.get("parent", "")
-            fields = me.get("fields", [])
+        for me in _mapping_items(schema, "x-polylogue-mutually-exclusive"):
+            parent = str(me.get("parent", "")).strip()
+            fields = _string_tuple(me.get("fields"))
             if parent and len(fields) >= 2:
                 self.mutual_exclusions.append(
                     self._mutual_exclusion_cls(
@@ -36,28 +88,28 @@ class RelationConstraintSolverRuntimeMixin:
                 )
 
     def _parse_string_lengths(self, schema: dict[str, object]) -> None:
-        for sl in schema.get("x-polylogue-string-lengths", []):
-            path = sl.get("path", "")
+        for sl in _mapping_items(schema, "x-polylogue-string-lengths"):
+            path = str(sl.get("path", "")).strip()
             if path:
                 self.string_lengths[path] = self._string_length_cls(
                     path=path,
-                    min_length=sl.get("min", 0),
-                    max_length=sl.get("max", 100),
-                    avg_length=sl.get("avg", 50.0),
-                    stddev=sl.get("stddev", 10.0),
+                    min_length=_int_value(sl.get("min"), 0),
+                    max_length=_int_value(sl.get("max"), 100),
+                    avg_length=_float_value(sl.get("avg"), 50.0),
+                    stddev=_float_value(sl.get("stddev"), 10.0),
                 )
 
     def register_generated_id(self, path: str, value: str) -> None:
         self.fk_graph.register_id(path, value)
 
-    def resolve_foreign_key(self, path: str, rng) -> str | None:
+    def resolve_foreign_key(self, path: str, rng: random.Random) -> str | None:
         return self.fk_graph.resolve_reference(path, rng)
 
     def get_time_delta(
         self,
         field_a: str,
         field_b: str,
-        rng,
+        rng: random.Random,
     ) -> float | None:
         for td in self.time_deltas:
             if (td.field_a == field_a and td.field_b == field_b) or (td.field_a == field_b and td.field_b == field_a):
@@ -72,7 +124,7 @@ class RelationConstraintSolverRuntimeMixin:
         self,
         parent_path: str,
         field_names: set[str],
-        rng,
+        rng: random.Random,
     ) -> set[str]:
         result = set(field_names)
         for group in self.mutual_exclusions:
@@ -88,7 +140,7 @@ class RelationConstraintSolverRuntimeMixin:
     def generate_string_with_length(
         self,
         path: str,
-        rng,
+        rng: random.Random,
         base_text: str,
     ) -> str:
         constraint = self.string_lengths.get(path)

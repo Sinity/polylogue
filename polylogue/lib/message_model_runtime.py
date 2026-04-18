@@ -1,12 +1,20 @@
-"""Runtime behavior mixin for message models."""
+"""Runtime behavior helpers for ``Message`` models."""
 
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable, Mapping
+from datetime import datetime
 from functools import cached_property
+from typing import TYPE_CHECKING, Any, cast
 
+from polylogue.lib.attachment_models import Attachment
 from polylogue.lib.roles import Role
 from polylogue.logging import get_logger
+from polylogue.types import Provider
+
+if TYPE_CHECKING:
+    from polylogue.schemas.unified_models import HarmonizedMessage
 
 
 def _coerce_optional_float(value: object) -> float | None:
@@ -37,6 +45,27 @@ def _coerce_optional_int(value: object) -> int | None:
     return None
 
 
+def _mapping(value: object) -> Mapping[str, object] | None:
+    return value if isinstance(value, Mapping) else None
+
+
+def _content_block_mappings(value: object) -> list[Mapping[str, object]]:
+    if not isinstance(value, list):
+        return []
+    return [block for block in value if isinstance(block, Mapping)]
+
+
+def _block_texts(blocks: Iterable[Mapping[str, object]], *, block_type: str) -> list[str]:
+    texts: list[str] = []
+    for block in blocks:
+        if block.get("type") != block_type:
+            continue
+        text = block.get("text")
+        if isinstance(text, str) and text:
+            texts.append(text)
+    return texts
+
+
 _CONTEXT_START_MARKERS = (
     "<environment_context>",
     "<subagent_notification>",
@@ -51,6 +80,17 @@ logger = get_logger(__name__)
 
 
 class MessageRuntimeMixin:
+    id: str
+    role: Role
+    text: str | None
+    timestamp: datetime | None
+    provider: Provider | None
+    attachments: list[Attachment]
+    provider_meta: dict[str, object] | None
+    content_blocks: list[dict[str, object]]
+    parent_id: str | None
+    branch_index: int
+
     @property
     def is_branch(self) -> bool:
         return self.branch_index > 0
@@ -72,15 +112,15 @@ class MessageRuntimeMixin:
         return self.is_user or self.is_assistant
 
     @cached_property
-    def harmonized(self):
-        if not self.provider or not self.provider_meta:
+    def harmonized(self) -> HarmonizedMessage | None:
+        if self.provider is None or self.provider_meta is None:
             return None
         try:
             from polylogue.schemas.unified import extract_from_provider_meta
 
             return extract_from_provider_meta(
                 self.provider,
-                self.provider_meta,
+                cast(dict[str, Any], self.provider_meta),
                 message_id=self.id,
                 role=self.role,
                 text=self.text,
@@ -96,41 +136,41 @@ class MessageRuntimeMixin:
             return None
 
     def _is_chatgpt_thinking(self) -> bool:
-        if not self.provider_meta:
+        if self.provider_meta is None:
             return False
-        raw = self.provider_meta.get("raw", {})
-        if not isinstance(raw, dict):
+        raw = _mapping(self.provider_meta.get("raw"))
+        if raw is None:
             return False
 
-        content = raw.get("content", {})
-        if isinstance(content, dict):
-            content_type = content.get("content_type", "")
-            if content_type in ("thoughts", "reasoning_recap"):
+        content = _mapping(raw.get("content"))
+        if content is not None:
+            content_type = content.get("content_type")
+            if isinstance(content_type, str) and content_type in {"thoughts", "reasoning_recap"}:
                 return True
 
         if self.role == Role.TOOL:
-            metadata = raw.get("metadata", {})
-            if isinstance(metadata, dict) and "finished_text" in metadata:
+            metadata = _mapping(raw.get("metadata"))
+            if metadata is not None and "finished_text" in metadata:
                 return True
 
         return False
 
     @cached_property
     def is_tool_use(self) -> bool:
-        if any(block.get("type") in ("tool_use", "tool_result") for block in self.content_blocks):
+        if any(block.get("type") in {"tool_use", "tool_result"} for block in self.content_blocks):
             return True
 
-        if self.provider_meta:
-            provider_meta = self.provider_meta
+        provider_meta = self.provider_meta
+        if provider_meta is not None:
             if any(
-                isinstance(block, dict) and block.get("type") in ("tool_use", "tool_result")
-                for block in provider_meta.get("content_blocks") or []
+                block.get("type") in {"tool_use", "tool_result"}
+                for block in _content_block_mappings(provider_meta.get("content_blocks"))
             ):
                 return True
-            if provider_meta.get("isSidechain") or provider_meta.get("isMeta"):
+            if bool(provider_meta.get("isSidechain")) or bool(provider_meta.get("isMeta")):
                 return True
             harmonized = self.harmonized
-            if harmonized and harmonized.tool_calls:
+            if harmonized is not None and harmonized.tool_calls:
                 return True
 
         if self.role == Role.TOOL:
@@ -143,23 +183,23 @@ class MessageRuntimeMixin:
         if any(block.get("type") == "thinking" for block in self.content_blocks):
             return True
 
-        if self.provider_meta:
-            provider_meta = self.provider_meta
+        provider_meta = self.provider_meta
+        if provider_meta is not None:
             if any(
-                isinstance(block, dict) and block.get("type") == "thinking"
-                for block in provider_meta.get("content_blocks") or []
+                block.get("type") == "thinking"
+                for block in _content_block_mappings(provider_meta.get("content_blocks"))
             ):
                 return True
-            if provider_meta.get("isThought"):
+            if bool(provider_meta.get("isThought")):
                 return True
-            raw = provider_meta.get("raw")
-            if isinstance(raw, dict) and raw.get("isThought"):
+            raw = _mapping(provider_meta.get("raw"))
+            if raw is not None and bool(raw.get("isThought")):
                 return True
             harmonized = self.harmonized
-            if harmonized and harmonized.reasoning_traces:
+            if harmonized is not None and harmonized.reasoning_traces:
                 return True
 
-        return bool(self._is_chatgpt_thinking())
+        return self._is_chatgpt_thinking()
 
     @cached_property
     def is_context_dump(self) -> bool:
@@ -185,63 +225,62 @@ class MessageRuntimeMixin:
     def is_substantive(self) -> bool:
         if not self.is_dialogue or self.is_noise or self.is_thinking:
             return False
-        return bool(self.text and len(self.text.strip()) > 10)
+        text = self.text
+        return text is not None and len(text.strip()) > 10
 
     @cached_property
     def word_count(self) -> int:
-        if not self.text:
+        text = self.text
+        if not text:
             return 0
-        return len(self.text.split())
+        return len(text.split())
 
     @property
     def cost_usd(self) -> float | None:
-        if not self.provider_meta:
+        provider_meta = self.provider_meta
+        if provider_meta is None:
             return None
-        raw = self.provider_meta.get("raw", self.provider_meta)
+        raw = _mapping(provider_meta.get("raw")) or provider_meta
         return _coerce_optional_float(raw.get("costUSD"))
 
     @property
     def duration_ms(self) -> int | None:
-        if not self.provider_meta:
+        provider_meta = self.provider_meta
+        if provider_meta is None:
             return None
-        raw = self.provider_meta.get("raw", self.provider_meta)
+        raw = _mapping(provider_meta.get("raw")) or provider_meta
         return _coerce_optional_int(raw.get("durationMs"))
 
     def extract_thinking(self) -> str | None:
-        db_texts = [
-            block["text"]
-            for block in self.content_blocks
-            if block.get("type") == "thinking" and isinstance(block.get("text"), str)
-        ]
-        if db_texts:
-            return "\n\n".join(db_texts).strip() or None
+        direct_texts = _block_texts(self.content_blocks, block_type="thinking")
+        if direct_texts:
+            return "\n\n".join(direct_texts).strip() or None
 
         harmonized = self.harmonized
-        if harmonized and harmonized.reasoning_traces:
-            texts = [trace.text for trace in harmonized.reasoning_traces if trace.text]
-            if texts:
-                return "\n\n".join(texts).strip() or None
+        if harmonized is not None and harmonized.reasoning_traces:
+            reasoning_texts = [trace.text for trace in harmonized.reasoning_traces if trace.text]
+            if reasoning_texts:
+                return "\n\n".join(reasoning_texts).strip() or None
 
-        if self.provider_meta:
-            blocks = self.provider_meta.get("content_blocks", [])
-            if isinstance(blocks, list):
-                thinking_texts = [
-                    block["text"]
-                    for block in blocks
-                    if isinstance(block, dict)
-                    and block.get("type") == "thinking"
-                    and isinstance(block.get("text"), str)
-                ]
-                if thinking_texts:
-                    return "\n\n".join(thinking_texts).strip() or None
+        provider_meta = self.provider_meta
+        if provider_meta is not None:
+            provider_texts = _block_texts(
+                _content_block_mappings(provider_meta.get("content_blocks")),
+                block_type="thinking",
+            )
+            if provider_texts:
+                return "\n\n".join(provider_texts).strip() or None
 
-        if self.text:
-            match = re.search(r"<(?:antml:)?thinking>(.*?)</(?:antml:)?thinking>", self.text, re.DOTALL)
+        text = self.text
+        if text:
+            match = re.search(r"<(?:antml:)?thinking>(.*?)</(?:antml:)?thinking>", text, re.DOTALL)
             if match:
                 return match.group(1).strip()
 
-        if self.text and (self._is_chatgpt_thinking() or (self.provider_meta and self.provider_meta.get("isThought"))):
-            return self.text.strip() or None
+        if text and (
+            self._is_chatgpt_thinking() or (provider_meta is not None and bool(provider_meta.get("isThought")))
+        ):
+            return text.strip() or None
 
         return None
 

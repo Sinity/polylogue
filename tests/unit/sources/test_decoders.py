@@ -10,6 +10,7 @@ import io
 import json
 import zipfile
 from pathlib import Path
+from typing import Any, cast
 
 from hypothesis import given, settings
 from hypothesis import strategies as st
@@ -29,14 +30,14 @@ from polylogue.sources.decoders import (
 class TestDecodeJsonBytesBasic:
     """Deterministic tests for _decode_json_bytes."""
 
-    def test_utf8_roundtrip(self):
+    def test_utf8_roundtrip(self) -> None:
         """Encode then decode a UTF-8 JSON payload."""
         payload = '{"key": "value", "num": 42}'
         result = _decode_json_bytes(payload.encode("utf-8"))
         assert result is not None
         assert json.loads(result) == {"key": "value", "num": 42}
 
-    def test_bom_stripping(self):
+    def test_bom_stripping(self) -> None:
         """BOM-prefixed bytes are decoded (utf-8-sig in encoding list handles it)."""
         # utf-8-sig encoded bytes: BOM is consumed during decode
         payload = '{"key": "value"}'
@@ -50,7 +51,7 @@ class TestDecodeJsonBytesBasic:
         assert '"key"' in result
         assert '"value"' in result
 
-    def test_utf8_sig_direct_bom(self):
+    def test_utf8_sig_direct_bom(self) -> None:
         """Direct utf-8-sig BOM bytes are decoded successfully."""
         # Create bytes with a single BOM prefix
         bom = b"\xef\xbb\xbf"
@@ -60,7 +61,7 @@ class TestDecodeJsonBytesBasic:
         # Content is present
         assert "key" in result
 
-    def test_null_bytes_removed(self):
+    def test_null_bytes_removed(self) -> None:
         """Null bytes are stripped from decoded output."""
         payload = '{"key":\x00 "value"}'
         raw = payload.encode("utf-8")
@@ -69,7 +70,7 @@ class TestDecodeJsonBytesBasic:
         assert "\x00" not in result
         assert "key" in result
 
-    def test_fallback_encodings_utf16(self):
+    def test_fallback_encodings_utf16(self) -> None:
         """UTF-16 encoded payloads are decoded correctly."""
         payload = '{"key": "value"}'
         raw = payload.encode("utf-16")
@@ -78,7 +79,7 @@ class TestDecodeJsonBytesBasic:
         parsed = json.loads(result)
         assert parsed == {"key": "value"}
 
-    def test_fallback_encodings_utf32(self):
+    def test_fallback_encodings_utf32(self) -> None:
         """UTF-32 encoded payloads are decoded correctly."""
         payload = '{"key": "value"}'
         raw = payload.encode("utf-32")
@@ -87,13 +88,13 @@ class TestDecodeJsonBytesBasic:
         parsed = json.loads(result)
         assert parsed == {"key": "value"}
 
-    def test_returns_none_for_empty(self):
+    def test_returns_none_for_empty(self) -> None:
         """Empty bytes produce None."""
         result = _decode_json_bytes(b"")
         # Empty bytes decode to empty string, which is falsy
         assert result is None or result == ""
 
-    def test_unicode_content_preserved(self):
+    def test_unicode_content_preserved(self) -> None:
         """Unicode content survives decode roundtrip."""
         payload = '{"emoji": "\\u2764", "jp": "\\u65e5\\u672c\\u8a9e"}'
         raw = payload.encode("utf-8")
@@ -107,7 +108,7 @@ class TestDecodeJsonBytesFuzz:
 
     @given(st.binary(max_size=4096))
     @settings(max_examples=200)
-    def test_never_crashes_on_arbitrary_bytes(self, data: bytes):
+    def test_never_crashes_on_arbitrary_bytes(self, data: bytes) -> None:
         """_decode_json_bytes never raises on any input."""
         result = _decode_json_bytes(data)
         assert result is None or isinstance(result, str)
@@ -121,7 +122,7 @@ class TestDecodeJsonBytesFuzz:
 class TestIterJsonStream:
     """Tests for _iter_json_stream parsing strategies."""
 
-    def test_jsonl_with_blank_lines(self):
+    def test_jsonl_with_blank_lines(self) -> None:
         """JSONL parsing skips blank lines and yields valid objects."""
         content = b'{"a": 1}\n\n{"b": 2}\n\n\n{"c": 3}\n'
         handle = io.BytesIO(content)
@@ -131,7 +132,7 @@ class TestIterJsonStream:
         assert items[1] == {"b": 2}
         assert items[2] == {"c": 3}
 
-    def test_json_root_array(self):
+    def test_json_root_array(self) -> None:
         """Root array JSON is unpacked into individual items."""
         content = json.dumps([{"a": 1}, {"b": 2}]).encode("utf-8")
         handle = io.BytesIO(content)
@@ -140,7 +141,7 @@ class TestIterJsonStream:
         assert items[0] == {"a": 1}
         assert items[1] == {"b": 2}
 
-    def test_conversations_wrapper(self):
+    def test_conversations_wrapper(self) -> None:
         """{"conversations": [...]} is unpacked into individual items."""
         content = json.dumps({"conversations": [{"id": "c1"}, {"id": "c2"}]}).encode("utf-8")
         handle = io.BytesIO(content)
@@ -149,7 +150,7 @@ class TestIterJsonStream:
         assert items[0] == {"id": "c1"}
         assert items[1] == {"id": "c2"}
 
-    def test_single_dict_yielded_as_is(self):
+    def test_single_dict_yielded_as_is(self) -> None:
         """A single JSON dict is yielded without unwrapping."""
         content = json.dumps({"key": "value"}).encode("utf-8")
         handle = io.BytesIO(content)
@@ -157,7 +158,7 @@ class TestIterJsonStream:
         assert len(items) == 1
         assert items[0] == {"key": "value"}
 
-    def test_jsonl_invalid_lines_skipped(self):
+    def test_jsonl_invalid_lines_skipped(self) -> None:
         """Invalid JSON lines in JSONL are skipped (not crashed on)."""
         content = b'{"valid": 1}\nnot json at all\n{"also_valid": 2}\n'
         handle = io.BytesIO(content)
@@ -166,14 +167,14 @@ class TestIterJsonStream:
         assert items[0] == {"valid": 1}
         assert items[1] == {"also_valid": 2}
 
-    def test_ndjson_extension_treated_as_jsonl(self):
+    def test_ndjson_extension_treated_as_jsonl(self) -> None:
         """Files with .ndjson extension use JSONL parsing."""
         content = b'{"a": 1}\n{"b": 2}\n'
         handle = io.BytesIO(content)
         items = list(_iter_json_stream(handle, "data.ndjson"))
         assert len(items) == 2
 
-    def test_jsonl_txt_extension(self):
+    def test_jsonl_txt_extension(self) -> None:
         """Files with .jsonl.txt extension use JSONL parsing."""
         content = b'{"a": 1}\n{"b": 2}\n'
         handle = io.BytesIO(content)
@@ -204,7 +205,7 @@ class TestZipEntryValidator:
             info.external_attr = 0o40775 << 16  # Directory bit
         return info
 
-    def test_bomb_protection_compression_ratio(self):
+    def test_bomb_protection_compression_ratio(self) -> None:
         """Entries with compression ratio > MAX_COMPRESSION_RATIO are rejected."""
         validator = _ZipEntryValidator(
             "chatgpt",
@@ -216,7 +217,7 @@ class TestZipEntryValidator:
         entries = list(validator.filter_entries([bomb_entry]))
         assert len(entries) == 0
 
-    def test_size_limit_rejection(self):
+    def test_size_limit_rejection(self) -> None:
         """Entries with uncompressed size > MAX_UNCOMPRESSED_SIZE are rejected."""
         validator = _ZipEntryValidator(
             "chatgpt",
@@ -231,7 +232,7 @@ class TestZipEntryValidator:
         entries = list(validator.filter_entries([huge_entry]))
         assert len(entries) == 0
 
-    def test_claude_json_entries_are_not_special_cased(self):
+    def test_claude_json_entries_are_not_special_cased(self) -> None:
         """Claude ZIP validation now relies on artifact classification, not filename allowlists."""
         validator = _ZipEntryValidator(
             "claude-ai",
@@ -250,7 +251,7 @@ class TestZipEntryValidator:
             "account.json",
         ]
 
-    def test_directories_skipped(self):
+    def test_directories_skipped(self) -> None:
         """Directory entries in ZIP are skipped."""
         validator = _ZipEntryValidator(
             "chatgpt",
@@ -263,7 +264,7 @@ class TestZipEntryValidator:
         entries = list(validator.filter_entries([dir_entry]))
         assert len(entries) == 0
 
-    def test_non_json_extensions_skipped(self):
+    def test_non_json_extensions_skipped(self) -> None:
         """Non-JSON files in ZIP are skipped."""
         validator = _ZipEntryValidator(
             "chatgpt",
@@ -279,7 +280,7 @@ class TestZipEntryValidator:
         assert len(entries_out) == 1
         assert entries_out[0].filename == "data.json"
 
-    def test_valid_entry_passes_through(self):
+    def test_valid_entry_passes_through(self) -> None:
         """A normal JSON entry with reasonable ratio passes validation."""
         validator = _ZipEntryValidator(
             "chatgpt",
@@ -290,9 +291,9 @@ class TestZipEntryValidator:
         entries = list(validator.filter_entries([normal_entry]))
         assert len(entries) == 1
 
-    def test_cursor_state_records_failures(self):
+    def test_cursor_state_records_failures(self) -> None:
         """Rejected entries record failures in cursor_state."""
-        cursor_state: dict = {"failed_files": [], "failed_count": 0}
+        cursor_state: dict[str, Any] = {"failed_files": [], "failed_count": 0}
         validator = _ZipEntryValidator(
             "chatgpt",
             cursor_state=cursor_state,
@@ -300,5 +301,5 @@ class TestZipEntryValidator:
         )
         bomb_entry = self._make_zip_info("bomb.json", file_size=500000, compress_size=1)
         list(validator.filter_entries([bomb_entry]))
-        assert cursor_state["failed_count"] >= 1
-        assert len(cursor_state["failed_files"]) >= 1
+        assert int(cursor_state["failed_count"]) >= 1
+        assert len(cast(list[object], cursor_state["failed_files"])) >= 1

@@ -11,12 +11,15 @@ import json
 
 from hypothesis import given, settings
 
+from polylogue.lib.messages import MessageCollection
+from polylogue.rendering.formatting import format_conversation
+from tests.infra.builders import make_conv, make_msg
 from tests.infra.strategies.schema_driven import schema_conformant_payload
 
 
 @given(payload=schema_conformant_payload("chatgpt"))
 @settings(max_examples=10, deadline=10000)
-def test_chatgpt_schema_payload_parses_without_crash(payload) -> None:
+def test_chatgpt_schema_payload_parses_without_crash(payload: object) -> None:
     """Schema-conformant ChatGPT payloads must not crash with unhandled exceptions.
 
     ValueError (missing role) and ValidationError are expected for minimal
@@ -39,7 +42,7 @@ def test_chatgpt_schema_payload_parses_without_crash(payload) -> None:
 
 @given(payload=schema_conformant_payload("claude-code"))
 @settings(max_examples=10, deadline=10000)
-def test_claude_code_schema_payload_parses_without_crash(payload) -> None:
+def test_claude_code_schema_payload_parses_without_crash(payload: object) -> None:
     """Schema-conformant Claude Code payloads must not crash with unhandled exceptions."""
     from pydantic import ValidationError
 
@@ -57,7 +60,7 @@ def test_claude_code_schema_payload_parses_without_crash(payload) -> None:
 
 @given(payload=schema_conformant_payload("chatgpt"))
 @settings(max_examples=10, deadline=10000)
-def test_chatgpt_successful_extraction_produces_valid_role(payload) -> None:
+def test_chatgpt_successful_extraction_produces_valid_role(payload: object) -> None:
     """When extraction succeeds, the role must be valid and non-empty."""
     from pydantic import ValidationError
 
@@ -75,13 +78,10 @@ def test_chatgpt_successful_extraction_produces_valid_role(payload) -> None:
 
 @given(payload=schema_conformant_payload("claude-code"))
 @settings(max_examples=5, deadline=15000)
-def test_claude_code_json_roundtrip_preserves_message_count(payload) -> None:
+def test_claude_code_json_roundtrip_preserves_message_count(payload: object) -> None:
     """parse → json_export → re-parse preserves message count for Claude Code."""
     from pydantic import ValidationError
 
-    from polylogue.lib.messages import MessageCollection
-    from polylogue.lib.models import Conversation, Message
-    from polylogue.rendering.formatting import format_conversation
     from polylogue.schemas.unified import extract_harmonized_message
 
     if not isinstance(payload, dict):
@@ -92,12 +92,8 @@ def test_claude_code_json_roundtrip_preserves_message_count(payload) -> None:
     except (ValueError, ValidationError):
         return  # can't roundtrip if extraction fails
 
-    msg = Message(
-        id=result.id or "test-msg",
-        role=result.role,
-        text=result.text or "",
-    )
-    conv = Conversation(
+    msg = make_msg(id=result.id or "test-msg", role=result.role, text=result.text or "")
+    conv = make_conv(
         id="roundtrip-test",
         provider="claude-code",
         title="Roundtrip Test",

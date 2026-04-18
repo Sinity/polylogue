@@ -8,22 +8,25 @@ surface that is specific to ``ConsoleFacade`` / ``UI``.
 from __future__ import annotations
 
 import json
+from collections.abc import Generator
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
+from rich.progress import TaskID
 
 from polylogue.ui import UI, _PlainProgressTracker, _RichProgressTracker, create_ui
 from polylogue.ui.facade import ConsoleFacade, PlainConsole, UIError, create_console_facade
 
 
 @pytest.fixture
-def mock_prompt_file(tmp_path):
+def mock_prompt_file(tmp_path: Any) -> Any:
     prompt_file = tmp_path / "prompts.jsonl"
     return prompt_file
 
 
 @pytest.fixture
-def mock_facade():
+def mock_facade() -> Generator[Any, None, None]:
     with patch("polylogue.ui.create_console_facade") as mock_create:
         facade = MagicMock(spec=ConsoleFacade)
         facade.console = MagicMock()
@@ -33,12 +36,12 @@ def mock_facade():
 
 
 @pytest.fixture
-def rich_facade():
+def rich_facade() -> Any:
     return create_console_facade(plain=False)
 
 
 @pytest.fixture
-def plain_facade():
+def plain_facade() -> Any:
     return create_console_facade(plain=True)
 
 
@@ -49,11 +52,11 @@ PROMPT_TOPICS = {
 }
 
 
-def _write_stubs(prompt_file, *entries: dict[str, object]) -> None:
+def _write_stubs(prompt_file: Any, *entries: dict[str, object]) -> None:
     prompt_file.write_text("\n".join(json.dumps(entry) for entry in entries) + "\n")
 
 
-def _questionary_stub(monkeypatch, method: str, result: object) -> MagicMock:
+def _questionary_stub(monkeypatch: Any, method: str, result: object) -> MagicMock:
     import questionary
 
     question = MagicMock()
@@ -73,7 +76,7 @@ class TestPlainConsole:
             (("[unclosed markup",), "[unclosed markup", None),
         ],
     )
-    def test_print_contract(self, capsys, objects, expected, unexpected):
+    def test_print_contract(self, capsys: Any, objects: Any, expected: Any, unexpected: Any) -> None:
         console = PlainConsole()
         console.print(*objects)
         output = capsys.readouterr().out
@@ -81,11 +84,11 @@ class TestPlainConsole:
         if unexpected:
             assert unexpected not in output
 
-    def test_print_ignores_extra_kwargs(self, capsys):
+    def test_print_ignores_extra_kwargs(self, capsys: Any) -> None:
         PlainConsole().print("text", sep="|", end="!\n")
         assert "text" in capsys.readouterr().out
 
-    def test_init_accepts_extra_args(self):
+    def test_init_accepts_extra_args(self) -> None:
         assert PlainConsole("arg1", key="value") is not None
 
 
@@ -101,7 +104,7 @@ class TestConsoleFacadePromptStubs:
             ),
         ],
     )
-    def test_stub_loading_contract(self, tmp_path, monkeypatch, entries, expected_count):
+    def test_stub_loading_contract(self, tmp_path: Any, monkeypatch: Any, entries: Any, expected_count: Any) -> None:
         if entries:
             prompt_file = tmp_path / "stubs.jsonl"
             _write_stubs(prompt_file, *entries)
@@ -110,13 +113,13 @@ class TestConsoleFacadePromptStubs:
             facade = ConsoleFacade(plain=True)
         assert len(facade._prompt_responses) == expected_count
 
-    def test_invalid_json_raises_uierror(self, tmp_path):
+    def test_invalid_json_raises_uierror(self, tmp_path: Any) -> None:
         prompt_file = tmp_path / "bad.jsonl"
         prompt_file.write_text("not json\n")
         with pytest.raises(UIError, match="Invalid prompt stub"):
             ConsoleFacade(plain=True, prompt_stub_path=prompt_file)
 
-    def test_pop_prompt_response_contract(self, mock_prompt_file):
+    def test_pop_prompt_response_contract(self, mock_prompt_file: Any) -> None:
         _write_stubs(mock_prompt_file, {"type": "confirm", "value": True})
         facade = ConsoleFacade(plain=True, prompt_stub_path=mock_prompt_file)
         with pytest.raises(UIError, match="expected 'confirm' but got 'choose'"):
@@ -153,7 +156,9 @@ class TestConsoleFacadePrompts:
             "input_default",
         ],
     )
-    def test_plain_prompt_matrix(self, monkeypatch, kind, plain_value, default, expected):
+    def test_plain_prompt_matrix(
+        self, monkeypatch: Any, kind: Any, plain_value: Any, default: Any, expected: Any
+    ) -> None:
         monkeypatch.setattr("sys.stdin.isatty", lambda: True)
         monkeypatch.setattr("builtins.input", lambda _: plain_value)
         facade = ConsoleFacade(plain=True)
@@ -166,7 +171,7 @@ class TestConsoleFacadePrompts:
             assert facade.input("Name:", default=default) == expected
 
     @pytest.mark.parametrize("kind", ["confirm", "choose", "input"])
-    def test_plain_non_tty_raises_uierror(self, monkeypatch, kind):
+    def test_plain_non_tty_raises_uierror(self, monkeypatch: Any, kind: Any) -> None:
         monkeypatch.setattr("sys.stdin.isatty", lambda: False)
         facade = ConsoleFacade(plain=True)
         with pytest.raises(UIError, match=PROMPT_TOPICS[kind]):
@@ -184,7 +189,7 @@ class TestConsoleFacadePrompts:
         ],
         ids=["bool_true", "str_yes", "str_zero", "use_default"],
     )
-    def test_confirm_stub_contract(self, mock_prompt_file, entry, expected):
+    def test_confirm_stub_contract(self, mock_prompt_file: Any, entry: Any, expected: Any) -> None:
         _write_stubs(mock_prompt_file, entry)
         facade = ConsoleFacade(plain=False, prompt_stub_path=mock_prompt_file)
         assert facade.confirm("Continue?", default=False) is expected
@@ -198,7 +203,7 @@ class TestConsoleFacadePrompts:
             ({"type": "choose", "use_default": True}, ["first", "second"], "first"),
         ],
     )
-    def test_choose_stub_contract(self, mock_prompt_file, entry, options, expected):
+    def test_choose_stub_contract(self, mock_prompt_file: Any, entry: Any, options: Any, expected: Any) -> None:
         _write_stubs(mock_prompt_file, entry)
         assert ConsoleFacade(plain=False, prompt_stub_path=mock_prompt_file).choose("Pick:", options) == expected
 
@@ -212,13 +217,13 @@ class TestConsoleFacadePrompts:
             ({"type": "input", "value": ""}, "default", ""),
         ],
     )
-    def test_input_stub_contract(self, mock_prompt_file, entry, default, expected):
+    def test_input_stub_contract(self, mock_prompt_file: Any, entry: Any, default: Any, expected: Any) -> None:
         _write_stubs(mock_prompt_file, entry)
         assert (
             ConsoleFacade(plain=False, prompt_stub_path=mock_prompt_file).input("Prompt:", default=default) == expected
         )
 
-    def test_rich_choose_fallback_paths(self, monkeypatch):
+    def test_rich_choose_fallback_paths(self, monkeypatch: Any) -> None:
         question = _questionary_stub(monkeypatch, "select", None)
         facade = ConsoleFacade(plain=False)
         assert facade.choose("Pick:", ["a", "b", "c"]) is None
@@ -228,7 +233,7 @@ class TestConsoleFacadePrompts:
         assert facade.choose("Pick:", [f"opt{i}" for i in range(15)]) == "opt13"
         question.ask.assert_called_once()
 
-    def test_rich_confirm_and_input_fallback_paths(self, monkeypatch):
+    def test_rich_confirm_and_input_fallback_paths(self, monkeypatch: Any) -> None:
         confirm = _questionary_stub(monkeypatch, "confirm", None)
         input_box = _questionary_stub(monkeypatch, "text", "")
         facade = ConsoleFacade(plain=False)
@@ -239,7 +244,7 @@ class TestConsoleFacadePrompts:
 
 
 class TestConsoleFacadeRendering:
-    def test_console_facade_creation_contract(self):
+    def test_console_facade_creation_contract(self) -> None:
         assert create_console_facade(plain=True).plain is True
         assert create_console_facade(plain=False).plain is False
 
@@ -257,14 +262,14 @@ class TestConsoleFacadeRendering:
             ("info", ("FYI",), ["FYI"]),
         ],
     )
-    def test_plain_rendering_surface_contract(self, capsys, method, args, expected):
+    def test_plain_rendering_surface_contract(self, capsys: Any, method: Any, args: Any, expected: Any) -> None:
         facade = ConsoleFacade(plain=True)
         getattr(facade, method)(*args)
         output = capsys.readouterr().out
         for text in expected:
             assert text in output
 
-    def test_rich_rendering_surface_contract(self, rich_facade, capsys):
+    def test_rich_rendering_surface_contract(self, rich_facade: Any, capsys: Any) -> None:
         rich_facade.banner("Welcome", "Dashboard")
         rich_facade.summary("Checklist", ["Item 1", "[red]Item 2[/red]"])
         rich_facade.render_markdown("# Title\n\nBody")
@@ -285,10 +290,10 @@ class TestConsoleFacadeRendering:
         assert "Oops" in output
         assert "FYI" in output
 
-    def test_render_diff_falls_back_when_pager_missing(self, plain_facade):
+    def test_render_diff_falls_back_when_pager_missing(self, plain_facade: Any) -> None:
         plain_facade.render_diff("line1\n", "line2\n", "file.txt")
 
-    def test_protocol_theme_contract(self):
+    def test_protocol_theme_contract(self) -> None:
         plain = ConsoleFacade(plain=True)
         rich = ConsoleFacade(plain=False)
         assert callable(getattr(plain.console, "print", None))
@@ -301,7 +306,7 @@ class TestConsoleFacadeRendering:
 
 
 class TestUIWrapper:
-    def test_ui_init_and_create_contract(self, mock_facade):
+    def test_ui_init_and_create_contract(self, mock_facade: Any) -> None:
         ui = UI(plain=False)
         assert ui._facade == mock_facade
         assert ui.plain is False
@@ -312,7 +317,7 @@ class TestUIWrapper:
             with pytest.raises(SystemExit, match="boom"):
                 UI(plain=False)
 
-    def test_ui_delegation_contract(self, mock_facade):
+    def test_ui_delegation_contract(self, mock_facade: Any) -> None:
         ui = UI(plain=False)
         ui.banner("Title", "Subtitle")
         ui.summary("Summary", ["line1"])
@@ -333,7 +338,7 @@ class TestUIWrapper:
             ("input", ("Prompt",), {"default": None}),
         ],
     )
-    def test_ui_prompt_delegation_contract(self, mock_facade, method, args, kwargs):
+    def test_ui_prompt_delegation_contract(self, mock_facade: Any, method: Any, args: Any, kwargs: Any) -> None:
         ui = UI(plain=False)
         getattr(mock_facade, method).return_value = (
             True if method == "confirm" else "A" if method == "choose" else "val"
@@ -350,7 +355,7 @@ class TestUIWrapper:
             ("input", lambda ui: ui.input("Prompt")),
         ],
     )
-    def test_ui_plain_prompt_abort_contract(self, mock_facade, method, call):
+    def test_ui_plain_prompt_abort_contract(self, mock_facade: Any, method: Any, call: Any) -> None:
         mock_facade.plain = True
         mock_facade.console = MagicMock()
         getattr(mock_facade, method).side_effect = UIError(
@@ -363,7 +368,7 @@ class TestUIWrapper:
 
 
 class TestProgressTrackers:
-    def test_plain_progress_tracker_contract(self):
+    def test_plain_progress_tracker_contract(self) -> None:
         console = MagicMock()
         tracker = _PlainProgressTracker(console, "Task", 10)
         with tracker:
@@ -376,12 +381,12 @@ class TestProgressTrackers:
         tracker = _PlainProgressTracker(console, "Task2", None)
         with tracker:
             tracker.advance(1.5)
-            tracker.update(total=5.5)
+            tracker.update(total=5)
         assert console.print.call_count >= 2
 
-    def test_rich_progress_tracker_contract(self):
+    def test_rich_progress_tracker_contract(self) -> None:
         progress = MagicMock()
-        task_id = "task-1"
+        task_id = TaskID(1)
         tracker = _RichProgressTracker(progress, task_id)
         with tracker:
             tracker.advance(5)

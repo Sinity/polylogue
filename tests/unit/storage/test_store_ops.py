@@ -6,10 +6,13 @@ import asyncio
 import importlib
 import json
 import shutil
+import sqlite3
 import tempfile
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any, TypedDict, cast
 from unittest.mock import AsyncMock
 
 import pytest
@@ -17,17 +20,30 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 from pydantic import ValidationError
 
+from polylogue.lib.conversation_models import Conversation
+from polylogue.lib.messages import MessageCollection
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.backends.connection import open_connection
 from polylogue.storage.query_models import ConversationRecordQuery
 from polylogue.storage.repository import ConversationRepository
 from polylogue.storage.store import (
     AttachmentRecord,
+    ContentBlockRecord,
     ConversationRecord,
+    MessageRecord,
     _json_or_none,
+    _make_ref_id,
+)
+from polylogue.types import (
+    AttachmentId,
+    ContentBlockType,
+    ContentHash,
+    ConversationId,
+    MessageId,
+    Provider,
+    SemanticBlockType,
 )
 from tests.infra.storage_records import (
-    _make_ref_id,
     _prune_attachment_refs,
     make_attachment,
     make_conversation,
@@ -52,29 +68,154 @@ from tests.infra.strategies.storage import (
 )
 
 
-def _conversation_row(conn, conversation_id: str):
-    return conn.execute(
-        "SELECT * FROM conversations WHERE conversation_id = ?",
-        (conversation_id,),
-    ).fetchone()
+class SimpleTagSpec(TypedDict):
+    conversation_id: str
+    tags: list[str]
 
 
-def _message_count(conn, conversation_id: str) -> int:
-    return conn.execute(
+class SimpleTitleSearchSpec(TypedDict):
+    title: str
+    search_term: str
+
+
+def _conversation_id(value: str) -> ConversationId:
+    return ConversationId(value)
+
+
+def _message_id(value: str) -> MessageId:
+    return MessageId(value)
+
+
+def _attachment_id(value: str) -> AttachmentId:
+    return AttachmentId(value)
+
+
+def _content_hash(value: str) -> ContentHash:
+    return ContentHash(value)
+
+
+def _content_block(
+    *,
+    block_id: str,
+    message_id: str,
+    conversation_id: str,
+    block_index: int,
+    block_type: str,
+    text: str | None = None,
+    tool_name: str | None = None,
+    tool_id: str | None = None,
+    tool_input: str | None = None,
+    media_type: str | None = None,
+    metadata: str | None = None,
+    semantic_type: str | None = None,
+) -> ContentBlockRecord:
+    return ContentBlockRecord(
+        block_id=block_id,
+        message_id=_message_id(message_id),
+        conversation_id=_conversation_id(conversation_id),
+        block_index=block_index,
+        type=ContentBlockType.from_string(block_type),
+        text=text,
+        tool_name=tool_name,
+        tool_id=tool_id,
+        tool_input=tool_input,
+        media_type=media_type,
+        metadata=metadata,
+        semantic_type=None if semantic_type is None else SemanticBlockType.from_string(semantic_type),
+    )
+
+
+def _conversation_record(
+    *,
+    conversation_id: str,
+    provider_name: str,
+    provider_conversation_id: str,
+    content_hash: str,
+    title: str | None = None,
+    created_at: str | None = None,
+    updated_at: str | None = None,
+    provider_meta: dict[str, object] | None = None,
+    metadata: dict[str, object] | None = None,
+) -> ConversationRecord:
+    return ConversationRecord(
+        conversation_id=_conversation_id(conversation_id),
+        provider_name=provider_name,
+        provider_conversation_id=provider_conversation_id,
+        title=title,
+        created_at=created_at,
+        updated_at=updated_at,
+        content_hash=_content_hash(content_hash),
+        provider_meta=provider_meta,
+        metadata=metadata,
+    )
+
+
+def _attachment_record(
+    *,
+    attachment_id: str,
+    conversation_id: str,
+    message_id: str | None,
+    mime_type: str,
+    size_bytes: int | None,
+    provider_meta: dict[str, object] | None = None,
+) -> AttachmentRecord:
+    return AttachmentRecord(
+        attachment_id=_attachment_id(attachment_id),
+        conversation_id=_conversation_id(conversation_id),
+        message_id=None if message_id is None else _message_id(message_id),
+        mime_type=mime_type,
+        size_bytes=size_bytes,
+        provider_meta=provider_meta,
+    )
+
+
+def _ref_id(attachment_id: str, conversation_id: str, message_id: str | None) -> str:
+    return _make_ref_id(
+        _attachment_id(attachment_id),
+        _conversation_id(conversation_id),
+        None if message_id is None else _message_id(message_id),
+    )
+
+
+def _conversation_model(conversation_id: str) -> Conversation:
+    return Conversation(
+        id=_conversation_id(conversation_id),
+        provider=Provider.CHATGPT,
+        messages=MessageCollection.empty(),
+    )
+
+
+def _conversation_row(conn: sqlite3.Connection, conversation_id: str) -> sqlite3.Row | None:
+    return cast(
+        sqlite3.Row | None,
+        conn.execute(
+            "SELECT * FROM conversations WHERE conversation_id = ?",
+            (conversation_id,),
+        ).fetchone(),
+    )
+
+
+def _message_count(conn: sqlite3.Connection, conversation_id: str) -> int:
+    row = conn.execute(
         "SELECT COUNT(*) FROM messages WHERE conversation_id = ?",
         (conversation_id,),
-    ).fetchone()[0]
-
-
-def _attachment_row(conn, attachment_id: str):
-    return conn.execute(
-        "SELECT * FROM attachments WHERE attachment_id = ?",
-        (attachment_id,),
     ).fetchone()
+    assert row is not None
+    return int(row[0])
 
 
-def _record_query(**kwargs) -> ConversationRecordQuery:
-    return ConversationRecordQuery(**kwargs)
+def _attachment_row(conn: sqlite3.Connection, attachment_id: str) -> sqlite3.Row | None:
+    return cast(
+        sqlite3.Row | None,
+        conn.execute(
+            "SELECT * FROM attachments WHERE attachment_id = ?",
+            (attachment_id,),
+        ).fetchone(),
+    )
+
+
+def _record_query(**kwargs: object) -> ConversationRecordQuery:
+    return ConversationRecordQuery(**cast(dict[str, Any], kwargs))
 
 
 @pytest.mark.asyncio
@@ -129,7 +270,6 @@ async def test_aggregate_message_stats_reports_role_counts_and_words(tmp_path: P
 async def test_backend_path_terms_filter_contract(tmp_path: Path) -> None:
     """Low-level list/count filters must honor persisted semantic paths."""
     from polylogue.storage.action_event_rebuild_runtime import rebuild_action_event_read_model_sync
-    from polylogue.storage.store import ContentBlockRecord
     from tests.infra.storage_records import ConversationBuilder
 
     db_path = tmp_path / "path-filter.db"
@@ -145,12 +285,12 @@ async def test_backend_path_terms_filter_contract(tmp_path: Path) -> None:
             role="assistant",
             text="Inspecting the repository README",
             content_blocks=[
-                ContentBlockRecord(
+                _content_block(
                     block_id="blk-readme-0",
                     message_id="m1",
                     conversation_id="conv-readme",
                     block_index=0,
-                    type="tool_use",
+                    block_type="tool_use",
                     tool_name="Read",
                     metadata=f'{{"path":"{target_path}"}}',
                     semantic_type="file_read",
@@ -169,12 +309,12 @@ async def test_backend_path_terms_filter_contract(tmp_path: Path) -> None:
             role="assistant",
             text="Inspecting docs",
             content_blocks=[
-                ContentBlockRecord(
+                _content_block(
                     block_id="blk-other-0",
                     message_id="m2",
                     conversation_id="conv-other",
                     block_index=0,
-                    type="tool_use",
+                    block_type="tool_use",
                     tool_name="Read",
                     metadata=f'{{"path":"{other_path}"}}',
                     semantic_type="file_read",
@@ -231,7 +371,6 @@ async def test_list_summaries_by_query_omits_large_provider_meta_payloads(tmp_pa
 
 def test_action_event_rebuild_omits_large_provider_meta_payloads(tmp_path: Path) -> None:
     from polylogue.storage.action_event_rebuild_runtime import rebuild_action_event_read_model_sync
-    from polylogue.storage.store import ContentBlockRecord
     from tests.infra.storage_records import ConversationBuilder
 
     db_path = tmp_path / "action-event-provider-meta.db"
@@ -245,12 +384,12 @@ def test_action_event_rebuild_omits_large_provider_meta_payloads(tmp_path: Path)
             role="assistant",
             text="Searching the repo for provider-meta handling.",
             content_blocks=[
-                ContentBlockRecord(
+                _content_block(
                     block_id="blk-heavy-action-0",
                     message_id="m-heavy-action",
                     conversation_id="conv-heavy-action",
                     block_index=0,
-                    type="tool_use",
+                    block_type="tool_use",
                     tool_name="Grep",
                     semantic_type="search",
                 )
@@ -290,7 +429,6 @@ def test_action_event_rebuild_omits_large_provider_meta_payloads(tmp_path: Path)
 async def test_filter_path_terms_apply_after_fts_search(tmp_path: Path) -> None:
     """Combined FTS + path queries must keep the path constraint after search ranking."""
     from polylogue.lib.filters import ConversationFilter
-    from polylogue.storage.store import ContentBlockRecord
     from tests.infra.storage_records import ConversationBuilder
 
     db_path = tmp_path / "path-fts.db"
@@ -305,12 +443,12 @@ async def test_filter_path_terms_apply_after_fts_search(tmp_path: Path) -> None:
             role="assistant",
             text="Investigating the same parser regression",
             content_blocks=[
-                ContentBlockRecord(
+                _content_block(
                     block_id="blk-match-0",
                     message_id="m1",
                     conversation_id="conv-match",
                     block_index=0,
-                    type="tool_use",
+                    block_type="tool_use",
                     tool_name="Read",
                     metadata=f'{{"path":"{target_path}"}}',
                     semantic_type="file_read",
@@ -329,12 +467,12 @@ async def test_filter_path_terms_apply_after_fts_search(tmp_path: Path) -> None:
             role="assistant",
             text="Investigating the same parser regression",
             content_blocks=[
-                ContentBlockRecord(
+                _content_block(
                     block_id="blk-nopath-0",
                     message_id="m2",
                     conversation_id="conv-no-path",
                     block_index=0,
-                    type="tool_use",
+                    block_type="tool_use",
                     tool_name="Read",
                     metadata='{"path":"/workspace/polylogue/docs/cli-reference.md"}',
                     semantic_type="file_read",
@@ -357,7 +495,6 @@ async def test_filter_path_terms_apply_after_fts_search(tmp_path: Path) -> None:
 async def test_backend_action_terms_filter_contract(tmp_path: Path) -> None:
     """Low-level list/count filters must honor semantic action categories."""
     from polylogue.storage.action_event_rebuild_runtime import rebuild_action_event_read_model_sync
-    from polylogue.storage.store import ContentBlockRecord
     from tests.infra.storage_records import ConversationBuilder
 
     db_path = tmp_path / "action-filter.db"
@@ -371,12 +508,12 @@ async def test_backend_action_terms_filter_contract(tmp_path: Path) -> None:
             role="assistant",
             text="Searching for parser code",
             content_blocks=[
-                ContentBlockRecord(
+                _content_block(
                     block_id="blk-search-0",
                     message_id="m1",
                     conversation_id="conv-search",
                     block_index=0,
-                    type="tool_use",
+                    block_type="tool_use",
                     tool_name="Grep",
                     semantic_type="search",
                 )
@@ -394,12 +531,12 @@ async def test_backend_action_terms_filter_contract(tmp_path: Path) -> None:
             role="assistant",
             text="Checking git status",
             content_blocks=[
-                ContentBlockRecord(
+                _content_block(
                     block_id="blk-git-0",
                     message_id="m2",
                     conversation_id="conv-git",
                     block_index=0,
-                    type="tool_use",
+                    block_type="tool_use",
                     tool_name="Bash",
                     tool_input='{"command":"git status"}',
                     semantic_type="git",
@@ -418,12 +555,12 @@ async def test_backend_action_terms_filter_contract(tmp_path: Path) -> None:
             role="assistant",
             text="Using an unknown tool",
             content_blocks=[
-                ContentBlockRecord(
+                _content_block(
                     block_id="blk-other-0",
                     message_id="m3",
                     conversation_id="conv-other",
                     block_index=0,
-                    type="tool_use",
+                    block_type="tool_use",
                     tool_name="Mystery",
                     semantic_type="other",
                 )
@@ -499,7 +636,6 @@ async def test_backend_action_terms_filter_contract(tmp_path: Path) -> None:
 async def test_filter_action_terms_apply_after_fts_search(tmp_path: Path) -> None:
     """Combined FTS + action queries must preserve action constraints after search ranking."""
     from polylogue.lib.filters import ConversationFilter
-    from polylogue.storage.store import ContentBlockRecord
     from tests.infra.storage_records import ConversationBuilder
 
     db_path = tmp_path / "action-fts.db"
@@ -513,12 +649,12 @@ async def test_filter_action_terms_apply_after_fts_search(tmp_path: Path) -> Non
             role="assistant",
             text="Investigating the same parser regression",
             content_blocks=[
-                ContentBlockRecord(
+                _content_block(
                     block_id="blk-search-0",
                     message_id="m1",
                     conversation_id="conv-search",
                     block_index=0,
-                    type="tool_use",
+                    block_type="tool_use",
                     tool_name="Grep",
                     semantic_type="search",
                 )
@@ -536,12 +672,12 @@ async def test_filter_action_terms_apply_after_fts_search(tmp_path: Path) -> Non
             role="assistant",
             text="Investigating the same parser regression",
             content_blocks=[
-                ContentBlockRecord(
+                _content_block(
                     block_id="blk-shell-0",
                     message_id="m2",
                     conversation_id="conv-shell",
                     block_index=0,
-                    type="tool_use",
+                    block_type="tool_use",
                     tool_name="Bash",
                     tool_input='{"command":"python -m pytest"}',
                     semantic_type="shell",
@@ -566,7 +702,6 @@ async def test_filter_action_terms_apply_after_fts_search(tmp_path: Path) -> Non
 async def test_filter_action_terms_reconcile_runtime_semantics_after_sql_candidate_fetch(tmp_path: Path) -> None:
     """Runtime semantic facts must outrank stale persisted semantic_type labels."""
     from polylogue.lib.filters import ConversationFilter
-    from polylogue.storage.store import ContentBlockRecord
     from tests.infra.storage_records import ConversationBuilder
 
     db_path = tmp_path / "action-runtime-reconcile.db"
@@ -580,12 +715,12 @@ async def test_filter_action_terms_reconcile_runtime_semantics_after_sql_candida
             role="assistant",
             text="Create a task for the next review pass",
             content_blocks=[
-                ContentBlockRecord(
+                _content_block(
                     block_id="blk-stale-0",
                     message_id="m1",
                     conversation_id="conv-stale-other",
                     block_index=0,
-                    type="tool_use",
+                    block_type="tool_use",
                     tool_name="TaskCreate",
                     semantic_type="other",
                 )
@@ -607,7 +742,7 @@ async def test_filter_action_terms_reconcile_runtime_semantics_after_sql_candida
         await backend.close()
 
 
-def test_store_records_roundtrip_contract(test_conn) -> None:
+def test_store_records_roundtrip_contract(test_conn: sqlite3.Connection) -> None:
     """store_records() must insert, skip, update, and handle sparse payloads coherently."""
     initial = make_conversation("conv-create", content_hash="hash-create")
     created = store_records(
@@ -624,7 +759,9 @@ def test_store_records_roundtrip_contract(test_conn) -> None:
         "skipped_messages": 0,
         "skipped_attachments": 0,
     }
-    assert _conversation_row(test_conn, "conv-create")["title"] == "Test Conversation"
+    created_row = _conversation_row(test_conn, "conv-create")
+    assert created_row is not None
+    assert created_row["title"] == "Test Conversation"
     assert _message_count(test_conn, "conv-create") == 1
 
     duplicate = store_records(
@@ -643,8 +780,10 @@ def test_store_records_roundtrip_contract(test_conn) -> None:
         conn=test_conn,
     )
     assert updated["conversations"] == 1
-    assert _conversation_row(test_conn, "conv-create")["title"] == "Updated Title"
-    assert _conversation_row(test_conn, "conv-create")["content_hash"] == "hash-updated"
+    updated_row = _conversation_row(test_conn, "conv-create")
+    assert updated_row is not None
+    assert updated_row["title"] == "Updated Title"
+    assert updated_row["content_hash"] == "hash-updated"
 
     multi = store_records(
         conversation=make_conversation("conv-multi", title="Multi Message"),
@@ -677,10 +816,12 @@ def test_store_records_roundtrip_contract(test_conn) -> None:
     assert sparse["conversations"] == 1
     assert sparse["messages"] == 0
     assert sparse["attachments"] == 1
-    assert _attachment_row(test_conn, "att-empty")["ref_count"] == 1
+    sparse_attachment = _attachment_row(test_conn, "att-empty")
+    assert sparse_attachment is not None
+    assert sparse_attachment["ref_count"] == 1
 
 
-def test_prune_attachment_refs_contract(test_conn) -> None:
+def test_prune_attachment_refs_contract(test_conn: sqlite3.Connection) -> None:
     """Pruning refs must keep requested refs, recalculate counts, and delete zero-ref attachments."""
     conv = make_conversation("conv-prune", title="Prune Test")
     msg1 = make_message("msg-prune-1", "conv-prune", provider_message_id="ext-1", text="First")
@@ -696,8 +837,8 @@ def test_prune_attachment_refs_contract(test_conn) -> None:
         conn=test_conn,
     )
 
-    keep_ref = _make_ref_id("att-prune-1", "conv-prune", "msg-prune-1")
-    keep_shared = _make_ref_id("att-shared", "conv-prune", "msg-prune-1")
+    keep_ref = _ref_id("att-prune-1", "conv-prune", "msg-prune-1")
+    keep_shared = _ref_id("att-shared", "conv-prune", "msg-prune-1")
     _prune_attachment_refs(test_conn, "conv-prune", {keep_ref, keep_shared})
 
     remaining_refs = test_conn.execute(
@@ -705,14 +846,18 @@ def test_prune_attachment_refs_contract(test_conn) -> None:
         ("conv-prune",),
     ).fetchall()
     assert [row["ref_id"] for row in remaining_refs] == sorted([keep_ref, keep_shared])
-    assert _attachment_row(test_conn, "att-prune-1")["ref_count"] == 1
-    assert _attachment_row(test_conn, "att-shared")["ref_count"] == 1
+    pruned_attachment = _attachment_row(test_conn, "att-prune-1")
+    shared_attachment = _attachment_row(test_conn, "att-shared")
+    assert pruned_attachment is not None
+    assert shared_attachment is not None
+    assert pruned_attachment["ref_count"] == 1
+    assert shared_attachment["ref_count"] == 1
     assert _attachment_row(test_conn, "att-prune-2") is None
 
 
-def test_upsert_optional_and_attachment_contracts(test_conn) -> None:
+def test_upsert_optional_and_attachment_contracts(test_conn: sqlite3.Connection) -> None:
     """Optional-field upserts and attachment metadata updates must round-trip cleanly."""
-    conversation = ConversationRecord(
+    conversation = _conversation_record(
         conversation_id="conv-optional",
         provider_name="test",
         provider_conversation_id="ext-conv1",
@@ -724,24 +869,30 @@ def test_upsert_optional_and_attachment_contracts(test_conn) -> None:
     )
     assert upsert_conversation(test_conn, conversation) is True
     conv_row = _conversation_row(test_conn, "conv-optional")
+    assert conv_row is not None
     assert conv_row["title"] is None
     assert conv_row["created_at"] is None
     assert conv_row["provider_meta"] is None
 
-    message = make_message(
-        "msg-optional",
-        "conv-optional",
+    message = MessageRecord(
+        message_id=_message_id("msg-optional"),
+        conversation_id=_conversation_id("conv-optional"),
+        provider_message_id=None,
         role=None,
         text=None,
-        timestamp=None,
-        provider_message_id=None,
-        provider_meta=None,
+        sort_key=None,
+        content_hash=_content_hash("msg-optional-hash"),
+        provider_name="",
+        word_count=0,
+        has_tool_use=0,
+        has_thinking=0,
     )
     assert upsert_message(test_conn, message) is True
     msg_row = test_conn.execute(
         "SELECT * FROM messages WHERE message_id = ?",
         ("msg-optional",),
     ).fetchone()
+    assert msg_row is not None
     assert msg_row["role"] is None
     assert msg_row["text"] is None
     assert msg_row["provider_message_id"] is None
@@ -761,6 +912,7 @@ def test_upsert_optional_and_attachment_contracts(test_conn) -> None:
     assert upsert_attachment(test_conn, first) is False
     assert upsert_attachment(test_conn, second) is True
     att_row = _attachment_row(test_conn, "att-meta")
+    assert att_row is not None
     assert att_row["mime_type"] == "image/jpeg"
     assert att_row["size_bytes"] == 2048
     assert att_row["path"] == "/new/path.jpg"
@@ -771,7 +923,7 @@ def test_json_or_none_contract() -> None:
     """JSON serialization helper must preserve mappings and None."""
     import json
 
-    payloads = [
+    payloads: list[tuple[dict[str, object] | None, dict[str, object] | None]] = [
         ({"key": "value"}, {"key": "value"}),
         ({"nested": {"key": "value"}, "list": [1, 2, 3]}, {"nested": {"key": "value"}, "list": [1, 2, 3]}),
         (None, None),
@@ -781,17 +933,18 @@ def test_json_or_none_contract() -> None:
         if expected is None:
             assert result is None
         else:
+            assert result is not None
             assert json.loads(result) == expected
 
 
 def test_make_ref_id_contract() -> None:
     """Attachment ref IDs must be deterministic and sensitive to attachment, conversation, and message."""
-    same_1 = _make_ref_id("att1", "conv1", "msg1")
-    same_2 = _make_ref_id("att1", "conv1", "msg1")
-    different_attachment = _make_ref_id("att2", "conv1", "msg1")
-    different_conversation = _make_ref_id("att1", "conv2", "msg1")
-    none_message_1 = _make_ref_id("att1", "conv1", None)
-    none_message_2 = _make_ref_id("att1", "conv1", None)
+    same_1 = _ref_id("att1", "conv1", "msg1")
+    same_2 = _ref_id("att1", "conv1", "msg1")
+    different_attachment = _ref_id("att2", "conv1", "msg1")
+    different_conversation = _ref_id("att1", "conv2", "msg1")
+    none_message_1 = _ref_id("att1", "conv1", None)
+    none_message_2 = _ref_id("att1", "conv1", None)
 
     assert same_1 == same_2
     assert same_1 != different_attachment
@@ -803,7 +956,7 @@ def test_make_ref_id_contract() -> None:
 
 
 @pytest.mark.slow
-def test_write_lock_prevents_concurrent_writes(test_db) -> None:
+def test_write_lock_prevents_concurrent_writes(test_db: Path) -> None:
     """Threaded store_records() calls must complete without corrupting conversation or message counts."""
     results = []
     errors = []
@@ -829,7 +982,11 @@ def test_write_lock_prevents_concurrent_writes(test_db) -> None:
         assert conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 30
 
 
-def test_store_records_without_connection_creates_own(test_db, tmp_path, monkeypatch) -> None:
+def test_store_records_without_connection_creates_own(
+    test_db: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """store_records() must honor the default DB path when no connection is supplied."""
     import polylogue.paths
     import polylogue.storage.backends.connection as connection_module
@@ -859,7 +1016,7 @@ def test_store_records_without_connection_creates_own(test_db, tmp_path, monkeyp
 
 
 @pytest.mark.slow
-def test_concurrent_upsert_same_attachment_ref_count_correct(test_db) -> None:
+def test_concurrent_upsert_same_attachment_ref_count_correct(test_db: Path) -> None:
     """Concurrent upserts of the same attachment must keep ref_count equal to actual refs."""
     shared_attachment_id = "shared-attachment-race-test"
 
@@ -917,10 +1074,10 @@ def test_concurrent_upsert_same_attachment_ref_count_correct(test_db) -> None:
     ],
     ids=["zero", "large", "unknown", "negative"],
 )
-def test_attachment_size_bytes_contract(size_bytes, valid) -> None:
+def test_attachment_size_bytes_contract(size_bytes: int | None, valid: bool) -> None:
     """Attachment size validation must accept non-negative bounds."""
     if valid:
-        record = AttachmentRecord(
+        record = _attachment_record(
             attachment_id="test",
             conversation_id="conv1",
             message_id="msg1",
@@ -932,9 +1089,9 @@ def test_attachment_size_bytes_contract(size_bytes, valid) -> None:
     else:
         with pytest.raises(ValidationError):
             AttachmentRecord(
-                attachment_id="test",
-                conversation_id="conv1",
-                message_id="msg1",
+                attachment_id=_attachment_id("test"),
+                conversation_id=_conversation_id("conv1"),
+                message_id=_message_id("msg1"),
                 mime_type="text/plain",
                 size_bytes=size_bytes,
                 provider_meta=None,
@@ -942,9 +1099,9 @@ def test_attachment_size_bytes_contract(size_bytes, valid) -> None:
 
 
 @pytest.mark.parametrize("name", ["claude-ai", "claude-code", "Provider123"])
-def test_provider_name_accepts_valid(name) -> None:
+def test_provider_name_accepts_valid(name: str) -> None:
     """Representative provider-name formats should validate."""
-    record = ConversationRecord(
+    record = _conversation_record(
         conversation_id="test",
         provider_name=name,
         provider_conversation_id="ext1",
@@ -964,7 +1121,7 @@ class TestCrudLaws:
 
     @given(conversation_strategy(min_messages=1, max_messages=5))
     @settings(max_examples=30, deadline=None)
-    async def test_save_retrieve_roundtrip(self, conv_data: dict):
+    async def test_save_retrieve_roundtrip(self, conv_data: dict[str, Any]) -> None:
         """Saving a strategy-generated conversation and retrieving it preserves identity."""
         with tempfile.TemporaryDirectory() as tmp_dir:
             db_path = Path(tmp_dir) / "roundtrip.db"
@@ -980,8 +1137,9 @@ class TestCrudLaws:
                 created_at=conv_data.get("created_at"),
             )
 
-            messages = []
-            for i, msg_data in enumerate(conv_data.get("messages", [])):
+            messages: list[MessageRecord] = []
+            message_payloads = cast(list[dict[str, Any]], conv_data.get("messages", []))
+            for i, msg_data in enumerate(message_payloads):
                 msg = make_message(
                     message_id=f"{conv_id}-m{i}",
                     conversation_id=conv_id,
@@ -1006,7 +1164,7 @@ class TestCrudLaws:
 
     @given(conversation_strategy(min_messages=1, max_messages=3))
     @settings(max_examples=20, deadline=None)
-    async def test_save_is_idempotent(self, conv_data: dict):
+    async def test_save_is_idempotent(self, conv_data: dict[str, Any]) -> None:
         """Saving the same conversation twice yields the same stored data."""
         with tempfile.TemporaryDirectory() as tmp_dir:
             db_path = Path(tmp_dir) / "idempotent.db"
@@ -1037,13 +1195,13 @@ class TestCrudLaws:
 
 
 @st.composite
-def simple_tag_spec(draw: st.DrawFn) -> dict:
+def simple_tag_spec(draw: st.DrawFn) -> SimpleTagSpec:
     """Generate a tag assignment spec: conversation ID + list of tags."""
     conv_suffix = draw(
         st.text(
             min_size=3,
             max_size=12,
-            alphabet=st.characters(whitelist_categories=("L", "N"), whitelist_characters="-"),
+            alphabet="abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-",
         ).filter(lambda s: s[0].isalpha())
     )
     tags = draw(
@@ -1051,10 +1209,7 @@ def simple_tag_spec(draw: st.DrawFn) -> dict:
             st.text(
                 min_size=1,
                 max_size=15,
-                alphabet=st.characters(
-                    whitelist_categories=("L", "N"),
-                    whitelist_characters="-",
-                ),
+                alphabet="abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-",
             ),
             min_size=1,
             max_size=4,
@@ -1065,11 +1220,11 @@ def simple_tag_spec(draw: st.DrawFn) -> dict:
 
 
 @st.composite
-def simple_title_search_spec(draw: st.DrawFn) -> dict:
+def simple_title_search_spec(draw: st.DrawFn) -> SimpleTitleSearchSpec:
     """Generate a title search spec: title and search substring."""
     words = draw(
         st.lists(
-            st.text(min_size=3, max_size=12, alphabet=st.characters(whitelist_categories=("L",))),
+            st.text(min_size=3, max_size=12, alphabet="abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"),
             min_size=2,
             max_size=5,
         )
@@ -1084,7 +1239,7 @@ class TestTagAssignmentLaws:
 
     @given(simple_tag_spec())
     @settings(max_examples=15, deadline=None)
-    async def test_add_tag_is_retrievable(self, spec: dict):
+    async def test_add_tag_is_retrievable(self, spec: SimpleTagSpec) -> None:
         """Adding a tag to a conversation makes it appear in metadata."""
         with tempfile.TemporaryDirectory() as tmp_dir:
             from polylogue.storage.repository import ConversationRepository
@@ -1115,7 +1270,7 @@ class TestTagAssignmentLaws:
 
     @given(simple_tag_spec())
     @settings(max_examples=15, deadline=None)
-    async def test_remove_tag_is_idempotent(self, spec: dict):
+    async def test_remove_tag_is_idempotent(self, spec: SimpleTagSpec) -> None:
         """Removing a tag that doesn't exist doesn't crash."""
         with tempfile.TemporaryDirectory() as tmp_dir:
             from polylogue.storage.repository import ConversationRepository
@@ -1150,7 +1305,7 @@ class TestTitleSearchLaws:
 
     @given(simple_title_search_spec())
     @settings(max_examples=15, deadline=None)
-    async def test_title_search_finds_matching(self, spec: dict):
+    async def test_title_search_finds_matching(self, spec: SimpleTitleSearchSpec) -> None:
         """Searching by title substring finds the matching conversation."""
         with tempfile.TemporaryDirectory() as tmp_dir:
             from polylogue.storage.index import rebuild_index
@@ -1184,7 +1339,7 @@ class TestTitleSearchLaws:
 
     @given(simple_title_search_spec())
     @settings(max_examples=15, deadline=None)
-    async def test_title_search_excludes_non_matching(self, spec: dict):
+    async def test_title_search_excludes_non_matching(self, spec: SimpleTitleSearchSpec) -> None:
         """Title search doesn't return conversations with unrelated titles."""
         with tempfile.TemporaryDirectory() as tmp_dir:
             from polylogue.storage.repository import ConversationRepository
@@ -1226,7 +1381,7 @@ class TestTitleSearchLaws:
 class TestSearchCacheKey:
     """Tests for SearchCacheKey creation and behavior."""
 
-    def test_create_basic(self, tmp_path):
+    def test_create_basic(self, tmp_path: Path) -> None:
         """Create a basic cache key."""
         from polylogue.storage.search_cache import SearchCacheKey
 
@@ -1240,7 +1395,7 @@ class TestSearchCacheKey:
         assert key.source is None
         assert key.since is None
 
-    def test_create_with_all_params(self, tmp_path):
+    def test_create_with_all_params(self, tmp_path: Path) -> None:
         """Create a cache key with all parameters."""
         from polylogue.storage.search_cache import SearchCacheKey
 
@@ -1260,16 +1415,16 @@ class TestSearchCacheKey:
         assert key.render_root_path == str(tmp_path / "render")
         assert key.db_path == str(tmp_path / "test.db")
 
-    def test_key_is_frozen(self, tmp_path):
+    def test_key_is_frozen(self, tmp_path: Path) -> None:
         """Cache key is immutable (frozen dataclass)."""
         from polylogue.storage.search_cache import SearchCacheKey
 
         key = SearchCacheKey.create(query="test", archive_root=tmp_path)
-        # Frozen dataclass should raise on attribute assignment
+        attr_name = "query"
         with pytest.raises(AttributeError):
-            key.query = "changed"
+            setattr(key, attr_name, "changed")
 
-    def test_same_params_same_key(self, tmp_path):
+    def test_same_params_same_key(self, tmp_path: Path) -> None:
         """Same parameters produce equal keys (same cache version)."""
         from polylogue.storage.search_cache import SearchCacheKey
 
@@ -1277,7 +1432,7 @@ class TestSearchCacheKey:
         key2 = SearchCacheKey.create(query="test", archive_root=tmp_path, limit=10)
         assert key1 == key2
 
-    def test_different_query_different_key(self, tmp_path):
+    def test_different_query_different_key(self, tmp_path: Path) -> None:
         """Different queries produce different keys."""
         from polylogue.storage.search_cache import SearchCacheKey
 
@@ -1285,7 +1440,7 @@ class TestSearchCacheKey:
         key2 = SearchCacheKey.create(query="world", archive_root=tmp_path)
         assert key1 != key2
 
-    def test_different_limit_different_key(self, tmp_path):
+    def test_different_limit_different_key(self, tmp_path: Path) -> None:
         """Different limits produce different keys."""
         from polylogue.storage.search_cache import SearchCacheKey
 
@@ -1293,14 +1448,14 @@ class TestSearchCacheKey:
         key2 = SearchCacheKey.create(query="test", archive_root=tmp_path, limit=20)
         assert key1 != key2
 
-    def test_none_render_root(self, tmp_path):
+    def test_none_render_root(self, tmp_path: Path) -> None:
         """None render_root_path stored as None."""
         from polylogue.storage.search_cache import SearchCacheKey
 
         key = SearchCacheKey.create(query="test", archive_root=tmp_path, render_root_path=None)
         assert key.render_root_path is None
 
-    def test_key_is_hashable(self, tmp_path):
+    def test_key_is_hashable(self, tmp_path: Path) -> None:
         """Cache key can be used as dict key (hashable)."""
         from polylogue.storage.search_cache import SearchCacheKey
 
@@ -1312,7 +1467,7 @@ class TestSearchCacheKey:
 class TestInvalidateSearchCache:
     """Tests for cache invalidation."""
 
-    def test_invalidation_increments_version(self, tmp_path):
+    def test_invalidation_increments_version(self, tmp_path: Path) -> None:
         """Invalidation changes cache version."""
         from polylogue.storage.search_cache import SearchCacheKey, invalidate_search_cache
 
@@ -1324,7 +1479,7 @@ class TestInvalidateSearchCache:
         assert key_before != key_after
         assert key_before.cache_version < key_after.cache_version
 
-    def test_multiple_invalidations(self, tmp_path):
+    def test_multiple_invalidations(self, tmp_path: Path) -> None:
         """Multiple invalidations increment version each time."""
         from polylogue.storage.search_cache import SearchCacheKey, invalidate_search_cache
 
@@ -1340,7 +1495,7 @@ class TestInvalidateSearchCache:
 class TestCacheStats:
     """Tests for cache statistics."""
 
-    def test_stats_returns_dict(self):
+    def test_stats_returns_dict(self) -> None:
         """get_cache_stats returns a dictionary."""
         from polylogue.storage.search_cache import get_cache_stats
 
@@ -1348,7 +1503,7 @@ class TestCacheStats:
         assert isinstance(stats, dict)
         assert "cache_version" in stats
 
-    def test_stats_version_matches_current(self, tmp_path):
+    def test_stats_version_matches_current(self, tmp_path: Path) -> None:
         """Stats version matches what keys use."""
         from polylogue.storage.search_cache import SearchCacheKey, get_cache_stats
 
@@ -1365,7 +1520,7 @@ class TestCacheStats:
 class TestRepositoryOperations:
     """ConversationRepository CRUD operations."""
 
-    async def test_repository_basic_operations(self, test_db):
+    async def test_repository_basic_operations(self, test_db: Path) -> None:
         """Test ConversationRepository basic get/list operations."""
         from tests.infra.storage_records import DbFactory
 
@@ -1380,14 +1535,15 @@ class TestRepositoryOperations:
         conv = await repo.get("c1")
         assert conv is not None
         assert conv.id == "c1"
-        assert len(conv.messages) == 1
-        assert conv.messages[0].text == "hello world"
+        messages = conv.messages.to_list()
+        assert len(messages) == 1
+        assert messages[0].text == "hello world"
 
         lst = await repo.list()
         assert len(lst) == 1
         assert lst[0].id == "c1"
 
-    async def test_get_eager_includes_attachment_conversation_id(self, test_db):
+    async def test_get_eager_includes_attachment_conversation_id(self, test_db: Path) -> None:
         """ConversationRepository.get_eager() returns attachments with conversation_id field."""
         from tests.infra.storage_records import DbFactory
 
@@ -1417,14 +1573,15 @@ class TestRepositoryOperations:
         conv = await repo.get_eager("c-with-att")
 
         assert conv is not None
-        assert len(conv.messages) == 1
-        msg = conv.messages[0]
+        messages = conv.messages.to_list()
+        assert len(messages) == 1
+        msg = messages[0]
         assert len(msg.attachments) == 1
         att = msg.attachments[0]
         assert att.id == "att1"
         assert att.mime_type == "image/png"
 
-    async def test_get_eager_multiple_attachments(self, test_db):
+    async def test_get_eager_multiple_attachments(self, test_db: Path) -> None:
         """get_eager() correctly groups multiple attachments per message."""
         from tests.infra.storage_records import DbFactory
 
@@ -1458,18 +1615,19 @@ class TestRepositoryOperations:
         conv = await repo.get_eager("c-multi-att")
 
         assert conv is not None
-        assert len(conv.messages) == 2
+        messages = conv.messages.to_list()
+        assert len(messages) == 2
 
-        m1 = conv.messages[0]
+        m1 = messages[0]
         assert len(m1.attachments) == 2
         m1_att_ids = {a.id for a in m1.attachments}
         assert m1_att_ids == {"att1", "att2"}
 
-        m2 = conv.messages[1]
+        m2 = messages[1]
         assert len(m2.attachments) == 1
         assert m2.attachments[0].id == "att3"
 
-    async def test_get_eager_attachment_metadata_decoded(self, test_db):
+    async def test_get_eager_attachment_metadata_decoded(self, test_db: Path) -> None:
         """Attachment provider_meta JSON is properly decoded."""
         from tests.infra.storage_records import DbFactory
 
@@ -1499,8 +1657,9 @@ class TestRepositoryOperations:
         conv = await repo.get_eager("c-att-meta")
 
         assert conv is not None
-        assert len(conv.messages) == 1
-        msg = conv.messages[0]
+        messages = conv.messages.to_list()
+        assert len(messages) == 1
+        msg = messages[0]
         assert len(msg.attachments) == 1
         att = msg.attachments[0]
         assert att.provider_meta == meta or att.provider_meta is None
@@ -1509,7 +1668,7 @@ class TestRepositoryOperations:
 class TestCacheThreadSafety:
     """Thread safety tests for cache invalidation."""
 
-    def test_concurrent_invalidation(self):
+    def test_concurrent_invalidation(self) -> None:
         """Concurrent invalidation doesn't corrupt state."""
         import threading
 
@@ -1522,12 +1681,12 @@ class TestCacheThreadSafety:
         num_threads = 10
         invalidations_per_thread = 100
 
-        def invalidate_many():
+        def invalidate_many() -> None:
             try:
                 for _ in range(invalidations_per_thread):
                     invalidate_search_cache()
-            except Exception as e:
-                errors.append(e)
+            except Exception as exc:
+                errors.append(exc)
 
         threads = [threading.Thread(target=invalidate_many) for _ in range(num_threads)]
         for t in threads:
@@ -1542,29 +1701,31 @@ class TestCacheThreadSafety:
 
 
 class _VectorSpy:
+    model = "test-model"
+
     def __init__(self) -> None:
         self.query_calls: list[tuple[str, int]] = []
-        self.upsert_calls: list[tuple[str, list[object]]] = []
+        self.upsert_calls: list[tuple[str, list[MessageRecord]]] = []
 
     def query(self, text: str, limit: int = 10) -> list[tuple[str, float]]:
         self.query_calls.append((text, limit))
         return [("msg-1", 0.125)]
 
-    def upsert(self, conversation_id: str, messages: list[object]) -> None:
+    def upsert(self, conversation_id: str, messages: list[MessageRecord]) -> None:
         self.upsert_calls.append((conversation_id, messages))
 
 
 class TestRepositoryVectorAsyncBoundary:
     async def test_search_similar_offloads_vector_query(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        backend = SimpleNamespace(queries=SimpleNamespace())
+        backend = cast(SQLiteBackend, SimpleNamespace(queries=SimpleNamespace()))
         repo = ConversationRepository(backend=backend)
         provider = _VectorSpy()
-        repo._get_message_conversation_mapping = AsyncMock(return_value={"msg-1": "conv-1"})
-        repo.get_many = AsyncMock(return_value=["conv-1"])
+        monkeypatch.setattr(repo, "_get_message_conversation_mapping", AsyncMock(return_value={"msg-1": "conv-1"}))
+        monkeypatch.setattr(repo, "get_many", AsyncMock(return_value=[_conversation_model("conv-1")]))
 
-        to_thread_calls: list[tuple[object, tuple[object, ...], dict[str, object]]] = []
+        to_thread_calls: list[tuple[Callable[..., object], tuple[object, ...], dict[str, object]]] = []
 
-        async def fake_to_thread(func, /, *args, **kwargs):
+        async def fake_to_thread(func: Callable[..., object], /, *args: object, **kwargs: object) -> object:
             to_thread_calls.append((func, args, kwargs))
             return func(*args, **kwargs)
 
@@ -1572,7 +1733,7 @@ class TestRepositoryVectorAsyncBoundary:
 
         result = await repo.search_similar("semantic query", limit=4, vector_provider=provider)
 
-        assert result == ["conv-1"]
+        assert [str(conversation.id) for conversation in result] == ["conv-1"]
         assert provider.query_calls == [("semantic query", 12)]
         assert len(to_thread_calls) == 1
         assert getattr(to_thread_calls[0][0], "__self__", None) is provider
@@ -1583,13 +1744,15 @@ class TestRepositoryVectorAsyncBoundary:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         messages = [make_message("msg-embed", "conv-embed", text="Message long enough to embed.")]
-        backend = SimpleNamespace(queries=SimpleNamespace(get_messages=AsyncMock(return_value=messages)))
+        backend = cast(
+            SQLiteBackend, SimpleNamespace(queries=SimpleNamespace(get_messages=AsyncMock(return_value=messages)))
+        )
         repo = ConversationRepository(backend=backend)
         provider = _VectorSpy()
 
-        to_thread_calls: list[tuple[object, tuple[object, ...], dict[str, object]]] = []
+        to_thread_calls: list[tuple[Callable[..., object], tuple[object, ...], dict[str, object]]] = []
 
-        async def fake_to_thread(func, /, *args, **kwargs):
+        async def fake_to_thread(func: Callable[..., object], /, *args: object, **kwargs: object) -> object:
             to_thread_calls.append((func, args, kwargs))
             return func(*args, **kwargs)
 
@@ -1607,14 +1770,14 @@ class TestRepositoryVectorAsyncBoundary:
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        backend = SimpleNamespace(queries=SimpleNamespace())
+        backend = cast(SQLiteBackend, SimpleNamespace(queries=SimpleNamespace()))
         repo = ConversationRepository(backend=backend)
         provider = _VectorSpy()
-        repo._get_message_conversation_mapping = AsyncMock(return_value={"msg-1": "conv-1"})
+        monkeypatch.setattr(repo, "_get_message_conversation_mapping", AsyncMock(return_value={"msg-1": "conv-1"}))
 
-        to_thread_calls: list[tuple[object, tuple[object, ...], dict[str, object]]] = []
+        to_thread_calls: list[tuple[Callable[..., object], tuple[object, ...], dict[str, object]]] = []
 
-        async def fake_to_thread(func, /, *args, **kwargs):
+        async def fake_to_thread(func: Callable[..., object], /, *args: object, **kwargs: object) -> object:
             to_thread_calls.append((func, args, kwargs))
             return func(*args, **kwargs)
 
@@ -1639,7 +1802,7 @@ class TestInfraTagAssignment:
 
     @given(infra_tag_assignment_strategy(min_conversations=2, max_conversations=4))
     @settings(max_examples=10, deadline=None)
-    async def test_tag_assignment_roundtrip(self, spec: TagAssignmentSpec):
+    async def test_tag_assignment_roundtrip(self, spec: TagAssignmentSpec) -> None:
         """Tags assigned via strategy-generated specs are retrievable and consistent."""
         with tempfile.TemporaryDirectory() as tmp_dir:
             from polylogue.storage.repository import ConversationRepository
@@ -1667,7 +1830,7 @@ class TestInfraTagAssignment:
 
     @given(infra_tag_assignment_strategy(min_conversations=2, max_conversations=4))
     @settings(max_examples=10, deadline=None)
-    async def test_tag_counts_match_expected(self, spec: TagAssignmentSpec):
+    async def test_tag_counts_match_expected(self, spec: TagAssignmentSpec) -> None:
         """Tag counts computed from strategy match actual stored tag counts."""
         with tempfile.TemporaryDirectory() as tmp_dir:
             from polylogue.storage.repository import ConversationRepository
@@ -1700,7 +1863,7 @@ class TestInfraTitleSearch:
 
     @given(infra_title_search_strategy())
     @settings(max_examples=15, deadline=None)
-    async def test_literal_title_search_finds_matching_with_special_chars(self, spec: TitleSearchSpec):
+    async def test_literal_title_search_finds_matching_with_special_chars(self, spec: TitleSearchSpec) -> None:
         """Title search with wildcard-sensitive characters finds exact matches."""
         with tempfile.TemporaryDirectory() as tmp_dir:
             from polylogue.storage.repository import ConversationRepository
@@ -1737,7 +1900,7 @@ class TestInfraTitleSearch:
 
     @given(infra_title_search_strategy())
     @settings(max_examples=15, deadline=None)
-    async def test_literal_title_search_excludes_decoy(self, spec: TitleSearchSpec):
+    async def test_literal_title_search_excludes_decoy(self, spec: TitleSearchSpec) -> None:
         """Title search with special characters does not match the decoy title."""
         with tempfile.TemporaryDirectory() as tmp_dir:
             from polylogue.storage.repository import ConversationRepository

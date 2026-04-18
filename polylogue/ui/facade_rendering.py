@@ -8,16 +8,17 @@ from pygments import highlight
 from pygments.formatters import TerminalFormatter
 from pygments.lexers import get_lexer_by_name
 from rich.align import Align
+from rich.box import Box
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.syntax import Syntax
 from rich.text import Text
 
+from polylogue.ui.facade_console import ConsoleLike
 
-def render_banner(
-    console: Console | object, *, plain: bool, banner_box: object, title: str, subtitle: str | None
-) -> None:
+
+def render_banner(console: ConsoleLike, *, plain: bool, banner_box: Box, title: str, subtitle: str | None) -> None:
     if plain:
         console.print(f"== {title} ==")
         if subtitle:
@@ -38,7 +39,7 @@ def render_banner(
     console.print(panel)
 
 
-def render_summary(console: Console | object, *, plain: bool, panel_box: object, title: str, lines: list[str]) -> None:
+def render_summary(console: ConsoleLike, *, plain: bool, panel_box: Box, title: str, lines: list[str]) -> None:
     text = "\n".join(lines)
     if plain:
         console.print(f"-- {title} --")
@@ -63,7 +64,7 @@ def render_summary(console: Console | object, *, plain: bool, panel_box: object,
     console.print(panel)
 
 
-def render_markdown(console: Console | object, *, plain: bool, panel_box: object, content: str) -> None:
+def render_markdown(console: ConsoleLike, *, plain: bool, panel_box: Box, content: str) -> None:
     if plain:
         console.print(content)
         return
@@ -78,7 +79,7 @@ def render_markdown(console: Console | object, *, plain: bool, panel_box: object
     console.print(panel)
 
 
-def render_code(console: Console | object, *, plain: bool, panel_box: object, code: str, language: str) -> None:
+def render_code(console: ConsoleLike, *, plain: bool, panel_box: Box, code: str, language: str) -> None:
     if plain:
         console.print(code)
         return
@@ -94,7 +95,7 @@ def render_code(console: Console | object, *, plain: bool, panel_box: object, co
 
 
 def render_diff(
-    console: Console | object,
+    console: ConsoleLike,
     *,
     plain: bool,
     filename: str,
@@ -133,7 +134,7 @@ def render_diff(
 
 
 def render_status(
-    console: Console | object,
+    console: ConsoleLike,
     *,
     plain: bool,
     icon: str,

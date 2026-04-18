@@ -45,9 +45,10 @@ class FTS5Provider:
         Raises:
             DatabaseError: If indexing fails
         """
+        rows = [(m.message_id, m.conversation_id, m.text) for m in messages]
         with connection_context(self.db_path) as conn:
             ensure_index(conn)
-            replace_fts_rows_for_messages_sync(conn, messages)
+            replace_fts_rows_for_messages_sync(conn, rows)
             conn.commit()
         if messages:
             invalidate_search_cache()

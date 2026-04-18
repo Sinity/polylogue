@@ -5,7 +5,7 @@ from __future__ import annotations
 import zipfile
 from collections.abc import Iterable
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO, cast
 
 from polylogue.lib.artifact_taxonomy import classify_artifact_path
 from polylogue.logging import get_logger
@@ -105,8 +105,9 @@ def process_zip(
     """Process a ZIP file, yielding conversations from its entries."""
     del should_group
 
+    from .cursor import _ParseContext
     from .dispatch import GROUP_PROVIDERS
-    from .emitter import _ConversationEmitter, _ParseContext
+    from .emitter import _ConversationEmitter
 
     validator = ZipEntryValidator(
         provider_hint,
@@ -133,7 +134,7 @@ def process_zip(
             precomputed_raw: RawConversationData | None = None
             if capture_raw and entry_should_group:
                 with zf.open(name) as handle:
-                    blob_hash, blob_size = get_blob_store().write_from_fileobj(handle)
+                    blob_hash, blob_size = get_blob_store().write_from_fileobj(cast(BinaryIO, handle))
                 precomputed_raw = RawConversationData(
                     raw_bytes=b"",
                     source_path=f"{zip_path}:{name}",
@@ -144,7 +145,7 @@ def process_zip(
                     blob_size=blob_size,
                 )
             with zf.open(name) as handle:
-                yield from emitter.emit(handle, name, precomputed_raw=precomputed_raw)
+                yield from emitter.emit(cast(BinaryIO, handle), name, precomputed_raw=precomputed_raw)
 
 
 __all__ = [

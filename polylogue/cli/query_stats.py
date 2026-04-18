@@ -213,13 +213,15 @@ async def output_stats_sql(
     if stats["words_approx"]:
         out(f"Words: ~{stats['words_approx']:,}")
 
-    if stats.get("providers"):
-        provider_parts = [f"{name} ({count:,})" for name, count in stats["providers"].items()]
+    providers = stats.get("providers")
+    if isinstance(providers, dict) and providers:
+        provider_parts = [f"{name} ({count:,})" for name, count in providers.items()]
         out(f"Providers: {', '.join(provider_parts)}")
 
     out(f"Attachment refs: {stats['attachment_refs']:,}")
     out(f"Unique attachments: {stats['distinct_attachments']:,}")
     if not has_filters:
+        assert archive_stats is not None
         embedding_line = (
             f"Embeddings: {archive_stats.embedded_conversations:,}/{archive_stats.total_conversations:,} convs, "
             f"{archive_stats.embedded_messages:,} msgs ({archive_stats.embedding_coverage:.1f}%)"
@@ -309,9 +311,8 @@ def output_stats_by_summaries(
     table.add_column("Messages", justify="right")
 
     for row in rows:
-        label = (
-            f"[{provider_color(row['group']).hex}]{row['group']}[/]" if dimension == "provider" else str(row["group"])
-        )
+        group_label = str(row["group"])
+        label = f"[{provider_color(group_label).hex}]{group_label}[/]" if dimension == "provider" else group_label
         table.add_row(label, f"{row['conversations']:,}", f"{row['messages']:,}")
 
     table.add_section()
@@ -394,9 +395,8 @@ def output_stats_by_grouped_conversations(
     table.add_column("Words", justify="right")
 
     for row in rows:
-        label = (
-            f"[{provider_color(row['group']).hex}]{row['group']}[/]" if dimension == "provider" else str(row["group"])
-        )
+        group_label = str(row["group"])
+        label = f"[{provider_color(group_label).hex}]{group_label}[/]" if dimension == "provider" else group_label
         table.add_row(label, f"{row['conversations']:,}", f"{row['messages']:,}", f"{row['words']:,}")
 
     table.add_section()
@@ -457,19 +457,19 @@ def output_semantic_grouped_stats(
                 if any(action_matches_slice(action, semantic_slice) for action in message.action_events)
             )
 
-            message_groups: dict[str, set[str]] = defaultdict(set)
+            action_message_groups: dict[str, set[str]] = defaultdict(set)
             for message in facts.message_facts:
                 for key in {
                     action.kind.value
                     for action in message.action_events
                     if action_matches_slice(action, semantic_slice)
                 }:
-                    message_groups[key].add(message.message_id)
+                    action_message_groups[key].add(message.message_id)
 
             for key, fact_count in action_counts.items():
                 action_groups[key]["convs"] += 1
                 action_groups[key]["facts"] += fact_count
-                action_groups[key]["msgs"] += len(message_groups[key])
+                action_groups[key]["msgs"] += len(action_message_groups[key])
 
         rows = [
             {
@@ -507,19 +507,19 @@ def output_semantic_grouped_stats(
                 if any(action_matches_slice(action, semantic_slice) for action in message.action_events)
             )
 
-            message_groups: dict[str, set[str]] = defaultdict(set)
+            tool_message_groups: dict[str, set[str]] = defaultdict(set)
             for message in facts.message_facts:
                 for key in {
                     normalized_tool_name(action)
                     for action in message.action_events
                     if action_matches_slice(action, semantic_slice)
                 }:
-                    message_groups[key].add(message.message_id)
+                    tool_message_groups[key].add(message.message_id)
 
             for key, fact_count in tool_counts.items():
                 tool_groups[key]["convs"] += 1
                 tool_groups[key]["facts"] += fact_count
-                tool_groups[key]["msgs"] += len(message_groups[key])
+                tool_groups[key]["msgs"] += len(tool_message_groups[key])
 
         rows = [
             {

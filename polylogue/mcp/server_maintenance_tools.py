@@ -22,11 +22,13 @@ def register_maintenance_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
             service = IndexService(config=hooks.get_config(), backend=repo.backend)
             success = await service.rebuild_index()
             status_info = await service.get_index_status()
+            index_exists_value = status_info.get("exists", False)
+            indexed_messages_value = status_info.get("count", 0)
             return hooks.json_payload(
                 MCPMutationStatusPayload(
                     status="ok" if success else "failed",
-                    index_exists=status_info.get("exists", False),
-                    indexed_messages=status_info.get("count", 0),
+                    index_exists=index_exists_value if isinstance(index_exists_value, bool) else False,
+                    indexed_messages=indexed_messages_value if isinstance(indexed_messages_value, int) else 0,
                 ),
                 exclude_none=True,
             )

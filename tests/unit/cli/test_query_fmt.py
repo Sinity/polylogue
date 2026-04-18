@@ -16,8 +16,10 @@ from __future__ import annotations
 
 import io
 import json
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from typing import cast
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -32,9 +34,14 @@ from polylogue.cli.query_output import (
     format_summary_list,
     render_stream_transcript,
 )
+from polylogue.lib.attachment_models import Attachment
 from polylogue.lib.messages import MessageCollection
 from polylogue.lib.models import Conversation, ConversationSummary, Message
+from polylogue.lib.roles import Role
 from polylogue.rendering.formatting import _conv_to_dict, _yaml_safe, format_conversation
+from polylogue.types import ConversationId, Provider
+from tests.infra.builders import make_conv as build_conv
+from tests.infra.builders import make_msg as build_msg
 
 
 @dataclass(frozen=True)
@@ -200,6 +207,9 @@ STREAM_CASES = (
     ("json-lines", '"type": "message"', '"role": "assistant"'),
 )
 
+StatItem = str | dict[str, object]
+StatsCaseRow = tuple[str, str, datetime, list[StatItem]]
+
 
 STATS_CASES = (
     (
@@ -291,14 +301,14 @@ def _make_msg(
     text: str | None = "Hello",
     **kwargs: object,
 ) -> Message:
-    return Message(
+    return build_msg(
         id=str(kwargs.get("id", f"msg-{role}")),
-        role=role,
+        role=Role.normalize(role),
         text=text,
-        timestamp=kwargs.get("timestamp"),
-        attachments=kwargs.get("attachments", []),
-        content_blocks=kwargs.get("content_blocks", []),
-        provider_meta=kwargs.get("provider_meta"),
+        timestamp=cast(datetime | None, kwargs.get("timestamp")),
+        attachments=cast(list[Attachment], kwargs.get("attachments", [])),
+        content_blocks=cast(list[dict[str, object]], kwargs.get("content_blocks", [])),
+        provider_meta=cast(dict[str, object] | None, kwargs.get("provider_meta")),
     )
 
 
@@ -309,21 +319,22 @@ def _make_conv(
     messages: list[Message] | None = None,
     **kwargs: object,
 ) -> Conversation:
-    if messages is None:
-        messages = [
+    default_messages: Sequence[Message] | MessageCollection | None = messages
+    if default_messages is None:
+        default_messages = [
             _make_msg("user", "Hello", id="msg-user"),
             _make_msg("assistant", "Response", id="msg-assistant"),
         ]
-    return Conversation(
+    return build_conv(
         id=id,
-        provider=provider,
+        provider=Provider.from_string(provider),
         title=title,
-        messages=MessageCollection(messages=messages),
-        created_at=kwargs.get("created_at"),
-        updated_at=kwargs.get("updated_at"),
+        messages=default_messages,
+        created_at=cast(datetime | None, kwargs.get("created_at")),
+        updated_at=cast(datetime | None, kwargs.get("updated_at")),
         metadata={
-            "tags": kwargs.get("tags", ["law", "example"]),
-            "summary": kwargs.get("summary", "Synthetic summary"),
+            "tags": cast(list[str], kwargs.get("tags", ["law", "example"])),
+            "summary": cast(str, kwargs.get("summary", "Synthetic summary")),
         },
     )
 
@@ -434,8 +445,8 @@ class TestListFormatting:
     @pytest.mark.parametrize("output_format", ["json", "yaml", "csv", "text"])
     def test_format_summary_list_contract(self, output_format: str) -> None:
         summary = ConversationSummary(
-            id="conv-summary-1",
-            provider="claude-ai",
+            id=ConversationId("conv-summary-1"),
+            provider=Provider.CLAUDE_AI,
             title="Summary Conversation",
             created_at=datetime(2025, 6, 1, tzinfo=timezone.utc),
             updated_at=datetime(2025, 6, 2, tzinfo=timezone.utc),
@@ -535,7 +546,12 @@ class TestStreamingOutput:
 
 class TestGroupedStatsOutput:
     @pytest.mark.parametrize("dimension,raw_cases,expected_tokens", STATS_CASES, ids=[case[0] for case in STATS_CASES])
-    def test_output_stats_by_contract_matrix(self, dimension: str, raw_cases, expected_tokens) -> None:
+    def test_output_stats_by_contract_matrix(
+        self,
+        dimension: str,
+        raw_cases: list[StatsCaseRow],
+        expected_tokens: tuple[str, ...],
+    ) -> None:
         conversations = []
         for conv_id, provider, updated_at, texts in raw_cases:
             messages = []

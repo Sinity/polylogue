@@ -10,6 +10,8 @@ from __future__ import annotations
 import errno
 import os
 import stat
+from collections.abc import Mapping
+from io import TextIOWrapper
 from pathlib import Path
 from unittest.mock import patch
 
@@ -20,8 +22,9 @@ import pytest
 class TestReadOnlyOutputDirectory:
     """Pipeline handles read-only output directory gracefully."""
 
-    def test_readonly_archive_root(self, tmp_path: Path, workspace_env) -> None:
+    def test_readonly_archive_root(self, tmp_path: Path, workspace_env: Mapping[str, Path]) -> None:
         """Write to a read-only archive root produces a clean OS error."""
+        del workspace_env
         readonly_dir = tmp_path / "readonly_archive"
         readonly_dir.mkdir()
         os.chmod(readonly_dir, stat.S_IRUSR | stat.S_IXUSR)
@@ -43,7 +46,7 @@ class TestENOSPC:
         """ENOSPC during file write produces clean error."""
         target = tmp_path / "output.md"
 
-        def raise_enospc(*args, **kwargs):
+        def raise_enospc(*args: object, **kwargs: object) -> None:
             raise OSError(errno.ENOSPC, "No space left on device")
 
         with patch("builtins.open", side_effect=raise_enospc):
@@ -57,8 +60,9 @@ class TestENOSPC:
 class TestFileDescriptorPressure:
     """Pipeline handles fd pressure gracefully."""
 
-    def test_many_open_fds(self, tmp_path: Path, workspace_env) -> None:
+    def test_many_open_fds(self, tmp_path: Path, workspace_env: Mapping[str, Path]) -> None:
         """Pipeline still works with many open file descriptors."""
+        del workspace_env
         import asyncio
 
         from polylogue.storage.backends.async_sqlite import SQLiteBackend
@@ -70,7 +74,7 @@ class TestFileDescriptorPressure:
             pass
 
         # Open many files to create fd pressure
-        fds = []
+        fds: list[TextIOWrapper] = []
         try:
             for i in range(100):
                 f = open(tmp_path / f"fd_{i}.tmp", "w")
@@ -80,7 +84,7 @@ class TestFileDescriptorPressure:
             # SQLite connection should still work under fd pressure
             backend = SQLiteBackend(db_path=db_path)
 
-            async def _check():
+            async def _check() -> int:
                 count = await backend.queries.count_conversations(ConversationRecordQuery())
                 await backend.close()
                 return count

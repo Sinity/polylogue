@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any, Literal
 
 import pytest
 
@@ -49,8 +50,8 @@ def test_all_authored_synthetic_benchmark_runners_resolve() -> None:
 
 
 @pytest.mark.asyncio
-async def test_run_synthetic_benchmark_campaign_preserves_scenario_metadata(monkeypatch, tmp_path: Path) -> None:
-    async def fake_incremental(_db_path: Path):
+async def test_run_synthetic_benchmark_campaign_preserves_scenario_metadata(monkeypatch: Any, tmp_path: Path) -> None:
+    async def fake_incremental(_db_path: Path) -> Any:
         return CampaignResult(
             campaign_name="incremental-index",
             scale_level="",
@@ -75,8 +76,8 @@ async def test_run_synthetic_benchmark_campaign_preserves_scenario_metadata(monk
 
 
 @pytest.mark.asyncio
-async def test_run_full_campaign_skips_scenarios_outside_scale_targets(monkeypatch, tmp_path: Path) -> None:
-    async def fake_generate_archive(_spec, archive_dir: Path, *, corpus_source=None):
+async def test_run_full_campaign_skips_scenarios_outside_scale_targets(monkeypatch: Any, tmp_path: Path) -> None:
+    async def fake_generate_archive(_spec: Any, archive_dir: Path, *, corpus_source: Any = None) -> Any:
         from devtools.large_archive_generator import ArchiveMetrics
 
         archive_dir.mkdir(parents=True, exist_ok=True)
@@ -88,7 +89,7 @@ async def test_run_full_campaign_skips_scenarios_outside_scale_targets(monkeypat
             conversation_count=2,
         )
 
-    async def fake_run_campaign(name: str, _db_path: Path):
+    async def fake_run_campaign(name: str, _db_path: Path) -> Any:
         return CampaignResult(
             campaign_name=name,
             scale_level="",
@@ -117,7 +118,7 @@ async def test_run_full_campaign_skips_scenarios_outside_scale_targets(monkeypat
     assert "startup-health" not in {result.campaign_name for result in results}
 
 
-def test_action_event_materialization_campaign_reports_action_row_counts(monkeypatch, tmp_path: Path) -> None:
+def test_action_event_materialization_campaign_reports_action_row_counts(monkeypatch: Any, tmp_path: Path) -> None:
     before = {
         "action_events_count": 2,
         "action_fts_rows": 2,
@@ -133,17 +134,17 @@ def test_action_event_materialization_campaign_reports_action_row_counts(monkeyp
     committed: list[str] = []
 
     class FakeConn:
-        def execute(self, sql: str) -> None:
+        def execute(self: Any, sql: str) -> None:
             executed.append(sql)
 
-        def commit(self) -> None:
+        def commit(self: Any) -> None:
             committed.append("commit")
 
     class FakeContext:
-        def __enter__(self) -> FakeConn:
+        def __enter__(self: Any) -> FakeConn:
             return FakeConn()
 
-        def __exit__(self, exc_type, exc, tb) -> bool:
+        def __exit__(self: Any, exc_type: Any, exc: Any, tb: Any) -> Literal[False]:
             return False
 
     monkeypatch.setattr("devtools.synthetic_benchmark_runtime._db_row_counts", lambda _db_path: next(row_counts))
@@ -166,7 +167,7 @@ def test_action_event_materialization_campaign_reports_action_row_counts(monkeyp
     }
 
 
-def test_session_product_materialization_campaign_reports_rebuild_counts(monkeypatch, tmp_path: Path) -> None:
+def test_session_product_materialization_campaign_reports_rebuild_counts(monkeypatch: Any, tmp_path: Path) -> None:
     before = {
         "session_profiles_count": 1,
         "session_profiles_fts_count": 1,
@@ -187,14 +188,14 @@ def test_session_product_materialization_campaign_reports_rebuild_counts(monkeyp
     committed: list[str] = []
 
     class FakeConn:
-        def commit(self) -> None:
+        def commit(self: Any) -> None:
             committed.append("commit")
 
     class FakeContext:
-        def __enter__(self) -> FakeConn:
+        def __enter__(self: Any) -> FakeConn:
             return FakeConn()
 
-        def __exit__(self, exc_type, exc, tb) -> bool:
+        def __exit__(self: Any, exc_type: Any, exc: Any, tb: Any) -> Literal[False]:
             return False
 
     monkeypatch.setattr(

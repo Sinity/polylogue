@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
 import click
@@ -58,7 +59,7 @@ async def resolve_stream_target(
 
 async def apply_modifiers(
     env: AppEnv,
-    results: list[Conversation | ConversationSummary],
+    results: Sequence[Conversation | ConversationSummary],
     params: dict[str, Any],
     repo: ConversationRepository | None = None,
 ) -> None:
@@ -124,7 +125,7 @@ async def apply_modifiers(
 
 async def delete_conversations(
     env: AppEnv,
-    results: list[Conversation | ConversationSummary],
+    results: Sequence[Conversation | ConversationSummary],
     params: dict[str, Any],
     repo: ConversationRepository | None = None,
 ) -> None:

@@ -7,13 +7,15 @@ test state transitions, not just snapshots.
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
 from tests.infra.storage_records import ConversationBuilder, db_setup
 
 
 @pytest.fixture()
-def archive_with_orphans(workspace_env):
+def archive_with_orphans(workspace_env: Any) -> Any:
     """Create a DB with valid conversations and injected orphan debt."""
     db_path = db_setup(workspace_env)
 
@@ -46,7 +48,7 @@ def archive_with_orphans(workspace_env):
 
 
 @pytest.fixture()
-def archive_with_empty_conversations(workspace_env):
+def archive_with_empty_conversations(workspace_env: Any) -> Any:
     """Create a DB with valid conversations and injected empty conversation debt."""
     db_path = db_setup(workspace_env)
 
@@ -73,7 +75,7 @@ def archive_with_empty_conversations(workspace_env):
 class TestOrphanMessageConvergence:
     """debt(orphaned messages) > 0 → repair → debt = 0 → queries exclude orphans."""
 
-    def test_orphan_detected_then_repaired_to_zero(self, archive_with_orphans):
+    def test_orphan_detected_then_repaired_to_zero(self, archive_with_orphans: Any) -> None:
         from polylogue.storage.backends.connection import open_connection
         from polylogue.storage.repair import (
             count_orphaned_messages_sync,
@@ -91,7 +93,7 @@ class TestOrphanMessageConvergence:
             after = count_orphaned_messages_sync(conn)
         assert after == 0, f"After repair, expected 0 orphans, got {after}"
 
-    def test_healthy_messages_survive_orphan_repair(self, archive_with_orphans):
+    def test_healthy_messages_survive_orphan_repair(self, archive_with_orphans: Any) -> None:
         """Repair must not touch non-orphaned messages."""
         from polylogue.storage.backends.connection import open_connection
         from polylogue.storage.repair import repair_orphaned_messages
@@ -112,7 +114,7 @@ class TestOrphanMessageConvergence:
 
         assert healthy_after == healthy_before, f"Repair damaged healthy messages: {healthy_before} → {healthy_after}"
 
-    def test_repair_is_idempotent(self, archive_with_orphans):
+    def test_repair_is_idempotent(self, archive_with_orphans: Any) -> None:
         """Second repair after convergence is a no-op."""
         from polylogue.storage.repair import repair_orphaned_messages
 
@@ -124,7 +126,7 @@ class TestOrphanMessageConvergence:
 class TestEmptyConversationConvergence:
     """debt(empty conversations) > 0 → repair → debt = 0."""
 
-    def test_empty_detected_then_repaired_to_zero(self, archive_with_empty_conversations):
+    def test_empty_detected_then_repaired_to_zero(self, archive_with_empty_conversations: Any) -> None:
         from polylogue.storage.backends.connection import open_connection
         from polylogue.storage.repair import (
             count_empty_conversations_sync,
@@ -142,7 +144,7 @@ class TestEmptyConversationConvergence:
             after = count_empty_conversations_sync(conn)
         assert after == 0
 
-    def test_non_empty_conversations_survive(self, archive_with_empty_conversations):
+    def test_non_empty_conversations_survive(self, archive_with_empty_conversations: Any) -> None:
         from polylogue.storage.backends.connection import open_connection
         from polylogue.storage.repair import repair_empty_conversations
 
@@ -152,7 +154,7 @@ class TestEmptyConversationConvergence:
             remaining = conn.execute("SELECT COUNT(*) FROM conversations").fetchone()[0]
         assert remaining == 1, "Only the conversation with messages should survive"
 
-    def test_repair_is_idempotent(self, archive_with_empty_conversations):
+    def test_repair_is_idempotent(self, archive_with_empty_conversations: Any) -> None:
         from polylogue.storage.repair import repair_empty_conversations
 
         repair_empty_conversations(archive_with_empty_conversations, dry_run=False)
@@ -163,7 +165,7 @@ class TestEmptyConversationConvergence:
 class TestDryRunSafety:
     """Dry-run must never mutate archive state."""
 
-    def test_dry_run_orphan_repair_preserves_state(self, archive_with_orphans):
+    def test_dry_run_orphan_repair_preserves_state(self, archive_with_orphans: Any) -> None:
         from polylogue.storage.backends.connection import open_connection
         from polylogue.storage.repair import (
             count_orphaned_messages_sync,
@@ -180,7 +182,7 @@ class TestDryRunSafety:
 
         assert after == before, "Dry-run mutated state"
 
-    def test_dry_run_empty_repair_preserves_state(self, archive_with_empty_conversations):
+    def test_dry_run_empty_repair_preserves_state(self, archive_with_empty_conversations: Any) -> None:
         from polylogue.storage.backends.connection import open_connection
         from polylogue.storage.repair import (
             count_empty_conversations_sync,

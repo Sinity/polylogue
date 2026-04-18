@@ -16,7 +16,9 @@ Key properties tested:
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
+from typing import Any
 from unittest.mock import patch
 
 import pytest
@@ -42,7 +44,7 @@ from tests.infra.strategies.filters import (
 
 
 @pytest.fixture
-def filter_db(tmp_path):
+def filter_db(tmp_path: Any) -> Any:
     """Create database with test conversations for filter tests."""
     db_path = tmp_path / "filter_test.db"
 
@@ -83,14 +85,14 @@ def filter_db(tmp_path):
 
 
 @pytest.fixture
-def filter_repo(filter_db):
+def filter_repo(filter_db: Any) -> Any:
     """Create repository for filter tests."""
     backend = SQLiteBackend(db_path=filter_db)
     return ConversationRepository(backend=backend)
 
 
 @pytest.fixture
-def filter_db_empty(tmp_path):
+def filter_db_empty(tmp_path: Any) -> Any:
     """Create empty database for testing empty repository edge cases."""
     db_path = tmp_path / "filter_empty.db"
     with open_connection(db_path) as conn:
@@ -99,14 +101,14 @@ def filter_db_empty(tmp_path):
 
 
 @pytest.fixture
-def filter_repo_empty(filter_db_empty):
+def filter_repo_empty(filter_db_empty: Any) -> Any:
     """Create repository for empty database tests."""
     backend = SQLiteBackend(db_path=filter_db_empty)
     return ConversationRepository(backend=backend)
 
 
 @pytest.fixture
-def filter_db_advanced(tmp_path):
+def filter_db_advanced(tmp_path: Any) -> Any:
     """Create database with conversations for advanced filter tests.
 
     Includes thinking blocks, tool use, attachments, summaries,
@@ -215,7 +217,7 @@ def filter_db_advanced(tmp_path):
 
 
 @pytest.fixture
-def filter_repo_advanced(filter_db_advanced):
+def filter_repo_advanced(filter_db_advanced: Any) -> Any:
     """Create repository for advanced filter tests."""
     backend = SQLiteBackend(db_path=filter_db_advanced)
     return ConversationRepository(backend=backend)
@@ -226,7 +228,7 @@ def filter_repo_advanced(filter_db_advanced):
 # =============================================================================
 
 
-def _apply_filter_spec(f: ConversationFilter, spec: dict) -> ConversationFilter:
+def _apply_filter_spec(f: ConversationFilter, spec: dict[str, Any]) -> ConversationFilter:
     """Apply a single filter spec dict to a ConversationFilter."""
     ftype = spec["type"]
     if ftype == "provider":
@@ -256,7 +258,7 @@ def _apply_filter_spec(f: ConversationFilter, spec: dict) -> ConversationFilter:
 
 @given(filter_chain_strategy(min_filters=1, max_filters=4))
 @settings(max_examples=30, suppress_health_check=[HealthCheck.too_slow])
-def test_filter_chain_never_crashes_on_build(chain: list[dict]):
+def test_filter_chain_never_crashes_on_build(chain: list[dict[str, Any]]) -> None:
     """Building a filter chain from arbitrary filter specs never crashes.
 
     We can't call .list() here (needs async + DB), but we verify the
@@ -273,7 +275,7 @@ def test_filter_chain_never_crashes_on_build(chain: list[dict]):
 
 
 @pytest.mark.asyncio
-async def test_filter_chain_never_crashes_on_execution(make_filter_repo):
+async def test_filter_chain_never_crashes_on_execution(make_filter_repo: Any) -> None:
     """Composed filters never crash when executed against a real DB.
 
     Uses explicit examples rather than @given to avoid fixture-scope issues.
@@ -297,7 +299,7 @@ async def test_filter_chain_never_crashes_on_execution(make_filter_repo):
     )
 
     # Test a variety of filter chain combos
-    chains = [
+    chains: list[list[dict[str, Any]]] = [
         [{"type": "provider", "value": "claude-ai"}],
         [{"type": "limit", "value": 1}],
         [{"type": "provider", "value": "chatgpt"}, {"type": "limit", "value": 5}],
@@ -318,7 +320,7 @@ async def test_filter_chain_never_crashes_on_execution(make_filter_repo):
 
 
 @pytest.mark.asyncio
-async def test_filter_monotonicity_provider(filter_repo):
+async def test_filter_monotonicity_provider(filter_repo: Any) -> None:
     """Adding a provider filter never increases result count."""
     all_count = await ConversationFilter(filter_repo).count()
     filtered_count = await ConversationFilter(filter_repo).provider("claude-ai").count()
@@ -326,7 +328,7 @@ async def test_filter_monotonicity_provider(filter_repo):
 
 
 @pytest.mark.asyncio
-async def test_filter_monotonicity_limit(filter_repo):
+async def test_filter_monotonicity_limit(filter_repo: Any) -> None:
     """Adding a limit filter never increases result count."""
     all_count = await ConversationFilter(filter_repo).count()
     limited_count = len(await ConversationFilter(filter_repo).limit(1).list())
@@ -334,7 +336,7 @@ async def test_filter_monotonicity_limit(filter_repo):
 
 
 @pytest.mark.asyncio
-async def test_filter_monotonicity_exclude(filter_repo):
+async def test_filter_monotonicity_exclude(filter_repo: Any) -> None:
     """Adding an exclude filter never increases result count."""
     all_count = await ConversationFilter(filter_repo).count()
     excluded = await ConversationFilter(filter_repo).exclude_provider("claude-ai").list()
@@ -342,7 +344,7 @@ async def test_filter_monotonicity_exclude(filter_repo):
 
 
 @pytest.mark.asyncio
-async def test_filter_monotonicity_chained(filter_repo_advanced):
+async def test_filter_monotonicity_chained(filter_repo_advanced: Any) -> None:
     """Stacking filters monotonically decreases results."""
     c0 = await ConversationFilter(filter_repo_advanced).count()
     c1 = len(await ConversationFilter(filter_repo_advanced).provider("claude-ai").list())
@@ -356,7 +358,7 @@ async def test_filter_monotonicity_chained(filter_repo_advanced):
 
 
 @pytest.mark.asyncio
-async def test_filter_idempotence_provider(filter_repo):
+async def test_filter_idempotence_provider(filter_repo: Any) -> None:
     """Applying provider("claude-ai") twice yields same results as once."""
     once = await ConversationFilter(filter_repo).provider("claude-ai").list()
     twice = await ConversationFilter(filter_repo).provider("claude-ai").provider("claude-ai").list()
@@ -364,7 +366,7 @@ async def test_filter_idempotence_provider(filter_repo):
 
 
 @pytest.mark.asyncio
-async def test_filter_idempotence_exclude(filter_repo):
+async def test_filter_idempotence_exclude(filter_repo: Any) -> None:
     """Applying exclude_provider("claude-ai") twice yields same results as once."""
     once = await ConversationFilter(filter_repo).exclude_provider("claude-ai").list()
     twice = await ConversationFilter(filter_repo).exclude_provider("claude-ai").exclude_provider("claude-ai").list()
@@ -376,7 +378,7 @@ async def test_filter_idempotence_exclude(filter_repo):
 # =============================================================================
 
 
-def test_sql_pushdown_provider():
+def test_sql_pushdown_provider() -> None:
     """SQL pushdown includes provider when set."""
     from unittest.mock import MagicMock
 
@@ -386,7 +388,7 @@ def test_sql_pushdown_provider():
     assert params["provider"] == "claude-ai"
 
 
-def test_sql_pushdown_multi_provider():
+def test_sql_pushdown_multi_provider() -> None:
     """SQL pushdown includes providers list when multiple set."""
     from unittest.mock import MagicMock
 
@@ -396,7 +398,7 @@ def test_sql_pushdown_multi_provider():
     assert params["providers"] == ["claude-ai", "chatgpt"]
 
 
-def test_sql_pushdown_date_range():
+def test_sql_pushdown_date_range() -> None:
     """SQL pushdown includes since/until when set."""
     from unittest.mock import MagicMock
 
@@ -408,7 +410,7 @@ def test_sql_pushdown_date_range():
     assert "until" in params
 
 
-def test_sql_pushdown_title():
+def test_sql_pushdown_title() -> None:
     """SQL pushdown includes title_contains when set."""
     from unittest.mock import MagicMock
 
@@ -418,7 +420,7 @@ def test_sql_pushdown_title():
     assert params["title_contains"] == "Python"
 
 
-def test_sql_pushdown_empty():
+def test_sql_pushdown_empty() -> None:
     """SQL pushdown is empty dict when no filters set."""
     from unittest.mock import MagicMock
 
@@ -433,7 +435,7 @@ def test_sql_pushdown_empty():
 def test_provider_filter_exclusion_disjoint(
     include_providers: list[str],
     exclude_providers: list[str],
-):
+) -> None:
     """Provider inclusion and exclusion should be mutually exclusive."""
     included = set(include_providers)
     excluded = set(exclude_providers)
@@ -451,7 +453,7 @@ def test_provider_filter_exclusion_disjoint(
     st.integers(min_value=0, max_value=100),
     st.integers(min_value=1, max_value=50),
 )
-def test_limit_respects_bound(total_items: int, limit: int):
+def test_limit_respects_bound(total_items: int, limit: int) -> None:
     """Limit filter produces at most `limit` items."""
     items = list(range(total_items))
     limited = items[:limit]
@@ -462,7 +464,7 @@ def test_limit_respects_bound(total_items: int, limit: int):
     st.integers(min_value=0, max_value=50),
     st.integers(min_value=0, max_value=100),
 )
-def test_offset_skips_correctly(offset: int, total_items: int):
+def test_offset_skips_correctly(offset: int, total_items: int) -> None:
     """Offset filter skips the first `offset` items."""
     items = list(range(total_items))
     offset_items = items[offset:]
@@ -474,7 +476,7 @@ def test_offset_skips_correctly(offset: int, total_items: int):
     st.datetimes(min_value=datetime(2020, 1, 1), max_value=datetime(2025, 1, 1), timezones=st.just(timezone.utc)),
     st.datetimes(min_value=datetime(2020, 1, 1), max_value=datetime(2025, 1, 1), timezones=st.just(timezone.utc)),
 )
-def test_date_range_logic(since: datetime, until: datetime):
+def test_date_range_logic(since: datetime, until: datetime) -> None:
     """Date range filter is a valid interval (since <= until)."""
     if since > until:
         since, until = until, since
@@ -491,7 +493,7 @@ def test_date_range_logic(since: datetime, until: datetime):
     st.integers(min_value=0, max_value=100),
     st.integers(min_value=0, max_value=100),
 )
-def test_filter_composition_monotonic(items: list[int], threshold1: int, threshold2: int):
+def test_filter_composition_monotonic(items: list[int], threshold1: int, threshold2: int) -> None:
     """Composing filters never increases result count."""
     filtered_once = [x for x in items if x > threshold1]
     filtered_twice = [x for x in filtered_once if x > threshold2]
@@ -502,7 +504,7 @@ def test_filter_composition_monotonic(items: list[int], threshold1: int, thresho
     st.lists(st.integers(min_value=0, max_value=100), min_size=0, max_size=50),
     st.integers(min_value=0, max_value=100),
 )
-def test_filter_idempotent(items: list[int], threshold: int):
+def test_filter_idempotent(items: list[int], threshold: int) -> None:
     """Applying the same filter twice has no additional effect."""
     filtered_once = [x for x in items if x > threshold]
     filtered_twice = [x for x in filtered_once if x > threshold]
@@ -514,7 +516,7 @@ def test_filter_idempotent(items: list[int], threshold: int):
     st.integers(min_value=0, max_value=100),
     st.integers(min_value=0, max_value=100),
 )
-def test_filter_order_independent(items: list[int], threshold1: int, threshold2: int):
+def test_filter_order_independent(items: list[int], threshold1: int, threshold2: int) -> None:
     """For commutative filters, order doesn't affect result count."""
     filtered_ab = [x for x in items if x > threshold1 and x > threshold2]
     filtered_ba = [x for x in items if x > threshold2 and x > threshold1]
@@ -529,9 +531,9 @@ def test_filter_order_independent(items: list[int], threshold1: int, threshold2:
 class TestConversationFilterChaining:
     """Chainability and multi-method filter tests (key regressions)."""
 
-    def test_filter_returns_self(self, filter_repo):
+    def test_filter_returns_self(self: Any, filter_repo: Any) -> None:
         """Every fluent filter method must return self."""
-        CHAINABLE_METHODS = [
+        chainable_methods: tuple[Callable[[ConversationFilter], ConversationFilter], ...] = (
             lambda f: f.provider("claude-ai"),
             lambda f: f.since("2024-01-01"),
             lambda f: f.until("2025-01-01"),
@@ -547,13 +549,13 @@ class TestConversationFilterChaining:
             lambda f: f.tool("grep"),
             lambda f: f.exclude_tool("bash"),
             lambda f: f.similar("query"),
-        ]
-        for method_fn in CHAINABLE_METHODS:
+        )
+        for method_fn in chainable_methods:
             fresh = ConversationFilter(filter_repo)
             assert method_fn(fresh) is fresh
 
     @pytest.mark.asyncio
-    async def test_filter_chain_multiple_methods(self, filter_repo):
+    async def test_filter_chain_multiple_methods(self: Any, filter_repo: Any) -> None:
         """Chain must apply ALL filters — provider, limit both take effect."""
         result = await ConversationFilter(filter_repo).provider("claude-ai").limit(1).sort("date").list()
         assert isinstance(result, list)
@@ -565,28 +567,28 @@ class TestConversationFilterTerminal:
     """Terminal methods: first, count, delete."""
 
     @pytest.mark.asyncio
-    async def test_filter_first(self, filter_repo):
+    async def test_filter_first(self: Any, filter_repo: Any) -> None:
         result = await ConversationFilter(filter_repo).first()
         assert result is not None
         assert hasattr(result, "id")
 
     @pytest.mark.asyncio
-    async def test_filter_first_empty(self, filter_repo):
+    async def test_filter_first_empty(self: Any, filter_repo: Any) -> None:
         result = await ConversationFilter(filter_repo).provider("nonexistent").first()
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_filter_count(self, filter_repo):
+    async def test_filter_count(self: Any, filter_repo: Any) -> None:
         count = await ConversationFilter(filter_repo).count()
         assert count == 3
 
     @pytest.mark.asyncio
-    async def test_filter_count_with_filter(self, filter_repo):
+    async def test_filter_count_with_filter(self: Any, filter_repo: Any) -> None:
         count = await ConversationFilter(filter_repo).provider("claude-ai").count()
         assert count == 2
 
     @pytest.mark.asyncio
-    async def test_filter_delete_removes_conversations(self, filter_repo):
+    async def test_filter_delete_removes_conversations(self: Any, filter_repo: Any) -> None:
         initial_count = await ConversationFilter(filter_repo).count()
         assert initial_count > 0
         deleted = await ConversationFilter(filter_repo).limit(1).delete()
@@ -599,7 +601,7 @@ class TestFilterDateParsing:
     """Date parsing for since/until — key regressions."""
 
     @pytest.mark.parametrize("method_name", ["since", "until"])
-    def test_date_method_raises_on_invalid(self, filter_repo, method_name):
+    def test_date_method_raises_on_invalid(self: Any, filter_repo: Any, method_name: Any) -> None:
         f = ConversationFilter(filter_repo)
         with pytest.raises(ValueError, match="Cannot parse date"):
             getattr(f, method_name)("not-a-date")
@@ -613,14 +615,14 @@ class TestFilterDateParsing:
             ("until", "today"),
         ],
     )
-    def test_date_method_accepts_string_formats(self, filter_repo, method_name, date_str):
+    def test_date_method_accepts_string_formats(self: Any, filter_repo: Any, method_name: Any, date_str: Any) -> None:
         f = ConversationFilter(filter_repo)
         getattr(f, method_name)(date_str)
         field_name = "_since_date" if method_name == "since" else "_until_date"
         assert getattr(f, field_name) is not None
         assert isinstance(getattr(f, field_name), datetime)
 
-    def test_since_and_until_together_datetime(self, filter_repo):
+    def test_since_and_until_together_datetime(self: Any, filter_repo: Any) -> None:
         start = datetime(2024, 1, 1, tzinfo=timezone.utc)
         end = datetime(2024, 12, 31, tzinfo=timezone.utc)
         filter_obj = ConversationFilter(filter_repo).since(start).until(end)
@@ -633,12 +635,12 @@ class TestConversationFilterSort:
 
     @pytest.mark.parametrize("sort_key", ["date", "messages", "random"])
     @pytest.mark.asyncio
-    async def test_filter_sort(self, filter_repo, sort_key):
+    async def test_filter_sort(self: Any, filter_repo: Any, sort_key: Any) -> None:
         result = await ConversationFilter(filter_repo).sort(sort_key).list()
         assert len(result) > 0
 
     @pytest.mark.asyncio
-    async def test_filter_sort_reverse(self, filter_repo):
+    async def test_filter_sort_reverse(self: Any, filter_repo: Any) -> None:
         normal = await ConversationFilter(filter_repo).sort("date").list()
         reversed_list = await ConversationFilter(filter_repo).sort("date").reverse().list()
         if len(normal) > 1:
@@ -647,7 +649,7 @@ class TestConversationFilterSort:
 
     @pytest.mark.parametrize("sort_field", ["tokens", "words", "longest", "messages"])
     @pytest.mark.asyncio
-    async def test_sort_field_produces_results(self, filter_repo_advanced, sort_field):
+    async def test_sort_field_produces_results(self: Any, filter_repo_advanced: Any, sort_field: Any) -> None:
         result = await ConversationFilter(filter_repo_advanced).sort(sort_field).list()
         assert len(result) > 0
 
@@ -657,12 +659,12 @@ class TestConversationFilterHasTypes:
 
     @pytest.mark.parametrize("content_type", ["thinking", "tools", "attachments", "summary"])
     @pytest.mark.asyncio
-    async def test_has_content_type_returns_list(self, filter_repo_advanced, content_type):
+    async def test_has_content_type_returns_list(self: Any, filter_repo_advanced: Any, content_type: Any) -> None:
         result = await ConversationFilter(filter_repo_advanced).has(content_type).list()
         assert isinstance(result, list)
 
     @pytest.mark.asyncio
-    async def test_has_thinking_with_provider(self, filter_repo_advanced):
+    async def test_has_thinking_with_provider(self: Any, filter_repo_advanced: Any) -> None:
         result = await ConversationFilter(filter_repo_advanced).provider("claude-ai").has("thinking").list()
         assert len(result) >= 1
         for conv in result:
@@ -675,12 +677,14 @@ class TestConversationFilterSample:
 
     @pytest.mark.parametrize("sample_size,expected", [(2, 2), (0, 0), (1, 1)])
     @pytest.mark.asyncio
-    async def test_sample_returns_correct_count(self, filter_repo_advanced, sample_size, expected):
+    async def test_sample_returns_correct_count(
+        self: Any, filter_repo_advanced: Any, sample_size: Any, expected: Any
+    ) -> None:
         result = await ConversationFilter(filter_repo_advanced).sample(sample_size).list()
         assert len(result) == expected
 
     @pytest.mark.asyncio
-    async def test_sample_with_filter_respects_filters(self, filter_repo_advanced):
+    async def test_sample_with_filter_respects_filters(self: Any, filter_repo_advanced: Any) -> None:
         result = await ConversationFilter(filter_repo_advanced).provider("claude-ai").sample(2).list()
         assert all(c.provider == "claude-ai" for c in result)
 
@@ -689,7 +693,7 @@ class TestConversationFilterCombinedFilters:
     """Combined positive + negative filters — key regressions."""
 
     @pytest.mark.asyncio
-    async def test_exclude_provider_and_exclude_tag(self, filter_repo_advanced):
+    async def test_exclude_provider_and_exclude_tag(self: Any, filter_repo_advanced: Any) -> None:
         result = await (
             ConversationFilter(filter_repo_advanced).exclude_provider("claude-ai").exclude_tag("quantum").list()
         )
@@ -698,14 +702,14 @@ class TestConversationFilterCombinedFilters:
             assert "quantum" not in conv.tags
 
     @pytest.mark.asyncio
-    async def test_provider_with_exclude_tag(self, filter_repo_advanced):
+    async def test_provider_with_exclude_tag(self: Any, filter_repo_advanced: Any) -> None:
         result = await ConversationFilter(filter_repo_advanced).provider("claude-ai").exclude_tag("simple").list()
         assert all(c.provider == "claude-ai" for c in result)
         for conv in result:
             assert "simple" not in conv.tags
 
     @pytest.mark.asyncio
-    async def test_multiple_exclude_providers(self, filter_repo_advanced):
+    async def test_multiple_exclude_providers(self: Any, filter_repo_advanced: Any) -> None:
         result = await ConversationFilter(filter_repo_advanced).exclude_provider("claude-ai", "chatgpt").list()
         for conv in result:
             assert conv.provider not in ("claude-ai", "chatgpt")
@@ -715,23 +719,23 @@ class TestConversationFilterListSummaries:
     """list_summaries() terminal method — key regressions."""
 
     @pytest.mark.asyncio
-    async def test_list_summaries_returns_summary_objects(self, filter_repo_advanced):
+    async def test_list_summaries_returns_summary_objects(self: Any, filter_repo_advanced: Any) -> None:
         result = await ConversationFilter(filter_repo_advanced).list_summaries()
         assert len(result) > 0
         for summary in result:
             assert isinstance(summary, ConversationSummary)
 
     @pytest.mark.asyncio
-    async def test_list_summaries_rejects_content_filters(self, filter_repo_advanced):
+    async def test_list_summaries_rejects_content_filters(self: Any, filter_repo_advanced: Any) -> None:
         with pytest.raises(ValueError, match="Cannot use list_summaries"):
             await ConversationFilter(filter_repo_advanced).has("thinking").list_summaries()
 
     @pytest.mark.asyncio
-    async def test_list_summaries_allows_summary_has_filter(self, filter_repo_advanced):
+    async def test_list_summaries_allows_summary_has_filter(self: Any, filter_repo_advanced: Any) -> None:
         result = await ConversationFilter(filter_repo_advanced).has("summary").list_summaries()
         assert all(s.summary for s in result)
 
-    def test_can_use_summaries_check(self, filter_repo_advanced):
+    def test_can_use_summaries_check(self: Any, filter_repo_advanced: Any) -> None:
         simple = ConversationFilter(filter_repo_advanced).provider("claude-ai")
         assert simple.can_use_summaries() is True
         with_content = ConversationFilter(filter_repo_advanced).has("thinking")
@@ -752,8 +756,11 @@ class TestConversationFilterEmptyRepository:
         ],
     )
     @pytest.mark.asyncio
-    async def test_empty_repo_terminal_operations(self, filter_repo_empty, terminal_method, expected_result):
+    async def test_empty_repo_terminal_operations(
+        self: Any, filter_repo_empty: Any, terminal_method: Any, expected_result: Any
+    ) -> None:
         filter_obj = ConversationFilter(filter_repo_empty)
+        result: object
         if terminal_method == "list":
             result = await filter_obj.list()
         elif terminal_method == "first":
@@ -771,7 +778,7 @@ class TestConversationFilterBranching:
     """Branch predicate and pick regression tests."""
 
     @pytest.fixture
-    def filter_repo_branches(self, tmp_path):
+    def filter_repo_branches(self: Any, tmp_path: Any) -> Any:
         db_path = tmp_path / "filter_branches.db"
         with open_connection(db_path) as conn:
             rebuild_index(conn)
@@ -806,7 +813,7 @@ class TestConversationFilterBranching:
             ("has_branches", False),
         ],
     )
-    def test_branch_predicates(self, filter_repo_branches, method, value):
+    def test_branch_predicates(self: Any, filter_repo_branches: Any, method: Any, value: Any) -> None:
         filter_obj = ConversationFilter(filter_repo_branches)
         getattr(filter_obj, method)(value)
         if method == "is_continuation":
@@ -817,7 +824,7 @@ class TestConversationFilterBranching:
             assert filter_obj._has_branches is value
 
     @pytest.mark.asyncio
-    async def test_parent_filters_by_parent_id(self, filter_repo_branches):
+    async def test_parent_filters_by_parent_id(self: Any, filter_repo_branches: Any) -> None:
         result = await ConversationFilter(filter_repo_branches).parent("root").list()
         for conv in result:
             assert conv.parent_id == "root"
@@ -827,7 +834,7 @@ class TestFiltersPick:
     """pick() interactive picker regression tests."""
 
     @pytest.fixture
-    def filter_repo_pick(self, tmp_path):
+    def filter_repo_pick(self: Any, tmp_path: Any) -> Any:
         db_path = tmp_path / "filter_pick.db"
         with open_connection(db_path) as conn:
             rebuild_index(conn)
@@ -837,12 +844,12 @@ class TestFiltersPick:
         return ConversationRepository(backend)
 
     @pytest.mark.asyncio
-    async def test_pick_no_results(self, filter_repo_pick):
+    async def test_pick_no_results(self: Any, filter_repo_pick: Any) -> None:
         result = await pick_filter(ConversationFilter(filter_repo_pick).provider("nonexistent"))
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_pick_non_tty(self, filter_repo_pick):
+    async def test_pick_non_tty(self: Any, filter_repo_pick: Any) -> None:
         with patch("sys.stdout.isatty", return_value=False):
             result = await pick_filter(ConversationFilter(filter_repo_pick))
             assert result is not None
@@ -852,13 +859,13 @@ class TestFtsWithProviderFilter:
     """FTS + provider combined filter regression."""
 
     @pytest.mark.asyncio
-    async def test_fts_with_provider_match(self, filter_repo):
+    async def test_fts_with_provider_match(self: Any, filter_repo: Any) -> None:
         result = await ConversationFilter(filter_repo).contains("errors").provider("claude-ai").list()
         assert len(result) > 0
         assert all(c.provider == "claude-ai" for c in result)
 
     @pytest.mark.asyncio
-    async def test_fts_with_provider_mismatch(self, filter_repo):
+    async def test_fts_with_provider_mismatch(self: Any, filter_repo: Any) -> None:
         result = await ConversationFilter(filter_repo).contains("schema").provider("chatgpt").list()
         assert len(result) == 0
 
@@ -867,7 +874,7 @@ class TestDeleteCascade:
     """Delete cascade behavior."""
 
     @pytest.fixture
-    async def populated_db(self, tmp_path):
+    async def populated_db(self: Any, tmp_path: Any) -> Any:
         db_path = tmp_path / "cascade.db"
         backend = SQLiteBackend(db_path=db_path)
         repo = ConversationRepository(backend=backend)
@@ -885,7 +892,7 @@ class TestDeleteCascade:
         return db_path, backend, repo
 
     @pytest.mark.asyncio
-    async def test_delete_cascades_to_messages(self, populated_db):
+    async def test_delete_cascades_to_messages(self: Any, populated_db: Any) -> None:
         db_path, backend, repo = populated_db
         f = ConversationFilter(repo).id("cascade-conv")
         deleted = await f.delete()
@@ -907,7 +914,7 @@ class TestFilterLimitZeroEdgeCases:
         ],
     )
     @pytest.mark.asyncio
-    async def test_limit_zero_returns_empty(self, filter_repo_advanced, setup_fn):
+    async def test_limit_zero_returns_empty(self: Any, filter_repo_advanced: Any, setup_fn: Any) -> None:
         result = await setup_fn(ConversationFilter(filter_repo_advanced)).list()
         assert len(result) == 0
 
@@ -925,7 +932,7 @@ class TestFilterLimitZeroEdgeCases:
     ),
     st.integers(min_value=1, max_value=200),
 )
-def test_rrf_scores_bounded_single_list(results: list[tuple[str, float]], k: int):
+def test_rrf_scores_bounded_single_list(results: list[tuple[str, float]], k: int) -> None:
     """RRF scores from a single list are bounded by 1/(k+1)."""
     fused = reciprocal_rank_fusion(results, k=k)
     max_score = 1.0 / (k + 1)
@@ -944,7 +951,7 @@ def test_rrf_scores_bounded_two_lists(
     results1: list[tuple[str, float]],
     results2: list[tuple[str, float]],
     k: int,
-):
+) -> None:
     """RRF scores from two lists are bounded by 2/(k+1)."""
     fused = reciprocal_rank_fusion(results1, results2, k=k)
     max_score = 2.0 / (k + 1)
@@ -968,7 +975,7 @@ def test_rrf_symmetric_scores(
     results1: list[tuple[str, float]],
     results2: list[tuple[str, float]],
     k: int,
-):
+) -> None:
     """RRF(A, B) produces same scores as RRF(B, A)."""
     fused_ab = reciprocal_rank_fusion(results1, results2, k=k)
     fused_ba = reciprocal_rank_fusion(results2, results1, k=k)
@@ -981,7 +988,7 @@ def test_rrf_symmetric_scores(
 @given(
     st.lists(st.tuples(st.uuids().map(str), st.floats(min_value=0, max_value=1)), min_size=1, max_size=20),
 )
-def test_rrf_single_list_preserves_order(results: list[tuple[str, float]]):
+def test_rrf_single_list_preserves_order(results: list[tuple[str, float]]) -> None:
     """For a single list, RRF preserves the original ranking order."""
     seen = set()
     unique_results = []
@@ -1001,7 +1008,7 @@ def test_rrf_single_list_preserves_order(results: list[tuple[str, float]]):
 
 
 @given(st.integers(min_value=1, max_value=100))
-def test_rrf_rank_decreases_score(k: int):
+def test_rrf_rank_decreases_score(k: int) -> None:
     """Lower rank produces lower score."""
     results = [(f"item_{i}", 0.0) for i in range(10)]
     fused = reciprocal_rank_fusion(results, k=k)
@@ -1011,7 +1018,7 @@ def test_rrf_rank_decreases_score(k: int):
 
 
 @given(st.integers(min_value=1, max_value=100))
-def test_rrf_appearing_in_both_lists_increases_score(k: int):
+def test_rrf_appearing_in_both_lists_increases_score(k: int) -> None:
     """Items appearing in both lists score higher than single-list items."""
     list1 = [("common", 1.0), ("only_list1", 0.9)]
     list2 = [("common", 0.95), ("only_list2", 0.85)]
@@ -1026,19 +1033,19 @@ def test_rrf_appearing_in_both_lists_increases_score(k: int):
 # =============================================================================
 
 
-def test_rrf_empty_lists():
+def test_rrf_empty_lists() -> None:
     result = reciprocal_rank_fusion()
     assert result == []
 
 
-def test_rrf_empty_list_in_args():
+def test_rrf_empty_list_in_args() -> None:
     results = [("item1", 1.0), ("item2", 0.9)]
     empty: list[tuple[str, float]] = []
     fused = reciprocal_rank_fusion(results, empty)
     assert len(fused) == 2
 
 
-def test_rrf_duplicate_items_same_list():
+def test_rrf_duplicate_items_same_list() -> None:
     results = [("item1", 1.0), ("item2", 0.9), ("item1", 0.5)]
     fused = reciprocal_rank_fusion(results)
     item_ids = [item_id for item_id, _ in fused]
@@ -1052,7 +1059,7 @@ def test_rrf_duplicate_items_same_list():
         max_size=50,
     ),
 )
-def test_rrf_never_crashes(results: list[tuple[str, float]]):
+def test_rrf_never_crashes(results: list[tuple[str, float]]) -> None:
     fused = reciprocal_rank_fusion(results)
     assert isinstance(fused, list)
 
@@ -1062,7 +1069,7 @@ def test_rrf_never_crashes(results: list[tuple[str, float]]):
 # =============================================================================
 
 
-def test_rrf_formula_correctness():
+def test_rrf_formula_correctness() -> None:
     k = 60
     results = [("a", 0.0), ("b", 0.0), ("c", 0.0)]
     fused = reciprocal_rank_fusion(results, k=k)
@@ -1072,7 +1079,7 @@ def test_rrf_formula_correctness():
     assert abs(scores["c"] - 1 / 63) < 1e-10
 
 
-def test_rrf_combined_formula():
+def test_rrf_combined_formula() -> None:
     k = 60
     list1 = [("a", 0.0), ("b", 0.0)]
     list2 = [("b", 0.0), ("a", 0.0)]

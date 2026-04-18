@@ -17,15 +17,20 @@ Usage:
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+from typing import Any
+
 from polylogue.lib.messages import MessageCollection
 from polylogue.lib.models import Conversation, Message
+from polylogue.lib.roles import Role
+from polylogue.types import ConversationId, Provider
 
 
 def make_msg(
     id: str = "m1",
-    role: str = "user",
+    role: Role | str = Role.USER,
     text: str | None = "hello",
-    **kwargs,
+    **kwargs: Any,
 ) -> Message:
     """Build a Message with sensible defaults for testing.
 
@@ -38,15 +43,16 @@ def make_msg(
     Returns:
         A fully constructed Message domain object.
     """
-    return Message(id=id, role=role, text=text, **kwargs)
+    role_value = role if isinstance(role, Role) else (Role.normalize(role.strip()) if role.strip() else Role.UNKNOWN)
+    return Message(id=id, role=role_value, text=text, **kwargs)
 
 
 def make_conv(
-    messages: list[Message] | None = None,
+    messages: Sequence[Message] | MessageCollection | None = None,
     title: str | None = "Test",
-    provider: str = "test",
+    provider: Provider | str = Provider.UNKNOWN,
     id: str = "test-conv",
-    **kwargs,
+    **kwargs: Any,
 ) -> Conversation:
     """Build a Conversation with sensible defaults for testing.
 
@@ -60,11 +66,17 @@ def make_conv(
     Returns:
         A fully constructed Conversation domain object with an eager MessageCollection.
     """
-    msgs = messages if messages is not None else [make_msg()]
+    provider_value = provider if isinstance(provider, Provider) else Provider.from_string(provider)
+    if messages is None:
+        message_collection = MessageCollection(messages=[make_msg()])
+    elif isinstance(messages, MessageCollection):
+        message_collection = messages
+    else:
+        message_collection = MessageCollection(messages=list(messages))
     return Conversation(
-        id=id,
-        provider=provider,
+        id=ConversationId(id),
+        provider=provider_value,
         title=title,
-        messages=MessageCollection(messages=msgs),
+        messages=message_collection,
         **kwargs,
     )

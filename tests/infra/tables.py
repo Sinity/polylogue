@@ -8,6 +8,13 @@ Each table is a list of tuples suitable for ``@pytest.mark.parametrize``.
 
 from __future__ import annotations
 
+from datetime import datetime as _datetime
+from datetime import timezone as _timezone
+
+ParseTimestampCase = tuple[str | int | float | None, int | None, int | None, int | None, int | None, str]
+FormatTimestampInput = int | _datetime
+FormatTimestampCase = tuple[FormatTimestampInput, str, str]
+
 # =============================================================================
 # Claude Code: record type → role mapping (superset of all 4 files)
 #
@@ -156,7 +163,7 @@ NORMALIZE_ROLE_CANONICAL: list[tuple[str, str, str]] = [
 # When expected_year is None → result must be None
 # =============================================================================
 
-PARSE_TIMESTAMP_FORMAT_TABLE: list[tuple] = [
+PARSE_TIMESTAMP_FORMAT_TABLE: list[ParseTimestampCase] = [
     # Epoch integers
     (1704067200, 2024, 1, 1, None, "epoch_int"),
     (1704067200.5, 2024, 1, 1, 500000, "epoch_float"),
@@ -190,11 +197,7 @@ PARSE_TIMESTAMP_FORMAT_TABLE: list[tuple] = [
 # Tuples: (input, expected_prefix, description)
 # expected_prefix: the ISO 8601 date prefix that must appear in the output
 # =============================================================================
-
-from datetime import datetime as _datetime
-from datetime import timezone as _timezone
-
-FORMAT_TIMESTAMP_TABLE: list[tuple] = [
+FORMAT_TIMESTAMP_TABLE: list[FormatTimestampCase] = [
     (1700000000, "2023-", "epoch_int_gives_2023"),
     (_datetime(2024, 6, 15, 12, 0, 0, tzinfo=_timezone.utc), "2024-06-15", "utc_datetime"),
     (_datetime(2024, 1, 1, 0, 0, 0), "2024-01-01", "naive_datetime_treated_as_utc"),

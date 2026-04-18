@@ -79,7 +79,7 @@ async def iter_messages(
         params.extend([fetch_limit, offset])
 
         cursor = await conn.execute(query, tuple(params))
-        rows = await cursor.fetchall()
+        rows = list(await cursor.fetchall())
 
         if not rows:
             break

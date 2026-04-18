@@ -27,6 +27,7 @@ def test_attachment_path_traversal_rejected() -> None:
         path="../../../etc/passwd",
         name="passwd",
     )
+    assert att.path is not None
     normalized = Path(att.path).resolve()
     assert not str(normalized).endswith("/etc/passwd")
 
@@ -46,7 +47,7 @@ def test_attachment_path_null_byte_rejected() -> None:
         path="safe_file\x00../../etc/passwd",
         name="exploit",
     )
-    assert "\x00" not in att.path
+    assert "\x00" not in (att.path or "")
 
 
 @pytest.mark.parametrize(
@@ -89,7 +90,8 @@ def test_filename_control_characters_removed(filename: str) -> None:
         path=filename,
         name=filename,
     )
-    assert not any(ord(c) < 32 for c in att.name)
+    sanitized = att.name or ""
+    assert not any(ord(c) < 32 for c in sanitized)
 
 
 @pytest.mark.parametrize("name", DOTS_ONLY_FILENAMES)
@@ -119,7 +121,7 @@ def test_filename_case_sensitivity_consistent() -> None:
         ParsedAttachment(provider_attachment_id=f"att-case-{i}", path=name, name=name)
         for i, name in enumerate(["File.txt", "file.txt", "FILE.txt"])
     ]
-    assert all(att.name for att in attachments)
+    assert all(att.name is not None for att in attachments)
 
 
 @pytest.mark.parametrize(
@@ -132,6 +134,7 @@ def test_filename_extension_preserved(filename: str) -> None:
         path=filename,
         name=filename,
     )
+    assert att.name is not None
     assert Path(att.name).suffix or Path(filename).suffix == Path(att.name).suffix
 
 

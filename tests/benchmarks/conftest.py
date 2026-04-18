@@ -26,6 +26,7 @@ from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.backends.connection import open_connection
 from polylogue.storage.index import rebuild_index
 from polylogue.storage.store import ContentBlockRecord, ConversationRecord, MessageRecord
+from tests.infra.storage_records import make_content_block, make_conversation, make_message
 
 # ---------------------------------------------------------------------------
 # Real archive distribution (from actual data analysis):
@@ -179,23 +180,21 @@ def _make_content_block(rng: random.Random, msg_id: str, conv_id: str, block_ind
     if sem is None:
         # Thinking block
         if rng.random() < 0.15:
-            return ContentBlockRecord(
-                block_id=ContentBlockRecord.make_id(msg_id, block_index),
+            return make_content_block(
                 message_id=msg_id,
                 conversation_id=conv_id,
                 block_index=block_index,
-                type="thinking",
+                block_type="thinking",
                 text=_generate_realistic_text(rng, "assistant", block_index)[:200],
             )
         return None
 
     tool_name = rng.choice(_TOOL_NAMES)
-    return ContentBlockRecord(
-        block_id=ContentBlockRecord.make_id(msg_id, block_index),
+    return make_content_block(
         message_id=msg_id,
         conversation_id=conv_id,
         block_index=block_index,
-        type="tool_use",
+        block_type="tool_use",
         tool_name=tool_name,
         semantic_type=sem,
         tool_input=json.dumps({"file_path": rng.choice(_FILE_PATHS)})
@@ -227,7 +226,7 @@ async def _seed_realistic_db(db_path: Path, target_messages: int, seed: int = 42
 
         conv_id = f"bench-conv-{conv_index:05d}"
         conv_records.append(
-            ConversationRecord(
+            make_conversation(
                 conversation_id=conv_id,
                 provider_name=provider,
                 provider_conversation_id=f"prov-{conv_index:05d}",
@@ -258,7 +257,7 @@ async def _seed_realistic_db(db_path: Path, target_messages: int, seed: int = 42
                             has_think = 1
 
             all_msgs.append(
-                MessageRecord(
+                make_message(
                     message_id=msg_id,
                     conversation_id=conv_id,
                     role=role,
@@ -280,7 +279,7 @@ async def _seed_realistic_db(db_path: Path, target_messages: int, seed: int = 42
     for msg in all_msgs:
         msgs_by_conv[msg.conversation_id].append(msg)
 
-    provider_by_cid = {r.conversation_id: r.provider_name for r in conv_records}
+    provider_by_cid = {str(r.conversation_id): r.provider_name for r in conv_records}
 
     async with backend.bulk_connection():
         for i, record in enumerate(conv_records, start=1):

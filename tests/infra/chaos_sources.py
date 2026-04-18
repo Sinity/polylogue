@@ -6,6 +6,7 @@ with controlled corruption patterns for integration testing.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -154,7 +155,7 @@ class ChaosInboxBuilder:
         return self.base_path
 
     @staticmethod
-    def _get_corruption_fn(corruption_type: str):
+    def _get_corruption_fn(corruption_type: str) -> Callable[[list[str], int], list[str]]:
         """Map corruption type to corruption function."""
         mapping = {
             "malformed": corrupt_line_malformed_json,

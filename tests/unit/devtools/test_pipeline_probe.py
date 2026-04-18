@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 from pathlib import Path
 
@@ -15,53 +16,37 @@ from polylogue.storage.backends.connection import open_connection
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.repository import ConversationRepository
 from polylogue.storage.store import RawConversationRecord
+from polylogue.types import Provider, ValidationStatus
 
 
-class _Args:
-    input_mode = "synthetic"
-    provider = "chatgpt"
-    corpus_source = "default"
-    count = 1
-    messages_min = 3
-    messages_max = 4
-    seed = 7
-    sample_per_provider = 50
-    source_filters = None
-    source_db = None
-    source_blob_root = None
-    manifest_out = None
-    manifest_in = None
-    stage = "parse"
-    raw_batch_size = None
-    ingest_workers = None
-    measure_ingest_result_size = False
-    json_out = None
-    max_total_ms = None
-    max_peak_rss_mb = None
-
+class _Args(argparse.Namespace):
     def __init__(self, workdir: Path) -> None:
-        self.workdir = workdir
+        super().__init__(
+            input_mode="synthetic",
+            provider="chatgpt",
+            corpus_source="default",
+            count=1,
+            messages_min=3,
+            messages_max=4,
+            seed=7,
+            sample_per_provider=50,
+            source_filters=None,
+            source_db=None,
+            source_blob_root=None,
+            manifest_out=None,
+            manifest_in=None,
+            stage="parse",
+            raw_batch_size=None,
+            ingest_workers=None,
+            measure_ingest_result_size=False,
+            json_out=None,
+            max_total_ms=None,
+            max_peak_rss_mb=None,
+            workdir=workdir,
+        )
 
 
-class _ArchiveArgs:
-    input_mode = "archive-subset"
-    provider = None
-    count = 1
-    messages_min = 3
-    messages_max = 4
-    seed = 11
-    sample_per_provider = 1
-    source_filters = None
-    manifest_out = None
-    manifest_in = None
-    stage = "parse"
-    raw_batch_size = None
-    ingest_workers = None
-    measure_ingest_result_size = False
-    json_out = None
-    max_total_ms = None
-    max_peak_rss_mb = None
-
+class _ArchiveArgs(argparse.Namespace):
     def __init__(
         self,
         *,
@@ -71,34 +56,31 @@ class _ArchiveArgs:
         manifest_out: Path | None = None,
         manifest_in: Path | None = None,
     ) -> None:
-        self.workdir = workdir
-        self.source_db = source_db
-        self.source_blob_root = source_blob_root
-        self.manifest_out = manifest_out
-        self.manifest_in = manifest_in
+        super().__init__(
+            input_mode="archive-subset",
+            provider=None,
+            count=1,
+            messages_min=3,
+            messages_max=4,
+            seed=11,
+            sample_per_provider=1,
+            source_filters=None,
+            manifest_out=manifest_out,
+            manifest_in=manifest_in,
+            stage="parse",
+            raw_batch_size=None,
+            ingest_workers=None,
+            measure_ingest_result_size=False,
+            json_out=None,
+            max_total_ms=None,
+            max_peak_rss_mb=None,
+            workdir=workdir,
+            source_db=source_db,
+            source_blob_root=source_blob_root,
+        )
 
 
-class _SourceSubsetArgs:
-    input_mode = "source-subset"
-    provider = None
-    count = 1
-    messages_min = 3
-    messages_max = 4
-    seed = 13
-    sample_per_provider = 50
-    source_filters = None
-    source_db = None
-    source_blob_root = None
-    manifest_out = None
-    manifest_in = None
-    stage = "parse"
-    raw_batch_size = None
-    ingest_workers = None
-    measure_ingest_result_size = False
-    json_out = None
-    max_total_ms = None
-    max_peak_rss_mb = None
-
+class _SourceSubsetArgs(argparse.Namespace):
     def __init__(
         self,
         *,
@@ -106,9 +88,30 @@ class _SourceSubsetArgs:
         source_paths: list[Path],
         source_name: str = "inbox",
     ) -> None:
-        self.workdir = workdir
-        self.source_paths = source_paths
-        self.source_name = source_name
+        super().__init__(
+            input_mode="source-subset",
+            provider=None,
+            count=1,
+            messages_min=3,
+            messages_max=4,
+            seed=13,
+            sample_per_provider=50,
+            source_filters=None,
+            source_db=None,
+            source_blob_root=None,
+            manifest_out=None,
+            manifest_in=None,
+            stage="parse",
+            raw_batch_size=None,
+            ingest_workers=None,
+            measure_ingest_result_size=False,
+            json_out=None,
+            max_total_ms=None,
+            max_peak_rss_mb=None,
+            workdir=workdir,
+            source_paths=source_paths,
+            source_name=source_name,
+        )
 
 
 async def _seed_archive_source(tmp_path: Path) -> tuple[Path, Path]:
@@ -186,7 +189,7 @@ async def _seed_archive_source(tmp_path: Path) -> tuple[Path, Path]:
                 RawConversationRecord(
                     raw_id=raw_id,
                     provider_name=provider_name,
-                    payload_provider=provider_name,
+                    payload_provider=Provider.from_string(provider_name),
                     source_name=source_name,
                     source_path=f"/tmp/{source_name}-{index}",
                     source_index=index,
@@ -195,7 +198,7 @@ async def _seed_archive_source(tmp_path: Path) -> tuple[Path, Path]:
                     file_mtime=f"2026-04-0{index + 1}T11:00:00Z",
                     parsed_at="2026-04-01T00:00:00Z",
                     validated_at="2026-04-01T00:00:00Z",
-                    validation_status="passed",
+                    validation_status=ValidationStatus.PASSED,
                 )
             )
     finally:
@@ -204,7 +207,7 @@ async def _seed_archive_source(tmp_path: Path) -> tuple[Path, Path]:
     return source_db, source_blob_root
 
 
-async def test_run_probe_emits_real_pipeline_summary(tmp_path) -> None:
+async def test_run_probe_emits_real_pipeline_summary(tmp_path: Path) -> None:
     summary = await run_probe(_Args(tmp_path / "probe"))
     acquisition_details = summary["run_payload"]["metrics"]["stages"]["ingest"]["details"]["acquisition"]
     ingest_details = summary["run_payload"]["metrics"]["stages"]["ingest"]["details"]["batch_observations"]
@@ -230,7 +233,7 @@ async def test_run_probe_emits_real_pipeline_summary(tmp_path) -> None:
     assert len(summary["raw_fanout"]) == summary["db_stats"]["raw_conversations_count"]
 
 
-async def test_run_probe_can_stage_real_source_subset(tmp_path) -> None:
+async def test_run_probe_can_stage_real_source_subset(tmp_path: Path) -> None:
     source_input_root = tmp_path / "inputs"
     files, total_bytes = _write_probe_sources(
         request=CorpusRequest(
@@ -265,10 +268,10 @@ async def test_run_probe_can_stage_real_source_subset(tmp_path) -> None:
     assert all(len(entry["sha256"]) == 64 for entry in summary["provenance"]["source_input_fingerprints"])
 
 
-def test_write_probe_sources_threads_through_corpus_source(monkeypatch, tmp_path: Path) -> None:
+def test_write_probe_sources_threads_through_corpus_source(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     calls: list[CorpusRequest] = []
 
-    def fake_resolve_scenarios(self, **kwargs):
+    def fake_resolve_scenarios(self: CorpusRequest, **kwargs: object) -> tuple[CorpusScenario, ...]:
         assert kwargs["origin"] == "compiled.pipeline-probe"
         assert kwargs["tags"] == ("synthetic", "probe", "scenario")
         calls.append(self)
@@ -315,7 +318,7 @@ def test_write_probe_sources_threads_through_corpus_source(monkeypatch, tmp_path
     assert total_bytes == 2
 
 
-async def test_run_probe_applies_ingest_tuning_overrides(tmp_path) -> None:
+async def test_run_probe_applies_ingest_tuning_overrides(tmp_path: Path) -> None:
     source_input_root = tmp_path / "inputs"
     files, _ = _write_probe_sources(
         request=CorpusRequest(
@@ -345,7 +348,7 @@ async def test_run_probe_applies_ingest_tuning_overrides(tmp_path) -> None:
     assert all(batch["workers"] == 1 for batch in ingest_details["batches"])
 
 
-async def test_run_probe_can_measure_ingest_result_sizes(tmp_path) -> None:
+async def test_run_probe_can_measure_ingest_result_sizes(tmp_path: Path) -> None:
     source_input_root = tmp_path / "inputs"
     files, _ = _write_probe_sources(
         request=CorpusRequest(
@@ -374,7 +377,7 @@ async def test_run_probe_can_measure_ingest_result_sizes(tmp_path) -> None:
     assert batch["batches"][0]["max_result_mb"] > 0
 
 
-async def test_run_probe_rejects_source_subset_without_source_paths(tmp_path) -> None:
+async def test_run_probe_rejects_source_subset_without_source_paths(tmp_path: Path) -> None:
     args = _SourceSubsetArgs(
         workdir=tmp_path / "missing-source-paths",
         source_paths=[],
@@ -384,7 +387,7 @@ async def test_run_probe_rejects_source_subset_without_source_paths(tmp_path) ->
         await run_probe(args)
 
 
-def test_main_writes_json_summary(tmp_path, capsys) -> None:
+def test_main_writes_json_summary(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     workdir = tmp_path / "probe-main"
     json_out = tmp_path / "probe-summary.json"
 
@@ -415,7 +418,7 @@ def test_main_writes_json_summary(tmp_path, capsys) -> None:
     assert written["result"]["run_path"] is not None
 
 
-def test_main_runs_source_subset_mode(tmp_path, capsys) -> None:
+def test_main_runs_source_subset_mode(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     source_input_root = tmp_path / "inputs"
     files, _ = _write_probe_sources(
         request=CorpusRequest(
@@ -450,7 +453,7 @@ def test_main_runs_source_subset_mode(tmp_path, capsys) -> None:
     assert printed["db_stats"]["raw_conversations_count"] == 1
 
 
-def test_main_uses_ephemeral_workdir_when_omitted(capsys) -> None:
+def test_main_uses_ephemeral_workdir_when_omitted(capsys: pytest.CaptureFixture[str]) -> None:
     exit_code = main(
         [
             "--provider",
@@ -473,7 +476,7 @@ def test_main_uses_ephemeral_workdir_when_omitted(capsys) -> None:
     assert printed["result"]["run_path"] is not None
 
 
-def test_main_returns_nonzero_when_budget_is_exceeded(capsys) -> None:
+def test_main_returns_nonzero_when_budget_is_exceeded(capsys: pytest.CaptureFixture[str]) -> None:
     exit_code = main(
         [
             "--provider",
@@ -500,7 +503,7 @@ def test_main_returns_nonzero_when_budget_is_exceeded(capsys) -> None:
     assert len(printed["budgets"]["violations"]) >= 1
 
 
-async def test_run_probe_can_sample_archive_subset_and_persist_manifest(tmp_path) -> None:
+async def test_run_probe_can_sample_archive_subset_and_persist_manifest(tmp_path: Path) -> None:
     source_db, source_blob_root = await _seed_archive_source(tmp_path)
     manifest_out = tmp_path / "subset-manifest.json"
     args = _ArchiveArgs(
@@ -526,7 +529,7 @@ async def test_run_probe_can_sample_archive_subset_and_persist_manifest(tmp_path
     assert len(manifest["records"]) == 2
 
 
-async def test_run_probe_can_replay_archive_subset_manifest(tmp_path) -> None:
+async def test_run_probe_can_replay_archive_subset_manifest(tmp_path: Path) -> None:
     source_db, source_blob_root = await _seed_archive_source(tmp_path)
     manifest_out = tmp_path / "subset-manifest.json"
     first_args = _ArchiveArgs(
@@ -553,7 +556,7 @@ async def test_run_probe_can_replay_archive_subset_manifest(tmp_path) -> None:
     assert summary["sample"]["provider_counts"] == {"chatgpt": 1, "codex": 1}
 
 
-async def test_run_probe_rejects_empty_archive_subset(tmp_path) -> None:
+async def test_run_probe_rejects_empty_archive_subset(tmp_path: Path) -> None:
     empty_db = tmp_path / "empty-source.db"
     with open_connection(empty_db):
         pass
