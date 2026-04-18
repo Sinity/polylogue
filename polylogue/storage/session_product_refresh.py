@@ -23,6 +23,7 @@ from polylogue.storage.session_product_threads import (
     thread_root_id_async,
     thread_root_ids_async,
 )
+from polylogue.storage.store import SessionPhaseRecord, SessionProfileRecord, SessionWorkEventRecord
 
 # Keep incremental refreshes on the same bounded chunk size as full rebuilds.
 # Hydrating 100 conversations at once inflates RSS badly on pathological archives.
@@ -244,7 +245,7 @@ async def _apply_session_product_conversation_update_async(
 async def _load_existing_session_profile_records_async(
     conn: aiosqlite.Connection,
     conversation_ids: Sequence[str],
-) -> dict[str, object]:
+) -> dict[str, SessionProfileRecord]:
     if not conversation_ids:
         return {}
     placeholders = ", ".join("?" for _ in conversation_ids)
@@ -339,9 +340,9 @@ async def _apply_session_product_conversation_updates_async(
         conversations, messages, attachments, blocks = await load_async_batch(conn, chunk)
         root_ids_by_conversation = await thread_root_ids_async(conn, chunk)
         load_elapsed_ms = round((time.perf_counter() - load_started) * 1000.0, 1)
-        profile_records_to_write: list[object] = []
-        work_event_records_to_write: list[object] = []
-        phase_records_to_write: list[object] = []
+        profile_records_to_write: list[SessionProfileRecord] = []
+        work_event_records_to_write: list[SessionWorkEventRecord] = []
+        phase_records_to_write: list[SessionPhaseRecord] = []
         hydrate_started = time.perf_counter()
         hydrated_by_id = {
             str(conversation.id): conversation
@@ -400,7 +401,8 @@ async def _apply_session_product_conversation_updates_async(
             transaction_depth,
         )
         write_elapsed_ms = round((time.perf_counter() - write_started) * 1000.0, 1)
-        chunk_observation = {
+        chunk_total_ms = round((time.perf_counter() - chunk_started) * 1000.0, 1)
+        chunk_observation: dict[str, object] = {
             "conversation_count": len(chunk),
             "estimated_message_count": sum(
                 max(int(message_counts.get(conversation_id, 0) or 0), 1) for conversation_id in chunk
@@ -416,9 +418,9 @@ async def _apply_session_product_conversation_updates_async(
             "hydrate_ms": hydrate_elapsed_ms,
             "build_ms": build_elapsed_ms,
             "write_ms": write_elapsed_ms,
-            "total_ms": round((time.perf_counter() - chunk_started) * 1000.0, 1),
+            "total_ms": chunk_total_ms,
         }
-        if chunk_observation["total_ms"] >= 500.0:
+        if chunk_total_ms >= 500.0:
             chunk_observation["slow"] = True
         chunk_observations.append(chunk_observation)
 

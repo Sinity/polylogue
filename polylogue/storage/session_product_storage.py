@@ -7,8 +7,11 @@ from collections.abc import Sequence
 
 from polylogue.storage.store import (
     DaySessionSummaryRecord,
+    SessionPhaseRecord,
     SessionProfileRecord,
     SessionTagRollupRecord,
+    SessionWorkEventRecord,
+    WorkThreadRecord,
     _json_array_or_none,
     _json_or_none,
 )
@@ -157,7 +160,7 @@ def replace_session_profile_sync(conn: sqlite3.Connection, record: SessionProfil
 def replace_session_work_events_sync(
     conn: sqlite3.Connection,
     conversation_id: str,
-    records: Sequence[object],
+    records: Sequence[SessionWorkEventRecord],
 ) -> None:
     conn.execute("DELETE FROM session_work_events WHERE conversation_id = ?", (conversation_id,))
     if records:
@@ -252,7 +255,7 @@ def replace_session_work_events_sync(
 def replace_session_phases_sync(
     conn: sqlite3.Connection,
     conversation_id: str,
-    records: Sequence[object],
+    records: Sequence[SessionPhaseRecord],
 ) -> None:
     conn.execute("DELETE FROM session_phases WHERE conversation_id = ?", (conversation_id,))
     if records:
@@ -316,7 +319,7 @@ def replace_session_phases_sync(
                         record.canonical_session_date,
                         record.confidence,
                         _json_array_or_none(record.evidence_reasons) or "[]",
-                        _json_or_none(record.tool_counts),
+                        _json_or_none(dict[str, object](record.tool_counts)),
                         record.word_count,
                     ]
                     + (
@@ -349,7 +352,11 @@ def replace_session_phases_sync(
 # ---------------------------------------------------------------------------
 
 
-def replace_work_thread_sync(conn: sqlite3.Connection, thread_id: str, record: object | None) -> None:
+def replace_work_thread_sync(
+    conn: sqlite3.Connection,
+    thread_id: str,
+    record: WorkThreadRecord | None,
+) -> None:
     conn.execute("DELETE FROM work_threads WHERE thread_id = ?", (thread_id,))
     if record is not None:
         conn.execute(
@@ -389,7 +396,7 @@ def replace_work_thread_sync(conn: sqlite3.Connection, thread_id: str, record: o
                 record.total_messages,
                 record.total_cost_usd,
                 record.wall_duration_ms,
-                _json_or_none(record.work_event_breakdown or {}),
+                _json_or_none(dict[str, object](record.work_event_breakdown or {})),
                 _json_or_none(record.payload),
                 record.search_text,
             ),
@@ -437,7 +444,7 @@ def replace_session_tag_rollup_rows_sync(
                     record.conversation_count,
                     record.explicit_count,
                     record.auto_count,
-                    _json_or_none(record.repo_breakdown),
+                    _json_or_none(dict[str, object](record.repo_breakdown)),
                     record.search_text,
                 )
                 for record in records
@@ -492,7 +499,7 @@ def replace_day_session_summaries_sync(
                     record.total_wall_duration_ms,
                     record.total_messages,
                     record.total_words,
-                    _json_or_none(record.work_event_breakdown),
+                    _json_or_none(dict[str, object](record.work_event_breakdown)),
                     _json_array_or_none(record.repos_active),
                     _json_or_none(record.payload),
                     record.search_text,
