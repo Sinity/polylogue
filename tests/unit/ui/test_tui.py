@@ -1,17 +1,15 @@
+from typing import Any
+
 import pytest
 from textual.widgets import DataTable, Input, TabbedContent, Tree
 
-try:
-    from polylogue.ui.tui.app import PolylogueApp
-    from polylogue.ui.tui.screens.base import RepositoryBoundContainer
-    from polylogue.ui.tui.screens.dashboard import Dashboard, ProviderBar
-    from polylogue.ui.tui.widgets.stats import StatCard
-except ImportError:
-    # Textual might not be installed in some envs
-    PolylogueApp = None
+from polylogue.ui.tui.app import PolylogueApp
+from polylogue.ui.tui.screens.base import RepositoryBoundContainer
+from polylogue.ui.tui.screens.dashboard import Dashboard, ProviderBar
+from polylogue.ui.tui.widgets.stats import StatCard
 
 pytestmark = pytest.mark.tui
-_skip = pytest.mark.skipif(PolylogueApp is None, reason="Textual not installed")
+_skip = pytest.mark.skipif(False, reason="Textual not installed")
 
 
 # ---------------------------------------------------------------------------
@@ -19,12 +17,12 @@ _skip = pytest.mark.skipif(PolylogueApp is None, reason="Textual not installed")
 # ---------------------------------------------------------------------------
 
 
-def _make_app(repo):
+def _make_app(repo: Any) -> Any:
     """Create PolylogueApp with an injected repository."""
     return PolylogueApp(repository=repo)
 
 
-async def _wait_workers(pilot, *, selector: str | None = None, reject: str = "Loading..."):
+async def _wait_workers(pilot: Any, *, selector: str | None = None, reject: str = "Loading...") -> None:
     """Wait for all thread workers to finish, then flush DOM (Phase 2B fix).
 
     Thread workers schedule call_from_thread() callbacks that haven't been
@@ -61,7 +59,7 @@ async def _wait_workers(pilot, *, selector: str | None = None, reject: str = "Lo
 
 @_skip
 @pytest.mark.asyncio
-async def test_dashboard_stats_populated(storage_repository, conversation_builder):
+async def test_dashboard_stats_populated(storage_repository: Any, conversation_builder: Any) -> None:
     """Seed data → mount → wait → assert stat card values match seeded counts."""
     conversation_builder("c1").add_message("m1", text="Hello").save()
     conversation_builder("c2").add_message("m2", text="World").add_message("m3", text="!").save()
@@ -78,7 +76,7 @@ async def test_dashboard_stats_populated(storage_repository, conversation_builde
 
 @_skip
 @pytest.mark.asyncio
-async def test_dashboard_provider_bars(storage_repository, conversation_builder):
+async def test_dashboard_provider_bars(storage_repository: Any, conversation_builder: Any) -> None:
     """Seed 2 providers → assert ProviderBar widgets rendered with correct counts."""
     conversation_builder("c1").provider("chatgpt").add_message("m1", text="A").save()
     conversation_builder("c2").provider("chatgpt").add_message("m2", text="B").save()
@@ -102,7 +100,7 @@ async def test_dashboard_provider_bars(storage_repository, conversation_builder)
 
 @_skip
 @pytest.mark.asyncio
-async def test_dashboard_empty_db(storage_repository):
+async def test_dashboard_empty_db(storage_repository: Any) -> None:
     """Empty DB → graceful '0' display, no errors."""
     app = _make_app(storage_repository)
     async with app.run_test() as pilot:
@@ -121,7 +119,7 @@ async def test_dashboard_empty_db(storage_repository):
 
 @_skip
 @pytest.mark.asyncio
-async def test_browser_tree_populated(storage_repository, conversation_builder):
+async def test_browser_tree_populated(storage_repository: Any, conversation_builder: Any) -> None:
     """Seed conversations → switch to browser → wait → assert tree nodes match."""
     conversation_builder("c1").provider("chatgpt").title("My Chat").add_message("m1", text="Hi").save()
 
@@ -146,7 +144,7 @@ async def test_browser_tree_populated(storage_repository, conversation_builder):
 
 @_skip
 @pytest.mark.asyncio
-async def test_browser_node_selection(storage_repository, conversation_builder):
+async def test_browser_node_selection(storage_repository: Any, conversation_builder: Any) -> None:
     """Click leaf node → assert markdown viewer shows conversation content."""
     conversation_builder("c1").provider("chatgpt").title("Test Chat").add_message("m1", text="Hello World").save()
 
@@ -177,7 +175,7 @@ async def test_browser_node_selection(storage_repository, conversation_builder):
 
 @_skip
 @pytest.mark.asyncio
-async def test_browser_empty_db(storage_repository):
+async def test_browser_empty_db(storage_repository: Any) -> None:
     """Empty DB → fallback provider list shown."""
     import asyncio
 
@@ -207,7 +205,7 @@ async def test_browser_empty_db(storage_repository):
 
 @_skip
 @pytest.mark.asyncio
-async def test_search_flow(storage_repository, conversation_builder):
+async def test_search_flow(storage_repository: Any, conversation_builder: Any) -> None:
     """Seed + index → type query → wait → assert DataTable rows."""
     conversation_builder("c1").add_message("m1", text="UniqueSearchTerm123").save()
 
@@ -249,7 +247,7 @@ async def test_search_flow(storage_repository, conversation_builder):
 
 @_skip
 @pytest.mark.asyncio
-async def test_search_no_results(storage_repository, conversation_builder):
+async def test_search_no_results(storage_repository: Any, conversation_builder: Any) -> None:
     """Search non-existent term → empty results, no error."""
     conversation_builder("c1").add_message("m1", text="Hello").save()
 
@@ -278,7 +276,7 @@ async def test_search_no_results(storage_repository, conversation_builder):
 
 @_skip
 @pytest.mark.asyncio
-async def test_search_empty_db(storage_repository):
+async def test_search_empty_db(storage_repository: Any) -> None:
     """Empty DB with FTS table → 0 results, no crash (messages_fts always exists)."""
     app = _make_app(storage_repository)
     async with app.run_test() as pilot:
@@ -304,7 +302,7 @@ async def test_search_empty_db(storage_repository):
 
 @_skip
 @pytest.mark.asyncio
-async def test_keyboard_tab_switch(storage_repository):
+async def test_keyboard_tab_switch(storage_repository: Any) -> None:
     """Press Tab key → verify tab changes (basic navigation)."""
     app = _make_app(storage_repository)
     async with app.run_test() as pilot:
@@ -324,7 +322,7 @@ async def test_keyboard_tab_switch(storage_repository):
 
 @_skip
 @pytest.mark.asyncio
-async def test_dark_mode_toggle(storage_repository):
+async def test_dark_mode_toggle(storage_repository: Any) -> None:
     """Press 'd' → assert dark mode toggles without crashing."""
     app = _make_app(storage_repository)
     async with app.run_test() as pilot:
@@ -339,7 +337,7 @@ async def test_dark_mode_toggle(storage_repository):
 
 @_skip
 @pytest.mark.asyncio
-async def test_search_missing_index_shows_rebuild_hint(storage_repository, conversation_builder):
+async def test_search_missing_index_shows_rebuild_hint(storage_repository: Any, conversation_builder: Any) -> None:
     """Dropping FTS tables yields a direct rebuild hint instead of a crash."""
     from polylogue.storage.backends.connection import open_connection
 
@@ -367,7 +365,7 @@ async def test_search_missing_index_shows_rebuild_hint(storage_repository, conve
         assert "Search index not built" in str(row[2])
 
 
-def test_repository_bound_container_requires_injected_repo():
+def test_repository_bound_container_requires_injected_repo() -> None:
     class DummyScreen(RepositoryBoundContainer):
         pass
 
@@ -379,7 +377,7 @@ def test_repository_bound_container_requires_injected_repo():
 
 @_skip
 @pytest.mark.asyncio
-async def test_quit_action(storage_repository):
+async def test_quit_action(storage_repository: Any) -> None:
     """Press 'q' → app exits cleanly."""
     app = _make_app(storage_repository)
     async with app.run_test() as pilot:
@@ -395,7 +393,7 @@ async def test_quit_action(storage_repository):
 
 @_skip
 @pytest.mark.asyncio
-async def test_worker_failure_recovery(storage_repository, monkeypatch):
+async def test_worker_failure_recovery(storage_repository: Any, monkeypatch: Any) -> None:
     """Inject error in repo → assert app stays usable with error notification."""
     from unittest.mock import MagicMock
 
@@ -422,7 +420,7 @@ async def test_worker_failure_recovery(storage_repository, monkeypatch):
 
 @_skip
 @pytest.mark.asyncio
-async def test_app_startup(storage_repository):
+async def test_app_startup(storage_repository: Any) -> None:
     """Test that the app starts and loads the dashboard."""
     app = _make_app(storage_repository)
 
