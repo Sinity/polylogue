@@ -5,37 +5,20 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 from functools import lru_cache
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
+
+from .payloads import (
+    PayloadDict,
+    merge_unique_string_tuples,
+    payload_string,
+    payload_string_tuple,
+)
 
 if TYPE_CHECKING:
     from polylogue.artifact_graph import ArtifactGraph
     from polylogue.artifacts import ArtifactNode, ArtifactPath
     from polylogue.maintenance_targets import MaintenanceTargetSpec
     from polylogue.operations import OperationSpec
-
-
-def _coerce_string(value: object, default: str) -> str:
-    if isinstance(value, str) and value:
-        return value
-    return default
-
-
-def _coerce_string_tuple(value: object) -> tuple[str, ...]:
-    if isinstance(value, (list, tuple)) and all(isinstance(item, str) for item in value):
-        return tuple(value)
-    return ()
-
-
-def _merge_unique_string_tuples(*groups: tuple[str, ...]) -> tuple[str, ...]:
-    seen: set[str] = set()
-    merged: list[str] = []
-    for group in groups:
-        for item in group:
-            if item in seen:
-                continue
-            seen.add(item)
-            merged.append(item)
-    return tuple(merged)
 
 
 def _partition_runtime_operation_targets(operation_targets: tuple[str, ...]) -> tuple[tuple[str, ...], tuple[str, ...]]:
@@ -55,6 +38,18 @@ def _contains_non_runtime_artifact_targets(artifact_targets: tuple[str, ...]) ->
         return False
     runtime_names = set(runtime_artifact_target_names())
     return any(target not in runtime_names for target in artifact_targets)
+
+
+def _object_string_attribute(obj: object, name: str, default: str) -> str:
+    value = getattr(obj, name, None)
+    if isinstance(value, str):
+        return value
+    return default
+
+
+def _object_string_tuple_attribute(obj: object, name: str) -> tuple[str, ...]:
+    value = getattr(obj, name, None)
+    return payload_string_tuple(value) if isinstance(value, list | tuple) else ()
 
 
 @lru_cache(maxsize=1)
@@ -105,27 +100,27 @@ class ScenarioMetadata:
     @classmethod
     def from_payload(cls, payload: Mapping[str, object]) -> ScenarioMetadata:
         return cls(
-            origin=_coerce_string(payload.get("origin"), "authored"),
-            path_targets=_coerce_string_tuple(payload.get("path_targets")),
-            artifact_targets=_coerce_string_tuple(payload.get("artifact_targets")),
-            operation_targets=_coerce_string_tuple(payload.get("operation_targets")),
-            maintenance_targets=_coerce_string_tuple(payload.get("maintenance_targets")),
-            tags=_coerce_string_tuple(payload.get("tags")),
+            origin=payload_string(payload.get("origin"), "authored"),
+            path_targets=payload_string_tuple(payload.get("path_targets")),
+            artifact_targets=payload_string_tuple(payload.get("artifact_targets")),
+            operation_targets=payload_string_tuple(payload.get("operation_targets")),
+            maintenance_targets=payload_string_tuple(payload.get("maintenance_targets")),
+            tags=payload_string_tuple(payload.get("tags")),
         )
 
     @classmethod
     def from_object(cls, obj: object) -> ScenarioMetadata:
         return cls(
-            origin=_coerce_string(getattr(obj, "origin", None), "authored"),
-            path_targets=_coerce_string_tuple(getattr(obj, "path_targets", None)),
-            artifact_targets=_coerce_string_tuple(getattr(obj, "artifact_targets", None)),
-            operation_targets=_coerce_string_tuple(getattr(obj, "operation_targets", None)),
-            maintenance_targets=_coerce_string_tuple(getattr(obj, "maintenance_targets", None)),
-            tags=_coerce_string_tuple(getattr(obj, "tags", None)),
+            origin=_object_string_attribute(obj, "origin", "authored"),
+            path_targets=_object_string_tuple_attribute(obj, "path_targets"),
+            artifact_targets=_object_string_tuple_attribute(obj, "artifact_targets"),
+            operation_targets=_object_string_tuple_attribute(obj, "operation_targets"),
+            maintenance_targets=_object_string_tuple_attribute(obj, "maintenance_targets"),
+            tags=_object_string_tuple_attribute(obj, "tags"),
         )
 
-    def to_payload(self) -> dict[str, Any]:
-        payload: dict[str, Any] = {"origin": self.origin}
+    def to_payload(self) -> PayloadDict:
+        payload: PayloadDict = {"origin": self.origin}
         if self.path_targets:
             payload["path_targets"] = list(self.path_targets)
         if self.artifact_targets:
@@ -143,17 +138,17 @@ class ScenarioMetadata:
             return self
         return ScenarioMetadata(
             origin=self.origin,
-            path_targets=_merge_unique_string_tuples(self.path_targets, *(other.path_targets for other in others)),
-            artifact_targets=_merge_unique_string_tuples(
+            path_targets=merge_unique_string_tuples(self.path_targets, *(other.path_targets for other in others)),
+            artifact_targets=merge_unique_string_tuples(
                 self.artifact_targets, *(other.artifact_targets for other in others)
             ),
-            operation_targets=_merge_unique_string_tuples(
+            operation_targets=merge_unique_string_tuples(
                 self.operation_targets, *(other.operation_targets for other in others)
             ),
-            maintenance_targets=_merge_unique_string_tuples(
+            maintenance_targets=merge_unique_string_tuples(
                 self.maintenance_targets, *(other.maintenance_targets for other in others)
             ),
-            tags=_merge_unique_string_tuples(self.tags, *(other.tags for other in others)),
+            tags=merge_unique_string_tuples(self.tags, *(other.tags for other in others)),
         )
 
     def with_default_targets(self, defaults: ScenarioMetadata) -> ScenarioMetadata:
@@ -170,13 +165,13 @@ class ScenarioMetadata:
             operation_targets=(
                 self.operation_targets
                 if preserve_explicit_operations
-                else _merge_unique_string_tuples(
+                else merge_unique_string_tuples(
                     explicit_declared_only_operations,
                     explicit_runtime_operations or defaults.operation_targets,
                 )
             ),
             maintenance_targets=self.maintenance_targets or defaults.maintenance_targets,
-            tags=_merge_unique_string_tuples(self.tags, defaults.tags),
+            tags=merge_unique_string_tuples(self.tags, defaults.tags),
         )
 
     def runtime_path_targets(self) -> tuple[str, ...]:

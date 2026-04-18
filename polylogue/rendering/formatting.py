@@ -16,10 +16,17 @@ from __future__ import annotations
 import csv
 import io
 import json
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypedDict
 
 if TYPE_CHECKING:
     from polylogue.lib.models import Conversation
+
+
+class ConversationMessagePayload(TypedDict):
+    id: str
+    role: str
+    text: str | None
+    timestamp: str | None
 
 
 def format_conversation(
@@ -55,13 +62,13 @@ def format_conversation(
         return _conv_to_markdown(conv)
 
 
-def _conv_to_dict(conv: Conversation, fields: str | None) -> dict[str, Any]:
+def _conv_to_dict(conv: Conversation, fields: str | None) -> dict[str, object]:
     """Convert conversation to summary dict (message count, not content).
 
     Used for list-mode output where loading all message text is unnecessary.
     For full-content output, use _conv_to_json() instead.
     """
-    full = {
+    full: dict[str, object] = {
         "id": str(conv.id),
         "provider": str(conv.provider),
         "title": conv.display_title,
@@ -74,7 +81,7 @@ def _conv_to_dict(conv: Conversation, fields: str | None) -> dict[str, Any]:
     if not fields:
         return full
     selected = [f.strip() for f in fields.split(",")]
-    return {k: v for k, v in full.items() if k in selected}
+    return {key: value for key, value in full.items() if key in selected}
 
 
 def _conv_to_json(conv: Conversation, fields: str | None) -> str:
@@ -82,15 +89,7 @@ def _conv_to_json(conv: Conversation, fields: str | None) -> str:
     data = _conv_to_dict(conv, fields)
     # Override message count with full message content
     if fields is None or "messages" in (fields or "").split(","):
-        data["messages"] = [
-            {
-                "id": str(msg.id),
-                "role": str(msg.role),
-                "text": msg.text,
-                "timestamp": msg.timestamp.isoformat() if msg.timestamp else None,
-            }
-            for msg in conv.messages
-        ]
+        data["messages"] = [_serialize_message(msg) for msg in conv.messages]
     return json.dumps(data, indent=2)
 
 
@@ -109,15 +108,7 @@ def _conv_to_yaml(conv: Conversation, fields: str | None) -> str:
     data = _conv_to_dict(conv, fields)
     # For single conversation, also include full message content
     if fields is None or "messages" in fields.split(","):
-        data["messages"] = [
-            {
-                "id": str(msg.id),
-                "role": str(msg.role),
-                "text": msg.text,
-                "timestamp": msg.timestamp.isoformat() if msg.timestamp else None,
-            }
-            for msg in conv.messages
-        ]
+        data["messages"] = [_serialize_message(msg) for msg in conv.messages]
 
     return str(yaml.dump(data, default_flow_style=False, allow_unicode=True, sort_keys=False))
 
@@ -156,22 +147,9 @@ def _conv_to_csv_messages(conv: Conversation) -> str:
 
 def _conv_to_markdown(conv: Conversation) -> str:
     """Convert conversation to markdown."""
-    lines = [f"# {conv.display_title or conv.id}", ""]
-    if conv.display_date:
-        lines.append(f"**Date**: {conv.display_date.strftime('%Y-%m-%d %H:%M')}")
-    lines.append(f"**Provider**: {conv.provider}")
-    lines.append("")
+    from polylogue.rendering.core_markdown import format_conversation_markdown
 
-    for msg in conv.messages:
-        if not msg.text:
-            continue
-        role_label = (msg.role or "unknown").capitalize()
-        lines.append(f"## {role_label}")
-        lines.append("")
-        lines.append(msg.text)
-        lines.append("")
-
-    return "\n".join(lines)
+    return format_conversation_markdown(conv)
 
 
 def _conv_to_plaintext(conv: Conversation) -> str:
@@ -195,6 +173,17 @@ def _conv_to_plaintext(conv: Conversation) -> str:
             lines.append("")
 
     return "\n".join(lines).strip()
+
+
+def _serialize_message(message: Any) -> ConversationMessagePayload:
+    timestamp = message.timestamp
+    isoformat = getattr(timestamp, "isoformat", None)
+    return {
+        "id": str(message.id),
+        "role": str(message.role),
+        "text": message.text,
+        "timestamp": isoformat() if callable(isoformat) else None,
+    }
 
 
 def _yaml_safe(value: str) -> str:

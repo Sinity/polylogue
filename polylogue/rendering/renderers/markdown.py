@@ -42,15 +42,12 @@ class MarkdownRenderer:
             ValueError: If conversation not found
             IOError: If output path is invalid or write fails
         """
-        # Use shared formatter to get markdown
         formatted = await self.formatter.format(conversation_id)
 
-        # Determine output path
         render_root_path = conversation_render_root(output_path, formatted.provider, conversation_id)
         render_root_path.mkdir(parents=True, exist_ok=True)
         md_path = render_root_path / "conversation.md"
 
-        # Write markdown file
         md_path.write_text(formatted.markdown_text, encoding="utf-8")
 
         return md_path
