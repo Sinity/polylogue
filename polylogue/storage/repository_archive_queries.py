@@ -4,32 +4,51 @@ from __future__ import annotations
 
 import builtins
 from collections.abc import AsyncIterator
+from typing import TYPE_CHECKING, cast
 
+from polylogue.lib.conversation_models import Conversation, ConversationSummary
 from polylogue.storage.query_models import ConversationRecordQuery
+
+if TYPE_CHECKING:
+    from polylogue.lib.filters import ConversationFilter
+    from polylogue.storage.backends.query_store import SQLiteQueryStore
 
 
 class RepositoryArchiveQueryMixin:
+    if TYPE_CHECKING:
+        queries: SQLiteQueryStore
+
+        async def list_summaries_by_query(
+            self,
+            query: ConversationRecordQuery,
+        ) -> list[ConversationSummary]: ...
+
+        async def list_by_query(
+            self,
+            query: ConversationRecordQuery,
+        ) -> list[Conversation]: ...
+
     async def list_summaries(
         self,
         limit: int | None = 50,
         offset: int = 0,
         provider: str | None = None,
-        providers: builtins.list[str] | None = None,
+        providers: list[str] | None = None,
         source: str | None = None,
         since: str | None = None,
         until: str | None = None,
         title_contains: str | None = None,
-        path_terms: builtins.list[str] | None = None,
-        action_terms: builtins.list[str] | None = None,
-        excluded_action_terms: builtins.list[str] | None = None,
-        tool_terms: builtins.list[str] | None = None,
-        excluded_tool_terms: builtins.list[str] | None = None,
+        path_terms: list[str] | None = None,
+        action_terms: list[str] | None = None,
+        excluded_action_terms: list[str] | None = None,
+        tool_terms: list[str] | None = None,
+        excluded_tool_terms: list[str] | None = None,
         has_tool_use: bool = False,
         has_thinking: bool = False,
         min_messages: int | None = None,
         max_messages: int | None = None,
         min_words: int | None = None,
-    ):
+    ) -> list[ConversationSummary]:
         return await self.list_summaries_by_query(
             ConversationRecordQuery(
                 source=source,
@@ -58,22 +77,22 @@ class RepositoryArchiveQueryMixin:
         *,
         page_size: int = 50,
         provider: str | None = None,
-        providers: builtins.list[str] | None = None,
+        providers: list[str] | None = None,
         source: str | None = None,
         since: str | None = None,
         until: str | None = None,
         title_contains: str | None = None,
-        path_terms: builtins.list[str] | None = None,
-        action_terms: builtins.list[str] | None = None,
-        excluded_action_terms: builtins.list[str] | None = None,
-        tool_terms: builtins.list[str] | None = None,
-        excluded_tool_terms: builtins.list[str] | None = None,
+        path_terms: list[str] | None = None,
+        action_terms: list[str] | None = None,
+        excluded_action_terms: list[str] | None = None,
+        tool_terms: list[str] | None = None,
+        excluded_tool_terms: list[str] | None = None,
         has_tool_use: bool = False,
         has_thinking: bool = False,
         min_messages: int | None = None,
         max_messages: int | None = None,
         min_words: int | None = None,
-    ) -> AsyncIterator[builtins.list]:
+    ) -> AsyncIterator[list[ConversationSummary]]:
         offset = 0
         while True:
             page = await self.list_summaries(
@@ -108,21 +127,21 @@ class RepositoryArchiveQueryMixin:
         limit: int | None = 50,
         offset: int = 0,
         provider: str | None = None,
-        providers: builtins.list[str] | None = None,
+        providers: list[str] | None = None,
         since: str | None = None,
         until: str | None = None,
         title_contains: str | None = None,
-        path_terms: builtins.list[str] | None = None,
-        action_terms: builtins.list[str] | None = None,
-        excluded_action_terms: builtins.list[str] | None = None,
-        tool_terms: builtins.list[str] | None = None,
-        excluded_tool_terms: builtins.list[str] | None = None,
+        path_terms: list[str] | None = None,
+        action_terms: list[str] | None = None,
+        excluded_action_terms: list[str] | None = None,
+        tool_terms: list[str] | None = None,
+        excluded_tool_terms: list[str] | None = None,
         has_tool_use: bool = False,
         has_thinking: bool = False,
         min_messages: int | None = None,
         max_messages: int | None = None,
         min_words: int | None = None,
-    ):
+    ) -> list[Conversation]:
         return await self.list_by_query(
             ConversationRecordQuery(
                 provider=provider,
@@ -186,10 +205,11 @@ class RepositoryArchiveQueryMixin:
             )
         )
 
-    def filter(self):
+    def filter(self) -> ConversationFilter:
         from polylogue.lib import filters
+        from polylogue.storage.repository import ConversationRepository
 
-        return filters.ConversationFilter(self)
+        return filters.ConversationFilter(cast(ConversationRepository, self))
 
 
 __all__ = ["RepositoryArchiveQueryMixin"]

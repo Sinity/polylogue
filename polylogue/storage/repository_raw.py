@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from typing import TYPE_CHECKING
 
 from polylogue.storage.backends.queries import artifacts as artifacts_q
 from polylogue.storage.backends.queries import raw as raw_queries
+from polylogue.storage.repository_contracts import RepositoryBackendProtocol
 from polylogue.storage.state_views import RawConversationState, RawConversationStateUpdate
 from polylogue.storage.store import (
     ArtifactObservationRecord,
@@ -15,6 +17,9 @@ from polylogue.types import Provider, ValidationMode, ValidationStatus
 
 
 class RepositoryRawMixin:
+    if TYPE_CHECKING:
+        _backend: RepositoryBackendProtocol
+
     async def save_raw_conversation(self, record: RawConversationRecord) -> bool:
         async with self._backend.connection() as conn:
             return await raw_queries.save_raw_conversation(
@@ -91,7 +96,8 @@ class RepositoryRawMixin:
             )
 
     async def get_known_source_mtimes(self) -> dict[str, str]:
-        return await self._backend.queries.get_known_source_mtimes()
+        async with self._backend.connection() as conn:
+            return await raw_queries.get_known_source_mtimes(conn)
 
     async def reset_parse_status(
         self,

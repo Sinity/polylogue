@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Mapping
 from pathlib import Path
-from typing import TYPE_CHECKING, TypeVar, cast
+from typing import TYPE_CHECKING, TypeVar
 
 import structlog
 
@@ -203,7 +203,7 @@ class ArchiveSearchMixin:
         provider: str | None = None,
         limit: int | None = None,
     ) -> list[Conversation]:
-        return cast(list[Conversation], await self.repository.list(provider=provider, limit=limit))
+        return await self.repository.list(provider=provider, limit=limit)
 
     async def query_conversations(self, spec: ConversationQuerySpec) -> list[Conversation]:
         return await spec.list(self.repository)
