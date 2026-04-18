@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import inspect
+from collections.abc import Awaitable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -12,10 +12,11 @@ from polylogue.cli.query_stats import emit_structured_stats
 if TYPE_CHECKING:
     from polylogue.cli.types import AppEnv
     from polylogue.lib.action_events import ActionEvent
-    from polylogue.lib.models import ConversationSummary
+    from polylogue.lib.models import Conversation, ConversationSummary
     from polylogue.lib.query_spec import ConversationQuerySpec
     from polylogue.lib.semantic_facts import ConversationSemanticFacts
     from polylogue.storage.repository import ConversationRepository
+    from polylogue.storage.store import AttachmentRecord
 
 
 # ---------------------------------------------------------------------------
@@ -135,38 +136,26 @@ def filtered_action_events(
 async def _load_semantic_stats_conversations(
     repo: ConversationRepository,
     conversation_ids: list[str],
-) -> list:
-    get_many = getattr(repo, "get_many", None)
-    if get_many is not None:
-        conversations = get_many(conversation_ids)
-        if inspect.isawaitable(conversations):
-            return await conversations
-        if isinstance(conversations, list):
-            return conversations
-
-    queries = getattr(repo, "queries", None)
-    if queries is None:
-        return []
-
-    records_result = queries.get_conversations_batch(conversation_ids)
-    messages_result = queries.get_messages_batch(conversation_ids)
-    if not inspect.isawaitable(records_result) or not inspect.isawaitable(messages_result):
+) -> list[Conversation]:
+    if not conversation_ids:
         return []
 
     from polylogue.storage.hydrators import conversation_from_records
 
-    records = await records_result
-    messages_by_conversation = await messages_result
+    queries = repo.queries
+    records = await queries.get_conversations_batch(conversation_ids)
+    messages_by_conversation = await queries.get_messages_batch(conversation_ids)
 
-    attachments_by_conversation: dict[str, list] = {}
-    get_attachments_batch = getattr(queries, "get_attachments_batch", None)
-    if get_attachments_batch is not None:
-        attachments_result = get_attachments_batch(conversation_ids)
-        if inspect.isawaitable(attachments_result):
-            attachments_by_conversation = await attachments_result
+    attachments_by_conversation: dict[str, list[AttachmentRecord]] = {}
+    attachments_result: Awaitable[dict[str, list[AttachmentRecord]]] | dict[str, list[AttachmentRecord]] | object
+    attachments_result = queries.get_attachments_batch(conversation_ids)
+    if isinstance(attachments_result, Awaitable):
+        attachments_by_conversation = await attachments_result
+    elif isinstance(attachments_result, dict):
+        attachments_by_conversation = attachments_result
 
     records_by_id = {str(record.conversation_id): record for record in records}
-    hydrated = []
+    hydrated: list[Conversation] = []
     for conversation_id in conversation_ids:
         record = records_by_id.get(conversation_id)
         if record is None:
@@ -247,10 +236,13 @@ async def output_stats_by_semantic_ids(
     matched_facts = 0
     matched_messages = 0
     key_func = (lambda action: action.kind.value) if dimension == "action" else normalized_tool_name
-    action_event_status = repo.get_action_event_read_model_status()
-    if inspect.isawaitable(action_event_status):
-        action_event_status = await action_event_status
-    if not isinstance(action_event_status, dict):
+    action_event_status_result: Awaitable[dict[str, int | bool]] | dict[str, int | bool] | object
+    action_event_status_result = repo.get_action_event_read_model_status()
+    if isinstance(action_event_status_result, Awaitable):
+        action_event_status = await action_event_status_result
+    elif isinstance(action_event_status_result, dict):
+        action_event_status = action_event_status_result
+    else:
         action_event_status = {}
     action_read_model_ready = bool(action_event_status.get("ready", False))
 
