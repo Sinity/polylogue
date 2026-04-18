@@ -29,11 +29,13 @@ from polylogue.archive_products import (
 from polylogue.sync_bridge import run_coroutine_sync
 
 if TYPE_CHECKING:
-    pass
+    from polylogue.facade import Polylogue
 
 
 class SyncProductQueriesMixin:
     """Derived product query helpers for ``SyncPolylogue``."""
+
+    _facade: Polylogue
 
     def get_session_product_status(self) -> dict[str, int | bool]:
         return run_coroutine_sync(self._facade.get_session_product_status())

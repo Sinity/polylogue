@@ -8,6 +8,38 @@ from dataclasses import dataclass
 from typing import Any
 
 
+def _payload_items(value: object) -> tuple[object, ...]:
+    if isinstance(value, list | tuple):
+        return tuple(value)
+    return ()
+
+
+def _payload_int(payload: Mapping[str, object], key: str) -> int | None:
+    value = payload.get(key)
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float | str):
+        return int(value)
+    raise TypeError(f"{key} must be an int-compatible value, got {type(value).__name__}")
+
+
+def _payload_float(payload: Mapping[str, object], key: str) -> float | None:
+    value = payload.get(key)
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return float(value)
+    if isinstance(value, int | float):
+        return float(value)
+    if isinstance(value, str):
+        return float(value)
+    raise TypeError(f"{key} must be a float-compatible value, got {type(value).__name__}")
+
+
 @dataclass(frozen=True)
 class AssertionSpec:
     """Expected success criteria for an authored executable scenario."""
@@ -44,17 +76,13 @@ class AssertionSpec:
         if payload is None:
             return cls()
         return cls(
-            exit_code=int(payload["exit_code"]) if payload.get("exit_code") is not None else 0,
-            stdout_contains=tuple(str(item) for item in payload.get("stdout_contains", ())),
-            stdout_not_contains=tuple(str(item) for item in payload.get("stdout_not_contains", ())),
+            exit_code=_payload_int(payload, "exit_code") if payload.get("exit_code") is not None else 0,
+            stdout_contains=tuple(str(item) for item in _payload_items(payload.get("stdout_contains"))),
+            stdout_not_contains=tuple(str(item) for item in _payload_items(payload.get("stdout_not_contains"))),
             stdout_is_valid_json=bool(payload.get("stdout_is_valid_json", False)),
-            stdout_min_lines=int(payload["stdout_min_lines"]) if payload.get("stdout_min_lines") is not None else None,
-            benchmark_warn_pct=(
-                float(payload["benchmark_warn_pct"]) if payload.get("benchmark_warn_pct") is not None else None
-            ),
-            benchmark_fail_pct=(
-                float(payload["benchmark_fail_pct"]) if payload.get("benchmark_fail_pct") is not None else None
-            ),
+            stdout_min_lines=_payload_int(payload, "stdout_min_lines"),
+            benchmark_warn_pct=_payload_float(payload, "benchmark_warn_pct"),
+            benchmark_fail_pct=_payload_float(payload, "benchmark_fail_pct"),
         )
 
     def validate_process(self, output: str, exit_code: int) -> str | None:

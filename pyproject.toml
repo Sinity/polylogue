@@ -162,12 +162,8 @@ plugins = []
 exclude = [
   "tests/",
   "polylogue/sources/providers/",
-  "polylogue/cli/query\\.py$",
   "polylogue/pipeline/services/ingest_batch\\.py$",
   "polylogue/pipeline/services/ingest_worker\\.py$",
-  "polylogue/protocols\\.py$",
-  "polylogue/scenarios/assertions\\.py$",
-  "polylogue/scenarios/execution\\.py$",
   "polylogue/schemas/generation_cluster_support\\.py$",
   "polylogue/schemas/generation_packages\\.py$",
   "polylogue/schemas/generation_provider_bundle\\.py$",
@@ -221,9 +217,6 @@ exclude = [
   "polylogue/storage/session_product_refresh\\.py$",
   "polylogue/storage/session_product_storage\\.py$",
   "polylogue/storage/session_product_threads\\.py$",
-  "polylogue/sync\\.py$",
-  "polylogue/sync_conversation_queries\\.py$",
-  "polylogue/sync_product_queries\\.py$",
 ]
 files = [
   "polylogue",
