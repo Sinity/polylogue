@@ -28,13 +28,18 @@ class _LatestRunQueries(Protocol):
     def get_latest_run(self) -> RunRecord | None | Awaitable[RunRecord | None]: ...
 
 
-class _BackendWithPublicationState(Protocol):
-    db_path: Path
-    queries: _LatestRunQueries
-
-
 class _PublicationRepository(Protocol):
     async def record_publication(self, record: PublicationRecord) -> None: ...
+
+
+def _backend_db_path(backend: object) -> Path | None:
+    db_path = getattr(backend, "db_path", None)
+    return db_path if isinstance(db_path, Path) else None
+
+
+def _backend_queries(backend: object) -> _LatestRunQueries | None:
+    queries = getattr(backend, "queries", None)
+    return queries if queries is not None and hasattr(queries, "get_latest_run") else None
 
 
 def build_latest_run_summary(record: RunRecord | None) -> PublicationRunSummary | None:
@@ -113,30 +118,35 @@ def load_archive_maintenance_summary(*, db_path: Path) -> ArchiveMaintenanceSumm
     )
 
 
-async def load_latest_run_summary(backend: _BackendWithPublicationState) -> PublicationRunSummary | None:
+async def load_latest_run_summary(backend: object) -> PublicationRunSummary | None:
     """Return the latest pipeline run summary for manifest embedding."""
-    record = backend.queries.get_latest_run()
+    queries = _backend_queries(backend)
+    if queries is None:
+        return None
+    record = queries.get_latest_run()
     if inspect.isawaitable(record):
         record = await record
     return build_latest_run_summary(record)
 
 
 async def load_artifact_proof_summary_for_backend(
-    backend: _BackendWithPublicationState,
+    backend: object,
 ) -> ArtifactProofSummary | None:
     """Return durable artifact-proof summary for manifest embedding."""
-    if not isinstance(getattr(backend, "db_path", None), Path):
+    db_path = _backend_db_path(backend)
+    if db_path is None:
         return None
-    return await asyncio.to_thread(load_artifact_proof_summary, db_path=backend.db_path)
+    return await asyncio.to_thread(load_artifact_proof_summary, db_path=db_path)
 
 
 async def load_archive_maintenance_summary_for_backend(
-    backend: _BackendWithPublicationState,
+    backend: object,
 ) -> ArchiveMaintenanceSummary | None:
     """Return derived-model maintenance summary for manifest embedding."""
-    if not isinstance(getattr(backend, "db_path", None), Path):
+    db_path = _backend_db_path(backend)
+    if db_path is None:
         return None
-    return await asyncio.to_thread(load_archive_maintenance_summary, db_path=backend.db_path)
+    return await asyncio.to_thread(load_archive_maintenance_summary, db_path=db_path)
 
 
 async def build_site_publication_manifest(
