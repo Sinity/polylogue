@@ -6,7 +6,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from sqlite3 import Connection
-from typing import TypeVar
+from typing import Any, TypeVar
 
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.backends.connection import open_connection
@@ -40,7 +40,7 @@ def open_bench_store(db_path: Path) -> Iterator[BenchAsyncStore]:
 
 
 def benchmark_store_call(
-    benchmark,
+    benchmark: Any,
     db_path: Path,
     operation: Callable[[BenchAsyncStore], Awaitable[T]],
 ) -> None:
@@ -50,7 +50,7 @@ def benchmark_store_call(
 
 
 def benchmark_connection_call(
-    benchmark,
+    benchmark: Any,
     db_path: Path,
     operation: Callable[[Connection], T],
 ) -> None:

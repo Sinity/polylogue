@@ -190,11 +190,11 @@ class TestFTS5EscapeFuzz:
     ]
 
     @pytest.mark.parametrize("data", SAFE_CORPUS)
-    def test_fts5_escape_safe_corpus(self, data: bytes):
+    def test_fts5_escape_safe_corpus(self: object, data: bytes) -> None:
         """Run FTS5 escape fuzz with inputs that should be safe."""
         fuzz_fts5_escape(data)
 
-    def test_fts5_escape_security_invariant(self):
+    def test_fts5_escape_security_invariant(self: object) -> None:
         """Test that SQL injection is prevented even if FTS5 syntax fails.
 
         The key security property is that malicious input cannot escape the
@@ -220,7 +220,7 @@ class TestFTS5EscapeFuzz:
             # The query should be safely parameterized
             # Even if FTS5 fails to parse, SQL injection is prevented
 
-    def test_fts5_escape_no_crashes(self):
+    def test_fts5_escape_no_crashes(self: object) -> None:
         """Verify escape function doesn't crash on arbitrary input."""
         import random
 
@@ -242,7 +242,7 @@ class TestFTS5EscapeFuzz:
 # =============================================================================
 
 
-def main():
+def main() -> None:
     """Run atheris fuzzer with libFuzzer engine."""
     if not HAS_ATHERIS:
         print("atheris not installed, running pytest-compatible tests instead")

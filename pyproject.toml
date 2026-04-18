@@ -155,15 +155,10 @@ disallow_incomplete_defs = true
 disallow_untyped_defs = true
 cache_dir = ".cache/mypy"
 plugins = []
-# Files excluded from strict type checking. This is legacy debt from
-# before the gate was restored (#188) — the list only shrinks. When
-# cleaning a module, remove its entry and run `devtools verify` to
-# confirm the gate still passes.
-exclude = [
-  "tests/",
-]
 files = [
   "polylogue",
+  "tests/**/*.py",
+  "devtools/**/*.py",
 ]
 ignore_missing_imports = true
 disallow_subclassing_any = false  # Pydantic BaseModel seen as Any (plugin incompatible with nix mypy 1.17)

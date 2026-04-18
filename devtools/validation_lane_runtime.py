@@ -50,7 +50,10 @@ def run_lane(lane: LaneEntry) -> int:
     print()
 
     try:
-        result = run_execution(lane.execution, timeout=lane.timeout_s, capture_output=True)
+        execution = lane.execution
+        if execution is None:
+            raise ValueError(f"Lane {lane.name!r} is missing execution metadata")
+        result = run_execution(execution, timeout=lane.timeout_s, capture_output=True)
         if result.stdout:
             print(result.stdout, end="" if result.stdout.endswith("\n") else "\n")
         if result.stderr:

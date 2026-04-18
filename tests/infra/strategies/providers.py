@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from hypothesis import strategies as st
 
@@ -46,7 +46,7 @@ def decode_provider_payload(provider: str, raw: bytes) -> Any:
     """Decode schema-generated provider bytes into the wire payload type."""
     if provider in _JSONL_PROVIDERS:
         return [json.loads(line) for line in raw.decode().splitlines() if line.strip()]
-    return json.loads(raw)
+    return cast(dict[str, Any], json.loads(raw))
 
 
 # =============================================================================
@@ -68,7 +68,7 @@ def chatgpt_export_strategy(
     seed = draw(st.integers(min_value=0, max_value=2**32))
     n = draw(st.integers(min_value=max(min_messages, 2), max_value=max_messages))
     raw = corpus.generate(count=1, messages_per_conversation=range(n, n + 1), seed=seed)[0]
-    return json.loads(raw)
+    return cast(dict[str, Any], json.loads(raw))
 
 
 @st.composite
@@ -87,7 +87,7 @@ def chatgpt_message_node_strategy(
         # Fallback — shouldn't happen with valid generation
         return {"id": "fallback", "message": None, "children": []}
     idx = draw(st.integers(min_value=0, max_value=len(nodes) - 1))
-    return nodes[idx]
+    return cast(dict[str, Any], nodes[idx])
 
 
 # =============================================================================
@@ -106,7 +106,7 @@ def claude_ai_export_strategy(
     seed = draw(st.integers(min_value=0, max_value=2**32))
     n = draw(st.integers(min_value=max(min_messages, 2), max_value=max_messages))
     raw = corpus.generate(count=1, messages_per_conversation=range(n, n + 1), seed=seed)[0]
-    return json.loads(raw)
+    return cast(dict[str, Any], json.loads(raw))
 
 
 # =============================================================================
@@ -154,7 +154,7 @@ def gemini_export_strategy(
     seed = draw(st.integers(min_value=0, max_value=2**32))
     n = draw(st.integers(min_value=max(min_messages, 2), max_value=max_messages))
     raw = corpus.generate(count=1, messages_per_conversation=range(n, n + 1), seed=seed)[0]
-    return json.loads(raw)
+    return cast(dict[str, Any], json.loads(raw))
 
 
 @st.composite
@@ -165,7 +165,7 @@ def gemini_message_strategy(draw: st.DrawFn) -> dict[str, Any]:
     if not messages:
         return {"role": "user", "text": "test"}
     idx = draw(st.integers(min_value=0, max_value=len(messages) - 1))
-    return messages[idx]
+    return cast(dict[str, Any], messages[idx])
 
 
 # =============================================================================
@@ -374,7 +374,7 @@ def gemini_semantic_message_strategy(draw: st.DrawFn) -> dict[str, Any]:
 def codex_semantic_record_strategy(draw: st.DrawFn) -> dict[str, Any]:
     """Generate Codex direct and envelope records with mixed block types."""
     raw = draw(st.sampled_from(_CODEX_SEMANTIC_RECORDS))
-    return json.loads(json.dumps(raw))
+    return cast(dict[str, Any], json.loads(json.dumps(raw)))
 
 
 @st.composite

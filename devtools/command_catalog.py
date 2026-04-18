@@ -6,6 +6,7 @@ import importlib
 from collections import OrderedDict
 from collections.abc import Callable, Iterable
 from dataclasses import asdict, dataclass
+from typing import cast
 
 CommandMain = Callable[[list[str] | None], int]
 CONTROL_PLANE = "devtools"
@@ -40,7 +41,7 @@ class CommandSpec:
 
     def resolve_main(self) -> CommandMain:
         module = importlib.import_module(self.module)
-        return getattr(module, self.entrypoint)
+        return cast(CommandMain, getattr(module, self.entrypoint))
 
     def to_dict(self) -> dict[str, object]:
         data = asdict(self)

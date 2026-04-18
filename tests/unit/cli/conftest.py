@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+from pathlib import Path
 
 import pytest
 
@@ -11,7 +12,7 @@ from tests.infra.storage_records import DbFactory
 
 
 @pytest.fixture
-def search_workspace(cli_workspace, monkeypatch):
+def search_workspace(cli_workspace: dict[str, Path], monkeypatch: pytest.MonkeyPatch) -> dict[str, Path]:
     """CLI workspace with searchable conversations."""
     # Set up environment
     monkeypatch.setenv("XDG_STATE_HOME", str(cli_workspace["state_dir"]))

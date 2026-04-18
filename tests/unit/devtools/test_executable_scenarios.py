@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import cast
 
 from polylogue.scenarios import (
     CorpusSpec,
@@ -29,14 +30,15 @@ def test_executable_scenario_exposes_pytest_targets() -> None:
     )
 
     projection = scenario.to_projection_entry()
+    execution_payload = cast(dict[str, object], projection.source_payload["execution"])
 
     assert scenario.tests == ("tests/unit/cli/test_machine_contract.py",)
     assert projection.source_kind is ScenarioProjectionSourceKind.VALIDATION_LANE
     assert projection.name == "machine-contract"
     assert projection.operation_targets == ("cli.json-contract",)
     assert projection.tags == ("contract", "json")
-    assert projection.source_payload["execution"]["kind"] == "pytest"
-    assert projection.source_payload["execution"]["argv"] == ["tests/unit/cli/test_machine_contract.py"]
+    assert execution_payload["kind"] == "pytest"
+    assert execution_payload["argv"] == ["tests/unit/cli/test_machine_contract.py"]
 
 
 def test_executable_scenario_projection_payload_preserves_corpus_specs() -> None:
@@ -49,8 +51,9 @@ def test_executable_scenario_projection_payload_preserves_corpus_specs() -> None
     )
 
     projection = scenario.to_projection_entry()
+    corpus_specs = cast(list[dict[str, object]], projection.source_payload["corpus_specs"])
 
-    assert projection.source_payload["corpus_specs"][0]["provider"] == "chatgpt"
+    assert corpus_specs[0]["provider"] == "chatgpt"
 
 
 def test_executable_scenario_infers_schema_query_metadata_from_polylogue_execution() -> None:

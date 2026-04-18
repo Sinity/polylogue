@@ -11,6 +11,9 @@ from typing import TYPE_CHECKING, Any
 
 from hypothesis import strategies as st
 
+from polylogue.lib.roles import Role
+from polylogue.types import ConversationId, Provider
+
 if TYPE_CHECKING:
     from polylogue.lib.models import Conversation, Message
 
@@ -215,7 +218,7 @@ def message_model_strategy(draw: st.DrawFn, *, role: str | None = None) -> Messa
     text = draw(st.one_of(st.none(), st.text(max_size=200)))
 
     # Optionally add content_blocks in provider_meta
-    provider_meta: dict | None = None
+    provider_meta: dict[str, Any] | None = None
     block_type = draw(st.sampled_from(["text", "thinking", "tool_use", "none"]))
     if block_type != "none":
         block_text = draw(st.text(max_size=100))
@@ -238,14 +241,14 @@ def message_model_strategy(draw: st.DrawFn, *, role: str | None = None) -> Messa
 
     return MessageModel(
         id=draw(st.text(min_size=1, max_size=40, alphabet=st.characters(whitelist_categories=("L", "N")))),
-        role=role_val,
+        role=Role.normalize(role_val),
         text=text,
         provider_meta=provider_meta,
     )
 
 
 @st.composite
-def parsed_attachment_model_strategy(draw: st.DrawFn):
+def parsed_attachment_model_strategy(draw: st.DrawFn) -> object:
     """Generate a ParsedAttachment model instance for property testing."""
     from polylogue.sources.parsers.base import ParsedAttachment
 
@@ -280,7 +283,11 @@ def conversation_model_strategy(draw: st.DrawFn, *, min_messages: int = 0, max_m
 
     messages = draw(st.lists(message_model_strategy(), min_size=min_messages, max_size=max_messages))
     return ConversationModel(
-        id=draw(st.text(min_size=1, max_size=40, alphabet=st.characters(whitelist_categories=("L", "N")))),
-        provider=draw(st.sampled_from(["chatgpt", "claude-ai", "claude-code", "codex", "gemini"])),
+        id=ConversationId(
+            draw(st.text(min_size=1, max_size=40, alphabet=st.characters(whitelist_categories=("L", "N"))))
+        ),
+        provider=Provider.from_string(
+            draw(st.sampled_from(["chatgpt", "claude-ai", "claude-code", "codex", "gemini"]))
+        ),
         messages=MessageCollection(messages=messages),
     )
