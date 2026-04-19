@@ -120,10 +120,10 @@ def _metadata_for_polylogue_products(argv: tuple[str, ...]) -> ScenarioMetadata:
         return _metadata_for_operations(direct_operation)
     operation_name = next(
         (
-            _PRODUCT_OPERATION_BY_METHOD[product.operations_method]
+            _PRODUCT_OPERATION_BY_METHOD[product.operations_method_name]
             for product in PRODUCT_REGISTRY.values()
             if product.resolved_cli_command_name == subcommand
-            and product.operations_method in _PRODUCT_OPERATION_BY_METHOD
+            and product.operations_method_name in _PRODUCT_OPERATION_BY_METHOD
         ),
         "",
     )

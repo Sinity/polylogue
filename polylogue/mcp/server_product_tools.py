@@ -8,9 +8,7 @@ lookups) are registered directly.
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING, Any, cast
-
-from pydantic import BaseModel
+from typing import TYPE_CHECKING
 
 from polylogue.mcp.payloads import MCPRootPayload
 from polylogue.products.registry import (
@@ -32,34 +30,41 @@ def _register_list_tool(
 ) -> None:
     """Register one list-style MCP tool for a product type."""
 
-    # Build the set of accepted query field names from the query class
-    from polylogue.products.registry import _resolve_query_class
-
-    query_cls = cast(type[BaseModel], _resolve_query_class(pt.query_class_path))
-    query_fields = set(query_cls.model_fields)
+    query_model = pt.query_model
+    if query_model is None:
+        raise ValueError(f"Product type {pt.name} does not declare a query model")
+    query_fields = set(query_model.model_fields)
 
     # Determine parameter defaults from the query class
-    field_defaults: dict[str, Any] = {}
-    for fname, finfo in query_cls.model_fields.items():
+    field_defaults: dict[str, object | None] = {}
+    field_annotations: dict[str, object] = {}
+    for fname, finfo in query_model.model_fields.items():
         if finfo.default is not None:
             field_defaults[fname] = finfo.default
         else:
             field_defaults[fname] = None
+        field_annotations[fname] = finfo.annotation if finfo.annotation is not None else object
 
-    async def tool_fn(**kwargs: Any) -> str:
+    async def tool_fn(**kwargs: object) -> str:
         async def run() -> str:
             ops = hooks.get_archive_ops()
             # Apply limit clamping and offset sanitization
             if "limit" in kwargs:
                 kwargs["limit"] = hooks.clamp_limit(kwargs["limit"])
             if "offset" in kwargs:
-                kwargs["offset"] = max(0, int(kwargs["offset"]))
+                offset_value = kwargs["offset"]
+                if isinstance(offset_value, bool):
+                    kwargs["offset"] = 0
+                elif isinstance(offset_value, (int, str, bytes, bytearray)):
+                    kwargs["offset"] = max(0, int(offset_value))
+                else:
+                    kwargs["offset"] = 0
             products = await fetch_products_async(pt, ops, **kwargs)
             return hooks.json_payload(
                 MCPRootPayload(
                     root={
                         "count": len(products),
-                        "items": [p.model_dump(mode="json") if hasattr(p, "model_dump") else p for p in products],
+                        "items": [product.model_dump(mode="json") for product in products],
                     }
                 )
             )
@@ -75,27 +80,23 @@ def _register_list_tool(
     ]
     for fname in sorted(query_fields):
         default = field_defaults.get(fname)
-        # FastMCP reads annotations from __annotations__, so we build them
+        annotation = field_annotations[fname]
         if fname == "limit":
             params.append(
                 inspect.Parameter(fname, inspect.Parameter.KEYWORD_ONLY, default=pt.mcp_default_limit, annotation=int)
             )
         elif fname == "offset":
             params.append(inspect.Parameter(fname, inspect.Parameter.KEYWORD_ONLY, default=0, annotation=int))
-        elif isinstance(default, str):
-            params.append(inspect.Parameter(fname, inspect.Parameter.KEYWORD_ONLY, default=default, annotation=str))
-        elif isinstance(default, int):
-            params.append(inspect.Parameter(fname, inspect.Parameter.KEYWORD_ONLY, default=default, annotation=int))
         else:
             params.append(
-                inspect.Parameter(fname, inspect.Parameter.KEYWORD_ONLY, default=None, annotation="str | None")
+                inspect.Parameter(fname, inspect.Parameter.KEYWORD_ONLY, default=default, annotation=annotation)
             )
 
     # Remove the placeholder — FastMCP doesn't need it
     params = params[1:]
 
     # Create a properly-signed wrapper
-    async def wrapper(**kw: Any) -> str:
+    async def wrapper(**kw: object) -> str:
         return await tool_fn(**kw)
 
     wrapper.__name__ = pt.name
@@ -103,7 +104,7 @@ def _register_list_tool(
     wrapper.__doc__ = f"List {pt.display_name.lower()} from the archive."
 
     # Set annotations for FastMCP introspection
-    annotations: dict[str, Any] = {}
+    annotations: dict[str, object] = {}
     for p in params:
         annotations[p.name] = p.annotation
     annotations["return"] = str
@@ -121,7 +122,7 @@ def register_product_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
 
     # Register generic list tools from the registry
     for pt in PRODUCT_REGISTRY.values():
-        if pt.query_class_path and pt.operations_method:
+        if pt.query_model is not None and pt.operations_method_name:
             _register_list_tool(mcp, hooks, pt)
 
     # --- Special tools ---
