@@ -5,15 +5,78 @@ from __future__ import annotations
 import random
 import uuid
 from datetime import datetime, timezone
-from typing import Any
+from typing import Protocol
 
+from polylogue.lib.raw_payload_decode import JSONRecord, JSONValue
 from polylogue.schemas.synthetic.semantic_values import _text_for_role
 from polylogue.schemas.synthetic.showcase import ConversationTheme
 
 
+def _as_record(value: JSONValue) -> JSONRecord:
+    return value if isinstance(value, dict) else {}
+
+
+class _WireFormatContext(Protocol):
+    provider: str
+
+    def _ensure_wire_chatgpt(
+        self,
+        data: JSONRecord,
+        role: str,
+        rng: random.Random,
+        ts: float,
+        *,
+        index: int,
+        theme: ConversationTheme | None,
+    ) -> None: ...
+
+    def _ensure_wire_claude_ai(
+        self,
+        data: JSONRecord,
+        role: str,
+        rng: random.Random,
+        ts: float,
+        *,
+        index: int,
+        theme: ConversationTheme | None,
+    ) -> None: ...
+
+    def _ensure_wire_claude_code(
+        self,
+        data: JSONRecord,
+        role: str,
+        rng: random.Random,
+        ts: float,
+        *,
+        index: int,
+        theme: ConversationTheme | None,
+    ) -> None: ...
+
+    def _ensure_wire_codex(
+        self,
+        data: JSONRecord,
+        role: str,
+        rng: random.Random,
+        ts: float,
+        *,
+        index: int,
+        theme: ConversationTheme | None,
+    ) -> None: ...
+
+    def _ensure_wire_gemini(
+        self,
+        data: JSONRecord,
+        role: str,
+        rng: random.Random,
+        *,
+        index: int,
+        theme: ConversationTheme | None,
+    ) -> None: ...
+
+
 def _ensure_wire_format(
-    self: Any,
-    data: dict[str, Any],
+    self: _WireFormatContext,
+    data: JSONRecord,
     role: str,
     rng: random.Random,
     index: int,
@@ -35,8 +98,8 @@ def _ensure_wire_format(
 
 
 def _ensure_wire_chatgpt(
-    self: Any,
-    data: dict[str, Any],
+    self: _WireFormatContext,
+    data: JSONRecord,
     role: str,
     rng: random.Random,
     ts: float,
@@ -54,6 +117,7 @@ def _ensure_wire_chatgpt(
     if not isinstance(msg.get("content"), dict):
         msg["content"] = {}
     content = msg.setdefault("content", {})
+    assert isinstance(content, dict)
     if isinstance(content, dict):
         if "parts" not in content or not content["parts"]:
             content["parts"] = [_text_for_role(rng, role, turn_index=index, theme=theme)]
@@ -63,8 +127,8 @@ def _ensure_wire_chatgpt(
 
 
 def _ensure_wire_claude_ai(
-    self: Any,
-    data: dict[str, Any],
+    self: _WireFormatContext,
+    data: JSONRecord,
     role: str,
     rng: random.Random,
     ts: float,
@@ -81,8 +145,8 @@ def _ensure_wire_claude_ai(
 
 
 def _ensure_wire_claude_code(
-    self: Any,
-    data: dict[str, Any],
+    self: _WireFormatContext,
+    data: JSONRecord,
     role: str,
     rng: random.Random,
     ts: float,
@@ -91,9 +155,10 @@ def _ensure_wire_claude_code(
     theme: ConversationTheme | None,
 ) -> None:
     data.setdefault("type", role)
-    if not isinstance(data.get("message"), dict):
+    message = data.get("message")
+    if not isinstance(message, dict):
         data["message"] = {}
-    msg = data["message"]
+    msg = _as_record(data["message"])
     msg.setdefault("role", role)
     if "content" not in msg:
         msg["content"] = [{"type": "text", "text": _text_for_role(rng, role, turn_index=index, theme=theme)}]
@@ -102,8 +167,8 @@ def _ensure_wire_claude_code(
 
 
 def _ensure_wire_codex(
-    self: Any,
-    data: dict[str, Any],
+    self: _WireFormatContext,
+    data: JSONRecord,
     role: str,
     rng: random.Random,
     ts: float,
@@ -123,7 +188,13 @@ def _ensure_wire_codex(
 
 
 def _ensure_wire_gemini(
-    self: Any, data: dict[str, Any], role: str, rng: random.Random, *, index: int, theme: ConversationTheme | None
+    self: _WireFormatContext,
+    data: JSONRecord,
+    role: str,
+    rng: random.Random,
+    *,
+    index: int,
+    theme: ConversationTheme | None,
 ) -> None:
     data.setdefault("role", role)
     if not data.get("text"):

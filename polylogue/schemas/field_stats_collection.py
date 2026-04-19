@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import math
-from typing import Any
+from typing import TypeAlias
 
+from polylogue.lib.raw_payload_decode import JSONRecord, JSONValue
 from polylogue.schemas.field_stats_detection import (
     _detect_numeric_format,
     _detect_string_format,
@@ -17,27 +18,33 @@ from polylogue.schemas.field_stats_models import (
     FieldStats,
 )
 
+JSONContainer: TypeAlias = dict[str, JSONValue]
+JSONList: TypeAlias = list[JSONValue]
+FieldStatsByPath: TypeAlias = dict[str, FieldStats]
+DictKeySetsByPath: TypeAlias = dict[str, set[str]]
+CoOccurrenceByPath: TypeAlias = dict[str, dict[int, set[str]]]
+
 
 def _collect_field_stats(
-    samples: list[dict[str, Any]],
+    samples: list[JSONRecord],
     *,
     conversation_ids: list[str | None] | None = None,
     max_depth: int = 15,
-) -> dict[str, FieldStats]:
+) -> FieldStatsByPath:
     """Walk all samples and collect per-JSON-path statistics."""
-    all_stats: dict[str, FieldStats] = {}
-    dict_key_sets: dict[str, set[str]] = {}
+    all_stats: FieldStatsByPath = {}
+    dict_key_sets: DictKeySetsByPath = {}
 
     def _ensure_stats(path: str) -> FieldStats:
         if path not in all_stats:
             all_stats[path] = FieldStats(path=path)
         return all_stats[path]
 
-    co_occurrence: dict[str, dict[int, set[str]]] = {}
+    co_occurrence: CoOccurrenceByPath = {}
     numeric_sample_cap = 500
     string_length_cap = 2000
 
-    def _walk(value: Any, path: str, depth: int, sample_idx: int) -> None:
+    def _walk(value: JSONValue, path: str, depth: int, sample_idx: int) -> None:
         if depth > max_depth:
             return
 
@@ -57,8 +64,8 @@ def _collect_field_stats(
             dict_key_sets[path].update(value.keys())
             stats.object_key_counts.append(len(value))
 
-            static_keys: dict[str, Any] = {}
-            dynamic_values: list[Any] = []
+            static_keys: JSONContainer = {}
+            dynamic_values: JSONList = []
             for key, item in value.items():
                 if is_dynamic_key(key):
                     dynamic_values.append(item)
