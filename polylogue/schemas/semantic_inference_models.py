@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from polylogue.schemas.json_types import JSONDocument
-
 KNOWN_ROLE_VALUES = frozenset(
     {
         "user",
@@ -53,7 +51,7 @@ class SemanticCandidate:
     path: str
     role: str
     confidence: float
-    evidence: JSONDocument = field(default_factory=dict)
+    evidence: dict[str, object] = field(default_factory=dict)
 
 
 __all__ = [

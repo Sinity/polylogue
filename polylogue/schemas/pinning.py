@@ -171,7 +171,7 @@ def save_pins(provider: Provider | str, pin_set: PinSet) -> None:
 
 
 def resolve_pinned_paths(
-    schema: JSONDocument,
+    schema: object,
     pins: PinSet,
 ) -> dict[str, str | None]:
     """Resolve which schema paths to use for each semantic role.
@@ -180,6 +180,7 @@ def resolve_pinned_paths(
     produce entries. If no pin exists for a role, it maps to None (and
     the extractor falls back to well-known-name heuristics).
     """
+    del schema
     result: dict[str, str | None] = dict.fromkeys(PINNABLE_ROLES)
 
     # First: apply confirmed pins directly

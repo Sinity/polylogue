@@ -61,8 +61,9 @@ def _string_list(value: object) -> list[str]:
     return [item for item in value if isinstance(item, str)]
 
 
-def collect_annotation_summary(schema: JSONDocument) -> SchemaAnnotationSummary:
+def collect_annotation_summary(schema: Mapping[str, object]) -> SchemaAnnotationSummary:
     """Collect format/value/semantic coverage from a schema document."""
+    schema_node = json_document(schema)
     format_count = 0
     values_count = 0
     total_enum_values = 0
@@ -123,7 +124,7 @@ def collect_annotation_summary(schema: JSONDocument) -> SchemaAnnotationSummary:
                     if child_node is not None:
                         visit(child_node, path=path)
 
-    visit(schema, path="$")
+    visit(schema_node, path="$")
     roles = sorted(role_by_key.values(), key=lambda item: (-item.confidence, item.path, item.role))
     return SchemaAnnotationSummary(
         semantic_count=len(roles),
@@ -140,7 +141,7 @@ def collect_annotation_summary(schema: JSONDocument) -> SchemaAnnotationSummary:
     )
 
 
-def build_review_proof(schema: JSONDocument) -> SchemaReviewProof:
+def build_review_proof(schema: Mapping[str, object]) -> SchemaReviewProof:
     """Build a proof surface from a schema's semantic annotations and field stats.
 
     Re-runs inference from the schema's own samples metadata to produce
@@ -152,7 +153,8 @@ def build_review_proof(schema: JSONDocument) -> SchemaReviewProof:
         RECORD_STREAM_KINDS,
     )
 
-    artifact_kind_value = schema.get("x-polylogue-artifact-kind")
+    schema_node = json_document(schema)
+    artifact_kind_value = schema_node.get("x-polylogue-artifact-kind")
     artifact_kind = artifact_kind_value if isinstance(artifact_kind_value, str) else None
     is_record_stream = artifact_kind in RECORD_STREAM_KINDS
 
@@ -164,7 +166,7 @@ def build_review_proof(schema: JSONDocument) -> SchemaReviewProof:
 
     # Collect all role assignments from the schema itself
     role_entries: dict[str, list[_RoleCandidate]] = {}
-    _collect_role_candidates_from_schema(schema, "$", role_entries)
+    _collect_role_candidates_from_schema(schema_node, "$", role_entries)
 
     # Build proof entries for each semantic role
     proof_entries: list[SchemaRoleProofEntry] = []

@@ -344,7 +344,7 @@ class SchemaRegistry:
         for element in package.elements:
             if element.schema_file is None:
                 continue
-            schema = copy.deepcopy(element_schemas[element.element_kind])
+            schema = cast(dict[str, object], copy.deepcopy(element_schemas[element.element_kind]))
             schema["$id"] = f"polylogue://schemas/{provider_token}/{package.version}/{element.element_kind}"
             schema["x-polylogue-version"] = (
                 int(package.version[1:]) if package.version.startswith("v") else package.version

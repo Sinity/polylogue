@@ -52,7 +52,7 @@ def _harmonize_viewport_message(
         cost=meta.cost,
         duration_ms=meta.duration_ms,
         provider=provider,
-        raw=raw,
+        raw=dict(raw),
     )
 
 

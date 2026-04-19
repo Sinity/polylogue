@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from typing import Any, Protocol, TypeAlias, overload
+from typing import Any, Protocol, TypeAlias, cast, overload
 
 from polylogue.schemas import generation_dynamic_keys as _dynamic_keys
 from polylogue.schemas.field_stats import FieldStats
@@ -38,12 +38,15 @@ def _annotate_schema(
     min_conversation_count: int = 1,
     privacy_config: PrivacyConfigLike | None = None,
 ) -> SchemaPayload:
-    return annotate_schema(
-        dict(schema),
-        dict(stats),
-        path,
-        min_conversation_count=min_conversation_count,
-        privacy_config=privacy_config,
+    return cast(
+        SchemaPayload,
+        annotate_schema(
+            dict(schema),
+            dict(stats),
+            path,
+            min_conversation_count=min_conversation_count,
+            privacy_config=privacy_config,
+        ),
     )
 
 
@@ -53,7 +56,10 @@ def _annotate_semantic_and_relational(
     *,
     artifact_kind: str | None = None,
 ) -> SchemaPayload:
-    return annotate_semantic_and_relational(dict(schema), dict(field_stats), artifact_kind=artifact_kind)
+    return cast(
+        SchemaPayload,
+        annotate_semantic_and_relational(dict(schema), dict(field_stats), artifact_kind=artifact_kind),
+    )
 
 
 @overload

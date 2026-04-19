@@ -14,8 +14,9 @@ Semantic roles handled:
 from __future__ import annotations
 
 import random
+from collections.abc import Mapping
 
-from polylogue.schemas.synthetic.models import SchemaRecord, SchemaValue
+from polylogue.schemas.synthetic.models import SchemaScalar
 from polylogue.schemas.synthetic.showcase import _SHOWCASE_THEMES, ConversationTheme
 
 # =============================================================================
@@ -42,7 +43,7 @@ _ROLE_TEXTS: dict[str, list[str]] = {
 }
 
 
-def _string_values(schema: SchemaRecord, key: str) -> list[str]:
+def _string_values(schema: Mapping[str, object], key: str) -> list[str]:
     values = schema.get(key)
     if not isinstance(values, list):
         return []
@@ -97,8 +98,8 @@ class SemanticValueGenerator:
 
     def try_generate(
         self,
-        schema: SchemaRecord,
-    ) -> tuple[bool, SchemaValue]:
+        schema: Mapping[str, object],
+    ) -> tuple[bool, SchemaScalar]:
         """Attempt semantic generation for a schema node.
 
         Returns:
@@ -137,7 +138,7 @@ class SemanticValueGenerator:
     def turn_index(self) -> int:
         return self._turn_index
 
-    def _generate_role(self, schema: SchemaRecord) -> str:
+    def _generate_role(self, schema: Mapping[str, object]) -> str:
         """Generate a role value from observed values or cycle."""
         # Prefer observed values from the schema
         if values := _string_values(schema, "x-polylogue-values"):
@@ -150,7 +151,7 @@ class SemanticValueGenerator:
             return str(self.rng.choice(values))
         return self.current_role
 
-    def _generate_body(self, schema: SchemaRecord) -> str:
+    def _generate_body(self, schema: Mapping[str, object]) -> str:
         """Generate message body content."""
         return _text_for_role(
             self.rng,
@@ -159,7 +160,7 @@ class SemanticValueGenerator:
             theme=self.theme,
         )
 
-    def _generate_timestamp(self, schema: SchemaRecord) -> SchemaValue:
+    def _generate_timestamp(self, schema: Mapping[str, object]) -> SchemaScalar:
         """Generate a sequential timestamp value.
 
         Respects the field's format annotation to produce the right
@@ -180,7 +181,7 @@ class SemanticValueGenerator:
             case _:
                 return ts
 
-    def _generate_title(self, schema: SchemaRecord) -> str:
+    def _generate_title(self, schema: Mapping[str, object]) -> str:
         """Generate a conversation title."""
         if self.theme is not None:
             return self.theme.title

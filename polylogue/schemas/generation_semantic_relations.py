@@ -6,7 +6,7 @@ from collections.abc import Mapping, Sequence
 from typing import cast, overload
 
 from polylogue.schemas.field_stats import FieldStats
-from polylogue.schemas.json_types import JSONDocument, JSONDocumentList, JSONValue
+from polylogue.schemas.json_types import JSONDocument, JSONDocumentList, JSONValue, json_document
 from polylogue.schemas.relational_inference import infer_relations
 from polylogue.schemas.relational_inference_models import RelationalAnnotations
 from polylogue.schemas.semantic_inference import infer_semantic_roles, select_best_roles
@@ -100,7 +100,7 @@ def annotate_semantic_and_relational(
     best_roles = select_best_roles(candidates)
     role_by_path: dict[str, tuple[str, float, JSONDocument]] = {}
     for role, candidate in best_roles.items():
-        role_by_path[candidate.path] = (role, candidate.confidence, candidate.evidence)
+        role_by_path[candidate.path] = (role, candidate.confidence, json_document(candidate.evidence))
 
     _attach_semantic_roles(schema_node, role_by_path)
     relations = infer_relations(stats_by_path)
