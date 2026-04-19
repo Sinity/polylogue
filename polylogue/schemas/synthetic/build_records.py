@@ -4,32 +4,19 @@ from __future__ import annotations
 
 import random
 import uuid
-from typing import Protocol, TypeAlias
+from typing import Protocol
 
 from polylogue.lib.raw_payload_decode import JSONRecord, JSONValue
+from polylogue.schemas.synthetic.models import SchemaRecord
 from polylogue.schemas.synthetic.semantic_values import SemanticValueGenerator
 from polylogue.schemas.synthetic.showcase import ConversationTheme
-
-SchemaRecord: TypeAlias = dict[str, JSONValue]
-
-
-class _TreeConfig(Protocol):
-    container_path: str | None
-    key_field: str
-    parent_field: str
-    children_field: str | None
-    session_field: str | None
-
-
-class _WireFormat(Protocol):
-    tree: _TreeConfig | None
-    messages_path: str | None
+from polylogue.schemas.synthetic.wire_formats import WireFormat
 
 
 class _WireFormatContext(Protocol):
     provider: str
     schema: SchemaRecord
-    wire_format: _WireFormat
+    wire_format: WireFormat
     _semantic_gen: SemanticValueGenerator | None
 
     def _generate_from_schema(
