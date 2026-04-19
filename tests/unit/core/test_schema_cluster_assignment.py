@@ -16,12 +16,17 @@ from pathlib import Path
 
 import pytest
 
+from polylogue.schemas.json_types import JSONDocument, json_document_list
 from polylogue.schemas.registry import (
     ClusterManifest,
     SchemaRegistry,
     _fingerprint_hash,
 )
 from polylogue.schemas.shape_fingerprint import _structure_fingerprint
+
+
+def _document_list_field(document: JSONDocument, key: str) -> list[JSONDocument]:
+    return json_document_list(document.get(key))
 
 
 @pytest.fixture
@@ -285,7 +290,7 @@ class TestManifestMembership:
         manifest = registry.cluster_samples("cnt-prov", samples)
         d = manifest.to_dict()
         assert d["cluster_count"] == 2
-        assert len(d["clusters"]) == 2
+        assert len(_document_list_field(d, "clusters")) == 2
 
     def test_manifest_roundtrip(self, registry: SchemaRegistry) -> None:
         samples = [

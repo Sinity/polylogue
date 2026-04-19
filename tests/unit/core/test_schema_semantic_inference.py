@@ -10,10 +10,20 @@ Covers:
 from __future__ import annotations
 
 from collections import Counter
+from collections.abc import Mapping
 
 from polylogue.schemas.field_stats import FieldStats
 from polylogue.schemas.semantic_inference_models import SemanticCandidate
 from polylogue.schemas.semantic_inference_runtime import infer_semantic_roles, select_best_roles
+
+
+def _candidate_for_role(candidates: list[SemanticCandidate], role: str) -> SemanticCandidate | None:
+    return next((candidate for candidate in candidates if candidate.role == role), None)
+
+
+def _evidence_float(evidence: Mapping[str, object], key: str) -> float | None:
+    value = evidence.get(key)
+    return float(value) if isinstance(value, (int, float)) else None
 
 
 class TestInferSemanticRoles:
@@ -190,7 +200,7 @@ class TestScoreMessageContainer:
             "$.messages[*].created_at": FieldStats(path="$.messages[*].created_at"),
         }
         candidates = infer_semantic_roles(stats)
-        container = next((c for c in candidates if c.role == "message_container"), None)
+        container = _candidate_for_role(candidates, "message_container")
         assert container is not None
         assert container.path == "$.messages"
         assert container.confidence > 0.15
@@ -210,7 +220,7 @@ class TestScoreMessageContainer:
             ),
         }
         candidates = infer_semantic_roles(stats)
-        container = next((c for c in candidates if c.role == "message_container"), None)
+        container = _candidate_for_role(candidates, "message_container")
         assert container is not None
         assert "avg_object_fanout" in container.evidence
 
@@ -225,7 +235,7 @@ class TestScoreMessageContainer:
             "$.messages[*].id": FieldStats(path="$.messages[*].id"),
         }
         candidates_low = infer_semantic_roles(stats_low)
-        container_low = next((c for c in candidates_low if c.role == "message_container"), None)
+        container_low = _candidate_for_role(candidates_low, "message_container")
         # Same setup but with high frequency
         stats_high = {
             "$.messages": FieldStats(
@@ -237,7 +247,7 @@ class TestScoreMessageContainer:
             "$.messages[*].id": FieldStats(path="$.messages[*].id"),
         }
         candidates_high = infer_semantic_roles(stats_high)
-        container_high = next((c for c in candidates_high if c.role == "message_container"), None)
+        container_high = _candidate_for_role(candidates_high, "message_container")
         assert container_high is not None
         # High frequency should score better than low frequency
         if container_low is not None:
@@ -255,9 +265,11 @@ class TestScoreMessageContainer:
             "$.messages[*].id": FieldStats(path="$.messages[*].id"),
         }
         candidates = infer_semantic_roles(stats)
-        container = next((c for c in candidates if c.role == "message_container"), None)
+        container = _candidate_for_role(candidates, "message_container")
         assert container is not None
-        assert container.evidence.get("depth", 999) <= 3
+        depth = _evidence_float(container.evidence, "depth")
+        assert depth is not None
+        assert depth <= 3
 
 
 class TestScoreMessageRole:
@@ -275,7 +287,7 @@ class TestScoreMessageRole:
             ),
         }
         candidates = infer_semantic_roles(stats)
-        role = next((c for c in candidates if c.role == "message_role"), None)
+        role = _candidate_for_role(candidates, "message_role")
         assert role is not None
         assert role.confidence > 0.3
         assert "known_roles" in role.evidence
@@ -294,7 +306,7 @@ class TestScoreMessageRole:
             ),
         }
         candidates = infer_semantic_roles(stats)
-        role = next((c for c in candidates if c.role == "message_role"), None)
+        role = _candidate_for_role(candidates, "message_role")
         assert role is not None
         assert "name_signal" in role.evidence
 
@@ -312,7 +324,7 @@ class TestScoreMessageRole:
             ),
         }
         candidates = infer_semantic_roles(stats)
-        role = next((c for c in candidates if c.role == "message_role"), None)
+        role = _candidate_for_role(candidates, "message_role")
         assert role is None
 
     def test_multiline_content_penalizes(self) -> None:
@@ -330,7 +342,7 @@ class TestScoreMessageRole:
             ),
         }
         candidates_no_nl = infer_semantic_roles(stats_no_nl)
-        role_no_nl = next((c for c in candidates_no_nl if c.role == "message_role"), None)
+        role_no_nl = _candidate_for_role(candidates_no_nl, "message_role")
 
         stats_nl = {
             "$.type": FieldStats(
@@ -345,9 +357,9 @@ class TestScoreMessageRole:
             ),
         }
         candidates_nl = infer_semantic_roles(stats_nl)
-        role_nl = next((c for c in candidates_nl if c.role == "message_role"), None)
+        role_nl = _candidate_for_role(candidates_nl, "message_role")
         # Both should score, but multiline should be lower
-        if role_no_nl and role_nl:
+        if role_no_nl is not None and role_nl is not None:
             assert role_no_nl.confidence > role_nl.confidence
 
 
@@ -375,7 +387,7 @@ class TestScoreMessageBody:
             ),
         }
         candidates = infer_semantic_roles(stats)
-        body = next((c for c in candidates if c.role == "message_body"), None)
+        body = _candidate_for_role(candidates, "message_body")
         assert body is not None
         assert body.confidence > 0.3
         assert "avg_length" in body.evidence
@@ -396,7 +408,7 @@ class TestScoreMessageBody:
             ),
         }
         candidates = infer_semantic_roles(stats)
-        body = next((c for c in candidates if c.role == "message_body"), None)
+        body = _candidate_for_role(candidates, "message_body")
         assert body is not None
         assert "name_signal" in body.evidence
 
@@ -415,7 +427,7 @@ class TestScoreMessageBody:
             ),
         }
         candidates = infer_semantic_roles(stats)
-        body = next((c for c in candidates if c.role == "message_body"), None)
+        body = _candidate_for_role(candidates, "message_body")
         assert body is None
 
     def test_entropy_bonus(self) -> None:
@@ -439,7 +451,7 @@ class TestScoreMessageBody:
             ),
         }
         candidates = infer_semantic_roles(stats)
-        body = next((c for c in candidates if c.role == "message_body"), None)
+        body = _candidate_for_role(candidates, "message_body")
         assert body is not None
         assert "entropy" in body.evidence
 
@@ -461,7 +473,7 @@ class TestScoreMessageTimestamp:
             ),
         }
         candidates = infer_semantic_roles(stats)
-        ts = next((c for c in candidates if c.role == "message_timestamp"), None)
+        ts = _candidate_for_role(candidates, "message_timestamp")
         assert ts is not None
         assert ts.confidence > 0.3
         assert "format" in ts.evidence
@@ -480,7 +492,7 @@ class TestScoreMessageTimestamp:
             ),
         }
         candidates = infer_semantic_roles(stats)
-        ts = next((c for c in candidates if c.role == "message_timestamp"), None)
+        ts = _candidate_for_role(candidates, "message_timestamp")
         assert ts is not None
         assert ts.confidence > 0.3
 
@@ -499,7 +511,7 @@ class TestScoreMessageTimestamp:
             ),
         }
         candidates = infer_semantic_roles(stats)
-        ts = next((c for c in candidates if c.role == "message_timestamp"), None)
+        ts = _candidate_for_role(candidates, "message_timestamp")
         assert ts is not None
         # Monotonicity bonus requires _ordered_samples to be set (from array context)
         # Plain numeric_values don't trigger monotonicity checking
@@ -519,7 +531,7 @@ class TestScoreMessageTimestamp:
             ),
         }
         candidates = infer_semantic_roles(stats)
-        ts = next((c for c in candidates if c.role == "message_timestamp"), None)
+        ts = _candidate_for_role(candidates, "message_timestamp")
         assert ts is not None
         assert "name_signal" in ts.evidence
 
@@ -539,9 +551,9 @@ class TestScoreMessageTimestamp:
             ),
         }
         candidates = infer_semantic_roles(stats)
-        ts = next((c for c in candidates if c.role == "message_timestamp"), None)
+        ts = _candidate_for_role(candidates, "message_timestamp")
         # Should still exist but with reduced confidence due to multiline
-        if ts:
+        if ts is not None:
             assert ts.confidence < 0.6
 
 
@@ -562,7 +574,7 @@ class TestScoreConversationTitle:
             ),
         }
         candidates = infer_semantic_roles(stats)
-        title = next((c for c in candidates if c.role == "conversation_title"), None)
+        title = _candidate_for_role(candidates, "conversation_title")
         assert title is not None
         assert title.confidence > 0.2
         assert "avg_length" in title.evidence
@@ -583,7 +595,7 @@ class TestScoreConversationTitle:
             ),
         }
         candidates = infer_semantic_roles(stats)
-        title = next((c for c in candidates if c.role == "conversation_title"), None)
+        title = _candidate_for_role(candidates, "conversation_title")
         assert title is not None
         assert "name_signal" in title.evidence
 
@@ -602,7 +614,7 @@ class TestScoreConversationTitle:
             ),
         }
         candidates = infer_semantic_roles(stats)
-        title = next((c for c in candidates if c.role == "conversation_title"), None)
+        title = _candidate_for_role(candidates, "conversation_title")
         assert title is None
 
     def test_multiline_penalizes(self) -> None:
@@ -620,11 +632,13 @@ class TestScoreConversationTitle:
             ),
         }
         candidates = infer_semantic_roles(stats)
-        title = next((c for c in candidates if c.role == "conversation_title"), None)
+        title = _candidate_for_role(candidates, "conversation_title")
         # Title with multiline should exist but multiline is tracked in evidence
-        if title:
+        if title is not None:
             assert "newline_rate" in title.evidence
-            assert title.evidence["newline_rate"] > 0.0
+            newline_rate = _evidence_float(title.evidence, "newline_rate")
+            assert newline_rate is not None
+            assert newline_rate > 0.0
 
     def test_inside_array_penalizes(self) -> None:
         """Titles inside message arrays ([*]) are penalized."""
@@ -641,9 +655,9 @@ class TestScoreConversationTitle:
             ),
         }
         candidates = infer_semantic_roles(stats)
-        title = next((c for c in candidates if c.role == "conversation_title"), None)
+        title = _candidate_for_role(candidates, "conversation_title")
         # Array items are penalized but may still score if other factors strong
-        if title:
+        if title is not None:
             assert title.confidence < 0.5
 
     def test_deep_path_penalizes(self) -> None:
@@ -661,8 +675,10 @@ class TestScoreConversationTitle:
             ),
         }
         candidates = infer_semantic_roles(stats)
-        title = next((c for c in candidates if c.role == "conversation_title"), None)
+        title = _candidate_for_role(candidates, "conversation_title")
         # Deep paths are penalized via the scoring function
         # The 0.5x multiplier for depth > 4 should be applied
-        if title:
-            assert title.evidence.get("depth", 0) > 4
+        if title is not None:
+            depth = _evidence_float(title.evidence, "depth")
+            assert depth is not None
+            assert depth > 4

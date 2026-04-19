@@ -5,11 +5,11 @@ from __future__ import annotations
 import gzip
 import json
 from pathlib import Path
-from typing import Any
 
 import pytest
 from jsonschema import Draft202012Validator
 
+from polylogue.schemas.json_types import JSONDocument, JSONDocumentList, json_document, json_document_list
 from polylogue.schemas.registry import (
     ClusterManifest,
     PropertyChange,
@@ -20,6 +20,14 @@ from polylogue.schemas.registry import (
 )
 
 
+def _document_list_field(document: JSONDocument, key: str) -> JSONDocumentList:
+    return json_document_list(document.get(key))
+
+
+def _document_field(document: JSONDocument, key: str) -> JSONDocument:
+    return json_document(document.get(key))
+
+
 @pytest.fixture
 def tmp_registry(tmp_path: Path) -> SchemaRegistry:
     """Registry with an isolated storage root."""
@@ -27,7 +35,7 @@ def tmp_registry(tmp_path: Path) -> SchemaRegistry:
 
 
 @pytest.fixture
-def sample_schema_a() -> dict[str, Any]:
+def sample_schema_a() -> JSONDocument:
     return {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
@@ -41,7 +49,7 @@ def sample_schema_a() -> dict[str, Any]:
 
 
 @pytest.fixture
-def sample_schema_b() -> dict[str, Any]:
+def sample_schema_b() -> JSONDocument:
     return {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
@@ -83,8 +91,9 @@ class TestSchemaDiffOutputs:
         )
         d = diff.to_dict()
         assert d["has_changes"] is True
-        assert len(d["classified_changes"]) == 3
-        assert d["classified_changes"][0]["kind"] == "added"
+        classified_changes = _document_list_field(d, "classified_changes")
+        assert len(classified_changes) == 3
+        assert classified_changes[0]["kind"] == "added"
 
     def test_to_text_renders(self) -> None:
         diff = SchemaDiff(
@@ -299,8 +308,9 @@ class TestRegistryPromotion:
         assert version == "v1"
         schema = tmp_registry.get_schema("stub-prov", version=version)
         assert schema is not None
-        assert "id" in schema["properties"]
-        assert "key" in schema["properties"]
+        properties = _document_field(schema, "properties")
+        assert "id" in properties
+        assert "key" in properties
 
     def test_promote_cluster_updates_manifest(self, tmp_registry: SchemaRegistry) -> None:
         samples = [{"a": 1}]
@@ -347,8 +357,8 @@ class TestEnhancedCompare:
     def test_classified_changes_additive(
         self,
         tmp_registry: SchemaRegistry,
-        sample_schema_a: dict[str, Any],
-        sample_schema_b: dict[str, Any],
+        sample_schema_a: JSONDocument,
+        sample_schema_b: JSONDocument,
     ) -> None:
         tmp_registry.register_schema("cmp-prov", sample_schema_a)
         tmp_registry.register_schema("cmp-prov", sample_schema_b)
@@ -362,8 +372,8 @@ class TestEnhancedCompare:
     def test_classified_changes_type_mutation(
         self,
         tmp_registry: SchemaRegistry,
-        sample_schema_a: dict[str, Any],
-        sample_schema_b: dict[str, Any],
+        sample_schema_a: JSONDocument,
+        sample_schema_b: JSONDocument,
     ) -> None:
         tmp_registry.register_schema("cmp-prov", sample_schema_a)
         tmp_registry.register_schema("cmp-prov", sample_schema_b)
@@ -376,8 +386,8 @@ class TestEnhancedCompare:
     def test_classified_changes_requiredness(
         self,
         tmp_registry: SchemaRegistry,
-        sample_schema_a: dict[str, Any],
-        sample_schema_b: dict[str, Any],
+        sample_schema_a: JSONDocument,
+        sample_schema_b: JSONDocument,
     ) -> None:
         tmp_registry.register_schema("cmp-prov", sample_schema_a)
         tmp_registry.register_schema("cmp-prov", sample_schema_b)
