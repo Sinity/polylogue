@@ -7,7 +7,6 @@ lookups) are registered directly.
 
 from __future__ import annotations
 
-import json
 from typing import TYPE_CHECKING
 
 from polylogue.mcp.payloads import MCPRootPayload
@@ -151,32 +150,33 @@ def register_product_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
 
             summaries = await hooks.get_repo().list_summaries()
             coverage = analyze_coverage(summaries)
-            return json.dumps(
-                {
-                    "total_conversations": coverage.total_conversations,
-                    "total_messages": coverage.total_messages,
-                    "provider_counts": coverage.provider_counts,
-                    "provider_ranges": [
-                        {
-                            "provider": r.provider,
-                            "first_date": r.first_date.isoformat(),
-                            "last_date": r.last_date.isoformat(),
-                            "count": r.count,
-                        }
-                        for r in coverage.provider_ranges
-                    ],
-                    "gaps": [
-                        {
-                            "start_date": g.start_date.isoformat(),
-                            "end_date": g.end_date.isoformat(),
-                            "days": g.days,
-                        }
-                        for g in coverage.gaps
-                    ],
-                    "truncated_sessions": coverage.truncated_sessions,
-                    "date_range": [d.isoformat() if d else None for d in coverage.date_range],
-                },
-                indent=2,
+            return hooks.json_payload(
+                MCPRootPayload(
+                    root={
+                        "total_conversations": coverage.total_conversations,
+                        "total_messages": coverage.total_messages,
+                        "provider_counts": coverage.provider_counts,
+                        "provider_ranges": [
+                            {
+                                "provider": r.provider,
+                                "first_date": r.first_date.isoformat(),
+                                "last_date": r.last_date.isoformat(),
+                                "count": r.count,
+                            }
+                            for r in coverage.provider_ranges
+                        ],
+                        "gaps": [
+                            {
+                                "start_date": g.start_date.isoformat(),
+                                "end_date": g.end_date.isoformat(),
+                                "days": g.days,
+                            }
+                            for g in coverage.gaps
+                        ],
+                        "truncated_sessions": coverage.truncated_sessions,
+                        "date_range": [d.isoformat() if d else None for d in coverage.date_range],
+                    }
+                )
             )
 
         return await hooks.async_safe_call("archive_coverage", run)

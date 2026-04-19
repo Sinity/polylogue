@@ -2,16 +2,16 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from polylogue.lib.query_spec import ConversationQuerySpec
 from polylogue.mcp.payloads import (
     MCPArchiveStatsPayload,
     MCPConversationDetailPayload,
-    MCPConversationSummaryListPayload,
     MCPConversationSummaryPayload,
     MCPHealthReportPayload,
     MCPStatsByPayload,
+    conversation_summary_list_payload,
 )
 from polylogue.mcp.server_maintenance_tools import register_maintenance_tools
 from polylogue.mcp.server_mutation_tools import register_mutation_tools
@@ -23,7 +23,7 @@ if TYPE_CHECKING:
     from polylogue.mcp.server_support import ServerCallbacks
 
 
-def build_query_spec(**params: Any) -> ConversationQuerySpec:
+def build_query_spec(**params: object) -> ConversationQuerySpec:
     normalized = dict(params)
     if "has_tool_use" in normalized:
         normalized["filter_has_tool_use"] = normalized.pop("has_tool_use")
@@ -73,11 +73,7 @@ def register_query_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                 min_words=min_words,
             )
             results = await ops.query_conversations(spec)
-            return hooks.json_payload(
-                MCPConversationSummaryListPayload(
-                    root=[MCPConversationSummaryPayload.from_conversation(result) for result in results]
-                )
-            )
+            return hooks.json_payload(conversation_summary_list_payload(results))
 
         return await hooks.async_safe_call("search", run)
 
@@ -125,11 +121,7 @@ def register_query_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                 min_words=min_words,
             )
             conversations = await ops.query_conversations(spec)
-            return hooks.json_payload(
-                MCPConversationSummaryListPayload(
-                    root=[MCPConversationSummaryPayload.from_conversation(conv) for conv in conversations]
-                )
-            )
+            return hooks.json_payload(conversation_summary_list_payload(conversations))
 
         return await hooks.async_safe_call("list_conversations", run)
 
@@ -181,11 +173,7 @@ def register_read_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
     async def get_session_tree(conversation_id: str) -> str:
         async def run() -> str:
             tree = await hooks.get_repo().get_session_tree(conversation_id)
-            return hooks.json_payload(
-                MCPConversationSummaryListPayload(
-                    root=[MCPConversationSummaryPayload.from_conversation(conv) for conv in tree]
-                )
-            )
+            return hooks.json_payload(conversation_summary_list_payload(tree))
 
         return await hooks.async_safe_call("get_session_tree", run)
 

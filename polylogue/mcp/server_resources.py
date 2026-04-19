@@ -7,11 +7,10 @@ from typing import TYPE_CHECKING
 from polylogue.mcp.payloads import (
     MCPArchiveStatsPayload,
     MCPConversationDetailPayload,
-    MCPConversationSummaryListPayload,
-    MCPConversationSummaryPayload,
     MCPErrorPayload,
     MCPHealthReportPayload,
     MCPTagCountsPayload,
+    conversation_summary_list_payload,
 )
 from polylogue.mcp.server_tools import build_query_spec
 
@@ -39,11 +38,7 @@ def register_resources(mcp: FastMCP, hooks: ServerCallbacks) -> None:
     @mcp.resource("polylogue://conversations")
     async def conversations_resource() -> str:
         convs = await build_query_spec().list(hooks.get_repo())
-        return hooks.json_payload(
-            MCPConversationSummaryListPayload(
-                root=[MCPConversationSummaryPayload.from_conversation(conv) for conv in convs]
-            )
-        )
+        return hooks.json_payload(conversation_summary_list_payload(convs))
 
     @mcp.resource("polylogue://conversation/{conv_id}")
     async def conversation_resource(conv_id: str) -> str:

@@ -2,30 +2,41 @@
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Protocol, TypeVar, overload
+
+from pydantic import BaseModel
 
 from polylogue.logging import get_logger
 from polylogue.mcp.payloads import MCPErrorPayload
+from polylogue.operations import ArchiveOperations
 from polylogue.services import RuntimeServices, build_runtime_services
+from polylogue.surface_payloads import serialize_surface_payload
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
+    from polylogue.config import Config
+    from polylogue.storage.repository import ConversationRepository
 
 logger = get_logger(__name__)
 _runtime_services: RuntimeServices | None = None
+TResult = TypeVar("TResult")
+
+
+class JSONPayloadSerializer(Protocol):
+    def __call__(self, payload: BaseModel, *, exclude_none: bool = False) -> str: ...
 
 
 @dataclass(frozen=True)
 class ServerCallbacks:
-    json_payload: Callable[..., str]
-    clamp_limit: Callable[[int | Any], int]
-    safe_call: Callable[[str, Any], str]
-    async_safe_call: Callable[[str, Any], Awaitable[str]]
+    json_payload: JSONPayloadSerializer
+    clamp_limit: Callable[[int | object], int]
+    safe_call: Callable[[str, Callable[[], str]], str]
+    async_safe_call: Callable[[str, Callable[[], Awaitable[str]]], Awaitable[str]]
     error_json: Callable[..., str]
-    get_repo: Callable[[], Any]
-    get_config: Callable[[], Any]
-    get_archive_ops: Callable[[], Any]
+    get_repo: Callable[[], ConversationRepository]
+    get_config: Callable[[], Config]
+    get_archive_ops: Callable[[], ArchiveOperations]
     extract_fenced_code: Callable[[str, str], list[dict[str, str]]]
 
 
@@ -45,38 +56,70 @@ def _extract_fenced_code(text: str, language: str = "") -> list[dict[str, str]]:
     return results
 
 
-def _json_payload(payload: Any, *, exclude_none: bool = False) -> str:
+def _json_payload(payload: BaseModel, *, exclude_none: bool = False) -> str:
     """Serialize a typed MCP payload with canonical JSON formatting."""
-    return str(payload.to_json(exclude_none=exclude_none))
+    return serialize_surface_payload(payload, exclude_none=exclude_none)
 
 
-def _clamp_limit(limit: int | Any) -> int:
+def _clamp_limit(limit: int | object) -> int:
     """Ensure limit is a positive integer, defaulting to 10 on bad input."""
     try:
-        return max(1, int(limit))
+        if isinstance(limit, bool):
+            raise TypeError
+        if isinstance(limit, int):
+            return max(1, limit)
+        if isinstance(limit, float):
+            return max(1, int(limit))
+        if isinstance(limit, str | bytes | bytearray):
+            return max(1, int(limit))
+        return max(1, int(str(limit)))
     except (TypeError, ValueError):
         return 10
 
 
-def _safe_call(fn_name: str, fn: Any) -> str:
+@overload
+def _safe_call(fn_name: str, fn: Callable[[], str]) -> str: ...
+
+
+@overload
+def _safe_call(fn_name: str, fn: Callable[[], None]) -> str: ...
+
+
+@overload
+def _safe_call(fn_name: str, fn: Callable[[], TResult]) -> TResult | str: ...
+
+
+def _safe_call(fn_name: str, fn: Callable[[], TResult]) -> TResult | str:
     """Call fn() and return its result, or a JSON error dict on exception."""
     try:
-        return str(fn())
+        return fn()
     except Exception as exc:
         logger.exception("MCP tool %s failed", fn_name)
         return _json_payload(MCPErrorPayload(error=str(exc), tool=fn_name), exclude_none=True)
 
 
-async def _async_safe_call(fn_name: str, fn: Any) -> str:
+@overload
+async def _async_safe_call(fn_name: str, fn: Callable[[], Awaitable[str]]) -> str: ...
+
+
+@overload
+async def _async_safe_call(fn_name: str, fn: Callable[[], Awaitable[None]]) -> str: ...
+
+
+@overload
+async def _async_safe_call(fn_name: str, fn: Callable[[], Awaitable[TResult]]) -> TResult | str: ...
+
+
+async def _async_safe_call(fn_name: str, fn: Callable[[], Awaitable[TResult]]) -> TResult | str:
     """Async version of _safe_call for async tool handlers."""
     try:
-        return str(await fn())
+        return await fn()
     except Exception as exc:
         logger.exception("MCP tool %s failed", fn_name)
         return _json_payload(MCPErrorPayload(error=str(exc), tool=fn_name), exclude_none=True)
 
 
-def _error_json(message: str, **extra: Any) -> str:
+def _error_json(message: str, **extra: str) -> str:
     """Return a JSON-encoded error dict."""
     return _json_payload(MCPErrorPayload(error=message, **extra), exclude_none=True)
 
@@ -95,12 +138,12 @@ def _get_runtime_services() -> RuntimeServices:
     return _runtime_services
 
 
-def _get_repo() -> Any:
+def _get_repo() -> ConversationRepository:
     """Return the MCP repository from the configured runtime services."""
     return _get_runtime_services().get_repository()
 
 
-def _get_config() -> Any:
+def _get_config() -> Config:
     """Return the MCP config from the configured runtime services."""
     return _get_runtime_services().get_config()
 

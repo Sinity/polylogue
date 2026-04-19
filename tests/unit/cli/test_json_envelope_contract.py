@@ -213,4 +213,4 @@ class TestStatusFieldInvariant:
         """Error and success envelopes have distinct status values."""
         err_status = MachineError(code="x", message="y").to_dict()["status"]
         ok_status = success().to_dict()["status"]
-        assert err_status != ok_status
+        assert (err_status, ok_status) == ("error", "ok")
