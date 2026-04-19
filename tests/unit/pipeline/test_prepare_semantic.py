@@ -14,6 +14,16 @@ from __future__ import annotations
 from polylogue.lib.viewports import ToolCategory, classify_tool
 from polylogue.pipeline.semantic_capture import extract_subagent_spawns, parse_git_operation
 from polylogue.pipeline.semantic_metadata import extract_tool_metadata
+from polylogue.schemas.json_types import JSONDocument, json_document
+
+
+def _payload(data: object) -> JSONDocument:
+    return json_document(data)
+
+
+def _string_list(value: object) -> list[str]:
+    return [entry for entry in value if isinstance(entry, str)] if isinstance(value, list) else []
+
 
 # =============================================================================
 # Tests for classify_tool
@@ -80,35 +90,38 @@ class TestClassifyTool:
 
 class TestExtractToolMetadata:
     def test_git_status_returns_metadata(self) -> None:
-        meta = extract_tool_metadata("Bash", {"command": "git status"})
+        meta = extract_tool_metadata("Bash", _payload({"command": "git status"}))
         assert meta is not None
         assert meta["command"] == "status"
         assert "full_command" in meta
 
     def test_git_commit_extracts_message(self) -> None:
-        meta = extract_tool_metadata("Bash", {"command": 'git commit -m "fix: bug"'})
+        meta = extract_tool_metadata("Bash", _payload({"command": 'git commit -m "fix: bug"'}))
         assert meta is not None
         assert meta["command"] == "commit"
         assert meta.get("message") == "fix: bug"
 
     def test_git_push_extracts_remote_branch(self) -> None:
-        meta = extract_tool_metadata("Bash", {"command": "git push origin main"})
+        meta = extract_tool_metadata("Bash", _payload({"command": "git push origin main"}))
         assert meta is not None
         assert meta.get("remote") == "origin"
         assert meta.get("branch") == "main"
 
     def test_git_checkout_extracts_branch(self) -> None:
-        meta = extract_tool_metadata("Bash", {"command": "git checkout feature-x"})
+        meta = extract_tool_metadata("Bash", _payload({"command": "git checkout feature-x"}))
         assert meta is not None
         assert meta.get("branch") == "feature-x"
 
     def test_read_returns_file_path(self) -> None:
-        meta = extract_tool_metadata("Read", {"file_path": "/path/to/file.py"})
+        meta = extract_tool_metadata("Read", _payload({"file_path": "/path/to/file.py"}))
         assert meta is not None
         assert meta["path"] == "/path/to/file.py"
 
     def test_write_returns_file_path_and_snippet(self) -> None:
-        meta = extract_tool_metadata("Write", {"file_path": "/path/to/file.py", "content": "hello world"})
+        meta = extract_tool_metadata(
+            "Write",
+            _payload({"file_path": "/path/to/file.py", "content": "hello world"}),
+        )
         assert meta is not None
         assert meta["path"] == "/path/to/file.py"
         assert "new_content_snippet" in meta
@@ -116,11 +129,13 @@ class TestExtractToolMetadata:
     def test_edit_returns_path_and_snippets(self) -> None:
         meta = extract_tool_metadata(
             "Edit",
-            {
-                "file_path": "/path/to/file.py",
-                "old_string": "old code",
-                "new_string": "new code",
-            },
+            _payload(
+                {
+                    "file_path": "/path/to/file.py",
+                    "old_string": "old code",
+                    "new_string": "new code",
+                }
+            ),
         )
         assert meta is not None
         assert meta["path"] == "/path/to/file.py"
@@ -130,34 +145,39 @@ class TestExtractToolMetadata:
     def test_task_returns_agent_type(self) -> None:
         meta = extract_tool_metadata(
             "Task",
-            {
-                "subagent_type": "general-purpose",
-                "description": "Do something",
-                "prompt": "Please do X",
-            },
+            _payload(
+                {
+                    "subagent_type": "general-purpose",
+                    "description": "Do something",
+                    "prompt": "Please do X",
+                }
+            ),
         )
         assert meta is not None
         assert meta["agent_type"] == "general-purpose"
         assert "prompt_snippet" in meta
 
     def test_shell_returns_none(self) -> None:
-        meta = extract_tool_metadata("Bash", {"command": "ls -la"})
+        meta = extract_tool_metadata("Bash", _payload({"command": "ls -la"}))
         assert meta is None
 
     def test_search_returns_path_and_pattern(self) -> None:
-        meta = extract_tool_metadata("Grep", {"path": "/workspace/polylogue", "pattern": "build_session_profile"})
+        meta = extract_tool_metadata(
+            "Grep",
+            _payload({"path": "/workspace/polylogue", "pattern": "build_session_profile"}),
+        )
         assert meta is not None
         assert meta["path"] == "/workspace/polylogue"
         assert meta["pattern"] == "build_session_profile"
 
     def test_agent_todo_metadata_summarizes_todos(self) -> None:
-        meta = extract_tool_metadata("TodoWrite", {"todos": [{"id": "1"}, {"id": "2"}]})
+        meta = extract_tool_metadata("TodoWrite", _payload({"todos": [{"id": "1"}, {"id": "2"}]}))
         assert meta is not None
         assert meta["tool"] == "TodoWrite"
         assert meta["todo_count"] == 2
 
     def test_other_tool_returns_none(self) -> None:
-        meta = extract_tool_metadata("UnknownTool", {})
+        meta = extract_tool_metadata("UnknownTool", _payload({}))
         assert meta is None
 
 
@@ -212,7 +232,7 @@ class TestParseGitOperation:
     def test_git_add(self) -> None:
         result = parse_git_operation({"tool_name": "Bash", "input": {"command": "git add file1.py file2.py"}})
         assert result is not None
-        assert "file1.py" in result.get("files", [])
+        assert "file1.py" in _string_list(result.get("files"))
 
 
 # =============================================================================

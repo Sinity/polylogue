@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass
 from io import BytesIO, StringIO
 from pathlib import Path
@@ -17,7 +18,7 @@ from polylogue.types import Provider
 WireFormat = Literal["json", "jsonl"]
 JSONScalar: TypeAlias = str | int | float | bool | None
 JSONValue: TypeAlias = JSONScalar | list["JSONValue"] | dict[str, "JSONValue"]
-JSONRecord: TypeAlias = dict[str, JSONValue]
+JSONRecord: TypeAlias = Mapping[str, object]
 
 
 def _coerce_json_value(value: object) -> JSONValue:

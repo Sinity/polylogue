@@ -4,13 +4,15 @@ from __future__ import annotations
 
 import random
 import uuid
-from typing import Protocol
+from typing import Protocol, TypeAlias
 
-from polylogue.lib.raw_payload_decode import JSONRecord, JSONValue
+from polylogue.lib.raw_payload_decode import JSONValue
 from polylogue.schemas.synthetic.models import SchemaRecord
 from polylogue.schemas.synthetic.semantic_values import SemanticValueGenerator
 from polylogue.schemas.synthetic.showcase import ConversationTheme
 from polylogue.schemas.synthetic.wire_formats import WireFormat
+
+SyntheticRecord: TypeAlias = dict[str, JSONValue]
 
 
 class _WireFormatContext(Protocol):
@@ -32,7 +34,7 @@ class _WireFormatContext(Protocol):
 
     def _ensure_wire_format(
         self,
-        data: JSONRecord,
+        data: SyntheticRecord,
         role: str,
         rng: random.Random,
         index: int,
@@ -43,7 +45,7 @@ class _WireFormatContext(Protocol):
     def _role_cycle(self) -> list[str]: ...
 
 
-def _coerce_record(value: JSONValue) -> JSONRecord:
+def _coerce_record(value: JSONValue) -> SyntheticRecord:
     return value if isinstance(value, dict) else {}
 
 
@@ -51,7 +53,7 @@ def _coerce_schema(value: JSONValue) -> SchemaRecord:
     return value if isinstance(value, dict) else {}
 
 
-def _child_id_list(record: JSONRecord, field_name: str) -> list[JSONValue]:
+def _child_id_list(record: SyntheticRecord, field_name: str) -> list[JSONValue]:
     existing = record.get(field_name)
     if isinstance(existing, list) and all(isinstance(item, str) for item in existing):
         return existing
@@ -60,7 +62,7 @@ def _child_id_list(record: JSONRecord, field_name: str) -> list[JSONValue]:
     return children
 
 
-def _message_payloads(records: list[JSONRecord]) -> list[JSONValue]:
+def _message_payloads(records: list[SyntheticRecord]) -> list[JSONValue]:
     return list(records)
 
 
@@ -77,7 +79,7 @@ def _has_messages_path(parts: list[str], schema: SchemaRecord) -> tuple[bool, Sc
 
 def _generate_tree_json(
     self: _WireFormatContext, n_messages: int, rng: random.Random, *, theme: ConversationTheme | None = None
-) -> JSONRecord:
+) -> SyntheticRecord:
     tree_cfg = self.wire_format.tree
     assert tree_cfg is not None and tree_cfg.container_path is not None
 
@@ -93,7 +95,7 @@ def _generate_tree_json(
 
     container_schema = _coerce_schema(properties.get(tree_cfg.container_path))
     node_schema = _coerce_schema(container_schema.get("additionalProperties"))
-    nodes: list[JSONRecord] = []
+    nodes: list[SyntheticRecord] = []
 
     for i in range(n_messages):
         node = _coerce_record(self._generate_from_schema(node_schema, rng))
@@ -119,7 +121,7 @@ def _generate_tree_json(
         nodes.append(node)
 
     properties_map = _coerce_schema(self.schema.get("properties"))
-    children_by_id: JSONRecord = {}
+    children_by_id: SyntheticRecord = {}
     for node in nodes:
         node_id_value = node.get(tree_cfg.key_field)
         if isinstance(node_id_value, str):
@@ -138,7 +140,7 @@ def _generate_tree_json(
 
 def _generate_linear_json(
     self: _WireFormatContext, n_messages: int, rng: random.Random, *, theme: ConversationTheme | None = None
-) -> JSONRecord:
+) -> SyntheticRecord:
     msgs_path = self.wire_format.messages_path
     assert msgs_path is not None
     msgs_parts = msgs_path.split(".")
@@ -160,7 +162,7 @@ def _generate_linear_json(
         top = {}
     top_record = _coerce_record(top)
 
-    messages: list[JSONRecord] = []
+    messages: list[SyntheticRecord] = []
     for i in range(n_messages):
         msg = _coerce_record(self._generate_from_schema(item_schema, rng))
         role = roles[i % len(roles)]
@@ -168,7 +170,7 @@ def _generate_linear_json(
         self._semantic_gen.advance_turn()
         messages.append(msg)
 
-    target: JSONRecord = top_record
+    target: SyntheticRecord = top_record
     for index, part in enumerate(msgs_parts):
         if index == len(msgs_parts) - 1:
             target[part] = _message_payloads(messages)
@@ -184,9 +186,9 @@ def _generate_linear_json(
 
 def _generate_jsonl_records(
     self: _WireFormatContext, n_messages: int, rng: random.Random, *, theme: ConversationTheme | None = None
-) -> list[JSONRecord]:
+) -> list[SyntheticRecord]:
     tree_cfg = self.wire_format.tree
-    records: list[JSONRecord] = []
+    records: list[SyntheticRecord] = []
     roles = self._role_cycle()
     session_id = str(uuid.UUID(int=rng.getrandbits(128), version=4))
     base_ts = rng.uniform(1670000000, 1760000000)

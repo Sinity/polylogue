@@ -5,18 +5,20 @@ from __future__ import annotations
 import json
 import random
 import uuid
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
-from typing import Protocol, cast
+from typing import Protocol, TypeAlias, cast
 
-from polylogue.lib.raw_payload_decode import JSONRecord, JSONValue
+from polylogue.lib.raw_payload_decode import JSONValue
 from polylogue.schemas.synthetic.models import SchemaRecord, SchemaValue
 from polylogue.schemas.synthetic.semantic_values import _text_for_role
 from polylogue.schemas.synthetic.wire_formats import WireEncoding
 
+SyntheticRecord: TypeAlias = dict[str, JSONValue]
+
 
 class _SemanticGenerator(Protocol):
-    def try_generate(self, schema: SchemaRecord) -> tuple[bool, JSONValue]: ...
+    def try_generate(self, schema: Mapping[str, object]) -> tuple[bool, JSONValue]: ...
 
 
 class _RelationSolver(Protocol):
@@ -65,7 +67,7 @@ class _SyntheticRuntimeContext(Protocol):
         depth: int = 0,
         max_depth: int = 6,
         path: str = "$",
-    ) -> JSONRecord: ...
+    ) -> SyntheticRecord: ...
 
     def _generate_array(
         self,
@@ -218,8 +220,8 @@ def _generate_object(
     depth: int = 0,
     max_depth: int = 6,
     path: str = "$",
-) -> JSONRecord:
-    obj: JSONRecord = {}
+) -> SyntheticRecord:
+    obj: SyntheticRecord = {}
     properties = _schema_record(schema.get("properties"))
     candidate_keys = set(properties.keys())
     if skip_keys:

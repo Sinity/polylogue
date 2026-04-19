@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Any
+from collections.abc import Callable
+from typing import Any, cast
 
 from polylogue.lib.provider_semantics import (
     extract_chatgpt_text,
@@ -11,6 +12,7 @@ from polylogue.lib.provider_semantics import (
     extract_reasoning_traces,
     extract_tool_calls,
 )
+from polylogue.lib.raw_payload_decode import JSONRecord
 from polylogue.lib.roles import Role
 from polylogue.lib.timestamps import parse_timestamp
 from polylogue.lib.viewports import CostInfo, ReasoningTrace, TokenUsage
@@ -18,94 +20,118 @@ from polylogue.schemas.unified_models import HarmonizedMessage, _missing_role, e
 from polylogue.types import Provider
 
 
-def _fallback_extract_claude_code(raw: dict[str, Any]) -> HarmonizedMessage:
+def _record(value: object) -> JSONRecord:
+    return cast(JSONRecord, value) if isinstance(value, dict) else {}
+
+
+def _content_blocks(value: object) -> list[dict[str, Any]] | None:
+    if not isinstance(value, list):
+        return None
+    return [dict(item) for item in value if isinstance(item, dict)]
+
+
+def _payload_record(raw: JSONRecord) -> dict[str, Any]:
+    return dict(raw)
+
+
+FallbackExtractor = Callable[[JSONRecord], HarmonizedMessage]
+
+
+def _fallback_extract_claude_code(raw: JSONRecord) -> HarmonizedMessage:
     """Fallback extraction for malformed Claude Code records."""
-    msg = raw.get("message", {})
-    content = msg.get("content", []) if isinstance(msg, dict) else []
+    payload = _payload_record(raw)
+    if payload.get("message") == {}:
+        _missing_role()
+    msg = _payload_record(_record(payload.get("message")))
+    content = _content_blocks(msg.get("content"))
 
     return HarmonizedMessage(
-        id=raw.get("uuid"),
-        role=Role.normalize((msg.get("role") if isinstance(msg, dict) else raw.get("type")) or _missing_role()),
+        id=payload.get("uuid"),
+        role=Role.normalize((msg.get("role") or payload.get("type")) or _missing_role()),
         text=extract_claude_code_text(content),
-        timestamp=parse_timestamp(raw.get("timestamp")),
+        timestamp=parse_timestamp(payload.get("timestamp")),
         reasoning_traces=extract_reasoning_traces(content, Provider.CLAUDE_CODE),
         tool_calls=extract_tool_calls(content, Provider.CLAUDE_CODE),
         content_blocks=extract_content_blocks(content),
-        model=msg.get("model") if isinstance(msg, dict) else None,
-        tokens=extract_token_usage(msg.get("usage") if isinstance(msg, dict) else None),
-        cost=CostInfo(total_usd=raw.get("costUSD")) if raw.get("costUSD") else None,
-        duration_ms=raw.get("durationMs"),
+        model=msg.get("model"),
+        tokens=extract_token_usage(dict(usage) if (usage := _record(msg.get("usage"))) else None),
+        cost=CostInfo(total_usd=payload.get("costUSD")) if payload.get("costUSD") else None,
+        duration_ms=payload.get("durationMs"),
         provider=Provider.CLAUDE_CODE,
-        raw=raw,
+        raw=payload,
     )
 
 
-def _fallback_extract_claude_ai(raw: dict[str, Any]) -> HarmonizedMessage:
+def _fallback_extract_claude_ai(raw: JSONRecord) -> HarmonizedMessage:
     """Fallback extraction for malformed Claude AI records."""
+    payload = _payload_record(raw)
     return HarmonizedMessage(
-        id=raw.get("uuid"),
-        role=Role.normalize(raw.get("sender") or _missing_role()),
-        text=raw.get("text", ""),
-        timestamp=parse_timestamp(raw.get("created_at")),
+        id=payload.get("uuid"),
+        role=Role.normalize(payload.get("sender") or _missing_role()),
+        text=payload.get("text", ""),
+        timestamp=parse_timestamp(payload.get("created_at")),
         provider=Provider.CLAUDE_AI,
-        raw=raw,
+        raw=payload,
     )
 
 
-def _fallback_extract_chatgpt(raw: dict[str, Any]) -> HarmonizedMessage:
+def _fallback_extract_chatgpt(raw: JSONRecord) -> HarmonizedMessage:
     """Fallback extraction for malformed ChatGPT records."""
-    author = raw.get("author", {})
-    content = raw.get("content", {})
-    metadata = raw.get("metadata", {})
+    payload = _payload_record(raw)
+    author = _payload_record(_record(payload.get("author")))
+    content = _payload_record(_record(payload.get("content")))
+    metadata = _payload_record(_record(payload.get("metadata")))
 
     return HarmonizedMessage(
-        id=raw.get("id"),
-        role=Role.normalize((author.get("role") if isinstance(author, dict) else None) or _missing_role()),
-        text=extract_chatgpt_text(content) if isinstance(content, dict) else "",
-        timestamp=parse_timestamp(raw.get("create_time")),
-        model=metadata.get("model_slug") if isinstance(metadata, dict) else None,
+        id=payload.get("id"),
+        role=Role.normalize(author.get("role") or _missing_role()),
+        text=extract_chatgpt_text(content),
+        timestamp=parse_timestamp(payload.get("create_time")),
+        model=metadata.get("model_slug"),
         provider=Provider.CHATGPT,
-        raw=raw,
+        raw=payload,
     )
 
 
-def _fallback_extract_gemini(raw: dict[str, Any]) -> HarmonizedMessage:
+def _fallback_extract_gemini(raw: JSONRecord) -> HarmonizedMessage:
     """Fallback extraction for malformed Gemini records."""
-    is_thinking = raw.get("isThought", False)
-    thinking_budget = raw.get("thinkingBudget")
-    token_count = raw.get("tokenCount")
+    payload = _payload_record(raw)
+    is_thinking = payload.get("isThought", False)
+    thinking_budget = payload.get("thinkingBudget")
+    token_count = payload.get("tokenCount")
     output_tokens = token_count if isinstance(token_count, int) else None
 
     return HarmonizedMessage(
         id=None,
-        role=Role.normalize(raw.get("role") or _missing_role()),
-        text=raw.get("text", ""),
+        role=Role.normalize(payload.get("role") or _missing_role()),
+        text=payload.get("text", ""),
         timestamp=None,
         reasoning_traces=[
             ReasoningTrace(
-                text=raw.get("text", ""),
+                text=payload.get("text", ""),
                 token_count=thinking_budget if isinstance(thinking_budget, int) else None,
                 provider=Provider.GEMINI,
-                raw=raw,
+                raw=payload,
             )
         ]
         if is_thinking
         else [],
         tokens=TokenUsage(output_tokens=output_tokens) if output_tokens is not None else None,
         provider=Provider.GEMINI,
-        raw=raw,
+        raw=payload,
     )
 
 
-def _fallback_extract_codex(raw: dict[str, Any]) -> HarmonizedMessage:
+def _fallback_extract_codex(raw: JSONRecord) -> HarmonizedMessage:
     """Fallback extraction for malformed Codex records."""
-    if isinstance(raw.get("payload"), dict):
-        payload = raw["payload"]
+    raw_payload = _payload_record(raw)
+    payload = _payload_record(_record(raw_payload.get("payload")))
+    if payload:
         role = payload.get("role", "unknown")
         content = payload.get("content", [])
     else:
-        role = raw.get("role", "unknown")
-        content = raw.get("content", [])
+        role = raw_payload.get("role", "unknown")
+        content = raw_payload.get("content", [])
 
     text_parts = []
     for block in content if isinstance(content, list) else []:
@@ -116,16 +142,16 @@ def _fallback_extract_codex(raw: dict[str, Any]) -> HarmonizedMessage:
             text_parts.append(text)
 
     return HarmonizedMessage(
-        id=raw.get("id"),
+        id=raw_payload.get("id"),
         role=Role.normalize(role),
         text="\n".join(text_parts),
-        timestamp=parse_timestamp(raw.get("timestamp")),
+        timestamp=parse_timestamp(raw_payload.get("timestamp")),
         provider=Provider.CODEX,
-        raw=raw,
+        raw=raw_payload,
     )
 
 
-_FALLBACK_EXTRACTORS = {
+_FALLBACK_EXTRACTORS: dict[Provider, FallbackExtractor] = {
     Provider.CLAUDE_CODE: _fallback_extract_claude_code,
     Provider.CLAUDE_AI: _fallback_extract_claude_ai,
     Provider.CHATGPT: _fallback_extract_chatgpt,
@@ -134,7 +160,7 @@ _FALLBACK_EXTRACTORS = {
 }
 
 
-def extract_fallback_message(provider: Provider, raw: dict[str, Any]) -> HarmonizedMessage:
+def extract_fallback_message(provider: Provider, raw: JSONRecord) -> HarmonizedMessage:
     """Fallback harmonization for malformed raw provider payloads."""
     try:
         extractor = _FALLBACK_EXTRACTORS[provider]

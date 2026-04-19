@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from polylogue.paths import db_path as archive_db_path
 from polylogue.schemas.generation_models import _ProviderBundle
@@ -20,7 +21,11 @@ def persist_generated_provider_bundle(output_dir: Path, provider: str, bundle: _
         return
 
     registry = SchemaRegistry(storage_root=output_dir)
-    registry.replace_provider_packages(provider, bundle.catalog, bundle.package_schemas)
+    registry.replace_provider_packages(
+        provider,
+        bundle.catalog,
+        cast(Mapping[str, dict[str, Mapping[str, object]]], bundle.package_schemas),
+    )
     registry.save_cluster_manifest(bundle.manifest)
 
     for legacy_name in (f"{provider}.schema.json.gz", f"{provider}.schema.json"):

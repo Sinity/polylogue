@@ -20,7 +20,8 @@ from polylogue.schemas.observation import ProviderConfig
 from polylogue.schemas.redaction_report import SchemaReport
 from polylogue.schemas.shape_fingerprint import _structure_fingerprint
 
-SchemaPayload: TypeAlias = Mapping[str, Any]
+SchemaInput: TypeAlias = Mapping[str, object]
+SchemaPayload: TypeAlias = dict[str, Any]
 MutableSchemaPayload: TypeAlias = dict[str, Any]
 
 
@@ -34,7 +35,7 @@ _STRUCTURE_EXEMPLARS_PER_FINGERPRINT = 8
 def _generate_cluster_schema(
     provider: str,
     config: ProviderConfig,
-    samples: Sequence[SchemaPayload],
+    samples: Sequence[SchemaInput],
     conv_ids: Sequence[str | None],
     *,
     privacy_config: PrivacyConfigLike | None,
@@ -104,7 +105,7 @@ def _apply_schema_metadata(
 
 
 def generate_schema_from_samples(
-    samples: Sequence[SchemaPayload],
+    samples: Sequence[SchemaInput],
     *,
     annotate: bool = True,
     max_stats_samples: int = 500,
@@ -145,6 +146,7 @@ def generate_schema_from_samples(
 
 
 __all__ = [
+    "SchemaInput",
     "_apply_schema_metadata",
     "_generate_cluster_schema",
     "generate_schema_from_samples",

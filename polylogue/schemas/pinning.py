@@ -21,14 +21,24 @@ import json
 import logging
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Literal, TypeAlias, cast
 
+from polylogue.schemas.json_types import JSONDocument, json_document, json_document_list
 from polylogue.types import Provider
 
 logger = logging.getLogger(__name__)
 
+PinAction: TypeAlias = Literal["confirm", "reject"]
+PinnableRole: TypeAlias = Literal[
+    "message_role",
+    "message_body",
+    "message_timestamp",
+    "message_container",
+    "conversation_title",
+]
+
 # Semantic roles that can be pinned
-PINNABLE_ROLES = frozenset(
+PINNABLE_ROLES: frozenset[PinnableRole] = frozenset(
     {
         "message_role",
         "message_body",
@@ -39,20 +49,55 @@ PINNABLE_ROLES = frozenset(
 )
 
 
+def _required_string(record: JSONDocument, key: str) -> str:
+    value = record.get(key)
+    if not isinstance(value, str):
+        raise ValueError(f"Pin field {key!r} must be a string")
+    return value
+
+
+def _optional_string(record: JSONDocument, key: str, default: str = "") -> str:
+    value = record.get(key)
+    return value if isinstance(value, str) else default
+
+
+def _pin_action(value: object) -> PinAction:
+    if value in ("confirm", "reject"):
+        return cast(PinAction, value)
+    raise ValueError(f"Pin action must be 'confirm' or 'reject', got {value!r}")
+
+
+def _pin_role(value: object) -> PinnableRole:
+    if value in PINNABLE_ROLES:
+        return cast(PinnableRole, value)
+    raise ValueError(f"Role {value!r} is not pinnable. Valid: {sorted(PINNABLE_ROLES)}")
+
+
 @dataclass(frozen=True, slots=True)
 class PinDecision:
     """A human review decision about a semantic annotation."""
 
     path: str
-    role: str
-    action: str  # "confirm" or "reject"
+    role: PinnableRole
+    action: PinAction
     reason: str = ""
 
     def __post_init__(self) -> None:
-        if self.action not in ("confirm", "reject"):
-            raise ValueError(f"Pin action must be 'confirm' or 'reject', got {self.action!r}")
-        if self.role not in PINNABLE_ROLES:
-            raise ValueError(f"Role {self.role!r} is not pinnable. Valid: {sorted(PINNABLE_ROLES)}")
+        _pin_action(self.action)
+        _pin_role(self.role)
+
+    def to_dict(self) -> JSONDocument:
+        return json_document(asdict(self))
+
+    @classmethod
+    def from_dict(cls, data: object) -> PinDecision:
+        record = json_document(data)
+        return cls(
+            path=_required_string(record, "path"),
+            role=_pin_role(record.get("role")),
+            action=_pin_action(record.get("action")),
+            reason=_optional_string(record, "reason"),
+        )
 
 
 @dataclass
@@ -73,24 +118,16 @@ class PinSet:
         """Check if a specific path+role combination was rejected."""
         return any(pin.path == path and pin.role == role and pin.action == "reject" for pin in self.pins)
 
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "provider": self.provider,
-            "pins": [asdict(pin) for pin in self.pins],
-        }
+    def to_dict(self) -> JSONDocument:
+        return json_document({"provider": self.provider, "pins": [pin.to_dict() for pin in self.pins]})
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> PinSet:
-        pins = [
-            PinDecision(
-                path=p["path"],
-                role=p["role"],
-                action=p["action"],
-                reason=p.get("reason", ""),
-            )
-            for p in data.get("pins", [])
-        ]
-        return cls(provider=data.get("provider", ""), pins=pins)
+    def from_dict(cls, data: object) -> PinSet:
+        payload = json_document(data)
+        return cls(
+            provider=_optional_string(payload, "provider"),
+            pins=[PinDecision.from_dict(pin) for pin in json_document_list(payload.get("pins"))],
+        )
 
 
 # -------------------------------------------------------------------
@@ -116,7 +153,7 @@ def load_pins(provider: Provider | str) -> PinSet:
         pin_set = PinSet.from_dict(data)
         pin_set.provider = str(provider)
         return pin_set
-    except (json.JSONDecodeError, KeyError, TypeError) as exc:
+    except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
         logger.warning("Failed to load pins from %s: %s", path, exc)
         return PinSet(provider=str(provider))
 
@@ -134,7 +171,7 @@ def save_pins(provider: Provider | str, pin_set: PinSet) -> None:
 
 
 def resolve_pinned_paths(
-    schema: dict[str, Any],
+    schema: object,
     pins: PinSet,
 ) -> dict[str, str | None]:
     """Resolve which schema paths to use for each semantic role.
@@ -143,6 +180,7 @@ def resolve_pinned_paths(
     produce entries. If no pin exists for a role, it maps to None (and
     the extractor falls back to well-known-name heuristics).
     """
+    del schema
     result: dict[str, str | None] = dict.fromkeys(PINNABLE_ROLES)
 
     # First: apply confirmed pins directly
@@ -155,9 +193,9 @@ def resolve_pinned_paths(
 
 
 def apply_pins_to_schema(
-    schema: dict[str, Any],
+    schema: JSONDocument,
     pins: PinSet,
-) -> dict[str, Any]:
+) -> JSONDocument:
     """Apply pin decisions to a schema in-place (for re-inference).
 
     - Confirmed annotations get ``x-polylogue-pinned: true``
@@ -170,7 +208,7 @@ def apply_pins_to_schema(
 
 
 def _apply_pins_recursive(
-    node: Any,
+    node: object,
     path: str,
     pins: PinSet,
 ) -> None:
@@ -179,12 +217,12 @@ def _apply_pins_recursive(
         return
 
     role = node.get("x-polylogue-semantic-role")
-    if role and pins.is_rejected(path or "$", role):
+    if isinstance(role, str) and pins.is_rejected(path or "$", role):
         # Remove rejected annotation
         node.pop("x-polylogue-semantic-role", None)
         node.pop("x-polylogue-evidence", None)
         node["x-polylogue-rejected"] = True
-    elif role and pins.confirmed_path(role) == (path or "$"):
+    elif isinstance(role, str) and pins.confirmed_path(role) == (path or "$"):
         node["x-polylogue-pinned"] = True
 
     # Recurse into schema structure

@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any, TypeAlias
+from typing import TypeAlias
 
 from polylogue.lib.viewports import ToolCategory, classify_tool
+from polylogue.schemas.json_types import JSONDocument, JSONValue, json_document
 
-ToolInputScalar: TypeAlias = str | int | float | bool | None
-ToolInputPayload: TypeAlias = Mapping[str, Any]
-ToolMetadata: TypeAlias = dict[str, Any]
+ToolInputPayload: TypeAlias = Mapping[str, JSONValue]
+ToolMetadata: TypeAlias = JSONDocument
 
 
 def extract_tool_metadata(tool_name: str, tool_input: ToolInputPayload) -> ToolMetadata | None:
@@ -34,7 +34,7 @@ def _payload_string(tool_input: ToolInputPayload, key: str) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
-def _payload_list(tool_input: ToolInputPayload, key: str) -> list[Any] | None:
+def _payload_list(tool_input: ToolInputPayload, key: str) -> list[JSONValue] | None:
     value = tool_input.get(key)
     return value if isinstance(value, list) else None
 
@@ -62,10 +62,7 @@ def _parse_git_command(command: str) -> ToolMetadata:
         return {"full_command": command}
 
     git_command = parts[1]
-    metadata: ToolMetadata = {
-        "command": git_command,
-        "full_command": command,
-    }
+    metadata: ToolMetadata = {"command": git_command, "full_command": command}
 
     if git_command == "commit":
         message = _quoted_flag_value(command, "-m")
@@ -162,7 +159,7 @@ def _extract_agent_metadata(tool_name: str, tool_input: ToolInputPayload) -> Too
     questions = _payload_list(tool_input, "questions")
     if questions is not None:
         metadata["question_count"] = len(questions)
-    return metadata
+    return json_document(metadata)
 
 
 __all__ = [
