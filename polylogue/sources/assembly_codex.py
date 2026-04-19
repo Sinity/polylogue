@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 from polylogue.logging import get_logger
 
@@ -72,7 +72,7 @@ class CodexAssemblySpec:
     def enrich_conversation(
         self,
         conv: ParsedConversation,
-        sidecar_data: SidecarData,
+        sidecar_data: Mapping[str, Any],
     ) -> ParsedConversation:
         """Enrich a Codex conversation with thread name or first-user-message title."""
         thread_names = _coerce_thread_names(sidecar_data.get("thread_names"))

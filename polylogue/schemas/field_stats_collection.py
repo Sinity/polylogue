@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Mapping, Sequence
 from typing import TypeAlias
 
-from polylogue.lib.raw_payload_decode import JSONRecord, JSONValue
 from polylogue.schemas.field_stats_detection import (
     _detect_numeric_format,
     _detect_string_format,
@@ -18,17 +18,18 @@ from polylogue.schemas.field_stats_models import (
     FieldStats,
 )
 
-JSONContainer: TypeAlias = dict[str, JSONValue]
-JSONList: TypeAlias = list[JSONValue]
+SampleMapping: TypeAlias = Mapping[str, object]
+JSONContainer: TypeAlias = dict[str, object]
+JSONList: TypeAlias = list[object]
 FieldStatsByPath: TypeAlias = dict[str, FieldStats]
 DictKeySetsByPath: TypeAlias = dict[str, set[str]]
 CoOccurrenceByPath: TypeAlias = dict[str, dict[int, set[str]]]
 
 
 def _collect_field_stats(
-    samples: list[JSONRecord],
+    samples: Sequence[SampleMapping],
     *,
-    conversation_ids: list[str | None] | None = None,
+    conversation_ids: Sequence[str | None] | None = None,
     max_depth: int = 15,
 ) -> FieldStatsByPath:
     """Walk all samples and collect per-JSON-path statistics."""
@@ -44,7 +45,7 @@ def _collect_field_stats(
     numeric_sample_cap = 500
     string_length_cap = 2000
 
-    def _walk(value: JSONValue, path: str, depth: int, sample_idx: int) -> None:
+    def _walk(value: object, path: str, depth: int, sample_idx: int) -> None:
         if depth > max_depth:
             return
 
@@ -58,7 +59,7 @@ def _collect_field_stats(
         stats.present_count += 1
         stats.value_count += 1
 
-        if isinstance(value, dict):
+        if isinstance(value, Mapping):
             if path not in dict_key_sets:
                 dict_key_sets[path] = set()
             dict_key_sets[path].update(value.keys())
@@ -70,7 +71,7 @@ def _collect_field_stats(
                 if is_dynamic_key(key):
                     dynamic_values.append(item)
                 else:
-                    static_keys[key] = item
+                    static_keys[str(key)] = item
 
             if path not in co_occurrence:
                 co_occurrence[path] = {}

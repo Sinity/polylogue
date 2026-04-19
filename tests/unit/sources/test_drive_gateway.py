@@ -148,7 +148,8 @@ def test_service_handle_rebuilds_on_expired_credentials(monkeypatch: pytest.Monk
     cast(Any, gw)._service = expired
     creds = object()
     rebuilt = object()
-    gw._auth_manager.load_credentials.return_value = creds
+    load_credentials = cast(MagicMock, gw._auth_manager.load_credentials)
+    load_credentials.return_value = creds
     build = MagicMock(return_value=rebuilt)
 
     def fake_import(name: str) -> Any:
@@ -158,7 +159,7 @@ def test_service_handle_rebuilds_on_expired_credentials(monkeypatch: pytest.Monk
 
     monkeypatch.setattr("polylogue.sources.drive_gateway._import_module", fake_import)
     assert gw._service_handle() is rebuilt
-    gw._auth_manager.load_credentials.assert_called_once_with()
+    load_credentials.assert_called_once_with()
     build.assert_called_once_with("drive", "v3", credentials=creds, cache_discovery=False)
 
 
@@ -166,7 +167,8 @@ def test_service_handle_builds_and_caches_service(monkeypatch: pytest.MonkeyPatc
     gw = _gateway()
     creds = object()
     built = object()
-    gw._auth_manager.load_credentials.return_value = creds
+    load_credentials = cast(MagicMock, gw._auth_manager.load_credentials)
+    load_credentials.return_value = creds
     build = MagicMock(return_value=built)
 
     def fake_import(name: str) -> Any:
@@ -181,7 +183,7 @@ def test_service_handle_builds_and_caches_service(monkeypatch: pytest.MonkeyPatc
 
     assert first is built
     assert second is built
-    gw._auth_manager.load_credentials.assert_called_once_with()
+    load_credentials.assert_called_once_with()
     build.assert_called_once_with("drive", "v3", credentials=creds, cache_discovery=False)
 
 

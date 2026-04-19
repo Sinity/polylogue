@@ -34,9 +34,14 @@ class DriveFile:
 
 
 class DriveConfigLike(Protocol):
-    credentials_path: str | PathLike[str] | None
-    token_path: str | PathLike[str] | None
-    retry_count: int | None
+    @property
+    def credentials_path(self) -> str | PathLike[str] | None: ...
+
+    @property
+    def token_path(self) -> str | PathLike[str] | None: ...
+
+    @property
+    def retry_count(self) -> int | None: ...
 
 
 class DriveConsoleLike(Protocol):
@@ -44,10 +49,13 @@ class DriveConsoleLike(Protocol):
 
 
 class DriveUILike(Protocol):
-    plain: bool
-    console: DriveConsoleLike | None
+    @property
+    def plain(self) -> bool: ...
 
-    def input(self, prompt: str, default: str | None = None) -> str | None: ...
+    @property
+    def console(self) -> DriveConsoleLike | None: ...
+
+    def input(self, prompt: str, *, default: str | None = None) -> str | None: ...
 
 
 class DriveCredentialLike(Protocol):
@@ -77,12 +85,14 @@ class DriveCredentialsFactory(Protocol):
 
 
 class DriveAuthFlowLike(Protocol):
-    credentials: DriveCredentialLike
+    credentials: object
 
     def authorization_url(self, *, prompt: str, access_type: str) -> tuple[str, object]: ...
 
     def fetch_token(self, *, code: str) -> None: ...
 
+
+class DriveLocalServerFlowLike(DriveAuthFlowLike, Protocol):
     def run_local_server(self, *, open_browser: bool, port: int) -> DriveCredentialLike: ...
 
 
@@ -92,7 +102,7 @@ class DriveAuthFlowFactory(Protocol):
         cls,
         filename: str,
         scopes: Sequence[str],
-    ) -> DriveAuthFlowLike: ...
+    ) -> DriveLocalServerFlowLike: ...
 
 
 class DriveTokenStoreLike(Protocol):
@@ -116,6 +126,7 @@ __all__ = [
     "CachedCredentialState",
     "DriveAuthFlowFactory",
     "DriveAuthFlowLike",
+    "DriveLocalServerFlowLike",
     "DriveAuthError",
     "DriveConfigLike",
     "DriveConsoleLike",

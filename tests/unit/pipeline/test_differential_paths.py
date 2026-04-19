@@ -32,7 +32,7 @@ class TestDecoderConvergence:
         return records, malformed_count
 
     @staticmethod
-    def _stream_decode(raw_bytes: bytes) -> list[object]:
+    def _stream_decode(raw_bytes: bytes) -> list[JSONValue]:
         """Run the streaming decoder path, return valid records.
 
         The streaming decoder (ijson) operates on token streams, not lines,

@@ -27,6 +27,7 @@ from .drive_types import (
     DriveConfigLike,
     DriveCredentialLike,
     DriveCredentialsFactory,
+    DriveLocalServerFlowLike,
     DriveTokenStoreLike,
     DriveUILike,
 )
@@ -146,7 +147,7 @@ class DriveAuthManager:
         )
 
     def _run_manual_auth_flow(self, flow: DriveAuthFlowLike) -> DriveCredentialLike:
-        return run_manual_auth_flow(flow=flow, prompter=self._prompter)
+        return cast(DriveCredentialLike, run_manual_auth_flow(flow=flow, prompter=self._prompter))
 
     def load_credentials(self) -> DriveCredentialLike:
         """Load or acquire Google OAuth credentials. Triggers interactive auth if needed."""
@@ -178,7 +179,7 @@ class DriveAuthManager:
                 "Run with --interactive or set POLYLOGUE_TOKEN_PATH with a valid token."
             )
 
-        flow = installed_app_flow_cls.from_client_secrets_file(str(credentials_path), SCOPES)
+        flow: DriveLocalServerFlowLike = installed_app_flow_cls.from_client_secrets_file(str(credentials_path), SCOPES)
         try:
             creds = flow.run_local_server(open_browser=False, port=0)
         except OSError as exc:

@@ -2,15 +2,14 @@
 
 from __future__ import annotations
 
-from typing import TypeAlias
+from collections.abc import Mapping
+from typing import Any, TypeAlias
 
 from polylogue.lib.viewports import ToolCategory, classify_tool
 
 ToolInputScalar: TypeAlias = str | int | float | bool | None
-ToolInputValue: TypeAlias = dict[str, "ToolInputValue"] | list["ToolInputValue"] | ToolInputScalar
-ToolInputPayload: TypeAlias = dict[str, ToolInputValue]
-ToolMetadataValue: TypeAlias = dict[str, "ToolMetadataValue"] | list["ToolMetadataValue"] | ToolInputScalar
-ToolMetadata: TypeAlias = dict[str, ToolMetadataValue]
+ToolInputPayload: TypeAlias = Mapping[str, Any]
+ToolMetadata: TypeAlias = dict[str, Any]
 
 
 def extract_tool_metadata(tool_name: str, tool_input: ToolInputPayload) -> ToolMetadata | None:
@@ -35,7 +34,7 @@ def _payload_string(tool_input: ToolInputPayload, key: str) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
-def _payload_list(tool_input: ToolInputPayload, key: str) -> list[ToolInputValue] | None:
+def _payload_list(tool_input: ToolInputPayload, key: str) -> list[Any] | None:
     value = tool_input.get(key)
     return value if isinstance(value, list) else None
 

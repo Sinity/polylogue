@@ -61,9 +61,7 @@ _INGEST_SOFT_BLOB_LIMIT_BYTES = 48 * 1024 * 1024
 _INGEST_HIGH_BLOB_LIMIT_BYTES = 96 * 1024 * 1024
 _INGEST_EXTREME_BLOB_LIMIT_BYTES = 256 * 1024 * 1024
 
-ObservationScalar: TypeAlias = str | int | float | bool
-ObservationValue: TypeAlias = ObservationScalar | list[dict[str, object]]
-BatchObservation: TypeAlias = dict[str, ObservationValue]
+BatchObservation: TypeAlias = dict[str, object]
 
 
 @dataclass(slots=True)
@@ -639,7 +637,11 @@ def _resolved_ingest_worker_limit(value: int | None) -> int:
     return value if value is not None else _DEFAULT_INGEST_WORKER_LIMIT
 
 
-def _select_ingest_worker_count(raw_records: Sequence[RawConversationRecord], ingest_workers: int | None) -> int:
+def _record_blob_size(record: object) -> int:
+    return max(int(getattr(record, "blob_size", 0) or 0), 0)
+
+
+def _select_ingest_worker_count(raw_records: Sequence[object], ingest_workers: int | None) -> int:
     base_worker_count = min(
         len(raw_records),
         os.cpu_count() or 4,
@@ -648,7 +650,7 @@ def _select_ingest_worker_count(raw_records: Sequence[RawConversationRecord], in
     if base_worker_count <= 1:
         return base_worker_count
 
-    blob_sizes = [max(int(getattr(record, "blob_size", 0) or 0), 0) for record in raw_records]
+    blob_sizes = [_record_blob_size(record) for record in raw_records]
     total_blob_bytes = sum(blob_sizes)
     max_blob_bytes = max(blob_sizes, default=0)
 

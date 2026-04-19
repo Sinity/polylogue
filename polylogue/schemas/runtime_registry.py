@@ -5,7 +5,7 @@ from __future__ import annotations
 import copy
 import gzip
 import json
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -32,6 +32,7 @@ from polylogue.types import Provider
 SCHEMA_DIR = Path(__file__).parent / "providers"
 SchemaProvider = Provider | str
 SchemaCacheKey = tuple[str, str, str | None]
+SchemaInputDocument = Mapping[str, Any]
 PublicSchemaDocument = dict[str, Any]
 SchemaDocument = JSONRecord
 ElementSchemaMap = dict[str, SchemaDocument]
@@ -126,7 +127,7 @@ class _SchemaEvidence:
     representative_paths: list[str]
 
 
-def _schema_evidence(schema: SchemaDocument) -> _SchemaEvidence:
+def _schema_evidence(schema: SchemaInputDocument) -> _SchemaEvidence:
     observed_at = _string_value(schema.get("x-polylogue-generated-at"))
     package_profile_family_ids = _string_list(
         schema.get(
@@ -173,8 +174,8 @@ def _resolved_package_version(catalog: SchemaPackageCatalog, version: str) -> st
     return version
 
 
-def _schema_document(schema: PublicSchemaDocument) -> SchemaDocument:
-    return cast(SchemaDocument, schema)
+def _schema_document(schema: SchemaInputDocument) -> SchemaDocument:
+    return cast(SchemaDocument, dict(schema))
 
 
 class SchemaRegistry:
@@ -363,7 +364,7 @@ class SchemaRegistry:
         self,
         provider: str,
         catalog: SchemaPackageCatalog,
-        package_schemas: dict[str, ElementSchemaMap],
+        package_schemas: Mapping[str, ElementSchemaMap],
     ) -> None:
         provider_token = _provider_token(provider)
         provider_dir = self._provider_dir(provider_token)
@@ -387,7 +388,7 @@ class SchemaRegistry:
         provider: str,
         *,
         version: str,
-        schema: SchemaDocument,
+        schema: SchemaInputDocument,
         element_kind: str = "conversation_document",
         first_seen: str | None = None,
         last_seen: str | None = None,
@@ -423,16 +424,16 @@ class SchemaRegistry:
                 )
             ],
         )
-        return package, {element_kind: schema}
+        return package, {element_kind: _schema_document(schema)}
 
-    def register_schema(self, provider: str, schema: PublicSchemaDocument) -> str:
+    def register_schema(self, provider: str, schema: SchemaInputDocument) -> str:
         provider_token = _provider_token(provider)
         versions = self.list_versions(provider_token)
         new_version = f"v{int(versions[-1][1:]) + 1}" if versions else "v1"
         self.write_schema_version(provider_token, new_version, schema)
         return new_version
 
-    def write_schema_version(self, provider: str, version: str, schema: PublicSchemaDocument) -> Path:
+    def write_schema_version(self, provider: str, version: str, schema: SchemaInputDocument) -> Path:
         provider_token = _provider_token(provider)
         package, schemas = self._single_element_package(
             provider_token,

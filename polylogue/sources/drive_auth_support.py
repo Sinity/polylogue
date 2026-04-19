@@ -59,8 +59,9 @@ class _PromptBridge:
     def plain(self) -> bool:
         return False
 
-    def input(self, prompt: str, **_: object) -> str | None:
+    def input(self, prompt: str, *, default: str | None = None) -> str | None:
         del prompt
+        del default
         return None
 
 
@@ -148,7 +149,7 @@ def run_manual_auth_flow(
     *,
     flow: DriveAuthFlowLike,
     prompter: DriveAuthPrompter | None,
-) -> DriveCredentialLike:
+) -> object:
     auth_url, _ = flow.authorization_url(prompt="consent", access_type="offline")
     if prompter is not None:
         prompter.announce_auth_url(auth_url)

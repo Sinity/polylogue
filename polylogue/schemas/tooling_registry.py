@@ -3,19 +3,20 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, TypeAlias
+from typing import TYPE_CHECKING, Any, TypeAlias
 
 from polylogue.schemas.observation import schema_cluster_id
 from polylogue.schemas.packages import SchemaPackageCatalog, SchemaVersionPackage
-from polylogue.schemas.runtime_registry import canonical_schema_provider
+from polylogue.schemas.runtime_registry import ElementSchemaMap, PublicSchemaDocument, canonical_schema_provider
 from polylogue.schemas.tooling_diff import diff_schemas
 from polylogue.schemas.tooling_models import ClusterManifest, PropertyChange, SchemaCluster, SchemaDiff
 from polylogue.types import Provider
 
-SchemaPayload: TypeAlias = dict[str, object]
-SchemaSample: TypeAlias = SchemaPayload | list[SchemaPayload]
+SchemaPayload: TypeAlias = Mapping[str, Any]
+ObservedSchemaSample: TypeAlias = object
 
 
 def _dominant_keys(sample: object) -> list[str]:
@@ -44,13 +45,13 @@ class SchemaRegistryToolingMixin:
             element_kind: str = "conversation_document",
             first_seen: str | None = None,
             last_seen: str | None = None,
-        ) -> tuple[SchemaVersionPackage, dict[str, SchemaPayload]]: ...
+        ) -> tuple[SchemaVersionPackage, ElementSchemaMap]: ...
 
         def replace_provider_packages(
             self,
             provider: str,
             catalog: SchemaPackageCatalog,
-            package_schemas: dict[str, dict[str, SchemaPayload]],
+            package_schemas: Mapping[str, ElementSchemaMap],
         ) -> None: ...
 
         def _catalog_path(self, provider: str) -> Path: ...
@@ -61,22 +62,22 @@ class SchemaRegistryToolingMixin:
             *,
             version: str = "default",
             element_kind: str | None = None,
-        ) -> SchemaPayload | None: ...
+        ) -> PublicSchemaDocument | None: ...
 
         def register_schema(self, provider: str, schema: SchemaPayload) -> str: ...
 
     def replace_provider_schemas(
         self,
         provider: str | Provider,
-        versioned_schemas: list[tuple[str, SchemaPayload]],
+        versioned_schemas: Sequence[tuple[str, SchemaPayload]],
         *,
         manifest: ClusterManifest | None = None,
     ) -> Path:
         provider_token = canonical_schema_provider(provider)
         packages: list[SchemaVersionPackage] = []
-        package_schemas: dict[str, dict[str, SchemaPayload]] = {}
+        package_schemas: dict[str, ElementSchemaMap] = {}
         for version, schema in versioned_schemas:
-            package, schemas = self._single_element_package(provider_token, version=version, schema=schema.copy())
+            package, schemas = self._single_element_package(provider_token, version=version, schema=dict(schema))
             packages.append(package)
             package_schemas[version] = schemas
         latest_version = packages[-1].version if packages else None
@@ -114,7 +115,7 @@ class SchemaRegistryToolingMixin:
     def cluster_samples(
         self,
         provider: str | Provider,
-        samples: list[SchemaSample],
+        samples: Sequence[ObservedSchemaSample],
         *,
         source_paths: list[str] | None = None,
         artifact_kinds: list[str] | None = None,
@@ -188,7 +189,7 @@ class SchemaRegistryToolingMixin:
         provider: str | Provider,
         cluster_id: str,
         *,
-        samples: list[SchemaPayload] | None = None,
+        samples: Sequence[SchemaPayload] | None = None,
     ) -> str:
         provider_token = canonical_schema_provider(provider)
         manifest = self.load_cluster_manifest(provider_token)

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import pickle
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, TypeAlias, TypedDict, cast
@@ -299,7 +300,7 @@ def _attachment_provider_meta(
     return meta
 
 
-def _tool_input_payload(tool_input: dict[str, object] | None) -> ToolInputPayload:
+def _tool_input_payload(tool_input: Mapping[str, object] | None) -> ToolInputPayload:
     return cast(ToolInputPayload, dict(tool_input or {}))
 
 

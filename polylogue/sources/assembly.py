@@ -6,9 +6,10 @@ can implement for sidecar discovery and post-parse enrichment.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol, TypeAlias, TypedDict
+from typing import TYPE_CHECKING, Any, Protocol, TypeAlias, TypedDict
 
 from polylogue.types import Provider
 
@@ -17,7 +18,7 @@ from .parsers.base import ParsedConversation
 if TYPE_CHECKING:
     from .parsers.claude_index import SessionIndexEntry
 
-SidecarData: TypeAlias = dict[str, object]
+SidecarData: TypeAlias = dict[str, Any]
 
 
 class _ClaudeCodeSidecarData(TypedDict, total=False):
@@ -49,7 +50,7 @@ class ProviderAssemblySpec(Protocol):
     def enrich_conversation(
         self,
         conv: ParsedConversation,
-        sidecar_data: SidecarData,
+        sidecar_data: Mapping[str, Any],
     ) -> ParsedConversation:
         """Enrich a parsed conversation using discovered sidecar data."""
         ...

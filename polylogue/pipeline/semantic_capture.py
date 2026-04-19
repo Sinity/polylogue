@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import NotRequired, TypedDict, cast
+from collections.abc import Mapping, Sequence
+from typing import Any, NotRequired, TypedDict, cast
 
 from polylogue.lib.payload_coercion import is_payload_mapping, mapping_or_empty, optional_string
 from polylogue.lib.raw_payload_decode import JSONValue
@@ -26,7 +27,7 @@ class ThinkingTraceSummary(TypedDict):
 class ToolInvocationSummary(TypedDict, total=False):
     tool_name: str | None
     tool_id: str | None
-    input: dict[str, object]
+    input: Mapping[str, Any]
     is_file_operation: bool
     is_search_operation: bool
     is_subagent: bool
@@ -36,8 +37,8 @@ class ToolInvocationSummary(TypedDict, total=False):
 class FileChangeSummary(TypedDict):
     path: str
     operation: str
-    old_content: NotRequired[str | None]
-    new_content: NotRequired[str | None]
+    old_content: NotRequired[str]
+    new_content: NotRequired[str]
 
 
 class SubagentSpawnSummary(TypedDict):
@@ -69,7 +70,7 @@ def _summary_text(item: object) -> str:
     return _text_from_message_content(message.get("content"))
 
 
-def detect_context_compaction(item: dict[str, object]) -> ContextCompactionSummary | None:
+def detect_context_compaction(item: Mapping[str, Any]) -> ContextCompactionSummary | None:
     """Detect if a raw message item represents a context compaction event."""
     msg_type = item.get("type")
 
@@ -98,7 +99,7 @@ def detect_context_compaction(item: dict[str, object]) -> ContextCompactionSumma
     return None
 
 
-def extract_thinking_traces(content_blocks: list[dict[str, object]]) -> list[ThinkingTraceSummary]:
+def extract_thinking_traces(content_blocks: Sequence[Mapping[str, Any]]) -> list[ThinkingTraceSummary]:
     traces: list[ThinkingTraceSummary] = []
     for block in content_blocks:
         if block.get("type") != "thinking":
@@ -109,12 +110,12 @@ def extract_thinking_traces(content_blocks: list[dict[str, object]]) -> list[Thi
     return traces
 
 
-def extract_tool_invocations(content_blocks: list[dict[str, object]]) -> list[ToolInvocationSummary]:
+def extract_tool_invocations(content_blocks: Sequence[Mapping[str, Any]]) -> list[ToolInvocationSummary]:
     invocations: list[ToolInvocationSummary] = []
     for block in content_blocks:
         if block.get("type") != "tool_use":
             continue
-        input_payload = dict(mapping_or_empty(block.get("input")))
+        input_payload = mapping_or_empty(block.get("input"))
         invocation: ToolInvocationSummary = {
             "tool_name": optional_string(block.get("name")),
             "tool_id": optional_string(block.get("id")),
@@ -132,7 +133,7 @@ def extract_tool_invocations(content_blocks: list[dict[str, object]]) -> list[To
     return invocations
 
 
-def parse_git_operation(tool_invocation: ToolInvocationSummary) -> dict[str, object] | None:
+def parse_git_operation(tool_invocation: Mapping[str, Any]) -> dict[str, Any] | None:
     if tool_invocation.get("tool_name") != "Bash":
         return None
     command = optional_string(mapping_or_empty(tool_invocation.get("input")).get("command"))
@@ -141,7 +142,7 @@ def parse_git_operation(tool_invocation: ToolInvocationSummary) -> dict[str, obj
     return _parse_git_command(command)
 
 
-def extract_file_changes(tool_invocations: list[ToolInvocationSummary]) -> list[FileChangeSummary]:
+def extract_file_changes(tool_invocations: Sequence[Mapping[str, Any]]) -> list[FileChangeSummary]:
     changes: list[FileChangeSummary] = []
     for invocation in tool_invocations:
         tool_name = invocation.get("tool_name")
@@ -170,16 +171,17 @@ def extract_file_changes(tool_invocations: list[ToolInvocationSummary]) -> list[
     return changes
 
 
-def extract_subagent_spawns(tool_invocations: list[ToolInvocationSummary]) -> list[SubagentSpawnSummary]:
+def extract_subagent_spawns(tool_invocations: Sequence[Mapping[str, Any]]) -> list[SubagentSpawnSummary]:
     spawns: list[SubagentSpawnSummary] = []
     for invocation in tool_invocations:
         if invocation.get("tool_name") != "Task":
             continue
-        input_data = dict(mapping_or_empty(invocation.get("input")))
+        input_data = mapping_or_empty(invocation.get("input"))
         parsed = _parse_subagent_spawn(input_data)
+        agent_type = parsed.get("agent_type")
         spawns.append(
             {
-                "agent_type": parsed["agent_type"],
+                "agent_type": agent_type if isinstance(agent_type, str) else "general-purpose",
                 "prompt": optional_string(input_data.get("prompt")) or "",
                 "description": optional_string(parsed.get("description")),
                 "run_in_background": bool(parsed.get("run_in_background", False)),
@@ -188,8 +190,8 @@ def extract_subagent_spawns(tool_invocations: list[ToolInvocationSummary]) -> li
     return spawns
 
 
-def extract_git_operations(tool_invocations: list[ToolInvocationSummary]) -> list[dict[str, object]]:
-    operations: list[dict[str, object]] = []
+def extract_git_operations(tool_invocations: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    operations: list[dict[str, Any]] = []
     for invocation in tool_invocations:
         if git_op := parse_git_operation(invocation):
             operations.append(git_op)

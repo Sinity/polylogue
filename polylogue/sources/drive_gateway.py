@@ -137,7 +137,7 @@ class DriveServiceGateway:
 
     def _service_handle(self) -> _DriveService:
         if self._service is not None:
-            http = self._service._http
+            http = getattr(self._service, "_http", None)
             if http is not None:
                 credentials = getattr(http, "credentials", None)
                 if credentials is not None and getattr(credentials, "expired", False):

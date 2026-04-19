@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 from pydantic import BaseModel, Field, field_validator
 
 from polylogue.lib.branch_type import BranchType
@@ -27,7 +29,7 @@ class ParsedContentBlock(BaseModel):
     text: str | None = None
     tool_name: str | None = None
     tool_id: str | None = None
-    tool_input: dict[str, object] | None = None
+    tool_input: Mapping[str, object] | None = None
     media_type: str | None = None
     metadata: dict[str, object] | None = None
 

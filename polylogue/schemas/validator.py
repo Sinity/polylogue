@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Literal, Protocol, TypeAlias
+from typing import TYPE_CHECKING, Any, Literal, Protocol, TypeAlias
 
 try:
     import jsonschema
@@ -32,8 +32,8 @@ from .validator_resolution import (
 if TYPE_CHECKING:
     from polylogue.schemas.packages import SchemaResolution
 
-ValidationSchema: TypeAlias = dict[str, object]
-ValidationSample: TypeAlias = dict[str, object]
+ValidationSchema: TypeAlias = Mapping[str, Any]
+ValidationSample: TypeAlias = dict[str, Any]
 
 
 class ValidationErrorLike(Protocol):
@@ -190,10 +190,10 @@ class SchemaValidator:
         if jsonschema is None:
             raise ImportError("jsonschema not installed. Run: pip install jsonschema")
 
-        self.schema = schema
+        self.schema = dict(schema)
         self.strict = strict
         self.provider = provider
-        self._validator = Draft202012Validator(schema)
+        self._validator = Draft202012Validator(self.schema)
 
     @classmethod
     def canonical_provider(cls, provider: str | Provider) -> Provider:

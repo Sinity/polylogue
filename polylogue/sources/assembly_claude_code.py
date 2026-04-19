@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from pathlib import Path
+from typing import Any
 
 from .assembly import SidecarData
 from .parsers.base import ParsedConversation
@@ -36,7 +38,7 @@ class ClaudeCodeAssemblySpec:
     def enrich_conversation(
         self,
         conv: ParsedConversation,
-        sidecar_data: SidecarData,
+        sidecar_data: Mapping[str, Any],
     ) -> ParsedConversation:
         """Enrich a Claude Code conversation from the sessions-index sidecar."""
         data = sidecar_data.get("session_index")

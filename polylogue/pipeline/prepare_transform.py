@@ -119,7 +119,7 @@ def transform_to_records(convo: ParsedConversation, source_name: str, *, archive
                 semantic_type = (
                     None if category is ToolCategory.OTHER else SemanticBlockType.from_string(category.value)
                 )
-                tool_meta = extract_tool_metadata(block.tool_name, block.tool_input or {})
+                tool_meta = extract_tool_metadata(block.tool_name, dict(block.tool_input or {}))
                 if tool_meta is not None:
                     base = dict(block.metadata) if isinstance(block.metadata, dict) else {}
                     base.update(tool_meta)
