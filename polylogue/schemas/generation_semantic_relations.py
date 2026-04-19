@@ -2,71 +2,42 @@
 
 from __future__ import annotations
 
-from typing import Any
+from collections.abc import Mapping, Sequence
+from typing import cast, overload
 
 from polylogue.schemas.field_stats import FieldStats
+from polylogue.schemas.json_types import JSONDocument, JSONDocumentList, JSONValue
 from polylogue.schemas.relational_inference import infer_relations
+from polylogue.schemas.relational_inference_models import RelationalAnnotations
 from polylogue.schemas.semantic_inference import infer_semantic_roles, select_best_roles
 
 
-def annotate_semantic_and_relational(
-    schema: dict[str, Any],
-    field_stats: dict[str, FieldStats],
-    *,
-    artifact_kind: str | None = None,
-) -> dict[str, Any]:
-    """Attach semantic-role and relational annotations to a schema."""
-    candidates = infer_semantic_roles(field_stats, artifact_kind=artifact_kind)
-    best_roles = select_best_roles(candidates)
-    role_by_path: dict[str, tuple[str, float, dict[str, Any]]] = {}
-    for role, candidate in best_roles.items():
-        role_by_path[candidate.path] = (role, candidate.confidence, candidate.evidence)
-
-    _attach_semantic_roles(schema, role_by_path)
-    relations = infer_relations(field_stats)
-    _attach_relational_annotations(schema, relations)
-    return schema
+def _schema_node(value: JSONValue | object) -> JSONDocument | None:
+    return value if isinstance(value, dict) else None
 
 
-def _attach_semantic_roles(
-    schema: dict[str, Any],
-    role_by_path: dict[str, tuple[str, float, dict[str, Any]]],
-    *,
-    path: str = "$",
-) -> None:
-    if not isinstance(schema, dict):
-        return
-    if path in role_by_path:
-        role, confidence, evidence = role_by_path[path]
-        schema["x-polylogue-semantic-role"] = role
-        schema["x-polylogue-score"] = round(confidence, 3)
-        schema["x-polylogue-evidence"] = evidence
-
-    if "properties" in schema:
-        for prop_name, prop_schema in schema["properties"].items():
-            _attach_semantic_roles(prop_schema, role_by_path, path=f"{path}.{prop_name}")
-    if isinstance(schema.get("additionalProperties"), dict):
-        _attach_semantic_roles(schema["additionalProperties"], role_by_path, path=f"{path}.*")
-    if isinstance(schema.get("items"), dict):
-        _attach_semantic_roles(schema["items"], role_by_path, path=f"{path}[*]")
-    for keyword in ("anyOf", "oneOf", "allOf"):
-        for item in schema.get(keyword, []):
-            _attach_semantic_roles(item, role_by_path, path=path)
+def _json_value(value: object) -> JSONValue:
+    return cast(JSONValue, value)
 
 
-def _attach_relational_annotations(schema: dict[str, Any], relations: Any) -> None:
-    if relations.foreign_keys:
-        schema["x-polylogue-foreign-keys"] = [
+def _relation_payloads(
+    relations: RelationalAnnotations,
+) -> tuple[
+    JSONDocumentList,
+    JSONDocumentList,
+    JSONDocumentList,
+    JSONDocumentList,
+]:
+    return (
+        [
             {
                 "source": relation.source_path,
                 "target": relation.target_path,
                 "match_ratio": round(relation.match_ratio, 3),
             }
             for relation in relations.foreign_keys
-        ]
-
-    if relations.time_deltas:
-        schema["x-polylogue-time-deltas"] = [
+        ],
+        [
             {
                 "field_a": relation.field_a,
                 "field_b": relation.field_b,
@@ -75,19 +46,15 @@ def _attach_relational_annotations(schema: dict[str, Any], relations: Any) -> No
                 "avg_delta": round(relation.avg_delta, 1),
             }
             for relation in relations.time_deltas
-        ]
-
-    if relations.mutual_exclusions:
-        schema["x-polylogue-mutually-exclusive"] = [
+        ],
+        [
             {
                 "parent": relation.parent_path,
-                "fields": sorted(relation.field_names),
+                "fields": _json_value(sorted(relation.field_names)),
             }
             for relation in relations.mutual_exclusions
-        ]
-
-    if relations.string_lengths:
-        schema["x-polylogue-string-lengths"] = [
+        ],
+        [
             {
                 "path": relation.path,
                 "min": relation.min_length,
@@ -96,7 +63,94 @@ def _attach_relational_annotations(schema: dict[str, Any], relations: Any) -> No
                 "stddev": round(relation.stddev, 1),
             }
             for relation in relations.string_lengths
-        ]
+        ],
+    )
+
+
+@overload
+def annotate_semantic_and_relational(
+    schema: JSONDocument,
+    field_stats: Mapping[str, FieldStats],
+    *,
+    artifact_kind: str | None = None,
+) -> JSONDocument: ...
+
+
+@overload
+def annotate_semantic_and_relational(
+    schema: JSONValue,
+    field_stats: Mapping[str, FieldStats],
+    *,
+    artifact_kind: str | None = None,
+) -> JSONValue: ...
+
+
+def annotate_semantic_and_relational(
+    schema: JSONValue,
+    field_stats: Mapping[str, FieldStats],
+    *,
+    artifact_kind: str | None = None,
+) -> JSONValue:
+    """Attach semantic-role and relational annotations to a schema."""
+    schema_node = _schema_node(schema)
+    if schema_node is None:
+        return schema
+    stats_by_path = dict(field_stats)
+    candidates = infer_semantic_roles(stats_by_path, artifact_kind=artifact_kind)
+    best_roles = select_best_roles(candidates)
+    role_by_path: dict[str, tuple[str, float, JSONDocument]] = {}
+    for role, candidate in best_roles.items():
+        role_by_path[candidate.path] = (role, candidate.confidence, candidate.evidence)
+
+    _attach_semantic_roles(schema_node, role_by_path)
+    relations = infer_relations(stats_by_path)
+    _attach_relational_annotations(schema_node, relations)
+    return schema_node
+
+
+def _attach_semantic_roles(
+    schema: JSONDocument,
+    role_by_path: Mapping[str, tuple[str, float, JSONDocument]],
+    *,
+    path: str = "$",
+) -> None:
+    if path in role_by_path:
+        role, confidence, evidence = role_by_path[path]
+        schema["x-polylogue-semantic-role"] = role
+        schema["x-polylogue-score"] = round(confidence, 3)
+        schema["x-polylogue-evidence"] = evidence
+
+    properties = _schema_node(schema.get("properties"))
+    if properties is not None:
+        for prop_name, prop_schema in properties.items():
+            child_schema = _schema_node(prop_schema)
+            if child_schema is not None:
+                _attach_semantic_roles(child_schema, role_by_path, path=f"{path}.{prop_name}")
+    additional_properties = _schema_node(schema.get("additionalProperties"))
+    if additional_properties is not None:
+        _attach_semantic_roles(additional_properties, role_by_path, path=f"{path}.*")
+    items = _schema_node(schema.get("items"))
+    if items is not None:
+        _attach_semantic_roles(items, role_by_path, path=f"{path}[*]")
+    for keyword in ("anyOf", "oneOf", "allOf"):
+        keyword_items = schema.get(keyword)
+        if isinstance(keyword_items, Sequence) and not isinstance(keyword_items, (str, bytes, bytearray)):
+            for item in keyword_items:
+                child_schema = _schema_node(item)
+                if child_schema is not None:
+                    _attach_semantic_roles(child_schema, role_by_path, path=path)
+
+
+def _attach_relational_annotations(schema: JSONDocument, relations: RelationalAnnotations) -> None:
+    foreign_keys, time_deltas, mutual_exclusions, string_lengths = _relation_payloads(relations)
+    if foreign_keys:
+        schema["x-polylogue-foreign-keys"] = _json_value(foreign_keys)
+    if time_deltas:
+        schema["x-polylogue-time-deltas"] = _json_value(time_deltas)
+    if mutual_exclusions:
+        schema["x-polylogue-mutually-exclusive"] = _json_value(mutual_exclusions)
+    if string_lengths:
+        schema["x-polylogue-string-lengths"] = _json_value(string_lengths)
 
 
 __all__ = ["annotate_semantic_and_relational"]

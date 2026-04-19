@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from datetime import datetime, timezone
-from typing import Any, Protocol, TypeAlias, cast
+from typing import Protocol, TypeAlias, cast
 
 from polylogue.schemas.field_stats import _collect_field_stats
 from polylogue.schemas.generation_support import (
@@ -16,12 +16,13 @@ from polylogue.schemas.generation_support import (
     _remove_nested_required,
     collapse_dynamic_keys,
 )
+from polylogue.schemas.json_types import JSONDocument
 from polylogue.schemas.observation import ProviderConfig
 from polylogue.schemas.redaction_report import SchemaReport
 from polylogue.schemas.shape_fingerprint import _structure_fingerprint
 
-SchemaPayload: TypeAlias = Mapping[str, Any]
-MutableSchemaPayload: TypeAlias = dict[str, Any]
+SchemaPayload: TypeAlias = JSONDocument
+MutableSchemaPayload: TypeAlias = JSONDocument
 
 
 class PrivacyConfigLike(Protocol):
