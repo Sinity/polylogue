@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import TypeAlias
 
 from polylogue.lib.provider_identity import CORE_RUNTIME_PROVIDERS
 from polylogue.lib.raw_payload import build_raw_payload_envelope
@@ -24,12 +24,18 @@ def _format_malformed_jsonl_error(*, malformed_lines: int, malformed_detail: str
     return message
 
 
+VerificationRow: TypeAlias = tuple[str, str, str | None, str]
+VerificationSqlParam: TypeAlias = str | int
+VerificationSqlParams: TypeAlias = tuple[VerificationSqlParam, ...]
+VerificationUpdate: TypeAlias = tuple[str, str, str, str | None]
+
+
 # ---------------------------------------------------------------------------
 # Row iteration helpers
 # ---------------------------------------------------------------------------
 
 
-def verification_provider_clause(providers: list[str]) -> tuple[str, tuple[Any, ...]]:
+def verification_provider_clause(providers: list[str]) -> tuple[str, tuple[str, ...]]:
     provider_placeholders = ",".join("?" for _ in providers)
     runtime_placeholders = ",".join("?" for _ in CORE_RUNTIME_PROVIDERS)
     clause = (
@@ -37,8 +43,17 @@ def verification_provider_clause(providers: list[str]) -> tuple[str, tuple[Any, 
         f"OR (payload_provider IS NULL AND provider_name IN ({provider_placeholders})) "
         f"OR (payload_provider IS NULL AND provider_name NOT IN ({runtime_placeholders}))"
     )
-    params: tuple[Any, ...] = (*providers, *providers, *CORE_RUNTIME_PROVIDERS)
+    params: tuple[str, ...] = (*providers, *providers, *CORE_RUNTIME_PROVIDERS)
     return clause, params
+
+
+def _row_payload_data(row: sqlite3.Row) -> VerificationRow:
+    return (
+        str(row["raw_id"]),
+        str(row["provider_name"]),
+        row["payload_provider"],
+        str(row["source_path"] or ""),
+    )
 
 
 def iter_verification_rows(
@@ -50,7 +65,7 @@ def iter_verification_rows(
 ) -> tuple[int | None, int, Iterator[sqlite3.Row]]:
     bounded_limit, bounded_offset = bounded_window(record_limit, record_offset)
     provider_where = ""
-    where_params: tuple[Any, ...] = ()
+    where_params: tuple[str, ...] = ()
     if providers:
         provider_where, where_params = verification_provider_clause(providers)
 
@@ -81,12 +96,12 @@ def iter_verification_rows(
 
             if provider_where:
                 query = base_query + f"WHERE rowid > ? AND ({provider_where}) ORDER BY rowid LIMIT ?"
-                params: tuple[Any, ...] = (last_rowid, *where_params, batch_size)
+                query_params: VerificationSqlParams = (last_rowid, *where_params, batch_size)
             else:
                 query = base_query + "WHERE rowid > ? ORDER BY rowid LIMIT ?"
-                params = (last_rowid, batch_size)
+                query_params = (last_rowid, batch_size)
 
-            batch = conn.execute(query, params).fetchall()
+            batch = conn.execute(query, query_params).fetchall()
             if not batch:
                 break
 
@@ -99,9 +114,59 @@ def iter_verification_rows(
 
 
 def resolve_candidate_provider(row: sqlite3.Row) -> tuple[str, str | None]:
-    raw_provider = str(row["provider_name"])
-    stored_payload_provider = row["payload_provider"]
+    _, raw_provider, stored_payload_provider, _ = _row_payload_data(row)
     return str(stored_payload_provider or raw_provider), stored_payload_provider
+
+
+def _provider_matches_filter(provider_filter: set[str], provider: str) -> bool:
+    return not provider_filter or provider in provider_filter
+
+
+def _report_progress(
+    callback: Callable[[int], object] | None,
+    steps: int = 1,
+) -> None:
+    if callback is not None:
+        callback(steps)
+
+
+def _track_selected_row(
+    *,
+    provider_filter: set[str],
+    provider: str,
+    total_records: int,
+    stats_by_provider: dict[str, ProviderSchemaVerification],
+) -> tuple[int, ProviderSchemaVerification] | None:
+    if not _provider_matches_filter(provider_filter, provider):
+        return None
+
+    total_records += 1
+    provider_stats = _provider_stats(stats_by_provider=stats_by_provider, provider=provider)
+    provider_stats.total_records += 1
+    return total_records, provider_stats
+
+
+def _provider_stats(
+    *, stats_by_provider: dict[str, ProviderSchemaVerification], provider: str
+) -> ProviderSchemaVerification:
+    return stats_by_provider.setdefault(provider, ProviderSchemaVerification(provider=provider))
+
+
+def _record_decode_error(
+    *,
+    raw_id: str,
+    provider: str,
+    payload_provider: str | None,
+    reason: str,
+    stats_by_provider: dict[str, ProviderSchemaVerification],
+    quarantine_updates: list[VerificationUpdate],
+    quarantine_malformed: bool,
+) -> None:
+    provider_stats = _provider_stats(stats_by_provider=stats_by_provider, provider=provider)
+    provider_stats.decode_errors += 1
+    if quarantine_malformed:
+        provider_stats.quarantined_records += 1
+        quarantine_updates.append((raw_id, reason, provider, payload_provider))
 
 
 # ---------------------------------------------------------------------------
@@ -112,7 +177,7 @@ def resolve_candidate_provider(row: sqlite3.Row) -> tuple[str, str | None]:
 def apply_quarantine_updates(
     conn: sqlite3.Connection,
     *,
-    updates: list[tuple[str, str, str, str | None]],
+    updates: list[VerificationUpdate],
 ) -> None:
     validated_at = datetime.now(tz=timezone.utc).isoformat()
     for raw_id, reason, provider, payload_provider in updates:
@@ -164,7 +229,7 @@ def verify_raw_corpus(
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     try:
-        quarantine_updates: list[tuple[str, str, str, str | None]] = []
+        quarantine_updates: list[VerificationUpdate] = []
         _ignored_limit, _ignored_offset, rows = iter_verification_rows(
             conn,
             providers=request.providers,
@@ -173,16 +238,15 @@ def verify_raw_corpus(
         )
         blob_store = get_blob_store()
         for row in rows:
-            candidate_provider, stored_payload_provider = resolve_candidate_provider(row)
-            raw_provider = str(row["provider_name"])
+            raw_id, raw_provider, stored_payload_provider, source_path = _row_payload_data(row)
+            candidate_provider = str(stored_payload_provider or raw_provider)
 
-            raw_id = str(row["raw_id"])
             raw_source = blob_store.blob_path(raw_id)
 
             try:
                 envelope = build_raw_payload_envelope(
                     raw_source,
-                    source_path=str(row["source_path"] or ""),
+                    source_path=source_path,
                     fallback_provider=raw_provider,
                     payload_provider=stored_payload_provider,
                     jsonl_dict_only=True,
@@ -191,62 +255,69 @@ def verify_raw_corpus(
                 malformed_lines = envelope.malformed_jsonl_lines
                 malformed_detail = envelope.malformed_jsonl_detail
             except Exception as exc:
-                if provider_filter and candidate_provider not in provider_filter:
-                    continue
-                total_records += 1
-                provider_stats = stats_by_provider.setdefault(
-                    candidate_provider,
-                    ProviderSchemaVerification(provider=candidate_provider),
+                tracked_row = _track_selected_row(
+                    provider_filter=provider_filter,
+                    provider=candidate_provider,
+                    total_records=total_records,
+                    stats_by_provider=stats_by_provider,
                 )
-                provider_stats.total_records += 1
-                provider_stats.decode_errors += 1
-                if request.quarantine_malformed:
-                    raw_id = str(row["raw_id"])
-                    reason = f"Unable to decode payload: {exc}"
-                    quarantine_updates.append((raw_id, reason, candidate_provider, stored_payload_provider))
-                    provider_stats.quarantined_records += 1
-                if request.progress_callback is not None:
-                    request.progress_callback(1)
+                if tracked_row is None:
+                    continue
+                total_records, provider_stats = tracked_row
+                _record_decode_error(
+                    raw_id=raw_id,
+                    provider=candidate_provider,
+                    payload_provider=stored_payload_provider,
+                    reason=f"Unable to decode payload: {exc}",
+                    stats_by_provider=stats_by_provider,
+                    quarantine_updates=quarantine_updates,
+                    quarantine_malformed=request.quarantine_malformed,
+                )
+                _report_progress(request.progress_callback)
                 continue
 
             actual_provider = envelope.provider
-            if provider_filter and actual_provider not in provider_filter:
-                continue
-            total_records += 1
-            provider_stats = stats_by_provider.setdefault(
-                actual_provider,
-                ProviderSchemaVerification(provider=actual_provider),
+            tracked_row = _track_selected_row(
+                provider_filter=provider_filter,
+                provider=actual_provider,
+                total_records=total_records,
+                stats_by_provider=stats_by_provider,
             )
-            provider_stats.total_records += 1
+            if tracked_row is None:
+                continue
+            total_records, provider_stats = tracked_row
             if not envelope.artifact.schema_eligible:
                 provider_stats.skipped_no_schema += 1
-                if request.progress_callback is not None:
-                    request.progress_callback(1)
+                _report_progress(request.progress_callback)
                 continue
             if malformed_lines:
-                provider_stats.decode_errors += 1
                 if request.quarantine_malformed:
-                    raw_id = str(row["raw_id"])
-                    reason = _format_malformed_jsonl_error(
-                        malformed_lines=malformed_lines,
-                        malformed_detail=malformed_detail,
+                    _record_decode_error(
+                        raw_id=raw_id,
+                        provider=actual_provider,
+                        payload_provider=actual_provider,
+                        reason=_format_malformed_jsonl_error(
+                            malformed_lines=malformed_lines,
+                            malformed_detail=malformed_detail,
+                        ),
+                        stats_by_provider=stats_by_provider,
+                        quarantine_updates=quarantine_updates,
+                        quarantine_malformed=request.quarantine_malformed,
                     )
-                    quarantine_updates.append((raw_id, reason, actual_provider, actual_provider))
-                    provider_stats.quarantined_records += 1
-                if request.progress_callback is not None:
-                    request.progress_callback(1)
+                else:
+                    provider_stats.decode_errors += 1
+                _report_progress(request.progress_callback)
                 continue
 
             try:
                 validator = SchemaValidator.for_payload(
                     actual_provider,
                     payload,
-                    source_path=str(row["source_path"] or ""),
+                    source_path=source_path,
                 )
             except (FileNotFoundError, ImportError):
                 provider_stats.skipped_no_schema += 1
-                if request.progress_callback is not None:
-                    request.progress_callback(1)
+                _report_progress(request.progress_callback)
                 continue
 
             samples = validator.validation_samples(
@@ -255,8 +326,7 @@ def verify_raw_corpus(
             )
             if not samples:
                 provider_stats.valid_records += 1
-                if request.progress_callback is not None:
-                    request.progress_callback(1)
+                _report_progress(request.progress_callback)
                 continue
 
             invalid_found = False
@@ -275,8 +345,7 @@ def verify_raw_corpus(
             if drift_found:
                 provider_stats.drift_records += 1
 
-            if request.progress_callback is not None:
-                request.progress_callback(1)
+            _report_progress(request.progress_callback)
 
         if quarantine_updates:
             apply_quarantine_updates(conn, updates=quarantine_updates)
