@@ -5,27 +5,82 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+from collections.abc import Mapping
+from enum import Enum
 from pathlib import Path
+from typing import IO
 
-from polylogue.site.models import ConversationIndex, SiteConfig
+from polylogue.site.models import ConversationIndex, SearchDocument, SiteConfig
 
 
-def build_search_document(conversation: ConversationIndex) -> dict[str, str]:
-    """Build a JSON-search entry for a site index conversation."""
-    return {
-        "id": conversation.id,
-        "title": conversation.title,
-        "provider": conversation.provider,
-        "preview": conversation.preview,
-        "path": conversation.path,
-    }
+class SearchBuildStatus(str, Enum):
+    """Materialization state for static-site search assets."""
+
+    DISABLED = "disabled"
+    JSON_INDEX_WRITTEN = "json_index_written"
+    BUILT = "built"
+    FAILED = "failed"
+    PENDING = "pending"
+
+    def __str__(self) -> str:
+        return self.value
+
+
+def build_search_document(conversation: ConversationIndex) -> SearchDocument:
+    """Build the canonical search payload for one indexed conversation."""
+    return SearchDocument.from_conversation(conversation)
+
+
+class SearchIndexWriter:
+    """Incremental JSON search-index writer for site scans."""
+
+    def __init__(self, output_dir: Path, config: SiteConfig) -> None:
+        self._enabled = config.enable_search and not config.uses_pagefind
+        self._path = output_dir / "search-index.json"
+        self._handle: IO[str] | None = None
+        self._wrote_entry = False
+
+    @property
+    def enabled(self) -> bool:
+        return self._enabled
+
+    def open(self) -> None:
+        """Open the JSON array stream when this build writes a search index."""
+        if not self._enabled:
+            return
+        self._handle = self._path.open("w", encoding="utf-8")
+        self._handle.write("[")
+
+    def append(self, document: SearchDocument) -> None:
+        """Append one document to the open JSON array."""
+        if self._handle is None:
+            return
+        if self._wrote_entry:
+            self._handle.write(",")
+        json.dump(document.to_payload(), self._handle)
+        self._wrote_entry = True
+
+    def finish(self) -> None:
+        """Close the JSON array stream after a successful scan."""
+        if self._handle is None:
+            return
+        self._handle.write("]")
+        self._handle.close()
+        self._handle = None
+
+    def abort(self) -> None:
+        """Discard a partial search index after a failed scan."""
+        if self._handle is not None:
+            self._handle.close()
+            self._handle = None
+        self._path.unlink(missing_ok=True)
 
 
 def render_search_markup(config: SiteConfig) -> str:
     """Render the search UI snippet for index pages."""
     if not config.enable_search:
         return ""
-    if config.search_provider == "pagefind":
+    if config.uses_pagefind:
         return """
         <div id="search" style="margin-bottom: 2rem;"></div>
         <link href="/_pagefind/pagefind-ui.css" rel="stylesheet">
@@ -99,30 +154,42 @@ def render_search_markup(config: SiteConfig) -> str:
 """
 
 
-def generate_pagefind_config(output_dir: Path) -> str:
-    """Generate pagefind config and opportunistically build the index."""
-    config = {
+def _pagefind_config(output_dir: Path) -> Mapping[str, str]:
+    return {
         "site": str(output_dir),
         "output_subdir": "_pagefind",
     }
+
+
+def generate_pagefind_config(output_dir: Path) -> SearchBuildStatus:
+    """Generate pagefind config and opportunistically build the index."""
     (output_dir / "pagefind.json").write_text(
-        json.dumps(config, indent=2),
+        json.dumps(_pagefind_config(output_dir), indent=2),
         encoding="utf-8",
     )
 
     pagefind_bin = shutil.which("pagefind")
-    if pagefind_bin:
-        try:
-            subprocess.run(
-                [pagefind_bin, "--site", str(output_dir)],
-                capture_output=True,
-                text=True,
-                timeout=300,
-                check=True,
-            )
-            return "built"
-        except subprocess.CalledProcessError:
-            return "failed"
-        except FileNotFoundError:
-            return "pending"
-    return "pending"
+    if pagefind_bin is None:
+        return SearchBuildStatus.PENDING
+    try:
+        subprocess.run(
+            [pagefind_bin, "--site", str(output_dir)],
+            capture_output=True,
+            text=True,
+            timeout=300,
+            check=True,
+        )
+    except subprocess.CalledProcessError:
+        return SearchBuildStatus.FAILED
+    except FileNotFoundError:
+        return SearchBuildStatus.PENDING
+    return SearchBuildStatus.BUILT
+
+
+__all__ = [
+    "SearchBuildStatus",
+    "SearchIndexWriter",
+    "build_search_document",
+    "generate_pagefind_config",
+    "render_search_markup",
+]

@@ -3,32 +3,51 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from polylogue.publication import OutputManifest
 from polylogue.showcase.runner import ShowcaseResult
 
 from .showcase_report_payloads import generate_json_report
-from .showcase_report_text import (
-    generate_cookbook,
-    generate_showcase_markdown,
-    generate_summary,
-)
+from .showcase_report_text import generate_cookbook, generate_showcase_markdown, generate_summary
 
 
-def generate_manifest(
-    result: ShowcaseResult,
-    *,
-    include_hashes: bool = True,
-) -> dict[str, Any]:
-    """Produce a manifest with file hashes for all generated artifacts."""
+@dataclass(frozen=True, slots=True)
+class ShowcaseReportArtifact:
+    """One generated showcase report artifact."""
+
+    relative_path: str
+    content: str
+
+    def write_to(self, output_dir: Path) -> None:
+        (output_dir / self.relative_path).write_text(self.content)
+
+
+def scan_manifest(result: ShowcaseResult, *, include_hashes: bool = True) -> OutputManifest:
+    """Produce the typed manifest for all generated showcase artifacts."""
     if not result.output_dir:
-        return OutputManifest().model_dump(mode="json")
+        return OutputManifest()
     return OutputManifest.scan(
         result.output_dir,
         include_hashes=include_hashes,
         exclude_paths={"showcase-manifest.json"},
-    ).model_dump(mode="json", exclude_none=True)
+    )
+
+
+def generate_manifest(result: ShowcaseResult, *, include_hashes: bool = True) -> dict[str, Any]:
+    """Produce a JSON-serializable manifest payload for showcase artifacts."""
+    return scan_manifest(result, include_hashes=include_hashes).model_dump(mode="json", exclude_none=True)
+
+
+def _report_artifacts(result: ShowcaseResult) -> tuple[ShowcaseReportArtifact, ...]:
+    return (
+        ShowcaseReportArtifact("showcase-summary.txt", generate_summary(result)),
+        ShowcaseReportArtifact("showcase-report.json", generate_json_report(result)),
+        ShowcaseReportArtifact("showcase-cookbook.md", generate_cookbook(result)),
+        ShowcaseReportArtifact("showcase-session.md", generate_showcase_markdown(result)),
+    )
 
 
 def save_reports(result: ShowcaseResult) -> None:
@@ -36,10 +55,13 @@ def save_reports(result: ShowcaseResult) -> None:
     if not result.output_dir:
         return
 
-    out = result.output_dir
-    (out / "showcase-summary.txt").write_text(generate_summary(result))
-    (out / "showcase-report.json").write_text(generate_json_report(result))
-    (out / "showcase-cookbook.md").write_text(generate_cookbook(result))
-    (out / "showcase-session.md").write_text(generate_showcase_markdown(result))
-    manifest = generate_manifest(result, include_hashes=True)
-    (out / "showcase-manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True))
+    output_dir = result.output_dir
+    for artifact in _report_artifacts(result):
+        artifact.write_to(output_dir)
+    manifest = scan_manifest(result, include_hashes=True)
+    (output_dir / "showcase-manifest.json").write_text(
+        json.dumps(manifest.model_dump(mode="json", exclude_none=True), indent=2, sort_keys=True)
+    )
+
+
+__all__ = ["ShowcaseReportArtifact", "generate_manifest", "save_reports", "scan_manifest"]

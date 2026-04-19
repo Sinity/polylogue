@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, overload
 
 from polylogue.lib.provider_identity import (
     CORE_RUNTIME_PROVIDERS,
@@ -16,6 +17,7 @@ from polylogue.logging import get_logger
 from polylogue.paths import db_path as archive_db_path
 from polylogue.schemas.observation import (
     ProviderConfig,
+    SchemaUnit,
     extract_schema_units_from_payload,
     resolve_provider_config,
 )
@@ -24,8 +26,11 @@ from polylogue.types import Provider
 
 logger = get_logger(__name__)
 
+SchemaRow = tuple[str | None, str | None, str | None, str, str | None, str | None]
+SchemaSample = dict[str, Any]
 
-def _sample_provider_where_clause(provider_name: str | Provider) -> tuple[str, tuple[Any, ...]]:
+
+def _sample_provider_where_clause(provider_name: str | Provider) -> tuple[str, tuple[str, ...]]:
     provider_token = str(Provider.from_string(provider_name))
     runtime_placeholders = ",".join("?" for _ in CORE_RUNTIME_PROVIDERS)
     clause = (
@@ -33,12 +38,23 @@ def _sample_provider_where_clause(provider_name: str | Provider) -> tuple[str, t
         "OR (payload_provider IS NULL AND provider_name = ?) "
         f"OR (payload_provider IS NULL AND provider_name NOT IN ({runtime_placeholders}))"
     )
-    params: tuple[Any, ...] = (
+    params: tuple[str, ...] = (
         provider_token,
         provider_token,
         *CORE_RUNTIME_PROVIDERS,
     )
     return clause, params
+
+
+def _coerce_schema_row(row: sqlite3.Row) -> SchemaRow:
+    return (
+        row[0],
+        row[1],
+        row[2],
+        row[3],
+        row[4],
+        row[5],
+    )
 
 
 def _iter_schema_units_from_db(
@@ -48,7 +64,7 @@ def _iter_schema_units_from_db(
     config: ProviderConfig,
     max_samples: int | None = None,
     full_corpus: bool = False,
-) -> Any:
+) -> Iterator[SchemaUnit]:
     """Yield clusterable schema units from raw_conversations."""
     provider_name = Provider.from_string(provider_name)
     blob_store = get_blob_store()
@@ -70,17 +86,10 @@ def _iter_schema_units_from_db(
             if not rows:
                 break
             for row in rows:
-                # row indices: 0=source_path, 1=provider_name, 2=payload_provider,
-                #              3=raw_id, 4=file_mtime, 5=acquired_at
-                source_path = row[0]
-                provider_name_col = row[1]
-                payload_provider_col = row[2]
-                raw_id = row[3]
-                file_mtime = row[4]
-                acquired_at = row[5]
-
-                # Load raw content from blob store.
-                raw_content: Any = blob_store.blob_path(raw_id)
+                source_path, provider_name_col, payload_provider_col, raw_id, file_mtime, acquired_at = (
+                    _coerce_schema_row(row)
+                )
+                raw_content = blob_store.blob_path(raw_id)
 
                 if config.sample_granularity == "record":
                     runtime_provider = canonical_runtime_provider(payload_provider_col or provider_name_col)
@@ -120,7 +129,7 @@ def _iter_schema_units_from_db(
                     envelope = sampling_root.build_raw_payload_envelope(
                         raw_content,
                         source_path=source_path,
-                        fallback_provider=provider_name_col,
+                        fallback_provider=provider_name_col or str(provider_name),
                         payload_provider=payload_provider_col,
                         jsonl_dict_only=config.sample_granularity == "record",
                     )
@@ -141,13 +150,33 @@ def _iter_schema_units_from_db(
         conn.close()
 
 
+@overload
+def _iter_samples_from_db(
+    provider_name: Provider,
+    *,
+    db_path: Path,
+    config: ProviderConfig,
+    with_conv_ids: Literal[False] = False,
+) -> Iterator[SchemaSample]: ...
+
+
+@overload
+def _iter_samples_from_db(
+    provider_name: Provider,
+    *,
+    db_path: Path,
+    config: ProviderConfig,
+    with_conv_ids: Literal[True],
+) -> Iterator[tuple[SchemaSample, str | None]]: ...
+
+
 def _iter_samples_from_db(
     provider_name: Provider,
     *,
     db_path: Path,
     config: ProviderConfig,
     with_conv_ids: bool = False,
-) -> Any:
+) -> Iterator[SchemaSample | tuple[SchemaSample, str | None]]:
     """Yield individual sample dicts from the database."""
     provider_name = Provider.from_string(provider_name)
     for unit in _iter_schema_units_from_db(provider_name, db_path=db_path, config=config):

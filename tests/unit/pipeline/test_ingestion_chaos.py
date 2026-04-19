@@ -91,6 +91,11 @@ def _iter_jsonl_stream(data: bytes, name: str = "test.jsonl") -> list[Any]:
     return list(_iter_json_stream(BytesIO(data), name))
 
 
+def _as_record(value: Any) -> dict[str, Any]:
+    assert isinstance(value, dict)
+    return value
+
+
 # ===========================================================================
 # E1-E2: Large-batch partial-corruption tests
 # ===========================================================================
@@ -126,7 +131,7 @@ class TestLargeBatchMalformedJson:
         corrupted = corrupt_line_malformed_json(lines, self.CORRUPT_INDEX)
         data = _jsonl_bytes(corrupted)
 
-        parsed = _iter_jsonl_stream(data)
+        parsed = [_as_record(record) for record in _iter_jsonl_stream(data)]
         assert all(record.get("type") == "message" for record in parsed)
 
 
@@ -151,7 +156,7 @@ class TestLargeBatchTruncatedLine:
         corrupted = corrupt_line_truncated(lines, self.CORRUPT_INDEX)
         data = _jsonl_bytes(corrupted)
 
-        parsed = _iter_jsonl_stream(data)
+        parsed = [_as_record(record) for record in _iter_jsonl_stream(data)]
         assert all(isinstance(r, dict) and "type" in r for r in parsed)
 
 
@@ -220,7 +225,7 @@ class TestLargeBatchWrongEnvelope:
         corrupted = corrupt_line_wrong_envelope(lines, self.CORRUPT_INDEX)
         data = _jsonl_bytes(corrupted)
 
-        parsed = _iter_jsonl_stream(data)
+        parsed = [_as_record(record) for record in _iter_jsonl_stream(data)]
         # Exactly one record should lack the 'type' field
         records_without_type = [r for r in parsed if "type" not in r]
         assert len(records_without_type) == 1
@@ -369,6 +374,7 @@ class TestDecodeRawPayloadCorruption:
             fallback_provider="codex",
         )
         assert envelope.malformed_jsonl_lines == 5
+        assert isinstance(envelope.payload, list)
         assert len(envelope.payload) == 95
 
     def test_bad_utf8_lines_are_counted_and_salvaged(self, tmp_path: Any) -> None:
@@ -407,7 +413,8 @@ class TestTimestampEpochNearZero:
         patterns = generate_timestamp_patterns()
         records = patterns["epoch_near_zero"]
         for record in records:
-            ts = record["timestamp"]
+            cast_record = _as_record(record)
+            ts = cast_record["timestamp"]
             result = parse_timestamp(ts)
             assert result is not None, f"Failed to parse timestamp: {ts}"
             assert isinstance(result, datetime)
@@ -437,7 +444,8 @@ class TestTimestampY2K38:
         patterns = generate_timestamp_patterns()
         records = patterns["y2038_adjacent"]
         for record in records:
-            ts = record["timestamp"]
+            cast_record = _as_record(record)
+            ts = cast_record["timestamp"]
             result = parse_timestamp(ts)
             assert result is not None, f"Failed to parse timestamp: {ts}"
             assert isinstance(result, datetime)
@@ -471,7 +479,8 @@ class TestTimestampFarFuture:
         patterns = generate_timestamp_patterns()
         records = patterns["far_future"]
         for record in records:
-            ts = record["timestamp"]
+            cast_record = _as_record(record)
+            ts = cast_record["timestamp"]
             result = parse_timestamp(ts)
             assert result is not None, f"Failed to parse timestamp: {ts}"
             assert isinstance(result, datetime)
@@ -501,7 +510,8 @@ class TestTimestampMixedFormats:
         records = patterns["mixed_formats"]
         parsed_timestamps = []
         for record in records:
-            ts = record["timestamp"]
+            cast_record = _as_record(record)
+            ts = cast_record["timestamp"]
             result = parse_timestamp(ts)
             assert result is not None, f"Failed to parse timestamp: {ts}"
             parsed_timestamps.append(result)
@@ -555,7 +565,8 @@ class TestTimestampMissing:
         records = patterns["missing_timestamps"]
         results = []
         for record in records:
-            ts = record.get("timestamp")  # Key may be absent
+            cast_record = _as_record(record)
+            ts = cast_record.get("timestamp")  # Key may be absent
             results.append(parse_timestamp(ts))
 
         # First record has timestamp
@@ -615,7 +626,7 @@ class TestTimestampPatternsInJsonl:
         lines = [json.dumps(r, separators=(",", ":")) for r in records]
         data = _jsonl_bytes(lines)
 
-        parsed = _iter_jsonl_stream(data)
+        parsed = [_as_record(record) for record in _iter_jsonl_stream(data)]
         assert len(parsed) == len(records)
         for record in parsed:
             ts = parse_timestamp(record["timestamp"])
@@ -629,7 +640,7 @@ class TestTimestampPatternsInJsonl:
         lines = [json.dumps(r, separators=(",", ":")) for r in records]
         data = _jsonl_bytes(lines)
 
-        parsed = _iter_jsonl_stream(data)
+        parsed = [_as_record(record) for record in _iter_jsonl_stream(data)]
         assert len(parsed) == len(records)
         for record in parsed:
             ts = parse_timestamp(record["timestamp"])
@@ -643,7 +654,7 @@ class TestTimestampPatternsInJsonl:
         lines = [json.dumps(r, separators=(",", ":")) for r in records]
         data = _jsonl_bytes(lines)
 
-        parsed = _iter_jsonl_stream(data)
+        parsed = [_as_record(record) for record in _iter_jsonl_stream(data)]
         assert len(parsed) == len(records)
         for record in parsed:
             ts = parse_timestamp(record["timestamp"])
@@ -656,7 +667,7 @@ class TestTimestampPatternsInJsonl:
         lines = [json.dumps(r, separators=(",", ":")) for r in records]
         data = _jsonl_bytes(lines)
 
-        parsed = _iter_jsonl_stream(data)
+        parsed = [_as_record(record) for record in _iter_jsonl_stream(data)]
         assert len(parsed) == len(records)
         for record in parsed:
             ts = parse_timestamp(record["timestamp"])
@@ -669,7 +680,7 @@ class TestTimestampPatternsInJsonl:
         lines = [json.dumps(r, separators=(",", ":")) for r in records]
         data = _jsonl_bytes(lines)
 
-        parsed = _iter_jsonl_stream(data)
+        parsed = [_as_record(record) for record in _iter_jsonl_stream(data)]
         assert len(parsed) == len(records)
         # Only records with timestamps should parse; missing should be None
         timestamps = [parse_timestamp(r.get("timestamp")) for r in parsed]

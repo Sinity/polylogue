@@ -2,19 +2,22 @@
 
 from __future__ import annotations
 
-from typing import Any
+from collections.abc import Mapping
+from typing import Any, TypeAlias
 
 from polylogue.lib.viewports import ToolCategory, classify_tool
 
+ToolInputScalar: TypeAlias = str | int | float | bool | None
+ToolInputPayload: TypeAlias = Mapping[str, Any]
+ToolMetadata: TypeAlias = dict[str, Any]
 
-def extract_tool_metadata(tool_name: str, tool_input: dict[str, Any]) -> dict[str, Any] | None:
-    """Return structured metadata dict for a tool_use block, or None."""
+
+def extract_tool_metadata(tool_name: str, tool_input: ToolInputPayload) -> ToolMetadata | None:
+    """Return structured metadata for a parsed tool-use block."""
     category = classify_tool(tool_name, tool_input)
     if category == ToolCategory.GIT:
-        cmd = tool_input.get("command", "")
-        if isinstance(cmd, str):
-            return _parse_git_command(cmd)
-        return None
+        command = _payload_string(tool_input, "command")
+        return _parse_git_command(command) if command is not None else None
     if category == ToolCategory.SUBAGENT:
         return _parse_subagent_spawn(tool_input)
     if category == ToolCategory.AGENT:
@@ -26,122 +29,144 @@ def extract_tool_metadata(tool_name: str, tool_input: dict[str, Any]) -> dict[st
     return None
 
 
-def _parse_git_command(cmd: str) -> dict[str, Any]:
-    parts = cmd.strip().split()
-    if len(parts) < 2:
-        return {"full_command": cmd}
+def _payload_string(tool_input: ToolInputPayload, key: str) -> str | None:
+    value = tool_input.get(key)
+    return value if isinstance(value, str) and value else None
 
-    git_cmd = parts[1]
-    result: dict[str, Any] = {
-        "command": git_cmd,
-        "full_command": cmd,
+
+def _payload_list(tool_input: ToolInputPayload, key: str) -> list[Any] | None:
+    value = tool_input.get(key)
+    return value if isinstance(value, list) else None
+
+
+def _quoted_flag_value(command: str, flag: str) -> str | None:
+    marker = f"{flag} "
+    start = command.find(marker)
+    if start < 0:
+        return None
+    remaining = command[start + len(marker) :].lstrip()
+    if not remaining:
+        return None
+    quote = remaining[0]
+    if quote not in {'"', "'"}:
+        return None
+    end_quote = remaining.find(quote, 1)
+    if end_quote <= 0:
+        return None
+    return remaining[1:end_quote]
+
+
+def _parse_git_command(command: str) -> ToolMetadata:
+    parts = command.strip().split()
+    if len(parts) < 2:
+        return {"full_command": command}
+
+    git_command = parts[1]
+    metadata: ToolMetadata = {
+        "command": git_command,
+        "full_command": command,
     }
 
-    if git_cmd == "commit":
-        for i, part in enumerate(parts):
-            if part == "-m" and i + 1 < len(parts):
-                msg_start = cmd.find("-m") + 2
-                if msg_start > 2:
-                    remaining = cmd[msg_start:].strip()
-                    if remaining.startswith('"'):
-                        end_quote = remaining.find('"', 1)
-                        if end_quote > 0:
-                            result["message"] = remaining[1:end_quote]
-                    elif remaining.startswith("'"):
-                        end_quote = remaining.find("'", 1)
-                        if end_quote > 0:
-                            result["message"] = remaining[1:end_quote]
+    if git_command == "commit":
+        message = _quoted_flag_value(command, "-m")
+        if message is not None:
+            metadata["message"] = message
+        return metadata
 
-    elif git_cmd in ("checkout", "switch"):
+    if git_command in {"checkout", "switch"}:
         for part in parts[2:]:
             if not part.startswith("-"):
-                result["branch"] = part
+                metadata["branch"] = part
                 break
+        return metadata
 
-    elif git_cmd == "push":
-        non_flags = [p for p in parts[2:] if not p.startswith("-")]
+    if git_command == "push":
+        non_flags = [part for part in parts[2:] if not part.startswith("-")]
         if len(non_flags) >= 2:
-            result["remote"] = non_flags[0]
-            result["branch"] = non_flags[1]
+            metadata["remote"] = non_flags[0]
+            metadata["branch"] = non_flags[1]
         elif len(non_flags) == 1:
-            result["remote"] = non_flags[0]
+            metadata["remote"] = non_flags[0]
+        return metadata
 
-    elif git_cmd in ("add", "rm"):
-        result["files"] = [p for p in parts[2:] if not p.startswith("-")]
+    if git_command in {"add", "rm"}:
+        metadata["files"] = [part for part in parts[2:] if not part.startswith("-")]
+    return metadata
 
-    return result
 
-
-def _parse_subagent_spawn(tool_input: dict[str, Any]) -> dict[str, Any]:
-    prompt = tool_input.get("prompt", "")
-    return {
-        "agent_type": tool_input.get("subagent_type", "general-purpose"),
-        "description": tool_input.get("description"),
-        "prompt_snippet": prompt[:200] if isinstance(prompt, str) else None,
-        "run_in_background": tool_input.get("run_in_background", False),
+def _parse_subagent_spawn(tool_input: ToolInputPayload) -> ToolMetadata:
+    prompt = _payload_string(tool_input, "prompt")
+    metadata: ToolMetadata = {
+        "agent_type": _payload_string(tool_input, "subagent_type") or "general-purpose",
+        "run_in_background": bool(tool_input.get("run_in_background", False)),
     }
+    description = _payload_string(tool_input, "description")
+    if description is not None:
+        metadata["description"] = description
+    if prompt is not None:
+        metadata["prompt_snippet"] = prompt[:200]
+    return metadata
 
 
-def _extract_file_paths(tool_name: str, tool_input: dict[str, Any]) -> dict[str, Any] | None:
-    path = tool_input.get("file_path") or tool_input.get("path")
-    if not path:
+def _extract_file_paths(tool_name: str, tool_input: ToolInputPayload) -> ToolMetadata | None:
+    path = _payload_string(tool_input, "file_path") or _payload_string(tool_input, "path")
+    if path is None:
         return None
 
-    result: dict[str, Any] = {"path": path}
-
+    metadata: ToolMetadata = {"path": path}
     if tool_name == "Write":
-        content = tool_input.get("content")
-        if isinstance(content, str):
-            result["new_content_snippet"] = content[:500]
+        content = _payload_string(tool_input, "content")
+        if content is not None:
+            metadata["new_content_snippet"] = content[:500]
     elif tool_name == "Edit":
-        old_string = tool_input.get("old_string")
-        new_string = tool_input.get("new_string")
-        if isinstance(old_string, str):
-            result["old_snippet"] = old_string[:200]
-        if isinstance(new_string, str):
-            result["new_snippet"] = new_string[:200]
-
-    return result
-
-
-def _extract_search_metadata(tool_input: dict[str, Any]) -> dict[str, Any] | None:
-    result: dict[str, Any] = {}
-    path = tool_input.get("path")
-    if isinstance(path, str) and path:
-        result["path"] = path
-    pattern = tool_input.get("pattern")
-    if isinstance(pattern, str) and pattern:
-        result["pattern"] = pattern
-    query = tool_input.get("query")
-    if isinstance(query, str) and query:
-        result["query"] = query[:500]
-    return result or None
+        old_string = _payload_string(tool_input, "old_string")
+        new_string = _payload_string(tool_input, "new_string")
+        if old_string is not None:
+            metadata["old_snippet"] = old_string[:200]
+        if new_string is not None:
+            metadata["new_snippet"] = new_string[:200]
+    return metadata
 
 
-def _extract_agent_metadata(tool_name: str, tool_input: dict[str, Any]) -> dict[str, Any] | None:
-    result: dict[str, Any] = {"tool": tool_name}
-    description = tool_input.get("description")
-    if isinstance(description, str) and description:
-        result["description"] = description[:200]
-    prompt = tool_input.get("prompt")
-    if isinstance(prompt, str) and prompt:
-        result["prompt_snippet"] = prompt[:200]
-    plan = tool_input.get("plan")
-    if isinstance(plan, str) and plan:
-        result["plan_snippet"] = plan[:200]
-    subject = tool_input.get("subject")
-    if isinstance(subject, str) and subject:
-        result["subject"] = subject[:200]
-    task_id = tool_input.get("taskId") or tool_input.get("task_id")
-    if isinstance(task_id, str) and task_id:
-        result["task_id"] = task_id
-    todos = tool_input.get("todos")
-    if isinstance(todos, list):
-        result["todo_count"] = len(todos)
-    questions = tool_input.get("questions")
-    if isinstance(questions, list):
-        result["question_count"] = len(questions)
-    return result
+def _extract_search_metadata(tool_input: ToolInputPayload) -> ToolMetadata | None:
+    metadata: ToolMetadata = {}
+    path = _payload_string(tool_input, "path")
+    if path is not None:
+        metadata["path"] = path
+    pattern = _payload_string(tool_input, "pattern")
+    if pattern is not None:
+        metadata["pattern"] = pattern
+    query = _payload_string(tool_input, "query")
+    if query is not None:
+        metadata["query"] = query[:500]
+    return metadata or None
 
 
-__all__ = ["extract_tool_metadata"]
+def _extract_agent_metadata(tool_name: str, tool_input: ToolInputPayload) -> ToolMetadata:
+    metadata: ToolMetadata = {"tool": tool_name}
+    for key, field_name in (
+        ("description", "description"),
+        ("prompt", "prompt_snippet"),
+        ("plan", "plan_snippet"),
+        ("subject", "subject"),
+    ):
+        value = _payload_string(tool_input, key)
+        if value is not None:
+            metadata[field_name] = value[:200]
+    task_id = _payload_string(tool_input, "taskId") or _payload_string(tool_input, "task_id")
+    if task_id is not None:
+        metadata["task_id"] = task_id
+    todos = _payload_list(tool_input, "todos")
+    if todos is not None:
+        metadata["todo_count"] = len(todos)
+    questions = _payload_list(tool_input, "questions")
+    if questions is not None:
+        metadata["question_count"] = len(questions)
+    return metadata
+
+
+__all__ = [
+    "ToolInputPayload",
+    "ToolMetadata",
+    "extract_tool_metadata",
+]

@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import zipfile
 from collections.abc import Iterable
-from typing import Any
 
 from polylogue.config import Source
 from polylogue.lib.artifact_taxonomy import classify_artifact_path
@@ -30,7 +29,7 @@ _decoders.logger = logger
 def iter_source_conversations(
     source: Source,
     *,
-    cursor_state: dict[str, Any] | None = None,
+    cursor_state: dict[str, object] | None = None,
 ) -> Iterable[ParsedConversation]:
     """Iterate parsed conversations from one configured source."""
     for _raw, conversation in iter_source_conversations_with_raw(
@@ -44,7 +43,7 @@ def iter_source_conversations(
 def iter_source_conversations_with_raw(
     source: Source,
     *,
-    cursor_state: dict[str, Any] | None = None,
+    cursor_state: dict[str, object] | None = None,
     capture_raw: bool = True,
     known_mtimes: dict[str, str] | None = None,
 ) -> Iterable[tuple[RawConversationData | None, ParsedConversation]]:

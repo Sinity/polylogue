@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from .assertions import AssertionSpec
 from .execution import ExecutionSpec
 from .metadata import ScenarioMetadata
+from .payloads import PayloadDict
 from .sources import NamedScenarioSource
 
 
@@ -59,7 +60,7 @@ class ExecutableScenario(NamedScenarioSource):
             return ()
         return self.execution.pytest_targets
 
-    def projection_source_payload(self) -> dict[str, object]:
+    def projection_source_payload(self) -> PayloadDict:
         payload = self.scenario_payload()
         if self.execution is not None:
             payload["execution"] = self.execution.to_payload()

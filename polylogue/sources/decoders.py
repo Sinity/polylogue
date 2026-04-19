@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
-from typing import IO, Any, BinaryIO
+from typing import IO, BinaryIO
 
 import ijson
 
 from polylogue.logging import get_logger
-from polylogue.sources.decoder_json import decode_json_bytes_with, iter_json_stream_with
+from polylogue.sources.decoder_json import (
+    JsonValue,
+    decode_json_bytes_with,
+    iter_json_stream_with,
+)
 from polylogue.sources.decoder_zip import (
     MAX_COMPRESSION_RATIO,
     MAX_UNCOMPRESSED_SIZE,
@@ -28,7 +32,7 @@ def _iter_json_stream(
     handle: BinaryIO | IO[bytes],
     path_name: str,
     unpack_lists: bool = True,
-) -> Iterable[Any]:
+) -> Iterable[JsonValue]:
     yield from iter_json_stream_with(logger, ijson, handle, path_name, unpack_lists)
 
 

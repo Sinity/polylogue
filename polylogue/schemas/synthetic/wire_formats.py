@@ -7,6 +7,9 @@ tree vs. linear vs. JSONL, and message location paths.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Literal, TypeAlias
+
+WireEncoding: TypeAlias = Literal["json", "jsonl"]
 
 
 @dataclass(frozen=True)
@@ -24,7 +27,7 @@ class TreeConfig:
 class WireFormat:
     """Wire format configuration for a provider's export format."""
 
-    encoding: str  # "json" | "jsonl"
+    encoding: WireEncoding
     tree: TreeConfig | None = None
     messages_path: str | None = None  # Dot-path to messages array
 
@@ -66,5 +69,6 @@ PROVIDER_WIRE_FORMATS: dict[str, WireFormat] = {
 __all__ = [
     "PROVIDER_WIRE_FORMATS",
     "TreeConfig",
+    "WireEncoding",
     "WireFormat",
 ]

@@ -14,6 +14,7 @@ from polylogue.storage.hydrators import (
     message_from_record,
 )
 from polylogue.storage.query_models import ConversationRecordQuery
+from polylogue.storage.repository_contracts import RepositoryBackendProtocol
 from polylogue.storage.state_views import ConversationRenderProjection
 from polylogue.storage.store import ConversationRecord
 
@@ -24,6 +25,7 @@ if TYPE_CHECKING:
 
 class RepositoryArchiveConversationMixin:
     if TYPE_CHECKING:
+        _backend: RepositoryBackendProtocol
         queries: SQLiteQueryStore
 
     async def resolve_id(self, id_prefix: str) -> ConversationId | None:
@@ -80,10 +82,11 @@ class RepositoryArchiveConversationMixin:
         if not present_ids:
             return []
 
-        msgs_by_id, atts_by_id = await asyncio.gather(
-            self.queries.get_messages_batch(present_ids),
-            self.queries.get_attachments_batch(present_ids),
-        )
+        async with self._backend.read_pool(size=2):
+            msgs_by_id, atts_by_id = await asyncio.gather(
+                self.queries.get_messages_batch(present_ids),
+                self.queries.get_attachments_batch(present_ids),
+            )
         return [
             conversation_from_records(
                 by_id[conversation_id],

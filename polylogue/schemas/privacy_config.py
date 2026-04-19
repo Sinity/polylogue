@@ -12,7 +12,7 @@ import os
 from dataclasses import dataclass, field
 from fnmatch import fnmatch
 from pathlib import Path
-from typing import Any, Literal
+from typing import Literal, TypeAlias
 
 try:
     import tomllib
@@ -21,10 +21,21 @@ except ModuleNotFoundError:  # Python <3.11
 
 
 # ---------------------------------------------------------------------------
+# Typing helpers
+# ---------------------------------------------------------------------------
+
+PrivacyLevel: TypeAlias = Literal["strict", "standard", "permissive"]
+PrivacySettingValue: TypeAlias = str | int | bool | float | list[str] | dict[str, str] | None
+PrivacyConfigSection: TypeAlias = dict[str, PrivacySettingValue]
+FieldOverride: TypeAlias = dict[str, str]
+PatternList: TypeAlias = list[str]
+
+
+# ---------------------------------------------------------------------------
 # Preset definitions
 # ---------------------------------------------------------------------------
 
-_PRESETS: dict[str, dict[str, Any]] = {
+_PRESETS: dict[PrivacyLevel, dict[str, int | bool]] = {
     "strict": {
         "safe_enum_max_length": 30,
         "high_entropy_min_length": 8,
@@ -115,7 +126,7 @@ def _xdg_config_home() -> Path:
 
 def load_privacy_config(
     *,
-    cli_overrides: dict[str, Any] | None = None,
+    cli_overrides: PrivacyConfigSection | None = None,
     project_path: Path | None = None,
 ) -> PrivacyConfig:
     """Load privacy config with XDG base + project-level + CLI cascade.
@@ -123,10 +134,10 @@ def load_privacy_config(
     Merge order: XDG defaults → project file → CLI flags.
     Field overrides from all levels merge (later wins per path).
     """
-    merged: dict[str, Any] = {}
-    merged_field_overrides: dict[str, str] = {}
-    merged_allow_patterns: list[str] = []
-    merged_deny_patterns: list[str] = []
+    merged: PrivacyConfigSection = {}
+    merged_field_overrides: FieldOverride = {}
+    merged_allow_patterns: PatternList = []
+    merged_deny_patterns: PatternList = []
 
     # 1. XDG base config
     xdg_path = _xdg_config_home() / "polylogue" / "schemas.toml"
@@ -154,10 +165,19 @@ def load_privacy_config(
     if merged_deny_patterns:
         merged["deny_value_patterns"] = merged_deny_patterns
 
-    return PrivacyConfig(**{k: v for k, v in merged.items() if v is not None})
+    return PrivacyConfig(
+        level=_privacy_level_value(merged.get("level")),
+        safe_enum_max_length=_int_config_value(merged.get("safe_enum_max_length"), default=50),
+        high_entropy_min_length=_int_config_value(merged.get("high_entropy_min_length"), default=10),
+        cross_conv_min_count=_int_config_value(merged.get("cross_conv_min_count"), default=3),
+        cross_conv_proportional=_bool_config_value(merged.get("cross_conv_proportional"), default=False),
+        field_overrides=dict(merged_field_overrides),
+        allow_value_patterns=list(merged_allow_patterns),
+        deny_value_patterns=list(merged_deny_patterns),
+    )
 
 
-def _load_toml_section(path: Path) -> dict[str, Any]:
+def _load_toml_section(path: Path) -> PrivacyConfigSection:
     """Load the [schema.privacy] section from a TOML file."""
     with open(path, "rb") as f:
         data = tomllib.load(f)
@@ -165,22 +185,40 @@ def _load_toml_section(path: Path) -> dict[str, Any]:
 
 
 def _merge_into(
-    source: dict[str, Any],
-    merged: dict[str, Any],
-    field_overrides: dict[str, str],
-    allow_patterns: list[str],
-    deny_patterns: list[str],
+    source: PrivacyConfigSection,
+    merged: PrivacyConfigSection,
+    field_overrides: FieldOverride,
+    allow_patterns: PatternList,
+    deny_patterns: PatternList,
 ) -> None:
     """Merge a source dict into the accumulated config."""
     for key, value in source.items():
         if key == "field_overrides" and isinstance(value, dict):
-            field_overrides.update(value)
+            field_overrides.update({str(pattern): str(action) for pattern, action in value.items()})
         elif key == "allow_value_patterns" and isinstance(value, list):
-            allow_patterns.extend(value)
+            allow_patterns.extend(str(item) for item in value)
         elif key == "deny_value_patterns" and isinstance(value, list):
-            deny_patterns.extend(value)
+            deny_patterns.extend(str(item) for item in value)
         else:
             merged[key] = value
+
+
+def _privacy_level_value(value: PrivacySettingValue) -> PrivacyLevel:
+    if value == "strict":
+        return "strict"
+    if value == "standard":
+        return "standard"
+    if value == "permissive":
+        return "permissive"
+    return "standard"
+
+
+def _int_config_value(value: PrivacySettingValue, *, default: int) -> int:
+    return value if isinstance(value, int) and not isinstance(value, bool) else default
+
+
+def _bool_config_value(value: PrivacySettingValue, *, default: bool) -> bool:
+    return value if isinstance(value, bool) else default
 
 
 __all__ = [

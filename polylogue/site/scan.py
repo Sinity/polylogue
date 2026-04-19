@@ -2,18 +2,22 @@
 
 from __future__ import annotations
 
-import json
 from collections.abc import AsyncIterator, Awaitable, Callable
 from pathlib import Path
-from typing import IO, TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from polylogue.site.models import ArchiveIndexStats, ConversationIndex, ConversationPageBuildStats, SiteConfig
-from polylogue.site.search import build_search_document
+from polylogue.site.search import SearchIndexWriter, build_search_document
 
 if TYPE_CHECKING:
     from polylogue.protocols import ProgressCallback
     from polylogue.storage.backends.async_sqlite import SQLiteBackend
     from polylogue.storage.repository import ConversationRepository
+
+
+@runtime_checkable
+class _MessageCountQueries(Protocol):
+    async def get_message_counts_batch(self, conversation_ids: list[str]) -> dict[str, int]: ...
 
 
 async def iter_conversation_indexes(
@@ -29,12 +33,25 @@ async def iter_conversation_indexes(
         provider=provider,
     ):
         summary_page = list(summaries)
-        message_counts = await backend.get_message_counts_batch([str(summary.id) for summary in summary_page])
+        message_counts = await _load_message_counts(
+            backend,
+            [str(summary.id) for summary in summary_page],
+        )
         for summary in summary_page:
             yield ConversationIndex.from_summary(
                 summary,
                 message_counts.get(str(summary.id), 0),
             )
+
+
+async def _load_message_counts(
+    backend: SQLiteBackend,
+    conversation_ids: list[str],
+) -> dict[str, int]:
+    queries = getattr(backend, "queries", None)
+    if isinstance(queries, _MessageCountQueries):
+        return await queries.get_message_counts_batch(conversation_ids)
+    return await backend.get_message_counts_batch(conversation_ids)
 
 
 async def scan_archive(
@@ -49,13 +66,8 @@ async def scan_archive(
     """Scan archive summaries once and drive streaming site outputs from that pass."""
     stats = ArchiveIndexStats()
     page_stats = ConversationPageBuildStats()
-    search_path = output_dir / "search-index.json"
-    search_handle: IO[str] | None = None
-    wrote_search_entry = False
-
-    if config.enable_search and config.search_provider != "pagefind":
-        search_handle = search_path.open("w", encoding="utf-8")
-        search_handle.write("[")
+    search_writer = SearchIndexWriter(output_dir, config)
+    search_writer.open()
 
     try:
         if progress_callback is not None:
@@ -65,11 +77,7 @@ async def scan_archive(
                 conversation,
                 root_page_size=config.conversations_per_page,
             )
-            if search_handle is not None:
-                if wrote_search_entry:
-                    search_handle.write(",")
-                json.dump(build_search_document(conversation), search_handle)
-                wrote_search_entry = True
+            search_writer.append(build_search_document(conversation))
             page_stats.record(
                 await generate_conversation_page(
                     conversation,
@@ -79,14 +87,9 @@ async def scan_archive(
             if progress_callback is not None:
                 progress_callback(1, desc=f"Building site: scanning archive {stats.total_conversations:,}")
     except Exception:
-        if search_handle is not None:
-            search_handle.close()
-            search_path.unlink(missing_ok=True)
-            search_handle = None
+        search_writer.abort()
         raise
     finally:
-        if search_handle is not None:
-            search_handle.write("]")
-            search_handle.close()
+        search_writer.finish()
 
     return stats, page_stats

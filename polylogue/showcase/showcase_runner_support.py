@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-import json
 import subprocess
 import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
-from polylogue.scenarios import CorpusRequest, CorpusSpec, ExecutionSpec
+from polylogue.scenarios import CorpusRequest, CorpusSpec, ExecutionSpec, canonical_payload_json
 from polylogue.showcase.corpus_requests import showcase_corpus_request
 from polylogue.showcase.exercises import EXERCISES, Exercise, topological_order
 from polylogue.showcase.showcase_runner_models import ExerciseResult
@@ -109,7 +108,7 @@ def _merge_exercise_corpus_specs(exercises: tuple[Exercise, ...]) -> tuple[Corpu
     merged: list[CorpusSpec] = []
     for exercise in exercises:
         for corpus_spec in exercise.corpus_specs:
-            key = json.dumps(corpus_spec.to_payload(), sort_keys=True)
+            key = canonical_payload_json(corpus_spec.to_payload())
             if key in seen:
                 continue
             seen.add(key)

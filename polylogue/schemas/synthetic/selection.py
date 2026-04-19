@@ -2,9 +2,51 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from typing import Protocol, TypeAlias, cast
+
 from polylogue.schemas.runtime_registry import SchemaRegistry, canonical_schema_provider
-from polylogue.schemas.synthetic.models import SyntheticSchemaSelection
+from polylogue.schemas.synthetic.models import SchemaRecord, SyntheticSchemaSelection
 from polylogue.schemas.synthetic.wire_formats import PROVIDER_WIRE_FORMATS
+
+
+class _SchemaVersionPackageLike(Protocol):
+    version: str
+    default_element_kind: str | None
+
+    def element(self, element_kind: str | None) -> object | None: ...
+
+
+class _SchemaRegistryLike(Protocol):
+    def get_package(self, provider: str, version: str = "default") -> object | None: ...
+
+    def get_element_schema(
+        self,
+        provider: str,
+        *,
+        version: str = "default",
+        element_kind: str | None = None,
+    ) -> object | None: ...
+
+    def get_schema(self, provider: str, version: str = "default") -> object | None: ...
+
+    def list_providers(self) -> list[str]: ...
+
+
+RegistryFactory: TypeAlias = Callable[[], _SchemaRegistryLike]
+CanonicalProviderResolver: TypeAlias = Callable[[str], str]
+
+
+def _default_registry_factory() -> _SchemaRegistryLike:
+    return SchemaRegistry()
+
+
+def _schema_package(value: object) -> _SchemaVersionPackageLike | None:
+    return cast(_SchemaVersionPackageLike, value) if value is not None else None
+
+
+def _schema_record(value: object) -> SchemaRecord | None:
+    return cast(SchemaRecord, value) if isinstance(value, dict) else None
 
 
 def select_synthetic_schema(
@@ -12,14 +54,16 @@ def select_synthetic_schema(
     *,
     version: str = "default",
     element_kind: str | None = None,
+    registry_factory: RegistryFactory = _default_registry_factory,
+    canonical_provider_resolver: CanonicalProviderResolver = canonical_schema_provider,
 ) -> SyntheticSchemaSelection:
-    canonical_provider = canonical_schema_provider(provider)
-    registry = SchemaRegistry()
-    package = registry.get_package(canonical_provider, version=version) if hasattr(registry, "get_package") else None
+    canonical_provider = canonical_provider_resolver(provider)
+    registry = registry_factory()
+    package = _schema_package(registry.get_package(canonical_provider, version=version))
     resolved_element_kind = element_kind
 
-    schema: dict[str, object] | None
-    if package is not None and hasattr(registry, "get_element_schema"):
+    schema: SchemaRecord | None
+    if package is not None:
         if resolved_element_kind is None or resolved_element_kind == "default":
             resolved_element_kind = package.default_element_kind
         if package.element(resolved_element_kind) is None:
@@ -28,10 +72,12 @@ def select_synthetic_schema(
                 f"{resolved_element_kind!r} in package {package.version} for provider "
                 f"{canonical_provider}"
             )
-        schema = registry.get_element_schema(
-            canonical_provider,
-            version=version,
-            element_kind=resolved_element_kind,
+        schema = _schema_record(
+            registry.get_element_schema(
+                canonical_provider,
+                version=version,
+                element_kind=resolved_element_kind,
+            )
         )
         canonical_version = package.version
     else:
@@ -40,7 +86,7 @@ def select_synthetic_schema(
                 f"Element schemas are not available for provider {canonical_provider}; "
                 f"cannot request element_kind={element_kind!r}"
             )
-        schema = registry.get_schema(canonical_provider, version=version)
+        schema = _schema_record(registry.get_schema(canonical_provider, version=version))
         canonical_version = version
         resolved_element_kind = None if element_kind is None else element_kind
 
@@ -63,8 +109,11 @@ def select_synthetic_schema(
     )
 
 
-def available_synthetic_providers() -> list[str]:
-    schema_providers = set(SchemaRegistry().list_providers())
+def available_synthetic_providers(
+    *,
+    registry_factory: RegistryFactory = _default_registry_factory,
+) -> list[str]:
+    schema_providers = set(registry_factory().list_providers())
     return [provider for provider in PROVIDER_WIRE_FORMATS if provider in schema_providers]
 
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from polylogue.lib.raw_payload import build_raw_payload_envelope
 from polylogue.logging import get_logger
@@ -13,6 +14,61 @@ from polylogue.storage.store import RawConversationRecord
 from polylogue.types import Provider, ValidationMode, ValidationStatus
 
 logger = get_logger(__name__)
+
+
+if TYPE_CHECKING:
+    from polylogue.lib.raw_payload_decode import JSONValue, RawPayloadEnvelope
+
+
+ValidationCounts = dict[str, int]
+
+
+def _normalize_payload_provider(raw_record: RawConversationRecord) -> str | None:
+    stored_payload_provider = getattr(raw_record, "payload_provider", None)
+    if not isinstance(stored_payload_provider, str):
+        return None
+    candidate = stored_payload_provider.strip()
+    if not candidate:
+        return None
+    return candidate
+
+
+def _initial_counts() -> ValidationCounts:
+    return {
+        "validated": 0,
+        "invalid": 0,
+        "drift": 0,
+        "skipped_no_schema": 0,
+        "errors": 0,
+    }
+
+
+def _build_validation_envelope(
+    raw_source: Path,
+    raw_record: RawConversationRecord,
+    payload_provider: str | None,
+) -> RawPayloadEnvelope:
+    return build_raw_payload_envelope(
+        raw_source,
+        source_path=raw_record.source_path,
+        fallback_provider=raw_record.provider_name,
+        payload_provider=payload_provider,
+    )
+
+
+def _validator_for_payload(
+    envelope: RawPayloadEnvelope,
+    *,
+    source_path: str | None,
+) -> SchemaValidator | None:
+    try:
+        return SchemaValidator.for_payload(
+            envelope.provider,
+            envelope.payload,
+            source_path=source_path,
+        )
+    except (FileNotFoundError, ImportError):
+        return None
 
 
 def _format_malformed_jsonl_error(*, malformed_lines: int, malformed_detail: str | None) -> str:
@@ -46,18 +102,10 @@ def _validate_record_sync(
     import time as _time
 
     t_start = _time.perf_counter()
-    counts_delta: dict[str, int] = {
-        "validated": 0,
-        "invalid": 0,
-        "drift": 0,
-        "skipped_no_schema": 0,
-        "errors": 0,
-    }
+    counts_delta: ValidationCounts = _initial_counts()
     drift_counts_delta: dict[str, int] = {}
 
-    stored_payload_provider = getattr(raw_record, "payload_provider", None)
-    if not isinstance(stored_payload_provider, str) or not stored_payload_provider.strip():
-        stored_payload_provider = None
+    stored_payload_provider = _normalize_payload_provider(raw_record)
     canonical_provider = Provider.from_string(stored_payload_provider or raw_record.provider_name)
     payload_provider: Provider | None = (
         Provider.from_string(stored_payload_provider) if stored_payload_provider else None
@@ -67,13 +115,12 @@ def _validate_record_sync(
     raw_source = blob_store.blob_path(raw_record.raw_id)
 
     try:
-        envelope = build_raw_payload_envelope(
+        envelope = _build_validation_envelope(
             raw_source,
-            source_path=raw_record.source_path,
-            fallback_provider=raw_record.provider_name,
+            raw_record=raw_record,
             payload_provider=stored_payload_provider,
         )
-        payload = envelope.payload
+        payload: JSONValue = envelope.payload
         malformed_lines = envelope.malformed_jsonl_lines
         malformed_detail = envelope.malformed_jsonl_detail
         payload_provider = envelope.provider
@@ -131,14 +178,11 @@ def _validate_record_sync(
             malformed_lines=malformed_lines,
         )
 
-    validator = None
-    try:
-        validator = SchemaValidator.for_payload(
-            envelope.provider,
-            envelope.payload,
-            source_path=raw_record.source_path,
-        )
-    except (FileNotFoundError, ImportError):
+    validator = _validator_for_payload(
+        envelope,
+        source_path=raw_record.source_path,
+    )
+    if validator is None:
         counts_delta["skipped_no_schema"] += 1
 
     collected_errors: list[str] = []

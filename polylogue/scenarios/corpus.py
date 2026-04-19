@@ -8,6 +8,15 @@ from enum import Enum
 from typing import TYPE_CHECKING, Any
 
 from .metadata import ScenarioMetadata
+from .payloads import (
+    PayloadDict,
+    PayloadMap,
+    merge_unique_string_tuples,
+    payload_int,
+    payload_mapping,
+    payload_optional_string,
+    payload_string_tuple,
+)
 from .projections import ScenarioProjectionSource, ScenarioProjectionSourceKind
 from .specs import ScenarioSpec
 
@@ -16,28 +25,10 @@ if TYPE_CHECKING:
     from polylogue.schemas.tooling_models import ClusterManifest, SchemaCluster
 
 
-def _coerce_optional_string(value: object) -> str | None:
-    if isinstance(value, str) and value:
-        return value
-    return None
-
-
-def _coerce_optional_int(value: object) -> int | None:
-    if isinstance(value, int):
-        return value
-    return None
-
-
 def _coerce_optional_float(value: object) -> float | None:
     if isinstance(value, (int, float)):
         return float(value)
     return None
-
-
-def _coerce_string_tuple(value: object) -> tuple[str, ...]:
-    if isinstance(value, (list, tuple)) and all(isinstance(item, str) for item in value):
-        return tuple(value)
-    return ()
 
 
 def _slugify_corpus_token(value: str) -> str:
@@ -97,21 +88,21 @@ class CorpusProfile:
     @classmethod
     def from_payload(cls, payload: Mapping[str, object]) -> CorpusProfile:
         return cls(
-            family_ids=_coerce_string_tuple(payload.get("family_ids")),
-            profile_tokens=_coerce_string_tuple(payload.get("profile_tokens")),
-            artifact_kind=_coerce_optional_string(payload.get("artifact_kind")),
-            anchor_kind=_coerce_optional_string(payload.get("anchor_kind")),
-            observed_sample_count=_coerce_optional_int(payload.get("observed_sample_count")),
-            observed_artifact_count=_coerce_optional_int(payload.get("observed_artifact_count")),
+            family_ids=payload_string_tuple(payload.get("family_ids")),
+            profile_tokens=payload_string_tuple(payload.get("profile_tokens")),
+            artifact_kind=payload_optional_string(payload.get("artifact_kind")),
+            anchor_kind=payload_optional_string(payload.get("anchor_kind")),
+            observed_sample_count=payload_int(payload.get("observed_sample_count"), "observed_sample_count"),
+            observed_artifact_count=payload_int(payload.get("observed_artifact_count"), "observed_artifact_count"),
             observed_confidence=_coerce_optional_float(payload.get("observed_confidence")),
-            bundle_scope_count=_coerce_optional_int(payload.get("bundle_scope_count")),
-            representative_paths=_coerce_string_tuple(payload.get("representative_paths")),
-            first_seen=_coerce_optional_string(payload.get("first_seen")),
-            last_seen=_coerce_optional_string(payload.get("last_seen")),
+            bundle_scope_count=payload_int(payload.get("bundle_scope_count"), "bundle_scope_count"),
+            representative_paths=payload_string_tuple(payload.get("representative_paths")),
+            first_seen=payload_optional_string(payload.get("first_seen")),
+            last_seen=payload_optional_string(payload.get("last_seen")),
         )
 
-    def to_payload(self) -> dict[str, Any]:
-        payload: dict[str, Any] = {}
+    def to_payload(self) -> PayloadDict:
+        payload: PayloadDict = {}
         if self.family_ids:
             payload["family_ids"] = list(self.family_ids)
         if self.profile_tokens:
@@ -325,25 +316,23 @@ class CorpusSpec(ScenarioProjectionSource, ScenarioMetadata):
         )
 
     @classmethod
-    def from_payload(cls, payload: Mapping[str, object]) -> CorpusSpec:
+    def from_payload(cls, payload: PayloadMap) -> CorpusSpec:
         metadata = ScenarioMetadata.from_payload(payload)
-        provider = _coerce_optional_string(payload.get("provider"))
+        provider = payload_optional_string(payload.get("provider"))
         if provider is None:
             raise ValueError("CorpusSpec payload must include provider")
-        profile_payload = payload.get("profile")
-        profile = (
-            CorpusProfile.from_payload(profile_payload) if isinstance(profile_payload, Mapping) else CorpusProfile()
-        )
+        profile_payload = payload_mapping(payload.get("profile"))
+        profile = CorpusProfile.from_payload(profile_payload) if profile_payload is not None else CorpusProfile()
         return cls(
             provider=provider,
-            package_version=_coerce_optional_string(payload.get("package_version")) or "default",
-            element_kind=_coerce_optional_string(payload.get("element_kind")),
+            package_version=payload_optional_string(payload.get("package_version")) or "default",
+            element_kind=payload_optional_string(payload.get("element_kind")),
             profile=profile,
-            count=_coerce_optional_int(payload.get("count")) or 5,
-            messages_min=_coerce_optional_int(payload.get("messages_min")) or 3,
-            messages_max=_coerce_optional_int(payload.get("messages_max")) or 15,
-            seed=_coerce_optional_int(payload.get("seed")),
-            style=_coerce_optional_string(payload.get("style")) or "default",
+            count=payload_int(payload.get("count"), "count") or 5,
+            messages_min=payload_int(payload.get("messages_min"), "messages_min") or 3,
+            messages_max=payload_int(payload.get("messages_max"), "messages_max") or 15,
+            seed=payload_int(payload.get("seed"), "seed"),
+            style=payload_optional_string(payload.get("style")) or "default",
             origin=metadata.origin,
             path_targets=metadata.path_targets,
             artifact_targets=metadata.artifact_targets,
@@ -351,7 +340,7 @@ class CorpusSpec(ScenarioProjectionSource, ScenarioMetadata):
             tags=metadata.tags,
         )
 
-    def to_payload(self) -> dict[str, Any]:
+    def to_payload(self) -> PayloadDict:
         payload = super().to_payload()
         payload.update(
             {
@@ -375,19 +364,8 @@ class CorpusSpec(ScenarioProjectionSource, ScenarioMetadata):
     def projection_source_kind(self) -> ScenarioProjectionSourceKind:
         return ScenarioProjectionSourceKind.INFERRED_CORPUS
 
-    def projection_source_payload(self) -> Mapping[str, object]:
+    def projection_source_payload(self) -> PayloadMap:
         return self.to_payload()
-
-
-def _merge_unique_string_tuples(*groups: tuple[str, ...]) -> tuple[str, ...]:
-    seen: set[str] = set()
-    merged: list[str] = []
-    for group in groups:
-        for item in group:
-            if item not in seen:
-                seen.add(item)
-                merged.append(item)
-    return tuple(merged)
 
 
 def _inferred_schema_metadata() -> ScenarioMetadata:
@@ -488,10 +466,10 @@ def build_corpus_scenarios(
                 package_version=package_version,
                 corpus_specs=ordered_specs,
                 origin=origin,
-                path_targets=_merge_unique_string_tuples(*(spec.path_targets for spec in ordered_specs)),
-                artifact_targets=_merge_unique_string_tuples(*(spec.artifact_targets for spec in ordered_specs)),
-                operation_targets=_merge_unique_string_tuples(*(spec.operation_targets for spec in ordered_specs)),
-                tags=_merge_unique_string_tuples(tags, *(spec.tags for spec in ordered_specs)),
+                path_targets=merge_unique_string_tuples(*(spec.path_targets for spec in ordered_specs)),
+                artifact_targets=merge_unique_string_tuples(*(spec.artifact_targets for spec in ordered_specs)),
+                operation_targets=merge_unique_string_tuples(*(spec.operation_targets for spec in ordered_specs)),
+                tags=merge_unique_string_tuples(tags, *(spec.tags for spec in ordered_specs)),
             )
         )
     return tuple(scenarios)
@@ -609,15 +587,7 @@ def resolve_corpus_scenarios(
 
 
 def _merge_string_tuples(*groups: tuple[str, ...]) -> tuple[str, ...]:
-    seen: set[str] = set()
-    merged: list[str] = []
-    for group in groups:
-        for item in group:
-            if not item or item in seen:
-                continue
-            seen.add(item)
-            merged.append(item)
-    return tuple(merged)
+    return merge_unique_string_tuples(*groups, skip_empty=True)
 
 
 def _catalog_package_for_version(

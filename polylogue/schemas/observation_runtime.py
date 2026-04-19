@@ -3,22 +3,21 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import TypeAlias
 
 from polylogue.lib.artifact_taxonomy import classify_artifact
 from polylogue.lib.raw_payload import extract_payload_samples, record_bucket_key
-from polylogue.schemas.observation_identity import (
-    derive_bundle_scope,
-    schema_cluster_id,
-)
+from polylogue.schemas.observation_identity import derive_bundle_scope, schema_cluster_id
 from polylogue.schemas.observation_models import ProviderConfig, SchemaUnit
 from polylogue.types import Provider
+
+SchemaSample: TypeAlias = dict[str, object]
 
 _SCHEMA_SAMPLE_STRING_LIMIT = 1024
 
 
 def extract_schema_units_from_payload(
-    payload: Any,
+    payload: object,
     *,
     provider_name: Provider,
     source_path: str | Path | None,
@@ -29,9 +28,9 @@ def extract_schema_units_from_payload(
 ) -> list[SchemaUnit]:
     """Extract clusterable schema units from one decoded payload."""
     provider_token = Provider.from_string(provider_name)
-    effective_max_samples = max_samples
-    if effective_max_samples is None:
-        effective_max_samples = config.schema_sample_cap
+    effective_max_samples = max_samples if max_samples is not None else config.schema_sample_cap
+    bundle_scope = derive_bundle_scope(provider_token, source_path)
+    source_path_text = str(source_path) if source_path is not None else None
 
     if config.sample_granularity == "record":
         artifact = classify_artifact(
@@ -42,13 +41,14 @@ def extract_schema_units_from_payload(
         if not artifact.schema_eligible:
             return []
 
-        samples = extract_payload_samples(
-            payload,
-            sample_granularity="record",
-            max_samples=effective_max_samples,
-            record_type_key=config.record_type_key,
+        samples = _compact_schema_samples(
+            extract_payload_samples(
+                payload,
+                sample_granularity="record",
+                max_samples=effective_max_samples,
+                record_type_key=config.record_type_key,
+            )
         )
-        samples = _compact_schema_samples(samples)
         if not samples:
             return []
 
@@ -59,8 +59,8 @@ def extract_schema_units_from_payload(
                 artifact_kind=artifact.cohort,
                 conversation_id=raw_id,
                 raw_id=raw_id,
-                source_path=str(source_path) if source_path is not None else None,
-                bundle_scope=derive_bundle_scope(provider_token, source_path),
+                source_path=source_path_text,
+                bundle_scope=bundle_scope,
                 observed_at=observed_at,
                 exact_structure_id=schema_cluster_id(payload, artifact.cohort),
                 profile_tokens=_record_profile_tokens(
@@ -70,12 +70,13 @@ def extract_schema_units_from_payload(
             )
         ]
 
-    documents = extract_payload_samples(
-        payload,
-        sample_granularity="document",
-        max_samples=effective_max_samples,
+    documents = _compact_schema_samples(
+        extract_payload_samples(
+            payload,
+            sample_granularity="document",
+            max_samples=effective_max_samples,
+        )
     )
-    documents = _compact_schema_samples(documents)
     units: list[SchemaUnit] = []
     for sample in documents:
         artifact = classify_artifact(
@@ -92,8 +93,8 @@ def extract_schema_units_from_payload(
                 artifact_kind=artifact.cohort,
                 conversation_id=_document_conversation_id(sample, raw_id),
                 raw_id=raw_id,
-                source_path=str(source_path) if source_path is not None else None,
-                bundle_scope=derive_bundle_scope(provider_token, source_path),
+                source_path=source_path_text,
+                bundle_scope=bundle_scope,
                 observed_at=observed_at,
                 exact_structure_id=schema_cluster_id(sample, artifact.cohort),
                 profile_tokens=_document_profile_tokens(sample),
@@ -102,11 +103,9 @@ def extract_schema_units_from_payload(
     return units
 
 
-def _compact_schema_value(value: Any) -> Any:
+def _compact_schema_value(value: object) -> object:
     if isinstance(value, str):
-        if len(value) <= _SCHEMA_SAMPLE_STRING_LIMIT:
-            return value
-        return value[:_SCHEMA_SAMPLE_STRING_LIMIT]
+        return value[:_SCHEMA_SAMPLE_STRING_LIMIT] if len(value) > _SCHEMA_SAMPLE_STRING_LIMIT else value
     if isinstance(value, list):
         return [_compact_schema_value(item) for item in value]
     if isinstance(value, dict):
@@ -114,8 +113,8 @@ def _compact_schema_value(value: Any) -> Any:
     return value
 
 
-def _compact_schema_samples(samples: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    compacted: list[dict[str, Any]] = []
+def _compact_schema_samples(samples: list[SchemaSample]) -> list[SchemaSample]:
+    compacted: list[SchemaSample] = []
     for sample in samples:
         compacted_sample = _compact_schema_value(sample)
         if isinstance(compacted_sample, dict):
@@ -123,12 +122,12 @@ def _compact_schema_samples(samples: list[dict[str, Any]]) -> list[dict[str, Any
     return compacted
 
 
-def _coarse_type(value: Any) -> str:
+def _coarse_type(value: object) -> str:
     if value is None:
         return "null"
     if isinstance(value, bool):
         return "bool"
-    if isinstance(value, (int, float)) and not isinstance(value, bool):
+    if isinstance(value, (int, float)):
         return "number"
     if isinstance(value, str):
         return "string"
@@ -139,7 +138,7 @@ def _coarse_type(value: Any) -> str:
     return type(value).__name__
 
 
-def _document_profile_tokens(sample: dict[str, Any]) -> tuple[str, ...]:
+def _document_profile_tokens(sample: SchemaSample) -> tuple[str, ...]:
     tokens: list[str] = []
     for key, value in sorted(sample.items()):
         tokens.append(f"field:{key}")
@@ -152,7 +151,7 @@ def _document_profile_tokens(sample: dict[str, Any]) -> tuple[str, ...]:
 
 
 def _record_profile_tokens(
-    samples: list[dict[str, Any]],
+    samples: list[SchemaSample],
     *,
     record_type_key: str | None,
 ) -> tuple[str, ...]:
@@ -170,7 +169,7 @@ def _record_profile_tokens(
     return tuple(tokens[:160])
 
 
-def _document_conversation_id(sample: dict[str, Any], raw_id: str | None) -> str | None:
+def _document_conversation_id(sample: SchemaSample, raw_id: str | None) -> str | None:
     for key in ("conversation_id", "id", "uuid"):
         value = sample.get(key)
         if isinstance(value, str) and value.strip():

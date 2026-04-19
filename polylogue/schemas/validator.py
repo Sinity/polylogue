@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, Protocol, TypeAlias
 
 try:
     import jsonschema
@@ -30,6 +31,15 @@ from .validator_resolution import (
 
 if TYPE_CHECKING:
     from polylogue.schemas.packages import SchemaResolution
+
+ValidationSchema: TypeAlias = Mapping[str, Any]
+ValidationSample: TypeAlias = dict[str, Any]
+
+
+class ValidationErrorLike(Protocol):
+    absolute_path: Iterable[object]
+    message: str
+
 
 # ---------------------------------------------------------------------------
 # Validation result model
@@ -65,13 +75,38 @@ _UUID_KEY_RE = re.compile(
 )
 
 
-def collect_validation_samples(
-    payload: Any,
+def _sample_payload(value: object) -> ValidationSample | None:
+    if not isinstance(value, Mapping):
+        return None
+    return {str(key): child for key, child in value.items()}
+
+
+def _schema_mapping(value: object) -> ValidationSchema:
+    payload = _sample_payload(value)
+    return payload if payload is not None else {}
+
+
+def _validation_samples(
+    payload: object,
     *,
-    schema: dict[str, Any],
+    sample_granularity: Literal["document", "record"],
+    max_samples: int | None,
+) -> list[ValidationSample]:
+    raw_samples = extract_payload_samples(
+        payload,
+        sample_granularity=sample_granularity,
+        max_samples=max_samples,
+    )
+    return [sample for raw in raw_samples if (sample := _sample_payload(raw)) is not None]
+
+
+def collect_validation_samples(
+    payload: object,
+    *,
+    schema: ValidationSchema,
     provider: Provider | None,
     max_samples: int | None = None,
-) -> list[dict[str, Any]]:
+) -> list[ValidationSample]:
     """Extract representative objects from a payload for validation."""
     raw_granularity = schema.get("x-polylogue-sample-granularity")
     granularity: Literal["document", "record"]
@@ -81,26 +116,26 @@ def collect_validation_samples(
         granularity = "document"
     else:
         granularity = "record" if provider in _RECORD_VALIDATION_PROVIDERS else "document"
-    return extract_payload_samples(
+    return _validation_samples(
         payload,
         sample_granularity=granularity,
         max_samples=max_samples,
     )
 
 
-def format_validation_error(error: Any) -> str:
+def format_validation_error(error: ValidationErrorLike) -> str:
     path = ".".join(str(part) for part in error.absolute_path) or "root"
     return f"{path}: {error.message}"
 
 
 def detect_drift(
-    data: dict[str, Any],
-    schema: dict[str, Any],
+    data: ValidationSample,
+    schema: Mapping[str, object],
     path: str,
 ) -> list[str]:
     """Detect fields in data not present in schema (drift)."""
     warnings: list[str] = []
-    schema_props = set(schema.get("properties", {}).keys())
+    schema_props = _schema_mapping(schema.get("properties", {}))
     has_additional = schema.get("additionalProperties", True)
 
     for key, value in data.items():
@@ -110,23 +145,29 @@ def detect_drift(
             if has_additional is False:
                 warnings.append(f"Unexpected field: {current_path}")
             elif has_additional is True:
-                pass
-            elif isinstance(has_additional, dict):
+                continue
+            else:
+                additional_schema = _schema_mapping(has_additional)
                 dynamic_container = bool(schema.get("x-polylogue-dynamic-keys"))
                 if not dynamic_container and not looks_dynamic_key(key):
                     warnings.append(f"Unexpected field: {current_path}")
-                if isinstance(value, dict):
-                    warnings.extend(detect_drift(value, has_additional, current_path))
-        else:
-            prop_schema = schema["properties"][key]
-            if isinstance(value, dict) and "properties" in prop_schema:
-                warnings.extend(detect_drift(value, prop_schema, current_path))
-            elif isinstance(value, list) and "items" in prop_schema:
-                items_schema = prop_schema["items"]
-                if isinstance(items_schema, dict) and "properties" in items_schema:
-                    for i, item in enumerate(value):
-                        if isinstance(item, dict):
-                            warnings.extend(detect_drift(item, items_schema, f"{current_path}[{i}]"))
+                nested_value = _sample_payload(value)
+                if nested_value is not None:
+                    warnings.extend(detect_drift(nested_value, additional_schema, current_path))
+            continue
+
+        prop_schema = _schema_mapping(schema_props.get(key))
+        nested_value = _sample_payload(value)
+        if nested_value is not None and "properties" in prop_schema:
+            warnings.extend(detect_drift(nested_value, prop_schema, current_path))
+            continue
+        if isinstance(value, list) and "items" in prop_schema:
+            items_schema = _schema_mapping(prop_schema.get("items"))
+            if "properties" in items_schema:
+                for index, item in enumerate(value):
+                    nested_item = _sample_payload(item)
+                    if nested_item is not None:
+                        warnings.extend(detect_drift(nested_item, items_schema, f"{current_path}[{index}]"))
 
     return warnings
 
@@ -145,14 +186,14 @@ class SchemaValidator:
 
     _cache: dict[tuple[str, str, str, bool], SchemaValidator] = {}
 
-    def __init__(self, schema: dict[str, Any], strict: bool = True, provider: Provider | None = None):
+    def __init__(self, schema: ValidationSchema, strict: bool = True, provider: Provider | None = None):
         if jsonschema is None:
             raise ImportError("jsonschema not installed. Run: pip install jsonschema")
 
-        self.schema = schema
+        self.schema = dict(schema)
         self.strict = strict
         self.provider = provider
-        self._validator = Draft202012Validator(schema)
+        self._validator = Draft202012Validator(self.schema)
 
     @classmethod
     def canonical_provider(cls, provider: str | Provider) -> Provider:
@@ -173,7 +214,7 @@ class SchemaValidator:
     def for_payload(
         cls,
         provider: str | Provider,
-        payload: Any,
+        payload: object,
         *,
         source_path: str | None = None,
         schema_resolution: SchemaResolution | None = None,
@@ -198,19 +239,20 @@ class SchemaValidator:
     def available_providers(cls) -> list[str]:
         return _available_providers(registry_cls=SchemaRegistry)
 
-    def validate(self, data: Any, *, include_drift: bool | None = None) -> ValidationResult:
+    def validate(self, data: object, *, include_drift: bool | None = None) -> ValidationResult:
         errors = [format_validation_error(error) for error in self._validator.iter_errors(data)]
         drift_warnings: list[str] = []
         should_detect_drift = self.strict if include_drift is None else include_drift
-        if should_detect_drift and isinstance(data, dict):
-            drift_warnings.extend(detect_drift(data, self.schema, ""))
+        sample = _sample_payload(data)
+        if should_detect_drift and sample is not None:
+            drift_warnings.extend(detect_drift(sample, self.schema, ""))
         return ValidationResult(
             is_valid=len(errors) == 0,
             errors=errors,
             drift_warnings=drift_warnings,
         )
 
-    def validation_samples(self, payload: Any, *, max_samples: int | None = None) -> list[dict[str, Any]]:
+    def validation_samples(self, payload: object, *, max_samples: int | None = None) -> list[ValidationSample]:
         return collect_validation_samples(
             payload,
             schema=self.schema,
@@ -223,10 +265,21 @@ class SchemaValidator:
 
 
 def validate_provider_export(
-    data: Any,
+    data: object,
     provider: str | Provider,
     strict: bool = True,
 ) -> ValidationResult:
     """Convenience function to validate a provider export."""
     validator = SchemaValidator.for_provider(provider, strict=strict)
     return validator.validate(data)
+
+
+__all__ = [
+    "SchemaValidator",
+    "ValidationResult",
+    "collect_validation_samples",
+    "detect_drift",
+    "format_validation_error",
+    "looks_dynamic_key",
+    "validate_provider_export",
+]

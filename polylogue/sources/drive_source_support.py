@@ -3,10 +3,11 @@ from __future__ import annotations
 import json
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import TypeAlias, cast
 
 from polylogue.logging import get_logger
 
+from .drive_gateway import DrivePayloadRecord
 from .drive_types import (
     FOLDER_MIME_TYPE,
     GEMINI_PROMPT_MIME_TYPE,
@@ -14,6 +15,10 @@ from .drive_types import (
 )
 
 logger = get_logger(__name__)
+
+JsonScalar: TypeAlias = str | int | float | bool | None
+JsonPayload: TypeAlias = dict[str, "JsonPayload"] | list["JsonPayload"] | JsonScalar
+JsonObject: TypeAlias = DrivePayloadRecord
 
 
 def _parse_modified_time(raw: str | None) -> float | None:
@@ -58,24 +63,24 @@ def _is_supported_drive_payload(name: str, mime_type: str) -> bool:
     return name.lower().endswith((".json", ".jsonl", ".jsonl.txt", ".ndjson")) or mime_type == GEMINI_PROMPT_MIME_TYPE
 
 
-def _parse_downloaded_json_payload(raw: bytes, *, name: str) -> object:
+def _parse_downloaded_json_payload(raw: bytes, *, name: str) -> JsonPayload:
     if _is_newline_delimited_json_name(name):
-        items = []
+        items: list[JsonPayload] = []
         for line in raw.splitlines():
             line = line.strip()
             if not line:
                 continue
             try:
-                items.append(json.loads(line))
+                items.append(cast(JsonPayload, json.loads(line)))
             except json.JSONDecodeError as exc:
                 logger.warning("Skipping invalid JSON line in Drive file %s: %s", name, exc)
                 continue
         return items
 
     try:
-        return json.loads(raw)
+        return cast(JsonPayload, json.loads(raw))
     except (UnicodeDecodeError, json.JSONDecodeError):
-        return json.loads(raw.decode("utf-8", errors="replace"))
+        return cast(JsonPayload, json.loads(raw.decode("utf-8", errors="replace")))
 
 
 def _needs_download(meta: DriveFile, dest: Path) -> bool:
@@ -94,12 +99,24 @@ def _needs_download(meta: DriveFile, dest: Path) -> bool:
     return modified_timestamp is not None and abs(stat.st_mtime - modified_timestamp) > 1
 
 
-def _build_drive_file(meta: dict[str, Any], *, file_id_fallback: str = "") -> DriveFile:
-    file_id = meta.get("id", file_id_fallback)
+def _extract_meta_string(meta: JsonObject, key: str, *, file_id_fallback: str = "") -> str:
+    value = meta.get(key)
+    if isinstance(value, str):
+        return value
+    return file_id_fallback
+
+
+def _build_drive_file(meta: JsonObject, *, file_id_fallback: str = "") -> DriveFile:
+    file_id = _extract_meta_string(meta, "id", file_id_fallback=file_id_fallback)
+    name = _extract_meta_string(meta, "name", file_id_fallback=file_id_fallback)
+    modified_time_raw = meta.get("modifiedTime")
+    modified_time = modified_time_raw if isinstance(modified_time_raw, str) else None
+    size_raw = meta.get("size")
+    size_value = size_raw if isinstance(size_raw, (str, int)) else None
     return DriveFile(
         file_id=file_id,
-        name=meta.get("name") or file_id or file_id_fallback,
-        mime_type=meta.get("mimeType") or "",
-        modified_time=meta.get("modifiedTime"),
-        size_bytes=_parse_size(meta.get("size")),
+        name=name or file_id or file_id_fallback,
+        mime_type=_extract_meta_string(meta, "mimeType"),
+        modified_time=modified_time,
+        size_bytes=_parse_size(size_value),
     )

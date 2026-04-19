@@ -98,13 +98,17 @@ def _parse_code_records(records: Iterable[object], fallback_id: str) -> ParsedCo
 
         compaction = detect_context_compaction(item)
         if compaction:
-            compaction_timestamp = normalize_timestamp(compaction.get("timestamp"))
-            context_compactions.append(compaction)
+            raw_timestamp = compaction.get("timestamp")
+            compaction_timestamp = normalize_timestamp(
+                raw_timestamp if isinstance(raw_timestamp, (str, int, float)) else None
+            )
+            context_compaction = dict(compaction)
+            context_compactions.append(context_compaction)
             provider_events.append(
                 ParsedProviderEvent(
                     event_type="compaction",
                     timestamp=compaction_timestamp,
-                    payload=compaction,
+                    payload=context_compaction,
                 )
             )
             continue

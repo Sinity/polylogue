@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TypeAlias, cast
 
 from polylogue.scenarios import CorpusScenario, CorpusSpec
 from polylogue.schemas.generation_models import GenerationResult
@@ -14,13 +15,45 @@ from polylogue.schemas.verification_models import ArtifactProofReport
 from polylogue.storage.state_views import ArtifactCohortSummary
 from polylogue.storage.store import ArtifactObservationRecord
 
+JSONPrimitive: TypeAlias = str | int | float | bool | None
+JSONValue: TypeAlias = JSONPrimitive | Sequence["JSONValue"] | Mapping[str, "JSONValue"]
+JSONDocument: TypeAlias = dict[str, JSONValue]
+JSONDocumentList: TypeAlias = list[JSONDocument]
+
+
+def _json_document(payload: Mapping[str, object]) -> JSONDocument:
+    return cast(JSONDocument, dict(payload))
+
+
+def _corpus_spec_payloads(specs: tuple[CorpusSpec, ...]) -> JSONDocumentList:
+    return [_json_document(spec.to_payload()) for spec in specs]
+
+
+def _corpus_scenario_payloads(scenarios: tuple[CorpusScenario, ...]) -> JSONDocumentList:
+    return [
+        {
+            "provider": scenario.provider,
+            "package_version": scenario.package_version,
+            "corpus_specs": _corpus_spec_payloads(scenario.corpus_specs),
+        }
+        for scenario in scenarios
+    ]
+
+
+def _role_payloads(roles: list[SchemaRoleAssignment]) -> JSONDocumentList:
+    return [role.to_dict() for role in roles]
+
+
+def _proof_role_payloads(roles: list[SchemaRoleProofEntry]) -> JSONDocumentList:
+    return [role.to_dict() for role in roles]
+
 
 @dataclass(frozen=True)
 class SchemaInferRequest:
     provider: str
     db_path: Path
     max_samples: int | None = None
-    privacy_config: Any | None = None
+    privacy_config: JSONDocument | None = None
     cluster: bool = False
     cluster_sample_limit: int = 500
     full_corpus: bool = False
@@ -50,26 +83,19 @@ class SchemaProviderSnapshot:
     corpus_specs: tuple[CorpusSpec, ...] = ()
     corpus_scenarios: tuple[CorpusScenario, ...] = ()
 
-    def to_dict(self) -> dict[str, Any]:
-        payload: dict[str, Any] = {"provider": self.provider, "versions": list(self.versions)}
+    def to_dict(self) -> JSONDocument:
+        payload: JSONDocument = {"provider": self.provider, "versions": list(self.versions)}
         if self.catalog is not None:
             payload["catalog"] = self.catalog.to_dict()
         if self.manifest is not None:
             payload["manifest"] = self.manifest.to_dict()
         if self.corpus_specs:
-            payload["corpus_specs"] = [spec.to_payload() for spec in self.corpus_specs]
+            payload["corpus_specs"] = _corpus_spec_payloads(self.corpus_specs)
         if self.corpus_scenarios:
-            payload["corpus_scenarios"] = [
-                {
-                    "provider": scenario.provider,
-                    "package_version": scenario.package_version,
-                    "corpus_specs": [spec.to_payload() for spec in scenario.corpus_specs],
-                }
-                for scenario in self.corpus_scenarios
-            ]
+            payload["corpus_scenarios"] = _corpus_scenario_payloads(self.corpus_scenarios)
         return payload
 
-    def to_list_item_dict(self) -> dict[str, Any]:
+    def to_list_item_dict(self) -> JSONDocument:
         return {
             "provider": self.provider,
             "versions": list(self.versions),
@@ -88,7 +114,7 @@ class SchemaListResult:
     selected: SchemaProviderSnapshot | None = None
     providers: list[SchemaProviderSnapshot] = field(default_factory=list)
 
-    def to_dict(self) -> dict[str, Any] | list[dict[str, Any]]:
+    def to_dict(self) -> JSONDocument | JSONDocumentList:
         if self.provider is not None:
             if self.selected is None:
                 return {"provider": self.provider, "versions": []}
@@ -108,7 +134,7 @@ class SchemaCompareRequest:
 class SchemaCompareResult:
     diff: SchemaDiff
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> JSONDocument:
         return self.diff.to_dict()
 
 
@@ -127,10 +153,10 @@ class SchemaPromoteResult:
     cluster_id: str
     package_version: str
     package: SchemaVersionPackage | None
-    schema: dict[str, Any] | None
+    schema: JSONDocument | None
     versions: list[str]
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> JSONDocument:
         return {
             "provider": self.provider,
             "cluster_id": self.cluster_id,
@@ -145,9 +171,9 @@ class SchemaRoleAssignment:
     path: str
     role: str
     confidence: float
-    evidence: dict[str, Any]
+    evidence: JSONDocument
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> JSONDocument:
         return {
             "path": self.path,
             "role": self.role,
@@ -163,7 +189,7 @@ class SchemaCoverageSummary:
     with_values: int
     with_role: int
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> JSONDocument:
         return {
             "total_fields": self.total_fields,
             "with_format": self.with_format,
@@ -181,13 +207,13 @@ class SchemaAnnotationSummary:
     roles: list[SchemaRoleAssignment]
     coverage: SchemaCoverageSummary
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> JSONDocument:
         return {
             "semantic_count": self.semantic_count,
             "format_count": self.format_count,
             "values_count": self.values_count,
             "total_enum_values": self.total_enum_values,
-            "roles": [role.to_dict() for role in self.roles],
+            "roles": _role_payloads(self.roles),
             "coverage": self.coverage.to_dict(),
         }
 
@@ -199,12 +225,12 @@ class SchemaRoleProofEntry:
     role: str
     chosen_path: str | None
     chosen_score: float
-    competing: list[dict[str, Any]]
-    evidence: dict[str, Any]
+    competing: JSONDocumentList
+    evidence: JSONDocument
     abstained: bool
     abstain_reason: str | None = None
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> JSONDocument:
         return {
             "role": self.role,
             "chosen_path": self.chosen_path,
@@ -225,9 +251,9 @@ class SchemaReviewProof:
     eligible_roles: list[str]
     ineligible_roles: list[str]
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> JSONDocument:
         return {
-            "roles": [entry.to_dict() for entry in self.roles],
+            "roles": _proof_role_payloads(self.roles),
             "artifact_kind": self.artifact_kind,
             "eligible_roles": self.eligible_roles,
             "ineligible_roles": self.ineligible_roles,
@@ -248,12 +274,12 @@ class SchemaExplainResult:
     version: str
     element_kind: str | None
     package: SchemaVersionPackage | None
-    schema: dict[str, Any]
+    schema: JSONDocument
     annotations: SchemaAnnotationSummary
     review_proof: SchemaReviewProof | None = None
 
-    def to_dict(self) -> dict[str, Any]:
-        payload = {"schema": self.schema, "annotations": self.annotations.to_dict()}
+    def to_dict(self) -> JSONDocument:
+        payload: JSONDocument = {"schema": self.schema, "annotations": self.annotations.to_dict()}
         if self.package is not None:
             payload["package"] = self.package.to_dict()
         if self.review_proof is not None:
@@ -284,7 +310,7 @@ class ArtifactProofResult:
 @dataclass(frozen=True)
 class SchemaPayloadResolveRequest:
     provider: str
-    payload: dict[str, Any]
+    payload: JSONDocument
     source_path: str | None = None
 
 

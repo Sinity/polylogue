@@ -31,6 +31,19 @@ class QAResult:
     invariants_skipped: bool = False
     report_dir: Path | None = None
 
+    def stage_statuses(self) -> dict[str, OutcomeStatus]:
+        """Return stable stage-name to status mapping for reporting surfaces."""
+        return {
+            "audit": self.audit_status,
+            "proof": self.proof_status,
+            "showcase": self.showcase_status,
+            "invariants": self.invariant_status,
+        }
+
+    def failed_stages(self) -> tuple[str, ...]:
+        """Return the names of any failing stages in report order."""
+        return tuple(name for name, status in self.stage_statuses().items() if status is OutcomeStatus.ERROR)
+
     @property
     def audit_status(self) -> OutcomeStatus:
         if self.audit_skipped:
@@ -69,15 +82,7 @@ class QAResult:
 
     @property
     def overall_status(self) -> OutcomeStatus:
-        if any(
-            stage is OutcomeStatus.ERROR
-            for stage in (
-                self.audit_status,
-                self.proof_status,
-                self.showcase_status,
-                self.invariant_status,
-            )
-        ):
+        if self.failed_stages():
             return OutcomeStatus.ERROR
         return OutcomeStatus.OK
 

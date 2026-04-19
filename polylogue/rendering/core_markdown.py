@@ -3,21 +3,39 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from polylogue.assets import asset_path
 from polylogue.lib.roles import Role
+from polylogue.rendering.block_models import RenderableBlock, coerce_renderable_blocks
+from polylogue.rendering.blocks import has_structured_blocks, render_blocks_markdown
 
 if TYPE_CHECKING:
     from polylogue.lib.models import Conversation
     from polylogue.storage.state_views import ConversationRenderProjection
 
 
-def _has_structured_blocks(blocks: list[Any]) -> bool:
-    """Check if a block list contains typed blocks worth rendering structurally."""
-    return any(isinstance(b, dict) and b.get("type") in ("thinking", "tool_use", "tool_result", "code") for b in blocks)
+@dataclass(frozen=True, slots=True)
+class MarkdownAttachment:
+    """Attachment payload used by markdown rendering."""
+
+    attachment_id: str
+    path: str | Path | None
+    provider_meta: object = None
+
+
+@dataclass(frozen=True, slots=True)
+class MarkdownMessage:
+    """Message payload used by markdown rendering."""
+
+    message_id: str
+    role: str
+    text: str | None
+    timestamp: str | None
+    content_blocks: tuple[RenderableBlock, ...] = ()
 
 
 def format_message_text(text: str) -> str:
@@ -34,18 +52,18 @@ def format_message_text(text: str) -> str:
     return text
 
 
-def append_attachment_markdown(att: dict[str, Any], lines: list[str], archive_root: Path) -> None:
+def append_attachment_markdown(att: MarkdownAttachment, lines: list[str], archive_root: Path) -> None:
     """Append a single attachment line to a markdown output buffer."""
     name = None
-    meta = att.get("provider_meta")
+    meta = att.provider_meta
     if meta:
         try:
-            meta_dict = meta if isinstance(meta, dict) else json.loads(meta)
+            meta_dict = meta if isinstance(meta, dict) else json.loads(meta) if isinstance(meta, str) else {}
             name = meta_dict.get("name") or meta_dict.get("provider_id") or meta_dict.get("drive_id")
         except (json.JSONDecodeError, TypeError):
             name = None
-    label = name or att["attachment_id"]
-    path_value = att.get("path") or str(asset_path(archive_root, att["attachment_id"]))
+    label = name or att.attachment_id
+    path_value = att.path or str(asset_path(archive_root, att.attachment_id))
     lines.append(f"- Attachment: {label} ({path_value})")
 
 
@@ -54,8 +72,8 @@ def render_markdown_document(
     title: str,
     provider: str,
     conversation_id: str,
-    messages: list[dict[str, Any]],
-    attachments_by_message: dict[str | None, list[dict[str, Any]]],
+    messages: list[MarkdownMessage],
+    attachments_by_message: dict[str | None, list[MarkdownAttachment]],
     archive_root: Path,
 ) -> str:
     """Render a conversation payload to canonical markdown."""
@@ -63,13 +81,13 @@ def render_markdown_document(
     message_ids: set[str] = set()
 
     for msg in messages:
-        message_id = msg["message_id"]
+        message_id = msg.message_id
         message_ids.add(message_id)
-        role = msg["role"] or "message"
-        text = msg["text"] or ""
-        timestamp = msg.get("timestamp")
+        role = msg.role or "message"
+        text = msg.text or ""
+        timestamp = msg.timestamp
         msg_atts = attachments_by_message.get(message_id, [])
-        content_blocks = msg.get("content_blocks")
+        content_blocks = msg.content_blocks
 
         if not text.strip() and not msg_atts and not content_blocks:
             continue
@@ -80,9 +98,7 @@ def render_markdown_document(
         lines.append("")
 
         # Structure-preserving: if we have typed content blocks, render them
-        if content_blocks and _has_structured_blocks(content_blocks):
-            from polylogue.rendering.blocks import render_blocks_markdown
-
+        if content_blocks and has_structured_blocks(content_blocks):
             block_text = render_blocks_markdown(content_blocks)
             if block_text:
                 lines.append(block_text)
@@ -126,54 +142,56 @@ def _normalize_markdown_attachment(
     *,
     attachment_id: str,
     path: str | Path | None,
-    provider_meta: Any,
-) -> dict[str, Any]:
-    return {
-        "attachment_id": attachment_id,
-        "path": path,
-        "provider_meta": provider_meta,
-    }
+    provider_meta: object,
+) -> MarkdownAttachment:
+    return MarkdownAttachment(
+        attachment_id=attachment_id,
+        path=path,
+        provider_meta=provider_meta,
+    )
 
 
 def _normalize_markdown_message(
     *,
     message_id: str,
-    role: Any,
+    role: object,
     text: str | None,
-    timestamp: Any,
+    timestamp: object,
     default_role: Role | str,
-    content_blocks: list[dict[str, Any]] | None = None,
-) -> dict[str, Any]:
+    content_blocks: tuple[RenderableBlock, ...] = (),
+) -> MarkdownMessage:
     normalized_role = role if isinstance(role, Role) else (Role.normalize(str(role)) if role else default_role)
-    return {
-        "message_id": message_id,
-        "role": str(normalized_role),
-        "text": text,
-        "timestamp": _normalize_markdown_timestamp(timestamp),
-        "content_blocks": content_blocks,
-    }
+    return MarkdownMessage(
+        message_id=message_id,
+        role=str(normalized_role),
+        text=text,
+        timestamp=_normalize_markdown_timestamp(timestamp),
+        content_blocks=content_blocks,
+    )
 
 
 def _group_projection_attachments(
     projection: ConversationRenderProjection,
-) -> dict[str | None, list[Any]]:
-    attachments_by_message: dict[str | None, list[Any]] = {}
+) -> dict[str | None, list[MarkdownAttachment]]:
+    attachments_by_message: dict[str | None, list[MarkdownAttachment]] = {}
     for attachment in projection.attachments:
-        attachments_by_message.setdefault(attachment.message_id, []).append(attachment)
+        attachments_by_message.setdefault(attachment.message_id, []).append(
+            _normalize_markdown_attachment(
+                attachment_id=attachment.attachment_id,
+                path=attachment.path,
+                provider_meta=attachment.provider_meta,
+            )
+        )
     return attachments_by_message
 
 
 def format_conversation_markdown(conv: Conversation) -> str:
     """Format a loaded Conversation domain object to markdown."""
-    attachments_by_message: dict[str | None, list[dict[str, Any]]] = {}
-    normalized_messages = []
+    attachments_by_message: dict[str | None, list[MarkdownAttachment]] = {}
+    normalized_messages: list[MarkdownMessage] = []
 
     for msg in conv.messages:
         message_id = str(msg.id)
-        # Carry content blocks through if the message has them
-        raw_blocks = None
-        if getattr(msg, "content_blocks", None):
-            raw_blocks = [b.model_dump(mode="json") if hasattr(b, "model_dump") else b for b in msg.content_blocks]
         normalized_messages.append(
             _normalize_markdown_message(
                 message_id=message_id,
@@ -181,7 +199,7 @@ def format_conversation_markdown(conv: Conversation) -> str:
                 text=msg.text,
                 timestamp=msg.timestamp,
                 default_role="message",
-                content_blocks=raw_blocks,
+                content_blocks=coerce_renderable_blocks(getattr(msg, "content_blocks", None)),
             )
         )
         if getattr(msg, "attachments", None):
@@ -205,6 +223,8 @@ def format_conversation_markdown(conv: Conversation) -> str:
 
 
 __all__ = [
+    "MarkdownAttachment",
+    "MarkdownMessage",
     "append_attachment_markdown",
     "format_conversation_markdown",
     "format_message_text",

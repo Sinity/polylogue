@@ -3,30 +3,29 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypeAlias
 
 from polylogue.schemas.observation import schema_cluster_id
 from polylogue.schemas.packages import SchemaPackageCatalog, SchemaVersionPackage
-from polylogue.schemas.runtime_registry import canonical_schema_provider
+from polylogue.schemas.runtime_registry import ElementSchemaMap, PublicSchemaDocument, canonical_schema_provider
 from polylogue.schemas.tooling_diff import diff_schemas
-from polylogue.schemas.tooling_models import (
-    ClusterManifest,
-    PropertyChange,
-    SchemaCluster,
-    SchemaDiff,
-)
+from polylogue.schemas.tooling_models import ClusterManifest, PropertyChange, SchemaCluster, SchemaDiff
 from polylogue.types import Provider
 
+SchemaPayload: TypeAlias = Mapping[str, Any]
+ObservedSchemaSample: TypeAlias = object
 
-def _dominant_keys(sample: Any) -> list[str]:
+
+def _dominant_keys(sample: object) -> list[str]:
     if isinstance(sample, dict):
-        return sorted(sample.keys())
+        return sorted(str(key) for key in sample)
     if isinstance(sample, list):
         first_dict = next((item for item in sample if isinstance(item, dict)), None)
         if first_dict is not None:
-            return sorted(first_dict.keys())
+            return sorted(str(key) for key in first_dict)
     return []
 
 
@@ -42,17 +41,17 @@ class SchemaRegistryToolingMixin:
             provider: str,
             *,
             version: str,
-            schema: dict[str, Any],
+            schema: SchemaPayload,
             element_kind: str = "conversation_document",
             first_seen: str | None = None,
             last_seen: str | None = None,
-        ) -> tuple[SchemaVersionPackage, dict[str, dict[str, Any]]]: ...
+        ) -> tuple[SchemaVersionPackage, ElementSchemaMap]: ...
 
         def replace_provider_packages(
             self,
             provider: str,
             catalog: SchemaPackageCatalog,
-            package_schemas: dict[str, dict[str, dict[str, Any]]],
+            package_schemas: Mapping[str, ElementSchemaMap],
         ) -> None: ...
 
         def _catalog_path(self, provider: str) -> Path: ...
@@ -63,34 +62,32 @@ class SchemaRegistryToolingMixin:
             *,
             version: str = "default",
             element_kind: str | None = None,
-        ) -> dict[str, Any] | None: ...
+        ) -> PublicSchemaDocument | None: ...
 
-        def register_schema(self, provider: str, schema: dict[str, Any]) -> str: ...
+        def register_schema(self, provider: str, schema: SchemaPayload) -> str: ...
 
     def replace_provider_schemas(
         self,
         provider: str | Provider,
-        versioned_schemas: list[tuple[str, dict[str, Any]]],
+        versioned_schemas: Sequence[tuple[str, SchemaPayload]],
         *,
         manifest: ClusterManifest | None = None,
     ) -> Path:
         provider_token = canonical_schema_provider(provider)
-        packages = []
-        package_schemas: dict[str, dict[str, dict[str, Any]]] = {}
+        packages: list[SchemaVersionPackage] = []
+        package_schemas: dict[str, ElementSchemaMap] = {}
         for version, schema in versioned_schemas:
-            package, schemas = self._single_element_package(provider_token, version=version, schema=schema.copy())
+            package, schemas = self._single_element_package(provider_token, version=version, schema=dict(schema))
             packages.append(package)
             package_schemas[version] = schemas
+        latest_version = packages[-1].version if packages else None
+        recommended_version = manifest.default_version if manifest is not None else latest_version
         catalog = SchemaPackageCatalog(
             provider=provider_token,
             packages=sorted(packages, key=lambda item: int(item.version[1:])),
-            latest_version=packages[-1].version if packages else None,
-            default_version=(
-                manifest.default_version if manifest is not None else (packages[-1].version if packages else None)
-            ),
-            recommended_version=(
-                manifest.default_version if manifest is not None else (packages[-1].version if packages else None)
-            ),
+            latest_version=latest_version,
+            default_version=recommended_version,
+            recommended_version=recommended_version,
         )
         self.replace_provider_packages(provider_token, catalog, package_schemas)
         if manifest is not None:
@@ -118,7 +115,7 @@ class SchemaRegistryToolingMixin:
     def cluster_samples(
         self,
         provider: str | Provider,
-        samples: list[Any],
+        samples: Sequence[ObservedSchemaSample],
         *,
         source_paths: list[str] | None = None,
         artifact_kinds: list[str] | None = None,
@@ -157,13 +154,17 @@ class SchemaRegistryToolingMixin:
                     artifact_kind=artifact_by_cluster.get(cluster_id, "unspecified"),
                 )
             )
+
         artifact_counts: dict[str, int] = {}
         for cluster in clusters:
             artifact_counts[cluster.artifact_kind] = (
                 artifact_counts.get(cluster.artifact_kind, 0) + cluster.sample_count
             )
         return ClusterManifest(
-            provider=provider_token, clusters=clusters, generated_at=now, artifact_counts=artifact_counts
+            provider=provider_token,
+            clusters=clusters,
+            generated_at=now,
+            artifact_counts=artifact_counts,
         )
 
     def save_cluster_manifest(self, manifest: ClusterManifest) -> Path:
@@ -188,7 +189,7 @@ class SchemaRegistryToolingMixin:
         provider: str | Provider,
         cluster_id: str,
         *,
-        samples: list[dict[str, Any]] | None = None,
+        samples: Sequence[SchemaPayload] | None = None,
     ) -> str:
         provider_token = canonical_schema_provider(provider)
         manifest = self.load_cluster_manifest(provider_token)

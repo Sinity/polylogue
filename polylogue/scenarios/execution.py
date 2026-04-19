@@ -2,15 +2,23 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any
 
 from polylogue.maintenance_targets import build_maintenance_target_catalog
 
 from .corpus import CorpusRequest, CorpusSourceKind
 from .metadata import ScenarioMetadata
+from .payloads import (
+    PayloadDict,
+    PayloadMap,
+    merge_unique_string_tuples,
+    payload_float,
+    payload_int,
+    payload_mapping,
+    payload_string,
+    payload_string_tuple,
+)
 
 
 class ExecutionKind(str, Enum):
@@ -66,63 +74,16 @@ _PRODUCT_SUBCOMMAND_OPERATION_NAMES = {
 }
 
 
-def _payload_items(value: object) -> tuple[object, ...]:
-    if isinstance(value, list | tuple):
-        return tuple(value)
-    return ()
-
-
-def _payload_str(value: object, default: str = "") -> str:
-    return default if value is None else str(value)
-
-
-def _payload_str_tuple(value: object) -> tuple[str, ...]:
-    return tuple(str(item) for item in _payload_items(value))
-
-
-def _payload_int(value: object, key: str) -> int | None:
-    if value is None:
-        return None
-    if isinstance(value, bool):
-        return int(value)
-    if isinstance(value, int):
-        return value
-    if isinstance(value, float | str):
-        return int(value)
-    raise TypeError(f"{key} must be an int-compatible value, got {type(value).__name__}")
-
-
-def _payload_float(value: object, key: str) -> float | None:
-    if value is None:
-        return None
-    if isinstance(value, bool):
-        return float(value)
-    if isinstance(value, int | float):
-        return float(value)
-    if isinstance(value, str):
-        return float(value)
-    raise TypeError(f"{key} must be a float-compatible value, got {type(value).__name__}")
-
-
-def _unique(items: tuple[str, ...]) -> tuple[str, ...]:
-    seen: set[str] = set()
-    merged: list[str] = []
-    for item in items:
-        if item in seen:
-            continue
-        seen.add(item)
-        merged.append(item)
-    return tuple(merged)
-
-
 def _metadata_for_operations(*operation_names: str) -> ScenarioMetadata:
     from polylogue.operations import build_runtime_operation_catalog
 
-    target_names = _unique(tuple(name for name in operation_names if name))
+    target_names = merge_unique_string_tuples(tuple(name for name in operation_names if name))
     operations = build_runtime_operation_catalog().resolve(target_names)
     return ScenarioMetadata(
-        path_targets=_unique(tuple(path for operation in operations for path in operation.path_targets)),
-        artifact_targets=_unique(
+        path_targets=merge_unique_string_tuples(
+            tuple(path for operation in operations for path in operation.path_targets)
+        ),
+        artifact_targets=merge_unique_string_tuples(
             tuple(artifact for operation in operations for artifact in (*operation.consumes, *operation.produces))
         ),
         operation_targets=target_names,
@@ -348,8 +309,8 @@ class PipelineProbeRequest:
             argv.extend(("--max-peak-rss-mb", str(self.max_peak_rss_mb)))
         return tuple(argv)
 
-    def to_payload(self) -> dict[str, Any]:
-        payload: dict[str, Any] = {
+    def to_payload(self) -> PayloadDict:
+        payload: PayloadDict = {
             "stage": self.stage,
             "input_mode": self.input_mode_kind.value,
         }
@@ -397,47 +358,48 @@ class PipelineProbeRequest:
         return payload
 
     @classmethod
-    def from_payload(cls, payload: Mapping[str, object]) -> PipelineProbeRequest:
-        corpus_payload = payload.get("corpus_request")
+    def from_payload(cls, payload: PayloadMap) -> PipelineProbeRequest:
+        corpus_payload = payload_mapping(payload.get("corpus_request"))
         corpus_request: CorpusRequest | None = None
-        if isinstance(corpus_payload, Mapping):
+        if corpus_payload is not None:
             providers = corpus_payload.get("providers")
             corpus_request = CorpusRequest(
-                providers=_payload_str_tuple(providers) or None,
-                source=CorpusSourceKind(_payload_str(corpus_payload.get("source"), CorpusSourceKind.DEFAULT.value)),
-                count=_payload_int(corpus_payload.get("count"), "corpus_request.count")
-                or _PIPELINE_PROBE_DEFAULT_COUNT,
-                messages_min=_payload_int(corpus_payload.get("messages_min"), "corpus_request.messages_min")
+                providers=payload_string_tuple(providers) or None,
+                source=CorpusSourceKind(payload_string(corpus_payload.get("source"), CorpusSourceKind.DEFAULT.value)),
+                count=payload_int(corpus_payload.get("count"), "corpus_request.count") or _PIPELINE_PROBE_DEFAULT_COUNT,
+                messages_min=payload_int(corpus_payload.get("messages_min"), "corpus_request.messages_min")
                 or _PIPELINE_PROBE_DEFAULT_MESSAGES_MIN,
-                messages_max=_payload_int(corpus_payload.get("messages_max"), "corpus_request.messages_max")
+                messages_max=payload_int(corpus_payload.get("messages_max"), "corpus_request.messages_max")
                 or _PIPELINE_PROBE_DEFAULT_MESSAGES_MAX,
-                seed=_payload_int(corpus_payload.get("seed"), "corpus_request.seed") or _PIPELINE_PROBE_DEFAULT_SEED,
-                style=_payload_str(corpus_payload.get("style"), "default") or "default",
-                package_version=_payload_str(corpus_payload.get("package_version"), "default") or "default",
+                seed=payload_int(corpus_payload.get("seed"), "corpus_request.seed") or _PIPELINE_PROBE_DEFAULT_SEED,
+                style=payload_string(corpus_payload.get("style"), "default") or "default",
+                package_version=payload_string(corpus_payload.get("package_version"), "default") or "default",
             )
         return cls(
-            stage=_payload_str(payload.get("stage"), "all") or "all",
+            stage=payload_string(payload.get("stage"), "all") or "all",
             input_mode=PipelineProbeInputMode(
-                _payload_str(payload.get("input_mode"), PipelineProbeInputMode.SYNTHETIC.value)
+                payload_string(payload.get("input_mode"), PipelineProbeInputMode.SYNTHETIC.value)
             ),
             corpus_request=corpus_request,
-            sample_per_provider=_payload_int(payload.get("sample_per_provider"), "sample_per_provider"),
-            source_filters=_payload_str_tuple(payload.get("source_filters")),
-            source_paths=_payload_str_tuple(payload.get("source_paths")),
-            source_name=_payload_str(payload.get("source_name"), "inbox") or "inbox",
-            source_db=_payload_str(payload.get("source_db")) if payload.get("source_db") is not None else None,
+            sample_per_provider=payload_int(payload.get("sample_per_provider"), "sample_per_provider"),
+            source_filters=payload_string_tuple(payload.get("source_filters")),
+            source_paths=payload_string_tuple(payload.get("source_paths")),
+            source_name=payload_string(payload.get("source_name"), "inbox") or "inbox",
+            source_db=payload_string(payload.get("source_db")) if payload.get("source_db") is not None else None,
             source_blob_root=(
-                _payload_str(payload.get("source_blob_root")) if payload.get("source_blob_root") is not None else None
+                payload_string(payload.get("source_blob_root")) if payload.get("source_blob_root") is not None else None
             ),
-            manifest_out=_payload_str(payload.get("manifest_out")) if payload.get("manifest_out") is not None else None,
-            manifest_in=_payload_str(payload.get("manifest_in")) if payload.get("manifest_in") is not None else None,
-            raw_batch_size=_payload_int(payload.get("raw_batch_size"), "raw_batch_size"),
-            ingest_workers=_payload_int(payload.get("ingest_workers"), "ingest_workers"),
+            manifest_out=payload_string(payload.get("manifest_out"))
+            if payload.get("manifest_out") is not None
+            else None,
+            manifest_in=payload_string(payload.get("manifest_in")) if payload.get("manifest_in") is not None else None,
+            raw_batch_size=payload_int(payload.get("raw_batch_size"), "raw_batch_size"),
+            ingest_workers=payload_int(payload.get("ingest_workers"), "ingest_workers"),
             measure_ingest_result_size=bool(payload.get("measure_ingest_result_size", False)),
-            workdir=_payload_str(payload.get("workdir")) if payload.get("workdir") is not None else None,
-            json_out=_payload_str(payload.get("json_out")) if payload.get("json_out") is not None else None,
-            max_total_ms=_payload_float(payload.get("max_total_ms"), "max_total_ms"),
-            max_peak_rss_mb=_payload_float(payload.get("max_peak_rss_mb"), "max_peak_rss_mb"),
+            workdir=payload_string(payload.get("workdir")) if payload.get("workdir") is not None else None,
+            json_out=payload_string(payload.get("json_out")) if payload.get("json_out") is not None else None,
+            max_total_ms=payload_float(payload.get("max_total_ms"), "max_total_ms"),
+            max_peak_rss_mb=payload_float(payload.get("max_peak_rss_mb"), "max_peak_rss_mb"),
         )
 
 
@@ -554,8 +516,8 @@ class ExecutionSpec:
             raise ValueError(f"{self.kind.value} execution cannot render a pytest command")
         return ("pytest", *prefix_args, *self.argv)
 
-    def to_payload(self) -> dict[str, Any]:
-        payload: dict[str, Any] = {"kind": self.kind.value}
+    def to_payload(self) -> PayloadDict:
+        payload: PayloadDict = {"kind": self.kind.value}
         if self.argv:
             payload["argv"] = list(self.argv)
         if self.members:
@@ -576,24 +538,20 @@ class ExecutionSpec:
         return payload
 
     @classmethod
-    def from_payload(cls, payload: Mapping[str, object]) -> ExecutionSpec:
-        kind = ExecutionKind(_payload_str(payload.get("kind")))
-        argv = _payload_str_tuple(payload.get("argv"))
-        members = _payload_str_tuple(payload.get("members"))
-        runner = _payload_str(payload.get("runner"))
-        subcommand = _payload_str(payload.get("subcommand"))
-        max_rss_mb = _payload_int(payload.get("max_rss_mb"), "max_rss_mb") or 0
-        wrapped_payload = payload.get("wrapped")
-        wrapped = cls.from_payload(wrapped_payload) if isinstance(wrapped_payload, Mapping) else None
-        probe_payload = payload.get("pipeline_probe")
-        pipeline_probe = (
-            PipelineProbeRequest.from_payload(probe_payload) if isinstance(probe_payload, Mapping) else None
-        )
-        metadata_payload = payload.get("metadata")
+    def from_payload(cls, payload: PayloadMap) -> ExecutionSpec:
+        kind = ExecutionKind(payload_string(payload.get("kind")))
+        argv = payload_string_tuple(payload.get("argv"))
+        members = payload_string_tuple(payload.get("members"))
+        runner = payload_string(payload.get("runner"))
+        subcommand = payload_string(payload.get("subcommand"))
+        max_rss_mb = payload_int(payload.get("max_rss_mb"), "max_rss_mb") or 0
+        wrapped_payload = payload_mapping(payload.get("wrapped"))
+        wrapped = cls.from_payload(wrapped_payload) if wrapped_payload is not None else None
+        probe_payload = payload_mapping(payload.get("pipeline_probe"))
+        pipeline_probe = PipelineProbeRequest.from_payload(probe_payload) if probe_payload is not None else None
+        metadata_payload = payload_mapping(payload.get("metadata"))
         metadata = (
-            ScenarioMetadata.from_payload(metadata_payload)
-            if isinstance(metadata_payload, Mapping)
-            else ScenarioMetadata()
+            ScenarioMetadata.from_payload(metadata_payload) if metadata_payload is not None else ScenarioMetadata()
         )
         return cls(
             kind=kind,

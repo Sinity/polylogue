@@ -17,7 +17,11 @@ from typing import Any
 import pytest
 
 from polylogue.config import Config
-from polylogue.rendering.core import ConversationFormatter, FormattedConversation
+from polylogue.rendering.core import (
+    ConversationFormatter,
+    FormattedConversation,
+    FormattedConversationMetadata,
+)
 from polylogue.rendering.renderers import (
     HTMLRenderer,
     MarkdownRenderer,
@@ -293,21 +297,49 @@ def test_formatted_conversation_dataclass_fields() -> None:
         provider="chatgpt",
         conversation_id="conv-123",
         markdown_text="# Test\n\nContent",
-        metadata={"message_count": 5},
+        metadata=FormattedConversationMetadata(
+            message_count=5,
+            attachment_count=0,
+            created_at=None,
+            updated_at=None,
+        ),
     )
     assert fc.title == "Test Title"
     assert fc.provider == "chatgpt"
     assert fc.conversation_id == "conv-123"
     assert fc.markdown_text == "# Test\n\nContent"
-    assert fc.metadata == {"message_count": 5}
+    assert fc.metadata == FormattedConversationMetadata(
+        message_count=5,
+        attachment_count=0,
+        created_at=None,
+        updated_at=None,
+    )
 
 
 def test_formatted_conversation_dataclass_equality() -> None:
     fc1 = FormattedConversation(
-        title="Test", provider="claude-ai", conversation_id="c1", markdown_text="md", metadata={}
+        title="Test",
+        provider="claude-ai",
+        conversation_id="c1",
+        markdown_text="md",
+        metadata=FormattedConversationMetadata(
+            message_count=0,
+            attachment_count=0,
+            created_at=None,
+            updated_at=None,
+        ),
     )
     fc2 = FormattedConversation(
-        title="Test", provider="claude-ai", conversation_id="c1", markdown_text="md", metadata={}
+        title="Test",
+        provider="claude-ai",
+        conversation_id="c1",
+        markdown_text="md",
+        metadata=FormattedConversationMetadata(
+            message_count=0,
+            attachment_count=0,
+            created_at=None,
+            updated_at=None,
+        ),
     )
     assert fc1 == fc2
 
@@ -354,7 +386,7 @@ async def test_formatter_format_comprehensive(workspace_env: Any, label: Any, co
         assert result.provider == "test"
         assert result.conversation_id == conv_id
         assert "Hello!" in result.markdown_text
-        assert result.metadata["message_count"] == 1
+        assert result.metadata.message_count == 1
     elif label == "null title":
         (ConversationBuilder(db_path, conv_id).title(None).save())
         result = await formatter.format(conv_id)
@@ -580,8 +612,8 @@ async def test_metadata_comprehensive(workspace_env: Any, label: Any, data: Any,
         builder.save()
         formatter = ConversationFormatter(workspace_env["archive_root"], db_path=db_path)
         result = await formatter.format(conv_id)
-        assert result.metadata["message_count"] == data["messages"], f"Failed {desc}"
-        assert result.metadata["attachment_count"] == data["attachments"], f"Failed {desc}"
+        assert result.metadata.message_count == data["messages"], f"Failed {desc}"
+        assert result.metadata.attachment_count == data["attachments"], f"Failed {desc}"
     elif label == "timestamps":
         (
             ConversationBuilder(db_path, conv_id)
@@ -592,8 +624,8 @@ async def test_metadata_comprehensive(workspace_env: Any, label: Any, data: Any,
         )
         formatter = ConversationFormatter(workspace_env["archive_root"], db_path=db_path)
         result = await formatter.format(conv_id)
-        assert result.metadata["created_at"] == data["created"], f"Failed {desc}"
-        assert result.metadata["updated_at"] == data["updated"], f"Failed {desc}"
+        assert result.metadata.created_at == data["created"], f"Failed {desc}"
+        assert result.metadata.updated_at == data["updated"], f"Failed {desc}"
 
 
 MARKDOWN_STRUCTURE_CASES = [

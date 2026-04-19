@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from pathlib import PurePosixPath
 from typing import Any
 
@@ -13,7 +14,7 @@ NOISE_PATH_TOKENS = frozenset({"...", "//", "/dev/null", "|", "||", "&&", ";"})
 METADATA_FILE_BASENAME_ALLOWLIST = frozenset({"LICENSE", "COPYING", "NOTICE", "Makefile", "Dockerfile", "Justfile"})
 
 
-def classify_tool(name: str, input_data: dict[str, Any]) -> ToolCategory:
+def classify_tool(name: str, input_data: Mapping[str, Any]) -> ToolCategory:
     name_lower = name.lower()
 
     if name_lower in ("read", "view", "cat"):

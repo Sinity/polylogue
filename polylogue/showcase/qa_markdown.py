@@ -2,25 +2,47 @@
 
 from __future__ import annotations
 
-from typing import Any
+from collections.abc import Mapping
+from datetime import datetime, timezone
+from typing import cast
 
 from polylogue.lib.outcomes import OutcomeStatus
 from polylogue.showcase.exercises import GROUPS
 from polylogue.showcase.qa_runner_models import QAResult
 from polylogue.showcase.report_common import status_label
+from polylogue.showcase.report_models import QASessionRecord
+
+
+def _payload_mapping(value: object) -> Mapping[str, object]:
+    if not isinstance(value, Mapping):
+        raise TypeError("Expected mapping payload")
+    return cast(Mapping[str, object], value)
 
 
 def generate_qa_markdown(
     result: QAResult,
     *,
-    session: dict[str, Any] | None = None,
+    session: QASessionRecord | None = None,
     git_sha: str | None = None,
 ) -> str:
     """Generate a stable, diffable Markdown report for a full QA run."""
-    from polylogue.showcase.qa_session_payload import generate_qa_session
+    from polylogue.showcase.qa_session_payload import build_qa_session_record
+    from polylogue.showcase.showcase_report_payloads import build_showcase_session_record
 
     if session is None:
-        session = generate_qa_session(result)
+        showcase_session = (
+            build_showcase_session_record(
+                result.showcase_result,
+                timestamp=datetime.now(timezone.utc).isoformat(),
+            )
+            if result.showcase_result is not None
+            else None
+        )
+        session = build_qa_session_record(
+            result,
+            timestamp=datetime.now(timezone.utc).isoformat(),
+            showcase_session=showcase_session,
+        )
     lines: list[str] = ["# QA Session", ""]
     if git_sha:
         lines.append(f"**Git SHA**: `{git_sha}`")
@@ -51,9 +73,16 @@ def generate_qa_markdown(
         lines.append(f"- Error: {result.audit_error}")
         lines.append("")
 
-    proof_report = session["proof"].get("report")
+    proof_report = session.proof.report
     if proof_report is not None:
-        proof_summary = proof_report["summary"]
+        proof_summary = _payload_mapping(proof_report["summary"])
+        package_versions = _payload_mapping(proof_summary.get("package_versions", {}))
+        element_kinds = _payload_mapping(proof_summary.get("element_kinds", {}))
+        resolution_reasons = _payload_mapping(proof_summary.get("resolution_reasons", {}))
+        providers = {
+            provider: _payload_mapping(stats)
+            for provider, stats in _payload_mapping(proof_report.get("providers", {})).items()
+        }
         lines.extend(
             [
                 "## Artifact Proof",
@@ -71,22 +100,22 @@ def generate_qa_markdown(
                 "",
             ]
         )
-        if proof_summary["package_versions"]:
+        if package_versions:
             lines.extend(["### Resolved Packages", "", "| Package | Count |", "| --- | ---: |"])
-            for version, count in proof_summary["package_versions"].items():
+            for version, count in package_versions.items():
                 lines.append(f"| {version} | {count} |")
             lines.append("")
-        if proof_summary["element_kinds"]:
+        if element_kinds:
             lines.extend(["### Resolved Elements", "", "| Element kind | Count |", "| --- | ---: |"])
-            for element_kind, count in proof_summary["element_kinds"].items():
+            for element_kind, count in element_kinds.items():
                 lines.append(f"| {element_kind} | {count} |")
             lines.append("")
-        if proof_summary["resolution_reasons"]:
+        if resolution_reasons:
             lines.extend(["### Resolution Reasons", "", "| Reason | Count |", "| --- | ---: |"])
-            for reason, count in proof_summary["resolution_reasons"].items():
+            for reason, count in resolution_reasons.items():
                 lines.append(f"| {reason} | {count} |")
             lines.append("")
-        if proof_report["providers"]:
+        if providers:
             lines.extend(
                 [
                     "### Providers",
@@ -95,7 +124,7 @@ def generate_qa_markdown(
                     "| --- | ---: | ---: | ---: | ---: | ---: | ---: |",
                 ]
             )
-            for provider, stats in proof_report["providers"].items():
+            for provider, stats in providers.items():
                 lines.append(
                     f"| {provider} | {stats['total_records']} | {stats['contract_backed_records']} | "
                     f"{stats['unsupported_parseable_records']} | {stats['recognized_non_parseable_records']} | "
@@ -105,7 +134,7 @@ def generate_qa_markdown(
     elif result.proof_error:
         lines.extend(["## Artifact Proof", "", f"- Error: {result.proof_error}", ""])
 
-    showcase_summary = session["showcase"]["summary"]
+    showcase_summary = session.showcase.summary
     if showcase_summary is not None:
         lines.extend(
             [
@@ -113,10 +142,10 @@ def generate_qa_markdown(
                 "",
                 "| Metric | Value |",
                 "| --- | ---: |",
-                f"| Total | {showcase_summary['total']} |",
-                f"| Passed | {showcase_summary['passed']} |",
-                f"| Failed | {showcase_summary['failed']} |",
-                f"| Skipped | {showcase_summary['skipped']} |",
+                f"| Total | {showcase_summary.total} |",
+                f"| Passed | {showcase_summary.passed} |",
+                f"| Failed | {showcase_summary.failed} |",
+                f"| Skipped | {showcase_summary.skipped} |",
                 "",
                 "### Results by Group",
                 "",
@@ -125,26 +154,29 @@ def generate_qa_markdown(
             ]
         )
         for group in GROUPS:
-            counts = session["showcase"]["group_counts"].get(group, {"pass": 0, "fail": 0, "skip": 0})
-            lines.append(f"| {group} | {counts['pass']} | {counts['fail']} | {counts['skip']} |")
+            counts = session.showcase.group_counts.get(group)
+            pass_count = counts.passed if counts is not None else 0
+            fail_count = counts.failed if counts is not None else 0
+            skip_count = counts.skipped if counts is not None else 0
+            lines.append(f"| {group} | {pass_count} | {fail_count} | {skip_count} |")
         lines.append("")
 
-    invariant_summary = session["invariants"]["summary"]
-    if not session["invariants"]["skipped"]:
+    invariant_summary = session.invariants.summary
+    if not session.invariants.skipped:
         lines.extend(
             [
                 "## Invariants",
                 "",
-                f"- Passed: {invariant_summary['passed']}",
-                f"- Failed: {invariant_summary['failed']}",
-                f"- Skipped: {invariant_summary['skipped']}",
+                f"- Passed: {invariant_summary.passed}",
+                f"- Failed: {invariant_summary.failed}",
+                f"- Skipped: {invariant_summary.skipped}",
             ]
         )
-        failures = [check for check in session["invariants"]["checks"] if check["status"] == OutcomeStatus.ERROR.value]
+        failures = [check for check in session.invariants.checks if check.status == OutcomeStatus.ERROR.value]
         if failures:
             lines.extend(["", "### Failures", ""])
             for failure in failures:
-                lines.append(f"- `{failure['invariant']}` @ `{failure['exercise']}`: {failure.get('error', '')}")
+                lines.append(f"- `{failure.invariant}` @ `{failure.exercise}`: {failure.error or ''}")
         lines.append("")
 
     return "\n".join(lines)

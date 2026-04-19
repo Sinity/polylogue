@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from polylogue.lib.roles import Role
 from polylogue.pipeline.services.ingest_batch import (
     _build_batch_memory_observation,
     _drain_ready_conversation_entries,
@@ -39,6 +40,7 @@ from polylogue.pipeline.services.ingest_worker import (
 )
 from polylogue.storage.backends.connection import open_connection
 from polylogue.storage.state_views import RawConversationStateUpdate
+from polylogue.types import AttachmentId, ContentBlockType, ContentHash, ConversationId, MessageId
 
 
 def _float_value(value: object) -> float:
@@ -56,19 +58,20 @@ def _conversation_data(
     attachment_tuples: list[AttachmentTuple] | None = None,
     attachment_ref_tuples: list[AttachmentRefTuple] | None = None,
 ) -> ConversationData:
+    typed_conversation_id = ConversationId(conversation_id)
     conversation_tuple: ConversationTuple = (
-        conversation_id,
+        typed_conversation_id,
         "codex",
         conversation_id.split(":", 1)[-1],
         "Conversation",
         "2026-04-02T00:00:00Z",
         "2026-04-02T00:00:00Z",
         0.0,
-        content_hash,
+        ContentHash(content_hash),
         None,
         "{}",
         1,
-        parent_conversation_id,
+        ConversationId(parent_conversation_id) if parent_conversation_id is not None else None,
         None,
         None,
     )
@@ -95,13 +98,13 @@ def _message_tuple(
     sort_key: float,
 ) -> MessageTuple:
     return (
+        MessageId(message_id),
+        ConversationId(conversation_id),
         message_id,
-        conversation_id,
-        message_id,
-        role,
+        Role.normalize(role),
         text,
         sort_key,
-        content_hash,
+        ContentHash(content_hash),
         1,
         None,
         0,
@@ -122,10 +125,10 @@ def _block_tuple(
 ) -> ContentBlockTuple:
     return (
         block_id,
-        message_id,
-        conversation_id,
+        MessageId(message_id),
+        ConversationId(conversation_id),
         block_index,
-        "text",
+        ContentBlockType.TEXT,
         text,
         None,
         None,
@@ -138,7 +141,7 @@ def _block_tuple(
 
 def _attachment_tuple(attachment_id: str, *, mime_type: str = "image/png") -> AttachmentTuple:
     return (
-        attachment_id,
+        AttachmentId(attachment_id),
         mime_type,
         1024,
         None,
@@ -152,11 +155,14 @@ def _attachment_ref_tuple(
     conversation_id: str,
     message_id: str,
 ) -> AttachmentRefTuple:
+    typed_attachment_id = AttachmentId(attachment_id)
+    typed_conversation_id = ConversationId(conversation_id)
+    typed_message_id = MessageId(message_id)
     return (
-        _make_ref_id(attachment_id, conversation_id, message_id),
-        attachment_id,
-        conversation_id,
-        message_id,
+        _make_ref_id(typed_attachment_id, typed_conversation_id, typed_message_id),
+        typed_attachment_id,
+        typed_conversation_id,
+        typed_message_id,
         None,
     )
 
@@ -261,7 +267,7 @@ def test_write_conversation_replaces_runtime_rows_on_content_change(tmp_path: Pa
                     text="beta",
                 ),
             ],
-            stats_tuple=("codex:replace", "codex", 2, 2, 0, 0),
+            stats_tuple=(ConversationId("codex:replace"), "codex", 2, 2, 0, 0),
             attachment_tuples=[
                 _attachment_tuple("att-1"),
                 _attachment_tuple("att-2", mime_type="image/jpeg"),
@@ -297,7 +303,7 @@ def test_write_conversation_replaces_runtime_rows_on_content_change(tmp_path: Pa
                     text="alpha updated",
                 )
             ],
-            stats_tuple=("codex:replace", "codex", 1, 2, 0, 0),
+            stats_tuple=(ConversationId("codex:replace"), "codex", 1, 2, 0, 0),
             attachment_tuples=[_attachment_tuple("att-1")],
             attachment_ref_tuples=[_attachment_ref_tuple("att-1", "codex:replace", "msg-1")],
         )

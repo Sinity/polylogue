@@ -4,11 +4,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
+from polylogue.rendering.block_models import coerce_renderable_blocks
 from polylogue.rendering.core_markdown import (
     _group_projection_attachments,
-    _normalize_markdown_attachment,
     _normalize_markdown_message,
     render_markdown_document,
 )
@@ -20,6 +20,16 @@ if TYPE_CHECKING:
 
 
 @dataclass
+class FormattedConversationMetadata:
+    """Typed metadata carried alongside the rendered markdown."""
+
+    message_count: int
+    attachment_count: int
+    created_at: str | None
+    updated_at: str | None
+
+
+@dataclass
 class FormattedConversation:
     """Structured representation of a rendered conversation."""
 
@@ -27,7 +37,7 @@ class FormattedConversation:
     provider: str
     conversation_id: str
     markdown_text: str
-    metadata: dict[str, Any]
+    metadata: FormattedConversationMetadata
 
 
 class ConversationFormatter:
@@ -65,23 +75,11 @@ class ConversationFormatter:
                 text=message.text,
                 timestamp=message.sort_key,
                 default_role="message",
-                content_blocks=[b.model_dump(mode="json") for b in message.content_blocks]
-                if message.content_blocks
-                else None,
+                content_blocks=coerce_renderable_blocks(message.content_blocks),
             )
             for message in projection.messages
         ]
-        normalized_attachments = {
-            key: [
-                _normalize_markdown_attachment(
-                    attachment_id=attachment.attachment_id,
-                    path=attachment.path,
-                    provider_meta=attachment.provider_meta,
-                )
-                for attachment in attachments
-            ]
-            for key, attachments in _group_projection_attachments(projection).items()
-        }
+        normalized_attachments = _group_projection_attachments(projection)
         markdown_text = render_markdown_document(
             title=title,
             provider=provider,
@@ -95,12 +93,12 @@ class ConversationFormatter:
             provider=provider,
             conversation_id=conversation_id,
             markdown_text=markdown_text,
-            metadata={
-                "message_count": len(projection.messages),
-                "attachment_count": len(projection.attachments),
-                "created_at": conversation.created_at,
-                "updated_at": conversation.updated_at,
-            },
+            metadata=FormattedConversationMetadata(
+                message_count=len(projection.messages),
+                attachment_count=len(projection.attachments),
+                created_at=conversation.created_at,
+                updated_at=conversation.updated_at,
+            ),
         )
 
     async def format(self, conversation_id: str) -> FormattedConversation:
@@ -110,4 +108,5 @@ class ConversationFormatter:
 __all__ = [
     "ConversationFormatter",
     "FormattedConversation",
+    "FormattedConversationMetadata",
 ]

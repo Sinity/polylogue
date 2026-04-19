@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import AsyncIterator
 from datetime import datetime, timezone
 from pathlib import Path
 from time import perf_counter
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from polylogue.publication import SitePublicationManifest
 from polylogue.rendering.renderers.html import HTMLMessageRenderer, PygmentsHighlighter
@@ -19,11 +20,11 @@ from polylogue.site.publication_flow import (
     record_site_publication_manifest,
     write_site_publication_manifest,
 )
+from polylogue.site.search import SearchBuildStatus
 from polylogue.site.site_builder_archive import (
     generate_conversation_page_for_builder,
     iter_conversation_indexes_for_builder,
     scan_archive_for_builder,
-    search_document_for_builder,
 )
 from polylogue.site.site_builder_pages import (
     generate_dashboard_for_builder,
@@ -116,13 +117,13 @@ class SiteBuilder:
                 )
                 dashboard_pages = 1
 
-            search_status = "disabled"
-            if self.config.enable_search and self.config.search_provider == "pagefind":
+            search_status = SearchBuildStatus.DISABLED
+            if self.config.uses_pagefind:
                 if self._progress_callback is not None:
                     self._progress_callback(0, desc="Building site: writing pagefind config")
                 search_status = await asyncio.to_thread(self._generate_pagefind_config)
             elif self.config.enable_search:
-                search_status = "json_index_written"
+                search_status = SearchBuildStatus.JSON_INDEX_WRITTEN
 
             duration_ms = int((perf_counter() - build_started) * 1000)
             backend, repository = self._open_storage()
@@ -137,7 +138,7 @@ class SiteBuilder:
                 duration_ms=duration_ms,
                 provider_index_pages=provider_index_pages,
                 dashboard_pages=dashboard_pages,
-                search_status=search_status,
+                search_status=str(search_status),
                 incremental=incremental,
                 latest_run=await load_latest_run_summary(backend),
                 artifact_proof=await load_artifact_proof_summary_for_backend(backend),
@@ -155,8 +156,12 @@ class SiteBuilder:
                 self._repository = None
 
     async def _iter_conversation_indexes(
-        self, *, provider: str | None = None, backend: Any = None, repository: Any = None
-    ) -> Any:
+        self,
+        *,
+        provider: str | None = None,
+        backend: SQLiteBackend | None = None,
+        repository: ConversationRepository | None = None,
+    ) -> AsyncIterator[ConversationIndex]:
         async for conversation in iter_conversation_indexes_for_builder(
             self,
             provider=provider,
@@ -165,14 +170,15 @@ class SiteBuilder:
         ):
             yield conversation
 
-    def _search_document(self, conversation: ConversationIndex) -> dict[str, str]:
-        return search_document_for_builder(self, conversation)
-
     async def _scan_archive(self, *, incremental: bool) -> tuple[ArchiveIndexStats, ConversationPageBuildStats]:
         return await scan_archive_for_builder(self, incremental=incremental)
 
     async def _generate_conversation_page(
-        self, repository: Any, conversation: ConversationIndex, *, incremental: bool = True
+        self,
+        repository: ConversationRepository,
+        conversation: ConversationIndex,
+        *,
+        incremental: bool = True,
     ) -> str:
         return await generate_conversation_page_for_builder(
             self,
@@ -196,7 +202,7 @@ class SiteBuilder:
     def _search_markup(self) -> str:
         return search_markup_for_builder(self)
 
-    def _generate_pagefind_config(self) -> str:
+    def _generate_pagefind_config(self) -> SearchBuildStatus:
         return generate_pagefind_config_for_builder(self)
 
 

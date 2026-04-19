@@ -5,18 +5,14 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
 
-from polylogue.scenarios import ScenarioMetadata
+from polylogue.scenarios import PayloadDict
+from polylogue.showcase.report_models import (
+    ShowcaseExerciseRecord,
+    ShowcaseSessionRecord,
+    canonical_showcase_session,
+)
 from polylogue.showcase.runner import ExerciseResult, ShowcaseResult
-
-
-def _serialize_exercise_corpus_specs(exercise: object) -> list[dict[str, Any]] | None:
-    corpus_specs = getattr(exercise, "corpus_specs", ())
-    if not isinstance(corpus_specs, (list, tuple)):
-        return None
-    payloads = [spec.to_payload() for spec in corpus_specs if hasattr(spec, "to_payload")]
-    return payloads or None
 
 
 def serialize_showcase_exercise(
@@ -24,62 +20,27 @@ def serialize_showcase_exercise(
     *,
     include_description: bool = True,
     include_tier: bool = False,
-) -> dict[str, Any]:
-    entry: dict[str, Any] = {
-        "name": result.exercise.name,
-        "group": result.exercise.group,
-        "passed": result.passed,
-        "exit_code": result.exit_code,
-        "duration_ms": round(result.duration_ms, 1),
-    }
-    if include_description:
-        entry["description"] = result.exercise.description
-    if include_tier:
-        entry["tier"] = result.exercise.tier
-    entry.update(ScenarioMetadata.from_object(result.exercise).to_payload())
-    corpus_spec_payloads = _serialize_exercise_corpus_specs(result.exercise)
-    if corpus_spec_payloads is not None:
-        entry["corpus_specs"] = corpus_spec_payloads
-    if result.skipped:
-        entry["skipped"] = True
-        entry["skip_reason"] = result.skip_reason
-    if result.error:
-        entry["error"] = result.error
-    return entry
+) -> PayloadDict:
+    return ShowcaseExerciseRecord.from_result(
+        result,
+        include_description=include_description,
+        include_tier=include_tier,
+    ).to_payload()
 
 
 def showcase_summary_payload(result: ShowcaseResult) -> dict[str, int | float]:
-    return {
-        "total": len(result.results),
-        "passed": result.passed,
-        "failed": result.failed,
-        "skipped": result.skipped,
-        "total_duration_ms": round(result.total_duration_ms, 1),
-    }
+    return result.summary().to_payload()
 
 
 def build_showcase_session_payload(
     result: ShowcaseResult,
     *,
     timestamp: str,
-) -> dict[str, Any]:
-    return {
-        "schema_version": 1,
-        "timestamp": timestamp,
-        "summary": showcase_summary_payload(result),
-        "group_counts": result.group_counts(),
-        "exercises": [
-            serialize_showcase_exercise(
-                report,
-                include_description=False,
-                include_tier=True,
-            )
-            for report in result.results
-        ],
-    }
+) -> PayloadDict:
+    return canonical_showcase_session(result, timestamp=timestamp).to_payload()
 
 
-def generate_showcase_session(result: ShowcaseResult) -> dict[str, Any]:
+def generate_showcase_session(result: ShowcaseResult) -> PayloadDict:
     return build_showcase_session_payload(
         result,
         timestamp=datetime.now(timezone.utc).isoformat(),
@@ -94,6 +55,11 @@ def write_showcase_session(result: ShowcaseResult, audit_dir: Path) -> Path:
     return out_path
 
 
+def build_showcase_session_record(result: ShowcaseResult, *, timestamp: str) -> ShowcaseSessionRecord:
+    """Return the typed showcase session record before JSON serialization."""
+    return canonical_showcase_session(result, timestamp=timestamp)
+
+
 def generate_json_report(result: ShowcaseResult) -> str:
     report = {
         **showcase_summary_payload(result),
@@ -104,6 +70,7 @@ def generate_json_report(result: ShowcaseResult) -> str:
 
 __all__ = [
     "build_showcase_session_payload",
+    "build_showcase_session_record",
     "generate_json_report",
     "generate_showcase_session",
     "serialize_showcase_exercise",

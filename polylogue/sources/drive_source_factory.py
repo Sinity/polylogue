@@ -9,16 +9,17 @@ from .drive_gateway import (
     _resolve_retry_base,
 )
 from .drive_source_client import DriveSourceClient
+from .drive_types import DriveConfigLike, DriveUILike
 
 
 def build_drive_source_client(
     *,
-    ui: object | None = None,
+    ui: DriveUILike | None = None,
     credentials_path: Path | None = None,
     token_path: Path | None = None,
     retries: int | None = None,
     retry_base: float | None = None,
-    config: object | None = None,
+    config: DriveConfigLike | None = None,
 ) -> DriveSourceClient:
     """Build the canonical Drive source client from auth and gateway primitives."""
     auth_manager = DriveAuthManager(

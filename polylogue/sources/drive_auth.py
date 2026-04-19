@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import shutil
 from pathlib import Path
-from typing import Any
+from typing import cast
 
 from polylogue.logging import get_logger
 
@@ -18,42 +18,48 @@ from .drive_auth_support import (
     refresh_credentials_if_needed,
     run_manual_auth_flow,
 )
-from .drive_types import SCOPES, DriveAuthError
-from .token_store import TokenStore, create_token_store
+from .drive_types import (
+    SCOPES,
+    CachedCredentialState,
+    DriveAuthError,
+    DriveAuthFlowFactory,
+    DriveAuthFlowLike,
+    DriveConfigLike,
+    DriveCredentialLike,
+    DriveCredentialsFactory,
+    DriveLocalServerFlowLike,
+    DriveTokenStoreLike,
+    DriveUILike,
+)
+from .token_store import create_token_store
 
 logger = get_logger(__name__)
 _import_auth_module = import_auth_module
 
 
-# ---------------------------------------------------------------------------
-# Path resolution helpers
-# ---------------------------------------------------------------------------
+def _configured_path(config: DriveConfigLike | None, attribute: str) -> Path | None:
+    if config is None:
+        return None
+    configured = getattr(config, attribute, None)
+    if configured:
+        return Path(configured)
+    return None
 
 
-def default_credentials_path(config: object | None = None) -> Path:
+def default_credentials_path(config: DriveConfigLike | None = None) -> Path:
     """Get default credentials path, optionally from DriveConfig."""
-    if config is not None and hasattr(config, "credentials_path"):
-        cred_path = getattr(config, "credentials_path", None)
-        if cred_path:
-            return Path(cred_path)
-    return drive_credentials_path()
+    return _configured_path(config, "credentials_path") or drive_credentials_path()
 
 
-def default_token_path(config: object | None = None) -> Path:
+def default_token_path(config: DriveConfigLike | None = None) -> Path:
     """Get default token path, optionally from DriveConfig."""
-    if config is not None and hasattr(config, "token_path"):
-        token_path = getattr(config, "token_path", None)
-        if token_path:
-            return Path(token_path)
-    return drive_token_path()
+    return _configured_path(config, "token_path") or drive_token_path()
 
 
-def _resolve_credentials_path(ui: object | None, config: object | None = None) -> Path:
+def _resolve_credentials_path(ui: DriveUILike | _PromptBridge | None, config: DriveConfigLike | None = None) -> Path:
     """Resolve credentials path from config, environment, or defaults."""
-    if config is not None and hasattr(config, "credentials_path"):
-        cred_path = getattr(config, "credentials_path", None)
-        if cred_path:
-            return Path(cred_path)
+    if configured := _configured_path(config, "credentials_path"):
+        return configured
 
     env_path = os.environ.get("POLYLOGUE_CREDENTIAL_PATH")
     if env_path:
@@ -63,9 +69,9 @@ def _resolve_credentials_path(ui: object | None, config: object | None = None) -
     if default_path.exists():
         return default_path
 
-    if ui is not None and not getattr(ui, "plain", True):
+    if ui is not None and not ui.plain:
         prompt = f"Path to Google OAuth client JSON (default {default_path}):"
-        response = getattr(ui, "input", lambda p, default: None)(prompt, default=str(default_path))
+        response = ui.input(prompt, default=str(default_path))
         if response:
             candidate = Path(response).expanduser()
             if candidate.exists():
@@ -79,12 +85,10 @@ def _resolve_credentials_path(ui: object | None, config: object | None = None) -
     )
 
 
-def _resolve_token_path(config: object | None = None) -> Path:
+def _resolve_token_path(config: DriveConfigLike | None = None) -> Path:
     """Resolve token path from config, environment, or defaults."""
-    if config is not None and hasattr(config, "token_path"):
-        token_path = getattr(config, "token_path", None)
-        if token_path:
-            return Path(token_path)
+    if configured := _configured_path(config, "token_path"):
+        return configured
 
     env_path = os.environ.get("POLYLOGUE_TOKEN_PATH")
     if env_path:
@@ -99,48 +103,58 @@ class DriveAuthManager:
     def __init__(
         self,
         *,
-        ui: object | None = None,
+        ui: DriveUILike | None = None,
         credentials_path: Path | None = None,
         token_path: Path | None = None,
-        config: object | None = None,
+        config: DriveConfigLike | None = None,
     ) -> None:
         self._credentials_path = credentials_path
         self._token_path = token_path
         self._config = config
         self._prompter: DriveAuthPrompter | None = None
-        if ui is not None and not getattr(ui, "plain", True):
+        if ui is not None and not ui.plain:
             self._prompter = UIAuthPrompter(ui)
 
         resolved_token_path = token_path or _resolve_token_path(config)
-        self._token_store: TokenStore = create_token_store(resolved_token_path.parent)
+        self._token_store: DriveTokenStoreLike = create_token_store(resolved_token_path.parent)
 
     def _resolved_token_path(self) -> Path:
         return self._token_path or _resolve_token_path(self._config)
 
-    def _load_cached_credentials(self, credentials_cls: Any, token_path: Path) -> Any:
+    def _load_cached_credentials(
+        self,
+        credentials_cls: DriveCredentialsFactory,
+        token_path: Path,
+    ) -> CachedCredentialState:
         return load_cached_credentials(
             token_store=self._token_store,
             credentials_cls=credentials_cls,
             token_path=token_path,
         )
 
-    def _persist_token(self, creds: Any, token_path: Path) -> None:
+    def _persist_token(self, creds: DriveCredentialLike, token_path: Path) -> None:
         persist_token(token_store=self._token_store, creds=creds, token_path=token_path)
 
-    def _refresh_credentials_if_needed(self, creds: Any, token_path: Path) -> Any:
+    def _refresh_credentials_if_needed(
+        self,
+        creds: DriveCredentialLike | None,
+        token_path: Path,
+    ) -> DriveCredentialLike | None:
         return refresh_credentials_if_needed(
             creds=creds,
             token_path=token_path,
             token_store=self._token_store,
         )
 
-    def _run_manual_auth_flow(self, flow: Any) -> Any:
-        return run_manual_auth_flow(flow=flow, prompter=self._prompter)
+    def _run_manual_auth_flow(self, flow: DriveAuthFlowLike) -> DriveCredentialLike:
+        return cast(DriveCredentialLike, run_manual_auth_flow(flow=flow, prompter=self._prompter))
 
-    def load_credentials(self) -> Any:
+    def load_credentials(self) -> DriveCredentialLike:
         """Load or acquire Google OAuth credentials. Triggers interactive auth if needed."""
-        credentials_cls = _import_auth_module("google.oauth2.credentials").Credentials
-        installed_app_flow_cls = _import_auth_module("google_auth_oauthlib.flow").InstalledAppFlow
+        credentials_module = _import_auth_module("google.oauth2.credentials")
+        flow_module = _import_auth_module("google_auth_oauthlib.flow")
+        credentials_cls = cast(DriveCredentialsFactory, credentials_module.Credentials)
+        installed_app_flow_cls = cast(DriveAuthFlowFactory, flow_module.InstalledAppFlow)
 
         token_path = self._resolved_token_path()
         cached = self._load_cached_credentials(credentials_cls, token_path)
@@ -154,7 +168,6 @@ class DriveAuthManager:
             )
 
         credentials_path = self._credentials_path or _resolve_credentials_path(
-            # Pass None when no interactive prompter — resolution will error if creds missing
             None if self._prompter is None else _PromptBridge(self._prompter),
             self._config,
         )
@@ -165,7 +178,8 @@ class DriveAuthManager:
                 "Drive authorization required but no interactive UI is available. "
                 "Run with --interactive or set POLYLOGUE_TOKEN_PATH with a valid token."
             )
-        flow = installed_app_flow_cls.from_client_secrets_file(str(credentials_path), SCOPES)
+
+        flow: DriveLocalServerFlowLike = installed_app_flow_cls.from_client_secrets_file(str(credentials_path), SCOPES)
         try:
             creds = flow.run_local_server(open_browser=False, port=0)
         except OSError as exc:

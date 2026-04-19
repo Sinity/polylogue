@@ -102,7 +102,7 @@ class HTMLRenderer:
         title = formatted.title
         provider = formatted.provider
         conversation_id = formatted.conversation_id
-        created_at = formatted.metadata["created_at"]
+        created_at = formatted.metadata.created_at
         md_text = formatted.markdown_text
 
         html_messages = build_projection_html_messages(

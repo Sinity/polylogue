@@ -12,7 +12,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from polylogue.scenarios import ExecutionKind, pytest_execution, run_execution
+from polylogue.scenarios import ExecutionKind, ScenarioMetadata, pytest_execution, run_execution
 
 from .authored_scenario_catalog import get_authored_scenario_catalog
 from .benchmark_catalog import BenchmarkCampaignEntry
@@ -73,6 +73,7 @@ class CampaignResult:
     path_targets: list[str] = field(default_factory=list)
     artifact_targets: list[str] = field(default_factory=list)
     operation_targets: list[str] = field(default_factory=list)
+    maintenance_targets: list[str] = field(default_factory=list)
     tags: list[str] = field(default_factory=list)
 
 
@@ -160,7 +161,13 @@ def _render_markdown(result: CampaignResult) -> str:
         f"- Fail threshold: `{result.fail_pct:.1f}%`",
         "",
     ]
-    if result.path_targets or result.artifact_targets or result.operation_targets or result.tags:
+    if (
+        result.path_targets
+        or result.artifact_targets
+        or result.operation_targets
+        or result.maintenance_targets
+        or result.tags
+    ):
         lines.extend(["## Scenario Metadata", ""])
         lines.append(f"- Origin: `{result.origin}`")
         if result.path_targets:
@@ -169,6 +176,8 @@ def _render_markdown(result: CampaignResult) -> str:
             lines.append(f"- Artifact targets: `{', '.join(result.artifact_targets)}`")
         if result.operation_targets:
             lines.append(f"- Operation targets: `{', '.join(result.operation_targets)}`")
+        if result.maintenance_targets:
+            lines.append(f"- Maintenance targets: `{', '.join(result.maintenance_targets)}`")
         if result.tags:
             lines.append(f"- Tags: `{', '.join(result.tags)}`")
         lines.append("")
@@ -253,6 +262,7 @@ def run_campaign(
     fail_threshold = campaign.fail_pct if fail_pct is None else fail_pct
     worst_regression = regressions[0].delta_pct if regressions else None
 
+    metadata = ScenarioMetadata.from_object(campaign)
     result = CampaignResult(
         campaign=campaign.name,
         description=campaign.description,
@@ -274,7 +284,12 @@ def run_campaign(
         fail_pct=fail_threshold,
         regressions=[asdict(item) for item in regressions],
         worst_regression_pct=worst_regression,
-        **campaign.to_payload(),
+        origin=metadata.origin,
+        path_targets=list(metadata.path_targets),
+        artifact_targets=list(metadata.artifact_targets),
+        operation_targets=list(metadata.operation_targets),
+        maintenance_targets=list(metadata.maintenance_targets),
+        tags=list(metadata.tags),
     )
 
     artifact_json.write_text(json.dumps(asdict(result), indent=2, sort_keys=True) + "\n")
