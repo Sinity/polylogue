@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any
+from typing import Protocol, TypeAlias
 
 from polylogue.schemas.field_stats import _collect_field_stats
 from polylogue.schemas.generation_support import (
@@ -19,24 +19,31 @@ from polylogue.schemas.observation import ProviderConfig
 from polylogue.schemas.redaction_report import SchemaReport
 from polylogue.schemas.shape_fingerprint import _structure_fingerprint
 
+SchemaPayload: TypeAlias = dict[str, object]
+
+
+class PrivacyConfigLike(Protocol):
+    level: str
+
+
 _STRUCTURE_EXEMPLARS_PER_FINGERPRINT = 8
 
 
 def _generate_cluster_schema(
     provider: str,
     config: ProviderConfig,
-    samples: list[dict[str, Any]],
+    samples: list[SchemaPayload],
     conv_ids: list[str | None],
     *,
-    privacy_config: Any | None,
+    privacy_config: PrivacyConfigLike | None,
     full_corpus: bool = False,
     artifact_kind: str | None = None,
-) -> tuple[dict[str, Any], SchemaReport | None]:
+) -> tuple[SchemaPayload, SchemaReport | None]:
     if not samples:
         return {"type": "object", "description": "No samples available"}, None
 
     builder = SchemaBuilder()
-    fingerprint_counts: dict[Any, int] = {}
+    fingerprint_counts: dict[object, int] = {}
     exemplar_cap = None if full_corpus else _STRUCTURE_EXEMPLARS_PER_FINGERPRINT
     for sample in samples:
         fingerprint = _structure_fingerprint(sample)
@@ -45,8 +52,7 @@ def _generate_cluster_schema(
             builder.add_object(sample)
             fingerprint_counts[fingerprint] = seen + 1
 
-    schema = builder.to_schema()
-    schema = collapse_dynamic_keys(schema)
+    schema = collapse_dynamic_keys(builder.to_schema())
     schema = _remove_nested_required(schema)
     if config.sample_granularity == "record":
         schema.pop("required", None)
@@ -67,13 +73,13 @@ def _generate_cluster_schema(
         field_stats,
         schema,
         privacy_config=privacy_config,
-        privacy_level=getattr(privacy_config, "level", "standard") if privacy_config else "standard",
+        privacy_level=privacy_config.level if privacy_config else "standard",
     )
     return schema, redaction_report
 
 
 def _apply_schema_metadata(
-    schema: dict[str, Any],
+    schema: SchemaPayload,
     *,
     provider: str,
     config: ProviderConfig,
@@ -94,12 +100,12 @@ def _apply_schema_metadata(
 
 
 def generate_schema_from_samples(
-    samples: list[dict[str, Any]],
+    samples: list[SchemaPayload],
     *,
     annotate: bool = True,
     max_stats_samples: int = 500,
     max_genson_samples: int | None = None,
-) -> dict[str, Any]:
+) -> SchemaPayload:
     if not GENSON_AVAILABLE:
         raise ImportError("genson is required for schema generation. Install with: pip install genson")
 
@@ -110,15 +116,13 @@ def generate_schema_from_samples(
     if max_genson_samples and len(samples) > max_genson_samples:
         import random
 
-        rng = random.Random(0)
-        genson_samples = rng.sample(samples, max_genson_samples)
+        genson_samples = random.Random(0).sample(samples, max_genson_samples)
 
     builder = SchemaBuilder()
     for sample in genson_samples:
         builder.add_object(sample)
 
-    schema = builder.to_schema()
-    schema = collapse_dynamic_keys(schema)
+    schema = collapse_dynamic_keys(builder.to_schema())
     schema = _remove_nested_required(schema)
 
     if annotate:
@@ -126,8 +130,7 @@ def generate_schema_from_samples(
         if max_stats_samples and len(samples) > max_stats_samples:
             import random
 
-            rng = random.Random(42)
-            stats_samples = rng.sample(samples, max_stats_samples)
+            stats_samples = random.Random(42).sample(samples, max_stats_samples)
 
         field_stats = _collect_field_stats(stats_samples)
         schema = _annotate_schema(schema, field_stats)
