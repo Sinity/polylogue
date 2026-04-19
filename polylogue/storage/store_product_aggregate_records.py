@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Any
-
 from pydantic import BaseModel, field_validator
+
+from polylogue.archive_product_models import DaySessionSummaryPayload
 
 from .store_constants import SESSION_PRODUCT_MATERIALIZER_VERSION
 
@@ -46,7 +46,7 @@ class DaySessionSummaryRecord(BaseModel):
     total_words: int = 0
     work_event_breakdown: dict[str, int]
     repos_active: tuple[str, ...] = ()
-    payload: dict[str, Any]
+    payload: DaySessionSummaryPayload
     search_text: str
 
     @field_validator("day", "provider_name", "materialized_at", "search_text")

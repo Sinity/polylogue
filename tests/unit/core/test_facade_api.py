@@ -353,7 +353,7 @@ class TestPolylogueArchiveProducts:
         assert enrichments[0].enrichment.confidence >= 0.0
         assert any(item.conversation_id == "conv-root" for item in phases)
         assert len(threads) == 1
-        assert threads[0].thread["session_count"] == 2
+        assert threads[0].thread.session_count == 2
 
         tag_rollups = await archive.list_session_tag_rollup_products(SessionTagRollupQuery(provider="claude-code"))
         day_summaries = await archive.list_day_session_summary_products(
@@ -365,9 +365,9 @@ class TestPolylogueArchiveProducts:
 
         assert any(item.tag == "provider:claude-code" for item in tag_rollups)
         assert len(day_summaries) == 1
-        assert day_summaries[0].summary["session_count"] == 2
+        assert day_summaries[0].summary.session_count == 2
         assert len(week_summaries) == 1
-        assert week_summaries[0].summary["session_count"] == 2
+        assert week_summaries[0].summary.session_count == 2
 
 
 class TestPolylogueListConversations:

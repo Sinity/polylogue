@@ -86,7 +86,7 @@ def test_session_timeline_row_builders_roundtrip_work_events_and_phases() -> Non
     phase = hydrate_session_phase(phase_records[0])
 
     assert work_event.summary == work_event_records[0].summary
-    assert work_event_records[0].inference_payload["summary"] == work_event.summary
+    assert work_event_records[0].inference_payload.summary == work_event.summary
     assert work_event.kind.value == work_event_records[0].kind
     assert work_event_records[0].search_text
 

@@ -9,6 +9,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from polylogue.archive_product_models import (
+    DaySessionSummaryPayload,
+    WeekSessionSummaryPayload,
+    WorkThreadPayload,
+)
 from polylogue.archive_products import (
     ArchiveEnrichmentProvenance,
     ArchiveInferenceProvenance,
@@ -447,7 +452,7 @@ class TestProductTools:
             root_id="conv-1",
             dominant_repo="polylogue",
             provenance=_provenance(),
-            thread={"session_count": 2},
+            thread=WorkThreadPayload(session_count=2),
         )
         tag_rollup = SessionTagRollupProduct(
             tag="provider:claude-code",
@@ -461,12 +466,12 @@ class TestProductTools:
         day_summary = DaySessionSummaryProduct(
             date="2026-03-24",
             provenance=_provenance(),
-            summary={"session_count": 1, "total_messages": 2},
+            summary=DaySessionSummaryPayload(date="2026-03-24", session_count=1, total_messages=2),
         )
         week_summary = WeekSessionSummaryProduct(
             iso_week="2026-W13",
             provenance=_provenance(),
-            summary={"session_count": 1, "total_messages": 2, "day_summaries": []},
+            summary=WeekSessionSummaryPayload(iso_week="2026-W13", session_count=1, total_messages=2),
         )
         analytics = ProviderAnalyticsProduct(
             provider_name="claude-code",

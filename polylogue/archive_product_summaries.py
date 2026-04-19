@@ -7,6 +7,7 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 
+from polylogue.archive_product_models import DaySessionSummaryPayload, WeekSessionSummaryPayload
 from polylogue.archive_products import (
     DaySessionSummaryProduct,
     WeekSessionSummaryProduct,
@@ -84,7 +85,7 @@ def build_day_session_summary_records(
                 total_words=summary.total_words,
                 work_event_breakdown=summary.work_event_breakdown,
                 repos_active=summary.repos_active,
-                payload=summary.to_dict(),
+                payload=DaySessionSummaryPayload.model_validate(summary.to_dict()),
                 search_text=search_text or bucket_day.isoformat(),
             )
         )
@@ -140,7 +141,7 @@ def aggregate_day_session_summary_products(
         DaySessionSummaryProduct(
             date=day,
             provenance=records_provenance(record_rows),
-            summary=summary.to_dict(),
+            summary=DaySessionSummaryPayload.model_validate(summary.to_dict()),
         )
         for day, summary, record_rows in _aggregate_day_summaries(rows)
     ]
@@ -165,7 +166,7 @@ def aggregate_week_session_summary_products(
             WeekSessionSummaryProduct(
                 iso_week=iso_week,
                 provenance=records_provenance(provenance_rows[iso_week]),
-                summary=week_summary.to_dict(),
+                summary=WeekSessionSummaryPayload.model_validate(week_summary.to_dict()),
             )
         )
     return products

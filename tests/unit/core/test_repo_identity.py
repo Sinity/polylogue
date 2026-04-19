@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from polylogue.archive_product_models import DaySessionSummaryPayload
 from polylogue.archive_product_summaries import aggregate_day_session_summary_products
 from polylogue.lib.action_events import ActionEvent
 from polylogue.lib.attribution import extract_attribution, extract_attribution_from_action_events
@@ -349,10 +350,10 @@ def test_day_summary_and_aggregate_products_preserve_repo_names() -> None:
                 materialized_at="2026-03-24T10:10:00+00:00",
                 work_event_breakdown={},
                 repos_active=("polylogue",),
-                payload=summary.to_dict(),
+                payload=DaySessionSummaryPayload.model_validate(summary.to_dict()),
                 search_text="claude-code",
             )
         ]
     )[0]
 
-    assert product.summary["repos_active"] == ["polylogue"]
+    assert product.summary.repos_active == ("polylogue",)

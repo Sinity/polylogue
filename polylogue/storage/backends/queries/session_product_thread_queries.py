@@ -5,7 +5,8 @@ from __future__ import annotations
 import aiosqlite
 
 from polylogue.storage.backends.queries.mappers import _row_to_work_thread_record
-from polylogue.storage.store import WorkThreadRecord, _json_array_or_none, _json_or_none
+from polylogue.storage.session_product_storage import work_thread_insert_values
+from polylogue.storage.store import WorkThreadRecord
 
 __all__ = [
     "get_work_thread",
@@ -97,25 +98,7 @@ async def replace_work_thread(
                 search_text
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (
-                record.thread_id,
-                record.root_id,
-                record.materializer_version,
-                record.materialized_at,
-                record.start_time,
-                record.end_time,
-                record.dominant_repo,
-                _json_array_or_none(record.session_ids),
-                record.session_count,
-                record.depth,
-                record.branch_count,
-                record.total_messages,
-                record.total_cost_usd,
-                record.wall_duration_ms,
-                _json_or_none(dict[str, object](record.work_event_breakdown or {})),
-                _json_or_none(record.payload),
-                record.search_text,
-            ),
+            work_thread_insert_values(record),
         )
     if transaction_depth == 0:
         await conn.commit()

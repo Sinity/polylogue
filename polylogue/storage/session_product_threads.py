@@ -7,6 +7,7 @@ from collections.abc import AsyncIterator, Iterable, Iterator, Sequence
 
 import aiosqlite
 
+from polylogue.archive_product_models import WorkThreadPayload
 from polylogue.lib.threads import WorkThread, build_session_threads
 from polylogue.storage.backends.queries.mappers import _row_to_session_profile_record
 from polylogue.storage.session_product_profiles import hydrate_session_profile, now_iso
@@ -124,13 +125,13 @@ def build_work_thread_record(
         total_cost_usd=thread.total_cost_usd,
         wall_duration_ms=thread.wall_duration_ms,
         work_event_breakdown=thread.work_event_breakdown,
-        payload=thread.to_dict(),
+        payload=WorkThreadPayload.model_validate(thread.to_dict()),
         search_text=thread_search_text(thread),
     )
 
 
 def hydrate_work_thread(record: WorkThreadRecord) -> WorkThread:
-    return WorkThread.from_dict(record.payload)
+    return WorkThread.from_dict(record.payload.model_dump(mode="json"))
 
 
 # ---------------------------------------------------------------------------

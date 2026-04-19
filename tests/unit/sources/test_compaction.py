@@ -466,8 +466,8 @@ class TestProfileCompactionCounting:
             compaction_count=3,
         )
         evidence = profile_evidence_payload(profile)
-        assert evidence["compaction_count"] == 3
-        assert evidence["has_compaction"] is True
+        assert evidence.compaction_count == 3
+        assert evidence.has_compaction is True
 
     def test_profile_evidence_payload_zero_compaction(self) -> None:
         from polylogue.lib.session_profile_models import SessionProfile
@@ -498,5 +498,5 @@ class TestProfileCompactionCounting:
             phases=(),
         )
         evidence = profile_evidence_payload(profile)
-        assert evidence["compaction_count"] == 0
-        assert evidence["has_compaction"] is False
+        assert evidence.compaction_count == 0
+        assert evidence.has_compaction is False

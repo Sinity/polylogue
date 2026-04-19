@@ -4,10 +4,24 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from datetime import date, datetime, timedelta
-from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
-
+from polylogue.archive_product_models import (
+    ARCHIVE_PRODUCT_CONTRACT_VERSION,
+    ArchiveEnrichmentProvenance,
+    ArchiveInferenceProvenance,
+    ArchiveProductModel,
+    ArchiveProductProvenance,
+    DaySessionSummaryPayload,
+    SessionEnrichmentPayload,
+    SessionEvidencePayload,
+    SessionInferencePayload,
+    SessionPhaseEvidencePayload,
+    SessionPhaseInferencePayload,
+    WeekSessionSummaryPayload,
+    WorkEventEvidencePayload,
+    WorkEventInferencePayload,
+    WorkThreadPayload,
+)
 from polylogue.lib.session_profile import SessionProfile
 from polylogue.storage.repair import ArchiveDebtStatus
 from polylogue.storage.store import (
@@ -18,132 +32,9 @@ from polylogue.storage.store import (
     WorkThreadRecord,
 )
 
-ARCHIVE_PRODUCT_CONTRACT_VERSION = 4
-
-
-class ArchiveProductModel(BaseModel):
-    """Shared base for public archive data product payloads."""
-
-    # extra="ignore" tolerates legacy fields from older materialized records
-    # (e.g. primary_work_kind, decisions removed in the March 2026 cleanup)
-    model_config = ConfigDict(extra="ignore", frozen=True)
-
-    def to_json(self, *, exclude_none: bool = False) -> str:
-        return self.model_dump_json(indent=2, exclude_none=exclude_none)
-
 
 class ArchiveProductUnavailableError(RuntimeError):
     """Raised when a durable archive-product surface is not ready to read."""
-
-
-class ArchiveProductProvenance(ArchiveProductModel):
-    materializer_version: int
-    materialized_at: str
-    source_updated_at: str | None = None
-    source_sort_key: float | None = None
-
-
-class ArchiveInferenceProvenance(ArchiveProductProvenance):
-    inference_version: int
-    inference_family: str
-
-
-class ArchiveEnrichmentProvenance(ArchiveProductProvenance):
-    enrichment_version: int
-    enrichment_family: str
-
-
-class SessionEvidencePayload(ArchiveProductModel):
-    created_at: str | None = None
-    updated_at: str | None = None
-    first_message_at: str | None = None
-    last_message_at: str | None = None
-    canonical_session_date: str | None = None
-    message_count: int = 0
-    substantive_count: int = 0
-    attachment_count: int = 0
-    tool_use_count: int = 0
-    thinking_count: int = 0
-    word_count: int = 0
-    total_cost_usd: float = 0.0
-    total_duration_ms: int = 0
-    wall_duration_ms: int = 0
-    cost_is_estimated: bool = False
-    compaction_count: int = 0
-    has_compaction: bool = False
-    tool_categories: dict[str, int] = Field(default_factory=dict)
-    repo_paths: tuple[str, ...] = ()
-    cwd_paths: tuple[str, ...] = ()
-    branch_names: tuple[str, ...] = ()
-    file_paths_touched: tuple[str, ...] = ()
-    languages_detected: tuple[str, ...] = ()
-    tags: tuple[str, ...] = ()
-    is_continuation: bool = False
-    parent_id: str | None = None
-
-
-class SessionInferencePayload(ArchiveProductModel):
-    repo_names: tuple[str, ...] = ()
-    work_event_count: int = 0
-    phase_count: int = 0
-    engaged_duration_ms: int = 0
-    engaged_minutes: float = 0.0
-    support_level: str = "weak"
-    support_signals: tuple[str, ...] = ()
-    engaged_duration_source: str = "session_total_fallback"
-    repo_inference_strength: str = "weak"
-    auto_tags: tuple[str, ...] = ()
-    work_events: tuple[dict[str, Any], ...] = ()
-    phases: tuple[dict[str, Any], ...] = ()
-
-
-class WorkEventEvidencePayload(ArchiveProductModel):
-    start_index: int
-    end_index: int
-    start_time: str | None = None
-    end_time: str | None = None
-    canonical_session_date: str | None = None
-    duration_ms: int = 0
-    file_paths: tuple[str, ...] = ()
-    tools_used: tuple[str, ...] = ()
-
-
-class WorkEventInferencePayload(ArchiveProductModel):
-    kind: str
-    summary: str
-    confidence: float
-    evidence: tuple[str, ...] = ()
-    support_level: str = "weak"
-    support_signals: tuple[str, ...] = ()
-    fallback_inference: bool = False
-
-
-class SessionPhaseEvidencePayload(ArchiveProductModel):
-    start_time: str | None = None
-    end_time: str | None = None
-    canonical_session_date: str | None = None
-    message_range: tuple[int, int] = (0, 0)
-    duration_ms: int = 0
-    tool_counts: dict[str, int] = Field(default_factory=dict)
-    word_count: int = 0
-
-
-class SessionPhaseInferencePayload(ArchiveProductModel):
-    confidence: float = 0.0
-    evidence: tuple[str, ...] = ()
-    support_level: str = "weak"
-    support_signals: tuple[str, ...] = ()
-    fallback_inference: bool = False
-
-
-class SessionEnrichmentPayload(ArchiveProductModel):
-    intent_summary: str | None = None
-    outcome_summary: str | None = None
-    blockers: tuple[str, ...] = ()
-    confidence: float = 0.0
-    support_level: str = "weak"
-    support_signals: tuple[str, ...] = ()
-    input_band_summary: dict[str, int] = Field(default_factory=dict)
 
 
 class SessionProfileProductQuery(ArchiveProductModel):
@@ -272,7 +163,7 @@ class SessionProfileProduct(ArchiveProductModel):
                 source_updated_at=record.source_updated_at,
                 source_sort_key=record.source_sort_key,
             ),
-            evidence=(SessionEvidencePayload.model_validate(record.evidence_payload) if include_evidence else None),
+            evidence=(record.evidence_payload if include_evidence else None),
             inference_provenance=(
                 ArchiveInferenceProvenance(
                     materializer_version=record.materializer_version,
@@ -285,7 +176,7 @@ class SessionProfileProduct(ArchiveProductModel):
                 if include_inference
                 else None
             ),
-            inference=(SessionInferencePayload.model_validate(record.inference_payload) if include_inference else None),
+            inference=(record.inference_payload if include_inference else None),
         )
 
 
@@ -320,7 +211,7 @@ class SessionEnrichmentProduct(ArchiveProductModel):
                 enrichment_version=record.enrichment_version,
                 enrichment_family=record.enrichment_family,
             ),
-            enrichment=SessionEnrichmentPayload.model_validate(record.enrichment_payload),
+            enrichment=record.enrichment_payload,
         )
 
 
@@ -358,8 +249,8 @@ class SessionWorkEventProduct(ArchiveProductModel):
                 inference_version=record.inference_version,
                 inference_family=record.inference_family,
             ),
-            evidence=WorkEventEvidencePayload.model_validate(record.evidence_payload),
-            inference=WorkEventInferencePayload.model_validate(record.inference_payload),
+            evidence=record.evidence_payload,
+            inference=record.inference_payload,
         )
 
 
@@ -397,8 +288,8 @@ class SessionPhaseProduct(ArchiveProductModel):
                 inference_version=record.inference_version,
                 inference_family=record.inference_family,
             ),
-            evidence=SessionPhaseEvidencePayload.model_validate(record.evidence_payload),
-            inference=SessionPhaseInferencePayload.model_validate(record.inference_payload),
+            evidence=record.evidence_payload,
+            inference=record.inference_payload,
         )
 
 
@@ -409,7 +300,7 @@ class WorkThreadProduct(ArchiveProductModel):
     root_id: str
     dominant_repo: str | None = None
     provenance: ArchiveProductProvenance
-    thread: dict[str, Any]
+    thread: WorkThreadPayload
 
     @classmethod
     def from_record(cls, record: WorkThreadRecord) -> WorkThreadProduct:
@@ -423,7 +314,7 @@ class WorkThreadProduct(ArchiveProductModel):
                 source_updated_at=record.end_time or record.start_time,
                 source_sort_key=None,
             ),
-            thread=dict(record.payload),
+            thread=record.payload,
         )
 
 
@@ -444,7 +335,7 @@ class DaySessionSummaryProduct(ArchiveProductModel):
     product_kind: str = "day_session_summary"
     date: str
     provenance: ArchiveProductProvenance
-    summary: dict[str, Any]
+    summary: DaySessionSummaryPayload
 
 
 class WeekSessionSummaryProduct(ArchiveProductModel):
@@ -452,7 +343,7 @@ class WeekSessionSummaryProduct(ArchiveProductModel):
     product_kind: str = "week_session_summary"
     iso_week: str
     provenance: ArchiveProductProvenance
-    summary: dict[str, Any]
+    summary: WeekSessionSummaryPayload
 
 
 class ProviderAnalyticsProduct(ArchiveProductModel):

@@ -8,7 +8,6 @@ works without re-specifying the filter on the subcommand.
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any
 
 import click
 
@@ -19,7 +18,6 @@ from polylogue.products.registry import (
     PRODUCT_REGISTRY,
     ProductQueryError,
     ProductType,
-    _resolve_query_class,
     fetch_products,
     render_product_items,
 )
@@ -33,22 +31,14 @@ def _build_click_params(pt: ProductType) -> list[click.Parameter]:
     params: list[click.Parameter] = []
 
     for opt in pt.cli_options:
-        kwargs: dict[str, Any] = {"help": opt.help}
-        if opt.type is not None:
-            kwargs["type"] = opt.type
-        if opt.default is not None:
-            kwargs["default"] = opt.default
-        else:
-            kwargs["default"] = None
-        if opt.show_default:
-            kwargs["show_default"] = True
-        if opt.is_flag:
-            kwargs["is_flag"] = True
-
         params.append(
             click.Option(
                 opt.flags,
-                **kwargs,
+                help=opt.help,
+                type=opt.type,
+                default=opt.default,
+                show_default=opt.show_default,
+                is_flag=opt.is_flag,
             )
         )
 
@@ -90,7 +80,7 @@ def _build_click_params(pt: ProductType) -> list[click.Parameter]:
     return params
 
 
-def _find_root_params(ctx: click.Context) -> dict[str, Any]:
+def _find_root_params(ctx: click.Context) -> dict[str, object]:
     """Walk up the context chain to find the root CLI group's params."""
     cur = ctx
     while cur.parent is not None:
@@ -105,8 +95,10 @@ def _make_callback(pt: ProductType) -> Callable[..., None]:
     context when the product's query class accepts them.
     """
     # Pre-resolve accepted fields so we only inject keys the query class understands.
-    query_cls = _resolve_query_class(pt.query_class_path)
-    accepted_root_keys = frozenset(k for k in _ROOT_FILTER_KEYS if k in query_cls.model_fields)
+    query_model = pt.query_model
+    accepted_root_keys = frozenset(
+        key for key in _ROOT_FILTER_KEYS if query_model is not None and key in query_model.model_fields
+    )
 
     @click.pass_context
     def callback(
@@ -114,7 +106,7 @@ def _make_callback(pt: ProductType) -> Callable[..., None]:
         /,
         json_mode: bool = False,
         output_format: str | None = None,
-        **kwargs: Any,
+        **kwargs: object,
     ) -> None:
         env: AppEnv = ctx.obj
 
@@ -157,7 +149,7 @@ def products_command() -> None:
 
 # Register all product types as subcommands
 for _pt in PRODUCT_REGISTRY.values():
-    if _pt.query_class_path and _pt.operations_method:
+    if _pt.query_model is not None and _pt.operations_method_name:
         products_command.add_command(_build_product_command(_pt))
 
 
