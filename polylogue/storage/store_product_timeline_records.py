@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
-from typing import Any
-
 from pydantic import BaseModel, field_validator
 
+from polylogue.archive_product_models import (
+    SessionPhaseEvidencePayload,
+    SessionPhaseInferencePayload,
+    WorkEventEvidencePayload,
+    WorkEventInferencePayload,
+)
 from polylogue.types import ConversationId
 
 from .store_constants import (
@@ -35,8 +39,8 @@ class SessionWorkEventRecord(BaseModel):
     summary: str
     file_paths: tuple[str, ...] = ()
     tools_used: tuple[str, ...] = ()
-    evidence_payload: dict[str, Any]
-    inference_payload: dict[str, Any]
+    evidence_payload: WorkEventEvidencePayload
+    inference_payload: WorkEventInferencePayload
     search_text: str
     inference_version: int = SESSION_INFERENCE_VERSION
     inference_family: str = SESSION_INFERENCE_FAMILY
@@ -78,8 +82,8 @@ class SessionPhaseRecord(BaseModel):
     evidence_reasons: tuple[str, ...] = ()
     tool_counts: dict[str, int]
     word_count: int = 0
-    evidence_payload: dict[str, Any]
-    inference_payload: dict[str, Any]
+    evidence_payload: SessionPhaseEvidencePayload
+    inference_payload: SessionPhaseInferencePayload
     search_text: str
     inference_version: int = SESSION_INFERENCE_VERSION
     inference_family: str = SESSION_INFERENCE_FAMILY

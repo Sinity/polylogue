@@ -8,12 +8,11 @@ from polylogue.storage.backends.queries.mappers import (
     _row_to_day_session_summary_record,
     _row_to_session_tag_rollup_record,
 )
-from polylogue.storage.store import (
-    DaySessionSummaryRecord,
-    SessionTagRollupRecord,
-    _json_array_or_none,
-    _json_or_none,
+from polylogue.storage.session_product_storage import (
+    day_session_summary_insert_values,
+    session_tag_rollup_insert_values,
 )
+from polylogue.storage.store import DaySessionSummaryRecord, SessionTagRollupRecord
 
 __all__ = [
     "list_day_session_summaries",
@@ -121,23 +120,7 @@ async def replace_session_tag_rollup_rows(
                 search_text
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            [
-                (
-                    record.tag,
-                    record.bucket_day,
-                    record.provider_name,
-                    record.materializer_version,
-                    record.materialized_at,
-                    record.source_updated_at,
-                    record.source_sort_key,
-                    record.conversation_count,
-                    record.explicit_count,
-                    record.auto_count,
-                    _json_or_none(dict[str, object](record.repo_breakdown)),
-                    record.search_text,
-                )
-                for record in records
-            ],
+            [session_tag_rollup_insert_values(record) for record in records],
         )
     if transaction_depth == 0:
         await conn.commit()
@@ -177,27 +160,7 @@ async def replace_day_session_summaries(
                 search_text
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            [
-                (
-                    record.day,
-                    record.provider_name,
-                    record.materializer_version,
-                    record.materialized_at,
-                    record.source_updated_at,
-                    record.source_sort_key,
-                    record.conversation_count,
-                    record.total_cost_usd,
-                    record.total_duration_ms,
-                    record.total_wall_duration_ms,
-                    record.total_messages,
-                    record.total_words,
-                    _json_or_none(dict[str, object](record.work_event_breakdown)),
-                    _json_array_or_none(record.repos_active),
-                    _json_or_none(record.payload),
-                    record.search_text,
-                )
-                for record in records
-            ],
+            [day_session_summary_insert_values(record) for record in records],
         )
     if transaction_depth == 0:
         await conn.commit()

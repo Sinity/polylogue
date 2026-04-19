@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Coroutine, Iterable, Sequence
-from typing import Any
+from collections.abc import Iterable, Sequence
+from dataclasses import dataclass
 
 import aiosqlite
 
@@ -12,6 +12,12 @@ from polylogue.archive_product_rollups import build_session_tag_rollup_records
 from polylogue.archive_product_summaries import build_day_session_summary_records
 from polylogue.archive_products import date_from_iso
 from polylogue.storage.backends.queries.mappers import _row_to_session_profile_record
+from polylogue.storage.backends.queries.session_product_summary_queries import (
+    replace_day_session_summaries as replace_day_session_summaries_async,
+)
+from polylogue.storage.backends.queries.session_product_summary_queries import (
+    replace_session_tag_rollup_rows as replace_session_tag_rollup_rows_async,
+)
 from polylogue.storage.session_product_profiles import hydrate_session_profile
 from polylogue.storage.session_product_storage import (
     replace_day_session_summaries_sync,
@@ -53,46 +59,12 @@ _DISTINCT_PROVIDER_DAY_GROUPS_SQL = f"""
 """
 
 
-def replace_day_session_summaries_async(
-    conn: aiosqlite.Connection,
-    *,
-    provider_name: str,
-    day: str,
-    records: list[DaySessionSummaryRecord],
-    transaction_depth: int,
-) -> Coroutine[Any, Any, None]:
-    from polylogue.storage.backends.queries.session_product_summary_queries import (
-        replace_day_session_summaries as replace_day_session_summaries_async_query,
-    )
-
-    return replace_day_session_summaries_async_query(
-        conn,
-        provider_name=provider_name,
-        day=day,
-        records=records,
-        transaction_depth=transaction_depth,
-    )
-
-
-def replace_session_tag_rollup_rows_async(
-    conn: aiosqlite.Connection,
-    *,
-    provider_name: str,
-    bucket_day: str,
-    records: list[SessionTagRollupRecord],
-    transaction_depth: int,
-) -> Coroutine[Any, Any, None]:
-    from polylogue.storage.backends.queries.session_product_summary_queries import (
-        replace_session_tag_rollup_rows as replace_session_tag_rollup_rows_async_query,
-    )
-
-    return replace_session_tag_rollup_rows_async_query(
-        conn,
-        provider_name=provider_name,
-        bucket_day=bucket_day,
-        records=records,
-        transaction_depth=transaction_depth,
-    )
+@dataclass(slots=True, frozen=True)
+class ProviderDayAggregateWrite:
+    provider_name: str
+    bucket_day: str
+    day_rows: list[DaySessionSummaryRecord]
+    tag_rows: list[SessionTagRollupRecord]
 
 
 def load_sync_provider_day_profile_records(
@@ -179,6 +151,14 @@ def _group_profile_records_by_provider_day(
     return grouped
 
 
+def _provider_day_group_query(
+    groups: Sequence[tuple[str, str]],
+) -> tuple[str, tuple[str, ...]]:
+    values = ", ".join("(?, ?)" for _ in groups)
+    params = tuple(value for group in groups for value in group)
+    return values, params
+
+
 def _aggregate_rows_for_profile_records(
     profile_records: Sequence[SessionProfileRecord],
 ) -> tuple[list[DaySessionSummaryRecord], list[SessionTagRollupRecord]]:
@@ -191,6 +171,26 @@ def _aggregate_rows_for_profile_records(
     )
 
 
+def _aggregate_writes_for_groups(
+    profile_records_by_group: dict[tuple[str, str], list[SessionProfileRecord]],
+    groups: Sequence[tuple[str, str]],
+) -> list[ProviderDayAggregateWrite]:
+    writes: list[ProviderDayAggregateWrite] = []
+    for provider_name, bucket_day in groups:
+        day_rows, tag_rows = _aggregate_rows_for_profile_records(
+            profile_records_by_group.get((provider_name, bucket_day), []),
+        )
+        writes.append(
+            ProviderDayAggregateWrite(
+                provider_name=provider_name,
+                bucket_day=bucket_day,
+                day_rows=day_rows,
+                tag_rows=tag_rows,
+            )
+        )
+    return writes
+
+
 def load_sync_provider_day_profile_records_by_groups(
     conn: sqlite3.Connection,
     groups: Sequence[tuple[str, str]],
@@ -200,8 +200,7 @@ def load_sync_provider_day_profile_records_by_groups(
         return {}
     grouped: dict[tuple[str, str], list[SessionProfileRecord]] = _empty_provider_day_profile_groups(normalized_groups)
     for group_chunk in _chunk_provider_day_groups(normalized_groups):
-        values = ", ".join("(?, ?)" for _ in group_chunk)
-        params = tuple(value for group in group_chunk for value in group)
+        values, params = _provider_day_group_query(group_chunk)
         rows = conn.execute(
             _PROVIDER_DAY_PROFILE_RECORDS_SQL_TEMPLATE.format(values=values),
             params,
@@ -220,8 +219,7 @@ async def load_async_provider_day_profile_records_by_groups(
         return {}
     grouped: dict[tuple[str, str], list[SessionProfileRecord]] = _empty_provider_day_profile_groups(normalized_groups)
     for group_chunk in _chunk_provider_day_groups(normalized_groups):
-        values = ", ".join("(?, ?)" for _ in group_chunk)
-        params = tuple(value for group in group_chunk for value in group)
+        values, params = _provider_day_group_query(group_chunk)
         rows = await (
             await conn.execute(
                 _PROVIDER_DAY_PROFILE_RECORDS_SQL_TEMPLATE.format(values=values),
@@ -240,21 +238,18 @@ def refresh_sync_provider_day_aggregates(
     normalized_groups = _normalize_provider_day_groups(sorted(groups))
     for group_chunk in _chunk_provider_day_groups(normalized_groups):
         profile_records_by_group = load_sync_provider_day_profile_records_by_groups(conn, group_chunk)
-        for provider_name, bucket_day in group_chunk:
-            day_rows, tag_rows = _aggregate_rows_for_profile_records(
-                profile_records_by_group.get((provider_name, bucket_day), []),
-            )
+        for write in _aggregate_writes_for_groups(profile_records_by_group, group_chunk):
             replace_day_session_summaries_sync(
                 conn,
-                provider_name=provider_name,
-                day=bucket_day,
-                records=day_rows,
+                provider_name=write.provider_name,
+                day=write.bucket_day,
+                records=write.day_rows,
             )
             replace_session_tag_rollup_rows_sync(
                 conn,
-                provider_name=provider_name,
-                bucket_day=bucket_day,
-                records=tag_rows,
+                provider_name=write.provider_name,
+                bucket_day=write.bucket_day,
+                records=write.tag_rows,
             )
 
 
@@ -270,22 +265,19 @@ async def refresh_async_provider_day_aggregates(
             conn,
             group_chunk,
         )
-        for provider_name, bucket_day in group_chunk:
-            day_rows, tag_rows = _aggregate_rows_for_profile_records(
-                profile_records_by_group.get((provider_name, bucket_day), []),
-            )
+        for write in _aggregate_writes_for_groups(profile_records_by_group, group_chunk):
             await replace_day_session_summaries_async(
                 conn,
-                provider_name=provider_name,
-                day=bucket_day,
-                records=day_rows,
+                provider_name=write.provider_name,
+                day=write.bucket_day,
+                records=write.day_rows,
                 transaction_depth=transaction_depth,
             )
             await replace_session_tag_rollup_rows_async(
                 conn,
-                provider_name=provider_name,
-                bucket_day=bucket_day,
-                records=tag_rows,
+                provider_name=write.provider_name,
+                bucket_day=write.bucket_day,
+                records=write.tag_rows,
                 transaction_depth=transaction_depth,
             )
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 
+from polylogue.archive_product_models import DaySessionSummaryPayload
 from polylogue.storage.backends.queries.mappers import _parse_json, _row_get
 from polylogue.storage.store import (
     DaySessionSummaryRecord,
@@ -54,12 +55,14 @@ def _row_to_day_session_summary_record(row: sqlite3.Row) -> DaySessionSummaryRec
         )
         or {},
         repos_active=tuple(_parse_json(_row_get(row, "repos_active_json")) or []),
-        payload=_parse_json(
-            row["payload_json"],
-            field="payload_json",
-            record_id=f"{row['provider_name']}:{row['day']}",
-        )
-        or {},
+        payload=DaySessionSummaryPayload.model_validate(
+            _parse_json(
+                row["payload_json"],
+                field="payload_json",
+                record_id=f"{row['provider_name']}:{row['day']}",
+            )
+            or {}
+        ),
         search_text=row["search_text"],
     )
 

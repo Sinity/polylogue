@@ -4,6 +4,12 @@ from __future__ import annotations
 
 from datetime import datetime
 
+from polylogue.archive_product_models import (
+    SessionPhaseEvidencePayload,
+    SessionPhaseInferencePayload,
+    WorkEventEvidencePayload,
+    WorkEventInferencePayload,
+)
 from polylogue.lib.hashing import hash_text
 from polylogue.lib.phase_extraction import SessionPhase
 from polylogue.lib.session_profile import SessionProfile
@@ -46,20 +52,20 @@ def _event_id(
     return f"wev-{hash_text(seed)[:16]}"
 
 
-def event_evidence_payload(event: WorkEvent) -> dict[str, object]:
-    return {
-        "start_index": event.start_index,
-        "end_index": event.end_index,
-        "start_time": event.start_time.isoformat() if event.start_time else None,
-        "end_time": event.end_time.isoformat() if event.end_time else None,
-        "canonical_session_date": (event.canonical_session_date.isoformat() if event.canonical_session_date else None),
-        "duration_ms": event.duration_ms,
-        "file_paths": list(event.file_paths),
-        "tools_used": list(event.tools_used),
-    }
+def event_evidence_payload(event: WorkEvent) -> WorkEventEvidencePayload:
+    return WorkEventEvidencePayload(
+        start_index=event.start_index,
+        end_index=event.end_index,
+        start_time=event.start_time.isoformat() if event.start_time else None,
+        end_time=event.end_time.isoformat() if event.end_time else None,
+        canonical_session_date=event.canonical_session_date.isoformat() if event.canonical_session_date else None,
+        duration_ms=event.duration_ms,
+        file_paths=event.file_paths,
+        tools_used=event.tools_used,
+    )
 
 
-def event_inference_payload(event: WorkEvent) -> dict[str, object]:
+def event_inference_payload(event: WorkEvent) -> WorkEventInferencePayload:
     summary = event_summary(event)
     signals = event_support_signals(event)
     fallback = event_fallback(event)
@@ -77,20 +83,20 @@ def _event_inference_payload(
     summary: str,
     signals: tuple[str, ...],
     fallback: bool,
-) -> dict[str, object]:
-    return {
-        "kind": event.kind.value,
-        "summary": summary,
-        "confidence": event.confidence,
-        "evidence": list(event.evidence),
-        "support_level": support_level(
+) -> WorkEventInferencePayload:
+    return WorkEventInferencePayload(
+        kind=event.kind.value,
+        summary=summary,
+        confidence=event.confidence,
+        evidence=event.evidence,
+        support_level=support_level(
             float(event.confidence or 0.0),
             support_signals=signals,
             fallback=fallback,
         ),
-        "support_signals": list(signals),
-        "fallback_inference": fallback,
-    }
+        support_signals=signals,
+        fallback_inference=fallback,
+    )
 
 
 def event_search_text(profile: SessionProfile, event: WorkEvent) -> str:
@@ -169,7 +175,12 @@ def build_session_work_event_records(
 
 
 def hydrate_work_event(record: SessionWorkEventRecord) -> WorkEvent:
-    return WorkEvent.from_dict({**record.evidence_payload, **record.inference_payload})
+    return WorkEvent.from_dict(
+        {
+            **record.evidence_payload.model_dump(mode="json"),
+            **record.inference_payload.model_dump(mode="json"),
+        }
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -198,19 +209,19 @@ def phase_search_text(profile: SessionProfile, phase: SessionPhase) -> str:
     return search_text or profile.conversation_id
 
 
-def phase_evidence_payload(phase: SessionPhase) -> dict[str, object]:
-    return {
-        "start_time": phase.start_time.isoformat() if phase.start_time else None,
-        "end_time": phase.end_time.isoformat() if phase.end_time else None,
-        "canonical_session_date": (phase.canonical_session_date.isoformat() if phase.canonical_session_date else None),
-        "message_range": list(phase.message_range),
-        "duration_ms": phase.duration_ms,
-        "tool_counts": dict(phase.tool_counts),
-        "word_count": phase.word_count,
-    }
+def phase_evidence_payload(phase: SessionPhase) -> SessionPhaseEvidencePayload:
+    return SessionPhaseEvidencePayload(
+        start_time=phase.start_time.isoformat() if phase.start_time else None,
+        end_time=phase.end_time.isoformat() if phase.end_time else None,
+        canonical_session_date=phase.canonical_session_date.isoformat() if phase.canonical_session_date else None,
+        message_range=phase.message_range,
+        duration_ms=phase.duration_ms,
+        tool_counts=dict(phase.tool_counts),
+        word_count=phase.word_count,
+    )
 
 
-def phase_inference_payload(phase: SessionPhase) -> dict[str, object]:
+def phase_inference_payload(phase: SessionPhase) -> SessionPhaseInferencePayload:
     signals = phase_support_signals(phase)
     fallback = phase_fallback(phase)
     return _phase_inference_payload(
@@ -225,18 +236,18 @@ def _phase_inference_payload(
     *,
     signals: tuple[str, ...],
     fallback: bool,
-) -> dict[str, object]:
-    return {
-        "confidence": phase.confidence,
-        "evidence": list(phase.evidence),
-        "support_level": support_level(
+) -> SessionPhaseInferencePayload:
+    return SessionPhaseInferencePayload(
+        confidence=phase.confidence,
+        evidence=phase.evidence,
+        support_level=support_level(
             float(phase.confidence or 0.0),
             support_signals=signals,
             fallback=fallback,
         ),
-        "support_signals": list(signals),
-        "fallback_inference": fallback,
-    }
+        support_signals=signals,
+        fallback_inference=fallback,
+    )
 
 
 def build_session_phase_records(
@@ -290,7 +301,10 @@ def build_session_phase_records(
 
 
 def hydrate_session_phase(record: SessionPhaseRecord) -> SessionPhase:
-    payload = {**record.evidence_payload, **record.inference_payload}
+    payload = {
+        **record.evidence_payload.model_dump(mode="json"),
+        **record.inference_payload.model_dump(mode="json"),
+    }
     return SessionPhase(
         start_time=(datetime.fromisoformat(str(payload["start_time"])) if payload.get("start_time") else None),
         end_time=(datetime.fromisoformat(str(payload["end_time"])) if payload.get("end_time") else None),

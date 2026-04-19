@@ -69,19 +69,19 @@ def test_session_enrichment_payload_reuses_text_band_outputs() -> None:
 
     payload = session_enrichment_payload(profile, analysis)
 
-    assert payload["intent_summary"] == user_turn_texts(analysis)[0]
-    assert payload["outcome_summary"] == assistant_turn_texts(analysis)[-1]
-    assert payload["blockers"] == list(blocker_texts(analysis))
-    assert payload["input_band_summary"] == {
+    assert payload.intent_summary == user_turn_texts(analysis)[0]
+    assert payload.outcome_summary == assistant_turn_texts(analysis)[-1]
+    assert payload.blockers == blocker_texts(analysis)
+    assert payload.input_band_summary == {
         "user_turns": 1,
         "assistant_turns": 1,
         "action_events": 1,
         "touched_paths": 1,
         "repo_names": 1,
     }
-    support_signals = payload["support_signals"]
-    assert isinstance(support_signals, list)
-    assert tuple(support_signals) == (
+    support_signals = payload.support_signals
+    assert isinstance(support_signals, tuple)
+    assert support_signals == (
         "user_turns",
         "action_events",
         "touched_paths",

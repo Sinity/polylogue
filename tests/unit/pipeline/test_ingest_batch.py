@@ -39,6 +39,7 @@ from polylogue.pipeline.services.ingest_worker import (
     _make_ref_id,
 )
 from polylogue.storage.backends.connection import open_connection
+from polylogue.storage.session_product_refresh import SessionProductRefreshChunkObservation
 from polylogue.storage.state_views import RawConversationStateUpdate
 from polylogue.types import AttachmentId, ContentBlockType, ContentHash, ConversationId, MessageId
 
@@ -489,18 +490,20 @@ async def test_refresh_session_products_bulk_dedupes_related_refreshes(
             },
             thread_root_ids={"root-a", "root-b"},
             chunk_observations=[
-                {
-                    "conversation_count": 3,
-                    "hydrated_count": 3,
-                    "profiles_written": 3,
-                    "work_events_written": 0,
-                    "phases_written": 0,
-                    "load_ms": 12.5,
-                    "hydrate_ms": 3.1,
-                    "build_ms": 9.9,
-                    "write_ms": 7.7,
-                    "total_ms": 33.2,
-                },
+                SessionProductRefreshChunkObservation(
+                    conversation_count=3,
+                    estimated_message_count=3,
+                    max_estimated_conversation_messages=1,
+                    hydrated_count=3,
+                    profiles_written=3,
+                    work_events_written=0,
+                    phases_written=0,
+                    load_ms=12.5,
+                    hydrate_ms=3.1,
+                    build_ms=9.9,
+                    write_ms=7.7,
+                    total_ms=33.2,
+                ),
             ],
         )
 
