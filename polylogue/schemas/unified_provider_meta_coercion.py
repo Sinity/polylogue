@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import datetime
-from typing import Any
 
 from pydantic import ValidationError
 
@@ -11,6 +11,8 @@ from polylogue.lib.timestamps import parse_timestamp
 from polylogue.lib.viewports import ContentBlock, CostInfo, ReasoningTrace, TokenUsage, ToolCall
 from polylogue.schemas.unified_models import extract_token_usage
 from polylogue.types import Provider
+
+ProviderMetaPayload = Mapping[str, object]
 
 
 def _coerce_timestamp(value: datetime | str | float | int | None) -> datetime | None:
@@ -80,7 +82,7 @@ def _coerce_content_blocks(blocks: object) -> list[ContentBlock]:
     return coerced
 
 
-def _extract_generic_tokens(provider_meta: dict[str, Any]) -> TokenUsage | None:
+def _extract_generic_tokens(provider_meta: ProviderMetaPayload) -> TokenUsage | None:
     usage = provider_meta.get("usage")
     if isinstance(usage, dict):
         return extract_token_usage(usage)
@@ -100,7 +102,7 @@ def _extract_generic_tokens(provider_meta: dict[str, Any]) -> TokenUsage | None:
     return None
 
 
-def _extract_generic_cost(provider_meta: dict[str, Any]) -> CostInfo | None:
+def _extract_generic_cost(provider_meta: ProviderMetaPayload) -> CostInfo | None:
     cost = provider_meta.get("cost")
     if isinstance(cost, CostInfo):
         return cost
@@ -116,7 +118,7 @@ def _extract_generic_cost(provider_meta: dict[str, Any]) -> CostInfo | None:
     return None
 
 
-def _has_extracted_viewports(provider_meta: dict[str, Any]) -> bool:
+def _has_extracted_viewports(provider_meta: ProviderMetaPayload) -> bool:
     return any(
         key in provider_meta
         for key in (
@@ -140,4 +142,5 @@ __all__ = [
     "_extract_generic_cost",
     "_extract_generic_tokens",
     "_has_extracted_viewports",
+    "ProviderMetaPayload",
 ]

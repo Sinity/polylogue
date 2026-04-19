@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
-from typing import Any, NotRequired, TypedDict, cast
+from collections.abc import Sequence
+from typing import NotRequired, TypedDict, cast
 
 from polylogue.lib.payload_coercion import is_payload_mapping, mapping_or_empty, optional_string
-from polylogue.lib.raw_payload_decode import JSONValue
-from polylogue.pipeline.semantic_metadata import _parse_git_command, _parse_subagent_spawn
+from polylogue.lib.raw_payload_decode import JSONRecord, JSONValue
+from polylogue.pipeline.semantic_metadata import ToolMetadata, _parse_git_command, _parse_subagent_spawn
 
 
 class ContextCompactionSummary(TypedDict):
@@ -27,7 +27,7 @@ class ThinkingTraceSummary(TypedDict):
 class ToolInvocationSummary(TypedDict, total=False):
     tool_name: str | None
     tool_id: str | None
-    input: Mapping[str, Any]
+    input: JSONRecord
     is_file_operation: bool
     is_search_operation: bool
     is_subagent: bool
@@ -52,6 +52,10 @@ def _json_value(value: object) -> JSONValue | None:
     return cast(JSONValue | None, value)
 
 
+def _json_record(value: object) -> JSONRecord:
+    return cast(JSONRecord, value) if isinstance(value, dict) else {}
+
+
 def _text_from_message_content(content: object) -> str:
     if isinstance(content, str):
         return content
@@ -70,7 +74,7 @@ def _summary_text(item: object) -> str:
     return _text_from_message_content(message.get("content"))
 
 
-def detect_context_compaction(item: Mapping[str, Any]) -> ContextCompactionSummary | None:
+def detect_context_compaction(item: JSONRecord) -> ContextCompactionSummary | None:
     """Detect if a raw message item represents a context compaction event."""
     msg_type = item.get("type")
 
@@ -99,7 +103,7 @@ def detect_context_compaction(item: Mapping[str, Any]) -> ContextCompactionSumma
     return None
 
 
-def extract_thinking_traces(content_blocks: Sequence[Mapping[str, Any]]) -> list[ThinkingTraceSummary]:
+def extract_thinking_traces(content_blocks: Sequence[JSONRecord]) -> list[ThinkingTraceSummary]:
     traces: list[ThinkingTraceSummary] = []
     for block in content_blocks:
         if block.get("type") != "thinking":
@@ -110,12 +114,12 @@ def extract_thinking_traces(content_blocks: Sequence[Mapping[str, Any]]) -> list
     return traces
 
 
-def extract_tool_invocations(content_blocks: Sequence[Mapping[str, Any]]) -> list[ToolInvocationSummary]:
+def extract_tool_invocations(content_blocks: Sequence[JSONRecord]) -> list[ToolInvocationSummary]:
     invocations: list[ToolInvocationSummary] = []
     for block in content_blocks:
         if block.get("type") != "tool_use":
             continue
-        input_payload = mapping_or_empty(block.get("input"))
+        input_payload = _json_record(mapping_or_empty(block.get("input")))
         invocation: ToolInvocationSummary = {
             "tool_name": optional_string(block.get("name")),
             "tool_id": optional_string(block.get("id")),
@@ -133,7 +137,7 @@ def extract_tool_invocations(content_blocks: Sequence[Mapping[str, Any]]) -> lis
     return invocations
 
 
-def parse_git_operation(tool_invocation: Mapping[str, Any]) -> dict[str, Any] | None:
+def parse_git_operation(tool_invocation: ToolInvocationSummary) -> ToolMetadata | None:
     if tool_invocation.get("tool_name") != "Bash":
         return None
     command = optional_string(mapping_or_empty(tool_invocation.get("input")).get("command"))
@@ -142,7 +146,7 @@ def parse_git_operation(tool_invocation: Mapping[str, Any]) -> dict[str, Any] | 
     return _parse_git_command(command)
 
 
-def extract_file_changes(tool_invocations: Sequence[Mapping[str, Any]]) -> list[FileChangeSummary]:
+def extract_file_changes(tool_invocations: Sequence[ToolInvocationSummary]) -> list[FileChangeSummary]:
     changes: list[FileChangeSummary] = []
     for invocation in tool_invocations:
         tool_name = invocation.get("tool_name")
@@ -171,13 +175,13 @@ def extract_file_changes(tool_invocations: Sequence[Mapping[str, Any]]) -> list[
     return changes
 
 
-def extract_subagent_spawns(tool_invocations: Sequence[Mapping[str, Any]]) -> list[SubagentSpawnSummary]:
+def extract_subagent_spawns(tool_invocations: Sequence[ToolInvocationSummary]) -> list[SubagentSpawnSummary]:
     spawns: list[SubagentSpawnSummary] = []
     for invocation in tool_invocations:
         if invocation.get("tool_name") != "Task":
             continue
         input_data = mapping_or_empty(invocation.get("input"))
-        parsed = _parse_subagent_spawn(input_data)
+        parsed = _parse_subagent_spawn(_json_record(input_data))
         agent_type = parsed.get("agent_type")
         spawns.append(
             {
@@ -190,8 +194,8 @@ def extract_subagent_spawns(tool_invocations: Sequence[Mapping[str, Any]]) -> li
     return spawns
 
 
-def extract_git_operations(tool_invocations: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
-    operations: list[dict[str, Any]] = []
+def extract_git_operations(tool_invocations: Sequence[ToolInvocationSummary]) -> list[ToolMetadata]:
+    operations: list[ToolMetadata] = []
     for invocation in tool_invocations:
         if git_op := parse_git_operation(invocation):
             operations.append(git_op)
