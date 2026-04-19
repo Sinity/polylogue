@@ -4,9 +4,27 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
-from typing import Any
 
+from polylogue.schemas.json_types import JSONDocument, json_document, json_document_list
 from polylogue.schemas.runtime_registry import SchemaProvider, canonical_schema_provider
+
+
+def _string_list(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item) for item in value]
+
+
+def _int_dict(value: object) -> dict[str, int]:
+    return {str(key): int(item) for key, item in json_document(value).items() if isinstance(item, (str, int, float))}
+
+
+def _int_scalar(value: object, default: int = 0) -> int:
+    return int(value) if isinstance(value, (str, int, float)) and not isinstance(value, bool) else default
+
+
+def _float_scalar(value: object, default: float = 1.0) -> float:
+    return float(value) if isinstance(value, (str, int, float)) and not isinstance(value, bool) else default
 
 
 @dataclass
@@ -15,7 +33,7 @@ class PropertyChange:
     kind: str
     detail: str
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> JSONDocument:
         return {"path": self.path, "kind": self.kind, "detail": self.detail}
 
 
@@ -43,18 +61,20 @@ class SchemaDiff:
             parts.append(f"~{len(self.changed_properties)} changed")
         return ", ".join(parts) if parts else "no changes"
 
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "provider": str(self.provider),
-            "version_a": self.version_a,
-            "version_b": self.version_b,
-            "summary": self.summary(),
-            "has_changes": self.has_changes,
-            "added_properties": self.added_properties,
-            "removed_properties": self.removed_properties,
-            "changed_properties": self.changed_properties,
-            "classified_changes": [change.to_dict() for change in self.classified_changes],
-        }
+    def to_dict(self) -> JSONDocument:
+        return json_document(
+            {
+                "provider": str(self.provider),
+                "version_a": self.version_a,
+                "version_b": self.version_b,
+                "summary": self.summary(),
+                "has_changes": self.has_changes,
+                "added_properties": self.added_properties,
+                "removed_properties": self.removed_properties,
+                "changed_properties": self.changed_properties,
+                "classified_changes": [change.to_dict() for change in self.classified_changes],
+            }
+        )
 
     def to_text(self) -> str:
         lines = [
@@ -170,10 +190,10 @@ class SchemaCluster:
     bundle_scope_count: int = 0
     promoted_package_version: str | None = None
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> JSONDocument:
         data = asdict(self)
         data["provider"] = str(self.provider)
-        return data
+        return json_document(data)
 
 
 @dataclass
@@ -188,41 +208,48 @@ class ClusterManifest:
         if not self.generated_at:
             self.generated_at = datetime.now(tz=timezone.utc).isoformat()
 
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "provider": str(self.provider),
-            "generated_at": self.generated_at,
-            "cluster_count": len(self.clusters),
-            "artifact_counts": self.artifact_counts,
-            "default_version": self.default_version,
-            "clusters": [cluster.to_dict() for cluster in self.clusters],
-        }
+    def to_dict(self) -> JSONDocument:
+        return json_document(
+            {
+                "provider": str(self.provider),
+                "generated_at": self.generated_at,
+                "cluster_count": len(self.clusters),
+                "artifact_counts": self.artifact_counts,
+                "default_version": self.default_version,
+                "clusters": [cluster.to_dict() for cluster in self.clusters],
+            }
+        )
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> ClusterManifest:
+    def from_dict(cls, data: JSONDocument) -> ClusterManifest:
+        cluster_payloads = json_document_list(data.get("clusters"))
         return cls(
-            provider=canonical_schema_provider(data["provider"]),
+            provider=canonical_schema_provider(str(data["provider"])),
             clusters=[
                 SchemaCluster(
-                    cluster_id=cluster["cluster_id"],
-                    provider=canonical_schema_provider(cluster["provider"]),
-                    sample_count=int(cluster["sample_count"]),
-                    first_seen=cluster["first_seen"],
-                    last_seen=cluster["last_seen"],
-                    representative_paths=list(cluster.get("representative_paths", [])),
-                    dominant_keys=list(cluster.get("dominant_keys", [])),
-                    confidence=float(cluster.get("confidence", 1.0)),
+                    cluster_id=str(cluster["cluster_id"]),
+                    provider=canonical_schema_provider(str(cluster["provider"])),
+                    sample_count=_int_scalar(cluster.get("sample_count")),
+                    first_seen=str(cluster["first_seen"]),
+                    last_seen=str(cluster["last_seen"]),
+                    representative_paths=_string_list(cluster.get("representative_paths")),
+                    dominant_keys=_string_list(cluster.get("dominant_keys")),
+                    confidence=_float_scalar(cluster.get("confidence")),
                     artifact_kind=str(cluster.get("artifact_kind", "unspecified")),
-                    profile_tokens=list(cluster.get("profile_tokens", [])),
-                    exact_structure_ids=list(cluster.get("exact_structure_ids", [])),
-                    bundle_scope_count=int(cluster.get("bundle_scope_count", 0)),
-                    promoted_package_version=cluster.get("promoted_package_version"),
+                    profile_tokens=_string_list(cluster.get("profile_tokens")),
+                    exact_structure_ids=_string_list(cluster.get("exact_structure_ids")),
+                    bundle_scope_count=_int_scalar(cluster.get("bundle_scope_count")),
+                    promoted_package_version=(
+                        str(cluster["promoted_package_version"])
+                        if isinstance(cluster.get("promoted_package_version"), str)
+                        else None
+                    ),
                 )
-                for cluster in data.get("clusters", [])
+                for cluster in cluster_payloads
             ],
-            generated_at=data.get("generated_at", ""),
-            artifact_counts={str(key): int(value) for key, value in data.get("artifact_counts", {}).items()},
-            default_version=data.get("default_version"),
+            generated_at=str(data.get("generated_at", "")),
+            artifact_counts=_int_dict(data.get("artifact_counts")),
+            default_version=str(data["default_version"]) if isinstance(data.get("default_version"), str) else None,
         )
 
 

@@ -135,7 +135,7 @@ class SchemaCompareResult:
     diff: SchemaDiff
 
     def to_dict(self) -> JSONDocument:
-        return self.diff.to_dict()
+        return cast(JSONDocument, self.diff.to_dict())
 
 
 @dataclass(frozen=True)

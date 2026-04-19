@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
 
 KNOWN_ROLE_VALUES = frozenset(
     {
@@ -52,7 +51,7 @@ class SemanticCandidate:
     path: str
     role: str
     confidence: float
-    evidence: dict[str, Any] = field(default_factory=dict)
+    evidence: dict[str, object] = field(default_factory=dict)
 
 
 __all__ = [

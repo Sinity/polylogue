@@ -19,17 +19,19 @@ from __future__ import annotations
 import json
 import random
 from datetime import datetime
-from typing import Any
-from unittest.mock import MagicMock
+from pathlib import Path
+from typing import Protocol, cast
 
 import pytest
 
+from polylogue.paths import Source
 from polylogue.scenarios import CorpusProfile, CorpusSpec
 from polylogue.schemas.synthetic import (
     PROVIDER_WIRE_FORMATS,
     SyntheticCorpus,
     WireFormat,
 )
+from polylogue.schemas.synthetic.models import SchemaRecord
 from polylogue.schemas.synthetic.semantic_values import (
     _ROLE_TEXTS,
     SemanticValueGenerator,
@@ -37,6 +39,81 @@ from polylogue.schemas.synthetic.semantic_values import (
 )
 from polylogue.schemas.synthetic.showcase import _SHOWCASE_THEMES
 from polylogue.sources.dispatch import parse_payload
+
+
+def _schema(value: object) -> SchemaRecord:
+    return cast(SchemaRecord, value)
+
+
+def _float_value(value: object) -> float:
+    assert isinstance(value, float)
+    return value
+
+
+class SyntheticSourceFactory(Protocol):
+    def __call__(
+        self,
+        provider: str,
+        count: int = 1,
+        messages_per_conversation: range = range(4, 12),
+        seed: int = 42,
+    ) -> Source: ...
+
+
+class _FakePackage:
+    def __init__(
+        self,
+        *,
+        version: str,
+        default_element_kind: str | None,
+        available_elements: set[str],
+    ) -> None:
+        self.version = version
+        self.default_element_kind = default_element_kind
+        self._available_elements = available_elements
+
+    def element(self, element_kind: str | None) -> object | None:
+        if element_kind in self._available_elements:
+            return {"element_kind": element_kind}
+        return None
+
+
+class _FakeRegistry:
+    def __init__(
+        self,
+        *,
+        package: _FakePackage | None,
+        element_schema: SchemaRecord | None = None,
+        schema: SchemaRecord | None = None,
+    ) -> None:
+        self._package = package
+        self._element_schema = element_schema
+        self._schema = schema
+        self.package_calls: list[tuple[str, str]] = []
+        self.element_schema_calls: list[tuple[str, str, str | None]] = []
+        self.schema_calls: list[tuple[str, str]] = []
+
+    def get_package(self, provider: str, version: str = "default") -> _FakePackage | None:
+        self.package_calls.append((provider, version))
+        return self._package
+
+    def get_element_schema(
+        self,
+        provider: str,
+        *,
+        version: str = "default",
+        element_kind: str | None = None,
+    ) -> SchemaRecord | None:
+        self.element_schema_calls.append((provider, version, element_kind))
+        return self._element_schema
+
+    def get_schema(self, provider: str, version: str = "default") -> SchemaRecord | None:
+        self.schema_calls.append((provider, version))
+        return self._schema
+
+    def list_providers(self) -> list[str]:
+        return ["chatgpt"]
+
 
 # ---------------------------------------------------------------------------
 # _text_for_role
@@ -150,7 +227,7 @@ class TestSyntheticConversationEnvelope:
         assert batch.report.provider == "chatgpt"
         assert batch.report.generated_count == 2
 
-    def test_write_spec_artifacts_returns_written_paths(self, tmp_path: Any) -> None:
+    def test_write_spec_artifacts_returns_written_paths(self, tmp_path: Path) -> None:
         spec = CorpusSpec.for_provider(
             "chatgpt",
             count=1,
@@ -165,7 +242,7 @@ class TestSyntheticConversationEnvelope:
         assert written.files[0].exists()
         assert written.batch.report.generated_count == 1
 
-    def test_write_specs_artifacts_avoids_same_provider_name_collisions(self, tmp_path: Any) -> None:
+    def test_write_specs_artifacts_avoids_same_provider_name_collisions(self, tmp_path: Path) -> None:
         specs = (
             CorpusSpec(
                 provider="chatgpt",
@@ -204,17 +281,19 @@ class TestSyntheticConversationEnvelope:
 class TestSemanticRole:
     def test_generates_role_from_cycle(self) -> None:
         gen = SemanticValueGenerator(random.Random(0))
-        schema = {"x-polylogue-semantic-role": "message_role"}
+        schema = _schema({"x-polylogue-semantic-role": "message_role"})
         handled, value = gen.try_generate(schema)
         assert handled is True
         assert value == "user"
 
     def test_role_respects_observed_values(self) -> None:
         gen = SemanticValueGenerator(random.Random(42))
-        schema = {
-            "x-polylogue-semantic-role": "message_role",
-            "x-polylogue-values": ["user", "assistant", "system"],
-        }
+        schema = _schema(
+            {
+                "x-polylogue-semantic-role": "message_role",
+                "x-polylogue-values": ["user", "assistant", "system"],
+            }
+        )
         handled, value = gen.try_generate(schema)
         assert handled is True
         assert value in {"user", "assistant", "system"}
@@ -224,10 +303,12 @@ class TestSemanticRole:
             random.Random(0),
             role_cycle=["human", "assistant"],
         )
-        schema = {
-            "x-polylogue-semantic-role": "message_role",
-            "x-polylogue-values": ["human", "assistant"],
-        }
+        schema = _schema(
+            {
+                "x-polylogue-semantic-role": "message_role",
+                "x-polylogue-values": ["human", "assistant"],
+            }
+        )
         handled, value = gen.try_generate(schema)
         assert handled is True
         assert value == "human"  # current_role is "human"
@@ -241,7 +322,7 @@ class TestSemanticRole:
 class TestSemanticBody:
     def test_generates_nonempty_body_text(self) -> None:
         gen = SemanticValueGenerator(random.Random(0))
-        schema = {"x-polylogue-semantic-role": "message_body"}
+        schema = _schema({"x-polylogue-semantic-role": "message_body"})
         handled, value = gen.try_generate(schema)
         assert handled is True
         assert isinstance(value, str)
@@ -249,7 +330,7 @@ class TestSemanticBody:
 
     def test_body_text_matches_current_role(self) -> None:
         gen = SemanticValueGenerator(random.Random(42))
-        schema = {"x-polylogue-semantic-role": "message_body"}
+        schema = _schema({"x-polylogue-semantic-role": "message_body"})
 
         # Turn 0 = user
         _, user_text = gen.try_generate(schema)
@@ -263,7 +344,7 @@ class TestSemanticBody:
     def test_body_with_theme_uses_themed_content(self) -> None:
         theme = _SHOWCASE_THEMES[0]
         gen = SemanticValueGenerator(random.Random(0), theme=theme)
-        schema = {"x-polylogue-semantic-role": "message_body"}
+        schema = _schema({"x-polylogue-semantic-role": "message_body"})
         handled, value = gen.try_generate(schema)
         assert handled is True
         assert value in theme.user_turns  # turn 0 = user
@@ -277,7 +358,7 @@ class TestSemanticBody:
 class TestSemanticTimestamp:
     def test_generates_epoch_by_default(self) -> None:
         gen = SemanticValueGenerator(random.Random(0), base_ts=1700000000.0)
-        schema = {"x-polylogue-semantic-role": "message_timestamp"}
+        schema = _schema({"x-polylogue-semantic-role": "message_timestamp"})
         handled, value = gen.try_generate(schema)
         assert handled is True
         assert isinstance(value, float)
@@ -285,7 +366,7 @@ class TestSemanticTimestamp:
 
     def test_sequential_timestamps_increase(self) -> None:
         gen = SemanticValueGenerator(random.Random(0), base_ts=1700000000.0)
-        schema = {"x-polylogue-semantic-role": "message_timestamp"}
+        schema = _schema({"x-polylogue-semantic-role": "message_timestamp"})
 
         _, ts0 = gen.try_generate(schema)
         gen.advance_turn()
@@ -293,14 +374,16 @@ class TestSemanticTimestamp:
         gen.advance_turn()
         _, ts2 = gen.try_generate(schema)
 
-        assert ts0 < ts1 < ts2
+        assert _float_value(ts0) < _float_value(ts1) < _float_value(ts2)
 
     def test_iso8601_format(self) -> None:
         gen = SemanticValueGenerator(random.Random(0), base_ts=1700000000.0)
-        schema = {
-            "x-polylogue-semantic-role": "message_timestamp",
-            "x-polylogue-format": "iso8601",
-        }
+        schema = _schema(
+            {
+                "x-polylogue-semantic-role": "message_timestamp",
+                "x-polylogue-format": "iso8601",
+            }
+        )
         handled, value = gen.try_generate(schema)
         assert handled is True
         assert isinstance(value, str)
@@ -310,10 +393,12 @@ class TestSemanticTimestamp:
 
     def test_unix_epoch_str_format(self) -> None:
         gen = SemanticValueGenerator(random.Random(0), base_ts=1700000000.0)
-        schema = {
-            "x-polylogue-semantic-role": "message_timestamp",
-            "x-polylogue-format": "unix-epoch-str",
-        }
+        schema = _schema(
+            {
+                "x-polylogue-semantic-role": "message_timestamp",
+                "x-polylogue-format": "unix-epoch-str",
+            }
+        )
         handled, value = gen.try_generate(schema)
         assert handled is True
         assert isinstance(value, str)
@@ -321,10 +406,12 @@ class TestSemanticTimestamp:
 
     def test_unix_epoch_format(self) -> None:
         gen = SemanticValueGenerator(random.Random(0), base_ts=1700000000.0)
-        schema = {
-            "x-polylogue-semantic-role": "message_timestamp",
-            "x-polylogue-format": "unix-epoch",
-        }
+        schema = _schema(
+            {
+                "x-polylogue-semantic-role": "message_timestamp",
+                "x-polylogue-format": "unix-epoch",
+            }
+        )
         handled, value = gen.try_generate(schema)
         assert handled is True
         assert isinstance(value, float)
@@ -338,7 +425,7 @@ class TestSemanticTimestamp:
 class TestSemanticTitle:
     def test_generates_title_string(self) -> None:
         gen = SemanticValueGenerator(random.Random(0))
-        schema = {"x-polylogue-semantic-role": "conversation_title"}
+        schema = _schema({"x-polylogue-semantic-role": "conversation_title"})
         handled, value = gen.try_generate(schema)
         assert handled is True
         assert isinstance(value, str)
@@ -347,24 +434,26 @@ class TestSemanticTitle:
     def test_themed_title_uses_theme(self) -> None:
         theme = _SHOWCASE_THEMES[0]
         gen = SemanticValueGenerator(random.Random(0), theme=theme)
-        schema = {"x-polylogue-semantic-role": "conversation_title"}
+        schema = _schema({"x-polylogue-semantic-role": "conversation_title"})
         handled, value = gen.try_generate(schema)
         assert handled is True
         assert value == theme.title
 
     def test_title_with_observed_values(self) -> None:
         gen = SemanticValueGenerator(random.Random(42))
-        schema = {
-            "x-polylogue-semantic-role": "conversation_title",
-            "x-polylogue-values": ["Alpha", "Beta", "Gamma"],
-        }
+        schema = _schema(
+            {
+                "x-polylogue-semantic-role": "conversation_title",
+                "x-polylogue-values": ["Alpha", "Beta", "Gamma"],
+            }
+        )
         handled, value = gen.try_generate(schema)
         assert handled is True
         assert value in {"Alpha", "Beta", "Gamma"}
 
     def test_title_without_theme_or_values_picks_showcase_theme(self) -> None:
         gen = SemanticValueGenerator(random.Random(42))
-        schema = {"x-polylogue-semantic-role": "conversation_title"}
+        schema = _schema({"x-polylogue-semantic-role": "conversation_title"})
         handled, value = gen.try_generate(schema)
         assert handled is True
         known_titles = {t.title for t in _SHOWCASE_THEMES}
@@ -379,14 +468,14 @@ class TestSemanticTitle:
 class TestSemanticFallback:
     def test_no_semantic_role_returns_not_handled(self) -> None:
         gen = SemanticValueGenerator(random.Random(0))
-        schema = {"type": "string"}
+        schema = _schema({"type": "string"})
         handled, value = gen.try_generate(schema)
         assert handled is False
         assert value is None
 
     def test_unknown_semantic_role_returns_not_handled(self) -> None:
         gen = SemanticValueGenerator(random.Random(0))
-        schema = {"x-polylogue-semantic-role": "completely_unknown_role"}
+        schema = _schema({"x-polylogue-semantic-role": "completely_unknown_role"})
         handled, value = gen.try_generate(schema)
         assert handled is False
         assert value is None
@@ -394,7 +483,7 @@ class TestSemanticFallback:
     def test_message_container_role_returns_not_handled(self) -> None:
         """message_container is structural and defers to normal generation."""
         gen = SemanticValueGenerator(random.Random(0))
-        schema = {"x-polylogue-semantic-role": "message_container"}
+        schema = _schema({"x-polylogue-semantic-role": "message_container"})
         handled, value = gen.try_generate(schema)
         assert handled is False
 
@@ -414,7 +503,7 @@ class TestWireFormatShape:
         assert set(PROVIDER_WIRE_FORMATS.keys()) == self.EXPECTED_PROVIDERS
 
     @pytest.mark.parametrize("provider", sorted(EXPECTED_PROVIDERS))
-    def test_encoding_is_valid(self, provider: Any) -> None:
+    def test_encoding_is_valid(self, provider: str) -> None:
         """Each wire format has a valid encoding value."""
         wf = PROVIDER_WIRE_FORMATS[provider]
         assert isinstance(wf, WireFormat)
@@ -471,7 +560,7 @@ class TestCorpusParseRoundtrip:
     """Generated corpus parses successfully through source iterators."""
 
     @pytest.mark.parametrize("provider", sorted(PROVIDER_WIRE_FORMATS.keys()))
-    def test_generated_data_parses(self, provider: Any, synthetic_source: Any) -> None:
+    def test_generated_data_parses(self, provider: str, synthetic_source: SyntheticSourceFactory) -> None:
         """Synthetic data for each provider round-trips through parser."""
         from polylogue.sources import iter_source_conversations
 
@@ -495,7 +584,7 @@ class TestSeedDeterminism:
     """Corpus generation is deterministic given the same seed."""
 
     @pytest.mark.parametrize("provider", sorted(SyntheticCorpus.available_providers() or ["chatgpt"]))
-    def test_same_seed_produces_identical_output(self, provider: Any) -> None:
+    def test_same_seed_produces_identical_output(self, provider: str) -> None:
         """Two generate() calls with same seed → identical byte output."""
         try:
             corpus = SyntheticCorpus.for_provider(provider)
@@ -522,7 +611,7 @@ class TestMessageCountContract:
     """Generated conversations respect the message count range."""
 
     @pytest.mark.parametrize("provider", sorted(SyntheticCorpus.available_providers() or ["chatgpt"]))
-    def test_generate_count_matches_requested(self, provider: Any) -> None:
+    def test_generate_count_matches_requested(self, provider: str) -> None:
         """generate(count=N) returns exactly N items."""
         try:
             corpus = SyntheticCorpus.for_provider(provider)
@@ -562,7 +651,7 @@ class TestParseRoundtrip:
     """Synthetic data round-trips through the actual provider parsers."""
 
     @pytest.mark.parametrize("provider", sorted(SyntheticCorpus.available_providers() or ["chatgpt"]))
-    def test_synthetic_parses_to_conversations(self, provider: Any, synthetic_source: Any) -> None:
+    def test_synthetic_parses_to_conversations(self, provider: str, synthetic_source: SyntheticSourceFactory) -> None:
         """Synthetic corpus for each provider parses into valid conversations."""
         from polylogue.sources import iter_source_conversations
 
@@ -736,17 +825,16 @@ class TestProviderAvailability:
     def test_for_provider_accepts_explicit_version_and_element(self, monkeypatch: pytest.MonkeyPatch) -> None:
         import polylogue.schemas.synthetic.core as synthetic_core
 
-        fake_registry = MagicMock()
-        fake_package = MagicMock(
+        fake_package = _FakePackage(
             version="v2",
             default_element_kind="conversation_record_stream",
+            available_elements={"conversation_record_stream"},
         )
-        fake_package.element.side_effect = lambda element_kind: (
-            {"element_kind": element_kind} if element_kind == "conversation_record_stream" else None
+        fake_schema = _schema({"type": "object"})
+        fake_registry = _FakeRegistry(
+            package=fake_package,
+            element_schema=fake_schema,
         )
-        fake_schema = {"type": "object"}
-        fake_registry.get_package.return_value = fake_package
-        fake_registry.get_element_schema.return_value = fake_schema
         monkeypatch.setattr(synthetic_core, "SchemaRegistry", lambda: fake_registry)
 
         corpus = SyntheticCorpus.for_provider(
@@ -756,38 +844,31 @@ class TestProviderAvailability:
         )
 
         assert isinstance(corpus, SyntheticCorpus)
-        fake_registry.get_package.assert_called_once_with("chatgpt", version="v2")
-        fake_registry.get_element_schema.assert_called_once_with(
-            "chatgpt",
-            version="v2",
-            element_kind="conversation_record_stream",
-        )
+        assert fake_registry.package_calls == [("chatgpt", "v2")]
+        assert fake_registry.element_schema_calls == [("chatgpt", "v2", "conversation_record_stream")]
         assert corpus.schema == fake_schema
 
     def test_for_provider_rejects_unknown_element_when_package_exists(self, monkeypatch: pytest.MonkeyPatch) -> None:
         import polylogue.schemas.synthetic.core as synthetic_core
 
-        fake_registry = MagicMock()
-        fake_package = MagicMock(
+        fake_package = _FakePackage(
             version="v2",
             default_element_kind="conversation_record_stream",
+            available_elements=set(),
         )
-        fake_package.element.return_value = None
-        fake_registry.get_package.return_value = fake_package
+        fake_registry = _FakeRegistry(package=fake_package)
         monkeypatch.setattr(synthetic_core, "SchemaRegistry", lambda: fake_registry)
 
         with pytest.raises(ValueError):
             SyntheticCorpus.for_provider("chatgpt", version="v2", element_kind="unknown_element")
 
-        fake_registry.get_package.assert_called_once_with("chatgpt", version="v2")
+        assert fake_registry.package_calls == [("chatgpt", "v2")]
 
     def test_for_provider_rejects_element_without_package(self, monkeypatch: pytest.MonkeyPatch) -> None:
         import polylogue.schemas.synthetic.core as synthetic_core
 
-        fake_registry = MagicMock()
-        fake_registry.get_package.return_value = None
-        fake_schema = {"type": "object"}
-        fake_registry.get_schema.return_value = fake_schema
+        fake_schema = _schema({"type": "object"})
+        fake_registry = _FakeRegistry(package=None, schema=fake_schema)
         monkeypatch.setattr(synthetic_core, "SchemaRegistry", lambda: fake_registry)
 
         with pytest.raises(ValueError):

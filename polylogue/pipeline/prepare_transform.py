@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import cast
 
 from polylogue.lib.json import dumps as json_dumps
 from polylogue.lib.viewports import ToolCategory, classify_tool
@@ -20,7 +21,7 @@ from polylogue.pipeline.prepare_models import (
     _timestamp_sort_key,
 )
 from polylogue.pipeline.prepare_transform_content import canonicalize_conversation_content
-from polylogue.pipeline.semantic_metadata import extract_tool_metadata
+from polylogue.pipeline.semantic_metadata import ToolInputPayload, extract_tool_metadata
 from polylogue.schemas.code_detection import detect_language
 from polylogue.sources.parsers.base import ParsedConversation
 from polylogue.storage.store import (
@@ -119,7 +120,10 @@ def transform_to_records(convo: ParsedConversation, source_name: str, *, archive
                 semantic_type = (
                     None if category is ToolCategory.OTHER else SemanticBlockType.from_string(category.value)
                 )
-                tool_meta = extract_tool_metadata(block.tool_name, dict(block.tool_input or {}))
+                tool_meta = extract_tool_metadata(
+                    block.tool_name,
+                    cast(ToolInputPayload, dict(block.tool_input or {})),
+                )
                 if tool_meta is not None:
                     base = dict(block.metadata) if isinstance(block.metadata, dict) else {}
                     base.update(tool_meta)

@@ -14,8 +14,9 @@ Semantic roles handled:
 from __future__ import annotations
 
 import random
-from typing import Any
+from collections.abc import Mapping
 
+from polylogue.schemas.synthetic.models import SchemaScalar
 from polylogue.schemas.synthetic.showcase import _SHOWCASE_THEMES, ConversationTheme
 
 # =============================================================================
@@ -40,6 +41,13 @@ _ROLE_TEXTS: dict[str, list[str]] = {
     "model": ["I'll explain step by step.", "Here's a breakdown of the architecture."],
     "tool": ["Function executed successfully.", "Error: resource not found."],
 }
+
+
+def _string_values(schema: Mapping[str, object], key: str) -> list[str]:
+    values = schema.get(key)
+    if not isinstance(values, list):
+        return []
+    return [value for value in values if isinstance(value, str)]
 
 
 def _text_for_role(
@@ -90,8 +98,8 @@ class SemanticValueGenerator:
 
     def try_generate(
         self,
-        schema: dict[str, Any],
-    ) -> tuple[bool, Any]:
+        schema: Mapping[str, object],
+    ) -> tuple[bool, SchemaScalar]:
         """Attempt semantic generation for a schema node.
 
         Returns:
@@ -130,10 +138,10 @@ class SemanticValueGenerator:
     def turn_index(self) -> int:
         return self._turn_index
 
-    def _generate_role(self, schema: dict[str, Any]) -> str:
+    def _generate_role(self, schema: Mapping[str, object]) -> str:
         """Generate a role value from observed values or cycle."""
         # Prefer observed values from the schema
-        if values := schema.get("x-polylogue-values"):
+        if values := _string_values(schema, "x-polylogue-values"):
             # Filter to known conversational roles if present
             conversational = [v for v in values if v in {"user", "assistant", "human", "model", "system", "tool"}]
             if conversational:
@@ -143,7 +151,7 @@ class SemanticValueGenerator:
             return str(self.rng.choice(values))
         return self.current_role
 
-    def _generate_body(self, schema: dict[str, Any]) -> str:
+    def _generate_body(self, schema: Mapping[str, object]) -> str:
         """Generate message body content."""
         return _text_for_role(
             self.rng,
@@ -152,7 +160,7 @@ class SemanticValueGenerator:
             theme=self.theme,
         )
 
-    def _generate_timestamp(self, schema: dict[str, Any]) -> Any:
+    def _generate_timestamp(self, schema: Mapping[str, object]) -> SchemaScalar:
         """Generate a sequential timestamp value.
 
         Respects the field's format annotation to produce the right
@@ -173,13 +181,13 @@ class SemanticValueGenerator:
             case _:
                 return ts
 
-    def _generate_title(self, schema: dict[str, Any]) -> str:
+    def _generate_title(self, schema: Mapping[str, object]) -> str:
         """Generate a conversation title."""
         if self.theme is not None:
             return self.theme.title
 
         # Use observed values if available
-        if values := schema.get("x-polylogue-values"):
+        if values := _string_values(schema, "x-polylogue-values"):
             return str(self.rng.choice(values))
 
         # Fallback: pick a theme title

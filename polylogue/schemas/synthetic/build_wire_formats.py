@@ -5,14 +5,16 @@ from __future__ import annotations
 import random
 import uuid
 from datetime import datetime, timezone
-from typing import Protocol
+from typing import Protocol, TypeAlias
 
-from polylogue.lib.raw_payload_decode import JSONRecord, JSONValue
+from polylogue.lib.raw_payload_decode import JSONValue
 from polylogue.schemas.synthetic.semantic_values import _text_for_role
 from polylogue.schemas.synthetic.showcase import ConversationTheme
 
+SyntheticRecord: TypeAlias = dict[str, JSONValue]
 
-def _as_record(value: JSONValue) -> JSONRecord:
+
+def _as_record(value: JSONValue) -> SyntheticRecord:
     return value if isinstance(value, dict) else {}
 
 
@@ -21,7 +23,7 @@ class _WireFormatContext(Protocol):
 
     def _ensure_wire_chatgpt(
         self,
-        data: JSONRecord,
+        data: SyntheticRecord,
         role: str,
         rng: random.Random,
         ts: float,
@@ -32,7 +34,7 @@ class _WireFormatContext(Protocol):
 
     def _ensure_wire_claude_ai(
         self,
-        data: JSONRecord,
+        data: SyntheticRecord,
         role: str,
         rng: random.Random,
         ts: float,
@@ -43,7 +45,7 @@ class _WireFormatContext(Protocol):
 
     def _ensure_wire_claude_code(
         self,
-        data: JSONRecord,
+        data: SyntheticRecord,
         role: str,
         rng: random.Random,
         ts: float,
@@ -54,7 +56,7 @@ class _WireFormatContext(Protocol):
 
     def _ensure_wire_codex(
         self,
-        data: JSONRecord,
+        data: SyntheticRecord,
         role: str,
         rng: random.Random,
         ts: float,
@@ -65,7 +67,7 @@ class _WireFormatContext(Protocol):
 
     def _ensure_wire_gemini(
         self,
-        data: JSONRecord,
+        data: SyntheticRecord,
         role: str,
         rng: random.Random,
         *,
@@ -76,7 +78,7 @@ class _WireFormatContext(Protocol):
 
 def _ensure_wire_format(
     self: _WireFormatContext,
-    data: JSONRecord,
+    data: SyntheticRecord,
     role: str,
     rng: random.Random,
     index: int,
@@ -99,7 +101,7 @@ def _ensure_wire_format(
 
 def _ensure_wire_chatgpt(
     self: _WireFormatContext,
-    data: JSONRecord,
+    data: SyntheticRecord,
     role: str,
     rng: random.Random,
     ts: float,
@@ -128,7 +130,7 @@ def _ensure_wire_chatgpt(
 
 def _ensure_wire_claude_ai(
     self: _WireFormatContext,
-    data: JSONRecord,
+    data: SyntheticRecord,
     role: str,
     rng: random.Random,
     ts: float,
@@ -146,7 +148,7 @@ def _ensure_wire_claude_ai(
 
 def _ensure_wire_claude_code(
     self: _WireFormatContext,
-    data: JSONRecord,
+    data: SyntheticRecord,
     role: str,
     rng: random.Random,
     ts: float,
@@ -168,7 +170,7 @@ def _ensure_wire_claude_code(
 
 def _ensure_wire_codex(
     self: _WireFormatContext,
-    data: JSONRecord,
+    data: SyntheticRecord,
     role: str,
     rng: random.Random,
     ts: float,
@@ -189,7 +191,7 @@ def _ensure_wire_codex(
 
 def _ensure_wire_gemini(
     self: _WireFormatContext,
-    data: JSONRecord,
+    data: SyntheticRecord,
     role: str,
     rng: random.Random,
     *,

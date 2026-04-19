@@ -2,10 +2,16 @@
 
 from __future__ import annotations
 
-from typing import Any, cast
+from collections.abc import Sequence
+from pathlib import Path
+from typing import Protocol, cast
 
 from polylogue.scenarios import CorpusScenario, CorpusSpec, build_corpus_scenarios, build_inferred_corpus_specs
 from polylogue.schemas.audit_models import AuditReport
+from polylogue.schemas.json_types import JSONDocument
+from polylogue.schemas.operator_models import (
+    JSONDocument as OperatorJSONDocument,
+)
 from polylogue.schemas.operator_models import (
     SchemaAuditRequest,
     SchemaCompareRequest,
@@ -19,12 +25,53 @@ from polylogue.schemas.operator_models import (
     SchemaProviderSnapshot,
 )
 from polylogue.schemas.operator_registry import schema_registry
-from polylogue.schemas.packages import SchemaPackageCatalog
-from polylogue.schemas.registry import ClusterManifest
+from polylogue.schemas.packages import SchemaPackageCatalog, SchemaVersionPackage
+from polylogue.schemas.tooling_models import ClusterManifest, SchemaDiff
 from polylogue.types import Provider
 
 
-def _registry_catalog(registry: Any, provider: str) -> SchemaPackageCatalog | None:
+class _SchemaRegistryLike(Protocol):
+    def load_package_catalog(self, provider: str) -> SchemaPackageCatalog | None: ...
+
+    def cluster_samples(self, provider: str, samples: Sequence[JSONDocument]) -> ClusterManifest: ...
+
+    def save_cluster_manifest(self, manifest: ClusterManifest) -> Path: ...
+
+    def load_cluster_manifest(self, provider: str) -> ClusterManifest | None: ...
+
+    def list_providers(self) -> list[str]: ...
+
+    def list_versions(self, provider: str) -> list[str]: ...
+
+    def get_schema_age_days(self, provider: str) -> int | None: ...
+
+    def compare_versions(
+        self,
+        provider: str,
+        from_version: str,
+        to_version: str,
+        *,
+        element_kind: str | None = None,
+    ) -> SchemaDiff: ...
+
+    def promote_cluster(
+        self,
+        provider: str,
+        cluster_id: str,
+        *,
+        samples: Sequence[JSONDocument] | None = None,
+    ) -> str: ...
+
+    def get_package(self, provider: str, *, version: str) -> SchemaVersionPackage | None: ...
+
+    def get_element_schema(self, provider: str, *, version: str) -> JSONDocument | None: ...
+
+
+def _typed_registry() -> _SchemaRegistryLike:
+    return cast(_SchemaRegistryLike, schema_registry())
+
+
+def _registry_catalog(registry: object, provider: str) -> SchemaPackageCatalog | None:
     load_catalog = getattr(registry, "load_package_catalog", None)
     if load_catalog is None:
         return None
@@ -67,7 +114,7 @@ def infer_schema(request: SchemaInferRequest) -> SchemaInferResult:
         full_corpus=request.full_corpus,
     )
     package_version = result.default_version or "default"
-    registry = schema_registry()
+    registry = _typed_registry()
     if not request.cluster or not result.success:
         corpus_specs, corpus_scenarios = _build_inferred_outputs(
             provider=request.provider,
@@ -135,9 +182,9 @@ def infer_schema(request: SchemaInferRequest) -> SchemaInferResult:
 def list_inferred_corpus_specs(
     *,
     provider: str | None = None,
-    registry: Any | None = None,
+    registry: _SchemaRegistryLike | None = None,
 ) -> tuple[CorpusSpec, ...]:
-    registry = registry or schema_registry()
+    registry = registry or _typed_registry()
     providers = (provider,) if provider is not None else tuple(registry.list_providers())
     specs: list[CorpusSpec] = []
     for provider_name in providers:
@@ -169,7 +216,7 @@ def list_inferred_corpus_specs(
 def list_inferred_corpus_scenarios(
     *,
     provider: str | None = None,
-    registry: Any | None = None,
+    registry: _SchemaRegistryLike | None = None,
 ) -> tuple[CorpusScenario, ...]:
     return build_corpus_scenarios(
         list_inferred_corpus_specs(provider=provider, registry=registry),
@@ -179,7 +226,7 @@ def list_inferred_corpus_scenarios(
 
 
 def list_schemas(request: SchemaListRequest) -> SchemaListResult:
-    registry = schema_registry()
+    registry = _typed_registry()
     if request.provider is not None:
         provider = request.provider
         return SchemaListResult(
@@ -215,7 +262,7 @@ def list_schemas(request: SchemaListRequest) -> SchemaListResult:
 
 
 def compare_schema_versions(request: SchemaCompareRequest) -> SchemaCompareResult:
-    registry = schema_registry()
+    registry = _typed_registry()
     return SchemaCompareResult(
         diff=registry.compare_versions(
             request.provider,
@@ -231,8 +278,8 @@ def promote_schema_cluster(request: SchemaPromoteRequest) -> SchemaPromoteResult
     from polylogue.schemas.sampling import load_samples_from_db
     from polylogue.schemas.shape_fingerprint import _structure_fingerprint
 
-    registry = schema_registry()
-    samples: list[dict[str, Any]] | None = None
+    registry = _typed_registry()
+    samples: list[JSONDocument] | None = None
     if request.with_samples:
         provider_token = Provider.from_string(request.provider)
         config = PROVIDERS.get(provider_token)
@@ -263,7 +310,7 @@ def promote_schema_cluster(request: SchemaPromoteRequest) -> SchemaPromoteResult
         cluster_id=request.cluster_id,
         package_version=new_version,
         package=registry.get_package(request.provider, version=new_version),
-        schema=registry.get_element_schema(request.provider, version=new_version),
+        schema=cast(OperatorJSONDocument | None, registry.get_element_schema(request.provider, version=new_version)),
         versions=registry.list_versions(request.provider),
     )
 
