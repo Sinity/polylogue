@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import TypeAlias
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -21,6 +21,45 @@ from polylogue.types import Provider
 
 from .gemini_models import GeminiBranchParent, GeminiGrounding, GeminiPart, GeminiThoughtSignature
 
+ThoughtSignatureValue: TypeAlias = GeminiThoughtSignature | dict[str, object] | str
+GeminiPartValue: TypeAlias = GeminiPart | dict[str, object]
+GeminiDictValue: TypeAlias = dict[str, object]
+GeminiBranchChildren: TypeAlias = list[GeminiDictValue]
+
+
+def _normalize_mapping(payload: BaseModel | GeminiDictValue) -> GeminiDictValue:
+    if isinstance(payload, BaseModel):
+        return payload.model_dump()
+    return payload
+
+
+def _to_text(value: object) -> str | None:
+    if isinstance(value, str):
+        return value
+    if value is None:
+        return None
+    return str(value)
+
+
+def _part_text(part: GeminiPartValue) -> str | None:
+    if isinstance(part, GeminiPart):
+        return _get_str_or_none(part.text)
+    return _to_text(part.get("text"))
+
+
+def _part_has_file_payload(part: GeminiPartValue) -> bool:
+    if isinstance(part, GeminiPart):
+        return getattr(part, "inlineData", None) is not None or getattr(part, "fileData", None) is not None
+    return "inlineData" in part or "fileData" in part
+
+
+def _get_str_or_none(value: object) -> str | None:
+    return value if isinstance(value, str) else None
+
+
+def _string_or_empty_dict(value: object) -> GeminiDictValue:
+    return value if isinstance(value, dict) else {}
+
 
 class GeminiMessage(BaseModel):
     """A single Gemini AI Studio message."""
@@ -35,17 +74,17 @@ class GeminiMessage(BaseModel):
     finishReason: str | None = None
     isThought: bool = False
     thinkingBudget: int | None = None
-    thoughtSignatures: list[GeminiThoughtSignature | dict[str, Any] | str] = Field(default_factory=list)
-    parts: list[GeminiPart | dict[str, Any]] = Field(default_factory=list)
-    grounding: GeminiGrounding | dict[str, Any] | None = None
-    branchParent: GeminiBranchParent | dict[str, Any] | None = None
-    branchChildren: list[dict[str, Any]] = Field(default_factory=list)
-    safetyRatings: list[dict[str, Any]] = Field(default_factory=list)
-    executableCode: dict[str, Any] | None = None
-    codeExecutionResult: dict[str, Any] | None = None
-    driveDocument: dict[str, Any] | str | None = None
-    inlineFile: dict[str, Any] | None = None
-    youtubeVideo: dict[str, Any] | None = None
+    thoughtSignatures: list[ThoughtSignatureValue] = Field(default_factory=list)
+    parts: list[GeminiPartValue] = Field(default_factory=list)
+    grounding: GeminiGrounding | GeminiDictValue | None = None
+    branchParent: GeminiBranchParent | GeminiDictValue | None = None
+    branchChildren: GeminiBranchChildren = Field(default_factory=list)
+    safetyRatings: list[GeminiDictValue] = Field(default_factory=list)
+    executableCode: GeminiDictValue | None = None
+    codeExecutionResult: GeminiDictValue | None = None
+    driveDocument: GeminiDictValue | str | None = None
+    inlineFile: GeminiDictValue | None = None
+    youtubeVideo: GeminiDictValue | None = None
     errorMessage: str | None = None
     isEdited: bool = False
 
@@ -66,13 +105,11 @@ class GeminiMessage(BaseModel):
         if self.text:
             return self.text
 
-        texts = []
+        texts: list[str] = []
         for part in self.parts:
-            if isinstance(part, GeminiPart) and part.text:
-                texts.append(part.text)
-            elif isinstance(part, dict) and part.get("text"):
-                val = part["text"]
-                texts.append(val if isinstance(val, str) else str(val))
+            text = _part_text(part)
+            if text:
+                texts.append(text)
         return "\n".join(texts)
 
     def to_meta(self) -> MessageMeta:
@@ -90,14 +127,12 @@ class GeminiMessage(BaseModel):
     def extract_reasoning_traces(self) -> list[ReasoningTrace]:
         traces = []
         if self.isThought and self.text:
-            sigs: list[str | dict[str, Any]] = []
+            sigs: list[str | GeminiDictValue] = []
             for signature in self.thoughtSignatures:
                 if isinstance(signature, str):
                     sigs.append(signature)
-                elif isinstance(signature, BaseModel):
-                    sigs.append(signature.model_dump())
                 else:
-                    sigs.append(signature)
+                    sigs.append(_normalize_mapping(signature))
 
             traces.append(
                 ReasoningTrace(
@@ -134,61 +169,50 @@ class GeminiMessage(BaseModel):
             )
 
         for part in self.parts:
-            if isinstance(part, GeminiPart):
-                if part.text:
-                    blocks.append(
-                        ContentBlock(
-                            type=ContentType.TEXT,
-                            text=part.text,
-                            raw=part.model_dump(),
-                        )
+            raw_part = _normalize_mapping(part) if not isinstance(part, GeminiPart) else part.model_dump()
+            part_text = _part_text(part)
+            if part_text:
+                blocks.append(
+                    ContentBlock(
+                        type=ContentType.TEXT,
+                        text=part_text,
+                        raw=raw_part,
                     )
-                elif getattr(part, "inlineData", None) is not None or getattr(part, "fileData", None) is not None:
-                    blocks.append(
-                        ContentBlock(
-                            type=ContentType.FILE,
-                            raw=part.model_dump(),
-                        )
+                )
+            elif _part_has_file_payload(part):
+                blocks.append(
+                    ContentBlock(
+                        type=ContentType.FILE,
+                        raw=raw_part,
                     )
-            elif isinstance(part, dict):
-                if part.get("text"):
-                    blocks.append(
-                        ContentBlock(
-                            type=ContentType.TEXT,
-                            text=part["text"],
-                            raw=part,
-                        )
-                    )
-                elif "inlineData" in part or "fileData" in part:
-                    blocks.append(
-                        ContentBlock(
-                            type=ContentType.FILE,
-                            raw=part,
-                        )
-                    )
+                )
 
         if self.executableCode:
-            language = self.executableCode.get("language", "")
-            code = self.executableCode.get("code", "")
-            if code:
+            executable_raw = self.executableCode
+            language = executable_raw.get("language", "")
+            code = executable_raw.get("code", "")
+            code_text = _to_text(code)
+            if code_text:
                 blocks.append(
                     ContentBlock(
                         type=ContentType.CODE,
-                        text=code,
+                        text=code_text,
                         language=language if isinstance(language, str) else None,
                         raw=self.executableCode,
                     )
                 )
 
         if self.codeExecutionResult:
-            outcome = self.codeExecutionResult.get("outcome", "")
-            output = self.codeExecutionResult.get("output", "")
+            result_raw = self.codeExecutionResult
+            outcome = result_raw.get("outcome", "")
+            output = result_raw.get("output", "")
+            output_text = _to_text(output)
             if output or outcome:
                 blocks.append(
                     ContentBlock(
                         type=ContentType.TOOL_RESULT,
-                        text=str(output) if output else f"[{outcome}]",
-                        raw=self.codeExecutionResult,
+                        text=output_text if output_text else f"[{outcome}]",
+                        raw=result_raw,
                     )
                 )
 
@@ -202,7 +226,7 @@ class GeminiMessage(BaseModel):
             )
 
         if self.inlineFile:
-            mime_type = self.inlineFile.get("mimeType")
+            mime_type = _get_str_or_none(self.inlineFile.get("mimeType"))
             inline_raw = dict(self.inlineFile)
             inline_raw.pop("data", None)
             blocks.append(
@@ -214,13 +238,13 @@ class GeminiMessage(BaseModel):
             )
 
         if self.youtubeVideo:
-            video_id = self.youtubeVideo.get("id")
-            url = f"https://www.youtube.com/watch?v={video_id}" if isinstance(video_id, str) and video_id else None
+            video_id = _get_str_or_none(self.youtubeVideo.get("id"))
+            url = f"https://www.youtube.com/watch?v={video_id}" if video_id else None
             blocks.append(
                 ContentBlock(
                     type=ContentType.VIDEO,
                     url=url,
-                    raw={"youtubeVideo": self.youtubeVideo},
+                    raw={"youtubeVideo": _string_or_empty_dict(self.youtubeVideo)},
                 )
             )
 

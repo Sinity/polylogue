@@ -6,7 +6,7 @@ import json
 from dataclasses import dataclass
 from io import BytesIO, StringIO
 from pathlib import Path
-from typing import Any, Literal
+from typing import Literal, TypeAlias, cast
 
 import orjson
 
@@ -15,14 +15,21 @@ from polylogue.sources.dispatch import detect_provider
 from polylogue.types import Provider
 
 WireFormat = Literal["json", "jsonl"]
+JSONScalar: TypeAlias = str | int | float | bool | None
+JSONValue: TypeAlias = JSONScalar | list["JSONValue"] | dict[str, "JSONValue"]
+JSONRecord: TypeAlias = dict[str, JSONValue]
 
 
-def _load_json_record(line: str) -> Any:
+def _coerce_json_value(value: object) -> JSONValue:
+    return cast(JSONValue, value)
+
+
+def _load_json_record(line: str) -> JSONValue:
     try:
-        return orjson.loads(line)
+        return _coerce_json_value(orjson.loads(line))
     except (orjson.JSONDecodeError, ValueError) as exc:
         try:
-            return json.loads(line)
+            return _coerce_json_value(json.loads(line))
         except json.JSONDecodeError:
             raise exc from None
 
@@ -31,7 +38,7 @@ def _load_json_record(line: str) -> Any:
 class RawPayloadEnvelope:
     """Canonical decoded raw payload with inferred runtime semantics."""
 
-    payload: Any
+    payload: JSONValue
     provider: Provider
     wire_format: WireFormat
     artifact: ArtifactClassification
@@ -43,13 +50,13 @@ def _decode_jsonl_payload(
     raw: Path | bytes | str,
     *,
     jsonl_dict_only: bool = False,
-) -> tuple[list[Any], int, str | None]:
+) -> tuple[list[JSONValue], int, str | None]:
     """Decode JSONL incrementally to avoid full-file line splitting.
 
     When *raw* is a :class:`~pathlib.Path`, lines are streamed directly
     from the file handle — the full file is never loaded into memory.
     """
-    lines: list[Any] = []
+    lines: list[JSONValue] = []
     malformed_lines = 0
     malformed_detail: str | None = None
     first_line = True
@@ -103,14 +110,14 @@ def _sample_jsonl_payload_with_detail(
     *,
     max_samples: int = 64,
     jsonl_dict_only: bool = False,
-) -> tuple[list[Any], int, str | None]:
+) -> tuple[list[JSONValue], int, str | None]:
     """Collect a bounded sample of valid JSONL records while scanning the full file.
 
     This is intended for provider/artifact/schema resolution where full-record
     materialization is unnecessary, but malformed-line accounting must still
     reflect the entire source.
     """
-    samples: list[Any] = []
+    samples: list[JSONValue] = []
     malformed_lines = 0
     malformed_detail: str | None = None
     valid_records = 0
@@ -167,7 +174,7 @@ def sample_jsonl_payload(
     *,
     max_samples: int = 64,
     jsonl_dict_only: bool = False,
-) -> tuple[list[Any], int]:
+) -> tuple[list[JSONValue], int]:
     samples, malformed_lines, _detail = _sample_jsonl_payload_with_detail(
         raw,
         max_samples=max_samples,
@@ -177,11 +184,11 @@ def sample_jsonl_payload(
 
 
 def _decode_raw_payload(
-    raw_content: Path | bytes | str | Any,
+    raw_content: Path | bytes | str | JSONValue,
     *,
     jsonl_dict_only: bool = False,
     prefer_jsonl: bool = False,
-) -> tuple[Any, WireFormat, int, str | None]:
+) -> tuple[JSONValue, WireFormat, int, str | None]:
     """Decode JSON payload bytes, with JSONL fallback support.
 
     When *raw_content* is a :class:`~pathlib.Path`, JSONL files are
@@ -200,7 +207,7 @@ def _decode_raw_payload(
                 pass
         raw_bytes = raw_content.read_bytes()
         try:
-            return orjson.loads(raw_bytes), "json", 0, None
+            return _coerce_json_value(orjson.loads(raw_bytes)), "json", 0, None
         except (orjson.JSONDecodeError, ValueError) as exc:
             try:
                 payload, malformed_lines, malformed_detail = _decode_jsonl_payload(
@@ -222,7 +229,7 @@ def _decode_raw_payload(
         except (UnicodeDecodeError, ValueError):
             pass
     try:
-        return orjson.loads(raw), "json", 0, None
+        return _coerce_json_value(orjson.loads(raw)), "json", 0, None
     except (orjson.JSONDecodeError, ValueError) as exc:
         try:
             payload, malformed_lines, malformed_detail = _decode_jsonl_payload(
@@ -235,7 +242,7 @@ def _decode_raw_payload(
 
 
 def _infer_payload_provider(
-    payload: Any,
+    payload: JSONValue,
     *,
     source_path: str | Path | None,
     fallback_provider: str | Provider,
@@ -255,7 +262,7 @@ def _infer_payload_provider(
 
 
 def build_raw_payload_envelope(
-    raw_content: Path | bytes | str | Any,
+    raw_content: Path | bytes | str | JSONValue,
     *,
     source_path: str | Path | None,
     fallback_provider: str | Provider,
@@ -301,4 +308,11 @@ def build_raw_payload_envelope(
     )
 
 
-__all__ = ["RawPayloadEnvelope", "WireFormat", "build_raw_payload_envelope", "sample_jsonl_payload"]
+__all__ = [
+    "JSONRecord",
+    "JSONValue",
+    "RawPayloadEnvelope",
+    "WireFormat",
+    "build_raw_payload_envelope",
+    "sample_jsonl_payload",
+]

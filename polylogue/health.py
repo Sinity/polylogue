@@ -3,14 +3,21 @@
 from __future__ import annotations
 
 import os
+import shutil
+import sqlite3
+import sys
 import time
+from collections.abc import Mapping
+from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, cast
+from typing import TypeAlias
 
+from polylogue.config import Config
 from polylogue.lib.outcomes import OutcomeCheck, OutcomeReport, OutcomeStatus
 from polylogue.maintenance_models import DerivedModelStatus
 from polylogue.maintenance_targets import build_maintenance_target_catalog
+from polylogue.storage.repair import ArchiveDebtStatus
 
 # Re-export canonical types for downstream consumers.
 HealthCheck = OutcomeCheck
@@ -19,6 +26,9 @@ VerifyStatus = OutcomeStatus
 HEALTH_TTL_SECONDS = 600
 _MAINTENANCE_TARGET_CATALOG = build_maintenance_target_catalog()
 
+JSONScalar: TypeAlias = str | int | float | bool | None
+JSONValue: TypeAlias = JSONScalar | list["JSONValue"] | Mapping[str, "JSONValue"]
+
 
 @dataclass
 class HealthReport(OutcomeReport):
@@ -26,7 +36,7 @@ class HealthReport(OutcomeReport):
 
     timestamp: int = field(default_factory=lambda: int(time.time()))
     derived_models: dict[str, DerivedModelStatus] = field(default_factory=dict)
-    archive_debt: dict[str, Any] = field(default_factory=dict)
+    archive_debt: dict[str, ArchiveDebtStatus] = field(default_factory=dict)
 
     @property
     def summary(self) -> dict[str, int]:
@@ -36,7 +46,7 @@ class HealthReport(OutcomeReport):
     def provenance(self) -> _ReportProvenance:
         return _ReportProvenance()
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> dict[str, object]:
         return {
             "timestamp": self.timestamp,
             "provenance": self.provenance.to_dict(),
@@ -51,10 +61,7 @@ class HealthReport(OutcomeReport):
                 for check in self.checks
             ],
             "derived_models": {name: status.to_dict() for name, status in sorted(self.derived_models.items())},
-            "archive_debt": {
-                name: (status.to_dict() if hasattr(status, "to_dict") else status)
-                for name, status in sorted(self.archive_debt.items())
-            },
+            "archive_debt": {name: status.to_dict() for name, status in sorted(self.archive_debt.items())},
             "summary": self.summary,
         }
 
@@ -65,7 +72,7 @@ class _ReportProvenance:
 
     source: str = "live"
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> dict[str, object]:
         return {"source": self.source}
 
 
@@ -76,7 +83,7 @@ def _summarize_db_error(exc: Exception) -> str:
     return detail
 
 
-def _open_health_probe_connection(db_path: Path) -> Any:
+def _open_health_probe_connection(db_path: Path) -> AbstractContextManager[sqlite3.Connection]:
     from polylogue.storage.backends.connection import open_read_connection
 
     return open_read_connection(db_path)
@@ -87,7 +94,7 @@ def _open_health_probe_connection(db_path: Path) -> Any:
 # ---------------------------------------------------------------------------
 
 
-def run_archive_health(config: Any, *, deep: bool = False, probe_only: bool = False) -> HealthReport:
+def run_archive_health(config: Config, *, deep: bool = False, probe_only: bool = False) -> HealthReport:
     from polylogue.storage.backends.schema import assert_supported_archive_layout
     from polylogue.storage.derived_status import collect_derived_model_statuses_sync
     from polylogue.storage.fts_lifecycle import message_fts_readiness_sync
@@ -135,15 +142,15 @@ def run_archive_health(config: Any, *, deep: bool = False, probe_only: bool = Fa
 
     # --- derived models, debt, duplicates, providers ---
     derived_statuses: dict[str, DerivedModelStatus] = {}
-    archive_debt: dict[str, Any] = {}
+    archive_debt: dict[str, ArchiveDebtStatus] = {}
     with _open_health_probe_connection(config.db_path) as conn:
         exact_index_counts = deep or not probe_only
         index_readiness = message_fts_readiness_sync(conn, verify_total_rows=exact_index_counts)
         if not index_readiness["exists"]:
             checks.append(HealthCheck("index", VerifyStatus.WARNING, summary="index not built"))
         else:
-            indexed_rows = int(cast(Any, index_readiness["indexed_rows"]))
-            total_rows = int(cast(Any, index_readiness["total_rows"]))
+            indexed_rows = int(index_readiness["indexed_rows"])
+            total_rows = int(index_readiness["total_rows"])
             if bool(index_readiness["ready"]):
                 checks.append(
                     HealthCheck(
@@ -178,10 +185,11 @@ def run_archive_health(config: Any, *, deep: bool = False, probe_only: bool = Fa
             debt = archive_debt.get(spec.name)
             if debt is None:
                 continue
+            unhealthy_status = spec.archive_health_unhealthy_status or VerifyStatus.WARNING
             checks.append(
                 HealthCheck(
                     debt.name,
-                    VerifyStatus.OK if debt.healthy else cast(VerifyStatus, spec.archive_health_unhealthy_status),
+                    VerifyStatus.OK if debt.healthy else unhealthy_status,
                     count=debt.issue_count,
                     summary=debt.detail,
                 )
@@ -294,7 +302,7 @@ def run_archive_health(config: Any, *, deep: bool = False, probe_only: bool = Fa
     return HealthReport(checks=checks, derived_models=derived_statuses, archive_debt=archive_debt)
 
 
-def get_health(config: Any, *, deep: bool = False, probe_only: bool = False) -> HealthReport:
+def get_health(config: Config, *, deep: bool = False, probe_only: bool = False) -> HealthReport:
     """Get a live archive health report."""
     return run_archive_health(config, deep=deep, probe_only=probe_only)
 
@@ -304,7 +312,7 @@ def get_health(config: Any, *, deep: bool = False, probe_only: bool = False) -> 
 # ---------------------------------------------------------------------------
 
 
-def run_runtime_health(config: Any) -> HealthReport:
+def run_runtime_health(config: Config) -> HealthReport:
     checks: list[HealthCheck] = []
 
     db = config.db_path
@@ -413,9 +421,6 @@ def run_runtime_health(config: Any) -> HealthReport:
         else:
             checks.append(HealthCheck("drive_token", VerifyStatus.WARNING, summary=f"Missing (auth required): {token}"))
 
-    import shutil
-    import sys
-
     term = os.environ.get("TERM", "unknown")
     cols, rows = shutil.get_terminal_size()
     is_tty = sys.stdout.isatty()
@@ -463,7 +468,7 @@ def run_runtime_health(config: Any) -> HealthReport:
 # ---------------------------------------------------------------------------
 
 
-def _build_source_health_checks(config: Any) -> list[HealthCheck]:
+def _build_source_health_checks(config: Config) -> list[HealthCheck]:
     from polylogue.sources.drive_auth import default_credentials_path, default_token_path
 
     checks: list[HealthCheck] = []
@@ -548,7 +553,7 @@ def _build_schema_health_checks() -> list[HealthCheck]:
 # ---------------------------------------------------------------------------
 
 
-def quick_health_summary(archive_root: Any) -> str:
+def quick_health_summary(archive_root: Path) -> str:
     """Return a one-line health summary without running a full health check.
 
     Reads basic DB stats (conversation count, schema version) for a cheap

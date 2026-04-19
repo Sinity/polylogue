@@ -13,6 +13,7 @@ from ..config import Source
 from ..paths import safe_path_component
 from .dispatch import parse_drive_payload
 from .drive_source import DriveSourceAPI, _parse_modified_time, build_drive_source_client
+from .drive_types import DriveConfigLike, DriveUILike
 from .parsers.base import ParsedConversation, RawConversationData
 
 logger = get_logger(__name__)
@@ -118,11 +119,11 @@ def iter_drive_conversations(
     *,
     source: Source,
     archive_root: Path,
-    ui: object | None = None,
+    ui: DriveUILike | None = None,
     client: DriveSourceAPI | None = None,
     download_assets: bool = True,
     cursor_state: dict[str, Any] | None = None,
-    drive_config: object | None = None,
+    drive_config: DriveConfigLike | None = None,
 ) -> Iterable[ParsedConversation]:
     if not source.folder:
         return
@@ -169,10 +170,10 @@ def iter_drive_conversations(
 def iter_drive_raw_data(
     *,
     source: Source,
-    ui: object | None = None,
+    ui: DriveUILike | None = None,
     client: DriveSourceAPI | None = None,
     cursor_state: dict[str, Any] | None = None,
-    drive_config: object | None = None,
+    drive_config: DriveConfigLike | None = None,
     known_mtimes: dict[str, str] | None = None,
 ) -> Iterable[RawConversationData]:
     """Iterate Drive payloads as raw bytes without writing a local cache.

@@ -14,6 +14,26 @@ if TYPE_CHECKING:
     from polylogue.storage.backends.async_sqlite import SQLiteBackend
 
 
+def _markdown_renderer(config: Config, backend: SQLiteBackend | None) -> OutputRenderer:
+    del backend
+    return MarkdownRenderer(archive_root=config.archive_root)
+
+
+def _html_renderer(config: Config, backend: SQLiteBackend | None) -> OutputRenderer:
+    template_path = config.html_template if hasattr(config, "html_template") else None
+    return HTMLRenderer(
+        archive_root=config.archive_root,
+        template_path=template_path,
+        backend=backend,
+    )
+
+
+_RENDERER_FACTORIES = {
+    "markdown": _markdown_renderer,
+    "html": _html_renderer,
+}
+
+
 def create_renderer(
     format: str,
     config: Config,
@@ -33,18 +53,10 @@ def create_renderer(
         ValueError: If format is not supported
     """
     format_lower = format.lower()
-
-    if format_lower == "markdown":
-        return MarkdownRenderer(archive_root=config.archive_root)
-    elif format_lower == "html":
-        template_path = config.html_template if hasattr(config, "html_template") else None
-        return HTMLRenderer(
-            archive_root=config.archive_root,
-            template_path=template_path,
-            backend=backend,
-        )
-    else:
+    factory = _RENDERER_FACTORIES.get(format_lower)
+    if factory is None:
         raise ValueError(f"Unsupported format: {format}. Supported formats: markdown, html")
+    return factory(config, backend)
 
 
 def list_formats() -> list[str]:
@@ -53,7 +65,7 @@ def list_formats() -> list[str]:
     Returns:
         List of format identifiers
     """
-    return ["markdown", "html"]
+    return sorted(_RENDERER_FACTORIES)
 
 
 __all__ = [

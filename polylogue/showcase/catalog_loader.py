@@ -7,7 +7,19 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from polylogue.scenarios import AssertionSpec, CorpusSpec, ExecutionSpec, ScenarioMetadata
+from polylogue.scenarios import (
+    AssertionSpec,
+    CorpusSpec,
+    ExecutionSpec,
+    PayloadDict,
+    ScenarioMetadata,
+    payload_bool,
+    payload_float,
+    payload_int,
+    payload_items,
+    payload_mapping,
+    payload_string_tuple,
+)
 from polylogue.showcase.exercise_models import Exercise
 
 _CATALOG_PATH = Path(__file__).with_name("exercise_catalog.json")
@@ -71,30 +83,6 @@ def _json_only_fields(*allowed: str) -> Callable[[str, int], str | None]:
     return check
 
 
-def _payload_str_sequence(value: object) -> tuple[str, ...]:
-    if isinstance(value, list):
-        return tuple(str(item) for item in value)
-    return ()
-
-
-def _payload_int(value: object, default: int) -> int:
-    if isinstance(value, bool):
-        return int(value)
-    if isinstance(value, int):
-        return value
-    if isinstance(value, str):
-        return int(value)
-    return default
-
-
-def _payload_float(value: object, default: float) -> float:
-    if isinstance(value, (int, float)) and not isinstance(value, bool):
-        return float(value)
-    if isinstance(value, str):
-        return float(value)
-    return default
-
-
 def _search_exit_ok(_output: str, exit_code: int) -> str | None:
     """Search exercises accept exit 0 (results found) or 2 (no results)."""
     if exit_code not in (0, 2):
@@ -116,64 +104,65 @@ class ExerciseCatalog:
     exercises: tuple[Exercise, ...]
 
 
-def _load_custom_validator(payload: dict[str, object]) -> Callable[[str, int], str | None]:
+def _load_custom_validator(payload: PayloadDict) -> Callable[[str, int], str | None]:
     kind = str(payload["kind"])
     if kind == "json_only_fields":
-        return _json_only_fields(*_payload_str_sequence(payload.get("allowed")))
+        return _json_only_fields(*payload_string_tuple(payload.get("allowed")))
     validator = _CUSTOM_VALIDATORS.get(kind)
     if validator is None:
         raise ValueError(f"Unsupported showcase custom validator: {kind}")
     return validator
 
 
-def _load_assertion(payload: dict[str, object] | None) -> AssertionSpec:
+def _load_assertion(payload: PayloadDict | None) -> AssertionSpec:
     if payload is None:
         return AssertionSpec()
-    custom_payload = payload.get("custom")
+    custom_payload = payload_mapping(payload.get("custom"))
     custom = None
-    if isinstance(custom_payload, dict):
-        custom = _load_custom_validator(custom_payload)
+    if custom_payload is not None:
+        custom = _load_custom_validator(dict(custom_payload))
     return AssertionSpec(
-        exit_code=_payload_int(payload.get("exit_code"), 0),
-        stdout_contains=_payload_str_sequence(payload.get("stdout_contains")),
-        stdout_not_contains=_payload_str_sequence(payload.get("stdout_not_contains")),
-        stdout_is_valid_json=bool(payload.get("stdout_is_valid_json", False)),
-        stdout_min_lines=_payload_int(payload.get("stdout_min_lines"), 0)
+        exit_code=payload_int(payload.get("exit_code"), "exit_code") if payload.get("exit_code") is not None else 0,
+        stdout_contains=payload_string_tuple(payload.get("stdout_contains")),
+        stdout_not_contains=payload_string_tuple(payload.get("stdout_not_contains")),
+        stdout_is_valid_json=payload_bool(payload.get("stdout_is_valid_json")),
+        stdout_min_lines=payload_int(payload.get("stdout_min_lines"), "stdout_min_lines")
         if payload.get("stdout_min_lines") is not None
         else None,
         custom=custom,
     )
 
 
-def _load_exercise(payload: dict[str, object]) -> Exercise:
+def _load_exercise(payload: PayloadDict) -> Exercise:
     metadata = ScenarioMetadata.from_payload(payload)
-    execution_payload = payload.get("execution")
-    if not isinstance(execution_payload, dict):
+    execution_payload = payload_mapping(payload.get("execution"))
+    if execution_payload is None:
         raise ValueError("Serialized showcase exercises must declare execution payloads")
     corpus_payloads = payload.get("corpus_specs")
-    corpus_specs: tuple[CorpusSpec, ...] = ()
+    corpus_specs: list[CorpusSpec] = []
     if isinstance(corpus_payloads, list):
-        corpus_specs = tuple(
-            CorpusSpec.from_payload(spec_payload) for spec_payload in corpus_payloads if isinstance(spec_payload, dict)
-        )
-    assertion_payload = payload.get("assertion")
+        for spec_payload in corpus_payloads:
+            parsed_spec_payload = payload_mapping(spec_payload)
+            if parsed_spec_payload is not None:
+                corpus_specs.append(CorpusSpec.from_payload(parsed_spec_payload))
+    assertion_payload = payload_mapping(payload.get("assertion"))
     return Exercise(
         name=str(payload["name"]),
         group=str(payload["group"]),
         description=str(payload["description"]),
         execution=ExecutionSpec.from_payload(execution_payload),
-        corpus_specs=corpus_specs,
-        assertion=_load_assertion(assertion_payload if isinstance(assertion_payload, dict) else None),
-        needs_data=bool(payload.get("needs_data", False)),
-        writes=bool(payload.get("writes", False)),
+        corpus_specs=tuple(corpus_specs),
+        assertion=_load_assertion(dict(assertion_payload) if assertion_payload is not None else None),
+        needs_data=payload_bool(payload.get("needs_data")),
+        writes=payload_bool(payload.get("writes")),
         depends_on=str(payload["depends_on"]) if payload.get("depends_on") is not None else None,
         output_ext=str(payload.get("output_ext", ".txt")),
-        tier=_payload_int(payload.get("tier"), 1),
+        tier=payload_int(payload.get("tier"), "tier") or 1,
         env=str(payload.get("env", "any")),
-        timeout_s=_payload_float(payload.get("timeout_s"), 120.0),
-        vhs_capture=bool(payload.get("vhs_capture", False)),
+        timeout_s=payload_float(payload.get("timeout_s"), "timeout_s") or 120.0,
+        vhs_capture=payload_bool(payload.get("vhs_capture")),
         artifact_class=str(payload.get("artifact_class", "text")),
-        capture_steps=_payload_str_sequence(payload.get("capture_steps")),
+        capture_steps=payload_string_tuple(payload.get("capture_steps")),
         origin=metadata.origin,
         path_targets=metadata.path_targets,
         artifact_targets=metadata.artifact_targets,
@@ -185,9 +174,16 @@ def _load_exercise(payload: dict[str, object]) -> Exercise:
 def load_exercise_catalog(path: Path | None = None) -> ExerciseCatalog:
     """Load the serialized exercise catalog."""
     catalog_path = path or _CATALOG_PATH
-    payload = json.loads(catalog_path.read_text(encoding="utf-8"))
-    groups = tuple(str(group) for group in payload.get("groups", ()))
-    exercises = tuple(_load_exercise(exercise) for exercise in payload.get("exercises", ()))
+    payload = payload_mapping(json.loads(catalog_path.read_text(encoding="utf-8")))
+    if payload is None:
+        raise ValueError("Showcase catalog payload must be a JSON object")
+    groups = tuple(str(group) for group in payload_items(payload.get("groups")))
+    exercises_list: list[Exercise] = []
+    for exercise in payload_items(payload.get("exercises")):
+        exercise_payload = payload_mapping(exercise)
+        if exercise_payload is not None:
+            exercises_list.append(_load_exercise(dict(exercise_payload)))
+    exercises = tuple(exercises_list)
     return ExerciseCatalog(groups=groups, exercises=exercises)
 
 

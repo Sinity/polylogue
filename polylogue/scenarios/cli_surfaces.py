@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from .payloads import merge_unique_string_tuples
+
 
 @dataclass(frozen=True, slots=True)
 class CliSurfaceVariant:
@@ -53,16 +55,7 @@ class CompiledCliSurface:
 
 def merge_cli_surface_tags(*groups: tuple[str, ...]) -> tuple[str, ...]:
     """Merge tag groups while preserving first-seen order."""
-
-    seen: set[str] = set()
-    merged: list[str] = []
-    for group in groups:
-        for item in group:
-            if item in seen:
-                continue
-            seen.add(item)
-            merged.append(item)
-    return tuple(merged)
+    return merge_unique_string_tuples(*groups, skip_empty=True)
 
 
 def compile_cli_surface_variant(family: CliSurfaceFamily, variant: CliSurfaceVariant) -> CompiledCliSurface:

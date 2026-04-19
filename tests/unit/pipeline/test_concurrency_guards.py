@@ -339,7 +339,7 @@ class TestConcurrentSaveGuards:
             await repo.save_conversation(conv, [], [])
 
         async def _read() -> int:
-            async with backend.connection() as conn:
+            async with backend.read_connection() as conn:
                 cursor = await conn.execute("SELECT COUNT(*) FROM conversations")
                 row = await cursor.fetchone()
                 assert row is not None
@@ -352,15 +352,20 @@ class TestConcurrentSaveGuards:
             tasks.append(_read())
 
         results = await asyncio.gather(*tasks, return_exceptions=True)
+        write_results = results[::2]
+        read_results = results[1::2]
 
         # Transient OperationalError("database is locked") is acceptable under
         # heavy contention — SQLite's WAL mode doesn't guarantee zero-wait reads
         # on all platforms.  Non-locked exceptions are real failures.
         from sqlite3 import OperationalError
 
+        write_failures = [result for result in write_results if isinstance(result, Exception)]
+        assert write_failures == [], f"Got write exceptions during concurrent read/write: {write_failures}"
+
         unexpected = [
             r
-            for r in results
+            for r in read_results
             if isinstance(r, Exception) and not (isinstance(r, OperationalError) and "locked" in str(r))
         ]
         assert unexpected == [], f"Got unexpected exceptions during concurrent read/write: {unexpected}"

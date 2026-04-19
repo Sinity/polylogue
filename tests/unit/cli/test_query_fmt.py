@@ -110,7 +110,7 @@ CONVERSATION_FORMAT_CASES = (
         "markdown",
         "markdown",
         None,
-        ("# Example Conversation", "## User", "## Assistant", "Hello", "Response"),
+        ("# Example Conversation", "## user", "## assistant", "Hello", "Response"),
     ),
     ConversationFormatCase(
         "html",

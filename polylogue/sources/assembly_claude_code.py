@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from .assembly import SidecarData
 from .parsers.base import ParsedConversation
 from .parsers.claude_index import (
     SessionIndexEntry,
@@ -16,7 +18,7 @@ from .parsers.claude_index import (
 class ClaudeCodeAssemblySpec:
     """Claude Code provider assembly — sessions-index.json sidecar."""
 
-    def discover_sidecars(self, source_paths: list[Path]) -> dict[str, Any]:
+    def discover_sidecars(self, source_paths: list[Path]) -> SidecarData:
         """Discover Claude Code sessions-index.json sidecars.
 
         Returns ``{"session_index": {session_id: SessionIndexEntry, ...}}``.
@@ -36,15 +38,30 @@ class ClaudeCodeAssemblySpec:
     def enrich_conversation(
         self,
         conv: ParsedConversation,
-        sidecar_data: dict[str, Any],
+        sidecar_data: Mapping[str, Any],
     ) -> ParsedConversation:
         """Enrich a Claude Code conversation from the sessions-index sidecar."""
-        idx: dict[str, SessionIndexEntry] = sidecar_data.get("session_index", {})
+        data = sidecar_data.get("session_index")
+        idx = _coerce_claude_code_session_index(data)
         if conv.provider_conversation_id in idx:
             return enrich_conversation_from_index(conv, idx[conv.provider_conversation_id])
         return conv
 
 
+def _coerce_claude_code_session_index(
+    value: object | None,
+) -> dict[str, SessionIndexEntry]:
+    """Best-effort coercion from dynamic sidecar data to session-index mapping."""
+    if not isinstance(value, dict):
+        return {}
+    result: dict[str, SessionIndexEntry] = {}
+    for session_id, entry in value.items():
+        if isinstance(session_id, str) and isinstance(entry, SessionIndexEntry):
+            result[session_id] = entry
+    return result
+
+
 __all__ = [
     "ClaudeCodeAssemblySpec",
+    "_coerce_claude_code_session_index",
 ]

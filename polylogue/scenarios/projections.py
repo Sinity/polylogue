@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable
 from dataclasses import asdict, dataclass, field
 from enum import Enum
 
 from .metadata import ScenarioMetadata
+from .payloads import PayloadDict, PayloadMap
 
 
 class ScenarioProjectionSourceKind(str, Enum):
@@ -35,7 +36,7 @@ class ScenarioProjectionSource:
     def projection_description(self) -> str:
         raise NotImplementedError
 
-    def projection_source_payload(self) -> Mapping[str, object]:
+    def projection_source_payload(self) -> PayloadMap:
         return {}
 
     def to_projection_entry(self) -> ScenarioProjectionEntry:
@@ -58,13 +59,13 @@ class ScenarioProjectionEntry(ScenarioMetadata):
     source_kind: ScenarioProjectionSourceKind
     name: str
     description: str
-    source_payload: dict[str, object] = field(default_factory=dict)
+    source_payload: PayloadDict = field(default_factory=dict)
 
     @classmethod
     def from_source(cls, source: ScenarioProjectionSource) -> ScenarioProjectionEntry:
         return source.to_projection_entry()
 
-    def to_dict(self) -> dict[str, object]:
+    def to_dict(self) -> PayloadDict:
         data = asdict(self)
         data["source_kind"] = self.source_kind.value
         return data

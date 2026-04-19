@@ -4,11 +4,9 @@ from __future__ import annotations
 
 from collections import Counter
 from pathlib import Path
-from typing import Any, cast
 
 from polylogue.scenarios import CorpusSpec
 from polylogue.schemas.runtime_registry import SchemaRegistry, canonical_schema_provider
-from polylogue.schemas.synthetic import selection as _selection
 from polylogue.schemas.synthetic.builders import (
     _ensure_wire_chatgpt,
     _ensure_wire_claude_ai,
@@ -24,6 +22,7 @@ from polylogue.schemas.synthetic.builders import (
     generate_batch,
 )
 from polylogue.schemas.synthetic.models import (
+    SchemaRecord,
     SyntheticGenerationBatch,
     SyntheticGenerationReport,
     SyntheticSchemaSelection,
@@ -42,30 +41,25 @@ from polylogue.schemas.synthetic.selection import available_synthetic_providers,
 from polylogue.schemas.synthetic.wire_formats import WireFormat
 
 
-def _sync_selection_patch_surfaces() -> None:
-    selection_module = cast(Any, _selection)
-    selection_module.SchemaRegistry = SchemaRegistry
-    selection_module.canonical_schema_provider = canonical_schema_provider
-
-
 class SyntheticCorpus:
     """Generate synthetic provider data from annotated schemas."""
 
     def __init__(
         self,
-        schema: dict[str, Any],
+        schema: SchemaRecord,
         wire_format: WireFormat,
         provider: str,
         *,
         package_version: str = "default",
         element_kind: str | None = None,
-    ):
+    ) -> None:
         self.schema = schema
         self.wire_format = wire_format
         self.provider = provider
         self.package_version = package_version
         self.element_kind = element_kind
         self._relation_solver = RelationConstraintSolver(schema)
+        self._semantic_gen: object | None = None
 
     @classmethod
     def for_provider(
@@ -75,11 +69,12 @@ class SyntheticCorpus:
         version: str = "default",
         element_kind: str | None = None,
     ) -> SyntheticCorpus:
-        _sync_selection_patch_surfaces()
         selection = select_synthetic_schema(
             provider,
             version=version,
             element_kind=element_kind,
+            registry_factory=lambda: SchemaRegistry(),
+            canonical_provider_resolver=canonical_schema_provider,
         )
         return cls.from_selection(selection)
 
@@ -103,8 +98,7 @@ class SyntheticCorpus:
 
     @classmethod
     def available_providers(cls) -> list[str]:
-        _sync_selection_patch_surfaces()
-        return available_synthetic_providers()
+        return available_synthetic_providers(registry_factory=lambda: SchemaRegistry())
 
     @classmethod
     def generate_batch_for_spec(cls, spec: CorpusSpec) -> SyntheticGenerationBatch:

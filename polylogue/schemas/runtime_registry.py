@@ -5,13 +5,15 @@ from __future__ import annotations
 import copy
 import gzip
 import json
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, cast
 
 from polylogue.lib.provider_identity import canonical_schema_provider as _canonical_schema_provider
 from polylogue.lib.provider_identity import normalize_provider_token
+from polylogue.lib.raw_payload_decode import JSONRecord
 from polylogue.paths import data_home
 from polylogue.schemas.observation import (
     derive_bundle_scope,
@@ -29,6 +31,71 @@ from polylogue.types import Provider
 
 SCHEMA_DIR = Path(__file__).parent / "providers"
 SchemaProvider = Provider | str
+SchemaCacheKey = tuple[str, str, str | None]
+SchemaInputDocument = Mapping[str, Any]
+PublicSchemaDocument = dict[str, Any]
+SchemaDocument = JSONRecord
+ElementSchemaMap = dict[str, SchemaDocument]
+
+
+def _provider_token(provider: str | Provider) -> str:
+    return str(canonical_schema_provider(provider))
+
+
+def _string_value(value: object) -> str | None:
+    return value if isinstance(value, str) else None
+
+
+def _nonblank_string(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip()
+    return normalized or None
+
+
+def _string_list(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, str)]
+
+
+def _int_value(value: object) -> int:
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        try:
+            return int(value)
+        except ValueError:
+            return 0
+    return 0
+
+
+def _read_json_dict(path: Path) -> PublicSchemaDocument:
+    loaded = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(loaded, dict):
+        raise ValueError(f"Expected JSON object in {path}")
+    return loaded
+
+
+def _read_gzip_json_dict(path: Path) -> PublicSchemaDocument:
+    loaded = json.loads(gzip.decompress(path.read_bytes()).decode("utf-8"))
+    if not isinstance(loaded, dict):
+        raise ValueError(f"Expected gzipped JSON object in {path}")
+    return loaded
+
+
+def _catalog_path(provider_dir: Path) -> Path:
+    return provider_dir / "catalog.json"
+
+
+def _version_sort_key(version: str) -> tuple[int, str]:
+    if version.startswith("v") and version[1:].isdigit():
+        return (int(version[1:]), version)
+    return (-1, version)
 
 
 def canonical_schema_provider(provider: str | Provider) -> SchemaProvider:
@@ -44,13 +111,80 @@ def canonical_schema_provider(provider: str | Provider) -> SchemaProvider:
     return normalized
 
 
+@dataclass(frozen=True)
+class _SchemaEvidence:
+    observed_at: str | None
+    sample_count: int
+    observed_artifact_count: int
+    package_profile_family_ids: list[str]
+    element_profile_family_ids: list[str]
+    anchor_profile_family_id: str
+    element_first_seen: str
+    element_last_seen: str
+    element_bundle_scope_count: int
+    exact_structure_ids: list[str]
+    profile_tokens: list[str]
+    representative_paths: list[str]
+
+
+def _schema_evidence(schema: SchemaInputDocument) -> _SchemaEvidence:
+    observed_at = _string_value(schema.get("x-polylogue-generated-at"))
+    package_profile_family_ids = _string_list(
+        schema.get(
+            "x-polylogue-package-profile-family-ids",
+            schema.get("x-polylogue-profile-family-ids", []),
+        )
+    )
+    if not package_profile_family_ids:
+        package_profile_family_ids = _string_list(schema.get("x-polylogue-profile-family-ids", []))
+
+    element_profile_family_ids = _string_list(
+        schema.get("x-polylogue-profile-family-ids", package_profile_family_ids)
+    ) or list(package_profile_family_ids)
+    anchor_profile_family_id = _nonblank_string(schema.get("x-polylogue-anchor-profile-family-id")) or next(
+        (item for item in package_profile_family_ids if item),
+        "",
+    )
+    element_first_seen = _string_value(schema.get("x-polylogue-element-first-seen")) or (observed_at or "")
+    element_last_seen = _string_value(schema.get("x-polylogue-element-last-seen")) or (observed_at or "")
+
+    return _SchemaEvidence(
+        observed_at=observed_at,
+        sample_count=_int_value(schema.get("x-polylogue-sample-count", 0)),
+        observed_artifact_count=_int_value(schema.get("x-polylogue-observed-artifact-count", 0)),
+        package_profile_family_ids=package_profile_family_ids,
+        element_profile_family_ids=element_profile_family_ids,
+        anchor_profile_family_id=anchor_profile_family_id,
+        element_first_seen=element_first_seen,
+        element_last_seen=element_last_seen,
+        element_bundle_scope_count=_int_value(schema.get("x-polylogue-element-bundle-scope-count", 0)),
+        exact_structure_ids=_string_list(schema.get("x-polylogue-exact-structure-ids", [])),
+        profile_tokens=_string_list(schema.get("x-polylogue-profile-tokens", [])),
+        representative_paths=_string_list(schema.get("x-polylogue-representative-paths", [])),
+    )
+
+
+def _resolved_package_version(catalog: SchemaPackageCatalog, version: str) -> str | None:
+    if version == "default":
+        return catalog.default_version or catalog.latest_version or catalog.recommended_version
+    if version == "latest":
+        return catalog.latest_version or catalog.default_version or catalog.recommended_version
+    if version == "recommended":
+        return catalog.recommended_version or catalog.default_version or catalog.latest_version
+    return version
+
+
+def _schema_document(schema: SchemaInputDocument) -> SchemaDocument:
+    return cast(SchemaDocument, dict(schema))
+
+
 class SchemaRegistry:
     """Runtime package/catalog authority for schema resolution."""
 
-    def __init__(self, storage_root: Path | None = None):
+    def __init__(self, storage_root: Path | None = None) -> None:
         self._storage_root = storage_root
         self._catalog_cache: dict[str, SchemaPackageCatalog | None] = {}
-        self._schema_cache: dict[tuple[str, str, str | None], dict[str, Any] | None] = {}
+        self._schema_cache: dict[SchemaCacheKey, PublicSchemaDocument | None] = {}
 
     def clear_cache(self) -> None:
         """Clear internal caches. Call after modifying schema packages."""
@@ -62,10 +196,10 @@ class SchemaRegistry:
         return self._storage_root if self._storage_root is not None else data_home() / "schemas"
 
     def _provider_dir(self, provider: str) -> Path:
-        return self.storage_root / str(canonical_schema_provider(provider))
+        return self.storage_root / _provider_token(provider)
 
     def _bundled_provider_dir(self, provider: str) -> Path:
-        return SCHEMA_DIR / str(canonical_schema_provider(provider))
+        return SCHEMA_DIR / _provider_token(provider)
 
     def _provider_search_roots(self, provider: str) -> list[Path]:
         roots: list[Path] = []
@@ -86,12 +220,9 @@ class SchemaRegistry:
     def _package_manifest_path(self, provider: str, version: str) -> Path:
         return self._package_dir(provider, version) / "package.json"
 
-    def _catalog_path_in(self, provider_dir: Path) -> Path:
-        return provider_dir / "catalog.json"
-
     def _provider_dir_for_catalog(self, provider: str) -> Path | None:
         for provider_dir in self._provider_search_roots(provider):
-            if self._catalog_path_in(provider_dir).exists():
+            if _catalog_path(provider_dir).exists():
                 return provider_dir
         return None
 
@@ -103,41 +234,32 @@ class SchemaRegistry:
         return None
 
     def load_package_catalog(self, provider: str) -> SchemaPackageCatalog | None:
-        if provider in self._catalog_cache:
-            return self._catalog_cache[provider]
-        provider_dir = self._provider_dir_for_catalog(provider)
+        provider_token = _provider_token(provider)
+        if provider_token in self._catalog_cache:
+            return self._catalog_cache[provider_token]
+        provider_dir = self._provider_dir_for_catalog(provider_token)
         if provider_dir is None:
-            self._catalog_cache[provider] = None
+            self._catalog_cache[provider_token] = None
             return None
-        catalog = SchemaPackageCatalog.from_dict(
-            json.loads((provider_dir / "catalog.json").read_text(encoding="utf-8"))
-        )
-        self._catalog_cache[provider] = catalog
+        catalog = SchemaPackageCatalog.from_dict(_read_json_dict(_catalog_path(provider_dir)))
+        self._catalog_cache[provider_token] = catalog
         return catalog
 
     def save_package_catalog(self, catalog: SchemaPackageCatalog) -> Path:
-        provider_dir = self._provider_dir(catalog.provider)
+        provider_token = _provider_token(catalog.provider)
+        provider_dir = self._provider_dir(provider_token)
         provider_dir.mkdir(parents=True, exist_ok=True)
-        path = self._catalog_path(catalog.provider)
+        path = self._catalog_path(provider_token)
         path.write_text(json.dumps(catalog.to_dict(), indent=2), encoding="utf-8")
         self.clear_cache()
         return path
 
-    def _resolve_catalog_version(self, catalog: SchemaPackageCatalog, version: str) -> str | None:
-        if version == "default":
-            return catalog.default_version or catalog.latest_version or catalog.recommended_version
-        if version == "latest":
-            return catalog.latest_version or catalog.default_version or catalog.recommended_version
-        if version == "recommended":
-            return catalog.recommended_version or catalog.default_version or catalog.latest_version
-        return version
-
     def get_package(self, provider: str, version: str = "default") -> SchemaVersionPackage | None:
-        provider_token = str(canonical_schema_provider(provider))
+        provider_token = _provider_token(provider)
         catalog = self.load_package_catalog(provider_token)
         if catalog is None:
             return None
-        resolved_version = self._resolve_catalog_version(catalog, version)
+        resolved_version = _resolved_package_version(catalog, version)
         return catalog.package(resolved_version) if resolved_version is not None else None
 
     def get_element_schema(
@@ -146,40 +268,45 @@ class SchemaRegistry:
         *,
         version: str = "default",
         element_kind: str | None = None,
-    ) -> dict[str, Any] | None:
-        cache_key = (provider, version, element_kind)
+    ) -> PublicSchemaDocument | None:
+        provider_token = _provider_token(provider)
+        cache_key: SchemaCacheKey = (provider_token, version, element_kind)
         if cache_key in self._schema_cache:
             return self._schema_cache[cache_key]
-        provider_token = str(canonical_schema_provider(provider))
+
         package = self.get_package(provider_token, version=version)
         if package is None:
             self._schema_cache[cache_key] = None
             return None
+
         element = package.element(element_kind)
         if element is None or element.schema_file is None:
             self._schema_cache[cache_key] = None
             return None
+
         provider_dir = self._provider_dir_for_package(provider_token, package.version)
         if provider_dir is None:
             self._schema_cache[cache_key] = None
             return None
+
         path = provider_dir / "versions" / package.version / "elements" / element.schema_file
         if not path.exists():
             self._schema_cache[cache_key] = None
             return None
-        schema = cast(dict[str, Any], json.loads(gzip.decompress(path.read_bytes()).decode("utf-8")))
+
+        schema = _read_gzip_json_dict(path)
         self._schema_cache[cache_key] = schema
         return schema
 
-    def get_schema(self, provider: str, version: str = "default") -> dict[str, Any] | None:
+    def get_schema(self, provider: str, version: str = "default") -> PublicSchemaDocument | None:
         return self.get_element_schema(provider, version=version)
 
     def list_versions(self, provider: str) -> list[str]:
-        provider_token = str(canonical_schema_provider(provider))
+        provider_token = _provider_token(provider)
         catalog = self.load_package_catalog(provider_token)
         if catalog is None:
             return []
-        return sorted((package.version for package in catalog.packages), key=lambda value: int(value[1:]))
+        return sorted((package.version for package in catalog.packages), key=_version_sort_key)
 
     def list_providers(self) -> list[str]:
         providers: set[str] = set()
@@ -189,7 +316,7 @@ class SchemaRegistry:
                 continue
             scanned_roots.add(root)
             for path in root.iterdir():
-                if path.is_dir() and (path / "catalog.json").exists():
+                if path.is_dir() and _catalog_path(path).exists():
                     providers.add(path.name)
         return sorted(providers)
 
@@ -207,9 +334,9 @@ class SchemaRegistry:
         self,
         package: SchemaVersionPackage,
         *,
-        element_schemas: dict[str, dict[str, Any]],
+        element_schemas: ElementSchemaMap,
     ) -> Path:
-        provider_token = str(canonical_schema_provider(package.provider))
+        provider_token = _provider_token(package.provider)
         package_dir = self._package_dir(provider_token, package.version)
         elements_dir = package_dir / "elements"
         elements_dir.mkdir(parents=True, exist_ok=True)
@@ -237,9 +364,9 @@ class SchemaRegistry:
         self,
         provider: str,
         catalog: SchemaPackageCatalog,
-        package_schemas: dict[str, dict[str, dict[str, Any]]],
+        package_schemas: Mapping[str, ElementSchemaMap],
     ) -> None:
-        provider_token = str(canonical_schema_provider(provider))
+        provider_token = _provider_token(provider)
         provider_dir = self._provider_dir(provider_token)
         provider_dir.mkdir(parents=True, exist_ok=True)
         versions_dir = provider_dir / "versions"
@@ -261,86 +388,62 @@ class SchemaRegistry:
         provider: str,
         *,
         version: str,
-        schema: dict[str, Any],
+        schema: SchemaInputDocument,
         element_kind: str = "conversation_document",
         first_seen: str | None = None,
         last_seen: str | None = None,
-    ) -> tuple[SchemaVersionPackage, dict[str, dict[str, Any]]]:
-        provider_token = str(canonical_schema_provider(provider))
+    ) -> tuple[SchemaVersionPackage, ElementSchemaMap]:
+        provider_token = _provider_token(provider)
         now = datetime.now(tz=timezone.utc).isoformat()
-        observed_at = schema.get("x-polylogue-generated-at")
-        profile_family_ids = [
-            str(item)
-            for item in schema.get(
-                "x-polylogue-package-profile-family-ids",
-                schema.get("x-polylogue-profile-family-ids", []),
-            )
-            if isinstance(item, str)
-        ]
-        if not profile_family_ids:
-            profile_family_ids = [
-                str(item) for item in schema.get("x-polylogue-profile-family-ids", []) if isinstance(item, str)
-            ]
-        element_profile_family_ids = [
-            str(item)
-            for item in schema.get("x-polylogue-profile-family-ids", profile_family_ids)
-            if isinstance(item, str)
-        ]
-        anchor_profile_family_id = str(schema.get("x-polylogue-anchor-profile-family-id", "")).strip() or next(
-            (item for item in profile_family_ids if item),
-            "",
-        )
-        observed_artifact_count = int(schema.get("x-polylogue-observed-artifact-count", 0) or 0)
+        evidence = _schema_evidence(schema)
         package = SchemaVersionPackage(
             provider=provider_token,
             version=version,
             anchor_kind=element_kind,
             default_element_kind=element_kind,
-            first_seen=first_seen or observed_at or now,
-            last_seen=last_seen or first_seen or observed_at or now,
+            first_seen=first_seen or evidence.observed_at or now,
+            last_seen=last_seen or first_seen or evidence.observed_at or now,
             bundle_scope_count=0,
-            sample_count=int(schema.get("x-polylogue-sample-count", 0) or 0),
-            anchor_profile_family_id=anchor_profile_family_id,
-            profile_family_ids=profile_family_ids,
+            sample_count=evidence.sample_count,
+            anchor_profile_family_id=evidence.anchor_profile_family_id,
+            profile_family_ids=evidence.package_profile_family_ids,
             elements=[
                 SchemaElementManifest(
                     element_kind=element_kind,
                     schema_file=f"{element_kind}.schema.json.gz",
-                    sample_count=int(schema.get("x-polylogue-sample-count", 0) or 0),
-                    artifact_count=observed_artifact_count,
-                    first_seen=str(schema.get("x-polylogue-element-first-seen", observed_at or "")),
-                    last_seen=str(schema.get("x-polylogue-element-last-seen", observed_at or "")),
-                    bundle_scope_count=int(schema.get("x-polylogue-element-bundle-scope-count", 0) or 0),
-                    exact_structure_ids=[str(item) for item in schema.get("x-polylogue-exact-structure-ids", [])],
-                    profile_family_ids=element_profile_family_ids,
-                    profile_tokens=[
-                        str(item) for item in schema.get("x-polylogue-profile-tokens", []) if isinstance(item, str)
-                    ],
-                    representative_paths=[
-                        str(item)
-                        for item in schema.get("x-polylogue-representative-paths", [])
-                        if isinstance(item, str)
-                    ],
-                    observed_artifact_count=observed_artifact_count,
+                    sample_count=evidence.sample_count,
+                    artifact_count=evidence.observed_artifact_count,
+                    first_seen=evidence.element_first_seen,
+                    last_seen=evidence.element_last_seen,
+                    bundle_scope_count=evidence.element_bundle_scope_count,
+                    exact_structure_ids=evidence.exact_structure_ids,
+                    profile_family_ids=evidence.element_profile_family_ids,
+                    profile_tokens=evidence.profile_tokens,
+                    representative_paths=evidence.representative_paths,
+                    observed_artifact_count=evidence.observed_artifact_count,
                 )
             ],
         )
-        return package, {element_kind: schema}
+        return package, {element_kind: _schema_document(schema)}
 
-    def register_schema(self, provider: str, schema: dict[str, Any]) -> str:
-        provider_token = str(canonical_schema_provider(provider))
+    def register_schema(self, provider: str, schema: SchemaInputDocument) -> str:
+        provider_token = _provider_token(provider)
         versions = self.list_versions(provider_token)
         new_version = f"v{int(versions[-1][1:]) + 1}" if versions else "v1"
         self.write_schema_version(provider_token, new_version, schema)
         return new_version
 
-    def write_schema_version(self, provider: str, version: str, schema: dict[str, Any]) -> Path:
-        provider_token = str(canonical_schema_provider(provider))
-        package, schemas = self._single_element_package(provider_token, version=version, schema=copy.deepcopy(schema))
+    def write_schema_version(self, provider: str, version: str, schema: SchemaInputDocument) -> Path:
+        provider_token = _provider_token(provider)
+        package, schemas = self._single_element_package(
+            provider_token,
+            version=version,
+            schema=_schema_document(copy.deepcopy(schema)),
+        )
         catalog = self.load_package_catalog(provider_token) or SchemaPackageCatalog(provider=provider_token)
         existing_packages = [item for item in catalog.packages if item.version != version]
         existing_packages.append(package)
-        existing_packages.sort(key=lambda item: int(item.version[1:]))
+        existing_packages.sort(key=lambda item: _version_sort_key(item.version))
         catalog.packages = existing_packages
         catalog.latest_version = existing_packages[-1].version if existing_packages else version
         catalog.default_version = catalog.latest_version
@@ -354,11 +457,11 @@ class SchemaRegistry:
     def resolve_payload(
         self,
         provider: str,
-        payload: Any,
+        payload: object,
         *,
         source_path: str | None = None,
     ) -> SchemaResolution | None:
-        provider_token = str(canonical_schema_provider(provider))
+        provider_token = _provider_token(provider)
         catalog = self.load_package_catalog(provider_token)
         if catalog is None or not catalog.packages:
             return None
@@ -491,11 +594,12 @@ class SchemaRegistry:
         provider: str,
     ) -> SchemaResolution | None:
         best_match: tuple[float, SchemaVersionPackage, SchemaElementManifest] | None = None
+        observed_profile_tokens = set(profile_tokens)
         for package in packages:
             element = package.element(artifact_kind)
             if element is None or not element.profile_tokens:
                 continue
-            score = profile_similarity(set(element.profile_tokens), set(profile_tokens))
+            score = profile_similarity(set(element.profile_tokens), observed_profile_tokens)
             if best_match is None or score > best_match[0]:
                 best_match = (score, package, element)
         if best_match is None or best_match[0] <= 0.0:
@@ -513,7 +617,7 @@ class SchemaRegistry:
     def match_payload_version(
         self,
         provider: str,
-        payload: Any,
+        payload: object,
         *,
         source_path: str | None = None,
     ) -> str | None:

@@ -11,7 +11,7 @@ from polylogue.scenarios import ExecutionSpec, run_execution
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class ShowcaseCliResult:
     exit_code: int
     stdout: str
@@ -20,6 +20,10 @@ class ShowcaseCliResult:
     @property
     def output(self) -> str:
         return self.stdout + self.stderr
+
+    @property
+    def succeeded(self) -> bool:
+        return self.exit_code == 0
 
 
 def invoke_showcase_cli(

@@ -12,31 +12,27 @@ from polylogue.site.templates import (
 )
 
 
+def _build_environment(templates: dict[str, str]) -> Environment:
+    return Environment(
+        loader=DictLoader(templates),
+        autoescape=select_autoescape(["html", "xml"]),
+        enable_async=True,
+    )
+
+
 def build_template_environments(highlighter: PygmentsHighlighter) -> tuple[Environment, Environment]:
     """Build index/dashboard and conversation template environments."""
     conversation_template = CONVERSATION_TEMPLATE.replace(
         "{{ highlight_css }}",
         highlighter.get_css(),
     )
-    index_env = Environment(
-        loader=DictLoader(
-            {
-                "index.html": INDEX_TEMPLATE,
-                "dashboard.html": DASHBOARD_TEMPLATE,
-            }
-        ),
-        autoescape=select_autoescape(["html", "xml"]),
-        enable_async=True,
+    index_env = _build_environment(
+        {
+            "index.html": INDEX_TEMPLATE,
+            "dashboard.html": DASHBOARD_TEMPLATE,
+        }
     )
-    page_env = Environment(
-        loader=DictLoader(
-            {
-                "conversation.html": conversation_template,
-            }
-        ),
-        autoescape=select_autoescape(["html", "xml"]),
-        enable_async=True,
-    )
+    page_env = _build_environment({"conversation.html": conversation_template})
     return index_env, page_env
 
 

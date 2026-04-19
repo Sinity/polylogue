@@ -23,6 +23,30 @@ from polylogue.storage.state_views import RunResult
 from polylogue.sync_bridge import run_coroutine_sync
 
 
+def _resolved_corpus_request(
+    *,
+    request: CorpusRequest | None,
+    providers: tuple[str, ...] | None = None,
+    count: int = 3,
+    style: str = "showcase",
+    corpus_source: CorpusSourceKind | str = CorpusSourceKind.DEFAULT,
+    messages_min: int = 6,
+    messages_max: int = 19,
+    seed: int = 42,
+) -> CorpusRequest:
+    if request is not None:
+        return request
+    return CorpusRequest(
+        providers=providers,
+        count=count,
+        style=style,
+        source=corpus_source,
+        messages_min=messages_min,
+        messages_max=messages_max,
+        seed=seed,
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class VerificationWorkspace:
     """Filesystem layout and environment for an isolated verification run."""
@@ -115,11 +139,12 @@ def build_synthetic_corpus_specs(
     seed: int = 42,
 ) -> tuple[CorpusSpec, ...]:
     """Resolve synthetic corpus specs for showcase and demo workflows."""
-    resolved_request = request or CorpusRequest(
+    resolved_request = _resolved_corpus_request(
+        request=request,
         providers=providers,
         count=count,
         style=style,
-        source=corpus_source,
+        corpus_source=corpus_source,
         messages_min=messages_min,
         messages_max=messages_max,
         seed=seed,
@@ -139,11 +164,12 @@ def build_synthetic_corpus_scenarios(
     seed: int = 42,
 ) -> tuple[CorpusScenario, ...]:
     """Resolve named synthetic corpus scenarios for showcase and demo workflows."""
-    resolved_request = request or CorpusRequest(
+    resolved_request = _resolved_corpus_request(
+        request=request,
         providers=providers,
         count=count,
         style=style,
-        source=corpus_source,
+        corpus_source=corpus_source,
         messages_min=messages_min,
         messages_max=messages_max,
         seed=seed,
@@ -369,7 +395,7 @@ def _run_pipeline_with_sources(
     regenerate_schemas: bool,
 ) -> RunResult:
     """Run the ingestion pipeline under a workspace environment."""
-    del regenerate_schemas
+    from polylogue.pipeline.run_support import RUN_STAGE_SEQUENCES
     from polylogue.pipeline.runner import run_sources
 
     config = Config(
@@ -377,12 +403,16 @@ def _run_pipeline_with_sources(
         render_root=workspace.render_root,
         sources=sources,
     )
+    stage_sequence = None
+    if regenerate_schemas:
+        stage_sequence = ("schema", *RUN_STAGE_SEQUENCES["all"])
 
     with override_workspace_env(workspace.env_vars):
         return run_coroutine_sync(
             run_sources(
                 config=config,
                 stage="all",
+                stage_sequence=stage_sequence,
                 plan=None,
                 ui=None,
                 source_names=None,

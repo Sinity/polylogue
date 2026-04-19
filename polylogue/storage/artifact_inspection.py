@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 from datetime import datetime, timezone
-from typing import Any
+from typing import TYPE_CHECKING
 
 from polylogue.lib.artifact_taxonomy import ArtifactKind, classify_artifact_path
 from polylogue.lib.raw_payload import build_raw_payload_envelope
@@ -15,6 +15,9 @@ from polylogue.storage.store import ArtifactObservationRecord, RawConversationRe
 from polylogue.types import ArtifactSupportStatus, Provider
 
 _SCHEMA_REGISTRY = SchemaRegistry()
+
+if TYPE_CHECKING:
+    from polylogue.lib.raw_payload_decode import JSONValue, RawPayloadEnvelope
 
 
 def artifact_observation_id(
@@ -41,12 +44,78 @@ def _link_group_key(source_path: str | None) -> str | None:
     return None
 
 
-def _sidecar_agent_type(payload: Any) -> str | None:
+def _build_payload_envelope(
+    raw_content: bytes,
+    record: RawConversationRecord,
+) -> RawPayloadEnvelope:
+    return build_raw_payload_envelope(
+        raw_content,
+        source_path=record.source_path,
+        fallback_provider=record.provider_name,
+        payload_provider=record.payload_provider,
+        jsonl_dict_only=False,
+    )
+
+
+def _normalize_payload_provider_hint(record: RawConversationRecord) -> str | None:
+    hint = record.payload_provider or record.provider_name
+    if not isinstance(hint, str):
+        return None
+    candidate = hint.strip()
+    return candidate or None
+
+
+def _resolve_payload_support(
+    registry: SchemaRegistry,
+    payload_provider: Provider,
+    payload: JSONValue,
+    source_path: str | None,
+) -> tuple[str | None, str | None, str | None, bool]:
+    resolution = registry.resolve_payload(
+        payload_provider,
+        payload,
+        source_path=source_path,
+    )
+    if resolution is None:
+        return None, None, None, False
+
+    package = registry.get_package(payload_provider, version=resolution.package_version)
+    element = package.element(resolution.element_kind) if package is not None else None
+    if package is None or element is None or not element.supported:
+        return None, None, resolution.reason, False
+
+    return (
+        resolution.package_version,
+        resolution.element_kind,
+        resolution.reason,
+        True,
+    )
+
+
+def _inspect_payload_envelope(record: RawConversationRecord) -> RawPayloadEnvelope:
+    blob_store = get_blob_store()
+    prefix = _inspection_prefix(record)
+    try:
+        envelope = _build_payload_envelope(prefix, record)
+    except Exception:
+        if not _full_json_inspection_allowed(record):
+            raise
+        return _build_payload_envelope(blob_store.read_all(record.raw_id), record)
+
+    if _should_retry_full_json_inspection(record, wire_format=envelope.wire_format):
+        return _build_payload_envelope(blob_store.read_all(record.raw_id), record)
+    return envelope
+
+
+def _sidecar_agent_type(payload: JSONValue) -> str | None:
     if isinstance(payload, dict):
         agent_type = payload.get("agentType")
         return agent_type if isinstance(agent_type, str) and agent_type else None
-    if isinstance(payload, list) and payload and isinstance(payload[0], dict):
-        agent_type = payload[0].get("agentType")
+    if isinstance(payload, list):
+        first_payload = payload[0] if payload else None
+        if not isinstance(first_payload, dict):
+            return None
+        agent_type = first_payload.get("agentType")
         return agent_type if isinstance(agent_type, str) and agent_type else None
     return None
 
@@ -127,8 +196,9 @@ def inspect_raw_artifact(record: RawConversationRecord) -> ArtifactObservationRe
     decodes the full payload. This keeps memory bounded regardless of
     file size (a 1.5 GB JSONL file is classified from its first line).
     """
-    provider_hint = record.payload_provider or record.provider_name
-    bundle_scope = derive_bundle_scope(provider_hint, record.source_path)
+    provider_hint = _normalize_payload_provider_hint(record)
+    provider_token = provider_hint or record.provider_name
+    bundle_scope = derive_bundle_scope(provider_token, record.source_path)
     observation_id = artifact_observation_id(
         source_name=record.source_name,
         source_path=record.source_path,
@@ -138,35 +208,7 @@ def inspect_raw_artifact(record: RawConversationRecord) -> ArtifactObservationRe
     registry = _SCHEMA_REGISTRY
 
     try:
-        blob_store = get_blob_store()
-        try:
-            prefix = _inspection_prefix(record)
-            envelope = build_raw_payload_envelope(
-                prefix,
-                source_path=record.source_path,
-                fallback_provider=record.provider_name,
-                payload_provider=record.payload_provider,
-                jsonl_dict_only=False,
-            )
-        except Exception:
-            if not _full_json_inspection_allowed(record):
-                raise
-            envelope = build_raw_payload_envelope(
-                blob_store.read_all(record.raw_id),
-                source_path=record.source_path,
-                fallback_provider=record.provider_name,
-                payload_provider=record.payload_provider,
-                jsonl_dict_only=False,
-            )
-        else:
-            if _should_retry_full_json_inspection(record, wire_format=envelope.wire_format):
-                envelope = build_raw_payload_envelope(
-                    blob_store.read_all(record.raw_id),
-                    source_path=record.source_path,
-                    fallback_provider=record.provider_name,
-                    payload_provider=record.payload_provider,
-                    jsonl_dict_only=False,
-                )
+        envelope = _inspect_payload_envelope(record)
         payload_provider = envelope.provider
         resolved_package_version: str | None = None
         resolved_element_kind: str | None = None
@@ -178,19 +220,17 @@ def inspect_raw_artifact(record: RawConversationRecord) -> ArtifactObservationRe
             and envelope.artifact.schema_eligible
             and envelope.malformed_jsonl_lines == 0
         ):
-            resolution = registry.resolve_payload(
-                payload_provider,
-                envelope.payload,
+            (
+                resolved_package_version,
+                resolved_element_kind,
+                resolution_reason,
+                has_supported_resolution,
+            ) = _resolve_payload_support(
+                registry=registry,
+                payload_provider=payload_provider,
+                payload=envelope.payload,
                 source_path=record.source_path,
             )
-            if resolution is not None:
-                package = registry.get_package(payload_provider, version=resolution.package_version)
-                element = package.element(resolution.element_kind) if package is not None else None
-                if package is not None and element is not None and element.supported:
-                    has_supported_resolution = True
-                    resolved_package_version = resolution.package_version
-                    resolved_element_kind = resolution.element_kind
-                    resolution_reason = resolution.reason
 
         support_status = _support_status(
             parse_as_conversation=envelope.artifact.parse_as_conversation,
@@ -233,7 +273,7 @@ def inspect_raw_artifact(record: RawConversationRecord) -> ArtifactObservationRe
             last_observed_at=observed_at,
         )
     except Exception as exc:
-        path_classification = classify_artifact_path(record.source_path, provider=provider_hint)
+        path_classification = classify_artifact_path(record.source_path, provider=provider_token)
         artifact_kind = (
             path_classification.kind.value if path_classification is not None else ArtifactKind.UNKNOWN.value
         )
@@ -244,7 +284,7 @@ def inspect_raw_artifact(record: RawConversationRecord) -> ArtifactObservationRe
             observation_id=observation_id,
             raw_id=record.raw_id,
             provider_name=record.provider_name,
-            payload_provider=Provider.from_string(provider_hint) if provider_hint is not None else None,
+            payload_provider=Provider.from_string(provider_token),
             source_name=record.source_name,
             source_path=record.source_path,
             source_index=record.source_index,

@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from polylogue.logging import get_logger
 
+from .assembly import SidecarData
 from .parsers.base import ParsedConversation
 
 logger = get_logger(__name__)
@@ -33,9 +35,12 @@ def _parse_codex_session_index(sessions_root: Path) -> dict[str, str]:
             if not line:
                 continue
             try:
-                entry = json.loads(line)
-                tid = entry.get("id") or entry.get("thread_id")
-                name = entry.get("thread_name") or entry.get("name")
+                parsed = json.loads(line)
+                if not isinstance(parsed, dict):
+                    continue
+                entry = cast(Mapping[str, object], parsed)
+                tid = _coerce_codex_session_id(entry)
+                name = _coerce_codex_thread_name(entry)
                 if tid and name:
                     names[tid] = name  # Latest wins (append-only)
             except (json.JSONDecodeError, TypeError):
@@ -48,7 +53,7 @@ def _parse_codex_session_index(sessions_root: Path) -> dict[str, str]:
 class CodexAssemblySpec:
     """Codex provider assembly — session_index.jsonl thread name sidecar."""
 
-    def discover_sidecars(self, source_paths: list[Path]) -> dict[str, Any]:
+    def discover_sidecars(self, source_paths: list[Path]) -> SidecarData:
         """Discover Codex thread names from session_index.jsonl.
 
         Returns ``{"thread_names": {thread_id: thread_name, ...}}``.
@@ -67,10 +72,10 @@ class CodexAssemblySpec:
     def enrich_conversation(
         self,
         conv: ParsedConversation,
-        sidecar_data: dict[str, Any],
+        sidecar_data: Mapping[str, Any],
     ) -> ParsedConversation:
         """Enrich a Codex conversation with thread name or first-user-message title."""
-        thread_names: dict[str, str] = sidecar_data.get("thread_names", {})
+        thread_names = _coerce_thread_names(sidecar_data.get("thread_names"))
         cid = conv.provider_conversation_id
 
         # Try thread name from side index
@@ -115,6 +120,29 @@ class CodexAssemblySpec:
                     )
 
         return conv
+
+
+def _coerce_thread_names(value: object | None) -> dict[str, str]:
+    """Best-effort coercion to a thread-name sidecar map."""
+    if not isinstance(value, dict):
+        return {}
+    result: dict[str, str] = {}
+    for thread_id, thread_name in value.items():
+        if isinstance(thread_id, str) and isinstance(thread_name, str):
+            result[thread_id] = thread_name
+    return result
+
+
+def _coerce_codex_session_id(entry: Mapping[str, object]) -> str | None:
+    """Read a thread identifier from a parsed Codex session-index entry."""
+    value = entry.get("id") or entry.get("thread_id")
+    return value if isinstance(value, str) and value else None
+
+
+def _coerce_codex_thread_name(entry: Mapping[str, object]) -> str | None:
+    """Read a thread name from a parsed Codex session-index entry."""
+    value = entry.get("thread_name") or entry.get("name")
+    return value if isinstance(value, str) and value else None
 
 
 __all__ = [

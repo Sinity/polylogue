@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from io import BytesIO
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, TypeAlias
 
+from polylogue.lib.payload_coercion import PayloadMapping, is_payload_mapping, optional_string
 from polylogue.logging import get_logger
 from polylogue.types import Provider
 
@@ -23,36 +24,105 @@ GROUP_PROVIDERS = frozenset({Provider.CLAUDE_CODE, Provider.CODEX, Provider.GEMI
 STREAM_RECORD_PROVIDERS = frozenset({Provider.CLAUDE_CODE, Provider.CODEX})
 _MAX_PARSE_DEPTH = 10
 
+PayloadRecord: TypeAlias = dict[str, object]
+ProviderParser: TypeAlias = Callable[[PayloadRecord, str], ParsedConversation]
 
-def detect_provider(payload: Any, path: object | None = None) -> Provider | None:
+
+def _payload_mapping(value: object) -> PayloadMapping | None:
+    return value if is_payload_mapping(value) else None
+
+
+def _payload_record(value: object) -> PayloadRecord | None:
+    mapping = _payload_mapping(value)
+    return dict(mapping) if mapping is not None else None
+
+
+def _payload_list(value: object) -> list[object] | None:
+    return value if isinstance(value, list) else None
+
+
+def _payload_messages(record: PayloadMapping) -> list[object] | None:
+    messages = record.get("messages")
+    return messages if isinstance(messages, list) else None
+
+
+def _payload_conversations(record: PayloadMapping) -> list[object] | None:
+    conversations = record.get("conversations")
+    return conversations if isinstance(conversations, list) else None
+
+
+def _looks_like_gemini_mapping(record: PayloadMapping) -> bool:
+    return "chunkedPrompt" in record or isinstance(record.get("chunks"), list)
+
+
+def _detect_provider_from_mapping(record: PayloadMapping) -> Provider | None:
+    if chatgpt.looks_like(record):
+        return Provider.CHATGPT
+    if claude.looks_like_ai(record):
+        return Provider.CLAUDE_AI
+    if claude.looks_like_code([dict(record)]):
+        return Provider.CLAUDE_CODE
+    if codex.looks_like([dict(record)]):
+        return Provider.CODEX
+    if _looks_like_gemini_mapping(record):
+        return Provider.GEMINI
+    return None
+
+
+def _detect_provider_from_sequence(payloads: list[object]) -> Provider | None:
+    if not payloads:
+        return None
+
+    first_record = _payload_mapping(payloads[0])
+    if first_record is not None:
+        if is_payload_mapping(first_record.get("mapping")):
+            return Provider.CHATGPT
+        if isinstance(first_record.get("chat_messages"), list):
+            return Provider.CLAUDE_AI
+        if _looks_like_gemini_mapping(first_record):
+            return Provider.GEMINI
+    if claude.looks_like_code(payloads):
+        return Provider.CLAUDE_CODE
+    if codex.looks_like(payloads):
+        return Provider.CODEX
+    return None
+
+
+def _parse_bundle_items(
+    payloads: list[object],
+    fallback_id: str,
+    parser: ProviderParser,
+) -> list[ParsedConversation]:
+    results: list[ParsedConversation] = []
+    for index, item in enumerate(payloads):
+        if record := _payload_record(item):
+            results.append(parser(record, f"{fallback_id}-{index}"))
+    return results
+
+
+def _parse_grouped_records(
+    payload: object,
+    fallback_id: str,
+    parser: Callable[[list[object], str], ParsedConversation],
+) -> list[ParsedConversation]:
+    payloads = _payload_list(payload)
+    if payloads is not None:
+        return [parser(payloads, fallback_id)]
+
+    if record := _payload_record(payload):
+        messages = _payload_messages(record)
+        return [parser(messages if messages is not None else [record], fallback_id)]
+    return []
+
+
+def detect_provider(payload: object, path: object | None = None) -> Provider | None:
     """Infer provider from payload shape. Path is accepted for surface compatibility."""
     del path
 
-    if isinstance(payload, dict):
-        if chatgpt.looks_like(payload):
-            return Provider.CHATGPT
-        if claude.looks_like_ai(payload):
-            return Provider.CLAUDE_AI
-        if claude.looks_like_code([payload]):
-            return Provider.CLAUDE_CODE
-        if codex.looks_like([payload]):
-            return Provider.CODEX
-        if "chunkedPrompt" in payload or ("chunks" in payload and isinstance(payload.get("chunks"), list)):
-            return Provider.GEMINI
-    if isinstance(payload, list):
-        if payload and isinstance(payload[0], dict):
-            first = payload[0]
-            if isinstance(first.get("mapping"), dict):
-                return Provider.CHATGPT
-            if isinstance(first.get("chat_messages"), list):
-                return Provider.CLAUDE_AI
-            if "chunkedPrompt" in first or ("chunks" in first and isinstance(first.get("chunks"), list)):
-                return Provider.GEMINI
-        if claude.looks_like_code(payload):
-            return Provider.CLAUDE_CODE
-        if codex.looks_like(payload):
-            return Provider.CODEX
-    return None
+    if record := _payload_mapping(payload):
+        return _detect_provider_from_mapping(record)
+    payloads = _payload_list(payload)
+    return _detect_provider_from_sequence(payloads) if payloads is not None else None
 
 
 def _detect_provider_from_raw_bytes(
@@ -79,43 +149,58 @@ def _detect_provider_from_raw_bytes(
     return detect_provider(payloads) or fallback_provider
 
 
-def _looks_like_chunked_conversation(payload: Any) -> bool:
-    return isinstance(payload, dict) and (drive.looks_like(payload) or isinstance(payload.get("chunks"), list))
+def _looks_like_chunked_conversation(payload: object) -> bool:
+    record = _payload_mapping(payload)
+    return record is not None and (drive.looks_like(record) or isinstance(record.get("chunks"), list))
 
 
-def _looks_like_chunked_conversation_list(payload: list[Any]) -> bool:
+def _looks_like_chunked_conversation_list(payload: list[object]) -> bool:
     return bool(payload) and all(_looks_like_chunked_conversation(item) for item in payload)
-
-
-def _parse_bundle_items(
-    payload: list[Any],
-    fallback_id: str,
-    parser: Callable[[dict[str, object], str], ParsedConversation],
-) -> list[ParsedConversation]:
-    return [parser(item, f"{fallback_id}-{i}") for i, item in enumerate(payload) if isinstance(item, dict)]
 
 
 def _schema_guided_payload(
     provider: Provider,
-    payload: Any,
+    payload: object,
     schema_resolution: SchemaResolution | None,
-) -> Any:
+) -> object:
     """Apply schema-derived structural hints before provider-specific lowering."""
     if schema_resolution is None:
         return payload
     if schema_resolution.element_kind not in {"conversation_record_stream", "subagent_conversation_stream"}:
         return payload
-    if provider in (Provider.CLAUDE_CODE, Provider.CODEX) and isinstance(payload, dict):
-        messages = payload.get("messages")
-        if isinstance(messages, list):
+    if provider in (Provider.CLAUDE_CODE, Provider.CODEX) and (record := _payload_record(payload)):
+        messages = _payload_messages(record)
+        if messages is not None:
             return messages
-        return [payload]
+        return [record]
     return payload
+
+
+def _generic_messages_conversation(
+    provider: Provider,
+    payload: PayloadMapping,
+    fallback_id: str,
+) -> ParsedConversation | None:
+    messages_payload = _payload_messages(payload)
+    if messages_payload is None:
+        return None
+
+    messages = extract_messages_from_list(messages_payload)
+    title = optional_string(payload.get("title")) or optional_string(payload.get("name")) or fallback_id
+    conversation_id = optional_string(payload.get("id")) or fallback_id
+    return ParsedConversation(
+        provider_name=provider,
+        provider_conversation_id=conversation_id,
+        title=title,
+        created_at=None,
+        updated_at=None,
+        messages=messages,
+    )
 
 
 def parse_payload(
     provider: str | Provider,
-    payload: Any,
+    payload: object,
     fallback_id: str,
     _depth: int = 0,
     *,
@@ -126,84 +211,78 @@ def parse_payload(
     if _depth > _MAX_PARSE_DEPTH:
         logger.warning("Recursion depth exceeded parsing %s (provider=%s)", fallback_id, provider)
         return []
-    payload = _schema_guided_payload(runtime_provider, payload, schema_resolution)
-    if isinstance(payload, dict) and isinstance(payload.get("conversations"), list):
-        results: list[ParsedConversation] = []
-        for i, item in enumerate(payload["conversations"]):
-            if isinstance(item, dict):
-                results.extend(
-                    parse_payload(
-                        runtime_provider,
-                        item,
-                        f"{fallback_id}-{i}",
-                        _depth + 1,
-                        schema_resolution=schema_resolution,
+
+    shaped_payload = _schema_guided_payload(runtime_provider, payload, schema_resolution)
+
+    if record := _payload_mapping(shaped_payload):
+        if conversations := _payload_conversations(record):
+            results: list[ParsedConversation] = []
+            for index, item in enumerate(conversations):
+                if item_record := _payload_mapping(item):
+                    results.extend(
+                        parse_payload(
+                            runtime_provider,
+                            item_record,
+                            f"{fallback_id}-{index}",
+                            _depth + 1,
+                            schema_resolution=schema_resolution,
+                        )
                     )
-                )
-        return results
-    if runtime_provider is Provider.CHATGPT:
-        if isinstance(payload, list):
-            return _parse_bundle_items(payload, fallback_id, chatgpt.parse)
-        return [chatgpt.parse(payload, fallback_id)]
-    if runtime_provider is Provider.CLAUDE_AI:
-        if isinstance(payload, list):
-            return _parse_bundle_items(payload, fallback_id, claude.parse_ai)
-        return [claude.parse_ai(payload, fallback_id)]
-    if runtime_provider is Provider.CLAUDE_CODE:
-        if isinstance(payload, list):
-            return [claude.parse_code(payload, fallback_id)]
-        if isinstance(payload, dict):
-            if isinstance(payload.get("messages"), list):
-                return [claude.parse_code(payload["messages"], fallback_id)]
-            return [claude.parse_code([payload], fallback_id)]
-    if runtime_provider is Provider.CODEX:
-        if isinstance(payload, list):
-            return [codex.parse(payload, fallback_id)]
-        if isinstance(payload, dict):
-            return [codex.parse([payload], fallback_id)]
-    if runtime_provider in (Provider.GEMINI, Provider.DRIVE) and isinstance(payload, list):
-        if _looks_like_chunked_conversation_list(payload):
-            results = []
-            for i, item in enumerate(payload):
-                results.extend(
-                    parse_payload(
-                        runtime_provider,
-                        item,
-                        f"{fallback_id}-{i}",
-                        _depth + 1,
-                        schema_resolution=schema_resolution,
-                    )
-                )
             return results
-        return [drive.parse_chunked_prompt(runtime_provider, {"chunks": payload}, fallback_id)]
+    else:
+        record = None
 
-    if isinstance(payload, dict):
-        if "messages" in payload and isinstance(payload["messages"], list):
-            messages = extract_messages_from_list(payload["messages"])
-            title = payload.get("title") or payload.get("name") or fallback_id
-            return [
-                ParsedConversation(
-                    provider_name=runtime_provider,
-                    provider_conversation_id=str(payload.get("id") or fallback_id),
-                    title=str(title),
-                    created_at=None,
-                    updated_at=None,
-                    messages=messages,
+    payloads = _payload_list(shaped_payload)
+
+    if runtime_provider is Provider.CHATGPT:
+        if payloads is not None:
+            return _parse_bundle_items(payloads, fallback_id, chatgpt.parse)
+        return [chatgpt.parse(dict(record), fallback_id)] if record is not None else []
+
+    if runtime_provider is Provider.CLAUDE_AI:
+        if payloads is not None:
+            return _parse_bundle_items(payloads, fallback_id, claude.parse_ai)
+        return [claude.parse_ai(dict(record), fallback_id)] if record is not None else []
+
+    if runtime_provider is Provider.CLAUDE_CODE:
+        return _parse_grouped_records(shaped_payload, fallback_id, claude.parse_code)
+
+    if runtime_provider is Provider.CODEX:
+        return _parse_grouped_records(shaped_payload, fallback_id, codex.parse)
+
+    if runtime_provider in (Provider.GEMINI, Provider.DRIVE) and payloads is not None:
+        if _looks_like_chunked_conversation_list(payloads):
+            chunked_results: list[ParsedConversation] = []
+            for index, item in enumerate(payloads):
+                chunked_results.extend(
+                    parse_payload(
+                        runtime_provider,
+                        item,
+                        f"{fallback_id}-{index}",
+                        _depth + 1,
+                        schema_resolution=schema_resolution,
+                    )
                 )
-            ]
+            return chunked_results
+        return [drive.parse_chunked_prompt(runtime_provider, {"chunks": payloads}, fallback_id)]
 
-        if chatgpt.looks_like(payload):
-            return [chatgpt.parse(payload, fallback_id)]
-        if _looks_like_chunked_conversation(payload):
-            return [drive.parse_chunked_prompt(runtime_provider, payload, fallback_id)]
+    if record is None:
         return []
 
+    generic = _generic_messages_conversation(runtime_provider, record, fallback_id)
+    if generic is not None:
+        return [generic]
+
+    if chatgpt.looks_like(record):
+        return [chatgpt.parse(dict(record), fallback_id)]
+    if _looks_like_chunked_conversation(record):
+        return [drive.parse_chunked_prompt(runtime_provider, dict(record), fallback_id)]
     return []
 
 
 def parse_stream_payload(
     provider: str | Provider,
-    payloads: Any,
+    payloads: Iterable[object],
     fallback_id: str,
 ) -> list[ParsedConversation]:
     """Parse a grouped record stream without materializing the full payload list."""
@@ -216,25 +295,33 @@ def parse_stream_payload(
 
 
 def parse_drive_payload(
-    provider: str | Provider, payload: Any, fallback_id: str, _depth: int = 0
+    provider: str | Provider,
+    payload: object,
+    fallback_id: str,
+    _depth: int = 0,
 ) -> list[ParsedConversation]:
     runtime_provider = Provider.from_string(provider)
     if _depth > _MAX_PARSE_DEPTH:
         logger.warning("Recursion depth exceeded parsing drive payload %s", fallback_id)
         return []
-    if isinstance(payload, list):
-        if payload and isinstance(payload[0], dict) and ("role" in payload[0] or "text" in payload[0]):
-            return [drive.parse_chunked_prompt(runtime_provider, {"chunks": payload}, fallback_id)]
 
-        results = []
-        for i, item in enumerate(payload):
-            results.extend(parse_drive_payload(runtime_provider, item, f"{fallback_id}-{i}", _depth + 1))
-        return results
-    if isinstance(payload, dict):
-        if "chunkedPrompt" in payload or "chunks" in payload:
-            return [drive.parse_chunked_prompt(runtime_provider, payload, fallback_id)]
-        detected = detect_provider(payload) or runtime_provider
-        return parse_payload(detected, payload, fallback_id)
+    payloads = _payload_list(payload)
+    if payloads is not None:
+        if payloads and all(isinstance(item, str) or _payload_record(item) is not None for item in payloads):
+            first_record = _payload_mapping(payloads[0]) if payloads else None
+            if first_record is None or "role" in first_record or "text" in first_record:
+                return [drive.parse_chunked_prompt(runtime_provider, {"chunks": payloads}, fallback_id)]
+
+        nested_results: list[ParsedConversation] = []
+        for index, item in enumerate(payloads):
+            nested_results.extend(parse_drive_payload(runtime_provider, item, f"{fallback_id}-{index}", _depth + 1))
+        return nested_results
+
+    if record := _payload_mapping(payload):
+        if "chunkedPrompt" in record or "chunks" in record:
+            return [drive.parse_chunked_prompt(runtime_provider, dict(record), fallback_id)]
+        detected = detect_provider(record) or runtime_provider
+        return parse_payload(detected, record, fallback_id)
     return []
 
 

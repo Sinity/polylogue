@@ -7,9 +7,12 @@ from pathlib import Path
 
 from jinja2 import Environment
 
-from polylogue.paths import safe_path_component
-from polylogue.site.models import ArchiveIndexStats, ConversationIndex, SiteConfig
+from polylogue.site.models import ArchiveIndexStats, ConversationIndex, ProviderIndex, SiteConfig
 from polylogue.site.search import render_search_markup
+
+
+def _provider_max_count(providers: tuple[ProviderIndex, ...]) -> int:
+    return max((provider.conversation_count for provider in providers), default=1)
 
 
 async def generate_root_index(
@@ -23,6 +26,7 @@ async def generate_root_index(
 ) -> None:
     """Generate root index.html from streamed archive aggregates."""
     template = env.get_template("index.html")
+    providers = archive_stats.provider_indexes()
     await write_stream(
         template,
         output_dir / "index.html",
@@ -32,8 +36,8 @@ async def generate_root_index(
         conversations=archive_stats.root_page_conversations,
         total_conversations=archive_stats.total_conversations,
         total_messages=archive_stats.total_messages,
-        providers=archive_stats.provider_counts,
-        provider_count=len(archive_stats.provider_counts),
+        providers=providers,
+        provider_count=len(providers),
         generated_at=generated_at,
     )
 
@@ -50,26 +54,26 @@ async def generate_provider_indexes(
 ) -> int:
     """Generate provider-scoped index pages without a full shared archive list."""
     template = env.get_template("index.html")
-
-    for provider in archive_stats.provider_order:
-        provider_dir = output_dir / safe_path_component(provider, fallback="provider")
+    providers = archive_stats.provider_indexes()
+    for provider in providers:
+        provider_dir = output_dir / Path(provider.path).parent
         provider_dir.mkdir(parents=True, exist_ok=True)
 
         await write_stream(
             template,
             provider_dir / "index.html",
-            title=f"{provider} | {config.title}",
-            description=f"Conversations from {provider}",
+            title=f"{provider.name} | {config.title}",
+            description=f"Conversations from {provider.name}",
             search_markup=render_search_markup(config),
-            conversations=conversation_iter_factory(provider),
-            total_conversations=archive_stats.provider_counts[provider],
-            total_messages=archive_stats.provider_messages[provider],
-            providers={},
+            conversations=conversation_iter_factory(provider.name),
+            total_conversations=provider.conversation_count,
+            total_messages=provider.message_count,
+            providers=(),
             provider_count=1,
             generated_at=generated_at,
         )
 
-    return len(archive_stats.provider_order)
+    return len(providers)
 
 
 async def generate_dashboard(
@@ -83,14 +87,15 @@ async def generate_dashboard(
 ) -> None:
     """Generate statistics dashboard from archive aggregates."""
     template = env.get_template("dashboard.html")
+    providers = archive_stats.provider_indexes()
     await write_stream(
         template,
         output_dir / "dashboard.html",
         title=config.title,
-        providers=archive_stats.provider_counts,
-        max_count=max(archive_stats.provider_counts.values(), default=1),
+        providers=providers,
+        max_count=_provider_max_count(providers),
         total_conversations=archive_stats.total_conversations,
         total_messages=archive_stats.total_messages,
-        provider_count=len(archive_stats.provider_counts),
+        provider_count=len(providers),
         generated_at=generated_at,
     )

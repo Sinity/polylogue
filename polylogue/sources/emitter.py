@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from dataclasses import dataclass
 from io import BytesIO
 from itertools import chain
-from typing import TYPE_CHECKING, Any, BinaryIO
+from typing import TYPE_CHECKING, BinaryIO
 
 from polylogue.lib.artifact_taxonomy import classify_artifact
 from polylogue.lib.json import dumps_bytes as json_dumps_bytes
@@ -14,6 +15,7 @@ from polylogue.types import Provider
 
 from .assembly import get_assembly_spec
 from .cursor import _ParseContext
+from .decoder_json import JsonValue
 from .decoders import _iter_json_stream
 from .dispatch import GROUP_PROVIDERS, detect_provider, parse_payload
 from .parsers.base import ParsedConversation, RawConversationData
@@ -29,6 +31,13 @@ def _schema_registry_factory() -> SchemaRegistryType:
     from polylogue.schemas.runtime_registry import SchemaRegistry
 
     return SchemaRegistry()
+
+
+@dataclass(frozen=True, slots=True)
+class _SniffResult:
+    provider: Provider
+    payloads: Iterable[JsonValue]
+    grouped_payloads: list[JsonValue] | None = None
 
 
 class _ConversationEmitter:
@@ -81,31 +90,31 @@ class _ConversationEmitter:
             stream_start = self._capture_stream_start(handle) if pre_read_bytes is None else None
             if pre_read_bytes is None and stream_start is None and self._ctx.capture_raw and precomputed_raw is None:
                 sniff_bytes = handle.read()
-                sniff_provider, sniff_payloads, grouped_payloads = self._sniff_jsonl_payloads(
+                sniffed = self._sniff_jsonl_payloads(
                     BytesIO(sniff_bytes),
                     stream_name,
                 )
-                if sniff_provider in GROUP_PROVIDERS:
+                if sniffed.provider in GROUP_PROVIDERS:
                     yield from self._emit_grouped(
                         BytesIO(sniff_bytes),
                         stream_name,
                         sniff_bytes,
                         precomputed_raw=precomputed_raw,
-                        precomputed_payloads=grouped_payloads,
+                        precomputed_payloads=sniffed.grouped_payloads,
                     )
                     return
                 yield from self._emit_individual_payloads(
-                    sniff_payloads,
+                    sniffed.payloads,
                     stream_name=stream_name,
                 )
                 return
 
             sniff_handle = BytesIO(pre_read_bytes) if pre_read_bytes is not None else handle
-            sniff_provider, sniff_payloads, grouped_payloads = self._sniff_jsonl_payloads(
+            sniffed = self._sniff_jsonl_payloads(
                 sniff_handle,
                 stream_name,
             )
-            if sniff_provider in GROUP_PROVIDERS:
+            if sniffed.provider in GROUP_PROVIDERS:
                 grouped_bytes = pre_read_bytes
                 grouped_handle = sniff_handle
                 if (
@@ -122,11 +131,11 @@ class _ConversationEmitter:
                     stream_name,
                     grouped_bytes,
                     precomputed_raw=precomputed_raw,
-                    precomputed_payloads=grouped_payloads,
+                    precomputed_payloads=sniffed.grouped_payloads,
                 )
                 return
             yield from self._emit_individual_payloads(
-                sniff_payloads,
+                sniffed.payloads,
                 stream_name=stream_name,
             )
             return
@@ -140,7 +149,7 @@ class _ConversationEmitter:
         pre_read_bytes: bytes | None,
         *,
         precomputed_raw: RawConversationData | None = None,
-        precomputed_payloads: list[Any] | None = None,
+        precomputed_payloads: list[JsonValue] | None = None,
     ) -> Iterable[tuple[RawConversationData | None, ParsedConversation]]:
         """Grouped JSONL: entire file = one conversation."""
         if precomputed_raw is not None:
@@ -199,7 +208,7 @@ class _ConversationEmitter:
 
     def _emit_individual_payloads(
         self,
-        payloads: Iterable[Any],
+        payloads: Iterable[JsonValue],
         *,
         stream_name: str,
         whole_file_raw: RawConversationData | None = None,
@@ -241,9 +250,9 @@ class _ConversationEmitter:
         self,
         handle: BinaryIO,
         stream_name: str,
-    ) -> tuple[Provider, Iterable[Any], list[Any] | None]:
+    ) -> _SniffResult:
         payload_iter = iter(_iter_json_stream(handle, stream_name))
-        buffered_payloads: list[Any] = []
+        buffered_payloads: list[JsonValue] = []
         for payload in payload_iter:
             buffered_payloads.append(payload)
             detected_provider = detect_provider(payload)
@@ -251,13 +260,21 @@ class _ConversationEmitter:
                 continue
             if detected_provider in GROUP_PROVIDERS:
                 buffered_payloads.extend(payload_iter)
-                return detected_provider, buffered_payloads, buffered_payloads
-            return detected_provider, chain(buffered_payloads, payload_iter), None
+                return _SniffResult(
+                    provider=detected_provider,
+                    payloads=buffered_payloads,
+                    grouped_payloads=buffered_payloads,
+                )
+            return _SniffResult(provider=detected_provider, payloads=chain(buffered_payloads, payload_iter))
 
         detected_provider = detect_provider(buffered_payloads) or self._ctx.provider_hint
         if detected_provider in GROUP_PROVIDERS:
-            return detected_provider, buffered_payloads, buffered_payloads
-        return detected_provider, iter(buffered_payloads), None
+            return _SniffResult(
+                provider=detected_provider,
+                payloads=buffered_payloads,
+                grouped_payloads=buffered_payloads,
+            )
+        return _SniffResult(provider=detected_provider, payloads=iter(buffered_payloads))
 
     def _capture_stream_start(self, handle: BinaryIO) -> int | None:
         seekable = getattr(handle, "seekable", None)
@@ -278,7 +295,7 @@ class _ConversationEmitter:
     def _resolve_schema(
         self,
         provider: Provider,
-        payload: Any,
+        payload: JsonValue,
     ) -> SchemaResolution | None:
         """Resolve schema metadata for the payload, if schemas are available."""
         if self._schema_registry is None:

@@ -2,13 +2,7 @@
 
 from __future__ import annotations
 
-CONVERSATION_TEMPLATE = """<!DOCTYPE html>
-<html lang="en" data-theme="dark">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{{ title }} | Polylogue</title>
-    <style>
+CONVERSATION_STYLE = """
         :root {
             --bg-primary: #0a0a0c;
             --bg-secondary: #16161a;
@@ -190,25 +184,37 @@ CONVERSATION_TEMPLATE = """<!DOCTYPE html>
             color: var(--text-muted);
             font-size: 0.8rem;
         }
+"""
+
+
+def _build_conversation_template() -> str:
+    return f"""<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{{{ title }}}} | Polylogue</title>
+    <style>
+{CONVERSATION_STYLE}
     </style>
 </head>
 <body>
     <div class="container">
         <a href="../../index.html" class="nav-back">← Back to Index</a>
-        <h1>{{ title }}</h1>
+        <h1>{{{{ title }}}}</h1>
         <div class="conv-meta">
-            <span class="badge">{{ provider }}</span>
-            <span>{{ message_count }} messages</span>
-            {% if updated_at %}<span>{{ updated_at }}</span>{% endif %}
+            <span class="badge">{{{{ provider }}}}</span>
+            <span>{{{{ message_count }}}} messages</span>
+            {{% if updated_at %}}<span>{{{{ updated_at }}}}</span>{{% endif %}}
         </div>
 
         <div data-pagefind-body>
-        {% for msg in messages %}
-        <div class="message message-{{ msg.role or 'unknown' }}">
-            <div class="message-role">{{ msg.role or 'unknown' }}</div>
-            <div class="message-body">{{ msg.html_content | safe }}</div>
+        {{% for msg in messages %}}
+        <div class="message message-{{{{ msg.role or 'unknown' }}}}">
+            <div class="message-role">{{{{ msg.role or 'unknown' }}}}</div>
+            <div class="message-body">{{{{ msg.html_content | safe }}}}</div>
         </div>
-        {% endfor %}
+        {{% endfor %}}
         </div>
 
         <div class="footer">
@@ -219,4 +225,7 @@ CONVERSATION_TEMPLATE = """<!DOCTYPE html>
 </html>
 """
 
-__all__ = ["CONVERSATION_TEMPLATE"]
+
+CONVERSATION_TEMPLATE = _build_conversation_template()
+
+__all__ = ["CONVERSATION_STYLE", "CONVERSATION_TEMPLATE"]

@@ -48,10 +48,14 @@ class PygmentsHighlighter:
             else:
                 lexer = guess_lexer(code)
         except ClassNotFound:
-            escaped = code.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-            return f'<pre class="highlight"><code>{escaped}</code></pre>'
+            return self._plain_code_block(code)
 
         return str(highlight(code, lexer, self.formatter))
+
+    @staticmethod
+    def _plain_code_block(code: str) -> str:
+        escaped = code.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        return f'<pre class="highlight"><code>{escaped}</code></pre>'
 
 
 class HTMLMessageRenderer:

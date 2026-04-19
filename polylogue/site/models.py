@@ -30,7 +30,7 @@ def format_summary_date(value: object, fmt: str, summary_id: str) -> str | None:
         return str(value)[:10] if fmt == "%Y-%m-%d" else str(value)
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class SiteConfig:
     """Configuration for static site generation."""
 
@@ -41,8 +41,29 @@ class SiteConfig:
     conversations_per_page: int = 100
     include_dashboard: bool = True
 
+    @property
+    def search_provider_name(self) -> str | None:
+        """Return the configured search backend name when search is enabled."""
+        return str(self.search_provider) if self.enable_search else None
 
-@dataclass
+    @property
+    def uses_pagefind(self) -> bool:
+        """Whether this site build should produce Pagefind assets."""
+        return self.enable_search and self.search_provider is SearchProvider.PAGEFIND
+
+    def to_payload(self) -> dict[str, object]:
+        """Return a stable manifest-friendly config payload."""
+        return {
+            "title": self.title,
+            "description": self.description,
+            "enable_search": self.enable_search,
+            "search_provider": str(self.search_provider),
+            "conversations_per_page": self.conversations_per_page,
+            "include_dashboard": self.include_dashboard,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class ConversationIndex:
     """Indexed conversation for site generation."""
 
@@ -71,6 +92,61 @@ class ConversationIndex:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class SearchDocument:
+    """Compact search payload for one indexed conversation."""
+
+    id: str
+    title: str
+    provider: str
+    preview: str
+    path: str
+
+    @classmethod
+    def from_conversation(cls, conversation: ConversationIndex) -> SearchDocument:
+        return cls(
+            id=conversation.id,
+            title=conversation.title,
+            provider=conversation.provider,
+            preview=conversation.preview,
+            path=conversation.path,
+        )
+
+    def to_payload(self) -> dict[str, str]:
+        return {
+            "id": self.id,
+            "title": self.title,
+            "provider": self.provider,
+            "preview": self.preview,
+            "path": self.path,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderIndex:
+    """Provider-scoped aggregate row for index and dashboard pages."""
+
+    name: str
+    conversation_count: int
+    message_count: int
+    path: str
+
+    @classmethod
+    def from_counts(
+        cls,
+        provider: str,
+        *,
+        conversation_count: int,
+        message_count: int,
+    ) -> ProviderIndex:
+        return cls(
+            name=provider,
+            conversation_count=conversation_count,
+            message_count=message_count,
+            path=f"{safe_path_component(provider, fallback='provider')}/index.html",
+        )
+
+
 @dataclass
 class ArchiveIndexStats:
     """Streaming archive aggregates used by site-generation surfaces."""
@@ -96,8 +172,19 @@ class ArchiveIndexStats:
             self.provider_messages.get(conversation.provider, 0) + conversation.message_count
         )
 
+    def provider_indexes(self) -> tuple[ProviderIndex, ...]:
+        """Return provider aggregates in stable archive order."""
+        return tuple(
+            ProviderIndex.from_counts(
+                provider,
+                conversation_count=self.provider_counts[provider],
+                message_count=self.provider_messages.get(provider, 0),
+            )
+            for provider in self.provider_order
+        )
 
-@dataclass
+
+@dataclass(slots=True)
 class ConversationPageBuildStats:
     """Conversation-page materialization counts for one site build."""
 
@@ -114,3 +201,11 @@ class ConversationPageBuildStats:
             self.reused += 1
         elif status == "failed":
             self.failed += 1
+
+    def to_payload(self) -> dict[str, int]:
+        return {
+            "total": self.total,
+            "rendered": self.rendered,
+            "reused": self.reused,
+            "failed": self.failed,
+        }

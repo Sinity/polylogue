@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from polylogue.lib.metrics import read_peak_rss_self_mb
 from polylogue.logging import get_logger
@@ -17,6 +17,7 @@ from polylogue.storage.store import RawConversationRecord
 
 if TYPE_CHECKING:
     from polylogue.config import DriveConfig, Source
+    from polylogue.sources.drive_types import DriveUILike
     from polylogue.storage.backends.async_sqlite import SQLiteBackend
     from polylogue.storage.repository import ConversationRepository
 
@@ -70,6 +71,7 @@ class AcquisitionService:
         """Visit source raw payloads incrementally without forcing list materialization."""
         result = ScanResult()
         known_mtimes = await self.repository.get_known_source_mtimes()
+        drive_ui = cast("DriveUILike | None", ui)
 
         async def _consume(record: RawConversationRecord) -> None:
             if on_record is not None:
@@ -83,7 +85,7 @@ class AcquisitionService:
                 async for record in iter_raw_record_stream(
                     source,
                     known_mtimes=known_mtimes,
-                    ui=ui,
+                    ui=drive_ui,
                     cursor_state=cursor_state,
                     drive_config=drive_config,
                     observation_callback=observation_callback,

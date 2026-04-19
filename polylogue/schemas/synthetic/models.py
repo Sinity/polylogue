@@ -4,9 +4,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Literal, TypeAlias
 
-from polylogue.schemas.synthetic.wire_formats import WireFormat
+from polylogue.schemas.synthetic.wire_formats import WireEncoding, WireFormat
+
+SchemaScalar: TypeAlias = str | int | float | bool | None
+SchemaValue: TypeAlias = SchemaScalar | list["SchemaValue"] | dict[str, "SchemaValue"]
+SchemaRecord: TypeAlias = dict[str, SchemaValue]
+SyntheticStyle: TypeAlias = Literal["default", "showcase"]
 
 
 @dataclass(frozen=True)
@@ -14,7 +19,7 @@ class SyntheticSchemaSelection:
     provider: str
     package_version: str
     element_kind: str | None
-    schema: dict[str, Any]
+    schema: SchemaRecord
     wire_format: WireFormat
 
 
@@ -30,10 +35,10 @@ class SyntheticGenerationReport:
     provider: str
     package_version: str
     element_kind: str | None
-    wire_encoding: str
+    wire_encoding: WireEncoding
     requested_count: int
     generated_count: int
-    style: str
+    style: SyntheticStyle
     seed: int | None
 
 
@@ -54,9 +59,13 @@ class SyntheticWrittenBatch:
 
 
 __all__ = [
+    "SchemaRecord",
+    "SchemaScalar",
+    "SchemaValue",
     "SyntheticArtifact",
     "SyntheticGenerationBatch",
     "SyntheticGenerationReport",
     "SyntheticSchemaSelection",
+    "SyntheticStyle",
     "SyntheticWrittenBatch",
 ]

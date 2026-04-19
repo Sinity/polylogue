@@ -20,8 +20,11 @@ def generate_summary(result: ShowcaseResult) -> str:
 
     group_counts = result.group_counts()
     for group in GROUPS:
-        counts = group_counts.get(group, {"pass": 0, "fail": 0, "skip": 0})
-        lines.append(f"  {group:<20s}  {counts['pass']:>4d}  {counts['fail']:>4d}  {counts['skip']:>4d}")
+        counts = group_counts.get(group)
+        pass_count = counts.passed if counts is not None else 0
+        fail_count = counts.failed if counts is not None else 0
+        skip_count = counts.skipped if counts is not None else 0
+        lines.append(f"  {group:<20s}  {pass_count:>4d}  {fail_count:>4d}  {skip_count:>4d}")
 
     lines.append(f"  {'─' * 20}  {'─' * 4}  {'─' * 4}  {'─' * 4}")
     lines.append(f"  {'TOTAL':<20s}  {result.passed:>4d}  {result.failed:>4d}  {result.skipped:>4d}")
@@ -135,8 +138,11 @@ def generate_showcase_markdown(
 
     group_counts = result.group_counts()
     for group in GROUPS:
-        counts = group_counts.get(group, {"pass": 0, "fail": 0, "skip": 0})
-        lines.append(f"| {group} | {counts['pass']} | {counts['fail']} | {counts['skip']} |")
+        counts = group_counts.get(group)
+        pass_count = counts.passed if counts is not None else 0
+        fail_count = counts.failed if counts is not None else 0
+        skip_count = counts.skipped if counts is not None else 0
+        lines.append(f"| {group} | {pass_count} | {fail_count} | {skip_count} |")
     lines.append("")
 
     lines.append("## Exercises")

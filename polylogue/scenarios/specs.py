@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from .metadata import ScenarioMetadata
+from .payloads import PayloadDict, PayloadMap
 from .projections import ScenarioProjectionSource
 
 if TYPE_CHECKING:
@@ -33,13 +33,13 @@ class ScenarioSpec(ScenarioProjectionSource, ScenarioMetadata):
                 providers.append(provider)
         return tuple(providers)
 
-    def scenario_payload(self) -> dict[str, Any]:
+    def scenario_payload(self) -> PayloadDict:
         payload = self.to_payload()
         if self.corpus_specs:
             payload["corpus_specs"] = [spec.to_payload() for spec in self.corpus_specs]
         return payload
 
-    def projection_source_payload(self) -> Mapping[str, object]:
+    def projection_source_payload(self) -> PayloadMap:
         return self.scenario_payload()
 
 

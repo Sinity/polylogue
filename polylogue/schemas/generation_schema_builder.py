@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Protocol, TypeAlias, cast
 
 from polylogue.schemas.field_stats import _collect_field_stats
 from polylogue.schemas.generation_support import (
@@ -19,39 +20,48 @@ from polylogue.schemas.observation import ProviderConfig
 from polylogue.schemas.redaction_report import SchemaReport
 from polylogue.schemas.shape_fingerprint import _structure_fingerprint
 
+SchemaPayload: TypeAlias = Mapping[str, Any]
+MutableSchemaPayload: TypeAlias = dict[str, Any]
+
+
+class PrivacyConfigLike(Protocol):
+    level: str
+
+
 _STRUCTURE_EXEMPLARS_PER_FINGERPRINT = 8
 
 
 def _generate_cluster_schema(
     provider: str,
     config: ProviderConfig,
-    samples: list[dict[str, Any]],
-    conv_ids: list[str | None],
+    samples: Sequence[SchemaPayload],
+    conv_ids: Sequence[str | None],
     *,
-    privacy_config: Any | None,
+    privacy_config: PrivacyConfigLike | None,
     full_corpus: bool = False,
     artifact_kind: str | None = None,
-) -> tuple[dict[str, Any], SchemaReport | None]:
+) -> tuple[MutableSchemaPayload, SchemaReport | None]:
     if not samples:
         return {"type": "object", "description": "No samples available"}, None
 
     builder = SchemaBuilder()
-    fingerprint_counts: dict[Any, int] = {}
+    fingerprint_counts: dict[object, int] = {}
     exemplar_cap = None if full_corpus else _STRUCTURE_EXEMPLARS_PER_FINGERPRINT
     for sample in samples:
         fingerprint = _structure_fingerprint(sample)
         seen = fingerprint_counts.get(fingerprint, 0)
         if exemplar_cap is None or seen < exemplar_cap:
-            builder.add_object(sample)
+            builder.add_object(dict(sample))
             fingerprint_counts[fingerprint] = seen + 1
 
-    schema = builder.to_schema()
-    schema = collapse_dynamic_keys(schema)
-    schema = _remove_nested_required(schema)
+    schema = collapse_dynamic_keys(builder.to_schema())
+    schema = cast(MutableSchemaPayload, _remove_nested_required(schema))
     if config.sample_granularity == "record":
         schema.pop("required", None)
 
-    conv_ids_for_stats: list[str | None] | None = conv_ids if any(conv_id is not None for conv_id in conv_ids) else None
+    conv_ids_for_stats: Sequence[str | None] | None = (
+        conv_ids if any(conv_id is not None for conv_id in conv_ids) else None
+    )
     field_stats = _collect_field_stats(samples, conversation_ids=conv_ids_for_stats)
     schema = _annotate_schema(
         schema,
@@ -67,13 +77,13 @@ def _generate_cluster_schema(
         field_stats,
         schema,
         privacy_config=privacy_config,
-        privacy_level=getattr(privacy_config, "level", "standard") if privacy_config else "standard",
+        privacy_level=privacy_config.level if privacy_config else "standard",
     )
     return schema, redaction_report
 
 
 def _apply_schema_metadata(
-    schema: dict[str, Any],
+    schema: MutableSchemaPayload,
     *,
     provider: str,
     config: ProviderConfig,
@@ -94,40 +104,37 @@ def _apply_schema_metadata(
 
 
 def generate_schema_from_samples(
-    samples: list[dict[str, Any]],
+    samples: Sequence[SchemaPayload],
     *,
     annotate: bool = True,
     max_stats_samples: int = 500,
     max_genson_samples: int | None = None,
-) -> dict[str, Any]:
+) -> MutableSchemaPayload:
     if not GENSON_AVAILABLE:
         raise ImportError("genson is required for schema generation. Install with: pip install genson")
 
     if not samples:
         return {"type": "object", "description": "No samples available"}
 
-    genson_samples = samples
+    genson_samples = list(samples)
     if max_genson_samples and len(samples) > max_genson_samples:
         import random
 
-        rng = random.Random(0)
-        genson_samples = rng.sample(samples, max_genson_samples)
+        genson_samples = random.Random(0).sample(list(samples), max_genson_samples)
 
     builder = SchemaBuilder()
     for sample in genson_samples:
-        builder.add_object(sample)
+        builder.add_object(dict(sample))
 
-    schema = builder.to_schema()
-    schema = collapse_dynamic_keys(schema)
-    schema = _remove_nested_required(schema)
+    schema = collapse_dynamic_keys(builder.to_schema())
+    schema = cast(MutableSchemaPayload, _remove_nested_required(schema))
 
     if annotate:
-        stats_samples = samples
+        stats_samples = list(samples)
         if max_stats_samples and len(samples) > max_stats_samples:
             import random
 
-            rng = random.Random(42)
-            stats_samples = rng.sample(samples, max_stats_samples)
+            stats_samples = random.Random(42).sample(list(samples), max_stats_samples)
 
         field_stats = _collect_field_stats(stats_samples)
         schema = _annotate_schema(schema, field_stats)

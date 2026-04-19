@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import itertools
 import json
-from typing import Any
+from dataclasses import dataclass
 
 import click
 
@@ -25,13 +25,46 @@ from polylogue.showcase.exercise_models import AssertionSpec, Exercise
 from polylogue.types import ExerciseIOMode
 
 
-def discover_filter_flags(cli_group: click.Group) -> list[dict[str, Any]]:
+@dataclass(frozen=True, slots=True)
+class FilterFlagDescriptor:
+    """Compact descriptor for a query-style Click option."""
+
+    name: str
+    cli_name: str
+    is_flag: bool
+    type_name: str
+    default: object
+    test_value: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class FormatScenarioSpec:
+    """Output-format expectations used by generated scenario families."""
+
+    well_formed_json: bool = False
+    stdout_contains: tuple[str, ...] = ()
+
+
+def _filter_flag_test_value(name: str, option: click.Option) -> str | None:
+    type_name = str(option.type).lower()
+    if option.is_flag:
+        return None
+    if "int" in type_name:
+        return "5"
+    if "date" in name or "since" in name or "until" in name:
+        return "2020-01-01"
+    if "provider" in name:
+        return "chatgpt"
+    return None
+
+
+def discover_filter_flags(cli_group: click.Group) -> list[FilterFlagDescriptor]:
     """Introspect Click command tree and discover filter/query flags.
 
     Returns a list of flag descriptors with name, type, and default values.
     """
     # The main query surface is the root group (polylogue itself)
-    flags: list[dict[str, Any]] = []
+    flags: list[FilterFlagDescriptor] = []
 
     for param in cli_group.params:
         if not isinstance(param, click.Option):
@@ -52,89 +85,96 @@ def discover_filter_flags(cli_group: click.Group) -> list[dict[str, Any]]:
                 "exclude",
             )
         ):
-            flag_info: dict[str, Any] = {
-                "name": name,
-                "cli_name": param.opts[0] if param.opts else f"--{name}",
-                "is_flag": param.is_flag,
-                "type": str(param.type),
-                "default": param.default,
-            }
-            # Determine a sane test value
-            if param.is_flag:
-                flag_info["test_value"] = None  # just use the flag
-            elif "int" in str(param.type).lower():
-                flag_info["test_value"] = "5"
-            elif "date" in name or "since" in name or "until" in name:
-                flag_info["test_value"] = "2020-01-01"
-            elif "provider" in name:
-                flag_info["test_value"] = "chatgpt"
-            else:
-                flag_info["test_value"] = None
-            flags.append(flag_info)
+            flags.append(
+                FilterFlagDescriptor(
+                    name=name,
+                    cli_name=param.opts[0] if param.opts else f"--{name}",
+                    is_flag=param.is_flag,
+                    type_name=str(param.type),
+                    default=param.default,
+                    test_value=_filter_flag_test_value(name, param),
+                )
+            )
 
     return flags
 
 
-def _make_flag_args(flag: dict[str, Any]) -> list[str]:
+def _make_flag_args(flag: FilterFlagDescriptor) -> list[str]:
     """Build CLI args for a single flag."""
-    cli_name = flag["cli_name"]
-    if flag["is_flag"]:
-        return [cli_name]
-    if flag["test_value"] is not None:
-        return [cli_name, str(flag["test_value"])]
-    return [cli_name]
+    if flag.is_flag:
+        return [flag.cli_name]
+    if flag.test_value is not None:
+        return [flag.cli_name, flag.test_value]
+    return [flag.cli_name]
+
+
+def _is_incompatible_flag_pair(left: FilterFlagDescriptor, right: FilterFlagDescriptor) -> bool:
+    """Return whether two discovered flags should not form a generated pair."""
+    if left.name == right.name:
+        return True
+    return ("provider" in left.name and "exclude" in right.name) or (
+        "exclude" in left.name and "provider" in right.name
+    )
+
+
+def _generated_filter_exercise(
+    *,
+    name: str,
+    description: str,
+    args: list[str],
+    pairwise: bool = False,
+) -> Exercise:
+    dims = query_read(complexity="combinatorial" if pairwise else "basic")
+    tags = ("generated", "filters", "pairwise") if pairwise else ("generated", "filters")
+    return Exercise(
+        name=name,
+        group="generated-filters",
+        description=description,
+        execution=polylogue_execution(*args),
+        needs_data=True,
+        tier=dims.derived_tier,
+        env="any",
+        origin="generated.filters",
+        tags=tags,
+    )
+
+
+def _generate_single_flag_scenarios(flags: list[FilterFlagDescriptor]) -> list[Exercise]:
+    scenarios: list[Exercise] = []
+    for flag in flags:
+        scenarios.append(
+            _generated_filter_exercise(
+                name=f"gen-filter-{flag.name}",
+                description=f"Generated: filter with {flag.cli_name}",
+                args=_make_flag_args(flag) + ["list", "-n", "3"],
+            )
+        )
+    return scenarios
+
+
+def _generate_pairwise_flag_scenarios(flags: list[FilterFlagDescriptor]) -> list[Exercise]:
+    scenarios: list[Exercise] = []
+    for left_flag, right_flag in itertools.combinations(flags, 2):
+        if _is_incompatible_flag_pair(left_flag, right_flag):
+            continue
+        scenarios.append(
+            _generated_filter_exercise(
+                name=f"gen-filter-{left_flag.name}+{right_flag.name}",
+                description=f"Generated: {left_flag.cli_name} + {right_flag.cli_name}",
+                args=_make_flag_args(left_flag) + _make_flag_args(right_flag) + ["list", "-n", "3"],
+                pairwise=True,
+            )
+        )
+    return scenarios
 
 
 def generate_filter_scenarios(cli_group: click.Group | None = None) -> tuple[Exercise, ...]:
     """Generate smoke and pairwise filter scenarios from CLI flags."""
     flags = discover_filter_flags(cli_group or root_cli)
-    scenarios: list[Exercise] = []
-
-    # Individual smoke: each flag alone
-    for flag in flags:
-        dims = query_read(complexity="basic")
-        args = _make_flag_args(flag) + ["list", "-n", "3"]
-        scenarios.append(
-            Exercise(
-                name=f"gen-filter-{flag['name']}",
-                group="generated-filters",
-                description=f"Generated: filter with {flag['cli_name']}",
-                execution=polylogue_execution(*args),
-                needs_data=True,
-                tier=dims.derived_tier,
-                env="any",
-                origin="generated.filters",
-                tags=("generated", "filters"),
-            )
-        )
-
-    # Pairwise combinations (compatible flags only)
-    for a, b in itertools.combinations(flags, 2):
-        # Skip incompatible pairs
-        if a["name"] == b["name"]:
-            continue
-        if "provider" in a["name"] and "exclude" in b["name"]:
-            continue
-        if "exclude" in a["name"] and "provider" in b["name"]:
-            continue
-
-        dims = query_read(complexity="combinatorial")
-        args = _make_flag_args(a) + _make_flag_args(b) + ["list", "-n", "3"]
-        pair_name = f"gen-filter-{a['name']}+{b['name']}"
-        scenarios.append(
-            Exercise(
-                name=pair_name,
-                group="generated-filters",
-                description=f"Generated: {a['cli_name']} + {b['cli_name']}",
-                execution=polylogue_execution(*args),
-                needs_data=True,
-                tier=dims.derived_tier,
-                env="any",
-                origin="generated.filters",
-                tags=("generated", "filters", "pairwise"),
-            )
-        )
-
+    scenarios = [
+        *_generate_single_flag_scenarios(flags),
+        *_generate_pairwise_flag_scenarios(flags),
+    ]
     return tuple(scenarios)
 
 
@@ -322,15 +362,15 @@ def generate_json_contract_exercises() -> list[Exercise]:
 # Format matrix
 # ---------------------------------------------------------------------------
 
-_FORMAT_SPECS: dict[str, dict[str, Any]] = {
-    "json": {"well_formed": True, "contains": []},
-    "markdown": {"well_formed": False, "contains": ["#"]},
-    "html": {"well_formed": False, "contains": ["<"]},
-    "yaml": {"well_formed": False, "contains": [":"]},
-    "plaintext": {"well_formed": False, "contains": []},
-    "csv": {"well_formed": False, "contains": [","]},
-    "obsidian": {"well_formed": False, "contains": ["---"]},
-    "org": {"well_formed": False, "contains": ["#+"]},
+_FORMAT_SPECS: dict[str, FormatScenarioSpec] = {
+    "json": FormatScenarioSpec(well_formed_json=True),
+    "markdown": FormatScenarioSpec(stdout_contains=("#",)),
+    "html": FormatScenarioSpec(stdout_contains=("<",)),
+    "yaml": FormatScenarioSpec(stdout_contains=(":",)),
+    "plaintext": FormatScenarioSpec(),
+    "csv": FormatScenarioSpec(stdout_contains=(",",)),
+    "obsidian": FormatScenarioSpec(stdout_contains=("---",)),
+    "org": FormatScenarioSpec(stdout_contains=("#+",)),
 }
 
 
@@ -360,14 +400,10 @@ def generate_format_scenarios() -> tuple[Exercise, ...]:
 
             dims = query_read(output_format=fmt, complexity="basic")
             args = mode_args + ["-f", fmt]
-            validation_kwargs: dict[str, Any] = {}
-
-            if spec["well_formed"]:
-                validation_kwargs["custom"] = _is_valid_json_check
-            # contains checks only apply to "latest" mode which renders
-            # full content; "list" mode outputs plain conversation titles
-            if spec["contains"] and mode_name == "latest":
-                validation_kwargs["stdout_contains"] = tuple(spec["contains"])
+            assertion = AssertionSpec(
+                custom=_is_valid_json_check if spec.well_formed_json else None,
+                stdout_contains=spec.stdout_contains if mode_name == "latest" else (),
+            )
 
             scenarios.append(
                 Exercise(
@@ -375,7 +411,7 @@ def generate_format_scenarios() -> tuple[Exercise, ...]:
                     group="generated-formats",
                     description=f"Generated: {fmt} format in {mode_name} mode",
                     execution=polylogue_execution(*args),
-                    assertion=AssertionSpec(**validation_kwargs),
+                    assertion=assertion,
                     needs_data=True,
                     tier=dims.derived_tier,
                     env="any",

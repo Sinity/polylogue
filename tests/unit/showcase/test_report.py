@@ -10,6 +10,7 @@ Laws that hold regardless of exercise content:
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -24,12 +25,13 @@ from polylogue.showcase.exercise_models import Exercise
 from polylogue.showcase.invariants import InvariantResult
 from polylogue.showcase.qa_report import (
     generate_qa_markdown,
-    generate_qa_session,
     generate_qa_summary,
 )
 from polylogue.showcase.qa_runner import QAResult
+from polylogue.showcase.qa_session_payload import build_qa_session_record
 from polylogue.showcase.runner import ExerciseResult, ShowcaseResult
 from polylogue.showcase.showcase_report_payloads import (
+    build_showcase_session_record,
     generate_json_report,
     generate_showcase_session,
     write_showcase_session,
@@ -69,6 +71,11 @@ def _make_showcase(results: list[ExerciseResult]) -> ShowcaseResult:
     sr.results = results
     sr.total_duration_ms = sum(r.duration_ms for r in results)
     return sr
+
+
+def _payload_mapping(value: object) -> Mapping[str, object]:
+    assert isinstance(value, Mapping)
+    return value
 
 
 # ---------------------------------------------------------------------------
@@ -116,15 +123,15 @@ def test_qa_session_summary_counts_consistent(n_passed: Any, n_failed: Any, n_sk
         + [_make_result(passed=False, error="err") for _ in range(n_failed)]
         + [_make_result(skipped=True) for _ in range(n_skipped)]
     )
-    session = generate_showcase_session(_make_showcase(results))
-    s = session["summary"]
+    session = build_showcase_session_record(_make_showcase(results), timestamp="2026-01-01T00:00:00Z")
+    s = session.summary
 
     total = n_passed + n_failed + n_skipped
-    assert s["total"] == total
-    assert s["passed"] == n_passed
-    assert s["failed"] == n_failed
-    assert s["skipped"] == n_skipped
-    assert len(session["exercises"]) == total
+    assert s.total == total
+    assert s.passed == n_passed
+    assert s.failed == n_failed
+    assert s.skipped == n_skipped
+    assert len(session.exercises) == total
 
 
 # ---------------------------------------------------------------------------
@@ -153,8 +160,8 @@ def test_qa_session_serializes_to_valid_json(n: Any) -> None:
 def test_qa_session_schema_version_is_always_one(n: Any) -> None:
     """schema_version field is always 1 regardless of result set."""
     results = [_make_result() for _ in range(n)]
-    session = generate_showcase_session(_make_showcase(results))
-    assert session["schema_version"] == 1
+    session = build_showcase_session_record(_make_showcase(results), timestamp="2026-01-01T00:00:00Z")
+    assert session.schema_version == 1
 
 
 # ---------------------------------------------------------------------------
@@ -217,8 +224,8 @@ def test_qa_session_exercise_tier_preserved() -> None:
         ExerciseResult(exercise=ex2, passed=True, exit_code=0, output="", duration_ms=2.0),
         ExerciseResult(exercise=ex3, passed=False, exit_code=1, output="", error="bad", duration_ms=3.0),
     ]
-    session = generate_showcase_session(_make_showcase(results))
-    tiers = {e["name"]: e["tier"] for e in session["exercises"]}
+    session = build_showcase_session_record(_make_showcase(results), timestamp="2026-01-01T00:00:00Z")
+    tiers = {exercise.name: exercise.tier for exercise in session.exercises}
     assert tiers == {"e1": 1, "e2": 2, "e3": 3}
 
 
@@ -277,24 +284,34 @@ def test_full_qa_session_contains_composed_stage_payloads() -> None:
         ],
     )
 
-    session = generate_qa_session(qa_result)
+    session = build_qa_session_record(
+        qa_result,
+        timestamp="2026-01-01T00:00:00Z",
+        showcase_session=build_showcase_session_record(showcase, timestamp="2026-01-01T00:00:00Z"),
+    )
+    audit_report = _payload_mapping(session.audit.report)
+    audit_summary = _payload_mapping(audit_report["summary"])
+    proof_report = _payload_mapping(session.proof.report)
+    proof_summary = _payload_mapping(proof_report["summary"])
+    showcase_summary = session.showcase.summary
 
-    assert session["audit"]["status"] == "ok"
-    assert session["audit"]["report"]["summary"] == {"passed": 1, "warned": 0, "failed": 0}
-    assert session["proof"]["status"] == "error"
-    assert session["proof"]["report"]["summary"]["contract_backed_records"] == 1
-    assert session["proof"]["report"]["summary"]["unsupported_parseable_records"] == 1
-    assert session["proof"]["report"]["summary"]["package_versions"] == {"v1": 1}
-    assert session["proof"]["report"]["summary"]["element_kinds"] == {"conversation_document": 1}
-    assert session["showcase"]["summary"] == {
+    assert session.audit.status == "ok"
+    assert audit_summary == {"passed": 1, "warned": 0, "failed": 0}
+    assert session.proof.status == "error"
+    assert proof_summary["contract_backed_records"] == 1
+    assert proof_summary["unsupported_parseable_records"] == 1
+    assert proof_summary["package_versions"] == {"v1": 1}
+    assert proof_summary["element_kinds"] == {"conversation_document": 1}
+    assert showcase_summary is not None
+    assert showcase_summary.to_payload() == {
         "total": 2,
         "passed": 1,
         "failed": 1,
         "skipped": 0,
         "total_duration_ms": 84.0,
     }
-    assert session["invariants"]["summary"] == {"passed": 1, "failed": 1, "skipped": 0}
-    assert session["overall_status"] == "error"
+    assert session.invariants.summary.to_payload() == {"passed": 1, "failed": 1, "skipped": 0}
+    assert session.overall_status == "error"
 
 
 def test_generate_qa_summary_reports_stage_statuses() -> None:

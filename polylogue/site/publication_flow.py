@@ -42,6 +42,43 @@ def _backend_queries(backend: object) -> _LatestRunQueries | None:
     return queries if queries is not None and hasattr(queries, "get_latest_run") else None
 
 
+def _archive_publication_summary(archive_stats: ArchiveIndexStats) -> ArchivePublicationSummary:
+    return ArchivePublicationSummary(
+        total_conversations=archive_stats.total_conversations,
+        total_messages=archive_stats.total_messages,
+        provider_count=len(archive_stats.provider_counts),
+        provider_counts=dict(sorted(archive_stats.provider_counts.items())),
+        provider_messages=dict(sorted(archive_stats.provider_messages.items())),
+    )
+
+
+def _site_output_summary(
+    *,
+    conversation_pages: ConversationPageBuildStats,
+    provider_index_pages: int,
+    dashboard_pages: int,
+    search_documents: int,
+    search_status: str,
+    config: SiteConfig,
+    incremental: bool,
+) -> SiteOutputSummary:
+    return SiteOutputSummary(
+        root_index_pages=1,
+        provider_index_pages=provider_index_pages,
+        dashboard_pages=dashboard_pages,
+        total_index_pages=1 + provider_index_pages + dashboard_pages,
+        total_conversation_pages=conversation_pages.total,
+        rendered_conversation_pages=conversation_pages.rendered,
+        reused_conversation_pages=conversation_pages.reused,
+        failed_conversation_pages=conversation_pages.failed,
+        search_documents=search_documents,
+        search_enabled=config.enable_search,
+        search_provider=config.search_provider_name,
+        search_status=search_status,
+        incremental=incremental,
+    )
+
+
 def build_latest_run_summary(record: RunRecord | None) -> PublicationRunSummary | None:
     """Convert a persisted run record into the embedded publication summary."""
     if record is None:
@@ -177,34 +214,15 @@ async def build_site_publication_manifest(
         generated_at=generated_at,
         output_dir=str(output_dir),
         duration_ms=duration_ms,
-        config={
-            "title": config.title,
-            "description": config.description,
-            "enable_search": config.enable_search,
-            "search_provider": str(config.search_provider),
-            "conversations_per_page": config.conversations_per_page,
-            "include_dashboard": config.include_dashboard,
-        },
-        archive=ArchivePublicationSummary(
-            total_conversations=archive_stats.total_conversations,
-            total_messages=archive_stats.total_messages,
-            provider_count=len(archive_stats.provider_counts),
-            provider_counts=dict(sorted(archive_stats.provider_counts.items())),
-            provider_messages=dict(sorted(archive_stats.provider_messages.items())),
-        ),
-        outputs=SiteOutputSummary(
-            root_index_pages=1,
+        config=config.to_payload(),
+        archive=_archive_publication_summary(archive_stats),
+        outputs=_site_output_summary(
+            conversation_pages=conversation_pages,
             provider_index_pages=provider_index_pages,
             dashboard_pages=dashboard_pages,
-            total_index_pages=1 + provider_index_pages + dashboard_pages,
-            total_conversation_pages=conversation_pages.total,
-            rendered_conversation_pages=conversation_pages.rendered,
-            reused_conversation_pages=conversation_pages.reused,
-            failed_conversation_pages=conversation_pages.failed,
-            search_documents=(archive_stats.total_conversations if config.enable_search else 0),
-            search_enabled=config.enable_search,
-            search_provider=(str(config.search_provider) if config.enable_search else None),
+            search_documents=archive_stats.total_conversations if config.enable_search else 0,
             search_status=search_status,
+            config=config,
             incremental=incremental,
         ),
         latest_run=latest_run,

@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from polylogue.types import ExerciseIOMode
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class ExerciseDimensions:
     """Multi-dimensional classification for a showcase exercise."""
 
