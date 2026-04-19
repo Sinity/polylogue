@@ -2,193 +2,196 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import NotRequired, TypedDict, cast
 
+from polylogue.lib.payload_coercion import is_payload_mapping, mapping_or_empty, optional_string
+from polylogue.lib.raw_payload_decode import JSONValue
 from polylogue.pipeline.semantic_metadata import _parse_git_command, _parse_subagent_spawn
 
 
-def detect_context_compaction(item: dict[str, Any]) -> dict[str, Any] | None:
-    """Detect if a raw message item represents a context compaction event.
+class ContextCompactionSummary(TypedDict):
+    summary: str
+    timestamp: JSONValue | None
+    trigger: JSONValue | None
+    pre_tokens: JSONValue | None
+    preserved_segment_id: str | None
+    is_modern: bool
 
-    Recognises two record shapes:
-    - **Legacy**: ``{"type": "summary", "message": {"content": "..."}, ...}``
-    - **Modern**: ``{"type": "system", "subtype": "compact_boundary",
-      "compact_metadata": {...}, ...}``
 
-    Returns a normalised dict with ``summary``, ``timestamp``, ``trigger``,
-    ``pre_tokens``, ``preserved_segment_id``, and ``is_modern``.
-    """
+class ThinkingTraceSummary(TypedDict):
+    text: str
+    token_count: int
+
+
+class ToolInvocationSummary(TypedDict, total=False):
+    tool_name: str | None
+    tool_id: str | None
+    input: dict[str, object]
+    is_file_operation: bool
+    is_search_operation: bool
+    is_subagent: bool
+    is_git_operation: bool
+
+
+class FileChangeSummary(TypedDict):
+    path: str
+    operation: str
+    old_content: NotRequired[str | None]
+    new_content: NotRequired[str | None]
+
+
+class SubagentSpawnSummary(TypedDict):
+    agent_type: str
+    prompt: str
+    description: str | None
+    run_in_background: bool
+
+
+def _json_value(value: object) -> JSONValue | None:
+    return cast(JSONValue | None, value)
+
+
+def _text_from_message_content(content: object) -> str:
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return ""
+    for block in content:
+        if is_payload_mapping(block) and block.get("type") == "text":
+            text = optional_string(block.get("text"))
+            if text:
+                return text
+    return ""
+
+
+def _summary_text(item: object) -> str:
+    message = mapping_or_empty(mapping_or_empty(item).get("message"))
+    return _text_from_message_content(message.get("content"))
+
+
+def detect_context_compaction(item: dict[str, object]) -> ContextCompactionSummary | None:
+    """Detect if a raw message item represents a context compaction event."""
     msg_type = item.get("type")
 
-    # ------------------------------------------------------------------
-    # Legacy format: type == "summary"
-    # ------------------------------------------------------------------
     if msg_type == "summary":
-        message = item.get("message", {})
-        content = ""
-        if isinstance(message, dict):
-            content_raw = message.get("content")
-            if isinstance(content_raw, str):
-                content = content_raw
-            elif isinstance(content_raw, list):
-                for block in content_raw:
-                    if isinstance(block, dict) and block.get("type") == "text":
-                        content = block.get("text", "")
-                        break
-
         return {
-            "summary": content,
-            "timestamp": item.get("timestamp"),
+            "summary": _summary_text(item),
+            "timestamp": _json_value(item.get("timestamp")),
             "trigger": None,
             "pre_tokens": None,
             "preserved_segment_id": None,
             "is_modern": False,
         }
 
-    # ------------------------------------------------------------------
-    # Modern format: type == "system", subtype == "compact_boundary"
-    # ------------------------------------------------------------------
     if msg_type == "system" and item.get("subtype") == "compact_boundary":
-        meta = item.get("compact_metadata") or {}
-        # Extract summary text from message.content (same structure as legacy)
-        message = item.get("message", {})
-        content = ""
-        if isinstance(message, dict):
-            content_raw = message.get("content")
-            if isinstance(content_raw, str):
-                content = content_raw
-            elif isinstance(content_raw, list):
-                for block in content_raw:
-                    if isinstance(block, dict) and block.get("type") == "text":
-                        content = block.get("text", "")
-                        break
-
-        # pre_tokens: accept both camelCase and snake_case
-        pre_tokens = meta.get("preTokens") or meta.get("pre_tokens")
-
-        # preserved_segment → anchor_uuid
-        preserved = meta.get("preserved_segment") or {}
-        anchor_uuid = preserved.get("anchor_uuid") if isinstance(preserved, dict) else None
-
+        meta = mapping_or_empty(item.get("compact_metadata"))
+        preserved = mapping_or_empty(meta.get("preserved_segment"))
         return {
-            "summary": content,
-            "timestamp": item.get("timestamp"),
-            "trigger": meta.get("trigger"),
-            "pre_tokens": pre_tokens,
-            "preserved_segment_id": anchor_uuid,
+            "summary": _summary_text(item),
+            "timestamp": _json_value(item.get("timestamp")),
+            "trigger": _json_value(meta.get("trigger")),
+            "pre_tokens": _json_value(meta.get("preTokens") or meta.get("pre_tokens")),
+            "preserved_segment_id": optional_string(preserved.get("anchor_uuid")),
             "is_modern": True,
         }
 
     return None
 
 
-def extract_thinking_traces(content_blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    traces = []
+def extract_thinking_traces(content_blocks: list[dict[str, object]]) -> list[ThinkingTraceSummary]:
+    traces: list[ThinkingTraceSummary] = []
     for block in content_blocks:
-        if block.get("type") == "thinking":
-            text = block.get("thinking") or block.get("text") or ""
-            if text:
-                traces.append(
-                    {
-                        "text": text,
-                        "token_count": len(text.split()),
-                    }
-                )
+        if block.get("type") != "thinking":
+            continue
+        text = optional_string(block.get("thinking")) or optional_string(block.get("text")) or ""
+        if text:
+            traces.append({"text": text, "token_count": len(text.split())})
     return traces
 
 
-def extract_tool_invocations(content_blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    invocations = []
+def extract_tool_invocations(content_blocks: list[dict[str, object]]) -> list[ToolInvocationSummary]:
+    invocations: list[ToolInvocationSummary] = []
     for block in content_blocks:
-        if block.get("type") == "tool_use":
-            invocation: dict[str, Any] = {
-                "tool_name": block.get("name"),
-                "tool_id": block.get("id"),
-                "input": block.get("input") or {},
-            }
-            tool_name = invocation["tool_name"]
-            if tool_name:
-                invocation["is_file_operation"] = tool_name in {"Read", "Write", "Edit", "NotebookEdit"}
-                invocation["is_search_operation"] = tool_name in {"Glob", "Grep", "WebSearch"}
-                invocation["is_subagent"] = tool_name == "Task"
-                if tool_name == "Bash":
-                    cmd = (invocation.get("input") or {}).get("command", "")
-                    invocation["is_git_operation"] = isinstance(cmd, str) and cmd.strip().startswith("git ")
-            invocations.append(invocation)
+        if block.get("type") != "tool_use":
+            continue
+        input_payload = dict(mapping_or_empty(block.get("input")))
+        invocation: ToolInvocationSummary = {
+            "tool_name": optional_string(block.get("name")),
+            "tool_id": optional_string(block.get("id")),
+            "input": input_payload,
+        }
+        tool_name = invocation.get("tool_name")
+        if tool_name:
+            invocation["is_file_operation"] = tool_name in {"Read", "Write", "Edit", "NotebookEdit"}
+            invocation["is_search_operation"] = tool_name in {"Glob", "Grep", "WebSearch"}
+            invocation["is_subagent"] = tool_name == "Task"
+            if tool_name == "Bash":
+                command = optional_string(input_payload.get("command")) or ""
+                invocation["is_git_operation"] = command.strip().startswith("git ")
+        invocations.append(invocation)
     return invocations
 
 
-def parse_git_operation(tool_invocation: dict[str, Any]) -> dict[str, Any] | None:
+def parse_git_operation(tool_invocation: ToolInvocationSummary) -> dict[str, object] | None:
     if tool_invocation.get("tool_name") != "Bash":
         return None
-    command = tool_invocation.get("input", {}).get("command", "")
-    if not isinstance(command, str) or not command.strip().startswith("git "):
-        return None
-    parts = command.strip().split()
-    if len(parts) < 2:
+    command = optional_string(mapping_or_empty(tool_invocation.get("input")).get("command"))
+    if not command or not command.strip().startswith("git "):
         return None
     return _parse_git_command(command)
 
 
-def extract_file_changes(tool_invocations: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    changes = []
+def extract_file_changes(tool_invocations: list[ToolInvocationSummary]) -> list[FileChangeSummary]:
+    changes: list[FileChangeSummary] = []
     for invocation in tool_invocations:
         tool_name = invocation.get("tool_name")
-        input_data = invocation.get("input", {})
+        input_data = mapping_or_empty(invocation.get("input"))
+        path = optional_string(input_data.get("file_path")) or optional_string(input_data.get("path"))
+        if not path:
+            continue
+
         if tool_name == "Read":
-            path = input_data.get("file_path") or input_data.get("path")
-            if path:
-                changes.append({"path": path, "operation": "read"})
+            changes.append({"path": path, "operation": "read"})
         elif tool_name == "Write":
-            path = input_data.get("file_path") or input_data.get("path")
-            content = input_data.get("content")
-            if path:
-                changes.append(
-                    {
-                        "path": path,
-                        "operation": "write",
-                        "new_content": content[:500] if isinstance(content, str) else None,
-                    }
-                )
+            content = optional_string(input_data.get("content"))
+            entry: FileChangeSummary = {"path": path, "operation": "write"}
+            if content is not None:
+                entry["new_content"] = content[:500]
+            changes.append(entry)
         elif tool_name == "Edit":
-            path = input_data.get("file_path") or input_data.get("path")
-            old_string = input_data.get("old_string")
-            new_string = input_data.get("new_string")
-            if path:
-                changes.append(
-                    {
-                        "path": path,
-                        "operation": "edit",
-                        "old_content": old_string[:200] if isinstance(old_string, str) else None,
-                        "new_content": new_string[:200] if isinstance(new_string, str) else None,
-                    }
-                )
+            entry = {"path": path, "operation": "edit"}
+            old_string = optional_string(input_data.get("old_string"))
+            new_string = optional_string(input_data.get("new_string"))
+            if old_string is not None:
+                entry["old_content"] = old_string[:200]
+            if new_string is not None:
+                entry["new_content"] = new_string[:200]
+            changes.append(entry)
     return changes
 
 
-def extract_subagent_spawns(tool_invocations: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    spawns = []
+def extract_subagent_spawns(tool_invocations: list[ToolInvocationSummary]) -> list[SubagentSpawnSummary]:
+    spawns: list[SubagentSpawnSummary] = []
     for invocation in tool_invocations:
         if invocation.get("tool_name") != "Task":
             continue
-        input_data = invocation.get("input", {})
+        input_data = dict(mapping_or_empty(invocation.get("input")))
         parsed = _parse_subagent_spawn(input_data)
         spawns.append(
             {
                 "agent_type": parsed["agent_type"],
-                "prompt": input_data.get("prompt", ""),
-                "description": parsed["description"],
-                "run_in_background": parsed["run_in_background"],
+                "prompt": optional_string(input_data.get("prompt")) or "",
+                "description": optional_string(parsed.get("description")),
+                "run_in_background": bool(parsed.get("run_in_background", False)),
             }
         )
     return spawns
 
 
-def extract_git_operations(tool_invocations: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    operations = []
+def extract_git_operations(tool_invocations: list[ToolInvocationSummary]) -> list[dict[str, object]]:
+    operations: list[dict[str, object]] = []
     for invocation in tool_invocations:
-        git_op = parse_git_operation(invocation)
-        if git_op:
+        if git_op := parse_git_operation(invocation):
             operations.append(git_op)
     return operations
 

@@ -6,36 +6,154 @@ import json
 import random
 import uuid
 from datetime import datetime, timezone
-from typing import Any
+from typing import Literal, Protocol, TypeAlias, cast
 
+from polylogue.lib.raw_payload_decode import JSONRecord, JSONValue
 from polylogue.schemas.synthetic.semantic_values import _text_for_role
+
+SchemaScalar: TypeAlias = str | int | float | bool | None
+SchemaValue: TypeAlias = SchemaScalar | list["SchemaValue"] | dict[str, "SchemaValue"]
+SchemaRecord: TypeAlias = dict[str, SchemaValue]
+
+
+class _SemanticGenerator(Protocol):
+    def try_generate(self, schema: SchemaRecord) -> tuple[bool, JSONValue]: ...
+
+
+class _RelationSolver(Protocol):
+    mutual_exclusions: object
+
+    def generate_string_with_length(self, path: str, rng: random.Random, value: str) -> str: ...
+
+    def register_generated_id(self, path: str, value: str) -> None: ...
+
+    def filter_mutually_exclusive(
+        self,
+        path: str,
+        candidate_keys: set[str],
+        rng: random.Random,
+    ) -> set[str]: ...
+
+    def resolve_foreign_key(self, path: str, rng: random.Random) -> JSONValue | None: ...
+
+
+class _WireFormat(Protocol):
+    encoding: Literal["json", "jsonl"]
+
+
+class _SyntheticRuntimeContext(Protocol):
+    wire_format: _WireFormat
+    _semantic_gen: _SemanticGenerator | None
+    _relation_solver: _RelationSolver
+
+    def _generate_from_schema(
+        self,
+        schema: SchemaRecord,
+        rng: random.Random,
+        *,
+        skip_keys: set[str] | None = None,
+        depth: int = 0,
+        max_depth: int = 6,
+        path: str = "$",
+    ) -> JSONValue: ...
+
+    def _generate_object(
+        self,
+        schema: SchemaRecord,
+        rng: random.Random,
+        *,
+        skip_keys: set[str] | None = None,
+        depth: int = 0,
+        max_depth: int = 6,
+        path: str = "$",
+    ) -> JSONRecord: ...
+
+    def _generate_array(
+        self,
+        schema: SchemaRecord,
+        rng: random.Random,
+        *,
+        depth: int = 0,
+        max_depth: int = 6,
+        path: str = "$",
+    ) -> list[JSONValue]: ...
+
+    def _generate_string(self, schema: SchemaRecord, rng: random.Random) -> str: ...
+
+    def _generate_number(
+        self,
+        schema: SchemaRecord,
+        rng: random.Random,
+        *,
+        is_int: bool = False,
+    ) -> float | int: ...
+
+
+def _schema_record(value: object) -> SchemaRecord:
+    return cast(SchemaRecord, value) if isinstance(value, dict) else {}
+
+
+def _schema_records(value: object, keyword: str) -> list[SchemaRecord]:
+    if not isinstance(value, list):
+        return []
+    return [record for item in value if (record := _schema_record(item))]
+
+
+def _schema_type(schema: SchemaRecord, rng: random.Random) -> str | None:
+    schema_type = schema.get("type")
+    if isinstance(schema_type, str):
+        return schema_type
+    if isinstance(schema_type, list):
+        non_null = [item for item in schema_type if isinstance(item, str) and item != "null"]
+        return rng.choice(non_null) if non_null else "null"
+    return None
+
+
+def _coerce_float(value: SchemaValue, default: float = 0.0) -> float:
+    if isinstance(value, bool):
+        return float(int(value))
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        return float(value)
+    return default
+
+
+def _coerce_int(value: SchemaValue, default: int = 0) -> int:
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        return int(value)
+    return default
 
 
 def _generate_from_schema(
-    self: Any,
-    schema: dict[str, Any],
+    self: _SyntheticRuntimeContext,
+    schema: SchemaRecord,
     rng: random.Random,
     *,
     skip_keys: set[str] | None = None,
     depth: int = 0,
     max_depth: int = 6,
     path: str = "$",
-) -> Any:
-    if depth > max_depth or not isinstance(schema, dict):
+) -> JSONValue:
+    if depth > max_depth or not schema:
         return None
 
-    semantic_gen = getattr(self, "_semantic_gen", None)
-    if schema.get("x-polylogue-semantic-role") and semantic_gen is not None:
-        handled, value = semantic_gen.try_generate(schema)
+    semantic_role = schema.get("x-polylogue-semantic-role")
+    if isinstance(semantic_role, str) and self._semantic_gen is not None:
+        handled, value = self._semantic_gen.try_generate(schema)
         if handled:
             return value
 
     for keyword in ("anyOf", "oneOf"):
-        if keyword in schema:
-            variants = schema[keyword]
-            non_null = [
-                variant for variant in variants if variant.get("type") != "null" and variant.get("type") is not None
-            ]
+        variants = _schema_records(schema.get(keyword), keyword)
+        if variants:
+            non_null = [variant for variant in variants if variant.get("type") != "null"]
             chosen = rng.choice(non_null) if non_null else rng.choice(variants)
             return self._generate_from_schema(
                 chosen,
@@ -46,12 +164,9 @@ def _generate_from_schema(
                 path=path,
             )
 
-    schema_type = schema.get("type")
-    if isinstance(schema_type, list):
-        non_null = [item for item in schema_type if item != "null"]
-        schema_type = rng.choice(non_null) if non_null else "null"
-
-    freq = schema.get("x-polylogue-frequency", 1.0)
+    schema_type = _schema_type(schema, rng)
+    freq_value = schema.get("x-polylogue-frequency")
+    freq = float(freq_value) if isinstance(freq_value, (int, float)) else 1.0
     if depth > 0 and freq < 1.0 and rng.random() > freq:
         return None
 
@@ -96,17 +211,17 @@ def _generate_from_schema(
 
 
 def _generate_object(
-    self: Any,
-    schema: dict[str, Any],
+    self: _SyntheticRuntimeContext,
+    schema: SchemaRecord,
     rng: random.Random,
     *,
     skip_keys: set[str] | None = None,
     depth: int = 0,
     max_depth: int = 6,
     path: str = "$",
-) -> dict[str, object]:
-    obj: dict[str, Any] = {}
-    properties = schema.get("properties", {})
+) -> JSONRecord:
+    obj: JSONRecord = {}
+    properties = _schema_record(schema.get("properties"))
     candidate_keys = set(properties.keys())
     if skip_keys:
         candidate_keys -= skip_keys
@@ -114,12 +229,15 @@ def _generate_object(
     if self._relation_solver.mutual_exclusions:
         candidate_keys = self._relation_solver.filter_mutually_exclusive(path, candidate_keys, rng)
 
-    for prop_name in properties:
+    for prop_name, prop_value in properties.items():
         if prop_name not in candidate_keys:
             continue
+        prop_schema = _schema_record(prop_value)
+        if not prop_schema:
+            continue
 
-        prop_schema = properties[prop_name]
-        freq = prop_schema.get("x-polylogue-frequency", 1.0)
+        freq_value = prop_schema.get("x-polylogue-frequency")
+        freq = float(freq_value) if isinstance(freq_value, (int, float)) else 1.0
         if freq < 1.0 and rng.random() > freq:
             continue
 
@@ -142,8 +260,9 @@ def _generate_object(
     return obj
 
 
-def _generate_string(self: Any, schema: dict[str, Any], rng: random.Random) -> str:
-    if values := schema.get("x-polylogue-values"):
+def _generate_string(self: _SyntheticRuntimeContext, schema: SchemaRecord, rng: random.Random) -> str:
+    values = schema.get("x-polylogue-values")
+    if isinstance(values, list) and values:
         return str(rng.choice(values))
 
     match schema.get("x-polylogue-format"):
@@ -171,9 +290,17 @@ def _generate_string(self: Any, schema: dict[str, Any], rng: random.Random) -> s
     return f"synthetic-{rng.randint(0, 99999)}"
 
 
-def _generate_number(self: Any, schema: dict[str, Any], rng: random.Random, *, is_int: bool = False) -> float | int:
-    if value_range := schema.get("x-polylogue-range"):
-        lo, hi = value_range
+def _generate_number(
+    self: _SyntheticRuntimeContext,
+    schema: SchemaRecord,
+    rng: random.Random,
+    *,
+    is_int: bool = False,
+) -> float | int:
+    range_value = schema.get("x-polylogue-range")
+    if isinstance(range_value, list) and len(range_value) >= 2:
+        lo = _coerce_float(range_value[0])
+        hi = _coerce_float(range_value[1])
         value = rng.uniform(lo, hi)
     elif schema.get("x-polylogue-format") == "unix-epoch":
         value = rng.uniform(1670000000, 1760000000)
@@ -183,29 +310,38 @@ def _generate_number(self: Any, schema: dict[str, Any], rng: random.Random, *, i
 
 
 def _generate_array(
-    self: Any,
-    schema: dict[str, Any],
+    self: _SyntheticRuntimeContext,
+    schema: SchemaRecord,
     rng: random.Random,
     *,
     depth: int = 0,
     max_depth: int = 6,
     path: str = "$",
-) -> list[Any]:
-    item_schema = schema.get("items", {})
-    if lengths := schema.get("x-polylogue-array-lengths"):
-        lo, hi = lengths
+) -> list[JSONValue]:
+    item_schema = _schema_record(schema.get("items"))
+    lengths = schema.get("x-polylogue-array-lengths")
+    if isinstance(lengths, list) and len(lengths) >= 2:
+        lo = _coerce_int(lengths[0])
+        hi = _coerce_int(lengths[1])
         clamped_lo = min(max(0, lo), 5)
         clamped_hi = min(max(hi, clamped_lo), 5)
         n_items = rng.randint(clamped_lo, clamped_hi)
     else:
         n_items = rng.randint(1, 3)
 
-    item_allows_null = (
-        item_schema.get("type") == "null"
-        or (isinstance(item_schema.get("type"), list) and "null" in item_schema["type"])
-        or any(variant.get("type") == "null" for variant in item_schema.get("anyOf", []))
-        or any(variant.get("type") == "null" for variant in item_schema.get("oneOf", []))
+    item_type = item_schema.get("type")
+    item_allows_null = item_type == "null" or (
+        isinstance(item_type, list) and any(item == "null" for item in item_type if isinstance(item, str))
     )
+    if not item_allows_null:
+        item_allows_null = any(
+            variant.get("type") == "null" for variant in _schema_records(item_schema.get("anyOf"), "anyOf")
+        )
+    if not item_allows_null:
+        item_allows_null = any(
+            variant.get("type") == "null" for variant in _schema_records(item_schema.get("oneOf"), "oneOf")
+        )
+
     items = [
         self._generate_from_schema(
             item_schema,
@@ -221,8 +357,10 @@ def _generate_array(
     return items
 
 
-def _serialize(self: Any, data: Any) -> bytes:
+def _serialize(self: _SyntheticRuntimeContext, data: JSONValue) -> bytes:
     if self.wire_format.encoding == "jsonl":
+        if not isinstance(data, list):
+            raise ValueError("JSONL wire format requires a list payload")
         lines = [json.dumps(record, separators=(",", ":")) for record in data]
         return ("\n".join(lines) + "\n").encode("utf-8")
     return json.dumps(data, indent=2).encode("utf-8")

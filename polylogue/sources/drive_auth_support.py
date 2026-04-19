@@ -5,10 +5,20 @@ from __future__ import annotations
 import importlib
 import json
 from pathlib import Path
-from typing import Any, Protocol
+from types import ModuleType
+from typing import Protocol
 
 from polylogue.logging import get_logger
-from polylogue.sources.drive_types import SCOPES, CachedCredentialState, DriveAuthError
+from polylogue.sources.drive_types import (
+    SCOPES,
+    CachedCredentialState,
+    DriveAuthError,
+    DriveAuthFlowLike,
+    DriveCredentialLike,
+    DriveCredentialsFactory,
+    DriveTokenStoreLike,
+    DriveUILike,
+)
 
 logger = get_logger(__name__)
 
@@ -24,7 +34,7 @@ class DriveAuthPrompter(Protocol):
 class UIAuthPrompter:
     """Adapter bridging a generic UI object to DriveAuthPrompter."""
 
-    def __init__(self, ui: object) -> None:
+    def __init__(self, ui: DriveUILike) -> None:
         self._ui = ui
 
     def announce_auth_url(self, url: str) -> None:
@@ -43,16 +53,18 @@ class _PromptBridge:
 
     def __init__(self, prompter: DriveAuthPrompter) -> None:
         self._prompter = prompter
+        self.console = None
 
     @property
     def plain(self) -> bool:
         return False
 
     def input(self, prompt: str, **_: object) -> str | None:
+        del prompt
         return None
 
 
-def import_auth_module(name: str) -> Any:
+def import_auth_module(name: str) -> ModuleType:
     try:
         return importlib.import_module(name)
     except ModuleNotFoundError as exc:
@@ -65,8 +77,8 @@ def import_auth_module(name: str) -> Any:
 
 def load_cached_credentials(
     *,
-    token_store: Any,
-    credentials_cls: Any,
+    token_store: DriveTokenStoreLike,
+    credentials_cls: DriveCredentialsFactory,
     token_path: Path,
 ) -> CachedCredentialState:
     creds = None
@@ -89,14 +101,24 @@ def load_cached_credentials(
     return CachedCredentialState(creds=creds, had_invalid_token_path=had_invalid_token_path)
 
 
-def persist_token(*, token_store: Any, creds: Any, token_path: Path) -> None:
+def persist_token(
+    *,
+    token_store: DriveTokenStoreLike,
+    creds: DriveCredentialLike,
+    token_path: Path,
+) -> None:
     token_store.save("drive_token", creds.to_json())
     token_path.parent.mkdir(parents=True, exist_ok=True)
     token_path.write_text(creds.to_json(), encoding="utf-8")
     token_path.chmod(0o600)
 
 
-def refresh_credentials_if_needed(*, creds: Any, token_path: Path, token_store: Any) -> Any:
+def refresh_credentials_if_needed(
+    *,
+    creds: DriveCredentialLike | None,
+    token_path: Path,
+    token_store: DriveTokenStoreLike,
+) -> DriveCredentialLike | None:
     if creds and creds.expired and creds.refresh_token:
         try:
             import google.auth.transport.requests as _gtr
@@ -122,7 +144,11 @@ def refresh_credentials_if_needed(*, creds: Any, token_path: Path, token_store: 
     return creds
 
 
-def run_manual_auth_flow(*, flow: Any, prompter: DriveAuthPrompter | None) -> Any:
+def run_manual_auth_flow(
+    *,
+    flow: DriveAuthFlowLike,
+    prompter: DriveAuthPrompter | None,
+) -> DriveCredentialLike:
     auth_url, _ = flow.authorization_url(prompt="consent", access_type="offline")
     if prompter is not None:
         prompter.announce_auth_url(auth_url)

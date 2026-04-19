@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import importlib
 from collections.abc import Callable
-from typing import Any, BinaryIO, TypeVar
+from types import ModuleType
+from typing import Protocol, TypeAlias, TypeVar, cast
 
 from tenacity import (
     retry_if_exception_type,
@@ -13,17 +14,72 @@ from tenacity import (
 
 from polylogue.logging import get_logger
 
-from .drive_types import DriveAuthError, DriveError, DriveNotFoundError
+from .drive_types import (
+    DriveAuthError,
+    DriveConfigLike,
+    DriveCredentialLike,
+    DriveNotFoundError,
+)
+from .drive_types import DriveError as DriveServiceError
 
 logger = get_logger(__name__)
 
 T = TypeVar("T")
+T_co = TypeVar("T_co", covariant=True)
+DrivePayloadRecord: TypeAlias = dict[str, object]
 
 DEFAULT_DRIVE_RETRIES = 3
 DEFAULT_DRIVE_RETRY_BASE = 0.5
 
 
-def _import_module(name: str) -> Any:
+class _DriveAuthManagerLike(Protocol):
+    def load_credentials(self) -> DriveCredentialLike: ...
+
+
+class _ExecutableRequest(Protocol[T_co]):
+    def execute(self) -> T_co: ...
+
+
+class _DriveFilesResource(Protocol):
+    def get(self, *, fileId: str, fields: str) -> _ExecutableRequest[DrivePayloadRecord]: ...  # noqa: N803
+
+    def list(
+        self,
+        *,
+        q: str,
+        fields: str,
+        pageToken: str | None,  # noqa: N803
+        pageSize: int,  # noqa: N803
+    ) -> _ExecutableRequest[DrivePayloadRecord]: ...  # noqa: N803
+
+    def get_media(self, *, fileId: str) -> object: ...  # noqa: N803
+
+
+class _DriveService(Protocol):
+    _http: object | None
+
+    def files(self) -> _DriveFilesResource: ...
+
+
+class _DriveServiceBuilder(Protocol):
+    def __call__(
+        self,
+        api_name: str,
+        api_version: str,
+        *,
+        credentials: DriveCredentialLike,
+        cache_discovery: bool,
+    ) -> _DriveService: ...
+
+
+class _MediaIoBaseDownload(Protocol):
+    def next_chunk(self) -> tuple[object | None, bool]: ...
+
+
+MediaDownloadFactory = Callable[[object, object], _MediaIoBaseDownload]
+
+
+def _import_module(name: str) -> ModuleType:
     try:
         return importlib.import_module(name)
     except ModuleNotFoundError as exc:
@@ -34,13 +90,14 @@ def _import_module(name: str) -> Any:
         ) from exc
 
 
-def _resolve_retries(value: int | None, config: object | None = None) -> int:
+def _resolve_retries(value: int | None, config: DriveConfigLike | None = None) -> int:
     """Resolve retry count from explicit value, config, or default."""
     if value is not None:
         return max(0, int(value))
 
-    if config is not None and hasattr(config, "retry_count"):
-        return max(0, int(config.retry_count))
+    configured = config.retry_count if config is not None else None
+    if configured is not None:
+        return max(0, int(configured))
 
     return DEFAULT_DRIVE_RETRIES
 
@@ -57,16 +114,16 @@ class DriveServiceGateway:
     def __init__(
         self,
         *,
-        auth_manager: Any,
+        auth_manager: _DriveAuthManagerLike,
         retries: int,
         retry_base: float,
     ) -> None:
         self._auth_manager = auth_manager
         self._retries = retries
         self._retry_base = retry_base
-        self._service = None
+        self._service: _DriveService | None = None
 
-    def call_with_retry(self, func: Callable[..., T], *args: Any, **kwargs: Any) -> T:
+    def call_with_retry(self, func: Callable[..., T], *args: object, **kwargs: object) -> T:
         from tenacity import Retrying
 
         retryer = Retrying(
@@ -78,22 +135,24 @@ class DriveServiceGateway:
         )
         return retryer(func, *args, **kwargs)
 
-    def _service_handle(self) -> Any:
+    def _service_handle(self) -> _DriveService:
         if self._service is not None:
-            creds = getattr(self._service, "_http", None)
-            if creds is not None:
-                http_creds = getattr(creds, "credentials", None)
-                if http_creds is not None and getattr(http_creds, "expired", False):
+            http = self._service._http
+            if http is not None:
+                credentials = getattr(http, "credentials", None)
+                if credentials is not None and getattr(credentials, "expired", False):
                     logger.info("Cached service credentials expired, re-authenticating")
                     self._service = None
                     return self._service_handle()
             return self._service
-        build = _import_module("googleapiclient.discovery").build
+
+        discovery = _import_module("googleapiclient.discovery")
+        build = cast(_DriveServiceBuilder, discovery.build)
         creds = self._auth_manager.load_credentials()
         self._service = build("drive", "v3", credentials=creds, cache_discovery=False)
         return self._service
 
-    def get_file(self, file_id: str, fields: str) -> dict[str, Any]:
+    def get_file(self, file_id: str, fields: str) -> DrivePayloadRecord:
         service = self._service_handle()
         return self.call_with_retry(lambda: service.files().get(fileId=file_id, fields=fields).execute())
 
@@ -104,17 +163,19 @@ class DriveServiceGateway:
         fields: str,
         page_token: str | None,
         page_size: int,
-    ) -> dict[str, Any]:
+    ) -> DrivePayloadRecord:
         service = self._service_handle()
         return self.call_with_retry(
-            lambda t=page_token: service.files().list(q=q, fields=fields, pageToken=t, pageSize=page_size).execute()
+            lambda token=page_token: (
+                service.files().list(q=q, fields=fields, pageToken=token, pageSize=page_size).execute()
+            )
         )
 
     def _download_request(
         self,
-        request: Any,
-        handle: Any,
-        downloader_cls: Any,
+        request: object,
+        handle: object,
+        downloader_cls: MediaDownloadFactory,
         *,
         file_id: str,
     ) -> None:
@@ -126,14 +187,15 @@ class DriveServiceGateway:
             _, done = downloader.next_chunk()
             chunks += 1
             if chunks >= max_chunks:
-                raise DriveError(f"Download exceeded {max_chunks} chunks for file {file_id}")
+                raise DriveServiceError(f"Download exceeded {max_chunks} chunks for file {file_id}")
 
-    def download_file(self, file_id: str, handle: BinaryIO) -> None:
-        """Download file content into handle."""
-        media_io_base_download_cls = _import_module("googleapiclient.http").MediaIoBaseDownload
+    def download_file(self, file_id: str, handle: object) -> None:
+        """Download file content into a writable binary handle."""
+        http_module = _import_module("googleapiclient.http")
+        downloader_cls = cast(MediaDownloadFactory, http_module.MediaIoBaseDownload)
         service = self._service_handle()
         request = service.files().get_media(fileId=file_id)
-        self._download_request(request, handle, media_io_base_download_cls, file_id=file_id)
+        self._download_request(request, handle, downloader_cls, file_id=file_id)
 
 
 __all__ = [
