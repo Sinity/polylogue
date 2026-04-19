@@ -43,8 +43,8 @@ def replace_session_profile_sync(conn: sqlite3.Connection, record: SessionProfil
     conn.execute("DELETE FROM session_profiles WHERE conversation_id = ?", (record.conversation_id,))
     payload_json = _json_or_none(
         {
-            **record.evidence_payload,
-            **record.inference_payload,
+            **record.evidence_payload.model_dump(mode="json"),
+            **record.inference_payload.model_dump(mode="json"),
             "conversation_id": str(record.conversation_id),
             "provider": record.provider_name,
             "title": record.title,
@@ -231,8 +231,8 @@ def replace_session_work_events_sync(
                         [
                             _json_or_none(
                                 {
-                                    **record.evidence_payload,
-                                    **record.inference_payload,
+                                    **record.evidence_payload.model_dump(mode="json"),
+                                    **record.inference_payload.model_dump(mode="json"),
                                 }
                             )
                         ]
@@ -319,15 +319,15 @@ def replace_session_phases_sync(
                         record.canonical_session_date,
                         record.confidence,
                         _json_array_or_none(record.evidence_reasons) or "[]",
-                        _json_or_none(dict[str, object](record.tool_counts)),
+                        _json_or_none(record.tool_counts),
                         record.word_count,
                     ]
                     + (
                         [
                             _json_or_none(
                                 {
-                                    **record.evidence_payload,
-                                    **record.inference_payload,
+                                    **record.evidence_payload.model_dump(mode="json"),
+                                    **record.inference_payload.model_dump(mode="json"),
                                 }
                             )
                         ]
@@ -396,7 +396,7 @@ def replace_work_thread_sync(
                 record.total_messages,
                 record.total_cost_usd,
                 record.wall_duration_ms,
-                _json_or_none(dict[str, object](record.work_event_breakdown or {})),
+                _json_or_none(record.work_event_breakdown or {}),
                 _json_or_none(record.payload),
                 record.search_text,
             ),
@@ -444,7 +444,7 @@ def replace_session_tag_rollup_rows_sync(
                     record.conversation_count,
                     record.explicit_count,
                     record.auto_count,
-                    _json_or_none(dict[str, object](record.repo_breakdown)),
+                    _json_or_none(record.repo_breakdown),
                     record.search_text,
                 )
                 for record in records
@@ -499,7 +499,7 @@ def replace_day_session_summaries_sync(
                     record.total_wall_duration_ms,
                     record.total_messages,
                     record.total_words,
-                    _json_or_none(dict[str, object](record.work_event_breakdown)),
+                    _json_or_none(record.work_event_breakdown),
                     _json_array_or_none(record.repos_active),
                     _json_or_none(record.payload),
                     record.search_text,

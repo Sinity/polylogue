@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
-from typing import Any
-
 from pydantic import BaseModel, field_validator
 
+from polylogue.archive_product_models import (
+    SessionEnrichmentPayload,
+    SessionEvidencePayload,
+    SessionInferencePayload,
+    WorkThreadPayload,
+)
 from polylogue.types import ConversationId
 
 from .store_constants import (
@@ -45,12 +49,12 @@ class SessionProfileRecord(BaseModel):
     engaged_duration_ms: int = 0
     wall_duration_ms: int = 0
     cost_is_estimated: bool = False
-    evidence_payload: dict[str, Any]
-    inference_payload: dict[str, Any]
+    evidence_payload: SessionEvidencePayload
+    inference_payload: SessionInferencePayload
     search_text: str
     evidence_search_text: str
     inference_search_text: str
-    enrichment_payload: dict[str, Any]
+    enrichment_payload: SessionEnrichmentPayload
     enrichment_search_text: str
     enrichment_version: int = SESSION_ENRICHMENT_VERSION
     enrichment_family: str = SESSION_ENRICHMENT_FAMILY
@@ -91,7 +95,7 @@ class WorkThreadRecord(BaseModel):
     total_cost_usd: float = 0.0
     wall_duration_ms: int = 0
     work_event_breakdown: dict[str, int] | None = None
-    payload: dict[str, Any]
+    payload: WorkThreadPayload
     search_text: str
 
     @field_validator("thread_id", "root_id", "materialized_at", "search_text")

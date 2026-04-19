@@ -83,8 +83,8 @@ def _session_profile_insert_values(
 ) -> tuple[object, ...]:
     payload_json = _json_or_none(
         {
-            **record.evidence_payload,
-            **record.inference_payload,
+            **record.evidence_payload.model_dump(mode="json"),
+            **record.inference_payload.model_dump(mode="json"),
             "conversation_id": str(record.conversation_id),
             "provider": record.provider_name,
             "title": record.title,

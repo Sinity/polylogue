@@ -129,8 +129,8 @@ async def replace_session_work_events_bulk(
                         [
                             _json_or_none(
                                 {
-                                    **record.evidence_payload,
-                                    **record.inference_payload,
+                                    **record.evidence_payload.model_dump(mode="json"),
+                                    **record.inference_payload.model_dump(mode="json"),
                                 }
                             )
                         ]
@@ -246,8 +246,8 @@ async def replace_session_phases_bulk(
                         [
                             _json_or_none(
                                 {
-                                    **record.evidence_payload,
-                                    **record.inference_payload,
+                                    **record.evidence_payload.model_dump(mode="json"),
+                                    **record.inference_payload.model_dump(mode="json"),
                                 }
                             )
                         ]

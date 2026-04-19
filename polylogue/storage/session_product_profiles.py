@@ -5,6 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
+from polylogue.archive_product_models import (
+    SessionEnrichmentPayload,
+    SessionEvidencePayload,
+    SessionInferencePayload,
+)
 from polylogue.lib.phase_extraction import SessionPhase
 from polylogue.lib.session_profile import SessionAnalysis, SessionProfile
 from polylogue.lib.work_event_extraction import WorkEvent
@@ -65,21 +70,17 @@ def profile_search_text(profile: SessionProfile) -> str:
     )
 
 
-def _payload_strings(value: object) -> tuple[str, ...]:
-    if not isinstance(value, list):
-        return ()
-    return tuple(str(item) for item in value)
-
-
-def profile_enrichment_search_text(profile: SessionProfile, enrichment_payload: dict[str, object]) -> str:
-    blockers = _payload_strings(enrichment_payload.get("blockers"))
-    support_signals_list = _payload_strings(enrichment_payload.get("support_signals"))
+def profile_enrichment_search_text(
+    profile: SessionProfile,
+    enrichment_payload: SessionEnrichmentPayload,
+) -> str:
+    blockers = enrichment_payload.blockers
+    support_signals_list = enrichment_payload.support_signals
     parts = [
         profile.provider,
         profile.title or "",
-        str(enrichment_payload.get("refined_work_kind") or ""),
-        str(enrichment_payload.get("intent_summary") or ""),
-        str(enrichment_payload.get("outcome_summary") or ""),
+        enrichment_payload.intent_summary or "",
+        enrichment_payload.outcome_summary or "",
         *profile.repo_names,
         *profile.repo_paths,
         *blockers,
@@ -97,7 +98,7 @@ def profile_enrichment_search_text(profile: SessionProfile, enrichment_payload: 
 def session_enrichment_payload(
     profile: SessionProfile,
     analysis: SessionAnalysis | None,
-) -> dict[str, object]:
+) -> SessionEnrichmentPayload:
     text_bands = _collect_enrichment_text_bands(analysis)
     user_turns = text_bands.user_turns
     assistant_turns = text_bands.assistant_turns
@@ -122,65 +123,63 @@ def session_enrichment_payload(
     )
     intent_summary = user_turns[0] if user_turns else (profile.title or None)
     outcome_summary = assistant_turns[-1] if assistant_turns else (user_turns[-1] if user_turns else None)
-    return {
-        "intent_summary": intent_summary,
-        "outcome_summary": outcome_summary,
-        "blockers": list(blockers_val),
-        "confidence": round(confidence, 3),
-        "support_level": support_level(confidence, support_signals=support_signals_val),
-        "support_signals": list(support_signals_val),
-        "input_band_summary": input_band_summary,
-    }
+    return SessionEnrichmentPayload(
+        intent_summary=intent_summary,
+        outcome_summary=outcome_summary,
+        blockers=blockers_val,
+        confidence=round(confidence, 3),
+        support_level=support_level(confidence, support_signals=support_signals_val),
+        support_signals=support_signals_val,
+        input_band_summary=input_band_summary,
+    )
 
 
-def profile_evidence_payload(profile: SessionProfile) -> dict[str, object]:
-    return {
-        "created_at": profile.created_at.isoformat() if profile.created_at else None,
-        "updated_at": profile.updated_at.isoformat() if profile.updated_at else None,
-        "first_message_at": profile.first_message_at.isoformat() if profile.first_message_at else None,
-        "last_message_at": profile.last_message_at.isoformat() if profile.last_message_at else None,
-        "canonical_session_date": (
-            profile.canonical_session_date.isoformat() if profile.canonical_session_date else None
-        ),
-        "message_count": profile.message_count,
-        "substantive_count": profile.substantive_count,
-        "attachment_count": profile.attachment_count,
-        "tool_use_count": profile.tool_use_count,
-        "thinking_count": profile.thinking_count,
-        "word_count": profile.word_count,
-        "total_cost_usd": profile.total_cost_usd,
-        "total_duration_ms": profile.total_duration_ms,
-        "wall_duration_ms": profile.wall_duration_ms,
-        "cost_is_estimated": profile.cost_is_estimated,
-        "compaction_count": profile.compaction_count,
-        "has_compaction": profile.compaction_count > 0,
-        "tool_categories": dict(profile.tool_categories),
-        "repo_paths": list(profile.repo_paths),
-        "cwd_paths": list(profile.cwd_paths),
-        "branch_names": list(profile.branch_names),
-        "file_paths_touched": list(profile.file_paths_touched),
-        "languages_detected": list(profile.languages_detected),
-        "tags": list(profile.tags),
-        "is_continuation": profile.is_continuation,
-        "parent_id": profile.parent_id,
-    }
+def profile_evidence_payload(profile: SessionProfile) -> SessionEvidencePayload:
+    return SessionEvidencePayload(
+        created_at=profile.created_at.isoformat() if profile.created_at else None,
+        updated_at=profile.updated_at.isoformat() if profile.updated_at else None,
+        first_message_at=profile.first_message_at.isoformat() if profile.first_message_at else None,
+        last_message_at=profile.last_message_at.isoformat() if profile.last_message_at else None,
+        canonical_session_date=profile.canonical_session_date.isoformat() if profile.canonical_session_date else None,
+        message_count=profile.message_count,
+        substantive_count=profile.substantive_count,
+        attachment_count=profile.attachment_count,
+        tool_use_count=profile.tool_use_count,
+        thinking_count=profile.thinking_count,
+        word_count=profile.word_count,
+        total_cost_usd=profile.total_cost_usd,
+        total_duration_ms=profile.total_duration_ms,
+        wall_duration_ms=profile.wall_duration_ms,
+        cost_is_estimated=profile.cost_is_estimated,
+        compaction_count=profile.compaction_count,
+        has_compaction=profile.compaction_count > 0,
+        tool_categories=dict(profile.tool_categories),
+        repo_paths=profile.repo_paths,
+        cwd_paths=profile.cwd_paths,
+        branch_names=profile.branch_names,
+        file_paths_touched=profile.file_paths_touched,
+        languages_detected=profile.languages_detected,
+        tags=profile.tags,
+        is_continuation=profile.is_continuation,
+        parent_id=profile.parent_id,
+    )
 
 
-def profile_inference_payload(profile: SessionProfile) -> dict[str, object]:
+def profile_inference_payload(profile: SessionProfile) -> SessionInferencePayload:
     signals = profile_support_signals(profile)
-    return {
-        "repo_names": list(profile.repo_names),
-        "work_event_count": len(profile.work_events),
-        "phase_count": len(profile.phases),
-        "engaged_duration_ms": profile.engaged_duration_ms,
-        "engaged_minutes": round(profile.engaged_duration_ms / 60_000.0, 4),
-        "support_level": profile_support_level(profile),
-        "support_signals": list(signals),
-        "engaged_duration_source": engaged_duration_source(profile),
-        "repo_inference_strength": repo_inference_strength(profile),
-        "auto_tags": list(profile.auto_tags),
-        "work_events": [event.to_dict() for event in profile.work_events],
-        "phases": [
+    return SessionInferencePayload(
+        repo_names=profile.repo_names,
+        work_event_count=len(profile.work_events),
+        phase_count=len(profile.phases),
+        engaged_duration_ms=profile.engaged_duration_ms,
+        engaged_minutes=round(profile.engaged_duration_ms / 60_000.0, 4),
+        support_level=profile_support_level(profile),
+        support_signals=signals,
+        engaged_duration_source=engaged_duration_source(profile),
+        repo_inference_strength=repo_inference_strength(profile),
+        auto_tags=profile.auto_tags,
+        work_events=tuple(event.to_dict() for event in profile.work_events),
+        phases=tuple(
             {
                 "start_time": phase.start_time.isoformat() if phase.start_time else None,
                 "end_time": phase.end_time.isoformat() if phase.end_time else None,
@@ -195,8 +194,8 @@ def profile_inference_payload(profile: SessionProfile) -> dict[str, object]:
                 "evidence": list(phase.evidence),
             }
             for phase in profile.phases
-        ],
-    }
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -261,8 +260,8 @@ def build_session_profile_record(
 
 def hydrate_session_profile(record: SessionProfileRecord) -> SessionProfile:
     merged_payload = {
-        **record.evidence_payload,
-        **record.inference_payload,
+        **record.evidence_payload.model_dump(mode="json"),
+        **record.inference_payload.model_dump(mode="json"),
         "conversation_id": str(record.conversation_id),
         "provider": record.provider_name,
         "title": record.title,

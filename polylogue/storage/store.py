@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Mapping
+
+from pydantic import BaseModel
 
 from polylogue.lib.json import dumps as json_dumps
 from polylogue.storage.store_constants import (
@@ -35,10 +38,12 @@ from polylogue.storage.store_runtime_raw_records import (
 from polylogue.types import AttachmentId, ConversationId, MessageId
 
 
-def _json_or_none(value: dict[str, object] | None) -> str | None:
+def _json_or_none(value: BaseModel | Mapping[str, object] | None) -> str | None:
     if value is None:
         return None
-    return json_dumps(value)
+    if isinstance(value, BaseModel):
+        return json_dumps(value.model_dump(mode="json"))
+    return json_dumps(dict(value))
 
 
 def _json_array_or_none(value: tuple[str, ...] | list[str] | None) -> str | None:

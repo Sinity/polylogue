@@ -4,6 +4,13 @@ from __future__ import annotations
 
 import sqlite3
 
+from polylogue.archive_product_models import (
+    SessionPhaseEvidencePayload,
+    SessionPhaseInferencePayload,
+    WorkEventEvidencePayload,
+    WorkEventInferencePayload,
+    WorkThreadPayload,
+)
 from polylogue.storage.backends.queries.mappers import _parse_json, _row_get
 from polylogue.storage.store import SessionPhaseRecord, SessionWorkEventRecord, WorkThreadRecord
 from polylogue.types import ConversationId
@@ -18,45 +25,47 @@ def _row_to_session_work_event_record(row: sqlite3.Row) -> SessionWorkEventRecor
         )
         or {}
     )
-    evidence_payload = (
-        _parse_json(
-            _row_get(row, "evidence_payload_json"),
-            field="evidence_payload_json",
-            record_id=row["event_id"],
-        )
-        or {}
+    raw_evidence_payload = _parse_json(
+        _row_get(row, "evidence_payload_json"),
+        field="evidence_payload_json",
+        record_id=row["event_id"],
     )
-    if not evidence_payload:
-        evidence_payload = {
-            "start_index": int(_row_get(row, "start_index", 0) or legacy_payload.get("start_index") or 0),
-            "end_index": int(_row_get(row, "end_index", 0) or legacy_payload.get("end_index") or 0),
-            "start_time": _row_get(row, "start_time") or legacy_payload.get("start_time"),
-            "end_time": _row_get(row, "end_time") or legacy_payload.get("end_time"),
-            "canonical_session_date": _row_get(row, "canonical_session_date")
-            or legacy_payload.get("canonical_session_date"),
-            "duration_ms": int(_row_get(row, "duration_ms", 0) or legacy_payload.get("duration_ms") or 0),
-            "file_paths": tuple(
-                _parse_json(_row_get(row, "file_paths_json")) or legacy_payload.get("file_paths") or []
-            ),
-            "tools_used": tuple(
-                _parse_json(_row_get(row, "tools_used_json")) or legacy_payload.get("tools_used") or []
-            ),
-        }
-    inference_payload = (
-        _parse_json(
-            _row_get(row, "inference_payload_json"),
-            field="inference_payload_json",
-            record_id=row["event_id"],
+    if raw_evidence_payload:
+        evidence_payload = WorkEventEvidencePayload.model_validate(raw_evidence_payload)
+    else:
+        evidence_payload = WorkEventEvidencePayload.model_validate(
+            {
+                "start_index": int(_row_get(row, "start_index", 0) or legacy_payload.get("start_index") or 0),
+                "end_index": int(_row_get(row, "end_index", 0) or legacy_payload.get("end_index") or 0),
+                "start_time": _row_get(row, "start_time") or legacy_payload.get("start_time"),
+                "end_time": _row_get(row, "end_time") or legacy_payload.get("end_time"),
+                "canonical_session_date": _row_get(row, "canonical_session_date")
+                or legacy_payload.get("canonical_session_date"),
+                "duration_ms": int(_row_get(row, "duration_ms", 0) or legacy_payload.get("duration_ms") or 0),
+                "file_paths": tuple(
+                    _parse_json(_row_get(row, "file_paths_json")) or legacy_payload.get("file_paths") or []
+                ),
+                "tools_used": tuple(
+                    _parse_json(_row_get(row, "tools_used_json")) or legacy_payload.get("tools_used") or []
+                ),
+            }
         )
-        or {}
+    raw_inference_payload = _parse_json(
+        _row_get(row, "inference_payload_json"),
+        field="inference_payload_json",
+        record_id=row["event_id"],
     )
-    if not inference_payload:
-        inference_payload = {
-            "kind": row["kind"],
-            "summary": row["summary"],
-            "confidence": float(_row_get(row, "confidence", 0.0) or legacy_payload.get("confidence") or 0.0),
-            "evidence": tuple(legacy_payload.get("evidence") or ()),
-        }
+    if raw_inference_payload:
+        inference_payload = WorkEventInferencePayload.model_validate(raw_inference_payload)
+    else:
+        inference_payload = WorkEventInferencePayload.model_validate(
+            {
+                "kind": row["kind"],
+                "summary": row["summary"],
+                "confidence": float(_row_get(row, "confidence", 0.0) or legacy_payload.get("confidence") or 0.0),
+                "evidence": tuple(legacy_payload.get("evidence") or ()),
+            }
+        )
     return SessionWorkEventRecord(
         event_id=row["event_id"],
         conversation_id=ConversationId(row["conversation_id"]),
@@ -94,43 +103,47 @@ def _row_to_session_phase_record(row: sqlite3.Row) -> SessionPhaseRecord:
         )
         or {}
     )
-    evidence_payload = (
-        _parse_json(
-            _row_get(row, "evidence_payload_json"),
-            field="evidence_payload_json",
-            record_id=row["phase_id"],
-        )
-        or {}
+    raw_evidence_payload = _parse_json(
+        _row_get(row, "evidence_payload_json"),
+        field="evidence_payload_json",
+        record_id=row["phase_id"],
     )
-    if not evidence_payload:
-        evidence_payload = {
-            "start_time": _row_get(row, "start_time") or legacy_payload.get("start_time"),
-            "end_time": _row_get(row, "end_time") or legacy_payload.get("end_time"),
-            "canonical_session_date": _row_get(row, "canonical_session_date")
-            or legacy_payload.get("canonical_session_date"),
-            "message_range": (
-                int(_row_get(row, "start_index", 0) or legacy_payload.get("start_index") or 0),
-                int(_row_get(row, "end_index", 0) or legacy_payload.get("end_index") or 0),
-            ),
-            "duration_ms": int(_row_get(row, "duration_ms", 0) or legacy_payload.get("duration_ms") or 0),
-            "tool_counts": _parse_json(_row_get(row, "tool_counts_json")) or legacy_payload.get("tool_counts") or {},
-            "word_count": int(_row_get(row, "word_count", 0) or legacy_payload.get("word_count") or 0),
-        }
-    inference_payload = (
-        _parse_json(
-            _row_get(row, "inference_payload_json"),
-            field="inference_payload_json",
-            record_id=row["phase_id"],
+    if raw_evidence_payload:
+        evidence_payload = SessionPhaseEvidencePayload.model_validate(raw_evidence_payload)
+    else:
+        evidence_payload = SessionPhaseEvidencePayload.model_validate(
+            {
+                "start_time": _row_get(row, "start_time") or legacy_payload.get("start_time"),
+                "end_time": _row_get(row, "end_time") or legacy_payload.get("end_time"),
+                "canonical_session_date": _row_get(row, "canonical_session_date")
+                or legacy_payload.get("canonical_session_date"),
+                "message_range": (
+                    int(_row_get(row, "start_index", 0) or legacy_payload.get("start_index") or 0),
+                    int(_row_get(row, "end_index", 0) or legacy_payload.get("end_index") or 0),
+                ),
+                "duration_ms": int(_row_get(row, "duration_ms", 0) or legacy_payload.get("duration_ms") or 0),
+                "tool_counts": _parse_json(_row_get(row, "tool_counts_json"))
+                or legacy_payload.get("tool_counts")
+                or {},
+                "word_count": int(_row_get(row, "word_count", 0) or legacy_payload.get("word_count") or 0),
+            }
         )
-        or {}
+    raw_inference_payload = _parse_json(
+        _row_get(row, "inference_payload_json"),
+        field="inference_payload_json",
+        record_id=row["phase_id"],
     )
-    if not inference_payload:
-        inference_payload = {
-            "confidence": float(_row_get(row, "confidence", 0.0) or legacy_payload.get("confidence") or 0.0),
-            "evidence": tuple(
-                _parse_json(_row_get(row, "evidence_reasons_json")) or legacy_payload.get("evidence") or []
-            ),
-        }
+    if raw_inference_payload:
+        inference_payload = SessionPhaseInferencePayload.model_validate(raw_inference_payload)
+    else:
+        inference_payload = SessionPhaseInferencePayload.model_validate(
+            {
+                "confidence": float(_row_get(row, "confidence", 0.0) or legacy_payload.get("confidence") or 0.0),
+                "evidence": tuple(
+                    _parse_json(_row_get(row, "evidence_reasons_json")) or legacy_payload.get("evidence") or []
+                ),
+            }
+        )
     return SessionPhaseRecord(
         phase_id=row["phase_id"],
         conversation_id=ConversationId(row["conversation_id"]),
@@ -181,7 +194,9 @@ def _row_to_work_thread_record(row: sqlite3.Row) -> WorkThreadRecord:
         total_cost_usd=float(_row_get(row, "total_cost_usd", 0.0) or 0.0),
         wall_duration_ms=int(_row_get(row, "wall_duration_ms", 0) or 0),
         work_event_breakdown=_parse_json(_row_get(row, "work_event_breakdown_json")) or {},
-        payload=_parse_json(row["payload_json"], field="payload_json", record_id=row["thread_id"]) or {},
+        payload=WorkThreadPayload.model_validate(
+            _parse_json(row["payload_json"], field="payload_json", record_id=row["thread_id"]) or {}
+        ),
         search_text=row["search_text"],
     )
 
