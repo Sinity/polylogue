@@ -175,8 +175,14 @@ def test_schema_explain_result_to_dict() -> None:
     payload = result.to_dict()
     assert payload["schema"] == {"type": "object"}
     assert payload["package"] == package.to_dict()
-    assert payload["annotations"]["semantic_count"] == 1
-    assert payload["annotations"]["roles"][0]["role"] == "message_id"
+    annotations_payload = payload["annotations"]
+    assert isinstance(annotations_payload, dict)
+    assert annotations_payload["semantic_count"] == 1
+    roles_payload = annotations_payload["roles"]
+    assert isinstance(roles_payload, list)
+    first_role = roles_payload[0]
+    assert isinstance(first_role, dict)
+    assert first_role["role"] == "message_id"
 
 
 def test_schema_payload_resolve_result_resolved_property() -> None:
