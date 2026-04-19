@@ -13,10 +13,12 @@ import pickle
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypeAlias, TypedDict, cast
 
 from polylogue.lib.artifact_taxonomy import classify_artifact
+from polylogue.lib.branch_type import BranchType
 from polylogue.lib.json import dumps as json_dumps
+from polylogue.lib.roles import Role
 from polylogue.lib.viewports import ToolCategory, classify_tool
 from polylogue.pipeline.ids import (
     attachment_content_id,
@@ -26,13 +28,23 @@ from polylogue.pipeline.ids import (
 from polylogue.pipeline.ids import conversation_id as make_conversation_id
 from polylogue.pipeline.ids import message_id as make_message_id
 from polylogue.pipeline.prepare_transform_content import canonicalize_conversation_content
-from polylogue.pipeline.semantic_metadata import extract_tool_metadata
+from polylogue.pipeline.semantic_metadata import ToolInputPayload, ToolMetadata, extract_tool_metadata
 from polylogue.schemas.code_detection import detect_language
 from polylogue.sources.decoders import _iter_json_stream
 from polylogue.sources.dispatch import STREAM_RECORD_PROVIDERS
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.store import RawConversationRecord, _json_or_none
-from polylogue.types import ContentHash, ConversationId, Provider, ValidationMode, ValidationStatus
+from polylogue.types import (
+    AttachmentId,
+    ContentBlockType,
+    ContentHash,
+    ConversationId,
+    MessageId,
+    Provider,
+    SemanticBlockType,
+    ValidationMode,
+    ValidationStatus,
+)
 
 if TYPE_CHECKING:
     from polylogue.schemas.runtime_registry import SchemaRegistry
@@ -41,13 +53,87 @@ if TYPE_CHECKING:
 _SOURCE_HASH_SUFFIX = re.compile(r"-(?:[0-9a-f]{16,64})$", re.IGNORECASE)
 _SCHEMA_REGISTRY: SchemaRegistry | None = None
 
-ConversationTuple = tuple[object, ...]
-MessageTuple = tuple[object, ...]
-ContentBlockTuple = tuple[object, ...]
-ActionEventTuple = tuple[object, ...]
-StatsTuple = tuple[object, ...]
-AttachmentTuple = tuple[object, ...]
-AttachmentRefTuple = tuple[object, ...]
+ProviderMetadata: TypeAlias = dict[str, object]
+BlockMetadata: TypeAlias = dict[str, object]
+
+
+class _TimestampUpdates(TypedDict, total=False):
+    created_at: str
+    updated_at: str
+
+
+ConversationTuple = tuple[
+    ConversationId,
+    str,
+    str,
+    str | None,
+    str | None,
+    str | None,
+    float | None,
+    ContentHash,
+    str | None,
+    str,
+    int,
+    ConversationId | None,
+    BranchType | None,
+    str | None,
+]
+MessageTuple = tuple[
+    MessageId,
+    ConversationId,
+    str,
+    Role,
+    str | None,
+    float | None,
+    ContentHash,
+    int,
+    MessageId | None,
+    int,
+    str | Provider,
+    int,
+    int,
+    int,
+]
+ContentBlockTuple = tuple[
+    str,
+    MessageId,
+    ConversationId,
+    int,
+    ContentBlockType,
+    str | None,
+    str | None,
+    str | None,
+    str | None,
+    str | None,
+    str | None,
+    SemanticBlockType | str | None,
+]
+ActionEventTuple = tuple[
+    str,
+    str,
+    str,
+    int,
+    str | None,
+    str | None,
+    float | None,
+    int,
+    str,
+    str,
+    str | None,
+    str,
+    str | None,
+    str | None,
+    str | None,
+    str | None,
+    str | None,
+    str | None,
+    str | None,
+    str | None,
+    str,
+]
+StatsTuple = tuple[ConversationId, str, int, int, int, int]
+AttachmentTuple = tuple[AttachmentId, str | None, int | None, str | None, int, str | None]
+AttachmentRefTuple = tuple[str, AttachmentId, ConversationId, MessageId | None, str | None]
 
 
 def _format_malformed_jsonl_error(*, malformed_lines: int, malformed_detail: str | None) -> str:
@@ -83,7 +169,7 @@ class ConversationData:
     action_event_tuples: list[ActionEventTuple] = field(default_factory=list)
 
     # (conversation_id, provider_name, msg_count, word_count, tool_use_count, thinking_count)
-    stats_tuple: StatsTuple = ()
+    stats_tuple: StatsTuple | tuple[()] = ()
 
     # Attachments are rare; keep as list of simple tuples
     # Each: (attachment_id, conversation_id, message_id, mime_type, size_bytes, path, provider_meta_json)
@@ -175,6 +261,46 @@ def _finalize_result(result: IngestRecordResult, *, measure_serialized_size: boo
         return result
     result.serialized_size_bytes = len(pickle.dumps(result, protocol=pickle.HIGHEST_PROTOCOL))
     return result
+
+
+def _normalized_conversation(
+    convo: ParsedConversation,
+    *,
+    fallback_timestamp: str | None,
+) -> ParsedConversation:
+    updates: _TimestampUpdates = {}
+    if convo.created_at is None and fallback_timestamp:
+        updates["created_at"] = fallback_timestamp
+    effective_created = updates.get("created_at", convo.created_at)
+    if convo.updated_at is None and isinstance(effective_created, str) and effective_created:
+        updates["updated_at"] = effective_created
+    return convo.model_copy(update=updates) if updates else convo
+
+
+def _merged_conversation_provider_meta(
+    convo: ParsedConversation,
+    *,
+    source_name: str,
+) -> ProviderMetadata:
+    merged_provider_meta: ProviderMetadata = {"source": source_name}
+    if convo.provider_meta:
+        merged_provider_meta.update(convo.provider_meta)
+    return merged_provider_meta
+
+
+def _attachment_provider_meta(
+    base_meta: ProviderMetadata | None,
+    *,
+    provider_attachment_id: str | None,
+) -> ProviderMetadata:
+    meta: ProviderMetadata = dict(base_meta or {})
+    if provider_attachment_id:
+        meta.setdefault("provider_id", provider_attachment_id)
+    return meta
+
+
+def _tool_input_payload(tool_input: dict[str, object] | None) -> ToolInputPayload:
+    return cast(ToolInputPayload, dict(tool_input or {}))
 
 
 def _is_stream_record_provider(source_path: str | None, provider: str | Provider | None) -> bool:
@@ -323,13 +449,10 @@ def _stream_grouped_jsonl_record(
     source_name = raw_record.source_name or raw_record.source_path or ""
     result_convos: list[ConversationData] = []
     for convo in parsed_conversations:
-        updates: dict[str, object] = {}
-        if convo.created_at is None and fallback_timestamp:
-            updates["created_at"] = fallback_timestamp
-        effective_created = updates.get("created_at", convo.created_at)
-        if convo.updated_at is None and isinstance(effective_created, str) and effective_created:
-            updates["updated_at"] = effective_created
-        normalized_convo = convo.model_copy(update=updates) if updates else convo
+        normalized_convo = _normalized_conversation(
+            convo,
+            fallback_timestamp=fallback_timestamp,
+        )
         try:
             cdata = _transform_to_tuples(
                 normalized_convo,
@@ -546,13 +669,10 @@ def ingest_record(
     source_name = raw_record.source_name or raw_record.source_path or ""
     result_convos: list[ConversationData] = []
     for convo in parsed_conversations:
-        updates: dict[str, object] = {}
-        if convo.created_at is None and fallback_timestamp:
-            updates["created_at"] = fallback_timestamp
-        effective_created = updates.get("created_at", convo.created_at)
-        if convo.updated_at is None and isinstance(effective_created, str) and effective_created:
-            updates["updated_at"] = effective_created
-        normalized_convo = convo.model_copy(update=updates) if updates else convo
+        normalized_convo = _normalized_conversation(
+            convo,
+            fallback_timestamp=fallback_timestamp,
+        )
         try:
             cdata = _transform_to_tuples(
                 normalized_convo,
@@ -609,9 +729,10 @@ def _transform_to_tuples(
     content_hash = conversation_content_hash(convo)
     cid = make_conversation_id(convo.provider_name, convo.provider_conversation_id)
 
-    merged_provider_meta: dict[str, object] = {"source": source_name}
-    if convo.provider_meta:
-        merged_provider_meta.update(convo.provider_meta)
+    merged_provider_meta = _merged_conversation_provider_meta(
+        convo,
+        source_name=source_name,
+    )
 
     # Parent conversation — always compute it (no PrepareCache needed).
     # If parent doesn't exist in DB yet, that's fine — no FK constraint.
@@ -643,7 +764,7 @@ def _transform_to_tuples(
     )
 
     # Build message ID map
-    message_id_map: dict[str, str] = {}
+    message_id_map: dict[str, MessageId] = {}
     for idx, msg in enumerate(convo.messages, start=1):
         provider_message_id = msg.provider_message_id or f"msg-{idx}"
         message_id_map[str(provider_message_id)] = make_message_id(cid, provider_message_id)
@@ -660,7 +781,7 @@ def _transform_to_tuples(
         mid = message_id_map[str(provider_message_id)]
         message_hash = message_content_hash(msg, provider_message_id)
 
-        parent_message_id: str | None = None
+        parent_message_id: MessageId | None = None
         if msg.parent_message_provider_id:
             parent_message_id = message_id_map.get(str(msg.parent_message_provider_id))
 
@@ -696,12 +817,13 @@ def _transform_to_tuples(
         for block_idx, block in enumerate(msg.content_blocks):
             tool_input_json = json_dumps(block.tool_input) if block.tool_input is not None else None
             semantic_type: str | None = None
-            semantic_metadata: dict[str, object] | None = block.metadata
+            semantic_metadata: BlockMetadata | ToolMetadata | None = block.metadata
 
             if block.type == "tool_use" and block.tool_name:
-                category = classify_tool(block.tool_name, block.tool_input or {})
+                tool_input = _tool_input_payload(block.tool_input)
+                category = classify_tool(block.tool_name, tool_input)
                 semantic_type = None if category is ToolCategory.OTHER else category.value
-                tool_meta = extract_tool_metadata(block.tool_name, block.tool_input or {})
+                tool_meta = extract_tool_metadata(block.tool_name, tool_input)
                 if tool_meta is not None:
                     base = dict(block.metadata) if isinstance(block.metadata, dict) else {}
                     base.update(tool_meta)
@@ -711,7 +833,8 @@ def _transform_to_tuples(
             elif block.type == "code" and block.text and semantic_metadata is None:
                 detected_lang = detect_language(block.text)
                 if detected_lang:
-                    semantic_metadata = {"language": detected_lang}
+                    language_metadata: BlockMetadata = {"language": detected_lang}
+                    semantic_metadata = language_metadata
 
             metadata_json = json_dumps(semantic_metadata) if semantic_metadata is not None else None
 
@@ -758,14 +881,16 @@ def _transform_to_tuples(
     attachment_tuples: list[AttachmentTuple] = []
     attachment_ref_tuples: list[AttachmentRefTuple] = []
     for att in convo.attachments:
-        aid, updated_meta, updated_path = attachment_content_id(
+        raw_attachment_id, updated_meta, updated_path = attachment_content_id(
             convo.provider_name,
             att,
             archive_root=archive_root,
         )
-        meta: dict[str, object] = dict(updated_meta or {})
-        if att.provider_attachment_id:
-            meta.setdefault("provider_id", att.provider_attachment_id)
+        aid = AttachmentId(raw_attachment_id)
+        meta = _attachment_provider_meta(
+            updated_meta,
+            provider_attachment_id=att.provider_attachment_id,
+        )
         message_id_val = message_id_map.get(att.message_provider_id or "") if att.message_provider_id else None
         meta_json = _json_or_none(meta)
 
@@ -810,7 +935,7 @@ def _build_action_event_tuples(
     conversation_id: str,
     provider_name: str,
     messages: list[ParsedMessage],
-    message_id_map: dict[str, str],
+    message_id_map: dict[str, MessageId],
     msg_tuples: list[MessageTuple],
 ) -> list[ActionEventTuple]:
     """Build action event tuples for all messages in a conversation.

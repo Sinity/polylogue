@@ -19,7 +19,7 @@ from concurrent.futures import Future, as_completed
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypeAlias
 
 from polylogue.lib.metrics import (
     read_current_rss_mb,
@@ -30,7 +30,9 @@ from polylogue.logging import get_logger
 from polylogue.paths import blob_store_root
 from polylogue.pipeline.services.ingest_worker import (
     ConversationData,
+    ConversationTuple,
     IngestRecordResult,
+    MessageTuple,
     ingest_record,
 )
 from polylogue.pipeline.services.process_pool import process_pool_executor
@@ -58,6 +60,10 @@ _DEFAULT_INGEST_WORKER_LIMIT = 8
 _INGEST_SOFT_BLOB_LIMIT_BYTES = 48 * 1024 * 1024
 _INGEST_HIGH_BLOB_LIMIT_BYTES = 96 * 1024 * 1024
 _INGEST_EXTREME_BLOB_LIMIT_BYTES = 256 * 1024 * 1024
+
+ObservationScalar: TypeAlias = str | int | float | bool
+ObservationValue: TypeAlias = ObservationScalar | list[dict[str, object]]
+BatchObservation: TypeAlias = dict[str, ObservationValue]
 
 
 @dataclass(slots=True)
@@ -261,14 +267,14 @@ def _check_content_unchanged(conn: sqlite3.Connection, cid: str, content_hash: s
     return row is not None and row[0] == content_hash
 
 
-def _topo_sort_message_tuples(tuples: list[tuple[object, ...]]) -> list[tuple[object, ...]]:
+def _topo_sort_message_tuples(tuples: list[MessageTuple]) -> list[MessageTuple]:
     """Sort message tuples so parents come before children (FK constraint).
 
     message_id is at index 0, parent_message_id is at index 8.
     """
     ids_in_batch = {t[0] for t in tuples}
-    no_parent: list[tuple[object, ...]] = []
-    has_parent: list[tuple[object, ...]] = []
+    no_parent: list[MessageTuple] = []
+    has_parent: list[MessageTuple] = []
     for t in tuples:
         if t[8] and t[8] in ids_in_batch:
             has_parent.append(t)
@@ -282,7 +288,7 @@ def _topo_sort_message_tuples(tuples: list[tuple[object, ...]]) -> list[tuple[ob
     for _ in range(len(remaining) + 1):
         if not remaining:
             break
-        next_remaining: list[tuple[object, ...]] = []
+        next_remaining: list[MessageTuple] = []
         for t in remaining:
             if t[8] in inserted_ids:
                 ordered.append(t)
@@ -347,7 +353,7 @@ def _conversation_exists(conn: sqlite3.Connection, conversation_id: str) -> bool
 def _resolved_conversation_tuple(
     conn: sqlite3.Connection,
     cdata: ConversationData,
-) -> tuple[object, ...]:
+) -> ConversationTuple:
     """Resolve parent conversation links against the currently materialized archive.
 
     Parent conversation links are only durable when the parent already exists.
@@ -359,9 +365,22 @@ def _resolved_conversation_tuple(
         return cdata.conversation_tuple
     if _conversation_exists(conn, parent_id):
         return cdata.conversation_tuple
-    updated = list(cdata.conversation_tuple)
-    updated[11] = None
-    return tuple(updated)
+    return (
+        cdata.conversation_tuple[0],
+        cdata.conversation_tuple[1],
+        cdata.conversation_tuple[2],
+        cdata.conversation_tuple[3],
+        cdata.conversation_tuple[4],
+        cdata.conversation_tuple[5],
+        cdata.conversation_tuple[6],
+        cdata.conversation_tuple[7],
+        cdata.conversation_tuple[8],
+        cdata.conversation_tuple[9],
+        cdata.conversation_tuple[10],
+        None,
+        cdata.conversation_tuple[12],
+        cdata.conversation_tuple[13],
+    )
 
 
 def _parent_ready(
@@ -620,7 +639,7 @@ def _resolved_ingest_worker_limit(value: int | None) -> int:
     return value if value is not None else _DEFAULT_INGEST_WORKER_LIMIT
 
 
-def _select_ingest_worker_count(raw_records: Sequence[object], ingest_workers: int | None) -> int:
+def _select_ingest_worker_count(raw_records: Sequence[RawConversationRecord], ingest_workers: int | None) -> int:
     base_worker_count = min(
         len(raw_records),
         os.cpu_count() or 4,
@@ -762,8 +781,8 @@ def _build_batch_memory_observation(
     peak_rss_self_end_mb: float | None,
     peak_rss_children_mb: float | None,
     max_current_rss_mb: float | None,
-) -> dict[str, object]:
-    observation: dict[str, object] = {}
+) -> BatchObservation:
+    observation: BatchObservation = {}
     if rss_start_mb is not None:
         observation["rss_start_mb"] = rss_start_mb
     if rss_end_mb is not None:
@@ -792,7 +811,7 @@ async def process_ingest_batch(
     batch_ids: list[str],
     result: ParseResult,
     progress_callback: ProgressCallback | None,
-) -> dict[str, object] | None:
+) -> BatchObservation | None:
     """Process a batch of raw records through the unified ingest pipeline.
 
     1. Submit all records to ProcessPool (decode + validate + parse + transform)
@@ -875,7 +894,7 @@ async def process_ingest_batch(
     rss_end_mb = read_current_rss_mb()
     peak_rss_self_end_mb = read_peak_rss_self_mb()
     peak_rss_children_mb = read_peak_rss_children_mb()
-    observation: dict[str, object] = {
+    observation: BatchObservation = {
         "records": batch_summary.raw_record_count,
         "blob_mb": round(batch_summary.total_blob_mb, 1),
         "result_mb": round(batch_summary.total_result_bytes / (1024 * 1024), 3),
@@ -1007,7 +1026,7 @@ async def _persist_batch_raw_state_updates(
 async def refresh_session_products_bulk(
     backend: SQLiteBackend,
     changed_conversation_ids: list[str],
-) -> dict[str, object] | None:
+) -> BatchObservation | None:
     """Bulk session product refresh — once after all batches, not per-batch."""
     if not changed_conversation_ids:
         return None
@@ -1057,7 +1076,7 @@ async def refresh_session_products_bulk(
         chunk_hydrate_values = [float(chunk["hydrate_ms"]) for chunk in chunk_observations]
         chunk_build_values = [float(chunk["build_ms"]) for chunk in chunk_observations]
         chunk_write_values = [float(chunk["write_ms"]) for chunk in chunk_observations]
-        observation: dict[str, object] = {
+        observation: BatchObservation = {
             "conversations": len(changed_conversation_ids),
             "unique_thread_roots": len(thread_root_ids),
             "unique_provider_days": len(affected_groups),
