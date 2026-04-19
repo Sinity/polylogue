@@ -14,8 +14,8 @@ from polylogue.storage.session_product_refresh import (
 from tests.infra.storage_records import make_conversation, make_message, store_records
 
 
-def _chunk_metric(chunk_observation: dict[str, object], key: str) -> float:
-    value = chunk_observation[key]
+def _chunk_metric(chunk_observation: object, key: str) -> float:
+    value = getattr(chunk_observation, key)
     assert isinstance(value, int | float)
     return float(value)
 
@@ -133,10 +133,10 @@ async def test_apply_session_product_conversation_updates_async_uses_small_defau
 
     assert update.counts["profiles"] == 11
     assert len(update.chunk_observations) == 2
-    assert update.chunk_observations[0]["conversation_count"] == 10
-    assert update.chunk_observations[0]["estimated_message_count"] == 10
-    assert update.chunk_observations[1]["conversation_count"] == 1
-    assert update.chunk_observations[1]["estimated_message_count"] == 1
+    assert update.chunk_observations[0].conversation_count == 10
+    assert update.chunk_observations[0].estimated_message_count == 10
+    assert update.chunk_observations[1].conversation_count == 1
+    assert update.chunk_observations[1].estimated_message_count == 1
 
 
 @pytest.mark.asyncio
@@ -190,10 +190,10 @@ async def test_apply_session_product_conversation_updates_async_splits_large_mes
 
     assert update.counts["profiles"] == 3
     assert len(update.chunk_observations) == 2
-    assert update.chunk_observations[0]["conversation_count"] == 1
-    assert update.chunk_observations[0]["estimated_message_count"] == 4_000
-    assert update.chunk_observations[1]["conversation_count"] == 2
-    assert update.chunk_observations[1]["estimated_message_count"] == 4_100
+    assert update.chunk_observations[0].conversation_count == 1
+    assert update.chunk_observations[0].estimated_message_count == 4_000
+    assert update.chunk_observations[1].conversation_count == 2
+    assert update.chunk_observations[1].estimated_message_count == 4_100
 
 
 @pytest.mark.asyncio

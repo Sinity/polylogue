@@ -5,6 +5,7 @@ from __future__ import annotations
 import sqlite3
 from collections import defaultdict
 from collections.abc import AsyncIterator, Iterable, Iterator, Sequence
+from dataclasses import dataclass
 
 import aiosqlite
 
@@ -93,6 +94,33 @@ SELECT
 FROM conversations
 WHERE conversation_id IN ({placeholders})
 """
+
+
+@dataclass(slots=True)
+class SessionProductArchiveBatch:
+    conversations: list[ConversationRecord]
+    messages: list[MessageRecord]
+    attachments_by_conversation: dict[str, list[AttachmentRecord]]
+    blocks: list[ContentBlockRecord]
+
+
+@dataclass(slots=True)
+class SessionProductRecordBundle:
+    profile_record: SessionProfileRecord
+    work_event_records: list[SessionWorkEventRecord]
+    phase_records: list[SessionPhaseRecord]
+
+    @property
+    def conversation_id(self) -> ConversationId:
+        return self.profile_record.conversation_id
+
+    @property
+    def work_event_count(self) -> int:
+        return len(self.work_event_records)
+
+    @property
+    def phase_count(self) -> int:
+        return len(self.phase_records)
 
 
 def chunked(items: Sequence[str], *, size: int) -> Iterable[Sequence[str]]:
@@ -217,7 +245,7 @@ def sync_attachment_batch(
 def load_sync_batch(
     conn: sqlite3.Connection,
     conversation_ids: Sequence[str],
-) -> tuple[list[ConversationRecord], list[MessageRecord], dict[str, list[AttachmentRecord]], list[ContentBlockRecord]]:
+) -> SessionProductArchiveBatch:
     placeholders = ", ".join("?" for _ in conversation_ids)
     conversations = [
         _row_to_session_product_conversation(row)
@@ -250,13 +278,18 @@ def load_sync_batch(
             tuple(conversation_ids),
         ).fetchall()
     ]
-    return conversations, messages, sync_attachment_batch(conn, conversation_ids), blocks
+    return SessionProductArchiveBatch(
+        conversations=conversations,
+        messages=messages,
+        attachments_by_conversation=sync_attachment_batch(conn, conversation_ids),
+        blocks=blocks,
+    )
 
 
 async def load_async_batch(
     conn: aiosqlite.Connection,
     conversation_ids: Sequence[str],
-) -> tuple[list[ConversationRecord], list[MessageRecord], dict[str, list[AttachmentRecord]], list[ContentBlockRecord]]:
+) -> SessionProductArchiveBatch:
     placeholders = ", ".join("?" for _ in conversation_ids)
     conversations = [
         _row_to_session_product_conversation(row)
@@ -296,24 +329,26 @@ async def load_async_batch(
         ).fetchall()
     ]
     attachments = await get_attachments_batch(conn, list(conversation_ids))
-    return conversations, messages, attachments, blocks
+    return SessionProductArchiveBatch(
+        conversations=conversations,
+        messages=messages,
+        attachments_by_conversation=attachments,
+        blocks=blocks,
+    )
 
 
 def hydrate_conversations(
-    conversations: list[ConversationRecord],
-    messages: list[MessageRecord],
-    attachments_by_conversation: dict[str, list[AttachmentRecord]],
-    blocks: list[ContentBlockRecord],
+    batch: SessionProductArchiveBatch,
 ) -> list[Conversation]:
     messages_by_conversation: dict[str, list[MessageRecord]] = defaultdict(list)
     blocks_by_conversation: dict[str, list[ContentBlockRecord]] = defaultdict(list)
-    for message in messages:
+    for message in batch.messages:
         messages_by_conversation[str(message.conversation_id)].append(message)
-    for block in blocks:
+    for block in batch.blocks:
         blocks_by_conversation[str(block.conversation_id)].append(block)
 
     hydrated: list[Conversation] = []
-    for conversation in conversations:
+    for conversation in batch.conversations:
         conversation_id = str(conversation.conversation_id)
         attached_messages = attach_blocks_to_messages(
             messages_by_conversation.get(conversation_id, []),
@@ -323,7 +358,7 @@ def hydrate_conversations(
             conversation_from_records(
                 conversation,
                 attached_messages,
-                attachments_by_conversation.get(conversation_id, []),
+                batch.attachments_by_conversation.get(conversation_id, []),
             )
         )
     return hydrated
@@ -331,15 +366,75 @@ def hydrate_conversations(
 
 def build_session_product_records(
     conversation: Conversation,
-) -> tuple[SessionProfileRecord, list[SessionWorkEventRecord], list[SessionPhaseRecord]]:
+) -> SessionProductRecordBundle:
     analysis = build_session_analysis(conversation)
     profile = build_session_profile(conversation, analysis=analysis)
     materialized_at = now_iso()
-    return (
-        build_session_profile_record(profile, analysis=analysis, materialized_at=materialized_at),
-        build_session_work_event_records(profile, materialized_at=materialized_at),
-        build_session_phase_records(profile, materialized_at=materialized_at),
+    return SessionProductRecordBundle(
+        profile_record=build_session_profile_record(
+            profile,
+            analysis=analysis,
+            materialized_at=materialized_at,
+        ),
+        work_event_records=build_session_work_event_records(profile, materialized_at=materialized_at),
+        phase_records=build_session_phase_records(profile, materialized_at=materialized_at),
     )
+
+
+def build_session_product_record_bundles(
+    conversations: Iterable[Conversation],
+) -> list[SessionProductRecordBundle]:
+    return [build_session_product_records(conversation) for conversation in conversations]
+
+
+def _count_record_bundles(
+    bundles: Sequence[SessionProductRecordBundle],
+) -> tuple[int, int, int]:
+    return (
+        len(bundles),
+        sum(bundle.work_event_count for bundle in bundles),
+        sum(bundle.phase_count for bundle in bundles),
+    )
+
+
+def _materialize_progress_desc(
+    *,
+    profile_count: int,
+    progress_total: int | None,
+) -> str:
+    if progress_total is not None:
+        return f"Materializing: {profile_count}/{progress_total}"
+    return f"Materializing: {profile_count}"
+
+
+def _empty_rebuild_counts() -> dict[str, int]:
+    return {
+        "profiles": 0,
+        "work_events": 0,
+        "phases": 0,
+        "threads": 0,
+        "tag_rollups": 0,
+        "day_summaries": 0,
+    }
+
+
+def _finalize_rebuild_counts(
+    *,
+    profiles: int,
+    work_events: int,
+    phases: int,
+    threads: int,
+    tag_rollups: int,
+    day_summaries: int,
+) -> dict[str, int]:
+    return {
+        "profiles": profiles,
+        "work_events": work_events,
+        "phases": phases,
+        "threads": threads,
+        "tag_rollups": tag_rollups,
+        "day_summaries": day_summaries,
+    }
 
 
 def rebuild_session_products_sync(
@@ -366,7 +461,7 @@ def rebuild_session_products_sync(
         conn.execute("DELETE FROM session_tag_rollups")
         conn.execute("DELETE FROM day_session_summaries")
         conn.commit()
-        return {"profiles": 0, "work_events": 0, "phases": 0, "threads": 0, "tag_rollups": 0, "day_summaries": 0}
+        return _empty_rebuild_counts()
 
     profile_count = 0
     work_event_count = 0
@@ -374,31 +469,39 @@ def rebuild_session_products_sync(
     saw_conversation_ids = False
     for chunk in conversation_chunks:
         saw_conversation_ids = True
-        conversations, messages, attachments, blocks = load_sync_batch(conn, chunk)
-        chunk_profiles = 0
-        for conversation in hydrate_conversations(conversations, messages, attachments, blocks):
-            profile_record, event_records, phase_records = build_session_product_records(conversation)
-            replace_session_profile_sync(conn, profile_record)
-            replace_session_work_events_sync(conn, profile_record.conversation_id, event_records)
-            replace_session_phases_sync(conn, profile_record.conversation_id, phase_records)
-            profile_count += 1
-            chunk_profiles += 1
-            work_event_count += len(event_records)
-            phase_count += len(phase_records)
-        if progress_callback is not None and chunk_profiles:
-            desc = (
-                f"Materializing: {profile_count}/{progress_total}"
-                if progress_total is not None
-                else f"Materializing: {profile_count}"
+        batch = load_sync_batch(conn, chunk)
+        record_bundles = build_session_product_record_bundles(hydrate_conversations(batch))
+        chunk_profiles, chunk_work_events, chunk_phases = _count_record_bundles(record_bundles)
+        for bundle in record_bundles:
+            replace_session_profile_sync(conn, bundle.profile_record)
+            replace_session_work_events_sync(
+                conn,
+                bundle.conversation_id,
+                bundle.work_event_records,
             )
-            progress_callback(chunk_profiles, desc=desc)
+            replace_session_phases_sync(
+                conn,
+                bundle.conversation_id,
+                bundle.phase_records,
+            )
+        profile_count += chunk_profiles
+        work_event_count += chunk_work_events
+        phase_count += chunk_phases
+        if progress_callback is not None and chunk_profiles:
+            progress_callback(
+                chunk_profiles,
+                desc=_materialize_progress_desc(
+                    profile_count=profile_count,
+                    progress_total=progress_total,
+                ),
+            )
     if not saw_conversation_ids:
         conn.execute("DELETE FROM work_threads")
         conn.execute("DELETE FROM session_phases")
         conn.execute("DELETE FROM session_tag_rollups")
         conn.execute("DELETE FROM day_session_summaries")
         conn.commit()
-        return {"profiles": 0, "work_events": 0, "phases": 0, "threads": 0, "tag_rollups": 0, "day_summaries": 0}
+        return _empty_rebuild_counts()
 
     conn.execute("DELETE FROM work_threads")
     thread_count = 0
@@ -417,14 +520,14 @@ def rebuild_session_products_sync(
     tag_rollup_count = conn.execute("SELECT COUNT(*) FROM session_tag_rollups").fetchone()[0]
     day_summary_count = conn.execute("SELECT COUNT(*) FROM day_session_summaries").fetchone()[0]
     conn.commit()
-    return {
-        "profiles": profile_count,
-        "work_events": work_event_count,
-        "phases": phase_count,
-        "threads": thread_count,
-        "tag_rollups": int(tag_rollup_count),
-        "day_summaries": int(day_summary_count),
-    }
+    return _finalize_rebuild_counts(
+        profiles=profile_count,
+        work_events=work_event_count,
+        phases=phase_count,
+        threads=thread_count,
+        tag_rollups=int(tag_rollup_count),
+        day_summaries=int(day_summary_count),
+    )
 
 
 async def rebuild_session_products_async(
@@ -456,55 +559,71 @@ async def rebuild_session_products_async(
         await conn.execute("DELETE FROM session_phases")
         await conn.execute("DELETE FROM session_tag_rollups")
         await conn.execute("DELETE FROM day_session_summaries")
-        return {"profiles": 0, "work_events": 0, "phases": 0, "threads": 0, "tag_rollups": 0, "day_summaries": 0}
+        return _empty_rebuild_counts()
 
     profile_count = 0
     work_event_count = 0
     phase_count = 0
     if conversation_ids is None:
         async for chunk in iter_conversation_id_pages_async(conn, page_size=page_size):
-            conversations, messages, attachments, blocks = await load_async_batch(conn, chunk)
-            chunk_profiles = 0
-            for conversation in hydrate_conversations(conversations, messages, attachments, blocks):
-                profile_record, event_records, phase_records = build_session_product_records(conversation)
-                await replace_session_profile(conn, profile_record, transaction_depth)
+            batch = await load_async_batch(conn, chunk)
+            record_bundles = build_session_product_record_bundles(hydrate_conversations(batch))
+            chunk_profiles, chunk_work_events, chunk_phases = _count_record_bundles(record_bundles)
+            for bundle in record_bundles:
+                await replace_session_profile(conn, bundle.profile_record, transaction_depth)
                 await replace_session_work_events(
-                    conn, profile_record.conversation_id, event_records, transaction_depth
+                    conn,
+                    bundle.conversation_id,
+                    bundle.work_event_records,
+                    transaction_depth,
                 )
-                await replace_session_phases(conn, profile_record.conversation_id, phase_records, transaction_depth)
-                profile_count += 1
-                chunk_profiles += 1
-                work_event_count += len(event_records)
-                phase_count += len(phase_records)
+                await replace_session_phases(
+                    conn,
+                    bundle.conversation_id,
+                    bundle.phase_records,
+                    transaction_depth,
+                )
+            profile_count += chunk_profiles
+            work_event_count += chunk_work_events
+            phase_count += chunk_phases
             if progress_callback is not None and chunk_profiles:
-                desc = (
-                    f"Materializing: {profile_count}/{progress_total}"
-                    if progress_total is not None
-                    else f"Materializing: {profile_count}"
+                progress_callback(
+                    chunk_profiles,
+                    desc=_materialize_progress_desc(
+                        profile_count=profile_count,
+                        progress_total=progress_total,
+                    ),
                 )
-                progress_callback(chunk_profiles, desc=desc)
     else:
         for chunk_ids in chunked(list(conversation_ids), size=page_size):
-            conversations, messages, attachments, blocks = await load_async_batch(conn, chunk_ids)
-            chunk_profiles = 0
-            for conversation in hydrate_conversations(conversations, messages, attachments, blocks):
-                profile_record, event_records, phase_records = build_session_product_records(conversation)
-                await replace_session_profile(conn, profile_record, transaction_depth)
+            batch = await load_async_batch(conn, chunk_ids)
+            record_bundles = build_session_product_record_bundles(hydrate_conversations(batch))
+            chunk_profiles, chunk_work_events, chunk_phases = _count_record_bundles(record_bundles)
+            for bundle in record_bundles:
+                await replace_session_profile(conn, bundle.profile_record, transaction_depth)
                 await replace_session_work_events(
-                    conn, profile_record.conversation_id, event_records, transaction_depth
+                    conn,
+                    bundle.conversation_id,
+                    bundle.work_event_records,
+                    transaction_depth,
                 )
-                await replace_session_phases(conn, profile_record.conversation_id, phase_records, transaction_depth)
-                profile_count += 1
-                chunk_profiles += 1
-                work_event_count += len(event_records)
-                phase_count += len(phase_records)
+                await replace_session_phases(
+                    conn,
+                    bundle.conversation_id,
+                    bundle.phase_records,
+                    transaction_depth,
+                )
+            profile_count += chunk_profiles
+            work_event_count += chunk_work_events
+            phase_count += chunk_phases
             if progress_callback is not None and chunk_profiles:
-                desc = (
-                    f"Materializing: {profile_count}/{progress_total}"
-                    if progress_total is not None
-                    else f"Materializing: {profile_count}"
+                progress_callback(
+                    chunk_profiles,
+                    desc=_materialize_progress_desc(
+                        profile_count=profile_count,
+                        progress_total=progress_total,
+                    ),
                 )
-                progress_callback(chunk_profiles, desc=desc)
 
     await conn.execute("DELETE FROM work_threads")
     thread_count = 0
@@ -528,19 +647,22 @@ async def rebuild_session_products_async(
     day_summary_row = await (await conn.execute("SELECT COUNT(*) FROM day_session_summaries")).fetchone()
     tag_rollup_count = int(tag_rollup_row[0]) if tag_rollup_row is not None else 0
     day_summary_count = int(day_summary_row[0]) if day_summary_row is not None else 0
-    return {
-        "profiles": profile_count,
-        "work_events": work_event_count,
-        "phases": phase_count,
-        "threads": thread_count,
-        "tag_rollups": int(tag_rollup_count),
-        "day_summaries": int(day_summary_count),
-    }
+    return _finalize_rebuild_counts(
+        profiles=profile_count,
+        work_events=work_event_count,
+        phases=phase_count,
+        threads=thread_count,
+        tag_rollups=int(tag_rollup_count),
+        day_summaries=int(day_summary_count),
+    )
 
 
 __all__ = [
     "_ALL_CONVERSATION_IDS_SQL",
     "_ALL_SESSION_PROFILE_ROWS_SQL",
+    "SessionProductArchiveBatch",
+    "SessionProductRecordBundle",
+    "build_session_product_record_bundles",
     "build_session_product_records",
     "chunked",
     "hydrate_conversations",

@@ -14,6 +14,7 @@ from polylogue.storage.session_product_aggregates import (
     refresh_async_provider_day_aggregates,
 )
 from polylogue.storage.session_product_rebuild import (
+    SessionProductRecordBundle,
     build_session_product_records,
     hydrate_conversations,
     load_async_batch,
@@ -43,7 +44,50 @@ class _SessionProductBulkRefreshUpdate:
     counts: dict[str, int]
     thread_root_ids: set[str]
     affected_groups: set[tuple[str, str]]
-    chunk_observations: list[dict[str, object]]
+    chunk_observations: list[SessionProductRefreshChunkObservation]
+
+
+@dataclass(slots=True, frozen=True)
+class _SessionProductRefreshChunk:
+    conversation_ids: tuple[str, ...]
+    estimated_message_count: int
+    max_estimated_conversation_messages: int
+
+
+@dataclass(slots=True, frozen=True)
+class SessionProductRefreshChunkObservation:
+    conversation_count: int
+    estimated_message_count: int
+    max_estimated_conversation_messages: int
+    hydrated_count: int
+    profiles_written: int
+    work_events_written: int
+    phases_written: int
+    load_ms: float
+    hydrate_ms: float
+    build_ms: float
+    write_ms: float
+    total_ms: float
+    slow: bool = False
+
+    def to_observation(self) -> dict[str, object]:
+        observation: dict[str, object] = {
+            "conversation_count": self.conversation_count,
+            "estimated_message_count": self.estimated_message_count,
+            "max_estimated_conversation_messages": self.max_estimated_conversation_messages,
+            "hydrated_count": self.hydrated_count,
+            "profiles_written": self.profiles_written,
+            "work_events_written": self.work_events_written,
+            "phases_written": self.phases_written,
+            "load_ms": self.load_ms,
+            "hydrate_ms": self.hydrate_ms,
+            "build_ms": self.build_ms,
+            "write_ms": self.write_ms,
+            "total_ms": self.total_ms,
+        }
+        if self.slow:
+            observation["slow"] = True
+        return observation
 
 
 def _empty_refresh_counts() -> dict[str, int]:
@@ -200,8 +244,8 @@ async def _apply_session_product_conversation_update_async(
             (conversation_id,),
         )
     ).fetchone()
-    conversations, messages, attachments, blocks = await load_async_batch(conn, [conversation_id])
-    hydrated = hydrate_conversations(conversations, messages, attachments, blocks)
+    batch = await load_async_batch(conn, [conversation_id])
+    hydrated = hydrate_conversations(batch)
     if not hydrated:
         await conn.execute("DELETE FROM session_profiles WHERE conversation_id = ?", (conversation_id,))
         await replace_session_work_events(conn, conversation_id, [], transaction_depth)
@@ -215,24 +259,34 @@ async def _apply_session_product_conversation_update_async(
             affected_groups={old_group} if old_group is not None else set(),
         )
 
-    profile_record, event_records, phase_records = build_session_product_records(hydrated[0])
-    await replace_session_profile(conn, profile_record, transaction_depth)
-    await replace_session_work_events(conn, conversation_id, event_records, transaction_depth)
-    await replace_session_phases(conn, conversation_id, phase_records, transaction_depth)
+    record_bundle = build_session_product_records(hydrated[0])
+    await replace_session_profile(conn, record_bundle.profile_record, transaction_depth)
+    await replace_session_work_events(
+        conn,
+        conversation_id,
+        record_bundle.work_event_records,
+        transaction_depth,
+    )
+    await replace_session_phases(
+        conn,
+        conversation_id,
+        record_bundle.phase_records,
+        transaction_depth,
+    )
 
     affected_groups = {
         group
         for group in (
             profile_provider_day(_row_to_session_profile_record(old_profile_record)) if old_profile_record else None,
-            profile_provider_day(profile_record),
+            profile_provider_day(record_bundle.profile_record),
         )
         if group is not None
     }
     return _SessionProductRefreshUpdate(
         counts={
             "profiles": 1,
-            "work_events": len(event_records),
-            "phases": len(phase_records),
+            "work_events": record_bundle.work_event_count,
+            "phases": record_bundle.phase_count,
             "threads": 0,
             "tag_rollups": 0,
             "day_summaries": 0,
@@ -284,25 +338,83 @@ def _chunk_conversation_ids_by_message_budget(
     message_counts: dict[str, int],
     page_size: int,
     message_budget: int,
-) -> list[list[str]]:
-    chunks: list[list[str]] = []
+) -> list[_SessionProductRefreshChunk]:
+    chunks: list[_SessionProductRefreshChunk] = []
     current_chunk: list[str] = []
     current_messages = 0
+    current_max_messages = 0
 
     for conversation_id in conversation_ids:
         estimated_messages = max(int(message_counts.get(conversation_id, 0) or 0), 1)
         if current_chunk and (
             len(current_chunk) >= page_size or current_messages + estimated_messages > message_budget
         ):
-            chunks.append(current_chunk)
+            chunks.append(
+                _SessionProductRefreshChunk(
+                    conversation_ids=tuple(current_chunk),
+                    estimated_message_count=current_messages,
+                    max_estimated_conversation_messages=current_max_messages,
+                )
+            )
             current_chunk = []
             current_messages = 0
+            current_max_messages = 0
         current_chunk.append(conversation_id)
         current_messages += estimated_messages
+        current_max_messages = max(current_max_messages, estimated_messages)
 
     if current_chunk:
-        chunks.append(current_chunk)
+        chunks.append(
+            _SessionProductRefreshChunk(
+                conversation_ids=tuple(current_chunk),
+                estimated_message_count=current_messages,
+                max_estimated_conversation_messages=current_max_messages,
+            )
+        )
     return chunks
+
+
+def _flatten_record_bundles(
+    bundles: Sequence[SessionProductRecordBundle],
+) -> tuple[list[SessionProfileRecord], list[SessionWorkEventRecord], list[SessionPhaseRecord]]:
+    profile_records: list[SessionProfileRecord] = []
+    work_event_records: list[SessionWorkEventRecord] = []
+    phase_records: list[SessionPhaseRecord] = []
+    for bundle in bundles:
+        profile_records.append(bundle.profile_record)
+        work_event_records.extend(bundle.work_event_records)
+        phase_records.extend(bundle.phase_records)
+    return profile_records, work_event_records, phase_records
+
+
+def _refresh_chunk_observation(
+    *,
+    chunk: _SessionProductRefreshChunk,
+    hydrated_count: int,
+    profiles_written: int,
+    work_events_written: int,
+    phases_written: int,
+    load_ms: float,
+    hydrate_ms: float,
+    build_ms: float,
+    write_ms: float,
+    total_ms: float,
+) -> SessionProductRefreshChunkObservation:
+    return SessionProductRefreshChunkObservation(
+        conversation_count=len(chunk.conversation_ids),
+        estimated_message_count=chunk.estimated_message_count,
+        max_estimated_conversation_messages=chunk.max_estimated_conversation_messages,
+        hydrated_count=hydrated_count,
+        profiles_written=profiles_written,
+        work_events_written=work_events_written,
+        phases_written=phases_written,
+        load_ms=load_ms,
+        hydrate_ms=hydrate_ms,
+        build_ms=build_ms,
+        write_ms=write_ms,
+        total_ms=total_ms,
+        slow=total_ms >= 500.0,
+    )
 
 
 async def _apply_session_product_conversation_updates_async(
@@ -323,7 +435,7 @@ async def _apply_session_product_conversation_updates_async(
     counts = _empty_refresh_counts()
     thread_root_ids: set[str] = set()
     affected_groups: set[tuple[str, str]] = set()
-    chunk_observations: list[dict[str, object]] = []
+    chunk_observations: list[SessionProductRefreshChunkObservation] = []
     conversation_id_list = list(conversation_ids)
     message_counts = await _load_message_counts_async(conn, conversation_id_list)
     conversation_chunks = _chunk_conversation_ids_by_message_budget(
@@ -336,22 +448,17 @@ async def _apply_session_product_conversation_updates_async(
     for chunk in conversation_chunks:
         chunk_started = time.perf_counter()
         load_started = time.perf_counter()
-        old_profile_records = await _load_existing_session_profile_records_async(conn, chunk)
-        conversations, messages, attachments, blocks = await load_async_batch(conn, chunk)
-        root_ids_by_conversation = await thread_root_ids_async(conn, chunk)
+        old_profile_records = await _load_existing_session_profile_records_async(conn, chunk.conversation_ids)
+        batch = await load_async_batch(conn, chunk.conversation_ids)
+        root_ids_by_conversation = await thread_root_ids_async(conn, chunk.conversation_ids)
         load_elapsed_ms = round((time.perf_counter() - load_started) * 1000.0, 1)
-        profile_records_to_write: list[SessionProfileRecord] = []
-        work_event_records_to_write: list[SessionWorkEventRecord] = []
-        phase_records_to_write: list[SessionPhaseRecord] = []
         hydrate_started = time.perf_counter()
-        hydrated_by_id = {
-            str(conversation.id): conversation
-            for conversation in hydrate_conversations(conversations, messages, attachments, blocks)
-        }
+        hydrated_by_id = {str(conversation.id): conversation for conversation in hydrate_conversations(batch)}
         hydrate_elapsed_ms = round((time.perf_counter() - hydrate_started) * 1000.0, 1)
 
         build_started = time.perf_counter()
-        for conversation_id in chunk:
+        record_bundles: list[SessionProductRecordBundle] = []
+        for conversation_id in chunk.conversation_ids:
             old_profile_record = old_profile_records.get(conversation_id)
             hydrated_conversation = hydrated_by_id.get(conversation_id)
             if hydrated_conversation is None:
@@ -360,19 +467,17 @@ async def _apply_session_product_conversation_updates_async(
                     affected_groups.add(old_group)
                 continue
 
-            profile_record, event_records, phase_records = build_session_product_records(hydrated_conversation)
-            profile_records_to_write.append(profile_record)
-            work_event_records_to_write.extend(event_records)
-            phase_records_to_write.extend(phase_records)
+            record_bundle = build_session_product_records(hydrated_conversation)
+            record_bundles.append(record_bundle)
 
             counts["profiles"] += 1
-            counts["work_events"] += len(event_records)
-            counts["phases"] += len(phase_records)
+            counts["work_events"] += record_bundle.work_event_count
+            counts["phases"] += record_bundle.phase_count
             affected_groups.update(
                 group
                 for group in (
                     profile_provider_day(old_profile_record),
-                    profile_provider_day(profile_record),
+                    profile_provider_day(record_bundle.profile_record),
                 )
                 if group is not None
             )
@@ -382,47 +487,43 @@ async def _apply_session_product_conversation_updates_async(
         build_elapsed_ms = round((time.perf_counter() - build_started) * 1000.0, 1)
 
         write_started = time.perf_counter()
+        profile_records_to_write, work_event_records_to_write, phase_records_to_write = _flatten_record_bundles(
+            record_bundles
+        )
         await replace_session_profiles_bulk(
             conn,
-            chunk,
+            chunk.conversation_ids,
             profile_records_to_write,
             transaction_depth,
         )
         await replace_session_work_events_bulk(
             conn,
-            chunk,
+            chunk.conversation_ids,
             work_event_records_to_write,
             transaction_depth,
         )
         await replace_session_phases_bulk(
             conn,
-            chunk,
+            chunk.conversation_ids,
             phase_records_to_write,
             transaction_depth,
         )
         write_elapsed_ms = round((time.perf_counter() - write_started) * 1000.0, 1)
         chunk_total_ms = round((time.perf_counter() - chunk_started) * 1000.0, 1)
-        chunk_observation: dict[str, object] = {
-            "conversation_count": len(chunk),
-            "estimated_message_count": sum(
-                max(int(message_counts.get(conversation_id, 0) or 0), 1) for conversation_id in chunk
-            ),
-            "max_estimated_conversation_messages": max(
-                max(int(message_counts.get(conversation_id, 0) or 0), 1) for conversation_id in chunk
-            ),
-            "hydrated_count": len(hydrated_by_id),
-            "profiles_written": len(profile_records_to_write),
-            "work_events_written": len(work_event_records_to_write),
-            "phases_written": len(phase_records_to_write),
-            "load_ms": load_elapsed_ms,
-            "hydrate_ms": hydrate_elapsed_ms,
-            "build_ms": build_elapsed_ms,
-            "write_ms": write_elapsed_ms,
-            "total_ms": chunk_total_ms,
-        }
-        if chunk_total_ms >= 500.0:
-            chunk_observation["slow"] = True
-        chunk_observations.append(chunk_observation)
+        chunk_observations.append(
+            _refresh_chunk_observation(
+                chunk=chunk,
+                hydrated_count=len(hydrated_by_id),
+                profiles_written=len(profile_records_to_write),
+                work_events_written=len(work_event_records_to_write),
+                phases_written=len(phase_records_to_write),
+                load_ms=load_elapsed_ms,
+                hydrate_ms=hydrate_elapsed_ms,
+                build_ms=build_elapsed_ms,
+                write_ms=write_elapsed_ms,
+                total_ms=chunk_total_ms,
+            )
+        )
 
     return _SessionProductBulkRefreshUpdate(
         counts=counts,
@@ -433,6 +534,7 @@ async def _apply_session_product_conversation_updates_async(
 
 
 __all__ = [
+    "SessionProductRefreshChunkObservation",
     "delete_session_products_for_conversation_async",
     "refresh_async_provider_day_aggregates",
     "refresh_session_products_for_conversation_async",
