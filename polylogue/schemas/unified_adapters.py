@@ -27,6 +27,11 @@ class ViewportRecord(Protocol):
 AdapterBuilder: TypeAlias = Callable[[JSONRecord], ViewportRecord]
 
 
+class _ViewportModelType(Protocol):
+    @classmethod
+    def model_validate(cls, obj: object) -> object: ...
+
+
 def _harmonize_viewport_message(
     provider: Provider,
     raw: JSONRecord,
@@ -51,36 +56,47 @@ def _harmonize_viewport_message(
     )
 
 
+def _validate_viewport(
+    raw: JSONRecord,
+    model_type: _ViewportModelType,
+) -> ViewportRecord:
+    return cast(ViewportRecord, model_type.model_validate(raw))
+
+
+def _require_claude_code_message(raw: JSONRecord) -> None:
+    if raw.get("message") == {}:
+        raise ValueError("Message has no role. Data should be validated at import time.")
+
+
 def _validate_claude_code_record(raw: JSONRecord) -> ViewportRecord:
     from polylogue.sources.providers.claude_code import ClaudeCodeRecord
 
-    if raw.get("message") == {}:
-        raise ValueError("Message has no role. Data should be validated at import time.")
-    return cast(ViewportRecord, ClaudeCodeRecord.model_validate(raw))
+    _require_claude_code_message(raw)
+    return _validate_viewport(raw, ClaudeCodeRecord)
 
 
 def _validate_claude_ai_message(raw: JSONRecord) -> ViewportRecord:
     from polylogue.sources.providers.claude_ai import ClaudeAIChatMessage
 
-    return cast(ViewportRecord, ClaudeAIChatMessage.model_validate(raw))
+    return _validate_viewport(raw, ClaudeAIChatMessage)
 
 
 def _validate_chatgpt_message(raw: JSONRecord) -> ViewportRecord:
     from polylogue.sources.providers.chatgpt import ChatGPTMessage
 
-    return cast(ViewportRecord, ChatGPTMessage.model_validate(raw))
+    return _validate_viewport(raw, ChatGPTMessage)
 
 
 def _validate_gemini_message(raw: JSONRecord) -> ViewportRecord:
     from polylogue.sources.providers.gemini import GeminiMessage
 
-    return cast(ViewportRecord, GeminiMessage.model_validate(raw))
+    return _validate_viewport(raw, GeminiMessage)
 
 
 def _validate_codex_record(raw: JSONRecord) -> ViewportRecord:
     from polylogue.sources.providers.codex import CodexRecord
 
-    return cast(ViewportRecord, CodexRecord.model_validate(raw))
+    return _validate_viewport(raw, CodexRecord)
 
 
 _ADAPTER_BUILDERS: dict[Provider, AdapterBuilder] = {

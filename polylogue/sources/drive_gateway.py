@@ -3,7 +3,7 @@ from __future__ import annotations
 import importlib
 from collections.abc import Callable
 from types import ModuleType
-from typing import Protocol, TypeAlias, TypeVar, cast
+from typing import ParamSpec, Protocol, TypeAlias, TypeVar, cast
 
 from tenacity import (
     retry_if_exception_type,
@@ -24,6 +24,7 @@ from .drive_types import DriveError as DriveServiceError
 
 logger = get_logger(__name__)
 
+P = ParamSpec("P")
 T = TypeVar("T")
 T_co = TypeVar("T_co", covariant=True)
 DrivePayloadRecord: TypeAlias = dict[str, object]
@@ -38,6 +39,10 @@ class _DriveAuthManagerLike(Protocol):
 
 class _ExecutableRequest(Protocol[T_co]):
     def execute(self) -> T_co: ...
+
+
+class _BinaryWritable(Protocol):
+    def write(self, data: bytes) -> object: ...
 
 
 class _DriveFilesResource(Protocol):
@@ -76,7 +81,7 @@ class _MediaIoBaseDownload(Protocol):
     def next_chunk(self) -> tuple[object | None, bool]: ...
 
 
-MediaDownloadFactory = Callable[[object, object], _MediaIoBaseDownload]
+MediaDownloadFactory = Callable[[_BinaryWritable, object], _MediaIoBaseDownload]
 
 
 def _import_module(name: str) -> ModuleType:
@@ -123,7 +128,7 @@ class DriveServiceGateway:
         self._retry_base = retry_base
         self._service: _DriveService | None = None
 
-    def call_with_retry(self, func: Callable[..., T], *args: object, **kwargs: object) -> T:
+    def call_with_retry(self, func: Callable[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
         from tenacity import Retrying
 
         retryer = Retrying(
@@ -135,15 +140,20 @@ class DriveServiceGateway:
         )
         return retryer(func, *args, **kwargs)
 
+    @staticmethod
+    def _credentials_expired(service: object) -> bool:
+        http = getattr(service, "_http", None)
+        if http is None:
+            return False
+        credentials = getattr(http, "credentials", None)
+        return bool(getattr(credentials, "expired", False))
+
     def _service_handle(self) -> _DriveService:
         if self._service is not None:
-            http = getattr(self._service, "_http", None)
-            if http is not None:
-                credentials = getattr(http, "credentials", None)
-                if credentials is not None and getattr(credentials, "expired", False):
-                    logger.info("Cached service credentials expired, re-authenticating")
-                    self._service = None
-                    return self._service_handle()
+            if self._credentials_expired(self._service):
+                logger.info("Cached service credentials expired, re-authenticating")
+                self._service = None
+                return self._service_handle()
             return self._service
 
         discovery = _import_module("googleapiclient.discovery")
@@ -165,16 +175,16 @@ class DriveServiceGateway:
         page_size: int,
     ) -> DrivePayloadRecord:
         service = self._service_handle()
-        return self.call_with_retry(
-            lambda token=page_token: (
-                service.files().list(q=q, fields=fields, pageToken=token, pageSize=page_size).execute()
-            )
-        )
+
+        def _load_page() -> DrivePayloadRecord:
+            return service.files().list(q=q, fields=fields, pageToken=page_token, pageSize=page_size).execute()
+
+        return self.call_with_retry(_load_page)
 
     def _download_request(
         self,
         request: object,
-        handle: object,
+        handle: _BinaryWritable,
         downloader_cls: MediaDownloadFactory,
         *,
         file_id: str,
@@ -189,7 +199,7 @@ class DriveServiceGateway:
             if chunks >= max_chunks:
                 raise DriveServiceError(f"Download exceeded {max_chunks} chunks for file {file_id}")
 
-    def download_file(self, file_id: str, handle: object) -> None:
+    def download_file(self, file_id: str, handle: _BinaryWritable) -> None:
         """Download file content into a writable binary handle."""
         http_module = _import_module("googleapiclient.http")
         downloader_cls = cast(MediaDownloadFactory, http_module.MediaIoBaseDownload)
