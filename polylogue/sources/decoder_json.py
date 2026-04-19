@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterable
-from typing import IO, Any, BinaryIO
+from typing import IO, BinaryIO, Protocol, TypeAlias, cast
 
 import ijson
 
@@ -23,8 +23,28 @@ ENCODING_GUESSES: tuple[str, ...] = (
     "utf-32-be",
 )
 
+JsonScalar: TypeAlias = str | int | float | bool | None
+JsonValue: TypeAlias = dict[str, "JsonValue"] | list["JsonValue"] | JsonScalar
+JsonReadable: TypeAlias = BinaryIO | IO[bytes]
 
-def decode_json_bytes_with(logger_obj: Any, blob: bytes) -> str | None:
+
+class LoggerLike(Protocol):
+    def debug(self, message: str, *args: object) -> object: ...
+
+    def warning(self, message: str, *args: object) -> object: ...
+
+
+class IjsonCommonLike(Protocol):
+    JSONError: type[Exception]
+
+
+class IjsonModuleLike(Protocol):
+    common: IjsonCommonLike
+
+    def items(self, handle: JsonReadable, prefix: str) -> Iterable[JsonValue]: ...
+
+
+def decode_json_bytes_with(logger_obj: LoggerLike, blob: bytes) -> str | None:
     """Decode a JSON payload from bytes, trying multiple encodings."""
     for encoding in ENCODING_GUESSES:
         try:
@@ -46,89 +66,137 @@ def decode_json_bytes(blob: bytes) -> str | None:
     return decode_json_bytes_with(logger, blob)
 
 
+def _yield_jsonl_pending(
+    logger_obj: LoggerLike,
+    raw_pending: bytes | str,
+    *,
+    is_last: bool,
+    path_name: str,
+) -> tuple[list[JsonValue], int]:
+    if isinstance(raw_pending, bytes):
+        decoded = decode_json_bytes_with(logger_obj, raw_pending)
+        if not decoded:
+            if is_last:
+                logger_obj.debug("Skipping undecodable trailing line from %s", path_name)
+                return ([], 0)
+            else:
+                return ([], 1)
+    else:
+        decoded = raw_pending
+
+    try:
+        return ([cast(JsonValue, json.loads(decoded))], 0)
+    except json.JSONDecodeError as exc:
+        if is_last:
+            logger_obj.debug("Skipping truncated trailing line in %s: %s", path_name, exc)
+            return ([], 0)
+        return ([], 1)
+
+
+def _iter_jsonl_stream(
+    logger_obj: LoggerLike,
+    handle: JsonReadable,
+    path_name: str,
+) -> Iterable[JsonValue]:
+    error_count = 0
+    pending: bytes | str | None = None
+
+    for line in handle:
+        raw = line.strip()
+        if not raw:
+            continue
+        if pending is not None:
+            records, new_errors = _yield_jsonl_pending(
+                logger_obj,
+                pending,
+                is_last=False,
+                path_name=path_name,
+            )
+            error_count += new_errors
+            if new_errors:
+                if error_count <= 3:
+                    logger_obj.warning("Skipping invalid JSON line in %s", path_name)
+                elif error_count == 4:
+                    logger_obj.warning("Skipping further invalid JSON lines in %s...", path_name)
+            yield from records
+        pending = raw
+
+    if pending is not None:
+        records, _new_errors = _yield_jsonl_pending(
+            logger_obj,
+            pending,
+            is_last=True,
+            path_name=path_name,
+        )
+        yield from records
+
+    if error_count > 3:
+        logger_obj.warning("Skipped %d invalid JSON lines in %s", error_count, path_name)
+
+
+def _stream_prefixed_items(
+    logger_obj: LoggerLike,
+    ijson_module: IjsonModuleLike,
+    handle: JsonReadable,
+    path_name: str,
+    prefix: str,
+    *,
+    strategy_name: str,
+) -> tuple[bool, list[JsonValue]]:
+    found_any = False
+    records: list[JsonValue] = []
+    try:
+        for item in ijson_module.items(handle, prefix):
+            found_any = True
+            records.append(item)
+        return (found_any, records)
+    except ijson_module.common.JSONError:
+        return (found_any, records)
+    except Exception as exc:
+        logger_obj.debug("Strategy %s failed for %s: %s", strategy_name, path_name, exc)
+        return (found_any, records)
+
+
 def iter_json_stream_with(
-    logger_obj: Any,
-    ijson_module: Any,
-    handle: BinaryIO | IO[bytes],
+    logger_obj: LoggerLike,
+    ijson_module: IjsonModuleLike,
+    handle: JsonReadable,
     path_name: str,
     unpack_lists: bool = True,
-) -> Iterable[Any]:
+) -> Iterable[JsonValue]:
     if path_name.lower().endswith((".jsonl", ".jsonl.txt", ".ndjson")):
-        error_count = 0
-        pending: bytes | str | None = None
-
-        def yield_pending(raw_pending: bytes | str, *, is_last: bool) -> Iterable[Any]:
-            nonlocal error_count
-            if isinstance(raw_pending, bytes):
-                decoded = decode_json_bytes_with(logger_obj, raw_pending)
-                if not decoded:
-                    if is_last:
-                        logger_obj.debug("Skipping undecodable trailing line from %s", path_name)
-                    else:
-                        logger_obj.warning("Skipping undecodable line from %s", path_name)
-                    return
-            else:
-                decoded = raw_pending
-            try:
-                yield json.loads(decoded)
-            except json.JSONDecodeError as exc:
-                if is_last:
-                    logger_obj.debug("Skipping truncated trailing line in %s: %s", path_name, exc)
-                else:
-                    error_count += 1
-                    if error_count <= 3:
-                        logger_obj.warning("Skipping invalid JSON line in %s: %s", path_name, exc)
-                    elif error_count == 4:
-                        logger_obj.warning("Skipping further invalid JSON lines in %s...", path_name)
-
-        for line in handle:
-            raw = line.strip()
-            if not raw:
-                continue
-            if pending is not None:
-                yield from yield_pending(pending, is_last=False)
-            pending = raw
-        if pending is not None:
-            yield from yield_pending(pending, is_last=True)
-        if error_count > 3:
-            logger_obj.warning("Skipped %d invalid JSON lines in %s", error_count, path_name)
+        yield from _iter_jsonl_stream(logger_obj, handle, path_name)
         return
 
     if unpack_lists:
-        try:
-            found_any = False
-            for item in ijson_module.items(handle, "item"):
-                found_any = True
-                yield item
-            if found_any:
-                return
-        except ijson_module.common.JSONError:
-            if found_any:
-                return
-        except Exception as exc:
-            logger_obj.debug("Strategy 1 (ijson items) failed for %s: %s", path_name, exc)
-            if found_any:
-                return
+        found_any, records = _stream_prefixed_items(
+            logger_obj,
+            ijson_module,
+            handle,
+            path_name,
+            "item",
+            strategy_name="1 (ijson items)",
+        )
+        if found_any:
+            yield from records
+            return
 
         handle.seek(0)
-        try:
-            found_any = False
-            for item in ijson_module.items(handle, "conversations.item"):
-                found_any = True
-                yield item
-            if found_any:
-                return
-        except ijson_module.common.JSONError:
-            if found_any:
-                return
-        except Exception as exc:
-            logger_obj.debug("Strategy 2 (ijson conversations.item) failed for %s: %s", path_name, exc)
-            if found_any:
-                return
+        found_any, records = _stream_prefixed_items(
+            logger_obj,
+            ijson_module,
+            handle,
+            path_name,
+            "conversations.item",
+            strategy_name="2 (ijson conversations.item)",
+        )
+        if found_any:
+            yield from records
+            return
 
         handle.seek(0)
 
-    data = json.load(handle)
+    data = cast(JsonValue, json.load(handle))
     if isinstance(data, dict):
         yield data
     elif isinstance(data, list):
@@ -138,12 +206,16 @@ def iter_json_stream_with(
             yield data
 
 
-def iter_json_stream(handle: BinaryIO | IO[bytes], path_name: str, unpack_lists: bool = True) -> Iterable[Any]:
+def iter_json_stream(handle: JsonReadable, path_name: str, unpack_lists: bool = True) -> Iterable[JsonValue]:
     yield from iter_json_stream_with(logger, ijson, handle, path_name, unpack_lists)
 
 
 __all__ = [
     "ENCODING_GUESSES",
+    "IjsonModuleLike",
+    "JsonReadable",
+    "JsonValue",
+    "LoggerLike",
     "decode_json_bytes",
     "decode_json_bytes_with",
     "iter_json_stream",

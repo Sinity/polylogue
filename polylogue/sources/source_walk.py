@@ -5,13 +5,12 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
 
 from polylogue.config import Source
 from polylogue.types import Provider
 
 from . import cursor as _cursor
-from .assembly import get_assembly_spec
+from .assembly import SidecarData, get_assembly_spec
 
 _SUPPORTED_EXTENSIONS = frozenset({".json", ".jsonl", ".ndjson", ".zip"})
 _SUPPORTED_DOUBLE_EXTENSIONS = frozenset({".jsonl.txt"})
@@ -53,13 +52,13 @@ class _SourceWalkSetup:
     paths: list[Path]
     paths_to_process: list[tuple[Path, str | None]]
     skipped_mtime: int
-    sidecar_data: dict[str, Any] = field(default_factory=dict)
+    sidecar_data: SidecarData = field(default_factory=dict)
 
 
 def _setup_source_walk(
     source: Source,
     *,
-    cursor_state: dict[str, Any] | None,
+    cursor_state: dict[str, object] | None,
     include_mtime: bool,
     known_mtimes: dict[str, str] | None,
     discover_sidecars: bool,
@@ -73,7 +72,7 @@ def _setup_source_walk(
         include_file_mtime=include_mtime,
         known_mtimes=known_mtimes,
     )
-    sidecar_data: dict[str, Any] = {}
+    sidecar_data: SidecarData = {}
     if discover_sidecars:
         provider = Provider.from_string(source.name)
         spec = get_assembly_spec(provider)

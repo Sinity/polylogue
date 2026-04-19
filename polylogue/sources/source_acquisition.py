@@ -6,7 +6,7 @@ import time
 import zipfile
 from collections.abc import Callable, Iterable
 from pathlib import Path
-from typing import IO, Any, BinaryIO, cast
+from typing import IO, BinaryIO, TypeAlias, cast
 
 from polylogue.config import Source
 from polylogue.lib.artifact_taxonomy import classify_artifact
@@ -30,6 +30,11 @@ _decoders.logger = logger
 
 _DETECTION_PREFIX_SIZE = 8192  # 8 KB — enough for provider detection
 _HEARTBEAT_INTERVAL_S = 5.0
+AcquisitionObservation: TypeAlias = dict[str, object]
+ObservationCallback: TypeAlias = Callable[[AcquisitionObservation], None]
+StatusCallback: TypeAlias = Callable[[str], None]
+CursorState: TypeAlias = dict[str, object]
+DetectedEntryPayload: TypeAlias = tuple[Provider, object, float]
 
 
 def _heartbeat_label(source_path: str) -> str:
@@ -39,7 +44,7 @@ def _heartbeat_label(source_path: str) -> str:
 
 
 def _make_status_heartbeat(
-    status_callback: Callable[[str], None] | None,
+    status_callback: StatusCallback | None,
     *,
     source_name: str,
     source_path: str,
@@ -62,7 +67,7 @@ def _make_status_heartbeat(
 
 
 def _observe_acquisition(
-    observation_callback: Callable[[dict[str, object]], None] | None,
+    observation_callback: ObservationCallback | None,
     *,
     phase: str,
     source_path: str,
@@ -77,18 +82,72 @@ def _observe_acquisition(
     peak_rss_self_mb = read_peak_rss_self_mb()
     if current_rss_mb is None and peak_rss_self_mb is None:
         return
-    observation_callback(
-        {
-            "phase": phase,
-            "source_path": source_path,
-            "provider_hint": str(provider_hint),
-            "blob_size": blob_size,
-            "blob_mb": round(blob_size / (1024 * 1024), 3),
-            "source_index": source_index,
-            "current_rss_mb": current_rss_mb,
-            "peak_rss_self_mb": peak_rss_self_mb,
-            **extra,
-        }
+    payload: AcquisitionObservation = {
+        "phase": phase,
+        "source_path": source_path,
+        "provider_hint": str(provider_hint),
+        "blob_size": blob_size,
+        "blob_mb": round(blob_size / (1024 * 1024), 3),
+        "source_index": source_index,
+        "current_rss_mb": current_rss_mb,
+        "peak_rss_self_mb": peak_rss_self_mb,
+        **extra,
+    }
+    observation_callback(payload)
+
+
+def _stream_fileobj_to_blob(
+    blob_store: BlobStore,
+    handle: BinaryIO,
+    *,
+    status_callback: StatusCallback | None,
+    source_name: str,
+    source_path: str,
+) -> tuple[str, int]:
+    heartbeat = _make_status_heartbeat(
+        status_callback,
+        source_name=source_name,
+        source_path=source_path,
+    )
+    if heartbeat is not None:
+        heartbeat()
+    return blob_store.write_from_fileobj(handle, heartbeat=heartbeat)
+
+
+def _stream_path_to_blob(
+    blob_store: BlobStore,
+    path: Path,
+    *,
+    status_callback: StatusCallback | None,
+    source_name: str,
+) -> tuple[str, int]:
+    heartbeat = _make_status_heartbeat(
+        status_callback,
+        source_name=source_name,
+        source_path=str(path),
+    )
+    if heartbeat is not None:
+        heartbeat()
+    return blob_store.write_from_path(path, heartbeat=heartbeat)
+
+
+def _raw_data_record(
+    *,
+    source_path: str,
+    file_mtime: str | None,
+    provider_hint: Provider,
+    blob_hash: str,
+    blob_size: int,
+    source_index: int | None = None,
+) -> RawConversationData:
+    return RawConversationData(
+        raw_bytes=b"",
+        source_path=source_path,
+        source_index=source_index,
+        file_mtime=file_mtime,
+        provider_hint=provider_hint,
+        blob_hash=blob_hash,
+        blob_size=blob_size,
     )
 
 
@@ -97,7 +156,7 @@ def _iter_entry_payloads(
     *,
     stream_name: str,
     provider_hint: Provider,
-) -> Iterable[tuple[Provider, Any, float]]:
+) -> Iterable[DetectedEntryPayload]:
     """Yield payloads from a streamed JSON/JSONL document with provider hints."""
     current_provider = provider_hint
     last_detected_provider: Provider | None = None
@@ -131,24 +190,23 @@ def _make_split_entry_raw_data(
 ) -> RawConversationData:
     """Persist a split payload to the blob store and return raw metadata."""
     blob_hash, blob_size = blob_store.write_from_bytes(payload_bytes)
-    return RawConversationData(
-        raw_bytes=b"",
+    return _raw_data_record(
         source_path=source_path,
-        source_index=source_index,
         file_mtime=file_mtime,
         provider_hint=provider_hint,
         blob_hash=blob_hash,
         blob_size=blob_size,
+        source_index=source_index,
     )
 
 
 def iter_source_raw_data(
     source: Source,
     *,
-    cursor_state: dict[str, Any] | None = None,
+    cursor_state: CursorState | None = None,
     known_mtimes: dict[str, str] | None = None,
-    observation_callback: Callable[[dict[str, object]], None] | None = None,
-    status_callback: Callable[[str], None] | None = None,
+    observation_callback: ObservationCallback | None = None,
+    status_callback: StatusCallback | None = None,
 ) -> Iterable[RawConversationData]:
     """Iterate raw source payloads without parsing provider payload semantics.
 
@@ -198,17 +256,13 @@ def iter_source_raw_data(
                             continue
                         entry_provider_hint = _zip_entry_provider_hint(info.filename, provider_hint)
                         if entry_provider_hint in GROUP_PROVIDERS:
-                            heartbeat = _make_status_heartbeat(
-                                status_callback,
-                                source_name=source.name,
-                                source_path=entry_path,
-                            )
-                            if heartbeat is not None:
-                                heartbeat()
                             with zf.open(info.filename) as handle:
-                                blob_hash, blob_size = blob_store.write_from_fileobj(
+                                blob_hash, blob_size = _stream_fileobj_to_blob(
+                                    blob_store,
                                     cast(BinaryIO, handle),
-                                    heartbeat=heartbeat,
+                                    status_callback=status_callback,
+                                    source_name=source.name,
+                                    source_path=entry_path,
                                 )
                             _observe_acquisition(
                                 observation_callback,
@@ -217,10 +271,8 @@ def iter_source_raw_data(
                                 provider_hint=entry_provider_hint,
                                 blob_size=blob_size,
                             )
-                            yield RawConversationData(
-                                raw_bytes=b"",
+                            yield _raw_data_record(
                                 source_path=entry_path,
-                                source_index=None,
                                 file_mtime=file_mtime,
                                 provider_hint=entry_provider_hint,
                                 blob_hash=blob_hash,
@@ -300,17 +352,13 @@ def iter_source_raw_data(
                         # Preserve original ZIP entry bytes when the entry is
                         # grouped, non-conversation metadata, or a single
                         # conversation document.
-                        heartbeat = _make_status_heartbeat(
-                            status_callback,
-                            source_name=source.name,
-                            source_path=entry_path,
-                        )
-                        if heartbeat is not None:
-                            heartbeat()
                         with zf.open(info.filename) as handle:
-                            blob_hash, blob_size = blob_store.write_from_fileobj(
+                            blob_hash, blob_size = _stream_fileobj_to_blob(
+                                blob_store,
                                 cast(BinaryIO, handle),
-                                heartbeat=heartbeat,
+                                status_callback=status_callback,
+                                source_name=source.name,
+                                source_path=entry_path,
                             )
                         _observe_acquisition(
                             observation_callback,
@@ -319,10 +367,8 @@ def iter_source_raw_data(
                             provider_hint=detected_provider,
                             blob_size=blob_size,
                         )
-                        yield RawConversationData(
-                            raw_bytes=b"",
+                        yield _raw_data_record(
                             source_path=entry_path,
-                            source_index=None,
                             file_mtime=file_mtime,
                             provider_hint=detected_provider,
                             blob_hash=blob_hash,
@@ -332,14 +378,12 @@ def iter_source_raw_data(
                 # Stream-hash the file to blob store — never loads full
                 # content into Python memory. A 1.5 GB file is hashed and
                 # copied in 128 KB chunks.
-                heartbeat = _make_status_heartbeat(
-                    status_callback,
+                blob_hash, blob_size = _stream_path_to_blob(
+                    blob_store,
+                    path,
+                    status_callback=status_callback,
                     source_name=source.name,
-                    source_path=str(path),
                 )
-                if heartbeat is not None:
-                    heartbeat()
-                blob_hash, blob_size = blob_store.write_from_path(path, heartbeat=heartbeat)
                 # Read a small prefix for provider detection only.
                 prefix = blob_store.read_prefix(blob_hash, _DETECTION_PREFIX_SIZE)
                 detected_provider = _detect_provider_from_raw_bytes(
@@ -354,10 +398,8 @@ def iter_source_raw_data(
                     provider_hint=detected_provider,
                     blob_size=blob_size,
                 )
-                yield RawConversationData(
-                    raw_bytes=b"",
+                yield _raw_data_record(
                     source_path=str(path),
-                    source_index=None,
                     file_mtime=file_mtime,
                     provider_hint=detected_provider,
                     blob_hash=blob_hash,

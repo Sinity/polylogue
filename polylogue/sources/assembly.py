@@ -8,11 +8,24 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Protocol, TypeAlias, TypedDict
 
 from polylogue.types import Provider
 
 from .parsers.base import ParsedConversation
+
+if TYPE_CHECKING:
+    from .parsers.claude_index import SessionIndexEntry
+
+SidecarData: TypeAlias = dict[str, object]
+
+
+class _ClaudeCodeSidecarData(TypedDict, total=False):
+    session_index: dict[str, SessionIndexEntry]
+
+
+class _CodexSidecarData(TypedDict, total=False):
+    thread_names: dict[str, str]
 
 
 @dataclass(frozen=True, slots=True)
@@ -26,7 +39,7 @@ class TitleResolution:
 class ProviderAssemblySpec(Protocol):
     """Provider-specific sidecar discovery and conversation enrichment."""
 
-    def discover_sidecars(self, source_paths: list[Path]) -> dict[str, Any]:
+    def discover_sidecars(self, source_paths: list[Path]) -> SidecarData:
         """Discover provider-specific sidecars from source paths.
 
         Returns opaque provider data keyed by parent directory or similar.
@@ -36,7 +49,7 @@ class ProviderAssemblySpec(Protocol):
     def enrich_conversation(
         self,
         conv: ParsedConversation,
-        sidecar_data: dict[str, Any],
+        sidecar_data: SidecarData,
     ) -> ParsedConversation:
         """Enrich a parsed conversation using discovered sidecar data."""
         ...
@@ -57,6 +70,9 @@ def get_assembly_spec(provider: Provider) -> ProviderAssemblySpec | None:
 
 __all__ = [
     "ProviderAssemblySpec",
+    "SidecarData",
+    "_CodexSidecarData",
+    "_ClaudeCodeSidecarData",
     "TitleResolution",
     "get_assembly_spec",
 ]
