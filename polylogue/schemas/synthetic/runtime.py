@@ -5,15 +5,14 @@ from __future__ import annotations
 import json
 import random
 import uuid
+from collections.abc import Sequence
 from datetime import datetime, timezone
-from typing import Literal, Protocol, TypeAlias, cast
+from typing import Protocol, cast
 
 from polylogue.lib.raw_payload_decode import JSONRecord, JSONValue
+from polylogue.schemas.synthetic.models import SchemaRecord, SchemaValue
 from polylogue.schemas.synthetic.semantic_values import _text_for_role
-
-SchemaScalar: TypeAlias = str | int | float | bool | None
-SchemaValue: TypeAlias = SchemaScalar | list["SchemaValue"] | dict[str, "SchemaValue"]
-SchemaRecord: TypeAlias = dict[str, SchemaValue]
+from polylogue.schemas.synthetic.wire_formats import WireEncoding
 
 
 class _SemanticGenerator(Protocol):
@@ -21,7 +20,7 @@ class _SemanticGenerator(Protocol):
 
 
 class _RelationSolver(Protocol):
-    mutual_exclusions: object
+    mutual_exclusions: Sequence[object]
 
     def generate_string_with_length(self, path: str, rng: random.Random, value: str) -> str: ...
 
@@ -38,7 +37,7 @@ class _RelationSolver(Protocol):
 
 
 class _WireFormat(Protocol):
-    encoding: Literal["json", "jsonl"]
+    encoding: WireEncoding
 
 
 class _SyntheticRuntimeContext(Protocol):
@@ -93,7 +92,7 @@ def _schema_record(value: object) -> SchemaRecord:
     return cast(SchemaRecord, value) if isinstance(value, dict) else {}
 
 
-def _schema_records(value: object, keyword: str) -> list[SchemaRecord]:
+def _schema_records(value: object) -> list[SchemaRecord]:
     if not isinstance(value, list):
         return []
     return [record for item in value if (record := _schema_record(item))]
@@ -151,7 +150,7 @@ def _generate_from_schema(
             return value
 
     for keyword in ("anyOf", "oneOf"):
-        variants = _schema_records(schema.get(keyword), keyword)
+        variants = _schema_records(schema.get(keyword))
         if variants:
             non_null = [variant for variant in variants if variant.get("type") != "null"]
             chosen = rng.choice(non_null) if non_null else rng.choice(variants)
@@ -334,13 +333,9 @@ def _generate_array(
         isinstance(item_type, list) and any(item == "null" for item in item_type if isinstance(item, str))
     )
     if not item_allows_null:
-        item_allows_null = any(
-            variant.get("type") == "null" for variant in _schema_records(item_schema.get("anyOf"), "anyOf")
-        )
+        item_allows_null = any(variant.get("type") == "null" for variant in _schema_records(item_schema.get("anyOf")))
     if not item_allows_null:
-        item_allows_null = any(
-            variant.get("type") == "null" for variant in _schema_records(item_schema.get("oneOf"), "oneOf")
-        )
+        item_allows_null = any(variant.get("type") == "null" for variant in _schema_records(item_schema.get("oneOf")))
 
     items = [
         self._generate_from_schema(

@@ -6,13 +6,12 @@ import os
 import tempfile
 from collections.abc import Iterable
 from pathlib import Path
-from typing import Any, BinaryIO, cast
+from typing import BinaryIO, cast
 
 from polylogue.logging import get_logger
 
-from .drive_gateway import DriveServiceGateway
+from .drive_gateway import DrivePayloadRecord, DriveServiceGateway
 from .drive_source_support import (
-    JsonObject,
     _build_drive_file,
     _build_folder_lookup_query,
     _is_supported_drive_payload,
@@ -34,37 +33,37 @@ class DriveSourceClient:
     """Owns Polylogue-specific Drive source semantics."""
 
     @staticmethod
-    def _as_payload_dict(payload: Any) -> JsonObject:
+    def _as_payload_dict(payload: object) -> DrivePayloadRecord:
         if isinstance(payload, dict):
-            return payload
+            return cast(DrivePayloadRecord, payload)
         return {}
 
     @staticmethod
-    def _as_payload_list(payload: Any) -> list[Any]:
+    def _as_payload_list(payload: object) -> list[object]:
         if isinstance(payload, list):
-            return payload
+            return cast(list[object], payload)
         return []
 
     @staticmethod
-    def _as_str(payload: Any, default: str = "") -> str:
+    def _as_str(payload: object, default: str = "") -> str:
         return payload if isinstance(payload, str) else default
 
     @classmethod
-    def _as_mime_type(cls, payload: Any, default: str = "") -> str:
+    def _as_mime_type(cls, payload: object, default: str = "") -> str:
         return cls._as_str(payload, default=default)
 
     @classmethod
-    def _as_file_id(cls, payload: Any, default: str = "") -> str:
+    def _as_file_id(cls, payload: object, default: str = "") -> str:
         return cls._as_str(payload, default=default)
 
     @classmethod
-    def _next_page_token(cls, payload: Any) -> str | None:
+    def _next_page_token(cls, payload: object) -> str | None:
         if isinstance(payload, str):
             return payload
         return None
 
     @classmethod
-    def _resolve_next_page_token(cls, payload: Any) -> str | None:
+    def _resolve_next_page_token(cls, payload: object) -> str | None:
         return cls._next_page_token(payload)
 
     def __init__(self, *, gateway: DriveServiceGateway) -> None:
@@ -73,9 +72,8 @@ class DriveSourceClient:
 
     def _resolve_folder_by_id(self, folder_ref: str) -> str | None:
         meta = self._gateway.get_file(folder_ref, "id,name,mimeType")
-        payload = self._as_payload_dict(meta)
-        if self._as_mime_type(payload.get("mimeType")) == FOLDER_MIME_TYPE:
-            return self._as_file_id(payload.get("id"))
+        if self._as_mime_type(meta.get("mimeType")) == FOLDER_MIME_TYPE:
+            return self._as_file_id(meta.get("id"))
         return None
 
     def _resolve_folder_by_name(self, folder_ref: str) -> str:
@@ -85,8 +83,7 @@ class DriveSourceClient:
             page_token=None,
             page_size=1000,
         )
-        payload = self._as_payload_dict(response)
-        matches = self._as_payload_list(payload.get("files"))
+        matches = self._as_payload_list(response.get("files"))
         if not matches:
             raise DriveNotFoundError(f"Folder not found: {folder_ref}")
         first = self._as_payload_dict(matches[0])
@@ -121,8 +118,7 @@ class DriveSourceClient:
                 page_token=page_token,
                 page_size=1000,
             )
-            payload = self._as_payload_dict(response)
-            for item in self._as_payload_list(payload.get("files")):
+            for item in self._as_payload_list(response.get("files")):
                 item_payload = self._as_payload_dict(item)
                 name = self._as_str(item_payload.get("name"))
                 mime_type = self._as_str(item_payload.get("mimeType"))
@@ -132,7 +128,7 @@ class DriveSourceClient:
                 if file_obj.file_id:
                     self._meta_cache[file_obj.file_id] = file_obj
                     yield file_obj
-            page_token = self._resolve_next_page_token(payload.get("nextPageToken"))
+            page_token = self._resolve_next_page_token(response.get("nextPageToken"))
             if not page_token:
                 break
 
@@ -140,7 +136,7 @@ class DriveSourceClient:
         if file_id in self._meta_cache:
             return self._meta_cache[file_id]
         meta = self._gateway.get_file(file_id, "id,name,mimeType,modifiedTime,size")
-        file_obj = _build_drive_file(self._as_payload_dict(meta), file_id_fallback=file_id)
+        file_obj = _build_drive_file(meta, file_id_fallback=file_id)
         self._meta_cache[file_id] = file_obj
         return file_obj
 

@@ -7,6 +7,7 @@ from typing import TypeAlias, cast
 
 from polylogue.logging import get_logger
 
+from .drive_gateway import DrivePayloadRecord
 from .drive_types import (
     FOLDER_MIME_TYPE,
     GEMINI_PROMPT_MIME_TYPE,
@@ -17,7 +18,7 @@ logger = get_logger(__name__)
 
 JsonScalar: TypeAlias = str | int | float | bool | None
 JsonPayload: TypeAlias = dict[str, "JsonPayload"] | list["JsonPayload"] | JsonScalar
-JsonObject: TypeAlias = dict[str, JsonPayload]
+JsonObject: TypeAlias = DrivePayloadRecord
 
 
 def _parse_modified_time(raw: str | None) -> float | None:
@@ -111,7 +112,7 @@ def _build_drive_file(meta: JsonObject, *, file_id_fallback: str = "") -> DriveF
     modified_time_raw = meta.get("modifiedTime")
     modified_time = modified_time_raw if isinstance(modified_time_raw, str) else None
     size_raw = meta.get("size")
-    size_value = size_raw if isinstance(size_raw, (str, int)) or size_raw is None else None
+    size_value = size_raw if isinstance(size_raw, (str, int)) else None
     return DriveFile(
         file_id=file_id,
         name=name or file_id or file_id_fallback,
