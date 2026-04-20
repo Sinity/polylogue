@@ -16,17 +16,17 @@ from __future__ import annotations
 import csv
 import io
 import json
-from typing import TYPE_CHECKING, Any, TypedDict
+from typing import TYPE_CHECKING
+
+from polylogue.surface_payloads import (
+    ConversationDetailPayload,
+    ConversationListRowPayload,
+    JSONDocument,
+    model_json_document,
+)
 
 if TYPE_CHECKING:
     from polylogue.lib.models import Conversation
-
-
-class ConversationMessagePayload(TypedDict):
-    id: str
-    role: str
-    text: str | None
-    timestamp: str | None
 
 
 def format_conversation(
@@ -62,34 +62,24 @@ def format_conversation(
         return _conv_to_markdown(conv)
 
 
-def _conv_to_dict(conv: Conversation, fields: str | None) -> dict[str, object]:
+def _conv_to_dict(conv: Conversation, fields: str | None) -> JSONDocument:
     """Convert conversation to summary dict (message count, not content).
 
     Used for list-mode output where loading all message text is unnecessary.
     For full-content output, use _conv_to_json() instead.
     """
-    full: dict[str, object] = {
-        "id": str(conv.id),
-        "provider": str(conv.provider),
-        "title": conv.display_title,
-        "date": conv.display_date.isoformat() if conv.display_date else None,
-        "messages": len(conv.messages),
-        "words": sum(m.word_count for m in conv.messages),
-        "tags": conv.tags,
-        "summary": conv.summary,
-    }
-    if not fields:
-        return full
-    selected = [f.strip() for f in fields.split(",")]
-    return {key: value for key, value in full.items() if key in selected}
+    selected = {field.strip() for field in fields.split(",")} if fields else None
+    return ConversationListRowPayload.from_conversation(conv).selected(selected)
 
 
 def _conv_to_json(conv: Conversation, fields: str | None) -> str:
     """Convert a single conversation to full JSON with message content."""
     data = _conv_to_dict(conv, fields)
-    # Override message count with full message content
-    if fields is None or "messages" in (fields or "").split(","):
-        data["messages"] = [_serialize_message(msg) for msg in conv.messages]
+    if fields is None or "messages" in {field.strip() for field in fields.split(",")}:
+        detail_payload = ConversationDetailPayload.from_conversation(conv)
+        data["messages"] = [
+            model_json_document(message_payload, exclude_none=True) for message_payload in detail_payload.messages
+        ]
     return json.dumps(data, indent=2)
 
 
@@ -106,9 +96,11 @@ def _conv_to_yaml(conv: Conversation, fields: str | None) -> str:
     import yaml
 
     data = _conv_to_dict(conv, fields)
-    # For single conversation, also include full message content
-    if fields is None or "messages" in fields.split(","):
-        data["messages"] = [_serialize_message(msg) for msg in conv.messages]
+    if fields is None or "messages" in {field.strip() for field in fields.split(",")}:
+        detail_payload = ConversationDetailPayload.from_conversation(conv)
+        data["messages"] = [
+            model_json_document(message_payload, exclude_none=True) for message_payload in detail_payload.messages
+        ]
 
     return str(yaml.dump(data, default_flow_style=False, allow_unicode=True, sort_keys=False))
 
@@ -173,17 +165,6 @@ def _conv_to_plaintext(conv: Conversation) -> str:
             lines.append("")
 
     return "\n".join(lines).strip()
-
-
-def _serialize_message(message: Any) -> ConversationMessagePayload:
-    timestamp = message.timestamp
-    isoformat = getattr(timestamp, "isoformat", None)
-    return {
-        "id": str(message.id),
-        "role": str(message.role),
-        "text": message.text,
-        "timestamp": isoformat() if callable(isoformat) else None,
-    }
 
 
 def _yaml_safe(value: str) -> str:

@@ -35,6 +35,8 @@ from polylogue.cli.query_stats import (
 )
 from polylogue.logging import get_logger
 from polylogue.rendering.formatting import format_conversation
+from polylogue.schemas.json_types import JSONDocument
+from polylogue.surface_payloads import ConversationListRowPayload
 
 logger = get_logger(__name__)
 
@@ -268,16 +270,11 @@ def open_result(
 # ---------------------------------------------------------------------------
 
 
-def summary_to_dict(summary: ConversationSummary, message_count: int) -> dict[str, object]:
-    return {
-        "id": str(summary.id),
-        "provider": str(summary.provider),
-        "title": summary.display_title,
-        "date": summary.display_date.isoformat() if summary.display_date else None,
-        "tags": summary.tags,
-        "summary": summary.summary,
-        "messages": message_count,
-    }
+def summary_to_dict(summary: ConversationSummary, message_count: int) -> JSONDocument:
+    return ConversationListRowPayload.from_summary(
+        summary,
+        message_count=message_count,
+    ).selected()
 
 
 def format_summary_list(

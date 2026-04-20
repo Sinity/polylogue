@@ -16,6 +16,8 @@ from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.types import AppEnv
 from polylogue.lib.query_spec import ConversationQuerySpec, QuerySpecError
 from polylogue.logging import get_logger
+from polylogue.schemas.json_types import JSONDocument
+from polylogue.surface_payloads import ConversationListRowPayload
 from polylogue.sync_bridge import run_coroutine_sync
 
 logger = get_logger(__name__)
@@ -90,16 +92,11 @@ def result_date(result: Conversation | ConversationSummary) -> datetime | None:
     return None
 
 
-def summary_to_dict(summary: ConversationSummary, message_count: int) -> dict[str, object]:
-    return {
-        "id": str(summary.id),
-        "provider": str(summary.provider),
-        "title": summary.display_title,
-        "date": summary.display_date.isoformat() if summary.display_date else None,
-        "tags": summary.tags,
-        "summary": summary.summary,
-        "messages": message_count,
-    }
+def summary_to_dict(summary: ConversationSummary, message_count: int) -> JSONDocument:
+    return ConversationListRowPayload.from_summary(
+        summary,
+        message_count=message_count,
+    ).selected()
 
 
 # ---------------------------------------------------------------------------
