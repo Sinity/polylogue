@@ -51,8 +51,8 @@ def test_polylogue_doctor_targeted_execution_uses_maintenance_target_catalog_met
     assert execution.metadata.operation_targets == (
         "materialize-action-events",
         "materialize-session-products",
-        "project-action-event-health",
-        "project-session-product-health",
+        "project-action-event-readiness",
+        "project-session-product-readiness",
     )
     assert execution.metadata.maintenance_targets == (
         "action_event_read_model",
@@ -63,7 +63,7 @@ def test_polylogue_doctor_targeted_execution_uses_maintenance_target_catalog_met
 def test_polylogue_doctor_target_aliases_resolve_through_catalog() -> None:
     execution = polylogue_execution("doctor", "--target", "action_events")
 
-    assert execution.metadata.operation_targets == ("project-action-event-health",)
+    assert execution.metadata.operation_targets == ("project-action-event-readiness",)
     assert execution.metadata.maintenance_targets == ("action_event_read_model",)
 
 
@@ -171,10 +171,10 @@ def test_composite_execution_has_members_only() -> None:
 
 
 def test_runner_execution_has_runner_only() -> None:
-    execution = runner_execution("startup-health")
+    execution = runner_execution("startup-readiness")
 
     assert execution.kind is ExecutionKind.RUNNER
     assert execution.is_runner is True
     assert execution.command is None
     assert execution.pytest_targets == ()
-    assert execution.runner == "startup-health"
+    assert execution.runner == "startup-readiness"

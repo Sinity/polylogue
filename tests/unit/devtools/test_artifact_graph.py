@@ -15,7 +15,7 @@ def test_render_artifact_graph_text_mentions_the_current_runtime_paths() -> None
     assert "Runtime Scenario Coverage:" in rendered
     assert "raw-reparse-loop" in rendered
     assert "raw-archive-ingest-loop" in rendered
-    assert "message-fts-health-loop" in rendered
+    assert "message-fts-readiness-loop" in rendered
     assert "conversation-query-loop" in rendered
     assert "action-event-repair-loop" in rendered
     assert "session-product-repair-loop" in rendered
@@ -39,13 +39,13 @@ def test_render_artifact_graph_text_mentions_the_current_runtime_paths() -> None
     assert "query-work-threads" in rendered
     assert "query-session-product-status" in rendered
     assert "query-archive-debt" in rendered
-    assert "project-action-event-health" in rendered
-    assert "project-session-product-health" in rendered
-    assert "project-archive-health" in rendered
+    assert "project-action-event-readiness" in rendered
+    assert "project-session-product-readiness" in rendered
+    assert "project-archive-readiness" in rendered
     assert "json-doctor-action-event-preview" in rendered
     assert "json-doctor-session-products-preview" in rendered
     assert "run-preview-reparse" in rendered
-    assert "startup-health" in rendered
+    assert "startup-readiness" in rendered
     assert "retrieval-checks" in rendered
     assert "synthetic-benchmark:action-event-materialization" in rendered
     assert "synthetic-benchmark:session-product-materialization" in rendered
@@ -70,7 +70,7 @@ def test_render_artifact_graph_json_is_machine_readable() -> None:
     assert {path["name"] for path in payload["paths"]} >= {
         "raw-reparse-loop",
         "raw-archive-ingest-loop",
-        "message-fts-health-loop",
+        "message-fts-readiness-loop",
         "conversation-query-loop",
         "action-event-repair-loop",
         "session-product-repair-loop",
@@ -111,7 +111,7 @@ def test_render_artifact_graph_json_is_machine_readable() -> None:
         "generated.json-contract",
     ) in {
         (ref["source"], ref["name"], ref["origin"])
-        for ref in payload["scenario_coverage"]["operations"]["project-action-event-health"]
+        for ref in payload["scenario_coverage"]["operations"]["project-action-event-readiness"]
     }
     assert (
         "exercise",
@@ -134,7 +134,7 @@ def test_render_artifact_graph_json_is_machine_readable() -> None:
         "generated.json-contract",
     ) in {
         (ref["source"], ref["name"], ref["origin"])
-        for ref in payload["scenario_coverage"]["operations"]["project-session-product-health"]
+        for ref in payload["scenario_coverage"]["operations"]["project-session-product-readiness"]
     }
     assert (
         "exercise",
@@ -198,10 +198,12 @@ def test_render_artifact_graph_json_is_machine_readable() -> None:
     assert any(
         ref["name"] == "retrieval-checks" for ref in payload["scenario_coverage"]["operations"]["query-conversations"]
     )
-    assert any(ref["name"] == "startup-health" for ref in payload["scenario_coverage"]["artifacts"]["archive_health"])
     assert any(
-        ref["name"] == "live-health-json"
-        for ref in payload["scenario_coverage"]["operations"]["project-archive-health"]
+        ref["name"] == "startup-readiness" for ref in payload["scenario_coverage"]["artifacts"]["archive_readiness"]
+    )
+    assert any(
+        ref["name"] == "live-readiness-json"
+        for ref in payload["scenario_coverage"]["operations"]["project-archive-readiness"]
     )
     assert (
         "synthetic-benchmark",
@@ -302,7 +304,7 @@ def test_render_artifact_graph_json_is_machine_readable() -> None:
     assert payload["scenario_coverage"]["paths"]["session-product-status-query-loop"]["complete"] is True
     assert payload["scenario_coverage"]["paths"]["archive-debt-query-loop"]["complete"] is True
     assert payload["scenario_coverage"]["paths"]["action-event-repair-loop"]["complete"] is True
-    assert payload["scenario_coverage"]["paths"]["message-fts-health-loop"]["complete"] is True
+    assert payload["scenario_coverage"]["paths"]["message-fts-readiness-loop"]["complete"] is True
     assert payload["scenario_coverage"]["paths"]["conversation-query-loop"]["complete"] is True
     assert payload["scenario_coverage"]["paths"]["raw-reparse-loop"]["complete"] is True
     assert payload["scenario_coverage"]["paths"]["raw-archive-ingest-loop"]["complete"] is True

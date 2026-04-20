@@ -94,7 +94,7 @@ VALIDATION_FAMILIES: tuple[ValidationLaneFamily, ...] = (
                     "live-products-work-events",
                     "live-products-phases",
                     "live-embed-stats",
-                    "live-health-json",
+                    "live-readiness-json",
                     "maintenance-memory-budget",
                 ),
             ),
@@ -136,7 +136,7 @@ VALIDATION_FAMILIES: tuple[ValidationLaneFamily, ...] = (
         stages=(
             ValidationLaneStageSpec(
                 suffix="live",
-                description="Bounded live archive lane for enrichment products, retrieval bands, and health surfaces",
+                description="Bounded live archive lane for enrichment products, retrieval bands, and readiness surfaces",
                 timeout_s=2400,
                 members=(
                     "live-session-product-repair",
@@ -144,7 +144,7 @@ VALIDATION_FAMILIES: tuple[ValidationLaneFamily, ...] = (
                     "live-products-profiles-inference",
                     "live-products-enrichments",
                     "live-embed-stats",
-                    "live-health-json",
+                    "live-readiness-json",
                     "memory-budget",
                 ),
             ),
@@ -186,7 +186,7 @@ STANDALONE_COMPOSITE_LANES = {
         "live-embed-stats",
         "live-retrieval-checks",
         "live-products-status",
-        "live-health-json",
+        "live-readiness-json",
     ),
     "live-products-small": composite_lane(
         "live-products-small",
@@ -221,7 +221,7 @@ STANDALONE_COMPOSITE_LANES = {
         "live-maintenance-small",
         "Bounded live archive lane for health, maintenance preview, and maintenance memory budget",
         720,
-        "live-health-json",
+        "live-readiness-json",
         "live-maintenance-preview",
         "maintenance-memory-budget",
     ),

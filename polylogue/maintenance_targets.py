@@ -27,12 +27,12 @@ class MaintenanceTargetSpec:
     category: MaintenanceCategory
     destructive: bool
     description: str
-    include_preview_when_healthy: bool = False
-    doctor_health_operation: str = ""
+    include_preview_when_ready: bool = False
+    doctor_readiness_operation: str = ""
     doctor_repair_operation: str = ""
-    include_in_archive_health: bool = False
-    archive_health_unhealthy_status: OutcomeStatus | None = None
-    archive_health_requires_deep: bool = False
+    include_in_archive_readiness: bool = False
+    archive_readiness_unready_status: OutcomeStatus | None = None
+    archive_readiness_requires_deep: bool = False
     aliases: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
@@ -42,14 +42,14 @@ class MaintenanceTargetSpec:
             "category": self.category.value,
             "destructive": self.destructive,
             "description": self.description,
-            "include_preview_when_healthy": self.include_preview_when_healthy,
-            "doctor_health_operation": self.doctor_health_operation,
+            "include_preview_when_ready": self.include_preview_when_ready,
+            "doctor_readiness_operation": self.doctor_readiness_operation,
             "doctor_repair_operation": self.doctor_repair_operation,
-            "include_in_archive_health": self.include_in_archive_health,
-            "archive_health_unhealthy_status": (
-                self.archive_health_unhealthy_status.value if self.archive_health_unhealthy_status else None
+            "include_in_archive_readiness": self.include_in_archive_readiness,
+            "archive_readiness_unready_status": (
+                self.archive_readiness_unready_status.value if self.archive_readiness_unready_status else None
             ),
-            "archive_health_requires_deep": self.archive_health_requires_deep,
+            "archive_readiness_requires_deep": self.archive_readiness_requires_deep,
             "aliases": list(self.aliases),
         }
 
@@ -87,13 +87,13 @@ class MaintenanceTargetCatalog:
         return tuple(resolved)
 
     def preview_target_names(self) -> tuple[str, ...]:
-        return tuple(spec.name for spec in self.specs if spec.include_preview_when_healthy)
+        return tuple(spec.name for spec in self.specs if spec.include_preview_when_ready)
 
-    def archive_health_specs(self, *, deep: bool) -> tuple[MaintenanceTargetSpec, ...]:
+    def archive_readiness_specs(self, *, deep: bool) -> tuple[MaintenanceTargetSpec, ...]:
         return tuple(
             spec
             for spec in self.specs
-            if spec.include_in_archive_health and (deep or not spec.archive_health_requires_deep)
+            if spec.include_in_archive_readiness and (deep or not spec.archive_readiness_requires_deep)
         )
 
     def maintenance_targets_for_operation_names(
@@ -103,7 +103,7 @@ class MaintenanceTargetCatalog:
         return tuple(
             spec
             for spec in self.specs
-            if spec.doctor_health_operation in operations or spec.doctor_repair_operation in operations
+            if spec.doctor_readiness_operation in operations or spec.doctor_repair_operation in operations
         )
 
     def repair_hint(self, names: tuple[str, ...], *, include_run_all: bool = False) -> str:
@@ -116,9 +116,9 @@ class MaintenanceTargetCatalog:
             return f"Run {commands[0]}."
         return f"Run {', '.join(commands[:-1])}, or {commands[-1]}."
 
-    def doctor_health_operations_for_names(self, names: tuple[str, ...]) -> tuple[str, ...]:
+    def doctor_readiness_operations_for_names(self, names: tuple[str, ...]) -> tuple[str, ...]:
         return _unique(
-            tuple(spec.doctor_health_operation for spec in self.resolve(names) if spec.doctor_health_operation)
+            tuple(spec.doctor_readiness_operation for spec in self.resolve(names) if spec.doctor_readiness_operation)
         )
 
     def doctor_repair_operations_for_names(self, names: tuple[str, ...]) -> tuple[str, ...]:
@@ -154,8 +154,8 @@ MAINTENANCE_TARGET_SPECS: tuple[MaintenanceTargetSpec, ...] = (
         category=MaintenanceCategory.DERIVED_REPAIR,
         destructive=False,
         description="Repair or rebuild the derived session-product read models.",
-        include_preview_when_healthy=True,
-        doctor_health_operation="project-session-product-health",
+        include_preview_when_ready=True,
+        doctor_readiness_operation="project-session-product-readiness",
         doctor_repair_operation="materialize-session-products",
     ),
     MaintenanceTargetSpec(
@@ -164,8 +164,8 @@ MAINTENANCE_TARGET_SPECS: tuple[MaintenanceTargetSpec, ...] = (
         category=MaintenanceCategory.DERIVED_REPAIR,
         destructive=False,
         description="Repair or rebuild the action-event read model and its FTS projection.",
-        include_preview_when_healthy=True,
-        doctor_health_operation="project-action-event-health",
+        include_preview_when_ready=True,
+        doctor_readiness_operation="project-action-event-readiness",
         doctor_repair_operation="materialize-action-events",
         aliases=("action_events",),
     ),
@@ -175,7 +175,7 @@ MAINTENANCE_TARGET_SPECS: tuple[MaintenanceTargetSpec, ...] = (
         category=MaintenanceCategory.DERIVED_REPAIR,
         destructive=False,
         description="Repair lexical message FTS rows that are missing or dangling.",
-        include_preview_when_healthy=True,
+        include_preview_when_ready=True,
         doctor_repair_operation="index-message-fts",
     ),
     MaintenanceTargetSpec(
@@ -191,8 +191,8 @@ MAINTENANCE_TARGET_SPECS: tuple[MaintenanceTargetSpec, ...] = (
         category=MaintenanceCategory.ARCHIVE_CLEANUP,
         destructive=True,
         description="Delete message rows that reference missing conversations.",
-        include_in_archive_health=True,
-        archive_health_unhealthy_status=OutcomeStatus.ERROR,
+        include_in_archive_readiness=True,
+        archive_readiness_unready_status=OutcomeStatus.ERROR,
     ),
     MaintenanceTargetSpec(
         name="orphaned_content_blocks",
@@ -200,9 +200,9 @@ MAINTENANCE_TARGET_SPECS: tuple[MaintenanceTargetSpec, ...] = (
         category=MaintenanceCategory.ARCHIVE_CLEANUP,
         destructive=True,
         description="Delete content blocks that reference missing conversations or messages.",
-        include_in_archive_health=True,
-        archive_health_unhealthy_status=OutcomeStatus.ERROR,
-        archive_health_requires_deep=True,
+        include_in_archive_readiness=True,
+        archive_readiness_unready_status=OutcomeStatus.ERROR,
+        archive_readiness_requires_deep=True,
     ),
     MaintenanceTargetSpec(
         name="empty_conversations",
@@ -210,8 +210,8 @@ MAINTENANCE_TARGET_SPECS: tuple[MaintenanceTargetSpec, ...] = (
         category=MaintenanceCategory.ARCHIVE_CLEANUP,
         destructive=True,
         description="Delete conversations that no longer contain any messages.",
-        include_in_archive_health=True,
-        archive_health_unhealthy_status=OutcomeStatus.WARNING,
+        include_in_archive_readiness=True,
+        archive_readiness_unready_status=OutcomeStatus.WARNING,
     ),
     MaintenanceTargetSpec(
         name="orphaned_attachments",
@@ -219,8 +219,8 @@ MAINTENANCE_TARGET_SPECS: tuple[MaintenanceTargetSpec, ...] = (
         category=MaintenanceCategory.ARCHIVE_CLEANUP,
         destructive=True,
         description="Delete orphaned attachment references and unreferenced attachment rows.",
-        include_in_archive_health=True,
-        archive_health_unhealthy_status=OutcomeStatus.ERROR,
+        include_in_archive_readiness=True,
+        archive_readiness_unready_status=OutcomeStatus.ERROR,
     ),
 )
 

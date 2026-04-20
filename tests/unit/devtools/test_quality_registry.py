@@ -22,7 +22,7 @@ def test_build_quality_registry_exposes_live_catalogs() -> None:
     assert any(entry.name == "pipeline" for entry in registry.benchmark_campaigns)
     assert any(entry.name == "action-event-materialization" for entry in registry.synthetic_benchmark_campaigns)
     assert any(entry.name == "session-product-materialization" for entry in registry.synthetic_benchmark_campaigns)
-    assert any(entry.name == "startup-health" for entry in registry.synthetic_benchmark_campaigns)
+    assert any(entry.name == "startup-readiness" for entry in registry.synthetic_benchmark_campaigns)
     assert any(
         scenario.provider == "chatgpt" and scenario.package_version == "v1"
         for scenario in registry.inferred_corpus_scenarios
@@ -65,7 +65,7 @@ def test_build_quality_registry_exposes_live_catalogs() -> None:
     assert live_session_product_repair.operation_targets == (
         "cli.json-contract",
         "materialize-session-products",
-        "project-session-product-health",
+        "project-session-product-readiness",
     )
     search_filters = next(entry for entry in registry.benchmark_campaigns if entry.name == "search-filters")
     assert search_filters.origin == "authored.benchmark-domain"
@@ -79,18 +79,20 @@ def test_build_quality_registry_exposes_live_catalogs() -> None:
         "benchmark.repair.action-events",
     )
     assert pipeline.tags == ("benchmark", "pipeline")
-    startup_health = next(entry for entry in registry.synthetic_benchmark_campaigns if entry.name == "startup-health")
+    startup_health = next(
+        entry for entry in registry.synthetic_benchmark_campaigns if entry.name == "startup-readiness"
+    )
     assert startup_health.origin == "authored.synthetic-benchmark"
-    assert startup_health.summary_metric == "total_health_s"
+    assert startup_health.summary_metric == "total_readiness_s"
     assert startup_health.summary_label == "s"
-    assert startup_health.artifact_targets == ("message_fts", "archive_health")
-    assert startup_health.operation_targets == ("project-archive-health", "health.startup.synthetic")
-    assert startup_health.tags == ("benchmark", "synthetic", "health")
+    assert startup_health.artifact_targets == ("message_fts", "archive_readiness")
+    assert startup_health.operation_targets == ("project-archive-readiness", "readiness.startup.synthetic")
+    assert startup_health.tags == ("benchmark", "synthetic", "readiness")
     retrieval_checks = next(entry for entry in registry.contract_lanes if entry.name == "retrieval-checks")
-    assert retrieval_checks.path_targets == ("conversation-query-loop", "message-fts-health-loop")
-    assert retrieval_checks.artifact_targets == ("message_fts", "conversation_query_results", "archive_health")
-    assert retrieval_checks.operation_targets == ("query-conversations", "project-archive-health")
-    assert retrieval_checks.tags == ("contract", "retrieval", "health")
+    assert retrieval_checks.path_targets == ("conversation-query-loop", "message-fts-readiness-loop")
+    assert retrieval_checks.artifact_targets == ("message_fts", "conversation_query_results", "archive_readiness")
+    assert retrieval_checks.operation_targets == ("query-conversations", "project-archive-readiness")
+    assert retrieval_checks.tags == ("contract", "retrieval", "readiness")
     action_events = next(
         entry for entry in registry.synthetic_benchmark_campaigns if entry.name == "action-event-materialization"
     )
@@ -135,10 +137,10 @@ def test_build_quality_registry_exposes_live_catalogs() -> None:
     assert action_event_preview.artifact_targets == (
         "action_event_rows",
         "action_event_fts",
-        "action_event_health",
+        "action_event_readiness",
     )
     assert "cli.json-contract" in action_event_preview.operation_targets
-    assert "project-action-event-health" in action_event_preview.operation_targets
+    assert "project-action-event-readiness" in action_event_preview.operation_targets
     assert action_event_preview.tags == ("generated", "json-contract", "maintenance", "action-events")
     frontier_local = next(entry for entry in registry.composite_lanes if entry.name == "frontier-local")
     archive_intelligence = next(entry for entry in registry.composite_lanes if entry.name == "archive-intelligence")
@@ -146,7 +148,7 @@ def test_build_quality_registry_exposes_live_catalogs() -> None:
     assert "cli.json-contract" in frontier_local.operation_targets
     assert "cli.help" in frontier_local.operation_targets
     assert "query-conversations" in archive_intelligence.operation_targets
-    assert "project-archive-health" in archive_intelligence.operation_targets
+    assert "project-archive-readiness" in archive_intelligence.operation_targets
     assert runtime_substrate.family == "runtime-substrate"
     runtime_projection = next(
         entry for entry in registry.scenario_projections if entry.name == "runtime-substrate-hardening"

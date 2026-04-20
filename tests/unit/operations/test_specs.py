@@ -21,12 +21,12 @@ def test_runtime_operation_catalog_covers_the_current_runtime_paths() -> None:
         "query-conversations",
         "render-conversations",
         "publish-site",
-        "project-action-event-health",
+        "project-action-event-readiness",
         "materialize-session-products",
-        "project-retrieval-band-health",
+        "project-retrieval-band-readiness",
         "query-embedding-status",
-        "project-session-product-health",
-        "project-archive-health",
+        "project-session-product-readiness",
+        "project-archive-readiness",
         "query-session-profiles",
         "query-session-work-events",
         "query-session-phases",
@@ -84,11 +84,11 @@ def test_runtime_operation_catalog_covers_the_current_runtime_paths() -> None:
     assert "session_profile_rows" in specs["materialize-session-products"].produces
     assert "work_thread_fts" in specs["materialize-session-products"].produces
     assert specs["materialize-session-products"].path_targets == ("session-product-repair-loop",)
-    assert specs["project-action-event-health"].previewable is True
-    assert specs["project-retrieval-band-health"].previewable is True
-    assert specs["project-retrieval-band-health"].path_targets == ("retrieval-band-health-loop",)
+    assert specs["project-action-event-readiness"].previewable is True
+    assert specs["project-retrieval-band-readiness"].previewable is True
+    assert specs["project-retrieval-band-readiness"].path_targets == ("retrieval-band-readiness-loop",)
     assert specs["query-embedding-status"].path_targets == ("embedding-status-query-loop",)
-    assert specs["project-session-product-health"].previewable is True
+    assert specs["project-session-product-readiness"].previewable is True
     assert specs["query-session-profiles"].path_targets == ("session-profile-query-loop",)
     assert specs["query-session-enrichments"].path_targets == ("session-enrichment-query-loop",)
     assert specs["query-session-work-events"].path_targets == ("session-work-event-query-loop",)
@@ -99,7 +99,10 @@ def test_runtime_operation_catalog_covers_the_current_runtime_paths() -> None:
     assert specs["compile-inferred-corpus-scenarios"].path_targets == ("inferred-corpus-compilation-loop",)
     assert specs["query-schema-catalog"].path_targets == ("schema-list-query-loop",)
     assert specs["query-schema-explanations"].path_targets == ("schema-explain-query-loop",)
-    assert specs["project-archive-health"].path_targets == ("message-fts-health-loop", "retrieval-band-health-loop")
+    assert specs["project-archive-readiness"].path_targets == (
+        "message-fts-readiness-loop",
+        "retrieval-band-readiness-loop",
+    )
 
 
 def test_runtime_operation_catalog_has_declared_surfaces_and_code_refs() -> None:
@@ -111,7 +114,7 @@ def test_runtime_operation_catalog_has_declared_surfaces_and_code_refs() -> None
 def test_declared_operation_catalog_contains_runtime_and_control_plane_operations() -> None:
     catalog = build_declared_operation_catalog()
 
-    assert "project-action-event-health" in catalog.names()
+    assert "project-action-event-readiness" in catalog.names()
     assert "benchmark.storage.crud" in catalog.names()
     assert "cli.json-contract" in catalog.names()
 
@@ -119,6 +122,6 @@ def test_declared_operation_catalog_contains_runtime_and_control_plane_operation
 def test_operation_catalog_resolve_filters_unknown_names() -> None:
     catalog = build_declared_operation_catalog()
 
-    assert tuple(spec.name for spec in catalog.resolve(("project-action-event-health", "missing"))) == (
-        "project-action-event-health",
+    assert tuple(spec.name for spec in catalog.resolve(("project-action-event-readiness", "missing"))) == (
+        "project-action-event-readiness",
     )

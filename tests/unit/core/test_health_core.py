@@ -1,4 +1,4 @@
-"""Unit contracts for health reporting (consolidated module)."""
+"""Unit contracts for readiness reporting (consolidated module)."""
 
 from __future__ import annotations
 
@@ -30,9 +30,9 @@ import pytest
     ],
 )
 def test_health_check_dataclass_contract(name: str, status_name: str, detail: str, expected: dict[str, object]) -> None:
-    from polylogue.health import HealthCheck, VerifyStatus
+    from polylogue.readiness import ReadinessCheck, VerifyStatus
 
-    check = HealthCheck(name=name, status=getattr(VerifyStatus, status_name), summary=detail)
+    check = ReadinessCheck(name=name, status=getattr(VerifyStatus, status_name), summary=detail)
     assert {
         "name": check.name,
         "status": check.status.value,
@@ -99,9 +99,9 @@ def test_run_health_core_contract(
     expected_checks: set[str],
 ) -> None:
     from polylogue.config import get_config
-    from polylogue.health import run_archive_health
+    from polylogue.readiness import run_archive_readiness
 
-    report = run_archive_health(get_config(), deep=deep)
+    report = run_archive_readiness(get_config(), deep=deep)
     names = {check.name for check in report.checks}
     assert report.timestamp > 0
     assert expected_checks.issubset(names)
@@ -125,8 +125,8 @@ def test_run_health_embedding_status_contract(
     expected_text: str,
 ) -> None:
     from polylogue.config import get_config
-    from polylogue.health import run_archive_health
     from polylogue.maintenance_models import DerivedModelStatus
+    from polylogue.readiness import run_archive_readiness
     from tests.infra.storage_records import ConversationBuilder
 
     ConversationBuilder(cli_workspace["db_path"], "health-embed-1").add_message(text="hello").save()
@@ -206,7 +206,7 @@ def test_run_health_embedding_status_contract(
             ),
         },
     ):
-        report = run_archive_health(get_config())
+        report = run_archive_readiness(get_config())
 
     check = next(c for c in report.checks if c.name == "transcript_embeddings")
     assert check.status.value == expected_status
@@ -219,7 +219,7 @@ def test_run_health_embedding_status_contract(
 )
 def test_run_health_path_contracts(tmp_path: Path, path_name: str, missing: bool) -> None:
     from polylogue.config import Config, Source
-    from polylogue.health import VerifyStatus, run_archive_health
+    from polylogue.readiness import VerifyStatus, run_archive_readiness
 
     archive_root = tmp_path / "archive"
     render_root = tmp_path / "render"
@@ -228,7 +228,7 @@ def test_run_health_path_contracts(tmp_path: Path, path_name: str, missing: bool
     if path_name != "render_root" or not missing:
         render_root.mkdir(parents=True, exist_ok=True)
 
-    report = run_archive_health(
+    report = run_archive_readiness(
         Config(archive_root=archive_root, render_root=render_root, sources=[Source(name="test", path=tmp_path)])
     )
     check = next(c for c in report.checks if c.name == path_name)
@@ -237,17 +237,17 @@ def test_run_health_path_contracts(tmp_path: Path, path_name: str, missing: bool
 
 def test_run_health_includes_source_checks(cli_workspace: Mapping[str, Path]) -> None:
     from polylogue.config import get_config
-    from polylogue.health import run_archive_health
+    from polylogue.readiness import run_archive_readiness
 
     config = get_config()
-    report = run_archive_health(config)
+    report = run_archive_readiness(config)
     source_checks = [check for check in report.checks if check.name.startswith("source:")]
     assert len(source_checks) >= len(config.sources)
 
 
-def test_run_archive_health_reports_busy_archive_with_operator_message(tmp_path: Path) -> None:
+def test_run_archive_readiness_reports_busy_archive_with_operator_message(tmp_path: Path) -> None:
     from polylogue.config import Config, Source
-    from polylogue.health import run_archive_health
+    from polylogue.readiness import run_archive_readiness
 
     archive_root = tmp_path / "archive"
     render_root = tmp_path / "render"
@@ -260,7 +260,7 @@ def test_run_archive_health_reports_busy_archive_with_operator_message(tmp_path:
         "polylogue.storage.backends.connection.open_connection",
         side_effect=sqlite3.OperationalError("database is locked"),
     ):
-        report = run_archive_health(config)
+        report = run_archive_readiness(config)
 
     database_check = next(check for check in report.checks if check.name == "database")
     index_check = next(check for check in report.checks if check.name == "index")
@@ -275,13 +275,13 @@ def test_run_archive_health_reports_busy_archive_with_operator_message(tmp_path:
     )
 
 
-def test_run_archive_health_reports_legacy_inline_raw_layout(
+def test_run_archive_readiness_reports_legacy_inline_raw_layout(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import polylogue.paths
     from polylogue.config import get_config
-    from polylogue.health import VerifyStatus, run_archive_health
+    from polylogue.readiness import VerifyStatus, run_archive_readiness
 
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
@@ -317,7 +317,7 @@ def test_run_archive_health_reports_legacy_inline_raw_layout(
     conn.commit()
     conn.close()
 
-    report = run_archive_health(get_config())
+    report = run_archive_readiness(get_config())
 
     database_check = next(check for check in report.checks if check.name == "database")
     index_check = next(check for check in report.checks if check.name == "index")
@@ -327,28 +327,28 @@ def test_run_archive_health_reports_legacy_inline_raw_layout(
 
 
 @pytest.mark.parametrize("deep", [False, True])
-def test_get_health_contract(cli_workspace: Mapping[str, Path], deep: bool) -> None:
+def test_get_readiness_contract(cli_workspace: Mapping[str, Path], deep: bool) -> None:
     from polylogue.config import get_config
-    from polylogue.health import get_health
+    from polylogue.readiness import get_readiness
 
     config = get_config()
-    report = get_health(config, deep=deep)
+    report = get_readiness(config, deep=deep)
     assert report.timestamp > 0
 
 
-def test_quick_health_summary_returns_live_status(tmp_path: Path) -> None:
-    from polylogue.health import quick_health_summary
+def test_quick_readiness_summary_returns_live_status(tmp_path: Path) -> None:
+    from polylogue.readiness import quick_readiness_summary
 
-    result = quick_health_summary(tmp_path)
+    result = quick_readiness_summary(tmp_path)
     # With a valid DB, returns "OK (N conversations)"; without, returns "unavailable (...)"
     assert isinstance(result, str)
     assert "OK" in result or "unavailable" in result or "schema" in result
 
 
 def test_verify_status_contract() -> None:
-    from polylogue.health import HEALTH_TTL_SECONDS, VerifyStatus
+    from polylogue.readiness import READINESS_TTL_SECONDS, VerifyStatus
 
     assert str(VerifyStatus.OK) == "ok"
     assert str(VerifyStatus.WARNING) == "warning"
     assert str(VerifyStatus.ERROR) == "error"
-    assert 60 <= HEALTH_TTL_SECONDS <= 3600
+    assert 60 <= READINESS_TTL_SECONDS <= 3600

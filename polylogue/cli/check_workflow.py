@@ -18,7 +18,7 @@ from polylogue.cli.check_models import CheckCommandResult, VacuumResult
 from polylogue.cli.check_validation import validate_check_options as _validate_check_options
 from polylogue.cli.helpers import load_effective_config
 from polylogue.cli.types import AppEnv
-from polylogue.health import get_health, run_runtime_health
+from polylogue.readiness import get_readiness, run_runtime_readiness
 from polylogue.schemas.operator_workflow import (
     list_artifact_cohorts,
     list_artifact_observations,
@@ -91,9 +91,9 @@ def _runtime_only_requested(options: CheckCommandOptions) -> bool:
 def run_check_workflow(env: AppEnv, options: CheckCommandOptions) -> CheckCommandResult:
     config = load_effective_config(env)
     if _runtime_only_requested(options):
-        return CheckCommandResult(report=run_runtime_health(config))
+        return CheckCommandResult(report=run_runtime_readiness(config))
 
-    report = get_health(
+    report = get_readiness(
         config,
         deep=options.deep,
         probe_only=not (options.deep or options.repair or options.cleanup),
@@ -101,7 +101,7 @@ def run_check_workflow(env: AppEnv, options: CheckCommandOptions) -> CheckComman
     result = CheckCommandResult(report=report)
 
     if options.runtime:
-        result.runtime_report = run_runtime_health(config)
+        result.runtime_report = run_runtime_readiness(config)
 
     if options.check_blob:
         from polylogue.storage.blob_store import get_blob_store

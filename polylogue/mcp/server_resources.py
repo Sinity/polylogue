@@ -8,7 +8,7 @@ from polylogue.mcp.payloads import (
     MCPArchiveStatsPayload,
     MCPConversationDetailPayload,
     MCPErrorPayload,
-    MCPHealthReportPayload,
+    MCPReadinessReportPayload,
     MCPTagCountsPayload,
     conversation_summary_list_payload,
 )
@@ -52,14 +52,14 @@ def register_resources(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         tags = await hooks.get_tag_store().list_tags()
         return hooks.json_payload(MCPTagCountsPayload(root=tags))
 
-    @mcp.resource("polylogue://health")
-    def health_resource() -> str:
+    @mcp.resource("polylogue://readiness")
+    def readiness_resource() -> str:
         try:
-            from polylogue.health import get_health
+            from polylogue.readiness import get_readiness
 
-            report = get_health(hooks.get_config())
+            report = get_readiness(hooks.get_config())
             return hooks.json_payload(
-                MCPHealthReportPayload.from_report(
+                MCPReadinessReportPayload.from_report(
                     report,
                     include_counts=False,
                     include_detail=False,

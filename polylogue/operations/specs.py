@@ -18,7 +18,7 @@ class OperationKind(str, Enum):
     CLI = "cli"
     BENCHMARK = "benchmark"
     QUERY = "query"
-    HEALTHCHECK = "healthcheck"
+    READINESSCHECK = "readinesscheck"
 
 
 @dataclass(frozen=True, slots=True)
@@ -134,7 +134,7 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         description="Build or repair lexical message FTS rows from persisted archive messages.",
         consumes=("message_source_rows",),
         produces=("message_fts",),
-        path_targets=("message-fts-health-loop", "conversation-query-loop"),
+        path_targets=("message-fts-readiness-loop", "conversation-query-loop"),
         code_refs=(
             "polylogue.storage.fts_lifecycle.rebuild_fts_index_sync",
             "polylogue.storage.fts_lifecycle.repair_fts_index_sync",
@@ -219,11 +219,11 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         mutates_state=True,
     ),
     OperationSpec(
-        name="project-action-event-health",
+        name="project-action-event-readiness",
         kind=OperationKind.PROJECTION,
-        description="Project health, debt, and repair semantics from action-event rows and FTS state.",
+        description="Project readiness, debt, and repair semantics from action-event rows and FTS state.",
         consumes=("action_event_rows", "action_event_fts"),
-        produces=("action_event_health",),
+        produces=("action_event_readiness",),
         path_targets=("action-event-repair-loop",),
         code_refs=(
             "polylogue.storage.derived_status",
@@ -263,18 +263,18 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         mutates_state=True,
     ),
     OperationSpec(
-        name="project-retrieval-band-health",
+        name="project-retrieval-band-readiness",
         kind=OperationKind.PROJECTION,
-        description="Project transcript/evidence/inference/enrichment retrieval readiness from embeddings and durable read-model health.",
+        description="Project transcript/evidence/inference/enrichment retrieval readiness from embeddings and durable read-model readiness.",
         consumes=(
             "embedding_metadata_rows",
             "embedding_status_rows",
             "message_embedding_vectors",
-            "action_event_health",
-            "session_product_health",
+            "action_event_readiness",
+            "session_product_readiness",
         ),
-        produces=("retrieval_band_health",),
-        path_targets=("retrieval-band-health-loop",),
+        produces=("retrieval_band_readiness",),
+        path_targets=("retrieval-band-readiness-loop",),
         code_refs=(
             "polylogue.storage.embedding_stats.read_embedding_stats_sync",
             "polylogue.storage.embedding_stats_support.build_retrieval_bands_from_status",
@@ -291,7 +291,7 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
             "embedding_metadata_rows",
             "embedding_status_rows",
             "message_embedding_vectors",
-            "retrieval_band_health",
+            "retrieval_band_readiness",
         ),
         produces=("embedding_status_results",),
         path_targets=("embedding-status-query-loop",),
@@ -303,11 +303,11 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         previewable=True,
     ),
     OperationSpec(
-        name="project-session-product-health",
+        name="project-session-product-readiness",
         kind=OperationKind.PROJECTION,
         description="Project readiness, debt, and stale-surface semantics from durable session-product rows and FTS state.",
         consumes=("session_product_rows", "session_product_fts"),
-        produces=("session_product_health",),
+        produces=("session_product_readiness",),
         path_targets=("session-product-repair-loop",),
         code_refs=(
             "polylogue.storage.session_product_status",
@@ -432,8 +432,8 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
     OperationSpec(
         name="query-session-product-status",
         kind=OperationKind.QUERY,
-        description="Resolve projected session-product status views from session-product health state.",
-        consumes=("session_product_health",),
+        description="Resolve projected session-product status views from session-product readiness state.",
+        consumes=("session_product_readiness",),
         produces=("session_product_status_results",),
         path_targets=("session-product-status-query-loop",),
         code_refs=(
@@ -461,8 +461,8 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
     OperationSpec(
         name="query-archive-debt",
         kind=OperationKind.QUERY,
-        description="Resolve archive debt views from projected derived-model health and maintenance state.",
-        consumes=("action_event_health", "session_product_health", "archive_health"),
+        description="Resolve archive debt views from projected derived-model readiness and maintenance state.",
+        consumes=("action_event_readiness", "session_product_readiness", "archive_readiness"),
         produces=("archive_debt_results",),
         path_targets=("archive-debt-query-loop",),
         code_refs=(
@@ -529,14 +529,14 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         previewable=True,
     ),
     OperationSpec(
-        name="project-archive-health",
+        name="project-archive-readiness",
         kind=OperationKind.PROJECTION,
-        description="Project archive-wide health and debt semantics from message FTS and durable derived-model readiness.",
-        consumes=("message_fts", "action_event_health", "session_product_health", "retrieval_band_health"),
-        produces=("archive_health",),
-        path_targets=("message-fts-health-loop", "retrieval-band-health-loop"),
+        description="Project archive-wide readiness and debt semantics from message FTS and durable derived-model readiness.",
+        consumes=("message_fts", "action_event_readiness", "session_product_readiness", "retrieval_band_readiness"),
+        produces=("archive_readiness",),
+        path_targets=("message-fts-readiness-loop", "retrieval-band-readiness-loop"),
         code_refs=(
-            "polylogue.health.run_archive_health",
+            "polylogue.readiness.run_archive_readiness",
             "polylogue.storage.derived_status.collect_derived_model_statuses_sync",
             "polylogue.storage.repair.collect_archive_debt_statuses_sync",
         ),
@@ -610,9 +610,9 @@ DECLARED_CONTROL_PLANE_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         previewable=True,
     ),
     OperationSpec(
-        name="health.startup.synthetic",
-        kind=OperationKind.HEALTHCHECK,
-        description="Benchmark startup health checks over a synthetic archive.",
+        name="readiness.startup.synthetic",
+        kind=OperationKind.READINESSCHECK,
+        description="Benchmark startup readiness checks over a synthetic archive.",
         surfaces=("synthetic-benchmark",),
         previewable=True,
     ),

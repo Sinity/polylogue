@@ -8,7 +8,7 @@ from polylogue.cli.check_models import CheckCommandResult
 from polylogue.cli.check_support import format_count_mapping, run_vacuum
 from polylogue.cli.check_workflow import CheckCommandOptions
 from polylogue.cli.types import AppEnv
-from polylogue.health import VerifyStatus
+from polylogue.readiness import VerifyStatus
 
 # ---------------------------------------------------------------------------
 # Support helpers
@@ -34,7 +34,7 @@ def status_icon(status: VerifyStatus, *, plain: bool) -> str:
 # ---------------------------------------------------------------------------
 
 
-def build_health_lines(
+def build_readiness_lines(
     env: AppEnv,
     result: CheckCommandResult,
     options: CheckCommandOptions,
@@ -191,7 +191,7 @@ def build_report_lines(
     options: CheckCommandOptions,
 ) -> list[str]:
     """Build the full plain-mode report body."""
-    lines = build_health_lines(env, result, options)
+    lines = build_readiness_lines(env, result, options)
     append_derived_model_lines(lines, result)
     append_schema_lines(lines, result)
     append_artifact_proof_lines(lines, result)
@@ -210,7 +210,7 @@ def emit_maintenance_output(
     result: CheckCommandResult,
     options: CheckCommandOptions,
 ) -> None:
-    """Render maintenance/correction output after the health report."""
+    """Render maintenance/correction output after the readiness report."""
     if result.maintenance_results is not None:
         click.echo("")
         mode_label = "Preview of maintenance" if options.preview else "Running maintenance"

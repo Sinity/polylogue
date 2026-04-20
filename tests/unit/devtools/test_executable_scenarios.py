@@ -172,18 +172,18 @@ def test_executable_scenario_infers_embed_stats_metadata_from_polylogue_executio
         execution=polylogue_execution("embed", "--stats", "--json"),
     )
 
-    assert scenario.path_targets == ("retrieval-band-health-loop", "embedding-status-query-loop")
+    assert scenario.path_targets == ("retrieval-band-readiness-loop", "embedding-status-query-loop")
     assert scenario.artifact_targets == (
         "embedding_metadata_rows",
         "embedding_status_rows",
         "message_embedding_vectors",
-        "action_event_health",
-        "session_product_health",
-        "retrieval_band_health",
+        "action_event_readiness",
+        "session_product_readiness",
+        "retrieval_band_readiness",
         "embedding_status_results",
     )
     assert scenario.operation_targets == (
-        "project-retrieval-band-health",
+        "project-retrieval-band-readiness",
         "query-embedding-status",
         "cli.json-contract",
     )

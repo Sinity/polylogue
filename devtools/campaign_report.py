@@ -61,8 +61,8 @@ def _pick_key_metric(result: CampaignResult) -> tuple[str, str]:
             return "total_wall_s", f"{m.get('total_wall_s', 0):.3f}s"
         case "filter-scan":
             return "list_50_wall_s", f"{m.get('list_50_wall_s', 0):.4f}s"
-        case "startup-health":
-            return "total_health_s", f"{m.get('total_health_s', 0):.4f}s"
+        case "startup-readiness":
+            return "total_readiness_s", f"{m.get('total_readiness_s', 0):.4f}s"
         case _:
             if m:
                 key = next(iter(m))
