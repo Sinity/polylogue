@@ -16,6 +16,7 @@ from polylogue.errors import PolylogueError
 from polylogue.ui.facade_console import ConsoleLike, PlainConsole
 from polylogue.ui.facade_prompts import (
     _NO_STUB_RESPONSE,
+    PromptStubEntry,
     consume_choose_stub,
     consume_confirm_stub,
     consume_input_stub,
@@ -62,7 +63,7 @@ class ConsoleFacade:
     prompt_stub_path: Path | None = None
     console: ConsoleLike = field(init=False)
     theme: Theme = field(init=False, repr=False)
-    _prompt_responses: deque[dict[str, object]] = field(init=False, repr=False)
+    _prompt_responses: deque[PromptStubEntry] = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
         self.theme = Theme(rich_theme_styles())
@@ -74,10 +75,10 @@ class ConsoleFacade:
         self._banner_box = box.DOUBLE
         self._prompt_responses = load_prompt_responses(UIError, prompt_stub_path=self.prompt_stub_path)
 
-    def _load_prompt_responses(self) -> object:
+    def _load_prompt_responses(self) -> deque[PromptStubEntry]:
         return load_prompt_responses(UIError, prompt_stub_path=self.prompt_stub_path)
 
-    def _pop_prompt_response(self, kind: str) -> object:
+    def _pop_prompt_response(self, kind: str) -> PromptStubEntry | None:
         return pop_prompt_response(self._prompt_responses, kind, UIError)
 
     def _require_plain_prompt_tty(self, prompt_topic: str) -> None:

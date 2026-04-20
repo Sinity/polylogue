@@ -5,45 +5,96 @@ from __future__ import annotations
 import json
 import sys
 from collections import deque
+from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final
 
 if TYPE_CHECKING:
     from polylogue.ui.facade import UIError
 
-_NO_STUB_RESPONSE = object()
+_PROMPT_STUB_SCALARS = (bool, int, float, str)
+
+
+@dataclass(frozen=True)
+class PromptStubEntry:
+    """Normalized prompt-stub entry loaded from a JSONL file."""
+
+    kind: str | None = None
+    use_default: bool = False
+    value: bool | int | float | str | None = None
+    has_value: bool = False
+    index: int | None = None
+
+    @classmethod
+    def from_json(cls, raw: object) -> PromptStubEntry | None:
+        if not isinstance(raw, dict):
+            return None
+        kind = raw.get("type")
+        entry_kind = kind if isinstance(kind, str) else None
+        use_default = bool(raw.get("use_default", False))
+        has_value = "value" in raw
+        raw_value = raw.get("value")
+        value: bool | int | float | str | None = (
+            raw_value if raw_value is None or isinstance(raw_value, _PROMPT_STUB_SCALARS) else str(raw_value)
+        )
+        return cls(
+            kind=entry_kind,
+            use_default=use_default,
+            value=value,
+            has_value=has_value,
+            index=_coerce_index(raw.get("index")),
+        )
+
+
+class _NoStubResponse:
+    __slots__ = ()
+
+
+_NO_STUB_RESPONSE: Final = _NoStubResponse()
+
+
+def _coerce_index(raw: object) -> int | None:
+    if isinstance(raw, int):
+        return raw
+    if isinstance(raw, str):
+        try:
+            return int(raw)
+        except ValueError:
+            return None
+    return None
 
 
 def load_prompt_responses(
     ui_error_cls: type[UIError],
     *,
     prompt_stub_path: Path | None = None,
-) -> deque[dict[str, object]]:
+) -> deque[PromptStubEntry]:
     if prompt_stub_path is None:
         return deque()
-    entries: deque[dict[str, object]] = deque()
+    entries: deque[PromptStubEntry] = deque()
     for line in prompt_stub_path.read_text(encoding="utf-8").splitlines():
         line = line.strip()
         if not line:
             continue
         try:
             data = json.loads(line)
-            if isinstance(data, dict):
-                entries.append(data)
+            entry = PromptStubEntry.from_json(data)
+            if entry is not None:
+                entries.append(entry)
         except json.JSONDecodeError as exc:
             raise ui_error_cls(f"Invalid prompt stub entry: {line}") from exc
     return entries
 
 
 def pop_prompt_response(
-    prompt_responses: deque[dict[str, object]],
+    prompt_responses: deque[PromptStubEntry],
     kind: str,
     ui_error_cls: type[UIError],
-) -> dict[str, object] | None:
+) -> PromptStubEntry | None:
     if not prompt_responses:
         return None
     entry = prompt_responses.popleft()
-    expected = entry.get("type")
+    expected = entry.kind
     if expected and expected != kind:
         raise ui_error_cls(f"Prompt stub expected '{expected}' but got '{kind}'")
     return entry
@@ -58,17 +109,17 @@ def require_plain_prompt_tty(prompt_topic: str, ui_error_cls: type[UIError]) -> 
 
 
 def consume_confirm_stub(
-    prompt_responses: deque[dict[str, object]],
+    prompt_responses: deque[PromptStubEntry],
     *,
     default: bool,
     ui_error_cls: type[UIError],
-) -> bool | object:
+) -> bool | _NoStubResponse:
     response = pop_prompt_response(prompt_responses, "confirm", ui_error_cls)
     if response is None:
         return _NO_STUB_RESPONSE
-    if response.get("use_default"):
+    if response.use_default:
         return default
-    value = response.get("value")
+    value = response.value
     if isinstance(value, bool):
         return value
     if isinstance(value, str):
@@ -81,46 +132,47 @@ def consume_confirm_stub(
 
 
 def consume_choose_stub(
-    prompt_responses: deque[dict[str, object]],
+    prompt_responses: deque[PromptStubEntry],
     options: list[str],
     ui_error_cls: type[UIError],
-) -> str | None | object:
+) -> str | None | _NoStubResponse:
     response = pop_prompt_response(prompt_responses, "choose", ui_error_cls)
     if response is None:
         return _NO_STUB_RESPONSE
-    if response.get("use_default"):
+    if response.use_default:
         return options[0] if options else None
-    if "value" in response:
-        value = response["value"]
-        if isinstance(value, str) and value in options:
-            return value
-    if "index" in response:
-        try:
-            index_val = response["index"]
-            idx: int | None = None
-            if isinstance(index_val, int):
-                idx = index_val
-            elif isinstance(index_val, str):
-                idx = int(index_val)
-            if idx is not None and 0 <= idx < len(options):
-                return options[idx]
-        except (KeyError, ValueError, TypeError):
-            pass
+    value = response.value
+    if isinstance(value, str) and value in options:
+        return value
+    if response.index is not None and 0 <= response.index < len(options):
+        return options[response.index]
     return _NO_STUB_RESPONSE
 
 
 def consume_input_stub(
-    prompt_responses: deque[dict[str, object]],
+    prompt_responses: deque[PromptStubEntry],
     *,
     default: str | None,
     ui_error_cls: type[UIError],
-) -> str | None | object:
+) -> str | None | _NoStubResponse:
     response = pop_prompt_response(prompt_responses, "input", ui_error_cls)
     if response is None:
         return _NO_STUB_RESPONSE
-    if response.get("use_default"):
+    if response.use_default:
         return default
-    if "value" in response:
-        value = response["value"]
+    if response.has_value:
+        value = response.value
         return None if value is None else str(value)
     return _NO_STUB_RESPONSE
+
+
+__all__ = [
+    "PromptStubEntry",
+    "_NO_STUB_RESPONSE",
+    "consume_choose_stub",
+    "consume_confirm_stub",
+    "consume_input_stub",
+    "load_prompt_responses",
+    "pop_prompt_response",
+    "require_plain_prompt_tty",
+]

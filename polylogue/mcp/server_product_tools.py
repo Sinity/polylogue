@@ -7,6 +7,8 @@ lookups) are registered directly.
 
 from __future__ import annotations
 
+import inspect
+from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
 from polylogue.mcp.payloads import MCPRootPayload
@@ -22,6 +24,84 @@ if TYPE_CHECKING:
     from polylogue.mcp.server_support import ServerCallbacks
 
 
+def _query_field_defaults(pt: ProductType) -> tuple[dict[str, object | None], dict[str, object]]:
+    query_model = pt.query_model
+    if query_model is None:
+        raise ValueError(f"Product type {pt.name} does not declare a query model")
+
+    defaults: dict[str, object | None] = {}
+    annotations: dict[str, object] = {}
+    for field_name, field_info in query_model.model_fields.items():
+        defaults[field_name] = None if field_info.is_required() else field_info.get_default(call_default_factory=True)
+        annotations[field_name] = field_info.annotation if field_info.annotation is not None else object
+    return defaults, annotations
+
+
+def _sanitize_offset(value: object) -> int:
+    if isinstance(value, bool):
+        return 0
+    if isinstance(value, (int, str, bytes, bytearray)):
+        return max(0, int(value))
+    return 0
+
+
+def _normalize_list_tool_kwargs(
+    hooks: ServerCallbacks,
+    kwargs: Mapping[str, object],
+) -> dict[str, object]:
+    normalized = dict(kwargs)
+    if "limit" in normalized:
+        normalized["limit"] = hooks.clamp_limit(normalized["limit"])
+    if "offset" in normalized:
+        normalized["offset"] = _sanitize_offset(normalized["offset"])
+    return normalized
+
+
+def _build_list_tool_parameters(
+    pt: ProductType,
+    *,
+    field_defaults: dict[str, object | None],
+    field_annotations: dict[str, object],
+) -> list[inspect.Parameter]:
+    params: list[inspect.Parameter] = []
+    for field_name in sorted(field_annotations):
+        if field_name == "limit":
+            params.append(
+                inspect.Parameter(
+                    field_name,
+                    inspect.Parameter.KEYWORD_ONLY,
+                    default=pt.mcp_default_limit,
+                    annotation=int,
+                )
+            )
+            continue
+        if field_name == "offset":
+            params.append(
+                inspect.Parameter(
+                    field_name,
+                    inspect.Parameter.KEYWORD_ONLY,
+                    default=0,
+                    annotation=int,
+                )
+            )
+            continue
+        params.append(
+            inspect.Parameter(
+                field_name,
+                inspect.Parameter.KEYWORD_ONLY,
+                default=field_defaults.get(field_name),
+                annotation=field_annotations[field_name],
+            )
+        )
+    return params
+
+
+def _wrapper_annotations(params: list[inspect.Parameter]) -> dict[str, object]:
+    annotations: dict[str, object] = {parameter.name: parameter.annotation for parameter in params}
+    annotations["return"] = str
+    return annotations
+
+
 def _register_list_tool(
     mcp: FastMCP,
     hooks: ServerCallbacks,
@@ -32,33 +112,18 @@ def _register_list_tool(
     query_model = pt.query_model
     if query_model is None:
         raise ValueError(f"Product type {pt.name} does not declare a query model")
-    query_fields = set(query_model.model_fields)
-
-    # Determine parameter defaults from the query class
-    field_defaults: dict[str, object | None] = {}
-    field_annotations: dict[str, object] = {}
-    for fname, finfo in query_model.model_fields.items():
-        if finfo.default is not None:
-            field_defaults[fname] = finfo.default
-        else:
-            field_defaults[fname] = None
-        field_annotations[fname] = finfo.annotation if finfo.annotation is not None else object
+    field_defaults, field_annotations = _query_field_defaults(pt)
+    params = _build_list_tool_parameters(
+        pt,
+        field_defaults=field_defaults,
+        field_annotations=field_annotations,
+    )
 
     async def tool_fn(**kwargs: object) -> str:
         async def run() -> str:
             ops = hooks.get_archive_ops()
-            # Apply limit clamping and offset sanitization
-            if "limit" in kwargs:
-                kwargs["limit"] = hooks.clamp_limit(kwargs["limit"])
-            if "offset" in kwargs:
-                offset_value = kwargs["offset"]
-                if isinstance(offset_value, bool):
-                    kwargs["offset"] = 0
-                elif isinstance(offset_value, (int, str, bytes, bytearray)):
-                    kwargs["offset"] = max(0, int(offset_value))
-                else:
-                    kwargs["offset"] = 0
-            products = await fetch_products_async(pt, ops, **kwargs)
+            normalized_kwargs = _normalize_list_tool_kwargs(hooks, kwargs)
+            products = await fetch_products_async(pt, ops, **normalized_kwargs)
             return hooks.json_payload(
                 MCPRootPayload(
                     root={
@@ -70,31 +135,6 @@ def _register_list_tool(
 
         return await hooks.async_safe_call(pt.name, run)
 
-    # Build a dynamic function signature so FastMCP can introspect parameters.
-    # We create a wrapper with explicit keyword arguments matching the query class.
-    import inspect
-
-    params = [
-        inspect.Parameter("self_placeholder", inspect.Parameter.POSITIONAL_OR_KEYWORD, default=None),
-    ]
-    for fname in sorted(query_fields):
-        default = field_defaults.get(fname)
-        annotation = field_annotations[fname]
-        if fname == "limit":
-            params.append(
-                inspect.Parameter(fname, inspect.Parameter.KEYWORD_ONLY, default=pt.mcp_default_limit, annotation=int)
-            )
-        elif fname == "offset":
-            params.append(inspect.Parameter(fname, inspect.Parameter.KEYWORD_ONLY, default=0, annotation=int))
-        else:
-            params.append(
-                inspect.Parameter(fname, inspect.Parameter.KEYWORD_ONLY, default=default, annotation=annotation)
-            )
-
-    # Remove the placeholder — FastMCP doesn't need it
-    params = params[1:]
-
-    # Create a properly-signed wrapper
     async def wrapper(**kw: object) -> str:
         return await tool_fn(**kw)
 
@@ -102,16 +142,8 @@ def _register_list_tool(
     wrapper.__qualname__ = pt.name
     wrapper.__doc__ = f"List {pt.display_name.lower()} from the archive."
 
-    # Set annotations for FastMCP introspection
-    annotations: dict[str, object] = {}
-    for p in params:
-        annotations[p.name] = p.annotation
-    annotations["return"] = str
-    wrapper.__annotations__ = annotations
-
-    # Set defaults
-    defaults_dict = {p.name: p.default for p in params}
-    wrapper.__kwdefaults__ = defaults_dict
+    wrapper.__annotations__ = _wrapper_annotations(params)
+    wrapper.__kwdefaults__ = {parameter.name: parameter.default for parameter in params}
 
     mcp.tool()(wrapper)
 

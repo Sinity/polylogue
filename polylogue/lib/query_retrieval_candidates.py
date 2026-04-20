@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Literal, overload
+import inspect
+from collections.abc import Awaitable
+from typing import TYPE_CHECKING, Literal, TypeVar, cast, overload
 
 from polylogue.lib.query_support import provider_values
 
@@ -11,6 +13,15 @@ if TYPE_CHECKING:
     from polylogue.lib.query_plan import ConversationQueryPlan
     from polylogue.protocols import ConversationQueryRuntimeStore
     from polylogue.storage.query_models import ConversationRecordQuery
+
+
+_T = TypeVar("_T")
+
+
+async def _resolve_maybe_awaitable(value: _T | object) -> _T:
+    if inspect.isawaitable(value):
+        return await cast(Awaitable[_T], value)
+    return cast(_T, value)
 
 
 def candidate_record_query(plan: ConversationQueryPlan) -> tuple[ConversationRecordQuery, bool]:
@@ -45,7 +56,9 @@ async def action_event_rows_ready(
 ) -> bool:
     if not uses_action_read_model(plan):
         return True
-    return (await repository.get_action_event_artifact_state()).rows_ready
+    state: object = await _resolve_maybe_awaitable(repository.get_action_event_artifact_state())
+    rows_ready = getattr(state, "rows_ready", False)
+    return rows_ready if isinstance(rows_ready, bool) else False
 
 
 async def action_search_ready(
@@ -54,7 +67,9 @@ async def action_search_ready(
 ) -> bool:
     if not uses_action_read_model(plan):
         return True
-    return (await repository.get_action_event_artifact_state()).ready
+    state: object = await _resolve_maybe_awaitable(repository.get_action_event_artifact_state())
+    ready = getattr(state, "ready", False)
+    return ready if isinstance(ready, bool) else False
 
 
 async def can_use_action_event_stats_with(

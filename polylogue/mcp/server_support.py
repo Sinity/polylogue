@@ -4,12 +4,12 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Protocol, TypeVar, overload
+from typing import TYPE_CHECKING, Protocol, TypeVar, cast, overload
 
 from pydantic import BaseModel
 
 from polylogue.logging import get_logger
-from polylogue.mcp.payloads import MCPErrorPayload
+from polylogue.mcp.payloads import MCPErrorPayload, MCPFencedCodeBlock
 from polylogue.operations import ArchiveOperations
 from polylogue.protocols import ConversationQueryRuntimeStore, TagStore
 from polylogue.services import RuntimeServices, build_runtime_services
@@ -28,27 +28,39 @@ class JSONPayloadSerializer(Protocol):
     def __call__(self, payload: BaseModel, *, exclude_none: bool = False) -> str: ...
 
 
+class ErrorJSONSerializer(Protocol):
+    def __call__(self, message: str, **extra: str) -> str: ...
+
+
+class FencedCodeExtractor(Protocol):
+    def __call__(self, text: str, language: str = "") -> list[MCPFencedCodeBlock]: ...
+
+
+class ToJSONPayload(Protocol):
+    def to_json(self, *, exclude_none: bool = False) -> str: ...
+
+
 @dataclass(frozen=True)
 class ServerCallbacks:
     json_payload: JSONPayloadSerializer
     clamp_limit: Callable[[int | object], int]
     safe_call: Callable[[str, Callable[[], str]], str]
     async_safe_call: Callable[[str, Callable[[], Awaitable[str]]], Awaitable[str]]
-    error_json: Callable[..., str]
+    error_json: ErrorJSONSerializer
     get_query_store: Callable[[], ConversationQueryRuntimeStore]
     get_tag_store: Callable[[], TagStore]
     get_backend: Callable[[], SQLiteBackend]
     get_config: Callable[[], Config]
     get_archive_ops: Callable[[], ArchiveOperations]
-    extract_fenced_code: Callable[[str, str], list[dict[str, str]]]
+    extract_fenced_code: FencedCodeExtractor
 
 
-def _extract_fenced_code(text: str, language: str = "") -> list[dict[str, str]]:
+def _extract_fenced_code(text: str, language: str = "") -> list[MCPFencedCodeBlock]:
     """Extract fenced code blocks from markdown text."""
     if "```" not in text:
         return []
     blocks = text.split("```")
-    results = []
+    results: list[MCPFencedCodeBlock] = []
     for i in range(1, len(blocks), 2):
         block = blocks[i]
         lines = block.split("\n", 1)
@@ -61,6 +73,9 @@ def _extract_fenced_code(text: str, language: str = "") -> list[dict[str, str]]:
 
 def _json_payload(payload: BaseModel, *, exclude_none: bool = False) -> str:
     """Serialize a typed MCP payload with canonical JSON formatting."""
+    to_json = getattr(payload, "to_json", None)
+    if callable(to_json):
+        return cast(ToJSONPayload, payload).to_json(exclude_none=exclude_none)
     return serialize_surface_payload(payload, exclude_none=exclude_none)
 
 

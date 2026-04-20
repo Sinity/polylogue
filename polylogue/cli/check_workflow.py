@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import sys
 from dataclasses import dataclass
-from typing import Any
 
 from polylogue.cli.check_maintenance import (
     build_preview_counts as _build_preview_counts,
@@ -15,9 +14,8 @@ from polylogue.cli.check_maintenance import (
 from polylogue.cli.check_maintenance import (
     resolve_selected_maintenance_targets as _resolve_selected_maintenance_targets,
 )
-from polylogue.cli.check_validation import (
-    validate_check_options as _validate_check_options,
-)
+from polylogue.cli.check_models import CheckCommandResult, VacuumResult
+from polylogue.cli.check_validation import validate_check_options as _validate_check_options
 from polylogue.cli.helpers import load_effective_config
 from polylogue.cli.types import AppEnv
 from polylogue.health import get_health, run_runtime_health
@@ -69,18 +67,6 @@ class CheckCommandOptions:
     schema_record_offset: int
     schema_quarantine_malformed: bool
     maintenance_targets: tuple[str, ...]
-
-
-@dataclass
-class CheckCommandResult:
-    report: Any
-    runtime_report: Any | None = None
-    schema_report: Any | None = None
-    proof_report: Any | None = None
-    artifact_rows: list[Any] | None = None
-    cohort_rows: list[Any] | None = None
-    maintenance_results: list[Any] | None = None
-    vacuum_result: dict[str, Any] | None = None
 
 
 def validate_check_options(options: CheckCommandOptions) -> None:
@@ -189,6 +175,7 @@ def run_check_workflow(env: AppEnv, options: CheckCommandOptions) -> CheckComman
     if options.repair or options.cleanup:
         preview_counts = _build_preview_counts(report) if options.preview else None
         selected_targets = _resolve_selected_maintenance_targets(options)
+        result.maintenance_targets = selected_targets
         session_product_progress_callback = None
         if (
             options.repair
@@ -209,11 +196,7 @@ def run_check_workflow(env: AppEnv, options: CheckCommandOptions) -> CheckComman
 
     if (options.repair or options.cleanup) and options.vacuum:
         if options.preview:
-            result.vacuum_result = {
-                "ok": True,
-                "preview": True,
-                "detail": "Preview mode: VACUUM skipped.",
-            }
+            result.vacuum_result = VacuumResult(ok=True, preview=True, detail="Preview mode: VACUUM skipped.")
         elif options.json_output:
             result.vacuum_result = vacuum_database(env)
 

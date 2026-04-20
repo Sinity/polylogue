@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from polylogue.lib.query_spec import ConversationQuerySpec
 
@@ -15,7 +15,7 @@ if TYPE_CHECKING:
 class RootModeRequest:
     """Canonical root request for stats-or-query dispatch."""
 
-    params: dict[str, Any]
+    params: dict[str, object]
     query_terms: tuple[str, ...]
 
     @classmethod
@@ -25,7 +25,7 @@ class RootModeRequest:
         )
         return cls(params=dict(ctx.params), query_terms=query_terms)
 
-    def query_params(self) -> dict[str, Any]:
+    def query_params(self) -> dict[str, object]:
         params = dict(self.params)
         params["query"] = self.query_terms
         return params
