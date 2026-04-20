@@ -140,8 +140,86 @@ class ConversationRecordQuery:
         }
 
 
+@dataclass(frozen=True, slots=True)
+class SessionProfileListQuery:
+    """Canonical session-profile read selection for storage/runtime boundaries."""
+
+    provider: str | None = None
+    since: str | None = None
+    until: str | None = None
+    first_message_since: str | None = None
+    first_message_until: str | None = None
+    session_date_since: str | None = None
+    session_date_until: str | None = None
+    tier: str = "merged"
+    limit: int | None = 50
+    offset: int = 0
+    query: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class SessionTimelineListQuery:
+    """Canonical session timeline selection for work-event and phase reads."""
+
+    conversation_id: str | None = None
+    provider: str | None = None
+    since: str | None = None
+    until: str | None = None
+    kind: str | None = None
+    limit: int | None = 50
+    offset: int = 0
+    query: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class WorkThreadListQuery:
+    """Canonical work-thread read selection for repository/search runtime."""
+
+    since: str | None = None
+    until: str | None = None
+    limit: int | None = 50
+    offset: int = 0
+    query: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class SessionTagRollupListQuery:
+    """Canonical tag-rollup selection for durable product aggregate reads."""
+
+    provider: str | None = None
+    since: str | None = None
+    until: str | None = None
+    query: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class DaySessionSummaryListQuery:
+    """Canonical day-summary selection for durable product aggregate reads."""
+
+    provider: str | None = None
+    since: str | None = None
+    until: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ArtifactObservationListQuery:
+    """Canonical durable-artifact observation selection for storage reads."""
+
+    providers: tuple[str, ...] = ()
+    support_statuses: tuple[str, ...] = ()
+    artifact_kinds: tuple[str, ...] = ()
+    limit: int | None = None
+    offset: int = 0
+
+
 __all__ = [
+    "ArtifactObservationListQuery",
     "ConversationCountQueryKwargs",
     "ConversationListQueryKwargs",
     "ConversationRecordQuery",
+    "DaySessionSummaryListQuery",
+    "SessionProfileListQuery",
+    "SessionTagRollupListQuery",
+    "SessionTimelineListQuery",
+    "WorkThreadListQuery",
 ]

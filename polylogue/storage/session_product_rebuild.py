@@ -9,14 +9,18 @@ from dataclasses import dataclass
 
 import aiosqlite
 
+from polylogue.lib.branch_type import BranchType
 from polylogue.lib.conversation_models import Conversation
 from polylogue.lib.session_profile import SessionProfile, build_session_analysis, build_session_profile
 from polylogue.protocols import ProgressCallback
 from polylogue.storage.action_event_rows import attach_blocks_to_messages
 from polylogue.storage.backends.queries.attachments import get_attachments_batch
 from polylogue.storage.backends.queries.mappers import (
+    _json_object,
     _parse_json,
+    _row_float,
     _row_get,
+    _row_text,
     _row_to_content_block,
     _row_to_message,
     _row_to_session_profile_record,
@@ -192,6 +196,9 @@ def _row_to_session_product_conversation(row: sqlite3.Row) -> ConversationRecord
         if isinstance(parsed_compactions, list) and parsed_compactions:
             provider_meta["context_compactions"] = parsed_compactions
 
+    parent_conversation_id = _row_text(row, "parent_conversation_id")
+    branch_type = _row_text(row, "branch_type")
+
     return ConversationRecord(
         conversation_id=row["conversation_id"],
         provider_name=row["provider_name"],
@@ -199,14 +206,14 @@ def _row_to_session_product_conversation(row: sqlite3.Row) -> ConversationRecord
         title=row["title"],
         created_at=row["created_at"],
         updated_at=row["updated_at"],
-        sort_key=_row_get(row, "sort_key"),
+        sort_key=_row_float(row, "sort_key"),
         content_hash=row["content_hash"],
         provider_meta=provider_meta or None,
-        metadata=_parse_json(row["metadata"], field="metadata", record_id=row["conversation_id"]),
+        metadata=_json_object(_parse_json(row["metadata"], field="metadata", record_id=row["conversation_id"])),
         version=row["version"],
-        parent_conversation_id=_row_get(row, "parent_conversation_id"),
-        branch_type=_row_get(row, "branch_type"),
-        raw_id=_row_get(row, "raw_id"),
+        parent_conversation_id=ConversationId(parent_conversation_id) if parent_conversation_id is not None else None,
+        branch_type=BranchType(branch_type) if branch_type is not None else None,
+        raw_id=_row_text(row, "raw_id"),
     )
 
 

@@ -5,6 +5,12 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from polylogue.lib.session_profile import SessionProfile
+from polylogue.storage.product_read_support import (
+    hydrate_mapping,
+    hydrate_optional,
+    hydrate_sequence,
+)
+from polylogue.storage.query_models import SessionProfileListQuery
 from polylogue.storage.session_product_profiles import hydrate_session_profile
 from polylogue.storage.store import SessionProfileRecord
 
@@ -21,7 +27,7 @@ class RepositoryProductProfileReadMixin:
 
     async def get_session_profile(self, conversation_id: str) -> SessionProfile | None:
         record = await self.get_session_profile_record(conversation_id)
-        return hydrate_session_profile(record) if record is not None else None
+        return hydrate_optional(record, hydrate_session_profile)
 
     async def get_session_profile_records_batch(
         self,
@@ -34,7 +40,13 @@ class RepositoryProductProfileReadMixin:
         conversation_ids: list[str],
     ) -> dict[str, SessionProfile]:
         records = await self.get_session_profile_records_batch(conversation_ids)
-        return {conversation_id: hydrate_session_profile(record) for conversation_id, record in records.items()}
+        return hydrate_mapping(records, hydrate_session_profile)
+
+    async def _list_session_profile_records_query(
+        self,
+        query: SessionProfileListQuery,
+    ) -> list[SessionProfileRecord]:
+        return await self.queries._list_session_profiles_query(query)
 
     async def list_session_profiles(
         self,
@@ -51,20 +63,22 @@ class RepositoryProductProfileReadMixin:
         offset: int = 0,
         query: str | None = None,
     ) -> list[SessionProfile]:
-        records = await self.queries.list_session_profiles(
-            provider=provider,
-            since=since,
-            until=until,
-            first_message_since=first_message_since,
-            first_message_until=first_message_until,
-            session_date_since=session_date_since,
-            session_date_until=session_date_until,
-            tier=tier,
-            limit=limit,
-            offset=offset,
-            query=query,
+        records = await self._list_session_profile_records_query(
+            SessionProfileListQuery(
+                provider=provider,
+                since=since,
+                until=until,
+                first_message_since=first_message_since,
+                first_message_until=first_message_until,
+                session_date_since=session_date_since,
+                session_date_until=session_date_until,
+                tier=tier,
+                limit=limit,
+                offset=offset,
+                query=query,
+            )
         )
-        return [hydrate_session_profile(record) for record in records]
+        return hydrate_sequence(records, hydrate_session_profile)
 
     async def list_session_profile_records(
         self,
@@ -81,18 +95,20 @@ class RepositoryProductProfileReadMixin:
         offset: int = 0,
         query: str | None = None,
     ) -> list[SessionProfileRecord]:
-        return await self.queries.list_session_profiles(
-            provider=provider,
-            since=since,
-            until=until,
-            first_message_since=first_message_since,
-            first_message_until=first_message_until,
-            session_date_since=session_date_since,
-            session_date_until=session_date_until,
-            tier=tier,
-            limit=limit,
-            offset=offset,
-            query=query,
+        return await self._list_session_profile_records_query(
+            SessionProfileListQuery(
+                provider=provider,
+                since=since,
+                until=until,
+                first_message_since=first_message_since,
+                first_message_until=first_message_until,
+                session_date_since=session_date_since,
+                session_date_until=session_date_until,
+                tier=tier,
+                limit=limit,
+                offset=offset,
+                query=query,
+            )
         )
 
     async def get_session_enrichment_record(self, conversation_id: str) -> SessionProfileRecord | None:
@@ -112,18 +128,20 @@ class RepositoryProductProfileReadMixin:
         offset: int = 0,
         query: str | None = None,
     ) -> list[SessionProfileRecord]:
-        return await self.queries.list_session_profiles(
-            provider=provider,
-            since=since,
-            until=until,
-            first_message_since=first_message_since,
-            first_message_until=first_message_until,
-            session_date_since=session_date_since,
-            session_date_until=session_date_until,
-            tier="enrichment",
-            limit=limit,
-            offset=offset,
-            query=query,
+        return await self._list_session_profile_records_query(
+            SessionProfileListQuery(
+                provider=provider,
+                since=since,
+                until=until,
+                first_message_since=first_message_since,
+                first_message_until=first_message_until,
+                session_date_since=session_date_since,
+                session_date_until=session_date_until,
+                tier="enrichment",
+                limit=limit,
+                offset=offset,
+                query=query,
+            )
         )
 
 

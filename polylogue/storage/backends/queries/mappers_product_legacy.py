@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 from collections.abc import Iterable, Mapping
-from typing import TypeVar
+from typing import TypeAlias, TypeVar
 
 from pydantic import BaseModel
 
@@ -17,11 +17,13 @@ from polylogue.archive_product_models import (
     WorkEventEvidencePayload,
     WorkEventInferencePayload,
 )
+from polylogue.lib.json import JSONDocument, JSONValue, json_document
 from polylogue.lib.session_payload_documents import SessionPhaseDocument, WorkEventDocument
 from polylogue.storage.backends.queries.mappers import _parse_json, _row_get
 
 PayloadModel = TypeVar("PayloadModel", bound=BaseModel)
-LegacyPayload = dict[str, object]
+LegacyPayload: TypeAlias = JSONDocument
+LegacyPayloadContainer: TypeAlias = Mapping[str, JSONValue]
 
 
 def parse_payload_model(
@@ -48,7 +50,7 @@ def parse_legacy_payload_dict(row: sqlite3.Row, *, record_id: str) -> LegacyPayl
         record_id=record_id,
     )
     if isinstance(legacy_payload, dict):
-        return {str(key): value for key, value in legacy_payload.items()}
+        return json_document(legacy_payload)
     return {}
 
 
@@ -222,52 +224,48 @@ def _row_text(row: sqlite3.Row, column: str) -> str | None:
 def _row_int(
     row: sqlite3.Row,
     column: str,
-    legacy_payload: Mapping[str, object],
+    legacy_payload: LegacyPayloadContainer,
     *,
     legacy_key: str,
     default: int = 0,
 ) -> int:
-    raw_value = _row_get(row, column, None)
+    raw_value: JSONValue | bytes | bytearray | None = _row_get(row, column, None)
     if raw_value is None:
         raw_value = legacy_payload.get(legacy_key, default)
-    return int(raw_value or default)
+    return _legacy_int(raw_value, default)
 
 
 def _row_float(
     row: sqlite3.Row,
     column: str,
-    legacy_payload: Mapping[str, object],
+    legacy_payload: LegacyPayloadContainer,
     *,
     legacy_key: str,
     default: float = 0.0,
 ) -> float:
-    raw_value = _row_get(row, column, None)
+    raw_value: JSONValue | bytes | bytearray | None = _row_get(row, column, None)
     if raw_value is None:
         raw_value = legacy_payload.get(legacy_key, default)
-    return float(raw_value or default)
+    return _legacy_float(raw_value, default)
 
 
 def _row_bool(
     row: sqlite3.Row,
     column: str,
-    legacy_payload: Mapping[str, object],
+    legacy_payload: LegacyPayloadContainer,
     *,
     legacy_key: str,
 ) -> bool:
-    raw_value = _row_get(row, column, None)
+    raw_value: JSONValue | bytes | bytearray | None = _row_get(row, column, None)
     if raw_value is None:
         raw_value = legacy_payload.get(legacy_key, False)
-    if isinstance(raw_value, bool):
-        return raw_value
-    if isinstance(raw_value, str | int | float):
-        return bool(int(raw_value or 0))
-    return bool(raw_value)
+    return _legacy_bool(raw_value)
 
 
 def _row_text_tuple(
     row: sqlite3.Row,
     column: str,
-    legacy_payload: Mapping[str, object],
+    legacy_payload: LegacyPayloadContainer,
     *,
     legacy_key: str,
 ) -> tuple[str, ...]:
@@ -280,7 +278,7 @@ def _row_text_tuple(
 def _row_int_dict(
     row: sqlite3.Row,
     column: str,
-    legacy_payload: Mapping[str, object],
+    legacy_payload: LegacyPayloadContainer,
     *,
     legacy_key: str,
 ) -> dict[str, int]:
@@ -290,14 +288,14 @@ def _row_int_dict(
     return _legacy_int_dict(legacy_payload.get(legacy_key))
 
 
-def _legacy_text(value: object) -> str | None:
+def _legacy_text(value: JSONValue | bytes | bytearray) -> str | None:
     if value is None:
         return None
     text = str(value)
     return text if text else None
 
 
-def _legacy_float(value: object, default: float = 0.0) -> float:
+def _legacy_float(value: JSONValue | bytes | bytearray, default: float = 0.0) -> float:
     if isinstance(value, bool):
         return float(int(value))
     if isinstance(value, str | int | float):
@@ -305,7 +303,7 @@ def _legacy_float(value: object, default: float = 0.0) -> float:
     return default
 
 
-def _legacy_int(value: object, default: int = 0) -> int:
+def _legacy_int(value: JSONValue | bytes | bytearray, default: int = 0) -> int:
     if isinstance(value, bool):
         return int(value)
     if isinstance(value, str | int | float):
@@ -313,29 +311,43 @@ def _legacy_int(value: object, default: int = 0) -> int:
     return default
 
 
-def _legacy_text_tuple(value: object) -> tuple[str, ...]:
+def _legacy_text_tuple(
+    value: JSONValue | bytes | bytearray | list[JSONValue] | tuple[JSONValue, ...],
+) -> tuple[str, ...]:
     if not isinstance(value, Iterable) or isinstance(value, str | bytes | Mapping):
         return ()
     return tuple(str(item) for item in value if item is not None)
 
 
-def _legacy_dict_tuple(value: object) -> tuple[dict[str, object], ...]:
+def _legacy_dict_tuple(
+    value: JSONValue | list[JSONValue] | tuple[JSONValue, ...] | bytes | bytearray,
+) -> tuple[LegacyPayload, ...]:
     if not isinstance(value, Iterable) or isinstance(value, str | bytes | Mapping):
         return ()
-    items: list[dict[str, object]] = []
+    items: list[LegacyPayload] = []
     for item in value:
         if isinstance(item, Mapping):
-            items.append({str(key): val for key, val in item.items()})
+            items.append(json_document(dict(item)))
     return tuple(items)
 
 
-def _legacy_int_dict(value: object) -> dict[str, int]:
+def _legacy_int_dict(value: JSONValue | bytes | bytearray | Mapping[str, JSONValue]) -> dict[str, int]:
     if not isinstance(value, Mapping):
         return {}
-    return {str(key): int(item) for key, item in value.items() if item is not None}
+    return {str(key): _legacy_int(item) for key, item in value.items() if item is not None}
 
 
-def _legacy_work_event_documents(value: object) -> tuple[WorkEventDocument, ...]:
+def _legacy_bool(value: JSONValue | bytes | bytearray) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str | int | float):
+        return bool(int(value or 0))
+    return bool(value)
+
+
+def _legacy_work_event_documents(
+    value: JSONValue | list[JSONValue] | tuple[JSONValue, ...],
+) -> tuple[WorkEventDocument, ...]:
     documents: list[WorkEventDocument] = []
     for item in _legacy_dict_tuple(value):
         documents.append(
@@ -357,7 +369,9 @@ def _legacy_work_event_documents(value: object) -> tuple[WorkEventDocument, ...]
     return tuple(documents)
 
 
-def _legacy_phase_documents(value: object) -> tuple[SessionPhaseDocument, ...]:
+def _legacy_phase_documents(
+    value: JSONValue | list[JSONValue] | tuple[JSONValue, ...],
+) -> tuple[SessionPhaseDocument, ...]:
     documents: list[SessionPhaseDocument] = []
     for item in _legacy_dict_tuple(value):
         start_index = _legacy_int(item.get("start_index"))

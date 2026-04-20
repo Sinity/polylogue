@@ -11,6 +11,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Protocol
 
 from polylogue.lib.action_event_fields import (
     build_search_text,
@@ -23,7 +24,6 @@ from polylogue.lib.action_event_fields import (
     normalize_output_text,
 )
 from polylogue.lib.action_event_parsing import build_tool_calls_from_content_blocks
-from polylogue.lib.models import Message
 from polylogue.lib.viewports import ToolCall, ToolCategory
 from polylogue.types import Provider
 
@@ -55,7 +55,20 @@ class ActionEvent:
         return (self.tool_name or "unknown").strip().lower()
 
 
-def build_action_event(message: Message, call: ToolCall, *, sequence_index: int) -> ActionEvent:
+class ActionEventMessageLike(Protocol):
+    @property
+    def id(self) -> object: ...
+
+    @property
+    def timestamp(self) -> datetime | None: ...
+
+
+def build_action_event(
+    message: ActionEventMessageLike,
+    call: ToolCall,
+    *,
+    sequence_index: int,
+) -> ActionEvent:
     command = extract_command(call)
     affected_paths = tuple(call.affected_paths)
     cwd_path = extract_cwd_path(call)
@@ -94,7 +107,10 @@ def build_action_event(message: Message, call: ToolCall, *, sequence_index: int)
     )
 
 
-def build_action_events(message: Message, calls: tuple[ToolCall, ...]) -> tuple[ActionEvent, ...]:
+def build_action_events(
+    message: ActionEventMessageLike,
+    calls: tuple[ToolCall, ...],
+) -> tuple[ActionEvent, ...]:
     return tuple(build_action_event(message, call, sequence_index=index) for index, call in enumerate(calls))
 
 

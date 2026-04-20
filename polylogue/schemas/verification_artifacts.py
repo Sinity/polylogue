@@ -14,6 +14,7 @@ from polylogue.storage.artifact_queries import (
 )
 from polylogue.storage.artifact_views import ArtifactCohortSummary
 from polylogue.storage.backends.connection import open_connection
+from polylogue.storage.query_models import ArtifactObservationListQuery
 from polylogue.storage.store import ArtifactObservationRecord
 from polylogue.types import ArtifactSupportStatus, Provider
 
@@ -39,11 +40,13 @@ def list_artifact_observation_rows(
         ensure_artifact_observations(conn, providers=request.providers, refresh_resolutions=True)
         return list_durable_artifact_observations(
             conn,
-            providers=request.providers,
-            support_statuses=request.support_statuses,
-            artifact_kinds=request.artifact_kinds,
-            limit=bounded_limit,
-            offset=bounded_offset,
+            ArtifactObservationListQuery(
+                providers=tuple(request.providers or ()),
+                support_statuses=tuple(request.support_statuses or ()),
+                artifact_kinds=tuple(request.artifact_kinds or ()),
+                limit=bounded_limit,
+                offset=bounded_offset,
+            ),
         )
 
 
@@ -61,11 +64,13 @@ def list_artifact_cohort_rows(
         ensure_artifact_observations(conn, providers=request.providers, refresh_resolutions=True)
         return list_durable_artifact_cohorts(
             conn,
-            providers=request.providers,
-            support_statuses=request.support_statuses,
-            artifact_kinds=request.artifact_kinds,
-            limit=bounded_limit,
-            offset=bounded_offset,
+            ArtifactObservationListQuery(
+                providers=tuple(request.providers or ()),
+                support_statuses=tuple(request.support_statuses or ()),
+                artifact_kinds=tuple(request.artifact_kinds or ()),
+                limit=bounded_limit,
+                offset=bounded_offset,
+            ),
         )
 
 

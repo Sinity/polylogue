@@ -6,6 +6,8 @@ from typing import TYPE_CHECKING
 
 from polylogue.lib.phase_extraction import SessionPhase
 from polylogue.lib.work_event_extraction import WorkEvent
+from polylogue.storage.product_read_support import hydrate_sequence
+from polylogue.storage.query_models import SessionTimelineListQuery
 from polylogue.storage.session_product_timeline_rows import hydrate_session_phase, hydrate_work_event
 from polylogue.storage.store import SessionPhaseRecord, SessionWorkEventRecord
 
@@ -27,10 +29,28 @@ class RepositoryProductTimelineReadMixin:
         return await self.queries.get_session_phases(conversation_id)
 
     async def get_session_work_events(self, conversation_id: str) -> list[WorkEvent]:
-        return [hydrate_work_event(record) for record in await self.get_session_work_event_records(conversation_id)]
+        return hydrate_sequence(
+            await self.get_session_work_event_records(conversation_id),
+            hydrate_work_event,
+        )
 
     async def get_session_phases(self, conversation_id: str) -> list[SessionPhase]:
-        return [hydrate_session_phase(record) for record in await self.get_session_phase_records(conversation_id)]
+        return hydrate_sequence(
+            await self.get_session_phase_records(conversation_id),
+            hydrate_session_phase,
+        )
+
+    async def _list_session_work_event_records_query(
+        self,
+        query: SessionTimelineListQuery,
+    ) -> list[SessionWorkEventRecord]:
+        return await self.queries._list_session_work_events_query(query)
+
+    async def _list_session_phase_records_query(
+        self,
+        query: SessionTimelineListQuery,
+    ) -> list[SessionPhaseRecord]:
+        return await self.queries._list_session_phases_query(query)
 
     async def list_session_work_events(
         self,
@@ -44,17 +64,19 @@ class RepositoryProductTimelineReadMixin:
         offset: int = 0,
         query: str | None = None,
     ) -> list[WorkEvent]:
-        records = await self.queries.list_session_work_events(
-            conversation_id=conversation_id,
-            provider=provider,
-            since=since,
-            until=until,
-            kind=kind,
-            limit=limit,
-            offset=offset,
-            query=query,
+        records = await self._list_session_work_event_records_query(
+            SessionTimelineListQuery(
+                conversation_id=conversation_id,
+                provider=provider,
+                since=since,
+                until=until,
+                kind=kind,
+                limit=limit,
+                offset=offset,
+                query=query,
+            )
         )
-        return [hydrate_work_event(record) for record in records]
+        return hydrate_sequence(records, hydrate_work_event)
 
     async def list_session_work_event_records(
         self,
@@ -68,15 +90,17 @@ class RepositoryProductTimelineReadMixin:
         offset: int = 0,
         query: str | None = None,
     ) -> list[SessionWorkEventRecord]:
-        return await self.queries.list_session_work_events(
-            conversation_id=conversation_id,
-            provider=provider,
-            since=since,
-            until=until,
-            kind=kind,
-            limit=limit,
-            offset=offset,
-            query=query,
+        return await self._list_session_work_event_records_query(
+            SessionTimelineListQuery(
+                conversation_id=conversation_id,
+                provider=provider,
+                since=since,
+                until=until,
+                kind=kind,
+                limit=limit,
+                offset=offset,
+                query=query,
+            )
         )
 
     async def list_session_phases(
@@ -90,16 +114,18 @@ class RepositoryProductTimelineReadMixin:
         limit: int | None = 50,
         offset: int = 0,
     ) -> list[SessionPhase]:
-        records = await self.queries.list_session_phases(
-            conversation_id=conversation_id,
-            provider=provider,
-            since=since,
-            until=until,
-            kind=kind,
-            limit=limit,
-            offset=offset,
+        records = await self._list_session_phase_records_query(
+            SessionTimelineListQuery(
+                conversation_id=conversation_id,
+                provider=provider,
+                since=since,
+                until=until,
+                kind=kind,
+                limit=limit,
+                offset=offset,
+            )
         )
-        return [hydrate_session_phase(record) for record in records]
+        return hydrate_sequence(records, hydrate_session_phase)
 
     async def list_session_phase_records(
         self,
@@ -112,14 +138,16 @@ class RepositoryProductTimelineReadMixin:
         limit: int | None = 50,
         offset: int = 0,
     ) -> list[SessionPhaseRecord]:
-        return await self.queries.list_session_phases(
-            conversation_id=conversation_id,
-            provider=provider,
-            since=since,
-            until=until,
-            kind=kind,
-            limit=limit,
-            offset=offset,
+        return await self._list_session_phase_records_query(
+            SessionTimelineListQuery(
+                conversation_id=conversation_id,
+                provider=provider,
+                since=since,
+                until=until,
+                kind=kind,
+                limit=limit,
+                offset=offset,
+            )
         )
 
 

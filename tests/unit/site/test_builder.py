@@ -76,7 +76,9 @@ def test_site_builder_returns_typed_manifest_and_persists_it(db_path: Path, tmp_
     assert "site-manifest.json" not in {entry.relative_path for entry in manifest.artifacts.entries}
     assert persisted is not None
     assert persisted.publication_id == manifest.publication_id
-    assert persisted.manifest["outputs"]["rendered_conversation_pages"] == 1
+    outputs = persisted.manifest.get("outputs")
+    assert isinstance(outputs, dict)
+    assert outputs["rendered_conversation_pages"] == 1
     assert "maintenance" in persisted.manifest
 
 

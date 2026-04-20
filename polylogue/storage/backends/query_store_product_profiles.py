@@ -11,6 +11,7 @@ import aiosqlite
 from polylogue.storage.backends.queries import (
     session_product_profile_reads as session_product_profiles_q,
 )
+from polylogue.storage.query_models import SessionProfileListQuery
 from polylogue.storage.store import SessionProfileRecord
 
 
@@ -32,6 +33,13 @@ class SQLiteQueryStoreProductProfilesMixin:
                 conversation_ids,
             )
 
+    async def _list_session_profiles_query(
+        self,
+        query: SessionProfileListQuery,
+    ) -> list[SessionProfileRecord]:
+        async with self._connection_factory() as conn:
+            return await session_product_profiles_q.list_session_profiles(conn, query)
+
     async def list_session_profiles(
         self,
         *,
@@ -47,9 +55,8 @@ class SQLiteQueryStoreProductProfilesMixin:
         offset: int = 0,
         query: str | None = None,
     ) -> list[SessionProfileRecord]:
-        async with self._connection_factory() as conn:
-            return await session_product_profiles_q.list_session_profiles(
-                conn,
+        return await self._list_session_profiles_query(
+            SessionProfileListQuery(
                 provider=provider,
                 since=since,
                 until=until,
@@ -62,6 +69,7 @@ class SQLiteQueryStoreProductProfilesMixin:
                 offset=offset,
                 query=query,
             )
+        )
 
 
 __all__ = ["SQLiteQueryStoreProductProfilesMixin"]

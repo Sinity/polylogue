@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from collections import Counter
-from typing import Any
+from collections.abc import Collection, Iterator, Sequence
+from datetime import datetime
+from typing import Protocol
 
 from polylogue.lib.action_events import ActionEvent, build_action_events
 from polylogue.lib.semantic_fact_models import (
@@ -16,6 +18,8 @@ from polylogue.lib.semantic_fact_models import (
     SummarySemanticFacts,
 )
 from polylogue.lib.semantic_fact_support import (
+    SemanticMessageLike,
+    TextMessageLike,
     message_has_text,
     message_model_name,
     message_reasoning_traces,
@@ -30,7 +34,133 @@ from polylogue.lib.semantic_fact_support import (
 # ---------------------------------------------------------------------------
 
 
-def build_projection_semantic_facts(projection: Any) -> ProjectionSemanticFacts:
+class ProjectionAttachmentLike(Protocol):
+    @property
+    def message_id(self) -> str | None: ...
+
+
+class ProjectionMessageLike(TextMessageLike, Protocol):
+    @property
+    def message_id(self) -> str: ...
+
+    @property
+    def role(self) -> object: ...
+
+    @property
+    def sort_key(self) -> float | None: ...
+
+    @property
+    def has_thinking(self) -> int | bool: ...
+
+    @property
+    def has_tool_use(self) -> int | bool: ...
+
+
+class ProjectionLike(Protocol):
+    @property
+    def messages(self) -> Collection[ProjectionMessageLike]: ...
+
+    @property
+    def attachments(self) -> Collection[ProjectionAttachmentLike]: ...
+
+
+class SemanticConversationMessagesLike(Protocol):
+    def __iter__(self) -> Iterator[SemanticConversationMessageLike]: ...
+
+    def __len__(self) -> int: ...
+
+
+class SemanticConversationLike(Protocol):
+    @property
+    def id(self) -> object: ...
+
+    @property
+    def provider(self) -> object: ...
+
+    @property
+    def display_title(self) -> str: ...
+
+    @property
+    def display_date(self) -> datetime | None: ...
+
+    @property
+    def created_at(self) -> datetime | None: ...
+
+    @property
+    def updated_at(self) -> datetime | None: ...
+
+    @property
+    def messages(self) -> SemanticConversationMessagesLike: ...
+
+
+class SemanticConversationMessageLike(SemanticMessageLike, Protocol):
+    @property
+    def id(self) -> object: ...
+
+    @property
+    def role(self) -> object: ...
+
+    @property
+    def timestamp(self) -> datetime | None: ...
+
+    @property
+    def branch_index(self) -> int: ...
+
+    @property
+    def attachments(self) -> Sequence[object]: ...
+
+    @property
+    def word_count(self) -> int: ...
+
+    @property
+    def is_user(self) -> bool: ...
+
+    @property
+    def is_assistant(self) -> bool: ...
+
+    @property
+    def is_dialogue(self) -> bool: ...
+
+    @property
+    def is_context_dump(self) -> bool: ...
+
+    @property
+    def is_thinking(self) -> bool: ...
+
+    @property
+    def is_tool_use(self) -> bool: ...
+
+    @property
+    def is_substantive(self) -> bool: ...
+
+
+class SemanticSummaryLike(Protocol):
+    @property
+    def id(self) -> object: ...
+
+    @property
+    def provider(self) -> object: ...
+
+    @property
+    def display_title(self) -> str: ...
+
+    @property
+    def display_date(self) -> datetime | None: ...
+
+    @property
+    def created_at(self) -> datetime | None: ...
+
+    @property
+    def updated_at(self) -> datetime | None: ...
+
+    @property
+    def tags(self) -> Sequence[str]: ...
+
+    @property
+    def summary(self) -> str | None: ...
+
+
+def build_projection_semantic_facts(projection: ProjectionLike) -> ProjectionSemanticFacts:
     attachment_counts: Counter[str] = Counter(
         attachment.message_id for attachment in projection.attachments if attachment.message_id
     )
@@ -68,7 +198,7 @@ def build_projection_semantic_facts(projection: Any) -> ProjectionSemanticFacts:
     )
 
 
-def build_message_semantic_facts(message: Any) -> MessageSemanticFacts:
+def build_message_semantic_facts(message: SemanticConversationMessageLike) -> MessageSemanticFacts:
     tool_calls = message_tool_calls(message)
     action_events = build_action_events(message, tool_calls)
     tool_category_counts = Counter(action.kind.value for action in action_events)
@@ -99,7 +229,7 @@ def build_message_semantic_facts(message: Any) -> MessageSemanticFacts:
 # ---------------------------------------------------------------------------
 
 
-def build_conversation_semantic_facts(conversation: Any) -> ConversationSemanticFacts:
+def build_conversation_semantic_facts(conversation: SemanticConversationLike) -> ConversationSemanticFacts:
     role_counts: Counter[str] = Counter()
     tool_categories: Counter[str] = Counter()
     message_facts = tuple(build_message_semantic_facts(message) for message in conversation.messages)
@@ -112,7 +242,7 @@ def build_conversation_semantic_facts(conversation: Any) -> ConversationSemantic
     branch_messages = 0
     substantive_messages = 0
     word_count = 0
-    timestamps: list[Any] = []
+    timestamps: list[datetime] = []
     action_events: list[ActionEvent] = []
 
     for message_fact in message_facts:
@@ -170,7 +300,7 @@ def build_conversation_semantic_facts(conversation: Any) -> ConversationSemantic
     )
 
 
-def build_mcp_detail_semantic_facts(conversation: Any) -> MCPDetailSemanticFacts:
+def build_mcp_detail_semantic_facts(conversation: SemanticConversationLike) -> MCPDetailSemanticFacts:
     facts = build_conversation_semantic_facts(conversation)
     return MCPDetailSemanticFacts(
         conversation_id=facts.conversation_id,
@@ -194,7 +324,7 @@ def build_mcp_detail_semantic_facts(conversation: Any) -> MCPDetailSemanticFacts
 # ---------------------------------------------------------------------------
 
 
-def build_summary_semantic_facts(summary: Any, *, message_count: int) -> SummarySemanticFacts:
+def build_summary_semantic_facts(summary: SemanticSummaryLike, *, message_count: int) -> SummarySemanticFacts:
     return SummarySemanticFacts(
         conversation_id=str(summary.id),
         provider=str(summary.provider),
@@ -207,7 +337,7 @@ def build_summary_semantic_facts(summary: Any, *, message_count: int) -> Summary
 
 
 def build_mcp_summary_semantic_facts(
-    summary: Any,
+    summary: SemanticSummaryLike,
     *,
     message_count: int,
 ) -> MCPSummarySemanticFacts:
@@ -224,7 +354,7 @@ def build_mcp_summary_semantic_facts(
 
 
 def build_stream_semantic_facts(
-    conversation: Any,
+    conversation: SemanticConversationLike,
     *,
     dialogue_only: bool = False,
     message_limit: int | None = None,
@@ -256,6 +386,12 @@ def build_stream_semantic_facts(
 
 
 __all__ = [
+    "ProjectionAttachmentLike",
+    "ProjectionLike",
+    "ProjectionMessageLike",
+    "SemanticConversationLike",
+    "SemanticConversationMessageLike",
+    "SemanticSummaryLike",
     "ConversationSemanticFacts",
     "MCPDetailSemanticFacts",
     "MCPSummarySemanticFacts",

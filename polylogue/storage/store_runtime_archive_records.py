@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-from typing import Any
-
 from pydantic import BaseModel, Field, field_validator
 
 from polylogue.lib.branch_type import BranchType
 from polylogue.lib.hashing import hash_text
+from polylogue.lib.json import json_document
 from polylogue.lib.roles import Role
 from polylogue.lib.security import sanitize_path as _sanitize_path_helper
+from polylogue.storage.run_state import RunCounts, RunCountsPayload
 from polylogue.types import (
     AttachmentId,
     ContentBlockType,
@@ -19,6 +19,20 @@ from polylogue.types import (
     Provider,
     SemanticBlockType,
 )
+
+JSONObject = dict[str, object]
+
+
+def _coerce_json_object(value: object) -> JSONObject | None:
+    if value is None:
+        return None
+    document = json_document(value)
+    if not document:
+        return None
+    result: JSONObject = {}
+    for key, item in document.items():
+        result[key] = item
+    return result
 
 
 class ConversationRecord(BaseModel):
@@ -30,8 +44,8 @@ class ConversationRecord(BaseModel):
     updated_at: str | None = None
     sort_key: float | None = None
     content_hash: ContentHash
-    provider_meta: dict[str, object] | None = None
-    metadata: dict[str, object] | None = None
+    provider_meta: JSONObject | None = None
+    metadata: JSONObject | None = None
     version: int = 1
     parent_conversation_id: ConversationId | None = None
     branch_type: BranchType | None = None
@@ -47,6 +61,11 @@ class ConversationRecord(BaseModel):
         if not v or not v.strip():
             raise ValueError("Field cannot be empty")
         return v
+
+    @field_validator("provider_meta", "metadata", mode="before")
+    @classmethod
+    def coerce_json_document(cls, value: object) -> JSONObject | None:
+        return _coerce_json_object(value)
 
 
 class ContentBlockRecord(BaseModel):
@@ -127,7 +146,7 @@ class AttachmentRecord(BaseModel):
     mime_type: str | None = None
     size_bytes: int | None = None
     path: str | None = None
-    provider_meta: dict[str, object] | None = None
+    provider_meta: JSONObject | None = None
 
     @field_validator("attachment_id", "conversation_id")
     @classmethod
@@ -150,15 +169,41 @@ class AttachmentRecord(BaseModel):
             raise ValueError("size_bytes cannot be negative")
         return v
 
+    @field_validator("provider_meta", mode="before")
+    @classmethod
+    def coerce_provider_meta(cls, value: object) -> JSONObject | None:
+        return _coerce_json_object(value)
+
+
+def _coerce_run_counts_payload(value: object) -> RunCountsPayload | None:
+    if value is None:
+        return None
+    return RunCounts.model_validate(value).to_payload()
+
 
 class RunRecord(BaseModel):
     run_id: str
     timestamp: str
-    plan_snapshot: dict[str, Any] | None = None
-    counts: dict[str, Any] | None = None
-    drift: dict[str, Any] | None = None
+    plan_snapshot: JSONObject | None = None
+    counts: RunCountsPayload | None = None
+    drift: JSONObject | None = None
     indexed: bool | None = None
     duration_ms: int | None = None
+
+    @field_validator("plan_snapshot", mode="before")
+    @classmethod
+    def coerce_plan_snapshot(cls, value: object) -> JSONObject | None:
+        return _coerce_json_object(value)
+
+    @field_validator("counts", mode="before")
+    @classmethod
+    def coerce_counts(cls, value: object) -> RunCountsPayload | None:
+        return _coerce_run_counts_payload(value)
+
+    @field_validator("drift", mode="before")
+    @classmethod
+    def coerce_drift(cls, value: object) -> JSONObject | None:
+        return _coerce_json_object(value)
 
 
 class PublicationRecord(BaseModel):
@@ -167,7 +212,7 @@ class PublicationRecord(BaseModel):
     generated_at: str
     output_dir: str
     duration_ms: int | None = None
-    manifest: dict[str, Any]
+    manifest: JSONObject
 
     @field_validator("publication_id", "publication_kind", "generated_at", "output_dir")
     @classmethod
@@ -175,3 +220,8 @@ class PublicationRecord(BaseModel):
         if not v or not v.strip():
             raise ValueError("Field cannot be empty")
         return v
+
+    @field_validator("manifest", mode="before")
+    @classmethod
+    def coerce_manifest(cls, value: object) -> JSONObject:
+        return _coerce_json_object(value) or {}
