@@ -2,18 +2,24 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING
 
+from polylogue.cli.check_models import VacuumResult
+from polylogue.cli.types import AppEnv
+from polylogue.health import HealthReport
 from polylogue.maintenance_targets import MaintenanceTargetMode, build_maintenance_target_catalog
-from polylogue.storage.repair import preview_counts_from_archive_debt
+from polylogue.storage.repair import RepairResult, preview_counts_from_archive_debt
+
+if TYPE_CHECKING:
+    from polylogue.cli.check_workflow import CheckCommandOptions
 
 
-def build_preview_counts(report: Any) -> dict[str, int]:
-    return preview_counts_from_archive_debt(getattr(report, "archive_debt", {}) or {})
+def build_preview_counts(report: HealthReport) -> dict[str, int]:
+    return preview_counts_from_archive_debt(report.archive_debt)
 
 
 def resolve_selected_maintenance_targets(
-    options: Any,
+    options: CheckCommandOptions,
 ) -> tuple[str, ...]:
     if options.maintenance_targets:
         return tuple(options.maintenance_targets)
@@ -27,13 +33,13 @@ def resolve_selected_maintenance_targets(
 
 
 def persist_maintenance_run(
-    env: Any,
+    env: AppEnv,
     *,
-    report: Any,
-    options: Any,
+    report: HealthReport,
+    options: CheckCommandOptions,
     targets: tuple[str, ...],
-    maintenance_results: list[Any],
-    vacuum_result: dict[str, Any] | None,
+    maintenance_results: list[RepairResult],
+    vacuum_result: VacuumResult | None,
     preview_counts: dict[str, int] | None,
 ) -> None:
     """No-op — maintenance run recording removed."""

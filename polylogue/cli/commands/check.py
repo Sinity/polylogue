@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Any
-
 import click
 
+from polylogue.cli.check_models import VacuumResult
 from polylogue.cli.check_options import apply_check_command_options
 from polylogue.cli.check_rendering_json import emit_json_output
 from polylogue.cli.check_rendering_plain import render_plain_output
@@ -22,6 +21,7 @@ from polylogue.cli.check_support import run_vacuum as _run_vacuum_impl
 from polylogue.cli.check_support import vacuum_database as _vacuum_database_impl
 from polylogue.cli.check_workflow import CheckCommandOptions, run_check_workflow, validate_check_options
 from polylogue.cli.types import AppEnv
+from polylogue.protocols import ProgressCallback
 
 
 def _format_count_mapping(counts: dict[str, int]) -> str:
@@ -93,7 +93,7 @@ def check_command(
     render_plain_output(env, result, options)
 
 
-def _make_schema_progress_callback() -> Any:
+def _make_schema_progress_callback() -> ProgressCallback:
     return _make_schema_progress_callback_impl()
 
 
@@ -101,7 +101,7 @@ def _run_vacuum(env: AppEnv) -> None:
     _run_vacuum_impl(env)
 
 
-def _vacuum_database(env: AppEnv) -> dict[str, Any]:
+def _vacuum_database(env: AppEnv) -> VacuumResult:
     return _vacuum_database_impl(env)
 
 

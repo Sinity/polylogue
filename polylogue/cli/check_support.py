@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import sys
 import time
-from typing import Any
 
+from polylogue.cli.check_models import VacuumResult
 from polylogue.cli.helpers import fail
 from polylogue.cli.types import AppEnv
+from polylogue.protocols import ProgressCallback
 
 
 def format_count_mapping(counts: dict[str, int]) -> str:
@@ -38,7 +39,7 @@ def parse_schema_samples(raw: str) -> int | None:
     return parsed
 
 
-def make_count_progress_callback(*, label: str, unit: str) -> Any:
+def make_count_progress_callback(*, label: str, unit: str) -> ProgressCallback:
     """Return a stderr progress reporter for monotonically increasing counters."""
     start = time.monotonic()
     count = 0
@@ -59,30 +60,30 @@ def make_count_progress_callback(*, label: str, unit: str) -> Any:
     return _cb
 
 
-def make_schema_progress_callback() -> Any:
+def make_schema_progress_callback() -> ProgressCallback:
     """Return a stderr progress reporter for schema verification."""
     return make_count_progress_callback(label="Verifying schemas", unit="raw records")
 
 
-def make_session_product_progress_callback() -> Any:
+def make_session_product_progress_callback() -> ProgressCallback:
     """Return a stderr progress reporter for session-product repairs."""
     return make_count_progress_callback(label="Repairing session products", unit="conversations")
 
 
-def vacuum_database(env: AppEnv) -> dict[str, Any]:
+def vacuum_database(env: AppEnv) -> VacuumResult:
     """Run VACUUM and return a machine-readable result."""
     from polylogue.storage.backends.connection import open_connection
 
     try:
         with open_connection(env.config.db_path) as conn:
             conn.execute("VACUUM")
-        return {"ok": True, "detail": "Running VACUUM to reclaim space...\n  VACUUM complete."}
+        return VacuumResult(ok=True, detail="Running VACUUM to reclaim space...\n  VACUUM complete.")
     except Exception as exc:
-        return {"ok": False, "detail": f"Running VACUUM to reclaim space...\n  VACUUM failed: {exc}"}
+        return VacuumResult(ok=False, detail=f"Running VACUUM to reclaim space...\n  VACUUM failed: {exc}")
 
 
 def run_vacuum(env: AppEnv) -> None:
     """Run VACUUM to reclaim unused space."""
     result = vacuum_database(env)
     env.ui.console.print("")
-    env.ui.console.print(result["detail"])
+    env.ui.console.print(result.detail)
