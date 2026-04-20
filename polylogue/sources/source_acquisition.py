@@ -10,7 +10,7 @@ from typing import IO, BinaryIO, TypeAlias, cast
 
 from polylogue.config import Source
 from polylogue.lib.artifact_taxonomy import classify_artifact
-from polylogue.lib.json import JSONValue, is_json_value
+from polylogue.lib.json import JSONDocument, JSONValue, is_json_value
 from polylogue.lib.json import dumps_bytes as json_dumps_bytes
 from polylogue.lib.metrics import read_current_rss_mb, read_peak_rss_self_mb
 from polylogue.logging import get_logger
@@ -32,7 +32,7 @@ _decoders.logger = logger
 
 _DETECTION_PREFIX_SIZE = 8192  # 8 KB — enough for provider detection
 _HEARTBEAT_INTERVAL_S = 5.0
-AcquisitionObservation: TypeAlias = dict[str, object]
+AcquisitionObservation: TypeAlias = JSONDocument
 ObservationCallback: TypeAlias = Callable[[AcquisitionObservation], None]
 StatusCallback: TypeAlias = Callable[[str], None]
 CursorState: TypeAlias = CursorStatePayload
@@ -97,8 +97,10 @@ def _observe_acquisition(
         "source_index": source_index,
         "current_rss_mb": current_rss_mb,
         "peak_rss_self_mb": peak_rss_self_mb,
-        **extra,
     }
+    for key, value in extra.items():
+        if is_json_value(value):
+            payload[key] = value
     observation_callback(payload)
 
 

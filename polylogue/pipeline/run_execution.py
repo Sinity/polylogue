@@ -6,8 +6,10 @@ import time
 from typing import TYPE_CHECKING
 
 from polylogue.config import Config
+from polylogue.lib.json import JSONDocument, JSONValue, json_document
 from polylogue.lib.metrics import PipelineMetrics
 from polylogue.logging import get_logger
+from polylogue.pipeline.payload_types import SiteBuildOptions
 from polylogue.pipeline.run_finalization import persist_run_result
 from polylogue.pipeline.run_stages import (
     IndexStageOutcome,
@@ -38,9 +40,15 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 
-def _compact_log_details(value: object) -> object:
+def _json_detail_payload(payload: object) -> JSONDocument:
+    if isinstance(payload, dict):
+        return json_document(dict(payload))
+    return {}
+
+
+def _compact_log_details(value: JSONValue) -> JSONValue:
     if isinstance(value, dict):
-        compact: dict[str, object] = {}
+        compact: JSONDocument = {}
         for key, nested in value.items():
             if isinstance(nested, list):
                 count_key = f"{key}_count"
@@ -52,7 +60,7 @@ def _compact_log_details(value: object) -> object:
     return value
 
 
-def _compact_stage_log_payload(payload: dict[str, object]) -> dict[str, object]:
+def _compact_stage_log_payload(payload: JSONDocument) -> JSONDocument:
     """Trim oversized telemetry from normal stage-complete log lines."""
     compact = dict(payload)
     details = compact.get("details")
@@ -71,7 +79,7 @@ async def run_sources(
     source_names: Sequence[str] | None = None,
     progress_callback: ProgressCallback | None = None,
     render_format: str = "html",
-    site_options: dict[str, object] | None = None,
+    site_options: SiteBuildOptions | None = None,
     raw_batch_size: int = 50,
     ingest_workers: int | None = None,
     measure_ingest_result_size: bool = False,
@@ -103,7 +111,7 @@ async def run_sources(
                 ui=ui,
                 progress_callback=progress_callback,
             )
-            sm.details.update(acquire_result.diagnostics)
+            sm.details.update(_json_detail_payload(acquire_result.diagnostics))
             sm.stop(items=acquire_result.counts["acquired"])
             state.record_acquire(acquire_result)
             logger.info("Acquire stage complete", **sm.to_dict(), **acquire_result.counts)
@@ -141,7 +149,7 @@ async def run_sources(
                 measure_ingest_result_size=measure_ingest_result_size,
             )
             sm.sub_timings.update({f"{k}_s": v for k, v in ingest_result.timings.items()})
-            sm.details.update(ingest_result.diagnostics)
+            sm.details.update(_json_detail_payload(ingest_result.diagnostics))
             sm.stop(items=len(ingest_result.parse_raw_ids))
             if "acquire" not in executed_stages:
                 state.record_acquire(ingest_result.acquire_result)
@@ -174,7 +182,7 @@ async def run_sources(
                 progress_callback=progress_callback,
             )
             if materialize_outcome.observation:
-                sm.details.update(materialize_outcome.observation)
+                sm.details.update(_json_detail_payload(materialize_outcome.observation))
             state.record_materialize(materialized=materialize_outcome.item_count)
             sm.stop(items=materialize_outcome.item_count)
             materialize_log_payload = _compact_stage_log_payload(sm.to_dict())
@@ -201,7 +209,7 @@ async def run_sources(
                 failures=render_outcome.failures,
             )
             if render_outcome.observation:
-                sm.details.update(render_outcome.observation)
+                sm.details.update(_json_detail_payload(render_outcome.observation))
             sm.stop(items=state.counts.get("rendered", 0))
             logger.info(
                 "Render stage complete",

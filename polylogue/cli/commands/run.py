@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
 import click
 
@@ -41,6 +40,7 @@ from polylogue.pipeline.observers import (
     RunObserver,
     WebhookObserver,
 )
+from polylogue.pipeline.payload_types import SiteBuildOptions
 from polylogue.pipeline.run_support import RUN_STAGE_CHOICES, expand_requested_stage, normalize_stage_sequence
 from polylogue.pipeline.runner import plan_sources
 from polylogue.sources import DriveError
@@ -77,7 +77,7 @@ class RunStageRequest:
     name: str
     stage_sequence: tuple[str, ...]
     render_format: str | None = None
-    site_options: dict[str, Any] | None = None
+    site_options: SiteBuildOptions | None = None
     embed_options: EmbedOptions | None = None
 
 
@@ -100,7 +100,7 @@ def _make_stage_request(
     name: str,
     *,
     render_format: str | None = None,
-    site_options: dict[str, Any] | None = None,
+    site_options: SiteBuildOptions | None = None,
 ) -> RunStageRequest:
     return RunStageRequest(
         name=name,
@@ -152,7 +152,7 @@ def _resolve_embed_options(stage_requests: list[RunStageRequest]) -> EmbedOption
     return options[0]
 
 
-def _resolve_site_options(stage_requests: list[RunStageRequest]) -> dict[str, Any] | None:
+def _resolve_site_options(stage_requests: list[RunStageRequest]) -> SiteBuildOptions | None:
     options = [request.site_options for request in stage_requests if request.site_options is not None]
     if not options:
         return None
@@ -447,15 +447,17 @@ def run_site_stage(
     dashboard: bool,
 ) -> RunStageRequest:
     """Generate a static HTML site from the archive."""
+    site_options: SiteBuildOptions = {
+        "title": title,
+        "search": search,
+        "search_provider": search_provider,
+        "dashboard": dashboard,
+    }
+    if output is not None:
+        site_options["output"] = output
     return _make_stage_request(
         "site",
-        site_options={
-            "output": output,
-            "title": title,
-            "search": search,
-            "search_provider": search_provider,
-            "dashboard": dashboard,
-        },
+        site_options=site_options,
     )
 
 

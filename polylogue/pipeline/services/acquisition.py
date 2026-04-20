@@ -5,8 +5,10 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, cast
 
+from polylogue.lib.json import JSONDocument
 from polylogue.lib.metrics import read_peak_rss_self_mb
 from polylogue.logging import get_logger
+from polylogue.pipeline.payload_types import AcquireSplitPayloadSummary
 from polylogue.pipeline.services.acquisition_persistence import persist_raw_record
 from polylogue.pipeline.services.acquisition_records import ScanResult
 from polylogue.pipeline.services.acquisition_streams import iter_raw_record_stream
@@ -67,7 +69,7 @@ class AcquisitionService:
         drive_config: DriveConfig | None = None,
         progress_label: str = "Scanning",
         on_record: Callable[[RawConversationRecord], Awaitable[None]] | None = None,
-        observation_callback: Callable[[dict[str, object]], None] | None = None,
+        observation_callback: Callable[[JSONDocument], None] | None = None,
     ) -> ScanResult:
         """Visit source raw payloads incrementally without forcing list materialization."""
         result = ScanResult()
@@ -136,10 +138,10 @@ class AcquisitionService:
         # reduce commit frequency and async thread-crossing overhead.
         flush_interval = 500
         items_since_flush = 0
-        peak_observation: dict[str, object] | None = None
+        peak_observation: JSONDocument | None = None
         observation_count = 0
         peak_baseline = read_peak_rss_self_mb() or 0.0
-        split_payload_summary = {
+        split_payload_totals = {
             "count": 0,
             "total_blob_mb": 0.0,
             "max_blob_mb": 0.0,
@@ -151,15 +153,15 @@ class AcquisitionService:
             "max_serialize_ms": 0.0,
         }
 
-        def _observe(observation: dict[str, object]) -> None:
+        def _observe(observation: JSONDocument) -> None:
             nonlocal peak_observation, observation_count, peak_baseline
             observation_count += 1
             if observation.get("phase") == "zip-entry-split-payload-serialized":
-                split_payload_summary["count"] += 1
+                split_payload_totals["count"] += 1
                 blob_mb = observation.get("blob_mb")
                 if isinstance(blob_mb, int | float):
-                    split_payload_summary["total_blob_mb"] += float(blob_mb)
-                    split_payload_summary["max_blob_mb"] = max(split_payload_summary["max_blob_mb"], float(blob_mb))
+                    split_payload_totals["total_blob_mb"] += float(blob_mb)
+                    split_payload_totals["max_blob_mb"] = max(split_payload_totals["max_blob_mb"], float(blob_mb))
                 for field, total_key, max_key in (
                     ("detect_provider_ms", "total_detect_provider_ms", "max_detect_provider_ms"),
                     ("classify_ms", "total_classify_ms", "max_classify_ms"),
@@ -167,8 +169,8 @@ class AcquisitionService:
                 ):
                     value = observation.get(field)
                     if isinstance(value, int | float):
-                        split_payload_summary[total_key] += float(value)
-                        split_payload_summary[max_key] = max(split_payload_summary[max_key], float(value))
+                        split_payload_totals[total_key] += float(value)
+                        split_payload_totals[max_key] = max(split_payload_totals[max_key], float(value))
             peak_rss_self_mb = observation.get("peak_rss_self_mb")
             if not isinstance(peak_rss_self_mb, int | float):
                 return
@@ -205,10 +207,17 @@ class AcquisitionService:
         if peak_observation is not None:
             result.diagnostics["peak_observation"] = peak_observation
             result.diagnostics["observation_count"] = observation_count
-        if split_payload_summary["count"]:
-            result.diagnostics["split_payload_summary"] = {
-                key: round(value, 3) if isinstance(value, float) else value
-                for key, value in split_payload_summary.items()
-            }
+        if split_payload_totals["count"]:
+            result.diagnostics["split_payload_summary"] = AcquireSplitPayloadSummary(
+                count=int(split_payload_totals["count"]),
+                total_blob_mb=round(split_payload_totals["total_blob_mb"], 3),
+                max_blob_mb=round(split_payload_totals["max_blob_mb"], 3),
+                total_detect_provider_ms=round(split_payload_totals["total_detect_provider_ms"], 3),
+                total_classify_ms=round(split_payload_totals["total_classify_ms"], 3),
+                total_serialize_ms=round(split_payload_totals["total_serialize_ms"], 3),
+                max_detect_provider_ms=round(split_payload_totals["max_detect_provider_ms"], 3),
+                max_classify_ms=round(split_payload_totals["max_classify_ms"], 3),
+                max_serialize_ms=round(split_payload_totals["max_serialize_ms"], 3),
+            )
 
         return result
