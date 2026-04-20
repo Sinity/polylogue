@@ -6,8 +6,7 @@ from collections import Counter, defaultdict
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
-
-from typing_extensions import TypedDict
+from typing import TypeAlias
 
 from polylogue.lib.payload_coercion import (
     coerce_float,
@@ -18,24 +17,47 @@ from polylogue.lib.payload_coercion import (
     string_sequence,
 )
 from polylogue.lib.repo_identity import normalize_repo_names
+from polylogue.lib.session_payload_documents import WorkThreadDocument
 from polylogue.lib.session_profile import SessionProfile
 
+WorkThreadPayload: TypeAlias = WorkThreadDocument
 
-class WorkThreadPayload(TypedDict):
-    thread_id: str
-    root_id: str
-    session_ids: list[str]
-    session_count: int
-    depth: int
-    branch_count: int
-    start_time: str | None
-    end_time: str | None
-    wall_duration_ms: int
-    total_messages: int
-    total_cost_usd: float
-    dominant_repo: str | None
-    provider_breakdown: dict[str, int]
-    work_event_breakdown: dict[str, int]
+
+def _work_thread_payload(thread: WorkThread) -> WorkThreadPayload:
+    return {
+        "thread_id": thread.thread_id,
+        "root_id": thread.root_id,
+        "session_ids": list(thread.session_ids),
+        "session_count": len(thread.session_ids),
+        "depth": thread.depth,
+        "branch_count": thread.branch_count,
+        "start_time": thread.start_time.isoformat() if thread.start_time else None,
+        "end_time": thread.end_time.isoformat() if thread.end_time else None,
+        "wall_duration_ms": thread.wall_duration_ms,
+        "total_messages": thread.total_messages,
+        "total_cost_usd": thread.total_cost_usd,
+        "dominant_repo": thread.dominant_repo,
+        "provider_breakdown": dict(thread.provider_breakdown),
+        "work_event_breakdown": dict(thread.work_event_breakdown),
+    }
+
+
+def _work_thread_from_mapping(payload: Mapping[str, object]) -> WorkThread:
+    return WorkThread(
+        thread_id=str(payload["thread_id"]),
+        root_id=str(payload["root_id"]),
+        session_ids=string_sequence(payload.get("session_ids")),
+        depth=coerce_int(payload.get("depth"), 0),
+        branch_count=coerce_int(payload.get("branch_count"), 0),
+        start_time=optional_datetime(payload.get("start_time")),
+        end_time=optional_datetime(payload.get("end_time")),
+        wall_duration_ms=coerce_int(payload.get("wall_duration_ms"), 0),
+        total_messages=coerce_int(payload.get("total_messages"), 0),
+        total_cost_usd=coerce_float(payload.get("total_cost_usd"), 0.0),
+        dominant_repo=optional_string(payload.get("dominant_repo")),
+        provider_breakdown=string_int_mapping(payload.get("provider_breakdown")),
+        work_event_breakdown=string_int_mapping(payload.get("work_event_breakdown")),
+    )
 
 
 @dataclass(frozen=True)
@@ -55,40 +77,15 @@ class WorkThread:
     work_event_breakdown: dict[str, int]
 
     def to_dict(self) -> WorkThreadPayload:
-        return {
-            "thread_id": self.thread_id,
-            "root_id": self.root_id,
-            "session_ids": list(self.session_ids),
-            "session_count": len(self.session_ids),
-            "depth": self.depth,
-            "branch_count": self.branch_count,
-            "start_time": self.start_time.isoformat() if self.start_time else None,
-            "end_time": self.end_time.isoformat() if self.end_time else None,
-            "wall_duration_ms": self.wall_duration_ms,
-            "total_messages": self.total_messages,
-            "total_cost_usd": self.total_cost_usd,
-            "dominant_repo": self.dominant_repo,
-            "provider_breakdown": self.provider_breakdown,
-            "work_event_breakdown": self.work_event_breakdown,
-        }
+        return _work_thread_payload(self)
+
+    @classmethod
+    def from_payload(cls, payload: WorkThreadPayload) -> WorkThread:
+        return _work_thread_from_mapping(payload)
 
     @classmethod
     def from_dict(cls, payload: Mapping[str, object]) -> WorkThread:
-        return cls(
-            thread_id=str(payload["thread_id"]),
-            root_id=str(payload["root_id"]),
-            session_ids=string_sequence(payload.get("session_ids")),
-            depth=coerce_int(payload.get("depth"), 0),
-            branch_count=coerce_int(payload.get("branch_count"), 0),
-            start_time=optional_datetime(payload.get("start_time")),
-            end_time=optional_datetime(payload.get("end_time")),
-            wall_duration_ms=coerce_int(payload.get("wall_duration_ms"), 0),
-            total_messages=coerce_int(payload.get("total_messages"), 0),
-            total_cost_usd=coerce_float(payload.get("total_cost_usd"), 0.0),
-            dominant_repo=optional_string(payload.get("dominant_repo")),
-            provider_breakdown=string_int_mapping(payload.get("provider_breakdown")),
-            work_event_breakdown=string_int_mapping(payload.get("work_event_breakdown")),
-        )
+        return _work_thread_from_mapping(payload)
 
 
 def _bfs_depth(adjacency: dict[str, list[str]], root: str) -> int:
