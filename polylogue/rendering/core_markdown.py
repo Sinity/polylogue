@@ -15,7 +15,7 @@ from polylogue.rendering.blocks import has_structured_blocks, render_blocks_mark
 
 if TYPE_CHECKING:
     from polylogue.lib.models import Conversation
-    from polylogue.storage.state_views import ConversationRenderProjection
+    from polylogue.storage.archive_views import ConversationRenderProjection
 
 
 @dataclass(frozen=True, slots=True)

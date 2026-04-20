@@ -10,8 +10,8 @@ from polylogue.pipeline.prepare_models import (
     TransformResult,
 )
 from polylogue.sources.parsers.base import ParsedConversation
+from polylogue.storage.archive_views import ExistingConversation
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
-from polylogue.storage.state_views import ExistingConversation
 from polylogue.storage.store import AttachmentRecord, ContentBlockRecord, ConversationRecord, MessageRecord
 from polylogue.types import ConversationId, MessageId
 

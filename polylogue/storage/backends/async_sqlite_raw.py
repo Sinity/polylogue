@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 
 from polylogue.storage.backends.queries import artifacts as artifacts_q
 from polylogue.storage.backends.queries import raw as raw_queries
-from polylogue.storage.state_views import RawConversationState, RawConversationStateUpdate
+from polylogue.storage.raw_state_models import RawConversationState, RawConversationStateUpdate
 from polylogue.storage.store import ArtifactObservationRecord, RawConversationRecord
 from polylogue.types import Provider, ValidationMode, ValidationStatus
 

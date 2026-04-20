@@ -19,7 +19,7 @@ from polylogue.scenarios import (
     flatten_corpus_specs,
 )
 from polylogue.schemas.synthetic.models import SyntheticWrittenBatch
-from polylogue.storage.state_views import RunResult
+from polylogue.storage.run_state import RunResult
 from polylogue.sync_bridge import run_coroutine_sync
 
 

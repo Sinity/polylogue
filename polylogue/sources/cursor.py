@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from polylogue.logging import get_logger
-from polylogue.storage.state_views import CursorFailurePayload, CursorStatePayload
+from polylogue.storage.cursor_state import CursorFailurePayload, CursorStatePayload
 from polylogue.types import Provider
 
 logger = get_logger(__name__)

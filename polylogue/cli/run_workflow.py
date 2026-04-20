@@ -26,7 +26,7 @@ from polylogue.pipeline.run_support import expand_requested_stage
 from polylogue.pipeline.runner import run_sources
 from polylogue.protocols import ProgressCallback
 from polylogue.sources import DriveError
-from polylogue.storage.state_views import PlanResult, RunResult
+from polylogue.storage.run_state import PlanResult, RunResult
 from polylogue.sync_bridge import run_coroutine_sync
 
 

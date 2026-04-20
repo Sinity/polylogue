@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from polylogue.logging import get_logger
-from polylogue.storage.state_views import CursorStatePayload
+from polylogue.storage.cursor_state import CursorStatePayload
 from polylogue.types import Provider
 
 from ..assets import asset_path

@@ -10,7 +10,7 @@ from typing_extensions import TypedDict
 
 from polylogue.config import Config
 from polylogue.pipeline.run_support import PARSE_STAGES
-from polylogue.storage.state_views import RenderFailurePayload
+from polylogue.storage.run_state import RenderFailurePayload
 from polylogue.types import SearchProvider
 
 if TYPE_CHECKING:

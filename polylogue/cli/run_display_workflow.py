@@ -19,7 +19,7 @@ from polylogue.cli.helpers import fail
 from polylogue.lib.timestamps import format_timestamp
 from polylogue.pipeline.run_support import expand_requested_stage
 from polylogue.sources import DriveError
-from polylogue.storage.state_views import PlanResult, RunResult
+from polylogue.storage.run_state import PlanResult, RunResult
 
 
 def display_result(

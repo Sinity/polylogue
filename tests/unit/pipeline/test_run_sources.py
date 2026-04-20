@@ -25,8 +25,8 @@ from polylogue.sources.parsers.base import RawConversationData
 from polylogue.storage.backends import create_backend
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.backends.connection import open_connection
+from polylogue.storage.run_state import PlanCounts, PlanResult, RunCounts, RunDrift, RunResult
 from polylogue.storage.session_product_runtime import SessionProductCounts
-from polylogue.storage.state_views import PlanCounts, PlanResult, RunCounts, RunDrift, RunResult
 from polylogue.types import PlanStage
 from tests.infra.storage_records import make_conversation, make_message, store_records
 
@@ -335,7 +335,7 @@ def test_materialize_stage_log_omits_full_chunk_telemetry(
 
 class TestRunSourcesRenderFailures:
     def test_render_failure_tracked_in_result(self, workspace_env: WorkspaceEnv) -> None:
-        from polylogue.storage.state_views import RunResult
+        from polylogue.storage.run_state import RunResult
 
         archive_root = workspace_env["archive_root"]
         archive_root.mkdir(parents=True, exist_ok=True)

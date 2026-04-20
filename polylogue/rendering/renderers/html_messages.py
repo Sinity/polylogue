@@ -12,7 +12,7 @@ from polylogue.rendering.core_messages import RenderedMessage
 
 if TYPE_CHECKING:
     from polylogue.lib.models import Conversation
-    from polylogue.storage.state_views import ConversationRenderProjection
+    from polylogue.storage.archive_views import ConversationRenderProjection
 
 _ROLE_CLASS_RE = re.compile(r"[^a-z0-9-]")
 TMessage = TypeVar("TMessage", RenderedMessage, dict[str, object])

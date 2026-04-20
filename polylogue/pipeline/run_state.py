@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 
 from polylogue.pipeline.services.parsing import ParseResult
 from polylogue.pipeline.stage_models import AcquireResult, ValidateResult
-from polylogue.storage.state_views import DriftBucket, RenderFailurePayload, RunCounts, RunDrift
+from polylogue.storage.run_state import DriftBucket, RenderFailurePayload, RunCounts, RunDrift
 
 
 def _initial_counts() -> RunCounts:

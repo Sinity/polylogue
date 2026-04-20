@@ -19,7 +19,7 @@ from polylogue.lib.semantic_facts import (
     build_projection_semantic_facts,
 )
 from polylogue.lib.session_profile import build_session_profile
-from polylogue.storage.state_views import ConversationRenderProjection
+from polylogue.storage.archive_views import ConversationRenderProjection
 from polylogue.types import ConversationId, Provider
 from tests.infra.builders import make_conv, make_msg
 from tests.infra.storage_records import make_attachment, make_conversation, make_message

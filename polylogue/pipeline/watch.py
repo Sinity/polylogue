@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 from polylogue.pipeline.observers import RunObserver
 
 if TYPE_CHECKING:
-    from polylogue.storage.state_views import RunResult
+    from polylogue.storage.run_state import RunResult
 
 
 class WatchRunner:

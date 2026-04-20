@@ -33,7 +33,7 @@ from polylogue.storage.backends.connection import (
 from polylogue.storage.backends.queries.raw_state import EFFECTIVE_RAW_PROVIDER_SQL
 from polylogue.storage.blob_store import BlobStore, reset_blob_store
 from polylogue.storage.repository import ConversationRepository
-from polylogue.storage.state_views import RunResult
+from polylogue.storage.run_state import RunResult
 from polylogue.storage.store import RawConversationRecord
 from polylogue.types import Provider
 

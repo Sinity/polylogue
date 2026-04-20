@@ -20,7 +20,7 @@ from polylogue.sources.decoders import (
     _iter_json_stream,
     _ZipEntryValidator,
 )
-from polylogue.storage.state_views import CursorFailurePayload, CursorStatePayload
+from polylogue.storage.cursor_state import CursorFailurePayload, CursorStatePayload
 
 # =============================================================================
 # _decode_json_bytes
