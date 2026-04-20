@@ -5,47 +5,24 @@ from __future__ import annotations
 import json
 import random
 import uuid
-from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
-from typing import Protocol, TypeAlias, cast
+from typing import TYPE_CHECKING, Protocol, TypeAlias
 
 from polylogue.lib.raw_payload_decode import JSONValue
 from polylogue.schemas.synthetic.models import SchemaRecord, SchemaValue
-from polylogue.schemas.synthetic.semantic_values import _text_for_role
-from polylogue.schemas.synthetic.wire_formats import WireEncoding
+from polylogue.schemas.synthetic.semantic_values import SemanticValueGenerator, _text_for_role
+from polylogue.schemas.synthetic.wire_formats import WireFormat
+
+if TYPE_CHECKING:
+    from polylogue.schemas.synthetic.relations import RelationConstraintSolver
 
 SyntheticRecord: TypeAlias = dict[str, JSONValue]
 
 
-class _SemanticGenerator(Protocol):
-    def try_generate(self, schema: Mapping[str, object]) -> tuple[bool, JSONValue]: ...
-
-
-class _RelationSolver(Protocol):
-    mutual_exclusions: Sequence[object]
-
-    def generate_string_with_length(self, path: str, rng: random.Random, value: str) -> str: ...
-
-    def register_generated_id(self, path: str, value: str) -> None: ...
-
-    def filter_mutually_exclusive(
-        self,
-        path: str,
-        candidate_keys: set[str],
-        rng: random.Random,
-    ) -> set[str]: ...
-
-    def resolve_foreign_key(self, path: str, rng: random.Random) -> JSONValue | None: ...
-
-
-class _WireFormat(Protocol):
-    encoding: WireEncoding
-
-
 class _SyntheticRuntimeContext(Protocol):
-    wire_format: _WireFormat
-    _semantic_gen: _SemanticGenerator | None
-    _relation_solver: _RelationSolver
+    wire_format: WireFormat
+    _semantic_gen: SemanticValueGenerator | None
+    _relation_solver: RelationConstraintSolver
 
     def _generate_from_schema(
         self,
@@ -90,11 +67,11 @@ class _SyntheticRuntimeContext(Protocol):
     ) -> float | int: ...
 
 
-def _schema_record(value: object) -> SchemaRecord:
-    return cast(SchemaRecord, value) if isinstance(value, dict) else {}
+def _schema_record(value: SchemaValue | object) -> SchemaRecord:
+    return value if isinstance(value, dict) else {}
 
 
-def _schema_records(value: object) -> list[SchemaRecord]:
+def _schema_records(value: SchemaValue | object) -> list[SchemaRecord]:
     if not isinstance(value, list):
         return []
     return [record for item in value if (record := _schema_record(item))]

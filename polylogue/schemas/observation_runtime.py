@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TypeAlias
 
@@ -9,12 +10,144 @@ from polylogue.lib.artifact_taxonomy import classify_artifact
 from polylogue.lib.json import JSONDocument, JSONValue, is_json_value, json_document
 from polylogue.lib.raw_payload import extract_payload_samples, record_bucket_key
 from polylogue.schemas.observation_identity import derive_bundle_scope, schema_cluster_id
-from polylogue.schemas.observation_models import ProviderConfig, SchemaUnit
+from polylogue.schemas.observation_models import ProviderConfig, SchemaClusterPayload, SchemaUnit
 from polylogue.types import Provider
 
 SchemaSample: TypeAlias = JSONDocument
 
 _SCHEMA_SAMPLE_STRING_LIMIT = 1024
+
+
+@dataclass(frozen=True)
+class _ObservationContext:
+    provider_name: Provider
+    source_path: Path | None
+    source_path_text: str | None
+    raw_id: str | None
+    observed_at: str | None
+    bundle_scope: str | None
+    effective_max_samples: int | None
+
+
+@dataclass(frozen=True)
+class _ObservedSchemaUnit:
+    cluster_payload: SchemaClusterPayload
+    schema_samples: list[SchemaSample]
+    artifact_kind: str
+    conversation_id: str | None
+    profile_tokens: tuple[str, ...]
+
+
+def _build_observation_context(
+    *,
+    provider_name: Provider,
+    source_path: str | Path | None,
+    raw_id: str | None,
+    observed_at: str | None,
+    config: ProviderConfig,
+    max_samples: int | None,
+) -> _ObservationContext:
+    provider_token = Provider.from_string(provider_name)
+    source_path_obj = Path(source_path) if source_path is not None else None
+    return _ObservationContext(
+        provider_name=provider_token,
+        source_path=source_path_obj,
+        source_path_text=str(source_path_obj) if source_path_obj is not None else None,
+        raw_id=raw_id,
+        observed_at=observed_at,
+        bundle_scope=derive_bundle_scope(provider_token, source_path_obj),
+        effective_max_samples=max_samples if max_samples is not None else config.schema_sample_cap,
+    )
+
+
+def _to_schema_unit(observed: _ObservedSchemaUnit, context: _ObservationContext) -> SchemaUnit:
+    return SchemaUnit(
+        cluster_payload=observed.cluster_payload,
+        schema_samples=observed.schema_samples,
+        artifact_kind=observed.artifact_kind,
+        conversation_id=observed.conversation_id,
+        raw_id=context.raw_id,
+        source_path=context.source_path_text,
+        bundle_scope=context.bundle_scope,
+        observed_at=context.observed_at,
+        exact_structure_id=schema_cluster_id(observed.cluster_payload, observed.artifact_kind),
+        profile_tokens=observed.profile_tokens,
+    )
+
+
+def _eligible_artifact_kind(
+    payload: SchemaClusterPayload,
+    *,
+    context: _ObservationContext,
+) -> str | None:
+    artifact = classify_artifact(
+        payload,
+        provider=context.provider_name,
+        source_path=context.source_path,
+    )
+    return artifact.cohort if artifact.schema_eligible else None
+
+
+def _extract_record_observation(
+    normalized_payload: JSONValue,
+    *,
+    context: _ObservationContext,
+    config: ProviderConfig,
+) -> _ObservedSchemaUnit | None:
+    artifact_kind = _eligible_artifact_kind(normalized_payload, context=context)
+    if artifact_kind is None:
+        return None
+
+    samples = _compact_schema_samples(
+        extract_payload_samples(
+            normalized_payload,
+            sample_granularity="record",
+            max_samples=context.effective_max_samples,
+            record_type_key=config.record_type_key,
+        )
+    )
+    if not samples:
+        return None
+
+    return _ObservedSchemaUnit(
+        cluster_payload=normalized_payload,
+        schema_samples=samples,
+        artifact_kind=artifact_kind,
+        conversation_id=context.raw_id,
+        profile_tokens=_record_profile_tokens(
+            samples,
+            record_type_key=config.record_type_key,
+        ),
+    )
+
+
+def _extract_document_observations(
+    normalized_payload: JSONValue,
+    *,
+    context: _ObservationContext,
+) -> list[_ObservedSchemaUnit]:
+    documents = _compact_schema_samples(
+        extract_payload_samples(
+            normalized_payload,
+            sample_granularity="document",
+            max_samples=context.effective_max_samples,
+        )
+    )
+    units: list[_ObservedSchemaUnit] = []
+    for sample in documents:
+        artifact_kind = _eligible_artifact_kind(sample, context=context)
+        if artifact_kind is None:
+            continue
+        units.append(
+            _ObservedSchemaUnit(
+                cluster_payload=sample,
+                schema_samples=[sample],
+                artifact_kind=artifact_kind,
+                conversation_id=_document_conversation_id(sample, context.raw_id),
+                profile_tokens=_document_profile_tokens(sample),
+            )
+        )
+    return units
 
 
 def extract_schema_units_from_payload(
@@ -31,80 +164,32 @@ def extract_schema_units_from_payload(
     if not is_json_value(payload):
         return []
     normalized_payload: JSONValue = payload
-    provider_token = Provider.from_string(provider_name)
-    effective_max_samples = max_samples if max_samples is not None else config.schema_sample_cap
-    bundle_scope = derive_bundle_scope(provider_token, source_path)
-    source_path_text = str(source_path) if source_path is not None else None
+    context = _build_observation_context(
+        provider_name=provider_name,
+        source_path=source_path,
+        raw_id=raw_id,
+        observed_at=observed_at,
+        config=config,
+        max_samples=max_samples,
+    )
 
     if config.sample_granularity == "record":
-        artifact = classify_artifact(
+        observed = _extract_record_observation(
             normalized_payload,
-            provider=provider_token,
-            source_path=source_path,
+            context=context,
+            config=config,
         )
-        if not artifact.schema_eligible:
+        if observed is None:
             return []
+        return [_to_schema_unit(observed, context)]
 
-        samples = _compact_schema_samples(
-            extract_payload_samples(
-                normalized_payload,
-                sample_granularity="record",
-                max_samples=effective_max_samples,
-                record_type_key=config.record_type_key,
-            )
-        )
-        if not samples:
-            return []
-
-        return [
-            SchemaUnit(
-                cluster_payload=normalized_payload,
-                schema_samples=samples,
-                artifact_kind=artifact.cohort,
-                conversation_id=raw_id,
-                raw_id=raw_id,
-                source_path=source_path_text,
-                bundle_scope=bundle_scope,
-                observed_at=observed_at,
-                exact_structure_id=schema_cluster_id(normalized_payload, artifact.cohort),
-                profile_tokens=_record_profile_tokens(
-                    samples,
-                    record_type_key=config.record_type_key,
-                ),
-            )
-        ]
-
-    documents = _compact_schema_samples(
-        extract_payload_samples(
+    return [
+        _to_schema_unit(observed, context)
+        for observed in _extract_document_observations(
             normalized_payload,
-            sample_granularity="document",
-            max_samples=effective_max_samples,
+            context=context,
         )
-    )
-    units: list[SchemaUnit] = []
-    for sample in documents:
-        artifact = classify_artifact(
-            sample,
-            provider=provider_token,
-            source_path=source_path,
-        )
-        if not artifact.schema_eligible:
-            continue
-        units.append(
-            SchemaUnit(
-                cluster_payload=sample,
-                schema_samples=[sample],
-                artifact_kind=artifact.cohort,
-                conversation_id=_document_conversation_id(sample, raw_id),
-                raw_id=raw_id,
-                source_path=source_path_text,
-                bundle_scope=bundle_scope,
-                observed_at=observed_at,
-                exact_structure_id=schema_cluster_id(sample, artifact.cohort),
-                profile_tokens=_document_profile_tokens(sample),
-            )
-        )
-    return units
+    ]
 
 
 def _compact_schema_value(value: JSONValue) -> JSONValue:

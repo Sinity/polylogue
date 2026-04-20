@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import TypeAlias
 
 from polylogue.lib.json import JSONDocument, json_document
@@ -53,6 +55,25 @@ _WELL_KNOWN_TIMESTAMP_NAMES = frozenset(
         "date",
     }
 )
+
+
+@dataclass(frozen=True)
+class ResolvedSchemaBody:
+    raw: object | None
+    text: str
+    block_payloads: SchemaBlockPayload
+
+
+@dataclass(frozen=True)
+class ResolvedSchemaMessageFields:
+    message_id: str | None
+    role_raw: object | None
+    body: ResolvedSchemaBody
+    timestamp_raw: str | int | float | None
+    model: str | None
+    usage: JSONDocument | None
+    cost: CostInfo | None
+    duration_ms: int | None
 
 
 def _resolve_json_path(raw: SchemaPayload, path: str) -> object | None:
@@ -245,6 +266,68 @@ def _extract_duration_ms(raw: SchemaPayload) -> int | None:
 # -------------------------------------------------------------------
 
 
+def _resolve_role_raw(raw: SchemaPayload, paths: Mapping[str, str | None]) -> object | None:
+    role_path = paths.get("message_role")
+    role_raw = _resolve_json_path(raw, role_path) if role_path is not None else None
+    return role_raw if role_raw is not None else _find_by_well_known_names(raw, _WELL_KNOWN_ROLE_NAMES)
+
+
+def _resolve_body_raw(raw: SchemaPayload, paths: Mapping[str, str | None]) -> object | None:
+    body_path = paths.get("message_body")
+    body_raw = _resolve_json_path(raw, body_path) if body_path is not None else None
+    if body_raw is not None:
+        return body_raw
+    message_payload = _resolve_message_meta_payload(raw)
+    nested_body = _find_by_well_known_names(message_payload, _WELL_KNOWN_BODY_NAMES)
+    return nested_body if nested_body is not None else _find_by_well_known_names(raw, _WELL_KNOWN_BODY_NAMES)
+
+
+def _resolve_timestamp_raw(raw: SchemaPayload, paths: Mapping[str, str | None]) -> str | int | float | None:
+    timestamp_path = paths.get("message_timestamp")
+    ts_raw = _resolve_json_path(raw, timestamp_path) if timestamp_path is not None else None
+    if ts_raw is None:
+        ts_raw = _find_by_well_known_names(raw, _WELL_KNOWN_TIMESTAMP_NAMES)
+    return _timestamp_candidate(ts_raw)
+
+
+def _resolve_message_meta_payload(raw: SchemaPayload) -> SchemaPayload:
+    message_payload = json_document(raw.get("message"))
+    return message_payload if message_payload else raw
+
+
+def _resolve_body(body_raw: object | None) -> ResolvedSchemaBody:
+    block_payloads = _extract_content_block_list(body_raw)
+    return ResolvedSchemaBody(
+        raw=body_raw,
+        text=_extract_text_from_body(body_raw),
+        block_payloads=block_payloads,
+    )
+
+
+def _resolve_message_fields(
+    raw: SchemaPayload,
+    *,
+    schema: SchemaPayload,
+    provider: Provider,
+) -> ResolvedSchemaMessageFields:
+    pins = load_pins(provider)
+    paths = resolve_pinned_paths(schema, pins)
+    message_meta = _resolve_message_meta_payload(raw)
+    usage = json_document(message_meta.get("usage")) or None
+    model = message_meta.get("model")
+
+    return ResolvedSchemaMessageFields(
+        message_id=_extract_message_id(raw),
+        role_raw=_resolve_role_raw(raw, paths),
+        body=_resolve_body(_resolve_body_raw(raw, paths)),
+        timestamp_raw=_resolve_timestamp_raw(raw, paths),
+        model=model if isinstance(model, str) else None,
+        usage=usage,
+        cost=_extract_cost(raw),
+        duration_ms=_extract_duration_ms(raw),
+    )
+
+
 def extract_message_from_schema(
     raw: SchemaPayload,
     *,
@@ -252,51 +335,23 @@ def extract_message_from_schema(
     provider: Provider,
 ) -> HarmonizedMessage:
     """Extract a harmonized message using schema semantic annotations."""
-    pins = load_pins(provider)
-    paths = resolve_pinned_paths(schema, pins)
-
-    role_path = paths.get("message_role")
-    role_raw = _resolve_json_path(raw, role_path) if role_path is not None else None
-    if role_raw is None:
-        role_raw = _find_by_well_known_names(raw, _WELL_KNOWN_ROLE_NAMES)
-    role = Role.normalize(str(role_raw) if role_raw else "unknown")
-
-    body_path = paths.get("message_body")
-    body_raw = _resolve_json_path(raw, body_path) if body_path is not None else None
-    if body_raw is None:
-        body_raw = _find_by_well_known_names(raw, _WELL_KNOWN_BODY_NAMES)
-    text = _extract_text_from_body(body_raw)
-
-    block_dicts = _extract_content_block_list(body_raw)
-    content_blocks = extract_content_blocks(block_dicts) if block_dicts else []
-    reasoning_traces = extract_reasoning_traces(block_dicts, provider) if block_dicts else []
-    tool_calls = extract_tool_calls(block_dicts, provider) if block_dicts else []
-
-    timestamp_path = paths.get("message_timestamp")
-    ts_raw = _resolve_json_path(raw, timestamp_path) if timestamp_path is not None else None
-    if ts_raw is None:
-        ts_raw = _find_by_well_known_names(raw, _WELL_KNOWN_TIMESTAMP_NAMES)
-    timestamp = parse_timestamp(_timestamp_candidate(ts_raw))
-
-    msg_data = raw.get("message")
-    if not isinstance(msg_data, dict):
-        msg_data = raw
-    usage_raw = msg_data.get("usage")
-    tokens = extract_token_usage(usage_raw) if isinstance(usage_raw, dict) else None
-    model = msg_data.get("model")
+    resolved = _resolve_message_fields(raw, schema=schema, provider=provider)
+    block_dicts = resolved.body.block_payloads
+    role = Role.normalize(str(resolved.role_raw) if resolved.role_raw else "unknown")
+    timestamp = parse_timestamp(resolved.timestamp_raw)
 
     return HarmonizedMessage(
-        id=_extract_message_id(raw),
+        id=resolved.message_id,
         role=role,
-        text=text,
+        text=resolved.body.text,
         timestamp=timestamp,
-        reasoning_traces=reasoning_traces,
-        tool_calls=tool_calls,
-        content_blocks=content_blocks,
-        model=model if isinstance(model, str) else None,
-        tokens=tokens,
-        cost=_extract_cost(raw),
-        duration_ms=_extract_duration_ms(raw),
+        reasoning_traces=extract_reasoning_traces(block_dicts, provider) if block_dicts else [],
+        tool_calls=extract_tool_calls(block_dicts, provider) if block_dicts else [],
+        content_blocks=extract_content_blocks(block_dicts) if block_dicts else [],
+        model=resolved.model,
+        tokens=extract_token_usage(resolved.usage),
+        cost=resolved.cost,
+        duration_ms=resolved.duration_ms,
         provider=provider,
         raw=_object_record(raw),
     )
