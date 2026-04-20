@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
 
-from .assembly import SidecarData
+from .assembly import ClaudeCodeSessionIndex, SidecarData
 from .parsers.base import ParsedConversation
 from .parsers.claude_index import (
     SessionIndexEntry,
@@ -38,30 +36,15 @@ class ClaudeCodeAssemblySpec:
     def enrich_conversation(
         self,
         conv: ParsedConversation,
-        sidecar_data: Mapping[str, Any],
+        sidecar_data: SidecarData,
     ) -> ParsedConversation:
         """Enrich a Claude Code conversation from the sessions-index sidecar."""
-        data = sidecar_data.get("session_index")
-        idx = _coerce_claude_code_session_index(data)
+        idx: ClaudeCodeSessionIndex = sidecar_data.get("session_index", {})
         if conv.provider_conversation_id in idx:
             return enrich_conversation_from_index(conv, idx[conv.provider_conversation_id])
         return conv
 
 
-def _coerce_claude_code_session_index(
-    value: object | None,
-) -> dict[str, SessionIndexEntry]:
-    """Best-effort coercion from dynamic sidecar data to session-index mapping."""
-    if not isinstance(value, dict):
-        return {}
-    result: dict[str, SessionIndexEntry] = {}
-    for session_id, entry in value.items():
-        if isinstance(session_id, str) and isinstance(entry, SessionIndexEntry):
-            result[session_id] = entry
-    return result
-
-
 __all__ = [
     "ClaudeCodeAssemblySpec",
-    "_coerce_claude_code_session_index",
 ]

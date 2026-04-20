@@ -24,6 +24,7 @@ from polylogue.schemas.json_types import JSONDocument
 from polylogue.sources import decoders as decoders_module
 from polylogue.sources import dispatch as dispatch_module
 from polylogue.sources import source_acquisition
+from polylogue.sources.assembly import SidecarData
 from polylogue.sources.cursor import (
     _get_file_mtime,
     _initialize_cursor_state,
@@ -1201,7 +1202,7 @@ def _parse_context(
     source_path: str,
     fallback_id: str,
     capture_raw: bool = True,
-    sidecar_data: dict[str, object] | None = None,
+    sidecar_data: SidecarData | None = None,
 ) -> _ParseContext:
     return _ParseContext(
         provider_hint=Provider.from_string(provider_hint),
@@ -1926,7 +1927,7 @@ def test_iter_source_raw_data_reports_split_payload_observations(tmp_path: Path)
             ).encode("utf-8"),
         )
 
-    observations: list[dict[str, object]] = []
+    observations: list[JSONDocument] = []
 
     items = list(
         iter_source_raw_data(

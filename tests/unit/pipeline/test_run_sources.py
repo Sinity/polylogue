@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from polylogue.config import Config, Source
+from polylogue.pipeline.payload_types import IngestDiagnostics, MaterializeStageObservation
 from polylogue.pipeline.run_stages import (
     IndexStageOutcome,
     MaterializeStageOutcome,
@@ -21,6 +22,7 @@ from polylogue.pipeline.run_support import expand_requested_stage, normalize_sta
 from polylogue.pipeline.runner import _select_sources, latest_run, plan_sources, run_sources
 from polylogue.pipeline.services.parsing_models import IngestResult, ParseResult
 from polylogue.pipeline.stage_models import AcquireResult
+from polylogue.schemas.json_types import JSONDocument, JSONValue
 from polylogue.sources.parsers.base import RawConversationData
 from polylogue.storage.backends import create_backend
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
@@ -31,6 +33,36 @@ from polylogue.types import PlanStage
 from tests.infra.storage_records import make_conversation, make_message, store_records
 
 WorkspaceEnv = Mapping[str, Path]
+
+
+def _run_json_payload(**payload: JSONValue) -> JSONDocument:
+    return payload
+
+
+def _ingest_diagnostics_with_batch_summary(
+    *,
+    batch_count: int,
+    slow_batch_count: int,
+) -> IngestDiagnostics:
+    return {
+        "batch_observations": {
+            "batch_count": batch_count,
+            "slow_batch_count": slow_batch_count,
+        }
+    }
+
+
+def _materialize_stage_observation(
+    *,
+    conversations: int,
+    chunk_count: int,
+    slow_chunk_count: int,
+) -> MaterializeStageObservation:
+    return {
+        "conversations": conversations,
+        "update_chunk_count": chunk_count,
+        "update_slow_chunk_count": slow_chunk_count,
+    }
 
 
 def _seed_conversations(workspace_env: WorkspaceEnv, *conversation_ids: str, with_message: bool = False) -> None:
@@ -212,16 +244,7 @@ def test_ingest_stage_log_omits_full_batch_telemetry(workspace_env: WorkspaceEnv
         parse_result=parse_result,
         parse_raw_ids=["raw-log"],
         timings={"acquire": 0.0, "ingest": 0.02},
-        diagnostics={
-            "batch_observations": {
-                "batch_count": 2,
-                "slow_batch_count": 1,
-                "batches": [
-                    {"elapsed_ms": 123.4, "blob_mb": 12.3},
-                    {"elapsed_ms": 456.7, "blob_mb": 45.6},
-                ],
-            }
-        },
+        diagnostics=_ingest_diagnostics_with_batch_summary(batch_count=2, slow_batch_count=1),
     )
     persisted_result = RunResult(
         run_id="test-run",
@@ -281,15 +304,7 @@ def test_materialize_stage_log_omits_full_chunk_telemetry(
     materialize_outcome = MaterializeStageOutcome(
         item_count=12,
         rebuilt=False,
-        observation={
-            "conversations": 12,
-            "update_chunk_count": 2,
-            "update_slow_chunk_count": 1,
-            "update_chunks": [
-                {"total_ms": 123.4, "conversation_count": 10},
-                {"total_ms": 456.7, "conversation_count": 2},
-            ],
-        },
+        observation=_materialize_stage_observation(conversations=12, chunk_count=2, slow_chunk_count=1),
     )
     persisted_result = RunResult(
         run_id="test-run",
@@ -1155,7 +1170,11 @@ class TestWriteRunJson:
 
         archive_root = tmp_path / "archive"
         archive_root.mkdir()
-        payload = {"run_id": "test-run-1", "timestamp": int(time.time()), "counts": {"conversations": 1}}
+        payload = _run_json_payload(
+            run_id="test-run-1",
+            timestamp=int(time.time()),
+            counts={"conversations": 1},
+        )
 
         result = _write_run_json(archive_root, payload)
         assert (archive_root / "runs").exists()
@@ -1169,12 +1188,12 @@ class TestWriteRunJson:
         archive_root = tmp_path / "archive"
         archive_root.mkdir()
         timestamp = int(time.time())
-        payload = {
-            "run_id": "abc123",
-            "timestamp": timestamp,
-            "counts": {"conversations": 10, "messages": 50},
-            "indexed": True,
-        }
+        payload = _run_json_payload(
+            run_id="abc123",
+            timestamp=timestamp,
+            counts={"conversations": 10, "messages": 50},
+            indexed=True,
+        )
 
         result_path = _write_run_json(archive_root, payload)
         content = json.loads(result_path.read_text())
@@ -1188,7 +1207,10 @@ class TestWriteRunJson:
 
         archive_root = tmp_path / "archive"
         archive_root.mkdir()
-        result = _write_run_json(archive_root, {"run_id": "myrun", "timestamp": 1704067200})
+        result = _write_run_json(
+            archive_root,
+            _run_json_payload(run_id="myrun", timestamp=1704067200),
+        )
         assert result.name == "run-1704067200-myrun.json"
 
 
