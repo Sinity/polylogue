@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import builtins
+from typing import cast
 
 from polylogue.lib.conversation_models import Conversation
+from polylogue.lib.json import json_document
 from polylogue.storage.action_event_rows import attach_blocks_to_messages, build_action_event_records
 from polylogue.storage.backends.queries import action_events as action_events_q
 from polylogue.storage.backends.queries import attachments as attachments_q
@@ -39,12 +41,15 @@ def provider_conversation_id(conversation_id: str, provider: str | None) -> str:
 
 
 def conversation_to_record(conversation: Conversation) -> ConversationRecord:
-    from typing import cast
-
     from polylogue.types import ContentHash, ConversationId
 
     created_at_str = conversation.created_at.isoformat() if conversation.created_at else None
     updated_at_str = conversation.updated_at.isoformat() if conversation.updated_at else (created_at_str or None)
+    metadata = json_document(conversation.metadata)
+    metadata_record: dict[str, object] = {}
+    metadata_record.update(metadata)
+    provider_meta: dict[str, object] = {}
+    provider_meta.update(json_document(metadata.get("provider_meta")))
 
     return ConversationRecord(
         conversation_id=cast(ConversationId, str(conversation.id)),
@@ -56,9 +61,9 @@ def conversation_to_record(conversation: Conversation) -> ConversationRecord:
         title=conversation.title or "",
         created_at=created_at_str,
         updated_at=updated_at_str,
-        content_hash=cast(ContentHash, conversation.metadata.get("content_hash", "")),
-        provider_meta=cast(dict[str, object], conversation.metadata.get("provider_meta", {})),
-        metadata=conversation.metadata,
+        content_hash=cast(ContentHash, metadata_record.get("content_hash", "")),
+        provider_meta=provider_meta,
+        metadata=metadata_record,
     )
 
 

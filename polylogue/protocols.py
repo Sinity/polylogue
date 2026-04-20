@@ -13,6 +13,7 @@ from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
+from polylogue.lib.json import JSONDocument, JSONValue
 from polylogue.storage.store import (
     ArtifactObservationRecord,
     AttachmentRecord,
@@ -355,9 +356,9 @@ class TagStore(Protocol):
 
     async def list_tags(self, *, provider: str | None = None) -> dict[str, int]: ...
 
-    async def get_metadata(self, conversation_id: str) -> dict[str, object]: ...
+    async def get_metadata(self, conversation_id: str) -> JSONDocument: ...
 
-    async def update_metadata(self, conversation_id: str, key: str, value: object) -> None: ...
+    async def update_metadata(self, conversation_id: str, key: str, value: JSONValue) -> None: ...
 
     async def delete_metadata(self, conversation_id: str, key: str) -> None: ...
 

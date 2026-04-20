@@ -6,6 +6,7 @@ from collections.abc import AsyncIterator
 
 import aiosqlite
 
+from polylogue.lib.json import JSONDocument, json_document
 from polylogue.lib.json import dumps as json_dumps
 from polylogue.storage.backends.connection import _build_source_scope_filter
 from polylogue.storage.backends.queries.mappers import _parse_json
@@ -84,7 +85,7 @@ async def iter_conversation_ids(
             yield str(row["conversation_id"])
 
 
-async def get_metadata(conn: aiosqlite.Connection, conversation_id: str) -> dict[str, object]:
+async def get_metadata(conn: aiosqlite.Connection, conversation_id: str) -> JSONDocument:
     cursor = await conn.execute(
         "SELECT metadata FROM conversations WHERE conversation_id = ?",
         (conversation_id,),
@@ -92,13 +93,13 @@ async def get_metadata(conn: aiosqlite.Connection, conversation_id: str) -> dict
     row = await cursor.fetchone()
     if row is None:
         return {}
-    return _parse_json(row["metadata"], field="metadata", record_id=conversation_id) or {}
+    return json_document(_parse_json(row["metadata"], field="metadata", record_id=conversation_id))
 
 
 async def update_metadata_raw(
     conn: aiosqlite.Connection,
     conversation_id: str,
-    metadata: dict[str, object],
+    metadata: JSONDocument,
 ) -> None:
     await conn.execute(
         "UPDATE conversations SET metadata = ? WHERE conversation_id = ?",
@@ -109,7 +110,7 @@ async def update_metadata_raw(
 async def set_metadata(
     conn: aiosqlite.Connection,
     conversation_id: str,
-    metadata: dict[str, object],
+    metadata: JSONDocument,
     transaction_depth: int,
 ) -> None:
     await conn.execute(

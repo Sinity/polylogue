@@ -9,7 +9,11 @@ from typing import TYPE_CHECKING
 from polylogue.storage.backends.queries import attachments as attachments_q
 from polylogue.storage.backends.queries import conversations as conversations_q
 from polylogue.storage.backends.queries import messages as messages_q
-from polylogue.storage.backends.queries.stats import AggregateMessageStats
+from polylogue.storage.backends.queries.stats import (
+    AggregateMessageStats,
+    ProviderConversationCountRow,
+    ProviderMetricsRow,
+)
 from polylogue.storage.search_models import ConversationSearchResult
 from polylogue.storage.session_product_runtime import SessionProductStatusSnapshot
 from polylogue.storage.store import AttachmentRecord, ContentBlockRecord, ConversationRecord, MessageRecord
@@ -196,11 +200,11 @@ class SQLiteArchiveMixin:
         """Get conversation counts grouped by provider, month, or year."""
         return await self.queries.get_stats_by(group_by)
 
-    async def get_provider_conversation_counts(self) -> list[dict[str, object]]:
+    async def get_provider_conversation_counts(self) -> list[ProviderConversationCountRow]:
         """Return conversation counts per provider."""
         return await self.queries.get_provider_conversation_counts()
 
-    async def get_provider_metrics_rows(self) -> list[dict[str, object]]:
+    async def get_provider_metrics_rows(self) -> list[ProviderMetricsRow]:
         """Return raw provider aggregation rows for analytics reporting."""
         return await self.queries.get_provider_metrics_rows()
 

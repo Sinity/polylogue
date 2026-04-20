@@ -42,6 +42,7 @@ from polylogue.maintenance_targets import build_maintenance_target_catalog
 from polylogue.paths import conversation_render_root
 from polylogue.services import RuntimeServices, build_runtime_services
 from polylogue.storage.backends.connection import connection_context
+from polylogue.storage.backends.queries.stats import ProviderMetricsRow
 from polylogue.storage.repair import collect_archive_debt_statuses_sync
 from polylogue.storage.search import SearchHit, SearchResult
 from polylogue.storage.session_product_runtime import (
@@ -165,21 +166,21 @@ def _slice_products(
     return products
 
 
-def provider_analytics_product(row: Mapping[str, object]) -> ProviderAnalyticsProduct:
-    conversation_count = _row_int(row, "conversation_count")
-    user_message_count = _row_int(row, "user_message_count")
-    assistant_message_count = _row_int(row, "assistant_message_count")
-    message_count = _row_int(row, "message_count")
-    user_word_sum = _row_int(row, "user_word_sum")
-    assistant_word_sum = _row_int(row, "assistant_word_sum")
-    tool_use_count = _row_int(row, "tool_use_count")
-    thinking_count = _row_int(row, "thinking_count")
-    conversations_with_tools = _row_int(row, "conversations_with_tools")
-    conversations_with_thinking = _row_int(row, "conversations_with_thinking")
+def provider_analytics_product(row: ProviderMetricsRow) -> ProviderAnalyticsProduct:
+    conversation_count = row["conversation_count"]
+    user_message_count = row["user_message_count"]
+    assistant_message_count = row["assistant_message_count"]
+    message_count = row["message_count"]
+    user_word_sum = row["user_word_sum"]
+    assistant_word_sum = row["assistant_word_sum"]
+    tool_use_count = row["tool_use_count"]
+    thinking_count = row["thinking_count"]
+    conversations_with_tools = row["conversations_with_tools"]
+    conversations_with_thinking = row["conversations_with_thinking"]
     tool_use_percentage = (conversations_with_tools / conversation_count) * 100 if conversation_count > 0 else 0.0
     thinking_percentage = (conversations_with_thinking / conversation_count) * 100 if conversation_count > 0 else 0.0
     return ProviderAnalyticsProduct(
-        provider_name=_row_str(row, "provider_name", default="unknown") or "unknown",
+        provider_name=row["provider_name"] or "unknown",
         conversation_count=conversation_count,
         message_count=message_count,
         user_message_count=user_message_count,
@@ -355,10 +356,7 @@ class ArchiveStatsMixin:
 
     async def provider_counts(self) -> list[tuple[str, int]]:
         rows = await self.backend.get_provider_conversation_counts()
-        return [
-            (_row_str(row, "provider_name", default="unknown") or "unknown", _row_int(row, "conversation_count"))
-            for row in rows
-        ]
+        return [(row["provider_name"] or "unknown", row["conversation_count"]) for row in rows]
 
     async def get_session_product_status(self) -> SessionProductStatusSnapshot:
         return await self.backend.get_session_product_status()
