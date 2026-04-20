@@ -6,10 +6,11 @@ import json
 from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, TypeAlias
+from typing import TYPE_CHECKING, TypeAlias, cast
 
 from polylogue.schemas.json_types import json_document, json_document_list
 from polylogue.schemas.observation import schema_cluster_id
+from polylogue.schemas.observation_models import SchemaClusterPayload
 from polylogue.schemas.packages import SchemaPackageCatalog, SchemaVersionPackage
 from polylogue.schemas.runtime_registry import (
     ElementSchemaMap,
@@ -33,6 +34,18 @@ def _dominant_keys(sample: object) -> list[str]:
     if documents:
         return sorted(documents[0])
     return []
+
+
+def _cluster_payload(sample: object) -> SchemaClusterPayload:
+    document = json_document(sample)
+    if document:
+        return document
+    documents = json_document_list(sample)
+    if documents:
+        return cast(SchemaClusterPayload, documents)
+    if sample is None or isinstance(sample, (str, int, float, bool)):
+        return sample
+    return None
 
 
 class SchemaRegistryToolingMixin:
@@ -134,7 +147,7 @@ class SchemaRegistryToolingMixin:
             artifact_kind = (
                 artifact_kinds[index] if artifact_kinds is not None and index < len(artifact_kinds) else "unspecified"
             )
-            cluster_id = schema_cluster_id(sample, artifact_kind)
+            cluster_id = schema_cluster_id(_cluster_payload(sample), artifact_kind)
             groups.setdefault(cluster_id, []).append(index)
             artifact_by_cluster[cluster_id] = artifact_kind
 
