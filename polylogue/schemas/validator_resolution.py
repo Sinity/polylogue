@@ -34,7 +34,7 @@ def _load_package(
 ) -> SchemaVersionPackage:
     package = registry.get_package(str(provider), version=version)
     if package is None:
-        raise FileNotFoundError(f"No schema package found for provider: {provider} (version: {version})")
+        raise FileNotFoundError(f"No schema found for provider: {provider} (version: {version})")
     return package
 
 
@@ -57,6 +57,20 @@ def _load_schema(
     return schema
 
 
+def _load_latest_schema(
+    registry: object,
+    provider: Provider,
+) -> JSONDocument | None:
+    get_schema = getattr(registry, "get_schema", None)
+    if not callable(get_schema):
+        return None
+    latest_schema = get_schema(str(provider), version="latest")
+    if isinstance(latest_schema, dict):
+        return latest_schema
+    default_schema = get_schema(str(provider), version="default")
+    return default_schema if isinstance(default_schema, dict) else None
+
+
 def reset_registry_cache() -> None:
     """Clear shared runtime-registry instances used by schema validation."""
     _shared_registry.cache_clear()
@@ -74,6 +88,11 @@ def resolve_provider_schema(
 ) -> tuple[Provider, JSONDocument, tuple[str, str, str]]:
     canonical = canonical_provider(provider)
     registry = _registry_for(registry_cls)
+    if not hasattr(registry, "get_package"):
+        schema = _load_latest_schema(registry, canonical)
+        if schema is None:
+            raise FileNotFoundError(f"No schema found for provider: {canonical}")
+        return canonical, schema, (str(canonical), "latest", "conversation_document")
     package = _load_package(registry, canonical, version="default")
     package_version = package.version
     element_kind = package.default_element_kind
