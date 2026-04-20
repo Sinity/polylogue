@@ -27,9 +27,9 @@ from polylogue.surface_payloads import (
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    from polylogue.health import HealthCheck, HealthReport
     from polylogue.lib.models import Conversation
     from polylogue.lib.stats import ArchiveStats
+    from polylogue.readiness import ReadinessCheck, ReadinessReport
 
 TRoot = TypeVar("TRoot")
 
@@ -74,7 +74,7 @@ class MCPArchiveStatsPayload(SurfacePayloadModel):
     embedding_coverage_percent: float | None = None
     stale_embedding_messages: int | None = None
     messages_missing_embedding_provenance: int | None = None
-    embedding_health_status: str | None = None
+    embedding_readiness_status: str | None = None
     embedding_models: dict[str, int] | None = None
     embedding_dimensions: dict[int, int] | None = None
     embedding_oldest_at: str | None = None
@@ -105,7 +105,7 @@ class MCPArchiveStatsPayload(SurfacePayloadModel):
             messages_missing_embedding_provenance=(
                 archive_stats.messages_missing_embedding_provenance if include_embedded else None
             ),
-            embedding_health_status=archive_stats.embedding_health_status if include_embedded else None,
+            embedding_readiness_status=archive_stats.embedding_readiness_status if include_embedded else None,
             embedding_models=archive_stats.embedding_models if include_embedded else None,
             embedding_dimensions=archive_stats.embedding_dimensions if include_embedded else None,
             embedding_oldest_at=archive_stats.embedding_oldest_at if include_embedded else None,
@@ -150,7 +150,7 @@ class MCPStatsByPayload(MCPRootPayload[dict[str, int]]):
     root: dict[str, int]
 
 
-class MCPHealthCheckPayload(SurfacePayloadModel):
+class MCPReadinessCheckPayload(SurfacePayloadModel):
     name: str
     status: str
     count: int | None = None
@@ -159,11 +159,11 @@ class MCPHealthCheckPayload(SurfacePayloadModel):
     @classmethod
     def from_check(
         cls,
-        check: HealthCheck,
+        check: ReadinessCheck,
         *,
         include_counts: bool,
         include_detail: bool,
-    ) -> MCPHealthCheckPayload:
+    ) -> MCPReadinessCheckPayload:
         return cls(
             name=check.name,
             status=check.status.value,
@@ -172,30 +172,30 @@ class MCPHealthCheckPayload(SurfacePayloadModel):
         )
 
 
-def _extract_health_source(report: HealthReport) -> str | None:
+def _extract_readiness_source(report: ReadinessReport) -> str | None:
     provenance = report.provenance
     if provenance is None or provenance.source is None:
         return None
     return provenance.source
 
 
-class MCPHealthReportPayload(SurfacePayloadModel):
-    checks: list[MCPHealthCheckPayload]
+class MCPReadinessReportPayload(SurfacePayloadModel):
+    checks: list[MCPReadinessCheckPayload]
     summary: str | dict[str, int]
     source: str | None = None
 
     @classmethod
     def from_report(
         cls,
-        report: HealthReport,
+        report: ReadinessReport,
         *,
         include_counts: bool,
         include_detail: bool,
         include_cached: bool,
-    ) -> MCPHealthReportPayload:
+    ) -> MCPReadinessReportPayload:
         return cls(
             checks=[
-                MCPHealthCheckPayload.from_check(
+                MCPReadinessCheckPayload.from_check(
                     check,
                     include_counts=include_counts,
                     include_detail=include_detail,
@@ -203,7 +203,7 @@ class MCPHealthReportPayload(SurfacePayloadModel):
                 for check in report.checks
             ],
             summary=report.summary,
-            source=_extract_health_source(report) if include_cached else None,
+            source=_extract_readiness_source(report) if include_cached else None,
         )
 
 
@@ -214,8 +214,8 @@ __all__ = [
     "MCPConversationSummaryPayload",
     "MCPErrorPayload",
     "MCPFencedCodeBlock",
-    "MCPHealthCheckPayload",
-    "MCPHealthReportPayload",
+    "MCPReadinessCheckPayload",
+    "MCPReadinessReportPayload",
     "MCPMessagePayload",
     "MCPMetadataPayload",
     "MCPRootPayload",

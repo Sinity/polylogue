@@ -1,4 +1,4 @@
-"""Derived model status type used by health and derived-status modules."""
+"""Derived model status type used by readiness and derived-status modules."""
 
 from __future__ import annotations
 

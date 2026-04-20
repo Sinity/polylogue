@@ -13,9 +13,9 @@ from .cli_surfaces import (
 
 OPERATIONAL_SURFACE_FAMILIES: tuple[CliSurfaceFamily, ...] = (
     CliSurfaceFamily(
-        slug="doctor-health",
+        slug="doctor-readiness",
         command_args=("doctor", "--json"),
-        tags=("maintenance", "health"),
+        tags=("maintenance", "readiness"),
         exercise=CliSurfaceVariant(
             name="json-doctor",
             description="doctor JSON contract",
@@ -26,8 +26,8 @@ OPERATIONAL_SURFACE_FAMILIES: tuple[CliSurfaceFamily, ...] = (
         ),
         live_variants=(
             CliSurfaceVariant(
-                name="live-health-json",
-                description="Live archive machine-readable health report",
+                name="live-readiness-json",
+                description="Live archive machine-readable readiness report",
                 suffix_args=(),
                 env="any",
             ),
@@ -99,7 +99,7 @@ OPERATIONAL_SURFACE_FAMILIES: tuple[CliSurfaceFamily, ...] = (
     CliSurfaceFamily(
         slug="embed-stats",
         command_args=("embed", "--stats", "--json"),
-        tags=("live", "embeddings", "health"),
+        tags=("live", "embeddings", "readiness"),
         live_variants=(
             CliSurfaceVariant(
                 name="live-embed-stats",
@@ -124,7 +124,7 @@ OPERATIONAL_SURFACE_FAMILIES: tuple[CliSurfaceFamily, ...] = (
             "--limit",
             "50",
         ),
-        tags=("live", "retrieval", "health"),
+        tags=("live", "retrieval", "readiness"),
         live_variants=(
             CliSurfaceVariant(
                 name="live-retrieval-checks",

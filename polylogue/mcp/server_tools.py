@@ -9,7 +9,7 @@ from polylogue.mcp.payloads import (
     MCPArchiveStatsPayload,
     MCPConversationDetailPayload,
     MCPConversationSummaryPayload,
-    MCPHealthReportPayload,
+    MCPReadinessReportPayload,
     MCPStatsByPayload,
     conversation_summary_list_payload,
 )
@@ -185,13 +185,13 @@ def register_read_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         return await hooks.async_safe_call("get_stats_by", run)
 
     @mcp.tool()
-    def health_check() -> str:
+    def readiness_check() -> str:
         def run() -> str:
-            from polylogue.health import get_health
+            from polylogue.readiness import get_readiness
 
-            report = get_health(hooks.get_config())
+            report = get_readiness(hooks.get_config())
             return hooks.json_payload(
-                MCPHealthReportPayload.from_report(
+                MCPReadinessReportPayload.from_report(
                     report,
                     include_counts=True,
                     include_detail=True,
@@ -200,7 +200,7 @@ def register_read_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                 exclude_none=True,
             )
 
-        return hooks.safe_call("health_check", run)
+        return hooks.safe_call("readiness_check", run)
 
 
 def register_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:

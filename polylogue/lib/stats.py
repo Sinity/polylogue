@@ -53,7 +53,7 @@ class ArchiveStats:
         return fresh_messages > 0
 
     @property
-    def embedding_health_status(self) -> str:
+    def embedding_readiness_status(self) -> str:
         if self.embedded_messages <= 0:
             return "none"
         if self.stale_embedding_messages > 0 or self.messages_missing_embedding_provenance > 0:
@@ -80,7 +80,7 @@ class ArchiveStats:
             "embedding_models": self.embedding_models,
             "embedding_dimensions": self.embedding_dimensions,
             "embedding_coverage_percent": round(self.embedding_coverage, 1),
-            "embedding_health_status": self.embedding_health_status,
+            "embedding_readiness_status": self.embedding_readiness_status,
             "retrieval_ready": self.retrieval_ready,
             "avg_messages_per_conversation": round(self.avg_messages_per_conversation, 1),
             "db_size_bytes": self.db_size_bytes,

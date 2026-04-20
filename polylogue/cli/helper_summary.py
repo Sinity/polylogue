@@ -20,8 +20,8 @@ def print_summary_impl(
     verbose: bool = False,
     latest_run_fn: Callable[[Any], Awaitable[Any]],
     format_sources_summary_fn: Callable[[Any], str],
-    quick_health_summary_fn: Callable[[Any], str],
-    get_health_fn: Callable[..., Any],
+    quick_readiness_summary_fn: Callable[[Any], str],
+    get_readiness_fn: Callable[..., Any],
     get_provider_counts_fn: Callable[..., Awaitable[list[tuple[str, int]]]],
     list_provider_analytics_products_fn: Callable[..., Awaitable[list[Any]]],
 ) -> None:
@@ -74,11 +74,11 @@ def print_summary_impl(
         lines.append(embedding_line)
 
     if verbose:
-        report = get_health_fn(config)
+        report = get_readiness_fn(config)
         provenance = report.provenance
         source_val = getattr(provenance.source, "value", provenance.source) if hasattr(provenance, "source") else "live"
-        health_header = f"Health (source={source_val})"
-        lines.append(health_header)
+        readiness_header = f"Readiness (source={source_val})"
+        lines.append(readiness_header)
         for check in report.checks:
             status_str = str(check.status) if check.status else "?"
             icon = {"ok": "[green]✓[/green]", "warning": "[yellow]![/yellow]", "error": "[red]✗[/red]"}.get(
@@ -89,7 +89,7 @@ def print_summary_impl(
                 icon = {"ok": "OK", "warning": "WARN", "error": "ERR"}.get(status_str, "?")
             lines.append(f"  {icon} {check.name}: {check.detail}")
     else:
-        lines.append(f"Health: {quick_health_summary_fn(config.archive_root)}")
+        lines.append(f"Readiness: {quick_readiness_summary_fn(config.archive_root)}")
 
     ui.summary("Polylogue", lines)
 

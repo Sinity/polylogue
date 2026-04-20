@@ -59,14 +59,11 @@ def reset_command(
     _db = db_path()
     if database and _db.exists():
         targets.append(("database", _db))
-        # Also clean up WAL/SHM files and health cache alongside the database
+        # Also clean up WAL/SHM files alongside the database.
         for suffix in (".db-wal", ".db-shm"):
             wal_path = _db.with_suffix(suffix)
             if wal_path.exists():
                 targets.append((f"database {suffix}", wal_path))
-        health_path = data_home() / "health.json"
-        if health_path.exists():
-            targets.append(("health cache", health_path))
     if blob:
         _blob_root = blob_store_root()
         if _blob_root.exists():

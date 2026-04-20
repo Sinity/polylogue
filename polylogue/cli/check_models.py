@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from polylogue.health import HealthReport
+from polylogue.readiness import ReadinessReport
 from polylogue.schemas.verification_models import ArtifactProofReport, SchemaVerificationReport
 from polylogue.storage.artifact_views import ArtifactCohortSummary
 from polylogue.storage.repair import RepairResult
@@ -30,8 +30,8 @@ class VacuumResult:
 class CheckCommandResult:
     """Typed output surface for the check command workflow."""
 
-    report: HealthReport
-    runtime_report: HealthReport | None = None
+    report: ReadinessReport
+    runtime_report: ReadinessReport | None = None
     schema_report: SchemaVerificationReport | None = None
     proof_report: ArtifactProofReport | None = None
     artifact_rows: list[ArtifactObservationRecord] | None = None
