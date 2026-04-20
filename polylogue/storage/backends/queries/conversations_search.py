@@ -40,7 +40,7 @@ async def search_conversation_hits(
     if query_spec is None:
         return ConversationSearchResult(hits=[])
 
-    sql, params = query_spec
+    sql, params = query_spec.sql, query_spec.params
     cursor = await conn.execute(sql, params)
     rows = await cursor.fetchall()
     return ConversationSearchResult.from_ids([str(row["conversation_id"]) for row in rows])
@@ -79,7 +79,7 @@ async def search_action_conversation_hits(
     if query_spec is None:
         return ConversationSearchResult(hits=[])
 
-    sql, params = query_spec
+    sql, params = query_spec.sql, query_spec.params
     cursor = await conn.execute(sql, params)
     rows = await cursor.fetchall()
     return ConversationSearchResult.from_ids([str(row["conversation_id"]) for row in rows])

@@ -7,7 +7,9 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
 from enum import Enum
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypeAlias
+
+from typing_extensions import TypedDict
 
 from polylogue.lib.payload_coercion import (
     coerce_float,
@@ -100,6 +102,59 @@ class WorkEventKind(str, Enum):
     CONVERSATION = "conversation"
 
 
+class WorkEventPayload(TypedDict):
+    kind: str
+    start_index: int
+    end_index: int
+    start_time: str | None
+    end_time: str | None
+    canonical_session_date: str | None
+    duration_ms: int
+    confidence: float
+    evidence: list[str]
+    file_paths: list[str]
+    tools_used: list[str]
+    summary: str
+
+
+@dataclass(frozen=True)
+class MessageRange:
+    start: int
+    end: int
+
+    def iter_messages(self, messages: Sequence[MessageSemanticFacts]) -> Sequence[MessageSemanticFacts]:
+        return messages[self.start : self.end]
+
+
+@dataclass(frozen=True)
+class WorkEventSignalBundle:
+    action_category_counts: dict[str, int]
+    normalized_user_text: str
+    text_signal: WorkEventKind | None
+    text_signal_name: str | None
+
+
+@dataclass(frozen=True)
+class WorkEventClassifiedRange:
+    kind: WorkEventKind
+    confidence: float
+    evidence: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class WorkEventArtifacts:
+    file_paths: tuple[str, ...]
+    tools_used: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class WorkEventTiming:
+    start_time: datetime | None
+    end_time: datetime | None
+    canonical_session_date: date | None
+    duration_ms: int
+
+
 @dataclass(frozen=True)
 class WorkEvent:
     """A classified segment of work within a conversation."""
@@ -117,7 +172,7 @@ class WorkEvent:
     canonical_session_date: date | None = None
     duration_ms: int = 0
 
-    def to_dict(self) -> dict[str, object]:
+    def to_dict(self) -> WorkEventPayload:
         return {
             "kind": self.kind.value,
             "start_index": self.start_index,
@@ -189,7 +244,10 @@ _DATA_ANALYSIS_PATTERNS = ("data", "analysis", "query", "sql", "duckdb", "pandas
 # Text signals as weighted inputs (not short-circuit overrides).
 # Order matters — first match wins. These are checked only after action
 # evidence, or as a fallback when no action evidence is available.
-_TEXT_SIGNAL_TABLE: list[tuple[tuple[str, ...], WorkEventKind, str]] = [
+TextSignalTable: TypeAlias = list[tuple[tuple[str, ...], WorkEventKind, str]]
+
+
+_TEXT_SIGNAL_TABLE: TextSignalTable = [
     (_DEBUGGING_PATTERNS, WorkEventKind.DEBUGGING, "user_text_debugging"),
     (_PLANNING_PATTERNS, WorkEventKind.PLANNING, "user_text_planning"),
     (_TESTING_PATTERNS, WorkEventKind.TESTING, "user_text_testing"),
@@ -201,78 +259,92 @@ _TEXT_SIGNAL_TABLE: list[tuple[tuple[str, ...], WorkEventKind, str]] = [
 ]
 
 
-def _classify_message_range(
-    messages: list[MessageSemanticFacts],
-    start: int,
-    end: int,
-) -> tuple[WorkEventKind, float, list[str]]:
-    """Classify a message range by combining action evidence with text signals.
+def _collect_range_signals(
+    messages: Sequence[MessageSemanticFacts],
+    message_range: MessageRange,
+) -> WorkEventSignalBundle:
+    action_category_counts: dict[str, int] = {}
+    user_text_parts: list[str] = []
 
-    Actions are primary evidence. Text keywords are weighted signals that
-    influence the result, not short-circuit overrides. This prevents a
-    single mention of "error" from labeling a 2-hour implementation session
-    as "debugging".
-    """
-    category_counts: dict[str, int] = {}
-    user_text = ""
-    evidence: list[str] = []
+    for message in message_range.iter_messages(messages):
+        if message.is_user and message.text and not message.is_context_dump:
+            user_text_parts.append(message.text.lower())
+        for action in message.action_events:
+            category = action.kind.value
+            action_category_counts[category] = action_category_counts.get(category, 0) + 1
 
-    for i in range(start, end):
-        msg = messages[i]
-        if msg.is_user and msg.text and not msg.is_context_dump:
-            user_text += " " + msg.text.lower()
-        for action in msg.action_events:
-            cat = action.kind.value
-            category_counts[cat] = category_counts.get(cat, 0) + 1
-
-    text_lower = user_text.strip()
-
-    # Collect text signals (weighted, not short-circuit)
+    normalized_user_text = " ".join(part for part in user_text_parts if part).strip()
     text_signal: WorkEventKind | None = None
     text_signal_name: str | None = None
-    if text_lower:
+    if normalized_user_text:
         for patterns, kind, name in _TEXT_SIGNAL_TABLE:
-            if any(pattern in text_lower for pattern in patterns):
+            if any(pattern in normalized_user_text for pattern in patterns):
                 text_signal = kind
                 text_signal_name = name
                 break
+    return WorkEventSignalBundle(
+        action_category_counts=action_category_counts,
+        normalized_user_text=normalized_user_text,
+        text_signal=text_signal,
+        text_signal_name=text_signal_name,
+    )
 
-    # Action-based classification (primary evidence)
-    edit_count = category_counts.get("file_edit", 0) + category_counts.get("file_write", 0)
-    read_count = category_counts.get("file_read", 0)
-    search_count = category_counts.get("search", 0)
-    shell_count = category_counts.get("shell", 0)
-    git_count = category_counts.get("git", 0)
-    agent_count = category_counts.get("agent", 0) + category_counts.get("subagent", 0)
 
-    # Strong action evidence overrides text signals
+def _classify_range(signals: WorkEventSignalBundle) -> WorkEventClassifiedRange:
+    """Classify a message range from action evidence plus weighted text signals."""
+
+    evidence: list[str] = []
+    edit_count = signals.action_category_counts.get("file_edit", 0) + signals.action_category_counts.get(
+        "file_write",
+        0,
+    )
+    read_count = signals.action_category_counts.get("file_read", 0)
+    search_count = signals.action_category_counts.get("search", 0)
+    shell_count = signals.action_category_counts.get("shell", 0)
+    git_count = signals.action_category_counts.get("git", 0)
+    agent_count = signals.action_category_counts.get("agent", 0) + signals.action_category_counts.get("subagent", 0)
+
     if edit_count >= 2:
         evidence.append("file_edits")
-        if shell_count and text_signal == WorkEventKind.TESTING:
-            return WorkEventKind.TESTING, 0.7, evidence + ["shell_test", text_signal_name or ""]
-        if text_signal == WorkEventKind.REFACTORING:
-            return WorkEventKind.REFACTORING, 0.7, evidence + [text_signal_name or ""]
-        return WorkEventKind.IMPLEMENTATION, 0.75, evidence
+        if shell_count and signals.text_signal == WorkEventKind.TESTING:
+            return WorkEventClassifiedRange(
+                WorkEventKind.TESTING,
+                0.7,
+                tuple(evidence + ["shell_test", signals.text_signal_name or ""]),
+            )
+        if signals.text_signal == WorkEventKind.REFACTORING:
+            return WorkEventClassifiedRange(
+                WorkEventKind.REFACTORING,
+                0.7,
+                tuple(evidence + [signals.text_signal_name or ""]),
+            )
+        return WorkEventClassifiedRange(WorkEventKind.IMPLEMENTATION, 0.75, tuple(evidence))
     if agent_count >= 2 and edit_count == 0:
-        return WorkEventKind.PLANNING, 0.7, ["agent_orchestration"]
+        return WorkEventClassifiedRange(WorkEventKind.PLANNING, 0.7, ("agent_orchestration",))
     if search_count >= 2 or (read_count >= 3 and edit_count == 0):
-        return WorkEventKind.RESEARCH, 0.7, ["search_or_read_dominant"]
+        return WorkEventClassifiedRange(WorkEventKind.RESEARCH, 0.7, ("search_or_read_dominant",))
     if git_count >= 1:
-        return WorkEventKind.REVIEW, 0.6, ["git_operations"]
+        return WorkEventClassifiedRange(WorkEventKind.REVIEW, 0.6, ("git_operations",))
     if shell_count >= 2:
-        if text_signal == WorkEventKind.TESTING:
-            return WorkEventKind.TESTING, 0.65, ["shell_testing", text_signal_name or ""]
-        if text_signal == WorkEventKind.DEBUGGING:
-            return WorkEventKind.DEBUGGING, 0.65, ["shell_debugging", text_signal_name or ""]
-        return WorkEventKind.IMPLEMENTATION, 0.5, ["shell_default"]
+        if signals.text_signal == WorkEventKind.TESTING:
+            return WorkEventClassifiedRange(
+                WorkEventKind.TESTING,
+                0.65,
+                ("shell_testing", signals.text_signal_name or ""),
+            )
+        if signals.text_signal == WorkEventKind.DEBUGGING:
+            return WorkEventClassifiedRange(
+                WorkEventKind.DEBUGGING,
+                0.65,
+                ("shell_debugging", signals.text_signal_name or ""),
+            )
+        return WorkEventClassifiedRange(WorkEventKind.IMPLEMENTATION, 0.5, ("shell_default",))
 
-    # No strong action evidence — fall back to text signal if present
-    if text_signal is not None and text_signal_name:
-        # Lower confidence since text-only, no action corroboration
-        return text_signal, 0.5, [text_signal_name]
-    if not category_counts:
-        return WorkEventKind.CONVERSATION, 0.6, ["no_tools"]
-    return WorkEventKind.IMPLEMENTATION, 0.4, ["weak_signal"]
+    if signals.text_signal is not None and signals.text_signal_name:
+        return WorkEventClassifiedRange(signals.text_signal, 0.5, (signals.text_signal_name,))
+    if not signals.action_category_counts:
+        return WorkEventClassifiedRange(WorkEventKind.CONVERSATION, 0.6, ("no_tools",))
+    return WorkEventClassifiedRange(WorkEventKind.IMPLEMENTATION, 0.4, ("weak_signal",))
 
 
 def _compute_phase_ranges(
@@ -308,6 +380,65 @@ def _compute_phase_ranges(
         if sub_start < end:
             ranges.append((sub_start, end))
     return ranges if ranges else [(0, len(messages))]
+
+
+def _range_payload(range_bounds: tuple[int, int]) -> MessageRange:
+    return MessageRange(start=range_bounds[0], end=range_bounds[1])
+
+
+def _collect_range_artifacts(
+    messages: Sequence[MessageSemanticFacts],
+    message_range: MessageRange,
+) -> WorkEventArtifacts:
+    file_paths: list[str] = []
+    tools_used: list[str] = []
+    for message in message_range.iter_messages(messages):
+        for action in message.action_events:
+            tools_used.append(action.tool_name)
+            file_paths.extend(action.affected_paths)
+    return WorkEventArtifacts(
+        file_paths=tuple(dict.fromkeys(file_paths)),
+        tools_used=tuple(dict.fromkeys(tools_used)),
+    )
+
+
+def _build_range_summary(
+    messages: Sequence[MessageSemanticFacts],
+    message_range: MessageRange,
+    *,
+    fallback: WorkEventKind,
+) -> str:
+    summary_parts: list[str] = []
+    summary_length = 0
+    for message in message_range.iter_messages(messages):
+        if not message.is_user or not message.text:
+            continue
+        cleaned_text = _clean_summary_text(message.text)
+        if not cleaned_text:
+            continue
+        separator_length = 2 if summary_parts else 0
+        summary_parts.append(cleaned_text)
+        summary_length += separator_length + len(cleaned_text)
+        if summary_length >= _SUMMARY_MAX_JOINED_LEN:
+            break
+    return "; ".join(summary_parts)[:_SUMMARY_MAX_JOINED_LEN] if summary_parts else fallback.value
+
+
+def _range_timing(
+    messages: Sequence[MessageSemanticFacts],
+    message_range: MessageRange,
+) -> WorkEventTiming:
+    timestamps = [
+        message.timestamp for message in message_range.iter_messages(messages) if message.timestamp is not None
+    ]
+    start_time = timestamps[0] if timestamps else None
+    end_time = timestamps[-1] if timestamps else None
+    return WorkEventTiming(
+        start_time=start_time,
+        end_time=end_time,
+        canonical_session_date=_canonical_event_date(start_time, end_time),
+        duration_ms=_duration_ms_between(start_time, end_time),
+    )
 
 
 def _merge_adjacent(events: list[WorkEvent]) -> list[WorkEvent]:
@@ -354,46 +485,27 @@ def extract_work_events(
 
     events: list[WorkEvent] = []
     ranges = _compute_phase_ranges(conversation, facts=semantic_facts, phases=phases)
-    for chunk_start, chunk_end in ranges:
-        kind, confidence, evidence = _classify_message_range(messages, chunk_start, chunk_end)
-        file_paths: list[str] = []
-        tools_used: list[str] = []
-        for index in range(chunk_start, chunk_end):
-            for action in messages[index].action_events:
-                tools_used.append(action.tool_name)
-                file_paths.extend(action.affected_paths)
-
-        summary_parts: list[str] = []
-        summary_length = 0
-        for message in messages[chunk_start:chunk_end]:
-            if not message.is_user or not message.text:
-                continue
-            cleaned_text = _clean_summary_text(message.text)
-            if cleaned_text:
-                separator_length = 2 if summary_parts else 0
-                summary_parts.append(cleaned_text)
-                summary_length += separator_length + len(cleaned_text)
-                if summary_length >= _SUMMARY_MAX_JOINED_LEN:
-                    break
-        summary = "; ".join(summary_parts)[:_SUMMARY_MAX_JOINED_LEN] if summary_parts else kind.value
-        timestamps = [message.timestamp for message in messages[chunk_start:chunk_end] if message.timestamp is not None]
-        start_time = timestamps[0] if timestamps else None
-        end_time = timestamps[-1] if timestamps else None
-        duration_ms = _duration_ms_between(start_time, end_time)
+    for range_bounds in ranges:
+        message_range = _range_payload(range_bounds)
+        signals = _collect_range_signals(messages, message_range)
+        classified = _classify_range(signals)
+        artifacts = _collect_range_artifacts(messages, message_range)
+        timing = _range_timing(messages, message_range)
+        summary = _build_range_summary(messages, message_range, fallback=classified.kind)
 
         events.append(
             WorkEvent(
-                kind=kind,
-                start_index=chunk_start,
-                end_index=chunk_end,
-                start_time=start_time,
-                end_time=end_time,
-                canonical_session_date=_canonical_event_date(start_time, end_time),
-                duration_ms=duration_ms,
-                confidence=confidence,
-                evidence=tuple(dict.fromkeys(evidence)),
-                file_paths=tuple(dict.fromkeys(file_paths)),
-                tools_used=tuple(dict.fromkeys(tools_used)),
+                kind=classified.kind,
+                start_index=message_range.start,
+                end_index=message_range.end,
+                start_time=timing.start_time,
+                end_time=timing.end_time,
+                canonical_session_date=timing.canonical_session_date,
+                duration_ms=timing.duration_ms,
+                confidence=classified.confidence,
+                evidence=classified.evidence,
+                file_paths=artifacts.file_paths,
+                tools_used=artifacts.tools_used,
                 summary=summary,
             )
         )
@@ -401,4 +513,14 @@ def extract_work_events(
     return _merge_adjacent(events)
 
 
-__all__ = ["WorkEvent", "WorkEventKind", "extract_work_events"]
+__all__ = [
+    "MessageRange",
+    "WorkEvent",
+    "WorkEventArtifacts",
+    "WorkEventClassifiedRange",
+    "WorkEventKind",
+    "WorkEventPayload",
+    "WorkEventSignalBundle",
+    "WorkEventTiming",
+    "extract_work_events",
+]

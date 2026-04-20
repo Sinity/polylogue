@@ -7,6 +7,8 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
 
+from typing_extensions import TypedDict
+
 from polylogue.lib.payload_coercion import (
     coerce_float,
     coerce_int,
@@ -17,6 +19,23 @@ from polylogue.lib.payload_coercion import (
 )
 from polylogue.lib.repo_identity import normalize_repo_names
 from polylogue.lib.session_profile import SessionProfile
+
+
+class WorkThreadPayload(TypedDict):
+    thread_id: str
+    root_id: str
+    session_ids: list[str]
+    session_count: int
+    depth: int
+    branch_count: int
+    start_time: str | None
+    end_time: str | None
+    wall_duration_ms: int
+    total_messages: int
+    total_cost_usd: float
+    dominant_repo: str | None
+    provider_breakdown: dict[str, int]
+    work_event_breakdown: dict[str, int]
 
 
 @dataclass(frozen=True)
@@ -35,7 +54,7 @@ class WorkThread:
     provider_breakdown: dict[str, int]
     work_event_breakdown: dict[str, int]
 
-    def to_dict(self) -> dict[str, object]:
+    def to_dict(self) -> WorkThreadPayload:
         return {
             "thread_id": self.thread_id,
             "root_id": self.root_id,
