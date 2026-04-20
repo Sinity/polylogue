@@ -18,9 +18,9 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from typing import TypeAlias
 
 import click
-from pydantic import BaseModel
 
 from polylogue.archive_products import (
     ArchiveProductModel,
@@ -35,7 +35,7 @@ from polylogue.archive_products import (
     WorkThreadProductQuery,
 )
 
-ProductAccessor = Callable[[object], str]
+ProductAccessor: TypeAlias = Callable[[ArchiveProductModel], str]
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,12 +82,10 @@ class ProductType:
         return self.cli_command_name or self.name.replace("_", "-")
 
 
-def _model_payload(item: object) -> object:
+def _model_payload(item: ArchiveProductModel) -> dict[str, object]:
     """Convert a product item to a JSON-serializable payload."""
 
-    if isinstance(item, BaseModel):
-        return item.model_dump(mode="json")
-    return item
+    return item.model_dump(mode="json")
 
 
 def _stringify(value: object | None, default: str = "-") -> str:
@@ -99,7 +97,7 @@ def _stringify(value: object | None, default: str = "-") -> str:
 
 
 def render_product_items(
-    items: Sequence[object],
+    items: Sequence[ArchiveProductModel],
     product_type: ProductType,
     *,
     json_mode: bool = False,
@@ -140,7 +138,7 @@ def render_product_items(
 def _attr(name: str, default: str = "-") -> ProductAccessor:
     """Create an accessor that gets an attribute by name."""
 
-    def accessor(item: object) -> str:
+    def accessor(item: ArchiveProductModel) -> str:
         return _stringify(getattr(item, name, None), default)
 
     return accessor
@@ -149,7 +147,7 @@ def _attr(name: str, default: str = "-") -> ProductAccessor:
 def _nested(outer: str, inner: str, default: str = "-") -> ProductAccessor:
     """Create an accessor that gets a nested attribute."""
 
-    def accessor(item: object) -> str:
+    def accessor(item: ArchiveProductModel) -> str:
         nested = getattr(item, outer, None)
         if nested is None:
             return default
@@ -161,7 +159,7 @@ def _nested(outer: str, inner: str, default: str = "-") -> ProductAccessor:
 def _id_with_provider(identifier_attr: str) -> ProductAccessor:
     """Accessor rendering an identifier together with the provider name."""
 
-    def accessor(item: object) -> str:
+    def accessor(item: ArchiveProductModel) -> str:
         identifier = _stringify(getattr(item, identifier_attr, None))
         provider = _stringify(getattr(item, "provider_name", None))
         return f"{identifier} [{provider}]"
@@ -172,7 +170,7 @@ def _id_with_provider(identifier_attr: str) -> ProductAccessor:
 def _list_preview(name: str, limit: int = 3) -> ProductAccessor:
     """Accessor showing the first N items of a tuple/list attribute."""
 
-    def accessor(item: object) -> str:
+    def accessor(item: ArchiveProductModel) -> str:
         values = getattr(item, name, None)
         if isinstance(values, (list, tuple)):
             preview = ", ".join(str(value) for value in values[:limit])
@@ -185,7 +183,7 @@ def _list_preview(name: str, limit: int = 3) -> ProductAccessor:
 def _formatted_float(name: str, *, precision: int = 1, default: str = "-") -> ProductAccessor:
     """Accessor rendering a numeric attribute with fixed precision."""
 
-    def accessor(item: object) -> str:
+    def accessor(item: ArchiveProductModel) -> str:
         value = getattr(item, name, None)
         if not isinstance(value, (int, float)) or isinstance(value, bool):
             return default
@@ -197,7 +195,7 @@ def _formatted_float(name: str, *, precision: int = 1, default: str = "-") -> Pr
 def _count_with_percentage(count_attr: str, percentage_attr: str) -> ProductAccessor:
     """Accessor rendering ``count (pct%)`` pairs from sibling attributes."""
 
-    def accessor(item: object) -> str:
+    def accessor(item: ArchiveProductModel) -> str:
         count = getattr(item, count_attr, None)
         percentage = getattr(item, percentage_attr, None)
         if not isinstance(count, int) or isinstance(count, bool):

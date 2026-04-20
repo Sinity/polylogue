@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from datetime import date, datetime, timedelta
+from typing import Protocol
 
 from polylogue.archive_product_models import (
     ARCHIVE_PRODUCT_CONTRACT_VERSION,
@@ -37,98 +38,141 @@ class ArchiveProductUnavailableError(RuntimeError):
     """Raised when a durable archive-product surface is not ready to read."""
 
 
-class SessionProfileProductQuery(ArchiveProductModel):
-    provider: str | None = None
+class PaginatedProductQuery(ArchiveProductModel):
+    limit: int | None = 50
+    offset: int = 0
+
+
+class TimeWindowProductQuery(PaginatedProductQuery):
     since: str | None = None
     until: str | None = None
+
+
+class SearchableTimeWindowProductQuery(TimeWindowProductQuery):
+    query: str | None = None
+
+    @property
+    def wants_search(self) -> bool:
+        return bool(self.query)
+
+
+class ProviderTimeWindowProductQuery(TimeWindowProductQuery):
+    provider: str | None = None
+
+
+class ProviderSearchProductQuery(SearchableTimeWindowProductQuery):
+    provider: str | None = None
+
+
+class SessionWindowProductQuery(ProviderSearchProductQuery):
     first_message_since: str | None = None
     first_message_until: str | None = None
     session_date_since: str | None = None
     session_date_until: str | None = None
+
+
+class ConversationTimelineWindowProductQuery(ProviderTimeWindowProductQuery):
+    conversation_id: str | None = None
+    kind: str | None = None
+
+
+class SearchableConversationTimelineProductQuery(ConversationTimelineWindowProductQuery):
+    query: str | None = None
+
+    @property
+    def wants_search(self) -> bool:
+        return bool(self.query)
+
+
+class SessionProfileProductQuery(SessionWindowProductQuery):
     tier: str = "merged"
-    limit: int | None = 50
-    offset: int = 0
-    query: str | None = None
 
 
-class SessionEnrichmentProductQuery(ArchiveProductModel):
-    provider: str | None = None
-    since: str | None = None
-    until: str | None = None
-    first_message_since: str | None = None
-    first_message_until: str | None = None
-    session_date_since: str | None = None
-    session_date_until: str | None = None
-    limit: int | None = 50
-    offset: int = 0
-    query: str | None = None
+class SessionEnrichmentProductQuery(SessionWindowProductQuery):
+    pass
 
 
-class SessionWorkEventProductQuery(ArchiveProductModel):
-    conversation_id: str | None = None
-    provider: str | None = None
-    since: str | None = None
-    until: str | None = None
-    kind: str | None = None
-    limit: int | None = 50
-    offset: int = 0
-    query: str | None = None
+class SessionWorkEventProductQuery(SearchableConversationTimelineProductQuery):
+    pass
 
 
-class SessionPhaseProductQuery(ArchiveProductModel):
-    conversation_id: str | None = None
-    provider: str | None = None
-    since: str | None = None
-    until: str | None = None
-    kind: str | None = None
-    limit: int | None = 50
-    offset: int = 0
+class SessionPhaseProductQuery(ConversationTimelineWindowProductQuery):
+    pass
 
 
-class WorkThreadProductQuery(ArchiveProductModel):
-    since: str | None = None
-    until: str | None = None
-    limit: int | None = 50
-    offset: int = 0
-    query: str | None = None
+class WorkThreadProductQuery(SearchableTimeWindowProductQuery):
+    pass
 
 
-class SessionTagRollupQuery(ArchiveProductModel):
-    provider: str | None = None
-    since: str | None = None
-    until: str | None = None
+class SessionTagRollupQuery(ProviderSearchProductQuery):
     limit: int | None = 100
-    offset: int = 0
-    query: str | None = None
 
 
-class DaySessionSummaryProductQuery(ArchiveProductModel):
-    provider: str | None = None
-    since: str | None = None
-    until: str | None = None
+class DaySessionSummaryProductQuery(ProviderTimeWindowProductQuery):
     limit: int | None = 90
-    offset: int = 0
 
 
-class WeekSessionSummaryProductQuery(ArchiveProductModel):
-    provider: str | None = None
-    since: str | None = None
-    until: str | None = None
+class WeekSessionSummaryProductQuery(ProviderTimeWindowProductQuery):
     limit: int | None = 52
-    offset: int = 0
 
 
-class ProviderAnalyticsProductQuery(ArchiveProductModel):
+class ProviderAnalyticsProductQuery(PaginatedProductQuery):
     provider: str | None = None
     limit: int | None = None
-    offset: int = 0
 
 
-class ArchiveDebtProductQuery(ArchiveProductModel):
+class ArchiveDebtProductQuery(PaginatedProductQuery):
     category: str | None = None
     only_actionable: bool = False
     limit: int | None = None
-    offset: int = 0
+
+
+class _ProductRecordWithProvenance(Protocol):
+    materializer_version: int
+    materialized_at: str
+    source_updated_at: str | None
+    source_sort_key: float | None
+
+
+class _ProductRecordWithInference(_ProductRecordWithProvenance, Protocol):
+    inference_version: int
+    inference_family: str
+
+
+class _ProductRecordWithEnrichment(_ProductRecordWithProvenance, Protocol):
+    enrichment_version: int
+    enrichment_family: str
+
+
+def _record_provenance(record: _ProductRecordWithProvenance) -> ArchiveProductProvenance:
+    return ArchiveProductProvenance(
+        materializer_version=record.materializer_version,
+        materialized_at=record.materialized_at,
+        source_updated_at=record.source_updated_at,
+        source_sort_key=record.source_sort_key,
+    )
+
+
+def _record_inference_provenance(record: _ProductRecordWithInference) -> ArchiveInferenceProvenance:
+    return ArchiveInferenceProvenance(
+        materializer_version=record.materializer_version,
+        materialized_at=record.materialized_at,
+        source_updated_at=record.source_updated_at,
+        source_sort_key=record.source_sort_key,
+        inference_version=record.inference_version,
+        inference_family=record.inference_family,
+    )
+
+
+def _record_enrichment_provenance(record: _ProductRecordWithEnrichment) -> ArchiveEnrichmentProvenance:
+    return ArchiveEnrichmentProvenance(
+        materializer_version=record.materializer_version,
+        materialized_at=record.materialized_at,
+        source_updated_at=record.source_updated_at,
+        source_sort_key=record.source_sort_key,
+        enrichment_version=record.enrichment_version,
+        enrichment_family=record.enrichment_family,
+    )
 
 
 class SessionProfileProduct(ArchiveProductModel):
@@ -157,25 +201,9 @@ class SessionProfileProduct(ArchiveProductModel):
             conversation_id=record.conversation_id,
             provider_name=record.provider_name,
             title=record.title,
-            provenance=ArchiveProductProvenance(
-                materializer_version=record.materializer_version,
-                materialized_at=record.materialized_at,
-                source_updated_at=record.source_updated_at,
-                source_sort_key=record.source_sort_key,
-            ),
+            provenance=_record_provenance(record),
             evidence=(record.evidence_payload if include_evidence else None),
-            inference_provenance=(
-                ArchiveInferenceProvenance(
-                    materializer_version=record.materializer_version,
-                    materialized_at=record.materialized_at,
-                    source_updated_at=record.source_updated_at,
-                    source_sort_key=record.source_sort_key,
-                    inference_version=record.inference_version,
-                    inference_family=record.inference_family,
-                )
-                if include_inference
-                else None
-            ),
+            inference_provenance=(_record_inference_provenance(record) if include_inference else None),
             inference=(record.inference_payload if include_inference else None),
         )
 
@@ -197,20 +225,8 @@ class SessionEnrichmentProduct(ArchiveProductModel):
             conversation_id=record.conversation_id,
             provider_name=record.provider_name,
             title=record.title,
-            provenance=ArchiveProductProvenance(
-                materializer_version=record.materializer_version,
-                materialized_at=record.materialized_at,
-                source_updated_at=record.source_updated_at,
-                source_sort_key=record.source_sort_key,
-            ),
-            enrichment_provenance=ArchiveEnrichmentProvenance(
-                materializer_version=record.materializer_version,
-                materialized_at=record.materialized_at,
-                source_updated_at=record.source_updated_at,
-                source_sort_key=record.source_sort_key,
-                enrichment_version=record.enrichment_version,
-                enrichment_family=record.enrichment_family,
-            ),
+            provenance=_record_provenance(record),
+            enrichment_provenance=_record_enrichment_provenance(record),
             enrichment=record.enrichment_payload,
         )
 
@@ -235,20 +251,8 @@ class SessionWorkEventProduct(ArchiveProductModel):
             conversation_id=record.conversation_id,
             provider_name=record.provider_name,
             event_index=record.event_index,
-            provenance=ArchiveProductProvenance(
-                materializer_version=record.materializer_version,
-                materialized_at=record.materialized_at,
-                source_updated_at=record.source_updated_at,
-                source_sort_key=record.source_sort_key,
-            ),
-            inference_provenance=ArchiveInferenceProvenance(
-                materializer_version=record.materializer_version,
-                materialized_at=record.materialized_at,
-                source_updated_at=record.source_updated_at,
-                source_sort_key=record.source_sort_key,
-                inference_version=record.inference_version,
-                inference_family=record.inference_family,
-            ),
+            provenance=_record_provenance(record),
+            inference_provenance=_record_inference_provenance(record),
             evidence=record.evidence_payload,
             inference=record.inference_payload,
         )
@@ -274,20 +278,8 @@ class SessionPhaseProduct(ArchiveProductModel):
             conversation_id=record.conversation_id,
             provider_name=record.provider_name,
             phase_index=record.phase_index,
-            provenance=ArchiveProductProvenance(
-                materializer_version=record.materializer_version,
-                materialized_at=record.materialized_at,
-                source_updated_at=record.source_updated_at,
-                source_sort_key=record.source_sort_key,
-            ),
-            inference_provenance=ArchiveInferenceProvenance(
-                materializer_version=record.materializer_version,
-                materialized_at=record.materialized_at,
-                source_updated_at=record.source_updated_at,
-                source_sort_key=record.source_sort_key,
-                inference_version=record.inference_version,
-                inference_family=record.inference_family,
-            ),
+            provenance=_record_provenance(record),
+            inference_provenance=_record_inference_provenance(record),
             evidence=record.evidence_payload,
             inference=record.inference_payload,
         )
