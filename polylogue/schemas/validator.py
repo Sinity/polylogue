@@ -14,6 +14,7 @@ except ImportError:
     jsonschema = None
     Draft202012Validator = None
 
+from polylogue.lib.json import JSONDocument, JSONValue, is_json_value, json_document
 from polylogue.lib.raw_payload import extract_payload_samples
 from polylogue.schemas.runtime_registry import SchemaRegistry
 from polylogue.types import Provider
@@ -33,7 +34,7 @@ if TYPE_CHECKING:
     from polylogue.schemas.packages import SchemaResolution
 
 ValidationSchema: TypeAlias = Mapping[str, Any]
-ValidationSample: TypeAlias = dict[str, Any]
+ValidationSample: TypeAlias = JSONDocument
 
 
 class ValidationErrorLike(Protocol):
@@ -78,7 +79,7 @@ _UUID_KEY_RE = re.compile(
 def _sample_payload(value: object) -> ValidationSample | None:
     if not isinstance(value, Mapping):
         return None
-    return {str(key): child for key, child in value.items()}
+    return json_document(dict(value))
 
 
 def _schema_mapping(value: object) -> ValidationSchema:
@@ -92,8 +93,11 @@ def _validation_samples(
     sample_granularity: Literal["document", "record"],
     max_samples: int | None,
 ) -> list[ValidationSample]:
+    if not is_json_value(payload):
+        return []
+    normalized_payload: JSONValue = payload
     raw_samples = extract_payload_samples(
-        payload,
+        normalized_payload,
         sample_granularity=sample_granularity,
         max_samples=max_samples,
     )

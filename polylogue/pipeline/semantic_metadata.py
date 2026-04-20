@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from typing import TypeAlias
 
+from polylogue.lib.json import JSONDocument, JSONValue, json_document
 from polylogue.lib.viewports import ToolCategory, classify_tool
-from polylogue.schemas.json_types import JSONDocument, JSONValue, json_document
 
-ToolInputPayload: TypeAlias = Mapping[str, JSONValue]
+ToolInputPayload: TypeAlias = JSONDocument
 ToolMetadata: TypeAlias = JSONDocument
 
 

@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TypeAlias, cast
+from typing import Protocol, TypeAlias
 
 from polylogue.lib.branch_type import BranchType
+from polylogue.lib.json import JSONDocument, json_document
 from polylogue.lib.json import dumps as json_dumps
 from polylogue.lib.roles import Role
 from polylogue.lib.viewports import ToolCategory, classify_tool
@@ -32,7 +34,7 @@ from polylogue.types import (
 )
 
 ProviderMetadata: TypeAlias = dict[str, object]
-BlockMetadata: TypeAlias = dict[str, object]
+BlockMetadata: TypeAlias = JSONDocument
 
 
 @dataclass(frozen=True, slots=True)
@@ -148,8 +150,16 @@ def _attachment_provider_meta(
     return meta
 
 
-def _tool_input_payload(tool_input: dict[str, object] | None) -> ToolInputPayload:
-    return cast(ToolInputPayload, dict(tool_input or {}))
+def _tool_input_payload(tool_input: Mapping[str, object] | JSONDocument | None) -> ToolInputPayload:
+    if tool_input is None:
+        return {}
+    return json_document(tool_input if isinstance(tool_input, dict) else dict(tool_input))
+
+
+def _block_metadata(metadata: Mapping[str, object] | JSONDocument | None) -> BlockMetadata | None:
+    if metadata is None:
+        return None
+    return json_document(metadata if isinstance(metadata, dict) else dict(metadata))
 
 
 def _build_message_ids(convo: ParsedConversation, conversation_id: ConversationId) -> dict[str, MessageId]:
@@ -163,28 +173,28 @@ def _build_message_ids(convo: ParsedConversation, conversation_id: ConversationI
 def _materialize_content_block(
     message_id: MessageId,
     block_index: int,
-    block: object,
+    block: ParsedContentBlockLike,
 ) -> MaterializedContentBlock:
-    parsed_block = cast("ParsedContentBlockLike", block)
-    tool_input_json = json_dumps(parsed_block.tool_input) if parsed_block.tool_input is not None else None
+    tool_input = _tool_input_payload(block.tool_input)
+    tool_input_json = json_dumps(tool_input) if block.tool_input is not None else None
     semantic_type: SemanticBlockType | None = None
-    semantic_metadata: BlockMetadata | None = dict(parsed_block.metadata) if parsed_block.metadata is not None else None
+    semantic_metadata: BlockMetadata | None = _block_metadata(block.metadata)
 
-    if parsed_block.type == "tool_use" and parsed_block.tool_name:
-        category = classify_tool(parsed_block.tool_name, parsed_block.tool_input or {})
+    if block.type == "tool_use" and block.tool_name:
+        category = classify_tool(block.tool_name, tool_input)
         semantic_type = None if category is ToolCategory.OTHER else SemanticBlockType.from_string(category.value)
         tool_meta = extract_tool_metadata(
-            parsed_block.tool_name,
-            _tool_input_payload(parsed_block.tool_input),
+            block.tool_name,
+            tool_input,
         )
         if tool_meta is not None:
             base = semantic_metadata or {}
             base.update(tool_meta)
             semantic_metadata = base
-    elif parsed_block.type == "thinking":
+    elif block.type == "thinking":
         semantic_type = SemanticBlockType.THINKING
-    elif parsed_block.type == "code" and parsed_block.text and semantic_metadata is None:
-        detected_lang = detect_language(parsed_block.text)
+    elif block.type == "code" and block.text and semantic_metadata is None:
+        detected_lang = detect_language(block.text)
         if detected_lang:
             semantic_metadata = {"language": detected_lang}
 
@@ -195,12 +205,12 @@ def _materialize_content_block(
     return MaterializedContentBlock(
         block_id=ContentBlockRecord.make_id(message_id, block_index),
         block_index=block_index,
-        type=parsed_block.type,
-        text=parsed_block.text,
-        tool_name=parsed_block.tool_name,
-        tool_id=parsed_block.tool_id,
+        type=block.type,
+        text=block.text,
+        tool_name=block.tool_name,
+        tool_id=block.tool_id,
         tool_input_json=tool_input_json,
-        media_type=parsed_block.media_type,
+        media_type=block.media_type,
         metadata_json=metadata_json,
         semantic_type=semantic_type,
     )
@@ -318,14 +328,18 @@ def materialize_conversation(
     )
 
 
-class ParsedContentBlockLike:
+ParsedToolInput: TypeAlias = Mapping[str, object]
+ParsedBlockMetadata: TypeAlias = dict[str, object]
+
+
+class ParsedContentBlockLike(Protocol):
     type: ContentBlockType
     text: str | None
     tool_name: str | None
     tool_id: str | None
-    tool_input: dict[str, object] | None
+    tool_input: ParsedToolInput | None
     media_type: str | None
-    metadata: dict[str, object] | None
+    metadata: ParsedBlockMetadata | None
 
 
 __all__ = [

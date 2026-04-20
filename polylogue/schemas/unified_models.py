@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, NoReturn
+from typing import NoReturn
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, ValidationError, field_validator
 
+from polylogue.lib.json import JSONDocument
 from polylogue.lib.roles import Role
 from polylogue.lib.viewports import ContentBlock, CostInfo, ReasoningTrace, TokenUsage, ToolCall
 from polylogue.types import Provider
@@ -32,7 +33,7 @@ class HarmonizedMessage(BaseModel):
     cost: CostInfo | None = None
     duration_ms: int | None = None
     provider: Provider
-    raw: dict[str, Any] = Field(default_factory=dict)
+    raw: dict[str, object] = Field(default_factory=dict)
 
     @field_validator("role", mode="before")
     @classmethod
@@ -66,18 +67,26 @@ class HarmonizedMessage(BaseModel):
         return [call for call in self.tool_calls if call.is_git_operation]
 
 
-def extract_token_usage(usage: dict[str, Any] | None) -> TokenUsage | None:
+def extract_token_usage(usage: JSONDocument | None) -> TokenUsage | None:
     """Extract token usage from usage dict."""
     if not usage:
         return None
 
-    return TokenUsage(
-        input_tokens=usage.get("input_tokens"),
-        output_tokens=usage.get("output_tokens"),
-        cache_read_tokens=usage.get("cache_read_input_tokens"),
-        cache_write_tokens=usage.get("cache_creation_input_tokens"),
-        total_tokens=usage.get("total_tokens"),
-    )
+    try:
+        return TokenUsage.model_validate(
+            {
+                "input_tokens": usage.get("input_tokens"),
+                "output_tokens": usage.get("output_tokens"),
+                "cache_read_tokens": usage.get("cache_read_input_tokens"),
+                "cache_write_tokens": usage.get("cache_creation_input_tokens"),
+                "total_tokens": usage.get("total_tokens"),
+            }
+        )
+    except ValidationError:
+        return None
+
+
+HarmonizedMessage.model_rebuild()
 
 
 __all__ = ["HarmonizedMessage", "_missing_role", "extract_token_usage"]

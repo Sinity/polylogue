@@ -17,7 +17,7 @@ def json_document(value: object) -> JSONDocument:
 def json_document_list(value: object) -> JSONDocumentList:
     if not isinstance(value, list):
         return []
-    return [json_document(item) for item in value]
+    return [document for item in value if (document := json_document(item))]
 
 
 __all__ = [

@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from typing import TypeAlias
 
+from polylogue.lib.json import JSONDocument, json_document
 from polylogue.lib.provider_semantics import (
     extract_content_blocks,
     extract_reasoning_traces,
@@ -19,7 +20,7 @@ from polylogue.types import Provider
 
 logger = logging.getLogger(__name__)
 
-SchemaPayload: TypeAlias = dict[str, object]
+SchemaPayload: TypeAlias = JSONDocument
 SchemaBlockPayload: TypeAlias = list[SchemaPayload]
 
 # -------------------------------------------------------------------
@@ -109,7 +110,11 @@ def _walk(obj: object | None, parts: list[str]) -> object | None:
 def _schema_payload(value: object) -> SchemaPayload | None:
     if not isinstance(value, dict):
         return None
-    return {str(key): child for key, child in value.items()}
+    return json_document(value)
+
+
+def _object_record(value: SchemaPayload) -> dict[str, object]:
+    return dict(value)
 
 
 def _find_by_well_known_names(raw: SchemaPayload, names: frozenset[str]) -> object | None:
@@ -293,7 +298,7 @@ def extract_message_from_schema(
         cost=_extract_cost(raw),
         duration_ms=_extract_duration_ms(raw),
         provider=provider,
-        raw=raw,
+        raw=_object_record(raw),
     )
 
 

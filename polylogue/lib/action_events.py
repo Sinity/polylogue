@@ -8,9 +8,9 @@ search/web targets, and message-scoped event identity.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any
 
 from polylogue.lib.action_event_fields import (
     build_search_text,
@@ -48,7 +48,7 @@ class ActionEvent:
     url: str | None
     output_text: str | None
     search_text: str
-    raw: dict[str, Any]
+    raw: Mapping[str, object]
 
     @property
     def normalized_tool_name(self) -> str:

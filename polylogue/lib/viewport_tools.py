@@ -5,8 +5,8 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping
 from pathlib import PurePosixPath
-from typing import Any
 
+from polylogue.lib.json import JSONValue
 from polylogue.lib.viewport_enums import ToolCategory
 
 PATH_PATTERN = re.compile(r'(?:^|[\s"\'])(/[^\s"\']+|[./][^\s"\']+)')
@@ -14,7 +14,7 @@ NOISE_PATH_TOKENS = frozenset({"...", "//", "/dev/null", "|", "||", "&&", ";"})
 METADATA_FILE_BASENAME_ALLOWLIST = frozenset({"LICENSE", "COPYING", "NOTICE", "Makefile", "Dockerfile", "Justfile"})
 
 
-def classify_tool(name: str, input_data: Mapping[str, Any]) -> ToolCategory:
+def classify_tool(name: str, input_data: Mapping[str, JSONValue]) -> ToolCategory:
     name_lower = name.lower()
 
     if name_lower in ("read", "view", "cat"):

@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import datetime
-from typing import Any
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -23,7 +23,7 @@ class ReasoningTrace(BaseModel):
     duration_ms: int | None = None
     token_count: int | None = None
     provider: Provider | None = None
-    raw: dict[str, Any] = Field(default_factory=dict)
+    raw: Mapping[str, object] = Field(default_factory=dict)
 
     @field_validator("provider", mode="before")
     @classmethod
@@ -38,12 +38,12 @@ class ReasoningTrace(BaseModel):
 class ToolCall(BaseModel):
     name: str
     id: str | None = None
-    input: dict[str, Any] = Field(default_factory=dict)
+    input: Mapping[str, object] = Field(default_factory=dict)
     output: str | None = None
     success: bool | None = None
     category: ToolCategory = ToolCategory.OTHER
     provider: Provider | None = None
-    raw: dict[str, Any] = Field(default_factory=dict)
+    raw: Mapping[str, object] = Field(default_factory=dict)
 
     @field_validator("provider", mode="before")
     @classmethod
@@ -108,7 +108,7 @@ class ContentBlock(BaseModel):
     url: str | None = None
     mime_type: str | None = None
     tool_call: ToolCall | None = None
-    raw: dict[str, Any] = Field(default_factory=dict)
+    raw: Mapping[str, object] = Field(default_factory=dict)
 
 
 class TokenUsage(BaseModel):

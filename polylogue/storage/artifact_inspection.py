@@ -4,10 +4,9 @@ from __future__ import annotations
 
 import hashlib
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING
 
 from polylogue.lib.artifact_taxonomy import ArtifactKind, classify_artifact_path
-from polylogue.lib.raw_payload import build_raw_payload_envelope
+from polylogue.lib.raw_payload import JSONValue, RawPayloadEnvelope, build_raw_payload_envelope
 from polylogue.schemas.observation import derive_bundle_scope, schema_cluster_id
 from polylogue.schemas.runtime_registry import SchemaRegistry
 from polylogue.storage.blob_store import get_blob_store
@@ -15,9 +14,6 @@ from polylogue.storage.store import ArtifactObservationRecord, RawConversationRe
 from polylogue.types import ArtifactSupportStatus, Provider
 
 _SCHEMA_REGISTRY = SchemaRegistry()
-
-if TYPE_CHECKING:
-    from polylogue.lib.raw_payload_decode import JSONValue, RawPayloadEnvelope
 
 
 def artifact_observation_id(

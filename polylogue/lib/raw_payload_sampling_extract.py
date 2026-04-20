@@ -6,10 +6,9 @@ from collections import Counter
 from collections.abc import Callable, Iterable
 from io import BytesIO, StringIO
 from pathlib import Path
-from typing import IO, Any, Literal
+from typing import IO, Literal
 
-import orjson
-
+from polylogue.lib.json import JSONDocument, JSONValue, json_document, loads
 from polylogue.lib.raw_payload_sampling_buckets import (
     bucket_target_counts,
     is_record_candidate,
@@ -19,36 +18,36 @@ from polylogue.lib.raw_payload_sampling_buckets import (
 
 
 def limit_samples(
-    samples: list[dict[str, Any]],
+    samples: list[JSONDocument],
     *,
     limit: int,
     stratify: bool,
     record_type_key: str | None = None,
-) -> list[dict[str, Any]]:
+) -> list[JSONDocument]:
     """Limit extracted samples while preserving representative record variants."""
     if limit <= 0 or len(samples) <= limit:
         return samples
     if not stratify:
         return samples[:limit]
 
-    buckets: dict[str, list[dict[str, Any]]] = {}
+    buckets: dict[str, list[JSONDocument]] = {}
     for sample in samples:
         buckets.setdefault(record_bucket_key(sample, record_type_key), []).append(sample)
     return take_bucketed_samples(buckets, limit)
 
 
 def collect_limited_samples(
-    sample_factory: Callable[[], Iterable[dict[str, Any]]],
+    sample_factory: Callable[[], Iterable[JSONDocument]],
     *,
     limit: int,
     stratify: bool,
     record_type_key: str | None = None,
-) -> list[dict[str, Any]]:
+) -> list[JSONDocument]:
     """Collect bounded samples from a re-iterable source without full materialization."""
     if limit <= 0:
         return []
     if not stratify:
-        selected: list[dict[str, Any]] = []
+        selected: list[JSONDocument] = []
         for sample in sample_factory():
             selected.append(sample)
             if len(selected) >= limit:
@@ -61,7 +60,7 @@ def collect_limited_samples(
 
     target_counts = bucket_target_counts(bucket_counts, limit)
     collected_counts: Counter[str] = Counter()
-    stratified_selected: list[dict[str, Any]] = []
+    stratified_selected: list[JSONDocument] = []
 
     for sample in sample_factory():
         bucket = record_bucket_key(sample, record_type_key)
@@ -77,47 +76,50 @@ def collect_limited_samples(
 
 
 def extract_payload_samples(
-    payload: Any,
+    payload: JSONValue,
     *,
     sample_granularity: Literal["document", "record"],
     max_samples: int | None = None,
     record_type_key: str | None = None,
-) -> list[dict[str, Any]]:
+) -> list[JSONDocument]:
     """Extract representative validation/schema samples from a decoded payload."""
     if not isinstance(payload, (dict, list)):
         return []
 
     if sample_granularity == "document":
-        documents = [payload] if isinstance(payload, dict) else [item for item in payload if isinstance(item, dict)]
+        documents = [json_document(payload)] if isinstance(payload, dict) else [json_document(item) for item in payload]
+        documents = [document for document in documents if document]
         if max_samples is None:
             return documents
         return documents[:max_samples] if max_samples > 0 else []
 
     if isinstance(payload, dict):
-        return [payload] if is_record_candidate(payload) else []
+        payload_record = json_document(payload)
+        return [payload_record] if payload_record and is_record_candidate(payload_record) else []
 
     if max_samples is None:
-        return [item for item in payload if isinstance(item, dict) and is_record_candidate(item)]
+        return [record for item in payload if (record := json_document(item)) and is_record_candidate(record)]
 
     if max_samples <= 0:
         return []
 
     scan_cap: int = max(1024, max_samples * 64)
     per_bucket_cap: int = 8
-    buckets: dict[str, list[dict[str, Any]]] = {}
-    head_items: list[dict[str, Any]] = []
+    buckets: dict[str, list[JSONDocument]] = {}
+    head_items: list[JSONDocument] = []
     dict_count = 0
     truncated = False
 
     for item in payload:
-        if not isinstance(item, dict) or not is_record_candidate(item):
+        record = json_document(item)
+        if not record or not is_record_candidate(record):
             continue
         dict_count += 1
         if dict_count <= max_samples:
-            head_items.append(item)
-        bucket = buckets.setdefault(record_bucket_key(item, record_type_key), [])
+            head_items.append(record)
+        bucket = buckets.setdefault(record_bucket_key(record, record_type_key), [])
         if len(bucket) < per_bucket_cap:
-            bucket.append(item)
+            bucket.append(record)
         if dict_count >= scan_cap:
             truncated = True
             break
@@ -130,11 +132,11 @@ def extract_payload_samples(
 
 
 def extract_record_samples_from_raw_content(
-    raw_content: Path | bytes | str | Any,
+    raw_content: Path | bytes | str | JSONValue,
     *,
     max_samples: int | None,
     record_type_key: str | None = None,
-) -> list[dict[str, Any]]:
+) -> list[JSONDocument]:
     """Stream-record sample extraction for large JSONL payloads.
 
     When *raw_content* is a :class:`~pathlib.Path`, lines are streamed
@@ -147,7 +149,15 @@ def extract_record_samples_from_raw_content(
     if max_samples is not None and max_samples <= 0:
         return []
 
-    stream: IO[Any]
+    if not isinstance(raw_content, (Path, bytes, str)):
+        return extract_payload_samples(
+            raw_content,
+            sample_granularity="record",
+            max_samples=max_samples,
+            record_type_key=record_type_key,
+        )
+
+    stream: IO[bytes] | IO[str]
     if isinstance(raw_content, Path):
         stream = open(raw_content, "rb")  # noqa: SIM115 — caller-managed context
     else:
@@ -156,7 +166,7 @@ def extract_record_samples_from_raw_content(
 
     # Full-corpus mode: collect everything without caps.
     if max_samples is None:
-        all_records: list[dict[str, Any]] = []
+        all_records: list[JSONDocument] = []
         first_line = True
         try:
             for raw_line in stream:
@@ -168,18 +178,19 @@ def extract_record_samples_from_raw_content(
                 if not line:
                     continue
                 try:
-                    parsed = orjson.loads(line)
-                except (ValueError, orjson.JSONDecodeError):
+                    parsed = loads(line)
+                except ValueError:
                     continue
-                if isinstance(parsed, dict) and is_record_candidate(parsed):
-                    all_records.append(parsed)
+                record = json_document(parsed)
+                if record and is_record_candidate(record):
+                    all_records.append(record)
         finally:
             if isinstance(raw_content, Path):
                 stream.close()
         return all_records
 
-    lines: list[dict[str, Any]] = []
-    buckets: dict[str, list[dict[str, Any]]] = {}
+    lines: list[JSONDocument] = []
+    buckets: dict[str, list[JSONDocument]] = {}
     dict_count = 0
     scan_cap = max(1024, max_samples * 64)
     per_bucket_cap = 8
@@ -195,18 +206,19 @@ def extract_record_samples_from_raw_content(
             if not line:
                 continue
             try:
-                parsed = orjson.loads(line)
-            except (ValueError, orjson.JSONDecodeError):
+                parsed = loads(line)
+            except ValueError:
                 continue
-            if not isinstance(parsed, dict) or not is_record_candidate(parsed):
+            record = json_document(parsed)
+            if not record or not is_record_candidate(record):
                 continue
 
             dict_count += 1
             if dict_count <= max_samples:
-                lines.append(parsed)
-            bucket = buckets.setdefault(record_bucket_key(parsed, record_type_key), [])
+                lines.append(record)
+            bucket = buckets.setdefault(record_bucket_key(record, record_type_key), [])
             if len(bucket) < per_bucket_cap:
-                bucket.append(parsed)
+                bucket.append(record)
             if dict_count >= scan_cap:
                 break
     finally:

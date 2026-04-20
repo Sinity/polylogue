@@ -3,14 +3,18 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from typing import NotRequired, cast
+from typing import NotRequired
 
 from typing_extensions import TypedDict
 
-from polylogue.lib.payload_coercion import is_payload_mapping, mapping_or_empty, optional_string
-from polylogue.lib.raw_payload_decode import JSONRecord, JSONValue
-from polylogue.pipeline.semantic_metadata import ToolMetadata, _parse_git_command, _parse_subagent_spawn
-from polylogue.schemas.json_types import JSONValue as SchemaJSONValue
+from polylogue.lib.json import JSONDocument, JSONValue, is_json_value, json_document, json_document_list
+from polylogue.lib.payload_coercion import mapping_or_empty, optional_string
+from polylogue.pipeline.semantic_metadata import (
+    ToolInputPayload,
+    ToolMetadata,
+    _parse_git_command,
+    _parse_subagent_spawn,
+)
 
 
 class ContextCompactionSummary(TypedDict):
@@ -30,7 +34,7 @@ class ThinkingTraceSummary(TypedDict):
 class ToolInvocationSummary(TypedDict, total=False):
     tool_name: str | None
     tool_id: str | None
-    input: JSONRecord
+    input: JSONDocument
     is_file_operation: bool
     is_search_operation: bool
     is_subagent: bool
@@ -52,24 +56,18 @@ class SubagentSpawnSummary(TypedDict):
 
 
 def _json_value(value: object) -> JSONValue | None:
-    return cast(JSONValue | None, value)
+    return value if is_json_value(value) else None
 
 
-def _json_record(value: object) -> JSONRecord:
-    return cast(JSONRecord, value) if isinstance(value, dict) else {}
-
-
-def _tool_input_payload(value: Mapping[str, object]) -> dict[str, SchemaJSONValue]:
-    return cast(dict[str, SchemaJSONValue], dict(value))
+def _tool_input_payload(value: object) -> ToolInputPayload:
+    return json_document(value)
 
 
 def _text_from_message_content(content: object) -> str:
     if isinstance(content, str):
         return content
-    if not isinstance(content, list):
-        return ""
-    for block in content:
-        if is_payload_mapping(block) and block.get("type") == "text":
+    for block in json_document_list(content):
+        if block.get("type") == "text":
             text = optional_string(block.get("text"))
             if text:
                 return text
@@ -112,7 +110,7 @@ def detect_context_compaction(item: Mapping[str, object]) -> ContextCompactionSu
 
 def extract_thinking_traces(content_blocks: Sequence[Mapping[str, object]]) -> list[ThinkingTraceSummary]:
     traces: list[ThinkingTraceSummary] = []
-    for block in content_blocks:
+    for block in (json_document(item) for item in content_blocks):
         if block.get("type") != "thinking":
             continue
         text = optional_string(block.get("thinking")) or optional_string(block.get("text")) or ""
@@ -123,10 +121,10 @@ def extract_thinking_traces(content_blocks: Sequence[Mapping[str, object]]) -> l
 
 def extract_tool_invocations(content_blocks: Sequence[Mapping[str, object]]) -> list[ToolInvocationSummary]:
     invocations: list[ToolInvocationSummary] = []
-    for block in content_blocks:
+    for block in (json_document(item) for item in content_blocks):
         if block.get("type") != "tool_use":
             continue
-        input_payload = _json_record(mapping_or_empty(block.get("input")))
+        input_payload = json_document(block.get("input"))
         invocation: ToolInvocationSummary = {
             "tool_name": optional_string(block.get("name")),
             "tool_id": optional_string(block.get("id")),
@@ -147,7 +145,7 @@ def extract_tool_invocations(content_blocks: Sequence[Mapping[str, object]]) -> 
 def parse_git_operation(tool_invocation: Mapping[str, object]) -> ToolMetadata | None:
     if tool_invocation.get("tool_name") != "Bash":
         return None
-    command = optional_string(mapping_or_empty(tool_invocation.get("input")).get("command"))
+    command = optional_string(json_document(tool_invocation.get("input")).get("command"))
     if not command or not command.strip().startswith("git "):
         return None
     return _parse_git_command(command)
@@ -157,7 +155,7 @@ def extract_file_changes(tool_invocations: Sequence[Mapping[str, object]]) -> li
     changes: list[FileChangeSummary] = []
     for invocation in tool_invocations:
         tool_name = invocation.get("tool_name")
-        input_data = mapping_or_empty(invocation.get("input"))
+        input_data = json_document(invocation.get("input"))
         path = optional_string(input_data.get("file_path")) or optional_string(input_data.get("path"))
         if not path:
             continue
@@ -187,7 +185,7 @@ def extract_subagent_spawns(tool_invocations: Sequence[Mapping[str, object]]) ->
     for invocation in tool_invocations:
         if invocation.get("tool_name") != "Task":
             continue
-        input_data = mapping_or_empty(invocation.get("input"))
+        input_data = json_document(invocation.get("input"))
         parsed = _parse_subagent_spawn(_tool_input_payload(input_data))
         agent_type = parsed.get("agent_type")
         spawns.append(

@@ -13,6 +13,7 @@ Coverage includes:
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import datetime
 from typing import TypeAlias
 
@@ -71,6 +72,15 @@ ChatGPTConversationMessages: TypeAlias = list[tuple[str, str]]
 ProviderViewportRecord: TypeAlias = (
     ClaudeCodeRecord | ClaudeAIChatMessage | ChatGPTMessage | GeminiMessage | CodexRecord
 )
+
+
+def _object_mapping(value: object) -> Mapping[str, object]:
+    return value if isinstance(value, dict) else {}
+
+
+def _object_list(mapping: Mapping[str, object], key: str) -> list[object]:
+    value = mapping.get(key)
+    return list(value) if isinstance(value, list) else []
 
 
 class TestChatGPTMessageTextContent:
@@ -290,7 +300,7 @@ class TestClaudeCodeRecordContentBlocksRaw2:
         )
         record = ClaudeCodeRecord(type="assistant", message=msg)
         assert len(record.content_blocks_raw) == 1
-        assert record.content_blocks_raw[0]["type"] == "text"
+        assert _object_mapping(record.content_blocks_raw[0]).get("type") == "text"
 
 
 class TestClaudeCodeRecordToMeta2:
@@ -645,7 +655,7 @@ class TestGeminiExtractReasoningTracesExtra:
         )
         traces = msg.extract_reasoning_traces()
         assert len(traces) == 1
-        assert traces[0].raw["thoughtSignatures"] == expected_in_raw
+        assert _object_list(traces[0].raw, "thoughtSignatures") == expected_in_raw
 
     def test_extract_reasoning_traces_with_model_signatures(self) -> None:
         """Coverage for line 159-160: BaseModel signature handling."""
@@ -658,7 +668,7 @@ class TestGeminiExtractReasoningTracesExtra:
         )
         traces = msg.extract_reasoning_traces()
         assert len(traces) == 1
-        assert len(traces[0].raw["thoughtSignatures"]) == 1
+        assert len(_object_list(traces[0].raw, "thoughtSignatures")) == 1
 
     def test_extract_reasoning_traces_budget_none(self) -> None:
         msg = GeminiMessage(

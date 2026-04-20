@@ -2,37 +2,24 @@
 
 from __future__ import annotations
 
-import json
-from collections.abc import Mapping
 from dataclasses import dataclass
 from io import BytesIO, StringIO
 from pathlib import Path
-from typing import Literal, TypeAlias, cast
+from typing import Literal, TypeAlias
 
 import orjson
 
 from polylogue.lib.artifact_taxonomy import ArtifactClassification, classify_artifact
+from polylogue.lib.json import JSONDocument, JSONValue, is_json_value, loads
 from polylogue.sources.dispatch import detect_provider
 from polylogue.types import Provider
 
 WireFormat = Literal["json", "jsonl"]
-JSONScalar: TypeAlias = str | int | float | bool | None
-JSONValue: TypeAlias = JSONScalar | list["JSONValue"] | dict[str, "JSONValue"]
-JSONRecord: TypeAlias = Mapping[str, object]
-
-
-def _coerce_json_value(value: object) -> JSONValue:
-    return cast(JSONValue, value)
+JSONRecord: TypeAlias = JSONDocument
 
 
 def _load_json_record(line: str) -> JSONValue:
-    try:
-        return _coerce_json_value(orjson.loads(line))
-    except (orjson.JSONDecodeError, ValueError) as exc:
-        try:
-            return _coerce_json_value(json.loads(line))
-        except json.JSONDecodeError:
-            raise exc from None
+    return loads(line)
 
 
 @dataclass(frozen=True)
@@ -208,7 +195,7 @@ def _decode_raw_payload(
                 pass
         raw_bytes = raw_content.read_bytes()
         try:
-            return _coerce_json_value(orjson.loads(raw_bytes)), "json", 0, None
+            return loads(raw_bytes), "json", 0, None
         except (orjson.JSONDecodeError, ValueError) as exc:
             try:
                 payload, malformed_lines, malformed_detail = _decode_jsonl_payload(
@@ -218,6 +205,9 @@ def _decode_raw_payload(
             except (UnicodeDecodeError, ValueError):
                 raise exc from None
             return payload, "jsonl", malformed_lines, malformed_detail
+
+    if is_json_value(raw_content):
+        return raw_content, "json", 0, None
 
     raw = raw_content if isinstance(raw_content, (bytes, str)) else str(raw_content)
     if prefer_jsonl:
@@ -230,7 +220,7 @@ def _decode_raw_payload(
         except (UnicodeDecodeError, ValueError):
             pass
     try:
-        return _coerce_json_value(orjson.loads(raw)), "json", 0, None
+        return loads(raw), "json", 0, None
     except (orjson.JSONDecodeError, ValueError) as exc:
         try:
             payload, malformed_lines, malformed_detail = _decode_jsonl_payload(

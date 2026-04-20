@@ -4,11 +4,10 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 from datetime import datetime
-from typing import Any, cast
 
 from pydantic import ValidationError
 
-from polylogue.lib.raw_payload_decode import JSONRecord
+from polylogue.lib.json import JSONDocument, json_document
 from polylogue.schemas.unified_adapters import extract_with_adapter
 from polylogue.schemas.unified_fallbacks import extract_fallback_message
 from polylogue.schemas.unified_models import HarmonizedMessage
@@ -20,12 +19,10 @@ from polylogue.schemas.unified_provider_meta_harmonize import (
 from polylogue.types import Provider
 
 
-def _json_record(value: object) -> JSONRecord:
-    return cast(JSONRecord, value) if isinstance(value, dict) else {}
-
-
-def _provider_meta_dict(value: Mapping[str, object]) -> dict[str, Any]:
-    return dict(value)
+def _provider_meta_record(value: Mapping[str, object]) -> JSONDocument:
+    if isinstance(value, dict):
+        return json_document(value)
+    return json_document(dict(value))
 
 
 def extract_from_provider_meta(
@@ -39,13 +36,13 @@ def extract_from_provider_meta(
 ) -> HarmonizedMessage:
     """Extract HarmonizedMessage from polylogue database format."""
     resolved_provider = provider if isinstance(provider, Provider) else Provider.from_string(provider)
-    raw = provider_meta.get("raw")
-    if raw is not None:
-        raw_record = _json_record(raw)
+    provider_meta_record = _provider_meta_record(provider_meta)
+    raw_record = json_document(provider_meta_record.get("raw"))
+    if raw_record:
         try:
             harmonized = extract_with_adapter(resolved_provider, raw_record)
         except (ValidationError, ValueError):
-            harmonized = extract_fallback_message(resolved_provider, dict(raw_record))
+            harmonized = extract_fallback_message(resolved_provider, raw_record)
         return _overlay_message_context(
             harmonized,
             message_id=message_id,
@@ -54,10 +51,10 @@ def extract_from_provider_meta(
             timestamp=timestamp,
         )
 
-    if _has_extracted_viewports(dict(provider_meta)):
+    if _has_extracted_viewports(provider_meta_record):
         return _harmonize_extracted_provider_meta(
             resolved_provider,
-            _provider_meta_dict(provider_meta),
+            provider_meta_record,
             message_id=message_id,
             role=role,
             text=text,
@@ -65,11 +62,11 @@ def extract_from_provider_meta(
         )
 
     try:
-        harmonized = extract_with_adapter(resolved_provider, _json_record(provider_meta))
+        harmonized = extract_with_adapter(resolved_provider, provider_meta_record)
     except (ValidationError, ValueError, TypeError):
         return _harmonize_extracted_provider_meta(
             resolved_provider,
-            _provider_meta_dict(provider_meta),
+            provider_meta_record,
             message_id=message_id,
             role=role,
             text=text,
@@ -109,13 +106,14 @@ def harmonize_parsed_message(
     if not provider_meta:
         return None
 
-    raw = provider_meta.get("raw", provider_meta)
-    if not is_message_record(provider, _json_record(raw)):
+    provider_meta_record = _provider_meta_record(provider_meta)
+    raw_record = json_document(provider_meta_record.get("raw")) or provider_meta_record
+    if not is_message_record(provider, raw_record):
         return None
 
     return extract_from_provider_meta(
         provider,
-        provider_meta,
+        provider_meta_record,
         message_id=message_id,
         role=role,
         text=text,
