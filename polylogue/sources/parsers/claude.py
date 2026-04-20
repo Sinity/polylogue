@@ -6,6 +6,7 @@ with automatic validation and normalized property access.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from pathlib import Path
 
 from .base import ParsedAttachment, ParsedConversation, ParsedMessage
@@ -62,7 +63,7 @@ def normalize_timestamp(timestamp: int | float | str | None) -> str | None:
     return _normalize_timestamp(timestamp)
 
 
-def parse_ai(payload: dict[str, object], fallback_id: str) -> ParsedConversation:
+def parse_ai(payload: Mapping[str, object], fallback_id: str) -> ParsedConversation:
     return _parse_ai(payload, fallback_id)
 
 

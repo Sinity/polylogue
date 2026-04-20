@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 from polylogue.lib.roles import Role
 from polylogue.types import ContentBlockType, Provider
 
@@ -20,7 +22,7 @@ def _coerce_float(value: object) -> float | None:
     return None
 
 
-def extract_messages_from_mapping(mapping: dict[str, object]) -> tuple[list[ParsedMessage], list[ParsedAttachment]]:
+def extract_messages_from_mapping(mapping: Mapping[str, object]) -> tuple[list[ParsedMessage], list[ParsedAttachment]]:
     entries: list[tuple[float | None, int, ParsedMessage]] = []
     attachments: list[ParsedAttachment] = []
     for idx, node in enumerate(mapping.values(), start=1):
@@ -179,7 +181,7 @@ def looks_like(payload: object) -> bool:
     return isinstance(payload.get("mapping"), dict)
 
 
-def parse(payload: dict[str, object], fallback_id: str) -> ParsedConversation:
+def parse(payload: Mapping[str, object], fallback_id: str) -> ParsedConversation:
     mapping = payload.get("mapping") or {}
     if not isinstance(mapping, dict):
         mapping = {}

@@ -12,10 +12,10 @@ direct contracts.
 from __future__ import annotations
 
 import json
-from typing import Any
 
 import pytest
 
+from polylogue.lib.json import JSONDocument
 from polylogue.scenarios import CorpusSpec
 from polylogue.sources.parsers.drive import (
     _attachment_from_doc,
@@ -37,7 +37,7 @@ def _provider_content_blocks(
 
 
 @pytest.fixture
-def synthetic_gemini_payload() -> dict[str, Any]:
+def synthetic_gemini_payload() -> JSONDocument:
     from polylogue.schemas.synthetic import SyntheticCorpus
 
     raw = SyntheticCorpus.generate_for_spec(
@@ -123,7 +123,7 @@ def test_attachment_from_doc_contract(doc: object, expected_id: str | None, expe
 
 
 def test_parse_chunked_prompt_preserves_core_conversation_metadata() -> None:
-    payload: dict[str, object] = {
+    payload: JSONDocument = {
         "id": "gemini-conv",
         "displayName": "Gemini Session",
         "createTime": "2024-01-15T10:30:00Z",
@@ -149,7 +149,7 @@ def test_parse_chunked_prompt_preserves_core_conversation_metadata() -> None:
 
 
 def test_parse_chunked_prompt_preserves_reasoning_code_tool_results_and_attachments() -> None:
-    payload: dict[str, object] = {
+    payload: JSONDocument = {
         "id": "gemini-rich",
         "displayName": "Gemini Rich",
         "chunkedPrompt": {
@@ -222,7 +222,7 @@ def test_parse_chunked_prompt_preserves_reasoning_code_tool_results_and_attachme
 
 
 def test_parse_chunked_prompt_preserves_attachment_only_chunks_and_chunk_timestamps() -> None:
-    payload: dict[str, object] = {
+    payload: JSONDocument = {
         "chunkedPrompt": {
             "chunks": [
                 {
@@ -269,7 +269,7 @@ def test_parse_chunked_prompt_preserves_attachment_only_chunks_and_chunk_timesta
 
 
 def test_parse_chunked_prompt_skips_chunks_without_text_or_role() -> None:
-    payload: dict[str, object] = {
+    payload: JSONDocument = {
         "chunkedPrompt": {
             "chunks": [
                 "string chunk without role",
@@ -287,7 +287,7 @@ def test_parse_chunked_prompt_skips_chunks_without_text_or_role() -> None:
     assert [message.text for message in result.messages] == ["kept", "also kept"]
 
 
-def test_parse_chunked_prompt_accepts_synthetic_exports(synthetic_gemini_payload: dict[str, Any]) -> None:
+def test_parse_chunked_prompt_accepts_synthetic_exports(synthetic_gemini_payload: JSONDocument) -> None:
     result = parse_chunked_prompt("gemini", synthetic_gemini_payload, "synthetic-fallback")
 
     assert result.provider_name == "gemini"

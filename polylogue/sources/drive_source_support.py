@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-import json
 from datetime import datetime
 from pathlib import Path
-from typing import TypeAlias, cast
+from typing import TypeAlias
 
+from polylogue.lib.json import JSONValue, is_json_value, loads
 from polylogue.logging import get_logger
 
 from .drive_gateway import DrivePayloadRecord
@@ -16,9 +16,19 @@ from .drive_types import (
 
 logger = get_logger(__name__)
 
-JsonScalar: TypeAlias = str | int | float | bool | None
-JsonPayload: TypeAlias = dict[str, "JsonPayload"] | list["JsonPayload"] | JsonScalar
-JsonObject: TypeAlias = DrivePayloadRecord
+DriveJSONPayload: TypeAlias = JSONValue
+DriveJSONRecord: TypeAlias = DrivePayloadRecord
+DriveJSONSequence: TypeAlias = list[DriveJSONPayload]
+
+
+def _json_sequence(value: object) -> DriveJSONSequence:
+    if not isinstance(value, list):
+        return []
+    items: DriveJSONSequence = []
+    for item in value:
+        if is_json_value(item):
+            items.append(item)
+    return items
 
 
 def _parse_modified_time(raw: str | None) -> float | None:
@@ -63,24 +73,24 @@ def _is_supported_drive_payload(name: str, mime_type: str) -> bool:
     return name.lower().endswith((".json", ".jsonl", ".jsonl.txt", ".ndjson")) or mime_type == GEMINI_PROMPT_MIME_TYPE
 
 
-def _parse_downloaded_json_payload(raw: bytes, *, name: str) -> JsonPayload:
+def _parse_downloaded_json_payload(raw: bytes, *, name: str) -> DriveJSONPayload:
     if _is_newline_delimited_json_name(name):
-        items: list[JsonPayload] = []
+        items: DriveJSONSequence = []
         for line in raw.splitlines():
             line = line.strip()
             if not line:
                 continue
             try:
-                items.append(cast(JsonPayload, json.loads(line)))
-            except json.JSONDecodeError as exc:
+                items.append(loads(line))
+            except Exception as exc:
                 logger.warning("Skipping invalid JSON line in Drive file %s: %s", name, exc)
                 continue
         return items
 
     try:
-        return cast(JsonPayload, json.loads(raw))
-    except (UnicodeDecodeError, json.JSONDecodeError):
-        return cast(JsonPayload, json.loads(raw.decode("utf-8", errors="replace")))
+        return loads(raw)
+    except Exception:
+        return loads(raw.decode("utf-8", errors="replace"))
 
 
 def _needs_download(meta: DriveFile, dest: Path) -> bool:
@@ -99,14 +109,14 @@ def _needs_download(meta: DriveFile, dest: Path) -> bool:
     return modified_timestamp is not None and abs(stat.st_mtime - modified_timestamp) > 1
 
 
-def _extract_meta_string(meta: JsonObject, key: str, *, file_id_fallback: str = "") -> str:
+def _extract_meta_string(meta: DriveJSONRecord, key: str, *, file_id_fallback: str = "") -> str:
     value = meta.get(key)
     if isinstance(value, str):
         return value
     return file_id_fallback
 
 
-def _build_drive_file(meta: JsonObject, *, file_id_fallback: str = "") -> DriveFile:
+def _build_drive_file(meta: DriveJSONRecord, *, file_id_fallback: str = "") -> DriveFile:
     file_id = _extract_meta_string(meta, "id", file_id_fallback=file_id_fallback)
     name = _extract_meta_string(meta, "name", file_id_fallback=file_id_fallback)
     modified_time_raw = meta.get("modifiedTime")
@@ -120,3 +130,19 @@ def _build_drive_file(meta: JsonObject, *, file_id_fallback: str = "") -> DriveF
         modified_time=modified_time,
         size_bytes=_parse_size(size_value),
     )
+
+
+__all__ = [
+    "DriveJSONPayload",
+    "DriveJSONRecord",
+    "DriveJSONSequence",
+    "_build_drive_file",
+    "_build_folder_lookup_query",
+    "_is_supported_drive_payload",
+    "_json_sequence",
+    "_looks_like_id",
+    "_needs_download",
+    "_parse_downloaded_json_payload",
+    "_parse_modified_time",
+    "_parse_size",
+]

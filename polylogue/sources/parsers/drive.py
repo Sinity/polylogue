@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 from pydantic import ValidationError
 
+from polylogue.lib.json import JSONDocument, json_document
 from polylogue.lib.roles import Role
 from polylogue.logging import get_logger
 from polylogue.sources.providers.gemini import GeminiMessage
@@ -39,19 +42,19 @@ from .drive_support import (
 _logger = get_logger(__name__)
 
 
-def _collect_drive_docs(payload: object) -> list[dict[str, object] | str]:
+def _collect_drive_docs(payload: object) -> list[JSONDocument | str]:
     return _collect_drive_docs_impl(payload)
 
 
-def _attachment_from_doc(doc: dict[str, object] | str, message_id: str | None) -> ParsedAttachment | None:
+def _attachment_from_doc(doc: JSONDocument | str, message_id: str | None) -> ParsedAttachment | None:
     return _attachment_from_doc_impl(doc, message_id)
 
 
-def parse_chunked_prompt(provider: Provider | str, payload: dict[str, object], fallback_id: str) -> ParsedConversation:
+def parse_chunked_prompt(provider: Provider | str, payload: JSONDocument, fallback_id: str) -> ParsedConversation:
     runtime_provider = Provider.from_string(provider)
-    prompt = payload.get("chunkedPrompt")
-    chunks: list[str | dict[str, object]] = []
-    if isinstance(prompt, dict):
+    prompt = json_document(payload.get("chunkedPrompt"))
+    chunks: Sequence[object] = ()
+    if prompt:
         prompt_chunks = prompt.get("chunks")
         chunks = prompt_chunks if isinstance(prompt_chunks, list) else []
     else:
@@ -68,7 +71,7 @@ def parse_chunked_prompt(provider: Provider | str, payload: dict[str, object], f
     observed_timestamps: list[str | None] = []
     for idx, chunk in enumerate(chunks, start=1):
         if isinstance(chunk, str):
-            chunk_obj: dict[str, object] = {"text": chunk}
+            chunk_obj: JSONDocument = {"text": chunk}
         elif isinstance(chunk, dict):
             chunk_obj = chunk
         else:
@@ -121,7 +124,7 @@ def parse_chunked_prompt(provider: Provider | str, payload: dict[str, object], f
                 meta["isEdited"] = True
 
             # Extract structured content blocks via the typed model
-            content_block_payloads = [
+            content_block_payloads: list[JSONDocument] = [
                 block_payload
                 for cb in gem.extract_content_blocks()
                 if (block_payload := _viewport_block_payload(cb)) is not None
@@ -146,7 +149,7 @@ def parse_chunked_prompt(provider: Provider | str, payload: dict[str, object], f
             token_count = chunk_obj.get("tokenCount")
             if token_count:
                 meta["tokenCount"] = token_count
-            fallback_content_blocks: list[dict[str, object]] = []
+            fallback_content_blocks: list[JSONDocument] = []
             if text:
                 block_type = "thinking" if chunk_obj.get("isThought") else "text"
                 fallback_content_blocks.append({"type": block_type, "text": text})
@@ -218,4 +221,4 @@ def parse_chunked_prompt(provider: Provider | str, payload: dict[str, object], f
 
 def looks_like(payload: object) -> bool:
     """Return True if payload looks like a Drive / Gemini chunkedPrompt export."""
-    return isinstance(payload, dict) and "chunkedPrompt" in payload
+    return "chunkedPrompt" in json_document(payload)

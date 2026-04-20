@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 from pydantic import ValidationError
 
 from polylogue.sources.providers.claude_ai import ClaudeAIConversation
@@ -21,7 +23,7 @@ def looks_like_ai(payload: object) -> bool:
     return isinstance(payload, dict) and isinstance(payload.get("chat_messages"), list)
 
 
-def parse_ai(payload: dict[str, object], fallback_id: str) -> ParsedConversation:
+def parse_ai(payload: Mapping[str, object], fallback_id: str) -> ParsedConversation:
     try:
         conv = ClaudeAIConversation.model_validate(payload)
     except ValidationError:

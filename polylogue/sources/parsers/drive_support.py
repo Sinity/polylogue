@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from polylogue.sources.parsers.base import ParsedAttachment
 from polylogue.sources.parsers.drive_support_attachments import (
+    DriveDocSource,
     attachment_block_payloads,
     attachment_from_doc,
     collect_chunk_attachments,
@@ -33,9 +34,9 @@ __all__ = [
 ]
 
 
-def _collect_drive_docs(payload: object) -> list[dict[str, object] | str]:
+def _collect_drive_docs(payload: object) -> list[DriveDocSource]:
     return collect_drive_docs(payload)
 
 
-def _attachment_from_doc(doc: dict[str, object] | str, message_id: str | None) -> ParsedAttachment | None:
+def _attachment_from_doc(doc: DriveDocSource, message_id: str | None) -> ParsedAttachment | None:
     return attachment_from_doc(doc, message_id)

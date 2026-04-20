@@ -18,6 +18,7 @@ from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 from typing_extensions import TypedDict
 
+from polylogue.lib.json import JSONDocument
 from polylogue.sources.parsers import chatgpt, claude, codex, drive
 from tests.infra.strategies.schema_driven import schema_conformant_payload
 
@@ -30,6 +31,11 @@ class ProviderParser(TypedDict):
 def _payload_dict(payload: object) -> dict[str, object]:
     assert isinstance(payload, dict)
     return cast(dict[str, object], payload)
+
+
+def _payload_json_document(payload: object) -> JSONDocument:
+    assert isinstance(payload, dict)
+    return cast(JSONDocument, payload)
 
 
 def _payload_list(payload: object) -> list[object]:
@@ -62,7 +68,7 @@ def _parse_codex(payload: object) -> object:
 
 
 def _parse_gemini(payload: object) -> object:
-    return drive.parse_chunked_prompt("gemini", _payload_dict(payload), "crashtest")
+    return drive.parse_chunked_prompt("gemini", _payload_json_document(payload), "crashtest")
 
 
 PROVIDER_PARSERS: dict[str, ProviderParser] = {
