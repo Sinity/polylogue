@@ -7,11 +7,12 @@ from collections.abc import Iterable
 from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
-from typing import TypedDict, cast
+from typing import cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import click
 import pytest
+from typing_extensions import TypedDict
 
 from polylogue.cli import helpers
 from polylogue.cli.types import AppEnv
