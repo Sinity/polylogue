@@ -7,18 +7,28 @@ the ``summarize_archive_debt`` helper.
 
 from __future__ import annotations
 
-from pydantic import BaseModel
+from collections.abc import Sequence
+from typing import Protocol, runtime_checkable
 
 from polylogue.cli.machine_errors import emit_success
 from polylogue.products.registry import render_product_items
 
 
+@runtime_checkable
+class SupportsModelDump(Protocol):
+    def model_dump(self, *, mode: str) -> object: ...
+
+
 def model_payload(item: object) -> object:
-    return item.model_dump(mode="json") if isinstance(item, BaseModel) else item
+    return item.model_dump(mode="json") if isinstance(item, SupportsModelDump) else item
+
+
+def model_payloads(items: Sequence[object]) -> list[object]:
+    return [model_payload(item) for item in items]
 
 
 def emit_product_list(*, key: str, items: list[object]) -> None:
-    emit_success({"count": len(items), key: [model_payload(item) for item in items]})
+    emit_success({"count": len(items), key: model_payloads(items)})
 
 
 def summarize_archive_debt(items: list[object]) -> dict[str, int]:
@@ -33,6 +43,7 @@ def summarize_archive_debt(items: list[object]) -> dict[str, int]:
 __all__ = [
     "emit_product_list",
     "model_payload",
+    "model_payloads",
     "render_product_items",
     "summarize_archive_debt",
 ]

@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from typing import cast, overload
 
 from polylogue.rendering.block_models import RenderableBlock
 from polylogue.rendering.blocks import (
@@ -62,27 +63,85 @@ def role_css_class(role: str) -> str:
     return "message-" + _ROLE_CLASS_RE.sub("-", role.lower())
 
 
-def attach_rendered_message_branches(messages: Sequence[RenderedMessage]) -> list[RenderedMessage]:
-    """Attach branch messages to their mainline sibling in a typed message list."""
-    typed_messages = list(messages)
-    if not any(message.branch_index for message in typed_messages):
-        return typed_messages
+def _mapping_branch_index(message: Mapping[str, object]) -> int:
+    return normalize_render_branch_index(message.get("branch_index"))
 
-    mainline = [message for message in typed_messages if not message.branch_index]
+
+def _mapping_parent_message_id(message: Mapping[str, object]) -> str | None:
+    parent_message_id = message.get("parent_message_id")
+    if parent_message_id is None:
+        return None
+    return str(parent_message_id)
+
+
+def _attach_mapping_message_branches(messages: Sequence[Mapping[str, object]]) -> list[dict[str, object]]:
+    copied_messages = [dict(message) for message in messages]
+    if not any(_mapping_branch_index(message) for message in copied_messages):
+        return copied_messages
+
+    mainline = [message for message in copied_messages if not _mapping_branch_index(message)]
     mainline_by_parent = {
-        message.parent_message_id: message for message in mainline if message.parent_message_id is not None
+        parent_message_id: message
+        for message in mainline
+        if (parent_message_id := _mapping_parent_message_id(message)) is not None
     }
 
-    for message in typed_messages:
-        if not message.branch_index or message.parent_message_id is None:
+    for message in copied_messages:
+        branch_index = _mapping_branch_index(message)
+        parent_message_id = _mapping_parent_message_id(message)
+        if not branch_index or parent_message_id is None:
             continue
-        sibling = mainline_by_parent.get(message.parent_message_id)
+        sibling = mainline_by_parent.get(parent_message_id)
         if sibling is None:
             mainline.append(message)
             continue
-        sibling.branches.append(message)
+        sibling.setdefault("branches", [])
+        branches = sibling["branches"]
+        if isinstance(branches, list):
+            branches.append(message)
 
     return mainline
+
+
+@overload
+def attach_rendered_message_branches(messages: Sequence[RenderedMessage]) -> list[RenderedMessage]: ...
+
+
+@overload
+def attach_rendered_message_branches(messages: Sequence[Mapping[str, object]]) -> list[dict[str, object]]: ...
+
+
+def attach_rendered_message_branches(
+    messages: Sequence[RenderedMessage] | Sequence[Mapping[str, object]],
+) -> list[RenderedMessage] | list[dict[str, object]]:
+    """Attach branch messages to their mainline sibling for typed or mapping payloads."""
+    if not messages:
+        return []
+    if all(isinstance(message, RenderedMessage) for message in messages):
+        typed_messages = cast(list[RenderedMessage], list(messages))
+        if not any(message.branch_index for message in typed_messages):
+            return typed_messages
+
+        mainline = [message for message in typed_messages if not message.branch_index]
+        mainline_by_parent = {
+            message.parent_message_id: message for message in mainline if message.parent_message_id is not None
+        }
+
+        for message in typed_messages:
+            if not message.branch_index or message.parent_message_id is None:
+                continue
+            sibling = mainline_by_parent.get(message.parent_message_id)
+            if sibling is None:
+                mainline.append(message)
+                continue
+            sibling.branches.append(message)
+
+        return mainline
+
+    mapping_messages = cast(
+        list[Mapping[str, object]], [message for message in messages if isinstance(message, Mapping)]
+    )
+    return _attach_mapping_message_branches(mapping_messages)
 
 
 def build_rendered_message(

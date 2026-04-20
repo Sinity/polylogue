@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, TypeAlias
 from typing_extensions import TypedDict
 
 from polylogue.mcp.payloads import MCPFencedCodeBlock
-from polylogue.mcp.query_contracts import build_query_spec
+from polylogue.mcp.query_contracts import MCPConversationQueryRequest
 from polylogue.types import Provider
 
 if TYPE_CHECKING:
@@ -101,12 +101,12 @@ def register_prompts(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         limit: int = 50,
     ) -> str:
         store = hooks.get_query_store()
-        spec = build_query_spec(
+        spec = MCPConversationQueryRequest(
             query="error",
             provider=provider,
             since=since,
-            limit=hooks.clamp_limit(limit),
-        )
+            limit=limit,
+        ).build_spec(hooks.clamp_limit)
         convs = await spec.list(store)
 
         error_contexts: list[ErrorContextPayload] = []
@@ -144,10 +144,10 @@ Error contexts:
     async def summarize_week(limit: int = 100) -> str:
         store = hooks.get_query_store()
         week_ago = (datetime.now(tz=timezone.utc) - timedelta(days=7)).isoformat()
-        spec = build_query_spec(
+        spec = MCPConversationQueryRequest(
             since=week_ago,
-            limit=hooks.clamp_limit(limit),
-        )
+            limit=limit,
+        ).build_spec(hooks.clamp_limit)
         convs = await spec.list(store)
 
         by_provider: dict[str, int] = {}
@@ -175,7 +175,7 @@ Focus on actionable insights and patterns, not exhaustive summaries.
     @mcp.prompt()
     async def extract_code(language: str = "", limit: int = 50) -> str:
         store = hooks.get_query_store()
-        convs = await build_query_spec(limit=hooks.clamp_limit(limit)).list(store)
+        convs = await MCPConversationQueryRequest(limit=limit).build_spec(hooks.clamp_limit).list(store)
 
         code_snippets: list[ExtractedCodeSnippetPayload] = []
         for conv in convs:
@@ -225,10 +225,10 @@ Conversation 2:
     @mcp.prompt()
     async def extract_patterns(provider: str | None = None, limit: int = 30) -> str:
         store = hooks.get_query_store()
-        spec = build_query_spec(
+        spec = MCPConversationQueryRequest(
             provider=provider,
-            limit=hooks.clamp_limit(limit),
-        )
+            limit=limit,
+        ).build_spec(hooks.clamp_limit)
         convs = await spec.list(store)
 
         summaries: list[ConversationPatternPayload] = []

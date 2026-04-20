@@ -12,7 +12,7 @@ from polylogue.mcp.payloads import (
     MCPStatsByPayload,
     conversation_summary_list_payload,
 )
-from polylogue.mcp.query_contracts import build_query_spec
+from polylogue.mcp.query_contracts import MCPConversationQueryRequest
 from polylogue.mcp.server_maintenance_tools import register_maintenance_tools
 from polylogue.mcp.server_mutation_tools import register_mutation_tools
 from polylogue.mcp.server_product_tools import register_product_tools
@@ -45,9 +45,9 @@ def register_query_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
     ) -> str:
         async def run() -> str:
             ops = hooks.get_archive_ops()
-            spec = build_query_spec(
+            spec = MCPConversationQueryRequest(
                 query=query,
-                retrieval_lane=retrieval_lane or "auto",
+                retrieval_lane=retrieval_lane,
                 provider=provider,
                 since=since,
                 path=path,
@@ -57,12 +57,12 @@ def register_query_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                 action_text=action_text,
                 tool=tool,
                 exclude_tool=exclude_tool,
-                limit=hooks.clamp_limit(limit),
+                limit=limit,
                 has_tool_use=has_tool_use,
                 has_thinking=has_thinking,
                 min_messages=min_messages,
                 min_words=min_words,
-            )
+            ).build_spec(hooks.clamp_limit)
             results = await ops.query_conversations(spec)
             return hooks.json_payload(conversation_summary_list_payload(results))
 
@@ -91,9 +91,9 @@ def register_query_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
     ) -> str:
         async def run() -> str:
             ops = hooks.get_archive_ops()
-            spec = build_query_spec(
+            spec = MCPConversationQueryRequest(
                 provider=provider,
-                retrieval_lane=retrieval_lane or "auto",
+                retrieval_lane=retrieval_lane,
                 tag=tag,
                 title=title,
                 since=since,
@@ -105,12 +105,12 @@ def register_query_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                 tool=tool,
                 exclude_tool=exclude_tool,
                 sort=sort,
-                limit=hooks.clamp_limit(limit),
+                limit=limit,
                 has_tool_use=has_tool_use,
                 has_thinking=has_thinking,
                 min_messages=min_messages,
                 min_words=min_words,
-            )
+            ).build_spec(hooks.clamp_limit)
             conversations = await ops.query_conversations(spec)
             return hooks.json_payload(conversation_summary_list_payload(conversations))
 
