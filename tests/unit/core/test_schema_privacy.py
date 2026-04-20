@@ -11,7 +11,7 @@ Tests are grouped by guard type so failures pinpoint which heuristic regressed.
 
 from __future__ import annotations
 
-from typing import Any, cast
+from collections.abc import Mapping
 
 import pytest
 from hypothesis import given, settings
@@ -23,6 +23,7 @@ from polylogue.schemas.schema_inference import (
     _is_content_field,
     _is_safe_enum_value,
 )
+from tests.infra.schema_access import schema_property, schema_values
 
 # =============================================================================
 # _is_safe_enum_value — existing heuristics (regression guard)
@@ -211,7 +212,7 @@ class TestCrossConversationThreshold:
         values_by_conv: dict[str, list[str]],
         *,
         min_conversation_count: int = 3,
-    ) -> dict[str, Any]:
+    ) -> Mapping[str, object]:
         """Build schema annotations from samples grouped by conversation ID."""
         samples = []
         conv_ids = []
@@ -226,9 +227,9 @@ class TestCrossConversationThreshold:
         flat_conv_ids: list[str | None] = [cid for cid, vals in values_by_conv.items() for _ in vals]
 
         stats = _collect_field_stats(flat_samples, conversation_ids=flat_conv_ids)
-        schema: dict[str, Any] = {"type": "object", "properties": {"status": {"type": "string"}}}
+        schema: dict[str, object] = {"type": "object", "properties": {"status": {"type": "string"}}}
         annotated = _annotate_schema(schema, stats, min_conversation_count=min_conversation_count)
-        return cast(dict[str, Any], annotated.get("properties", {}).get("status", {}))
+        return schema_property(annotated, "status")
 
     def test_value_in_one_conv_excluded_at_threshold_3(self) -> None:
         """A value seen in only 1 conversation is excluded when threshold=3."""
@@ -239,7 +240,7 @@ class TestCrossConversationThreshold:
             "conv_D": ["common"],
         }
         status_schema = self._make_schema_with_samples(values_by_conv, min_conversation_count=3)
-        enum_vals = status_schema.get("x-polylogue-values", [])
+        enum_vals = schema_values(status_schema)
         assert "rare_status" not in enum_vals, "Single-conversation value should be excluded"
 
     def test_value_in_three_convs_included_at_threshold_3(self) -> None:
@@ -250,14 +251,14 @@ class TestCrossConversationThreshold:
             "conv_C": ["stable_role"],
         }
         status_schema = self._make_schema_with_samples(values_by_conv, min_conversation_count=3)
-        enum_vals = status_schema.get("x-polylogue-values", [])
+        enum_vals = schema_values(status_schema)
         assert "stable_role" in enum_vals, "Value in 3 conversations should pass threshold=3"
 
     def test_threshold_1_includes_single_conv_values(self) -> None:
         """Default threshold=1 preserves existing behaviour (no cross-conv filtering)."""
         values_by_conv = {"conv_A": ["only_here", "only_here"]}
         status_schema = self._make_schema_with_samples(values_by_conv, min_conversation_count=1)
-        enum_vals = status_schema.get("x-polylogue-values", [])
+        enum_vals = schema_values(status_schema)
         assert "only_here" in enum_vals, "threshold=1 should not filter single-conv values"
 
     def test_no_conversation_ids_skips_threshold(self) -> None:
@@ -266,7 +267,7 @@ class TestCrossConversationThreshold:
         stats = _collect_field_stats(samples)  # no conversation_ids
         schema = {"type": "object", "properties": {"status": {"type": "string"}}}
         annotated = _annotate_schema(schema, stats, min_conversation_count=3)
-        enum_vals = annotated.get("properties", {}).get("status", {}).get("x-polylogue-values", [])
+        enum_vals = schema_values(schema_property(annotated, "status"))
         # No conversation tracking → no filtering
         assert "solo_value" in enum_vals
 
@@ -312,7 +313,7 @@ class TestKeyDenylist:
         stats = _collect_field_stats(samples)
         schema = {"type": "object", "properties": {field_name: {"type": "string"}}}
         annotated = _annotate_schema(schema, stats)
-        field_schema = annotated["properties"][field_name]
+        field_schema = schema_property(annotated, field_name)
         assert "x-polylogue-values" not in field_schema, f"Field '{field_name}' should suppress enum extraction"
 
     def test_non_denylist_field_gets_enums(self) -> None:
@@ -321,7 +322,7 @@ class TestKeyDenylist:
         stats = _collect_field_stats(samples)
         schema = {"type": "object", "properties": {"status": {"type": "string"}}}
         annotated = _annotate_schema(schema, stats)
-        assert "x-polylogue-values" in annotated["properties"]["status"]
+        assert "x-polylogue-values" in schema_property(annotated, "status")
 
 
 # =============================================================================

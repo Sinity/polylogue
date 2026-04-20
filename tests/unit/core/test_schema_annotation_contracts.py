@@ -28,8 +28,16 @@ from polylogue.schemas.generation_support import (
 from polylogue.schemas.generation_workflow import (
     generate_schema_from_samples,
 )
+from polylogue.schemas.json_types import JSONDocument
 from polylogue.schemas.semantic_inference_runtime import (
     infer_semantic_roles,
+)
+from tests.infra.schema_access import (
+    schema_items,
+    schema_node,
+    schema_properties,
+    schema_property,
+    schema_values,
 )
 
 
@@ -96,13 +104,12 @@ class TestAnnotateSemanticAndRelational:
         result_schema = _annotate_semantic_and_relational(schema, field_stats)
 
         # If role was detected, check confidence/evidence
-        if "role" in result_schema.get("properties", {}):
-            role_schema = result_schema["properties"]["role"]
-            if "x-polylogue-semantic-role" in role_schema:
-                assert "x-polylogue-score" in role_schema
-                assert isinstance(role_schema["x-polylogue-score"], (int, float))
-                assert "x-polylogue-evidence" in role_schema
-                assert isinstance(role_schema["x-polylogue-evidence"], dict)
+        role_schema = schema_property(result_schema, "role")
+        if role_schema and "x-polylogue-semantic-role" in role_schema:
+            assert "x-polylogue-score" in role_schema
+            assert isinstance(role_schema["x-polylogue-score"], (int, float))
+            assert "x-polylogue-evidence" in role_schema
+            assert isinstance(role_schema["x-polylogue-evidence"], dict)
 
     def test_foreign_key_annotation_at_root(self) -> None:
         """x-polylogue-foreign-keys annotation at schema root."""
@@ -305,9 +312,10 @@ class TestGenerateSchemaFromSamples:
         ]
         result_schema = generate_schema_from_samples(samples)
         assert result_schema is not None
-        assert "properties" in result_schema
-        assert "messages" in result_schema["properties"]
-        assert "title" in result_schema["properties"]
+        properties = schema_properties(result_schema)
+        assert properties
+        assert "messages" in properties
+        assert "title" in properties
 
     def test_semantic_annotations_in_generated_schema(self) -> None:
         """Generated schema includes semantic role annotations."""
@@ -326,17 +334,16 @@ class TestGenerateSchemaFromSamples:
         # Check for at least some semantic annotations
         has_semantic = False
 
-        def check_schema(s: dict[str, object], depth: int = 0) -> bool:
+        def check_schema(s: object, depth: int = 0) -> bool:
             nonlocal has_semantic
-            if "x-polylogue-semantic-role" in s:
+            node = schema_node(s)
+            if "x-polylogue-semantic-role" in node:
                 has_semantic = True
-            properties = s.get("properties")
-            if isinstance(properties, dict):
-                for prop_schema in properties.values():
-                    if isinstance(prop_schema, dict):
-                        check_schema(prop_schema, depth + 1)
-            if "items" in s and isinstance(s["items"], dict):
-                check_schema(s["items"], depth + 1)
+            for prop_schema in schema_properties(node).values():
+                check_schema(prop_schema, depth + 1)
+            items = schema_items(node)
+            if items:
+                check_schema(items, depth + 1)
             return has_semantic
 
         check_schema(result_schema)
@@ -406,7 +413,7 @@ class TestGenerateSchemaFromSamples:
         ]
         result_schema = generate_schema_from_samples(samples)
         assert result_schema is not None
-        props = result_schema.get("properties", {})
+        props = schema_properties(result_schema)
         assert "id" in props or "title" in props or "message_count" in props
 
     def test_empty_samples_returns_base_object_schema(self) -> None:
@@ -650,29 +657,30 @@ def _find_annotations(
     return result
 
 
-def _get_nested(schema: dict[str, object], dotpath: str) -> dict[str, object] | None:
+def _get_nested(schema: object, dotpath: str) -> JSONDocument | None:
     """Navigate a schema by dot-separated property path."""
-    current = schema
+    current = schema_node(schema)
     for part in dotpath.split("."):
         if part == "additionalProperties":
-            candidate = current.get("additionalProperties", {})
+            candidate = schema_node(current.get("additionalProperties"))
         else:
-            properties = current.get("properties", {})
-            if not isinstance(properties, dict):
-                return None
-            candidate = properties.get(part, {})
-        if not isinstance(candidate, dict):
-            return None
-        current = candidate
+            candidate = schema_property(current, part)
+        current = schema_node(candidate)
         if not current:
             return None
         any_of = current.get("anyOf")
         if isinstance(any_of, list):
             for variant in any_of:
-                if isinstance(variant, dict) and variant.get("type") == "object" and "properties" in variant:
-                    current = variant
+                variant_node = schema_node(variant)
+                if variant_node.get("type") == "object" and schema_properties(variant_node):
+                    current = variant_node
                     break
     return current or None
+
+
+def _schema_any_of_variants(schema: object) -> list[JSONDocument]:
+    any_of = schema_node(schema).get("anyOf")
+    return [variant for variant in any_of if isinstance(variant, dict)] if isinstance(any_of, list) else []
 
 
 class TestSchemaAnnotations:
@@ -694,10 +702,8 @@ class TestSchemaAnnotations:
         if schema is None:
             pytest.skip("ChatGPT schema not available")
 
-        properties = schema.get("properties")
-        assert isinstance(properties, dict)
-        current_node = properties.get("current_node")
-        assert isinstance(current_node, dict)
+        current_node = schema_property(schema, "current_node")
+        assert current_node
         assert current_node.get("x-polylogue-format") == "uuid4"
         node_id = _get_nested(schema, "mapping.additionalProperties.id")
         assert node_id is not None
@@ -708,10 +714,8 @@ class TestSchemaAnnotations:
         if schema is None:
             pytest.skip("ChatGPT schema not available")
 
-        properties = schema.get("properties")
-        assert isinstance(properties, dict)
-        create_time = properties.get("create_time", {})
-        assert isinstance(create_time, dict)
+        create_time = schema_property(schema, "create_time")
+        assert create_time
         fmt = create_time.get("x-polylogue-format")
         rng = create_time.get("x-polylogue-range")
         assert fmt == "unix-epoch" or rng is not None
@@ -721,10 +725,8 @@ class TestSchemaAnnotations:
         if schema is None:
             pytest.skip("ChatGPT schema not available")
 
-        properties = schema.get("properties")
-        assert isinstance(properties, dict)
-        current_node = properties.get("current_node")
-        assert isinstance(current_node, dict)
+        current_node = schema_property(schema, "current_node")
+        assert current_node
         assert current_node.get("x-polylogue-ref") == "$.mapping"
 
     def test_claude_code_has_annotations(self) -> None:
@@ -744,12 +746,9 @@ class TestSchemaAnnotations:
         if schema is None:
             pytest.skip("Claude Code schema not available")
 
-        properties = schema.get("properties")
-        assert isinstance(properties, dict)
-        type_schema = properties.get("type")
-        assert isinstance(type_schema, dict)
-        type_values = type_schema.get("x-polylogue-values", [])
-        assert isinstance(type_values, list)
+        type_schema = schema_property(schema, "type")
+        assert type_schema
+        type_values = schema_values(type_schema)
         assert any(value in type_values for value in ("user", "assistant", "human"))
 
     def test_claude_ai_sender_semantic(self) -> None:
@@ -757,24 +756,19 @@ class TestSchemaAnnotations:
         if schema is None:
             pytest.skip("Claude AI schema not available")
 
-        properties = schema.get("properties")
-        assert isinstance(properties, dict)
-        messages = properties.get("chat_messages", {})
-        assert isinstance(messages, dict)
-        item = messages.get("items", {})
-        assert isinstance(item, dict)
+        messages = schema_property(schema, "chat_messages")
+        assert messages
+        item = schema_items(messages)
+        assert item
         # Navigate anyOf if present
-        if "anyOf" in item:
-            any_of = item["anyOf"]
-            assert isinstance(any_of, list)
-            for variant in any_of:
-                assert isinstance(variant, dict)
-                sender = variant.get("properties", {}).get("sender", {})
-                assert isinstance(sender, dict)
+        variants = _schema_any_of_variants(item)
+        if variants:
+            for variant in variants:
+                sender = schema_property(variant, "sender")
                 if "x-polylogue-semantic-role" in sender:
                     assert sender["x-polylogue-semantic-role"] == "message_role"
                     return
-        sender = item.get("properties", {}).get("sender", {})
+        sender = schema_property(item, "sender")
         assert sender.get("x-polylogue-semantic-role") == "message_role"
 
     @pytest.mark.parametrize("provider", ["chatgpt", "claude-code", "claude-ai", "codex"])

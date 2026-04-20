@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, TypeAlias
 
-from polylogue.schemas.json_types import JSONDocument, JSONValue, json_document, json_document_list
+from polylogue.schemas.json_types import json_document, json_document_list
 from polylogue.schemas.observation import schema_cluster_id
 from polylogue.schemas.packages import SchemaPackageCatalog, SchemaVersionPackage
 from polylogue.schemas.runtime_registry import (
