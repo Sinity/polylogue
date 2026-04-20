@@ -141,7 +141,7 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
     CommandSpec(
         "pipeline-probe",
         "verification",
-        "Run synthetic pipeline probes against generated archives.",
+        "Run typed pipeline probes against synthetic, staged, or archive-subset inputs.",
         "devtools.pipeline_probe",
     ),
     CommandSpec(
