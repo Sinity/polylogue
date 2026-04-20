@@ -7,8 +7,8 @@ from collections.abc import AsyncIterator, Iterable, Iterator, Sequence
 
 import aiosqlite
 
-from polylogue.archive_product_models import WorkThreadPayload
-from polylogue.lib.threads import WorkThread, build_session_threads
+from polylogue.archive_product_models import WorkThreadPayload as ArchivedWorkThreadPayload
+from polylogue.lib.threads import WorkThread, WorkThreadPayload, build_session_threads
 from polylogue.storage.backends.queries.mappers import _row_to_session_profile_record
 from polylogue.storage.session_product_profiles import hydrate_session_profile, now_iso
 from polylogue.storage.store import (
@@ -109,6 +109,7 @@ def build_work_thread_record(
     materialized_at: str | None = None,
 ) -> WorkThreadRecord:
     built_at = materialized_at or now_iso()
+    payload = _thread_payload(thread)
     return WorkThreadRecord(
         thread_id=thread.thread_id,
         root_id=ConversationId(thread.root_id),
@@ -125,13 +126,36 @@ def build_work_thread_record(
         total_cost_usd=thread.total_cost_usd,
         wall_duration_ms=thread.wall_duration_ms,
         work_event_breakdown=thread.work_event_breakdown,
-        payload=WorkThreadPayload.model_validate(thread.to_dict()),
+        payload=ArchivedWorkThreadPayload.model_validate(payload),
         search_text=thread_search_text(thread),
     )
 
 
 def hydrate_work_thread(record: WorkThreadRecord) -> WorkThread:
-    return WorkThread.from_dict(record.payload.model_dump(mode="json"))
+    return WorkThread.from_dict(_thread_payload_document(record))
+
+
+def _thread_payload(thread: WorkThread) -> WorkThreadPayload:
+    return thread.to_dict()
+
+
+def _thread_payload_document(record: WorkThreadRecord) -> dict[str, object]:
+    payload = record.payload
+    return {
+        "thread_id": record.thread_id,
+        "root_id": str(record.root_id),
+        "session_ids": list(payload.session_ids),
+        "session_count": payload.session_count,
+        "depth": payload.depth,
+        "branch_count": payload.branch_count,
+        "start_time": payload.start_time,
+        "end_time": payload.end_time,
+        "wall_duration_ms": payload.wall_duration_ms,
+        "total_messages": payload.total_messages,
+        "total_cost_usd": payload.total_cost_usd,
+        "dominant_repo": payload.dominant_repo,
+        "work_event_breakdown": dict(payload.work_event_breakdown),
+    }
 
 
 # ---------------------------------------------------------------------------

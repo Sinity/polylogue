@@ -10,9 +10,22 @@ from polylogue.archive_product_models import (
     SessionEvidencePayload,
     SessionInferencePayload,
 )
+from polylogue.lib.payload_coercion import (
+    coerce_float,
+    coerce_int,
+    int_pair,
+    optional_date,
+    optional_datetime,
+    string_int_mapping,
+    string_sequence,
+)
 from polylogue.lib.phase_extraction import SessionPhase
 from polylogue.lib.session_profile import SessionAnalysis, SessionProfile
-from polylogue.lib.work_event_extraction import WorkEvent
+from polylogue.lib.session_profile_models import (
+    SessionPhasePayload,
+    SessionProfilePayload,
+)
+from polylogue.lib.work_event_extraction import WorkEvent, WorkEventPayload
 from polylogue.storage.store import (
     SESSION_ENRICHMENT_FAMILY,
     SESSION_ENRICHMENT_VERSION,
@@ -178,23 +191,8 @@ def profile_inference_payload(profile: SessionProfile) -> SessionInferencePayloa
         engaged_duration_source=engaged_duration_source(profile),
         repo_inference_strength=repo_inference_strength(profile),
         auto_tags=profile.auto_tags,
-        work_events=tuple(event.to_dict() for event in profile.work_events),
-        phases=tuple(
-            {
-                "start_time": phase.start_time.isoformat() if phase.start_time else None,
-                "end_time": phase.end_time.isoformat() if phase.end_time else None,
-                "canonical_session_date": (
-                    phase.canonical_session_date.isoformat() if phase.canonical_session_date else None
-                ),
-                "message_range": list(phase.message_range),
-                "duration_ms": phase.duration_ms,
-                "tool_counts": dict(phase.tool_counts),
-                "word_count": phase.word_count,
-                "confidence": phase.confidence,
-                "evidence": list(phase.evidence),
-            }
-            for phase in profile.phases
-        ),
+        work_events=tuple(_work_event_document(event.to_dict()) for event in profile.work_events),
+        phases=tuple(_phase_document(_phase_payload_from_phase(phase)) for phase in profile.phases),
     )
 
 
@@ -259,12 +257,17 @@ def build_session_profile_record(
 
 
 def hydrate_session_profile(record: SessionProfileRecord) -> SessionProfile:
-    merged_payload = {
-        **record.evidence_payload.model_dump(mode="json"),
-        **record.inference_payload.model_dump(mode="json"),
+    merged_payload: SessionProfilePayload = {
         "conversation_id": str(record.conversation_id),
         "provider": record.provider_name,
         "title": record.title,
+        "created_at": record.evidence_payload.created_at,
+        "updated_at": record.evidence_payload.updated_at,
+        "tool_categories": dict(record.evidence_payload.tool_categories),
+        "cwd_paths": list(record.evidence_payload.cwd_paths),
+        "branch_names": list(record.evidence_payload.branch_names),
+        "file_paths_touched": list(record.evidence_payload.file_paths_touched),
+        "languages_detected": list(record.evidence_payload.languages_detected),
         "first_message_at": record.first_message_at,
         "last_message_at": record.last_message_at,
         "canonical_session_date": record.canonical_session_date,
@@ -275,18 +278,92 @@ def hydrate_session_profile(record: SessionProfileRecord) -> SessionProfile:
         "message_count": record.message_count,
         "substantive_count": record.substantive_count,
         "attachment_count": record.attachment_count,
-        "work_event_count": record.work_event_count,
-        "phase_count": record.phase_count,
         "word_count": record.word_count,
         "tool_use_count": record.tool_use_count,
         "thinking_count": record.thinking_count,
         "total_cost_usd": record.total_cost_usd,
         "total_duration_ms": record.total_duration_ms,
         "engaged_duration_ms": record.engaged_duration_ms,
+        "engaged_minutes": record.inference_payload.engaged_minutes,
         "wall_duration_ms": record.wall_duration_ms,
         "cost_is_estimated": record.cost_is_estimated,
+        "compaction_count": record.evidence_payload.compaction_count,
+        "work_events": [_work_event_payload(event) for event in record.inference_payload.work_events],
+        "phases": [_phase_payload(phase) for phase in record.inference_payload.phases],
+        "thread_id": None,
+        "continuation_depth": 0,
+        "is_continuation": record.evidence_payload.is_continuation,
+        "parent_id": record.evidence_payload.parent_id,
     }
     return SessionProfile.from_dict(merged_payload)
+
+
+def _phase_document(payload: SessionPhasePayload) -> dict[str, object]:
+    return {
+        "start_time": payload["start_time"],
+        "end_time": payload["end_time"],
+        "canonical_session_date": payload["canonical_session_date"],
+        "message_range": list(payload["message_range"]),
+        "duration_ms": payload["duration_ms"],
+        "tool_counts": dict(payload["tool_counts"]),
+        "word_count": payload["word_count"],
+        "confidence": payload["confidence"],
+        "evidence": list(payload["evidence"]),
+    }
+
+
+def _phase_payload_from_phase(phase: SessionPhase) -> SessionPhasePayload:
+    return {
+        "start_time": phase.start_time.isoformat() if phase.start_time else None,
+        "end_time": phase.end_time.isoformat() if phase.end_time else None,
+        "canonical_session_date": phase.canonical_session_date.isoformat() if phase.canonical_session_date else None,
+        "message_range": list(phase.message_range),
+        "duration_ms": phase.duration_ms,
+        "tool_counts": dict(phase.tool_counts),
+        "word_count": phase.word_count,
+        "confidence": phase.confidence,
+        "evidence": list(phase.evidence),
+    }
+
+
+def _phase_from_payload_mapping(payload: dict[str, object]) -> SessionPhase:
+    return SessionPhase(
+        start_time=optional_datetime(payload.get("start_time")),
+        end_time=optional_datetime(payload.get("end_time")),
+        canonical_session_date=optional_date(payload.get("canonical_session_date")),
+        message_range=int_pair(payload.get("message_range")),
+        duration_ms=coerce_int(payload.get("duration_ms"), 0),
+        tool_counts=string_int_mapping(payload.get("tool_counts")),
+        word_count=coerce_int(payload.get("word_count"), 0),
+        confidence=coerce_float(payload.get("confidence"), 0.0),
+        evidence=string_sequence(payload.get("evidence")),
+    )
+
+
+def _work_event_document(payload: WorkEventPayload) -> dict[str, object]:
+    return {
+        "kind": payload["kind"],
+        "start_index": payload["start_index"],
+        "end_index": payload["end_index"],
+        "start_time": payload["start_time"],
+        "end_time": payload["end_time"],
+        "canonical_session_date": payload["canonical_session_date"],
+        "duration_ms": payload["duration_ms"],
+        "confidence": payload["confidence"],
+        "evidence": list(payload["evidence"]),
+        "file_paths": list(payload["file_paths"]),
+        "tools_used": list(payload["tools_used"]),
+        "summary": payload["summary"],
+    }
+
+
+def _phase_payload(payload: dict[str, object]) -> SessionPhasePayload:
+    return _phase_payload_from_phase(_phase_from_payload_mapping(payload))
+
+
+def _work_event_payload(payload: dict[str, object]) -> WorkEventPayload:
+    event = WorkEvent.from_dict(payload)
+    return event.to_dict()
 
 
 # ---------------------------------------------------------------------------

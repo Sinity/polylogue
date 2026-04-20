@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Final
 
 from pydantic import BaseModel, field_validator
 
@@ -45,7 +46,42 @@ class _RawStateUnset:
         return "UNSET"
 
 
-UNSET = _RawStateUnset()
+UNSET: Final = _RawStateUnset()
+
+
+def _coerce_update_provider(value: Provider | str | None | _RawStateUnset) -> Provider | None | _RawStateUnset:
+    if value is UNSET:
+        return UNSET
+    if value is None:
+        return None
+    if isinstance(value, Provider):
+        return value
+    assert isinstance(value, str)
+    return Provider.from_string(value)
+
+
+def _coerce_update_status(
+    value: ValidationStatus | str | None | _RawStateUnset,
+) -> ValidationStatus | None | _RawStateUnset:
+    if value is UNSET:
+        return UNSET
+    if value is None:
+        return None
+    if isinstance(value, ValidationStatus):
+        return value
+    assert isinstance(value, str)
+    return ValidationStatus.from_string(value)
+
+
+def _coerce_update_mode(value: ValidationMode | str | None | _RawStateUnset) -> ValidationMode | None | _RawStateUnset:
+    if value is UNSET:
+        return UNSET
+    if value is None:
+        return None
+    if isinstance(value, ValidationMode):
+        return value
+    assert isinstance(value, str)
+    return ValidationMode.from_string(value)
 
 
 @dataclass(frozen=True)
@@ -60,6 +96,15 @@ class RawConversationStateUpdate:
     validation_drift_count: int | None | _RawStateUnset = UNSET
     validation_provider: Provider | str | None | _RawStateUnset = UNSET
     validation_mode: ValidationMode | str | None | _RawStateUnset = UNSET
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "payload_provider", _coerce_update_provider(self.payload_provider))
+        object.__setattr__(self, "validation_status", _coerce_update_status(self.validation_status))
+        object.__setattr__(self, "validation_provider", _coerce_update_provider(self.validation_provider))
+        object.__setattr__(self, "validation_mode", _coerce_update_mode(self.validation_mode))
+        drift_count = self.validation_drift_count
+        if isinstance(drift_count, int):
+            object.__setattr__(self, "validation_drift_count", max(0, drift_count))
 
     @property
     def has_values(self) -> bool:
