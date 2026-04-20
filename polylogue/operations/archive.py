@@ -68,6 +68,7 @@ if TYPE_CHECKING:
     from polylogue.storage.repository import ConversationRepository
 
 _ResultT = TypeVar("_ResultT")
+_QueryT = TypeVar("_QueryT")
 
 
 def _build_search_snippet(text: str, query: str) -> str:
@@ -138,6 +139,30 @@ def _row_int(row: Mapping[str, object], key: str) -> int:
 def _row_str(row: Mapping[str, object], key: str, *, default: str = "") -> str:
     value = row.get(key)
     return str(value) if value is not None else default
+
+
+def _default_query(query: _QueryT | None, model: type[_QueryT]) -> _QueryT:
+    return query if query is not None else model()
+
+
+def _query_wants_search(query: object) -> bool:
+    wants_search = getattr(query, "wants_search", None)
+    if isinstance(wants_search, bool):
+        return wants_search
+    return bool(getattr(query, "query", None))
+
+
+def _slice_products(
+    products: list[_ResultT],
+    *,
+    offset: int,
+    limit: int | None,
+) -> list[_ResultT]:
+    if offset:
+        products = products[offset:]
+    if limit is not None:
+        products = products[:limit]
+    return products
 
 
 def provider_analytics_product(row: Mapping[str, object]) -> ProviderAnalyticsProduct:
@@ -366,10 +391,10 @@ class ArchiveProductSessionMixin:
         self,
         query: SessionProfileProductQuery | None = None,
     ) -> list[SessionProfileProduct]:
-        request = query or SessionProfileProductQuery()
+        request = _default_query(query, SessionProfileProductQuery)
         status = await self._session_product_status()
         _require_ready_flag(status, "profile_rows_ready", "Session-profile rows are incomplete.")
-        if request.query:
+        if _query_wants_search(request):
             _require_ready_flag(
                 status,
                 _PROFILE_FTS_STATUS_BY_TIER.get(request.tier, "profile_merged_fts_ready"),
@@ -403,10 +428,10 @@ class ArchiveProductSessionMixin:
         self,
         query: SessionEnrichmentProductQuery | None = None,
     ) -> list[SessionEnrichmentProduct]:
-        request = query or SessionEnrichmentProductQuery()
+        request = _default_query(query, SessionEnrichmentProductQuery)
         status = await self._session_product_status()
         _require_ready_flag(status, "profile_rows_ready", "Session-profile rows are incomplete.")
-        if request.query:
+        if _query_wants_search(request):
             _require_ready_flag(
                 status,
                 "profile_enrichment_fts_ready",
@@ -439,10 +464,10 @@ class ArchiveProductSessionMixin:
         self,
         query: SessionWorkEventProductQuery | None = None,
     ) -> list[SessionWorkEventProduct]:
-        request = query or SessionWorkEventProductQuery()
+        request = _default_query(query, SessionWorkEventProductQuery)
         status = await self._session_product_status()
         _require_ready_flag(status, "work_event_inference_rows_ready", "Session work-event rows are incomplete.")
-        if request.query:
+        if _query_wants_search(request):
             _require_ready_flag(
                 status,
                 "work_event_inference_fts_ready",
@@ -473,7 +498,7 @@ class ArchiveProductSessionMixin:
         self,
         query: SessionPhaseProductQuery | None = None,
     ) -> list[SessionPhaseProduct]:
-        request = query or SessionPhaseProductQuery()
+        request = _default_query(query, SessionPhaseProductQuery)
         status = await self._session_product_status()
         _require_ready_flag(status, "phase_inference_rows_ready", "Session phase rows are incomplete.")
         records = await self.repository.list_session_phase_records(
@@ -497,10 +522,10 @@ class ArchiveProductSessionMixin:
         self,
         query: WorkThreadProductQuery | None = None,
     ) -> list[WorkThreadProduct]:
-        request = query or WorkThreadProductQuery()
+        request = _default_query(query, WorkThreadProductQuery)
         status = await self._session_product_status()
         _require_ready_flag(status, "threads_ready", "Work-thread rows are incomplete.")
-        if request.query:
+        if _query_wants_search(request):
             _require_ready_flag(status, "threads_fts_ready", "Work-thread search index is incomplete.")
         records = await self.repository.list_work_thread_records(
             since=request.since,
@@ -525,7 +550,7 @@ class ArchiveProductAggregateMixin:
         self,
         query: SessionTagRollupQuery | None = None,
     ) -> list[SessionTagRollupProduct]:
-        request = query or SessionTagRollupQuery()
+        request = _default_query(query, SessionTagRollupQuery)
         status = await _read_session_product_status(self.backend)
         _require_ready_flag(status, "tag_rollups_ready", "Session tag rollups are incomplete.")
         rows = await self.repository.list_session_tag_rollup_records(
@@ -535,17 +560,13 @@ class ArchiveProductAggregateMixin:
             query=request.query,
         )
         products = aggregate_session_tag_rollup_products(rows)
-        if request.offset:
-            products = products[request.offset :]
-        if request.limit is not None:
-            products = products[: request.limit]
-        return products
+        return _slice_products(products, offset=request.offset, limit=request.limit)
 
     async def list_day_session_summary_products(
         self,
         query: DaySessionSummaryProductQuery | None = None,
     ) -> list[DaySessionSummaryProduct]:
-        request = query or DaySessionSummaryProductQuery()
+        request = _default_query(query, DaySessionSummaryProductQuery)
         status = await _read_session_product_status(self.backend)
         _require_ready_flag(status, "day_summaries_ready", "Day session summaries are incomplete.")
         rows = await self.repository.list_day_session_summary_records(
@@ -554,17 +575,13 @@ class ArchiveProductAggregateMixin:
             until=request.until,
         )
         products = aggregate_day_session_summary_products(rows)
-        if request.offset:
-            products = products[request.offset :]
-        if request.limit is not None:
-            products = products[: request.limit]
-        return products
+        return _slice_products(products, offset=request.offset, limit=request.limit)
 
     async def list_week_session_summary_products(
         self,
         query: WeekSessionSummaryProductQuery | None = None,
     ) -> list[WeekSessionSummaryProduct]:
-        request = query or WeekSessionSummaryProductQuery()
+        request = _default_query(query, WeekSessionSummaryProductQuery)
         status = await _read_session_product_status(self.backend)
         _require_ready_flag(status, "week_summaries_ready", "Week session summaries are incomplete.")
         rows = await self.repository.list_day_session_summary_records(
@@ -573,11 +590,7 @@ class ArchiveProductAggregateMixin:
             until=request.until,
         )
         products = aggregate_week_session_summary_products(rows)
-        if request.offset:
-            products = products[request.offset :]
-        if request.limit is not None:
-            products = products[: request.limit]
-        return products
+        return _slice_products(products, offset=request.offset, limit=request.limit)
 
     async def list_provider_analytics_products(
         self,
@@ -585,14 +598,10 @@ class ArchiveProductAggregateMixin:
     ) -> list[ProviderAnalyticsProduct]:
         rows = await self.backend.get_provider_metrics_rows()
         products = [provider_analytics_product(row) for row in rows]
-        request = query or ProviderAnalyticsProductQuery()
+        request = _default_query(query, ProviderAnalyticsProductQuery)
         if request.provider:
             products = [product for product in products if product.provider_name == request.provider]
-        if request.offset:
-            products = products[request.offset :]
-        if request.limit is not None:
-            products = products[: request.limit]
-        return products
+        return _slice_products(products, offset=request.offset, limit=request.limit)
 
 
 class ArchiveProductDebtMixin:
@@ -605,7 +614,7 @@ class ArchiveProductDebtMixin:
         self,
         query: ArchiveDebtProductQuery | None = None,
     ) -> list[ArchiveDebtProduct]:
-        request = query or ArchiveDebtProductQuery()
+        request = _default_query(query, ArchiveDebtProductQuery)
         with connection_context(self.config.db_path) as conn:
             statuses = collect_archive_debt_statuses_sync(conn)
         products = [ArchiveDebtProduct.from_status(status) for status in statuses.values()]
@@ -614,11 +623,7 @@ class ArchiveProductDebtMixin:
             products = [product for product in products if product.category == request.category]
         if request.only_actionable:
             products = [product for product in products if not product.healthy]
-        if request.offset:
-            products = products[request.offset :]
-        if request.limit is not None:
-            products = products[: request.limit]
-        return products
+        return _slice_products(products, offset=request.offset, limit=request.limit)
 
 
 class ArchiveProductMixin(

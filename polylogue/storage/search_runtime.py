@@ -53,7 +53,7 @@ def search_messages_impl(
     if query_spec is None:
         return SearchResult(hits=[])
 
-    sql, params = query_spec
+    sql, params = query_spec.sql, query_spec.params
     with open_read_connection(db_path) as conn:
         readiness = message_fts_readiness_sync(conn)
         if not bool(readiness["exists"]):

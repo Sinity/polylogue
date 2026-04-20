@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 from collections.abc import ItemsView, KeysView, Mapping, ValuesView
-from typing import cast
+from typing import ClassVar, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from typing_extensions import TypedDict
 
-from polylogue.storage.cursor_state import CursorStatePayload
+from polylogue.storage.cursor_state import CursorFailurePayload, CursorStatePayload
 from polylogue.types import PlanStage
+
+_PayloadModelT = TypeVar("_PayloadModelT", bound=BaseModel)
 
 
 class PlanCountsPayload(TypedDict, total=False):
@@ -74,11 +76,100 @@ class RenderFailurePayload(TypedDict):
     error: str
 
 
-class _SparseIntMap(BaseModel):
+def _coerce_model(value: object, model_type: type[_PayloadModelT]) -> _PayloadModelT:
+    if isinstance(value, model_type):
+        return value
+    return model_type.model_validate(value or {})
+
+
+def _coerce_stage_sequence_payload(value: object) -> list[PlanStage]:
+    if value is None:
+        return []
+    values = value if isinstance(value, list) else list(value) if isinstance(value, tuple) else [value]
+    return [PlanStage.from_string(str(item)) for item in values]
+
+
+def _coerce_cursor_state_payload(value: object) -> dict[str, CursorStatePayload]:
+    if not isinstance(value, Mapping):
+        return {}
+
+    payload: dict[str, CursorStatePayload] = {}
+    for name, cursor in value.items():
+        if not isinstance(name, str) or not isinstance(cursor, Mapping):
+            continue
+        cursor_payload: CursorStatePayload = {}
+        int_fields = ("file_count", "error_count", "failed_count")
+        float_fields = ("latest_mtime",)
+        str_fields = (
+            "latest_file_name",
+            "latest_path",
+            "latest_file_id",
+            "latest_error",
+            "latest_error_file",
+        )
+        for field_name in int_fields:
+            field_value = cursor.get(field_name)
+            if isinstance(field_value, int) and not isinstance(field_value, bool):
+                if field_name == "file_count":
+                    cursor_payload["file_count"] = field_value
+                elif field_name == "error_count":
+                    cursor_payload["error_count"] = field_value
+                elif field_name == "failed_count":
+                    cursor_payload["failed_count"] = field_value
+        for field_name in float_fields:
+            field_value = cursor.get(field_name)
+            if (
+                field_name == "latest_mtime"
+                and isinstance(field_value, (int, float))
+                and not isinstance(field_value, bool)
+            ):
+                cursor_payload["latest_mtime"] = float(field_value)
+        for field_name in str_fields:
+            field_value = cursor.get(field_name)
+            if isinstance(field_value, str):
+                if field_name == "latest_file_name":
+                    cursor_payload["latest_file_name"] = field_value
+                elif field_name == "latest_path":
+                    cursor_payload["latest_path"] = field_value
+                elif field_name == "latest_file_id":
+                    cursor_payload["latest_file_id"] = field_value
+                elif field_name == "latest_error":
+                    cursor_payload["latest_error"] = field_value
+                elif field_name == "latest_error_file":
+                    cursor_payload["latest_error_file"] = field_value
+        failures = cursor.get("failed_files")
+        if isinstance(failures, list):
+            typed_failures: list[CursorFailurePayload] = []
+            for item in failures:
+                if not isinstance(item, Mapping):
+                    continue
+                path = item.get("path")
+                error = item.get("error")
+                if isinstance(path, str) and isinstance(error, str):
+                    typed_failures.append({"path": path, "error": error})
+            if typed_failures:
+                cursor_payload["failed_files"] = typed_failures
+        payload[name] = cursor_payload
+    return payload
+
+
+class _IntPayloadModel(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
+    _exclude_none_payload: ClassVar[bool] = True
+
+    def _payload_dict(self) -> dict[str, int]:
+        payload: dict[str, int] = {}
+        for field_name, field_info in self.__class__.model_fields.items():
+            key = field_info.alias or field_name
+            value = getattr(self, field_name)
+            if value is None and self._exclude_none_payload:
+                continue
+            if isinstance(value, int) and not isinstance(value, bool):
+                payload[key] = value
+        return payload
 
     def to_dict(self) -> dict[str, int]:
-        return cast(dict[str, int], self.model_dump(by_alias=True, exclude_none=True))
+        return self._payload_dict()
 
     def int_value(self, field_name: str) -> int:
         value = getattr(self, field_name)
@@ -111,40 +202,7 @@ class _SparseIntMap(BaseModel):
         return super().__eq__(other)
 
 
-class _DenseIntMap(BaseModel):
-    model_config = ConfigDict(extra="forbid", populate_by_name=True)
-
-    def to_dict(self) -> dict[str, int]:
-        return cast(dict[str, int], self.model_dump(by_alias=True))
-
-    def __getitem__(self, key: str) -> int:
-        payload = self.to_dict()
-        if key not in payload:
-            raise KeyError(key)
-        return payload[key]
-
-    def get(self, key: str, default: int | None = None) -> int | None:
-        return self.to_dict().get(key, default)
-
-    def items(self) -> ItemsView[str, int]:
-        return self.to_dict().items()
-
-    def keys(self) -> KeysView[str]:
-        return self.to_dict().keys()
-
-    def values(self) -> ValuesView[int]:
-        return self.to_dict().values()
-
-    def __contains__(self, key: object) -> bool:
-        return key in self.to_dict()
-
-    def __eq__(self, other: object) -> bool:
-        if isinstance(other, Mapping):
-            return self.to_dict() == dict(other)
-        return super().__eq__(other)
-
-
-class PlanCounts(_SparseIntMap):
+class PlanCounts(_IntPayloadModel):
     scan: int | None = None
     store_raw: int | None = None
     validate_count: int | None = Field(default=None, alias="validate")
@@ -172,7 +230,7 @@ class PlanCounts(_SparseIntMap):
         return payload
 
 
-class PlanDetails(_SparseIntMap):
+class PlanDetails(_IntPayloadModel):
     new_raw: int | None = None
     existing_raw: int | None = None
     duplicate_raw: int | None = None
@@ -200,7 +258,7 @@ class PlanDetails(_SparseIntMap):
         return payload
 
 
-class RunCounts(_SparseIntMap):
+class RunCounts(_IntPayloadModel):
     conversations: int | None = None
     messages: int | None = None
     attachments: int | None = None
@@ -226,37 +284,55 @@ class RunCounts(_SparseIntMap):
 
     def to_payload(self) -> RunCountsPayload:
         payload: RunCountsPayload = {}
-        for field_name in (
-            "conversations",
-            "messages",
-            "attachments",
-            "skipped_conversations",
-            "skipped_messages",
-            "skipped_attachments",
-            "acquired",
-            "skipped",
-            "acquire_errors",
-            "validated",
-            "validation_invalid",
-            "validation_drift",
-            "validation_skipped_no_schema",
-            "validation_errors",
-            "materialized",
-            "rendered",
-            "render_failures",
-            "parse_failures",
-            "schemas_generated",
-            "schemas_failed",
-            "new_conversations",
-            "changed_conversations",
-        ):
-            value = getattr(self, field_name)
-            if value is not None:
-                payload[field_name] = value
+        if self.conversations is not None:
+            payload["conversations"] = self.conversations
+        if self.messages is not None:
+            payload["messages"] = self.messages
+        if self.attachments is not None:
+            payload["attachments"] = self.attachments
+        if self.skipped_conversations is not None:
+            payload["skipped_conversations"] = self.skipped_conversations
+        if self.skipped_messages is not None:
+            payload["skipped_messages"] = self.skipped_messages
+        if self.skipped_attachments is not None:
+            payload["skipped_attachments"] = self.skipped_attachments
+        if self.acquired is not None:
+            payload["acquired"] = self.acquired
+        if self.skipped is not None:
+            payload["skipped"] = self.skipped
+        if self.acquire_errors is not None:
+            payload["acquire_errors"] = self.acquire_errors
+        if self.validated is not None:
+            payload["validated"] = self.validated
+        if self.validation_invalid is not None:
+            payload["validation_invalid"] = self.validation_invalid
+        if self.validation_drift is not None:
+            payload["validation_drift"] = self.validation_drift
+        if self.validation_skipped_no_schema is not None:
+            payload["validation_skipped_no_schema"] = self.validation_skipped_no_schema
+        if self.validation_errors is not None:
+            payload["validation_errors"] = self.validation_errors
+        if self.materialized is not None:
+            payload["materialized"] = self.materialized
+        if self.rendered is not None:
+            payload["rendered"] = self.rendered
+        if self.render_failures is not None:
+            payload["render_failures"] = self.render_failures
+        if self.parse_failures is not None:
+            payload["parse_failures"] = self.parse_failures
+        if self.schemas_generated is not None:
+            payload["schemas_generated"] = self.schemas_generated
+        if self.schemas_failed is not None:
+            payload["schemas_failed"] = self.schemas_failed
+        if self.new_conversations is not None:
+            payload["new_conversations"] = self.new_conversations
+        if self.changed_conversations is not None:
+            payload["changed_conversations"] = self.changed_conversations
         return payload
 
 
-class DriftBucket(_DenseIntMap):
+class DriftBucket(_IntPayloadModel):
+    _exclude_none_payload: ClassVar[bool] = False
     conversations: int = 0
     messages: int = 0
     attachments: int = 0
@@ -287,31 +363,33 @@ class RunDrift(BaseModel):
         }
 
     def __getitem__(self, key: str) -> DriftBucket:
-        if key not in {"new", "removed", "changed"}:
+        payload = self._bucket_mapping()
+        if key not in payload:
             raise KeyError(key)
-        return cast(DriftBucket, getattr(self, key))
+        return payload[key]
 
     def get(self, key: str, default: DriftBucket | None = None) -> DriftBucket | None:
-        if key in {"new", "removed", "changed"}:
-            return cast(DriftBucket, getattr(self, key))
-        return default
+        return self._bucket_mapping().get(key, default)
 
     def items(self) -> ItemsView[str, DriftBucket]:
-        return {"new": self.new, "removed": self.removed, "changed": self.changed}.items()
+        return self._bucket_mapping().items()
 
     def keys(self) -> KeysView[str]:
-        return {"new": self.new, "removed": self.removed, "changed": self.changed}.keys()
+        return self._bucket_mapping().keys()
 
     def values(self) -> ValuesView[DriftBucket]:
-        return {"new": self.new, "removed": self.removed, "changed": self.changed}.values()
+        return self._bucket_mapping().values()
 
     def __contains__(self, key: object) -> bool:
-        return key in {"new", "removed", "changed"}
+        return key in self._bucket_mapping()
 
     def __eq__(self, other: object) -> bool:
         if isinstance(other, Mapping):
             return self.to_dict() == dict(other)
         return super().__eq__(other)
+
+    def _bucket_mapping(self) -> dict[str, DriftBucket]:
+        return {"new": self.new, "removed": self.removed, "changed": self.changed}
 
 
 class PlanResult(BaseModel):
@@ -331,35 +409,22 @@ class PlanResult(BaseModel):
     @field_validator("stage_sequence", mode="before")
     @classmethod
     def coerce_stage_sequence(cls, v: object) -> list[PlanStage]:
-        if v is None:
-            return []
-        values = v if isinstance(v, list) else list(v) if isinstance(v, tuple) else [v]
-        return [PlanStage.from_string(str(item)) for item in values]
+        return _coerce_stage_sequence_payload(v)
 
     @field_validator("counts", mode="before")
     @classmethod
     def coerce_plan_counts(cls, v: object) -> PlanCounts:
-        if isinstance(v, PlanCounts):
-            return v
-        return PlanCounts.model_validate(v or {})
+        return _coerce_model(v, PlanCounts)
 
     @field_validator("details", mode="before")
     @classmethod
     def coerce_plan_details(cls, v: object) -> PlanDetails:
-        if isinstance(v, PlanDetails):
-            return v
-        return PlanDetails.model_validate(v or {})
+        return _coerce_model(v, PlanDetails)
 
     @field_validator("cursors", mode="before")
     @classmethod
     def coerce_cursors(cls, v: object) -> dict[str, CursorStatePayload]:
-        if not isinstance(v, dict):
-            return {}
-        payload: dict[str, CursorStatePayload] = {}
-        for name, cursor in v.items():
-            if isinstance(name, str) and isinstance(cursor, dict):
-                payload[name] = cast(CursorStatePayload, cursor)
-        return payload
+        return _coerce_cursor_state_payload(v)
 
 
 class RunResult(BaseModel):
@@ -375,16 +440,12 @@ class RunResult(BaseModel):
     @field_validator("counts", mode="before")
     @classmethod
     def coerce_run_counts(cls, v: object) -> RunCounts:
-        if isinstance(v, RunCounts):
-            return v
-        return RunCounts.model_validate(v or {})
+        return _coerce_model(v, RunCounts)
 
     @field_validator("drift", mode="before")
     @classmethod
     def coerce_run_drift(cls, v: object) -> RunDrift:
-        if isinstance(v, RunDrift):
-            return v
-        return RunDrift.model_validate(v or {})
+        return _coerce_model(v, RunDrift)
 
     @field_validator("render_failures", mode="before")
     @classmethod

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 from pydantic import BaseModel, Field, field_validator
 
 from polylogue.types import ArtifactSupportStatus, Provider
@@ -39,7 +41,18 @@ class ArtifactCohortSummary(BaseModel):
     @field_validator("support_status", mode="before")
     @classmethod
     def coerce_cohort_support_status(cls, v: object) -> ArtifactSupportStatus:
+        if isinstance(v, ArtifactSupportStatus):
+            return v
         return ArtifactSupportStatus.from_string(str(v))
+
+    @field_validator("sample_source_paths", mode="before")
+    @classmethod
+    def coerce_sample_source_paths(cls, v: object) -> list[str]:
+        if v is None:
+            return []
+        if isinstance(v, Sequence) and not isinstance(v, (str, bytes, bytearray)):
+            return [str(item) for item in v if str(item)]
+        return []
 
 
 __all__ = ["ArtifactCohortSummary"]
