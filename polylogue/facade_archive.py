@@ -11,6 +11,7 @@ from polylogue.archive_products import (
     SessionProfileProduct,
     SessionProfileProductQuery,
 )
+from polylogue.storage.session_product_runtime import SessionProductStatusSnapshot
 
 if TYPE_CHECKING:
     from polylogue.config import Config
@@ -41,7 +42,7 @@ if TYPE_CHECKING:
             since: str | None = None,
         ) -> SearchResult: ...
 
-        async def get_session_product_status(self) -> dict[str, int | bool]: ...
+        async def get_session_product_status(self) -> SessionProductStatusSnapshot: ...
 
         async def get_session_profile_product(
             self,
@@ -111,7 +112,7 @@ class PolylogueArchiveMixin:
             since=since,
         )
 
-    async def get_session_product_status(self) -> dict[str, int | bool]:
+    async def get_session_product_status(self) -> SessionProductStatusSnapshot:
         return await self.operations.get_session_product_status()
 
     async def get_session_profile_product(

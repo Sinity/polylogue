@@ -22,6 +22,7 @@ from polylogue.storage.backends.query_store_product_profiles import (
 from polylogue.storage.backends.query_store_product_timelines import (
     SQLiteQueryStoreProductTimelinesMixin,
 )
+from polylogue.storage.session_product_runtime import SessionProductStatusSnapshot
 from polylogue.storage.store import (
     ActionEventRecord,
     DaySessionSummaryRecord,
@@ -53,7 +54,7 @@ class SQLiteQueryStore(
         async with self._connection_factory() as conn:
             return await action_event_read_model_status_async(conn)
 
-    async def get_session_product_status(self) -> dict[str, int | bool]:
+    async def get_session_product_status(self) -> SessionProductStatusSnapshot:
         from polylogue.storage.session_product_status import session_product_status_async
 
         async with self._connection_factory() as conn:

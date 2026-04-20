@@ -43,12 +43,16 @@ from polylogue.services import RuntimeServices, build_runtime_services
 from polylogue.storage.backends.connection import connection_context
 from polylogue.storage.repair import collect_archive_debt_statuses_sync
 from polylogue.storage.search import SearchHit, SearchResult
+from polylogue.storage.session_product_runtime import (
+    SessionProductReadyFlag,
+    SessionProductStatusSnapshot,
+)
 from polylogue.types import Provider
 
 logger = structlog.get_logger(__name__)
 _MAINTENANCE_TARGET_CATALOG = build_maintenance_target_catalog()
 _SESSION_PRODUCT_REPAIR_HINT = _MAINTENANCE_TARGET_CATALOG.repair_hint(("session_products",), include_run_all=True)
-_PROFILE_FTS_STATUS_BY_TIER = {
+_PROFILE_FTS_STATUS_BY_TIER: dict[str, SessionProductReadyFlag] = {
     "merged": "profile_merged_fts_ready",
     "evidence": "profile_evidence_fts_ready",
     "inference": "profile_inference_fts_ready",
@@ -167,16 +171,16 @@ def provider_analytics_product(row: Mapping[str, object]) -> ProviderAnalyticsPr
 
 
 def _require_ready_flag(
-    status: dict[str, int | bool],
-    flag: str,
+    status: SessionProductStatusSnapshot,
+    flag: SessionProductReadyFlag,
     detail: str,
 ) -> None:
-    if bool(status.get(flag, False)):
+    if status.ready_flag(flag):
         return
     raise ArchiveProductUnavailableError(f"{detail} {_SESSION_PRODUCT_REPAIR_HINT}")
 
 
-async def _read_session_product_status(backend: SQLiteBackend) -> dict[str, int | bool]:
+async def _read_session_product_status(backend: SQLiteBackend) -> SessionProductStatusSnapshot:
     return await backend.get_session_product_status()
 
 
@@ -313,7 +317,7 @@ class ArchiveStatsMixin:
             for row in rows
         ]
 
-    async def get_session_product_status(self) -> dict[str, int | bool]:
+    async def get_session_product_status(self) -> SessionProductStatusSnapshot:
         return await self.backend.get_session_product_status()
 
 
@@ -326,7 +330,7 @@ class ArchiveProductSessionMixin:
         @property
         def backend(self) -> SQLiteBackend: ...
 
-    async def _session_product_status(self) -> dict[str, int | bool]:
+    async def _session_product_status(self) -> SessionProductStatusSnapshot:
         return await _read_session_product_status(self.backend)
 
     async def get_session_profile_product(

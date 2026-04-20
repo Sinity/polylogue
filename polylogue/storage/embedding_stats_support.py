@@ -8,6 +8,8 @@ from typing import cast
 
 import aiosqlite
 
+from polylogue.storage.session_product_runtime import SessionProductStatusSnapshot
+
 StatsRow = sqlite3.Row | tuple[object, ...]
 
 
@@ -40,7 +42,7 @@ def build_retrieval_bands_from_status(
     stale_messages: int,
     missing_provenance: int,
     action_status: Mapping[str, object],
-    session_status: Mapping[str, object],
+    session_status: SessionProductStatusSnapshot,
 ) -> dict[str, dict[str, object]]:
     transcript_ready = total_conversations == 0 or (
         embedded_conversations == total_conversations
@@ -50,30 +52,30 @@ def build_retrieval_bands_from_status(
     )
     transcript_status = "empty" if total_conversations == 0 else ("ready" if transcript_ready else "pending")
 
-    evidence_source_rows = _coerce_int(action_status["count"]) + _coerce_int(session_status["profile_row_count"])
-    evidence_materialized_rows = _coerce_int(action_status["action_fts_count"]) + _coerce_int(
-        session_status["profile_evidence_fts_count"]
+    evidence_source_rows = _coerce_int(action_status["count"]) + session_status.profile_row_count
+    evidence_materialized_rows = (
+        _coerce_int(action_status["action_fts_count"]) + session_status.profile_evidence_fts_count
     )
-    evidence_ready = bool(action_status["action_fts_ready"]) and bool(session_status["profile_evidence_fts_ready"])
+    evidence_ready = bool(action_status["action_fts_ready"]) and session_status.profile_evidence_fts_ready
 
     inference_source_rows = (
-        _coerce_int(session_status["profile_row_count"])
-        + _coerce_int(session_status["work_event_inference_count"])
-        + _coerce_int(session_status["phase_inference_count"])
+        session_status.profile_row_count
+        + session_status.work_event_inference_count
+        + session_status.phase_inference_count
     )
     inference_materialized_rows = (
-        _coerce_int(session_status["profile_inference_fts_count"])
-        + _coerce_int(session_status["work_event_inference_fts_count"])
-        + _coerce_int(session_status["phase_inference_count"])
+        session_status.profile_inference_fts_count
+        + session_status.work_event_inference_fts_count
+        + session_status.phase_inference_count
     )
     inference_ready = (
-        bool(session_status["profile_inference_fts_ready"])
-        and bool(session_status["work_event_inference_fts_ready"])
-        and bool(session_status["phase_inference_rows_ready"])
+        session_status.profile_inference_fts_ready
+        and session_status.work_event_inference_fts_ready
+        and session_status.phase_inference_rows_ready
     )
-    enrichment_source_rows = _coerce_int(session_status["profile_row_count"])
-    enrichment_materialized_rows = _coerce_int(session_status["profile_enrichment_fts_count"])
-    enrichment_ready = bool(session_status["profile_enrichment_fts_ready"])
+    enrichment_source_rows = session_status.profile_row_count
+    enrichment_materialized_rows = session_status.profile_enrichment_fts_count
+    enrichment_ready = session_status.profile_enrichment_fts_ready
 
     return {
         "transcript_embeddings": {
@@ -100,7 +102,7 @@ def build_retrieval_bands_from_status(
             "source_rows": evidence_source_rows,
             "materialized_rows": evidence_materialized_rows,
             "pending_rows": max(0, evidence_source_rows - evidence_materialized_rows),
-            "stale_rows": _coerce_int(session_status["profile_evidence_fts_duplicate_count"])
+            "stale_rows": session_status.profile_evidence_fts_duplicate_count
             + _coerce_int(action_status["stale_count"])
             + _coerce_int(action_status.get("action_fts_stale_rows", 0)),
             "detail": (
@@ -108,7 +110,7 @@ def build_retrieval_bands_from_status(
                 if evidence_ready
                 else (
                     f"Evidence retrieval pending ({evidence_materialized_rows:,}/{evidence_source_rows:,} supporting rows; "
-                    f"profile_evidence_fts={_coerce_int(session_status['profile_evidence_fts_count']):,}/{_coerce_int(session_status['profile_row_count']):,}, "
+                    f"profile_evidence_fts={session_status.profile_evidence_fts_count:,}/{session_status.profile_row_count:,}, "
                     f"action_event_fts={_coerce_int(action_status['action_fts_count']):,}/{_coerce_int(action_status['count']):,})"
                 )
             ),
@@ -120,19 +122,19 @@ def build_retrieval_bands_from_status(
             "materialized_rows": inference_materialized_rows,
             "pending_rows": max(0, inference_source_rows - inference_materialized_rows),
             "stale_rows": (
-                _coerce_int(session_status["profile_inference_fts_duplicate_count"])
-                + _coerce_int(session_status["work_event_inference_fts_duplicate_count"])
-                + _coerce_int(session_status["stale_work_event_inference_count"])
-                + _coerce_int(session_status["stale_phase_inference_count"])
+                session_status.profile_inference_fts_duplicate_count
+                + session_status.work_event_inference_fts_duplicate_count
+                + session_status.stale_work_event_inference_count
+                + session_status.stale_phase_inference_count
             ),
             "detail": (
                 f"Inference retrieval ready ({inference_materialized_rows:,}/{inference_source_rows:,} supporting rows)"
                 if inference_ready
                 else (
                     f"Inference retrieval pending ({inference_materialized_rows:,}/{inference_source_rows:,} supporting rows; "
-                    f"profile_inference_fts={_coerce_int(session_status['profile_inference_fts_count']):,}/{_coerce_int(session_status['profile_row_count']):,}, "
-                    f"work_event_inference_fts={_coerce_int(session_status['work_event_inference_fts_count']):,}/{_coerce_int(session_status['work_event_inference_count']):,}, "
-                    f"phase_inference={_coerce_int(session_status['phase_inference_count']):,}/{_coerce_int(session_status['expected_phase_inference_count']):,})"
+                    f"profile_inference_fts={session_status.profile_inference_fts_count:,}/{session_status.profile_row_count:,}, "
+                    f"work_event_inference_fts={session_status.work_event_inference_fts_count:,}/{session_status.work_event_inference_count:,}, "
+                    f"phase_inference={session_status.phase_inference_count:,}/{session_status.expected_phase_inference_count:,})"
                 )
             ),
         },
@@ -142,13 +144,13 @@ def build_retrieval_bands_from_status(
             "source_rows": enrichment_source_rows,
             "materialized_rows": enrichment_materialized_rows,
             "pending_rows": max(0, enrichment_source_rows - enrichment_materialized_rows),
-            "stale_rows": _coerce_int(session_status["profile_enrichment_fts_duplicate_count"]),
+            "stale_rows": session_status.profile_enrichment_fts_duplicate_count,
             "detail": (
                 f"Enrichment retrieval ready ({enrichment_materialized_rows:,}/{enrichment_source_rows:,} supporting rows)"
                 if enrichment_ready
                 else (
                     f"Enrichment retrieval pending ({enrichment_materialized_rows:,}/{enrichment_source_rows:,} supporting rows; "
-                    f"profile_enrichment_fts={_coerce_int(session_status['profile_enrichment_fts_count']):,}/{_coerce_int(session_status['profile_row_count']):,})"
+                    f"profile_enrichment_fts={session_status.profile_enrichment_fts_count:,}/{session_status.profile_row_count:,})"
                 )
             ),
         },

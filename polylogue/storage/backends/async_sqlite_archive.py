@@ -10,6 +10,7 @@ from polylogue.storage.backends.queries import attachments as attachments_q
 from polylogue.storage.backends.queries import conversations as conversations_q
 from polylogue.storage.backends.queries import messages as messages_q
 from polylogue.storage.backends.queries.stats import AggregateMessageStats
+from polylogue.storage.session_product_runtime import SessionProductStatusSnapshot
 from polylogue.storage.store import AttachmentRecord, ContentBlockRecord, ConversationRecord, MessageRecord
 
 if TYPE_CHECKING:
@@ -138,7 +139,7 @@ class SQLiteArchiveMixin:
         async for cid in self.queries.iter_conversation_ids(source_names=source_names, page_size=page_size):
             yield cid
 
-    async def get_session_product_status(self) -> dict[str, int | bool]:
+    async def get_session_product_status(self) -> SessionProductStatusSnapshot:
         """Return materialized session-product coverage counters."""
         return await self.queries.get_session_product_status()
 

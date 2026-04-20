@@ -26,6 +26,7 @@ from polylogue.archive_products import (
     WorkThreadProduct,
     WorkThreadProductQuery,
 )
+from polylogue.storage.session_product_runtime import SessionProductStatusSnapshot
 from polylogue.sync_bridge import run_coroutine_sync
 
 if TYPE_CHECKING:
@@ -37,7 +38,7 @@ class SyncProductQueriesMixin:
 
     _facade: Polylogue
 
-    def get_session_product_status(self) -> dict[str, int | bool]:
+    def get_session_product_status(self) -> SessionProductStatusSnapshot:
         return run_coroutine_sync(self._facade.get_session_product_status())
 
     def get_session_profile_product(
