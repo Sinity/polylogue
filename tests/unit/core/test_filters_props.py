@@ -18,7 +18,8 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from pathlib import Path
+from typing import Literal, NotRequired, TypeAlias, TypedDict
 from unittest.mock import patch
 
 import pytest
@@ -26,6 +27,8 @@ from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
 from polylogue.cli.filter_picker import pick_filter
+from polylogue.lib.conversation_models import Conversation
+from polylogue.lib.filter_types import SortField
 from polylogue.lib.filters import ConversationFilter
 from polylogue.lib.models import ConversationSummary
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
@@ -43,8 +46,35 @@ from tests.infra.strategies.filters import (
 # =============================================================================
 
 
+class MessageSeed(TypedDict):
+    id: str
+    role: NotRequired[str]
+    text: NotRequired[str]
+
+
+class ConversationSeed(TypedDict):
+    id: str
+    provider: str
+    title: NotRequired[str]
+    messages: NotRequired[list[MessageSeed]]
+
+
+class FilterSpec(TypedDict):
+    type: str
+    value: NotRequired[object]
+    field: NotRequired[str]
+    direction: NotRequired[str]
+
+
+FilterRepoFactory: TypeAlias = Callable[[list[ConversationSeed]], ConversationRepository]
+TerminalMethod: TypeAlias = Literal["list", "first", "count", "delete", "pick"]
+TerminalResult: TypeAlias = list[Conversation] | Conversation | None | int
+DateMethodName: TypeAlias = Literal["since", "until"]
+BranchPredicateName: TypeAlias = Literal["is_continuation", "is_sidechain", "has_branches"]
+
+
 @pytest.fixture
-def filter_db(tmp_path: Any) -> Any:
+def filter_db(tmp_path: Path) -> Path:
     """Create database with test conversations for filter tests."""
     db_path = tmp_path / "filter_test.db"
 
@@ -85,14 +115,14 @@ def filter_db(tmp_path: Any) -> Any:
 
 
 @pytest.fixture
-def filter_repo(filter_db: Any) -> Any:
+def filter_repo(filter_db: Path) -> ConversationRepository:
     """Create repository for filter tests."""
     backend = SQLiteBackend(db_path=filter_db)
     return ConversationRepository(backend=backend)
 
 
 @pytest.fixture
-def filter_db_empty(tmp_path: Any) -> Any:
+def filter_db_empty(tmp_path: Path) -> Path:
     """Create empty database for testing empty repository edge cases."""
     db_path = tmp_path / "filter_empty.db"
     with open_connection(db_path) as conn:
@@ -101,14 +131,14 @@ def filter_db_empty(tmp_path: Any) -> Any:
 
 
 @pytest.fixture
-def filter_repo_empty(filter_db_empty: Any) -> Any:
+def filter_repo_empty(filter_db_empty: Path) -> ConversationRepository:
     """Create repository for empty database tests."""
     backend = SQLiteBackend(db_path=filter_db_empty)
     return ConversationRepository(backend=backend)
 
 
 @pytest.fixture
-def filter_db_advanced(tmp_path: Any) -> Any:
+def filter_db_advanced(tmp_path: Path) -> Path:
     """Create database with conversations for advanced filter tests.
 
     Includes thinking blocks, tool use, attachments, summaries,
@@ -217,7 +247,7 @@ def filter_db_advanced(tmp_path: Any) -> Any:
 
 
 @pytest.fixture
-def filter_repo_advanced(filter_db_advanced: Any) -> Any:
+def filter_repo_advanced(filter_db_advanced: Path) -> ConversationRepository:
     """Create repository for advanced filter tests."""
     backend = SQLiteBackend(db_path=filter_db_advanced)
     return ConversationRepository(backend=backend)
@@ -228,19 +258,26 @@ def filter_repo_advanced(filter_db_advanced: Any) -> Any:
 # =============================================================================
 
 
-def _apply_filter_spec(f: ConversationFilter, spec: dict[str, Any]) -> ConversationFilter:
+def _apply_filter_spec(f: ConversationFilter, spec: FilterSpec) -> ConversationFilter:
     """Apply a single filter spec dict to a ConversationFilter."""
     ftype = spec["type"]
     if ftype == "provider":
-        return f.provider(spec["value"])
+        return f.provider(str(spec["value"]))
     elif ftype == "contains":
-        return f.contains(spec["value"])
+        return f.contains(str(spec["value"]))
     elif ftype == "since":
-        return f.since(spec["value"])
+        return f.since(str(spec["value"]))
     elif ftype == "until":
-        return f.until(spec["value"])
+        return f.until(str(spec["value"]))
     elif ftype == "limit":
-        return f.limit(spec["value"])
+        raw_value = spec["value"]
+        if isinstance(raw_value, bool):
+            return f.limit(int(raw_value))
+        if isinstance(raw_value, int):
+            return f.limit(raw_value)
+        if isinstance(raw_value, (float, str)):
+            return f.limit(int(raw_value))
+        return f.limit(0)
     elif ftype == "offset":
         # ConversationFilter does not have .offset(), skip
         return f
@@ -258,7 +295,7 @@ def _apply_filter_spec(f: ConversationFilter, spec: dict[str, Any]) -> Conversat
 
 @given(filter_chain_strategy(min_filters=1, max_filters=4))
 @settings(max_examples=30, suppress_health_check=[HealthCheck.too_slow])
-def test_filter_chain_never_crashes_on_build(chain: list[dict[str, Any]]) -> None:
+def test_filter_chain_never_crashes_on_build(chain: list[FilterSpec]) -> None:
     """Building a filter chain from arbitrary filter specs never crashes.
 
     We can't call .list() here (needs async + DB), but we verify the
@@ -275,7 +312,7 @@ def test_filter_chain_never_crashes_on_build(chain: list[dict[str, Any]]) -> Non
 
 
 @pytest.mark.asyncio
-async def test_filter_chain_never_crashes_on_execution(make_filter_repo: Any) -> None:
+async def test_filter_chain_never_crashes_on_execution(make_filter_repo: FilterRepoFactory) -> None:
     """Composed filters never crash when executed against a real DB.
 
     Uses explicit examples rather than @given to avoid fixture-scope issues.
@@ -299,7 +336,7 @@ async def test_filter_chain_never_crashes_on_execution(make_filter_repo: Any) ->
     )
 
     # Test a variety of filter chain combos
-    chains: list[list[dict[str, Any]]] = [
+    chains: list[list[FilterSpec]] = [
         [{"type": "provider", "value": "claude-ai"}],
         [{"type": "limit", "value": 1}],
         [{"type": "provider", "value": "chatgpt"}, {"type": "limit", "value": 5}],
@@ -320,7 +357,7 @@ async def test_filter_chain_never_crashes_on_execution(make_filter_repo: Any) ->
 
 
 @pytest.mark.asyncio
-async def test_filter_monotonicity_provider(filter_repo: Any) -> None:
+async def test_filter_monotonicity_provider(filter_repo: ConversationRepository) -> None:
     """Adding a provider filter never increases result count."""
     all_count = await ConversationFilter(filter_repo).count()
     filtered_count = await ConversationFilter(filter_repo).provider("claude-ai").count()
@@ -328,7 +365,7 @@ async def test_filter_monotonicity_provider(filter_repo: Any) -> None:
 
 
 @pytest.mark.asyncio
-async def test_filter_monotonicity_limit(filter_repo: Any) -> None:
+async def test_filter_monotonicity_limit(filter_repo: ConversationRepository) -> None:
     """Adding a limit filter never increases result count."""
     all_count = await ConversationFilter(filter_repo).count()
     limited_count = len(await ConversationFilter(filter_repo).limit(1).list())
@@ -336,7 +373,7 @@ async def test_filter_monotonicity_limit(filter_repo: Any) -> None:
 
 
 @pytest.mark.asyncio
-async def test_filter_monotonicity_exclude(filter_repo: Any) -> None:
+async def test_filter_monotonicity_exclude(filter_repo: ConversationRepository) -> None:
     """Adding an exclude filter never increases result count."""
     all_count = await ConversationFilter(filter_repo).count()
     excluded = await ConversationFilter(filter_repo).exclude_provider("claude-ai").list()
@@ -344,7 +381,7 @@ async def test_filter_monotonicity_exclude(filter_repo: Any) -> None:
 
 
 @pytest.mark.asyncio
-async def test_filter_monotonicity_chained(filter_repo_advanced: Any) -> None:
+async def test_filter_monotonicity_chained(filter_repo_advanced: ConversationRepository) -> None:
     """Stacking filters monotonically decreases results."""
     c0 = await ConversationFilter(filter_repo_advanced).count()
     c1 = len(await ConversationFilter(filter_repo_advanced).provider("claude-ai").list())
@@ -358,7 +395,7 @@ async def test_filter_monotonicity_chained(filter_repo_advanced: Any) -> None:
 
 
 @pytest.mark.asyncio
-async def test_filter_idempotence_provider(filter_repo: Any) -> None:
+async def test_filter_idempotence_provider(filter_repo: ConversationRepository) -> None:
     """Applying provider("claude-ai") twice yields same results as once."""
     once = await ConversationFilter(filter_repo).provider("claude-ai").list()
     twice = await ConversationFilter(filter_repo).provider("claude-ai").provider("claude-ai").list()
@@ -366,7 +403,7 @@ async def test_filter_idempotence_provider(filter_repo: Any) -> None:
 
 
 @pytest.mark.asyncio
-async def test_filter_idempotence_exclude(filter_repo: Any) -> None:
+async def test_filter_idempotence_exclude(filter_repo: ConversationRepository) -> None:
     """Applying exclude_provider("claude-ai") twice yields same results as once."""
     once = await ConversationFilter(filter_repo).exclude_provider("claude-ai").list()
     twice = await ConversationFilter(filter_repo).exclude_provider("claude-ai").exclude_provider("claude-ai").list()
@@ -531,7 +568,7 @@ def test_filter_order_independent(items: list[int], threshold1: int, threshold2:
 class TestConversationFilterChaining:
     """Chainability and multi-method filter tests (key regressions)."""
 
-    def test_filter_returns_self(self: Any, filter_repo: Any) -> None:
+    def test_filter_returns_self(self, filter_repo: ConversationRepository) -> None:
         """Every fluent filter method must return self."""
         chainable_methods: tuple[Callable[[ConversationFilter], ConversationFilter], ...] = (
             lambda f: f.provider("claude-ai"),
@@ -555,7 +592,7 @@ class TestConversationFilterChaining:
             assert method_fn(fresh) is fresh
 
     @pytest.mark.asyncio
-    async def test_filter_chain_multiple_methods(self: Any, filter_repo: Any) -> None:
+    async def test_filter_chain_multiple_methods(self, filter_repo: ConversationRepository) -> None:
         """Chain must apply ALL filters — provider, limit both take effect."""
         result = await ConversationFilter(filter_repo).provider("claude-ai").limit(1).sort("date").list()
         assert isinstance(result, list)
@@ -567,28 +604,28 @@ class TestConversationFilterTerminal:
     """Terminal methods: first, count, delete."""
 
     @pytest.mark.asyncio
-    async def test_filter_first(self: Any, filter_repo: Any) -> None:
+    async def test_filter_first(self, filter_repo: ConversationRepository) -> None:
         result = await ConversationFilter(filter_repo).first()
         assert result is not None
         assert hasattr(result, "id")
 
     @pytest.mark.asyncio
-    async def test_filter_first_empty(self: Any, filter_repo: Any) -> None:
+    async def test_filter_first_empty(self, filter_repo: ConversationRepository) -> None:
         result = await ConversationFilter(filter_repo).provider("nonexistent").first()
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_filter_count(self: Any, filter_repo: Any) -> None:
+    async def test_filter_count(self, filter_repo: ConversationRepository) -> None:
         count = await ConversationFilter(filter_repo).count()
         assert count == 3
 
     @pytest.mark.asyncio
-    async def test_filter_count_with_filter(self: Any, filter_repo: Any) -> None:
+    async def test_filter_count_with_filter(self, filter_repo: ConversationRepository) -> None:
         count = await ConversationFilter(filter_repo).provider("claude-ai").count()
         assert count == 2
 
     @pytest.mark.asyncio
-    async def test_filter_delete_removes_conversations(self: Any, filter_repo: Any) -> None:
+    async def test_filter_delete_removes_conversations(self, filter_repo: ConversationRepository) -> None:
         initial_count = await ConversationFilter(filter_repo).count()
         assert initial_count > 0
         deleted = await ConversationFilter(filter_repo).limit(1).delete()
@@ -601,7 +638,11 @@ class TestFilterDateParsing:
     """Date parsing for since/until — key regressions."""
 
     @pytest.mark.parametrize("method_name", ["since", "until"])
-    def test_date_method_raises_on_invalid(self: Any, filter_repo: Any, method_name: Any) -> None:
+    def test_date_method_raises_on_invalid(
+        self,
+        filter_repo: ConversationRepository,
+        method_name: DateMethodName,
+    ) -> None:
         f = ConversationFilter(filter_repo)
         with pytest.raises(ValueError, match="Cannot parse date"):
             getattr(f, method_name)("not-a-date")
@@ -615,14 +656,19 @@ class TestFilterDateParsing:
             ("until", "today"),
         ],
     )
-    def test_date_method_accepts_string_formats(self: Any, filter_repo: Any, method_name: Any, date_str: Any) -> None:
+    def test_date_method_accepts_string_formats(
+        self,
+        filter_repo: ConversationRepository,
+        method_name: DateMethodName,
+        date_str: str,
+    ) -> None:
         f = ConversationFilter(filter_repo)
         getattr(f, method_name)(date_str)
         field_name = "_since_date" if method_name == "since" else "_until_date"
         assert getattr(f, field_name) is not None
         assert isinstance(getattr(f, field_name), datetime)
 
-    def test_since_and_until_together_datetime(self: Any, filter_repo: Any) -> None:
+    def test_since_and_until_together_datetime(self, filter_repo: ConversationRepository) -> None:
         start = datetime(2024, 1, 1, tzinfo=timezone.utc)
         end = datetime(2024, 12, 31, tzinfo=timezone.utc)
         filter_obj = ConversationFilter(filter_repo).since(start).until(end)
@@ -635,12 +681,12 @@ class TestConversationFilterSort:
 
     @pytest.mark.parametrize("sort_key", ["date", "messages", "random"])
     @pytest.mark.asyncio
-    async def test_filter_sort(self: Any, filter_repo: Any, sort_key: Any) -> None:
+    async def test_filter_sort(self, filter_repo: ConversationRepository, sort_key: SortField) -> None:
         result = await ConversationFilter(filter_repo).sort(sort_key).list()
         assert len(result) > 0
 
     @pytest.mark.asyncio
-    async def test_filter_sort_reverse(self: Any, filter_repo: Any) -> None:
+    async def test_filter_sort_reverse(self, filter_repo: ConversationRepository) -> None:
         normal = await ConversationFilter(filter_repo).sort("date").list()
         reversed_list = await ConversationFilter(filter_repo).sort("date").reverse().list()
         if len(normal) > 1:
@@ -649,7 +695,11 @@ class TestConversationFilterSort:
 
     @pytest.mark.parametrize("sort_field", ["tokens", "words", "longest", "messages"])
     @pytest.mark.asyncio
-    async def test_sort_field_produces_results(self: Any, filter_repo_advanced: Any, sort_field: Any) -> None:
+    async def test_sort_field_produces_results(
+        self,
+        filter_repo_advanced: ConversationRepository,
+        sort_field: SortField,
+    ) -> None:
         result = await ConversationFilter(filter_repo_advanced).sort(sort_field).list()
         assert len(result) > 0
 
@@ -659,12 +709,16 @@ class TestConversationFilterHasTypes:
 
     @pytest.mark.parametrize("content_type", ["thinking", "tools", "attachments", "summary"])
     @pytest.mark.asyncio
-    async def test_has_content_type_returns_list(self: Any, filter_repo_advanced: Any, content_type: Any) -> None:
+    async def test_has_content_type_returns_list(
+        self,
+        filter_repo_advanced: ConversationRepository,
+        content_type: str,
+    ) -> None:
         result = await ConversationFilter(filter_repo_advanced).has(content_type).list()
         assert isinstance(result, list)
 
     @pytest.mark.asyncio
-    async def test_has_thinking_with_provider(self: Any, filter_repo_advanced: Any) -> None:
+    async def test_has_thinking_with_provider(self, filter_repo_advanced: ConversationRepository) -> None:
         result = await ConversationFilter(filter_repo_advanced).provider("claude-ai").has("thinking").list()
         assert len(result) >= 1
         for conv in result:
@@ -678,13 +732,16 @@ class TestConversationFilterSample:
     @pytest.mark.parametrize("sample_size,expected", [(2, 2), (0, 0), (1, 1)])
     @pytest.mark.asyncio
     async def test_sample_returns_correct_count(
-        self: Any, filter_repo_advanced: Any, sample_size: Any, expected: Any
+        self,
+        filter_repo_advanced: ConversationRepository,
+        sample_size: int,
+        expected: int,
     ) -> None:
         result = await ConversationFilter(filter_repo_advanced).sample(sample_size).list()
         assert len(result) == expected
 
     @pytest.mark.asyncio
-    async def test_sample_with_filter_respects_filters(self: Any, filter_repo_advanced: Any) -> None:
+    async def test_sample_with_filter_respects_filters(self, filter_repo_advanced: ConversationRepository) -> None:
         result = await ConversationFilter(filter_repo_advanced).provider("claude-ai").sample(2).list()
         assert all(c.provider == "claude-ai" for c in result)
 
@@ -693,7 +750,7 @@ class TestConversationFilterCombinedFilters:
     """Combined positive + negative filters — key regressions."""
 
     @pytest.mark.asyncio
-    async def test_exclude_provider_and_exclude_tag(self: Any, filter_repo_advanced: Any) -> None:
+    async def test_exclude_provider_and_exclude_tag(self, filter_repo_advanced: ConversationRepository) -> None:
         result = await (
             ConversationFilter(filter_repo_advanced).exclude_provider("claude-ai").exclude_tag("quantum").list()
         )
@@ -702,14 +759,14 @@ class TestConversationFilterCombinedFilters:
             assert "quantum" not in conv.tags
 
     @pytest.mark.asyncio
-    async def test_provider_with_exclude_tag(self: Any, filter_repo_advanced: Any) -> None:
+    async def test_provider_with_exclude_tag(self, filter_repo_advanced: ConversationRepository) -> None:
         result = await ConversationFilter(filter_repo_advanced).provider("claude-ai").exclude_tag("simple").list()
         assert all(c.provider == "claude-ai" for c in result)
         for conv in result:
             assert "simple" not in conv.tags
 
     @pytest.mark.asyncio
-    async def test_multiple_exclude_providers(self: Any, filter_repo_advanced: Any) -> None:
+    async def test_multiple_exclude_providers(self, filter_repo_advanced: ConversationRepository) -> None:
         result = await ConversationFilter(filter_repo_advanced).exclude_provider("claude-ai", "chatgpt").list()
         for conv in result:
             assert conv.provider not in ("claude-ai", "chatgpt")
@@ -719,23 +776,23 @@ class TestConversationFilterListSummaries:
     """list_summaries() terminal method — key regressions."""
 
     @pytest.mark.asyncio
-    async def test_list_summaries_returns_summary_objects(self: Any, filter_repo_advanced: Any) -> None:
+    async def test_list_summaries_returns_summary_objects(self, filter_repo_advanced: ConversationRepository) -> None:
         result = await ConversationFilter(filter_repo_advanced).list_summaries()
         assert len(result) > 0
         for summary in result:
             assert isinstance(summary, ConversationSummary)
 
     @pytest.mark.asyncio
-    async def test_list_summaries_rejects_content_filters(self: Any, filter_repo_advanced: Any) -> None:
+    async def test_list_summaries_rejects_content_filters(self, filter_repo_advanced: ConversationRepository) -> None:
         with pytest.raises(ValueError, match="Cannot use list_summaries"):
             await ConversationFilter(filter_repo_advanced).has("thinking").list_summaries()
 
     @pytest.mark.asyncio
-    async def test_list_summaries_allows_summary_has_filter(self: Any, filter_repo_advanced: Any) -> None:
+    async def test_list_summaries_allows_summary_has_filter(self, filter_repo_advanced: ConversationRepository) -> None:
         result = await ConversationFilter(filter_repo_advanced).has("summary").list_summaries()
         assert all(s.summary for s in result)
 
-    def test_can_use_summaries_check(self: Any, filter_repo_advanced: Any) -> None:
+    def test_can_use_summaries_check(self, filter_repo_advanced: ConversationRepository) -> None:
         simple = ConversationFilter(filter_repo_advanced).provider("claude-ai")
         assert simple.can_use_summaries() is True
         with_content = ConversationFilter(filter_repo_advanced).has("thinking")
@@ -757,10 +814,13 @@ class TestConversationFilterEmptyRepository:
     )
     @pytest.mark.asyncio
     async def test_empty_repo_terminal_operations(
-        self: Any, filter_repo_empty: Any, terminal_method: Any, expected_result: Any
+        self,
+        filter_repo_empty: ConversationRepository,
+        terminal_method: TerminalMethod,
+        expected_result: TerminalResult,
     ) -> None:
         filter_obj = ConversationFilter(filter_repo_empty)
-        result: object
+        result: TerminalResult
         if terminal_method == "list":
             result = await filter_obj.list()
         elif terminal_method == "first":
@@ -778,7 +838,7 @@ class TestConversationFilterBranching:
     """Branch predicate and pick regression tests."""
 
     @pytest.fixture
-    def filter_repo_branches(self: Any, tmp_path: Any) -> Any:
+    def filter_repo_branches(self, tmp_path: Path) -> ConversationRepository:
         db_path = tmp_path / "filter_branches.db"
         with open_connection(db_path) as conn:
             rebuild_index(conn)
@@ -813,7 +873,12 @@ class TestConversationFilterBranching:
             ("has_branches", False),
         ],
     )
-    def test_branch_predicates(self: Any, filter_repo_branches: Any, method: Any, value: Any) -> None:
+    def test_branch_predicates(
+        self,
+        filter_repo_branches: ConversationRepository,
+        method: BranchPredicateName,
+        value: bool,
+    ) -> None:
         filter_obj = ConversationFilter(filter_repo_branches)
         getattr(filter_obj, method)(value)
         if method == "is_continuation":
@@ -824,7 +889,7 @@ class TestConversationFilterBranching:
             assert filter_obj._has_branches is value
 
     @pytest.mark.asyncio
-    async def test_parent_filters_by_parent_id(self: Any, filter_repo_branches: Any) -> None:
+    async def test_parent_filters_by_parent_id(self, filter_repo_branches: ConversationRepository) -> None:
         result = await ConversationFilter(filter_repo_branches).parent("root").list()
         for conv in result:
             assert conv.parent_id == "root"
@@ -834,7 +899,7 @@ class TestFiltersPick:
     """pick() interactive picker regression tests."""
 
     @pytest.fixture
-    def filter_repo_pick(self: Any, tmp_path: Any) -> Any:
+    def filter_repo_pick(self, tmp_path: Path) -> ConversationRepository:
         db_path = tmp_path / "filter_pick.db"
         with open_connection(db_path) as conn:
             rebuild_index(conn)
@@ -844,12 +909,12 @@ class TestFiltersPick:
         return ConversationRepository(backend)
 
     @pytest.mark.asyncio
-    async def test_pick_no_results(self: Any, filter_repo_pick: Any) -> None:
+    async def test_pick_no_results(self, filter_repo_pick: ConversationRepository) -> None:
         result = await pick_filter(ConversationFilter(filter_repo_pick).provider("nonexistent"))
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_pick_non_tty(self: Any, filter_repo_pick: Any) -> None:
+    async def test_pick_non_tty(self, filter_repo_pick: ConversationRepository) -> None:
         with patch("sys.stdout.isatty", return_value=False):
             result = await pick_filter(ConversationFilter(filter_repo_pick))
             assert result is not None
@@ -859,13 +924,13 @@ class TestFtsWithProviderFilter:
     """FTS + provider combined filter regression."""
 
     @pytest.mark.asyncio
-    async def test_fts_with_provider_match(self: Any, filter_repo: Any) -> None:
+    async def test_fts_with_provider_match(self, filter_repo: ConversationRepository) -> None:
         result = await ConversationFilter(filter_repo).contains("errors").provider("claude-ai").list()
         assert len(result) > 0
         assert all(c.provider == "claude-ai" for c in result)
 
     @pytest.mark.asyncio
-    async def test_fts_with_provider_mismatch(self: Any, filter_repo: Any) -> None:
+    async def test_fts_with_provider_mismatch(self, filter_repo: ConversationRepository) -> None:
         result = await ConversationFilter(filter_repo).contains("schema").provider("chatgpt").list()
         assert len(result) == 0
 
@@ -874,7 +939,7 @@ class TestDeleteCascade:
     """Delete cascade behavior."""
 
     @pytest.fixture
-    async def populated_db(self: Any, tmp_path: Any) -> Any:
+    async def populated_db(self, tmp_path: Path) -> tuple[Path, SQLiteBackend, ConversationRepository]:
         db_path = tmp_path / "cascade.db"
         backend = SQLiteBackend(db_path=db_path)
         repo = ConversationRepository(backend=backend)
@@ -892,7 +957,10 @@ class TestDeleteCascade:
         return db_path, backend, repo
 
     @pytest.mark.asyncio
-    async def test_delete_cascades_to_messages(self: Any, populated_db: Any) -> None:
+    async def test_delete_cascades_to_messages(
+        self,
+        populated_db: tuple[Path, SQLiteBackend, ConversationRepository],
+    ) -> None:
         db_path, backend, repo = populated_db
         f = ConversationFilter(repo).id("cascade-conv")
         deleted = await f.delete()
@@ -914,7 +982,11 @@ class TestFilterLimitZeroEdgeCases:
         ],
     )
     @pytest.mark.asyncio
-    async def test_limit_zero_returns_empty(self: Any, filter_repo_advanced: Any, setup_fn: Any) -> None:
+    async def test_limit_zero_returns_empty(
+        self,
+        filter_repo_advanced: ConversationRepository,
+        setup_fn: Callable[[ConversationFilter], ConversationFilter],
+    ) -> None:
         result = await setup_fn(ConversationFilter(filter_repo_advanced)).list()
         assert len(result) == 0
 
