@@ -15,7 +15,9 @@ import tempfile
 from collections.abc import Iterator
 from contextlib import contextmanager, redirect_stdout
 from pathlib import Path
-from typing import NotRequired, TypeAlias, TypedDict
+from typing import NotRequired, TypeAlias
+
+from typing_extensions import TypedDict
 
 from polylogue.config import Config, Source
 from polylogue.paths import blob_store_root, db_path

@@ -12,11 +12,12 @@ from collections.abc import Sequence
 from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Literal, TypedDict
+from typing import Literal
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from hypothesis import HealthCheck, given, settings
+from typing_extensions import TypedDict
 
 from polylogue.config import Source
 from polylogue.lib.raw_payload_decode import JSONValue
