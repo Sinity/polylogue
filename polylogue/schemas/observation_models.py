@@ -4,9 +4,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Literal, TypeAlias
 
+from polylogue.lib.json import JSONDocumentList, JSONValue
 from polylogue.types import Provider
+
+SchemaSampleGranularity: TypeAlias = Literal["document", "record"]
+SchemaClusterPayload: TypeAlias = JSONValue
 
 
 @dataclass
@@ -18,7 +22,7 @@ class ProviderConfig:
     db_provider_name: Provider | None = None
     session_dir: Path | None = None
     max_sessions: int | None = None
-    sample_granularity: str = "document"
+    sample_granularity: SchemaSampleGranularity = "document"
     record_type_key: str | None = None
     schema_sample_cap: int | None = None
 
@@ -27,8 +31,8 @@ class ProviderConfig:
 class SchemaUnit:
     """Clusterable schema-observation input."""
 
-    cluster_payload: Any
-    schema_samples: list[dict[str, Any]]
+    cluster_payload: SchemaClusterPayload
+    schema_samples: JSONDocumentList
     artifact_kind: str
     conversation_id: str | None = None
     raw_id: str | None = None
@@ -77,3 +81,12 @@ PROVIDERS: dict[Provider, ProviderConfig] = {
         schema_sample_cap=128,
     ),
 }
+
+
+__all__ = [
+    "PROVIDERS",
+    "ProviderConfig",
+    "SchemaClusterPayload",
+    "SchemaSampleGranularity",
+    "SchemaUnit",
+]

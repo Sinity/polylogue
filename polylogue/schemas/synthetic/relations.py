@@ -12,8 +12,8 @@ from __future__ import annotations
 
 import random
 from dataclasses import dataclass, field
-from typing import Any
 
+from polylogue.schemas.synthetic.models import SchemaRecord
 from polylogue.schemas.synthetic.relation_solver_runtime import RelationConstraintSolverRuntimeMixin
 
 
@@ -88,7 +88,7 @@ class RelationConstraintSolver(RelationConstraintSolverRuntimeMixin):
     consistency.
     """
 
-    def __init__(self, schema: dict[str, Any]) -> None:
+    def __init__(self, schema: SchemaRecord) -> None:
         self.fk_graph = ForeignKeyGraph()
         self.time_deltas: list[TimeDeltaConstraint] = []
         self.mutual_exclusions: list[MutualExclusionGroup] = []

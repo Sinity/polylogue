@@ -4,9 +4,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, TypeAlias
+from typing import TYPE_CHECKING, Literal, TypeAlias
 
 from polylogue.schemas.synthetic.wire_formats import WireEncoding, WireFormat
+
+if TYPE_CHECKING:
+    from polylogue.schemas.synthetic.relations import RelationConstraintSolver
+    from polylogue.schemas.synthetic.semantic_values import SemanticValueGenerator
 
 SchemaScalar: TypeAlias = str | int | float | bool | None
 SchemaValue: TypeAlias = SchemaScalar | list["SchemaValue"] | dict[str, "SchemaValue"]
@@ -58,12 +62,19 @@ class SyntheticWrittenBatch:
     files: tuple[Path, ...]
 
 
+@dataclass
+class SyntheticGenerationState:
+    relation_solver: RelationConstraintSolver
+    semantic_generator: SemanticValueGenerator | None = None
+
+
 __all__ = [
     "SchemaRecord",
     "SchemaScalar",
     "SchemaValue",
     "SyntheticArtifact",
     "SyntheticGenerationBatch",
+    "SyntheticGenerationState",
     "SyntheticGenerationReport",
     "SyntheticSchemaSelection",
     "SyntheticStyle",
