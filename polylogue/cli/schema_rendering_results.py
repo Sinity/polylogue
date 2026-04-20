@@ -3,14 +3,21 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
 
 import click
 
 from polylogue.cli.machine_errors import emit_success
+from polylogue.scenarios import CorpusScenario, CorpusSpec
+from polylogue.schemas.audit_models import AuditReport
+from polylogue.schemas.operator_models import (
+    SchemaCompareResult,
+    SchemaInferResult,
+    SchemaListResult,
+    SchemaPromoteResult,
+)
 
 
-def _render_corpus_spec_preview(*, corpus_specs: Any, header: str) -> None:
+def _render_corpus_spec_preview(*, corpus_specs: tuple[CorpusSpec, ...], header: str) -> None:
     if not corpus_specs:
         return
     click.echo(header)
@@ -24,7 +31,7 @@ def _render_corpus_spec_preview(*, corpus_specs: Any, header: str) -> None:
         click.echo(f"    … {len(corpus_specs) - 3} more")
 
 
-def _render_corpus_scenario_preview(*, corpus_scenarios: Any, header: str) -> None:
+def _render_corpus_scenario_preview(*, corpus_scenarios: tuple[CorpusScenario, ...], header: str) -> None:
     if not corpus_scenarios:
         return
     click.echo(header)
@@ -38,10 +45,21 @@ def _render_corpus_scenario_preview(*, corpus_scenarios: Any, header: str) -> No
         click.echo(f"    … {len(corpus_scenarios) - 3} more")
 
 
+def _corpus_scenario_payloads(corpus_scenarios: tuple[CorpusScenario, ...]) -> list[dict[str, object]]:
+    return [
+        {
+            "provider": scenario.provider,
+            "package_version": scenario.package_version,
+            "corpus_specs": [spec.to_payload() for spec in scenario.corpus_specs],
+        }
+        for scenario in corpus_scenarios
+    ]
+
+
 def render_schema_generate_result(
     *,
     provider: str,
-    result: Any,
+    result: SchemaInferResult,
     json_output: bool,
     report: bool,
 ) -> None:
@@ -51,11 +69,11 @@ def render_schema_generate_result(
         click.echo(generation.redaction_report.format_summary(), err=True)
         if not json_output:
             report_path = Path(f"{provider}-redaction-report.md")
-            report_path.write_text(generation.redaction_report.format_markdown())
+            report_path.write_text(generation.redaction_report.format_markdown(), encoding="utf-8")
             click.echo(f"  Redaction report: {report_path}", err=True)
 
     if json_output:
-        payload: dict[str, Any] = {
+        payload: dict[str, object] = {
             "provider": provider,
             "generation": {
                 "success": generation.success,
@@ -74,14 +92,7 @@ def render_schema_generate_result(
         if result.corpus_specs:
             payload["corpus_specs"] = [spec.to_payload() for spec in result.corpus_specs]
         if result.corpus_scenarios:
-            payload["corpus_scenarios"] = [
-                {
-                    "provider": scenario.provider,
-                    "package_version": scenario.package_version,
-                    "corpus_specs": [spec.to_payload() for spec in scenario.corpus_specs],
-                }
-                for scenario in result.corpus_scenarios
-            ]
+            payload["corpus_scenarios"] = _corpus_scenario_payloads(result.corpus_scenarios)
         emit_success(payload)
         return
 
@@ -107,14 +118,14 @@ def render_schema_generate_result(
 def render_schema_list_result(
     *,
     provider: str | None,
-    result: Any,
+    result: SchemaListResult,
     json_output: bool,
 ) -> None:
     """Render schema list output in JSON or text mode."""
     if provider:
         selected = result.selected
         if json_output:
-            emit_success(result.to_dict())
+            emit_success(selected.to_dict() if selected is not None else {"provider": provider, "versions": []})
             return
         if selected is None or (not selected.versions and selected.catalog is None):
             click.echo(f"No schemas found for provider: {provider}")
@@ -198,7 +209,7 @@ def render_schema_list_result(
         )
 
 
-def render_schema_compare_result(*, result: Any, json_output: bool, md_output: bool) -> None:
+def render_schema_compare_result(*, result: SchemaCompareResult, json_output: bool, md_output: bool) -> None:
     """Render schema comparison output."""
     if json_output:
         emit_success(result.to_dict())
@@ -208,7 +219,7 @@ def render_schema_compare_result(*, result: Any, json_output: bool, md_output: b
         click.echo(result.diff.to_text())
 
 
-def render_schema_promote_result(*, result: Any, json_output: bool) -> None:
+def render_schema_promote_result(*, result: SchemaPromoteResult, json_output: bool) -> None:
     """Render schema cluster promotion output."""
     if json_output:
         emit_success(result.to_dict())
@@ -218,7 +229,7 @@ def render_schema_promote_result(*, result: Any, json_output: bool) -> None:
     click.echo(f"Available versions: {', '.join(result.versions)}")
 
 
-def render_schema_audit_result(*, report: Any, json_output: bool) -> None:
+def render_schema_audit_result(*, report: AuditReport, json_output: bool) -> None:
     """Render schema audit output."""
     if json_output:
         emit_success(report.to_json())

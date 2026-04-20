@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any
 
 import click
 
@@ -11,7 +10,9 @@ from polylogue.maintenance_targets import MAINTENANCE_TARGET_NAMES, build_mainte
 
 _MAINTENANCE_TARGET_HELP = build_maintenance_target_catalog().help_text()
 
-CHECK_COMMAND_OPTION_DECORATORS: tuple[Callable[[Callable[..., Any]], Callable[..., Any]], ...] = (
+CheckCommandDecorator = Callable[[Callable[..., object]], Callable[..., object]]
+
+CHECK_COMMAND_OPTION_DECORATORS: tuple[CheckCommandDecorator, ...] = (
     click.option("--json", "json_output", is_flag=True, help="Output as JSON"),
     click.option("--verbose", "-v", is_flag=True, help="Show breakdown by provider"),
     click.option("--repair", is_flag=True, help="Run safe derived-data and database maintenance repairs"),
@@ -103,7 +104,7 @@ CHECK_COMMAND_OPTION_DECORATORS: tuple[Callable[[Callable[..., Any]], Callable[.
 )
 
 
-def apply_check_command_options(func: Callable[..., Any]) -> Callable[..., Any]:
+def apply_check_command_options(func: Callable[..., object]) -> Callable[..., object]:
     for decorator in reversed(CHECK_COMMAND_OPTION_DECORATORS):
         func = decorator(func)
     return func
