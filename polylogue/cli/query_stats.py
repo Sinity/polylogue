@@ -10,7 +10,6 @@ from typing import TYPE_CHECKING
 import click
 
 from polylogue.cli.machine_errors import error_no_results
-from polylogue.storage.backends.queries import stats as stats_q
 
 if TYPE_CHECKING:
     from polylogue.cli.types import AppEnv
@@ -137,23 +136,17 @@ async def output_stats_sql(
             conv_ids = None
     else:
         conv_ids = None
-        async with repo.backend.read_connection() as conn:
-            await conn.execute("BEGIN")
-            try:
-                archive_stats = await repo.get_archive_stats(conn=conn)
-                conv_count = archive_stats.total_conversations
-                if conv_count == 0:
-                    if output_format == "json":
-                        error_no_results("No conversations in archive.").emit(exit_code=2)
-                    env.ui.console.print("No conversations in archive.")
-                    return
-                stats = await stats_q.aggregate_message_stats(conn, None)
-            finally:
-                if conn.in_transaction:
-                    await conn.rollback()
+        archive_stats = await repo.get_archive_stats()
+        conv_count = archive_stats.total_conversations
+        if conv_count == 0:
+            if output_format == "json":
+                error_no_results("No conversations in archive.").emit(exit_code=2)
+            env.ui.console.print("No conversations in archive.")
+            return
+        stats = await repo.aggregate_message_stats()
 
     if has_filters:
-        stats = await repo.queries.aggregate_message_stats(conv_ids)
+        stats = await repo.aggregate_message_stats(conv_ids)
 
     date_range = ""
     if stats["min_sort_key"] and stats["max_sort_key"]:

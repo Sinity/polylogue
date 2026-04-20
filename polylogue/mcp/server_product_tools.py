@@ -148,7 +148,7 @@ def register_product_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         async def run() -> str:
             from polylogue.lib.coverage import analyze_coverage
 
-            summaries = await hooks.get_repo().list_summaries()
+            summaries = await hooks.get_query_store().list_summaries()
             coverage = analyze_coverage(summaries)
             return hooks.json_payload(
                 MCPRootPayload(

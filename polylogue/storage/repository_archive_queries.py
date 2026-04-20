@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, cast
 
 from polylogue.lib.conversation_models import Conversation, ConversationSummary
 from polylogue.protocols import ConversationQueryRuntimeStore
+from polylogue.storage.backends.queries.stats import AggregateMessageStats
 from polylogue.storage.query_models import ConversationRecordQuery
 
 if TYPE_CHECKING:
@@ -167,6 +168,21 @@ class RepositoryArchiveQueryMixin:
 
     async def count_by_query(self, query: ConversationRecordQuery) -> int:
         return await self.queries.count_conversations(query)
+
+    async def get_conversation_stats(self, conversation_id: str) -> dict[str, int]:
+        return await self.queries.get_conversation_stats(conversation_id)
+
+    async def get_message_counts_batch(self, conversation_ids: builtins.list[str]) -> dict[str, int]:
+        return await self.queries.get_message_counts_batch(conversation_ids)
+
+    async def aggregate_message_stats(
+        self,
+        conversation_ids: builtins.list[str] | None = None,
+    ) -> AggregateMessageStats:
+        return await self.queries.aggregate_message_stats(conversation_ids)
+
+    async def get_stats_by(self, group_by: str = "provider") -> dict[str, int]:
+        return await self.queries.get_stats_by(group_by)
 
     async def count(
         self,

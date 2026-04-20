@@ -7,8 +7,6 @@ import csv
 import io
 import json
 import tempfile
-from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -84,38 +82,25 @@ def _make_env(*, repo: MagicMock | None = None, config: MagicMock | None = None)
     ui.console = MagicMock()
     ui.confirm = MagicMock(return_value=True)
     if repo is not None:
-        queries = repo.queries
-        if not isinstance(queries.get_conversation, AsyncMock):
-            queries.get_conversation = AsyncMock(return_value=None)
-        if not isinstance(queries.get_conversation_stats, AsyncMock):
-            queries.get_conversation_stats = AsyncMock(return_value={})
-        if not isinstance(queries.get_message_counts_batch, AsyncMock):
-            queries.get_message_counts_batch = AsyncMock(return_value={})
-        if not isinstance(queries.aggregate_message_stats, AsyncMock):
-            queries.aggregate_message_stats = AsyncMock(return_value={})
+        if not isinstance(repo.get_render_projection, AsyncMock):
+            repo.get_render_projection = AsyncMock(return_value=None)
+        if not isinstance(repo.get_conversation_stats, AsyncMock):
+            repo.get_conversation_stats = AsyncMock(return_value={})
+        if not isinstance(repo.get_message_counts_batch, AsyncMock):
+            repo.get_message_counts_batch = AsyncMock(return_value={})
+        if not isinstance(repo.aggregate_message_stats, AsyncMock):
+            repo.aggregate_message_stats = AsyncMock(return_value={})
+        if not isinstance(repo.get_conversations_batch, AsyncMock):
+            repo.get_conversations_batch = AsyncMock(return_value=[])
+        if not isinstance(repo.get_messages_batch, AsyncMock):
+            repo.get_messages_batch = AsyncMock(return_value={})
+        if not isinstance(repo.get_attachments_batch, AsyncMock):
+            repo.get_attachments_batch = AsyncMock(return_value={})
+        if not isinstance(repo.list_summaries_by_query, AsyncMock):
+            repo.list_summaries_by_query = AsyncMock(return_value=[])
         if not isinstance(repo.get_action_event_artifact_state, AsyncMock):
             repo.get_action_event_artifact_state = AsyncMock(return_value=_ready_action_event_state())
     return AppEnv(ui=ui, services=build_runtime_services(config=config, repository=repo))
-
-
-@asynccontextmanager
-async def _async_connection(conn: object) -> AsyncIterator[object]:
-    yield conn
-
-
-class _SnapshotConn:
-    def __init__(self) -> None:
-        self.in_transaction = False
-        self.execute = AsyncMock(side_effect=self._execute)
-        self.rollback = AsyncMock(side_effect=self._rollback)
-
-    async def _execute(self, sql: str, *args: object, **kwargs: object) -> None:
-        del args, kwargs
-        if sql == "BEGIN":
-            self.in_transaction = True
-
-    async def _rollback(self) -> None:
-        self.in_transaction = False
 
 
 def _fields_arg(fields: tuple[str, ...] | None) -> str | None:
@@ -476,7 +461,7 @@ def test_delete_conversations_contract(case: Any) -> None:
 @pytest.mark.parametrize("output_format", ["json", "yaml", "csv", "text"])
 def test_output_summary_list_contract(case: Any, output_format: str) -> None:
     repo = MagicMock()
-    repo.queries.get_message_counts_batch = AsyncMock(return_value=build_message_counts(case.summaries))
+    repo.get_message_counts_batch = AsyncMock(return_value=build_message_counts(case.summaries))
     env = _make_env(repo=repo)
     summaries = [build_conversation_summary(spec) for spec in case.summaries]
     params: dict[str, object] = {"output_format": output_format}
@@ -697,7 +682,7 @@ async def test_output_stats_by_semantic_summaries_json_contract() -> None:
             fts_rows=0,
         )
     )
-    repo.queries.get_conversations_batch = AsyncMock(
+    repo.get_conversations_batch = AsyncMock(
         side_effect=[
             [
                 ConversationRecord(
@@ -725,7 +710,7 @@ async def test_output_stats_by_semantic_summaries_json_contract() -> None:
             ],
         ]
     )
-    repo.queries.get_messages_batch = AsyncMock(
+    repo.get_messages_batch = AsyncMock(
         side_effect=[
             {
                 "conv-law-1": [
@@ -814,8 +799,8 @@ async def test_output_stats_by_semantic_summaries_json_contract() -> None:
         ],
         "summary": {"group": "MATCHED", "conversations": 2, "facts": 2, "messages": 2},
     }
-    assert repo.queries.get_conversations_batch.await_count == 2
-    assert repo.queries.get_messages_batch.await_count == 2
+    assert repo.get_conversations_batch.await_count == 2
+    assert repo.get_messages_batch.await_count == 2
 
 
 @pytest.mark.asyncio
@@ -1129,7 +1114,7 @@ def test_async_execute_query_action_routing_contract(case: str, expected_helper:
         mock_output_stats_by = cast(MagicMock, mock_output_stats_by)
         mock_open_result = cast(MagicMock, mock_open_result)
         mock_output_results = cast(MagicMock, mock_output_results)
-        repo.queries.get_message_counts_batch = AsyncMock(return_value={str(summary.id): 2})
+        repo.get_message_counts_batch = AsyncMock(return_value={str(summary.id): 2})
         asyncio.run(async_execute_query(env, {"limit": 7}))
 
     selection.build_filter.assert_called_once_with(repo, vector_provider=None)
@@ -1146,7 +1131,7 @@ def test_async_execute_query_action_routing_contract(case: str, expected_helper:
     elif expected_helper == "stats_by_summaries":
         filter_chain.list.assert_not_called()
         filter_chain.list_summaries.assert_awaited_once()
-        repo.queries.get_message_counts_batch.assert_awaited_once_with([str(summary.id)])
+        repo.get_message_counts_batch.assert_awaited_once_with([str(summary.id)])
         mock_output_stats_by_summaries.assert_called_once()
         mock_output_stats_by_semantic_summaries.assert_not_called()
         mock_output_stats_by_profile_summaries.assert_not_called()
@@ -1473,7 +1458,7 @@ def test_apply_transform_contract(transform: str, expected_ids: list[str]) -> No
 async def test_output_stats_sql_uses_summary_pushdown_contract() -> None:
     env = _make_env()
     repo = MagicMock()
-    repo.queries.aggregate_message_stats = AsyncMock(
+    repo.aggregate_message_stats = AsyncMock(
         return_value={
             "total": 9,
             "user": 4,
@@ -1518,7 +1503,7 @@ async def test_output_stats_sql_uses_summary_pushdown_contract() -> None:
 
     filter_chain.list_summaries.assert_awaited_once()
     filter_chain.count.assert_not_called()
-    repo.queries.aggregate_message_stats.assert_awaited_once_with(["conv-a", "conv-b"])
+    repo.aggregate_message_stats.assert_awaited_once_with(["conv-a", "conv-b"])
     printed = [call.args[0] for call in cast(MagicMock, env.ui.console.print).call_args_list if call.args]
     assert printed == [
         "\nConversations: 2\n",
@@ -1544,9 +1529,7 @@ async def test_output_stats_sql_empty_paths_contract(
 ) -> None:
     env = _make_env()
     repo = MagicMock()
-    repo.queries.aggregate_message_stats = AsyncMock()
-    conn = _SnapshotConn()
-    repo.backend.read_connection.return_value = _async_connection(conn)
+    repo.aggregate_message_stats = AsyncMock()
     repo.get_archive_stats = AsyncMock(return_value=SimpleNamespace(total_conversations=0))
 
     filter_chain = MagicMock()
@@ -1577,9 +1560,7 @@ async def test_output_stats_sql_empty_paths_json_contract(
 ) -> None:
     env = _make_env()
     repo = MagicMock()
-    repo.queries.aggregate_message_stats = AsyncMock()
-    conn = _SnapshotConn()
-    repo.backend.read_connection.return_value = _async_connection(conn)
+    repo.aggregate_message_stats = AsyncMock()
     repo.get_archive_stats = AsyncMock(return_value=SimpleNamespace(total_conversations=0))
 
     filter_chain = MagicMock()
@@ -1606,8 +1587,6 @@ async def test_output_stats_sql_empty_paths_json_contract(
 async def test_output_stats_sql_archive_scope_includes_embedding_state() -> None:
     env = _make_env()
     repo = MagicMock()
-    conn = _SnapshotConn()
-    repo.backend.read_connection.return_value = _async_connection(conn)
     repo.get_archive_stats = AsyncMock(
         return_value=SimpleNamespace(
             total_conversations=2,
@@ -1623,28 +1602,24 @@ async def test_output_stats_sql_archive_scope_includes_embedding_state() -> None
     filter_chain.can_use_summaries.return_value = False
     filter_chain.count = AsyncMock(side_effect=AssertionError("archive-scope stats should reuse archive snapshot"))
 
-    with patch(
-        "polylogue.cli.query_stats.stats_q.aggregate_message_stats",
-        new=AsyncMock(
-            return_value={
-                "total": 9,
-                "user": 4,
-                "assistant": 5,
-                "words_approx": 42,
-                "providers": {"claude-ai": 2, "chatgpt": 1},
-                "attachment_refs": 2,
-                "distinct_attachments": 1,
-                "min_sort_key": 1704067200,
-                "max_sort_key": 1704153600,
-            }
-        ),
-    ) as mock_aggregate:
-        await output_stats_sql(env, filter_chain, repo)
+    repo.aggregate_message_stats = AsyncMock(
+        return_value={
+            "total": 9,
+            "user": 4,
+            "assistant": 5,
+            "words_approx": 42,
+            "providers": {"claude-ai": 2, "chatgpt": 1},
+            "attachment_refs": 2,
+            "distinct_attachments": 1,
+            "min_sort_key": 1704067200,
+            "max_sort_key": 1704153600,
+        }
+    )
 
-    repo.get_archive_stats.assert_awaited_once_with(conn=conn)
-    mock_aggregate.assert_awaited_once_with(conn, None)
-    conn.execute.assert_awaited_once_with("BEGIN")
-    conn.rollback.assert_awaited_once()
+    await output_stats_sql(env, filter_chain, repo)
+
+    repo.get_archive_stats.assert_awaited_once_with()
+    repo.aggregate_message_stats.assert_awaited_once_with()
     printed = [call.args[0] for call in cast(MagicMock, env.ui.console.print).call_args_list if call.args]
     assert printed == [
         "\nConversations: 2\n",
@@ -1662,8 +1637,6 @@ async def test_output_stats_sql_archive_scope_includes_embedding_state() -> None
 async def test_output_stats_sql_json_contract() -> None:
     env = _make_env()
     repo = MagicMock()
-    conn = _SnapshotConn()
-    repo.backend.read_connection.return_value = _async_connection(conn)
     repo.get_archive_stats = AsyncMock(
         return_value=SimpleNamespace(
             total_conversations=2,
@@ -1679,34 +1652,27 @@ async def test_output_stats_sql_json_contract() -> None:
     filter_chain.describe.return_value = []
     filter_chain.can_use_summaries.return_value = False
     filter_chain.count = AsyncMock(side_effect=AssertionError("archive-scope stats should reuse archive snapshot"))
+    repo.aggregate_message_stats = AsyncMock(
+        return_value={
+            "total": 9,
+            "user": 4,
+            "assistant": 5,
+            "words_approx": 42,
+            "attachment_refs": 2,
+            "distinct_attachments": 1,
+            "min_sort_key": 1704067200,
+            "max_sort_key": 1704153600,
+            "providers": {"claude-ai": 2, "chatgpt": 1},
+        }
+    )
 
-    with (
-        patch(
-            "polylogue.cli.query_stats.stats_q.aggregate_message_stats",
-            new=AsyncMock(
-                return_value={
-                    "total": 9,
-                    "user": 4,
-                    "assistant": 5,
-                    "words_approx": 42,
-                    "attachment_refs": 2,
-                    "distinct_attachments": 1,
-                    "min_sort_key": 1704067200,
-                    "max_sort_key": 1704153600,
-                    "providers": {"claude-ai": 2, "chatgpt": 1},
-                }
-            ),
-        ) as mock_aggregate,
-        patch("click.echo") as mock_echo,
-    ):
+    with patch("click.echo") as mock_echo:
         mock_echo = cast(MagicMock, mock_echo)
         await output_stats_sql(env, filter_chain, repo, output_format="json")
 
     cast(MagicMock, env.ui.console.print).assert_not_called()
-    repo.get_archive_stats.assert_awaited_once_with(conn=conn)
-    mock_aggregate.assert_awaited_once_with(conn, None)
-    conn.execute.assert_awaited_once_with("BEGIN")
-    conn.rollback.assert_awaited_once()
+    repo.get_archive_stats.assert_awaited_once_with()
+    repo.aggregate_message_stats.assert_awaited_once_with()
     payload = json.loads(mock_echo.call_args.args[0])
     assert payload["dimension"] == "archive"
     assert payload["rows"] == []

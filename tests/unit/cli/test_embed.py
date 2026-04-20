@@ -81,8 +81,7 @@ def mock_repository() -> Any:
 def mock_repository_async(mock_conversation: Any) -> Any:
     repo = MagicMock()
     repo.view = AsyncMock(return_value=mock_conversation)
-    repo.queries = MagicMock()
-    repo.queries.get_messages = AsyncMock(return_value=_MOCK_MESSAGES)
+    repo.get_messages = AsyncMock(return_value=_MOCK_MESSAGES)
     return repo
 
 
@@ -177,9 +176,7 @@ class TestEmbedSingle:
     def test_embed_single_success(self, mock_env: Any, mock_repository_async: Any, capsys: Any) -> None:
         mock_vec_provider = MagicMock()
         _embed_single(mock_env, mock_repository_async, mock_vec_provider, "conv-123")
-        mock_vec_provider.upsert.assert_called_once_with(
-            "conv-123", mock_repository_async.queries.get_messages.return_value
-        )
+        mock_vec_provider.upsert.assert_called_once_with("conv-123", mock_repository_async.get_messages.return_value)
         captured = capsys.readouterr()
         assert "Embedding 2 messages" in captured.out
         assert "✓ Embedded" in captured.out
@@ -190,7 +187,7 @@ class TestEmbedSingle:
             _embed_single(mock_env, mock_repository_async, MagicMock(), "nonexistent")
 
     def test_embed_single_no_messages(self, mock_env: Any, mock_repository_async: Any, capsys: Any) -> None:
-        mock_repository_async.queries.get_messages = AsyncMock(return_value=[])
+        mock_repository_async.get_messages = AsyncMock(return_value=[])
         mock_vec_provider = MagicMock()
         _embed_single(mock_env, mock_repository_async, mock_vec_provider, "conv-123")
         mock_vec_provider.upsert.assert_not_called()

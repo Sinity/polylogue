@@ -23,14 +23,14 @@ def register_prompts(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         since: str | None = None,
         limit: int = 50,
     ) -> str:
-        repo = hooks.get_repo()
+        store = hooks.get_query_store()
         spec = build_query_spec(
             query="error",
             provider=provider,
             since=since,
             limit=hooks.clamp_limit(limit),
         )
-        convs = await spec.list(repo)
+        convs = await spec.list(store)
 
         error_contexts = []
         for conv in convs:
@@ -65,13 +65,13 @@ Error contexts:
 
     @mcp.prompt()
     async def summarize_week(limit: int = 100) -> str:
-        repo = hooks.get_repo()
+        store = hooks.get_query_store()
         week_ago = (datetime.now(tz=timezone.utc) - timedelta(days=7)).isoformat()
         spec = build_query_spec(
             since=week_ago,
             limit=hooks.clamp_limit(limit),
         )
-        convs = await spec.list(repo)
+        convs = await spec.list(store)
 
         by_provider: dict[str, int] = {}
         total_messages = 0
@@ -97,8 +97,8 @@ Focus on actionable insights and patterns, not exhaustive summaries.
 
     @mcp.prompt()
     async def extract_code(language: str = "", limit: int = 50) -> str:
-        repo = hooks.get_repo()
-        convs = await build_query_spec(limit=hooks.clamp_limit(limit)).list(repo)
+        store = hooks.get_query_store()
+        convs = await build_query_spec(limit=hooks.clamp_limit(limit)).list(store)
 
         code_snippets: list[dict[str, str]] = []
         for conv in convs:
@@ -128,9 +128,9 @@ Code snippets:
 
     @mcp.prompt()
     async def compare_conversations(id1: str, id2: str) -> str:
-        repo = hooks.get_repo()
-        conv1 = await repo.view(id1)
-        conv2 = await repo.view(id2)
+        store = hooks.get_query_store()
+        conv1 = await store.get_eager(id1)
+        conv2 = await store.get_eager(id2)
 
         def _summarize(conv: Any) -> dict[str, Any]:
             if conv is None:
@@ -165,12 +165,12 @@ Conversation 2:
 
     @mcp.prompt()
     async def extract_patterns(provider: str | None = None, limit: int = 30) -> str:
-        repo = hooks.get_repo()
+        store = hooks.get_query_store()
         spec = build_query_spec(
             provider=provider,
             limit=hooks.clamp_limit(limit),
         )
-        convs = await spec.list(repo)
+        convs = await spec.list(store)
 
         summaries = []
         for conv in convs:

@@ -142,13 +142,12 @@ async def _load_semantic_stats_conversations(
 
     from polylogue.storage.hydrators import conversation_from_records
 
-    queries = repo.queries
-    records = await queries.get_conversations_batch(conversation_ids)
-    messages_by_conversation = await queries.get_messages_batch(conversation_ids)
+    records = await repo.get_conversations_batch(conversation_ids)
+    messages_by_conversation = await repo.get_messages_batch(conversation_ids)
 
     attachments_by_conversation: dict[str, list[AttachmentRecord]] = {}
     attachments_result: Awaitable[dict[str, list[AttachmentRecord]]] | dict[str, list[AttachmentRecord]] | object
-    attachments_result = queries.get_attachments_batch(conversation_ids)
+    attachments_result = repo.get_attachments_batch(conversation_ids)
     if isinstance(attachments_result, Awaitable):
         attachments_by_conversation = await attachments_result
     elif isinstance(attachments_result, dict):

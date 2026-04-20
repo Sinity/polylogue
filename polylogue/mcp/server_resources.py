@@ -25,7 +25,7 @@ def register_resources(mcp: FastMCP, hooks: ServerCallbacks) -> None:
 
     @mcp.resource("polylogue://stats")
     async def stats_resource() -> str:
-        archive_stats = await hooks.get_repo().get_archive_stats()
+        archive_stats = await hooks.get_archive_ops().storage_stats()
         return hooks.json_payload(
             MCPArchiveStatsPayload.from_archive_stats(
                 archive_stats,
@@ -37,19 +37,19 @@ def register_resources(mcp: FastMCP, hooks: ServerCallbacks) -> None:
 
     @mcp.resource("polylogue://conversations")
     async def conversations_resource() -> str:
-        convs = await build_query_spec().list(hooks.get_repo())
+        convs = await build_query_spec().list(hooks.get_query_store())
         return hooks.json_payload(conversation_summary_list_payload(convs))
 
     @mcp.resource("polylogue://conversation/{conv_id}")
     async def conversation_resource(conv_id: str) -> str:
-        conv = await hooks.get_repo().get(conv_id)
+        conv = await hooks.get_archive_ops().get_conversation(conv_id)
         if not conv:
             return hooks.error_json(f"Conversation not found: {conv_id}")
         return hooks.json_payload(MCPConversationDetailPayload.from_conversation(conv))
 
     @mcp.resource("polylogue://tags")
     async def tags_resource() -> str:
-        tags = await hooks.get_repo().list_tags()
+        tags = await hooks.get_tag_store().list_tags()
         return hooks.json_payload(MCPTagCountsPayload(root=tags))
 
     @mcp.resource("polylogue://health")

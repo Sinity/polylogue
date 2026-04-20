@@ -16,7 +16,7 @@ from polylogue.storage.hydrators import (
 )
 from polylogue.storage.query_models import ConversationRecordQuery
 from polylogue.storage.repository_contracts import RepositoryBackendProtocol
-from polylogue.storage.store import ConversationRecord
+from polylogue.storage.store import AttachmentRecord, ConversationRecord, MessageRecord
 
 if TYPE_CHECKING:
     from polylogue.storage.backends.query_store import SQLiteQueryStore
@@ -66,6 +66,24 @@ class RepositoryArchiveConversationMixin:
 
     async def get_eager(self, conversation_id: str) -> Conversation | None:
         return await self.get(conversation_id)
+
+    async def get_messages(self, conversation_id: str) -> list[MessageRecord]:
+        return await self.queries.get_messages(conversation_id)
+
+    async def get_conversations_batch(self, ids: list[str]) -> list[ConversationRecord]:
+        return await self.queries.get_conversations_batch(ids)
+
+    async def get_messages_batch(
+        self,
+        conversation_ids: list[str],
+    ) -> dict[str, list[MessageRecord]]:
+        return await self.queries.get_messages_batch(conversation_ids)
+
+    async def get_attachments_batch(
+        self,
+        conversation_ids: list[str],
+    ) -> dict[str, list[AttachmentRecord]]:
+        return await self.queries.get_attachments_batch(conversation_ids)
 
     async def _hydrate_conversations(
         self,

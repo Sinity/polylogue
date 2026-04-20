@@ -154,12 +154,11 @@ def register_read_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
     @mcp.tool()
     async def get_conversation_summary(id: str) -> str:
         async def run() -> str:
-            repo = hooks.get_repo()
-            full_id = await repo.resolve_id(id) or id
-            summary = await repo.get_summary(full_id)
+            ops = hooks.get_archive_ops()
+            summary = await ops.get_conversation_summary(id)
             if summary is None:
                 return hooks.error_json(f"Conversation not found: {id}")
-            stats = await repo.queries.get_conversation_stats(str(full_id))
+            stats = await ops.get_conversation_stats(id)
             return hooks.json_payload(
                 MCPConversationSummaryPayload.from_summary(
                     summary,
@@ -172,7 +171,7 @@ def register_read_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
     @mcp.tool()
     async def get_session_tree(conversation_id: str) -> str:
         async def run() -> str:
-            tree = await hooks.get_repo().get_session_tree(conversation_id)
+            tree = await hooks.get_archive_ops().get_session_tree(conversation_id)
             return hooks.json_payload(conversation_summary_list_payload(tree))
 
         return await hooks.async_safe_call("get_session_tree", run)
@@ -180,7 +179,7 @@ def register_read_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
     @mcp.tool()
     async def get_stats_by(group_by: str = "provider") -> str:
         async def run() -> str:
-            root = await hooks.get_repo().queries.get_stats_by(group_by)
+            root = await hooks.get_archive_ops().get_stats_by(group_by)
             return hooks.json_payload(MCPStatsByPayload(root=root))
 
         return await hooks.async_safe_call("get_stats_by", run)
