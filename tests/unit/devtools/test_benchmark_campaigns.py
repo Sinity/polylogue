@@ -94,11 +94,11 @@ async def test_run_full_campaign_skips_scenarios_outside_scale_targets(monkeypat
         return CampaignResult(
             campaign_name=name,
             scale_level="",
-            metrics={"rebuild_wall_s": 1.0, "total_wall_s": 1.0, "list_50_wall_s": 1.0, "total_health_s": 1.0},
+            metrics={"rebuild_wall_s": 1.0, "total_wall_s": 1.0, "list_50_wall_s": 1.0, "total_readiness_s": 1.0},
             db_stats={},
         )
 
-    skipped = SYNTHETIC_CAMPAIGNS["startup-health"]
+    skipped = SYNTHETIC_CAMPAIGNS["startup-readiness"]
     limited = SYNTHETIC_CAMPAIGNS["incremental-index"]
     monkeypatch.setitem(
         SYNTHETIC_CAMPAIGNS,
@@ -116,7 +116,7 @@ async def test_run_full_campaign_skips_scenarios_outside_scale_targets(monkeypat
     results = await run_full_campaign("small", tmp_path)
 
     assert "incremental-index" in {result.campaign_name for result in results}
-    assert "startup-health" not in {result.campaign_name for result in results}
+    assert "startup-readiness" not in {result.campaign_name for result in results}
 
 
 def test_action_event_materialization_campaign_reports_action_row_counts(monkeypatch: Any, tmp_path: Path) -> None:

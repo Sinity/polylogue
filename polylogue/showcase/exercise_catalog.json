@@ -905,7 +905,7 @@
       "env": "seeded"
     },
     {
-      "name": "doctor-health",
+      "name": "doctor-readiness",
       "group": "subcommands",
       "description": "Health check",
       "execution": {
@@ -942,7 +942,7 @@
     {
       "name": "doctor-verbose",
       "group": "subcommands",
-      "description": "Verbose health check",
+      "description": "Verbose readiness check",
       "execution": {
         "kind": "polylogue",
         "argv": [

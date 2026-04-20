@@ -51,10 +51,10 @@ class TestLaneParsing:
     def test_retrieval_checks_lane_carries_runtime_query_and_health_metadata(self) -> None:
         lane = LANES["retrieval-checks"]
 
-        assert lane.path_targets == ("conversation-query-loop", "message-fts-health-loop")
-        assert lane.artifact_targets == ("message_fts", "conversation_query_results", "archive_health")
-        assert lane.operation_targets == ("query-conversations", "project-archive-health")
-        assert lane.tags == ("contract", "retrieval", "health")
+        assert lane.path_targets == ("conversation-query-loop", "message-fts-readiness-loop")
+        assert lane.artifact_targets == ("message_fts", "conversation_query_results", "archive_readiness")
+        assert lane.operation_targets == ("query-conversations", "project-archive-readiness")
+        assert lane.tags == ("contract", "retrieval", "readiness")
 
     def test_composite_lane_inherits_metadata_through_catalog_entries(self) -> None:
         from devtools.validation_catalog import build_composite_lane_entries
@@ -70,21 +70,21 @@ class TestLaneParsing:
         assert "cli.json-contract" in frontier_local.operation_targets
         assert "cli.help" in frontier_local.operation_targets
         assert "query-conversations" in archive_intelligence.operation_targets
-        assert "project-archive-health" in archive_intelligence.operation_targets
+        assert "project-archive-readiness" in archive_intelligence.operation_targets
         assert runtime_substrate.family == "runtime-substrate"
 
-    def test_live_health_json_lane_carries_archive_health_metadata(self) -> None:
-        lane = LANES["live-health-json"]
+    def test_live_health_json_lane_carries_archive_readiness_metadata(self) -> None:
+        lane = LANES["live-readiness-json"]
 
-        assert "message-fts-health-loop" in lane.path_targets
-        assert "archive_health" in lane.artifact_targets
-        assert "project-archive-health" in lane.operation_targets
+        assert "message-fts-readiness-loop" in lane.path_targets
+        assert "archive_readiness" in lane.artifact_targets
+        assert "project-archive-readiness" in lane.operation_targets
 
     def test_live_products_status_lane_infers_status_query_metadata(self) -> None:
         lane = LANES["live-products-status"]
 
         assert lane.path_targets == ("session-product-status-query-loop",)
-        assert lane.artifact_targets == ("session_product_health", "session_product_status_results")
+        assert lane.artifact_targets == ("session_product_readiness", "session_product_status_results")
         assert lane.operation_targets == ("query-session-product-status",)
 
     def test_live_products_debt_lane_infers_archive_debt_metadata(self) -> None:
@@ -92,9 +92,9 @@ class TestLaneParsing:
 
         assert lane.path_targets == ("archive-debt-query-loop",)
         assert lane.artifact_targets == (
-            "action_event_health",
-            "session_product_health",
-            "archive_health",
+            "action_event_readiness",
+            "session_product_readiness",
+            "archive_readiness",
             "archive_debt_results",
         )
         assert lane.operation_targets == ("query-archive-debt",)
@@ -102,18 +102,18 @@ class TestLaneParsing:
     def test_live_embed_stats_lane_infers_embedding_status_metadata(self) -> None:
         lane = LANES["live-embed-stats"]
 
-        assert lane.path_targets == ("retrieval-band-health-loop", "embedding-status-query-loop")
+        assert lane.path_targets == ("retrieval-band-readiness-loop", "embedding-status-query-loop")
         assert lane.artifact_targets == (
             "embedding_metadata_rows",
             "embedding_status_rows",
             "message_embedding_vectors",
-            "action_event_health",
-            "session_product_health",
-            "retrieval_band_health",
+            "action_event_readiness",
+            "session_product_readiness",
+            "retrieval_band_readiness",
             "embedding_status_results",
         )
         assert lane.operation_targets == (
-            "project-retrieval-band-health",
+            "project-retrieval-band-readiness",
             "query-embedding-status",
             "cli.json-contract",
         )
@@ -270,19 +270,19 @@ class TestCommandConstruction:
         assert lane.path_targets == (
             "embedding-materialization-loop",
             "embedding-status-query-loop",
-            "retrieval-band-health-loop",
+            "retrieval-band-readiness-loop",
         )
         assert lane.artifact_targets == (
             "archive_conversation_rows",
             "embedding_metadata_rows",
             "embedding_status_rows",
             "message_embedding_vectors",
-            "retrieval_band_health",
+            "retrieval_band_readiness",
             "embedding_status_results",
         )
         assert lane.operation_targets == (
             "materialize-transcript-embeddings",
-            "project-retrieval-band-health",
+            "project-retrieval-band-readiness",
             "query-embedding-status",
         )
         assert lane.tags == ("contract", "embeddings", "retrieval")
@@ -319,23 +319,23 @@ class TestCommandConstruction:
 
         assert lane.path_targets == (
             "embedding-status-query-loop",
-            "retrieval-band-health-loop",
-            "message-fts-health-loop",
+            "retrieval-band-readiness-loop",
+            "message-fts-readiness-loop",
         )
         assert lane.artifact_targets == (
             "embedding_metadata_rows",
             "embedding_status_rows",
             "message_embedding_vectors",
-            "retrieval_band_health",
+            "retrieval_band_readiness",
             "embedding_status_results",
-            "archive_health",
+            "archive_readiness",
         )
         assert lane.operation_targets == (
-            "project-retrieval-band-health",
+            "project-retrieval-band-readiness",
             "query-embedding-status",
-            "project-archive-health",
+            "project-archive-readiness",
         )
-        assert lane.tags == ("contract", "retrieval", "embeddings", "health")
+        assert lane.tags == ("contract", "retrieval", "embeddings", "readiness")
 
     def test_heuristic_inference_contracts_lane_uses_semantic_product_suite(self) -> None:
         cmd = build_lane_command(LANES["heuristic-inference-contracts"])

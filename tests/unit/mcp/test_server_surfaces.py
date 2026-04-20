@@ -212,7 +212,7 @@ class TestResourceSurfaces:
         parsed = json.loads(result)
         assert parsed == {"feature": 10, "bug": 5}
 
-    def test_health_resource(self: object, mcp_server: Any) -> None:
+    def test_readiness_resource(self: object, mcp_server: Any) -> None:
         mock_check = MagicMock()
         mock_check.name = "database"
         mock_check.status.value = "ok"
@@ -223,12 +223,12 @@ class TestResourceSurfaces:
 
         with (
             patch("polylogue.mcp.server._get_config") as mock_get_config,
-            patch("polylogue.health.get_health") as mock_get_health,
+            patch("polylogue.readiness.get_readiness") as mock_get_readiness,
         ):
             mock_get_config.return_value = MagicMock()
-            mock_get_health.return_value = mock_report
+            mock_get_readiness.return_value = mock_report
 
-            result = invoke_surface(mcp_server._resource_manager._resources["polylogue://health"].fn)
+            result = invoke_surface(mcp_server._resource_manager._resources["polylogue://readiness"].fn)
 
         parsed = json.loads(result)
         assert len(parsed["checks"]) == 1

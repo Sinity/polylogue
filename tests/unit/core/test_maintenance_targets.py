@@ -27,7 +27,7 @@ def test_maintenance_target_catalog_resolves_aliases_to_canonical_targets() -> N
     assert spec.name == "action_event_read_model"
     assert spec.category is MaintenanceCategory.DERIVED_REPAIR
     assert spec.doctor_repair_operation == "materialize-action-events"
-    assert spec.doctor_health_operation == "project-action-event-health"
+    assert spec.doctor_readiness_operation == "project-action-event-readiness"
 
 
 def test_maintenance_target_catalog_reports_preview_and_help_semantics() -> None:
@@ -45,15 +45,15 @@ def test_maintenance_target_catalog_reports_preview_and_help_semantics() -> None
     )
 
 
-def test_maintenance_target_catalog_exposes_archive_health_specs() -> None:
+def test_maintenance_target_catalog_exposes_archive_readiness_specs() -> None:
     catalog = build_maintenance_target_catalog()
 
-    assert tuple(spec.name for spec in catalog.archive_health_specs(deep=False)) == (
+    assert tuple(spec.name for spec in catalog.archive_readiness_specs(deep=False)) == (
         "orphaned_messages",
         "empty_conversations",
         "orphaned_attachments",
     )
-    assert tuple(spec.name for spec in catalog.archive_health_specs(deep=True)) == (
+    assert tuple(spec.name for spec in catalog.archive_readiness_specs(deep=True)) == (
         "orphaned_messages",
         "orphaned_content_blocks",
         "empty_conversations",

@@ -82,8 +82,8 @@ def test_build_document_includes_live_registry_sections() -> None:
             ),
             synthetic_benchmark_campaigns=(
                 BenchmarkCampaignEntry(
-                    name="startup-health",
-                    description="Synthetic startup-health benchmark.",
+                    name="startup-readiness",
+                    description="Synthetic startup-readiness benchmark.",
                 ),
             ),
             inferred_corpus_scenarios=(
@@ -121,7 +121,7 @@ def test_build_document_includes_live_registry_sections() -> None:
                 origin="generated.json-contract",
                 path_targets=("action-event-repair-loop",),
                 artifact_targets=("action_event_rows",),
-                operation_targets=("project-action-event-health",),
+                operation_targets=("project-action-event-readiness",),
                 maintenance_targets=("action_event_read_model",),
                 tags=("generated", "json-contract"),
             ),
@@ -167,7 +167,7 @@ def test_build_document_includes_live_registry_sections() -> None:
     assert "`frontier-local`" in rendered
     assert "`filters`" in rendered
     assert "`search-filters`" in rendered
-    assert "`startup-health`" in rendered
+    assert "`startup-readiness`" in rendered
     assert "## Inferred Corpus Catalog" in rendered
     assert "`chatgpt`" in rendered
     assert "## Synthetic Benchmark Campaign Catalog" in rendered

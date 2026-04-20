@@ -332,7 +332,9 @@ def run_runtime_readiness(config: Config) -> ReadinessReport:
                     ReadinessCheck("db_writable", VerifyStatus.OK, summary=f"Parent writable, DB will be created: {db}")
                 )
             else:
-                checks.append(ReadinessCheck("db_writable", VerifyStatus.ERROR, summary=f"Parent not writable: {parent}"))
+                checks.append(
+                    ReadinessCheck("db_writable", VerifyStatus.ERROR, summary=f"Parent not writable: {parent}")
+                )
         else:
             checks.append(ReadinessCheck("db_writable", VerifyStatus.WARNING, summary=f"Parent missing: {parent}"))
 
@@ -419,7 +421,9 @@ def run_runtime_readiness(config: Config) -> ReadinessReport:
         if token.exists():
             checks.append(ReadinessCheck("drive_token", VerifyStatus.OK, summary=str(token)))
         else:
-            checks.append(ReadinessCheck("drive_token", VerifyStatus.WARNING, summary=f"Missing (auth required): {token}"))
+            checks.append(
+                ReadinessCheck("drive_token", VerifyStatus.WARNING, summary=f"Missing (auth required): {token}")
+            )
 
     term = os.environ.get("TERM", "unknown")
     cols, rows = shutil.get_terminal_size()

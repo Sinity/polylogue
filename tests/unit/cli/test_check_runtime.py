@@ -1,6 +1,6 @@
-"""Tests for check --runtime command and run_runtime_health.
+"""Tests for check --runtime command and run_runtime_readiness.
 
-Validates health checks for the runtime environment, including:
+Validates readiness checks for the runtime environment, including:
 - Database writability
 - Schema version
 - FTS table availability
@@ -22,17 +22,17 @@ from typing import Any
 import pytest
 
 from polylogue.config import Config
-from polylogue.health import HealthReport, VerifyStatus, run_runtime_health
 from polylogue.paths import Source
+from polylogue.readiness import ReadinessReport, VerifyStatus, run_runtime_readiness
 
 pytestmark = pytest.mark.machine_contract
 
 
-class TestRuntimeHealthCheckNames:
-    """Tests that run_runtime_health includes expected check names."""
+class TestRuntimeReadinessCheckNames:
+    """Tests that run_runtime_readiness includes expected check names."""
 
     def test_runtime_health_includes_db_writable_check(self, tmp_path: Any) -> None:
-        """run_runtime_health includes db_writable check."""
+        """run_runtime_readiness includes db_writable check."""
         config = Config(
             archive_root=tmp_path / "archive",
             render_root=tmp_path / "render",
@@ -41,13 +41,13 @@ class TestRuntimeHealthCheckNames:
         (tmp_path / "archive").mkdir(parents=True, exist_ok=True)
         (tmp_path / "render").mkdir(parents=True, exist_ok=True)
 
-        report = run_runtime_health(config)
+        report = run_runtime_readiness(config)
 
         check_names = [c.name for c in report.checks]
         assert "db_writable" in check_names
 
     def test_runtime_health_includes_schema_version_check(self, tmp_path: Any) -> None:
-        """run_runtime_health includes schema_version check."""
+        """run_runtime_readiness includes schema_version check."""
         config = Config(
             archive_root=tmp_path / "archive",
             render_root=tmp_path / "render",
@@ -56,13 +56,13 @@ class TestRuntimeHealthCheckNames:
         (tmp_path / "archive").mkdir(parents=True, exist_ok=True)
         (tmp_path / "render").mkdir(parents=True, exist_ok=True)
 
-        report = run_runtime_health(config)
+        report = run_runtime_readiness(config)
 
         check_names = [c.name for c in report.checks]
         assert "schema_version" in check_names
 
     def test_runtime_health_includes_fts_tables_check(self, tmp_path: Any) -> None:
-        """run_runtime_health includes fts_tables check."""
+        """run_runtime_readiness includes fts_tables check."""
         config = Config(
             archive_root=tmp_path / "archive",
             render_root=tmp_path / "render",
@@ -71,13 +71,13 @@ class TestRuntimeHealthCheckNames:
         (tmp_path / "archive").mkdir(parents=True, exist_ok=True)
         (tmp_path / "render").mkdir(parents=True, exist_ok=True)
 
-        report = run_runtime_health(config)
+        report = run_runtime_readiness(config)
 
         check_names = [c.name for c in report.checks]
         assert "fts_tables" in check_names
 
     def test_runtime_health_includes_sqlite_vec_check(self, tmp_path: Any) -> None:
-        """run_runtime_health includes sqlite_vec check."""
+        """run_runtime_readiness includes sqlite_vec check."""
         config = Config(
             archive_root=tmp_path / "archive",
             render_root=tmp_path / "render",
@@ -86,13 +86,13 @@ class TestRuntimeHealthCheckNames:
         (tmp_path / "archive").mkdir(parents=True, exist_ok=True)
         (tmp_path / "render").mkdir(parents=True, exist_ok=True)
 
-        report = run_runtime_health(config)
+        report = run_runtime_readiness(config)
 
         check_names = [c.name for c in report.checks]
         assert "sqlite_vec" in check_names
 
     def test_runtime_health_includes_archive_root_writable_check(self, tmp_path: Any) -> None:
-        """run_runtime_health includes archive_root_writable check."""
+        """run_runtime_readiness includes archive_root_writable check."""
         config = Config(
             archive_root=tmp_path / "archive",
             render_root=tmp_path / "render",
@@ -101,13 +101,13 @@ class TestRuntimeHealthCheckNames:
         (tmp_path / "archive").mkdir(parents=True, exist_ok=True)
         (tmp_path / "render").mkdir(parents=True, exist_ok=True)
 
-        report = run_runtime_health(config)
+        report = run_runtime_readiness(config)
 
         check_names = [c.name for c in report.checks]
         assert "archive_root_writable" in check_names
 
     def test_runtime_health_includes_render_root_writable_check(self, tmp_path: Any) -> None:
-        """run_runtime_health includes render_root_writable check."""
+        """run_runtime_readiness includes render_root_writable check."""
         config = Config(
             archive_root=tmp_path / "archive",
             render_root=tmp_path / "render",
@@ -116,13 +116,13 @@ class TestRuntimeHealthCheckNames:
         (tmp_path / "archive").mkdir(parents=True, exist_ok=True)
         (tmp_path / "render").mkdir(parents=True, exist_ok=True)
 
-        report = run_runtime_health(config)
+        report = run_runtime_readiness(config)
 
         check_names = [c.name for c in report.checks]
         assert "render_root_writable" in check_names
 
     def test_runtime_health_includes_config_home_check(self, tmp_path: Any) -> None:
-        """run_runtime_health includes config_home check."""
+        """run_runtime_readiness includes config_home check."""
         config = Config(
             archive_root=tmp_path / "archive",
             render_root=tmp_path / "render",
@@ -131,13 +131,13 @@ class TestRuntimeHealthCheckNames:
         (tmp_path / "archive").mkdir(parents=True, exist_ok=True)
         (tmp_path / "render").mkdir(parents=True, exist_ok=True)
 
-        report = run_runtime_health(config)
+        report = run_runtime_readiness(config)
 
         check_names = [c.name for c in report.checks]
         assert "config_home" in check_names
 
     def test_runtime_health_includes_terminal_check(self, tmp_path: Any) -> None:
-        """run_runtime_health includes terminal check."""
+        """run_runtime_readiness includes terminal check."""
         config = Config(
             archive_root=tmp_path / "archive",
             render_root=tmp_path / "render",
@@ -146,13 +146,13 @@ class TestRuntimeHealthCheckNames:
         (tmp_path / "archive").mkdir(parents=True, exist_ok=True)
         (tmp_path / "render").mkdir(parents=True, exist_ok=True)
 
-        report = run_runtime_health(config)
+        report = run_runtime_readiness(config)
 
         check_names = [c.name for c in report.checks]
         assert "terminal" in check_names
 
     def test_runtime_health_includes_ui_libraries_check(self, tmp_path: Any) -> None:
-        """run_runtime_health includes ui_libraries check."""
+        """run_runtime_readiness includes ui_libraries check."""
         config = Config(
             archive_root=tmp_path / "archive",
             render_root=tmp_path / "render",
@@ -161,13 +161,13 @@ class TestRuntimeHealthCheckNames:
         (tmp_path / "archive").mkdir(parents=True, exist_ok=True)
         (tmp_path / "render").mkdir(parents=True, exist_ok=True)
 
-        report = run_runtime_health(config)
+        report = run_runtime_readiness(config)
 
         check_names = [c.name for c in report.checks]
         assert "ui_libraries" in check_names
 
     def test_runtime_health_includes_vhs_check(self, tmp_path: Any) -> None:
-        """run_runtime_health includes vhs check."""
+        """run_runtime_readiness includes vhs check."""
         config = Config(
             archive_root=tmp_path / "archive",
             render_root=tmp_path / "render",
@@ -176,14 +176,14 @@ class TestRuntimeHealthCheckNames:
         (tmp_path / "archive").mkdir(parents=True, exist_ok=True)
         (tmp_path / "render").mkdir(parents=True, exist_ok=True)
 
-        report = run_runtime_health(config)
+        report = run_runtime_readiness(config)
 
         check_names = [c.name for c in report.checks]
         assert "vhs" in check_names
 
 
-class TestRuntimeHealthCheckResults:
-    """Tests for runtime health check status results."""
+class TestRuntimeReadinessCheckResults:
+    """Tests for runtime readiness check status results."""
 
     def test_runtime_health_with_writable_paths(self, tmp_path: Any) -> None:
         """Runtime health returns OK for writable archive and render roots."""
@@ -198,7 +198,7 @@ class TestRuntimeHealthCheckResults:
             sources=[Source(name="test", path=tmp_path / "inbox")],
         )
 
-        report = run_runtime_health(config)
+        report = run_runtime_readiness(config)
 
         # Find writable checks
         archive_check = next(
@@ -229,7 +229,7 @@ class TestRuntimeHealthCheckResults:
             sources=[Source(name="test", path=tmp_path / "inbox")],
         )
 
-        report = run_runtime_health(config)
+        report = run_runtime_readiness(config)
 
         archive_check = next(
             (c for c in report.checks if c.name == "archive_root_writable"),
@@ -248,7 +248,7 @@ class TestRuntimeHealthCheckResults:
         assert render_check.status == VerifyStatus.OK
 
     def test_runtime_health_returns_health_report(self, tmp_path: Any) -> None:
-        """run_runtime_health returns a HealthReport object."""
+        """run_runtime_readiness returns a ReadinessReport object."""
         config = Config(
             archive_root=tmp_path / "archive",
             render_root=tmp_path / "render",
@@ -257,14 +257,14 @@ class TestRuntimeHealthCheckResults:
         (tmp_path / "archive").mkdir(parents=True, exist_ok=True)
         (tmp_path / "render").mkdir(parents=True, exist_ok=True)
 
-        report = run_runtime_health(config)
+        report = run_runtime_readiness(config)
 
-        assert isinstance(report, HealthReport)
+        assert isinstance(report, ReadinessReport)
         assert isinstance(report.checks, list)
         assert isinstance(report.summary, dict)
 
     def test_runtime_health_summary_has_ok_warning_error(self, tmp_path: Any) -> None:
-        """HealthReport.summary includes ok, warning, error counts."""
+        """ReadinessReport.summary includes ok, warning, error counts."""
         config = Config(
             archive_root=tmp_path / "archive",
             render_root=tmp_path / "render",
@@ -273,7 +273,7 @@ class TestRuntimeHealthCheckResults:
         (tmp_path / "archive").mkdir(parents=True, exist_ok=True)
         (tmp_path / "render").mkdir(parents=True, exist_ok=True)
 
-        report = run_runtime_health(config)
+        report = run_runtime_readiness(config)
 
         assert "ok" in report.summary
         assert "warning" in report.summary
@@ -283,7 +283,7 @@ class TestRuntimeHealthCheckResults:
         assert isinstance(report.summary["error"], int)
 
     def test_runtime_health_summary_counts_match_checks(self, tmp_path: Any) -> None:
-        """HealthReport.summary counts should match the actual checks."""
+        """ReadinessReport.summary counts should match the actual checks."""
         config = Config(
             archive_root=tmp_path / "archive",
             render_root=tmp_path / "render",
@@ -292,7 +292,7 @@ class TestRuntimeHealthCheckResults:
         (tmp_path / "archive").mkdir(parents=True, exist_ok=True)
         (tmp_path / "render").mkdir(parents=True, exist_ok=True)
 
-        report = run_runtime_health(config)
+        report = run_runtime_readiness(config)
 
         # Count checks by status
         ok_count = sum(1 for c in report.checks if c.status == VerifyStatus.OK)
@@ -313,7 +313,7 @@ class TestRuntimeHealthCheckResults:
         (tmp_path / "archive").mkdir(parents=True, exist_ok=True)
         (tmp_path / "render").mkdir(parents=True, exist_ok=True)
 
-        report = run_runtime_health(config)
+        report = run_runtime_readiness(config)
 
         valid_statuses = {VerifyStatus.OK, VerifyStatus.WARNING, VerifyStatus.ERROR}
         for check in report.checks:
@@ -329,7 +329,7 @@ class TestRuntimeHealthCheckResults:
         (tmp_path / "archive").mkdir(parents=True, exist_ok=True)
         (tmp_path / "render").mkdir(parents=True, exist_ok=True)
 
-        report = run_runtime_health(config)
+        report = run_runtime_readiness(config)
 
         for check in report.checks:
             assert check.name
@@ -337,7 +337,7 @@ class TestRuntimeHealthCheckResults:
 
 
 class TestRuntimeHealthReadOnlyPaths:
-    """Tests for runtime health with read-only or inaccessible paths."""
+    """Tests for runtime readiness with read-only or inaccessible paths."""
 
     @pytest.mark.skipif(os.name == "nt", reason="Unix-specific permission testing")
     def test_runtime_health_with_readonly_archive_root(self, tmp_path: Any) -> None:
@@ -356,7 +356,7 @@ class TestRuntimeHealthReadOnlyPaths:
             )
             (tmp_path / "render").mkdir(parents=True, exist_ok=True)
 
-            report = run_runtime_health(config)
+            report = run_runtime_readiness(config)
 
             archive_check = next(
                 (c for c in report.checks if c.name == "archive_root_writable"),
@@ -422,7 +422,7 @@ class TestRuntimeHealthLegacySchema:
         (tmp_path / "archive").mkdir(parents=True, exist_ok=True)
         (tmp_path / "render").mkdir(parents=True, exist_ok=True)
 
-        report = run_runtime_health(config)
+        report = run_runtime_readiness(config)
 
         schema_check = next((c for c in report.checks if c.name == "schema_version"), None)
         assert schema_check is not None
@@ -431,10 +431,10 @@ class TestRuntimeHealthLegacySchema:
 
 
 class TestRuntimeHealthToDict:
-    """Tests for HealthReport serialization from runtime checks."""
+    """Tests for ReadinessReport serialization from runtime checks."""
 
     def test_runtime_health_report_to_dict(self, tmp_path: Any) -> None:
-        """HealthReport from run_runtime_health serializes correctly."""
+        """ReadinessReport from run_runtime_readiness serializes correctly."""
         config = Config(
             archive_root=tmp_path / "archive",
             render_root=tmp_path / "render",
@@ -443,7 +443,7 @@ class TestRuntimeHealthToDict:
         (tmp_path / "archive").mkdir(parents=True, exist_ok=True)
         (tmp_path / "render").mkdir(parents=True, exist_ok=True)
 
-        report = run_runtime_health(config)
+        report = run_runtime_readiness(config)
         data = report.to_dict()
 
         assert "checks" in data

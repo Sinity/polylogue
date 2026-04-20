@@ -51,7 +51,7 @@ def test_render_scenario_projections_supports_targeted_filters() -> None:
         source_kinds=("exercise",),
         path_target="action-event-repair-loop",
         artifact_target="action_event_rows",
-        operation_target="project-action-event-health",
+        operation_target="project-action-event-readiness",
         tag="maintenance",
     )
 

@@ -126,11 +126,11 @@ class TestExercisesByGroup:
         assert action_preview.artifact_targets == (
             "action_event_rows",
             "action_event_fts",
-            "action_event_health",
+            "action_event_readiness",
         )
         assert action_preview.operation_targets == (
             "cli.json-contract",
-            "project-action-event-health",
+            "project-action-event-readiness",
         )
         assert action_preview.tags == (
             "generated",
@@ -144,11 +144,11 @@ class TestExercisesByGroup:
         assert session_preview.artifact_targets == (
             "session_product_rows",
             "session_product_fts",
-            "session_product_health",
+            "session_product_readiness",
         )
         assert session_preview.operation_targets == (
             "cli.json-contract",
-            "project-session-product-health",
+            "project-session-product-readiness",
         )
         assert session_preview.tags == (
             "generated",
@@ -252,7 +252,7 @@ class TestVhsExercises:
             "run-preview",
             "stats-default",
             "query-list",
-            "doctor-health",
+            "doctor-readiness",
             "query-latest-md",
         }
         assert vhs_names == expected

@@ -17,7 +17,7 @@ def test_named_scenario_source_projects_name_and_description() -> None:
         name="exercise-help",
         description="exercise help text",
         origin="generated.test",
-        artifact_targets=("archive_health",),
+        artifact_targets=("archive_readiness",),
         tags=("exercise", "help"),
     )
 
@@ -27,5 +27,5 @@ def test_named_scenario_source_projects_name_and_description() -> None:
     assert projection.name == "exercise-help"
     assert projection.description == "exercise help text"
     assert projection.origin == "generated.test"
-    assert projection.artifact_targets == ("archive_health",)
+    assert projection.artifact_targets == ("archive_readiness",)
     assert projection.tags == ("exercise", "help")

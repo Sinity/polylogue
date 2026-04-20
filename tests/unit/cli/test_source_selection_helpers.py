@@ -319,7 +319,7 @@ class SummaryRunResult(TypedDict):
     lines: list[str]
     console: str
     mock_quick: MagicMock
-    mock_get_health: MagicMock
+    mock_get_readiness: MagicMock
 
 
 def _make_env(config: Config, *, plain: bool) -> tuple[AppEnv, StringIO, MagicMock]:
@@ -406,8 +406,8 @@ def _run_summary(
     with (
         patch.object(env.repository, "get_archive_stats", new=AsyncMock(return_value=archive_stats)),
         patch("polylogue.cli.helpers.latest_run", new_callable=AsyncMock, return_value=last_run),
-        patch("polylogue.cli.helpers.quick_health_summary", return_value=quick_health) as mock_quick,
-        patch("polylogue.cli.helpers.get_health", return_value=health) as mock_get_health,
+        patch("polylogue.cli.helpers.quick_readiness_summary", return_value=quick_health) as mock_quick,
+        patch("polylogue.cli.helpers.get_readiness", return_value=health) as mock_get_readiness,
         patch("polylogue.cli.helpers.format_sources_summary", return_value="inbox"),
         patch("polylogue.cli.helpers.list_provider_analytics_products", metrics_mock),
         patch("polylogue.cli.helpers.get_provider_counts", counts_mock),
@@ -422,7 +422,7 @@ def _run_summary(
         "lines": lines,
         "console": buffer.getvalue(),
         "mock_quick": mock_quick,
-        "mock_get_health": mock_get_health,
+        "mock_get_readiness": mock_get_readiness,
     }
 
 
@@ -443,13 +443,13 @@ def test_print_summary_basic_contract(config: Config) -> None:
         "Sources: inbox",
         "Last run: run-123 (2025-01-15T12:30:45Z)",
         "Embeddings: 0/10 convs, 0 msgs (0.0%)",
-        "Health: OK",
+        "Readiness: OK",
     ]
     assert "Archive:" in result["console"]
     assert "10 conversations" in result["console"]
     assert "claude-ai:" in result["console"]
     result["mock_quick"].assert_called_once()
-    result["mock_get_health"].assert_not_called()
+    result["mock_get_readiness"].assert_not_called()
 
 
 @pytest.mark.parametrize(
@@ -475,9 +475,9 @@ def test_print_summary_verbose_health_matrix(config: Config, plain: bool, status
         "Last run: none",
     ]
     assert result["lines"][4] == "Embeddings: 0/0 convs, 0 msgs (0.0%)"
-    assert result["lines"][5] == "Health (source=live)"
+    assert result["lines"][5] == "Readiness (source=live)"
     assert result["lines"][6] == f"  {expected_indicator} database: detail"
-    result["mock_get_health"].assert_called_once()
+    result["mock_get_readiness"].assert_called_once()
     result["mock_quick"].assert_not_called()
 
 
@@ -514,7 +514,7 @@ def test_print_summary_verbose_analytics_deep_dive_contract(config: Config) -> N
     )
 
     assert result["lines"][4] == "Embeddings: 0/10 convs, 0 msgs (0.0%)"
-    assert result["lines"][5] == "Health (source=live)"
+    assert result["lines"][5] == "Readiness (source=live)"
     assert "Archive:" in result["console"]
     assert "10 conversations" in result["console"]
     assert "Deep Dive:" in result["console"]
@@ -534,7 +534,7 @@ def test_print_summary_analytics_errors_are_silent(config: Config) -> None:
     )
 
     assert result["title"] == "Polylogue"
-    assert result["lines"][-1] == "Health: OK"
+    assert result["lines"][-1] == "Readiness: OK"
     assert result["lines"][-2] == "Embeddings: 0/0 convs, 0 msgs (0.0%)"
     assert "Archive:" not in result["console"]
 

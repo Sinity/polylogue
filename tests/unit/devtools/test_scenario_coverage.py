@@ -10,9 +10,9 @@ def test_build_runtime_scenario_coverage_tracks_the_current_authored_map() -> No
         "source-acquisition-loop",
         "raw-reparse-loop",
         "raw-archive-ingest-loop",
-        "message-fts-health-loop",
+        "message-fts-readiness-loop",
         "embedding-materialization-loop",
-        "retrieval-band-health-loop",
+        "retrieval-band-readiness-loop",
         "embedding-status-query-loop",
         "conversation-query-loop",
         "action-event-repair-loop",
@@ -46,10 +46,10 @@ def test_build_runtime_scenario_coverage_tracks_the_current_authored_map() -> No
     assert "embedding_status_rows" in coverage.artifacts
     assert "message_embedding_vectors" in coverage.artifacts
     assert "tool_use_source_blocks" in coverage.artifacts
-    assert "retrieval_band_health" in coverage.artifacts
+    assert "retrieval_band_readiness" in coverage.artifacts
     assert "embedding_status_results" in coverage.artifacts
     assert "conversation_query_results" in coverage.artifacts
-    assert "archive_health" in coverage.artifacts
+    assert "archive_readiness" in coverage.artifacts
     assert "conversation_render_projection" in coverage.artifacts
     assert "rendered_conversation_artifacts" in coverage.artifacts
     assert "site_conversation_pages" in coverage.artifacts
@@ -66,13 +66,13 @@ def test_build_runtime_scenario_coverage_tracks_the_current_authored_map() -> No
     assert "index-message-fts" in coverage.operations
     assert "materialize-transcript-embeddings" in coverage.operations
     assert "materialize-action-events" in coverage.operations
-    assert "project-retrieval-band-health" in coverage.operations
+    assert "project-retrieval-band-readiness" in coverage.operations
     assert "query-embedding-status" in coverage.operations
     assert "query-conversations" in coverage.operations
     assert "render-conversations" in coverage.operations
     assert "publish-site" in coverage.operations
     assert "materialize-session-products" in coverage.operations
-    assert "project-archive-health" in coverage.operations
+    assert "project-archive-readiness" in coverage.operations
     assert "session_products" in coverage.maintenance_targets
     assert "action_event_read_model" in coverage.maintenance_targets
     assert "dangling_fts" in coverage.maintenance_targets

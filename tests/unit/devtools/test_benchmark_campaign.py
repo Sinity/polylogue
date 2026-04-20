@@ -222,22 +222,22 @@ def test_benchmark_scenario_index_tracks_authored_catalog() -> None:
 
 def test_benchmark_entry_compiles_its_own_projection_entry() -> None:
     campaign = BenchmarkCampaignEntry(
-        name="startup-health",
-        description="startup health benchmark",
+        name="startup-readiness",
+        description="startup readiness benchmark",
         origin="authored.synthetic-benchmark",
-        artifact_targets=("message_fts", "archive_health"),
-        operation_targets=("project-archive-health", "health.startup.synthetic"),
-        tags=("benchmark", "synthetic", "health"),
+        artifact_targets=("message_fts", "archive_readiness"),
+        operation_targets=("project-archive-readiness", "readiness.startup.synthetic"),
+        tags=("benchmark", "synthetic", "readiness"),
         projection_kind=ScenarioProjectionSourceKind.SYNTHETIC_BENCHMARK,
     )
 
     projection = campaign.to_projection_entry()
 
     assert projection.source_kind is ScenarioProjectionSourceKind.SYNTHETIC_BENCHMARK
-    assert projection.name == "startup-health"
-    assert projection.description == "startup health benchmark"
-    assert projection.artifact_targets == ("message_fts", "archive_health")
-    assert projection.operation_targets == ("project-archive-health", "health.startup.synthetic")
+    assert projection.name == "startup-readiness"
+    assert projection.description == "startup readiness benchmark"
+    assert projection.artifact_targets == ("message_fts", "archive_readiness")
+    assert projection.operation_targets == ("project-archive-readiness", "readiness.startup.synthetic")
 
 
 def test_run_campaign_executes_authored_pytest_through_shared_runtime(

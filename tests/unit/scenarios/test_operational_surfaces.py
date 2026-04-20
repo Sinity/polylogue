@@ -11,7 +11,7 @@ def test_build_operational_contract_surfaces_compiles_runtime_aligned_json_contr
     surfaces = {surface.name: surface for surface in build_operational_contract_surfaces()}
 
     assert surfaces["json-doctor"].args == ("doctor", "--json")
-    assert surfaces["json-doctor"].tags == ("maintenance", "health")
+    assert surfaces["json-doctor"].tags == ("maintenance", "readiness")
     assert surfaces["json-doctor-action-event-preview"].args == (
         "doctor",
         "--json",
@@ -35,8 +35,8 @@ def test_build_operational_contract_surfaces_compiles_runtime_aligned_json_contr
 def test_build_live_operational_surface_lanes_compiles_live_variants() -> None:
     surfaces = {surface.name: surface for surface in build_live_operational_surface_lanes()}
 
-    assert surfaces["live-health-json"].args == ("doctor", "--json")
-    assert surfaces["live-health-json"].tags == ("maintenance", "health")
+    assert surfaces["live-readiness-json"].args == ("doctor", "--json")
+    assert surfaces["live-readiness-json"].tags == ("maintenance", "readiness")
     assert surfaces["live-retrieval-checks"].args == (
         "--provider",
         "claude-code",
@@ -49,7 +49,7 @@ def test_build_live_operational_surface_lanes_compiles_live_variants() -> None:
         "--limit",
         "50",
     )
-    assert surfaces["live-retrieval-checks"].tags == ("live", "retrieval", "health")
+    assert surfaces["live-retrieval-checks"].tags == ("live", "retrieval", "readiness")
     assert surfaces["live-project-stats"].args == (
         "--provider",
         "claude-code",

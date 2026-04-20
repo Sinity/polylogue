@@ -1085,12 +1085,12 @@ async def test_search_after_index(workspace_env: dict[str, Path], storage_reposi
 
 
 def test_health_cached(workspace_env: dict[str, Path]) -> None:
-    """Test that get_health returns a live report."""
+    """Test that get_readiness returns a live report."""
     from polylogue.config import get_config
-    from polylogue.health import get_health
+    from polylogue.readiness import get_readiness
 
     config = get_config()
-    report = get_health(config)
+    report = get_readiness(config)
     assert report.provenance.source == "live"
     assert report.timestamp > 0
 
