@@ -51,7 +51,7 @@ async def test_apply_session_product_conversation_updates_async_batches_hydrated
             page_size=10,
         )
 
-    assert update.counts["profiles"] == 1
+    assert update.counts.profiles == 1
     assert update.thread_root_ids == {"conv-refresh"}
     assert update.affected_groups
     assert len(update.chunk_observations) == 1
@@ -94,7 +94,7 @@ async def test_apply_session_product_conversation_updates_async_preserves_thread
             page_size=10,
         )
 
-    assert update.counts["profiles"] == 2
+    assert update.counts.profiles == 2
     assert update.thread_root_ids == {"conv-root"}
     assert len(update.chunk_observations) == 1
 
@@ -131,7 +131,7 @@ async def test_apply_session_product_conversation_updates_async_uses_small_defau
             transaction_depth=1,
         )
 
-    assert update.counts["profiles"] == 11
+    assert update.counts.profiles == 11
     assert len(update.chunk_observations) == 2
     assert update.chunk_observations[0].conversation_count == 10
     assert update.chunk_observations[0].estimated_message_count == 10
@@ -188,7 +188,7 @@ async def test_apply_session_product_conversation_updates_async_splits_large_mes
             transaction_depth=1,
         )
 
-    assert update.counts["profiles"] == 3
+    assert update.counts.profiles == 3
     assert len(update.chunk_observations) == 2
     assert update.chunk_observations[0].conversation_count == 1
     assert update.chunk_observations[0].estimated_message_count == 4_000
@@ -220,7 +220,7 @@ async def test_apply_session_product_conversation_updates_async_clears_deleted_c
         )
         await conn.commit()
 
-    assert first_update.counts["profiles"] == 1
+    assert first_update.counts.profiles == 1
 
     with open_connection(db_path) as conn:
         conn.execute("DELETE FROM messages WHERE conversation_id = ?", ("conv-stale",))
@@ -236,7 +236,7 @@ async def test_apply_session_product_conversation_updates_async_clears_deleted_c
         )
         await conn.commit()
 
-    assert second_update.counts["profiles"] == 0
+    assert second_update.counts.profiles == 0
     assert len(second_update.chunk_observations) == 1
 
     with open_connection(db_path) as conn:

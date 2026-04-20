@@ -13,6 +13,7 @@ from polylogue.storage.embedding_stats import (
     read_embedding_stats_async,
     read_embedding_stats_sync,
 )
+from polylogue.storage.session_product_runtime import SessionProductStatusSnapshot
 
 
 def test_read_embedding_stats_sync_missing_tables_returns_zeroes() -> None:
@@ -99,27 +100,27 @@ def test_read_embedding_stats_sync_exposes_retrieval_bands_when_archive_tables_e
         monkeypatch.setattr(
             embedding_stats_mod,
             "session_product_status_sync",
-            lambda _conn: {
-                "profile_row_count": 2,
-                "profile_evidence_fts_count": 2,
-                "profile_evidence_fts_ready": True,
-                "profile_evidence_fts_duplicate_count": 0,
-                "work_event_inference_count": 2,
-                "work_event_inference_fts_count": 2,
-                "work_event_inference_fts_ready": True,
-                "work_event_inference_fts_duplicate_count": 0,
-                "phase_inference_count": 2,
-                "phase_inference_rows_ready": True,
-                "expected_phase_inference_count": 2,
-                "stale_work_event_inference_count": 0,
-                "stale_phase_inference_count": 0,
-                "profile_inference_fts_count": 2,
-                "profile_inference_fts_ready": True,
-                "profile_inference_fts_duplicate_count": 0,
-                "profile_enrichment_fts_count": 2,
-                "profile_enrichment_fts_ready": True,
-                "profile_enrichment_fts_duplicate_count": 0,
-            },
+            lambda _conn: SessionProductStatusSnapshot(
+                profile_row_count=2,
+                profile_evidence_fts_count=2,
+                profile_evidence_fts_ready=True,
+                profile_evidence_fts_duplicate_count=0,
+                work_event_inference_count=2,
+                work_event_inference_fts_count=2,
+                work_event_inference_fts_ready=True,
+                work_event_inference_fts_duplicate_count=0,
+                phase_inference_count=2,
+                phase_inference_rows_ready=True,
+                expected_phase_inference_count=2,
+                stale_work_event_inference_count=0,
+                stale_phase_inference_count=0,
+                profile_inference_fts_count=2,
+                profile_inference_fts_ready=True,
+                profile_inference_fts_duplicate_count=0,
+                profile_enrichment_fts_count=2,
+                profile_enrichment_fts_ready=True,
+                profile_enrichment_fts_duplicate_count=0,
+            ),
         )
 
         stats = read_embedding_stats_sync(conn)
@@ -214,27 +215,27 @@ async def test_read_embedding_stats_async_derives_pending_from_total_conversatio
         }
 
     async def fake_session_status(_conn: Any) -> Any:
-        return {
-            "profile_row_count": 0,
-            "profile_evidence_fts_count": 0,
-            "profile_evidence_fts_ready": True,
-            "profile_evidence_fts_duplicate_count": 0,
-            "work_event_inference_count": 0,
-            "work_event_inference_fts_count": 0,
-            "work_event_inference_fts_ready": True,
-            "work_event_inference_fts_duplicate_count": 0,
-            "phase_inference_count": 0,
-            "phase_inference_rows_ready": True,
-            "expected_phase_inference_count": 0,
-            "stale_work_event_inference_count": 0,
-            "stale_phase_inference_count": 0,
-            "profile_inference_fts_count": 0,
-            "profile_inference_fts_ready": True,
-            "profile_inference_fts_duplicate_count": 0,
-            "profile_enrichment_fts_count": 0,
-            "profile_enrichment_fts_ready": True,
-            "profile_enrichment_fts_duplicate_count": 0,
-        }
+        return SessionProductStatusSnapshot(
+            profile_row_count=0,
+            profile_evidence_fts_count=0,
+            profile_evidence_fts_ready=True,
+            profile_evidence_fts_duplicate_count=0,
+            work_event_inference_count=0,
+            work_event_inference_fts_count=0,
+            work_event_inference_fts_ready=True,
+            work_event_inference_fts_duplicate_count=0,
+            phase_inference_count=0,
+            phase_inference_rows_ready=True,
+            expected_phase_inference_count=0,
+            stale_work_event_inference_count=0,
+            stale_phase_inference_count=0,
+            profile_inference_fts_count=0,
+            profile_inference_fts_ready=True,
+            profile_inference_fts_duplicate_count=0,
+            profile_enrichment_fts_count=0,
+            profile_enrichment_fts_ready=True,
+            profile_enrichment_fts_duplicate_count=0,
+        )
 
     async with aiosqlite.connect(":memory:") as conn:
         await conn.execute("CREATE TABLE conversations (conversation_id TEXT)")

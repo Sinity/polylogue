@@ -40,53 +40,53 @@ def collect_derived_model_statuses_sync(
         "action_fts_ready": bool(action_status["action_fts_ready"]),
         "action_stale_rows": int(action_status["stale_count"]),
         "action_matches_version": bool(action_status["matches_version"]),
-        "profile_rows": int(session_status["profile_row_count"]),
-        "profile_merged_fts_rows": int(session_status["profile_merged_fts_count"]),
-        "profile_merged_fts_duplicates": int(session_status["profile_merged_fts_duplicate_count"]),
-        "profile_evidence_fts_rows": int(session_status["profile_evidence_fts_count"]),
-        "profile_evidence_fts_duplicates": int(session_status["profile_evidence_fts_duplicate_count"]),
-        "profile_inference_fts_rows": int(session_status["profile_inference_fts_count"]),
-        "profile_inference_fts_duplicates": int(session_status["profile_inference_fts_duplicate_count"]),
-        "profile_enrichment_fts_rows": int(session_status["profile_enrichment_fts_count"]),
-        "profile_enrichment_fts_duplicates": int(session_status["profile_enrichment_fts_duplicate_count"]),
-        "work_event_rows": int(session_status["work_event_inference_count"]),
-        "work_event_fts_rows": int(session_status["work_event_inference_fts_count"]),
-        "work_event_fts_duplicates": int(session_status["work_event_inference_fts_duplicate_count"]),
-        "phase_rows": int(session_status["phase_inference_count"]),
-        "work_thread_rows": int(session_status["thread_count"]),
-        "work_thread_fts_rows": int(session_status["thread_fts_count"]),
-        "work_thread_fts_duplicates": int(session_status["thread_fts_duplicate_count"]),
-        "total_thread_roots": int(session_status["root_threads"]),
-        "tag_rollup_rows": int(session_status["tag_rollup_count"]),
-        "expected_tag_rollup_rows": int(session_status["expected_tag_rollup_count"]),
-        "day_summary_rows": int(session_status["day_summary_count"]),
-        "expected_day_summary_rows": int(session_status["expected_day_summary_count"]),
-        "missing_profile_rows": int(session_status["missing_profile_row_count"]),
-        "stale_profile_rows": int(session_status["stale_profile_row_count"]),
-        "orphan_profile_rows": int(session_status["orphan_profile_row_count"]),
-        "expected_work_event_rows": int(session_status["expected_work_event_inference_count"]),
-        "stale_work_event_rows": int(session_status["stale_work_event_inference_count"]),
-        "orphan_work_event_rows": int(session_status["orphan_work_event_inference_count"]),
-        "expected_phase_rows": int(session_status["expected_phase_inference_count"]),
-        "stale_phase_rows": int(session_status["stale_phase_inference_count"]),
-        "orphan_phase_rows": int(session_status["orphan_phase_inference_count"]),
-        "stale_thread_rows": int(session_status["stale_thread_count"]),
-        "orphan_thread_rows": int(session_status["orphan_thread_count"]),
-        "stale_tag_rollup_rows": int(session_status["stale_tag_rollup_count"]),
-        "stale_day_summary_rows": int(session_status["stale_day_summary_count"]),
-        "profile_rows_ready": bool(session_status["profile_rows_ready"]),
-        "profile_merged_fts_ready": bool(session_status["profile_merged_fts_ready"]),
-        "profile_evidence_fts_ready": bool(session_status["profile_evidence_fts_ready"]),
-        "profile_inference_fts_ready": bool(session_status["profile_inference_fts_ready"]),
-        "profile_enrichment_fts_ready": bool(session_status["profile_enrichment_fts_ready"]),
-        "work_event_rows_ready": bool(session_status["work_event_inference_rows_ready"]),
-        "work_event_fts_ready": bool(session_status["work_event_inference_fts_ready"]),
-        "phase_rows_ready": bool(session_status["phase_inference_rows_ready"]),
-        "threads_ready": bool(session_status["threads_ready"]),
-        "thread_fts_ready": bool(session_status["threads_fts_ready"]),
-        "tag_rollups_ready": bool(session_status["tag_rollups_ready"]),
-        "day_summaries_ready": bool(session_status["day_summaries_ready"]),
-        "week_summaries_ready": bool(session_status["week_summaries_ready"]),
+        "profile_rows": session_status.profile_row_count,
+        "profile_merged_fts_rows": session_status.profile_merged_fts_count,
+        "profile_merged_fts_duplicates": session_status.profile_merged_fts_duplicate_count,
+        "profile_evidence_fts_rows": session_status.profile_evidence_fts_count,
+        "profile_evidence_fts_duplicates": session_status.profile_evidence_fts_duplicate_count,
+        "profile_inference_fts_rows": session_status.profile_inference_fts_count,
+        "profile_inference_fts_duplicates": session_status.profile_inference_fts_duplicate_count,
+        "profile_enrichment_fts_rows": session_status.profile_enrichment_fts_count,
+        "profile_enrichment_fts_duplicates": session_status.profile_enrichment_fts_duplicate_count,
+        "work_event_rows": session_status.work_event_inference_count,
+        "work_event_fts_rows": session_status.work_event_inference_fts_count,
+        "work_event_fts_duplicates": session_status.work_event_inference_fts_duplicate_count,
+        "phase_rows": session_status.phase_inference_count,
+        "work_thread_rows": session_status.thread_count,
+        "work_thread_fts_rows": session_status.thread_fts_count,
+        "work_thread_fts_duplicates": session_status.thread_fts_duplicate_count,
+        "total_thread_roots": session_status.root_threads,
+        "tag_rollup_rows": session_status.tag_rollup_count,
+        "expected_tag_rollup_rows": session_status.expected_tag_rollup_count,
+        "day_summary_rows": session_status.day_summary_count,
+        "expected_day_summary_rows": session_status.expected_day_summary_count,
+        "missing_profile_rows": session_status.missing_profile_row_count,
+        "stale_profile_rows": session_status.stale_profile_row_count,
+        "orphan_profile_rows": session_status.orphan_profile_row_count,
+        "expected_work_event_rows": session_status.expected_work_event_inference_count,
+        "stale_work_event_rows": session_status.stale_work_event_inference_count,
+        "orphan_work_event_rows": session_status.orphan_work_event_inference_count,
+        "expected_phase_rows": session_status.expected_phase_inference_count,
+        "stale_phase_rows": session_status.stale_phase_inference_count,
+        "orphan_phase_rows": session_status.orphan_phase_inference_count,
+        "stale_thread_rows": session_status.stale_thread_count,
+        "orphan_thread_rows": session_status.orphan_thread_count,
+        "stale_tag_rollup_rows": session_status.stale_tag_rollup_count,
+        "stale_day_summary_rows": session_status.stale_day_summary_count,
+        "profile_rows_ready": session_status.profile_rows_ready,
+        "profile_merged_fts_ready": session_status.profile_merged_fts_ready,
+        "profile_evidence_fts_ready": session_status.profile_evidence_fts_ready,
+        "profile_inference_fts_ready": session_status.profile_inference_fts_ready,
+        "profile_enrichment_fts_ready": session_status.profile_enrichment_fts_ready,
+        "work_event_rows_ready": session_status.work_event_inference_rows_ready,
+        "work_event_fts_ready": session_status.work_event_inference_fts_ready,
+        "phase_rows_ready": session_status.phase_inference_rows_ready,
+        "threads_ready": session_status.threads_ready,
+        "thread_fts_ready": session_status.threads_fts_ready,
+        "tag_rollups_ready": session_status.tag_rollups_ready,
+        "day_summaries_ready": session_status.day_summaries_ready,
+        "week_summaries_ready": session_status.week_summaries_ready,
         "embedded_conversations": embedding_stats.embedded_conversations,
         "embedded_messages": embedding_stats.embedded_messages,
         "pending_conversations": embedding_stats.pending_conversations,
@@ -101,7 +101,7 @@ def collect_derived_model_statuses_sync(
     )
     metrics["evidence_retrieval_rows"] = int(metrics["profile_evidence_fts_rows"]) + int(metrics["action_fts_rows"])
     metrics["expected_evidence_retrieval_rows"] = int(metrics["profile_rows"]) + int(metrics["action_rows"])
-    metrics["evidence_retrieval_ready"] = bool(session_status["profile_evidence_fts_ready"]) and bool(
+    metrics["evidence_retrieval_ready"] = session_status.profile_evidence_fts_ready and bool(
         action_status["action_fts_ready"]
     )
     metrics["inference_retrieval_rows"] = (
@@ -111,13 +111,13 @@ def collect_derived_model_statuses_sync(
         int(metrics["profile_rows"]) + int(metrics["work_event_rows"]) + int(metrics["phase_rows"])
     )
     metrics["inference_retrieval_ready"] = (
-        bool(session_status["profile_inference_fts_ready"])
-        and bool(session_status["work_event_inference_fts_ready"])
-        and bool(session_status["phase_inference_rows_ready"])
+        session_status.profile_inference_fts_ready
+        and session_status.work_event_inference_fts_ready
+        and session_status.phase_inference_rows_ready
     )
     metrics["enrichment_retrieval_rows"] = int(metrics["profile_enrichment_fts_rows"])
     metrics["expected_enrichment_retrieval_rows"] = int(metrics["profile_rows"])
-    metrics["enrichment_retrieval_ready"] = bool(session_status["profile_enrichment_fts_ready"])
+    metrics["enrichment_retrieval_ready"] = session_status.profile_enrichment_fts_ready
 
     return {
         **build_archive_product_statuses(metrics),

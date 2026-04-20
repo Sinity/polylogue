@@ -7,6 +7,7 @@ import sqlite3
 import pytest
 
 from polylogue.storage.embedding_stats_models import EmbeddingStatsSnapshot
+from polylogue.storage.session_product_runtime import SessionProductStatusSnapshot
 
 
 def test_collect_derived_statuses_skips_retrieval_band_recomputation(
@@ -50,57 +51,23 @@ def test_collect_derived_statuses_skips_retrieval_band_recomputation(
             _conn: sqlite3.Connection,
             *,
             verify_freshness: bool = True,
-        ) -> dict[str, object]:
+        ) -> SessionProductStatusSnapshot:
             verify_calls.append(("session", verify_freshness))
-            return {
-                "profile_row_count": 0,
-                "profile_merged_fts_count": 0,
-                "profile_merged_fts_duplicate_count": 0,
-                "profile_evidence_fts_count": 0,
-                "profile_evidence_fts_duplicate_count": 0,
-                "profile_inference_fts_count": 0,
-                "profile_inference_fts_duplicate_count": 0,
-                "profile_enrichment_fts_count": 0,
-                "profile_enrichment_fts_duplicate_count": 0,
-                "work_event_inference_count": 0,
-                "work_event_inference_fts_count": 0,
-                "work_event_inference_fts_duplicate_count": 0,
-                "phase_inference_count": 0,
-                "thread_count": 0,
-                "thread_fts_count": 0,
-                "thread_fts_duplicate_count": 0,
-                "root_threads": 0,
-                "tag_rollup_count": 0,
-                "expected_tag_rollup_count": 0,
-                "day_summary_count": 0,
-                "expected_day_summary_count": 0,
-                "missing_profile_row_count": 0,
-                "stale_profile_row_count": 0,
-                "orphan_profile_row_count": 0,
-                "expected_work_event_inference_count": 0,
-                "stale_work_event_inference_count": 0,
-                "orphan_work_event_inference_count": 0,
-                "expected_phase_inference_count": 0,
-                "stale_phase_inference_count": 0,
-                "orphan_phase_inference_count": 0,
-                "stale_thread_count": 0,
-                "orphan_thread_count": 0,
-                "stale_tag_rollup_count": 0,
-                "stale_day_summary_count": 0,
-                "profile_rows_ready": True,
-                "profile_merged_fts_ready": True,
-                "profile_evidence_fts_ready": True,
-                "profile_inference_fts_ready": True,
-                "profile_enrichment_fts_ready": True,
-                "work_event_inference_rows_ready": True,
-                "work_event_inference_fts_ready": True,
-                "phase_inference_rows_ready": True,
-                "threads_ready": True,
-                "threads_fts_ready": True,
-                "tag_rollups_ready": True,
-                "day_summaries_ready": True,
-                "week_summaries_ready": True,
-            }
+            return SessionProductStatusSnapshot(
+                profile_rows_ready=True,
+                profile_merged_fts_ready=True,
+                profile_evidence_fts_ready=True,
+                profile_inference_fts_ready=True,
+                profile_enrichment_fts_ready=True,
+                work_event_inference_rows_ready=True,
+                work_event_inference_fts_ready=True,
+                phase_inference_rows_ready=True,
+                threads_ready=True,
+                threads_fts_ready=True,
+                tag_rollups_ready=True,
+                day_summaries_ready=True,
+                week_summaries_ready=True,
+            )
 
         monkeypatch.setattr(
             derived_status_mod,

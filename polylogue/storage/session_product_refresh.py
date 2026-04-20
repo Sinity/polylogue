@@ -19,6 +19,11 @@ from polylogue.storage.session_product_rebuild import (
     hydrate_conversations,
     load_async_batch,
 )
+from polylogue.storage.session_product_runtime import (
+    ProviderDayGroup,
+    SessionProductCounts,
+    SessionProductRefreshChunkPayload,
+)
 from polylogue.storage.session_product_threads import (
     build_thread_records_for_roots_async,
     thread_root_id_async,
@@ -34,16 +39,16 @@ _SESSION_PRODUCT_REFRESH_MESSAGE_BUDGET = 5_000
 
 @dataclass(slots=True)
 class _SessionProductRefreshUpdate:
-    counts: dict[str, int]
+    counts: SessionProductCounts
     thread_root_id: str | None
-    affected_groups: set[tuple[str, str]]
+    affected_groups: set[ProviderDayGroup]
 
 
 @dataclass(slots=True)
 class _SessionProductBulkRefreshUpdate:
-    counts: dict[str, int]
+    counts: SessionProductCounts
     thread_root_ids: set[str]
-    affected_groups: set[tuple[str, str]]
+    affected_groups: set[ProviderDayGroup]
     chunk_observations: list[SessionProductRefreshChunkObservation]
 
 
@@ -70,8 +75,8 @@ class SessionProductRefreshChunkObservation:
     total_ms: float
     slow: bool = False
 
-    def to_observation(self) -> dict[str, object]:
-        observation: dict[str, object] = {
+    def to_observation(self) -> SessionProductRefreshChunkPayload:
+        observation: SessionProductRefreshChunkPayload = {
             "conversation_count": self.conversation_count,
             "estimated_message_count": self.estimated_message_count,
             "max_estimated_conversation_messages": self.max_estimated_conversation_messages,
@@ -84,21 +89,13 @@ class SessionProductRefreshChunkObservation:
             "build_ms": self.build_ms,
             "write_ms": self.write_ms,
             "total_ms": self.total_ms,
+            "slow": self.slow,
         }
-        if self.slow:
-            observation["slow"] = True
         return observation
 
 
-def _empty_refresh_counts() -> dict[str, int]:
-    return {
-        "profiles": 0,
-        "work_events": 0,
-        "phases": 0,
-        "threads": 0,
-        "tag_rollups": 0,
-        "day_summaries": 0,
-    }
+def _empty_refresh_counts() -> SessionProductCounts:
+    return SessionProductCounts()
 
 
 async def _refresh_thread_root_async(
@@ -156,7 +153,7 @@ async def delete_session_products_for_conversation_async(
     conversation_id: str,
     *,
     transaction_depth: int = 0,
-) -> dict[str, int]:
+) -> SessionProductCounts:
     from polylogue.storage.backends.queries.session_product_timeline_writes import (
         replace_session_phases,
         replace_session_work_events,
@@ -186,14 +183,13 @@ async def delete_session_products_for_conversation_async(
             {old_group},
             transaction_depth=transaction_depth,
         )
-    return {
-        "profiles": 1 if row is not None else 0,
-        "work_events": 0,
-        "phases": 0,
-        "threads": 0,
-        "tag_rollups": 1 if old_group is not None else 0,
-        "day_summaries": 1 if old_group is not None else 0,
-    }
+    counts = _empty_refresh_counts()
+    counts.add(
+        profiles=1 if row is not None else 0,
+        tag_rollups=1 if old_group is not None else 0,
+        day_summaries=1 if old_group is not None else 0,
+    )
+    return counts
 
 
 async def refresh_session_products_for_conversation_async(
@@ -201,7 +197,7 @@ async def refresh_session_products_for_conversation_async(
     conversation_id: str,
     *,
     transaction_depth: int = 0,
-) -> dict[str, int]:
+) -> SessionProductCounts:
     update = await _apply_session_product_conversation_update_async(
         conn,
         conversation_id,
@@ -217,11 +213,12 @@ async def refresh_session_products_for_conversation_async(
         update.affected_groups,
         transaction_depth=transaction_depth,
     )
-    result = dict(update.counts)
-    result["threads"] = thread_count
-    result["tag_rollups"] = len(update.affected_groups)
-    result["day_summaries"] = len(update.affected_groups)
-    return result
+    update.counts.add(
+        threads=thread_count,
+        tag_rollups=len(update.affected_groups),
+        day_summaries=len(update.affected_groups),
+    )
+    return update.counts
 
 
 async def _apply_session_product_conversation_update_async(
@@ -283,14 +280,11 @@ async def _apply_session_product_conversation_update_async(
         if group is not None
     }
     return _SessionProductRefreshUpdate(
-        counts={
-            "profiles": 1,
-            "work_events": record_bundle.work_event_count,
-            "phases": record_bundle.phase_count,
-            "threads": 0,
-            "tag_rollups": 0,
-            "day_summaries": 0,
-        },
+        counts=SessionProductCounts(
+            profiles=1,
+            work_events=record_bundle.work_event_count,
+            phases=record_bundle.phase_count,
+        ),
         thread_root_id=await thread_root_id_async(conn, conversation_id),
         affected_groups=affected_groups,
     )
@@ -434,7 +428,7 @@ async def _apply_session_product_conversation_updates_async(
 
     counts = _empty_refresh_counts()
     thread_root_ids: set[str] = set()
-    affected_groups: set[tuple[str, str]] = set()
+    affected_groups: set[ProviderDayGroup] = set()
     chunk_observations: list[SessionProductRefreshChunkObservation] = []
     conversation_id_list = list(conversation_ids)
     message_counts = await _load_message_counts_async(conn, conversation_id_list)
@@ -470,9 +464,11 @@ async def _apply_session_product_conversation_updates_async(
             record_bundle = build_session_product_records(hydrated_conversation)
             record_bundles.append(record_bundle)
 
-            counts["profiles"] += 1
-            counts["work_events"] += record_bundle.work_event_count
-            counts["phases"] += record_bundle.phase_count
+            counts.add(
+                profiles=1,
+                work_events=record_bundle.work_event_count,
+                phases=record_bundle.phase_count,
+            )
             affected_groups.update(
                 group
                 for group in (
