@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any
+from typing import cast
 
 from polylogue.schemas.generation_cluster_support import (
     _artifact_priority,
@@ -27,6 +27,8 @@ from polylogue.schemas.generation_schema_builder import (
     _apply_schema_metadata,
     _generate_cluster_schema,
 )
+from polylogue.schemas.generation_support import PrivacyConfigLike
+from polylogue.schemas.json_types import JSONDocument, JSONValue
 from polylogue.schemas.observation import ProviderConfig
 from polylogue.schemas.packages import (
     SchemaElementManifest,
@@ -43,7 +45,7 @@ class ProviderCatalogArtifacts:
     """Fully assembled provider package artifacts."""
 
     catalog: SchemaPackageCatalog
-    package_schemas: dict[str, dict[str, dict[str, Any]]]
+    package_schemas: dict[str, dict[str, JSONDocument]]
     package_reports: dict[str, dict[str, SchemaReport | None]]
     manifest: ClusterManifest
 
@@ -59,11 +61,11 @@ def build_provider_catalog_artifacts(
     sample_count: int,
     artifact_counts: dict[str, int],
     orphan_adjunct_counts: dict[str, int],
-    privacy_config: Any | None,
+    privacy_config: PrivacyConfigLike | None,
 ) -> ProviderCatalogArtifacts:
     """Build package schemas, catalog metadata, and manifest for a provider."""
     total_units = max(sum(acc.sample_count for acc in clusters.values()), 1)
-    package_schemas: dict[str, dict[str, dict[str, Any]]] = {}
+    package_schemas: dict[str, dict[str, JSONDocument]] = {}
     package_reports: dict[str, dict[str, SchemaReport | None]] = {}
     catalog_packages: list[SchemaVersionPackage] = []
     cluster_to_package_version: dict[str, str] = {}
@@ -84,7 +86,7 @@ def build_provider_catalog_artifacts(
             key=lambda item: (_artifact_priority(item[0]), item[0]),
             reverse=True,
         ):
-            schema_samples: list[dict[str, Any]] = []
+            schema_samples: list[JSONDocument] = []
             conv_ids: list[str | None] = []
             representative_paths: list[str] = []
             exact_structure_ids = sorted({membership.unit.exact_structure_id for membership in kind_memberships})
@@ -117,16 +119,21 @@ def build_provider_catalog_artifacts(
                 artifact_kind=element_kind,
                 observed_artifact_count=len(kind_memberships),
             )
+            profile_family_ids_json = [cast(JSONValue, profile_id) for profile_id in profile_family_ids]
+            exact_structure_ids_json = [cast(JSONValue, structure_id) for structure_id in exact_structure_ids]
+            package_profile_family_ids_json = [
+                cast(JSONValue, profile_id) for profile_id in sorted(package_acc.profile_family_ids)
+            ]
             schema["x-polylogue-package-version"] = version
-            schema["x-polylogue-profile-family-ids"] = profile_family_ids
-            schema["x-polylogue-exact-structure-ids"] = exact_structure_ids
+            schema["x-polylogue-profile-family-ids"] = profile_family_ids_json
+            schema["x-polylogue-exact-structure-ids"] = exact_structure_ids_json
             if element_first_seen:
                 schema["x-polylogue-element-first-seen"] = element_first_seen
             if element_last_seen:
                 schema["x-polylogue-element-last-seen"] = element_last_seen
             schema["x-polylogue-element-bundle-scope-count"] = len(element_bundle_scopes)
             schema["x-polylogue-anchor-profile-family-id"] = package_acc.anchor_family_id
-            schema["x-polylogue-package-profile-family-ids"] = sorted(package_acc.profile_family_ids)
+            schema["x-polylogue-package-profile-family-ids"] = package_profile_family_ids_json
             package_schemas[version][element_kind] = schema
             package_reports[version][element_kind] = redaction_report
             elements.append(

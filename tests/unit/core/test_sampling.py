@@ -15,6 +15,7 @@ import pytest
 from polylogue.schemas.observation import PROVIDERS, ProviderConfig
 from polylogue.schemas.sampling import load_samples_from_db, load_samples_from_sessions
 from polylogue.types import Provider
+from tests.infra.schema_access import schema_node
 
 
 class TestProviderConfig:
@@ -219,7 +220,12 @@ class TestLoadSamplesFromDb:
         assert len(result) == 2
         assert {sample["type"] for sample in result} == {"session_meta", "message"}
         message_sample = next(sample for sample in result if sample["type"] == "message")
-        assert len(message_sample["content"][0]["text"]) == 1024
+        content = message_sample.get("content")
+        assert isinstance(content, list)
+        first_block = schema_node(content[0]) if content else {}
+        text = first_block.get("text")
+        assert isinstance(text, str)
+        assert len(text) == 1024
 
 
 class TestLoadSamplesFromSessions:

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Protocol, cast
+from typing import Literal, Protocol, cast
 
 from polylogue.scenarios import CorpusScenario, CorpusSpec, build_corpus_scenarios, build_inferred_corpus_specs
 from polylogue.schemas.audit_models import AuditReport
@@ -26,6 +26,7 @@ from polylogue.schemas.operator_models import (
 )
 from polylogue.schemas.operator_registry import schema_registry
 from polylogue.schemas.packages import SchemaPackageCatalog, SchemaVersionPackage
+from polylogue.schemas.privacy_config import PrivacyConfig
 from polylogue.schemas.tooling_models import ClusterManifest, SchemaDiff
 from polylogue.types import Provider
 
@@ -33,7 +34,7 @@ from polylogue.types import Provider
 class _SchemaRegistryLike(Protocol):
     def load_package_catalog(self, provider: str) -> SchemaPackageCatalog | None: ...
 
-    def cluster_samples(self, provider: str, samples: Sequence[JSONDocument]) -> ClusterManifest: ...
+    def cluster_samples(self, provider: str, samples: Sequence[object]) -> ClusterManifest: ...
 
     def save_cluster_manifest(self, manifest: ClusterManifest) -> Path: ...
 
@@ -59,7 +60,7 @@ class _SchemaRegistryLike(Protocol):
         provider: str,
         cluster_id: str,
         *,
-        samples: Sequence[JSONDocument] | None = None,
+        samples: Sequence[object] | None = None,
     ) -> str: ...
 
     def get_package(self, provider: str, *, version: str) -> SchemaVersionPackage | None: ...
@@ -101,6 +102,41 @@ def _build_inferred_outputs(
     return corpus_specs, corpus_scenarios
 
 
+def _privacy_config(payload: JSONDocument | None) -> PrivacyConfig | None:
+    if payload is None:
+        return None
+    field_overrides = payload.get("field_overrides")
+    allow_patterns = payload.get("allow_value_patterns")
+    deny_patterns = payload.get("deny_value_patterns")
+    level = payload.get("level")
+    safe_enum_max_length = payload.get("safe_enum_max_length", 50)
+    high_entropy_min_length = payload.get("high_entropy_min_length", 10)
+    cross_conv_min_count = payload.get("cross_conv_min_count", 3)
+    config_level: Literal["strict", "standard", "permissive"]
+    if level in {"strict", "standard", "permissive"}:
+        config_level = cast(Literal["strict", "standard", "permissive"], level)
+    else:
+        config_level = "standard"
+    return PrivacyConfig(
+        level=config_level,
+        safe_enum_max_length=safe_enum_max_length if isinstance(safe_enum_max_length, int) else 50,
+        high_entropy_min_length=high_entropy_min_length if isinstance(high_entropy_min_length, int) else 10,
+        cross_conv_min_count=cross_conv_min_count if isinstance(cross_conv_min_count, int) else 3,
+        cross_conv_proportional=bool(payload.get("cross_conv_proportional", False)),
+        field_overrides=(
+            {key: value for key, value in field_overrides.items() if isinstance(key, str) and isinstance(value, str)}
+            if isinstance(field_overrides, dict)
+            else {}
+        ),
+        allow_value_patterns=[value for value in allow_patterns if isinstance(value, str)]
+        if isinstance(allow_patterns, list)
+        else [],
+        deny_value_patterns=[value for value in deny_patterns if isinstance(value, str)]
+        if isinstance(deny_patterns, list)
+        else [],
+    )
+
+
 def infer_schema(request: SchemaInferRequest) -> SchemaInferResult:
     from polylogue.schemas.generation_workflow import generate_provider_schema
     from polylogue.schemas.observation import PROVIDERS
@@ -110,7 +146,7 @@ def infer_schema(request: SchemaInferRequest) -> SchemaInferResult:
         request.provider,
         db_path=request.db_path,
         max_samples=request.max_samples,
-        privacy_config=request.privacy_config,
+        privacy_config=_privacy_config(cast(JSONDocument | None, request.privacy_config)),
         full_corpus=request.full_corpus,
     )
     package_version = result.default_version or "default"

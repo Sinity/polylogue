@@ -4,9 +4,10 @@ from __future__ import annotations
 
 from functools import lru_cache
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from polylogue.paths import data_home
+from polylogue.schemas.json_types import JSONDocument
 from polylogue.schemas.runtime_registry import SchemaRegistry, canonical_schema_provider
 from polylogue.types import Provider
 
@@ -39,7 +40,7 @@ def resolve_provider_schema(
     provider: str | Provider,
     *,
     registry_cls: type[SchemaRegistry] = SchemaRegistry,
-) -> tuple[Provider, dict[str, Any], tuple[str, str, str]]:
+) -> tuple[Provider, JSONDocument, tuple[str, str, str]]:
     canonical = canonical_provider(provider)
     registry = _registry_for(registry_cls)
     package = registry.get_package(str(canonical), version="default") if hasattr(registry, "get_package") else None
@@ -61,12 +62,12 @@ def resolve_provider_schema(
 
 def resolve_payload_schema(
     provider: str | Provider,
-    payload: Any,
+    payload: object,
     *,
     source_path: str | None = None,
     schema_resolution: SchemaResolution | None = None,
     registry_cls: type[SchemaRegistry] = SchemaRegistry,
-) -> tuple[Provider, dict[str, Any], tuple[str, str, str]]:
+) -> tuple[Provider, JSONDocument, tuple[str, str, str]]:
     canonical = canonical_provider(provider)
     registry = _registry_for(registry_cls)
     resolution = schema_resolution

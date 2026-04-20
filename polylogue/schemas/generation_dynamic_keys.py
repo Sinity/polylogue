@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from typing import Any
-
 try:
     from genson import SchemaBuilder
 
@@ -13,6 +11,7 @@ except ImportError:
     GENSON_AVAILABLE = False
 
 from polylogue.schemas.field_stats import is_dynamic_key
+from polylogue.schemas.json_types import JSONDocument, json_document, json_document_list
 
 _HIGH_CARDINALITY_KEY_THRESHOLD = 128
 _PATHLIKE_KEY_RATIO_THRESHOLD = 0.35
@@ -35,36 +34,33 @@ def _should_collapse_high_cardinality_keys(keys: list[str]) -> bool:
     return (pathlike / len(keys)) >= _PATHLIKE_KEY_RATIO_THRESHOLD
 
 
-def merge_schemas(schemas: list[dict[str, Any]]) -> dict[str, Any]:
+def merge_schemas(schemas: list[JSONDocument]) -> JSONDocument:
     """Merge multiple schemas into one using genson when available."""
     if not GENSON_AVAILABLE:
         return schemas[0] if schemas else {}
     builder = SchemaBuilder()
     for schema in schemas:
         builder.add_schema(schema)
-    return dict(builder.to_schema())
+    return json_document(builder.to_schema())
 
 
-def collapse_dynamic_keys(schema: dict[str, Any]) -> dict[str, Any]:
+def collapse_dynamic_keys(schema: JSONDocument) -> JSONDocument:
     """Collapse dynamic key properties into additionalProperties."""
-    if not isinstance(schema, dict):
-        return schema
+    properties = json_document(schema.get("properties"))
+    if properties:
+        static_props: JSONDocument = {}
+        dynamic_schemas: list[JSONDocument] = []
+        key_names = list(properties.keys())
 
-    if "properties" in schema:
-        props = schema["properties"]
-        static_props: dict[str, Any] = {}
-        dynamic_schemas: list[dict[str, Any]] = []
-        key_names = list(props.keys())
-
-        for key, value in props.items():
-            collapsed_value = collapse_dynamic_keys(value)
+        for key, value in properties.items():
+            collapsed_value = collapse_dynamic_keys(json_document(value))
             if is_dynamic_key(key):
                 dynamic_schemas.append(collapsed_value)
             else:
                 static_props[key] = collapsed_value
 
         if _should_collapse_high_cardinality_keys(key_names):
-            dynamic_schemas.extend(static_props.values())
+            dynamic_schemas.extend(json_document(value) for value in static_props.values() if json_document(value))
             static_props = {}
             schema["x-polylogue-high-cardinality-keys"] = True
 
@@ -72,20 +68,24 @@ def collapse_dynamic_keys(schema: dict[str, Any]) -> dict[str, Any]:
             schema["properties"] = static_props
             schema["additionalProperties"] = merge_schemas(dynamic_schemas)
             schema["x-polylogue-dynamic-keys"] = True
-            if "required" in schema:
-                schema["required"] = [required for required in schema["required"] if required in static_props]
+            required = schema.get("required")
+            if isinstance(required, list):
+                schema["required"] = [item for item in required if isinstance(item, str) and item in static_props]
         else:
             schema["properties"] = static_props
 
-    if "items" in schema:
-        schema["items"] = collapse_dynamic_keys(schema["items"])
+    items = json_document(schema.get("items"))
+    if items:
+        schema["items"] = collapse_dynamic_keys(items)
 
     for keyword in ("anyOf", "oneOf", "allOf"):
-        if keyword in schema:
-            schema[keyword] = [collapse_dynamic_keys(item) for item in schema[keyword]]
+        variants = json_document_list(schema.get(keyword))
+        if variants:
+            schema[keyword] = [collapse_dynamic_keys(item) for item in variants]
 
-    if "additionalProperties" in schema and isinstance(schema["additionalProperties"], dict):
-        schema["additionalProperties"] = collapse_dynamic_keys(schema["additionalProperties"])
+    additional_properties = json_document(schema.get("additionalProperties"))
+    if additional_properties:
+        schema["additionalProperties"] = collapse_dynamic_keys(additional_properties)
 
     return schema
 

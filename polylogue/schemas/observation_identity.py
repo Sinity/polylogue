@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 from pathlib import Path
-from typing import Any
 
 from polylogue.schemas.observation_models import PROVIDERS, ProviderConfig
 from polylogue.types import Provider
@@ -27,13 +26,13 @@ def resolve_provider_config(provider_name: str | Provider) -> ProviderConfig:
     )
 
 
-def fingerprint_hash(fingerprint: Any) -> str:
+def fingerprint_hash(fingerprint: object) -> str:
     """Compute a stable short hash for a structural fingerprint."""
     raw = repr(fingerprint).encode("utf-8")
     return hashlib.sha256(raw).hexdigest()[:16]
 
 
-def schema_cluster_id(cluster_payload: Any, artifact_kind: str) -> str:
+def schema_cluster_id(cluster_payload: object, artifact_kind: str) -> str:
     """Compute a stable cluster identifier for a schema unit."""
     from polylogue.schemas.shape_fingerprint import _structure_fingerprint
 
