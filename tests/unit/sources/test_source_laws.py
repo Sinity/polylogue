@@ -6,10 +6,10 @@ import json
 import os
 import tempfile
 import zipfile
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from io import BytesIO
 from pathlib import Path
-from typing import IO, Any, BinaryIO, TypedDict, cast
+from typing import IO, BinaryIO, TypedDict
 from unittest.mock import MagicMock
 
 import ijson
@@ -19,6 +19,7 @@ from hypothesis import strategies as st
 
 from polylogue.config import Source
 from polylogue.lib.roles import Role, normalize_role
+from polylogue.schemas.json_types import JSONDocument
 from polylogue.sources import decoders as decoders_module
 from polylogue.sources import dispatch as dispatch_module
 from polylogue.sources import source_acquisition
@@ -76,6 +77,7 @@ from polylogue.sources.source_parsing import (
     iter_source_conversations_with_raw,
 )
 from polylogue.sources.source_walk import _has_supported_extension
+from polylogue.storage.blob_store import BlobStore, Heartbeat
 from polylogue.types import Provider
 from tests.infra.source_builders import GenericConversationBuilder, make_claude_chat_message
 from tests.infra.strategies import (
@@ -94,6 +96,26 @@ class GeneratedSourceCase(TypedDict):
     path: Path
     raw: bytes
     provider: str
+
+
+class FailedFile(TypedDict):
+    path: str
+    error: str
+
+
+def _require_generated_source_case(value: object) -> GeneratedSourceCase:
+    if not isinstance(value, dict):
+        raise AssertionError(f"expected generated source case, got {type(value).__name__}")
+    path = value.get("path")
+    raw = value.get("raw")
+    provider = value.get("provider")
+    if not isinstance(path, Path):
+        raise AssertionError(f"expected generated path, got {type(path).__name__}")
+    if not isinstance(raw, bytes):
+        raise AssertionError(f"expected generated raw bytes, got {type(raw).__name__}")
+    if not isinstance(provider, str):
+        raise AssertionError(f"expected generated provider, got {type(provider).__name__}")
+    return GeneratedSourceCase(path=path, raw=raw, provider=provider)
 
 
 def _parsed_message(
@@ -130,8 +152,22 @@ def _parsed_conversation(
     )
 
 
-def _failed_files(cursor_state: dict[str, object]) -> list[dict[str, object]]:
-    return cast(list[dict[str, object]], cursor_state.get("failed_files", []))
+def _failed_files(cursor_state: Mapping[str, object]) -> list[FailedFile]:
+    failed_files = cursor_state.get("failed_files", [])
+    if not isinstance(failed_files, list):
+        return []
+    return [
+        FailedFile(path=str(item["path"]), error=str(item["error"]))
+        for item in failed_files
+        if isinstance(item, dict) and "path" in item and "error" in item
+    ]
+
+
+def _numeric_observation_value(observation: Mapping[str, object], key: str) -> float:
+    value = observation.get(key)
+    if not isinstance(value, (int, float, str)):
+        raise AssertionError(f"expected numeric observation field {key}, got {type(value).__name__}")
+    return float(value)
 
 
 _CANONICAL_PROVIDERS = (
@@ -365,9 +401,9 @@ def _write_generic_conversation(path: Path, conversation_id: str, text: str = "h
     st.booleans(),
 )
 @settings(max_examples=30, deadline=None)
-def test_iter_source_conversations_round_trips_generated_exports(case: dict[str, object], use_zip: bool) -> None:
+def test_iter_source_conversations_round_trips_generated_exports(case: object, use_zip: bool) -> None:
     """Generated provider exports should stay discoverable through file and ZIP iteration."""
-    generated = cast(GeneratedSourceCase, case)
+    generated = _require_generated_source_case(case)
     with tempfile.TemporaryDirectory() as tmp:
         source = _materialize_generated_source(
             Path(tmp),
@@ -396,12 +432,12 @@ def test_iter_source_conversations_round_trips_generated_exports(case: dict[str,
 )
 @settings(max_examples=30, deadline=None)
 def test_iter_source_conversations_with_raw_capture_contract(
-    case: dict[str, object],
+    case: object,
     use_zip: bool,
     capture_raw: bool,
 ) -> None:
     """Raw iteration must preserve provider parsing while toggling raw payload capture cleanly."""
-    generated = cast(GeneratedSourceCase, case)
+    generated = _require_generated_source_case(case)
     with tempfile.TemporaryDirectory() as tmp:
         source = _materialize_generated_source(
             Path(tmp),
@@ -518,7 +554,7 @@ def test_iter_source_conversations_tracks_file_disappearance_contract(
         encoding: str | None = None,
         errors: str | None = None,
         newline: str | None = None,
-    ) -> Any:
+    ) -> IO[str] | BinaryIO:
         if path == second:
             raise FileNotFoundError("deleted")
         return original_open(
@@ -1165,7 +1201,7 @@ def _parse_context(
     source_path: str,
     fallback_id: str,
     capture_raw: bool = True,
-    sidecar_data: dict[str, Any] | None = None,
+    sidecar_data: JSONDocument | None = None,
 ) -> _ParseContext:
     return _ParseContext(
         provider_hint=Provider.from_string(provider_hint),
@@ -1901,24 +1937,24 @@ def test_iter_source_raw_data_reports_split_payload_observations(tmp_path: Path)
 
     assert len(items) == 2
     assert observations
-    peak = max(observations, key=lambda observation: float(cast(str | int | float, observation["peak_rss_self_mb"])))
+    peak = max(observations, key=lambda observation: _numeric_observation_value(observation, "peak_rss_self_mb"))
     assert peak["phase"] == "zip-entry-split-payload-serialized"
     assert peak["source_path"] == f"{archive_path}:nested/conversations.json"
     assert peak["provider_hint"] == Provider.CHATGPT.value
     assert peak["source_index"] in {0, 1}
-    assert int(cast(str | int, peak["blob_size"])) > 0
+    assert _numeric_observation_value(peak, "blob_size") > 0
     assert peak["artifact_kind"]
-    assert float(cast(str | int | float, peak["detect_provider_ms"])) >= 0.0
-    assert float(cast(str | int | float, peak["classify_ms"])) >= 0.0
-    assert float(cast(str | int | float, peak["serialize_ms"])) >= 0.0
-    assert float(cast(str | int | float, peak["peak_rss_self_mb"])) > 0.0
+    assert _numeric_observation_value(peak, "detect_provider_ms") >= 0.0
+    assert _numeric_observation_value(peak, "classify_ms") >= 0.0
+    assert _numeric_observation_value(peak, "serialize_ms") >= 0.0
+    assert _numeric_observation_value(peak, "peak_rss_self_mb") > 0.0
 
 
 def test_iter_source_raw_data_streams_preserved_zip_entries_into_blob_store(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from polylogue.storage.blob_store import BlobStore, get_blob_store
+    from polylogue.storage.blob_store import get_blob_store
 
     entry_bytes = json.dumps({"id": "chatgpt-1", "mapping": {}}).encode("utf-8")
     archive_path = tmp_path / "bundle.zip"
@@ -1946,7 +1982,7 @@ def test_iter_entry_payloads_locks_provider_after_first_detected_payload(
         {"id": "chatgpt-2", "mapping": {}},
         {"id": "chatgpt-3", "mapping": {}},
     ]
-    detect_calls: list[dict[str, object]] = []
+    detect_calls: list[JSONDocument] = []
     original_detect_provider = dispatch_module.detect_provider
 
     def tracking_detect_provider(payload: object, path: object | None = None) -> Provider | None:
@@ -2000,7 +2036,7 @@ def test_iter_source_raw_data_skips_known_mtimes_without_reading_file(tmp_path: 
     items = list(
         iter_source_raw_data(
             Source(name="chatgpt", path=tmp_path),
-            known_mtimes={str(skipped): cast(str, _get_file_mtime(skipped))},
+            known_mtimes={str(skipped): str(_get_file_mtime(skipped))},
         )
     )
 
@@ -2101,15 +2137,13 @@ def test_iter_source_raw_data_tracks_read_failures_without_stopping(
     bad.write_text('{"mapping": {}, "id": "bad"}', encoding="utf-8")
 
     # Patch blob_store.write_from_path to fail for the bad file
-    from polylogue.storage.blob_store import BlobStore
-
     original_write = BlobStore.write_from_path
 
     def flaky_write(
         self: BlobStore,
         source: Path,
         *,
-        heartbeat: Any = None,
+        heartbeat: Heartbeat | None = None,
     ) -> tuple[str, int]:
         del heartbeat
         if source == bad:

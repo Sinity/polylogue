@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any, cast
+from pathlib import Path
 from unittest.mock import ANY, patch
 
 import pytest
@@ -13,6 +13,7 @@ from polylogue.cli import cli
 from polylogue.cli.check_workflow import CheckCommandOptions, run_check_workflow
 from polylogue.cli.types import AppEnv
 from polylogue.health import HealthCheck, HealthReport, VerifyStatus
+from polylogue.lib.raw_payload_decode import JSONValue
 from polylogue.schemas.operator_models import (
     ArtifactCohortListResult,
     ArtifactObservationListResult,
@@ -31,14 +32,53 @@ from polylogue.types import ArtifactSupportStatus, Provider
 from polylogue.ui import create_ui
 from tests.infra.storage_records import ConversationBuilder, DbFactory
 
+WorkspacePaths = dict[str, Path]
+JsonObject = dict[str, JSONValue]
+JsonArray = list[JSONValue]
+
 
 @pytest.fixture
-def cli_runner() -> Any:
+def cli_runner() -> CliRunner:
     """Provide a Click CLI test runner."""
     return CliRunner()
 
 
-def _extract_json(output: str) -> dict[str, Any]:
+def _require_json_object(value: object, *, context: str) -> JsonObject:
+    if not isinstance(value, dict):
+        raise ValueError(f"Expected {context} object, got {type(value).__name__}")
+    if not all(isinstance(key, str) for key in value):
+        raise ValueError(f"Expected {context} keys to be strings")
+    return {str(key): item for key, item in value.items()}
+
+
+def _require_json_array(value: object, *, context: str) -> JsonArray:
+    if not isinstance(value, list):
+        raise ValueError(f"Expected {context} array, got {type(value).__name__}")
+    return list(value)
+
+
+def _json_object_field(payload: JsonObject, key: str, *, context: str) -> JsonObject:
+    return _require_json_object(payload.get(key), context=f"{context}.{key}")
+
+
+def _json_array_field(payload: JsonObject, key: str, *, context: str) -> JsonArray:
+    return _require_json_array(payload.get(key), context=f"{context}.{key}")
+
+
+def _json_array_item(items: JsonArray, index: int, *, context: str) -> JsonObject:
+    return _require_json_object(items[index], context=f"{context}[{index}]")
+
+
+def _find_named_check(payload: JsonObject, name: str) -> JsonObject:
+    checks = _json_array_field(payload, "checks", context="check payload")
+    for check in checks:
+        check_payload = _require_json_object(check, context=f"check {name}")
+        if check_payload.get("name") == name:
+            return check_payload
+    raise AssertionError(f"Missing check named {name}")
+
+
+def _extract_json(output: str) -> JsonObject:
     """Extract JSON from CLI output, unwrapping the success envelope."""
     lines = output.strip().split("\n")
     # Find first line that starts with { and join all subsequent lines
@@ -47,21 +87,17 @@ def _extract_json(output: str) -> dict[str, Any]:
         raise ValueError(f"No JSON found in output: {output}")
     json_str = "\n".join(lines[json_start:])
     data = json.loads(json_str)
-    if not isinstance(data, dict):
-        raise ValueError(f"Expected JSON object, got {type(data).__name__}")
+    data_object = _require_json_object(data, context="JSON")
     # Unwrap success envelope
-    if isinstance(data, dict) and data.get("status") == "ok" and "result" in data:
-        result = data["result"]
-        if not isinstance(result, dict):
-            raise ValueError(f"Expected result object, got {type(result).__name__}")
-        return cast(dict[str, Any], result)
-    return cast(dict[str, Any], data)
+    if data_object.get("status") == "ok" and "result" in data_object:
+        return _require_json_object(data_object["result"], context="result")
+    return data_object
 
 
 class TestHealthReportConstruction:
     """Tests for proper HealthReport instantiation."""
 
-    def test_health_report_requires_summary(self: Any) -> None:
+    def test_health_report_requires_summary(self) -> None:
         """HealthReport derives summary dict from check statuses."""
         checks = [
             HealthCheck("database", VerifyStatus.OK, summary="DB reachable"),
@@ -73,7 +109,7 @@ class TestHealthReportConstruction:
         assert len(report.checks) == 2
         assert report.summary == {"ok": 1, "warning": 1, "error": 0}
 
-    def test_health_report_summary_counts(self: Any) -> None:
+    def test_health_report_summary_counts(self) -> None:
         """Summary should accurately reflect check status counts."""
         checks = [
             HealthCheck("check1", VerifyStatus.OK),
@@ -89,7 +125,7 @@ class TestHealthReportConstruction:
         assert report.summary["warning"] == 1
         assert report.summary["error"] == 1
 
-    def test_health_report_to_dict_serialization(self: Any) -> None:
+    def test_health_report_to_dict_serialization(self) -> None:
         """HealthReport should serialize to dict with all required fields."""
         checks = [HealthCheck("test", VerifyStatus.OK, summary="OK")]
         report = HealthReport(checks=checks)
@@ -101,7 +137,7 @@ class TestHealthReportConstruction:
         assert "timestamp" in data
         assert data["summary"] == {"ok": 1, "warning": 0, "error": 0}
 
-    def test_health_report_empty_checks(self: Any) -> None:
+    def test_health_report_empty_checks(self) -> None:
         """HealthReport with no checks should still have summary."""
         report = HealthReport(checks=[])
 
@@ -109,7 +145,7 @@ class TestHealthReportConstruction:
         assert report.summary == {"ok": 0, "warning": 0, "error": 0}
 
 
-def test_check_records_scoped_maintenance_preview(cli_workspace: Any, cli_runner: Any) -> None:
+def test_check_records_scoped_maintenance_preview(cli_workspace: WorkspacePaths, cli_runner: CliRunner) -> None:
     from polylogue.storage.session_product_rebuild import rebuild_session_products_sync
 
     db_path = cli_workspace["db_path"]
@@ -140,12 +176,16 @@ def test_check_records_scoped_maintenance_preview(cli_workspace: Any, cli_runner
 
     assert result.exit_code == 0
     payload = _extract_json(result.output)
-    assert payload["maintenance"]["targets"] == ["session_products"]
-    assert payload["maintenance"]["items"][0]["name"] == "session_products"
-    assert payload["maintenance"]["items"][0]["repaired_count"] > 0
+    maintenance = _json_object_field(payload, "maintenance", context="check payload")
+    assert maintenance.get("targets") == ["session_products"]
+    maintenance_item = _json_array_item(
+        _json_array_field(maintenance, "items", context="maintenance"), 0, context="maintenance.items"
+    )
+    assert maintenance_item.get("name") == "session_products"
+    assert maintenance_item.get("repaired_count") == 1
 
 
-def test_check_records_scoped_maintenance_apply(cli_workspace: Any, cli_runner: Any) -> None:
+def test_check_records_scoped_maintenance_apply(cli_workspace: WorkspacePaths, cli_runner: CliRunner) -> None:
     from polylogue.storage.session_product_rebuild import rebuild_session_products_sync
 
     db_path = cli_workspace["db_path"]
@@ -176,12 +216,18 @@ def test_check_records_scoped_maintenance_apply(cli_workspace: Any, cli_runner: 
 
     assert result.exit_code == 0
     payload = _extract_json(result.output)
-    assert payload["maintenance"]["targets"] == ["session_products"]
-    assert payload["maintenance"]["items"][0]["name"] == "session_products"
-    assert payload["maintenance"]["items"][0]["success"] is True
+    maintenance = _json_object_field(payload, "maintenance", context="check payload")
+    assert maintenance.get("targets") == ["session_products"]
+    maintenance_item = _json_array_item(
+        _json_array_field(maintenance, "items", context="maintenance"), 0, context="maintenance.items"
+    )
+    assert maintenance_item.get("name") == "session_products"
+    assert maintenance_item.get("success") is True
 
 
-def test_check_plain_preview_summarizes_changes_not_issues(cli_workspace: Any, cli_runner: Any) -> None:
+def test_check_plain_preview_summarizes_changes_not_issues(
+    cli_workspace: WorkspacePaths, cli_runner: CliRunner
+) -> None:
     from polylogue.storage.session_product_rebuild import rebuild_session_products_sync
 
     db_path = cli_workspace["db_path"]
@@ -216,7 +262,7 @@ def test_check_plain_preview_summarizes_changes_not_issues(cli_workspace: Any, c
     assert "issue(s)" not in result.output
 
 
-def test_check_warns_when_message_index_is_incomplete(cli_workspace: Any, cli_runner: Any) -> None:
+def test_check_warns_when_message_index_is_incomplete(cli_workspace: WorkspacePaths, cli_runner: CliRunner) -> None:
     db_path = cli_workspace["db_path"]
     factory = DbFactory(db_path)
     factory.create_conversation(
@@ -235,12 +281,14 @@ def test_check_warns_when_message_index_is_incomplete(cli_workspace: Any, cli_ru
 
     assert result.exit_code == 0
     payload = _extract_json(result.output)
-    index_check = next(check for check in payload["checks"] if check["name"] == "index")
+    index_check = _find_named_check(payload, "index")
     assert index_check["status"] == "warning"
     assert index_check["detail"] == "messages FTS missing or empty; use --deep to verify full coverage"
 
 
-def test_check_ignores_null_text_messages_in_fts_readiness(cli_workspace: Any, cli_runner: Any) -> None:
+def test_check_ignores_null_text_messages_in_fts_readiness(
+    cli_workspace: WorkspacePaths, cli_runner: CliRunner
+) -> None:
     db_path = cli_workspace["db_path"]
     factory = DbFactory(db_path)
     factory.create_conversation(
@@ -259,8 +307,8 @@ def test_check_ignores_null_text_messages_in_fts_readiness(cli_workspace: Any, c
     assert result.exit_code == 0
 
     data = _extract_json(result.output)
-    index_check = next(c for c in data["checks"] if c["name"] == "index")
-    fts_check = next(c for c in data["checks"] if c["name"] == "fts_sync")
+    index_check = _find_named_check(data, "index")
+    fts_check = _find_named_check(data, "fts_sync")
 
     assert index_check["status"] == "ok"
     assert index_check["detail"] == "messages FTS present"
@@ -271,7 +319,7 @@ def test_check_ignores_null_text_messages_in_fts_readiness(cli_workspace: Any, c
 class TestCheckCommand:
     """Tests for polylogue check command."""
 
-    def test_check_clean_database(self: Any, db_path: Any, cli_runner: Any) -> None:
+    def test_check_clean_database(self, db_path: Path, cli_runner: CliRunner) -> None:
         """Check command succeeds on clean database with valid data."""
         factory = DbFactory(db_path)
 
@@ -290,7 +338,7 @@ class TestCheckCommand:
         assert result.exit_code == 0
         assert "ok" in result.output.lower() or "✓" in result.output
 
-    def test_check_json_output(self: Any, db_path: Any, cli_runner: Any) -> None:
+    def test_check_json_output(self, db_path: Path, cli_runner: CliRunner) -> None:
         """Check --json flag produces valid JSON."""
         factory = DbFactory(db_path)
 
@@ -307,15 +355,17 @@ class TestCheckCommand:
         data = _extract_json(result.output)
         assert "checks" in data
         assert "summary" in data
-        assert isinstance(data["checks"], list)
-        assert isinstance(data["summary"], dict)
+        checks = _json_array_field(data, "checks", context="check payload")
+        summary = _json_object_field(data, "summary", context="check payload")
+        assert isinstance(checks, list)
+        assert isinstance(summary, dict)
 
         # Check summary has expected keys
-        assert "ok" in data["summary"]
-        assert "warning" in data["summary"]
-        assert "error" in data["summary"]
+        assert "ok" in summary
+        assert "warning" in summary
+        assert "error" in summary
 
-    def test_check_runtime_only_skips_archive_health(self: Any, monkeypatch: Any) -> None:
+    def test_check_runtime_only_skips_archive_health(self, monkeypatch: pytest.MonkeyPatch) -> None:
         runtime_report = HealthReport(checks=[HealthCheck("runtime_only", VerifyStatus.OK, summary="runtime ok")])
         env = AppEnv(ui=create_ui(True))
         options = CheckCommandOptions(
@@ -356,7 +406,7 @@ class TestCheckCommand:
         assert result.report is runtime_report
         assert result.runtime_report is None
 
-    def test_check_detects_orphan_messages(self: Any, db_path: Any, cli_runner: Any) -> None:
+    def test_check_detects_orphan_messages(self, db_path: Path, cli_runner: CliRunner) -> None:
         """Check detects messages without conversations."""
 
         # Disable foreign key constraints temporarily to insert orphan message
@@ -388,18 +438,15 @@ class TestCheckCommand:
         data = _extract_json(result.output)
 
         # Find the orphaned_messages check
-        orphan_check = next(
-            (c for c in data["checks"] if c["name"] == "orphaned_messages"),
-            None,
-        )
-        assert orphan_check is not None
+        orphan_check = _find_named_check(data, "orphaned_messages")
         assert orphan_check["status"] == "error"
         assert orphan_check["count"] == 1
 
         # Summary should show at least one error
-        assert data["summary"]["error"] >= 1
+        summary = _json_object_field(data, "summary", context="check payload")
+        assert summary.get("error") == 1
 
-    def test_check_verbose_output(self: Any, db_path: Any, cli_runner: Any) -> None:
+    def test_check_verbose_output(self, db_path: Path, cli_runner: CliRunner) -> None:
         """Check -v flag increases detail with provider breakdown."""
         factory = DbFactory(db_path)
 
@@ -427,7 +474,7 @@ class TestCheckCommand:
         # (provider_distribution check always has breakdown)
         assert "chatgpt" in result_verbose.output or "claude-ai" in result_verbose.output
 
-    def test_check_detects_empty_conversations(self: Any, db_path: Any, cli_runner: Any) -> None:
+    def test_check_detects_empty_conversations(self, db_path: Path, cli_runner: CliRunner) -> None:
         """Check detects conversations with no messages (warning status)."""
 
         # Create a conversation with no messages
@@ -459,15 +506,11 @@ class TestCheckCommand:
         data = _extract_json(result.output)
 
         # Find the empty_conversations check
-        empty_check = next(
-            (c for c in data["checks"] if c["name"] == "empty_conversations"),
-            None,
-        )
-        assert empty_check is not None
+        empty_check = _find_named_check(data, "empty_conversations")
         assert empty_check["status"] == "warning"
         assert empty_check["count"] == 1
 
-    def test_check_no_duplicate_conversation_ids(self: Any, db_path: Any, cli_runner: Any) -> None:
+    def test_check_no_duplicate_conversation_ids(self, db_path: Path, cli_runner: CliRunner) -> None:
         """Check duplicate_conversations check passes when there are no duplicates."""
         factory = DbFactory(db_path)
 
@@ -489,15 +532,11 @@ class TestCheckCommand:
         data = _extract_json(result.output)
 
         # Find the duplicate_conversations check
-        dup_check = next(
-            (c for c in data["checks"] if c["name"] == "duplicate_conversations"),
-            None,
-        )
-        assert dup_check is not None
+        dup_check = _find_named_check(data, "duplicate_conversations")
         assert dup_check["status"] == "ok"
         assert dup_check["count"] == 0  # No duplicates found
 
-    def test_check_detects_fts_sync_issues(self: Any, db_path: Any, cli_runner: Any) -> None:
+    def test_check_detects_fts_sync_issues(self, db_path: Path, cli_runner: CliRunner) -> None:
         """Check detects FTS sync issues when FTS table is missing."""
         factory = DbFactory(db_path)
 
@@ -519,15 +558,11 @@ class TestCheckCommand:
         data = _extract_json(result.output)
 
         # Find the fts_sync check
-        fts_check = next(
-            (c for c in data["checks"] if c["name"] == "fts_sync"),
-            None,
-        )
-        assert fts_check is not None
+        fts_check = _find_named_check(data, "fts_sync")
         # Should be warning due to missing FTS table
         assert fts_check["status"] == "warning"
 
-    def test_check_plain_output_format(self: Any, db_path: Any, cli_runner: Any) -> None:
+    def test_check_plain_output_format(self, db_path: Path, cli_runner: CliRunner) -> None:
         """Check --plain flag produces plain text output without colors."""
         factory = DbFactory(db_path)
 
@@ -546,7 +581,7 @@ class TestCheckCommand:
         assert "[green]" not in result.output
         assert "[red]" not in result.output
 
-    def test_check_summary_counts(self: Any, db_path: Any, cli_runner: Any) -> None:
+    def test_check_summary_counts(self, db_path: Path, cli_runner: CliRunner) -> None:
         """Check summary shows correct counts of ok/warning/error checks."""
         factory = DbFactory(db_path)
 
@@ -566,7 +601,7 @@ class TestCheckCommand:
         assert "warnings" in result.output or "warning" in result.output
         assert "errors" in result.output or "error" in result.output
 
-    def test_check_empty_database(self: Any, db_path: Any, cli_runner: Any) -> None:
+    def test_check_empty_database(self, db_path: Path, cli_runner: CliRunner) -> None:
         """Check command succeeds on empty database."""
         # Don't create any data - just verify empty DB (db_path fixture ensures DB exists)
 
@@ -576,7 +611,7 @@ class TestCheckCommand:
         # Should show healthy status checks (no integrity_check without --deep)
         assert "OK database" in result.output
 
-    def test_check_sqlite_integrity_check(self: Any, db_path: Any, cli_runner: Any) -> None:
+    def test_check_sqlite_integrity_check(self, db_path: Path, cli_runner: CliRunner) -> None:
         """Check includes SQLite integrity check when --deep is passed."""
         factory = DbFactory(db_path)
 
@@ -592,11 +627,7 @@ class TestCheckCommand:
         data = _extract_json(result.output)
 
         # Find the sqlite_integrity check
-        integrity_check = next(
-            (c for c in data["checks"] if c["name"] == "sqlite_integrity"),
-            None,
-        )
-        assert integrity_check is not None
+        integrity_check = _find_named_check(data, "sqlite_integrity")
         assert integrity_check["status"] == "ok"
         assert integrity_check["detail"] == "ok"
 
@@ -622,7 +653,9 @@ class TestCheckCommandSupplementary:
     ]
 
     @pytest.mark.parametrize("args,expected_error", INVALID_FLAG_COMBOS)
-    def test_invalid_flag_combinations_rejected(self: Any, cli_workspace: Any, args: Any, expected_error: Any) -> None:
+    def test_invalid_flag_combinations_rejected(
+        self, cli_workspace: WorkspacePaths, args: list[str], expected_error: str
+    ) -> None:
         """Flag dependencies and value constraints are enforced."""
         from click.testing import CliRunner
 
@@ -635,7 +668,7 @@ class TestCheckCommandSupplementary:
 
     # --- Remaining non-repetitive tests ---
 
-    def test_json_output_with_repair(self: Any, cli_workspace: Any) -> None:
+    def test_json_output_with_repair(self, cli_workspace: WorkspacePaths) -> None:
         """--json with --repair includes maintenance results."""
         from click.testing import CliRunner
 
@@ -645,10 +678,10 @@ class TestCheckCommandSupplementary:
         result = runner.invoke(cli, ["doctor", "--json", "--repair", "--preview"])
         assert result.exit_code == 0
         envelope = json.loads(result.output.split("\n", 1)[-1] if "Plain" in result.output else result.output)
-        data = envelope.get("result", envelope)
+        data = _require_json_object(envelope.get("result", envelope), context="repair preview payload")
         assert "maintenance" in data
 
-    def test_repair_with_no_issues_shows_message(self: Any, cli_workspace: Any) -> None:
+    def test_repair_with_no_issues_shows_message(self, cli_workspace: WorkspacePaths) -> None:
         """When repair finds no issues, should show a maintenance status message."""
         from click.testing import CliRunner
 
@@ -663,7 +696,7 @@ class TestCheckCommandSupplementary:
             or "maintenance" in result.output.lower()
         )
 
-    def test_vacuum_with_repair(self: Any, cli_workspace: Any) -> None:
+    def test_vacuum_with_repair(self, cli_workspace: WorkspacePaths) -> None:
         """--vacuum with --repair should attempt VACUUM."""
         from click.testing import CliRunner
 
@@ -674,7 +707,7 @@ class TestCheckCommandSupplementary:
         assert result.exit_code == 0
         assert "VACUUM" in result.output
 
-    def test_json_output_with_repair_and_vacuum_is_machine_safe(self: Any, cli_workspace: Any) -> None:
+    def test_json_output_with_repair_and_vacuum_is_machine_safe(self, cli_workspace: WorkspacePaths) -> None:
         """`--json --repair --vacuum` should stay valid JSON."""
         from click.testing import CliRunner
 
@@ -685,12 +718,13 @@ class TestCheckCommandSupplementary:
 
         assert result.exit_code == 0
         envelope = json.loads(result.output)
-        data = envelope.get("result", envelope)
+        data = _require_json_object(envelope.get("result", envelope), context="repair vacuum payload")
         assert "maintenance" in data
-        assert data["vacuum"]["ok"] is True
-        assert data["vacuum"]["preview"] is True
+        vacuum = _json_object_field(data, "vacuum", context="repair vacuum payload")
+        assert vacuum.get("ok") is True
+        assert vacuum.get("preview") is True
 
-    def test_check_schemas_json_output(self: Any, cli_workspace: Any) -> None:
+    def test_check_schemas_json_output(self, cli_workspace: WorkspacePaths) -> None:
         """--schemas adds schema_verification block to JSON output."""
         from click.testing import CliRunner
 
@@ -718,12 +752,13 @@ class TestCheckCommandSupplementary:
         assert result.exit_code == 0
         data = _extract_json(result.output)
         assert "schema_verification" in data
-        assert data["schema_verification"]["total_records"] == 3
-        assert data["schema_verification"]["max_samples"] == "all"
-        assert data["schema_verification"]["record_limit"] == "all"
-        assert data["schema_verification"]["record_offset"] == 0
+        schema_verification = _json_object_field(data, "schema_verification", context="schema verification payload")
+        assert schema_verification.get("total_records") == 3
+        assert schema_verification.get("max_samples") == "all"
+        assert schema_verification.get("record_limit") == "all"
+        assert schema_verification.get("record_offset") == 0
 
-    def test_check_schemas_forwards_record_chunk_options(self: Any, cli_workspace: Any) -> None:
+    def test_check_schemas_forwards_record_chunk_options(self, cli_workspace: WorkspacePaths) -> None:
         """Chunking options are forwarded to verify_raw_corpus."""
         from click.testing import CliRunner
 
@@ -770,7 +805,7 @@ class TestCheckCommandSupplementary:
         assert request.progress_callback is not None
         assert mock_verify.call_args.kwargs["db_path"] == ANY
 
-    def test_check_schemas_forwards_quarantine_flag(self: Any, cli_workspace: Any) -> None:
+    def test_check_schemas_forwards_quarantine_flag(self, cli_workspace: WorkspacePaths) -> None:
         """Quarantine option is forwarded to verify_raw_corpus."""
         from click.testing import CliRunner
 
@@ -801,7 +836,7 @@ class TestCheckCommandSupplementary:
         assert request.quarantine_malformed is True
         assert request.progress_callback is not None
 
-    def test_check_proof_json_output(self: Any, cli_workspace: Any) -> None:
+    def test_check_proof_json_output(self, cli_workspace: WorkspacePaths) -> None:
         """--proof adds artifact_proof block to JSON output."""
         from click.testing import CliRunner
 
@@ -835,12 +870,14 @@ class TestCheckCommandSupplementary:
         assert result.exit_code == 0
         data = _extract_json(result.output)
         assert "artifact_proof" in data
-        assert data["artifact_proof"]["total_records"] == 2
-        assert data["artifact_proof"]["summary"]["linked_sidecars"] == 1
-        assert data["artifact_proof"]["summary"]["unsupported_parseable_records"] == 1
-        assert data["artifact_proof"]["summary"]["package_versions"] == {"v7": 1}
+        artifact_proof = _json_object_field(data, "artifact_proof", context="artifact proof payload")
+        artifact_summary = _json_object_field(artifact_proof, "summary", context="artifact proof payload")
+        assert artifact_proof.get("total_records") == 2
+        assert artifact_summary.get("linked_sidecars") == 1
+        assert artifact_summary.get("unsupported_parseable_records") == 1
+        assert artifact_summary.get("package_versions") == {"v7": 1}
 
-    def test_check_proof_plain_output(self: Any, cli_workspace: Any) -> None:
+    def test_check_proof_plain_output(self, cli_workspace: WorkspacePaths) -> None:
         """--proof renders the artifact proof summary in plain output."""
         from click.testing import CliRunner
 
@@ -875,7 +912,7 @@ class TestCheckCommandSupplementary:
         assert "chatgpt: contract_backed=1" in result.output
         assert "packages: v1=1" in result.output
 
-    def test_check_proof_forwards_artifact_scope(self: Any, cli_workspace: Any) -> None:
+    def test_check_proof_forwards_artifact_scope(self, cli_workspace: WorkspacePaths) -> None:
         """Artifact provider/limit/offset are forwarded to the proof workflow."""
         from click.testing import CliRunner
 
@@ -910,7 +947,7 @@ class TestCheckCommandSupplementary:
         assert request.record_limit == 25
         assert request.record_offset == 50
 
-    def test_check_artifacts_json_output(self: Any, cli_workspace: Any) -> None:
+    def test_check_artifacts_json_output(self, cli_workspace: WorkspacePaths) -> None:
         """--artifacts adds artifact_observations rows to JSON output."""
         from click.testing import CliRunner
 
@@ -969,10 +1006,18 @@ class TestCheckCommandSupplementary:
 
         assert result.exit_code == 0
         data = _extract_json(result.output)
-        assert data["artifact_observations"]["count"] == 1
-        assert data["artifact_observations"]["items"][0]["support_status"] == "supported_parseable"
+        artifact_observations = _json_object_field(
+            data, "artifact_observations", context="artifact observations payload"
+        )
+        assert artifact_observations.get("count") == 1
+        observation = _json_array_item(
+            _json_array_field(artifact_observations, "items", context="artifact observations payload"),
+            0,
+            context="artifact_observations.items",
+        )
+        assert observation.get("support_status") == "supported_parseable"
 
-    def test_check_cohorts_plain_output(self: Any, cli_workspace: Any) -> None:
+    def test_check_cohorts_plain_output(self, cli_workspace: WorkspacePaths) -> None:
         """--cohorts renders durable cohort summaries in plain output."""
         from click.testing import CliRunner
 

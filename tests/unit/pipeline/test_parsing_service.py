@@ -4,15 +4,15 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from polylogue.config import Config, Source
+from polylogue.lib.raw_payload_decode import JSONValue
 from polylogue.pipeline.services.acquisition import AcquireResult, AcquisitionService
 from polylogue.pipeline.services.acquisition_records import ScanResult
 from polylogue.pipeline.services.parsing import ParseResult, ParsingService
@@ -24,9 +24,13 @@ from polylogue.storage.repository import ConversationRepository
 from polylogue.storage.store import RawConversationRecord
 from polylogue.types import Provider
 
+WorkspacePaths = dict[str, Path]
+ConversationPayload = dict[str, JSONValue]
+VisitSourcesCallback = Callable[[RawConversationRecord], Awaitable[None]]
+
 
 class TestParseResultMerge:
-    async def test_merge_thread_safe(self: Any) -> None:
+    async def test_merge_thread_safe(self) -> None:
         result = ParseResult()
 
         async def merge_batch(start_id: int) -> None:
@@ -53,7 +57,7 @@ class TestParseResultMerge:
 
 
 class TestParsingServiceParseSources:
-    async def test_ingest_empty_sources_returns_empty_result(self: Any) -> None:
+    async def test_ingest_empty_sources_returns_empty_result(self) -> None:
         mock_repository = MagicMock()
         mock_backend = MagicMock()
         mock_repository.backend = mock_backend
@@ -86,7 +90,7 @@ class TestParsingServiceParseSources:
         assert result.counts["messages"] == 0
         assert len(result.processed_ids) == 0
 
-    async def test_ingest_calls_acquire_then_parse(self: Any) -> None:
+    async def test_ingest_calls_acquire_then_parse(self) -> None:
         mock_repository = MagicMock()
         mock_backend = MagicMock()
         mock_repository.backend = mock_backend
@@ -133,7 +137,7 @@ class TestParsingServiceParseSources:
         assert result.counts["messages"] == 5
         assert result.processed_ids == {"conv-1", "conv-2"}
 
-    async def test_ingest_sources_surfaces_batch_diagnostics_only(self: Any) -> None:
+    async def test_ingest_sources_surfaces_batch_diagnostics_only(self) -> None:
         mock_repository = MagicMock()
         mock_backend = MagicMock()
         mock_repository.backend = mock_backend
@@ -175,7 +179,7 @@ class TestParsingServiceParseSources:
         assert result.diagnostics["batch_observations"]["max_peak_rss_growth_mb"] == 12.5
         assert "session_product_refresh" not in result.diagnostics
 
-    async def test_ingest_dedupes_backlog_without_rebuilding_raw_id_list(self: Any) -> Any:
+    async def test_ingest_dedupes_backlog_without_rebuilding_raw_id_list(self) -> None:
         mock_repository = MagicMock()
         mock_backend = MagicMock()
         mock_repository.backend = mock_backend
@@ -189,12 +193,12 @@ class TestParsingServiceParseSources:
         parse_backlog_calls: list[list[str]] = []
         validation_backlog_calls: list[list[str]] = []
 
-        async def _parse_backlog(*, source_names: Any, exclude_raw_ids: Any) -> Any:
+        async def _parse_backlog(*, source_names: list[str] | None, exclude_raw_ids: list[str]) -> list[str]:
             assert source_names == ["test-source"]
             parse_backlog_calls.append(list(exclude_raw_ids))
             return ["raw-2", "raw-3", "raw-3"]
 
-        async def _validation_backlog(*, source_names: Any, exclude_raw_ids: Any) -> Any:
+        async def _validation_backlog(*, source_names: list[str] | None, exclude_raw_ids: list[str]) -> list[str]:
             assert source_names == ["test-source"]
             validation_backlog_calls.append(list(exclude_raw_ids))
             return ["raw-3", "raw-4", "raw-1"]
@@ -225,7 +229,7 @@ class TestParsingServiceParseSources:
             progress_callback=None,
         )
 
-    async def test_ingest_skips_parse_when_nothing_acquired(self: Any) -> None:
+    async def test_ingest_skips_parse_when_nothing_acquired(self) -> None:
         mock_repository = MagicMock()
         mock_backend = MagicMock()
         mock_repository.backend = mock_backend
@@ -256,7 +260,7 @@ class TestParsingServiceParseSources:
         mock_parse.assert_not_called()
         assert result.counts["conversations"] == 0
 
-    async def test_progress_callback_passed_to_both_stages(self: Any) -> None:
+    async def test_progress_callback_passed_to_both_stages(self) -> None:
         mock_repository = MagicMock()
         mock_backend = MagicMock()
         mock_repository.backend = mock_backend
@@ -295,7 +299,7 @@ class TestParsingServiceParseSources:
         # In unified ingest, validation is inline — callback passed to parse_from_raw
         mock_parse.assert_awaited_once_with(raw_ids=["raw-1"], progress_callback=callback)
 
-    async def test_backend_not_initialized_raises(self: Any) -> None:
+    async def test_backend_not_initialized_raises(self) -> None:
         mock_repository = MagicMock()
         mock_repository.backend = None
         mock_config = MagicMock(spec=Config)
@@ -307,7 +311,7 @@ class TestParsingServiceParseSources:
 
 
 class TestParsingServiceIntegration:
-    def _conversation_json(self: Any, conversation_id: str, title: str, message: str) -> dict[str, Any]:
+    def _conversation_json(self, conversation_id: str, title: str, message: str) -> ConversationPayload:
         return {
             "id": conversation_id,
             "title": title,
@@ -329,7 +333,9 @@ class TestParsingServiceIntegration:
             },
         }
 
-    async def test_ingest_with_real_database(self: Any, cli_workspace: Any, monkeypatch: Any) -> None:
+    async def test_ingest_with_real_database(
+        self, cli_workspace: WorkspacePaths, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         monkeypatch.setenv("POLYLOGUE_SCHEMA_VALIDATION", "off")
         inbox = cli_workspace["inbox_dir"]
         (inbox / "conversations.json").write_text(
@@ -349,7 +355,7 @@ class TestParsingServiceIntegration:
         assert result.counts["conversations"] >= 1
         assert result.processed_ids
 
-    async def test_parse_from_raw_parses_stored_conversations(self: Any, cli_workspace: Any) -> None:
+    async def test_parse_from_raw_parses_stored_conversations(self, cli_workspace: WorkspacePaths) -> None:
         inbox = cli_workspace["inbox_dir"]
         (inbox / "conversations.json").write_text(
             json.dumps([self._conversation_json("test-conv-raw", "Test Raw Conversation", "Hello from raw!")])
@@ -383,7 +389,7 @@ class TestParsingServiceIntegration:
 
 
 class TestParsingServiceStreaming:
-    async def test_parse_from_raw_uses_raw_headers_without_prefetching_full_records(self: Any, tmp_path: Any) -> None:
+    async def test_parse_from_raw_uses_raw_headers_without_prefetching_full_records(self, tmp_path: Path) -> None:
         backend = MagicMock()
         backend.iter_raw_conversations.side_effect = AssertionError("iter_raw_conversations should not be used")
 
@@ -405,7 +411,7 @@ class TestParsingServiceStreaming:
         repository.iter_raw_headers.assert_called_once_with(provider_name="chatgpt")
         assert mock_process.await_count == 1
 
-    async def test_parse_from_raw_splits_explicit_raw_ids_by_blob_budget(self: Any, tmp_path: Any) -> None:
+    async def test_parse_from_raw_splits_explicit_raw_ids_by_blob_budget(self, tmp_path: Path) -> None:
         backend = MagicMock()
         repository = MagicMock()
         repository.backend = backend
@@ -429,7 +435,7 @@ class TestParsingServiceStreaming:
         assert mock_process.await_args_list[0].args[2] == ["raw-1"]
         assert mock_process.await_args_list[1].args[2] == ["raw-2", "raw-3"]
 
-    async def test_parse_from_raw_splits_streamed_backlog_by_blob_budget(self: Any, tmp_path: Any) -> None:
+    async def test_parse_from_raw_splits_streamed_backlog_by_blob_budget(self, tmp_path: Path) -> None:
         backend = MagicMock()
 
         async def raw_headers() -> AsyncGenerator[tuple[str, int], None]:
@@ -465,7 +471,7 @@ class TestParsingServiceStreaming:
 class TestPlanningService:
     @patch("polylogue.pipeline.services.acquisition.iter_source_raw_data")
     async def test_parse_plan_uses_existing_raw_scope_without_scanning_sources(
-        self: Any, mock_iter: Any, tmp_path: Path
+        self, mock_iter: MagicMock, tmp_path: Path
     ) -> None:
         backend = SQLiteBackend(db_path=tmp_path / "test.db")
         config = Config(sources=[], archive_root=tmp_path / "archive", render_root=tmp_path / "render")
@@ -493,7 +499,7 @@ class TestPlanningService:
         assert set(plan.parse_ready_raw_ids) == {"raw-scoped"}
         mock_iter.assert_not_called()
 
-    async def test_planning_includes_scoped_validation_backlog(self: Any, tmp_path: Path) -> None:
+    async def test_planning_includes_scoped_validation_backlog(self, tmp_path: Path) -> None:
         backend = SQLiteBackend(db_path=tmp_path / "test.db")
         config = Config(sources=[], archive_root=tmp_path / "archive", render_root=tmp_path / "render")
         planner = PlanningService(backend=backend, config=config)
@@ -523,7 +529,7 @@ class TestPlanningService:
         assert set(plan.validate_raw_ids) == {"raw-scoped"}
 
     @patch("polylogue.pipeline.services.acquisition.iter_source_raw_data")
-    async def test_build_plan_dedupes_duplicate_scanned_raw_ids(self: Any, mock_iter: Any, tmp_path: Path) -> None:
+    async def test_build_plan_dedupes_duplicate_scanned_raw_ids(self, mock_iter: MagicMock, tmp_path: Path) -> None:
         backend = SQLiteBackend(db_path=tmp_path / "test.db")
         config = Config(sources=[], archive_root=tmp_path / "archive", render_root=tmp_path / "render")
         planner = PlanningService(backend=backend, config=config)
@@ -550,8 +556,8 @@ class TestPlanningService:
         assert plan.summary.details["duplicate_raw"] == 1
 
     async def test_build_plan_execution_does_not_load_backlog_content(
-        self: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> Any:
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         backend = SQLiteBackend(db_path=tmp_path / "test.db")
         config = Config(sources=[], archive_root=tmp_path / "archive", render_root=tmp_path / "render")
         planner = PlanningService(backend=backend, config=config)
@@ -575,9 +581,14 @@ class TestPlanningService:
 
         original = ConversationRepository.get_raw_conversations_batch
 
-        async def spy_batch(self: Any, ids: Any, *args: Any, **kwargs: Any) -> Any:
+        async def spy_batch(
+            repository: ConversationRepository,
+            ids: list[str],
+            *args: object,
+            **kwargs: object,
+        ) -> list[RawConversationRecord]:
             call_count[0] += 1
-            return await original(self, ids, *args, **kwargs)
+            return await original(repository, ids, *args, **kwargs)
 
         monkeypatch.setattr(ConversationRepository, "get_raw_conversations_batch", spy_batch)
         plan = await planner.build_plan(sources=[Source(name="inbox-a", path=source_dir)], stage="all", preview=False)
@@ -586,8 +597,8 @@ class TestPlanningService:
         assert call_count[0] == 0
 
     async def test_build_plan_preview_validates_backlog_in_batches(
-        self: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> Any:
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         backend = SQLiteBackend(db_path=tmp_path / "test.db")
         config = Config(sources=[], archive_root=tmp_path / "archive", render_root=tmp_path / "render")
         planner = PlanningService(backend=backend, config=config)
@@ -613,10 +624,15 @@ class TestPlanningService:
 
         original = ConversationRepository.get_raw_conversations_batch
 
-        async def spy_batch(self: Any, ids: Any, *args: Any, **kwargs: Any) -> Any:
+        async def spy_batch(
+            repository: ConversationRepository,
+            ids: list[str],
+            *args: object,
+            **kwargs: object,
+        ) -> list[RawConversationRecord]:
             call_count[0] += 1
             batch_sizes.append(len(ids))
-            return await original(self, ids, *args, **kwargs)
+            return await original(repository, ids, *args, **kwargs)
 
         monkeypatch.setattr(ConversationRepository, "get_raw_conversations_batch", spy_batch)
         plan = await planner.build_plan(sources=[Source(name="inbox-a", path=source_dir)], stage="all", preview=True)
@@ -625,7 +641,7 @@ class TestPlanningService:
         assert call_count[0] >= 2
         assert max(batch_sizes) <= ValidationService.RAW_BATCH_SIZE
 
-    async def test_planning_includes_only_parseable_backlog_statuses(self: Any, tmp_path: Path) -> None:
+    async def test_planning_includes_only_parseable_backlog_statuses(self, tmp_path: Path) -> None:
         backend = SQLiteBackend(db_path=tmp_path / "test.db")
         config = Config(sources=[], archive_root=tmp_path / "archive", render_root=tmp_path / "render")
         planner = PlanningService(backend=backend, config=config)
@@ -651,7 +667,7 @@ class TestPlanningService:
         assert plan.summary.details["backlog_parse"] == 2
         assert set(plan.parse_ready_raw_ids) == {"raw-passed", "raw-skipped"}
 
-    async def test_build_plan_force_reparse_simulates_reset_for_parse_backlog(self: Any, tmp_path: Path) -> None:
+    async def test_build_plan_force_reparse_simulates_reset_for_parse_backlog(self, tmp_path: Path) -> None:
         backend = SQLiteBackend(db_path=tmp_path / "test.db")
         config = Config(sources=[], archive_root=tmp_path / "archive", render_root=tmp_path / "render")
         planner = PlanningService(backend=backend, config=config)
@@ -724,10 +740,10 @@ class TestPlanningService:
 
     @patch("polylogue.pipeline.services.acquisition.AcquisitionService.visit_sources")
     async def test_build_plan_force_reparse_counts_scanned_existing_records(
-        self: Any,
-        mock_visit_sources: Any,
+        self,
+        mock_visit_sources: MagicMock,
         tmp_path: Path,
-    ) -> Any:
+    ) -> None:
         backend = SQLiteBackend(db_path=tmp_path / "test.db")
         config = Config(sources=[], archive_root=tmp_path / "archive", render_root=tmp_path / "render")
         planner = PlanningService(backend=backend, config=config)
@@ -747,11 +763,11 @@ class TestPlanningService:
         await backend.mark_raw_parsed("raw-existing", payload_provider="chatgpt")
 
         async def _visit_sources(
-            _sources: Any,
+            _sources: list[Source],
             *,
-            on_record: Any = None,
-            **_kwargs: Any,
-        ) -> Any:
+            on_record: VisitSourcesCallback | None = None,
+            **_kwargs: object,
+        ) -> ScanResult:
             assert on_record is not None
             await on_record(record)
             result = ScanResult()
@@ -780,10 +796,10 @@ class TestPlanningService:
 
     @patch("polylogue.pipeline.services.acquisition.AcquisitionService.visit_sources")
     async def test_build_plan_force_reparse_reuses_shared_backlog_semantics_for_scanned_records(
-        self: Any,
-        mock_visit_sources: Any,
+        self,
+        mock_visit_sources: MagicMock,
         tmp_path: Path,
-    ) -> Any:
+    ) -> None:
         backend = SQLiteBackend(db_path=tmp_path / "test.db")
         config = Config(sources=[], archive_root=tmp_path / "archive", render_root=tmp_path / "render")
         planner = PlanningService(backend=backend, config=config)
@@ -831,11 +847,11 @@ class TestPlanningService:
         )
 
         async def _visit_sources(
-            _sources: Any,
+            _sources: list[Source],
             *,
-            on_record: Any = None,
-            **_kwargs: Any,
-        ) -> Any:
+            on_record: VisitSourcesCallback | None = None,
+            **_kwargs: object,
+        ) -> ScanResult:
             assert on_record is not None
             for record in records:
                 await on_record(record)
@@ -865,7 +881,7 @@ class TestPlanningService:
 
     @pytest.mark.parametrize(("stage", "count_key"), [("render", "render"), ("index", "index")])
     async def test_build_plan_uses_count_query_for_render_and_index(
-        self: Any, tmp_path: Path, stage: str, count_key: str
+        self, tmp_path: Path, stage: str, count_key: str
     ) -> None:
         backend = MagicMock(spec=SQLiteBackend)
         backend.queries = MagicMock()

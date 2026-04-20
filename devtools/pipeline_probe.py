@@ -15,7 +15,7 @@ import tempfile
 from collections.abc import Iterator
 from contextlib import contextmanager, redirect_stdout
 from pathlib import Path
-from typing import Any, cast
+from typing import NotRequired, TypeAlias, TypedDict
 
 from polylogue.config import Config, Source
 from polylogue.paths import blob_store_root, db_path
@@ -31,6 +31,7 @@ from polylogue.storage.backends.connection import (
 from polylogue.storage.backends.queries.raw_state import EFFECTIVE_RAW_PROVIDER_SQL
 from polylogue.storage.blob_store import BlobStore, reset_blob_store
 from polylogue.storage.repository import ConversationRepository
+from polylogue.storage.state_views import RunResult
 from polylogue.storage.store import RawConversationRecord
 from polylogue.types import Provider
 
@@ -53,6 +54,90 @@ _SOURCE_BACKED_PROBE_STAGE_SEQUENCES: dict[str, tuple[str, ...]] = {
     "reprocess": ("acquire", "parse", "materialize", "render", "index"),
     "all": ("acquire", "parse", "materialize", "render", "index"),
 }
+
+JsonScalar: TypeAlias = str | int | float | bool | None
+JsonValue: TypeAlias = JsonScalar | dict[str, "JsonValue"] | list["JsonValue"]
+JsonObject: TypeAlias = dict[str, JsonValue]
+ProbeSummary: TypeAlias = dict[str, object]
+
+
+class RawFanoutEntry(TypedDict):
+    raw_id: str
+    payload_provider: str | None
+    source_name: str | None
+    blob_size_bytes: int
+    conversation_count: int
+    message_count: int
+    parse_error: str | None
+
+
+class PathFingerprint(TypedDict):
+    path: str
+    kind: str
+    sha256: str
+    file_count: int
+    total_bytes: int
+
+
+class StagedSourceEntry(TypedDict):
+    input_path: str
+    staged_path: str
+    kind: str
+    file_count: int
+    bytes: int
+
+
+class SourceInputsSummary(TypedDict):
+    input_count: int
+    staged_entry_count: int
+    staged_file_count: int
+    total_bytes: int
+    entries: list[StagedSourceEntry]
+
+
+class ProbeProvenance(TypedDict):
+    git_commit: str | None
+    worktree_dirty: bool | None
+    manifest_sha256: NotRequired[str]
+    source_input_fingerprints: NotRequired[list[PathFingerprint]]
+    source_inputs_sha256: NotRequired[str]
+
+
+class ArchiveManifest(TypedDict):
+    input_mode: str
+    source_db: str
+    source_blob_root: str
+    seed: int
+    sample_per_provider: int
+    provider_filters: list[str]
+    source_filters: list[str]
+    candidate_count: int
+    missing_blob_count: int
+    available_by_provider: dict[str, int]
+    sampled_by_provider: dict[str, int]
+    records: list[JsonObject]
+
+
+class ArchiveSubsetSampleSummary(TypedDict):
+    selected_count: int
+    copied_records: int
+    copied_blob_bytes: int
+    provider_counts: dict[str, int]
+    source_counts: dict[str, int]
+    sample_per_provider: int
+    candidate_count: int
+    missing_blob_count: int
+    available_by_provider: dict[str, int]
+    sampled_by_provider: dict[str, int]
+
+
+class BudgetReport(TypedDict):
+    ok: bool
+    max_total_ms: float | None
+    observed_total_ms: JsonValue
+    max_peak_rss_mb: float | None
+    observed_peak_rss_mb: JsonValue
+    violations: list[str]
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -264,7 +349,7 @@ def _db_row_counts(db_path: Path) -> dict[str, int]:
     return stats
 
 
-def _db_raw_fanout(db_path: Path) -> list[dict[str, Any]]:
+def _db_raw_fanout(db_path: Path) -> list[RawFanoutEntry]:
     if not db_path.exists():
         return []
     with open_connection(db_path) as conn:
@@ -315,7 +400,7 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _fingerprint_path(path: Path) -> dict[str, Any]:
+def _fingerprint_path(path: Path) -> PathFingerprint:
     if path.is_file():
         return {
             "path": str(path),
@@ -379,18 +464,16 @@ def _safe_git_worktree_dirty() -> bool | None:
 def _build_probe_provenance(
     *,
     manifest_path: Path | None = None,
-    source_inputs: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    provenance: dict[str, Any] = {
+    source_inputs: SourceInputsSummary | None = None,
+) -> ProbeProvenance:
+    provenance: ProbeProvenance = {
         "git_commit": _safe_git_commit(),
         "worktree_dirty": _safe_git_worktree_dirty(),
     }
     if manifest_path is not None and manifest_path.exists():
         provenance["manifest_sha256"] = _sha256_file(manifest_path)
     if source_inputs is not None:
-        fingerprints = [
-            _fingerprint_path(Path(str(entry["staged_path"]))) for entry in source_inputs.get("entries", [])
-        ]
+        fingerprints = [_fingerprint_path(Path(entry["staged_path"])) for entry in source_inputs["entries"]]
         provenance["source_input_fingerprints"] = fingerprints
         digest = hashlib.sha256()
         for entry in fingerprints:
@@ -596,14 +679,15 @@ def _source_counts(records: list[RawConversationRecord]) -> dict[str, int]:
     return dict(sorted(counts.items()))
 
 
-def _persist_manifest(manifest: dict[str, Any], destination: Path) -> Path:
+def _persist_manifest(manifest: ArchiveManifest, destination: Path) -> Path:
     destination.parent.mkdir(parents=True, exist_ok=True)
     destination.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return destination
 
 
-def _load_manifest(manifest_path: Path) -> dict[str, Any]:
-    return cast(dict[str, Any], json.loads(manifest_path.read_text(encoding="utf-8")))
+def _load_manifest(manifest_path: Path) -> ArchiveManifest:
+    manifest: ArchiveManifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    return manifest
 
 
 def _build_archive_manifest(
@@ -614,7 +698,7 @@ def _build_archive_manifest(
     source_filters: list[str],
     sample_per_provider: int,
     seed: int,
-) -> dict[str, Any]:
+) -> ArchiveManifest:
     source_blob_store = BlobStore(source_blob_root)
     candidate_records = _fetch_archive_candidates(
         db_path=source_db,
@@ -689,7 +773,7 @@ def _resolve_archive_manifest(
     source_filters: list[str],
     sample_per_provider: int,
     seed: int,
-) -> dict[str, Any]:
+) -> ArchiveManifest:
     if manifest_in is not None:
         manifest = _load_manifest(manifest_in)
         if source_blob_root is not None:
@@ -712,11 +796,11 @@ def _resolve_archive_manifest(
 
 async def _seed_archive_subset(
     *,
-    manifest: dict[str, Any],
+    manifest: ArchiveManifest,
     repository: ConversationRepository,
     target_blob_store: BlobStore,
-) -> dict[str, Any]:
-    records = [RawConversationRecord.model_validate(record_payload) for record_payload in manifest.get("records", [])]
+) -> ArchiveSubsetSampleSummary:
+    records = [RawConversationRecord.model_validate(record_payload) for record_payload in manifest["records"]]
     source_blob_root = Path(str(manifest["source_blob_root"])).resolve()
     source_blob_store = BlobStore(source_blob_root)
     copied_records = 0
@@ -740,11 +824,11 @@ async def _seed_archive_subset(
         "copied_blob_bytes": copied_blob_bytes,
         "provider_counts": _provider_counts(records),
         "source_counts": _source_counts(records),
-        "sample_per_provider": manifest.get("sample_per_provider"),
-        "candidate_count": manifest.get("candidate_count"),
-        "missing_blob_count": manifest.get("missing_blob_count", 0),
-        "available_by_provider": manifest.get("available_by_provider", {}),
-        "sampled_by_provider": manifest.get("sampled_by_provider", {}),
+        "sample_per_provider": manifest["sample_per_provider"],
+        "candidate_count": manifest["candidate_count"],
+        "missing_blob_count": manifest["missing_blob_count"],
+        "available_by_provider": manifest["available_by_provider"],
+        "sampled_by_provider": manifest["sampled_by_provider"],
     }
 
 
@@ -763,10 +847,11 @@ def _probe_mode(args: argparse.Namespace) -> str:
     return str(getattr(args, "input_mode", "synthetic"))
 
 
-def _load_run_payload(run_path: str | None) -> dict[str, Any]:
+def _load_run_payload(run_path: str | None) -> JsonObject:
     if not run_path:
         return {}
-    return cast(dict[str, Any], json.loads(Path(run_path).read_text(encoding="utf-8")))
+    payload: JsonObject = json.loads(Path(run_path).read_text(encoding="utf-8"))
+    return payload
 
 
 def _path_size_bytes(path: Path) -> int:
@@ -793,9 +878,9 @@ def _stage_source_subset(
     *,
     source_paths: list[Path],
     source_root: Path,
-) -> dict[str, Any]:
+) -> SourceInputsSummary:
     source_root.mkdir(parents=True, exist_ok=True)
-    entries: list[dict[str, Any]] = []
+    entries: list[StagedSourceEntry] = []
     staged_file_count = 0
     total_bytes = 0
 
@@ -839,7 +924,7 @@ async def _run_probe_pipeline(
     measure_ingest_result_size: bool,
     backend: SQLiteBackend | None = None,
     repository: ConversationRepository | None = None,
-) -> tuple[Any, dict[str, Any]]:
+) -> tuple[RunResult, JsonObject]:
     result = await run_sources(
         config=config,
         stage=stage,
@@ -860,7 +945,27 @@ def _probe_stage_sequence(probe_mode: str, stage: str) -> list[str] | None:
     return list(_SOURCE_BACKED_PROBE_STAGE_SEQUENCES[stage])
 
 
-async def run_probe(args: argparse.Namespace) -> dict[str, Any]:
+def _json_object_or_empty(value: object | None) -> JsonObject:
+    if isinstance(value, dict):
+        payload: JsonObject = value
+        return payload
+    return {}
+
+
+def _json_float_or_none(value: object | None) -> float | None:
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value)
+        except ValueError:
+            return None
+    return None
+
+
+async def run_probe(args: argparse.Namespace) -> ProbeSummary:
     probe_mode = _probe_mode(args)
     if probe_mode not in _INPUT_MODES:
         raise ValueError(f"--input-mode must be one of {_INPUT_MODES}")
@@ -875,7 +980,7 @@ async def run_probe(args: argparse.Namespace) -> dict[str, Any]:
     archive_root = workdir / "archive"
     render_root = workdir / "render"
     db_path: Path | None = None
-    summary: dict[str, Any]
+    summary: ProbeSummary
 
     if probe_mode == "synthetic":
         if args.count <= 0:
@@ -915,6 +1020,7 @@ async def run_probe(args: argparse.Namespace) -> dict[str, Any]:
                 ingest_workers=ingest_workers,
                 measure_ingest_result_size=args.measure_ingest_result_size,
             )
+        result_payload = result.model_dump()
 
         summary = {
             "probe": {
@@ -946,7 +1052,7 @@ async def run_probe(args: argparse.Namespace) -> dict[str, Any]:
                 "total_bytes": total_bytes,
             },
             "provenance": _build_probe_provenance(),
-            "result": result.model_dump(),
+            "result": result_payload,
             "run_payload": run_payload,
             "db_stats": _db_row_counts(db_path) if db_path is not None else {},
             "raw_fanout": _db_raw_fanout(db_path) if db_path is not None else [],
@@ -980,6 +1086,7 @@ async def run_probe(args: argparse.Namespace) -> dict[str, Any]:
                 ingest_workers=ingest_workers,
                 measure_ingest_result_size=args.measure_ingest_result_size,
             )
+        result_payload = result.model_dump()
 
         summary = {
             "probe": {
@@ -1001,7 +1108,7 @@ async def run_probe(args: argparse.Namespace) -> dict[str, Any]:
             },
             "source_inputs": source_inputs,
             "provenance": _build_probe_provenance(source_inputs=source_inputs),
-            "result": result.model_dump(),
+            "result": result_payload,
             "run_payload": run_payload,
             "db_stats": _db_row_counts(db_path) if db_path is not None else {},
             "raw_fanout": _db_raw_fanout(db_path) if db_path is not None else [],
@@ -1054,6 +1161,7 @@ async def run_probe(args: argparse.Namespace) -> dict[str, Any]:
                 )
             finally:
                 await repository.close()
+        result_payload = result.model_dump()
 
         summary = {
             "probe": {
@@ -1079,7 +1187,7 @@ async def run_probe(args: argparse.Namespace) -> dict[str, Any]:
             },
             "sample": sample_summary,
             "provenance": _build_probe_provenance(manifest_path=manifest_path),
-            "result": result.model_dump(),
+            "result": result_payload,
             "run_payload": run_payload,
             "db_stats": _db_row_counts(db_path) if db_path is not None else {},
             "raw_fanout": _db_raw_fanout(db_path) if db_path is not None else [],
@@ -1088,29 +1196,35 @@ async def run_probe(args: argparse.Namespace) -> dict[str, Any]:
     return summary
 
 
-def _build_budget_report(summary: dict[str, Any], args: argparse.Namespace) -> dict[str, Any] | None:
+def _build_budget_report(summary: ProbeSummary, args: argparse.Namespace) -> BudgetReport | None:
     if args.max_total_ms is None and args.max_peak_rss_mb is None:
         return None
 
-    metrics = summary.get("run_payload", {}).get("metrics", {})
-    observed_total_ms = metrics.get("total_duration_ms", summary.get("result", {}).get("duration_ms"))
+    run_payload = _json_object_or_empty(summary.get("run_payload"))
+    metrics = _json_object_or_empty(run_payload.get("metrics"))
+    result_payload = _json_object_or_empty(summary.get("result"))
+    observed_total_ms = metrics.get("total_duration_ms", result_payload.get("duration_ms"))
     observed_peak_rss_mb = metrics.get("peak_rss_self_mb")
     violations: list[str] = []
 
     if args.max_total_ms is not None:
         if observed_total_ms is None:
             violations.append("missing total runtime metric")
-        elif float(observed_total_ms) > args.max_total_ms:
+        elif (observed_total_ms_value := _json_float_or_none(observed_total_ms)) is None:
+            violations.append("non-numeric total runtime metric")
+        elif observed_total_ms_value > args.max_total_ms:
             violations.append(
-                f"total runtime {float(observed_total_ms):.1f} ms exceeded budget {args.max_total_ms:.1f} ms"
+                f"total runtime {observed_total_ms_value:.1f} ms exceeded budget {args.max_total_ms:.1f} ms"
             )
 
     if args.max_peak_rss_mb is not None:
         if observed_peak_rss_mb is None:
             violations.append("missing peak RSS metric")
-        elif float(observed_peak_rss_mb) > args.max_peak_rss_mb:
+        elif (observed_peak_rss_mb_value := _json_float_or_none(observed_peak_rss_mb)) is None:
+            violations.append("non-numeric peak RSS metric")
+        elif observed_peak_rss_mb_value > args.max_peak_rss_mb:
             violations.append(
-                f"peak RSS {float(observed_peak_rss_mb):.1f} MiB exceeded budget {args.max_peak_rss_mb:.1f} MiB"
+                f"peak RSS {observed_peak_rss_mb_value:.1f} MiB exceeded budget {args.max_peak_rss_mb:.1f} MiB"
             )
 
     return {

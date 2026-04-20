@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -28,8 +28,10 @@ from polylogue.storage.backends.connection import open_connection
 from polylogue.storage.state_views import PlanResult, RunResult
 from tests.infra.storage_records import make_conversation, make_message, store_records
 
+WorkspaceEnv = Mapping[str, Path]
 
-def _seed_conversations(workspace_env: Any, *conversation_ids: str, with_message: bool = False) -> None:
+
+def _seed_conversations(workspace_env: WorkspaceEnv, *conversation_ids: str, with_message: bool = False) -> None:
     db_path = workspace_env["data_root"] / "polylogue" / "polylogue.db"
     db_path.parent.mkdir(parents=True, exist_ok=True)
     with open_connection(db_path) as conn:
@@ -81,7 +83,7 @@ def test_normalize_stage_sequence_rejects_duplicates() -> None:
         normalize_stage_sequence(stage="all", stage_sequence=("parse", "parse"))
 
 
-def test_run_sources_accepts_explicit_leaf_stage_sequence(workspace_env: Any, tmp_path: Path) -> None:
+def test_run_sources_accepts_explicit_leaf_stage_sequence(workspace_env: WorkspaceEnv, tmp_path: Path) -> None:
     inbox = tmp_path / "explicit-sequence"
     inbox.mkdir(parents=True, exist_ok=True)
     _write_chatgpt_export(inbox / "conversations.json", "conv-explicit-sequence")
@@ -105,7 +107,10 @@ def test_run_sources_accepts_explicit_leaf_stage_sequence(workspace_env: Any, tm
     assert result.indexed is False
 
 
-def test_explicit_leaf_stage_sequence_uses_order_sensitive_leaf_semantics(workspace_env: Any, tmp_path: Path) -> None:
+def test_explicit_leaf_stage_sequence_uses_order_sensitive_leaf_semantics(
+    workspace_env: WorkspaceEnv,
+    tmp_path: Path,
+) -> None:
     config = Config(
         sources=[Source(name="explicit", path=tmp_path / "explicit")],
         archive_root=workspace_env["archive_root"],
@@ -181,7 +186,7 @@ def test_explicit_leaf_stage_sequence_uses_order_sensitive_leaf_semantics(worksp
     assert mock_index.await_args.kwargs["stage"] == "all"
 
 
-def test_ingest_stage_log_omits_full_batch_telemetry(workspace_env: Any, tmp_path: Path) -> None:
+def test_ingest_stage_log_omits_full_batch_telemetry(workspace_env: WorkspaceEnv, tmp_path: Path) -> None:
     config = Config(
         sources=[Source(name="explicit", path=tmp_path / "explicit")],
         archive_root=workspace_env["archive_root"],
@@ -246,7 +251,10 @@ def test_ingest_stage_log_omits_full_batch_telemetry(workspace_env: Any, tmp_pat
     assert "batches" not in details["batch_observations"]
 
 
-def test_materialize_stage_log_omits_full_chunk_telemetry(workspace_env: Any, tmp_path: Path) -> None:
+def test_materialize_stage_log_omits_full_chunk_telemetry(
+    workspace_env: WorkspaceEnv,
+    tmp_path: Path,
+) -> None:
     config = Config(
         sources=[Source(name="explicit", path=tmp_path / "explicit")],
         archive_root=workspace_env["archive_root"],
@@ -306,7 +314,7 @@ def test_materialize_stage_log_omits_full_chunk_telemetry(workspace_env: Any, tm
 
 
 class TestRunSourcesRenderFailures:
-    def test_render_failure_tracked_in_result(self: Any, workspace_env: Any) -> Any:
+    def test_render_failure_tracked_in_result(self, workspace_env: WorkspaceEnv) -> None:
         from polylogue.storage.state_views import RunResult
 
         archive_root = workspace_env["archive_root"]
@@ -316,7 +324,8 @@ class TestRunSourcesRenderFailures:
 
         with patch("polylogue.rendering.renderers.html.HTMLRenderer.render", new_callable=AsyncMock) as mock_render:
 
-            def render_side_effect(conversation_id: Any, output_path: Any) -> Any:
+            def render_side_effect(conversation_id: str, output_path: Path) -> MagicMock:
+                del output_path
                 if "fail-conv" in conversation_id:
                     raise ValueError("Render failed for testing")
                 return MagicMock()
@@ -331,7 +340,7 @@ class TestRunSourcesRenderFailures:
         assert failure["conversation_id"] == "test:fail-conv"
         assert "error" in failure
 
-    def test_render_continues_after_failure(self: Any, workspace_env: Any) -> Any:
+    def test_render_continues_after_failure(self, workspace_env: WorkspaceEnv) -> None:
         archive_root = workspace_env["archive_root"]
         archive_root.mkdir(parents=True, exist_ok=True)
         _seed_conversations(workspace_env, "test:first", "test:second", "test:third")
@@ -340,7 +349,8 @@ class TestRunSourcesRenderFailures:
 
         with patch("polylogue.rendering.renderers.html.HTMLRenderer.render", new_callable=AsyncMock) as mock_render:
 
-            def render_side_effect(conversation_id: Any, output_path: Any) -> Any:
+            def render_side_effect(conversation_id: str, output_path: Path) -> MagicMock:
+                del output_path
                 render_attempts.append(conversation_id)
                 if "second" in conversation_id:
                     raise ValueError("Failed on purpose")
@@ -351,7 +361,7 @@ class TestRunSourcesRenderFailures:
 
         assert set(render_attempts) >= {"test:first", "test:second", "test:third"}
 
-    def test_render_failure_count_in_counts(self: Any, workspace_env: Any) -> Any:
+    def test_render_failure_count_in_counts(self, workspace_env: WorkspaceEnv) -> None:
         archive_root = workspace_env["archive_root"]
         archive_root.mkdir(parents=True, exist_ok=True)
         _seed_conversations(workspace_env, "test:success", "test:fail1", "test:fail2")
@@ -359,7 +369,8 @@ class TestRunSourcesRenderFailures:
 
         with patch("polylogue.rendering.renderers.html.HTMLRenderer.render", new_callable=AsyncMock) as mock_render:
 
-            def render_side_effect(conversation_id: Any, output_path: Any) -> Any:
+            def render_side_effect(conversation_id: str, output_path: Path) -> MagicMock:
+                del output_path
                 if conversation_id in ["test:fail1", "test:fail2"]:
                     raise ValueError("Render failed")
                 return MagicMock()
@@ -370,7 +381,7 @@ class TestRunSourcesRenderFailures:
         assert result.counts["render_failures"] == 2
         assert result.counts["rendered"] == 1
 
-    def test_render_stage_uses_configured_render_root(self: Any, workspace_env: Any, tmp_path: Path) -> None:
+    def test_render_stage_uses_configured_render_root(self, workspace_env: WorkspaceEnv, tmp_path: Path) -> None:
         custom_render_root = tmp_path / "custom-render-root"
         _seed_conversations(workspace_env, "test:custom-render-root", with_message=True)
         config = Config(sources=[], archive_root=workspace_env["archive_root"], render_root=custom_render_root)
@@ -394,7 +405,12 @@ class TestRunSourcesIntegration:
         ],
     )
     def test_stage_matrix(
-        self: Any, workspace_env: Any, tmp_path: Path, stage: str, with_source_data: bool, monkeypatch: Any
+        self,
+        workspace_env: WorkspaceEnv,
+        tmp_path: Path,
+        stage: str,
+        with_source_data: bool,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.setenv("POLYLOGUE_SCHEMA_VALIDATION", "strict")
         sources = []
@@ -458,7 +474,7 @@ class TestRunSourcesIntegration:
             else:
                 assert result.index_error is not None
 
-    def test_plan_snapshot_is_persisted_without_affecting_drift(self: Any, workspace_env: Any) -> None:
+    def test_plan_snapshot_is_persisted_without_affecting_drift(self, workspace_env: Mapping[str, Path]) -> None:
         config = Config(
             sources=[],
             archive_root=workspace_env["archive_root"],
@@ -480,7 +496,7 @@ class TestRunSourcesIntegration:
         assert result.drift["new"]["conversations"] == 0
         assert result.drift["removed"]["conversations"] == 0
 
-    def test_drift_calculation_without_plan(self: Any, workspace_env: Any, tmp_path: Path) -> None:
+    def test_drift_calculation_without_plan(self, workspace_env: Mapping[str, Path], tmp_path: Path) -> None:
         inbox = tmp_path / "inbox"
         inbox.mkdir()
         _write_chatgpt_export(inbox / "conversations.json", "conv-new")
@@ -498,7 +514,9 @@ class TestRunSourcesIntegration:
             result.counts["new_conversations"] + result.counts["changed_conversations"]
         )
 
-    def test_changed_conversation_is_not_reported_as_new(self: Any, workspace_env: Any, tmp_path: Path) -> None:
+    def test_changed_conversation_is_not_reported_as_new(
+        self, workspace_env: Mapping[str, Path], tmp_path: Path
+    ) -> None:
         inbox = tmp_path / "inbox"
         inbox.mkdir()
         export_path = inbox / "conversations.json"
@@ -523,7 +541,7 @@ class TestRunSourcesIntegration:
         assert second.drift["new"]["conversations"] == 0
         assert second.drift["changed"]["conversations"] == 1
 
-    def test_run_result_has_run_id(self: Any, workspace_env: Any) -> None:
+    def test_run_result_has_run_id(self, workspace_env: Mapping[str, Path]) -> None:
         config = Config(
             sources=[],
             archive_root=workspace_env["archive_root"],
@@ -534,7 +552,7 @@ class TestRunSourcesIntegration:
         assert isinstance(result.run_id, str)
         assert len(result.run_id) > 0
 
-    def test_materialize_stage_rebuilds_all_when_unscoped(self: Any, workspace_env: Any) -> None:
+    def test_materialize_stage_rebuilds_all_when_unscoped(self, workspace_env: Mapping[str, Path]) -> None:
         _seed_conversations(workspace_env, "test:materialize-rebuild", with_message=True)
         config = Config(
             sources=[],
@@ -563,7 +581,7 @@ class TestRunSourcesIntegration:
         assert result.counts["materialized"] == 1
         assert result.indexed is False
 
-    def test_index_error_captured(self: Any, workspace_env: Any) -> None:
+    def test_index_error_captured(self, workspace_env: Mapping[str, Path]) -> None:
         config = Config(
             sources=[],
             archive_root=workspace_env["archive_root"],
@@ -579,7 +597,7 @@ class TestRunSourcesIntegration:
         assert result.index_error is not None
         assert "Index rebuild failed" in result.index_error
 
-    def test_parse_stage_reuses_persisted_validation_status(self: Any, workspace_env: Any) -> None:
+    def test_parse_stage_reuses_persisted_validation_status(self, workspace_env: Mapping[str, Path]) -> None:
         from polylogue.storage.blob_store import get_blob_store
         from polylogue.storage.store import RawConversationRecord
 
@@ -634,7 +652,9 @@ class TestRunSourcesIntegration:
         asyncio.run(backend.close())
         assert result.counts["conversations"] >= 1
 
-    def test_materialize_stage_rebuild_progress_advances_by_processed_chunk(self: Any, workspace_env: Any) -> None:
+    def test_materialize_stage_rebuild_progress_advances_by_processed_chunk(
+        self, workspace_env: Mapping[str, Path]
+    ) -> None:
         _seed_conversations(workspace_env, "test:materialize-a", "test:materialize-b", with_message=True)
         backend = create_backend(workspace_env["data_root"] / "polylogue" / "polylogue.db")
         callback = MagicMock()
@@ -660,7 +680,7 @@ class TestRunSourcesIntegration:
             "Materializing: 2/2",
         ]
 
-    def test_all_stage_uses_bounded_rebuild_when_products_are_empty(self: Any, workspace_env: Any) -> None:
+    def test_all_stage_uses_bounded_rebuild_when_products_are_empty(self, workspace_env: Mapping[str, Path]) -> None:
         _seed_conversations(workspace_env, "test:all-a", "test:all-b", with_message=True)
         backend = create_backend(workspace_env["data_root"] / "polylogue" / "polylogue.db")
         callback = MagicMock()
@@ -688,7 +708,9 @@ class TestRunSourcesIntegration:
             "Materializing: 2/2",
         ]
 
-    def test_parse_with_explicit_source_filter_skips_acquire(self: Any, workspace_env: Any, tmp_path: Path) -> None:
+    def test_parse_with_explicit_source_filter_skips_acquire(
+        self, workspace_env: Mapping[str, Path], tmp_path: Path
+    ) -> None:
         scoped_source = tmp_path / "scoped"
         scoped_source.mkdir()
         config = Config(
@@ -734,10 +756,10 @@ class TestRunSourcesIntegration:
 
 class TestAcquisitionServiceAcquireSources:
     @pytest.fixture
-    def backend(self: Any, tmp_path: Path) -> SQLiteBackend:
+    def backend(self, tmp_path: Path) -> SQLiteBackend:
         return SQLiteBackend(db_path=tmp_path / "test.db")
 
-    async def test_acquire_empty_sources(self: Any, backend: SQLiteBackend) -> None:
+    async def test_acquire_empty_sources(self, backend: SQLiteBackend) -> None:
         from polylogue.pipeline.services.acquisition import AcquisitionService
 
         result = await AcquisitionService(backend=backend).acquire_sources([])
@@ -745,7 +767,7 @@ class TestAcquisitionServiceAcquireSources:
         assert result.raw_ids == []
 
     @patch("polylogue.pipeline.services.acquisition.iter_source_raw_data")
-    async def test_progress_callback_called(self: Any, mock_iter: Any, backend: SQLiteBackend) -> None:
+    async def test_progress_callback_called(self, mock_iter: MagicMock, backend: SQLiteBackend) -> None:
         from polylogue.pipeline.services.acquisition import AcquisitionService
 
         raw_data = RawConversationData(
@@ -768,7 +790,10 @@ class TestAcquisitionServiceAcquireSources:
     @pytest.mark.parametrize("error_scenario", ["iteration_error", "none_raw_data"])
     @patch("polylogue.pipeline.services.acquisition.iter_source_raw_data")
     async def test_acquire_handles_errors(
-        self: Any, mock_iter: Any, backend: SQLiteBackend, error_scenario: str
+        self,
+        mock_iter: MagicMock,
+        backend: SQLiteBackend,
+        error_scenario: str,
     ) -> None:
         from polylogue.pipeline.services.acquisition import AcquisitionService
 
@@ -786,7 +811,7 @@ class TestAcquisitionServiceAcquireSources:
 
 
 class TestAcquisitionServiceIntegration:
-    def _make_conv(self: Any, conversation_id: str, title: str, timestamp: int, message: str) -> dict[str, object]:
+    def _make_conv(self, conversation_id: str, title: str, timestamp: int, message: str) -> dict[str, object]:
         return {
             "id": conversation_id,
             "title": title,
@@ -808,7 +833,7 @@ class TestAcquisitionServiceIntegration:
             },
         }
 
-    async def test_acquire_real_chatgpt_file(self: Any, tmp_path: Path) -> None:
+    async def test_acquire_real_chatgpt_file(self, tmp_path: Path) -> None:
         from polylogue.pipeline.services.acquisition import AcquisitionService
 
         inbox = tmp_path / "inbox"
@@ -834,7 +859,7 @@ class TestAcquisitionServiceIntegration:
         assert data[0]["id"] == "conv-1"
         assert data[0]["title"] == "Test Chat"
 
-    async def test_acquire_multiple_json_files(self: Any, tmp_path: Path) -> None:
+    async def test_acquire_multiple_json_files(self, tmp_path: Path) -> None:
         from polylogue.pipeline.services.acquisition import AcquisitionService
 
         inbox = tmp_path / "inbox"
@@ -851,7 +876,7 @@ class TestAcquisitionServiceIntegration:
         assert result.counts["acquired"] == 1
         assert len(result.raw_ids) == 1
 
-    async def test_acquire_claude_code_sidecars_into_artifact_ledger(self: Any, tmp_path: Path) -> None:
+    async def test_acquire_claude_code_sidecars_into_artifact_ledger(self, tmp_path: Path) -> None:
         from polylogue.pipeline.services.acquisition import AcquisitionService
         from polylogue.schemas.verification_artifacts import list_artifact_observation_rows
         from polylogue.schemas.verification_requests import ArtifactObservationQuery
@@ -948,7 +973,7 @@ def _write_chatgpt_preview_export(path: Path, conversation_id: str) -> None:
 
 
 class TestSelectSources:
-    def test_select_all_sources_when_no_filter(self: Any, tmp_path: Path) -> None:
+    def test_select_all_sources_when_no_filter(self, tmp_path: Path) -> None:
         sources = [
             Source(name="source-a", path=tmp_path / "a"),
             Source(name="source-b", path=tmp_path / "b"),
@@ -959,7 +984,7 @@ class TestSelectSources:
         assert _select_sources(config, None) == sources
         assert _select_sources(config, []) == sources
 
-    def test_select_filtered_sources(self: Any, tmp_path: Path) -> None:
+    def test_select_filtered_sources(self, tmp_path: Path) -> None:
         sources = [
             Source(name="chatgpt-export", path=tmp_path / "a"),
             Source(name="claude-export", path=tmp_path / "b"),
@@ -973,7 +998,7 @@ class TestSelectSources:
             "codex-export",
         }
 
-    def test_select_empty_when_no_match(self: Any, tmp_path: Path) -> None:
+    def test_select_empty_when_no_match(self, tmp_path: Path) -> None:
         config = Config(
             sources=[Source(name="source-a", path=tmp_path / "a")],
             archive_root=tmp_path / "archive",
@@ -983,7 +1008,7 @@ class TestSelectSources:
 
 
 class TestPlanSources:
-    def test_plan_empty_config(self: Any, tmp_path: Path) -> None:
+    def test_plan_empty_config(self, tmp_path: Path) -> None:
         config = Config(sources=[], archive_root=tmp_path / "archive", render_root=tmp_path / "render")
         backend = SQLiteBackend(db_path=tmp_path / "preview.db")
         try:
@@ -998,7 +1023,7 @@ class TestPlanSources:
         assert result.sources == []
         assert result.cursors == {}
 
-    def test_plan_single_source(self: Any, tmp_path: Path) -> None:
+    def test_plan_single_source(self, tmp_path: Path) -> None:
         inbox = tmp_path / "inbox"
         inbox.mkdir()
         _write_chatgpt_preview_export(inbox / "conversations.json", "conv-1")
@@ -1024,7 +1049,7 @@ class TestPlanSources:
         assert result.sources == ["test-source"]
         assert result.stage_sequence == ["acquire", "parse", "materialize", "render", "site", "index"]
 
-    async def test_plan_inside_running_event_loop(self: Any, tmp_path: Path) -> None:
+    async def test_plan_inside_running_event_loop(self, tmp_path: Path) -> None:
         config = Config(sources=[], archive_root=tmp_path / "archive", render_root=tmp_path / "render")
         backend = SQLiteBackend(db_path=tmp_path / "preview.db")
         try:
@@ -1033,7 +1058,7 @@ class TestPlanSources:
             await backend.close()
         assert result.counts == {}
 
-    async def test_plan_accepts_explicit_leaf_stage_sequence(self: Any, tmp_path: Path) -> None:
+    async def test_plan_accepts_explicit_leaf_stage_sequence(self, tmp_path: Path) -> None:
         from polylogue.storage.blob_store import get_blob_store
         from polylogue.storage.store import RawConversationRecord
 
@@ -1101,7 +1126,7 @@ class TestPlanSources:
 
 
 class TestWriteRunJson:
-    def test_creates_runs_directory(self: Any, tmp_path: Any) -> None:
+    def test_creates_runs_directory(self, tmp_path: Path) -> None:
         import time
 
         from polylogue.pipeline.runner import _write_run_json
@@ -1114,7 +1139,7 @@ class TestWriteRunJson:
         assert (archive_root / "runs").exists()
         assert result.exists()
 
-    def test_writes_correct_content(self: Any, tmp_path: Any) -> None:
+    def test_writes_correct_content(self, tmp_path: Path) -> None:
         import time
 
         from polylogue.pipeline.runner import _write_run_json
@@ -1136,7 +1161,7 @@ class TestWriteRunJson:
         assert content["counts"] == {"conversations": 10, "messages": 50}
         assert content["indexed"] is True
 
-    def test_filename_contains_timestamp_and_id(self: Any, tmp_path: Any) -> None:
+    def test_filename_contains_timestamp_and_id(self, tmp_path: Path) -> None:
         from polylogue.pipeline.runner import _write_run_json
 
         archive_root = tmp_path / "archive"
@@ -1146,14 +1171,14 @@ class TestWriteRunJson:
 
 
 class TestLatestRun:
-    def test_no_runs_returns_none(self: Any, workspace_env: Any) -> None:
+    def test_no_runs_returns_none(self, workspace_env: Mapping[str, Path]) -> None:
         db_path = workspace_env["data_root"] / "polylogue" / "polylogue.db"
         db_path.parent.mkdir(parents=True, exist_ok=True)
         with open_connection(db_path):
             pass
         assert asyncio.run(latest_run()) is None
 
-    def test_returns_most_recent(self: Any, workspace_env: Any) -> None:
+    def test_returns_most_recent(self, workspace_env: Mapping[str, Path]) -> None:
         db_path = workspace_env["data_root"] / "polylogue" / "polylogue.db"
         db_path.parent.mkdir(parents=True, exist_ok=True)
         with open_connection(db_path) as conn:
@@ -1181,7 +1206,7 @@ class TestLatestRun:
         assert result.run_id == "run-1"
         assert result.timestamp == "3000"
 
-    def test_parses_json_columns(self: Any, workspace_env: Any) -> None:
+    def test_parses_json_columns(self, workspace_env: Mapping[str, Path]) -> None:
         db_path = workspace_env["data_root"] / "polylogue" / "polylogue.db"
         db_path.parent.mkdir(parents=True, exist_ok=True)
         plan = {"conversations": 5, "messages": 20}
