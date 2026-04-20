@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING
 
 from polylogue.pipeline.observers import RunObserver
@@ -35,7 +35,7 @@ class WatchRunner:
             while self._running:
                 try:
                     result = self._sync_fn()
-                    new_count = result.counts.get("conversations", 0)
+                    new_count = _conversation_count(result)
                     self._observer.on_completed(result)
                     if new_count <= 0:
                         self._observer.on_idle(result)
@@ -53,3 +53,15 @@ class WatchRunner:
 
 
 __all__ = ["WatchRunner"]
+
+
+def _conversation_count(result: object) -> int:
+    counts = getattr(result, "counts", None)
+    int_value = getattr(counts, "int_value", None)
+    if callable(int_value):
+        value = int_value("conversations")
+        return value if isinstance(value, int) else 0
+    if isinstance(counts, Mapping):
+        value = counts.get("conversations", 0)
+        return value if isinstance(value, int) else 0
+    return 0

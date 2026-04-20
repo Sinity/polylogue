@@ -19,12 +19,13 @@ from polylogue.cli.helpers import fail
 from polylogue.lib.timestamps import format_timestamp
 from polylogue.pipeline.run_support import expand_requested_stage
 from polylogue.sources import DriveError
+from polylogue.storage.state_views import PlanResult, RunResult
 
 
 def display_result(
     env: Any,
     cfg: Any,
-    result: Any,
+    result: RunResult,
     stage: str,
     selected_sources: list[str] | None,
     *,
@@ -120,7 +121,7 @@ def render_preview_summary(
     env: Any,
     *,
     selected_sources: list[str] | None,
-    plan_snapshot: Any,
+    plan_snapshot: PlanResult | None,
 ) -> None:
     plan_lines = []
     if selected_sources:

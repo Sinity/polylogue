@@ -30,7 +30,14 @@ from polylogue.cli.run_observers import (
 from polylogue.cli.run_workflow import display_result as _display_result
 from polylogue.cli.run_workflow import run_sync_once as _run_sync_once
 from polylogue.config import Config, get_config
-from polylogue.storage.state_views import RunResult
+from polylogue.storage.state_views import (
+    PlanCounts,
+    PlanDetails,
+    PlanResult,
+    RunCounts,
+    RunDrift,
+    RunResult,
+)
 
 
 def _make_env(*, plain: bool) -> MagicMock:
@@ -58,8 +65,8 @@ def _make_env(*, plain: bool) -> MagicMock:
 def _run_result(*, conversations: int = 1, index_error: str | None = None) -> RunResult:
     return RunResult(
         run_id="run-123",
-        counts={"conversations": conversations},
-        drift={},
+        counts=RunCounts(conversations=conversations),
+        drift=RunDrift(),
         indexed=index_error is None,
         index_error=index_error,
         duration_ms=150,
@@ -144,7 +151,13 @@ def test_run_sync_once_forwards_plan_snapshot_contract() -> None:
             None,
             None,
             "html",
-            plan_snapshot=MagicMock(timestamp=123, counts={"scan": 1}, sources=[], cursors={}),
+            plan_snapshot=PlanResult(
+                timestamp=123,
+                counts=PlanCounts(scan=1),
+                details=PlanDetails(),
+                sources=[],
+                cursors={},
+            ),
         )
 
     assert observed == result

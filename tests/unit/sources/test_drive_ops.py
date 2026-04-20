@@ -11,6 +11,7 @@ from polylogue.config import Source
 from polylogue.sources import DriveFile, download_drive_files, iter_drive_conversations
 from polylogue.sources.drive import _apply_drive_attachments
 from polylogue.sources.parsers.base import ParsedAttachment, ParsedConversation
+from polylogue.storage.state_views import CursorStatePayload
 from polylogue.types import Provider
 
 
@@ -80,6 +81,10 @@ class _DriveConversationClient:
 
     def download_bytes(self, file_id: str) -> bytes:
         return f"bytes:{file_id}".encode()
+
+
+def _empty_cursor_state() -> CursorStatePayload:
+    return {}
 
 
 def test_download_drive_files_contract(tmp_path: Path) -> None:
@@ -213,7 +218,7 @@ def test_iter_drive_conversations_tracks_cursor_and_attachment_downloads(tmp_pat
             "att-1": DriveFile("att-1", "doc.txt", "text/plain", None, 7),
         },
     )
-    cursor_state: dict[str, object] = {}
+    cursor_state: CursorStatePayload = _empty_cursor_state()
 
     conversations = list(
         iter_drive_conversations(
@@ -244,7 +249,7 @@ def test_iter_drive_conversations_tracks_payload_failures_and_continues(tmp_path
         payloads={"good": good_payload},
         payload_failures={"bad": RuntimeError("download failed")},
     )
-    cursor_state: dict[str, object] = {}
+    cursor_state: CursorStatePayload = _empty_cursor_state()
 
     conversations = list(
         iter_drive_conversations(

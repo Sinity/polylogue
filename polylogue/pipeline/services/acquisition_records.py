@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 
 from polylogue.lib.provider_identity import canonical_acquisition_provider
 from polylogue.sources.parsers.base import RawConversationData
+from polylogue.storage.state_views import CursorStatePayload
 from polylogue.storage.store import RawConversationRecord
 
 
@@ -17,7 +18,7 @@ class ScanResult:
             "scanned": 0,
             "errors": 0,
         }
-        self.cursors: dict[str, dict[str, object]] = {}
+        self.cursors: dict[str, CursorStatePayload] = {}
 
 
 def make_raw_record(

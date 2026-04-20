@@ -10,7 +10,6 @@ import io
 import json
 import zipfile
 from pathlib import Path
-from typing import Any, cast
 
 from hypothesis import given, settings
 from hypothesis import strategies as st
@@ -21,10 +20,15 @@ from polylogue.sources.decoders import (
     _iter_json_stream,
     _ZipEntryValidator,
 )
+from polylogue.storage.state_views import CursorFailurePayload, CursorStatePayload
 
 # =============================================================================
 # _decode_json_bytes
 # =============================================================================
+
+
+def _seeded_cursor_state() -> CursorStatePayload:
+    return {"failed_files": [], "failed_count": 0}
 
 
 class TestDecodeJsonBytesBasic:
@@ -209,7 +213,7 @@ class TestZipEntryValidator:
         """Entries with compression ratio > MAX_COMPRESSION_RATIO are rejected."""
         validator = _ZipEntryValidator(
             "chatgpt",
-            cursor_state={"failed_files": [], "failed_count": 0},
+            cursor_state=_seeded_cursor_state(),
             zip_path=Path("test.zip"),
         )
         # Ratio = 200000 / 1 = 200000, well above MAX_COMPRESSION_RATIO
@@ -221,7 +225,7 @@ class TestZipEntryValidator:
         """Entries with uncompressed size > MAX_UNCOMPRESSED_SIZE are rejected."""
         validator = _ZipEntryValidator(
             "chatgpt",
-            cursor_state={"failed_files": [], "failed_count": 0},
+            cursor_state=_seeded_cursor_state(),
             zip_path=Path("test.zip"),
         )
         huge_entry = self._make_zip_info(
@@ -293,7 +297,7 @@ class TestZipEntryValidator:
 
     def test_cursor_state_records_failures(self) -> None:
         """Rejected entries record failures in cursor_state."""
-        cursor_state: dict[str, Any] = {"failed_files": [], "failed_count": 0}
+        cursor_state = _seeded_cursor_state()
         validator = _ZipEntryValidator(
             "chatgpt",
             cursor_state=cursor_state,
@@ -301,5 +305,6 @@ class TestZipEntryValidator:
         )
         bomb_entry = self._make_zip_info("bomb.json", file_size=500000, compress_size=1)
         list(validator.filter_entries([bomb_entry]))
-        assert int(cursor_state["failed_count"]) >= 1
-        assert len(cast(list[object], cursor_state["failed_files"])) >= 1
+        failed_files: list[CursorFailurePayload] = cursor_state.get("failed_files", [])
+        assert cursor_state["failed_count"] >= 1
+        assert len(failed_files) >= 1

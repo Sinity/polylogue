@@ -4,14 +4,16 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
+from polylogue.storage.state_views import RunCounts, RunDrift
 
-def _int_value(mapping: Mapping[str, object], key: str) -> int:
+
+def _int_value(mapping: Mapping[str, object] | RunCounts, key: str) -> int:
     value = mapping.get(key)
     return value if isinstance(value, int) else 0
 
 
 def _drift_value(
-    drift: Mapping[str, Mapping[str, object]] | None,
+    drift: Mapping[str, Mapping[str, object]] | RunDrift | None,
     bucket: str,
     key: str,
 ) -> int:
@@ -25,8 +27,8 @@ def _drift_value(
 
 
 def conversation_activity_counts(
-    counts: Mapping[str, object],
-    drift: Mapping[str, Mapping[str, object]] | None = None,
+    counts: Mapping[str, object] | RunCounts,
+    drift: Mapping[str, Mapping[str, object]] | RunDrift | None = None,
 ) -> tuple[int, int, int]:
     """Return total, new, and changed conversation counts for one run."""
 

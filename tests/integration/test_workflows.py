@@ -675,6 +675,6 @@ async def test_pipeline_runner_stage_matrix(workspace_env: Any, chatgpt_sample_s
     assert result is not None
     assert result.counts["conversations"] > 0
     if stage == "parse":
-        assert result.counts.get("rendered", 0) == 0
+        assert result.counts.int_value("rendered") == 0
     else:
-        assert result.counts.get("rendered", 0) >= 1
+        assert result.counts.int_value("rendered") >= 1

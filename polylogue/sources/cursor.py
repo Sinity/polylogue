@@ -5,9 +5,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
 
 from polylogue.logging import get_logger
+from polylogue.storage.state_views import CursorFailurePayload, CursorStatePayload
 from polylogue.types import Provider
 
 logger = get_logger(__name__)
@@ -23,18 +23,19 @@ def _get_file_mtime(path: Path) -> str | None:
 
 
 def _record_cursor_failure(
-    cursor_state: dict[str, Any] | None,
+    cursor_state: CursorStatePayload | None,
     path: str,
     error: str,
 ) -> None:
     """Record a file processing failure in cursor_state."""
     if cursor_state is not None:
-        cursor_state["failed_files"].append({"path": path, "error": error})
-        cursor_state["failed_count"] = cursor_state.get("failed_count", 0) + 1
+        failed_files = cursor_state.setdefault("failed_files", [])
+        failed_files.append(CursorFailurePayload(path=path, error=error))
+        cursor_state["failed_count"] = int(cursor_state.get("failed_count", 0) or 0) + 1
 
 
 def _initialize_cursor_state(
-    cursor_state: dict[str, Any] | None,
+    cursor_state: CursorStatePayload | None,
     paths: list[Path],
 ) -> None:
     """Populate cursor bookkeeping for a source iteration pass."""
@@ -127,7 +128,7 @@ class _ParseContext:
     fallback_id: str  # path.stem, used as fallback conversation ID
     file_mtime: str | None
     capture_raw: bool
-    sidecar_data: dict[str, Any]
+    sidecar_data: dict[str, object]
 
 
 __all__ = [

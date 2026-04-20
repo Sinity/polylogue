@@ -125,8 +125,8 @@ def run_sync_once(
 
 def display_result(
     env: Any,
-    cfg: Any,
-    result: Any,
+    cfg: Config,
+    result: RunResult,
     stage: str,
     selected_sources: list[str] | None,
     *,
@@ -195,7 +195,7 @@ def render_preview_summary(
     env: Any,
     *,
     selected_sources: list[str] | None,
-    plan_snapshot: Any,
+    plan_snapshot: PlanResult | None,
 ) -> None:
     plan_lines = []
     if selected_sources:
