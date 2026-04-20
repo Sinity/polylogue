@@ -20,11 +20,13 @@ from polylogue.lib.payload_coercion import (
     string_sequence,
 )
 from polylogue.lib.phase_extraction import SessionPhase
-from polylogue.lib.session_profile import SessionAnalysis, SessionProfile
-from polylogue.lib.session_profile_models import (
-    SessionPhasePayload,
-    SessionProfilePayload,
+from polylogue.lib.session_payload_documents import (
+    SessionPhaseDocument,
+    SessionProfileDocument,
+    WorkEventDocument,
 )
+from polylogue.lib.session_profile import SessionAnalysis, SessionProfile
+from polylogue.lib.session_profile_models import SessionPhasePayload
 from polylogue.lib.work_event_extraction import WorkEvent, WorkEventPayload
 from polylogue.storage.store import (
     SESSION_ENRICHMENT_FAMILY,
@@ -257,7 +259,7 @@ def build_session_profile_record(
 
 
 def hydrate_session_profile(record: SessionProfileRecord) -> SessionProfile:
-    merged_payload: SessionProfilePayload = {
+    merged_payload: SessionProfileDocument = {
         "conversation_id": str(record.conversation_id),
         "provider": record.provider_name,
         "title": record.title,
@@ -298,7 +300,7 @@ def hydrate_session_profile(record: SessionProfileRecord) -> SessionProfile:
     return SessionProfile.from_dict(merged_payload)
 
 
-def _phase_document(payload: SessionPhasePayload) -> dict[str, object]:
+def _phase_document(payload: SessionPhasePayload) -> SessionPhaseDocument:
     return {
         "start_time": payload["start_time"],
         "end_time": payload["end_time"],
@@ -326,7 +328,7 @@ def _phase_payload_from_phase(phase: SessionPhase) -> SessionPhasePayload:
     }
 
 
-def _phase_from_payload_mapping(payload: dict[str, object]) -> SessionPhase:
+def _phase_from_payload_mapping(payload: SessionPhaseDocument | dict[str, object]) -> SessionPhase:
     return SessionPhase(
         start_time=optional_datetime(payload.get("start_time")),
         end_time=optional_datetime(payload.get("end_time")),
@@ -340,7 +342,7 @@ def _phase_from_payload_mapping(payload: dict[str, object]) -> SessionPhase:
     )
 
 
-def _work_event_document(payload: WorkEventPayload) -> dict[str, object]:
+def _work_event_document(payload: WorkEventPayload) -> WorkEventDocument:
     return {
         "kind": payload["kind"],
         "start_index": payload["start_index"],
@@ -357,11 +359,11 @@ def _work_event_document(payload: WorkEventPayload) -> dict[str, object]:
     }
 
 
-def _phase_payload(payload: dict[str, object]) -> SessionPhasePayload:
+def _phase_payload(payload: SessionPhaseDocument | dict[str, object]) -> SessionPhasePayload:
     return _phase_payload_from_phase(_phase_from_payload_mapping(payload))
 
 
-def _work_event_payload(payload: dict[str, object]) -> WorkEventPayload:
+def _work_event_payload(payload: WorkEventDocument | dict[str, object]) -> WorkEventPayload:
     event = WorkEvent.from_dict(payload)
     return event.to_dict()
 

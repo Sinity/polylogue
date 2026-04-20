@@ -12,7 +12,11 @@ from polylogue.storage.backends.queries import attachments as attachments_q
 from polylogue.storage.backends.queries import conversations as conversations_q
 from polylogue.storage.backends.queries import messages as messages_q
 from polylogue.storage.backends.queries import stats as stats_q
-from polylogue.storage.backends.queries.stats import AggregateMessageStats
+from polylogue.storage.backends.queries.stats import (
+    AggregateMessageStats,
+    ProviderConversationCountRow,
+    ProviderMetricsRow,
+)
 from polylogue.storage.query_models import ConversationRecordQuery
 from polylogue.storage.search_models import ConversationSearchResult
 from polylogue.storage.store import (
@@ -164,11 +168,11 @@ class SQLiteQueryStoreArchiveMixin:
         async with self._connection_factory() as conn:
             return await stats_q.get_stats_by(conn, group_by)
 
-    async def get_provider_conversation_counts(self) -> list[dict[str, object]]:
+    async def get_provider_conversation_counts(self) -> list[ProviderConversationCountRow]:
         async with self._connection_factory() as conn:
             return await stats_q.get_provider_conversation_counts(conn)
 
-    async def get_provider_metrics_rows(self) -> list[dict[str, object]]:
+    async def get_provider_metrics_rows(self) -> list[ProviderMetricsRow]:
         async with self._connection_factory() as conn:
             return await stats_q.get_provider_metrics_rows(conn)
 

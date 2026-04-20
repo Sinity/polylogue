@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Generic, TypeVar
 from pydantic import RootModel
 from typing_extensions import TypedDict
 
+from polylogue.schemas.json_types import JSONDocument
 from polylogue.surface_payloads import (
     ConversationDetailPayload as MCPConversationDetailPayload,
 )
@@ -135,6 +136,10 @@ class MCPTagCountsPayload(MCPRootPayload[dict[str, int]]):
 
 class MCPMetadataPayload(SurfacePayloadModel):
     root: dict[str, object]
+
+    @classmethod
+    def from_document(cls, document: JSONDocument) -> MCPMetadataPayload:
+        return cls(root=dict(document))
 
     def to_json(self, *, exclude_none: bool = False) -> str:
         del exclude_none

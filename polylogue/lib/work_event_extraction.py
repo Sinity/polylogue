@@ -9,8 +9,6 @@ from datetime import date, datetime
 from enum import Enum
 from typing import TYPE_CHECKING, TypeAlias
 
-from typing_extensions import TypedDict
-
 from polylogue.lib.payload_coercion import (
     coerce_float,
     coerce_int,
@@ -24,6 +22,7 @@ from polylogue.lib.semantic_facts import (
     MessageSemanticFacts,
     build_conversation_semantic_facts,
 )
+from polylogue.lib.session_payload_documents import WorkEventDocument
 
 # Strip XML-like protocol artifacts from user messages before summarizing.
 # Claude Code sessions contain <command-name>, <task-notification>,
@@ -102,19 +101,7 @@ class WorkEventKind(str, Enum):
     CONVERSATION = "conversation"
 
 
-class WorkEventPayload(TypedDict):
-    kind: str
-    start_index: int
-    end_index: int
-    start_time: str | None
-    end_time: str | None
-    canonical_session_date: str | None
-    duration_ms: int
-    confidence: float
-    evidence: list[str]
-    file_paths: list[str]
-    tools_used: list[str]
-    summary: str
+WorkEventPayload: TypeAlias = WorkEventDocument
 
 
 @dataclass(frozen=True)
@@ -191,7 +178,7 @@ class WorkEvent:
         }
 
     @classmethod
-    def from_dict(cls, payload: Mapping[str, object]) -> WorkEvent:
+    def from_dict(cls, payload: WorkEventPayload | Mapping[str, object]) -> WorkEvent:
         return cls(
             kind=WorkEventKind(str(payload["kind"])),
             start_index=coerce_int(payload.get("start_index"), 0),

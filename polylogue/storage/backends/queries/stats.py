@@ -29,8 +29,29 @@ class _MessageAggregate(TypedDict):
     words_approx: int
 
 
+class ProviderConversationCountRow(TypedDict):
+    provider_name: str
+    conversation_count: int
+
+
+class ProviderMetricsRow(TypedDict):
+    provider_name: str
+    conversation_count: int
+    message_count: int
+    user_message_count: int
+    assistant_message_count: int
+    user_word_sum: int
+    assistant_word_sum: int
+    tool_use_count: int
+    thinking_count: int
+    conversations_with_tools: int
+    conversations_with_thinking: int
+
+
 __all__ = [
     "AggregateMessageStats",
+    "ProviderConversationCountRow",
+    "ProviderMetricsRow",
     "aggregate_message_stats",
     "upsert_conversation_stats",
     "get_stats_by",
@@ -232,7 +253,7 @@ async def get_stats_by(conn: aiosqlite.Connection, group_by: str = "provider") -
 
 async def get_provider_conversation_counts(
     conn: aiosqlite.Connection,
-) -> list[dict[str, object]]:
+) -> list[ProviderConversationCountRow]:
     """Return conversation counts per provider — fast, conversations-table-only query."""
     cursor = await conn.execute(
         """
@@ -243,12 +264,18 @@ async def get_provider_conversation_counts(
         """
     )
     rows = await cursor.fetchall()
-    return [dict(row) for row in rows]
+    return [
+        {
+            "provider_name": str(row["provider_name"] or "unknown"),
+            "conversation_count": int(row["conversation_count"] or 0),
+        }
+        for row in rows
+    ]
 
 
 async def get_provider_metrics_rows(
     conn: aiosqlite.Connection,
-) -> list[dict[str, object]]:
+) -> list[ProviderMetricsRow]:
     """Return raw provider aggregation rows for analytics reporting."""
     cursor = await conn.execute(
         """
@@ -271,4 +298,19 @@ async def get_provider_metrics_rows(
         """
     )
     rows = await cursor.fetchall()
-    return [dict(row) for row in rows]
+    return [
+        {
+            "provider_name": str(row["provider_name"] or "unknown"),
+            "conversation_count": int(row["conversation_count"] or 0),
+            "message_count": int(row["message_count"] or 0),
+            "user_message_count": int(row["user_message_count"] or 0),
+            "assistant_message_count": int(row["assistant_message_count"] or 0),
+            "user_word_sum": int(row["user_word_sum"] or 0),
+            "assistant_word_sum": int(row["assistant_word_sum"] or 0),
+            "tool_use_count": int(row["tool_use_count"] or 0),
+            "thinking_count": int(row["thinking_count"] or 0),
+            "conversations_with_tools": int(row["conversations_with_tools"] or 0),
+            "conversations_with_thinking": int(row["conversations_with_thinking"] or 0),
+        }
+        for row in rows
+    ]

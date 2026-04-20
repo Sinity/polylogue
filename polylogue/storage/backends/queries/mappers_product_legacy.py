@@ -17,6 +17,7 @@ from polylogue.archive_product_models import (
     WorkEventEvidencePayload,
     WorkEventInferencePayload,
 )
+from polylogue.lib.session_payload_documents import SessionPhaseDocument, WorkEventDocument
 from polylogue.storage.backends.queries.mappers import _parse_json, _row_get
 
 PayloadModel = TypeVar("PayloadModel", bound=BaseModel)
@@ -109,8 +110,8 @@ def session_profile_inference_from_legacy(
             or "session_total_fallback",
             "repo_inference_strength": _legacy_text(legacy_payload.get("repo_inference_strength")) or "weak",
             "auto_tags": _row_text_tuple(row, "auto_tags_json", legacy_payload, legacy_key="auto_tags"),
-            "work_events": _legacy_dict_tuple(legacy_payload.get("work_events")),
-            "phases": _legacy_dict_tuple(legacy_payload.get("phases")),
+            "work_events": _legacy_work_event_documents(legacy_payload.get("work_events")),
+            "phases": _legacy_phase_documents(legacy_payload.get("phases")),
         }
     )
 
@@ -304,6 +305,14 @@ def _legacy_float(value: object, default: float = 0.0) -> float:
     return default
 
 
+def _legacy_int(value: object, default: int = 0) -> int:
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, str | int | float):
+        return int(value or default)
+    return default
+
+
 def _legacy_text_tuple(value: object) -> tuple[str, ...]:
     if not isinstance(value, Iterable) or isinstance(value, str | bytes | Mapping):
         return ()
@@ -324,6 +333,49 @@ def _legacy_int_dict(value: object) -> dict[str, int]:
     if not isinstance(value, Mapping):
         return {}
     return {str(key): int(item) for key, item in value.items() if item is not None}
+
+
+def _legacy_work_event_documents(value: object) -> tuple[WorkEventDocument, ...]:
+    documents: list[WorkEventDocument] = []
+    for item in _legacy_dict_tuple(value):
+        documents.append(
+            {
+                "kind": _legacy_text(item.get("kind")) or "conversation",
+                "start_index": _legacy_int(item.get("start_index")),
+                "end_index": _legacy_int(item.get("end_index")),
+                "start_time": _legacy_text(item.get("start_time")),
+                "end_time": _legacy_text(item.get("end_time")),
+                "canonical_session_date": _legacy_text(item.get("canonical_session_date")),
+                "duration_ms": _legacy_int(item.get("duration_ms")),
+                "confidence": _legacy_float(item.get("confidence")),
+                "evidence": list(_legacy_text_tuple(item.get("evidence"))),
+                "file_paths": list(_legacy_text_tuple(item.get("file_paths"))),
+                "tools_used": list(_legacy_text_tuple(item.get("tools_used"))),
+                "summary": _legacy_text(item.get("summary")) or "",
+            }
+        )
+    return tuple(documents)
+
+
+def _legacy_phase_documents(value: object) -> tuple[SessionPhaseDocument, ...]:
+    documents: list[SessionPhaseDocument] = []
+    for item in _legacy_dict_tuple(value):
+        start_index = _legacy_int(item.get("start_index"))
+        end_index = _legacy_int(item.get("end_index"))
+        documents.append(
+            {
+                "start_time": _legacy_text(item.get("start_time")),
+                "end_time": _legacy_text(item.get("end_time")),
+                "canonical_session_date": _legacy_text(item.get("canonical_session_date")),
+                "message_range": [start_index, end_index],
+                "duration_ms": _legacy_int(item.get("duration_ms")),
+                "tool_counts": _legacy_int_dict(item.get("tool_counts")),
+                "word_count": _legacy_int(item.get("word_count")),
+                "confidence": _legacy_float(item.get("confidence")),
+                "evidence": list(_legacy_text_tuple(item.get("evidence"))),
+            }
+        )
+    return tuple(documents)
 
 
 __all__ = [

@@ -56,7 +56,7 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
     async def get_metadata(conversation_id: str) -> str:
         async def run() -> str:
             metadata = await hooks.get_tag_store().get_metadata(conversation_id)
-            return hooks.json_payload(MCPMetadataPayload(root=metadata))
+            return hooks.json_payload(MCPMetadataPayload.from_document(metadata))
 
         return await hooks.async_safe_call("get_metadata", run)
 
