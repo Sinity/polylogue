@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 from collections.abc import Iterator
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, TypeAlias, overload
 
@@ -14,6 +15,7 @@ from polylogue.lib.provider_identity import (
     canonical_schema_provider,
 )
 from polylogue.lib.raw_payload import extract_record_samples_from_raw_content
+from polylogue.lib.raw_payload_decode import RawPayloadEnvelope
 from polylogue.logging import get_logger
 from polylogue.paths import db_path as archive_db_path
 from polylogue.schemas.observation import (
@@ -27,8 +29,21 @@ from polylogue.types import Provider
 
 logger = get_logger(__name__)
 
-SchemaRow = tuple[str | None, str | None, str | None, str, str | None, str | None]
 SchemaSample: TypeAlias = JSONDocument
+
+
+@dataclass(frozen=True)
+class _RawConversationRow:
+    source_path: str | None
+    provider_name: str | None
+    payload_provider: str | None
+    raw_id: str
+    file_mtime: str | None
+    acquired_at: str | None
+
+    @property
+    def observed_at(self) -> str | None:
+        return self.file_mtime or self.acquired_at
 
 
 def _sample_provider_where_clause(provider_name: str | Provider) -> tuple[str, tuple[str, ...]]:
@@ -47,15 +62,89 @@ def _sample_provider_where_clause(provider_name: str | Provider) -> tuple[str, t
     return clause, params
 
 
-def _coerce_schema_row(row: sqlite3.Row) -> SchemaRow:
-    return (
-        row[0],
-        row[1],
-        row[2],
-        row[3],
-        row[4],
-        row[5],
+def _coerce_schema_row(row: sqlite3.Row) -> _RawConversationRow:
+    return _RawConversationRow(
+        source_path=row[0],
+        provider_name=row[1],
+        payload_provider=row[2],
+        raw_id=row[3],
+        file_mtime=row[4],
+        acquired_at=row[5],
     )
+
+
+def _record_sample_limit(
+    *,
+    config: ProviderConfig,
+    max_samples: int | None,
+    full_corpus: bool,
+) -> int | None:
+    if full_corpus:
+        return None
+    if max_samples is not None:
+        return max_samples
+    return config.schema_sample_cap or 128
+
+
+def _iter_record_stream_units(
+    *,
+    row: _RawConversationRow,
+    provider_name: Provider,
+    raw_content: Path,
+    config: ProviderConfig,
+    max_samples: int | None,
+    full_corpus: bool,
+) -> Iterator[SchemaUnit]:
+    runtime_provider = canonical_runtime_provider(row.payload_provider or row.provider_name)
+    if canonical_schema_provider(runtime_provider) != str(provider_name):
+        return
+
+    try:
+        samples = extract_record_samples_from_raw_content(
+            raw_content,
+            max_samples=_record_sample_limit(
+                config=config,
+                max_samples=max_samples,
+                full_corpus=full_corpus,
+            ),
+            record_type_key=config.record_type_key,
+        )
+    except Exception:
+        samples = []
+
+    if not samples:
+        return
+
+    yield from extract_schema_units_from_payload(
+        samples,
+        provider_name=provider_name,
+        source_path=row.source_path,
+        raw_id=row.raw_id,
+        observed_at=row.observed_at,
+        config=config,
+        max_samples=max_samples,
+    )
+
+
+def _build_raw_payload_envelope_for_row(
+    row: _RawConversationRow,
+    *,
+    provider_name: Provider,
+    raw_content: Path,
+    config: ProviderConfig,
+) -> RawPayloadEnvelope | None:
+    try:
+        from polylogue.schemas import sampling as sampling_root
+
+        return sampling_root.build_raw_payload_envelope(
+            raw_content,
+            source_path=row.source_path,
+            fallback_provider=row.provider_name or str(provider_name),
+            payload_provider=row.payload_provider,
+            jsonl_dict_only=config.sample_granularity == "record",
+        )
+    except Exception:
+        return None
 
 
 def _iter_schema_units_from_db(
@@ -83,67 +172,43 @@ def _iter_schema_units_from_db(
         )
         batch_size = 1 if config.sample_granularity == "record" else 100
         while True:
-            rows = cursor.fetchmany(batch_size)
-            if not rows:
+            batch = tuple(_coerce_schema_row(row) for row in cursor.fetchmany(batch_size))
+            if not batch:
                 break
-            for row in rows:
-                source_path, provider_name_col, payload_provider_col, raw_id, file_mtime, acquired_at = (
-                    _coerce_schema_row(row)
-                )
-                raw_content = blob_store.blob_path(raw_id)
+            for row in batch:
+                raw_content = blob_store.blob_path(row.raw_id)
 
                 if config.sample_granularity == "record":
-                    runtime_provider = canonical_runtime_provider(payload_provider_col or provider_name_col)
-                    if canonical_schema_provider(runtime_provider) != str(provider_name):
+                    yielded_record_units = False
+                    for unit in _iter_record_stream_units(
+                        row=row,
+                        provider_name=provider_name,
+                        raw_content=raw_content,
+                        config=config,
+                        max_samples=max_samples,
+                        full_corpus=full_corpus,
+                    ):
+                        yielded_record_units = True
+                        yield unit
+                    if yielded_record_units:
                         continue
 
-                    sample_limit = max_samples
-                    if full_corpus:
-                        sample_limit = None
-                    elif sample_limit is None:
-                        sample_limit = config.schema_sample_cap or 128
-
-                    try:
-                        samples = extract_record_samples_from_raw_content(
-                            raw_content,
-                            max_samples=sample_limit,
-                            record_type_key=config.record_type_key,
-                        )
-                    except Exception:
-                        samples = []
-
-                    if samples:
-                        yield from extract_schema_units_from_payload(
-                            samples,
-                            provider_name=provider_name,
-                            source_path=source_path,
-                            raw_id=raw_id,
-                            observed_at=file_mtime or acquired_at,
-                            config=config,
-                            max_samples=max_samples,
-                        )
-                        continue
-
-                try:
-                    from polylogue.schemas import sampling as sampling_root
-
-                    envelope = sampling_root.build_raw_payload_envelope(
-                        raw_content,
-                        source_path=source_path,
-                        fallback_provider=provider_name_col or str(provider_name),
-                        payload_provider=payload_provider_col,
-                        jsonl_dict_only=config.sample_granularity == "record",
-                    )
-                except Exception:
+                envelope = _build_raw_payload_envelope_for_row(
+                    row,
+                    provider_name=provider_name,
+                    raw_content=raw_content,
+                    config=config,
+                )
+                if envelope is None:
                     continue
                 if canonical_schema_provider(envelope.provider) != str(provider_name):
                     continue
                 yield from extract_schema_units_from_payload(
                     envelope.payload,
                     provider_name=provider_name,
-                    source_path=source_path,
-                    raw_id=raw_id,
-                    observed_at=file_mtime or acquired_at,
+                    source_path=row.source_path,
+                    raw_id=row.raw_id,
+                    observed_at=row.observed_at,
                     config=config,
                     max_samples=max_samples,
                 )
