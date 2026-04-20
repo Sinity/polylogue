@@ -6,8 +6,9 @@ import json
 from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, TypeAlias
+from typing import TYPE_CHECKING, TypeAlias
 
+from polylogue.schemas.json_types import JSONDocument, JSONValue, json_document, json_document_list
 from polylogue.schemas.observation import schema_cluster_id
 from polylogue.schemas.packages import SchemaPackageCatalog, SchemaVersionPackage
 from polylogue.schemas.runtime_registry import ElementSchemaMap, PublicSchemaDocument, canonical_schema_provider
@@ -15,17 +16,17 @@ from polylogue.schemas.tooling_diff import diff_schemas
 from polylogue.schemas.tooling_models import ClusterManifest, PropertyChange, SchemaCluster, SchemaDiff
 from polylogue.types import Provider
 
-SchemaPayload: TypeAlias = Mapping[str, Any]
-ObservedSchemaSample: TypeAlias = object
+SchemaPayload: TypeAlias = JSONDocument
+ObservedSchemaSample: TypeAlias = JSONValue
 
 
-def _dominant_keys(sample: object) -> list[str]:
-    if isinstance(sample, dict):
-        return sorted(str(key) for key in sample)
-    if isinstance(sample, list):
-        first_dict = next((item for item in sample if isinstance(item, dict)), None)
-        if first_dict is not None:
-            return sorted(str(key) for key in first_dict)
+def _dominant_keys(sample: ObservedSchemaSample) -> list[str]:
+    document = json_document(sample)
+    if document:
+        return sorted(document)
+    documents = json_document_list(sample)
+    if documents:
+        return sorted(documents[0])
     return []
 
 
@@ -77,7 +78,7 @@ class SchemaRegistryToolingMixin:
         packages: list[SchemaVersionPackage] = []
         package_schemas: dict[str, ElementSchemaMap] = {}
         for version, schema in versioned_schemas:
-            package, schemas = self._single_element_package(provider_token, version=version, schema=dict(schema))
+            package, schemas = self._single_element_package(provider_token, version=version, schema=schema)
             packages.append(package)
             package_schemas[version] = schemas
         latest_version = packages[-1].version if packages else None
@@ -204,7 +205,7 @@ class SchemaRegistryToolingMixin:
         if samples:
             from polylogue.schemas.generation_workflow import generate_schema_from_samples
 
-            schema = generate_schema_from_samples(samples)
+            schema = json_document(generate_schema_from_samples(samples))
         else:
             schema = {
                 "$schema": "https://json-schema.org/draft/2020-12/schema",

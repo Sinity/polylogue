@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
 
 from polylogue.paths import db_path as archive_db_path
-from polylogue.schemas.generation_models import _ProviderBundle
+from polylogue.schemas.generation_models import GenerationResult, _ProviderBundle
 from polylogue.schemas.generation_provider_bundle import _build_provider_bundle
 from polylogue.schemas.generation_schema_builder import generate_schema_from_samples
+from polylogue.schemas.generation_support import PrivacyConfigLike
 from polylogue.schemas.observation import PROVIDERS
 from polylogue.schemas.registry import SchemaRegistry
 from polylogue.schemas.runtime_registry import ElementSchemaMap
@@ -45,9 +45,9 @@ def generate_provider_schema(
     provider: str,
     db_path: Path | None = None,
     max_samples: int | None = None,
-    privacy_config: Any | None = None,
+    privacy_config: PrivacyConfigLike | None = None,
     full_corpus: bool = False,
-) -> Any:
+) -> GenerationResult:
     """Generate the default inferred schema for a provider."""
     return _build_provider_bundle(
         provider,
@@ -63,8 +63,8 @@ def generate_all_schemas(
     db_path: Path | None = None,
     providers: list[str] | None = None,
     max_samples: int | None = None,
-    privacy_config: Any | None = None,
-) -> Any:
+    privacy_config: PrivacyConfigLike | None = None,
+) -> list[GenerationResult]:
     """Generate versioned schemas for all providers."""
     if db_path is None:
         db_path = archive_db_path()

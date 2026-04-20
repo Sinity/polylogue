@@ -3,16 +3,17 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from typing import Any, Protocol, TypeAlias, cast, overload
+from typing import Protocol, TypeAlias, overload
 
 from polylogue.schemas import generation_dynamic_keys as _dynamic_keys
 from polylogue.schemas.field_stats import FieldStats
 from polylogue.schemas.generation_field_annotations import annotate_schema, remove_nested_required
 from polylogue.schemas.generation_redaction import _build_redaction_report
 from polylogue.schemas.generation_semantic_relations import annotate_semantic_and_relational
+from polylogue.schemas.json_types import JSONDocument, JSONValue, json_document
 
-SchemaPayload: TypeAlias = dict[str, Any]
-SchemaMapping: TypeAlias = Mapping[str, Any]
+SchemaPayload: TypeAlias = JSONDocument
+SchemaMapping: TypeAlias = Mapping[str, JSONValue]
 SchemaCollection: TypeAlias = Sequence[SchemaMapping]
 FieldStatsMapping: TypeAlias = Mapping[str, FieldStats]
 
@@ -27,7 +28,7 @@ collapse_dynamic_keys = _dynamic_keys.collapse_dynamic_keys
 
 
 def _merge_schemas(schemas: SchemaCollection) -> SchemaPayload:
-    return _dynamic_keys.merge_schemas([dict(schema) for schema in schemas])
+    return _dynamic_keys.merge_schemas([json_document(dict(schema)) for schema in schemas])
 
 
 def _annotate_schema(
@@ -38,15 +39,12 @@ def _annotate_schema(
     min_conversation_count: int = 1,
     privacy_config: PrivacyConfigLike | None = None,
 ) -> SchemaPayload:
-    return cast(
-        SchemaPayload,
-        annotate_schema(
-            dict(schema),
-            dict(stats),
-            path,
-            min_conversation_count=min_conversation_count,
-            privacy_config=privacy_config,
-        ),
+    return annotate_schema(
+        json_document(dict(schema)),
+        dict(stats),
+        path,
+        min_conversation_count=min_conversation_count,
+        privacy_config=privacy_config,
     )
 
 
@@ -56,9 +54,10 @@ def _annotate_semantic_and_relational(
     *,
     artifact_kind: str | None = None,
 ) -> SchemaPayload:
-    return cast(
-        SchemaPayload,
-        annotate_semantic_and_relational(dict(schema), dict(field_stats), artifact_kind=artifact_kind),
+    return annotate_semantic_and_relational(
+        json_document(dict(schema)),
+        dict(field_stats),
+        artifact_kind=artifact_kind,
     )
 
 
@@ -72,7 +71,7 @@ def _remove_nested_required(schema: object, depth: int = 0) -> object: ...
 
 def _remove_nested_required(schema: object, depth: int = 0) -> object:
     if isinstance(schema, Mapping):
-        return remove_nested_required(dict(schema), depth=depth)
+        return remove_nested_required(json_document(dict(schema)), depth=depth)
     return schema
 
 
