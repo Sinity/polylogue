@@ -2,43 +2,31 @@
 
 from __future__ import annotations
 
+import random
 from collections import Counter
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from polylogue.scenarios import CorpusSpec
 from polylogue.schemas.runtime_registry import SchemaRegistry, canonical_schema_provider
-from polylogue.schemas.synthetic.builders import (
-    _ensure_wire_chatgpt,
-    _ensure_wire_claude_ai,
-    _ensure_wire_claude_code,
-    _ensure_wire_codex,
-    _ensure_wire_format,
-    _ensure_wire_gemini,
-    _generate_conversation,
-    _generate_jsonl_records,
-    _generate_linear_json,
-    _generate_tree_json,
-    _role_cycle,
-    generate_batch,
-)
+from polylogue.schemas.synthetic import builders as synthetic_builders
+from polylogue.schemas.synthetic import runtime as synthetic_runtime
 from polylogue.schemas.synthetic.models import (
     SchemaRecord,
     SyntheticGenerationBatch,
     SyntheticGenerationReport,
+    SyntheticGenerationState,
     SyntheticSchemaSelection,
     SyntheticWrittenBatch,
 )
 from polylogue.schemas.synthetic.relations import RelationConstraintSolver
-from polylogue.schemas.synthetic.runtime import (
-    _generate_array,
-    _generate_from_schema,
-    _generate_number,
-    _generate_object,
-    _generate_string,
-    _serialize,
-)
 from polylogue.schemas.synthetic.selection import available_synthetic_providers, select_synthetic_schema
+from polylogue.schemas.synthetic.semantic_values import SemanticValueGenerator
 from polylogue.schemas.synthetic.wire_formats import WireFormat
+
+if TYPE_CHECKING:
+    from polylogue.lib.raw_payload_decode import JSONValue
+    from polylogue.schemas.synthetic.showcase import ConversationTheme
 
 
 class SyntheticCorpus:
@@ -58,8 +46,10 @@ class SyntheticCorpus:
         self.provider = provider
         self.package_version = package_version
         self.element_kind = element_kind
-        self._relation_solver = RelationConstraintSolver(schema)
-        self._semantic_gen: object | None = None
+        self._generation_state = SyntheticGenerationState(
+            relation_solver=RelationConstraintSolver(schema),
+            semantic_generator=None,
+        )
 
     @classmethod
     def for_provider(
@@ -161,7 +151,7 @@ class SyntheticCorpus:
         seed: int | None = None,
         style: str = "default",
     ) -> SyntheticGenerationBatch:
-        return generate_batch(
+        return synthetic_builders.generate_batch(
             self,
             count=count,
             messages_per_conversation=messages_per_conversation,
@@ -183,23 +173,197 @@ class SyntheticCorpus:
             style=style,
         ).raw_items
 
-    _ensure_wire_chatgpt = _ensure_wire_chatgpt
-    _ensure_wire_claude_ai = _ensure_wire_claude_ai
-    _ensure_wire_claude_code = _ensure_wire_claude_code
-    _ensure_wire_codex = _ensure_wire_codex
-    _ensure_wire_format = _ensure_wire_format
-    _ensure_wire_gemini = _ensure_wire_gemini
-    _generate_array = _generate_array
-    _generate_conversation = _generate_conversation
-    _generate_from_schema = _generate_from_schema
-    _generate_jsonl_records = _generate_jsonl_records
-    _generate_linear_json = _generate_linear_json
-    _generate_number = _generate_number
-    _generate_object = _generate_object
-    _generate_string = _generate_string
-    _generate_tree_json = _generate_tree_json
-    _role_cycle = _role_cycle
-    _serialize = _serialize
+    @property
+    def _relation_solver(self) -> RelationConstraintSolver:
+        return self._generation_state.relation_solver
+
+    @_relation_solver.setter
+    def _relation_solver(self, value: RelationConstraintSolver) -> None:
+        self._generation_state.relation_solver = value
+
+    @property
+    def _semantic_gen(self) -> SemanticValueGenerator | None:
+        semantic_generator = self._generation_state.semantic_generator
+        return semantic_generator if isinstance(semantic_generator, SemanticValueGenerator) else None
+
+    @_semantic_gen.setter
+    def _semantic_gen(self, value: SemanticValueGenerator | None) -> None:
+        self._generation_state.semantic_generator = value
+
+    def _ensure_wire_chatgpt(
+        self,
+        data: dict[str, JSONValue],
+        role: str,
+        rng: random.Random,
+        ts: float,
+        *,
+        index: int,
+        theme: ConversationTheme | None,
+    ) -> None:
+        synthetic_builders._ensure_wire_chatgpt(self, data, role, rng, ts, index=index, theme=theme)
+
+    def _ensure_wire_claude_ai(
+        self,
+        data: dict[str, JSONValue],
+        role: str,
+        rng: random.Random,
+        ts: float,
+        *,
+        index: int,
+        theme: ConversationTheme | None,
+    ) -> None:
+        synthetic_builders._ensure_wire_claude_ai(self, data, role, rng, ts, index=index, theme=theme)
+
+    def _ensure_wire_claude_code(
+        self,
+        data: dict[str, JSONValue],
+        role: str,
+        rng: random.Random,
+        ts: float,
+        *,
+        index: int,
+        theme: ConversationTheme | None,
+    ) -> None:
+        synthetic_builders._ensure_wire_claude_code(self, data, role, rng, ts, index=index, theme=theme)
+
+    def _ensure_wire_codex(
+        self,
+        data: dict[str, JSONValue],
+        role: str,
+        rng: random.Random,
+        ts: float,
+        *,
+        index: int,
+        theme: ConversationTheme | None,
+    ) -> None:
+        synthetic_builders._ensure_wire_codex(self, data, role, rng, ts, index=index, theme=theme)
+
+    def _ensure_wire_format(
+        self,
+        data: dict[str, JSONValue],
+        role: str,
+        rng: random.Random,
+        index: int,
+        base_ts: float = 1700000000.0,
+        theme: ConversationTheme | None = None,
+    ) -> None:
+        synthetic_builders._ensure_wire_format(self, data, role, rng, index, base_ts=base_ts, theme=theme)
+
+    def _ensure_wire_gemini(
+        self,
+        data: dict[str, JSONValue],
+        role: str,
+        rng: random.Random,
+        *,
+        index: int,
+        theme: ConversationTheme | None,
+    ) -> None:
+        synthetic_builders._ensure_wire_gemini(self, data, role, rng, index=index, theme=theme)
+
+    def _generate_array(
+        self,
+        schema: SchemaRecord,
+        rng: random.Random,
+        *,
+        depth: int = 0,
+        max_depth: int = 6,
+        path: str = "$",
+    ) -> list[JSONValue]:
+        return synthetic_runtime._generate_array(self, schema, rng, depth=depth, max_depth=max_depth, path=path)
+
+    def _generate_conversation(
+        self,
+        n_messages: int,
+        rng: random.Random,
+        *,
+        theme: ConversationTheme | None = None,
+    ) -> JSONValue:
+        return synthetic_builders._generate_conversation(self, n_messages, rng, theme=theme)
+
+    def _generate_from_schema(
+        self,
+        schema: SchemaRecord,
+        rng: random.Random,
+        *,
+        skip_keys: set[str] | None = None,
+        depth: int = 0,
+        max_depth: int = 6,
+        path: str = "$",
+    ) -> JSONValue:
+        return synthetic_runtime._generate_from_schema(
+            self,
+            schema,
+            rng,
+            skip_keys=skip_keys,
+            depth=depth,
+            max_depth=max_depth,
+            path=path,
+        )
+
+    def _generate_jsonl_records(
+        self,
+        n_messages: int,
+        rng: random.Random,
+        *,
+        theme: ConversationTheme | None = None,
+    ) -> list[dict[str, JSONValue]]:
+        return synthetic_builders._generate_jsonl_records(self, n_messages, rng, theme=theme)
+
+    def _generate_linear_json(
+        self,
+        n_messages: int,
+        rng: random.Random,
+        *,
+        theme: ConversationTheme | None = None,
+    ) -> dict[str, JSONValue]:
+        return synthetic_builders._generate_linear_json(self, n_messages, rng, theme=theme)
+
+    def _generate_number(
+        self,
+        schema: SchemaRecord,
+        rng: random.Random,
+        *,
+        is_int: bool = False,
+    ) -> float | int:
+        return synthetic_runtime._generate_number(self, schema, rng, is_int=is_int)
+
+    def _generate_object(
+        self,
+        schema: SchemaRecord,
+        rng: random.Random,
+        *,
+        skip_keys: set[str] | None = None,
+        depth: int = 0,
+        max_depth: int = 6,
+        path: str = "$",
+    ) -> dict[str, JSONValue]:
+        return synthetic_runtime._generate_object(
+            self,
+            schema,
+            rng,
+            skip_keys=skip_keys,
+            depth=depth,
+            max_depth=max_depth,
+            path=path,
+        )
+
+    def _generate_string(self, schema: SchemaRecord, rng: random.Random) -> str:
+        return synthetic_runtime._generate_string(self, schema, rng)
+
+    def _generate_tree_json(
+        self,
+        n_messages: int,
+        rng: random.Random,
+        *,
+        theme: ConversationTheme | None = None,
+    ) -> dict[str, JSONValue]:
+        return synthetic_builders._generate_tree_json(self, n_messages, rng, theme=theme)
+
+    def _role_cycle(self) -> list[str]:
+        return synthetic_builders._role_cycle(self)
+
+    def _serialize(self, data: JSONValue) -> bytes:
+        return synthetic_runtime._serialize(self, data)
 
 
 __all__ = [

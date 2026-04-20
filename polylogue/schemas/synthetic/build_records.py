@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import random
 import uuid
+from collections.abc import Sequence
 from typing import Protocol, TypeAlias
 
 from polylogue.lib.raw_payload_decode import JSONValue
-from polylogue.schemas.synthetic.models import SchemaRecord
+from polylogue.schemas.synthetic.models import SchemaRecord, SchemaValue
 from polylogue.schemas.synthetic.semantic_values import SemanticValueGenerator
 from polylogue.schemas.synthetic.showcase import ConversationTheme
 from polylogue.schemas.synthetic.wire_formats import WireFormat
@@ -49,7 +50,7 @@ def _coerce_record(value: JSONValue) -> SyntheticRecord:
     return value if isinstance(value, dict) else {}
 
 
-def _coerce_schema(value: JSONValue) -> SchemaRecord:
+def _coerce_schema(value: SchemaValue | object) -> SchemaRecord:
     return value if isinstance(value, dict) else {}
 
 
@@ -66,7 +67,18 @@ def _message_payloads(records: list[SyntheticRecord]) -> list[JSONValue]:
     return list(records)
 
 
-def _has_messages_path(parts: list[str], schema: SchemaRecord) -> tuple[bool, SchemaRecord]:
+def _reset_semantic_generator(
+    self: _WireFormatContext,
+    *,
+    rng: random.Random,
+    theme: ConversationTheme | None,
+    base_ts: float,
+    roles: Sequence[str],
+) -> None:
+    self._semantic_gen = SemanticValueGenerator(rng, theme=theme, base_ts=base_ts, role_cycle=list(roles))
+
+
+def _has_messages_path(parts: Sequence[str], schema: SchemaRecord) -> tuple[bool, SchemaRecord]:
     cursor = schema
     for part in parts:
         props = _coerce_schema(cursor.get("properties"))
@@ -77,6 +89,12 @@ def _has_messages_path(parts: list[str], schema: SchemaRecord) -> tuple[bool, Sc
     return True, cursor
 
 
+def _advance_semantic_turn(self: _WireFormatContext) -> None:
+    semantic_generator = self._semantic_gen
+    if semantic_generator is not None:
+        semantic_generator.advance_turn()
+
+
 def _generate_tree_json(
     self: _WireFormatContext, n_messages: int, rng: random.Random, *, theme: ConversationTheme | None = None
 ) -> SyntheticRecord:
@@ -85,7 +103,7 @@ def _generate_tree_json(
 
     roles = self._role_cycle()
     base_ts = rng.uniform(1670000000, 1760000000)
-    self._semantic_gen = SemanticValueGenerator(rng, theme=theme, base_ts=base_ts, role_cycle=roles)
+    _reset_semantic_generator(self, rng=rng, theme=theme, base_ts=base_ts, roles=roles)
 
     top = self._generate_from_schema(self.schema, rng, skip_keys={tree_cfg.container_path})
     if not isinstance(top, dict):
@@ -117,17 +135,16 @@ def _generate_tree_json(
 
         role = roles[i % len(roles)]
         self._ensure_wire_format(node, role, rng, i, base_ts=base_ts, theme=theme)
-        self._semantic_gen.advance_turn()
+        _advance_semantic_turn(self)
         nodes.append(node)
 
-    properties_map = _coerce_schema(self.schema.get("properties"))
     children_by_id: SyntheticRecord = {}
     for node in nodes:
         node_id_value = node.get(tree_cfg.key_field)
         if isinstance(node_id_value, str):
             children_by_id[node_id_value] = node
     top_record[tree_cfg.container_path] = children_by_id
-    if "current_node" in properties_map:
+    if "current_node" in properties:
         top_record["current_node"] = nodes[-1][tree_cfg.key_field]
     if self.provider == "chatgpt":
         top_record["id"] = str(uuid.UUID(int=rng.getrandbits(128), version=4))
@@ -147,7 +164,7 @@ def _generate_linear_json(
 
     roles = self._role_cycle()
     base_ts = rng.uniform(1670000000, 1760000000)
-    self._semantic_gen = SemanticValueGenerator(rng, theme=theme, base_ts=base_ts, role_cycle=roles)
+    _reset_semantic_generator(self, rng=rng, theme=theme, base_ts=base_ts, roles=roles)
 
     schema_has_path, msgs_schema = _has_messages_path(msgs_parts, self.schema)
 
@@ -167,7 +184,7 @@ def _generate_linear_json(
         msg = _coerce_record(self._generate_from_schema(item_schema, rng))
         role = roles[i % len(roles)]
         self._ensure_wire_format(msg, role, rng, i, base_ts=base_ts, theme=theme)
-        self._semantic_gen.advance_turn()
+        _advance_semantic_turn(self)
         messages.append(msg)
 
     target: SyntheticRecord = top_record
@@ -192,14 +209,14 @@ def _generate_jsonl_records(
     roles = self._role_cycle()
     session_id = str(uuid.UUID(int=rng.getrandbits(128), version=4))
     base_ts = rng.uniform(1670000000, 1760000000)
-    self._semantic_gen = SemanticValueGenerator(rng, theme=theme, base_ts=base_ts, role_cycle=roles)
+    _reset_semantic_generator(self, rng=rng, theme=theme, base_ts=base_ts, roles=roles)
 
     for i in range(n_messages):
         record = _coerce_record(self._generate_from_schema(self.schema, rng))
 
         role = roles[i % len(roles)]
         self._ensure_wire_format(record, role, rng, i, base_ts=base_ts, theme=theme)
-        self._semantic_gen.advance_turn()
+        _advance_semantic_turn(self)
 
         if tree_cfg:
             node_id = str(uuid.UUID(int=rng.getrandbits(128), version=4))

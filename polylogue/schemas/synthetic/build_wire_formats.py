@@ -14,8 +14,14 @@ from polylogue.schemas.synthetic.showcase import ConversationTheme
 SyntheticRecord: TypeAlias = dict[str, JSONValue]
 
 
-def _as_record(value: JSONValue) -> SyntheticRecord:
+def _as_record(value: object) -> SyntheticRecord:
     return value if isinstance(value, dict) else {}
+
+
+def _record_field(record: SyntheticRecord, field_name: str) -> SyntheticRecord:
+    nested = _as_record(record.get(field_name))
+    record[field_name] = nested
+    return nested
 
 
 class _WireFormatContext(Protocol):
@@ -109,21 +115,17 @@ def _ensure_wire_chatgpt(
     index: int,
     theme: ConversationTheme | None,
 ) -> None:
-    msg = data.get("message")
-    if not isinstance(msg, dict):
-        msg = {"id": str(uuid.UUID(int=rng.getrandbits(128), version=4))}
-        data["message"] = msg
-    author = msg.setdefault("author", {})
-    if isinstance(author, dict):
-        author.setdefault("role", role)
-    if not isinstance(msg.get("content"), dict):
-        msg["content"] = {}
-    content = msg.setdefault("content", {})
-    assert isinstance(content, dict)
-    if isinstance(content, dict):
-        if "parts" not in content or not content["parts"]:
-            content["parts"] = [_text_for_role(rng, role, turn_index=index, theme=theme)]
-        content.setdefault("content_type", "text")
+    msg = _record_field(data, "message")
+    msg.setdefault("id", str(uuid.UUID(int=rng.getrandbits(128), version=4)))
+
+    author = _record_field(msg, "author")
+    author.setdefault("role", role)
+
+    content = _record_field(msg, "content")
+    if "parts" not in content or not content["parts"]:
+        content["parts"] = [_text_for_role(rng, role, turn_index=index, theme=theme)]
+    content.setdefault("content_type", "text")
+
     msg.setdefault("create_time", ts)
     msg.setdefault("id", str(uuid.UUID(int=rng.getrandbits(128), version=4)))
 
@@ -157,10 +159,7 @@ def _ensure_wire_claude_code(
     theme: ConversationTheme | None,
 ) -> None:
     data.setdefault("type", role)
-    message = data.get("message")
-    if not isinstance(message, dict):
-        data["message"] = {}
-    msg = _as_record(data["message"])
+    msg = _record_field(data, "message")
     msg.setdefault("role", role)
     if "content" not in msg:
         msg["content"] = [{"type": "text", "text": _text_for_role(rng, role, turn_index=index, theme=theme)}]

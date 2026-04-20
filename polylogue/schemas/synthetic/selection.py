@@ -3,22 +3,20 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Protocol, TypeAlias, cast
+from typing import Protocol, TypeAlias
 
+from polylogue.schemas.packages import SchemaVersionPackage
 from polylogue.schemas.runtime_registry import SchemaRegistry, canonical_schema_provider
 from polylogue.schemas.synthetic.models import SchemaRecord, SyntheticSchemaSelection
 from polylogue.schemas.synthetic.wire_formats import PROVIDER_WIRE_FORMATS
 
 
-class _SchemaVersionPackageLike(Protocol):
-    version: str
-    default_element_kind: str | None
-
-    def element(self, element_kind: str | None) -> object | None: ...
-
-
 class _SchemaRegistryLike(Protocol):
-    def get_package(self, provider: str, version: str = "default") -> object | None: ...
+    def get_package(
+        self,
+        provider: str,
+        version: str = "default",
+    ) -> SchemaVersionPackage | None: ...
 
     def get_element_schema(
         self,
@@ -26,9 +24,9 @@ class _SchemaRegistryLike(Protocol):
         *,
         version: str = "default",
         element_kind: str | None = None,
-    ) -> object | None: ...
+    ) -> SchemaRecord | None: ...
 
-    def get_schema(self, provider: str, version: str = "default") -> object | None: ...
+    def get_schema(self, provider: str, version: str = "default") -> SchemaRecord | None: ...
 
     def list_providers(self) -> list[str]: ...
 
@@ -41,14 +39,6 @@ def _default_registry_factory() -> _SchemaRegistryLike:
     return SchemaRegistry()
 
 
-def _schema_package(value: object) -> _SchemaVersionPackageLike | None:
-    return cast(_SchemaVersionPackageLike, value) if value is not None else None
-
-
-def _schema_record(value: object) -> SchemaRecord | None:
-    return cast(SchemaRecord, value) if isinstance(value, dict) else None
-
-
 def select_synthetic_schema(
     provider: str,
     *,
@@ -59,7 +49,7 @@ def select_synthetic_schema(
 ) -> SyntheticSchemaSelection:
     canonical_provider = canonical_provider_resolver(provider)
     registry = registry_factory()
-    package = _schema_package(registry.get_package(canonical_provider, version=version))
+    package = registry.get_package(canonical_provider, version=version)
     resolved_element_kind = element_kind
 
     schema: SchemaRecord | None
@@ -72,12 +62,10 @@ def select_synthetic_schema(
                 f"{resolved_element_kind!r} in package {package.version} for provider "
                 f"{canonical_provider}"
             )
-        schema = _schema_record(
-            registry.get_element_schema(
-                canonical_provider,
-                version=version,
-                element_kind=resolved_element_kind,
-            )
+        schema = registry.get_element_schema(
+            canonical_provider,
+            version=version,
+            element_kind=resolved_element_kind,
         )
         canonical_version = package.version
     else:
@@ -86,7 +74,7 @@ def select_synthetic_schema(
                 f"Element schemas are not available for provider {canonical_provider}; "
                 f"cannot request element_kind={element_kind!r}"
             )
-        schema = _schema_record(registry.get_schema(canonical_provider, version=version))
+        schema = registry.get_schema(canonical_provider, version=version)
         canonical_version = version
         resolved_element_kind = None if element_kind is None else element_kind
 

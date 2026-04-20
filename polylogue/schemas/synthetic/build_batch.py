@@ -14,6 +14,7 @@ from polylogue.schemas.synthetic.models import (
     SyntheticStyle,
 )
 from polylogue.schemas.synthetic.relations import RelationConstraintSolver
+from polylogue.schemas.synthetic.semantic_values import SemanticValueGenerator
 from polylogue.schemas.synthetic.showcase import _SHOWCASE_THEMES, ConversationTheme
 from polylogue.schemas.synthetic.wire_formats import WireFormat
 
@@ -25,7 +26,7 @@ class _SyntheticBatchContext(Protocol):
     package_version: str
     element_kind: str | None
     _relation_solver: RelationConstraintSolver
-    _semantic_gen: object | None
+    _semantic_gen: SemanticValueGenerator | None
 
     def _generate_jsonl_records(
         self,
@@ -33,7 +34,7 @@ class _SyntheticBatchContext(Protocol):
         rng: random.Random,
         *,
         theme: ConversationTheme | None = None,
-    ) -> object: ...
+    ) -> list[dict[str, JSONValue]]: ...
 
     def _generate_tree_json(
         self,
@@ -41,7 +42,7 @@ class _SyntheticBatchContext(Protocol):
         rng: random.Random,
         *,
         theme: ConversationTheme | None = None,
-    ) -> object: ...
+    ) -> dict[str, JSONValue]: ...
 
     def _generate_linear_json(
         self,
@@ -49,9 +50,9 @@ class _SyntheticBatchContext(Protocol):
         rng: random.Random,
         *,
         theme: ConversationTheme | None = None,
-    ) -> object: ...
+    ) -> dict[str, JSONValue]: ...
 
-    def _generate_from_schema(self, schema: SchemaRecord, rng: random.Random) -> object: ...
+    def _generate_from_schema(self, schema: SchemaRecord, rng: random.Random) -> JSONValue: ...
 
     def _serialize(self, data: JSONValue) -> bytes: ...
 
