@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 from polylogue.lib.metrics import read_current_rss_mb
 from polylogue.logging import get_logger
 from polylogue.protocols import OutputRenderer, ProgressCallback
+from polylogue.storage.state_views import RenderFailurePayload
 
 if TYPE_CHECKING:
     from polylogue.storage.backends.async_sqlite import SQLiteBackend
@@ -36,7 +37,7 @@ class RenderResult:
 
     def __init__(self) -> None:
         self.rendered_count: int = 0
-        self.failures: list[dict[str, str]] = []
+        self.failures: list[RenderFailurePayload] = []
         self.worker_count: int = 0
         self.rss_start_mb: float | None = None
         self.rss_end_mb: float | None = None

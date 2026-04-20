@@ -13,10 +13,40 @@ from polylogue.config import Source, get_config
 from polylogue.pipeline.observers import ExecObserver, NotificationObserver, WebhookObserver
 from polylogue.pipeline.runner import latest_run, plan_sources, run_sources
 from polylogue.storage.backends.connection import open_connection
-from polylogue.storage.state_views import RunResult
+from polylogue.storage.state_views import (
+    DriftBucket,
+    RenderFailurePayload,
+    RunCounts,
+    RunDrift,
+    RunResult,
+)
 from tests.infra.source_builders import ChatGPTExportBuilder, GenericConversationBuilder, InboxBuilder
 
 run_command = cast(Any, import_module("polylogue.cli.commands.run"))
+
+
+def _observer_result(
+    *,
+    conversations: int,
+    new_conversations: int = 0,
+    changed_conversations: int = 0,
+) -> RunResult:
+    return RunResult(
+        run_id="observer-run",
+        counts=RunCounts(
+            conversations=conversations,
+            new_conversations=new_conversations,
+            changed_conversations=changed_conversations,
+        ),
+        drift=RunDrift(
+            new=DriftBucket(conversations=new_conversations),
+            changed=DriftBucket(conversations=changed_conversations),
+        ),
+        indexed=True,
+        index_error=None,
+        duration_ms=0,
+        render_failures=[],
+    )
 
 
 @pytest.fixture
@@ -206,11 +236,13 @@ async def test_latest_run_parsing(workspace_env: Any, tmp_path: Any, setup_type:
 
 def test_display_result_reports_render_failures(mock_env: Any, capsys: Any) -> None:
     mock_config = MagicMock(render_root=Path("/tmp/render"))
-    failures = [{"conversation_id": f"conv-{index}", "error": f"error {index}"} for index in range(15)]
+    failures: list[RenderFailurePayload] = [
+        {"conversation_id": f"conv-{index}", "error": f"error {index}"} for index in range(15)
+    ]
     result = RunResult(
         run_id="run-123",
-        counts={"conversations": 0},
-        drift={},
+        counts=RunCounts(conversations=0),
+        drift=RunDrift(),
         indexed=True,
         index_error=None,
         duration_ms=0,
@@ -230,8 +262,8 @@ def test_display_result_reports_index_error_hint(mock_env: Any, capsys: Any) -> 
     mock_config = MagicMock(render_root=Path("/tmp/render"))
     result = RunResult(
         run_id="run-123",
-        counts={"conversations": 0},
-        drift={},
+        counts=RunCounts(conversations=0),
+        drift=RunDrift(),
         indexed=False,
         index_error="Database locked",
         duration_ms=0,
@@ -248,36 +280,23 @@ def test_display_result_reports_index_error_hint(mock_env: Any, capsys: Any) -> 
 class TestWatchModeCallbacks:
     def test_notify_callback_executes_with_count(self) -> None:
         with patch("subprocess.run") as mock_run:
-            NotificationObserver().on_completed(
-                MagicMock(
-                    counts={"conversations": 5, "new_conversations": 5, "changed_conversations": 0},
-                    drift={"new": {"conversations": 5}, "changed": {"conversations": 0}},
-                )
-            )
+            NotificationObserver().on_completed(_observer_result(conversations=5, new_conversations=5))
         assert "notify-send" in mock_run.call_args[0][0]
         assert "5" in str(mock_run.call_args[0][0])
 
     def test_notify_zero_is_noop(self) -> None:
         with patch("subprocess.run") as mock_run:
-            NotificationObserver().on_completed(MagicMock(counts={"conversations": 0}, drift={}))
+            NotificationObserver().on_completed(_observer_result(conversations=0))
         mock_run.assert_not_called()
 
     def test_notify_missing_binary_is_ignored(self) -> None:
         with patch("subprocess.run", side_effect=FileNotFoundError()):
-            NotificationObserver().on_completed(
-                MagicMock(
-                    counts={"conversations": 1, "new_conversations": 1, "changed_conversations": 0},
-                    drift={"new": {"conversations": 1}, "changed": {"conversations": 0}},
-                )
-            )
+            NotificationObserver().on_completed(_observer_result(conversations=1, new_conversations=1))
 
     def test_exec_callback_executes_with_count(self) -> None:
         with patch("subprocess.run") as mock_run:
             ExecObserver("echo $POLYLOGUE_ACTIVITY_COUNT").on_completed(
-                MagicMock(
-                    counts={"conversations": 3, "new_conversations": 3, "changed_conversations": 0},
-                    drift={"new": {"conversations": 3}, "changed": {"conversations": 0}},
-                )
+                _observer_result(conversations=3, new_conversations=3)
             )
         assert mock_run.call_args.kwargs["env"]["POLYLOGUE_ACTIVITY_COUNT"] == "3"
         assert mock_run.call_args.kwargs["env"]["POLYLOGUE_NEW_CONVERSATION_COUNT"] == "3"
@@ -304,10 +323,7 @@ class TestWatchModeCallbacks:
             patch("urllib.request.urlopen") as mock_urlopen,
         ):
             WebhookObserver("http://example.com/webhook").on_completed(
-                MagicMock(
-                    counts={"conversations": 2, "new_conversations": 2, "changed_conversations": 0},
-                    drift={"new": {"conversations": 2}, "changed": {"conversations": 0}},
-                )
+                _observer_result(conversations=2, new_conversations=2)
             )
         call_args = mock_urlopen.call_args[0][0]
         assert call_args.get_full_url() == "http://example.com/webhook"
@@ -322,10 +338,7 @@ class TestWatchModeCallbacks:
             patch("urllib.request.Request") as mock_request,
         ):
             WebhookObserver("http://example.com/webhook").on_completed(
-                MagicMock(
-                    counts={"conversations": 7, "new_conversations": 7, "changed_conversations": 0},
-                    drift={"new": {"conversations": 7}, "changed": {"conversations": 0}},
-                )
+                _observer_result(conversations=7, new_conversations=7)
             )
         payload = json.loads(mock_request.call_args.kwargs["data"].decode())
         assert payload == {
@@ -342,8 +355,5 @@ class TestWatchModeCallbacks:
             patch("urllib.request.urlopen", side_effect=ConnectionError("Connection failed")),
         ):
             WebhookObserver("http://example.com/webhook").on_completed(
-                MagicMock(
-                    counts={"conversations": 1, "new_conversations": 1, "changed_conversations": 0},
-                    drift={"new": {"conversations": 1}, "changed": {"conversations": 0}},
-                )
+                _observer_result(conversations=1, new_conversations=1)
             )

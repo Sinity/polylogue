@@ -5,13 +5,25 @@ from __future__ import annotations
 import tempfile
 import zipfile
 from pathlib import Path
-from typing import cast
 
 import pytest
 
 from polylogue.paths import Source
 from polylogue.sources.decoders import MAX_UNCOMPRESSED_SIZE
 from polylogue.sources.source_parsing import iter_source_conversations
+from polylogue.storage.state_views import CursorFailurePayload, CursorStatePayload
+
+
+def _empty_cursor_state() -> CursorStatePayload:
+    return {}
+
+
+def _failed_files(cursor_state: CursorStatePayload) -> list[CursorFailurePayload]:
+    return cursor_state.get("failed_files", [])
+
+
+def _failed_count(cursor_state: CursorStatePayload) -> int:
+    return cursor_state.get("failed_count", 0)
 
 
 def test_symlink_traversal_blocked_in_directory() -> None:
@@ -71,10 +83,10 @@ def test_zip_bomb_compression_ratio_blocked(tmp_path: Path) -> None:
         zf.writestr("valid.json", json_content)
 
     source = Source(name="test", path=tmp_path)
-    cursor_state: dict[str, object] = {}
+    cursor_state: CursorStatePayload = _empty_cursor_state()
     list(iter_source_conversations(source, cursor_state=cursor_state))
-    failed = cast(list[dict[str, object]], cursor_state.get("failed_files", []))
-    failed_count = cast(int, cursor_state.get("failed_count", 0))
+    failed = _failed_files(cursor_state)
+    failed_count = _failed_count(cursor_state)
     assert failed_count >= 1 or not failed
     if failed:
         has_expected_error = any(
@@ -96,6 +108,6 @@ def test_zip_path_traversal_filenames_handled(tmp_path: Path) -> None:
         zf.writestr("normal.json", json_content)
 
     source = Source(name="test", path=tmp_path)
-    cursor_state: dict[str, object] = {}
+    cursor_state: CursorStatePayload = _empty_cursor_state()
     payloads = list(iter_source_conversations(source, cursor_state=cursor_state))
     assert len(payloads) >= 1

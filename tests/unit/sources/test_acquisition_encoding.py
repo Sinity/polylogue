@@ -9,10 +9,10 @@ iter_source_raw_data (acquisition path).
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
 
 from polylogue.config import Source
 from polylogue.sources.parsers.base import ParsedConversation, RawConversationData
+from polylogue.storage.state_views import CursorFailurePayload, CursorStatePayload
 from tests.infra.encoding_fixtures import EncodingFixtureBuilder
 
 
@@ -33,7 +33,7 @@ def _collect_conversations_with_raw(
     source_path: Path,
     provider: str = "codex",
     *,
-    cursor_state: dict[str, Any] | None = None,
+    cursor_state: CursorStatePayload | None = None,
 ) -> list[tuple[RawConversationData | None, ParsedConversation]]:
     """Run iter_source_conversations_with_raw and collect results."""
     from polylogue.sources.source_parsing import iter_source_conversations_with_raw
@@ -46,13 +46,21 @@ def _collect_raw_data(
     source_path: Path,
     provider: str = "codex",
     *,
-    cursor_state: dict[str, Any] | None = None,
+    cursor_state: CursorStatePayload | None = None,
 ) -> list[RawConversationData]:
     """Run iter_source_raw_data and collect results."""
     from polylogue.sources.source_acquisition import iter_source_raw_data
 
     source = _make_source(source_path, name=provider)
     return list(iter_source_raw_data(source, cursor_state=cursor_state))
+
+
+def _empty_cursor_state() -> CursorStatePayload:
+    return {}
+
+
+def _failed_files(cursor_state: CursorStatePayload) -> list[CursorFailurePayload]:
+    return cursor_state.get("failed_files", [])
 
 
 class TestZipBomHandling:
@@ -110,7 +118,7 @@ class TestZipPartialCorruption:
     def test_valid_entries_survive_corrupt_siblings(self, tmp_path: Path) -> None:
         """Valid JSON entries are parsed even when other entries are corrupt."""
         EncodingFixtureBuilder.partial_corruption_zip(tmp_path)
-        cursor_state: dict[str, Any] = {}
+        cursor_state: CursorStatePayload = _empty_cursor_state()
         results = _collect_conversations_with_raw(tmp_path, provider="chatgpt", cursor_state=cursor_state)
         # At least the valid.json entry should produce a conversation
         # (it's added to the ZIP first, so it's yielded before corrupt.json fails)
@@ -121,11 +129,11 @@ class TestZipPartialCorruption:
     def test_cursor_state_records_corrupt_entries(self, tmp_path: Path) -> None:
         """cursor_state tracks failures for corrupt ZIP entries."""
         EncodingFixtureBuilder.partial_corruption_zip(tmp_path)
-        cursor_state: dict[str, Any] = {}
+        cursor_state: CursorStatePayload = _empty_cursor_state()
         _results = _collect_conversations_with_raw(tmp_path, provider="chatgpt", cursor_state=cursor_state)
         # The corrupt entry should cause a recorded failure
         # _initialize_cursor_state creates failed_files as a list
-        failed = cursor_state.get("failed_files", [])
+        failed = _failed_files(cursor_state)
         assert len(failed) >= 1, f"Expected at least 1 failure recorded, got cursor_state={cursor_state}"
 
 

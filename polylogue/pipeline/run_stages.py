@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, TypedDict
 
 from polylogue.config import Config
 from polylogue.pipeline.run_support import PARSE_STAGES
+from polylogue.storage.state_views import RenderFailurePayload
 from polylogue.types import SearchProvider
 
 if TYPE_CHECKING:
@@ -24,7 +25,7 @@ if TYPE_CHECKING:
 @dataclass(slots=True)
 class RenderStageOutcome:
     rendered_count: int
-    failures: list[dict[str, str]]
+    failures: list[RenderFailurePayload]
     total: int
     observation: dict[str, object] | None = None
 

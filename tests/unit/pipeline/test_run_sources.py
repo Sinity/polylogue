@@ -26,7 +26,8 @@ from polylogue.storage.backends import create_backend
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.backends.connection import open_connection
 from polylogue.storage.session_product_runtime import SessionProductCounts
-from polylogue.storage.state_views import PlanCounts, PlanResult, RunResult
+from polylogue.storage.state_views import PlanCounts, PlanResult, RunCounts, RunDrift, RunResult
+from polylogue.types import PlanStage
 from tests.infra.storage_records import make_conversation, make_message, store_records
 
 WorkspaceEnv = Mapping[str, Path]
@@ -103,8 +104,8 @@ def test_run_sources_accepts_explicit_leaf_stage_sequence(workspace_env: Workspa
     )
 
     assert result.counts["conversations"] >= 1
-    assert result.counts.get("materialized", 0) == 0
-    assert result.counts.get("rendered", 0) == 0
+    assert result.counts.int_value("materialized") == 0
+    assert result.counts.int_value("rendered") == 0
     assert result.indexed is False
 
 
@@ -132,8 +133,14 @@ def test_explicit_leaf_stage_sequence_uses_order_sensitive_leaf_semantics(
     )
     persisted_result = RunResult(
         run_id="test-run",
-        counts={"conversations": 1, "rendered": 1},
-        drift={"new": {"conversations": 1}, "changed": {"conversations": 0}, "removed": {"conversations": 0}},
+        counts=RunCounts(conversations=1, rendered=1),
+        drift=RunDrift.model_validate(
+            {
+                "new": {"conversations": 1},
+                "changed": {"conversations": 0},
+                "removed": {"conversations": 0},
+            }
+        ),
         indexed=True,
         index_error=None,
         duration_ms=1,
@@ -218,8 +225,14 @@ def test_ingest_stage_log_omits_full_batch_telemetry(workspace_env: WorkspaceEnv
     )
     persisted_result = RunResult(
         run_id="test-run",
-        counts={"conversations": 1},
-        drift={"new": {"conversations": 1}, "changed": {"conversations": 0}, "removed": {"conversations": 0}},
+        counts=RunCounts(conversations=1),
+        drift=RunDrift.model_validate(
+            {
+                "new": {"conversations": 1},
+                "changed": {"conversations": 0},
+                "removed": {"conversations": 0},
+            }
+        ),
         indexed=False,
         index_error=None,
         duration_ms=1,
@@ -280,8 +293,14 @@ def test_materialize_stage_log_omits_full_chunk_telemetry(
     )
     persisted_result = RunResult(
         run_id="test-run",
-        counts={"conversations": 1, "materialized": 12},
-        drift={"new": {"conversations": 1}, "changed": {"conversations": 0}, "removed": {"conversations": 0}},
+        counts=RunCounts(conversations=1, materialized=12),
+        drift=RunDrift.model_validate(
+            {
+                "new": {"conversations": 1},
+                "changed": {"conversations": 0},
+                "removed": {"conversations": 0},
+            }
+        ),
         indexed=False,
         index_error=None,
         duration_ms=1,
@@ -441,18 +460,18 @@ class TestRunSourcesIntegration:
 
         if stage == "parse":
             assert result.counts["conversations"] >= 1
-            assert result.counts.get("materialized", 0) == 0
-            assert result.counts.get("rendered", 0) == 0
+            assert result.counts.int_value("materialized") == 0
+            assert result.counts.int_value("rendered") == 0
             assert result.indexed is False
         elif stage == "materialize":
             assert result.counts["conversations"] == 0
-            assert result.counts.get("materialized", 0) >= 1
-            assert result.counts.get("rendered", 0) == 0
+            assert result.counts.int_value("materialized") >= 1
+            assert result.counts.int_value("rendered") == 0
             assert result.indexed is False
         elif stage == "render":
             assert result.counts["conversations"] == 0
             assert result.counts["messages"] == 0
-            assert result.counts.get("rendered", 0) == 0
+            assert result.counts.int_value("rendered") == 0
             assert result.indexed is False
         elif stage == "index":
             assert result.counts["conversations"] == 0
@@ -460,16 +479,16 @@ class TestRunSourcesIntegration:
             assert result.index_error is None
         elif stage == "reprocess":
             assert result.counts["conversations"] >= 1
-            assert result.counts.get("materialized", 0) >= 1
-            assert result.counts.get("rendered", 0) >= 1
+            assert result.counts.int_value("materialized") >= 1
+            assert result.counts.int_value("rendered") >= 1
             if result.indexed:
                 assert result.index_error is None
             else:
                 assert result.index_error is not None
         else:
             assert result.counts["conversations"] >= 1
-            assert result.counts.get("materialized", 0) >= 1
-            assert result.counts.get("rendered", 0) >= 1
+            assert result.counts.int_value("materialized") >= 1
+            assert result.counts.int_value("rendered") >= 1
             if result.indexed:
                 assert result.index_error is None
             else:
@@ -483,7 +502,9 @@ class TestRunSourcesIntegration:
         )
         plan = PlanResult(
             timestamp=123,
-            counts={"scan": 10, "store_raw": 10, "validate": 10, "parse": 10, "materialize": 10},
+            stage=PlanStage.PARSE,
+            stage_sequence=[PlanStage.PARSE],
+            counts=PlanCounts(scan=10, store_raw=10, validate=10, parse=10, materialize=10),
             sources=["test"],
             cursors={},
         )
@@ -1019,7 +1040,7 @@ class TestPlanSources:
 
         assert isinstance(result, PlanResult)
         assert result.stage == "all"
-        assert result.counts == {}
+        assert result.counts == PlanCounts()
         assert all(value == 0 for value in result.details.to_dict().values())
         assert result.sources == []
         assert result.cursors == {}
@@ -1057,7 +1078,7 @@ class TestPlanSources:
             result = plan_sources(config, backend=backend)
         finally:
             await backend.close()
-        assert result.counts == {}
+        assert result.counts == PlanCounts()
 
     async def test_plan_accepts_explicit_leaf_stage_sequence(self, tmp_path: Path) -> None:
         from polylogue.storage.blob_store import get_blob_store
@@ -1228,7 +1249,7 @@ class TestLatestRun:
         result = asyncio.run(latest_run())
         assert result is not None
         assert result.plan_snapshot == plan
-        assert result.counts == counts
-        assert result.drift == drift
+        assert result.counts == RunCounts.model_validate(counts)
+        assert RunDrift.model_validate(result.drift) == RunDrift.model_validate(drift)
         assert result.indexed is True
         assert result.duration_ms == 500

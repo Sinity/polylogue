@@ -18,7 +18,16 @@ from polylogue.cli.types import AppEnv
 from polylogue.sources import DriveError
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.repository import ConversationRepository
-from polylogue.storage.state_views import PlanResult, RunResult
+from polylogue.storage.state_views import (
+    DriftBucket,
+    PlanCounts,
+    PlanDetails,
+    PlanResult,
+    RenderFailurePayload,
+    RunCounts,
+    RunDrift,
+    RunResult,
+)
 from tests.infra.storage_records import DbFactory
 
 PatchMap = dict[str, MagicMock]
@@ -33,10 +42,10 @@ def runner() -> CliRunner:
 def mock_plan_result() -> PlanResult:
     return PlanResult(
         timestamp=1234567890,
-        counts={"scan": 5, "store_raw": 5, "validate": 5, "parse": 5, "materialize": 5},
+        counts=PlanCounts(scan=5, store_raw=5, validate=5, parse=5, materialize=5),
         sources=["test-inbox"],
-        cursors={"test-inbox": {"path": "/tmp/inbox"}},
-        details={"new_raw": 2, "existing_raw": 3},
+        cursors={"test-inbox": {"latest_path": "/tmp/inbox"}},
+        details=PlanDetails(new_raw=2, existing_raw=3),
     )
 
 
@@ -44,8 +53,11 @@ def mock_plan_result() -> PlanResult:
 def mock_run_result() -> RunResult:
     return RunResult(
         run_id="run-123",
-        counts={"conversations": 3, "messages": 30, "attachments": 1},
-        drift={"new": {"conversations": 2}, "changed": {"conversations": 1}, "removed": {}},
+        counts=RunCounts(conversations=3, messages=30, attachments=1),
+        drift=RunDrift(
+            new=DriftBucket(conversations=2),
+            changed=DriftBucket(conversations=1),
+        ),
         indexed=True,
         index_error=None,
         duration_ms=1500,
@@ -315,7 +327,14 @@ class TestRunCommand:
             runner,
             ["run", "--preview", "--source", "test-inbox"],
             plan_result=mock_plan_result,
-            run_result=RunResult(run_id="unused", counts={}, drift={}, indexed=False, index_error=None, duration_ms=0),
+            run_result=RunResult(
+                run_id="unused",
+                counts=RunCounts(),
+                drift=RunDrift(),
+                indexed=False,
+                index_error=None,
+                duration_ms=0,
+            ),
             selected_sources=["test-inbox"],
             prompted_stage="all",
         )
@@ -336,8 +355,8 @@ class TestRunCommand:
                 "index",
                 RunResult(
                     run_id="run-idx",
-                    counts={"conversations": 0},
-                    drift={},
+                    counts=RunCounts(conversations=0),
+                    drift=RunDrift(),
                     indexed=True,
                     index_error=None,
                     duration_ms=800,
@@ -351,8 +370,8 @@ class TestRunCommand:
                 "render",
                 RunResult(
                     run_id="run-render",
-                    counts={"conversations": 3},
-                    drift={},
+                    counts=RunCounts(conversations=3),
+                    drift=RunDrift(),
                     indexed=True,
                     index_error=None,
                     duration_ms=1200,
@@ -366,12 +385,15 @@ class TestRunCommand:
                 "all",
                 RunResult(
                     run_id="run-all",
-                    counts={"conversations": 2},
-                    drift={},
+                    counts=RunCounts(conversations=2),
+                    drift=RunDrift(),
                     indexed=False,
                     index_error="Vector database unavailable",
                     duration_ms=900,
-                    render_failures=[{"conversation_id": "conv-1", "error": "boom"}],
+                    render_failures=cast(
+                        list[RenderFailurePayload],
+                        [{"conversation_id": "conv-1", "error": "boom"}],
+                    ),
                 ),
                 ["Sync", "Render failures (1)", "Index error: Vector database unavailable"],
                 True,
