@@ -14,8 +14,9 @@ from polylogue.sources.drive_gateway import (
     _import_module,
     _resolve_retries,
     _resolve_retry_base,
+    resolve_drive_retry_policy,
 )
-from polylogue.sources.drive_types import DriveAuthError, DriveNotFoundError
+from polylogue.sources.drive_types import DriveAuthError, DriveNotFoundError, DriveRetryPolicy
 from tests.infra.drive_mocks import MockDriveService, MockMediaIoBaseDownload
 
 
@@ -23,7 +24,10 @@ def _gateway(*, retries: int = 0, retry_base: float = 0.0) -> DriveServiceGatewa
     """Build a gateway with a mock auth manager."""
     auth_manager = MagicMock()
     auth_manager.load_credentials.return_value = object()
-    return DriveServiceGateway(auth_manager=auth_manager, retries=retries, retry_base=retry_base)
+    return DriveServiceGateway(
+        auth_manager=auth_manager,
+        retry_policy=DriveRetryPolicy(retries=retries, retry_base=retry_base),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -81,6 +85,14 @@ def test_resolve_retry_base_contract(
     expected: float,
 ) -> None:
     assert _resolve_retry_base(explicit) == expected
+
+
+def test_resolve_drive_retry_policy_contract() -> None:
+    config = MagicMock(retry_count=7)
+    assert resolve_drive_retry_policy(retries=None, retry_base=None, config=config) == DriveRetryPolicy(
+        retries=7,
+        retry_base=DEFAULT_DRIVE_RETRY_BASE,
+    )
 
 
 # ---------------------------------------------------------------------------
