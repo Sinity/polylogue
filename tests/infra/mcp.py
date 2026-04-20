@@ -91,29 +91,44 @@ async def invoke_surface_async(
     return result
 
 
-def make_repo_mock() -> MagicMock:
-    """Create a repository mock with async methods used by MCP surfaces."""
-    repo = MagicMock()
-    repo.list = AsyncMock(return_value=[])
-    repo.search = AsyncMock(return_value=[])
-    repo.view = AsyncMock(return_value=None)
-    repo.get = AsyncMock(return_value=None)
-    repo.resolve_id = AsyncMock(return_value=None)
-    repo.get_archive_stats = AsyncMock(return_value=MagicMock())
-    repo.get_summary = AsyncMock(return_value=None)
-    repo.get_session_tree = AsyncMock(return_value=[])
-    repo.add_tag = AsyncMock(return_value=None)
-    repo.remove_tag = AsyncMock(return_value=None)
-    repo.list_tags = AsyncMock(return_value={})
-    repo.get_metadata = AsyncMock(return_value={})
-    repo.update_metadata = AsyncMock(return_value=None)
-    repo.delete_metadata = AsyncMock(return_value=None)
-    repo.delete_conversation = AsyncMock(return_value=False)
-    repo.backend = MagicMock()
-    repo.queries = MagicMock()
-    repo.queries.get_conversation_stats = AsyncMock(return_value={})
-    repo.queries.get_stats_by = AsyncMock(return_value={})
-    return repo
+def make_query_store_mock() -> MagicMock:
+    """Create a query-store mock matching the current MCP read/query seam."""
+    store = MagicMock()
+    store.list = AsyncMock(return_value=[])
+    store.list_summaries = AsyncMock(return_value=[])
+    store.list_summaries_by_query = AsyncMock(return_value=[])
+    store.search = AsyncMock(return_value=[])
+    store.search_summaries = AsyncMock(return_value=[])
+    store.view = AsyncMock(return_value=None)
+    store.get = AsyncMock(return_value=None)
+    store.get_eager = AsyncMock(return_value=None)
+    store.resolve_id = AsyncMock(return_value=None)
+    store.delete_conversation = AsyncMock(return_value=False)
+    return store
+
+
+def make_tag_store_mock() -> MagicMock:
+    """Create a tag/metadata store mock matching the current MCP mutation seam."""
+    store = MagicMock()
+    store.add_tag = AsyncMock(return_value=None)
+    store.remove_tag = AsyncMock(return_value=None)
+    store.list_tags = AsyncMock(return_value={})
+    store.get_metadata = AsyncMock(return_value={})
+    store.update_metadata = AsyncMock(return_value=None)
+    store.delete_metadata = AsyncMock(return_value=None)
+    return store
+
+
+def make_archive_ops_mock() -> MagicMock:
+    """Create an archive-operations mock matching the current MCP read seam."""
+    operations = MagicMock()
+    operations.get_conversation = AsyncMock(return_value=None)
+    operations.get_conversation_summary = AsyncMock(return_value=None)
+    operations.get_conversation_stats = AsyncMock(return_value={})
+    operations.get_session_tree = AsyncMock(return_value=[])
+    operations.get_stats_by = AsyncMock(return_value={})
+    operations.storage_stats = AsyncMock(return_value=MagicMock())
+    return operations
 
 
 def make_mock_filter(results: Sequence[object] | None = None, **method_overrides: object) -> MagicMock:

@@ -14,16 +14,23 @@ import sys
 import tempfile
 from collections.abc import Iterator
 from contextlib import contextmanager, redirect_stdout
+from dataclasses import replace
 from pathlib import Path
-from typing import NotRequired, TypeAlias
+from typing import NotRequired, Protocol, TypeAlias
 
 from typing_extensions import TypedDict
 
 from polylogue.config import Config, Source
 from polylogue.paths import blob_store_root, db_path
 from polylogue.pipeline.runner import RUN_STAGE_CHOICES, run_sources
-from polylogue.scenarios import CorpusRequest, CorpusSourceKind
+from polylogue.scenarios import (
+    CorpusRequest,
+    CorpusSourceKind,
+    PipelineProbeInputMode,
+    PipelineProbeRequest,
+)
 from polylogue.schemas.synthetic import SyntheticCorpus
+from polylogue.showcase.workspace import VerificationWorkspace, create_verification_workspace
 from polylogue.storage.backends import SQLiteBackend, create_backend
 from polylogue.storage.backends.connection import (
     _build_provider_scope_filter,
@@ -44,7 +51,7 @@ _EXT_MAP = {
     "claude-code": ".jsonl",
     "codex": ".jsonl",
 }
-_INPUT_MODES = ("synthetic", "archive-subset", "source-subset")
+_INPUT_MODES = tuple(mode.value for mode in PipelineProbeInputMode)
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _SOURCE_BACKED_PROBE_STAGE_SEQUENCES: dict[str, tuple[str, ...]] = {
     "acquire": ("acquire",),
@@ -61,6 +68,10 @@ JsonScalar: TypeAlias = str | int | float | bool | None
 JsonValue: TypeAlias = JsonScalar | dict[str, "JsonValue"] | list["JsonValue"]
 JsonObject: TypeAlias = dict[str, JsonValue]
 ProbeSummary: TypeAlias = dict[str, object]
+
+
+class _RawConversationStore(Protocol):
+    async def save_raw_conversation(self, record: RawConversationRecord) -> bool: ...
 
 
 class RawFanoutEntry(TypedDict):
@@ -308,24 +319,58 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def _request_from_args(args: argparse.Namespace) -> PipelineProbeRequest:
+    """Project argparse input onto the authored pipeline-probe request contract."""
+    provider_names = tuple(_names(getattr(args, "provider", None)))
+    corpus_request: CorpusRequest | None = None
+    input_mode = PipelineProbeInputMode(_probe_mode(args))
+    if input_mode is PipelineProbeInputMode.SYNTHETIC:
+        corpus_request = CorpusRequest(
+            providers=provider_names or ("chatgpt",),
+            source=CorpusSourceKind(getattr(args, "corpus_source", CorpusSourceKind.DEFAULT.value)),
+            count=args.count,
+            messages_min=args.messages_min,
+            messages_max=args.messages_max,
+            seed=args.seed,
+            style=getattr(args, "style", "default"),
+            package_version=getattr(args, "package_version", "default"),
+        )
+    return PipelineProbeRequest(
+        stage=args.stage,
+        input_mode=input_mode,
+        corpus_request=corpus_request,
+        sample_per_provider=args.sample_per_provider,
+        source_filters=tuple(_names(getattr(args, "source_filters", None))),
+        source_paths=tuple(str(path) for path in _paths(getattr(args, "source_paths", None))),
+        source_name=str(getattr(args, "source_name", "inbox") or "inbox"),
+        source_db=str(args.source_db) if args.source_db is not None else None,
+        source_blob_root=str(args.source_blob_root) if args.source_blob_root is not None else None,
+        manifest_out=str(args.manifest_out) if args.manifest_out is not None else None,
+        manifest_in=str(args.manifest_in) if args.manifest_in is not None else None,
+        raw_batch_size=args.raw_batch_size,
+        ingest_workers=args.ingest_workers,
+        measure_ingest_result_size=bool(args.measure_ingest_result_size),
+        workdir=str(args.workdir) if args.workdir is not None else None,
+        json_out=str(args.json_out) if args.json_out is not None else None,
+        max_total_ms=args.max_total_ms,
+        max_peak_rss_mb=args.max_peak_rss_mb,
+    )
+
+
 @contextmanager
-def _isolated_env(workdir: Path) -> Iterator[None]:
+def _isolated_env(workspace: VerificationWorkspace) -> Iterator[None]:
     previous = {
         key: os.environ.get(key)
         for key in (
+            "HOME",
+            "XDG_CACHE_HOME",
             "XDG_DATA_HOME",
             "XDG_STATE_HOME",
             "XDG_CONFIG_HOME",
             "POLYLOGUE_ARCHIVE_ROOT",
         )
     }
-    env_updates = {
-        "XDG_DATA_HOME": str(workdir / "xdg-data"),
-        "XDG_STATE_HOME": str(workdir / "xdg-state"),
-        "XDG_CONFIG_HOME": str(workdir / "xdg-config"),
-        "POLYLOGUE_ARCHIVE_ROOT": str(workdir / "archive"),
-    }
-    for key, value in env_updates.items():
+    for key, value in workspace.env_vars.items():
         os.environ[key] = value
     reset_blob_store()
     try:
@@ -337,6 +382,11 @@ def _isolated_env(workdir: Path) -> Iterator[None]:
                 os.environ.pop(key, None)
             else:
                 os.environ[key] = previous_value
+
+
+def _workspace_for_request(request: PipelineProbeRequest) -> VerificationWorkspace:
+    workdir = Path(request.workdir).resolve() if request.workdir is not None else None
+    return create_verification_workspace(workdir, prefix="polylogue-pipeline-probe-")
 
 
 def _db_row_counts(db_path: Path) -> dict[str, int]:
@@ -799,7 +849,7 @@ def _resolve_archive_manifest(
 async def _seed_archive_subset(
     *,
     manifest: ArchiveManifest,
-    repository: ConversationRepository,
+    repository: _RawConversationStore,
     target_blob_store: BlobStore,
 ) -> ArchiveSubsetSampleSummary:
     records = [RawConversationRecord.model_validate(record_payload) for record_payload in manifest["records"]]
@@ -834,8 +884,23 @@ async def _seed_archive_subset(
     }
 
 
-def _resolve_synthetic_provider(args: argparse.Namespace) -> str:
-    provider_names = _names(getattr(args, "provider", None))
+def _resolved_corpus_request(request: PipelineProbeRequest) -> CorpusRequest:
+    if request.corpus_request is not None:
+        return request.corpus_request
+    return CorpusRequest(
+        providers=("chatgpt",),
+        source=CorpusSourceKind.DEFAULT,
+        count=5,
+        messages_min=4,
+        messages_max=12,
+        seed=42,
+        style="default",
+        package_version="default",
+    )
+
+
+def _resolve_synthetic_provider(request: PipelineProbeRequest) -> str:
+    provider_names = tuple(_resolved_corpus_request(request).providers or ("chatgpt",))
     provider_name = provider_names[0] if provider_names else "chatgpt"
     available = set(SyntheticCorpus.available_providers())
     if provider_name not in available:
@@ -845,7 +910,9 @@ def _resolve_synthetic_provider(args: argparse.Namespace) -> str:
     return provider_name
 
 
-def _probe_mode(args: argparse.Namespace) -> str:
+def _probe_mode(args: argparse.Namespace | PipelineProbeRequest) -> str:
+    if isinstance(args, PipelineProbeRequest):
+        return args.input_mode_kind.value
     return str(getattr(args, "input_mode", "synthetic"))
 
 
@@ -918,23 +985,20 @@ def _stage_source_subset(
 async def _run_probe_pipeline(
     *,
     config: Config,
-    stage: str,
+    request: PipelineProbeRequest,
     stage_sequence: list[str] | None,
     source_names: list[str] | None,
-    raw_batch_size: int | None,
-    ingest_workers: int | None,
-    measure_ingest_result_size: bool,
     backend: SQLiteBackend | None = None,
     repository: ConversationRepository | None = None,
 ) -> tuple[RunResult, JsonObject]:
     result = await run_sources(
         config=config,
-        stage=stage,
+        stage=request.stage,
         stage_sequence=stage_sequence,
         source_names=source_names,
-        raw_batch_size=raw_batch_size or 50,
-        ingest_workers=ingest_workers,
-        measure_ingest_result_size=measure_ingest_result_size,
+        raw_batch_size=request.raw_batch_size or 50,
+        ingest_workers=request.ingest_workers,
+        measure_ingest_result_size=request.measure_ingest_result_size,
         backend=backend,
         repository=repository,
     )
@@ -967,44 +1031,37 @@ def _json_float_or_none(value: object | None) -> float | None:
     return None
 
 
-async def run_probe(args: argparse.Namespace) -> ProbeSummary:
-    probe_mode = _probe_mode(args)
+async def run_probe(request: PipelineProbeRequest) -> ProbeSummary:
+    probe_mode = _probe_mode(request)
     if probe_mode not in _INPUT_MODES:
         raise ValueError(f"--input-mode must be one of {_INPUT_MODES}")
 
-    workdir = args.workdir.resolve()
-    raw_batch_size = getattr(args, "raw_batch_size", None)
+    workspace = _workspace_for_request(request)
+    workdir = workspace.root
+    raw_batch_size = request.raw_batch_size
     if raw_batch_size is not None and raw_batch_size <= 0:
         raise ValueError("--raw-batch-size must be positive")
-    ingest_workers = getattr(args, "ingest_workers", None)
+    ingest_workers = request.ingest_workers
     if ingest_workers is not None and ingest_workers <= 0:
         raise ValueError("--ingest-workers must be positive")
-    archive_root = workdir / "archive"
-    render_root = workdir / "render"
+    archive_root = workspace.archive_root
+    render_root = workspace.render_root
     db_path: Path | None = None
     summary: ProbeSummary
 
-    if probe_mode == "synthetic":
-        if args.count <= 0:
+    if probe_mode == PipelineProbeInputMode.SYNTHETIC.value:
+        corpus_request = _resolved_corpus_request(request)
+        if corpus_request.count <= 0:
             raise ValueError("--count must be positive")
-        if args.messages_min <= 0 or args.messages_max < args.messages_min:
+        if corpus_request.messages_min <= 0 or corpus_request.messages_max < corpus_request.messages_min:
             raise ValueError("--messages-min/--messages-max must define a positive inclusive range")
-        provider_name = _resolve_synthetic_provider(args)
+        provider_name = _resolve_synthetic_provider(request)
         source_root = workdir / "sources" / provider_name
 
-        stage_sequence = _probe_stage_sequence(probe_mode, args.stage)
-        with _isolated_env(workdir):
+        stage_sequence = _probe_stage_sequence(probe_mode, request.stage)
+        with _isolated_env(workspace):
             files, total_bytes = _write_probe_sources(
-                request=CorpusRequest(
-                    providers=(provider_name,),
-                    source=CorpusSourceKind(args.corpus_source),
-                    count=args.count,
-                    messages_min=args.messages_min,
-                    messages_max=args.messages_max,
-                    seed=args.seed,
-                    style=getattr(args, "style", "default"),
-                    package_version=getattr(args, "package_version", "default"),
-                ),
+                request=corpus_request,
                 source_root=source_root,
             )
             config = Config(
@@ -1015,12 +1072,9 @@ async def run_probe(args: argparse.Namespace) -> ProbeSummary:
             db_path = config.db_path
             result, run_payload = await _run_probe_pipeline(
                 config=config,
-                stage=args.stage,
+                request=request,
                 stage_sequence=stage_sequence,
                 source_names=[provider_name],
-                raw_batch_size=raw_batch_size,
-                ingest_workers=ingest_workers,
-                measure_ingest_result_size=args.measure_ingest_result_size,
             )
         result_payload = result.model_dump()
 
@@ -1028,18 +1082,18 @@ async def run_probe(args: argparse.Namespace) -> ProbeSummary:
             "probe": {
                 "input_mode": "synthetic",
                 "provider": provider_name,
-                "corpus_source": args.corpus_source,
-                "stage": args.stage,
+                "corpus_source": corpus_request.source_kind.value,
+                "stage": request.stage,
                 "stage_sequence": stage_sequence,
-                "count": args.count,
-                "messages_min": args.messages_min,
-                "messages_max": args.messages_max,
-                "seed": args.seed,
-                "style": getattr(args, "style", "default"),
-                "package_version": getattr(args, "package_version", "default"),
-                "raw_batch_size": args.raw_batch_size,
-                "ingest_workers": args.ingest_workers,
-                "measure_ingest_result_size": args.measure_ingest_result_size,
+                "count": corpus_request.count,
+                "messages_min": corpus_request.messages_min,
+                "messages_max": corpus_request.messages_max,
+                "seed": corpus_request.seed,
+                "style": corpus_request.style,
+                "package_version": corpus_request.package_version,
+                "raw_batch_size": request.raw_batch_size,
+                "ingest_workers": request.ingest_workers,
+                "measure_ingest_result_size": request.measure_ingest_result_size,
             },
             "paths": {
                 "workdir": str(workdir),
@@ -1059,16 +1113,16 @@ async def run_probe(args: argparse.Namespace) -> ProbeSummary:
             "db_stats": _db_row_counts(db_path) if db_path is not None else {},
             "raw_fanout": _db_raw_fanout(db_path) if db_path is not None else [],
         }
-    elif probe_mode == "source-subset":
-        source_paths = _paths(getattr(args, "source_paths", None))
+    elif probe_mode == PipelineProbeInputMode.SOURCE_SUBSET.value:
+        source_paths = _paths(request.source_paths)
         if not source_paths:
             raise ValueError("--source-path is required in source-subset mode")
 
-        source_name = str(getattr(args, "source_name", "inbox")).strip() or "inbox"
+        source_name = request.source_name.strip() or "inbox"
         source_root = workdir / "sources" / source_name
-        stage_sequence = _probe_stage_sequence(probe_mode, args.stage)
+        stage_sequence = _probe_stage_sequence(probe_mode, request.stage)
 
-        with _isolated_env(workdir):
+        with _isolated_env(workspace):
             source_inputs = _stage_source_subset(
                 source_paths=source_paths,
                 source_root=source_root,
@@ -1081,12 +1135,9 @@ async def run_probe(args: argparse.Namespace) -> ProbeSummary:
             db_path = config.db_path
             result, run_payload = await _run_probe_pipeline(
                 config=config,
-                stage=args.stage,
+                request=request,
                 stage_sequence=stage_sequence,
                 source_names=[source_name],
-                raw_batch_size=raw_batch_size,
-                ingest_workers=ingest_workers,
-                measure_ingest_result_size=args.measure_ingest_result_size,
             )
         result_payload = result.model_dump()
 
@@ -1094,11 +1145,11 @@ async def run_probe(args: argparse.Namespace) -> ProbeSummary:
             "probe": {
                 "input_mode": "source-subset",
                 "source_name": source_name,
-                "stage": args.stage,
+                "stage": request.stage,
                 "stage_sequence": stage_sequence,
-                "raw_batch_size": args.raw_batch_size,
-                "ingest_workers": args.ingest_workers,
-                "measure_ingest_result_size": args.measure_ingest_result_size,
+                "raw_batch_size": request.raw_batch_size,
+                "ingest_workers": request.ingest_workers,
+                "measure_ingest_result_size": request.measure_ingest_result_size,
             },
             "paths": {
                 "workdir": str(workdir),
@@ -1116,30 +1167,32 @@ async def run_probe(args: argparse.Namespace) -> ProbeSummary:
             "raw_fanout": _db_raw_fanout(db_path) if db_path is not None else [],
         }
     else:
-        if args.sample_per_provider <= 0:
+        sample_per_provider = request.sample_per_provider or 50
+        if sample_per_provider <= 0:
             raise ValueError("--sample-per-provider must be positive")
-        provider_filters = _names(getattr(args, "provider", None))
-        source_filters = _names(getattr(args, "source_filters", None))
+        provider_filters = list(_resolved_corpus_request(request).providers or ())
+        source_filters = list(request.source_filters)
+        resolved_corpus_request = _resolved_corpus_request(request)
         manifest = _resolve_archive_manifest(
-            manifest_in=getattr(args, "manifest_in", None),
-            source_db=getattr(args, "source_db", None),
-            source_blob_root=getattr(args, "source_blob_root", None),
+            manifest_in=Path(request.manifest_in) if request.manifest_in is not None else None,
+            source_db=Path(request.source_db) if request.source_db is not None else None,
+            source_blob_root=Path(request.source_blob_root) if request.source_blob_root is not None else None,
             provider_filters=provider_filters,
             source_filters=source_filters,
-            sample_per_provider=args.sample_per_provider,
-            seed=args.seed,
+            sample_per_provider=sample_per_provider,
+            seed=resolved_corpus_request.seed or 42,
         )
         manifest_path = workdir / "archive-subset-manifest.json"
         _persist_manifest(manifest, manifest_path)
-        if args.manifest_out is not None:
-            _persist_manifest(manifest, args.manifest_out)
+        if request.manifest_out is not None:
+            _persist_manifest(manifest, Path(request.manifest_out))
 
         config = Config(
             sources=[],
             archive_root=archive_root,
             render_root=render_root,
         )
-        with _isolated_env(workdir):
+        with _isolated_env(workspace):
             db_path = config.db_path
             backend = create_backend(db_path=db_path)
             repository = ConversationRepository(backend=backend)
@@ -1152,12 +1205,9 @@ async def run_probe(args: argparse.Namespace) -> ProbeSummary:
                 )
                 result, run_payload = await _run_probe_pipeline(
                     config=config,
-                    stage=args.stage,
+                    request=request,
                     stage_sequence=None,
                     source_names=None,
-                    raw_batch_size=raw_batch_size,
-                    ingest_workers=ingest_workers,
-                    measure_ingest_result_size=args.measure_ingest_result_size,
                     backend=backend,
                     repository=repository,
                 )
@@ -1168,14 +1218,14 @@ async def run_probe(args: argparse.Namespace) -> ProbeSummary:
         summary = {
             "probe": {
                 "input_mode": "archive-subset",
-                "stage": args.stage,
-                "seed": args.seed,
-                "sample_per_provider": args.sample_per_provider,
+                "stage": request.stage,
+                "seed": resolved_corpus_request.seed,
+                "sample_per_provider": sample_per_provider,
                 "provider_filters": provider_filters,
                 "source_filters": source_filters,
-                "raw_batch_size": args.raw_batch_size,
-                "ingest_workers": args.ingest_workers,
-                "measure_ingest_result_size": args.measure_ingest_result_size,
+                "raw_batch_size": request.raw_batch_size,
+                "ingest_workers": request.ingest_workers,
+                "measure_ingest_result_size": request.measure_ingest_result_size,
             },
             "paths": {
                 "workdir": str(workdir),
@@ -1198,8 +1248,8 @@ async def run_probe(args: argparse.Namespace) -> ProbeSummary:
     return summary
 
 
-def _build_budget_report(summary: ProbeSummary, args: argparse.Namespace) -> BudgetReport | None:
-    if args.max_total_ms is None and args.max_peak_rss_mb is None:
+def _build_budget_report(summary: ProbeSummary, request: PipelineProbeRequest) -> BudgetReport | None:
+    if request.max_total_ms is None and request.max_peak_rss_mb is None:
         return None
 
     run_payload = _json_object_or_empty(summary.get("run_payload"))
@@ -1209,53 +1259,55 @@ def _build_budget_report(summary: ProbeSummary, args: argparse.Namespace) -> Bud
     observed_peak_rss_mb = metrics.get("peak_rss_self_mb")
     violations: list[str] = []
 
-    if args.max_total_ms is not None:
+    if request.max_total_ms is not None:
         if observed_total_ms is None:
             violations.append("missing total runtime metric")
         elif (observed_total_ms_value := _json_float_or_none(observed_total_ms)) is None:
             violations.append("non-numeric total runtime metric")
-        elif observed_total_ms_value > args.max_total_ms:
+        elif observed_total_ms_value > request.max_total_ms:
             violations.append(
-                f"total runtime {observed_total_ms_value:.1f} ms exceeded budget {args.max_total_ms:.1f} ms"
+                f"total runtime {observed_total_ms_value:.1f} ms exceeded budget {request.max_total_ms:.1f} ms"
             )
 
-    if args.max_peak_rss_mb is not None:
+    if request.max_peak_rss_mb is not None:
         if observed_peak_rss_mb is None:
             violations.append("missing peak RSS metric")
         elif (observed_peak_rss_mb_value := _json_float_or_none(observed_peak_rss_mb)) is None:
             violations.append("non-numeric peak RSS metric")
-        elif observed_peak_rss_mb_value > args.max_peak_rss_mb:
+        elif observed_peak_rss_mb_value > request.max_peak_rss_mb:
             violations.append(
-                f"peak RSS {observed_peak_rss_mb_value:.1f} MiB exceeded budget {args.max_peak_rss_mb:.1f} MiB"
+                f"peak RSS {observed_peak_rss_mb_value:.1f} MiB exceeded budget {request.max_peak_rss_mb:.1f} MiB"
             )
 
     return {
         "ok": not violations,
-        "max_total_ms": args.max_total_ms,
+        "max_total_ms": request.max_total_ms,
         "observed_total_ms": observed_total_ms,
-        "max_peak_rss_mb": args.max_peak_rss_mb,
+        "max_peak_rss_mb": request.max_peak_rss_mb,
         "observed_peak_rss_mb": observed_peak_rss_mb,
         "violations": violations,
     }
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = _parse_args(argv)
-    if args.workdir is None:
+    request = _request_from_args(_parse_args(argv))
+    active_request = request
+    if request.workdir is None:
         with tempfile.TemporaryDirectory(prefix="polylogue-pipeline-probe-") as tempdir:
-            args.workdir = Path(tempdir)
+            active_request = replace(request, workdir=str(Path(tempdir)))
             with redirect_stdout(sys.stderr):
-                summary = asyncio.run(run_probe(args))
+                summary = asyncio.run(run_probe(active_request))
     else:
         with redirect_stdout(sys.stderr):
-            summary = asyncio.run(run_probe(args))
-    budget_report = _build_budget_report(summary, args)
+            summary = asyncio.run(run_probe(active_request))
+    budget_report = _build_budget_report(summary, active_request)
     if budget_report is not None:
         summary["budgets"] = budget_report
     encoded = json.dumps(summary, indent=2, sort_keys=True)
-    if args.json_out is not None:
-        args.json_out.parent.mkdir(parents=True, exist_ok=True)
-        args.json_out.write_text(encoded + "\n", encoding="utf-8")
+    if active_request.json_out is not None:
+        json_out = Path(active_request.json_out)
+        json_out.parent.mkdir(parents=True, exist_ok=True)
+        json_out.write_text(encoded + "\n", encoding="utf-8")
     print(encoded)
     return 1 if budget_report is not None and not budget_report["ok"] else 0
 

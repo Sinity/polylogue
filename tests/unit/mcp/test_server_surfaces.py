@@ -22,8 +22,9 @@ from tests.infra.mcp import (
     invoke_surface,
     invoke_surface_async,
     make_mock_filter,
-    make_repo_mock,
+    make_query_store_mock,
     make_simple_conversation,
+    make_tag_store_mock,
 )
 
 SerializationCase = tuple[str, Conversation, dict[str, object], str]
@@ -202,7 +203,7 @@ class TestResourceSurfaces:
 
     def test_tags_resource(self: object, mcp_server: Any) -> None:
         with patch("polylogue.mcp.server._get_tag_store") as mock_get_tag_store:
-            mock_tag_store = make_repo_mock()
+            mock_tag_store = make_tag_store_mock()
             mock_tag_store.list_tags.return_value = {"feature": 10, "bug": 5}
             mock_get_tag_store.return_value = mock_tag_store
 
@@ -364,7 +365,7 @@ class TestPromptSurfaces:
         mcp_server: Any,
     ) -> None:
         with patch("polylogue.mcp.server._get_query_store") as mock_get_query_store:
-            mock_query_store = make_repo_mock()
+            mock_query_store = make_query_store_mock()
             mock_query_store.get_eager = AsyncMock(side_effect=[simple_conversation, simple_conversation])
             mock_get_query_store.return_value = mock_query_store
 

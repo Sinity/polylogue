@@ -43,8 +43,9 @@ from tests.infra.builders import make_conv, make_msg
 from tests.infra.mcp import (
     invoke_surface,
     invoke_surface_async,
-    make_repo_mock,
+    make_query_store_mock,
     make_simple_conversation,
+    make_tag_store_mock,
 )
 
 STATS_CONFIGS = [
@@ -649,7 +650,7 @@ class TestStatsTool:
 class TestMutationTools:
     def test_add_tag_success(self, mcp_server: Any) -> None:
         with patch("polylogue.mcp.server._get_tag_store") as mock_get_tag_store:
-            mock_tag_store = make_repo_mock()
+            mock_tag_store = make_tag_store_mock()
             mock_tag_store.add_tag.return_value = None
             mock_get_tag_store.return_value = mock_tag_store
 
@@ -663,7 +664,7 @@ class TestMutationTools:
 
     def test_add_tag_error(self, mcp_server: Any) -> None:
         with patch("polylogue.mcp.server._get_tag_store") as mock_get_tag_store:
-            mock_tag_store = make_repo_mock()
+            mock_tag_store = make_tag_store_mock()
             mock_tag_store.add_tag.side_effect = ValueError("Invalid tag")
             mock_get_tag_store.return_value = mock_tag_store
 
@@ -676,7 +677,7 @@ class TestMutationTools:
 
     def test_remove_tag_success(self, mcp_server: Any) -> None:
         with patch("polylogue.mcp.server._get_tag_store") as mock_get_tag_store:
-            mock_tag_store = make_repo_mock()
+            mock_tag_store = make_tag_store_mock()
             mock_tag_store.remove_tag.return_value = None
             mock_get_tag_store.return_value = mock_tag_store
 
@@ -690,7 +691,7 @@ class TestMutationTools:
 
     def test_remove_tag_error(self, mcp_server: Any) -> None:
         with patch("polylogue.mcp.server._get_tag_store") as mock_get_tag_store:
-            mock_tag_store = make_repo_mock()
+            mock_tag_store = make_tag_store_mock()
             mock_tag_store.remove_tag.side_effect = RuntimeError("Backend error")
             mock_get_tag_store.return_value = mock_tag_store
 
@@ -702,7 +703,7 @@ class TestMutationTools:
 
     def test_list_tags_returns_counts(self, mcp_server: Any) -> None:
         with patch("polylogue.mcp.server._get_tag_store") as mock_get_tag_store:
-            mock_tag_store = make_repo_mock()
+            mock_tag_store = make_tag_store_mock()
             mock_tag_store.list_tags.return_value = {"bug": 3, "feature": 5, "urgent": 1}
             mock_get_tag_store.return_value = mock_tag_store
 
@@ -712,7 +713,7 @@ class TestMutationTools:
 
     def test_list_tags_with_provider(self, mcp_server: Any) -> None:
         with patch("polylogue.mcp.server._get_tag_store") as mock_get_tag_store:
-            mock_tag_store = make_repo_mock()
+            mock_tag_store = make_tag_store_mock()
             mock_tag_store.list_tags.return_value = {"claude-ai": 2}
             mock_get_tag_store.return_value = mock_tag_store
 
@@ -723,7 +724,7 @@ class TestMutationTools:
 
     def test_get_metadata_success(self, mcp_server: Any) -> None:
         with patch("polylogue.mcp.server._get_tag_store") as mock_get_tag_store:
-            mock_tag_store = make_repo_mock()
+            mock_tag_store = make_tag_store_mock()
             mock_tag_store.get_metadata.return_value = {"key": "value", "count": 42}
             mock_get_tag_store.return_value = mock_tag_store
 
@@ -733,7 +734,7 @@ class TestMutationTools:
 
     def test_set_metadata_string_value(self, mcp_server: Any) -> None:
         with patch("polylogue.mcp.server._get_tag_store") as mock_get_tag_store:
-            mock_tag_store = make_repo_mock()
+            mock_tag_store = make_tag_store_mock()
             mock_tag_store.update_metadata.return_value = None
             mock_get_tag_store.return_value = mock_tag_store
 
@@ -749,7 +750,7 @@ class TestMutationTools:
 
     def test_set_metadata_json_value(self, mcp_server: Any) -> None:
         with patch("polylogue.mcp.server._get_tag_store") as mock_get_tag_store:
-            mock_tag_store = make_repo_mock()
+            mock_tag_store = make_tag_store_mock()
             mock_tag_store.update_metadata.return_value = None
             mock_get_tag_store.return_value = mock_tag_store
 
@@ -765,7 +766,7 @@ class TestMutationTools:
 
     def test_delete_metadata_success(self, mcp_server: Any) -> None:
         with patch("polylogue.mcp.server._get_tag_store") as mock_get_tag_store:
-            mock_tag_store = make_repo_mock()
+            mock_tag_store = make_tag_store_mock()
             mock_tag_store.delete_metadata.return_value = None
             mock_get_tag_store.return_value = mock_tag_store
 
@@ -782,7 +783,7 @@ class TestMutationTools:
 
     def test_delete_requires_confirm(self, mcp_server: Any) -> None:
         with patch("polylogue.mcp.server._get_query_store") as mock_get_query_store:
-            mock_query_store = make_repo_mock()
+            mock_query_store = make_query_store_mock()
             mock_get_query_store.return_value = mock_query_store
 
             result = invoke_surface(
@@ -797,7 +798,7 @@ class TestMutationTools:
 
     def test_delete_with_confirm(self, mcp_server: Any) -> None:
         with patch("polylogue.mcp.server._get_query_store") as mock_get_query_store:
-            mock_query_store = make_repo_mock()
+            mock_query_store = make_query_store_mock()
             mock_query_store.delete_conversation.return_value = True
             mock_get_query_store.return_value = mock_query_store
 
@@ -812,7 +813,7 @@ class TestMutationTools:
 
     def test_delete_not_found(self, mcp_server: Any) -> None:
         with patch("polylogue.mcp.server._get_query_store") as mock_get_query_store:
-            mock_query_store = make_repo_mock()
+            mock_query_store = make_query_store_mock()
             mock_query_store.delete_conversation.return_value = False
             mock_get_query_store.return_value = mock_query_store
 

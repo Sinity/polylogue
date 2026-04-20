@@ -91,12 +91,12 @@ class TestUnicodeHandling:
     @pytest.mark.asyncio
     async def test_unicode_tag(self, mcp_server: Any) -> None:
         """Unicode characters in tag names don't crash the server."""
-        from tests.infra.mcp import make_repo_mock
+        from tests.infra.mcp import make_tag_store_mock
 
-        with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
-            mock_repo = make_repo_mock()
-            mock_repo.add_tag = AsyncMock(return_value=True)
-            mock_get_repo.return_value = mock_repo
+        with patch("polylogue.mcp.server._get_tag_store") as mock_get_tag_store:
+            mock_tag_store = make_tag_store_mock()
+            mock_tag_store.add_tag = AsyncMock(return_value=True)
+            mock_get_tag_store.return_value = mock_tag_store
 
             # This should not crash even with emoji/CJK/RTL
             for tag in ["bug-fix", "重要", "مهم", "critical"]:
@@ -111,15 +111,15 @@ class TestUnicodeHandling:
     @pytest.mark.asyncio
     async def test_empty_query(self, mcp_server: Any) -> None:
         """Empty query string doesn't crash search."""
-        from tests.infra.mcp import make_mock_filter, make_repo_mock
+        from tests.infra.mcp import make_mock_filter, make_query_store_mock
 
         with (
-            patch("polylogue.mcp.server._get_repo") as mock_get_repo,
+            patch("polylogue.mcp.server._get_query_store") as mock_get_query_store,
             patch("polylogue.lib.filters.ConversationFilter") as mock_filter_cls,
         ):
-            mock_repo = make_repo_mock()
-            mock_repo.search = AsyncMock(return_value=[])
-            mock_get_repo.return_value = mock_repo
+            mock_query_store = make_query_store_mock()
+            mock_query_store.search = AsyncMock(return_value=[])
+            mock_get_query_store.return_value = mock_query_store
             mock_filter_cls.return_value = make_mock_filter(results=[])
 
             result = await _invoke_tool(
@@ -140,15 +140,15 @@ class TestBoundaryParameters:
     @pytest.mark.asyncio
     async def test_limit_zero(self, mcp_server: Any) -> None:
         """limit=0 is clamped to 1 (returns minimal results)."""
-        from tests.infra.mcp import make_mock_filter, make_repo_mock
+        from tests.infra.mcp import make_mock_filter, make_query_store_mock
 
         with (
-            patch("polylogue.mcp.server._get_repo") as mock_get_repo,
+            patch("polylogue.mcp.server._get_query_store") as mock_get_query_store,
             patch("polylogue.lib.filters.ConversationFilter") as mock_filter_cls,
         ):
-            mock_repo = make_repo_mock()
-            mock_repo.list = AsyncMock(return_value=[])
-            mock_get_repo.return_value = mock_repo
+            mock_query_store = make_query_store_mock()
+            mock_query_store.list = AsyncMock(return_value=[])
+            mock_get_query_store.return_value = mock_query_store
             mock_filter_cls.return_value = make_mock_filter(results=[])
 
             result = await _invoke_tool(
@@ -161,15 +161,15 @@ class TestBoundaryParameters:
     @pytest.mark.asyncio
     async def test_limit_negative(self, mcp_server: Any) -> None:
         """Negative limit is clamped to 1."""
-        from tests.infra.mcp import make_mock_filter, make_repo_mock
+        from tests.infra.mcp import make_mock_filter, make_query_store_mock
 
         with (
-            patch("polylogue.mcp.server._get_repo") as mock_get_repo,
+            patch("polylogue.mcp.server._get_query_store") as mock_get_query_store,
             patch("polylogue.lib.filters.ConversationFilter") as mock_filter_cls,
         ):
-            mock_repo = make_repo_mock()
-            mock_repo.list = AsyncMock(return_value=[])
-            mock_get_repo.return_value = mock_repo
+            mock_query_store = make_query_store_mock()
+            mock_query_store.list = AsyncMock(return_value=[])
+            mock_get_query_store.return_value = mock_query_store
             mock_filter_cls.return_value = make_mock_filter(results=[])
 
             result = await _invoke_tool(
