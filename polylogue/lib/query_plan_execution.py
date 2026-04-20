@@ -14,12 +14,12 @@ from .query_plan import ConversationQueryPlan
 
 if TYPE_CHECKING:
     from polylogue.lib.models import Conversation, ConversationSummary
-    from polylogue.storage.repository import ConversationRepository
+    from polylogue.protocols import ConversationQueryRuntimeStore
 
 
 async def list_for_plan(
     plan: ConversationQueryPlan,
-    repository: ConversationRepository,
+    repository: ConversationQueryRuntimeStore,
 ) -> list[Conversation]:
     if plan.similar_text:
         candidates = await repository.search_similar(
@@ -40,7 +40,7 @@ async def list_for_plan(
 
 async def list_summaries_for_plan(
     plan: ConversationQueryPlan,
-    repository: ConversationRepository,
+    repository: ConversationQueryRuntimeStore,
 ) -> list[ConversationSummary]:
     can_use_action_stats = await plan.can_use_action_event_stats_with(repository)
     uses_action_read_model = plan._uses_action_read_model()
@@ -62,7 +62,7 @@ async def list_summaries_for_plan(
 
 async def first_for_plan(
     plan: ConversationQueryPlan,
-    repository: ConversationRepository,
+    repository: ConversationQueryRuntimeStore,
 ) -> Conversation | None:
     results = await list_for_plan(plan.with_limit(1), repository)
     return results[0] if results else None
@@ -70,7 +70,7 @@ async def first_for_plan(
 
 async def count_for_plan(
     plan: ConversationQueryPlan,
-    repository: ConversationRepository,
+    repository: ConversationQueryRuntimeStore,
 ) -> int:
     if plan.can_count_in_sql() and await plan._action_event_rows_ready(repository):
         return int(await repository.count_by_query(plan.record_query.for_count()))
@@ -83,7 +83,7 @@ async def count_for_plan(
 
 async def delete_for_plan(
     plan: ConversationQueryPlan,
-    repository: ConversationRepository,
+    repository: ConversationQueryRuntimeStore,
 ) -> int:
     results: list[Conversation] | list[ConversationSummary]
     if plan.can_use_summaries():

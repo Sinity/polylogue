@@ -17,8 +17,7 @@ from polylogue.types import Provider
 if TYPE_CHECKING:
     from polylogue.lib.filters import ConversationFilter
     from polylogue.lib.models import Conversation, ConversationSummary
-    from polylogue.protocols import VectorProvider
-    from polylogue.storage.repository import ConversationRepository
+    from polylogue.protocols import ConversationQueryRuntimeStore, VectorProvider
 
 _SpecT = TypeVar("_SpecT", bound="ConversationQuerySpec")
 
@@ -376,7 +375,7 @@ class ConversationQuerySpec:
 
     async def list(
         self,
-        repository: ConversationRepository,
+        repository: ConversationQueryRuntimeStore,
         *,
         vector_provider: VectorProvider | None = None,
     ) -> builtins.list[Conversation]:
@@ -384,7 +383,7 @@ class ConversationQuerySpec:
 
     async def list_summaries(
         self,
-        repository: ConversationRepository,
+        repository: ConversationQueryRuntimeStore,
         *,
         vector_provider: VectorProvider | None = None,
     ) -> builtins.list[ConversationSummary]:
@@ -392,7 +391,7 @@ class ConversationQuerySpec:
 
     async def count(
         self,
-        repository: ConversationRepository,
+        repository: ConversationQueryRuntimeStore,
         *,
         vector_provider: VectorProvider | None = None,
     ) -> int:
@@ -400,7 +399,7 @@ class ConversationQuerySpec:
 
     async def delete(
         self,
-        repository: ConversationRepository,
+        repository: ConversationQueryRuntimeStore,
         *,
         vector_provider: VectorProvider | None = None,
     ) -> int:
@@ -408,7 +407,7 @@ class ConversationQuerySpec:
 
     def build_filter(
         self,
-        repository: ConversationRepository,
+        repository: ConversationQueryRuntimeStore,
         *,
         vector_provider: VectorProvider | None = None,
     ) -> ConversationFilter:

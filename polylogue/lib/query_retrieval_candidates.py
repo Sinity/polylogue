@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import inspect
 from typing import TYPE_CHECKING, Literal, overload
 
 from polylogue.lib.query_support import provider_values
@@ -10,8 +9,8 @@ from polylogue.lib.query_support import provider_values
 if TYPE_CHECKING:
     from polylogue.lib.models import Conversation, ConversationSummary
     from polylogue.lib.query_plan import ConversationQueryPlan
+    from polylogue.protocols import ConversationQueryRuntimeStore
     from polylogue.storage.query_models import ConversationRecordQuery
-    from polylogue.storage.repository import ConversationRepository
 
 
 def candidate_record_query(plan: ConversationQueryPlan) -> tuple[ConversationRecordQuery, bool]:
@@ -21,7 +20,7 @@ def candidate_record_query(plan: ConversationQueryPlan) -> tuple[ConversationRec
 
 async def candidate_record_query_for(
     plan: ConversationQueryPlan,
-    repository: ConversationRepository,
+    repository: ConversationQueryRuntimeStore,
 ) -> tuple[ConversationRecordQuery, bool]:
     if await action_event_rows_ready(plan, repository):
         return plan.record_query, plan.sql_pushed
@@ -42,48 +41,32 @@ def uses_action_read_model(plan: ConversationQueryPlan) -> bool:
 
 async def action_event_rows_ready(
     plan: ConversationQueryPlan,
-    repository: ConversationRepository,
+    repository: ConversationQueryRuntimeStore,
 ) -> bool:
     if not uses_action_read_model(plan):
         return True
-    status_reader = getattr(repository, "get_action_event_read_model_status", None)
-    if status_reader is None:
-        return True
-    status = status_reader()
-    if inspect.isawaitable(status):
-        status = await status
-    if not isinstance(status, dict):
-        return True
-    return bool(status.get("rows_ready", status.get("ready", False)))
+    return (await repository.get_action_event_artifact_state()).rows_ready
 
 
 async def action_search_ready(
     plan: ConversationQueryPlan,
-    repository: ConversationRepository,
+    repository: ConversationQueryRuntimeStore,
 ) -> bool:
     if not uses_action_read_model(plan):
         return True
-    status_reader = getattr(repository, "get_action_event_read_model_status", None)
-    if status_reader is None:
-        return True
-    status = status_reader()
-    if inspect.isawaitable(status):
-        status = await status
-    if not isinstance(status, dict):
-        return True
-    return bool(status.get("ready", False))
+    return (await repository.get_action_event_artifact_state()).ready
 
 
 async def can_use_action_event_stats_with(
     plan: ConversationQueryPlan,
-    repository: ConversationRepository,
+    repository: ConversationQueryRuntimeStore,
 ) -> bool:
     return plan.can_use_action_event_stats() and await action_event_rows_ready(plan, repository)
 
 
 async def fetch_record_query_for(
     plan: ConversationQueryPlan,
-    repository: ConversationRepository,
+    repository: ConversationQueryRuntimeStore,
 ) -> ConversationRecordQuery:
     record_query, _ = await candidate_record_query_for(plan, repository)
     return record_query.with_limit(plan.effective_fetch_limit())
@@ -116,7 +99,7 @@ def search_limit(plan: ConversationQueryPlan) -> int:
 @overload
 async def fetch_direct_id(
     plan: ConversationQueryPlan,
-    repository: ConversationRepository,
+    repository: ConversationQueryRuntimeStore,
     *,
     summaries: Literal[False],
 ) -> list[Conversation]: ...
@@ -125,7 +108,7 @@ async def fetch_direct_id(
 @overload
 async def fetch_direct_id(
     plan: ConversationQueryPlan,
-    repository: ConversationRepository,
+    repository: ConversationQueryRuntimeStore,
     *,
     summaries: Literal[True],
 ) -> list[ConversationSummary]: ...
@@ -133,7 +116,7 @@ async def fetch_direct_id(
 
 async def fetch_direct_id(
     plan: ConversationQueryPlan,
-    repository: ConversationRepository,
+    repository: ConversationQueryRuntimeStore,
     *,
     summaries: bool,
 ) -> list[Conversation] | list[ConversationSummary]:
@@ -152,7 +135,7 @@ async def fetch_direct_id(
 @overload
 async def fetch_search_results(
     plan: ConversationQueryPlan,
-    repository: ConversationRepository,
+    repository: ConversationQueryRuntimeStore,
     *,
     summaries: Literal[False],
 ) -> tuple[bool, list[Conversation]]: ...
@@ -161,7 +144,7 @@ async def fetch_search_results(
 @overload
 async def fetch_search_results(
     plan: ConversationQueryPlan,
-    repository: ConversationRepository,
+    repository: ConversationQueryRuntimeStore,
     *,
     summaries: Literal[True],
 ) -> tuple[bool, list[ConversationSummary]]: ...
@@ -169,7 +152,7 @@ async def fetch_search_results(
 
 async def fetch_search_results(
     plan: ConversationQueryPlan,
-    repository: ConversationRepository,
+    repository: ConversationQueryRuntimeStore,
     *,
     summaries: bool,
 ) -> tuple[bool, list[Conversation] | list[ConversationSummary]]:
@@ -208,7 +191,7 @@ async def fetch_search_results(
 @overload
 async def fetch_candidates(
     plan: ConversationQueryPlan,
-    repository: ConversationRepository,
+    repository: ConversationQueryRuntimeStore,
     *,
     summaries: Literal[False],
 ) -> tuple[list[Conversation], bool]: ...
@@ -217,7 +200,7 @@ async def fetch_candidates(
 @overload
 async def fetch_candidates(
     plan: ConversationQueryPlan,
-    repository: ConversationRepository,
+    repository: ConversationQueryRuntimeStore,
     *,
     summaries: Literal[True],
 ) -> tuple[list[ConversationSummary], bool]: ...
@@ -225,7 +208,7 @@ async def fetch_candidates(
 
 async def fetch_candidates(
     plan: ConversationQueryPlan,
-    repository: ConversationRepository,
+    repository: ConversationQueryRuntimeStore,
     *,
     summaries: bool,
 ) -> tuple[list[Conversation] | list[ConversationSummary], bool]:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from contextlib import AbstractAsyncContextManager
+from typing import TYPE_CHECKING
 
 import aiosqlite
 
@@ -30,6 +31,9 @@ from polylogue.storage.store import (
     WorkThreadRecord,
 )
 
+if TYPE_CHECKING:
+    from polylogue.storage.action_event_artifacts import ActionEventArtifactState
+
 
 class SQLiteQueryStore(
     SQLiteQueryStoreArchiveMixin,
@@ -48,11 +52,11 @@ class SQLiteQueryStore(
 
     # -- Product status (formerly query_store_product_status.py) ------------
 
-    async def get_action_event_read_model_status(self) -> dict[str, int | bool]:
-        from polylogue.storage.action_event_status import action_event_read_model_status_async
+    async def get_action_event_artifact_state(self) -> ActionEventArtifactState:
+        from polylogue.storage.action_event_status import action_event_artifact_state_async
 
         async with self._connection_factory() as conn:
-            return await action_event_read_model_status_async(conn)
+            return await action_event_artifact_state_async(conn)
 
     async def get_session_product_status(self) -> SessionProductStatusSnapshot:
         from polylogue.storage.session_product_status import session_product_status_async

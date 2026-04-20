@@ -23,6 +23,8 @@ from polylogue.types import Provider, ValidationMode, ValidationStatus
 if TYPE_CHECKING:
     from polylogue.lib.conversation_models import Conversation, ConversationSummary
     from polylogue.lib.message_models import Message
+    from polylogue.storage.action_event_artifacts import ActionEventArtifactState
+    from polylogue.storage.query_models import ConversationRecordQuery
     from polylogue.types import ConversationId
 
 
@@ -200,6 +202,44 @@ class SearchStore(Protocol):
 
 
 @runtime_checkable
+class ActionEventArtifactReader(Protocol):
+    """Read-only action-event artifact readiness surface."""
+
+    async def get_action_event_artifact_state(self) -> ActionEventArtifactState: ...
+
+
+@runtime_checkable
+class ConversationQueryRuntimeStore(
+    ConversationReader,
+    SearchStore,
+    ActionEventArtifactReader,
+    Protocol,
+):
+    """Repository/query runtime surface consumed by canonical query execution."""
+
+    async def list_summaries_by_query(
+        self,
+        query: ConversationRecordQuery,
+    ) -> list[ConversationSummary]: ...
+
+    async def list_by_query(
+        self,
+        query: ConversationRecordQuery,
+    ) -> list[Conversation]: ...
+
+    async def count_by_query(self, query: ConversationRecordQuery) -> int: ...
+
+    async def delete_conversation(self, conversation_id: str) -> bool: ...
+
+    async def search_actions(
+        self,
+        query: str,
+        limit: int = 20,
+        providers: builtins.list[str] | None = None,
+    ) -> list[Conversation]: ...
+
+
+@runtime_checkable
 class TagStore(Protocol):
     """Tag and metadata management interface."""
 
@@ -258,6 +298,8 @@ __all__ = [
     "ProgressCallback",
     "ConversationReader",
     "SearchStore",
+    "ActionEventArtifactReader",
+    "ConversationQueryRuntimeStore",
     "TagStore",
     "RawPersistenceStore",
     "RawValidationStore",

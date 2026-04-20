@@ -41,8 +41,7 @@ if TYPE_CHECKING:
     from polylogue.lib.filter_types import SortField
     from polylogue.lib.models import Conversation, ConversationSummary
     from polylogue.lib.query_runtime_filters import FilterableConversationLike
-    from polylogue.protocols import VectorProvider
-    from polylogue.storage.repository import ConversationRepository
+    from polylogue.protocols import ConversationQueryRuntimeStore, VectorProvider
 
 _T = TypeVar("_T")
 _FilterableT = TypeVar("_FilterableT", bound="FilterableConversationLike")
@@ -262,19 +261,19 @@ class ConversationQueryPlan:
     def _uses_action_read_model(self) -> bool:
         return uses_action_read_model(self)
 
-    async def _action_event_rows_ready(self, repository: ConversationRepository) -> bool:
+    async def _action_event_rows_ready(self, repository: ConversationQueryRuntimeStore) -> bool:
         return await action_event_rows_ready(self, repository)
 
-    async def can_use_action_event_stats_with(self, repository: ConversationRepository) -> bool:
+    async def can_use_action_event_stats_with(self, repository: ConversationQueryRuntimeStore) -> bool:
         return await can_use_action_event_stats_with(self, repository)
 
     async def _candidate_record_query_for(
         self,
-        repository: ConversationRepository,
+        repository: ConversationQueryRuntimeStore,
     ) -> tuple[ConversationRecordQuery, bool]:
         return await candidate_record_query_for(self, repository)
 
-    async def fetch_record_query_for(self, repository: ConversationRepository) -> ConversationRecordQuery:
+    async def fetch_record_query_for(self, repository: ConversationQueryRuntimeStore) -> ConversationRecordQuery:
         return await fetch_record_query_for(self, repository)
 
     def _should_batch_post_filter_fetch(self) -> bool:
@@ -283,27 +282,27 @@ class ConversationQueryPlan:
     def _search_limit(self) -> int:
         return search_limit(self)
 
-    async def list(self, repository: ConversationRepository) -> list[Conversation]:
+    async def list(self, repository: ConversationQueryRuntimeStore) -> list[Conversation]:
         from polylogue.lib.query_plan_execution import list_for_plan
 
         return await list_for_plan(self, repository)
 
-    async def list_summaries(self, repository: ConversationRepository) -> builtins.list[ConversationSummary]:
+    async def list_summaries(self, repository: ConversationQueryRuntimeStore) -> builtins.list[ConversationSummary]:
         from polylogue.lib.query_plan_execution import list_summaries_for_plan
 
         return await list_summaries_for_plan(self, repository)
 
-    async def first(self, repository: ConversationRepository) -> Conversation | None:
+    async def first(self, repository: ConversationQueryRuntimeStore) -> Conversation | None:
         from polylogue.lib.query_plan_execution import first_for_plan
 
         return await first_for_plan(self, repository)
 
-    async def count(self, repository: ConversationRepository) -> int:
+    async def count(self, repository: ConversationQueryRuntimeStore) -> int:
         from polylogue.lib.query_plan_execution import count_for_plan
 
         return await count_for_plan(self, repository)
 
-    async def delete(self, repository: ConversationRepository) -> int:
+    async def delete(self, repository: ConversationQueryRuntimeStore) -> int:
         from polylogue.lib.query_plan_execution import delete_for_plan
 
         return await delete_for_plan(self, repository)

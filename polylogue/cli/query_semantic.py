@@ -236,15 +236,7 @@ async def output_stats_by_semantic_ids(
     matched_facts = 0
     matched_messages = 0
     key_func = (lambda action: action.kind.value) if dimension == "action" else normalized_tool_name
-    action_event_status_result: Awaitable[dict[str, int | bool]] | dict[str, int | bool] | object
-    action_event_status_result = repo.get_action_event_read_model_status()
-    if isinstance(action_event_status_result, Awaitable):
-        action_event_status = await action_event_status_result
-    elif isinstance(action_event_status_result, dict):
-        action_event_status = action_event_status_result
-    else:
-        action_event_status = {}
-    action_read_model_ready = bool(action_event_status.get("ready", False))
+    action_read_model_ready = (await repo.get_action_event_artifact_state()).ready
 
     for offset in range(0, len(conversation_ids), batch_size):
         batch_ids = conversation_ids[offset : offset + batch_size]
