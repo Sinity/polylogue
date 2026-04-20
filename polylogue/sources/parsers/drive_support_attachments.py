@@ -4,23 +4,24 @@ from __future__ import annotations
 
 import base64
 import binascii
-from typing import TypeAlias
+from typing import TypeAlias, cast
 
 from polylogue.lib.hashing import hash_payload, hash_text_short
+from polylogue.lib.json import JSONDocument, JSONValue, is_json_document
 
 from .base import ParsedAttachment
 
 _YOUTUBE_WATCH_URL = "https://www.youtube.com/watch?v={video_id}"
 
 
-DrivePayload: TypeAlias = dict[str, object]
+DrivePayload: TypeAlias = JSONDocument
 DriveDocSource: TypeAlias = str | DrivePayload
 DrivePayloadSequence: TypeAlias = list[DriveDocSource]
-DriveDocMetadata: TypeAlias = dict[str, object]
+DriveDocMetadata: TypeAlias = JSONDocument
 
 
 def _as_drive_payload(payload: object) -> DrivePayload | None:
-    return payload if isinstance(payload, dict) else None
+    return payload if is_json_document(payload) else None
 
 
 def _collect_doc_fields(payload: DrivePayload) -> DrivePayloadSequence:
@@ -40,11 +41,13 @@ def collect_drive_docs(payload: object) -> list[DriveDocSource]:
     return _collect_doc_fields(payload_dict)
 
 
-def _docs_from_named_value(value: object | None) -> list[DriveDocSource]:
-    if isinstance(value, (dict, str)):
+def _docs_from_named_value(value: JSONValue | None) -> list[DriveDocSource]:
+    if isinstance(value, str):
+        return [value]
+    if is_json_document(value):
         return [value]
     if isinstance(value, list):
-        return [item for item in value if isinstance(item, (dict, str))]
+        return [item for item in value if isinstance(item, str) or is_json_document(item)]
     return []
 
 
@@ -85,9 +88,9 @@ def attachment_from_doc(doc: DriveDocSource, message_id: str | None) -> ParsedAt
             mime_type=None,
             size_bytes=None,
             path=None,
-            provider_meta=meta,
+            provider_meta=cast(dict[str, object], meta),
         )
-    if not isinstance(doc, dict):
+    if not is_json_document(doc):
         return None
     doc_id_val = _first_text(doc, "id", "fileId", "driveId")
     if not isinstance(doc_id_val, str) or not doc_id_val:
@@ -102,12 +105,12 @@ def attachment_from_doc(doc: DriveDocSource, message_id: str | None) -> ParsedAt
         mime_type=mime_val,
         size_bytes=size_bytes,
         path=None,
-        provider_meta=dict(doc),
+        provider_meta=cast(dict[str, object], dict(doc)),
     )
 
 
 def attachment_from_inline_file(
-    inline_file: object | None,
+    inline_file: JSONValue | None,
     message_id: str | None,
 ) -> ParsedAttachment | None:
     inline_file = _as_drive_payload(inline_file)
@@ -130,12 +133,12 @@ def attachment_from_inline_file(
         mime_type=mime_type if isinstance(mime_type, str) else None,
         size_bytes=size_bytes,
         path=None,
-        provider_meta=provider_meta,
+        provider_meta=cast(dict[str, object], provider_meta),
     )
 
 
 def attachment_from_youtube_video(
-    video: object | None,
+    video: JSONValue | None,
     message_id: str | None,
 ) -> ParsedAttachment | None:
     video_dict = _as_drive_payload(video)
@@ -158,7 +161,7 @@ def attachment_from_youtube_video(
         mime_type="video/youtube",
         size_bytes=None,
         path=None,
-        provider_meta=provider_meta,
+        provider_meta=cast(dict[str, object], provider_meta),
     )
 
 
@@ -184,7 +187,7 @@ def attachment_block_payloads(attachments: list[ParsedAttachment]) -> list[Drive
     blocks: list[DriveDocMetadata] = []
 
     def _metadata_for_block(attachment: ParsedAttachment) -> DriveDocMetadata:
-        metadata: DriveDocMetadata = dict(attachment.provider_meta or {})
+        metadata: DriveDocMetadata = dict(cast(JSONDocument, attachment.provider_meta or {}))
         if attachment.name:
             metadata.setdefault("name", attachment.name)
         return metadata

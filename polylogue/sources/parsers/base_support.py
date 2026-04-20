@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 from polylogue.lib.hashing import hash_text
 from polylogue.lib.roles import Role
 from polylogue.types import ContentBlockType
@@ -121,7 +123,7 @@ def attachment_from_meta(meta: object, message_id: str | None, index: int) -> Pa
     )
 
 
-def extract_messages_from_list(items: list[object]) -> list[ParsedMessage]:
+def extract_messages_from_list(items: Sequence[object]) -> list[ParsedMessage]:
     messages: list[ParsedMessage] = []
     for idx, item in enumerate(items, start=1):
         if not isinstance(item, dict):

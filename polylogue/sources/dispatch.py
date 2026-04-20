@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Callable, Iterable
+from collections.abc import Iterable
 from dataclasses import dataclass
 from io import BytesIO
-from typing import TYPE_CHECKING, Literal, TypeAlias
+from typing import TYPE_CHECKING, Literal, TypeAlias, cast
 
-from polylogue.lib.payload_coercion import PayloadMapping, is_payload_mapping, optional_string
+from polylogue.lib.json import JSONDocument, JSONValue, is_json_document, is_json_value
+from polylogue.lib.payload_coercion import optional_string
 from polylogue.logging import get_logger
 from polylogue.types import Provider
 
@@ -25,8 +26,8 @@ GROUP_PROVIDERS = frozenset({Provider.CLAUDE_CODE, Provider.CODEX, Provider.GEMI
 STREAM_RECORD_PROVIDERS = frozenset({Provider.CLAUDE_CODE, Provider.CODEX})
 _MAX_PARSE_DEPTH = 10
 
-PayloadRecord: TypeAlias = dict[str, object]
-ProviderParser: TypeAlias = Callable[[PayloadRecord, str], ParsedConversation]
+PayloadRecord: TypeAlias = JSONDocument
+PayloadSequence: TypeAlias = list[JSONValue]
 LoweredPayloadMode: TypeAlias = Literal[
     "single_record",
     "bundle_record",
@@ -41,37 +42,39 @@ class LoweredPayloadSpec:
     provider: Provider
     fallback_id: str
     mode: LoweredPayloadMode
-    payload: PayloadRecord | list[object]
-
-
-def _payload_mapping(value: object) -> PayloadMapping | None:
-    return value if is_payload_mapping(value) else None
+    payload: PayloadRecord | PayloadSequence
 
 
 def _payload_record(value: object) -> PayloadRecord | None:
-    mapping = _payload_mapping(value)
-    return dict(mapping) if mapping is not None else None
+    return value if is_json_document(value) else None
 
 
-def _payload_list(value: object) -> list[object] | None:
-    return value if isinstance(value, list) else None
+def _payload_list(value: object) -> PayloadSequence | None:
+    if not isinstance(value, list):
+        return None
+    payloads: list[JSONValue] = []
+    for item in value:
+        if not is_json_value(item):
+            return None
+        payloads.append(item)
+    return payloads
 
 
-def _payload_messages(record: PayloadMapping) -> list[object] | None:
+def _payload_messages(record: PayloadRecord) -> list[JSONValue] | None:
     messages = record.get("messages")
     return messages if isinstance(messages, list) else None
 
 
-def _payload_conversations(record: PayloadMapping) -> list[object] | None:
+def _payload_conversations(record: PayloadRecord) -> list[JSONValue] | None:
     conversations = record.get("conversations")
     return conversations if isinstance(conversations, list) else None
 
 
-def _looks_like_gemini_mapping(record: PayloadMapping) -> bool:
+def _looks_like_gemini_mapping(record: PayloadRecord) -> bool:
     return "chunkedPrompt" in record or isinstance(record.get("chunks"), list)
 
 
-def _detect_provider_from_mapping(record: PayloadMapping) -> Provider | None:
+def _detect_provider_from_mapping(record: PayloadRecord) -> Provider | None:
     if chatgpt.looks_like(record):
         return Provider.CHATGPT
     if claude.looks_like_ai(record):
@@ -85,13 +88,13 @@ def _detect_provider_from_mapping(record: PayloadMapping) -> Provider | None:
     return None
 
 
-def _detect_provider_from_sequence(payloads: list[object]) -> Provider | None:
+def _detect_provider_from_sequence(payloads: PayloadSequence) -> Provider | None:
     if not payloads:
         return None
 
-    first_record = _payload_mapping(payloads[0])
+    first_record = _payload_record(payloads[0])
     if first_record is not None:
-        if is_payload_mapping(first_record.get("mapping")):
+        if is_json_document(first_record.get("mapping")):
             return Provider.CHATGPT
         if isinstance(first_record.get("chat_messages"), list):
             return Provider.CLAUDE_AI
@@ -108,7 +111,7 @@ def detect_provider(payload: object, path: object | None = None) -> Provider | N
     """Infer provider from payload shape. Path is accepted for surface compatibility."""
     del path
 
-    if record := _payload_mapping(payload):
+    if record := _payload_record(payload):
         return _detect_provider_from_mapping(record)
     payloads = _payload_list(payload)
     return _detect_provider_from_sequence(payloads) if payloads is not None else None
@@ -139,11 +142,11 @@ def _detect_provider_from_raw_bytes(
 
 
 def _looks_like_chunked_conversation(payload: object) -> bool:
-    record = _payload_mapping(payload)
+    record = _payload_record(payload)
     return record is not None and (drive.looks_like(record) or isinstance(record.get("chunks"), list))
 
 
-def _looks_like_chunked_conversation_list(payload: list[object]) -> bool:
+def _looks_like_chunked_conversation_list(payload: PayloadSequence) -> bool:
     return bool(payload) and all(_looks_like_chunked_conversation(item) for item in payload)
 
 
@@ -167,7 +170,7 @@ def _schema_guided_payload(
 
 def _lower_bundle_specs(
     provider: Provider,
-    payloads: list[object],
+    payloads: PayloadSequence,
     fallback_id: str,
 ) -> list[LoweredPayloadSpec]:
     specs: list[LoweredPayloadSpec] = []
@@ -408,11 +411,11 @@ def _parse_lowered_spec(spec: LoweredPayloadSpec) -> list[ParsedConversation]:
 
     if spec.provider is Provider.CLAUDE_CODE:
         payloads = _payload_list(spec.payload)
-        return [claude.parse_code(payloads, spec.fallback_id)] if payloads is not None else []
+        return [claude.parse_code(cast(list[object], payloads), spec.fallback_id)] if payloads is not None else []
 
     if spec.provider is Provider.CODEX:
         payloads = _payload_list(spec.payload)
-        return [codex.parse(payloads, spec.fallback_id)] if payloads is not None else []
+        return [codex.parse(cast(list[object], payloads), spec.fallback_id)] if payloads is not None else []
 
     if spec.mode == "chunked_prompt":
         record = _payload_record(spec.payload)
@@ -479,7 +482,7 @@ def parse_drive_payload(
     payloads = _payload_list(payload)
     if payloads is not None:
         if payloads and all(isinstance(item, str) or _payload_record(item) is not None for item in payloads):
-            first_record = _payload_mapping(payloads[0]) if payloads else None
+            first_record = _payload_record(payloads[0]) if payloads else None
             if first_record is None or "role" in first_record or "text" in first_record:
                 spec = LoweredPayloadSpec(
                     provider=runtime_provider,

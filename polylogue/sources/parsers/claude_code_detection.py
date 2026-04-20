@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 _CODE_ONLY_TYPES = frozenset(
     {
         "file-history-snapshot",
@@ -16,7 +18,7 @@ _CODE_ONLY_TYPES = frozenset(
 )
 
 
-def looks_like_code(payload: list[object]) -> bool:
+def looks_like_code(payload: Sequence[object]) -> bool:
     """Return whether a payload matches the Claude Code record format."""
     if not isinstance(payload, list):
         return False
