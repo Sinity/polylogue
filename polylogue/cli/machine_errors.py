@@ -1,17 +1,14 @@
-"""Machine-consumable CLI error and success envelopes.
-
-When ``--json`` is passed, all CLI output — including failures — must be
-valid JSON on stdout.  This module provides the stable envelope shapes
-and a top-level exception handler that Click's default error path cannot
-satisfy (Click writes plain text to stderr before command logic runs).
-"""
+"""Machine-consumable CLI error and success envelopes."""
 
 from __future__ import annotations
 
-import json
 import sys
-from dataclasses import dataclass, field
-from typing import Any
+from collections.abc import Mapping
+
+from polylogue.surface_payloads import (
+    MachineErrorPayload,
+    MachineSuccessPayload,
+)
 
 # ---------------------------------------------------------------------------
 # Error codes
@@ -25,48 +22,22 @@ UNSUPPORTED_ENVIRONMENT = "unsupported_environment"
 NO_RESULTS = "no_results"
 
 
-# ---------------------------------------------------------------------------
-# Envelope dataclasses
-# ---------------------------------------------------------------------------
+class MachineError(MachineErrorPayload):
+    """CLI-visible machine-error envelope."""
 
 
-@dataclass(frozen=True, slots=True)
-class MachineError:
-    """Structured error envelope emitted when ``--json`` is active."""
-
-    code: str
-    message: str
-    command: list[str] = field(default_factory=list)
-    details: dict[str, Any] = field(default_factory=dict)
-
-    def to_dict(self) -> dict[str, Any]:
-        out: dict[str, Any] = {
-            "status": "error",
-            "code": self.code,
-            "message": self.message,
-        }
-        if self.command:
-            out["command"] = self.command
-        if self.details:
-            out["details"] = self.details
-        return out
-
-    def emit(self, *, exit_code: int = 1) -> None:
-        """Write JSON to stdout and exit."""
-        sys.stdout.write(json.dumps(self.to_dict(), indent=2))
-        sys.stdout.write("\n")
-        sys.stdout.flush()
-        raise SystemExit(exit_code)
+class MachineSuccess(MachineSuccessPayload):
+    """CLI-visible machine-success envelope."""
 
 
-@dataclass(frozen=True, slots=True)
-class MachineSuccess:
-    """Structured success envelope."""
-
-    result: dict[str, Any] = field(default_factory=dict)
-
-    def to_dict(self) -> dict[str, Any]:
-        return {"status": "ok", "result": self.result}
+def _normalize_result_payload(
+    result: Mapping[str, object] | MachineSuccessPayload | None,
+) -> dict[str, object]:
+    if result is None:
+        return {}
+    if isinstance(result, MachineSuccessPayload):
+        return result.result
+    return {str(key): value for key, value in result.items()}
 
 
 # ---------------------------------------------------------------------------
@@ -80,13 +51,13 @@ def error_invalid_arguments(
     command: list[str] | None = None,
     option: str | None = None,
 ) -> MachineError:
-    details: dict[str, Any] = {}
+    details: dict[str, object] = {}
     if option:
         details["option"] = option
     return MachineError(
         code=INVALID_ARGUMENTS,
         message=message,
-        command=command or [],
+        command=tuple(command or ()),
         details=details,
     )
 
@@ -97,13 +68,13 @@ def error_invalid_path(
     command: list[str] | None = None,
     path: str | None = None,
 ) -> MachineError:
-    details: dict[str, Any] = {}
+    details: dict[str, object] = {}
     if path:
         details["path"] = path
     return MachineError(
         code=INVALID_PATH,
         message=message,
-        command=command or [],
+        command=tuple(command or ()),
         details=details,
     )
 
@@ -114,13 +85,13 @@ def error_runtime(
     command: list[str] | None = None,
     exception_type: str | None = None,
 ) -> MachineError:
-    details: dict[str, Any] = {}
+    details: dict[str, object] = {}
     if exception_type:
         details["exception_type"] = exception_type
     return MachineError(
         code=RUNTIME_ERROR,
         message=message,
-        command=command or [],
+        command=tuple(command or ()),
         details=details,
     )
 
@@ -131,13 +102,13 @@ def error_dependency_missing(
     command: list[str] | None = None,
     dependency: str | None = None,
 ) -> MachineError:
-    details: dict[str, Any] = {}
+    details: dict[str, object] = {}
     if dependency:
         details["dependency"] = dependency
     return MachineError(
         code=DEPENDENCY_MISSING,
         message=message,
-        command=command or [],
+        command=tuple(command or ()),
         details=details,
     )
 
@@ -150,7 +121,7 @@ def error_unsupported_environment(
     return MachineError(
         code=UNSUPPORTED_ENVIRONMENT,
         message=message,
-        command=command or [],
+        command=tuple(command or ()),
     )
 
 
@@ -160,26 +131,24 @@ def error_no_results(
     command: list[str] | None = None,
     filters: list[str] | None = None,
 ) -> MachineError:
-    details: dict[str, Any] = {}
+    details: dict[str, object] = {}
     if filters:
-        details["filters"] = filters
+        details["filters"] = list(filters)
     return MachineError(
         code=NO_RESULTS,
         message=message,
-        command=command or [],
+        command=tuple(command or ()),
         details=details,
     )
 
 
-def success(result: dict[str, Any] | None = None) -> MachineSuccess:
-    return MachineSuccess(result=result or {})
+def success(result: Mapping[str, object] | MachineSuccess | None = None) -> MachineSuccess:
+    return MachineSuccess(result=_normalize_result_payload(result))
 
 
-def emit_success(result: dict[str, Any] | None = None) -> None:
-    """Write a ``{"status": "ok", "result": …}`` envelope to stdout."""
-    import json as _json
-
-    sys.stdout.write(_json.dumps(success(result).to_dict(), indent=2))
+def emit_success(result: Mapping[str, object] | MachineSuccess | None = None) -> None:
+    """Write a ``{\"status\": \"ok\", \"result\": …}`` envelope to stdout."""
+    sys.stdout.write(success(result).to_json(exclude_none=True))
     sys.stdout.write("\n")
     sys.stdout.flush()
 

@@ -48,6 +48,7 @@ from polylogue.cli.types import AppEnv
 from polylogue.lib.models import Conversation
 from polylogue.lib.query_spec import ConversationQuerySpec, QuerySpecError
 from polylogue.lib.roles import Role
+from polylogue.schemas.json_types import JSONDocument
 from polylogue.services import build_runtime_services
 from polylogue.storage.store import ContentBlockRecord, ConversationRecord, MessageRecord
 from polylogue.types import ContentBlockType, ContentHash, ConversationId, MessageId, Provider, SemanticBlockType
@@ -109,7 +110,7 @@ def _fields_arg(fields: tuple[str, ...] | None) -> str | None:
     return None if not fields else ",".join(fields)
 
 
-def _structured_rows(case: Any) -> list[dict[str, object]]:
+def _structured_rows(case: Any) -> list[JSONDocument]:
     rows = [summary_to_dict(build_conversation_summary(spec), spec.message_count) for spec in case.summaries]
     if case.selected_fields:
         selected = set(case.selected_fields)

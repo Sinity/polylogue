@@ -7,12 +7,14 @@ the ``summarize_archive_debt`` helper.
 
 from __future__ import annotations
 
+from pydantic import BaseModel
+
 from polylogue.cli.machine_errors import emit_success
 from polylogue.products.registry import render_product_items
 
 
 def model_payload(item: object) -> object:
-    return item.model_dump(mode="json") if hasattr(item, "model_dump") else item
+    return item.model_dump(mode="json") if isinstance(item, BaseModel) else item
 
 
 def emit_product_list(*, key: str, items: list[object]) -> None:
