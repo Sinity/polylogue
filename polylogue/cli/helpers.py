@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
 
 from polylogue.cli.formatting import format_sources_summary
 from polylogue.cli.helper_source_selection import (
@@ -15,6 +14,7 @@ from polylogue.cli.helper_source_selection import (
 from polylogue.cli.helper_source_state import load_last_source, save_last_source, source_state_path
 from polylogue.cli.helper_summary import print_summary_impl
 from polylogue.cli.helper_support import fail, load_effective_config
+from polylogue.cli.types import AppEnv
 from polylogue.operations import get_provider_counts, list_provider_analytics_products
 from polylogue.pipeline.runner import latest_run
 from polylogue.readiness import get_readiness, quick_readiness_summary
@@ -37,7 +37,7 @@ def latest_render_path(render_root: Path) -> Path | None:
     return latest
 
 
-def print_summary(env: Any, *, verbose: bool = False) -> None:
+def print_summary(env: AppEnv, *, verbose: bool = False) -> None:
     print_summary_impl(
         env,
         verbose=verbose,

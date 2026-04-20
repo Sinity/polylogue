@@ -3,14 +3,30 @@
 from __future__ import annotations
 
 import json
-from typing import Any
+from collections.abc import Mapping
 
 import click
 
 from polylogue.cli.machine_errors import emit_success
+from polylogue.schemas.operator_models import SchemaExplainResult
 
 
-def render_schema_explain_result(*, result: Any, json_output: bool, verbose: bool) -> None:
+def _schema_properties(schema: Mapping[str, object]) -> dict[str, Mapping[str, object]]:
+    properties = schema.get("properties")
+    if not isinstance(properties, Mapping):
+        return {}
+    return {name: value for name, value in properties.items() if isinstance(name, str) and isinstance(value, Mapping)}
+
+
+def _json_values(value: object) -> list[object]:
+    return value if isinstance(value, list) else []
+
+
+def _json_entries(value: object) -> list[object]:
+    return value if isinstance(value, list) else []
+
+
+def render_schema_explain_result(*, result: SchemaExplainResult, json_output: bool, verbose: bool) -> None:
     """Render schema explain output in JSON or human-readable form."""
     if json_output:
         emit_success(result.to_dict())
@@ -20,7 +36,7 @@ def render_schema_explain_result(*, result: Any, json_output: bool, verbose: boo
         _render_proof_surface(result)
         return
 
-    props = result.schema.get("properties", {})
+    props = _schema_properties(result.schema)
     resolved_element = result.element_kind or (
         result.package.default_element_kind
         if result.package is not None
@@ -68,7 +84,7 @@ def render_schema_explain_result(*, result: Any, json_output: bool, verbose: boo
 
     click.echo(f"\n  Properties ({len(props)}):")
     for name, prop_schema in sorted(props.items()):
-        type_str = prop_schema.get("type", "?")
+        type_str = str(prop_schema.get("type", "?"))
         annotations: list[str] = []
         if prop_schema.get("x-polylogue-semantic-role"):
             annotations.append(f"role={prop_schema['x-polylogue-semantic-role']}")
@@ -76,8 +92,8 @@ def render_schema_explain_result(*, result: Any, json_output: bool, verbose: boo
             annotations.append(f"fmt={prop_schema['x-polylogue-format']}")
         if prop_schema.get("x-polylogue-frequency") is not None:
             annotations.append(f"freq={prop_schema['x-polylogue-frequency']}")
-        if prop_schema.get("x-polylogue-values"):
-            values = prop_schema["x-polylogue-values"]
+        values = _json_values(prop_schema.get("x-polylogue-values"))
+        if values:
             preview = ", ".join(str(value) for value in values[:5])
             if len(values) > 5:
                 preview += f" (+{len(values) - 5} more)"
@@ -86,17 +102,17 @@ def render_schema_explain_result(*, result: Any, json_output: bool, verbose: boo
         click.echo(f"    {name}: {type_str}{ann_str}")
 
     for key in ("x-polylogue-foreign-keys", "x-polylogue-time-deltas", "x-polylogue-mutually-exclusive"):
-        value = result.schema.get(key)
-        if value:
+        values = _json_entries(result.schema.get(key))
+        if values:
             click.echo(f"\n  {key}:")
-            for entry in value:
+            for entry in values:
                 click.echo(f"    {json.dumps(entry)}")
 
     if verbose:
         render_explain_verbose(result)
 
 
-def render_explain_verbose(result: Any) -> None:
+def render_explain_verbose(result: SchemaExplainResult) -> None:
     """Render verbose schema explain coverage and role evidence."""
     click.echo()
     roles = result.annotations.roles
@@ -125,8 +141,10 @@ def render_explain_verbose(result: Any) -> None:
         )
 
 
-def _render_proof_surface(result: Any) -> None:
+def _render_proof_surface(result: SchemaExplainResult) -> None:
     """Render the proof surface for schema role assignment decisions."""
+    if result.review_proof is None:
+        return
     proof = result.review_proof
     click.echo(f"Schema Review Proof: {result.provider} {result.version}")
     click.echo(f"  Artifact kind: {proof.artifact_kind or 'unknown'}")

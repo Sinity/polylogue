@@ -3,27 +3,56 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-from typing import Any
+from pathlib import Path
+from typing import Protocol
 
+from polylogue.archive_products import ProviderAnalyticsProduct
 from polylogue.cli.helper_support import load_effective_config
 from polylogue.cli.types import AppEnv
+from polylogue.config import Config, Source
 from polylogue.logging import get_logger
+from polylogue.readiness import ReadinessReport
+from polylogue.services import RuntimeServices
+from polylogue.storage.backends.async_sqlite import SQLiteBackend
+from polylogue.storage.store_runtime_archive_records import RunRecord
 from polylogue.sync_bridge import run_coroutine_sync
 from polylogue.ui.theme import provider_color
 
 logger = get_logger(__name__)
 
 
+class LatestRunFn(Protocol):
+    def __call__(self, backend: SQLiteBackend | None = None) -> Awaitable[RunRecord | None]: ...
+
+
+class GetProviderCountsFn(Protocol):
+    def __call__(
+        self,
+        *,
+        services: RuntimeServices | None = None,
+        db_path: Path | None = None,
+    ) -> Awaitable[list[tuple[str, int]]]: ...
+
+
+class ListProviderAnalyticsProductsFn(Protocol):
+    def __call__(
+        self,
+        *,
+        services: RuntimeServices | None = None,
+        db_path: Path | None = None,
+    ) -> Awaitable[list[ProviderAnalyticsProduct]]: ...
+
+
 def print_summary_impl(
     env: AppEnv,
     *,
     verbose: bool = False,
-    latest_run_fn: Callable[[Any], Awaitable[Any]],
-    format_sources_summary_fn: Callable[[Any], str],
-    quick_readiness_summary_fn: Callable[[Any], str],
-    get_readiness_fn: Callable[..., Any],
-    get_provider_counts_fn: Callable[..., Awaitable[list[tuple[str, int]]]],
-    list_provider_analytics_products_fn: Callable[..., Awaitable[list[Any]]],
+    latest_run_fn: LatestRunFn,
+    format_sources_summary_fn: Callable[[list[Source]], str],
+    quick_readiness_summary_fn: Callable[[Path], str],
+    get_readiness_fn: Callable[[Config], ReadinessReport],
+    get_provider_counts_fn: GetProviderCountsFn,
+    list_provider_analytics_products_fn: ListProviderAnalyticsProductsFn,
 ) -> None:
     ui = env.ui
     config = load_effective_config(env)

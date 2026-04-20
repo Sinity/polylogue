@@ -7,11 +7,10 @@ lookups) are registered directly.
 
 from __future__ import annotations
 
-import inspect
-from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
 from polylogue.mcp.payloads import MCPRootPayload
+from polylogue.mcp.product_tool_contracts import ProductListToolSpec
 from polylogue.products.registry import (
     PRODUCT_REGISTRY,
     ProductType,
@@ -24,105 +23,18 @@ if TYPE_CHECKING:
     from polylogue.mcp.server_support import ServerCallbacks
 
 
-def _query_field_defaults(pt: ProductType) -> tuple[dict[str, object | None], dict[str, object]]:
-    query_model = pt.query_model
-    if query_model is None:
-        raise ValueError(f"Product type {pt.name} does not declare a query model")
-
-    defaults: dict[str, object | None] = {}
-    annotations: dict[str, object] = {}
-    for field_name, field_info in query_model.model_fields.items():
-        defaults[field_name] = None if field_info.is_required() else field_info.get_default(call_default_factory=True)
-        annotations[field_name] = field_info.annotation if field_info.annotation is not None else object
-    return defaults, annotations
-
-
-def _sanitize_offset(value: object) -> int:
-    if isinstance(value, bool):
-        return 0
-    if isinstance(value, (int, str, bytes, bytearray)):
-        return max(0, int(value))
-    return 0
-
-
-def _normalize_list_tool_kwargs(
-    hooks: ServerCallbacks,
-    kwargs: Mapping[str, object],
-) -> dict[str, object]:
-    normalized = dict(kwargs)
-    if "limit" in normalized:
-        normalized["limit"] = hooks.clamp_limit(normalized["limit"])
-    if "offset" in normalized:
-        normalized["offset"] = _sanitize_offset(normalized["offset"])
-    return normalized
-
-
-def _build_list_tool_parameters(
-    pt: ProductType,
-    *,
-    field_defaults: dict[str, object | None],
-    field_annotations: dict[str, object],
-) -> list[inspect.Parameter]:
-    params: list[inspect.Parameter] = []
-    for field_name in sorted(field_annotations):
-        if field_name == "limit":
-            params.append(
-                inspect.Parameter(
-                    field_name,
-                    inspect.Parameter.KEYWORD_ONLY,
-                    default=pt.mcp_default_limit,
-                    annotation=int,
-                )
-            )
-            continue
-        if field_name == "offset":
-            params.append(
-                inspect.Parameter(
-                    field_name,
-                    inspect.Parameter.KEYWORD_ONLY,
-                    default=0,
-                    annotation=int,
-                )
-            )
-            continue
-        params.append(
-            inspect.Parameter(
-                field_name,
-                inspect.Parameter.KEYWORD_ONLY,
-                default=field_defaults.get(field_name),
-                annotation=field_annotations[field_name],
-            )
-        )
-    return params
-
-
-def _wrapper_annotations(params: list[inspect.Parameter]) -> dict[str, object]:
-    annotations: dict[str, object] = {parameter.name: parameter.annotation for parameter in params}
-    annotations["return"] = str
-    return annotations
-
-
 def _register_list_tool(
     mcp: FastMCP,
     hooks: ServerCallbacks,
     pt: ProductType,
 ) -> None:
     """Register one list-style MCP tool for a product type."""
-
-    query_model = pt.query_model
-    if query_model is None:
-        raise ValueError(f"Product type {pt.name} does not declare a query model")
-    field_defaults, field_annotations = _query_field_defaults(pt)
-    params = _build_list_tool_parameters(
-        pt,
-        field_defaults=field_defaults,
-        field_annotations=field_annotations,
-    )
+    spec = ProductListToolSpec.from_product_type(pt)
 
     async def tool_fn(**kwargs: object) -> str:
         async def run() -> str:
             ops = hooks.get_archive_ops()
-            normalized_kwargs = _normalize_list_tool_kwargs(hooks, kwargs)
+            normalized_kwargs = spec.normalize_kwargs(hooks.clamp_limit, kwargs)
             products = await fetch_products_async(pt, ops, **normalized_kwargs)
             return hooks.json_payload(
                 MCPRootPayload(
@@ -138,12 +50,12 @@ def _register_list_tool(
     async def wrapper(**kw: object) -> str:
         return await tool_fn(**kw)
 
-    wrapper.__name__ = pt.name
-    wrapper.__qualname__ = pt.name
-    wrapper.__doc__ = f"List {pt.display_name.lower()} from the archive."
+    wrapper.__name__ = spec.name
+    wrapper.__qualname__ = spec.name
+    wrapper.__doc__ = spec.doc
 
-    wrapper.__annotations__ = _wrapper_annotations(params)
-    wrapper.__kwdefaults__ = {parameter.name: parameter.default for parameter in params}
+    wrapper.__annotations__ = spec.signature.annotations
+    wrapper.__kwdefaults__ = spec.signature.kwdefaults
 
     mcp.tool()(wrapper)
 

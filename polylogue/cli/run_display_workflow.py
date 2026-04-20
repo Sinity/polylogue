@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import Any
 
 import click
 
@@ -16,6 +15,8 @@ from polylogue.cli.formatting import (
     format_run_details,
 )
 from polylogue.cli.helpers import fail
+from polylogue.cli.types import AppEnv
+from polylogue.config import Config
 from polylogue.lib.timestamps import format_timestamp
 from polylogue.pipeline.run_support import expand_requested_stage
 from polylogue.sources import DriveError
@@ -23,8 +24,8 @@ from polylogue.storage.run_state import PlanResult, RunResult
 
 
 def display_result(
-    env: Any,
-    cfg: Any,
+    env: AppEnv,
+    cfg: Config,
     result: RunResult,
     stage: str,
     selected_sources: list[str] | None,
@@ -86,7 +87,7 @@ def display_result(
         )
 
 
-def render_sources(env: Any, *, json_output: bool) -> None:
+def render_sources(env: AppEnv, *, json_output: bool) -> None:
     from polylogue.cli.machine_errors import emit_success
 
     cfg = env.config
@@ -118,7 +119,7 @@ def handle_drive_error(exc: DriveError) -> None:
 
 
 def render_preview_summary(
-    env: Any,
+    env: AppEnv,
     *,
     selected_sources: list[str] | None,
     plan_snapshot: PlanResult | None,

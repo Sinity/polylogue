@@ -3,18 +3,32 @@
 from __future__ import annotations
 
 import inspect
-from collections.abc import Awaitable, Iterable, Mapping, Sequence
-from dataclasses import dataclass
-from datetime import datetime
-from enum import Enum
-from typing import TYPE_CHECKING, NoReturn, Protocol, TypeAlias, TypeVar, cast
+from collections.abc import Awaitable, Iterable, Sequence
+from typing import TYPE_CHECKING, Protocol, TypeVar, cast
 
 import click
 
-from polylogue.cli.machine_errors import error_no_results
+from polylogue.cli.query_contracts import (
+    QueryAction,
+    QueryExecutionPlan,
+    QueryMutationSpec,
+    QueryOutputSpec,
+    QueryParams,
+    QueryPlanError,
+    QueryRoute,
+    build_query_execution_plan,
+    coerce_query_spec,
+    describe_query_filters,
+    resolve_query_route,
+    result_date,
+    result_id,
+    result_provider,
+    result_title,
+)
+from polylogue.cli.query_feedback import emit_no_results
 from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.types import AppEnv
-from polylogue.lib.query_spec import ConversationQuerySpec, QuerySpecError
+from polylogue.lib.query_spec import QuerySpecError
 from polylogue.logging import get_logger
 from polylogue.schemas.json_types import JSONDocument
 from polylogue.surface_payloads import ConversationListRowPayload
@@ -27,9 +41,6 @@ if TYPE_CHECKING:
     from polylogue.lib.models import Conversation, ConversationSummary
     from polylogue.protocols import VectorProvider
 
-QueryParams: TypeAlias = dict[str, object]
-QueryParamSource: TypeAlias = Mapping[str, object] | ConversationQuerySpec
-QueryResult: TypeAlias = "Conversation | ConversationSummary"
 _T = TypeVar("_T")
 
 
@@ -43,68 +54,19 @@ async def _resolve_maybe_awaitable(value: _T | object) -> _T:
     return cast(_T, value)
 
 
-# ---------------------------------------------------------------------------
-# Query helpers (from query_helpers.py)
-# ---------------------------------------------------------------------------
-
-
-def coerce_query_spec(params: QueryParamSource) -> ConversationQuerySpec:
-    if isinstance(params, ConversationQuerySpec):
-        return params
-    return ConversationQuerySpec.from_params(params)
-
-
-def describe_query_filters(params: QueryParamSource) -> list[str]:
-    """Build a human-readable list of active filters from params or spec."""
-    return coerce_query_spec(params).describe()
-
-
 def no_results(
     env: AppEnv,
-    params: QueryParamSource,
+    params: QueryParams,
     *,
-    exit_code: int = 2,
-) -> NoReturn:
-    """Print a helpful no-results message and exit."""
-    filters = describe_query_filters(params)
-    output_format = params.get("output_format") if isinstance(params, Mapping) else None
-    if output_format == "json":
-        message = "No conversations matched filters." if filters else "No conversations matched."
-        error_no_results(message, filters=filters).emit(exit_code=exit_code)
-    if filters:
-        click.echo("No conversations matched filters:", err=True)
-        for item in filters:
-            click.echo(f"  {item}", err=True)
-        click.echo("Hint: try broadening your filters or use `list` to browse", err=True)
-    else:
-        click.echo("No conversations matched.", err=True)
-    raise SystemExit(exit_code)
-
-
-def result_id(result: QueryResult) -> str:
-    return str(result.id)
-
-
-def result_provider(result: QueryResult) -> str:
-    return str(result.provider)
-
-
-def result_title(result: QueryResult) -> str:
-    title = result.display_title
-    return title if title else result_id(result)[:20]
-
-
-def result_date(result: QueryResult) -> datetime | None:
-    display_date = getattr(result, "display_date", None)
-    if isinstance(display_date, datetime):
-        return display_date
-    updated_at = getattr(result, "updated_at", None)
-    if isinstance(updated_at, datetime):
-        return updated_at
-    created_at = getattr(result, "created_at", None)
-    if isinstance(created_at, datetime):
-        return created_at
-    return None
+    exit_code: int | None = 2,
+) -> None:
+    """Emit the canonical query no-results message."""
+    emit_no_results(
+        env,
+        selection=coerce_query_spec(params),
+        output_format=str(params.get("output_format") or "text"),
+        exit_code=exit_code,
+    )
 
 
 def summary_to_dict(summary: ConversationSummary, message_count: int) -> JSONDocument:
@@ -112,202 +74,6 @@ def summary_to_dict(summary: ConversationSummary, message_count: int) -> JSONDoc
         summary,
         message_count=message_count,
     ).selected()
-
-
-# ---------------------------------------------------------------------------
-# Query plan (from query_plan.py)
-# ---------------------------------------------------------------------------
-
-
-class QueryPlanError(ValueError):
-    """Raised when CLI query parameters describe an invalid plan."""
-
-
-class QueryAction(str, Enum):
-    COUNT = "count"
-    STREAM = "stream"
-    STATS = "stats"
-    STATS_BY = "stats-by"
-    MODIFY = "modify"
-    DELETE = "delete"
-    OPEN = "open"
-    SHOW = "show"
-
-
-class QueryRoute(str, Enum):
-    COUNT = "count"
-    SUMMARY_LIST = "summary-list"
-    STREAM = "stream"
-    STATS_SQL = "stats-sql"
-    SUMMARY_STATS = "summary-stats"
-    STATS_BY = "stats-by"
-    SUMMARY_MODIFY = "summary-modify"
-    SUMMARY_DELETE = "summary-delete"
-    MODIFY = "modify"
-    DELETE = "delete"
-    OPEN = "open"
-    SHOW = "show"
-
-
-@dataclass(frozen=True)
-class QueryOutputSpec:
-    output_format: str
-    destinations: tuple[str, ...]
-    fields: str | None
-    dialogue_only: bool
-    transform: str | None
-    list_mode: bool
-
-    def stream_format(self) -> str:
-        if self.output_format == "json":
-            return "json-lines"
-        if self.output_format in {"plaintext", "markdown", "json-lines"}:
-            return self.output_format
-        return "plaintext"
-
-
-@dataclass(frozen=True)
-class QueryMutationSpec:
-    set_meta: tuple[tuple[str, str], ...]
-    add_tags: tuple[str, ...]
-    delete_matched: bool
-    dry_run: bool
-    force: bool
-
-    @property
-    def has_operations(self) -> bool:
-        return bool(self.set_meta or self.add_tags)
-
-
-@dataclass(frozen=True)
-class QueryExecutionPlan:
-    selection: ConversationQuerySpec
-    action: QueryAction
-    output: QueryOutputSpec
-    mutation: QueryMutationSpec
-    stats_dimension: str | None = None
-
-    def prefers_summary_list(self) -> bool:
-        return (
-            self.action == QueryAction.SHOW
-            and self.output.list_mode
-            and self.output.transform is None
-            and not self.output.dialogue_only
-        )
-
-    def prefers_summary_stats(self) -> bool:
-        return self.action == QueryAction.STATS_BY and self.stats_dimension in {"provider", "month", "year", "day"}
-
-    def prefers_summary_mutation(self) -> bool:
-        return self.action in {QueryAction.MODIFY, QueryAction.DELETE}
-
-
-def resolve_query_route(
-    plan: QueryExecutionPlan,
-    *,
-    can_use_summaries: bool,
-) -> QueryRoute:
-    if plan.action == QueryAction.COUNT:
-        return QueryRoute.COUNT
-    if plan.prefers_summary_list() and can_use_summaries:
-        return QueryRoute.SUMMARY_LIST
-    if plan.action == QueryAction.STREAM:
-        return QueryRoute.STREAM
-    if plan.action == QueryAction.STATS:
-        return QueryRoute.STATS_SQL
-    if plan.prefers_summary_stats() and can_use_summaries:
-        return QueryRoute.SUMMARY_STATS
-    if plan.action == QueryAction.STATS_BY:
-        return QueryRoute.STATS_BY
-    if plan.action == QueryAction.MODIFY:
-        return QueryRoute.SUMMARY_MODIFY if can_use_summaries else QueryRoute.MODIFY
-    if plan.action == QueryAction.DELETE:
-        return QueryRoute.SUMMARY_DELETE if can_use_summaries else QueryRoute.DELETE
-    if plan.action == QueryAction.OPEN:
-        return QueryRoute.OPEN
-    return QueryRoute.SHOW
-
-
-def build_query_execution_plan(params: Mapping[str, object]) -> QueryExecutionPlan:
-    selection = ConversationQuerySpec.from_params(dict(params))
-
-    output_dest = str(params.get("output") or "stdout")
-    destinations = tuple(part.strip() for part in output_dest.split(",") if part.strip()) or ("stdout",)
-    output = QueryOutputSpec(
-        output_format=str(params.get("output_format") or "markdown"),
-        destinations=destinations,
-        fields=str(params["fields"]) if params.get("fields") is not None else None,
-        dialogue_only=bool(params.get("dialogue_only", False)),
-        transform=str(params["transform"]) if params.get("transform") is not None else None,
-        list_mode=bool(params.get("list_mode", False)),
-    )
-
-    def _iter_param_values(value: object) -> Iterable[object] | None:
-        if isinstance(value, str | bytes):
-            return None
-        if isinstance(value, Iterable):
-            return value
-        return None
-
-    def _iter_set_meta_pairs(value: object) -> tuple[tuple[str, str], ...]:
-        if isinstance(value, str | bytes):
-            return ()
-        if not isinstance(value, Iterable):
-            return ()
-        pairs: list[tuple[str, str]] = []
-        for item in value:
-            if isinstance(item, str | bytes):
-                continue
-            if not isinstance(item, Sequence):
-                continue
-            if len(item) < 2:
-                continue
-            pairs.append((str(item[0]), str(item[1])))
-        return tuple(pairs)
-
-    raw_set_meta = params.get("set_meta")
-    set_meta = _iter_set_meta_pairs(raw_set_meta)
-    raw_add_tags = params.get("add_tag")
-    add_tags = tuple(str(tag) for tag in _iter_param_values(raw_add_tags) or ())
-    mutation = QueryMutationSpec(
-        set_meta=set_meta,
-        add_tags=add_tags,
-        delete_matched=bool(params.get("delete_matched", False)),
-        dry_run=bool(params.get("dry_run", False)),
-        force=bool(params.get("force", False)),
-    )
-
-    stats_dimension = str(params["stats_by"]) if params.get("stats_by") else None
-
-    if params.get("count_only"):
-        action = QueryAction.COUNT
-    elif params.get("stream"):
-        action = QueryAction.STREAM
-    elif params.get("stats_only"):
-        action = QueryAction.STATS
-    elif stats_dimension is not None:
-        action = QueryAction.STATS_BY
-    elif mutation.delete_matched:
-        action = QueryAction.DELETE
-    elif mutation.has_operations:
-        action = QueryAction.MODIFY
-    elif params.get("open_result"):
-        action = QueryAction.OPEN
-    else:
-        action = QueryAction.SHOW
-
-    if action == QueryAction.DELETE and not selection.has_filters():
-        raise QueryPlanError(
-            "delete requires at least one filter to prevent accidental deletion of the entire archive."
-        )
-
-    return QueryExecutionPlan(
-        selection=selection,
-        action=action,
-        output=output,
-        mutation=mutation,
-        stats_dimension=stats_dimension,
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -420,10 +186,10 @@ def handle_query_mode(
     request = RootModeRequest.from_context(ctx)
 
     if request.should_show_stats():
-        show_stats(env, verbose=bool(request.params.get("verbose", False)))
+        show_stats(env, verbose=request.verbose)
         return
 
-    execute_query(env, request.query_params())
+    execute_query_request(env, request)
 
 
 class QueryFirstGroupBase(click.Group):
@@ -473,7 +239,12 @@ def project_query_results(results: list[Conversation], plan: QueryExecutionPlan)
 
 def execute_query(env: AppEnv, params: QueryParams) -> None:
     """Execute a query-mode command."""
-    run_coroutine_sync(async_execute_query(env, params))
+    execute_query_request(env, RootModeRequest.from_params(params))
+
+
+def execute_query_request(env: AppEnv, request: RootModeRequest) -> None:
+    """Execute a typed root-mode request."""
+    run_coroutine_sync(async_execute_query_request(env, request))
 
 
 def _create_query_vector_provider(config: Config) -> VectorProvider | None:
@@ -490,11 +261,18 @@ def _create_query_vector_provider(config: Config) -> VectorProvider | None:
 
 
 async def async_execute_query(env: AppEnv, params: QueryParams) -> None:
-    """Async core of execute_query."""
+    """Async compatibility wrapper for raw param execution."""
+    await async_execute_query_request(env, RootModeRequest.from_params(params))
+
+
+async def async_execute_query_request(env: AppEnv, request: RootModeRequest) -> None:
+    """Async core of query execution over a typed request."""
     from polylogue.cli import query_actions as _query_actions
     from polylogue.cli import query_output as _query_output
     from polylogue.cli.helpers import fail, load_effective_config
     from polylogue.config import ConfigError
+
+    params = request.query_params()
 
     try:
         config = load_effective_config(env)
@@ -552,7 +330,7 @@ async def async_execute_query(env: AppEnv, params: QueryParams) -> None:
         summary_results = await filter_chain.list_summaries()
         if not summary_results:
             no_results(env, params)
-        await _query_output._output_summary_list(env, summary_results, params, repo)
+        await _query_output._output_summary_list(env, summary_results, plan.output, repo)
         return
 
     if route == QueryRoute.STREAM:
@@ -562,9 +340,9 @@ async def async_execute_query(env: AppEnv, params: QueryParams) -> None:
                 "Warning: --transform is ignored in --stream mode (messages are streamed individually).",
                 err=True,
             )
-        if any(dest != "stdout" for dest in plan.output.destinations):
+        if any(target.kind != "stdout" for target in plan.output.destinations):
             click.echo(
-                f"Warning: --output {','.join(plan.output.destinations)} is ignored in --stream mode (output goes to stdout).",
+                f"Warning: --output {','.join(plan.output.destination_labels())} is ignored in --stream mode (output goes to stdout).",
                 err=True,
             )
 
@@ -581,7 +359,13 @@ async def async_execute_query(env: AppEnv, params: QueryParams) -> None:
         return
 
     if route == QueryRoute.STATS_SQL:
-        await _query_output.output_stats_sql(env, filter_chain, repo, output_format=plan.output.output_format)
+        await _query_output.output_stats_sql(
+            env,
+            filter_chain,
+            repo,
+            selection=plan.selection,
+            output_format=plan.output.output_format,
+        )
         return
 
     if route == QueryRoute.SUMMARY_STATS:
@@ -651,7 +435,7 @@ async def async_execute_query(env: AppEnv, params: QueryParams) -> None:
             open_results: Sequence[Conversation | ConversationSummary] = await filter_chain.list_summaries()
         else:
             open_results = await filter_chain.list()
-        _query_output._open_result(env, open_results, params)
+        _query_output._open_result(env, open_results, plan.output, selection=plan.selection)
         return
 
     if route in {QueryRoute.MODIFY, QueryRoute.SUMMARY_MODIFY}:
@@ -659,7 +443,7 @@ async def async_execute_query(env: AppEnv, params: QueryParams) -> None:
             matched_results: Sequence[Conversation | ConversationSummary] = await filter_chain.list_summaries()
         else:
             matched_results = await filter_chain.list()
-        await _query_actions.apply_modifiers(env, matched_results, params, repo)
+        await _query_actions.apply_modifiers(env, matched_results, plan.mutation, repo)
         return
 
     if route in {QueryRoute.DELETE, QueryRoute.SUMMARY_DELETE}:
@@ -667,7 +451,7 @@ async def async_execute_query(env: AppEnv, params: QueryParams) -> None:
             matched_results = await filter_chain.list_summaries()
         else:
             matched_results = await filter_chain.list()
-        await _query_actions.delete_conversations(env, matched_results, params, repo)
+        await _query_actions.delete_conversations(env, matched_results, plan.mutation, repo)
         return
 
     if route == QueryRoute.STATS_BY:
@@ -684,7 +468,7 @@ async def async_execute_query(env: AppEnv, params: QueryParams) -> None:
 
     conversation_results = await filter_chain.list()
     projected_results = project_query_results(conversation_results, plan)
-    _query_output.output_results(env, projected_results, params)
+    _query_output.output_results(env, projected_results, plan.output, selection=plan.selection)
 
 
 __all__ = [
@@ -699,6 +483,7 @@ __all__ = [
     "coerce_query_spec",
     "describe_query_filters",
     "execute_query",
+    "execute_query_request",
     "handle_query_mode",
     "no_results",
     "resolve_query_route",

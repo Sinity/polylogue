@@ -18,7 +18,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from polylogue.cli.query import QueryAction, QueryRoute
+from polylogue.cli.query import QueryAction, QueryOutputSpec, QueryRoute
+from polylogue.cli.query_contracts import QueryDeliveryTarget
 from polylogue.cli.types import AppEnv
 from polylogue.lib.models import Conversation as ConversationModel
 from polylogue.lib.models import ConversationSummary
@@ -145,6 +146,10 @@ def _make_params(**overrides: object) -> dict[str, object]:
     return params
 
 
+def _delivery_targets(*destinations: str) -> tuple[QueryDeliveryTarget, ...]:
+    return tuple(QueryDeliveryTarget.parse(destination) for destination in destinations)
+
+
 @pytest.mark.parametrize(
     ("param_overrides", "resolved_id", "expect_exit", "expect_warning"),
     [
@@ -251,7 +256,7 @@ async def test_async_execute_query_reports_non_date_query_spec_errors() -> None:
     plan = QueryExecutionPlan(
         selection=selection,
         action=QueryAction.SHOW,
-        output=QueryOutputSpec("markdown", ("stdout",), None, False, None, False),
+        output=QueryOutputSpec("markdown", _delivery_targets("stdout"), None, False, None, False, False),
         mutation=QueryMutationSpec((), (), False, False, False),
     )
 
@@ -946,6 +951,7 @@ def test_open_result_contract(
 
     env = _make_env(config=MagicMock(render_root=render_root))
     mock_print = cast(MagicMock, env.ui.console.print)
+    output = QueryOutputSpec.from_params(params)
     with (
         patch("polylogue.cli.helpers.load_effective_config", return_value=MagicMock(render_root=render_root)),
         patch("polylogue.cli.helpers.latest_render_path", return_value=fallback if latest_exists else None),
@@ -956,11 +962,11 @@ def test_open_result_contract(
         mock_echo = cast(MagicMock, mock_echo)
         if expected_exit is not None:
             with pytest.raises(SystemExit) as exc_info:
-                _open_result(env, results, params)
+                _open_result(env, results, output)
             assert exc_info.value.code == expected_exit
             mock_open.assert_not_called()
         else:
-            _open_result(env, results, params)
+            _open_result(env, results, output)
             if expected_stdout is not None:
                 mock_open.assert_not_called()
                 mock_print.assert_not_called()
@@ -987,7 +993,7 @@ def test_open_result_no_results_json_contract(capsys: pytest.CaptureFixture[str]
     ):
         mock_open = cast(MagicMock, mock_open)
         with pytest.raises(SystemExit) as exc_info:
-            _open_result(env, [], {"output_format": "json"})
+            _open_result(env, [], QueryOutputSpec.from_params({"output_format": "json"}))
 
     assert exc_info.value.code == 2
     mock_open.assert_not_called()
