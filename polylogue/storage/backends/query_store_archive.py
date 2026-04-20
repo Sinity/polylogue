@@ -14,6 +14,7 @@ from polylogue.storage.backends.queries import messages as messages_q
 from polylogue.storage.backends.queries import stats as stats_q
 from polylogue.storage.backends.queries.stats import AggregateMessageStats
 from polylogue.storage.query_models import ConversationRecordQuery
+from polylogue.storage.search_models import ConversationSearchResult
 from polylogue.storage.store import (
     AttachmentRecord,
     ContentBlockRecord,
@@ -64,14 +65,30 @@ class SQLiteQueryStoreArchiveMixin:
             return await conversations_q.resolve_id(conn, id_prefix)
 
     async def search_conversations(self, query: str, limit: int = 100, providers: list[str] | None = None) -> list[str]:
-        async with self._connection_factory() as conn:
-            return await conversations_q.search_conversations(conn, query, limit, providers)
+        return (await self.search_conversation_hits(query, limit=limit, providers=providers)).conversation_ids()
 
     async def search_action_conversations(
         self, query: str, limit: int = 100, providers: list[str] | None = None
     ) -> list[str]:
+        return (await self.search_action_conversation_hits(query, limit=limit, providers=providers)).conversation_ids()
+
+    async def search_conversation_hits(
+        self,
+        query: str,
+        limit: int = 100,
+        providers: list[str] | None = None,
+    ) -> ConversationSearchResult:
         async with self._connection_factory() as conn:
-            return await conversations_q.search_action_conversations(conn, query, limit, providers)
+            return await conversations_q.search_conversation_hits(conn, query, limit, providers)
+
+    async def search_action_conversation_hits(
+        self,
+        query: str,
+        limit: int = 100,
+        providers: list[str] | None = None,
+    ) -> ConversationSearchResult:
+        async with self._connection_factory() as conn:
+            return await conversations_q.search_action_conversation_hits(conn, query, limit, providers)
 
     async def get_messages(self, conversation_id: str) -> list[MessageRecord]:
         async with self._connection_factory() as conn:

@@ -5,6 +5,7 @@ from __future__ import annotations
 import aiosqlite
 
 from polylogue.maintenance_targets import build_maintenance_target_catalog
+from polylogue.storage.search_models import ConversationSearchResult
 
 _MAINTENANCE_TARGET_CATALOG = build_maintenance_target_catalog()
 _MESSAGE_SEARCH_REPAIR_HINT = _MAINTENANCE_TARGET_CATALOG.repair_hint(("dangling_fts",), include_run_all=True)
@@ -14,12 +15,12 @@ _ACTION_SEARCH_REPAIR_HINT = _MAINTENANCE_TARGET_CATALOG.repair_hint(
 )
 
 
-async def search_conversations(
+async def search_conversation_hits(
     conn: aiosqlite.Connection,
     query: str,
     limit: int = 100,
     providers: list[str] | None = None,
-) -> list[str]:
+) -> ConversationSearchResult:
     from polylogue.errors import DatabaseError
     from polylogue.storage.fts_lifecycle import message_fts_readiness_async
 
@@ -37,20 +38,29 @@ async def search_conversations(
         scope_names=providers,
     )
     if query_spec is None:
-        return []
+        return ConversationSearchResult(hits=[])
 
     sql, params = query_spec
     cursor = await conn.execute(sql, params)
     rows = await cursor.fetchall()
-    return [str(row["conversation_id"]) for row in rows]
+    return ConversationSearchResult.from_ids([str(row["conversation_id"]) for row in rows])
 
 
-async def search_action_conversations(
+async def search_conversations(
     conn: aiosqlite.Connection,
     query: str,
     limit: int = 100,
     providers: list[str] | None = None,
 ) -> list[str]:
+    return (await search_conversation_hits(conn, query, limit, providers)).conversation_ids()
+
+
+async def search_action_conversation_hits(
+    conn: aiosqlite.Connection,
+    query: str,
+    limit: int = 100,
+    providers: list[str] | None = None,
+) -> ConversationSearchResult:
     from polylogue.errors import DatabaseError
     from polylogue.storage.action_event_status import action_event_read_model_status_async
     from polylogue.storage.search import build_ranked_action_search_query
@@ -67,12 +77,26 @@ async def search_action_conversations(
         scope_names=providers,
     )
     if query_spec is None:
-        return []
+        return ConversationSearchResult(hits=[])
 
     sql, params = query_spec
     cursor = await conn.execute(sql, params)
     rows = await cursor.fetchall()
-    return [str(row["conversation_id"]) for row in rows]
+    return ConversationSearchResult.from_ids([str(row["conversation_id"]) for row in rows])
 
 
-__all__ = ["search_action_conversations", "search_conversations"]
+async def search_action_conversations(
+    conn: aiosqlite.Connection,
+    query: str,
+    limit: int = 100,
+    providers: list[str] | None = None,
+) -> list[str]:
+    return (await search_action_conversation_hits(conn, query, limit, providers)).conversation_ids()
+
+
+__all__ = [
+    "search_action_conversation_hits",
+    "search_action_conversations",
+    "search_conversation_hits",
+    "search_conversations",
+]

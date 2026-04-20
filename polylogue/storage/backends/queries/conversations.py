@@ -22,7 +22,9 @@ from polylogue.storage.backends.queries.conversations_reads import (
     list_conversations_by_parent,
 )
 from polylogue.storage.backends.queries.conversations_search import (
+    search_action_conversation_hits,
     search_action_conversations,
+    search_conversation_hits,
     search_conversations,
 )
 from polylogue.storage.backends.queries.conversations_writes import (
@@ -48,7 +50,9 @@ __all__ = [
     "list_tags",
     "resolve_id",
     "save_conversation_record",
+    "search_action_conversation_hits",
     "search_action_conversations",
+    "search_conversation_hits",
     "search_conversations",
     "set_metadata",
     "update_metadata_raw",

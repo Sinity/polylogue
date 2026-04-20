@@ -17,7 +17,11 @@ from polylogue.storage.backends.connection import (
 from polylogue.storage.backends.connection import (
     open_read_connection,
 )
-from polylogue.storage.search_providers.hybrid_conversations import _resolve_ranked_conversation_ids
+from polylogue.storage.search_models import ConversationSearchResult
+from polylogue.storage.search_providers.hybrid_conversations import (
+    _resolve_ranked_conversation_hits,
+    _resolve_ranked_conversation_ids,
+)
 from polylogue.storage.search_providers.hybrid_factory import create_hybrid_provider
 
 if TYPE_CHECKING:
@@ -165,17 +169,26 @@ class HybridSearchProvider:
         Returns:
             List of conversation IDs, ordered by best-matching message score.
         """
+        return self.search_conversation_hits(query, limit=limit, providers=providers).conversation_ids()
+
+    def search_conversation_hits(
+        self,
+        query: str,
+        limit: int = 20,
+        providers: list[str] | None = None,
+    ) -> ConversationSearchResult:
+        """Search and return ordered conversation hits."""
         if limit <= 0:
-            return []
+            return ConversationSearchResult(hits=[])
 
         # Get message-level results (scored for ranking)
         message_results = self.search_scored(query, limit=limit * 3)
 
         if not message_results:
-            return []
+            return ConversationSearchResult(hits=[])
 
         with open_connection(self.fts_provider.db_path) as conn:
-            return _resolve_ranked_conversation_ids(
+            return _resolve_ranked_conversation_hits(
                 conn,
                 message_results=message_results,
                 limit=limit,
@@ -185,6 +198,7 @@ class HybridSearchProvider:
 
 __all__ = [
     "HybridSearchProvider",
+    "_resolve_ranked_conversation_hits",
     "_resolve_ranked_conversation_ids",
     "create_hybrid_provider",
     "reciprocal_rank_fusion",
