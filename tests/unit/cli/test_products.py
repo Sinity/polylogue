@@ -383,10 +383,10 @@ def test_session_product_rebuild_supports_legacy_payload_columns(cli_workspace: 
         rebuild_session_products_sync(conn)
         status = session_product_status_sync(conn)
 
-    assert _expect_int(status["profile_row_count"]) == 2
-    assert _expect_bool(status["profile_rows_ready"]) is True
-    assert _expect_bool(status["work_event_inference_rows_ready"]) is True
-    assert _expect_bool(status["phase_inference_rows_ready"]) is True
+    assert status.profile_row_count == 2
+    assert status.profile_rows_ready is True
+    assert status.work_event_inference_rows_ready is True
+    assert status.phase_inference_rows_ready is True
 
 
 def test_session_product_rebuild_pages_full_rebuild(cli_workspace: CliWorkspace) -> None:
@@ -396,13 +396,13 @@ def test_session_product_rebuild_pages_full_rebuild(cli_workspace: CliWorkspace)
         counts = rebuild_session_products_sync(conn, page_size=1)
         status = session_product_status_sync(conn)
 
-    assert _expect_int(counts["profiles"]) == 2
-    assert _expect_int(counts["work_events"]) >= 1
-    assert _expect_int(counts["phases"]) >= 1
-    assert _expect_int(status["profile_row_count"]) == 2
-    assert _expect_bool(status["profile_rows_ready"]) is True
-    assert _expect_bool(status["work_event_inference_rows_ready"]) is True
-    assert _expect_bool(status["phase_inference_rows_ready"]) is True
+    assert counts.profiles == 2
+    assert counts.work_events >= 1
+    assert counts.phases >= 1
+    assert status.profile_row_count == 2
+    assert status.profile_rows_ready is True
+    assert status.work_event_inference_rows_ready is True
+    assert status.phase_inference_rows_ready is True
 
 
 def test_session_product_rebuild_sync_reports_progress(cli_workspace: CliWorkspace) -> None:
@@ -468,7 +468,7 @@ def test_session_product_rebuild_preserves_profile_semantics_without_loading_ful
             ("conv-heavy",),
         ).fetchone()
 
-    assert _expect_int(counts["profiles"]) == 1
+    assert counts.profiles == 1
     assert row is not None
     repo_names = _expect_list(json.loads(row["repo_names_json"]))
     evidence_payload = _expect_object(json.loads(row["evidence_payload_json"]))
@@ -564,14 +564,14 @@ def test_session_product_status_accepts_epoch_backed_conversation_timestamps(cli
         rebuild_session_products_sync(conn)
         status = session_product_status_sync(conn)
 
-    assert _expect_int(status["profile_row_count"]) == 1
-    assert _expect_int(status["stale_profile_row_count"]) == 0
-    assert _expect_int(status["stale_work_event_inference_count"]) == 0
-    assert _expect_int(status["stale_phase_inference_count"]) == 0
-    assert _expect_bool(status["profile_rows_ready"]) is True
-    assert _expect_bool(status["work_event_inference_rows_ready"]) is True
-    assert _expect_bool(status["phase_inference_rows_ready"]) is True
-    assert _expect_int(status["profile_merged_fts_duplicate_count"]) == 0
+    assert status.profile_row_count == 1
+    assert status.stale_profile_row_count == 0
+    assert status.stale_work_event_inference_count == 0
+    assert status.stale_phase_inference_count == 0
+    assert status.profile_rows_ready is True
+    assert status.work_event_inference_rows_ready is True
+    assert status.phase_inference_rows_ready is True
+    assert status.profile_merged_fts_duplicate_count == 0
 
 
 def test_targeted_session_product_rebuild_does_not_duplicate_profile_fts(cli_workspace: CliWorkspace) -> None:
@@ -581,10 +581,10 @@ def test_targeted_session_product_rebuild_does_not_duplicate_profile_fts(cli_wor
         rebuild_session_products_sync(conn, conversation_ids=["conv-root"])
         status = session_product_status_sync(conn)
 
-    assert _expect_int(status["profile_row_count"]) == 2
-    assert _expect_int(status["profile_merged_fts_count"]) == 2
-    assert _expect_int(status["profile_merged_fts_duplicate_count"]) == 0
-    assert _expect_bool(status["profile_merged_fts_ready"]) is True
+    assert status.profile_row_count == 2
+    assert status.profile_merged_fts_count == 2
+    assert status.profile_merged_fts_duplicate_count == 0
+    assert status.profile_merged_fts_ready is True
 
 
 def test_session_product_status_marks_older_materializer_versions_stale(cli_workspace: CliWorkspace) -> None:
@@ -599,9 +599,9 @@ def test_session_product_status_marks_older_materializer_versions_stale(cli_work
         conn.commit()
         status = session_product_status_sync(conn)
 
-    assert _expect_int(status["profile_row_count"]) == 2
-    assert _expect_int(status["stale_profile_row_count"]) == 2
-    assert _expect_bool(status["profile_rows_ready"]) is False
+    assert status.profile_row_count == 2
+    assert status.stale_profile_row_count == 2
+    assert status.profile_rows_ready is False
 
 
 @pytest.mark.parametrize(

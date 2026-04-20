@@ -608,40 +608,30 @@ def repair_session_products(
     try:
         with connection_context(None) as conn:
             status = session_product_status_sync(conn)
-            profile_merged_fts_pending = max(
-                0, int(status["profile_row_count"]) - int(status["profile_merged_fts_count"])
-            )
-            profile_merged_fts_duplicates = max(0, int(status.get("profile_merged_fts_duplicate_count", 0)))
-            profile_evidence_fts_pending = max(
-                0, int(status["profile_row_count"]) - int(status["profile_evidence_fts_count"])
-            )
-            profile_evidence_fts_duplicates = max(0, int(status.get("profile_evidence_fts_duplicate_count", 0)))
-            profile_inference_fts_pending = max(
-                0, int(status["profile_row_count"]) - int(status["profile_inference_fts_count"])
-            )
-            profile_inference_fts_duplicates = max(0, int(status.get("profile_inference_fts_duplicate_count", 0)))
-            profile_enrichment_fts_pending = max(
-                0, int(status["profile_row_count"]) - int(status["profile_enrichment_fts_count"])
-            )
-            profile_enrichment_fts_duplicates = max(0, int(status.get("profile_enrichment_fts_duplicate_count", 0)))
-            work_event_fts_pending = max(
-                0, int(status["work_event_inference_count"]) - int(status["work_event_inference_fts_count"])
-            )
-            work_event_fts_duplicates = max(0, int(status.get("work_event_inference_fts_duplicate_count", 0)))
-            thread_fts_pending = max(0, int(status["thread_count"]) - int(status["thread_fts_count"]))
-            thread_fts_duplicates = max(0, int(status.get("thread_fts_duplicate_count", 0)))
+            profile_merged_fts_pending = max(0, status.profile_row_count - status.profile_merged_fts_count)
+            profile_merged_fts_duplicates = max(0, status.profile_merged_fts_duplicate_count)
+            profile_evidence_fts_pending = max(0, status.profile_row_count - status.profile_evidence_fts_count)
+            profile_evidence_fts_duplicates = max(0, status.profile_evidence_fts_duplicate_count)
+            profile_inference_fts_pending = max(0, status.profile_row_count - status.profile_inference_fts_count)
+            profile_inference_fts_duplicates = max(0, status.profile_inference_fts_duplicate_count)
+            profile_enrichment_fts_pending = max(0, status.profile_row_count - status.profile_enrichment_fts_count)
+            profile_enrichment_fts_duplicates = max(0, status.profile_enrichment_fts_duplicate_count)
+            work_event_fts_pending = max(0, status.work_event_inference_count - status.work_event_inference_fts_count)
+            work_event_fts_duplicates = max(0, status.work_event_inference_fts_duplicate_count)
+            thread_fts_pending = max(0, status.thread_count - status.thread_fts_count)
+            thread_fts_duplicates = max(0, status.thread_fts_duplicate_count)
             pending = (
-                int(status["missing_profile_row_count"])
-                + int(status["stale_profile_row_count"])
-                + int(status["orphan_profile_row_count"])
-                + int(status["stale_work_event_inference_count"])
-                + int(status["orphan_work_event_inference_count"])
-                + int(status["stale_phase_inference_count"])
-                + int(status["orphan_phase_inference_count"])
-                + int(status["stale_thread_count"])
-                + int(status["orphan_thread_count"])
-                + int(status["stale_tag_rollup_count"])
-                + int(status["stale_day_summary_count"])
+                status.missing_profile_row_count
+                + status.stale_profile_row_count
+                + status.orphan_profile_row_count
+                + status.stale_work_event_inference_count
+                + status.orphan_work_event_inference_count
+                + status.stale_phase_inference_count
+                + status.orphan_phase_inference_count
+                + status.stale_thread_count
+                + status.orphan_thread_count
+                + status.stale_tag_rollup_count
+                + status.stale_day_summary_count
                 + profile_merged_fts_pending
                 + profile_merged_fts_duplicates
                 + profile_evidence_fts_pending
@@ -674,30 +664,23 @@ def repair_session_products(
             conn.commit()
             refreshed = session_product_status_sync(conn)
             success = (
-                bool(refreshed["profile_rows_ready"])
-                and bool(refreshed["profile_merged_fts_ready"])
-                and bool(refreshed["profile_evidence_fts_ready"])
-                and bool(refreshed["profile_inference_fts_ready"])
-                and bool(refreshed["profile_enrichment_fts_ready"])
-                and bool(refreshed["work_event_inference_rows_ready"])
-                and bool(refreshed["work_event_inference_fts_ready"])
-                and bool(refreshed["phase_inference_rows_ready"])
-                and bool(refreshed["threads_ready"])
-                and bool(refreshed["threads_fts_ready"])
-                and bool(refreshed["tag_rollups_ready"])
-                and bool(refreshed["day_summaries_ready"])
-                and bool(refreshed["week_summaries_ready"])
+                refreshed.profile_rows_ready
+                and refreshed.profile_merged_fts_ready
+                and refreshed.profile_evidence_fts_ready
+                and refreshed.profile_inference_fts_ready
+                and refreshed.profile_enrichment_fts_ready
+                and refreshed.work_event_inference_rows_ready
+                and refreshed.work_event_inference_fts_ready
+                and refreshed.phase_inference_rows_ready
+                and refreshed.threads_ready
+                and refreshed.threads_fts_ready
+                and refreshed.tag_rollups_ready
+                and refreshed.day_summaries_ready
+                and refreshed.week_summaries_ready
             )
             return _repair_result(
                 "session_products",
-                repaired_count=(
-                    int(rebuilt["profiles"])
-                    + int(rebuilt["work_events"])
-                    + int(rebuilt["phases"])
-                    + int(rebuilt["threads"])
-                    + int(rebuilt["tag_rollups"])
-                    + int(rebuilt["day_summaries"])
-                ),
+                repaired_count=rebuilt.total(),
                 success=success,
                 detail="Session products ready" if success else "Session products still incomplete",
             )

@@ -7,6 +7,7 @@ import sqlite3
 import aiosqlite
 
 from polylogue.storage.session_product_aggregates import _PROFILE_BUCKET_DAY_SQL
+from polylogue.storage.session_product_runtime import SessionProductStatusSnapshot
 from polylogue.storage.store import SESSION_PRODUCT_MATERIALIZER_VERSION
 
 # ---------------------------------------------------------------------------
@@ -262,7 +263,7 @@ def _to_int(row: tuple[object, ...] | sqlite3.Row | None) -> int:
 def _status_payload(
     tables: dict[str, bool],
     counts: dict[str, int],
-) -> dict[str, int | bool]:
+) -> SessionProductStatusSnapshot:
     profile_count = counts["profile_row_count"]
     work_event_count = counts["work_event_inference_count"]
     phase_count = counts["phase_inference_count"]
@@ -285,52 +286,52 @@ def _status_payload(
     expected_day_summary_count = counts["expected_day_summary_count"]
     stale_day_summary_count = counts["stale_day_summary_count"]
 
-    return {
+    return SessionProductStatusSnapshot(
         **counts,
-        "profile_rows_ready": tables["session_profiles"]
+        profile_rows_ready=tables["session_profiles"]
         and missing_profile_count == 0
         and stale_profile_count == 0
         and orphan_profile_count == 0,
-        "profile_merged_fts_ready": tables["session_profiles_fts"]
+        profile_merged_fts_ready=tables["session_profiles_fts"]
         and counts["profile_merged_fts_count"] == profile_count
         and counts["profile_merged_fts_duplicate_count"] == 0,
-        "profile_evidence_fts_ready": tables["session_profile_evidence_fts"]
+        profile_evidence_fts_ready=tables["session_profile_evidence_fts"]
         and counts["profile_evidence_fts_count"] == profile_count
         and counts["profile_evidence_fts_duplicate_count"] == 0,
-        "profile_inference_fts_ready": tables["session_profile_inference_fts"]
+        profile_inference_fts_ready=tables["session_profile_inference_fts"]
         and counts["profile_inference_fts_count"] == profile_count
         and counts["profile_inference_fts_duplicate_count"] == 0,
-        "profile_enrichment_fts_ready": tables["session_profile_enrichment_fts"]
+        profile_enrichment_fts_ready=tables["session_profile_enrichment_fts"]
         and counts["profile_enrichment_fts_count"] == profile_count
         and counts["profile_enrichment_fts_duplicate_count"] == 0,
-        "work_event_inference_rows_ready": tables["session_work_events"]
+        work_event_inference_rows_ready=tables["session_work_events"]
         and work_event_count == expected_work_event_count
         and stale_work_event_count == 0
         and orphan_work_event_count == 0,
-        "work_event_inference_fts_ready": tables["session_work_events_fts"]
+        work_event_inference_fts_ready=tables["session_work_events_fts"]
         and counts["work_event_inference_fts_count"] == work_event_count
         and counts["work_event_inference_fts_duplicate_count"] == 0,
-        "phase_inference_rows_ready": tables["session_phases"]
+        phase_inference_rows_ready=tables["session_phases"]
         and phase_count == expected_phase_count
         and stale_phase_count == 0
         and orphan_phase_count == 0,
-        "threads_ready": tables["work_threads"]
+        threads_ready=tables["work_threads"]
         and thread_count == counts["root_threads"]
         and stale_thread_count == 0
         and orphan_thread_count == 0,
-        "threads_fts_ready": tables["work_threads_fts"]
+        threads_fts_ready=tables["work_threads_fts"]
         and counts["thread_fts_count"] == thread_count
         and counts["thread_fts_duplicate_count"] == 0,
-        "tag_rollups_ready": tables["session_tag_rollups"]
+        tag_rollups_ready=tables["session_tag_rollups"]
         and tag_rollup_count == expected_tag_rollup_count
         and stale_tag_rollup_count == 0,
-        "day_summaries_ready": tables["day_session_summaries"]
+        day_summaries_ready=tables["day_session_summaries"]
         and day_summary_count == expected_day_summary_count
         and stale_day_summary_count == 0,
-        "week_summaries_ready": tables["day_session_summaries"]
+        week_summaries_ready=tables["day_session_summaries"]
         and day_summary_count == expected_day_summary_count
         and stale_day_summary_count == 0,
-    }
+    )
 
 
 def session_profile_repair_candidate_ids_sync(conn: sqlite3.Connection) -> list[str]:
@@ -355,7 +356,7 @@ def session_product_status_sync(
     conn: sqlite3.Connection,
     *,
     verify_freshness: bool = True,
-) -> dict[str, int | bool]:
+) -> SessionProductStatusSnapshot:
     tables = {key: bool(conn.execute(sql).fetchone()) for key, sql in _TABLE_SQLS.items()}
 
     def count(sql: str, *params: object) -> int:
@@ -511,7 +512,7 @@ def session_product_status_sync(
     return _status_payload(tables, counts)
 
 
-async def session_product_status_async(conn: aiosqlite.Connection) -> dict[str, int | bool]:
+async def session_product_status_async(conn: aiosqlite.Connection) -> SessionProductStatusSnapshot:
     tables = {}
     for key, sql in _TABLE_SQLS.items():
         tables[key] = bool(await (await conn.execute(sql)).fetchone())

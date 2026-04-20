@@ -33,6 +33,7 @@ from polylogue.storage.session_product_profiles import (
     hydrate_session_profile,
     now_iso,
 )
+from polylogue.storage.session_product_runtime import SessionProductCounts
 from polylogue.storage.session_product_storage import (
     replace_session_phases_sync,
     replace_session_profile_sync,
@@ -407,15 +408,8 @@ def _materialize_progress_desc(
     return f"Materializing: {profile_count}"
 
 
-def _empty_rebuild_counts() -> dict[str, int]:
-    return {
-        "profiles": 0,
-        "work_events": 0,
-        "phases": 0,
-        "threads": 0,
-        "tag_rollups": 0,
-        "day_summaries": 0,
-    }
+def _empty_rebuild_counts() -> SessionProductCounts:
+    return SessionProductCounts()
 
 
 def _finalize_rebuild_counts(
@@ -426,15 +420,15 @@ def _finalize_rebuild_counts(
     threads: int,
     tag_rollups: int,
     day_summaries: int,
-) -> dict[str, int]:
-    return {
-        "profiles": profiles,
-        "work_events": work_events,
-        "phases": phases,
-        "threads": threads,
-        "tag_rollups": tag_rollups,
-        "day_summaries": day_summaries,
-    }
+) -> SessionProductCounts:
+    return SessionProductCounts(
+        profiles=profiles,
+        work_events=work_events,
+        phases=phases,
+        threads=threads,
+        tag_rollups=tag_rollups,
+        day_summaries=day_summaries,
+    )
 
 
 def rebuild_session_products_sync(
@@ -444,7 +438,7 @@ def rebuild_session_products_sync(
     page_size: int = _SESSION_PRODUCT_REBUILD_PAGE_SIZE,
     progress_callback: ProgressCallback | None = None,
     progress_total: int | None = None,
-) -> dict[str, int]:
+) -> SessionProductCounts:
     conversation_chunks: Iterable[Sequence[str]]
     if conversation_ids is None:
         conn.execute("DELETE FROM session_work_events")
@@ -538,7 +532,7 @@ async def rebuild_session_products_async(
     transaction_depth: int = 0,
     progress_callback: ProgressCallback | None = None,
     progress_total: int | None = None,
-) -> dict[str, int]:
+) -> SessionProductCounts:
     from polylogue.storage.backends.queries.session_product_profile_writes import (
         replace_session_profile,
     )

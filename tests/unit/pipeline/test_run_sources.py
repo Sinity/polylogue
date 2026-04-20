@@ -25,6 +25,7 @@ from polylogue.sources.parsers.base import RawConversationData
 from polylogue.storage.backends import create_backend
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.backends.connection import open_connection
+from polylogue.storage.session_product_runtime import SessionProductCounts
 from polylogue.storage.state_views import PlanResult, RunResult
 from tests.infra.storage_records import make_conversation, make_message, store_records
 
@@ -564,14 +565,14 @@ class TestRunSourcesIntegration:
             "polylogue.storage.session_product_rebuild.rebuild_session_products_async",
             new_callable=AsyncMock,
         ) as mock_rebuild:
-            mock_rebuild.return_value = {
-                "profiles": 1,
-                "work_events": 2,
-                "phases": 1,
-                "threads": 1,
-                "tag_rollups": 1,
-                "day_summaries": 1,
-            }
+            mock_rebuild.return_value = SessionProductCounts(
+                profiles=1,
+                work_events=2,
+                phases=1,
+                threads=1,
+                tag_rollups=1,
+                day_summaries=1,
+            )
             result = asyncio.run(run_sources(config=config, stage="materialize"))
 
         mock_rebuild.assert_awaited_once()

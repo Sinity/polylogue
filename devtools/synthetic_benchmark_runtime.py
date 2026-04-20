@@ -330,12 +330,12 @@ def run_session_product_materialization_campaign(db_path: Path) -> CampaignResul
         scale_level="",
         metrics={
             "rebuild_wall_s": round(elapsed, 3),
-            "profiles_rebuilt": int(rebuilt["profiles"]),
-            "work_events_rebuilt": int(rebuilt["work_events"]),
-            "phases_rebuilt": int(rebuilt["phases"]),
-            "threads_rebuilt": int(rebuilt["threads"]),
-            "tag_rollups_rebuilt": int(rebuilt["tag_rollups"]),
-            "day_summaries_rebuilt": int(rebuilt["day_summaries"]),
+            "profiles_rebuilt": rebuilt.profiles,
+            "work_events_rebuilt": rebuilt.work_events,
+            "phases_rebuilt": rebuilt.phases,
+            "threads_rebuilt": rebuilt.threads,
+            "tag_rollups_rebuilt": rebuilt.tag_rollups,
+            "day_summaries_rebuilt": rebuilt.day_summaries,
         },
         db_stats={
             "session_profiles_before": stats_before.get("session_profiles_count", 0),
