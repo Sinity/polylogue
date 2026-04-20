@@ -14,11 +14,12 @@ if TYPE_CHECKING:
     from polylogue.lib.filters import ConversationFilter
     from polylogue.lib.models import Conversation, ConversationSummary
     from polylogue.lib.query_spec import ConversationQuerySpec
+    from polylogue.protocols import ConversationQueryRuntimeStore
     from polylogue.storage.repository import ConversationRepository
 
 
 async def resolve_stream_target(
-    repo: ConversationRepository,
+    repo: ConversationQueryRuntimeStore,
     filter_chain: ConversationFilter,
     selection: ConversationQuerySpec,
 ) -> str:
@@ -127,7 +128,7 @@ async def delete_conversations(
     env: AppEnv,
     results: Sequence[Conversation | ConversationSummary],
     params: dict[str, Any],
-    repo: ConversationRepository | None = None,
+    repo: ConversationQueryRuntimeStore | None = None,
 ) -> None:
     """Delete matched conversations."""
     from collections import Counter
