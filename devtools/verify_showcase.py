@@ -14,8 +14,9 @@ import difflib
 import sys
 from pathlib import Path
 
+from polylogue.showcase.cli_boundary import invoke_showcase_cli
 from polylogue.showcase.exercises import EXERCISES, Exercise
-from polylogue.showcase.runner import ShowcaseRunner
+from polylogue.showcase.showcase_runner_support import run_exercise
 
 BASELINE_DIR = Path(__file__).resolve().parent.parent / "tests" / "baselines" / "showcase"
 
@@ -38,10 +39,6 @@ def get_tier_0_exercises() -> list[Exercise]:
 
 def run_tier_0() -> dict[str, str]:
     """Run tier 0 exercises and return {exercise_name: output} mapping."""
-    runner = ShowcaseRunner(live=False, fail_fast=False, verbose=False)
-
-    # We only need to run the structural exercises — no seeding needed.
-    # Use the runner's _run_exercise directly to avoid full workspace setup.
     from polylogue.showcase.exercises import topological_order
 
     exercises = get_tier_0_exercises()
@@ -49,7 +46,11 @@ def run_tier_0() -> dict[str, str]:
 
     results: dict[str, str] = {}
     for ex in exercises:
-        er = runner._run_exercise(ex)
+        er = run_exercise(
+            ex,
+            env_vars={},
+            invoke_showcase_cli_fn=invoke_showcase_cli,
+        )
         results[ex.name] = er.output or ""
 
     return results

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import argparse
 import json
 from pathlib import Path
 from typing import TypeAlias
@@ -10,7 +9,7 @@ from typing import TypeAlias
 import pytest
 
 from devtools.pipeline_probe import _write_probe_sources, main, run_probe
-from polylogue.scenarios import CorpusRequest, CorpusScenario, CorpusSpec
+from polylogue.scenarios import CorpusRequest, CorpusScenario, CorpusSpec, PipelineProbeRequest
 from polylogue.schemas.synthetic import SyntheticCorpus
 from polylogue.storage.backends import create_backend
 from polylogue.storage.backends.connection import open_connection
@@ -66,99 +65,77 @@ def _load_json_object(text: str) -> JsonObject:
     return _require_json_object(json.loads(text))
 
 
-class _Args(argparse.Namespace):
-    def __init__(self, workdir: Path) -> None:
-        super().__init__(
-            input_mode="synthetic",
-            provider="chatgpt",
-            corpus_source="default",
+def _synthetic_request(workdir: Path) -> PipelineProbeRequest:
+    return PipelineProbeRequest(
+        stage="parse",
+        workdir=str(workdir),
+        corpus_request=CorpusRequest(
+            providers=("chatgpt",),
+            source="default",
             count=1,
             messages_min=3,
             messages_max=4,
             seed=7,
-            sample_per_provider=50,
-            source_filters=None,
-            source_db=None,
-            source_blob_root=None,
-            manifest_out=None,
-            manifest_in=None,
-            stage="parse",
-            raw_batch_size=None,
-            ingest_workers=None,
-            measure_ingest_result_size=False,
-            json_out=None,
-            max_total_ms=None,
-            max_peak_rss_mb=None,
-            workdir=workdir,
-        )
+            style="default",
+        ),
+    )
 
 
-class _ArchiveArgs(argparse.Namespace):
-    def __init__(
-        self,
-        *,
-        workdir: Path,
-        source_db: Path,
-        source_blob_root: Path,
-        manifest_out: Path | None = None,
-        manifest_in: Path | None = None,
-    ) -> None:
-        super().__init__(
-            input_mode="archive-subset",
-            provider=None,
+def _archive_request(
+    *,
+    workdir: Path,
+    source_db: Path,
+    source_blob_root: Path,
+    manifest_out: Path | None = None,
+    manifest_in: Path | None = None,
+    sample_per_provider: int = 1,
+    seed: int = 11,
+) -> PipelineProbeRequest:
+    return PipelineProbeRequest(
+        stage="parse",
+        input_mode="archive-subset",
+        workdir=str(workdir),
+        source_db=str(source_db),
+        source_blob_root=str(source_blob_root),
+        manifest_out=str(manifest_out) if manifest_out is not None else None,
+        manifest_in=str(manifest_in) if manifest_in is not None else None,
+        sample_per_provider=sample_per_provider,
+        corpus_request=CorpusRequest(
             count=1,
             messages_min=3,
             messages_max=4,
-            seed=11,
-            sample_per_provider=1,
-            source_filters=None,
-            manifest_out=manifest_out,
-            manifest_in=manifest_in,
-            stage="parse",
-            raw_batch_size=None,
-            ingest_workers=None,
-            measure_ingest_result_size=False,
-            json_out=None,
-            max_total_ms=None,
-            max_peak_rss_mb=None,
-            workdir=workdir,
-            source_db=source_db,
-            source_blob_root=source_blob_root,
-        )
+            seed=seed,
+            style="default",
+        ),
+    )
 
 
-class _SourceSubsetArgs(argparse.Namespace):
-    def __init__(
-        self,
-        *,
-        workdir: Path,
-        source_paths: list[Path],
-        source_name: str = "inbox",
-    ) -> None:
-        super().__init__(
-            input_mode="source-subset",
-            provider=None,
+def _source_subset_request(
+    *,
+    workdir: Path,
+    source_paths: list[Path],
+    source_name: str = "inbox",
+    raw_batch_size: int | None = None,
+    ingest_workers: int | None = None,
+    measure_ingest_result_size: bool = False,
+) -> PipelineProbeRequest:
+    return PipelineProbeRequest(
+        stage="parse",
+        input_mode="source-subset",
+        workdir=str(workdir),
+        source_paths=tuple(str(path) for path in source_paths),
+        source_name=source_name,
+        raw_batch_size=raw_batch_size,
+        ingest_workers=ingest_workers,
+        measure_ingest_result_size=measure_ingest_result_size,
+        corpus_request=CorpusRequest(
             count=1,
             messages_min=3,
             messages_max=4,
             seed=13,
-            sample_per_provider=50,
-            source_filters=None,
-            source_db=None,
-            source_blob_root=None,
-            manifest_out=None,
-            manifest_in=None,
-            stage="parse",
-            raw_batch_size=None,
-            ingest_workers=None,
-            measure_ingest_result_size=False,
-            json_out=None,
-            max_total_ms=None,
-            max_peak_rss_mb=None,
-            workdir=workdir,
-            source_paths=source_paths,
-            source_name=source_name,
-        )
+            style="default",
+        ),
+    )
 
 
 async def _seed_archive_source(tmp_path: Path) -> tuple[Path, Path]:
@@ -255,7 +232,7 @@ async def _seed_archive_source(tmp_path: Path) -> tuple[Path, Path]:
 
 
 async def test_run_probe_emits_real_pipeline_summary(tmp_path: Path) -> None:
-    summary = await run_probe(_Args(tmp_path / "probe"))
+    summary = await run_probe(_synthetic_request(tmp_path / "probe"))
     run_payload = _require_json_object(summary["run_payload"])
     metrics = _require_json_object(run_payload["metrics"])
     stages = _require_json_object(metrics["stages"])
@@ -302,13 +279,13 @@ async def test_run_probe_can_stage_real_source_subset(tmp_path: Path) -> None:
         ),
         source_root=source_input_root,
     )
-    args = _SourceSubsetArgs(
+    request = _source_subset_request(
         workdir=tmp_path / "source-subset-probe",
         source_paths=files,
         source_name="inbox",
     )
 
-    summary = await run_probe(args)
+    summary = await run_probe(request)
 
     source_inputs = _require_json_object(summary["source_inputs"])
     provenance = _require_json_object(summary["provenance"])
@@ -391,14 +368,14 @@ async def test_run_probe_applies_ingest_tuning_overrides(tmp_path: Path) -> None
         ),
         source_root=source_input_root,
     )
-    args = _SourceSubsetArgs(
+    request = _source_subset_request(
         workdir=tmp_path / "source-subset-overrides",
         source_paths=files,
+        raw_batch_size=1,
+        ingest_workers=1,
     )
-    args.raw_batch_size = 1
-    args.ingest_workers = 1
 
-    summary = await run_probe(args)
+    summary = await run_probe(request)
     ingest_details = _require_json_object(
         _json_path(summary, "run_payload", "metrics", "stages", "ingest", "details", "batch_observations")
     )
@@ -423,13 +400,13 @@ async def test_run_probe_can_measure_ingest_result_sizes(tmp_path: Path) -> None
         ),
         source_root=source_input_root,
     )
-    args = _SourceSubsetArgs(
+    request = _source_subset_request(
         workdir=tmp_path / "source-subset-size-probe",
         source_paths=files,
+        measure_ingest_result_size=True,
     )
-    args.measure_ingest_result_size = True
 
-    summary = await run_probe(args)
+    summary = await run_probe(request)
     batch = _require_json_object(
         _json_path(summary, "run_payload", "metrics", "stages", "ingest", "details", "batch_observations")
     )
@@ -442,13 +419,13 @@ async def test_run_probe_can_measure_ingest_result_sizes(tmp_path: Path) -> None
 
 
 async def test_run_probe_rejects_source_subset_without_source_paths(tmp_path: Path) -> None:
-    args = _SourceSubsetArgs(
+    request = _source_subset_request(
         workdir=tmp_path / "missing-source-paths",
         source_paths=[],
     )
 
     with pytest.raises(ValueError, match="--source-path is required"):
-        await run_probe(args)
+        await run_probe(request)
 
 
 def test_main_writes_json_summary(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -570,14 +547,14 @@ def test_main_returns_nonzero_when_budget_is_exceeded(capsys: pytest.CaptureFixt
 async def test_run_probe_can_sample_archive_subset_and_persist_manifest(tmp_path: Path) -> None:
     source_db, source_blob_root = await _seed_archive_source(tmp_path)
     manifest_out = tmp_path / "subset-manifest.json"
-    args = _ArchiveArgs(
+    request = _archive_request(
         workdir=tmp_path / "archive-probe",
         source_db=source_db,
         source_blob_root=source_blob_root,
         manifest_out=manifest_out,
     )
 
-    summary = await run_probe(args)
+    summary = await run_probe(request)
     manifest = _load_json_object(manifest_out.read_text(encoding="utf-8"))
 
     assert _json_path(summary, "probe", "input_mode") == "archive-subset"
@@ -597,24 +574,24 @@ async def test_run_probe_can_sample_archive_subset_and_persist_manifest(tmp_path
 async def test_run_probe_can_replay_archive_subset_manifest(tmp_path: Path) -> None:
     source_db, source_blob_root = await _seed_archive_source(tmp_path)
     manifest_out = tmp_path / "subset-manifest.json"
-    first_args = _ArchiveArgs(
+    first_request = _archive_request(
         workdir=tmp_path / "archive-probe-first",
         source_db=source_db,
         source_blob_root=source_blob_root,
         manifest_out=manifest_out,
     )
-    await run_probe(first_args)
+    await run_probe(first_request)
 
-    replay_args = _ArchiveArgs(
+    replay_request = _archive_request(
         workdir=tmp_path / "archive-probe-replay",
         source_db=source_db,
         source_blob_root=source_blob_root,
         manifest_in=manifest_out,
+        sample_per_provider=99,
+        seed=999,
     )
-    replay_args.sample_per_provider = 99
-    replay_args.seed = 999
 
-    summary = await run_probe(replay_args)
+    summary = await run_probe(replay_request)
 
     assert _json_path(summary, "sample", "selected_count") == 2
     assert _json_path(summary, "sample", "sample_per_provider") == 1
@@ -626,11 +603,11 @@ async def test_run_probe_rejects_empty_archive_subset(tmp_path: Path) -> None:
     with open_connection(empty_db):
         pass
     empty_blob_root = tmp_path / "empty-blobs"
-    args = _ArchiveArgs(
+    request = _archive_request(
         workdir=tmp_path / "archive-probe-empty",
         source_db=empty_db,
         source_blob_root=empty_blob_root,
     )
 
     with pytest.raises(ValueError, match="found no raw conversations"):
-        await run_probe(args)
+        await run_probe(request)
