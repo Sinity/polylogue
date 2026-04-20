@@ -26,7 +26,7 @@ from polylogue.storage.backends import create_backend
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.backends.connection import open_connection
 from polylogue.storage.session_product_runtime import SessionProductCounts
-from polylogue.storage.state_views import PlanResult, RunResult
+from polylogue.storage.state_views import PlanCounts, PlanResult, RunResult
 from tests.infra.storage_records import make_conversation, make_message, store_records
 
 WorkspaceEnv = Mapping[str, Path]
@@ -483,7 +483,7 @@ class TestRunSourcesIntegration:
         )
         plan = PlanResult(
             timestamp=123,
-            counts={"conversations": 10, "messages": 50, "attachments": 5},
+            counts={"scan": 10, "store_raw": 10, "validate": 10, "parse": 10, "materialize": 10},
             sources=["test"],
             cursors={},
         )
@@ -493,7 +493,7 @@ class TestRunSourcesIntegration:
 
         assert latest is not None
         assert latest.plan_snapshot is not None
-        assert latest.plan_snapshot["counts"] == plan.counts
+        assert PlanCounts.model_validate(latest.plan_snapshot["counts"]) == plan.counts
         assert result.drift["new"]["conversations"] == 0
         assert result.drift["removed"]["conversations"] == 0
 
@@ -1020,7 +1020,7 @@ class TestPlanSources:
         assert isinstance(result, PlanResult)
         assert result.stage == "all"
         assert result.counts == {}
-        assert result.details == {}
+        assert all(value == 0 for value in result.details.to_dict().values())
         assert result.sources == []
         assert result.cursors == {}
 

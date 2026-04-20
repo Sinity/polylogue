@@ -13,6 +13,7 @@ from polylogue.pipeline.services.acquisition_streams import iter_raw_record_stre
 from polylogue.pipeline.stage_models import AcquireResult
 from polylogue.protocols import ProgressCallback
 from polylogue.sources.source_acquisition import iter_source_raw_data
+from polylogue.storage.state_views import CursorStatePayload
 from polylogue.storage.store import RawConversationRecord
 
 if TYPE_CHECKING:
@@ -80,7 +81,7 @@ class AcquisitionService:
 
         for source in sources:
             logger.debug("Scanning source", source=source.name)
-            cursor_state: dict[str, object] = {}
+            cursor_state: CursorStatePayload = {}
             try:
                 async for record in iter_raw_record_stream(
                     source,

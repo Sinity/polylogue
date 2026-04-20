@@ -33,10 +33,10 @@ def runner() -> CliRunner:
 def mock_plan_result() -> PlanResult:
     return PlanResult(
         timestamp=1234567890,
-        counts={"conversations": 5, "messages": 50, "attachments": 2},
+        counts={"scan": 5, "store_raw": 5, "validate": 5, "parse": 5, "materialize": 5},
         sources=["test-inbox"],
         cursors={"test-inbox": {"path": "/tmp/inbox"}},
-        details={"new": 2, "existing": 3},
+        details={"new_raw": 2, "existing_raw": 3},
     )
 
 
@@ -45,7 +45,7 @@ def mock_run_result() -> RunResult:
     return RunResult(
         run_id="run-123",
         counts={"conversations": 3, "messages": 30, "attachments": 1},
-        drift={"conversations": {"new": 2, "updated": 1, "unchanged": 5}},
+        drift={"new": {"conversations": 2}, "changed": {"conversations": 1}, "removed": {}},
         indexed=True,
         index_error=None,
         duration_ms=1500,

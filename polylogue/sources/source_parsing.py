@@ -10,6 +10,7 @@ from polylogue.config import Source
 from polylogue.lib.artifact_taxonomy import classify_artifact_path
 from polylogue.logging import get_logger
 from polylogue.storage.blob_store import get_blob_store
+from polylogue.storage.state_views import CursorStatePayload
 from polylogue.types import Provider
 
 from . import cursor as _cursor
@@ -29,7 +30,7 @@ _decoders.logger = logger
 def iter_source_conversations(
     source: Source,
     *,
-    cursor_state: dict[str, object] | None = None,
+    cursor_state: CursorStatePayload | None = None,
 ) -> Iterable[ParsedConversation]:
     """Iterate parsed conversations from one configured source."""
     for _raw, conversation in iter_source_conversations_with_raw(
@@ -43,7 +44,7 @@ def iter_source_conversations(
 def iter_source_conversations_with_raw(
     source: Source,
     *,
-    cursor_state: dict[str, object] | None = None,
+    cursor_state: CursorStatePayload | None = None,
     capture_raw: bool = True,
     known_mtimes: dict[str, str] | None = None,
 ) -> Iterable[tuple[RawConversationData | None, ParsedConversation]]:

@@ -10,6 +10,7 @@ from pathlib import Path
 from polylogue.config import Source
 from polylogue.lib.run_activity import conversation_activity_counts
 from polylogue.lib.timestamps import format_timestamp
+from polylogue.storage.state_views import CursorStatePayload, PlanCounts, PlanDetails, RunCounts
 
 _FALSEY_ENV_VALUES = frozenset({"0", "false", "no"})
 
@@ -31,7 +32,7 @@ def announce_plain_mode() -> None:
     sys.stderr.write("Plain output active (non-TTY).\n")
 
 
-def format_cursors(cursors: Mapping[str, object]) -> str | None:
+def format_cursors(cursors: Mapping[str, object] | dict[str, CursorStatePayload]) -> str | None:
     if not cursors:
         return None
     parts: list[str] = []
@@ -62,7 +63,7 @@ def format_cursors(cursors: Mapping[str, object]) -> str | None:
     return "; ".join(parts)
 
 
-def format_counts(counts: Mapping[str, object]) -> str:
+def format_counts(counts: Mapping[str, object] | RunCounts) -> str:
     ordered_labels = [
         ("acquired", "acquired"),
         ("skipped", "skipped"),
@@ -102,7 +103,7 @@ def format_counts(counts: Mapping[str, object]) -> str:
     return ", ".join(parts)
 
 
-def format_run_details(counts: Mapping[str, object]) -> list[str]:
+def format_run_details(counts: Mapping[str, object] | RunCounts) -> list[str]:
     lines: list[str] = []
     total_conv, new_conv, changed_conv = conversation_activity_counts(counts)
 
@@ -163,7 +164,7 @@ def format_run_details(counts: Mapping[str, object]) -> list[str]:
     return lines
 
 
-def format_plan_counts(counts: Mapping[str, object]) -> str:
+def format_plan_counts(counts: Mapping[str, object] | PlanCounts) -> str:
     labels = [
         ("scan", "scan"),
         ("store_raw", "store"),
@@ -183,7 +184,7 @@ def format_plan_counts(counts: Mapping[str, object]) -> str:
     return ", ".join(parts)
 
 
-def format_plan_details(details: Mapping[str, object]) -> str | None:
+def format_plan_details(details: Mapping[str, object] | PlanDetails) -> str | None:
     labels = [
         ("new_raw", "new raw"),
         ("existing_raw", "existing raw"),

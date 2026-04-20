@@ -11,7 +11,7 @@ from polylogue.pipeline.run_support import expand_requested_stage, normalize_sta
 from polylogue.pipeline.stage_models import ValidateResult
 from polylogue.protocols import ProgressCallback
 from polylogue.storage.raw_ingest_artifacts import RawIngestArtifactState
-from polylogue.storage.state_views import PlanResult
+from polylogue.storage.state_views import PlanCounts, PlanDetails, PlanResult
 from polylogue.storage.store import RawConversationRecord
 from polylogue.types import PlanStage
 
@@ -75,13 +75,13 @@ async def build_ingest_plan(
         conversation_count = 0
         if has_materialize or has_render or has_index:
             conversation_count = await service.backend.count_conversation_ids(source_names=db_scope_names)
-        stage_counts: dict[str, int] = {}
+        stage_counts = PlanCounts()
         if has_materialize and conversation_count:
-            stage_counts["materialize"] = conversation_count
+            stage_counts.materialize = conversation_count
         if has_render and conversation_count:
-            stage_counts["render"] = conversation_count
+            stage_counts.render = conversation_count
         if has_index and conversation_count:
-            stage_counts["index"] = conversation_count
+            stage_counts.index = conversation_count
         return IngestPlan(
             summary=PlanResult(
                 timestamp=int(time.time()),
@@ -109,20 +109,20 @@ async def build_ingest_plan(
             force_reparse=force_reparse,
         )
         reprocess_raw_ids = dedupe_ids([*validate_backlog_ids, *parse_backlog_ids])
-        backlog_counts: dict[str, int] = {}
-        backlog_details: dict[str, int] = {}
+        backlog_counts = PlanCounts()
+        backlog_details = PlanDetails()
         if validate_backlog_ids:
-            backlog_counts["validate"] = len(validate_backlog_ids)
-            backlog_details["backlog_validate"] = len(validate_backlog_ids)
+            backlog_counts.validate_count = len(validate_backlog_ids)
+            backlog_details.backlog_validate = len(validate_backlog_ids)
         if reprocess_raw_ids:
-            backlog_counts["parse"] = len(reprocess_raw_ids)
-            backlog_details["backlog_parse"] = len(parse_backlog_ids)
+            backlog_counts.parse = len(reprocess_raw_ids)
+            backlog_details.backlog_parse = len(parse_backlog_ids)
             if has_materialize:
-                backlog_counts["materialize"] = len(reprocess_raw_ids)
+                backlog_counts.materialize = len(reprocess_raw_ids)
             if has_render:
-                backlog_counts["render"] = len(reprocess_raw_ids)
+                backlog_counts.render = len(reprocess_raw_ids)
             if has_index:
-                backlog_counts["index"] = len(reprocess_raw_ids)
+                backlog_counts.index = len(reprocess_raw_ids)
         return IngestPlan(
             summary=PlanResult(
                 timestamp=int(time.time()),
@@ -142,13 +142,13 @@ async def build_ingest_plan(
     scanned_count = 0
     validate_raw_ids: list[str] = []
     parse_ready_raw_ids: list[str] = []
-    plan_details: dict[str, int] = {
-        "new_raw": 0,
-        "existing_raw": 0,
-        "duplicate_raw": 0,
-        "backlog_validate": 0,
-        "backlog_parse": 0,
-    }
+    plan_details = PlanDetails(
+        new_raw=0,
+        existing_raw=0,
+        duplicate_raw=0,
+        backlog_validate=0,
+        backlog_parse=0,
+    )
     pending_records: list[RawConversationRecord] = []
     preview_validation = ValidateResult() if preview and has_parse else None
     seen_scanned_raw_ids: set[str] = set()
@@ -166,12 +166,12 @@ async def build_ingest_plan(
 
         for record in pending_records:
             if record.raw_id in seen_scanned_raw_ids:
-                plan_details["duplicate_raw"] += 1
+                plan_details.duplicate_raw = plan_details.int_value("duplicate_raw") + 1
                 continue
             seen_scanned_raw_ids.add(record.raw_id)
             state = scanned_states.get(record.raw_id)
             if state is None:
-                plan_details["new_raw"] += 1
+                plan_details.new_raw = plan_details.int_value("new_raw") + 1
                 if has_parse:
                     validate_raw_ids.append(record.raw_id)
                     if (
@@ -182,7 +182,7 @@ async def build_ingest_plan(
                         preview_records.append(record)
                 continue
 
-            plan_details["existing_raw"] += 1
+            plan_details.existing_raw = plan_details.int_value("existing_raw") + 1
             if not has_parse:
                 continue
 
@@ -226,7 +226,7 @@ async def build_ingest_plan(
             force_reparse=force_reparse,
         )
         if backlog_validate_ids:
-            plan_details["backlog_validate"] = len(backlog_validate_ids)
+            plan_details.backlog_validate = len(backlog_validate_ids)
             validate_raw_ids.extend(backlog_validate_ids)
 
         if preview:
@@ -237,9 +237,9 @@ async def build_ingest_plan(
                 )
                 preview_validation.merge(backlog_preview_validation)
             if preview_validation is not None and preview_validation.counts["invalid"]:
-                plan_details["preview_invalid"] = preview_validation.counts["invalid"]
+                plan_details.preview_invalid = preview_validation.counts["invalid"]
             if preview_validation is not None and preview_validation.counts["skipped_no_schema"]:
-                plan_details["preview_skipped_no_schema"] = preview_validation.counts["skipped_no_schema"]
+                plan_details.preview_skipped_no_schema = preview_validation.counts["skipped_no_schema"]
 
     if has_parse:
         backlog_parse_ids = await collect_parse_backlog(
@@ -248,43 +248,43 @@ async def build_ingest_plan(
             exclude_raw_ids=validate_raw_ids,
             force_reparse=force_reparse,
         )
-        plan_details["backlog_parse"] = len(backlog_parse_ids)
+        plan_details.backlog_parse = len(backlog_parse_ids)
         parse_ready_raw_ids.extend(backlog_parse_ids)
         if preview_validation is not None:
             parse_ready_raw_ids.extend(preview_validation.parseable_raw_ids)
         parse_ready_raw_ids = dedupe_ids(parse_ready_raw_ids)
         validate_raw_ids = dedupe_ids(validate_raw_ids)
 
-    final_counts: dict[str, int] = {}
+    final_counts = PlanCounts()
     if scanned_count:
-        final_counts["scan"] = scanned_count
-    if plan_details["new_raw"] and has_acquire:
-        final_counts["store_raw"] = plan_details["new_raw"]
+        final_counts.scan = scanned_count
+    if plan_details.int_value("new_raw") and has_acquire:
+        final_counts.store_raw = plan_details.int_value("new_raw")
     if has_parse and validate_raw_ids:
-        final_counts["validate"] = len(validate_raw_ids)
+        final_counts.validate_count = len(validate_raw_ids)
     if has_parse and parse_ready_raw_ids:
-        final_counts["parse"] = len(parse_ready_raw_ids)
+        final_counts.parse = len(parse_ready_raw_ids)
         if has_materialize:
-            final_counts["materialize"] = len(parse_ready_raw_ids)
+            final_counts.materialize = len(parse_ready_raw_ids)
         if has_render:
-            final_counts["render"] = len(parse_ready_raw_ids)
+            final_counts.render = len(parse_ready_raw_ids)
         if has_index:
-            final_counts["index"] = len(parse_ready_raw_ids)
+            final_counts.index = len(parse_ready_raw_ids)
     elif not has_parse and (has_materialize or has_render or has_index):
         conversation_count = await service.backend.count_conversation_ids(source_names=db_scope_names)
         if has_materialize and conversation_count:
-            final_counts["materialize"] = conversation_count
+            final_counts.materialize = conversation_count
         if has_render and conversation_count:
-            final_counts["render"] = conversation_count
+            final_counts.render = conversation_count
         if has_index and conversation_count:
-            final_counts["index"] = conversation_count
+            final_counts.index = conversation_count
 
     summary = PlanResult(
         timestamp=int(time.time()),
         stage=summary_stage,
         stage_sequence=normalized_plan_stage_sequence,
         counts=final_counts,
-        details={key: value for key, value in plan_details.items() if value},
+        details=plan_details,
         sources=source_names,
         cursors=scan_result.cursors,
     )

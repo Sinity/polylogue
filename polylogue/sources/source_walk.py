@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from polylogue.config import Source
+from polylogue.storage.state_views import CursorStatePayload
 from polylogue.types import Provider
 
 from . import cursor as _cursor
@@ -58,7 +59,7 @@ class _SourceWalkSetup:
 def _setup_source_walk(
     source: Source,
     *,
-    cursor_state: dict[str, object] | None,
+    cursor_state: CursorStatePayload | None,
     include_mtime: bool,
     known_mtimes: dict[str, str] | None,
     discover_sidecars: bool,
