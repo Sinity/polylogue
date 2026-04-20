@@ -6,9 +6,10 @@ import re
 from collections.abc import Iterable, Mapping
 from datetime import datetime
 from functools import cached_property
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING
 
 from polylogue.lib.attachment_models import Attachment
+from polylogue.lib.json import JSONDocument, json_document, json_document_list
 from polylogue.lib.roles import Role
 from polylogue.logging import get_logger
 from polylogue.types import Provider
@@ -49,10 +50,12 @@ def _mapping(value: object) -> Mapping[str, object] | None:
     return value if isinstance(value, Mapping) else None
 
 
-def _content_block_mappings(value: object) -> list[Mapping[str, object]]:
-    if not isinstance(value, list):
-        return []
-    return [block for block in value if isinstance(block, Mapping)]
+def _provider_meta_record(provider_meta: dict[str, object] | None) -> JSONDocument:
+    return json_document(provider_meta)
+
+
+def _content_block_documents(value: object) -> list[JSONDocument]:
+    return json_document_list(value)
 
 
 def _block_texts(blocks: Iterable[Mapping[str, object]], *, block_type: str) -> list[str]:
@@ -120,7 +123,7 @@ class MessageRuntimeMixin:
 
             return extract_from_provider_meta(
                 self.provider,
-                cast(dict[str, Any], self.provider_meta),
+                _provider_meta_record(self.provider_meta),
                 message_id=self.id,
                 role=self.role,
                 text=self.text,
@@ -138,12 +141,13 @@ class MessageRuntimeMixin:
     def _is_chatgpt_thinking(self) -> bool:
         if self.provider_meta is None:
             return False
-        raw = _mapping(self.provider_meta.get("raw"))
-        if raw is None:
+        provider_meta = _provider_meta_record(self.provider_meta)
+        raw = json_document(provider_meta.get("raw"))
+        if not raw:
             return False
 
-        content = _mapping(raw.get("content"))
-        if content is not None:
+        content = json_document(raw.get("content"))
+        if content:
             content_type = content.get("content_type")
             if isinstance(content_type, str) and content_type in {"thoughts", "reasoning_recap"}:
                 return True
@@ -162,12 +166,13 @@ class MessageRuntimeMixin:
 
         provider_meta = self.provider_meta
         if provider_meta is not None:
+            provider_meta_record = _provider_meta_record(provider_meta)
             if any(
                 block.get("type") in {"tool_use", "tool_result"}
-                for block in _content_block_mappings(provider_meta.get("content_blocks"))
+                for block in _content_block_documents(provider_meta_record.get("content_blocks"))
             ):
                 return True
-            if bool(provider_meta.get("isSidechain")) or bool(provider_meta.get("isMeta")):
+            if bool(provider_meta_record.get("isSidechain")) or bool(provider_meta_record.get("isMeta")):
                 return True
             harmonized = self.harmonized
             if harmonized is not None and harmonized.tool_calls:
@@ -185,15 +190,16 @@ class MessageRuntimeMixin:
 
         provider_meta = self.provider_meta
         if provider_meta is not None:
+            provider_meta_record = _provider_meta_record(provider_meta)
             if any(
                 block.get("type") == "thinking"
-                for block in _content_block_mappings(provider_meta.get("content_blocks"))
+                for block in _content_block_documents(provider_meta_record.get("content_blocks"))
             ):
                 return True
-            if bool(provider_meta.get("isThought")):
+            if bool(provider_meta_record.get("isThought")):
                 return True
-            raw = _mapping(provider_meta.get("raw"))
-            if raw is not None and bool(raw.get("isThought")):
+            raw = json_document(provider_meta_record.get("raw"))
+            if raw and bool(raw.get("isThought")):
                 return True
             harmonized = self.harmonized
             if harmonized is not None and harmonized.reasoning_traces:
@@ -240,7 +246,8 @@ class MessageRuntimeMixin:
         provider_meta = self.provider_meta
         if provider_meta is None:
             return None
-        raw = _mapping(provider_meta.get("raw")) or provider_meta
+        provider_meta_record = _provider_meta_record(provider_meta)
+        raw = json_document(provider_meta_record.get("raw")) or provider_meta_record
         return _coerce_optional_float(raw.get("costUSD"))
 
     @property
@@ -248,7 +255,8 @@ class MessageRuntimeMixin:
         provider_meta = self.provider_meta
         if provider_meta is None:
             return None
-        raw = _mapping(provider_meta.get("raw")) or provider_meta
+        provider_meta_record = _provider_meta_record(provider_meta)
+        raw = json_document(provider_meta_record.get("raw")) or provider_meta_record
         return _coerce_optional_int(raw.get("durationMs"))
 
     def extract_thinking(self) -> str | None:
@@ -264,8 +272,9 @@ class MessageRuntimeMixin:
 
         provider_meta = self.provider_meta
         if provider_meta is not None:
+            provider_meta_record = _provider_meta_record(provider_meta)
             provider_texts = _block_texts(
-                _content_block_mappings(provider_meta.get("content_blocks")),
+                _content_block_documents(provider_meta_record.get("content_blocks")),
                 block_type="thinking",
             )
             if provider_texts:
@@ -278,7 +287,8 @@ class MessageRuntimeMixin:
                 return match.group(1).strip()
 
         if text and (
-            self._is_chatgpt_thinking() or (provider_meta is not None and bool(provider_meta.get("isThought")))
+            self._is_chatgpt_thinking()
+            or (provider_meta is not None and bool(_provider_meta_record(provider_meta).get("isThought")))
         ):
             return text.strip() or None
 

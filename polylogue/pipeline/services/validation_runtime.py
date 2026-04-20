@@ -4,9 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING
 
-from polylogue.lib.raw_payload import build_raw_payload_envelope
+from polylogue.lib.raw_payload import RawPayloadEnvelope, build_raw_payload_envelope
 from polylogue.logging import get_logger
 from polylogue.schemas.validator import SchemaValidator
 from polylogue.storage.blob_store import BlobStore
@@ -14,10 +13,6 @@ from polylogue.storage.store import RawConversationRecord
 from polylogue.types import Provider, ValidationMode, ValidationStatus
 
 logger = get_logger(__name__)
-
-
-if TYPE_CHECKING:
-    from polylogue.lib.raw_payload_decode import JSONValue, RawPayloadEnvelope
 
 
 ValidationCounts = dict[str, int]
@@ -120,7 +115,7 @@ def _validate_record_sync(
             raw_record=raw_record,
             payload_provider=stored_payload_provider,
         )
-        payload: JSONValue = envelope.payload
+        payload = envelope.payload
         malformed_lines = envelope.malformed_jsonl_lines
         malformed_detail = envelope.malformed_jsonl_detail
         payload_provider = envelope.provider

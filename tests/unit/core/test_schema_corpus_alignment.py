@@ -14,6 +14,7 @@ from typing import Any
 
 import pytest
 
+from polylogue.lib.json import JSONValue, json_document
 from polylogue.lib.raw_payload_sampling_extract import (
     extract_payload_samples,
     extract_record_samples_from_raw_content,
@@ -35,6 +36,11 @@ from polylogue.schemas.semantic_inference_runtime import (
     infer_semantic_roles,
 )
 from polylogue.types import Provider
+
+
+def _payload_documents(records: list[dict[str, str]]) -> list[JSONValue]:
+    return [json_document(record) for record in records]
+
 
 # ---------------------------------------------------------------------------
 # 1. Full-corpus mode bypasses sample caps
@@ -68,7 +74,7 @@ class TestFullCorpusMode:
 
     def test_extract_payload_samples_no_cap_returns_all(self) -> None:
         """extract_payload_samples with max_samples=None returns all records."""
-        records = [{"type": "assistant", "text": f"resp {i}"} for i in range(50)]
+        records = _payload_documents([{"type": "assistant", "text": f"resp {i}"} for i in range(50)])
         result = extract_payload_samples(
             records,
             sample_granularity="record",

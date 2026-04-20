@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from polylogue.lib.json import JSONDocument, JSONDocumentList, JSONScalar, JSONValue
 from polylogue.lib.raw_payload_decode import (
     RawPayloadEnvelope,
     WireFormat,
@@ -17,6 +18,10 @@ from polylogue.lib.raw_payload_sampling_extract import (
 )
 
 __all__ = [
+    "JSONDocument",
+    "JSONDocumentList",
+    "JSONScalar",
+    "JSONValue",
     "RawPayloadEnvelope",
     "WireFormat",
     "build_raw_payload_envelope",

@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 from polylogue.paths import db_path as archive_db_path
 from polylogue.schemas.generation_models import _ProviderBundle
@@ -12,6 +11,14 @@ from polylogue.schemas.generation_provider_bundle import _build_provider_bundle
 from polylogue.schemas.generation_schema_builder import generate_schema_from_samples
 from polylogue.schemas.observation import PROVIDERS
 from polylogue.schemas.registry import SchemaRegistry
+from polylogue.schemas.runtime_registry import ElementSchemaMap
+
+
+def _package_schemas(bundle: _ProviderBundle) -> dict[str, ElementSchemaMap]:
+    return {
+        version: {element_kind: dict(schema) for element_kind, schema in element_schemas.items()}
+        for version, element_schemas in bundle.package_schemas.items()
+    }
 
 
 def persist_generated_provider_bundle(output_dir: Path, provider: str, bundle: _ProviderBundle) -> None:
@@ -24,7 +31,7 @@ def persist_generated_provider_bundle(output_dir: Path, provider: str, bundle: _
     registry.replace_provider_packages(
         provider,
         bundle.catalog,
-        cast(Mapping[str, dict[str, Mapping[str, object]]], bundle.package_schemas),
+        _package_schemas(bundle),
     )
     registry.save_cluster_manifest(bundle.manifest)
 

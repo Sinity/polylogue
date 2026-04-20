@@ -2,17 +2,17 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from datetime import datetime
 
 from pydantic import ValidationError
 
+from polylogue.lib.json import JSONDocument, json_document
 from polylogue.lib.timestamps import parse_timestamp
 from polylogue.lib.viewports import ContentBlock, CostInfo, ReasoningTrace, TokenUsage, ToolCall
 from polylogue.schemas.unified_models import extract_token_usage
 from polylogue.types import Provider
 
-ProviderMetaPayload = Mapping[str, object]
+ProviderMetaPayload = JSONDocument
 
 
 def _coerce_timestamp(value: datetime | str | float | int | None) -> datetime | None:
@@ -34,7 +34,7 @@ def _coerce_reasoning_traces(
             continue
         if not isinstance(trace, dict):
             continue
-        raw_trace = dict(trace)
+        raw_trace = json_document(trace)
         raw_trace.setdefault("provider", provider)
         try:
             coerced.append(ReasoningTrace.model_validate(raw_trace))
@@ -56,7 +56,7 @@ def _coerce_tool_calls(
             continue
         if not isinstance(call, dict):
             continue
-        raw_call = dict(call)
+        raw_call = json_document(call)
         raw_call.setdefault("provider", provider)
         try:
             coerced.append(ToolCall.model_validate(raw_call))
@@ -76,7 +76,7 @@ def _coerce_content_blocks(blocks: object) -> list[ContentBlock]:
         if not isinstance(block, dict):
             continue
         try:
-            coerced.append(ContentBlock.model_validate(block))
+            coerced.append(ContentBlock.model_validate(json_document(block)))
         except ValidationError:
             continue
     return coerced
@@ -85,14 +85,14 @@ def _coerce_content_blocks(blocks: object) -> list[ContentBlock]:
 def _extract_generic_tokens(provider_meta: ProviderMetaPayload) -> TokenUsage | None:
     usage = provider_meta.get("usage")
     if isinstance(usage, dict):
-        return extract_token_usage(usage)
+        return extract_token_usage(json_document(usage))
 
     tokens = provider_meta.get("tokens")
     if isinstance(tokens, TokenUsage):
         return tokens
     if isinstance(tokens, dict):
         try:
-            return TokenUsage.model_validate(tokens)
+            return TokenUsage.model_validate(json_document(tokens))
         except ValidationError:
             return None
 
@@ -108,7 +108,7 @@ def _extract_generic_cost(provider_meta: ProviderMetaPayload) -> CostInfo | None
         return cost
     if isinstance(cost, dict):
         try:
-            return CostInfo.model_validate(cost)
+            return CostInfo.model_validate(json_document(cost))
         except ValidationError:
             return None
 

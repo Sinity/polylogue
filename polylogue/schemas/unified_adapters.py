@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Protocol, TypeAlias, cast
+from typing import Protocol, TypeAlias
 
-from polylogue.lib.raw_payload_decode import JSONRecord
+from polylogue.lib.json import JSONDocument
 from polylogue.lib.viewports import ContentBlock, MessageMeta, ReasoningTrace, ToolCall
 from polylogue.schemas.unified_models import HarmonizedMessage, _missing_role
 from polylogue.types import Provider
@@ -24,17 +24,17 @@ class ViewportRecord(Protocol):
     def extract_content_blocks(self) -> list[ContentBlock]: ...
 
 
-AdapterBuilder: TypeAlias = Callable[[JSONRecord], ViewportRecord]
+AdapterBuilder: TypeAlias = Callable[[JSONDocument], ViewportRecord]
 
 
 class _ViewportModelType(Protocol):
     @classmethod
-    def model_validate(cls, obj: object) -> object: ...
+    def model_validate(cls, obj: object) -> ViewportRecord: ...
 
 
 def _harmonize_viewport_message(
     provider: Provider,
-    raw: JSONRecord,
+    raw: JSONDocument,
     message: ViewportRecord,
 ) -> HarmonizedMessage:
     """Build a harmonized message from a typed provider adapter."""
@@ -57,43 +57,43 @@ def _harmonize_viewport_message(
 
 
 def _validate_viewport(
-    raw: JSONRecord,
+    raw: JSONDocument,
     model_type: _ViewportModelType,
 ) -> ViewportRecord:
-    return cast(ViewportRecord, model_type.model_validate(raw))
+    return model_type.model_validate(raw)
 
 
-def _require_claude_code_message(raw: JSONRecord) -> None:
+def _require_claude_code_message(raw: JSONDocument) -> None:
     if raw.get("message") == {}:
         raise ValueError("Message has no role. Data should be validated at import time.")
 
 
-def _validate_claude_code_record(raw: JSONRecord) -> ViewportRecord:
+def _validate_claude_code_record(raw: JSONDocument) -> ViewportRecord:
     from polylogue.sources.providers.claude_code import ClaudeCodeRecord
 
     _require_claude_code_message(raw)
     return _validate_viewport(raw, ClaudeCodeRecord)
 
 
-def _validate_claude_ai_message(raw: JSONRecord) -> ViewportRecord:
+def _validate_claude_ai_message(raw: JSONDocument) -> ViewportRecord:
     from polylogue.sources.providers.claude_ai import ClaudeAIChatMessage
 
     return _validate_viewport(raw, ClaudeAIChatMessage)
 
 
-def _validate_chatgpt_message(raw: JSONRecord) -> ViewportRecord:
+def _validate_chatgpt_message(raw: JSONDocument) -> ViewportRecord:
     from polylogue.sources.providers.chatgpt import ChatGPTMessage
 
     return _validate_viewport(raw, ChatGPTMessage)
 
 
-def _validate_gemini_message(raw: JSONRecord) -> ViewportRecord:
+def _validate_gemini_message(raw: JSONDocument) -> ViewportRecord:
     from polylogue.sources.providers.gemini import GeminiMessage
 
     return _validate_viewport(raw, GeminiMessage)
 
 
-def _validate_codex_record(raw: JSONRecord) -> ViewportRecord:
+def _validate_codex_record(raw: JSONDocument) -> ViewportRecord:
     from polylogue.sources.providers.codex import CodexRecord
 
     return _validate_viewport(raw, CodexRecord)
@@ -108,7 +108,7 @@ _ADAPTER_BUILDERS: dict[Provider, AdapterBuilder] = {
 }
 
 
-def extract_with_adapter(provider: Provider, raw: JSONRecord) -> HarmonizedMessage:
+def extract_with_adapter(provider: Provider, raw: JSONDocument) -> HarmonizedMessage:
     """Extract via the canonical typed provider adapter for valid raw records."""
     try:
         builder = _ADAPTER_BUILDERS[provider]
