@@ -24,6 +24,100 @@ from polylogue.storage.store import (
 
 
 _SYNC_COLUMN_CACHE: dict[tuple[int, str], bool] = {}
+SqlValue = str | int | float | None
+SqlBindings = tuple[SqlValue, ...]
+
+_SESSION_PROFILE_BASE_COLUMNS = (
+    "conversation_id",
+    "materializer_version",
+    "materialized_at",
+    "source_updated_at",
+    "source_sort_key",
+    "provider_name",
+    "title",
+    "first_message_at",
+    "last_message_at",
+    "canonical_session_date",
+    "repo_paths_json",
+    "repo_names_json",
+    "tags_json",
+    "auto_tags_json",
+    "message_count",
+    "substantive_count",
+    "attachment_count",
+    "work_event_count",
+    "phase_count",
+    "word_count",
+    "tool_use_count",
+    "thinking_count",
+    "total_cost_usd",
+    "total_duration_ms",
+    "engaged_duration_ms",
+    "wall_duration_ms",
+    "cost_is_estimated",
+)
+_SESSION_PROFILE_PAYLOAD_COLUMNS = (
+    "evidence_payload_json",
+    "inference_payload_json",
+    "enrichment_payload_json",
+    "search_text",
+    "evidence_search_text",
+    "inference_search_text",
+    "enrichment_search_text",
+    "enrichment_version",
+    "enrichment_family",
+    "inference_version",
+    "inference_family",
+)
+_SESSION_WORK_EVENT_BASE_COLUMNS = (
+    "event_id",
+    "conversation_id",
+    "materializer_version",
+    "materialized_at",
+    "source_updated_at",
+    "source_sort_key",
+    "provider_name",
+    "event_index",
+    "kind",
+    "confidence",
+    "start_index",
+    "end_index",
+    "start_time",
+    "end_time",
+    "duration_ms",
+    "canonical_session_date",
+    "summary",
+    "file_paths_json",
+    "tools_used_json",
+)
+_TIMELINE_PAYLOAD_COLUMNS = (
+    "evidence_payload_json",
+    "inference_payload_json",
+    "search_text",
+    "inference_version",
+    "inference_family",
+)
+_SESSION_PHASE_BASE_COLUMNS = (
+    "phase_id",
+    "conversation_id",
+    "materializer_version",
+    "materialized_at",
+    "source_updated_at",
+    "source_sort_key",
+    "provider_name",
+    "phase_index",
+    "kind",
+    "start_index",
+    "end_index",
+    "start_time",
+    "end_time",
+    "duration_ms",
+    "canonical_session_date",
+    "confidence",
+    "evidence_reasons_json",
+    "tool_counts_json",
+    "word_count",
+)
 
 
 def table_has_column(conn: sqlite3.Connection, table: str, column: str) -> bool:
@@ -38,6 +132,39 @@ def table_has_column(conn: sqlite3.Connection, table: str, column: str) -> bool:
 
 def _placeholders(columns: Sequence[str]) -> str:
     return ", ".join("?" for _ in columns)
+
+
+def build_insert_sql(table: str, columns: Sequence[str]) -> str:
+    return f"""
+        INSERT INTO {table} (
+            {", ".join(columns)}
+        ) VALUES ({_placeholders(columns)})
+        """
+
+
+def _with_legacy_payload_column(
+    base_columns: tuple[str, ...],
+    payload_columns: tuple[str, ...],
+    *,
+    has_legacy_payload: bool,
+) -> tuple[str, ...]:
+    if has_legacy_payload:
+        return base_columns + ("payload_json",) + payload_columns
+    return base_columns + payload_columns
+
+
+def _compose_bindings(
+    base_values: Sequence[SqlValue],
+    payload_values: Sequence[SqlValue],
+    *,
+    has_legacy_payload: bool,
+    legacy_payload_json: str | None,
+) -> SqlBindings:
+    values = list(base_values)
+    if has_legacy_payload:
+        values.append(legacy_payload_json)
+    values.extend(payload_values)
+    return tuple(values)
 
 
 def _legacy_profile_payload_json(record: SessionProfileRecord) -> str | None:
@@ -56,61 +183,19 @@ def session_profile_insert_columns(
     *,
     has_legacy_payload: bool,
 ) -> tuple[str, ...]:
-    columns = [
-        "conversation_id",
-        "materializer_version",
-        "materialized_at",
-        "source_updated_at",
-        "source_sort_key",
-        "provider_name",
-        "title",
-        "first_message_at",
-        "last_message_at",
-        "canonical_session_date",
-        "repo_paths_json",
-        "repo_names_json",
-        "tags_json",
-        "auto_tags_json",
-        "message_count",
-        "substantive_count",
-        "attachment_count",
-        "work_event_count",
-        "phase_count",
-        "word_count",
-        "tool_use_count",
-        "thinking_count",
-        "total_cost_usd",
-        "total_duration_ms",
-        "engaged_duration_ms",
-        "wall_duration_ms",
-        "cost_is_estimated",
-    ]
-    if has_legacy_payload:
-        columns.append("payload_json")
-    columns.extend(
-        [
-            "evidence_payload_json",
-            "inference_payload_json",
-            "enrichment_payload_json",
-            "search_text",
-            "evidence_search_text",
-            "inference_search_text",
-            "enrichment_search_text",
-            "enrichment_version",
-            "enrichment_family",
-            "inference_version",
-            "inference_family",
-        ]
+    return _with_legacy_payload_column(
+        _SESSION_PROFILE_BASE_COLUMNS,
+        _SESSION_PROFILE_PAYLOAD_COLUMNS,
+        has_legacy_payload=has_legacy_payload,
     )
-    return tuple(columns)
 
 
 def session_profile_insert_values(
     record: SessionProfileRecord,
     *,
     has_legacy_payload: bool,
-) -> tuple[object, ...]:
-    values: list[object] = [
+) -> SqlBindings:
+    base_values: list[SqlValue] = [
         record.conversation_id,
         record.materializer_version,
         record.materialized_at,
@@ -139,80 +224,56 @@ def session_profile_insert_values(
         record.wall_duration_ms,
         int(record.cost_is_estimated),
     ]
-    if has_legacy_payload:
-        values.append(_legacy_profile_payload_json(record))
-    values.extend(
-        [
-            _json_or_none(record.evidence_payload),
-            _json_or_none(record.inference_payload),
-            _json_or_none(record.enrichment_payload),
-            record.search_text,
-            record.evidence_search_text,
-            record.inference_search_text,
-            record.enrichment_search_text,
-            record.enrichment_version,
-            record.enrichment_family,
-            record.inference_version,
-            record.inference_family,
-        ]
+    payload_values: tuple[SqlValue, ...] = (
+        _json_or_none(record.evidence_payload),
+        _json_or_none(record.inference_payload),
+        _json_or_none(record.enrichment_payload),
+        record.search_text,
+        record.evidence_search_text,
+        record.inference_search_text,
+        record.enrichment_search_text,
+        record.enrichment_version,
+        record.enrichment_family,
+        record.inference_version,
+        record.inference_family,
     )
-    return tuple(values)
+    return _compose_bindings(
+        base_values,
+        payload_values,
+        has_legacy_payload=has_legacy_payload,
+        legacy_payload_json=_legacy_profile_payload_json(record),
+    )
 
 
 def _legacy_timeline_payload_json(
-    evidence_payload: object,
-    inference_payload: object,
+    evidence_payload: BaseModel,
+    inference_payload: BaseModel,
 ) -> str | None:
-    evidence = evidence_payload.model_dump(mode="json") if isinstance(evidence_payload, BaseModel) else {}
-    inference = inference_payload.model_dump(mode="json") if isinstance(inference_payload, BaseModel) else {}
-    return _json_or_none({**evidence, **inference})
+    return _json_or_none(
+        {
+            **evidence_payload.model_dump(mode="json"),
+            **inference_payload.model_dump(mode="json"),
+        }
+    )
 
 
 def session_work_event_insert_columns(
     *,
     has_legacy_payload: bool,
 ) -> tuple[str, ...]:
-    columns = [
-        "event_id",
-        "conversation_id",
-        "materializer_version",
-        "materialized_at",
-        "source_updated_at",
-        "source_sort_key",
-        "provider_name",
-        "event_index",
-        "kind",
-        "confidence",
-        "start_index",
-        "end_index",
-        "start_time",
-        "end_time",
-        "duration_ms",
-        "canonical_session_date",
-        "summary",
-        "file_paths_json",
-        "tools_used_json",
-    ]
-    if has_legacy_payload:
-        columns.append("payload_json")
-    columns.extend(
-        [
-            "evidence_payload_json",
-            "inference_payload_json",
-            "search_text",
-            "inference_version",
-            "inference_family",
-        ]
+    return _with_legacy_payload_column(
+        _SESSION_WORK_EVENT_BASE_COLUMNS,
+        _TIMELINE_PAYLOAD_COLUMNS,
+        has_legacy_payload=has_legacy_payload,
     )
-    return tuple(columns)
 
 
 def session_work_event_insert_values(
     record: SessionWorkEventRecord,
     *,
     has_legacy_payload: bool,
-) -> tuple[object, ...]:
-    values: list[object] = [
+) -> SqlBindings:
+    base_values: list[SqlValue] = [
         record.event_id,
         record.conversation_id,
         record.materializer_version,
@@ -233,65 +294,38 @@ def session_work_event_insert_values(
         _json_array_or_none(record.file_paths),
         _json_array_or_none(record.tools_used),
     ]
-    if has_legacy_payload:
-        values.append(_legacy_timeline_payload_json(record.evidence_payload, record.inference_payload))
-    values.extend(
-        [
-            _json_or_none(record.evidence_payload),
-            _json_or_none(record.inference_payload),
-            record.search_text,
-            record.inference_version,
-            record.inference_family,
-        ]
+    payload_values: tuple[SqlValue, ...] = (
+        _json_or_none(record.evidence_payload),
+        _json_or_none(record.inference_payload),
+        record.search_text,
+        record.inference_version,
+        record.inference_family,
     )
-    return tuple(values)
+    return _compose_bindings(
+        base_values,
+        payload_values,
+        has_legacy_payload=has_legacy_payload,
+        legacy_payload_json=_legacy_timeline_payload_json(record.evidence_payload, record.inference_payload),
+    )
 
 
 def session_phase_insert_columns(
     *,
     has_legacy_payload: bool,
 ) -> tuple[str, ...]:
-    columns = [
-        "phase_id",
-        "conversation_id",
-        "materializer_version",
-        "materialized_at",
-        "source_updated_at",
-        "source_sort_key",
-        "provider_name",
-        "phase_index",
-        "kind",
-        "start_index",
-        "end_index",
-        "start_time",
-        "end_time",
-        "duration_ms",
-        "canonical_session_date",
-        "confidence",
-        "evidence_reasons_json",
-        "tool_counts_json",
-        "word_count",
-    ]
-    if has_legacy_payload:
-        columns.append("payload_json")
-    columns.extend(
-        [
-            "evidence_payload_json",
-            "inference_payload_json",
-            "search_text",
-            "inference_version",
-            "inference_family",
-        ]
+    return _with_legacy_payload_column(
+        _SESSION_PHASE_BASE_COLUMNS,
+        _TIMELINE_PAYLOAD_COLUMNS,
+        has_legacy_payload=has_legacy_payload,
     )
-    return tuple(columns)
 
 
 def session_phase_insert_values(
     record: SessionPhaseRecord,
     *,
     has_legacy_payload: bool,
-) -> tuple[object, ...]:
-    values: list[object] = [
+) -> SqlBindings:
+    base_values: list[SqlValue] = [
         record.phase_id,
         record.conversation_id,
         record.materializer_version,
@@ -312,21 +346,22 @@ def session_phase_insert_values(
         _json_or_none(record.tool_counts),
         record.word_count,
     ]
-    if has_legacy_payload:
-        values.append(_legacy_timeline_payload_json(record.evidence_payload, record.inference_payload))
-    values.extend(
-        [
-            _json_or_none(record.evidence_payload),
-            _json_or_none(record.inference_payload),
-            record.search_text,
-            record.inference_version,
-            record.inference_family,
-        ]
+    payload_values: tuple[SqlValue, ...] = (
+        _json_or_none(record.evidence_payload),
+        _json_or_none(record.inference_payload),
+        record.search_text,
+        record.inference_version,
+        record.inference_family,
     )
-    return tuple(values)
+    return _compose_bindings(
+        base_values,
+        payload_values,
+        has_legacy_payload=has_legacy_payload,
+        legacy_payload_json=_legacy_timeline_payload_json(record.evidence_payload, record.inference_payload),
+    )
 
 
-def work_thread_insert_values(record: WorkThreadRecord) -> tuple[object, ...]:
+def work_thread_insert_values(record: WorkThreadRecord) -> SqlBindings:
     return (
         record.thread_id,
         record.root_id,
@@ -348,7 +383,7 @@ def work_thread_insert_values(record: WorkThreadRecord) -> tuple[object, ...]:
     )
 
 
-def session_tag_rollup_insert_values(record: SessionTagRollupRecord) -> tuple[object, ...]:
+def session_tag_rollup_insert_values(record: SessionTagRollupRecord) -> SqlBindings:
     return (
         record.tag,
         record.bucket_day,
@@ -365,7 +400,7 @@ def session_tag_rollup_insert_values(record: SessionTagRollupRecord) -> tuple[ob
     )
 
 
-def day_session_summary_insert_values(record: DaySessionSummaryRecord) -> tuple[object, ...]:
+def day_session_summary_insert_values(record: DaySessionSummaryRecord) -> SqlBindings:
     return (
         record.day,
         record.provider_name,
@@ -396,11 +431,7 @@ def replace_session_profile_sync(conn: sqlite3.Connection, record: SessionProfil
     has_legacy_payload = table_has_column(conn, "session_profiles", "payload_json")
     columns = session_profile_insert_columns(has_legacy_payload=has_legacy_payload)
     conn.execute(
-        f"""
-        INSERT INTO session_profiles (
-            {", ".join(columns)}
-        ) VALUES ({_placeholders(columns)})
-        """,
+        build_insert_sql("session_profiles", columns),
         session_profile_insert_values(record, has_legacy_payload=has_legacy_payload),
     )
 
@@ -420,11 +451,7 @@ def replace_session_work_events_sync(
         has_legacy_payload = table_has_column(conn, "session_work_events", "payload_json")
         columns = session_work_event_insert_columns(has_legacy_payload=has_legacy_payload)
         conn.executemany(
-            f"""
-            INSERT INTO session_work_events (
-                {", ".join(columns)}
-            ) VALUES ({_placeholders(columns)})
-            """,
+            build_insert_sql("session_work_events", columns),
             [session_work_event_insert_values(record, has_legacy_payload=has_legacy_payload) for record in records],
         )
 
@@ -439,11 +466,7 @@ def replace_session_phases_sync(
         has_legacy_payload = table_has_column(conn, "session_phases", "payload_json")
         columns = session_phase_insert_columns(has_legacy_payload=has_legacy_payload)
         conn.executemany(
-            f"""
-            INSERT INTO session_phases (
-                {", ".join(columns)}
-            ) VALUES ({_placeholders(columns)})
-            """,
+            build_insert_sql("session_phases", columns),
             [session_phase_insert_values(record, has_legacy_payload=has_legacy_payload) for record in records],
         )
 
@@ -461,27 +484,28 @@ def replace_work_thread_sync(
     conn.execute("DELETE FROM work_threads WHERE thread_id = ?", (thread_id,))
     if record is not None:
         conn.execute(
-            """
-            INSERT INTO work_threads (
-                thread_id,
-                root_id,
-                materializer_version,
-                materialized_at,
-                start_time,
-                end_time,
-                dominant_repo,
-                session_ids_json,
-                session_count,
-                depth,
-                branch_count,
-                total_messages,
-                total_cost_usd,
-                wall_duration_ms,
-                work_event_breakdown_json,
-                payload_json,
-                search_text
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
+            build_insert_sql(
+                "work_threads",
+                (
+                    "thread_id",
+                    "root_id",
+                    "materializer_version",
+                    "materialized_at",
+                    "start_time",
+                    "end_time",
+                    "dominant_repo",
+                    "session_ids_json",
+                    "session_count",
+                    "depth",
+                    "branch_count",
+                    "total_messages",
+                    "total_cost_usd",
+                    "wall_duration_ms",
+                    "work_event_breakdown_json",
+                    "payload_json",
+                    "search_text",
+                ),
+            ),
             work_thread_insert_values(record),
         )
 
@@ -499,22 +523,23 @@ def replace_session_tag_rollup_rows_sync(
     )
     if records:
         conn.executemany(
-            """
-            INSERT INTO session_tag_rollups (
-                tag,
-                bucket_day,
-                provider_name,
-                materializer_version,
-                materialized_at,
-                source_updated_at,
-                source_sort_key,
-                conversation_count,
-                explicit_count,
-                auto_count,
-                repo_breakdown_json,
-                search_text
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
+            build_insert_sql(
+                "session_tag_rollups",
+                (
+                    "tag",
+                    "bucket_day",
+                    "provider_name",
+                    "materializer_version",
+                    "materialized_at",
+                    "source_updated_at",
+                    "source_sort_key",
+                    "conversation_count",
+                    "explicit_count",
+                    "auto_count",
+                    "repo_breakdown_json",
+                    "search_text",
+                ),
+            ),
             [session_tag_rollup_insert_values(record) for record in records],
         )
 
@@ -532,31 +557,33 @@ def replace_day_session_summaries_sync(
     )
     if records:
         conn.executemany(
-            """
-            INSERT INTO day_session_summaries (
-                day,
-                provider_name,
-                materializer_version,
-                materialized_at,
-                source_updated_at,
-                source_sort_key,
-                conversation_count,
-                total_cost_usd,
-                total_duration_ms,
-                total_wall_duration_ms,
-                total_messages,
-                total_words,
-                work_event_breakdown_json,
-                repos_active_json,
-                payload_json,
-                search_text
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
+            build_insert_sql(
+                "day_session_summaries",
+                (
+                    "day",
+                    "provider_name",
+                    "materializer_version",
+                    "materialized_at",
+                    "source_updated_at",
+                    "source_sort_key",
+                    "conversation_count",
+                    "total_cost_usd",
+                    "total_duration_ms",
+                    "total_wall_duration_ms",
+                    "total_messages",
+                    "total_words",
+                    "work_event_breakdown_json",
+                    "repos_active_json",
+                    "payload_json",
+                    "search_text",
+                ),
+            ),
             [day_session_summary_insert_values(record) for record in records],
         )
 
 
 __all__ = [
+    "build_insert_sql",
     "day_session_summary_insert_values",
     "replace_day_session_summaries_sync",
     "replace_session_phases_sync",
