@@ -2,13 +2,23 @@
 
 from __future__ import annotations
 
-from typing import Any
-
+from polylogue.schemas.json_types import JSONDocument, json_document
 from polylogue.schemas.runtime_registry import SchemaProvider
 from polylogue.schemas.tooling_models import PropertyChange, SchemaDiff
 
 
-def _type_label(schema: dict[str, Any]) -> str:
+def _schema_properties(schema: JSONDocument) -> JSONDocument:
+    return json_document(schema.get("properties"))
+
+
+def _required_properties(schema: JSONDocument) -> set[str]:
+    required = schema.get("required")
+    if not isinstance(required, list):
+        return set()
+    return {item for item in required if isinstance(item, str)}
+
+
+def _type_label(schema: JSONDocument) -> str:
     schema_type = schema.get("type")
     if isinstance(schema_type, list):
         return " | ".join(str(item) for item in schema_type)
@@ -19,11 +29,13 @@ def diff_schemas(
     provider: SchemaProvider,
     v1: str,
     v2: str,
-    schema_a: dict[str, Any],
-    schema_b: dict[str, Any],
+    schema_a: JSONDocument,
+    schema_b: JSONDocument,
 ) -> SchemaDiff:
-    props_a = set(schema_a.get("properties", {}).keys())
-    props_b = set(schema_b.get("properties", {}).keys())
+    properties_a = _schema_properties(schema_a)
+    properties_b = _schema_properties(schema_b)
+    props_a = set(properties_a)
+    props_b = set(properties_b)
     added = sorted(props_b - props_a)
     removed = sorted(props_a - props_b)
     changed: list[str] = []
@@ -32,7 +44,7 @@ def diff_schemas(
     for prop in added:
         classified.append(
             PropertyChange(
-                path=prop, kind="added", detail=f"new property (type: {_type_label(schema_b['properties'][prop])})"
+                path=prop, kind="added", detail=f"new property (type: {_type_label(json_document(properties_b[prop]))})"
             )
         )
     for prop in removed:
@@ -40,15 +52,15 @@ def diff_schemas(
             PropertyChange(
                 path=prop,
                 kind="removed",
-                detail=f"removed property (was type: {_type_label(schema_a['properties'][prop])})",
+                detail=f"removed property (was type: {_type_label(json_document(properties_a[prop]))})",
             )
         )
 
-    req_a = set(schema_a.get("required", []))
-    req_b = set(schema_b.get("required", []))
+    req_a = _required_properties(schema_a)
+    req_b = _required_properties(schema_b)
     for prop in sorted(props_a & props_b):
-        prop_a = schema_a["properties"][prop]
-        prop_b = schema_b["properties"][prop]
+        prop_a = json_document(properties_a[prop])
+        prop_b = json_document(properties_b[prop])
         if prop_a.get("type") != prop_b.get("type"):
             changed.append(prop)
             classified.append(

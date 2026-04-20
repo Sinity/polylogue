@@ -5,8 +5,9 @@ from __future__ import annotations
 import sqlite3
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Any, Literal, overload
+from typing import Literal, TypeAlias, overload
 
+from polylogue.lib.json import JSONDocument
 from polylogue.lib.provider_identity import (
     CORE_RUNTIME_PROVIDERS,
     canonical_runtime_provider,
@@ -27,7 +28,7 @@ from polylogue.types import Provider
 logger = get_logger(__name__)
 
 SchemaRow = tuple[str | None, str | None, str | None, str, str | None, str | None]
-SchemaSample = dict[str, Any]
+SchemaSample: TypeAlias = JSONDocument
 
 
 def _sample_provider_where_clause(provider_name: str | Provider) -> tuple[str, tuple[str, ...]]:

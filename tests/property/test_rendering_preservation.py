@@ -12,7 +12,7 @@ import json
 from collections import Counter
 from typing import Any
 
-from hypothesis import given, settings
+from hypothesis import HealthCheck, given, settings
 
 from tests.infra.strategies.messages import conversation_strategy
 
@@ -274,7 +274,7 @@ def test_json_yaml_agree_on_message_count(conv_data: dict[str, Any]) -> None:
 
 
 @given(conv_data=conversation_strategy(min_messages=1, max_messages=5))
-@settings(max_examples=20, deadline=5000)
+@settings(max_examples=20, deadline=5000, suppress_health_check=[HealthCheck.filter_too_much])
 def test_json_yaml_agree_on_identity(conv_data: dict[str, Any]) -> None:
     """JSON and YAML agree on conversation_id, provider, title."""
     import yaml

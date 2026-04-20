@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
-from typing import Any, Protocol, TypeAlias, cast
+from typing import Protocol, TypeAlias
 
 from polylogue.schemas.field_stats import _collect_field_stats
 from polylogue.schemas.generation_support import (
@@ -16,17 +16,19 @@ from polylogue.schemas.generation_support import (
     _remove_nested_required,
     collapse_dynamic_keys,
 )
+from polylogue.schemas.json_types import JSONDocument, json_document
 from polylogue.schemas.observation import ProviderConfig
 from polylogue.schemas.redaction_report import SchemaReport
 from polylogue.schemas.shape_fingerprint import _structure_fingerprint
 
 SchemaInput: TypeAlias = Mapping[str, object]
-SchemaPayload: TypeAlias = dict[str, Any]
-MutableSchemaPayload: TypeAlias = dict[str, Any]
+SchemaPayload: TypeAlias = JSONDocument
+MutableSchemaPayload: TypeAlias = JSONDocument
 
 
 class PrivacyConfigLike(Protocol):
-    level: str
+    @property
+    def level(self) -> str: ...
 
 
 _STRUCTURE_EXEMPLARS_PER_FINGERPRINT = 8
@@ -55,8 +57,8 @@ def _generate_cluster_schema(
             builder.add_object(dict(sample))
             fingerprint_counts[fingerprint] = seen + 1
 
-    schema = collapse_dynamic_keys(builder.to_schema())
-    schema = cast(MutableSchemaPayload, _remove_nested_required(schema))
+    schema = collapse_dynamic_keys(json_document(builder.to_schema()))
+    schema = _remove_nested_required(schema)
     if config.sample_granularity == "record":
         schema.pop("required", None)
 
@@ -127,8 +129,8 @@ def generate_schema_from_samples(
     for sample in genson_samples:
         builder.add_object(dict(sample))
 
-    schema = collapse_dynamic_keys(builder.to_schema())
-    schema = cast(MutableSchemaPayload, _remove_nested_required(schema))
+    schema = collapse_dynamic_keys(json_document(builder.to_schema()))
+    schema = _remove_nested_required(schema)
 
     if annotate:
         stats_samples = list(samples)
@@ -142,7 +144,7 @@ def generate_schema_from_samples(
         schema = _annotate_semantic_and_relational(schema, field_stats)
 
     schema["$schema"] = "https://json-schema.org/draft/2020-12/schema"
-    return dict(schema)
+    return schema
 
 
 __all__ = [

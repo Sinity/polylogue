@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Any
 
 from polylogue.lib.raw_payload import build_raw_payload_envelope, collect_limited_samples
 from polylogue.paths import db_path as archive_db_path
+from polylogue.schemas.json_types import JSONDocument
 from polylogue.schemas.observation import resolve_provider_config
+from polylogue.schemas.observation_models import SchemaUnit
 from polylogue.schemas.sampling_db import (
     _iter_samples_from_db,
     _iter_schema_units_from_db,
@@ -27,7 +29,7 @@ def iter_schema_units(
     db_path: Path | None = None,
     max_samples: int | None = None,
     full_corpus: bool = False,
-) -> Any:
+) -> Iterator[SchemaUnit]:
     """Yield schema units for a provider from DB, with session fallback."""
     provider_name = Provider.from_string(provider_name)
     if db_path is None:
@@ -63,7 +65,7 @@ def load_samples_from_db(
     provider_name: str | Provider,
     db_path: Path | None = None,
     max_samples: int | None = None,
-) -> list[dict[str, Any]]:
+) -> list[JSONDocument]:
     """Load raw samples from the polylogue database."""
     provider_name = Provider.from_string(provider_name)
     if db_path is None:
@@ -87,7 +89,7 @@ def load_samples_from_sessions(
     max_sessions: int | None = None,
     max_samples: int | None = None,
     record_type_key: str | None = None,
-) -> list[dict[str, Any]]:
+) -> list[JSONDocument]:
     """Load samples from JSONL session files."""
     if max_samples is None:
         return list(_iter_samples_from_sessions(session_dir, max_sessions=max_sessions))

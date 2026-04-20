@@ -2,19 +2,21 @@
 
 from __future__ import annotations
 
-from typing import Any
+from collections.abc import Mapping
 
 from polylogue.lib.outcomes import OutcomeCheck as CheckResult
 from polylogue.lib.outcomes import OutcomeStatus
-from polylogue.schemas.audit_walkers import _HEX_RE, _UUID_RE, _walk_semantic_roles, _walk_values
+from polylogue.schemas.audit_walkers import _HEX_RE, _UUID_RE, SchemaNode, _walk_semantic_roles, _walk_values
+from polylogue.schemas.json_types import json_document, json_document_list
 from polylogue.schemas.privacy import _is_safe_enum_value, _looks_high_entropy_token
 
 
-def check_privacy_guards(schema: dict[str, Any]) -> CheckResult:
+def check_privacy_guards(schema: Mapping[str, object] | SchemaNode) -> CheckResult:
     """Check that no UUIDs, hashes, or PII leak through enum values."""
     violations: list[str] = []
+    root = json_document(schema)
 
-    for path, values in _walk_values(schema):
+    for path, values in _walk_values(root):
         for v in values:
             if _UUID_RE.match(v):
                 violations.append(f"{path}: UUID leak {v!r}")
@@ -39,28 +41,32 @@ def check_privacy_guards(schema: dict[str, Any]) -> CheckResult:
     )
 
 
-def check_semantic_roles(schema: dict[str, Any]) -> CheckResult:
+def _schema_node_at_path(schema: Mapping[str, object] | SchemaNode, path: str) -> SchemaNode:
+    current = json_document(schema)
+    for part in path.split(".")[1:]:
+        if part == "*":
+            current = json_document(current.get("additionalProperties"))
+            continue
+        if part.endswith("[*]"):
+            name = part[:-3]
+            if name:
+                current = json_document(json_document(current.get("properties")).get(name))
+            current = json_document(current.get("items"))
+            continue
+        current = json_document(json_document(current.get("properties")).get(part))
+    return current
+
+
+def check_semantic_roles(schema: Mapping[str, object] | SchemaNode) -> CheckResult:
     """Check semantic role assignments for sanity."""
     issues: list[str] = []
-    roles = _walk_semantic_roles(schema)
+    root = json_document(schema)
+    roles = _walk_semantic_roles(root)
 
     for path, role, _confidence in roles:
         if role == "conversation_title":
-            fmt = None
-            parts = path.split(".")
-            current = schema
-            for part in parts[1:]:
-                if part == "*":
-                    current = current.get("additionalProperties", {})
-                elif "[*]" in part:
-                    name = part.replace("[*]", "")
-                    if name:
-                        current = current.get("properties", {}).get(name, {})
-                    current = current.get("items", {})
-                else:
-                    current = current.get("properties", {}).get(part, {})
-            if isinstance(current, dict):
-                fmt = current.get("x-polylogue-format")
+            current = _schema_node_at_path(root, path)
+            fmt = current.get("x-polylogue-format")
 
             if fmt in ("uuid4", "uuid", "hex-id"):
                 issues.append(f"{path}: {fmt}-format field assigned as {role}")
@@ -91,7 +97,7 @@ def check_semantic_roles(schema: dict[str, Any]) -> CheckResult:
     )
 
 
-def check_annotation_coverage(schema: dict[str, Any]) -> CheckResult:
+def check_annotation_coverage(schema: Mapping[str, object] | SchemaNode) -> CheckResult:
     """Check that schema has adequate annotation coverage."""
     total_fields = 0
     annotated_fields = 0
@@ -104,28 +110,28 @@ def check_annotation_coverage(schema: dict[str, Any]) -> CheckResult:
         "x-polylogue-multiline",
     }
 
-    def _count(s: dict[str, Any]) -> None:
+    def _count(node: SchemaNode) -> None:
         nonlocal total_fields, annotated_fields
-        if not isinstance(s, dict):
-            return
-        if "properties" in s:
-            for prop in s["properties"].values():
-                if isinstance(prop, dict):
-                    total_fields += 1
-                    if any(k in prop for k in annotation_keys):
-                        annotated_fields += 1
-                    _count(prop)
-        if isinstance(s.get("items"), dict):
-            _count(s["items"])
-        if isinstance(s.get("additionalProperties"), dict):
-            _count(s["additionalProperties"])
-        for kw in ("anyOf", "oneOf", "allOf"):
-            if kw in s:
-                for sub in s[kw]:
-                    if isinstance(sub, dict):
-                        _count(sub)
+        properties = json_document(node.get("properties"))
+        for prop in properties.values():
+            child = json_document(prop)
+            if not child:
+                continue
+            total_fields += 1
+            if any(key in child for key in annotation_keys):
+                annotated_fields += 1
+            _count(child)
+        items = json_document(node.get("items"))
+        if items:
+            _count(items)
+        additional_properties = json_document(node.get("additionalProperties"))
+        if additional_properties:
+            _count(additional_properties)
+        for keyword in ("anyOf", "oneOf", "allOf"):
+            for child in json_document_list(node.get(keyword)):
+                _count(child)
 
-    _count(schema)
+    _count(json_document(schema))
 
     if total_fields == 0:
         return CheckResult(
@@ -153,16 +159,17 @@ def check_annotation_coverage(schema: dict[str, Any]) -> CheckResult:
     )
 
 
-def check_cross_provider_consistency(schemas: dict[str, dict[str, Any]]) -> CheckResult:
+def check_cross_provider_consistency(schemas: Mapping[str, Mapping[str, object] | SchemaNode]) -> CheckResult:
     """Check consistency across all provider schemas."""
     issues: list[str] = []
 
     for provider, schema in schemas.items():
-        roles = _walk_semantic_roles(schema)
+        root = json_document(schema)
+        roles = _walk_semantic_roles(root)
         if not roles:
             issues.append(f"{provider}: no semantic roles")
 
-        if not schema.get("x-polylogue-sample-count"):
+        if not root.get("x-polylogue-sample-count"):
             issues.append(f"{provider}: missing sample count")
 
     if issues:

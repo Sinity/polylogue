@@ -4,12 +4,17 @@ from __future__ import annotations
 
 import random
 from collections import Counter
+from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING
 
+from polylogue.schemas.json_types import JSONDocument
 from polylogue.schemas.observation import SchemaUnit
 from polylogue.schemas.packages import SchemaPackageCatalog
 from polylogue.schemas.registry import ClusterManifest
+
+if TYPE_CHECKING:
+    from polylogue.schemas.redaction_report import SchemaReport
 
 
 @dataclass
@@ -17,10 +22,10 @@ class GenerationResult:
     """Result of schema generation."""
 
     provider: str
-    schema: dict[str, Any] | None
+    schema: JSONDocument | None
     sample_count: int
     error: str | None = None
-    redaction_report: Any | None = None
+    redaction_report: SchemaReport | None = None
     versions: list[str] = field(default_factory=list)
     default_version: str | None = None
     cluster_count: int = 0
@@ -36,7 +41,7 @@ class GenerationResult:
 class _ProviderBundle:
     result: GenerationResult
     catalog: SchemaPackageCatalog | None = None
-    package_schemas: dict[str, dict[str, dict[str, Any]]] = field(default_factory=dict)
+    package_schemas: dict[str, dict[str, JSONDocument]] = field(default_factory=dict)
     manifest: ClusterManifest | None = None
 
 
@@ -59,7 +64,7 @@ class _ClusterAccumulator:
     representative_paths: list[str] = field(default_factory=list)
     profile_token_counts: Counter[str] = field(default_factory=Counter)
     member_profiles: set[tuple[str, ...]] = field(default_factory=set)
-    reservoir_samples: list[dict[str, Any]] = field(default_factory=list)
+    reservoir_samples: list[Mapping[str, object]] = field(default_factory=list)
     reservoir_conv_ids: list[str | None] = field(default_factory=list)
     rng: random.Random = field(default_factory=lambda: random.Random(42))
     exact_structure_ids: set[str] = field(default_factory=set)

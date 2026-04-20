@@ -12,6 +12,7 @@ import pytest
 from hypothesis import HealthCheck, assume, given, settings
 from hypothesis import strategies as st
 
+from polylogue.schemas.json_types import json_document
 from polylogue.schemas.schema_inference import (
     _remove_nested_required,
     _structure_fingerprint,
@@ -22,6 +23,7 @@ from polylogue.schemas.schema_inference import (
 )
 from polylogue.schemas.validator import SchemaValidator
 from polylogue.types import Provider
+from tests.infra.schema_access import schema_node, schema_properties
 from tests.infra.strategies import (
     SessionJsonlFileSpec,
     dynamic_key_strategy,
@@ -33,6 +35,18 @@ from tests.infra.strategies import (
     session_jsonl_tree_strategy,
     static_key_strategy,
 )
+
+
+def _required_fields(schema: object) -> list[str]:
+    required = schema_node(schema).get("required")
+    if not isinstance(required, list):
+        return []
+    return [value for value in required if isinstance(value, str)]
+
+
+def _schema_string(schema: object, key: str) -> str | None:
+    value = schema_node(schema).get(key)
+    return value if isinstance(value, str) else None
 
 
 def _nested_required_paths(schema: object, *, depth: int = 0, path: str = "$") -> list[str]:
@@ -108,7 +122,7 @@ def test_collapse_dynamic_keys_preserves_static_fields_and_rehomes_dynamic_maps(
     dynamic_type: str,
 ) -> None:
     """Collapsing dynamic maps must keep static fields explicit and merge dynamic ones."""
-    schema = {
+    schema: dict[str, object] = {
         "type": "object",
         "required": static_keys + dynamic_keys,
         "properties": {
@@ -117,29 +131,31 @@ def test_collapse_dynamic_keys_preserves_static_fields_and_rehomes_dynamic_maps(
         },
     }
 
-    collapsed = collapse_dynamic_keys(copy.deepcopy(schema))
+    collapsed = collapse_dynamic_keys(json_document(copy.deepcopy(schema)))
+    properties = schema_properties(collapsed)
 
-    assert set(collapsed["properties"].keys()) == set(static_keys)
-    assert all(key not in collapsed["properties"] for key in dynamic_keys)
-    assert collapsed.get("x-polylogue-dynamic-keys") is True
-    assert "additionalProperties" in collapsed
-    assert set(collapsed.get("required", [])) == set(static_keys)
+    assert set(properties.keys()) == set(static_keys)
+    assert all(key not in properties for key in dynamic_keys)
+    assert schema_node(collapsed).get("x-polylogue-dynamic-keys") is True
+    assert "additionalProperties" in schema_node(collapsed)
+    assert set(_required_fields(collapsed)) == set(static_keys)
 
 
 @settings(max_examples=30)
 @given(st.lists(static_key_strategy(), min_size=1, max_size=4, unique=True))
 def test_collapse_dynamic_keys_leaves_static_only_objects_explicit(static_keys: list[str]) -> None:
     """Static-only schemas should not gain additionalProperties noise."""
-    schema = {
+    schema: dict[str, object] = {
         "type": "object",
         "properties": {key: {"type": "string"} for key in static_keys},
     }
 
-    collapsed = collapse_dynamic_keys(copy.deepcopy(schema))
+    collapsed = collapse_dynamic_keys(json_document(copy.deepcopy(schema)))
+    properties = schema_properties(collapsed)
 
-    assert set(collapsed["properties"].keys()) == set(static_keys)
-    assert "additionalProperties" not in collapsed
-    assert "x-polylogue-dynamic-keys" not in collapsed
+    assert set(properties.keys()) == set(static_keys)
+    assert "additionalProperties" not in schema_node(collapsed)
+    assert "x-polylogue-dynamic-keys" not in schema_node(collapsed)
 
 
 @settings(max_examples=35, deadline=None)
@@ -272,6 +288,6 @@ def test_generate_schema_from_samples_exposes_union_of_observed_top_level_fields
     schema = generate_schema_from_samples(samples)
     observed_keys = {key for sample in samples for key in sample}
 
-    assert observed_keys.issubset(schema.get("properties", {}).keys())
-    assert schema["type"] == "object"
-    assert schema["$schema"] == "https://json-schema.org/draft/2020-12/schema"
+    assert observed_keys.issubset(schema_properties(schema).keys())
+    assert _schema_string(schema, "type") == "object"
+    assert _schema_string(schema, "$schema") == "https://json-schema.org/draft/2020-12/schema"

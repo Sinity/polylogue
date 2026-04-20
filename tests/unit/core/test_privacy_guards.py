@@ -18,6 +18,7 @@ from polylogue.schemas.schema_inference import (
     _is_content_field,
     _is_safe_enum_value,
 )
+from tests.infra.schema_access import schema_property, schema_values
 
 LETTER_CATEGORIES: tuple[Literal["L"], ...] = ("L",)
 
@@ -119,7 +120,7 @@ class TestAnnotationPrivacyIntegration:
         annotated = _annotate_schema(schema, stats, path="$")
 
         # High cardinality → not enum-like → no values annotation
-        assert "x-polylogue-values" not in annotated["properties"]["status"]
+        assert not schema_values(schema_property(annotated, "status"))
 
     def test_content_field_values_excluded(self: Any) -> None:
         """Known content fields never get x-polylogue-values even if low cardinality."""
@@ -130,4 +131,4 @@ class TestAnnotationPrivacyIntegration:
         annotated = _annotate_schema(schema, stats, path="$")
 
         # "title" is in _CONTENT_FIELD_NAMES → values suppressed
-        assert "x-polylogue-values" not in annotated["properties"]["title"]
+        assert not schema_values(schema_property(annotated, "title"))

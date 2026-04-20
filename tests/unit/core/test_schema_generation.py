@@ -26,6 +26,7 @@ from polylogue.schemas.schema_inference import (
     load_samples_from_db,
     load_samples_from_sessions,
 )
+from tests.infra.schema_access import schema_properties, schema_property, schema_values
 
 
 class TestProviderSchemaGeneration:
@@ -212,8 +213,9 @@ class TestGenerateSchemaFromSamples:
         result = generate_schema_from_samples([{"id": "abc", "count": 42}])
         assert result["type"] == "object"
         assert "properties" in result
-        assert "id" in result["properties"]
-        assert "count" in result["properties"]
+        properties = schema_properties(result)
+        assert "id" in properties
+        assert "count" in properties
 
     def test_identifier_fields_do_not_emit_value_enums(self) -> None:
         result = generate_schema_from_samples(
@@ -222,8 +224,8 @@ class TestGenerateSchemaFromSamples:
                 {"resourceId": "12q0eVTU-RR-IMCjN0peXXKVg3LPwbmVW", "category": "HARM_CATEGORY_HARASSMENT"},
             ]
         )
-        assert "x-polylogue-values" not in result["properties"]["resourceId"]
-        assert "x-polylogue-values" in result["properties"]["category"]
+        assert not schema_values(schema_property(result, "resourceId"))
+        assert schema_values(schema_property(result, "category"))
 
     def test_high_entropy_tail_segments_are_filtered(self) -> None:
         result = generate_schema_from_samples(
@@ -232,8 +234,8 @@ class TestGenerateSchemaFromSamples:
                 {"promptId": "prompts/26CInJFZ16cELIshzl5Xf30JVJoaLr1q", "model": "models/gemini-2.5-pro"},
             ]
         )
-        assert "x-polylogue-values" not in result["properties"]["promptId"]
-        assert result["properties"]["model"].get("x-polylogue-values") == ["models/gemini-2.5-pro"]
+        assert not schema_values(schema_property(result, "promptId"))
+        assert schema_values(schema_property(result, "model")) == ["models/gemini-2.5-pro"]
 
     def test_high_entropy_values_filtered_even_without_identifier_field_name(self) -> None:
         result = generate_schema_from_samples(
@@ -242,8 +244,8 @@ class TestGenerateSchemaFromSamples:
                 {"channel": "12q0eVTU-RR-IMCjN0peXXKVg3LPwbmVW", "role": "assistant"},
             ]
         )
-        assert "x-polylogue-values" not in result["properties"]["channel"]
-        assert result["properties"]["role"].get("x-polylogue-values") == ["assistant"]
+        assert not schema_values(schema_property(result, "channel"))
+        assert schema_values(schema_property(result, "role")) == ["assistant"]
 
 
 class TestGenerateAllSchemas:
