@@ -6,6 +6,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date, datetime
 
+from typing_extensions import TypedDict
+
 from polylogue.lib.attribution import ConversationAttribution
 from polylogue.lib.payload_coercion import (
     coerce_float,
@@ -21,10 +23,61 @@ from polylogue.lib.payload_coercion import (
 from polylogue.lib.phase_extraction import SessionPhase
 from polylogue.lib.repo_identity import normalize_repo_names, normalize_repo_paths
 from polylogue.lib.semantic_facts import ConversationSemanticFacts
-from polylogue.lib.work_event_extraction import WorkEvent
+from polylogue.lib.work_event_extraction import WorkEvent, WorkEventPayload
 
 
-def _phase_to_dict(phase: SessionPhase) -> dict[str, object]:
+class SessionPhasePayload(TypedDict):
+    start_time: str | None
+    end_time: str | None
+    canonical_session_date: str | None
+    message_range: list[int]
+    duration_ms: int
+    tool_counts: dict[str, int]
+    word_count: int
+    confidence: float
+    evidence: list[str]
+
+
+class SessionProfilePayload(TypedDict):
+    conversation_id: str
+    provider: str
+    title: str | None
+    created_at: str | None
+    updated_at: str | None
+    message_count: int
+    substantive_count: int
+    tool_use_count: int
+    thinking_count: int
+    attachment_count: int
+    word_count: int
+    total_cost_usd: float
+    total_duration_ms: int
+    tool_categories: dict[str, int]
+    repo_paths: list[str]
+    cwd_paths: list[str]
+    branch_names: list[str]
+    file_paths_touched: list[str]
+    languages_detected: list[str]
+    repo_names: list[str]
+    work_events: list[WorkEventPayload]
+    phases: list[SessionPhasePayload]
+    first_message_at: str | None
+    last_message_at: str | None
+    canonical_session_date: str | None
+    engaged_duration_ms: int
+    engaged_minutes: float
+    wall_duration_ms: int
+    cost_is_estimated: bool
+    compaction_count: int
+    thread_id: str | None
+    continuation_depth: int
+    tags: list[str]
+    auto_tags: list[str]
+    is_continuation: bool
+    parent_id: str | None
+
+
+def _phase_to_dict(phase: SessionPhase) -> SessionPhasePayload:
     return {
         "start_time": phase.start_time.isoformat() if phase.start_time else None,
         "end_time": phase.end_time.isoformat() if phase.end_time else None,
@@ -92,7 +145,7 @@ class SessionProfile:
     is_continuation: bool = False
     parent_id: str | None = None
 
-    def to_dict(self) -> dict[str, object]:
+    def to_dict(self) -> SessionProfilePayload:
         return {
             "conversation_id": self.conversation_id,
             "provider": self.provider,
