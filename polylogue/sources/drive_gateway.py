@@ -21,6 +21,7 @@ from .drive_types import (
     DriveConfigLike,
     DriveCredentialLike,
     DriveNotFoundError,
+    DriveRetryPolicy,
 )
 from .drive_types import DriveError as DriveServiceError
 
@@ -121,6 +122,18 @@ def _resolve_retry_base(value: float | None) -> float:
     return DEFAULT_DRIVE_RETRY_BASE
 
 
+def resolve_drive_retry_policy(
+    *,
+    retries: int | None,
+    retry_base: float | None,
+    config: DriveConfigLike | None = None,
+) -> DriveRetryPolicy:
+    return DriveRetryPolicy(
+        retries=_resolve_retries(retries, config),
+        retry_base=_resolve_retry_base(retry_base),
+    )
+
+
 class DriveServiceGateway:
     """Owns Google API imports, service construction, raw Drive calls, and retry policy."""
 
@@ -128,20 +141,22 @@ class DriveServiceGateway:
         self,
         *,
         auth_manager: _DriveAuthManagerLike,
-        retries: int,
-        retry_base: float,
+        retry_policy: DriveRetryPolicy,
     ) -> None:
         self._auth_manager = auth_manager
-        self._retries = retries
-        self._retry_base = retry_base
+        self._retry_policy = retry_policy
         self._service: _DriveService | None = None
 
     def call_with_retry(self, func: Callable[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
         from tenacity import Retrying
 
         retryer = Retrying(
-            stop=stop_after_attempt(max(self._retries, 0) + 1),
-            wait=wait_exponential(multiplier=self._retry_base, min=self._retry_base, max=10),
+            stop=stop_after_attempt(max(self._retry_policy.retries, 0) + 1),
+            wait=wait_exponential(
+                multiplier=self._retry_policy.retry_base,
+                min=self._retry_policy.retry_base,
+                max=10,
+            ),
             retry=retry_if_exception_type(Exception)
             & retry_if_not_exception_type((DriveAuthError, DriveNotFoundError)),
             reraise=True,
@@ -223,4 +238,5 @@ __all__ = [
     "_import_module",
     "_resolve_retries",
     "_resolve_retry_base",
+    "resolve_drive_retry_policy",
 ]

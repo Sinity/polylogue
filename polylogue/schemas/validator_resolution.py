@@ -12,7 +12,7 @@ from polylogue.schemas.runtime_registry import SchemaRegistry, canonical_schema_
 from polylogue.types import Provider
 
 if TYPE_CHECKING:
-    from polylogue.schemas.packages import SchemaResolution
+    from polylogue.schemas.packages import SchemaResolution, SchemaVersionPackage
 
 
 @lru_cache(maxsize=8)
@@ -24,6 +24,51 @@ def _registry_for(registry_cls: type[SchemaRegistry]) -> SchemaRegistry:
     if registry_cls is SchemaRegistry:
         return _shared_registry(str(data_home() / "schemas"))
     return registry_cls()
+
+
+def _load_package(
+    registry: SchemaRegistry,
+    provider: Provider,
+    *,
+    version: str,
+) -> SchemaVersionPackage:
+    package = registry.get_package(str(provider), version=version)
+    if package is None:
+        raise FileNotFoundError(f"No schema found for provider: {provider} (version: {version})")
+    return package
+
+
+def _load_schema(
+    registry: SchemaRegistry,
+    provider: Provider,
+    *,
+    package_version: str,
+    element_kind: str,
+) -> JSONDocument:
+    schema = registry.get_element_schema(
+        str(provider),
+        version=package_version,
+        element_kind=element_kind,
+    )
+    if schema is None:
+        raise FileNotFoundError(
+            f"No schema found for provider: {provider} (package: {package_version}, element: {element_kind})"
+        )
+    return schema
+
+
+def _load_latest_schema(
+    registry: object,
+    provider: Provider,
+) -> JSONDocument | None:
+    get_schema = getattr(registry, "get_schema", None)
+    if not callable(get_schema):
+        return None
+    latest_schema = get_schema(str(provider), version="latest")
+    if isinstance(latest_schema, dict):
+        return latest_schema
+    default_schema = get_schema(str(provider), version="default")
+    return default_schema if isinstance(default_schema, dict) else None
 
 
 def reset_registry_cache() -> None:
@@ -43,20 +88,20 @@ def resolve_provider_schema(
 ) -> tuple[Provider, JSONDocument, tuple[str, str, str]]:
     canonical = canonical_provider(provider)
     registry = _registry_for(registry_cls)
-    package = registry.get_package(str(canonical), version="default") if hasattr(registry, "get_package") else None
-    package_version = package.version if package is not None else "latest"
-    element_kind = package.default_element_kind if package is not None else "default"
-
-    if package is not None and hasattr(registry, "get_element_schema"):
-        schema = registry.get_element_schema(
-            str(canonical),
-            version=package.version,
-            element_kind=package.default_element_kind,
-        )
-    else:
-        schema = registry.get_schema(str(canonical), version="latest")
-    if schema is None:
-        raise FileNotFoundError(f"No schema found for provider: {provider} (canonical: {canonical})")
+    if not hasattr(registry, "get_package"):
+        schema = _load_latest_schema(registry, canonical)
+        if schema is None:
+            raise FileNotFoundError(f"No schema found for provider: {canonical}")
+        return canonical, schema, (str(canonical), "latest", "conversation_document")
+    package = _load_package(registry, canonical, version="default")
+    package_version = package.version
+    element_kind = package.default_element_kind
+    schema = _load_schema(
+        registry,
+        canonical,
+        package_version=package_version,
+        element_kind=element_kind,
+    )
     return canonical, schema, (str(canonical), package_version, element_kind)
 
 
@@ -72,31 +117,26 @@ def resolve_payload_schema(
     registry = _registry_for(registry_cls)
     resolution = schema_resolution
     if resolution is None:
-        resolution = (
-            registry.resolve_payload(
-                str(canonical),
-                payload,
-                source_path=source_path,
-            )
-            if hasattr(registry, "resolve_payload")
-            else None
-        )
-    package_version = resolution.package_version if resolution is not None else "latest"
-    element_kind = resolution.element_kind if resolution is not None else "default"
-
-    if hasattr(registry, "get_element_schema"):
-        schema = registry.get_element_schema(
+        resolution = registry.resolve_payload(
             str(canonical),
-            version=package_version,
-            element_kind=None if element_kind == "default" else element_kind,
+            payload,
+            source_path=source_path,
         )
+
+    if resolution is None:
+        package = _load_package(registry, canonical, version="default")
+        package_version = package.version
+        element_kind = package.default_element_kind
     else:
-        schema = registry.get_schema(str(canonical), version=package_version)
-    if schema is None:
-        raise FileNotFoundError(
-            "No schema found for provider: "
-            f"{provider} (canonical: {canonical}, package: {package_version}, element: {element_kind})"
-        )
+        package_version = resolution.package_version
+        element_kind = resolution.element_kind
+
+    schema = _load_schema(
+        registry,
+        canonical,
+        package_version=package_version,
+        element_kind=element_kind,
+    )
     return canonical, schema, (str(canonical), package_version, element_kind)
 
 

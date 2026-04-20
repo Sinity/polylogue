@@ -17,6 +17,7 @@ Ensures:
 from __future__ import annotations
 
 from collections import Counter
+from collections.abc import Mapping
 from typing import Any
 
 import pytest
@@ -615,7 +616,7 @@ class TestFieldStatsCollection:
 # =============================================================================
 
 
-def _load_schema(provider: str) -> dict[str, object] | None:
+def _load_schema(provider: str) -> JSONDocument | None:
     """Load a packaged provider schema, returning None if absent."""
     try:
         from polylogue.schemas.registry import SCHEMA_DIR, SchemaRegistry
@@ -634,14 +635,14 @@ def _load_schema(provider: str) -> dict[str, object] | None:
 
 
 def _find_annotations(
-    schema: dict[str, object],
+    schema: Mapping[str, object],
     prefix: str = "x-polylogue-",
 ) -> dict[str, list[tuple[str, Any]]]:
     """Walk the schema tree and collect all x-polylogue-* annotations by key."""
     result: dict[str, list[tuple[str, Any]]] = {}
 
     def _walk(obj: Any, path: str) -> None:
-        if not isinstance(obj, dict):
+        if not isinstance(obj, Mapping):
             return
         for key, value in obj.items():
             if key.startswith(prefix):

@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from polylogue.lib.artifact_taxonomy import ArtifactKind, classify_artifact_path
 from polylogue.lib.raw_payload import JSONValue, RawPayloadEnvelope, build_raw_payload_envelope
 from polylogue.schemas.observation import derive_bundle_scope, schema_cluster_id
+from polylogue.schemas.packages import SchemaResolution
 from polylogue.schemas.runtime_registry import SchemaRegistry
 from polylogue.storage.blob_store import get_blob_store
 from polylogue.storage.store import ArtifactObservationRecord, RawConversationRecord
@@ -66,26 +67,21 @@ def _resolve_payload_support(
     payload_provider: Provider,
     payload: JSONValue,
     source_path: str | None,
-) -> tuple[str | None, str | None, str | None, bool]:
+) -> tuple[SchemaResolution | None, bool]:
     resolution = registry.resolve_payload(
         payload_provider,
         payload,
         source_path=source_path,
     )
     if resolution is None:
-        return None, None, None, False
+        return None, False
 
     package = registry.get_package(payload_provider, version=resolution.package_version)
     element = package.element(resolution.element_kind) if package is not None else None
     if package is None or element is None or not element.supported:
-        return None, None, resolution.reason, False
+        return resolution, False
 
-    return (
-        resolution.package_version,
-        resolution.element_kind,
-        resolution.reason,
-        True,
-    )
+    return resolution, True
 
 
 def _inspect_payload_envelope(record: RawConversationRecord) -> RawPayloadEnvelope:
@@ -206,9 +202,7 @@ def inspect_raw_artifact(record: RawConversationRecord) -> ArtifactObservationRe
     try:
         envelope = _inspect_payload_envelope(record)
         payload_provider = envelope.provider
-        resolved_package_version: str | None = None
-        resolved_element_kind: str | None = None
-        resolution_reason: str | None = None
+        resolution: SchemaResolution | None = None
         has_supported_resolution = False
 
         if (
@@ -216,17 +210,15 @@ def inspect_raw_artifact(record: RawConversationRecord) -> ArtifactObservationRe
             and envelope.artifact.schema_eligible
             and envelope.malformed_jsonl_lines == 0
         ):
-            (
-                resolved_package_version,
-                resolved_element_kind,
-                resolution_reason,
-                has_supported_resolution,
-            ) = _resolve_payload_support(
+            resolution, has_supported_resolution = _resolve_payload_support(
                 registry=registry,
                 payload_provider=payload_provider,
                 payload=envelope.payload,
                 source_path=record.source_path,
             )
+        resolved_package_version = resolution.package_version if resolution is not None else None
+        resolved_element_kind = resolution.element_kind if resolution is not None else None
+        resolution_reason = resolution.reason if resolution is not None else None
 
         support_status = _support_status(
             parse_as_conversation=envelope.artifact.parse_as_conversation,

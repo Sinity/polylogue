@@ -13,7 +13,7 @@ from ..config import Source
 from ..paths import safe_path_component
 from .dispatch import parse_drive_payload
 from .drive_source import DriveSourceAPI, _parse_modified_time, build_drive_source_client
-from .drive_types import DriveConfigLike, DriveUILike
+from .drive_types import DriveConfigLike, DriveFile, DriveUILike
 from .parsers.base import ParsedConversation, RawConversationData
 
 logger = get_logger(__name__)
@@ -26,6 +26,50 @@ class DriveDownloadResult:
     downloaded_files: list[Path]
     failed_files: list[dict[str, str | int]]
     total_files: int
+
+
+@dataclass(slots=True)
+class _DriveCursorTracker:
+    cursor_state: CursorStatePayload | None
+
+    def _record_latest_file(self, file_meta: DriveFile) -> None:
+        if self.cursor_state is None or not file_meta.modified_time:
+            return
+        modified_timestamp = _parse_modified_time(file_meta.modified_time)
+        last_timestamp = self.cursor_state.get("latest_mtime")
+        if modified_timestamp is None or (last_timestamp is not None and modified_timestamp <= last_timestamp):
+            return
+        self.cursor_state["latest_mtime"] = modified_timestamp
+        self.cursor_state["latest_file_id"] = file_meta.file_id
+        self.cursor_state["latest_file_name"] = file_meta.name
+
+    def observe_file(self, file_meta: DriveFile) -> None:
+        if self.cursor_state is None:
+            return
+        self.cursor_state["file_count"] = self.cursor_state.get("file_count", 0) + 1
+        self._record_latest_file(file_meta)
+
+    def record_failure(self, *, file_name: str, error: Exception) -> None:
+        if self.cursor_state is None:
+            return
+        self.cursor_state["error_count"] = self.cursor_state.get("error_count", 0) + 1
+        self.cursor_state["latest_error"] = str(error)
+        self.cursor_state["latest_error_file"] = file_name
+
+
+def _cursor_tracker(cursor_state: CursorStatePayload | None) -> _DriveCursorTracker:
+    if cursor_state is not None:
+        cursor_state.setdefault("file_count", 0)
+    return _DriveCursorTracker(cursor_state)
+
+
+def _resolved_drive_client(
+    *,
+    ui: DriveUILike | None,
+    client: DriveSourceAPI | None,
+    drive_config: DriveConfigLike | None,
+) -> DriveSourceAPI:
+    return client or build_drive_source_client(ui=ui, config=drive_config)
 
 
 def drive_cache_file_path(dest_dir: Path, name: str) -> Path:
@@ -127,27 +171,15 @@ def iter_drive_conversations(
 ) -> Iterable[ParsedConversation]:
     if not source.folder:
         return
-    drive_client = client or build_drive_source_client(ui=ui, config=drive_config)
+    drive_client = _resolved_drive_client(ui=ui, client=client, drive_config=drive_config)
     folder_id = drive_client.resolve_folder_id(source.folder)
-    if cursor_state is not None:
-        cursor_state.setdefault("file_count", 0)
+    tracker = _cursor_tracker(cursor_state)
     for file_meta in drive_client.iter_json_files(folder_id):
-        if cursor_state is not None:
-            cursor_state["file_count"] = cursor_state.get("file_count", 0) + 1
-            if file_meta.modified_time:
-                ts = _parse_modified_time(file_meta.modified_time)
-                last_ts = cursor_state.get("latest_mtime")
-                if ts is not None and (last_ts is None or ts > last_ts):
-                    cursor_state["latest_mtime"] = ts
-                    cursor_state["latest_file_id"] = file_meta.file_id
-                    cursor_state["latest_file_name"] = file_meta.name
+        tracker.observe_file(file_meta)
         try:
             payload = drive_client.download_json_payload(file_meta.file_id, name=file_meta.name)
         except Exception as exc:
-            if cursor_state is not None:
-                cursor_state["error_count"] = cursor_state.get("error_count", 0) + 1
-                cursor_state["latest_error"] = str(exc)
-                cursor_state["latest_error_file"] = file_meta.name
+            tracker.record_failure(file_name=file_meta.name, error=exc)
             logger.warning(
                 "Failed to download Drive payload for %s (%s): %s",
                 file_meta.name,
@@ -185,23 +217,14 @@ def iter_drive_raw_data(
     if not source.folder:
         return
 
-    drive_client = client or build_drive_source_client(ui=ui, config=drive_config)
+    drive_client = _resolved_drive_client(ui=ui, client=client, drive_config=drive_config)
     folder_id = drive_client.resolve_folder_id(source.folder)
-    if cursor_state is not None:
-        cursor_state.setdefault("file_count", 0)
+    tracker = _cursor_tracker(cursor_state)
 
     for file_meta in drive_client.iter_json_files(folder_id):
         dest_path = drive_cache_file_path(source.path or Path(source.name), file_meta.name)
         source_path = str(dest_path)
-        if cursor_state is not None:
-            cursor_state["file_count"] = cursor_state.get("file_count", 0) + 1
-            if file_meta.modified_time:
-                ts = _parse_modified_time(file_meta.modified_time)
-                last_ts = cursor_state.get("latest_mtime")
-                if ts is not None and (last_ts is None or ts > last_ts):
-                    cursor_state["latest_mtime"] = ts
-                    cursor_state["latest_file_id"] = file_meta.file_id
-                    cursor_state["latest_file_name"] = file_meta.name
+        tracker.observe_file(file_meta)
 
         if (
             known_mtimes is not None
@@ -226,10 +249,7 @@ def iter_drive_raw_data(
             try:
                 raw_bytes = drive_client.download_bytes(file_meta.file_id)
             except Exception as exc:
-                if cursor_state is not None:
-                    cursor_state["error_count"] = cursor_state.get("error_count", 0) + 1
-                    cursor_state["latest_error"] = str(exc)
-                    cursor_state["latest_error_file"] = file_meta.name
+                tracker.record_failure(file_name=file_meta.name, error=exc)
                 logger.warning(
                     "Failed to download Drive payload for %s (%s): %s",
                     file_meta.name,

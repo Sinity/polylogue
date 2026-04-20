@@ -212,6 +212,7 @@ class _ParsePlan:
     artifact: ArtifactClassification
     mode: ParsePlanMode
     schema_payload: object | None
+    schema_resolution: SchemaResolution | None = None
     payload: object | None = None
     stream_name: str | None = None
     malformed_jsonl_lines: int = 0
@@ -221,7 +222,6 @@ class _ParsePlan:
 @dataclass(frozen=True, slots=True)
 class _PlanValidation:
     status: ValidationStatus
-    schema_resolution: SchemaResolution | None = None
     validation_error: str | None = None
     parse_error: str | None = None
 
@@ -320,18 +320,61 @@ def _record_result(
     )
 
 
-def _resolve_schema_resolution(
-    provider: Provider,
-    payload: object,
+def _schema_payload_for_artifact(
     *,
+    artifact: ArtifactClassification,
+    payload: object,
+) -> object | None:
+    return payload if artifact.schema_eligible else None
+
+
+def _resolve_plan_schema(
+    *,
+    provider: Provider,
+    schema_payload: object | None,
     source_path: str | None,
 ) -> SchemaResolution | None:
-    if payload is None:
+    if schema_payload is None:
         return None
     return _runtime_schema_registry().resolve_payload(
         provider,
-        payload,
+        schema_payload,
         source_path=source_path,
+    )
+
+
+def _build_parse_plan(
+    *,
+    provider: Provider,
+    payload_provider: str,
+    artifact: ArtifactClassification,
+    source_path: str | None,
+    mode: ParsePlanMode,
+    payload: object | None = None,
+    schema_payload_source: object,
+    stream_name: str | None = None,
+    malformed_jsonl_lines: int = 0,
+    malformed_jsonl_detail: str | None = None,
+) -> _ParsePlan:
+    schema_payload = _schema_payload_for_artifact(
+        artifact=artifact,
+        payload=schema_payload_source,
+    )
+    return _ParsePlan(
+        provider=provider,
+        payload_provider=payload_provider,
+        artifact=artifact,
+        mode=mode,
+        schema_payload=schema_payload,
+        schema_resolution=_resolve_plan_schema(
+            provider=provider,
+            schema_payload=schema_payload,
+            source_path=source_path,
+        ),
+        payload=payload,
+        stream_name=stream_name,
+        malformed_jsonl_lines=malformed_jsonl_lines,
+        malformed_jsonl_detail=malformed_jsonl_detail,
     )
 
 
@@ -369,12 +412,13 @@ def _build_stream_parse_plan(
         provider=detected_provider,
         source_path=context.raw_record.source_path,
     )
-    return _ParsePlan(
+    return _build_parse_plan(
         provider=detected_provider,
         payload_provider=str(detected_provider),
         artifact=artifact,
+        source_path=context.raw_record.source_path,
         mode="stream",
-        schema_payload=sample_payloads if artifact.schema_eligible else None,
+        schema_payload_source=sample_payloads,
         stream_name=stream_name,
         malformed_jsonl_lines=malformed_lines,
         malformed_jsonl_detail=malformed_detail,
@@ -382,15 +426,17 @@ def _build_stream_parse_plan(
 
 
 def _build_envelope_parse_plan(
+    context: _IngestContext,
     envelope: RawPayloadEnvelope,
 ) -> _ParsePlan:
-    return _ParsePlan(
+    return _build_parse_plan(
         provider=envelope.provider,
         payload_provider=str(envelope.provider),
         artifact=envelope.artifact,
+        source_path=context.raw_record.source_path,
         mode="payload",
-        schema_payload=envelope.payload if envelope.artifact.schema_eligible else None,
         payload=envelope.payload,
+        schema_payload_source=envelope.payload,
         malformed_jsonl_lines=envelope.malformed_jsonl_lines,
         malformed_jsonl_detail=envelope.malformed_jsonl_detail,
     )
@@ -417,23 +463,16 @@ def _validate_parse_plan(
             parse_error=malformed_error,
         )
 
-    schema_resolution = _resolve_schema_resolution(
-        plan.provider,
-        plan.schema_payload,
-        source_path=context.raw_record.source_path,
-    )
-
     try:
         validator = SchemaValidator.for_payload(
             plan.provider,
             plan.schema_payload,
             source_path=context.raw_record.source_path,
-            schema_resolution=schema_resolution,
+            schema_resolution=plan.schema_resolution,
         )
     except (FileNotFoundError, ImportError):
         return _PlanValidation(
             status=ValidationStatus.SKIPPED,
-            schema_resolution=schema_resolution,
         )
 
     validation_samples = validator.validation_samples(plan.schema_payload)
@@ -446,31 +485,20 @@ def _validate_parse_plan(
         if collected_errors and context.validation_mode is ValidationMode.STRICT:
             return _PlanValidation(
                 status=ValidationStatus.FAILED,
-                schema_resolution=schema_resolution,
                 validation_error=f"Schema validation failed: {collected_errors[0]}",
             )
 
     return _PlanValidation(
         status=ValidationStatus.PASSED,
-        schema_resolution=schema_resolution,
     )
 
 
 def _parse_plan_conversations(
     context: _IngestContext,
     plan: _ParsePlan,
-    *,
-    schema_resolution: SchemaResolution | None,
 ) -> list[ParsedConversation]:
     from polylogue.sources.dispatch import parse_payload, parse_stream_payload
 
-    resolved_schema = schema_resolution
-    if resolved_schema is None and plan.artifact.schema_eligible:
-        resolved_schema = _resolve_schema_resolution(
-            plan.provider,
-            plan.schema_payload,
-            source_path=context.raw_record.source_path,
-        )
     fallback_id = _fallback_id(context.raw_record.source_path, context.raw_record.raw_id)
     if plan.mode == "stream":
         assert plan.stream_name is not None
@@ -485,7 +513,7 @@ def _parse_plan_conversations(
         plan.provider,
         plan.payload,
         fallback_id,
-        schema_resolution=resolved_schema,
+        schema_resolution=plan.schema_resolution,
     )
 
 
@@ -555,7 +583,6 @@ def _run_parse_plan(
         parsed_conversations = _parse_plan_conversations(
             context,
             plan,
-            schema_resolution=validation.schema_resolution,
         )
     except Exception as exc:
         return _record_result(
@@ -639,7 +666,7 @@ def ingest_record(
             error=f"decode: {exc}",
         )
 
-    return _run_parse_plan(context, _build_envelope_parse_plan(envelope))
+    return _run_parse_plan(context, _build_envelope_parse_plan(context, envelope))
 
 
 # ---------------------------------------------------------------------------
