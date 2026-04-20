@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import click
 
-from polylogue.cli.query import result_date, result_id, result_provider, result_title
+from polylogue.cli.query_contracts import QueryMutationSpec, result_date, result_id, result_provider, result_title
 
 if TYPE_CHECKING:
     from polylogue.cli.types import AppEnv
@@ -60,7 +60,7 @@ async def resolve_stream_target(
 async def apply_modifiers(
     env: AppEnv,
     results: Sequence[Conversation | ConversationSummary],
-    params: dict[str, Any],
+    mutation: QueryMutationSpec,
     repo: TagStore | None = None,
 ) -> None:
     """Apply metadata modifiers to matched conversations."""
@@ -69,16 +69,16 @@ async def apply_modifiers(
         env.ui.console.print("No conversations matched.")
         return
 
-    dry_run = params.get("dry_run", False)
-    force = params.get("force", False)
+    dry_run = mutation.dry_run
+    force = mutation.force
     count = len(results)
 
     operations: list[str] = []
-    if params.get("set_meta"):
-        keys = [kv[0] for kv in params["set_meta"]]
+    if mutation.set_meta:
+        keys = [kv[0] for kv in mutation.set_meta]
         operations.append(f"set metadata: {', '.join(keys)}")
-    if params.get("add_tag"):
-        operations.append(f"add tags: {', '.join(params['add_tag'])}")
+    if mutation.add_tags:
+        operations.append(f"add tags: {', '.join(mutation.add_tags)}")
 
     op_desc = "; ".join(operations)
 
@@ -102,14 +102,14 @@ async def apply_modifiers(
     meta_set = 0
 
     for conv in results:
-        if params.get("set_meta"):
-            for kv in params["set_meta"]:
+        if mutation.set_meta:
+            for kv in mutation.set_meta:
                 key, value = kv[0], kv[1]
                 await repo.update_metadata(result_id(conv), key, value)
                 meta_set += 1
 
-        if params.get("add_tag"):
-            for tag in params["add_tag"]:
+        if mutation.add_tags:
+            for tag in mutation.add_tags:
                 await repo.add_tag(result_id(conv), tag)
                 tags_added += 1
 
@@ -126,7 +126,7 @@ async def apply_modifiers(
 async def delete_conversations(
     env: AppEnv,
     results: Sequence[Conversation | ConversationSummary],
-    params: dict[str, Any],
+    mutation: QueryMutationSpec,
     repo: ConversationQueryRuntimeStore | None = None,
 ) -> None:
     """Delete matched conversations."""
@@ -137,8 +137,8 @@ async def delete_conversations(
         env.ui.console.print("No conversations matched.")
         return
 
-    dry_run = params.get("dry_run", False)
-    force = params.get("force", False)
+    dry_run = mutation.dry_run
+    force = mutation.force
     count = len(results)
 
     provider_counts = Counter(result_provider(conv) for conv in results)

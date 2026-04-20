@@ -13,6 +13,7 @@ import click
 
 from polylogue.archive_products import ArchiveProductUnavailableError
 from polylogue.cli.helper_support import fail
+from polylogue.cli.product_command_contracts import ProductCommandRequest, query_model_field_names
 from polylogue.cli.types import AppEnv
 from polylogue.products.registry import (
     PRODUCT_REGISTRY,
@@ -22,7 +23,6 @@ from polylogue.products.registry import (
     render_product_items,
 )
 
-# Root-level filter keys that product commands inherit from the parent context.
 _ROOT_FILTER_KEYS = ("provider", "since", "until")
 
 
@@ -80,14 +80,6 @@ def _build_click_params(pt: ProductType) -> list[click.Parameter]:
     return params
 
 
-def _find_root_params(ctx: click.Context) -> dict[str, object]:
-    """Walk up the context chain to find the root CLI group's params."""
-    cur = ctx
-    while cur.parent is not None:
-        cur = cur.parent
-    return cur.params
-
-
 def _make_callback(pt: ProductType) -> Callable[..., None]:
     """Create the Click callback for a product type command.
 
@@ -95,10 +87,7 @@ def _make_callback(pt: ProductType) -> Callable[..., None]:
     context when the product's query class accepts them.
     """
     # Pre-resolve accepted fields so we only inject keys the query class understands.
-    query_model = pt.query_model
-    accepted_root_keys = frozenset(
-        key for key in _ROOT_FILTER_KEYS if query_model is not None and key in query_model.model_fields
-    )
+    accepted_root_keys = tuple(key for key in _ROOT_FILTER_KEYS if key in query_model_field_names(pt))
 
     @click.pass_context
     def callback(
@@ -109,25 +98,20 @@ def _make_callback(pt: ProductType) -> Callable[..., None]:
         **kwargs: object,
     ) -> None:
         env: AppEnv = ctx.obj
-
-        # Inject root filter values the product query class can accept.
-        root_params = _find_root_params(ctx)
-        for key in accepted_root_keys:
-            if kwargs.get(key) is None:
-                root_val = root_params.get(key)
-                if root_val is not None:
-                    kwargs[key] = root_val
-
-        if output_format is None:
-            root_output_format = root_params.get("output_format")
-            if isinstance(root_output_format, str):
-                output_format = root_output_format
+        request = ProductCommandRequest.from_context(
+            ctx,
+            pt,
+            json_mode=json_mode,
+            output_format=output_format,
+            kwargs=kwargs,
+            inherited_root_keys=accepted_root_keys,
+        )
 
         try:
-            items = fetch_products(pt, env.operations, **kwargs)
+            items = fetch_products(pt, env.operations, **request.query_kwargs)
         except (ArchiveProductUnavailableError, ProductQueryError) as exc:
             fail(f"products {pt.resolved_cli_command_name}", str(exc))
-        render_product_items(items, pt, json_mode=(json_mode or output_format == "json"))
+        render_product_items(items, pt, json_mode=request.wants_json)
 
     return callback
 

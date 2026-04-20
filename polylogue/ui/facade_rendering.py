@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import difflib
+from typing import Literal
 
 from pygments import highlight
 from pygments.formatters import TerminalFormatter
 from pygments.lexers import get_lexer_by_name
 from rich.align import Align
 from rich.box import Box
-from rich.console import Console
+from rich.console import Console, RenderableType
 from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.syntax import Syntax
@@ -18,11 +19,37 @@ from rich.text import Text
 from polylogue.ui.facade_console import ConsoleLike
 
 
+def _print_plain_section(console: ConsoleLike, heading: str, content: str | None = None) -> None:
+    console.print(heading)
+    if content:
+        console.print(content)
+
+
+def _render_panel(
+    console: ConsoleLike,
+    body: RenderableType,
+    *,
+    border_style: str,
+    box: Box,
+    padding: tuple[int, int],
+    title: str | None = None,
+    title_align: Literal["left", "center", "right"] = "left",
+) -> None:
+    console.print(
+        Panel(
+            body,
+            border_style=border_style,
+            box=box,
+            padding=padding,
+            title=title,
+            title_align=title_align,
+        )
+    )
+
+
 def render_banner(console: ConsoleLike, *, plain: bool, banner_box: Box, title: str, subtitle: str | None) -> None:
     if plain:
-        console.print(f"== {title} ==")
-        if subtitle:
-            console.print(subtitle)
+        _print_plain_section(console, f"== {title} ==", subtitle)
         return
 
     title_text = Text(style="banner.title")
@@ -30,21 +57,19 @@ def render_banner(console: ConsoleLike, *, plain: bool, banner_box: Box, title: 
     title_text.append(title)
     if subtitle:
         title_text.append(f"\n{subtitle}", style="banner.subtitle")
-    panel = Panel(
+    _render_panel(
+        console,
         Align.left(title_text),
         border_style="banner.border",
         box=banner_box,
         padding=(1, 3),
     )
-    console.print(panel)
 
 
 def render_summary(console: ConsoleLike, *, plain: bool, panel_box: Box, title: str, lines: list[str]) -> None:
     text = "\n".join(lines)
     if plain:
-        console.print(f"-- {title} --")
-        if text:
-            console.print(text)
+        _print_plain_section(console, f"-- {title} --", text)
         return
 
     summary_text = Text()
@@ -53,7 +78,8 @@ def render_summary(console: ConsoleLike, *, plain: bool, panel_box: Box, title: 
         parsed = Text.from_markup(line, style="summary.text")
         summary_text.append_text(parsed)
         summary_text.append("\n")
-    panel = Panel(
+    _render_panel(
+        console,
         summary_text if summary_text.plain else Text(text, style="summary.text"),
         title=f"  {title}  ",
         title_align="left",
@@ -61,7 +87,6 @@ def render_summary(console: ConsoleLike, *, plain: bool, panel_box: Box, title: 
         box=panel_box,
         padding=(1, 2),
     )
-    console.print(panel)
 
 
 def render_markdown(console: ConsoleLike, *, plain: bool, panel_box: Box, content: str) -> None:
@@ -70,13 +95,13 @@ def render_markdown(console: ConsoleLike, *, plain: bool, panel_box: Box, conten
         return
 
     md = Markdown(content, style="summary.text")
-    panel = Panel(
+    _render_panel(
+        console,
         md,
         border_style="markdown.border",
         box=panel_box,
         padding=(1, 2),
     )
-    console.print(panel)
 
 
 def render_code(console: ConsoleLike, *, plain: bool, panel_box: Box, code: str, language: str) -> None:
@@ -85,13 +110,13 @@ def render_code(console: ConsoleLike, *, plain: bool, panel_box: Box, code: str,
         return
 
     syntax = Syntax(code, language, theme="monokai", line_numbers=True)
-    panel = Panel(
+    _render_panel(
+        console,
         syntax,
         border_style="code.border",
         box=panel_box,
         padding=(0, 1),
     )
-    console.print(panel)
 
 
 def render_diff(

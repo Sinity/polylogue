@@ -4,14 +4,14 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from polylogue.assets import asset_path
 from polylogue.lib.roles import Role
 from polylogue.rendering.block_models import RenderableBlock, coerce_renderable_blocks
 from polylogue.rendering.blocks import has_structured_blocks, render_blocks_markdown
+from polylogue.rendering.core_messages import normalize_render_timestamp
 
 if TYPE_CHECKING:
     from polylogue.lib.models import Conversation
@@ -125,19 +125,6 @@ def render_markdown_document(
     return "\n".join(lines).strip() + "\n"
 
 
-def _normalize_markdown_timestamp(timestamp: Any) -> str | None:
-    if timestamp is None:
-        return None
-    if isinstance(timestamp, datetime):
-        return timestamp.isoformat()
-    if isinstance(timestamp, (int, float)):
-        try:
-            return datetime.fromtimestamp(float(timestamp), tz=timezone.utc).isoformat().replace("+00:00", "Z")
-        except (ValueError, OSError):
-            return None
-    return str(timestamp)
-
-
 def _normalize_markdown_attachment(
     *,
     attachment_id: str,
@@ -165,7 +152,7 @@ def _normalize_markdown_message(
         message_id=message_id,
         role=str(normalized_role),
         text=text,
-        timestamp=_normalize_markdown_timestamp(timestamp),
+        timestamp=normalize_render_timestamp(timestamp),
         content_blocks=content_blocks,
     )
 

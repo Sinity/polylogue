@@ -31,6 +31,7 @@ from polylogue.cli.query import (
     summary_to_dict,
 )
 from polylogue.cli.query_actions import apply_modifiers, apply_transform, delete_conversations
+from polylogue.cli.query_contracts import QueryDeliveryTarget
 from polylogue.cli.query_output import (
     _output_summary_list,
     _render_conversation_rich,
@@ -51,6 +52,7 @@ from polylogue.services import build_runtime_services
 from polylogue.storage.action_event_artifacts import ActionEventArtifactState
 from polylogue.storage.store import ContentBlockRecord, ConversationRecord, MessageRecord
 from polylogue.types import ContentBlockType, ContentHash, ConversationId, MessageId, Provider, SemanticBlockType
+from polylogue.ui.facade_console import ConsoleLike
 from tests.infra.builders import make_conv, make_msg
 from tests.infra.strategies import (
     ConversationSummarySpec,
@@ -146,12 +148,54 @@ def _sample_summary_spec() -> ConversationSummarySpec:
     )
 
 
+def _delivery_targets(*destinations: str) -> tuple[QueryDeliveryTarget, ...]:
+    return tuple(QueryDeliveryTarget.parse(destination) for destination in destinations)
+
+
+def _output_spec(
+    output_format: str = "markdown",
+    *,
+    destinations: tuple[str, ...] = ("stdout",),
+    fields: str | None = None,
+    dialogue_only: bool = False,
+    transform: str | None = None,
+    list_mode: bool = False,
+    print_path: bool = False,
+) -> QueryOutputSpec:
+    return QueryOutputSpec(
+        output_format=output_format,
+        destinations=_delivery_targets(*destinations),
+        fields=fields,
+        dialogue_only=dialogue_only,
+        transform=transform,
+        list_mode=list_mode,
+        print_path=print_path,
+    )
+
+
+def _mutation_spec(
+    *,
+    set_meta: tuple[tuple[str, str], ...] = (),
+    add_tags: tuple[str, ...] = (),
+    delete_matched: bool = False,
+    dry_run: bool = False,
+    force: bool = False,
+) -> QueryMutationSpec:
+    return QueryMutationSpec(
+        set_meta=set_meta,
+        add_tags=add_tags,
+        delete_matched=delete_matched,
+        dry_run=dry_run,
+        force=force,
+    )
+
+
 def _build_plan(case: str) -> QueryExecutionPlan:
     selection = MagicMock()
     selection.similar_text = None
     action = QueryAction.SHOW
-    output = QueryOutputSpec("markdown", ("stdout",), None, False, None, False)
-    mutation = QueryMutationSpec((), (), False, False, False)
+    output = _output_spec()
+    mutation = _mutation_spec()
     stats_dimension = None
 
     if case == "count":
@@ -169,17 +213,22 @@ def _build_plan(case: str) -> QueryExecutionPlan:
         stats_dimension = "repo"
     elif case == "stream":
         action = QueryAction.STREAM
-        output = QueryOutputSpec("json", ("stdout", "browser"), None, True, "strip-tools", False)
+        output = _output_spec(
+            output_format="json",
+            destinations=("stdout", "browser"),
+            dialogue_only=True,
+            transform="strip-tools",
+        )
     elif case == "modify":
         action = QueryAction.MODIFY
-        mutation = QueryMutationSpec((("priority", "1"),), (), False, False, True)
+        mutation = _mutation_spec(set_meta=(("priority", "1"),), force=True)
     elif case == "delete":
         action = QueryAction.DELETE
-        mutation = QueryMutationSpec((), (), True, False, True)
+        mutation = _mutation_spec(delete_matched=True, force=True)
     elif case == "open":
         action = QueryAction.OPEN
     elif case == "summary_list":
-        output = QueryOutputSpec("markdown", ("stdout",), None, False, None, True)
+        output = _output_spec(list_mode=True)
 
     return QueryExecutionPlan(
         selection=selection,
@@ -274,7 +323,7 @@ def _sample_semantic_conversation() -> Conversation:
 def _make_recording_env() -> tuple[AppEnv, io.StringIO]:
     buffer = io.StringIO()
     env = _make_env()
-    env.ui.console = Console(file=buffer, width=120, force_terminal=False, color_system=None)
+    env.ui.console = cast(ConsoleLike, Console(file=buffer, width=120, force_terminal=False, color_system=None))
     return env, buffer
 
 
@@ -372,16 +421,16 @@ def test_apply_modifiers_contract(case: Any) -> None:
     mock_print = cast(MagicMock, env.ui.console.print)
     mock_confirm.return_value = case.confirm
     results = [build_conversation_summary(spec) for spec in case.summaries]
-    params = {
-        "set_meta": list(case.set_meta),
-        "add_tag": list(case.add_tags),
-        "dry_run": case.dry_run,
-        "force": case.force,
-    }
+    mutation = _mutation_spec(
+        set_meta=tuple(case.set_meta),
+        add_tags=tuple(case.add_tags),
+        dry_run=case.dry_run,
+        force=case.force,
+    )
 
     with patch("click.echo") as mock_echo:
         mock_echo = cast(MagicMock, mock_echo)
-        asyncio.run(apply_modifiers(env, results, params, repo))
+        asyncio.run(apply_modifiers(env, results, mutation, repo))
 
     should_confirm = len(results) > 10 and not case.force and not case.dry_run
     if should_confirm:
@@ -417,11 +466,11 @@ def test_delete_conversations_contract(case: Any) -> None:
     mock_confirm = cast(MagicMock, env.ui.confirm)
     mock_confirm.return_value = case.confirm
     results = [build_conversation_summary(spec) for spec in case.summaries]
-    params = {"dry_run": case.dry_run, "force": case.force}
+    mutation = _mutation_spec(dry_run=case.dry_run, force=case.force, delete_matched=True)
 
     with patch("click.echo") as mock_echo:
         mock_echo = cast(MagicMock, mock_echo)
-        asyncio.run(delete_conversations(env, results, params, repo))
+        asyncio.run(delete_conversations(env, results, mutation, repo))
 
     should_confirm = not case.force and not case.dry_run
     if should_confirm:
@@ -464,14 +513,14 @@ def test_output_summary_list_contract(case: Any, output_format: str) -> None:
     repo.get_message_counts_batch = AsyncMock(return_value=build_message_counts(case.summaries))
     env = _make_env(repo=repo)
     summaries = [build_conversation_summary(spec) for spec in case.summaries]
-    params: dict[str, object] = {"output_format": output_format}
+    output = _output_spec(output_format=output_format)
     if output_format in {"json", "yaml"}:
-        params["fields"] = _fields_arg(case.selected_fields)
+        output = _output_spec(output_format=output_format, fields=_fields_arg(case.selected_fields))
     cast(Any, env.ui).plain = output_format == "text"
 
     with patch("click.echo") as mock_echo:
         mock_echo = cast(MagicMock, mock_echo)
-        asyncio.run(_output_summary_list(env, summaries, params, repo))
+        asyncio.run(_output_summary_list(env, summaries, output, repo))
 
     if output_format == "json":
         assert json.loads(mock_echo.call_args[0][0]) == _structured_rows(case)
@@ -516,7 +565,7 @@ def test_send_output_routes_destination_contract(case: Any) -> None:
             mock_echo = cast(MagicMock, mock_echo)
             mock_browser = cast(MagicMock, mock_browser)
             mock_clipboard = cast(MagicMock, mock_clipboard)
-            _send_output(env, content, destinations, case.output_format, None)
+            _send_output(env, content, _delivery_targets(*destinations), case.output_format, None)
 
         assert mock_echo.call_count == (1 if case.to_stdout else 0)
         assert mock_browser.call_count == (1 if case.to_browser else 0)
@@ -553,8 +602,8 @@ def test_resolve_query_route_uses_full_stats_for_action_dimension() -> None:
     plan = QueryExecutionPlan(
         selection=ConversationQuerySpec(),
         action=QueryAction.STATS_BY,
-        output=QueryOutputSpec("markdown", ("stdout",), None, False, None, False),
-        mutation=QueryMutationSpec((), (), False, False, False),
+        output=_output_spec(),
+        mutation=_mutation_spec(),
         stats_dimension="action",
     )
 
@@ -565,8 +614,8 @@ def test_resolve_query_route_uses_full_stats_for_tool_dimension() -> None:
     plan = QueryExecutionPlan(
         selection=ConversationQuerySpec(),
         action=QueryAction.STATS_BY,
-        output=QueryOutputSpec("markdown", ("stdout",), None, False, None, False),
-        mutation=QueryMutationSpec((), (), False, False, False),
+        output=_output_spec(),
+        mutation=_mutation_spec(),
         stats_dimension="tool",
     )
 
@@ -924,6 +973,7 @@ def test_output_stats_by_conversations_action_slice_respects_selected_path() -> 
 
 def test_output_results_no_results_contract() -> None:
     env = _make_env()
+    output = _output_spec()
 
     with (
         patch("polylogue.cli.query_output.no_results", side_effect=SystemExit(2)) as mock_no_results,
@@ -936,10 +986,10 @@ def test_output_results_no_results_contract() -> None:
         mock_render = cast(MagicMock, mock_render)
         mock_send = cast(MagicMock, mock_send)
         mock_format = cast(MagicMock, mock_format)
-        output_results(env, [], {})
+        output_results(env, [], output)
 
     assert exc_info.value.code == 2
-    mock_no_results.assert_called_once_with(env, {})
+    mock_no_results.assert_called_once_with(env, output, selection=None)
     mock_render.assert_not_called()
     mock_send.assert_not_called()
     mock_format.assert_not_called()
@@ -977,6 +1027,7 @@ def test_output_results_projection_contract(
     del label
     env = _make_env()
     cast(Any, env.ui).plain = plain
+    output = QueryOutputSpec.from_params(params)
 
     with (
         patch("polylogue.cli.query_output._render_conversation_rich") as mock_render,
@@ -988,7 +1039,7 @@ def test_output_results_projection_contract(
         mock_send = cast(MagicMock, mock_send)
         mock_format = cast(MagicMock, mock_format)
         mock_format_list = cast(MagicMock, mock_format_list)
-        output_results(env, conversations, params)
+        output_results(env, conversations, output)
 
     if expected == "render-rich":
         mock_render.assert_called_once_with(env, conversations[0])
@@ -997,12 +1048,18 @@ def test_output_results_projection_contract(
         mock_format_list.assert_not_called()
     elif expected == "format-single":
         mock_format.assert_called_once_with(conversations[0], "html", "id,title")
-        mock_send.assert_called_once_with(env, "<html>ok</html>", ["stdout", "browser"], "html", conversations[0])
+        mock_send.assert_called_once_with(
+            env,
+            "<html>ok</html>",
+            _delivery_targets("stdout", "browser"),
+            "html",
+            conversations[0],
+        )
         mock_render.assert_not_called()
         mock_format_list.assert_not_called()
     else:
         mock_format_list.assert_called_once_with(conversations, "json", "id,provider")
-        mock_send.assert_called_once_with(env, "formatted-list", ["stdout"], "json", None)
+        mock_send.assert_called_once_with(env, "formatted-list", _delivery_targets("stdout"), "json", None)
         mock_render.assert_not_called()
         mock_format.assert_not_called()
 
@@ -1040,8 +1097,8 @@ def test_project_query_results_contract() -> None:
     plan = QueryExecutionPlan(
         selection=ConversationQuerySpec(),
         action=QueryAction.SHOW,
-        output=QueryOutputSpec("markdown", ("stdout",), None, True, "strip-all", False),
-        mutation=QueryMutationSpec((), (), False, False, False),
+        output=_output_spec(dialogue_only=True, transform="strip-all"),
+        mutation=_mutation_spec(),
     )
     conversation = _sample_conversation()
 
@@ -1334,7 +1391,8 @@ def test_async_execute_query_summary_list_no_results_contract() -> None:
         asyncio.run(async_execute_query(env, {}))
 
     assert exc_info.value.code == 2
-    mock_no_results.assert_called_once_with(env, {})
+    mock_no_results.assert_called_once()
+    assert mock_no_results.call_args.args[1] == {"query": ()}
 
 
 def test_async_execute_query_query_spec_error_contract() -> None:
@@ -1368,8 +1426,8 @@ def test_async_execute_query_show_projects_results_before_output_contract() -> N
     plan = QueryExecutionPlan(
         selection=selection,
         action=QueryAction.SHOW,
-        output=QueryOutputSpec("markdown", ("stdout",), None, True, "strip-all", False),
-        mutation=QueryMutationSpec((), (), False, False, False),
+        output=_output_spec(dialogue_only=True, transform="strip-all"),
+        mutation=_mutation_spec(),
     )
     filter_chain = MagicMock()
     filter_chain.can_use_summaries.return_value = False
@@ -1400,22 +1458,20 @@ def test_async_execute_query_show_projects_results_before_output_contract() -> N
             ],
         ),
         (
-            ConversationQuerySpec(),
+            {},
             ["No conversations matched."],
         ),
     ],
 )
-def test_no_results_contract(params: dict[str, object] | ConversationQuerySpec, expected_lines: list[str]) -> None:
+def test_no_results_contract(params: dict[str, object], expected_lines: list[str]) -> None:
     env = _make_env()
 
-    with patch("click.echo") as mock_echo, pytest.raises(SystemExit) as exc_info:
-        mock_echo = cast(MagicMock, mock_echo)
+    with pytest.raises(SystemExit) as exc_info:
         no_results(env, params)
 
     assert exc_info.value.code == 2
-    observed_lines = [call.args[0] for call in mock_echo.call_args_list if call.args]
+    observed_lines = [call.args[0] for call in cast(MagicMock, env.ui.console.print).call_args_list if call.args]
     assert observed_lines == expected_lines
-    assert all(call.kwargs.get("err") is True for call in mock_echo.call_args_list)
 
 
 def test_no_results_contract_json_emits_machine_envelope(capsys: pytest.CaptureFixture[str]) -> None:
@@ -1547,7 +1603,7 @@ async def test_output_stats_sql_empty_paths_contract(
 @pytest.mark.parametrize(
     ("described", "can_use_summaries", "expected_message", "expected_filters"),
     [
-        (["provider=claude-ai"], True, "No conversations matched.", ["provider=claude-ai"]),
+        (["provider=claude-ai"], True, "No conversations matched.", None),
         ([], False, "No conversations in archive.", None),
     ],
 )
@@ -1580,7 +1636,7 @@ async def test_output_stats_sql_empty_paths_json_contract(
     if expected_filters is None:
         assert "details" not in payload
     else:
-        assert payload["details"]["filters"] == expected_filters
+        assert payload.get("details", {}).get("filters") == expected_filters
 
 
 @pytest.mark.asyncio

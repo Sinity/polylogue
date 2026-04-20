@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import Any
 
 import click
 
@@ -19,6 +18,7 @@ from polylogue.cli.helpers import fail
 from polylogue.cli.run_display_workflow import render_sources
 from polylogue.cli.run_observers import progress_observer
 from polylogue.cli.run_watch_workflow import WatchDisplayObserver, WatchStatusObserver
+from polylogue.cli.types import AppEnv
 from polylogue.config import Config
 from polylogue.lib.timestamps import format_timestamp
 from polylogue.pipeline.observers import CompositeObserver, RunObserver
@@ -33,7 +33,7 @@ from polylogue.sync_bridge import run_coroutine_sync
 
 def execute_sync_once(
     cfg: Config,
-    env: Any,
+    env: AppEnv,
     stage: str,
     stage_sequence: Sequence[str] | None,
     selected_sources: list[str] | None,
@@ -61,7 +61,7 @@ def execute_sync_once(
 
 def run_with_progress(
     cfg: Config,
-    env: Any,
+    env: AppEnv,
     stage: str,
     stage_sequence: Sequence[str] | None,
     selected_sources: list[str] | None,
@@ -93,7 +93,7 @@ def run_with_progress(
 
 def run_sync_once(
     cfg: Config,
-    env: Any,
+    env: AppEnv,
     stage: str,
     stage_sequence: Sequence[str] | None,
     selected_sources: list[str] | None,
@@ -125,7 +125,7 @@ def run_sync_once(
 
 
 def display_result(
-    env: Any,
+    env: AppEnv,
     cfg: Config,
     result: RunResult,
     stage: str,
@@ -193,7 +193,7 @@ def handle_drive_error(exc: DriveError) -> None:
 
 
 def render_preview_summary(
-    env: Any,
+    env: AppEnv,
     *,
     selected_sources: list[str] | None,
     plan_snapshot: PlanResult | None,

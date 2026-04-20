@@ -15,6 +15,8 @@ from typing import TYPE_CHECKING, TypeAlias
 
 import click
 
+from polylogue.cli.query_contracts import QueryDeliveryTarget, QueryOutputSpec
+from polylogue.cli.query_feedback import emit_no_results
 from polylogue.cli.query_semantic import (
     SemanticStatsSlice,
     action_matches_slice,
@@ -43,10 +45,10 @@ logger = get_logger(__name__)
 if TYPE_CHECKING:
     from polylogue.cli.types import AppEnv
     from polylogue.lib.models import Conversation, ConversationSummary, Message
+    from polylogue.lib.query_spec import ConversationQuerySpec
     from polylogue.protocols import ConversationOutputStore
     from polylogue.storage.store import MessageRecord
 
-QueryParams: TypeAlias = dict[str, object]
 ConversationStats: TypeAlias = dict[str, int]
 
 
@@ -213,10 +215,12 @@ def copy_to_clipboard(env: AppEnv, content: str) -> None:
 def open_result(
     env: AppEnv,
     results: Sequence[Conversation | ConversationSummary],
-    params: dict[str, object],
+    output: QueryOutputSpec,
+    *,
+    selection: ConversationQuerySpec | None = None,
 ) -> None:
     if not results:
-        no_results(env, dict(params))
+        emit_no_results(env, selection=selection, output_format=output.output_format)
 
     conv = results[0]
 
@@ -256,9 +260,8 @@ def open_result(
         click.echo("Run 'polylogue run' to render conversations.", err=True)
         raise SystemExit(1)
 
-    if bool(params.get("print_path")):
-        output_format = str(params.get("output_format") or "markdown")
-        if output_format == "json":
+    if output.print_path:
+        if output.output_format == "json":
             click.echo(json.dumps({"path": str(render_file)}, indent=2))
         else:
             click.echo(str(render_file))
@@ -342,24 +345,23 @@ def format_summary_list(
 async def output_summary_list(
     env: AppEnv,
     summaries: list[ConversationSummary],
-    params: QueryParams,
+    output: QueryOutputSpec,
     repo: ConversationOutputStore | None = None,
 ) -> None:
     """Output a list of conversation summaries with optional rich table rendering."""
-    output_format = str(params.get("output_format") or "text")
     msg_counts: dict[str, int] = {}
     if repo:
         ids = [str(summary.id) for summary in summaries]
         msg_counts = await repo.get_message_counts_batch(ids)
 
-    fields = params.get("fields")
-    fields_value = str(fields) if isinstance(fields, str) else None
-    if output_format in {"json", "yaml", "csv"} or env.ui.plain:
+    if output.output_format in {"json", "yaml", "csv"} or env.ui.plain:
         click.echo(
             format_summary_list(
                 summaries,
-                "text" if env.ui.plain and output_format not in {"json", "yaml", "csv"} else output_format,
-                fields_value,
+                "text"
+                if env.ui.plain and output.output_format not in {"json", "yaml", "csv"}
+                else output.output_format,
+                output.fields,
                 message_counts=msg_counts,
             )
         )
@@ -606,11 +608,20 @@ def write_message_streaming(message: Message | MessageRecord, output_format: str
         sys.stdout.flush()
 
 
-def no_results(env: AppEnv, params: QueryParams, *, exit_code: int = 2) -> None:
-    """Delegate the no-results contract to the canonical query helper."""
-    from polylogue.cli.query import no_results as query_no_results
-
-    query_no_results(env, params, exit_code=exit_code)
+def no_results(
+    env: AppEnv,
+    output: QueryOutputSpec,
+    *,
+    selection: ConversationQuerySpec | None = None,
+    exit_code: int | None = 2,
+) -> None:
+    """Emit the canonical no-results contract for output surfaces."""
+    emit_no_results(
+        env,
+        selection=selection,
+        output_format=output.output_format,
+        exit_code=exit_code,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -621,30 +632,25 @@ def no_results(env: AppEnv, params: QueryParams, *, exit_code: int = 2) -> None:
 def output_results(
     env: AppEnv,
     results: list[Conversation],
-    params: QueryParams,
+    output: QueryOutputSpec,
+    *,
+    selection: ConversationQuerySpec | None = None,
 ) -> None:
     """Output query results."""
     if not results:
-        no_results(env, params)
+        no_results(env, output, selection=selection)
 
-    output_format = str(params.get("output_format") or "markdown")
-    output_dest = str(params.get("output") or "stdout")
-    list_mode = bool(params.get("list_mode", False))
-    fields = params.get("fields")
-    fields_value = fields if isinstance(fields, str) else None
-    destinations = [d.strip() for d in output_dest.split(",")] if output_dest else ["stdout"]
-
-    if len(results) == 1 and not list_mode:
+    if len(results) == 1 and not output.list_mode:
         conv = results[0]
-        if output_format == "markdown" and destinations == ["stdout"] and not env.ui.plain:
+        if output.output_format == "markdown" and output.destination_labels() == ("stdout",) and not env.ui.plain:
             _render_conversation_rich(env, conv)
             return
-        content = format_conversation(conv, output_format, fields_value)
-        _send_output(env, content, destinations, output_format, conv)
+        content = format_conversation(conv, output.output_format, output.fields)
+        _send_output(env, content, output.destinations, output.output_format, conv)
         return
 
-    content = _format_list(results, output_format, fields_value)
-    _send_output(env, content, destinations, output_format, None)
+    content = _format_list(results, output.output_format, output.fields)
+    _send_output(env, content, output.destinations, output.output_format, None)
 
 
 # Internal aliases used by query.py and tests
@@ -661,20 +667,21 @@ _render_conversation_rich = render_conversation_rich
 def _send_output(
     env: AppEnv,
     content: str,
-    destinations: list[str],
+    destinations: Sequence[QueryDeliveryTarget],
     output_format: str,
     conv: Conversation | None,
 ) -> None:
     """Send output to specified destinations."""
-    for dest in destinations:
-        if dest == "stdout":
+    for destination in destinations:
+        if destination.kind == "stdout":
             click.echo(content)
-        elif dest == "browser":
+        elif destination.kind == "browser":
             _open_in_browser(env, content, output_format, conv)
-        elif dest == "clipboard":
+        elif destination.kind == "clipboard":
             _copy_to_clipboard(env, content)
         else:
-            path = Path(dest)
+            assert destination.path is not None
+            path = destination.path
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(content, encoding="utf-8")
             env.ui.console.print(f"Wrote to {path}")

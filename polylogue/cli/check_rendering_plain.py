@@ -117,31 +117,31 @@ def append_schema_lines(lines: list[str], result: CheckCommandResult) -> None:
 def append_artifact_proof_lines(lines: list[str], result: CheckCommandResult) -> None:
     if result.proof_report is None:
         return
-    proof_summary = result.proof_report.to_dict()["summary"]
+    proof_report = result.proof_report
     lines.extend(
         [
             "",
-            f"Artifact proof: {result.proof_report.total_records:,} artifact observations "
-            f"(contract_backed={proof_summary['contract_backed_records']:,}, "
-            f"unsupported={proof_summary['unsupported_parseable_records']:,}, "
-            f"non_parseable={proof_summary['recognized_non_parseable_records']:,}, "
-            f"unknown={proof_summary['unknown_records']:,}, "
-            f"decode_errors={proof_summary['decode_errors']:,})",
+            f"Artifact proof: {proof_report.total_records:,} artifact observations "
+            f"(contract_backed={proof_report.contract_backed_records:,}, "
+            f"unsupported={proof_report.unsupported_parseable_records:,}, "
+            f"non_parseable={proof_report.recognized_non_parseable_records:,}, "
+            f"unknown={proof_report.unknown_records:,}, "
+            f"decode_errors={proof_report.decode_errors:,})",
         ]
     )
-    if proof_summary["subagent_streams"]:
+    if proof_report.subagent_streams:
         lines.append(
-            f"  Claude subagents: linked_sidecars={proof_summary['linked_sidecars']:,} "
-            f"orphan_sidecars={proof_summary['orphan_sidecars']:,} "
-            f"streams={proof_summary['subagent_streams']:,}"
+            f"  Claude subagents: linked_sidecars={proof_report.linked_sidecars:,} "
+            f"orphan_sidecars={proof_report.orphan_sidecars:,} "
+            f"streams={proof_report.subagent_streams:,}"
         )
-    if proof_summary["package_versions"]:
-        lines.append(f"  Resolved packages: {format_count_mapping(proof_summary['package_versions'])}")
-    if proof_summary["element_kinds"]:
-        lines.append(f"  Resolved elements: {format_count_mapping(proof_summary['element_kinds'])}")
-    if proof_summary["resolution_reasons"]:
-        lines.append(f"  Resolution reasons: {format_count_mapping(proof_summary['resolution_reasons'])}")
-    for provider, stats in sorted(result.proof_report.providers.items()):
+    if proof_report.package_versions:
+        lines.append(f"  Resolved packages: {format_count_mapping(proof_report.package_versions)}")
+    if proof_report.element_kinds:
+        lines.append(f"  Resolved elements: {format_count_mapping(proof_report.element_kinds)}")
+    if proof_report.resolution_reasons:
+        lines.append(f"  Resolution reasons: {format_count_mapping(proof_report.resolution_reasons)}")
+    for provider, stats in sorted(proof_report.providers.items()):
         lines.append(
             f"  {provider}: contract_backed={stats.contract_backed_records:,} "
             f"unsupported={stats.unsupported_parseable_records:,} "

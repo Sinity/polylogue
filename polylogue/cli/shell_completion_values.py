@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Callable
 from typing import Final
 
 import click
@@ -21,6 +22,7 @@ _PROVIDER_DESCRIPTIONS: Final[dict[str, str]] = {
 
 _MAX_ID_COMPLETIONS = 24
 _MAX_VALUE_COMPLETIONS = 32
+CompletionHelpBuilder = Callable[[sqlite3.Row], str]
 
 
 def _split_csv_incomplete(incomplete: str) -> tuple[str, str]:
@@ -53,6 +55,19 @@ def _fetch_rows(sql: str, params: tuple[object, ...]) -> list[sqlite3.Row]:
             return list(cursor.fetchall())
     except sqlite3.Error:
         return []
+
+
+def _rows_to_completion_items(
+    rows: list[sqlite3.Row],
+    *,
+    value_column: str,
+    help_builder: CompletionHelpBuilder | None = None,
+) -> list[CompletionItem]:
+    items: list[CompletionItem] = []
+    for row in rows:
+        help_text = help_builder(row) if help_builder is not None else None
+        items.append(CompletionItem(str(row[value_column]), help=help_text))
+    return items
 
 
 def _trim_help(value: str, *, limit: int = 72) -> str:
@@ -114,13 +129,14 @@ def complete_conversation_ids(
             _MAX_ID_COMPLETIONS,
         ),
     )
-    items: list[CompletionItem] = []
-    for row in rows:
-        conv_id = str(row["conversation_id"])
-        provider = str(row["provider_name"] or "unknown")
-        title = _trim_help(str(row["display_title"] or conv_id))
-        items.append(CompletionItem(conv_id, help=f"{provider} · {title}"))
-    return items
+    return _rows_to_completion_items(
+        rows,
+        value_column="conversation_id",
+        help_builder=lambda row: (
+            f"{str(row['provider_name'] or 'unknown')} · "
+            f"{_trim_help(str(row['display_title'] or row['conversation_id']))}"
+        ),
+    )
 
 
 def complete_open_targets(
@@ -158,7 +174,11 @@ def complete_tag_values(
             _MAX_VALUE_COMPLETIONS,
         ),
     )
-    items = [CompletionItem(str(row["tag_name"]), help=f"{int(row['cnt'])} conversations") for row in rows]
+    items = _rows_to_completion_items(
+        rows,
+        value_column="tag_name",
+        help_builder=lambda row: f"{int(row['cnt'])} conversations",
+    )
     return _with_csv_prefix(items, prefix)
 
 
@@ -186,7 +206,11 @@ def complete_tool_values(
             _MAX_VALUE_COMPLETIONS,
         ),
     )
-    return [CompletionItem(str(row["normalized_tool_name"]), help=f"{int(row['cnt'])} actions") for row in rows]
+    return _rows_to_completion_items(
+        rows,
+        value_column="normalized_tool_name",
+        help_builder=lambda row: f"{int(row['cnt'])} actions",
+    )
 
 
 __all__ = [

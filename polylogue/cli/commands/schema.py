@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
+from typing import TypeVar
 
 import click
 
@@ -33,6 +35,15 @@ from polylogue.schemas.operator_workflow import (
     list_schemas,
     promote_schema_cluster,
 )
+
+TResult = TypeVar("TResult")
+
+
+def _run_schema_action(command_name: str, action: Callable[[], TResult]) -> TResult:
+    try:
+        return action()
+    except ValueError as exc:
+        fail(command_name, str(exc))
 
 
 @click.group("schema")
@@ -134,17 +145,17 @@ def schema_compare(
 ) -> None:
     """Compare two schema package versions for a provider."""
     del env
-    try:
-        result = compare_schema_versions(
+    result = _run_schema_action(
+        "schema compare",
+        lambda: compare_schema_versions(
             SchemaCompareRequest(
                 provider=provider,
                 from_version=from_version,
                 to_version=to_version,
                 element_kind=element_kind,
             )
-        )
-    except ValueError as exc:
-        fail("schema compare", str(exc))
+        ),
+    )
 
     render_schema_compare_result(result=result, json_output=json_output, md_output=md_output)
 
@@ -165,8 +176,9 @@ def schema_promote(
     json_output: bool,
 ) -> None:
     """Promote an evidence cluster to a new registered package version."""
-    try:
-        result = promote_schema_cluster(
+    result = _run_schema_action(
+        "schema promote",
+        lambda: promote_schema_cluster(
             SchemaPromoteRequest(
                 provider=provider,
                 cluster_id=cluster_id,
@@ -174,9 +186,8 @@ def schema_promote(
                 with_samples=with_samples,
                 max_samples=max_samples,
             )
-        )
-    except ValueError as exc:
-        fail("schema promote", str(exc))
+        ),
+    )
 
     render_schema_promote_result(result=result, json_output=json_output)
 
@@ -200,17 +211,17 @@ def schema_explain(
 ) -> None:
     """Explain a package element schema with evidence and annotations."""
     del env
-    try:
-        result = explain_schema(
+    result = _run_schema_action(
+        "schema explain",
+        lambda: explain_schema(
             SchemaExplainRequest(
                 provider=provider,
                 version=version,
                 element_kind=element_kind,
                 proof=proof,
             )
-        )
-    except ValueError as exc:
-        fail("schema explain", str(exc))
+        ),
+    )
 
     render_schema_explain_result(result=result, json_output=json_output, verbose=verbose)
 

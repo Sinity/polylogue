@@ -12,7 +12,7 @@ from polylogue.mcp.payloads import (
     MCPTagCountsPayload,
     conversation_summary_list_payload,
 )
-from polylogue.mcp.server_tools import build_query_spec
+from polylogue.mcp.query_contracts import MCPConversationQueryRequest
 
 if TYPE_CHECKING:
     from mcp.server.fastmcp import FastMCP
@@ -37,7 +37,7 @@ def register_resources(mcp: FastMCP, hooks: ServerCallbacks) -> None:
 
     @mcp.resource("polylogue://conversations")
     async def conversations_resource() -> str:
-        convs = await build_query_spec().list(hooks.get_query_store())
+        convs = await MCPConversationQueryRequest().build_spec(hooks.clamp_limit).list(hooks.get_query_store())
         return hooks.json_payload(conversation_summary_list_payload(convs))
 
     @mcp.resource("polylogue://conversation/{conv_id}")
