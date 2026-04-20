@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from polylogue.lib.session_payload_documents import SessionPhaseDocument, WorkEventDocument
+
 ARCHIVE_PRODUCT_CONTRACT_VERSION = 4
 
 
@@ -75,8 +77,8 @@ class SessionInferencePayload(ArchiveProductModel):
     engaged_duration_source: str = "session_total_fallback"
     repo_inference_strength: str = "weak"
     auto_tags: tuple[str, ...] = ()
-    work_events: tuple[dict[str, object], ...] = ()
-    phases: tuple[dict[str, object], ...] = ()
+    work_events: tuple[WorkEventDocument, ...] = ()
+    phases: tuple[SessionPhaseDocument, ...] = ()
 
 
 class WorkEventEvidencePayload(ArchiveProductModel):

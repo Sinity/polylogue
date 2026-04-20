@@ -7,6 +7,8 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from polylogue.lib.conversation_models import Conversation
+from polylogue.lib.json import JSONDocument, JSONValue
+from polylogue.lib.payload_coercion import string_sequence
 from polylogue.storage.backends.queries import conversations as conversations_q
 from polylogue.storage.backends.queries import publications as publications_q
 from polylogue.storage.backends.queries import runs as runs_q
@@ -87,26 +89,26 @@ class RepositoryWriteMixin:
         async with self._backend.connection() as conn:
             return await publications_q.get_latest_publication(conn, publication_kind)
 
-    async def get_metadata(self, conversation_id: str) -> dict[str, object]:
+    async def get_metadata(self, conversation_id: str) -> JSONDocument:
         async with self._backend.connection() as conn:
             return await conversations_q.get_metadata(conn, conversation_id)
 
     async def _metadata_read_modify_write(
         self,
         conversation_id: str,
-        mutator: Callable[[dict[str, object]], bool],
+        mutator: Callable[[JSONDocument], bool],
     ) -> None:
         await metadata_read_modify_write(self._backend, conversation_id, mutator)
 
-    async def update_metadata(self, conversation_id: str, key: str, value: object) -> None:
-        def _set(meta: dict[str, object]) -> bool:
+    async def update_metadata(self, conversation_id: str, key: str, value: JSONValue) -> None:
+        def _set(meta: JSONDocument) -> bool:
             meta[key] = value
             return True
 
         await self._metadata_read_modify_write(conversation_id, _set)
 
     async def delete_metadata(self, conversation_id: str, key: str) -> None:
-        def _delete(meta: dict[str, object]) -> bool:
+        def _delete(meta: JSONDocument) -> bool:
             if key in meta:
                 del meta[key]
                 return True
@@ -115,24 +117,24 @@ class RepositoryWriteMixin:
         await self._metadata_read_modify_write(conversation_id, _delete)
 
     async def add_tag(self, conversation_id: str, tag: str) -> None:
-        def _add(meta: dict[str, object]) -> bool:
-            tags = meta.get("tags", [])
-            if not isinstance(tags, list):
-                tags = []
+        def _add(meta: JSONDocument) -> bool:
+            tags = list(string_sequence(meta.get("tags")))
             if tag not in tags:
                 tags.append(tag)
-                meta["tags"] = tags
+                tag_payload: list[JSONValue] = list(tags)
+                meta["tags"] = tag_payload
                 return True
             return False
 
         await self._metadata_read_modify_write(conversation_id, _add)
 
     async def remove_tag(self, conversation_id: str, tag: str) -> None:
-        def _remove(meta: dict[str, object]) -> bool:
-            tags = meta.get("tags", [])
-            if isinstance(tags, list) and tag in tags:
+        def _remove(meta: JSONDocument) -> bool:
+            tags = list(string_sequence(meta.get("tags")))
+            if tag in tags:
                 tags.remove(tag)
-                meta["tags"] = tags
+                tag_payload: list[JSONValue] = list(tags)
+                meta["tags"] = tag_payload
                 return True
             return False
 
@@ -142,7 +144,7 @@ class RepositoryWriteMixin:
         async with self._backend.connection() as conn:
             return await conversations_q.list_tags(conn, provider=provider)
 
-    async def set_metadata(self, conversation_id: str, metadata: dict[str, object]) -> None:
+    async def set_metadata(self, conversation_id: str, metadata: JSONDocument) -> None:
         async with self._backend.connection() as conn:
             await conversations_q.set_metadata(
                 conn,

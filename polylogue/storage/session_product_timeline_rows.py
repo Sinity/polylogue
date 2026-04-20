@@ -12,6 +12,7 @@ from polylogue.archive_product_models import (
 )
 from polylogue.lib.hashing import hash_text
 from polylogue.lib.phase_extraction import SessionPhase
+from polylogue.lib.session_payload_documents import WorkEventDocument
 from polylogue.lib.session_profile import SessionProfile
 from polylogue.lib.work_event_extraction import WorkEvent
 from polylogue.storage.session_product_profiles import (
@@ -175,12 +176,21 @@ def build_session_work_event_records(
 
 
 def hydrate_work_event(record: SessionWorkEventRecord) -> WorkEvent:
-    return WorkEvent.from_dict(
-        {
-            **record.evidence_payload.model_dump(mode="json"),
-            **record.inference_payload.model_dump(mode="json"),
-        }
-    )
+    payload: WorkEventDocument = {
+        "kind": record.inference_payload.kind,
+        "start_index": record.evidence_payload.start_index,
+        "end_index": record.evidence_payload.end_index,
+        "start_time": record.evidence_payload.start_time,
+        "end_time": record.evidence_payload.end_time,
+        "canonical_session_date": record.evidence_payload.canonical_session_date,
+        "duration_ms": record.evidence_payload.duration_ms,
+        "confidence": record.inference_payload.confidence,
+        "evidence": list(record.inference_payload.evidence),
+        "file_paths": list(record.evidence_payload.file_paths),
+        "tools_used": list(record.evidence_payload.tools_used),
+        "summary": record.inference_payload.summary,
+    }
+    return WorkEvent.from_dict(payload)
 
 
 # ---------------------------------------------------------------------------

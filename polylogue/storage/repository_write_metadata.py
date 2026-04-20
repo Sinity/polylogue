@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
+from polylogue.lib.json import JSONDocument
 from polylogue.storage.backends.queries import conversations as conversations_q
 from polylogue.storage.repository_contracts import RepositoryBackendProtocol
 
@@ -11,7 +12,7 @@ from polylogue.storage.repository_contracts import RepositoryBackendProtocol
 async def metadata_read_modify_write(
     backend: RepositoryBackendProtocol,
     conversation_id: str,
-    mutator: Callable[[dict[str, object]], bool],
+    mutator: Callable[[JSONDocument], bool],
 ) -> None:
     async with backend.transaction(), backend.connection() as conn:
         current = await conversations_q.get_metadata(conn, conversation_id)

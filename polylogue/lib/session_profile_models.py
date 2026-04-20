@@ -6,8 +6,6 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date, datetime
 
-from typing_extensions import TypedDict
-
 from polylogue.lib.attribution import ConversationAttribution
 from polylogue.lib.payload_coercion import (
     coerce_float,
@@ -23,58 +21,14 @@ from polylogue.lib.payload_coercion import (
 from polylogue.lib.phase_extraction import SessionPhase
 from polylogue.lib.repo_identity import normalize_repo_names, normalize_repo_paths
 from polylogue.lib.semantic_facts import ConversationSemanticFacts
-from polylogue.lib.work_event_extraction import WorkEvent, WorkEventPayload
+from polylogue.lib.session_payload_documents import (
+    SessionPhaseDocument,
+    SessionProfileDocument,
+)
+from polylogue.lib.work_event_extraction import WorkEvent
 
-
-class SessionPhasePayload(TypedDict):
-    start_time: str | None
-    end_time: str | None
-    canonical_session_date: str | None
-    message_range: list[int]
-    duration_ms: int
-    tool_counts: dict[str, int]
-    word_count: int
-    confidence: float
-    evidence: list[str]
-
-
-class SessionProfilePayload(TypedDict):
-    conversation_id: str
-    provider: str
-    title: str | None
-    created_at: str | None
-    updated_at: str | None
-    message_count: int
-    substantive_count: int
-    tool_use_count: int
-    thinking_count: int
-    attachment_count: int
-    word_count: int
-    total_cost_usd: float
-    total_duration_ms: int
-    tool_categories: dict[str, int]
-    repo_paths: list[str]
-    cwd_paths: list[str]
-    branch_names: list[str]
-    file_paths_touched: list[str]
-    languages_detected: list[str]
-    repo_names: list[str]
-    work_events: list[WorkEventPayload]
-    phases: list[SessionPhasePayload]
-    first_message_at: str | None
-    last_message_at: str | None
-    canonical_session_date: str | None
-    engaged_duration_ms: int
-    engaged_minutes: float
-    wall_duration_ms: int
-    cost_is_estimated: bool
-    compaction_count: int
-    thread_id: str | None
-    continuation_depth: int
-    tags: list[str]
-    auto_tags: list[str]
-    is_continuation: bool
-    parent_id: str | None
+SessionPhasePayload = SessionPhaseDocument
+SessionProfilePayload = SessionProfileDocument
 
 
 def _phase_to_dict(phase: SessionPhase) -> SessionPhasePayload:
@@ -91,7 +45,7 @@ def _phase_to_dict(phase: SessionPhase) -> SessionPhasePayload:
     }
 
 
-def _phase_from_mapping(payload: Mapping[str, object]) -> SessionPhase:
+def _phase_from_mapping(payload: SessionPhasePayload | Mapping[str, object]) -> SessionPhase:
     return SessionPhase(
         start_time=optional_datetime(payload.get("start_time")),
         end_time=optional_datetime(payload.get("end_time")),
@@ -186,7 +140,7 @@ class SessionProfile:
         }
 
     @classmethod
-    def from_dict(cls, payload: Mapping[str, object]) -> SessionProfile:
+    def from_dict(cls, payload: SessionProfilePayload | Mapping[str, object]) -> SessionProfile:
         repo_paths = normalize_repo_paths(string_sequence(payload.get("repo_paths")))
         explicit_repo_names = tuple(
             sorted({item.strip() for item in string_sequence(payload.get("repo_names")) if item.strip()})
