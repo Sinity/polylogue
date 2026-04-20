@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import inspect
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Awaitable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
-from typing import TYPE_CHECKING, Any, NoReturn
+from typing import TYPE_CHECKING, NoReturn, Protocol, TypeAlias, TypeVar, cast
 
 import click
 
@@ -27,26 +27,41 @@ if TYPE_CHECKING:
     from polylogue.lib.models import Conversation, ConversationSummary
     from polylogue.protocols import VectorProvider
 
+QueryParams: TypeAlias = dict[str, object]
+QueryParamSource: TypeAlias = Mapping[str, object] | ConversationQuerySpec
+QueryResult: TypeAlias = "Conversation | ConversationSummary"
+_T = TypeVar("_T")
+
+
+class ShowStatsCallback(Protocol):
+    def __call__(self, env: AppEnv, *, verbose: bool = False) -> None: ...
+
+
+async def _resolve_maybe_awaitable(value: _T | object) -> _T:
+    if inspect.isawaitable(value):
+        return await cast(Awaitable[_T], value)
+    return cast(_T, value)
+
 
 # ---------------------------------------------------------------------------
 # Query helpers (from query_helpers.py)
 # ---------------------------------------------------------------------------
 
 
-def coerce_query_spec(params: dict[str, Any] | ConversationQuerySpec) -> ConversationQuerySpec:
+def coerce_query_spec(params: QueryParamSource) -> ConversationQuerySpec:
     if isinstance(params, ConversationQuerySpec):
         return params
     return ConversationQuerySpec.from_params(params)
 
 
-def describe_query_filters(params: dict[str, Any] | ConversationQuerySpec) -> list[str]:
+def describe_query_filters(params: QueryParamSource) -> list[str]:
     """Build a human-readable list of active filters from params or spec."""
     return coerce_query_spec(params).describe()
 
 
 def no_results(
     env: AppEnv,
-    params: dict[str, Any] | ConversationQuerySpec,
+    params: QueryParamSource,
     *,
     exit_code: int = 2,
 ) -> NoReturn:
@@ -66,20 +81,20 @@ def no_results(
     raise SystemExit(exit_code)
 
 
-def result_id(result: Conversation | ConversationSummary) -> str:
+def result_id(result: QueryResult) -> str:
     return str(result.id)
 
 
-def result_provider(result: Conversation | ConversationSummary) -> str:
+def result_provider(result: QueryResult) -> str:
     return str(result.provider)
 
 
-def result_title(result: Conversation | ConversationSummary) -> str:
+def result_title(result: QueryResult) -> str:
     title = result.display_title
     return title if title else result_id(result)[:20]
 
 
-def result_date(result: Conversation | ConversationSummary) -> datetime | None:
+def result_date(result: QueryResult) -> datetime | None:
     display_date = getattr(result, "display_date", None)
     if isinstance(display_date, datetime):
         return display_date
@@ -398,7 +413,7 @@ def _split_query_mode_args(group: click.Group, args: list[str]) -> tuple[list[st
 def handle_query_mode(
     ctx: click.Context,
     *,
-    show_stats: Any,
+    show_stats: ShowStatsCallback,
 ) -> None:
     """Handle query mode: display stats or perform search."""
     env: AppEnv = ctx.obj
@@ -422,7 +437,7 @@ class QueryFirstGroupBase(click.Group):
             ctx.meta["polylogue_query_terms"] = query_terms
         return list(super().parse_args(ctx, parse_args))
 
-    def invoke(self, ctx: click.Context) -> Any:
+    def invoke(self, ctx: click.Context) -> object:
         """Invoke the group, dispatching to query or stats mode if no subcommand."""
         if ctx.meta.get("polylogue_has_subcommand", False):
             return super().invoke(ctx)
@@ -432,6 +447,7 @@ class QueryFirstGroupBase(click.Group):
             ctx.invoke(self.callback, **ctx.params)
 
         self.handle_default_mode(ctx)
+        return None
 
     def handle_default_mode(self, ctx: click.Context) -> None:
         """Dispatch no-subcommand mode for subclasses."""
@@ -455,7 +471,7 @@ def project_query_results(results: list[Conversation], plan: QueryExecutionPlan)
     return projected
 
 
-def execute_query(env: AppEnv, params: dict[str, Any]) -> None:
+def execute_query(env: AppEnv, params: QueryParams) -> None:
     """Execute a query-mode command."""
     run_coroutine_sync(async_execute_query(env, params))
 
@@ -473,13 +489,7 @@ def _create_query_vector_provider(config: Config) -> VectorProvider | None:
         return None
 
 
-async def _await_if_needed(value: Any) -> Any:
-    if inspect.isawaitable(value):
-        return await value
-    return value
-
-
-async def async_execute_query(env: AppEnv, params: dict[str, Any]) -> None:
+async def async_execute_query(env: AppEnv, params: QueryParams) -> None:
     """Async core of execute_query."""
     from polylogue.cli import query_actions as _query_actions
     from polylogue.cli import query_output as _query_output
@@ -558,13 +568,15 @@ async def async_execute_query(env: AppEnv, params: dict[str, Any]) -> None:
                 err=True,
             )
 
+        message_limit_param = params.get("limit")
+        message_limit = message_limit_param if isinstance(message_limit_param, int) else None
         await _query_output.stream_conversation(
             env,
             repo,
             full_id,
             output_format=plan.output.stream_format(),
             dialogue_only=plan.output.dialogue_only,
-            message_limit=params.get("limit"),
+            message_limit=message_limit,
         )
         return
 
@@ -598,7 +610,7 @@ async def async_execute_query(env: AppEnv, params: dict[str, Any]) -> None:
                 output_format=plan.output.output_format,
             )
             return
-        if await _await_if_needed(query_plan.can_use_action_event_stats_with(repo)) is True:
+        if await _resolve_maybe_awaitable(query_plan.can_use_action_event_stats_with(repo)) is True:
             summaries = await repo.list_summaries_by_query(query_plan.record_query.with_limit(query_plan.limit))
             await _query_output.output_stats_by_semantic_summaries(
                 env,

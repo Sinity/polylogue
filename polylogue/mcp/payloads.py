@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import json
 from typing import TYPE_CHECKING, Generic, TypeVar
 
 from pydantic import RootModel
+from typing_extensions import TypedDict
 
 from polylogue.surface_payloads import (
     ConversationDetailPayload as MCPConversationDetailPayload,
@@ -42,6 +44,11 @@ class MCPErrorPayload(SurfacePayloadModel):
     error: str
     tool: str | None = None
     conversation_id: str | None = None
+
+
+class MCPFencedCodeBlock(TypedDict):
+    language: str
+    code: str
 
 
 class MCPConversationSummaryListPayload(MCPRootPayload[list[MCPConversationSummaryPayload]]):
@@ -126,8 +133,12 @@ class MCPTagCountsPayload(MCPRootPayload[dict[str, int]]):
     root: dict[str, int]
 
 
-class MCPMetadataPayload(MCPRootPayload[dict[str, object]]):
+class MCPMetadataPayload(SurfacePayloadModel):
     root: dict[str, object]
+
+    def to_json(self, *, exclude_none: bool = False) -> str:
+        del exclude_none
+        return json.dumps(self.root, indent=2)
 
 
 class MCPStatsByPayload(MCPRootPayload[dict[str, int]]):
@@ -197,6 +208,7 @@ __all__ = [
     "MCPConversationSummaryListPayload",
     "MCPConversationSummaryPayload",
     "MCPErrorPayload",
+    "MCPFencedCodeBlock",
     "MCPHealthCheckPayload",
     "MCPHealthReportPayload",
     "MCPMessagePayload",

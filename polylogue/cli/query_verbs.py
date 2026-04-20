@@ -6,8 +6,6 @@ a specific action on the matched conversations.
 
 from __future__ import annotations
 
-from typing import Any
-
 import click
 
 from polylogue.cli.shell_completion_values import complete_open_targets
@@ -107,7 +105,7 @@ def delete_verb(ctx: click.Context, dry_run: bool, force: bool) -> None:
     _execute_query_verb(ctx, params)
 
 
-def _parent_params(ctx: click.Context) -> dict[str, Any]:
+def _parent_params(ctx: click.Context) -> dict[str, object]:
     """Extract params from parent context."""
     return dict(_require_parent_context(ctx).params)
 
@@ -128,7 +126,7 @@ def _require_parent_context(ctx: click.Context) -> click.Context:
 
 def _execute_query_verb(
     ctx: click.Context,
-    params: dict[str, Any],
+    params: dict[str, object],
     *,
     extra_query_terms: tuple[str, ...] = (),
 ) -> None:
