@@ -4,7 +4,9 @@ import asyncio
 from collections.abc import AsyncIterator, Iterable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, TypedDict
+from typing import TYPE_CHECKING
+
+from typing_extensions import TypedDict
 
 from polylogue.config import Config
 from polylogue.pipeline.run_support import PARSE_STAGES

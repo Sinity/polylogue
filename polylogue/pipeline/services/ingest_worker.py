@@ -14,7 +14,9 @@ import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, TypeAlias, TypedDict, cast
+from typing import TYPE_CHECKING, TypeAlias, cast
+
+from typing_extensions import TypedDict
 
 from polylogue.lib.artifact_taxonomy import classify_artifact
 from polylogue.lib.branch_type import BranchType

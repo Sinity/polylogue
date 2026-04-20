@@ -11,11 +11,12 @@ Unacceptable: AttributeError, IndexError, RecursionError (bugs).
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import TypedDict, cast
+from typing import cast
 
 import pytest
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
+from typing_extensions import TypedDict
 
 from polylogue.sources.parsers import chatgpt, claude, codex, drive
 from tests.infra.strategies.schema_driven import schema_conformant_payload

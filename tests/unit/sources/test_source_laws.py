@@ -9,13 +9,14 @@ import zipfile
 from collections.abc import Iterable, Mapping
 from io import BytesIO
 from pathlib import Path
-from typing import IO, BinaryIO, TypedDict
+from typing import IO, BinaryIO
 from unittest.mock import MagicMock
 
 import ijson
 import pytest
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
+from typing_extensions import TypedDict
 
 from polylogue.config import Source
 from polylogue.lib.roles import Role, normalize_role
