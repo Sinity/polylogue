@@ -1,9 +1,10 @@
-"""Package-aware schema manifest models."""
+"""Package-aware schema manifest and resolution models."""
 
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
+from typing import Literal, TypeAlias
 
 from polylogue.schemas.json_types import JSONDocument, json_document, json_document_list
 from polylogue.types import Provider
@@ -32,6 +33,14 @@ def _int_value(value: object, default: int = 0) -> int:
 
 def _string_int_dict(value: object) -> dict[str, int]:
     return {str(key): _int_value(item) for key, item in json_document(value).items()}
+
+
+SchemaResolutionReason: TypeAlias = Literal[
+    "bundle_scope",
+    "exact_structure",
+    "package_default",
+    "profile_family",
+]
 
 
 @dataclass
@@ -134,6 +143,14 @@ class SchemaVersionPackage:
         target = element_kind or self.default_element_kind
         return next((item for item in self.elements if item.element_kind == target), None)
 
+    def element_bundle_scopes(self, element_kind: str | None = None) -> set[str]:
+        element = self.element(element_kind)
+        if element is None:
+            return set(self.bundle_scopes)
+        scopes = set(self.bundle_scopes)
+        scopes.update(element.bundle_scopes)
+        return scopes
+
 
 @dataclass
 class SchemaPackageCatalog:
@@ -185,12 +202,14 @@ class SchemaResolution:
     element_kind: str
     exact_structure_id: str | None
     bundle_scope: str | None
-    reason: str
+    reason: SchemaResolutionReason
+    profile_score: float | None = None
 
 
 __all__ = [
     "SchemaElementManifest",
     "SchemaPackageCatalog",
     "SchemaResolution",
+    "SchemaResolutionReason",
     "SchemaVersionPackage",
 ]
