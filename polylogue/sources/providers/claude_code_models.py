@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Literal, TypeAlias
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from polylogue.lib.json import json_document
 from polylogue.lib.viewports import ReasoningTrace, TokenUsage, ToolCall, classify_tool
 from polylogue.types import Provider
+
+ClaudeCodeContentBlockRecord: TypeAlias = dict[str, object]
+ClaudeCodeContentBlocks: TypeAlias = list[ClaudeCodeContentBlockRecord]
 
 
 class ClaudeCodeToolUse(BaseModel):
@@ -18,14 +22,14 @@ class ClaudeCodeToolUse(BaseModel):
     type: Literal["tool_use"] = "tool_use"
     id: str
     name: str
-    input: dict[str, Any] = Field(default_factory=dict)
+    input: ClaudeCodeContentBlockRecord = Field(default_factory=dict)
 
     def to_tool_call(self) -> ToolCall:
         return ToolCall(
             name=self.name,
             id=self.id,
             input=self.input,
-            category=classify_tool(self.name, self.input),
+            category=classify_tool(self.name, json_document(self.input)),
             provider=Provider.CLAUDE_CODE,
             raw=self.model_dump(),
         )
@@ -38,7 +42,7 @@ class ClaudeCodeToolResult(BaseModel):
 
     type: Literal["tool_result"] = "tool_result"
     tool_use_id: str
-    content: str | list[Any] = ""
+    content: str | list[object] = ""
     is_error: bool = False
 
 
@@ -95,7 +99,7 @@ class ClaudeCodeMessageContent(BaseModel):
     type: str = "message"
     role: str
     model: str | None = None
-    content: list[dict[str, Any]] = Field(default_factory=list)
+    content: ClaudeCodeContentBlocks = Field(default_factory=list)
     stop_reason: str | None = None
     stop_sequence: str | None = None
     usage: ClaudeCodeUsage | None = None
@@ -107,4 +111,4 @@ class ClaudeCodeUserMessage(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     role: Literal["user"] = "user"
-    content: str | list[dict[str, Any]] = ""
+    content: str | ClaudeCodeContentBlocks = ""
