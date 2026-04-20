@@ -7,6 +7,7 @@ from collections.abc import Sequence
 import aiosqlite
 
 from polylogue.storage.session_product_storage import (
+    build_insert_sql,
     session_profile_insert_columns,
     session_profile_insert_values,
 )
@@ -45,13 +46,8 @@ async def replace_session_profiles_bulk(
     if records:
         has_legacy_payload = await _table_has_column(conn, "session_profiles", "payload_json")
         columns = session_profile_insert_columns(has_legacy_payload=has_legacy_payload)
-        placeholders = ", ".join("?" for _ in columns)
         await conn.executemany(
-            f"""
-            INSERT INTO session_profiles (
-                {", ".join(columns)}
-            ) VALUES ({placeholders})
-            """,
+            build_insert_sql("session_profiles", columns),
             [
                 session_profile_insert_values(
                     record,

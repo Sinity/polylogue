@@ -7,6 +7,7 @@ from collections.abc import Sequence
 import aiosqlite
 
 from polylogue.storage.session_product_storage import (
+    build_insert_sql,
     session_phase_insert_columns,
     session_phase_insert_values,
     session_work_event_insert_columns,
@@ -65,13 +66,8 @@ async def replace_session_work_events_bulk(
     if records:
         has_legacy_payload = await _table_has_column(conn, "session_work_events", "payload_json")
         columns = session_work_event_insert_columns(has_legacy_payload=has_legacy_payload)
-        placeholders = ", ".join("?" for _ in columns)
         await conn.executemany(
-            f"""
-            INSERT INTO session_work_events (
-                {", ".join(columns)}
-            ) VALUES ({placeholders})
-            """,
+            build_insert_sql("session_work_events", columns),
             [
                 session_work_event_insert_values(
                     record,
@@ -113,13 +109,8 @@ async def replace_session_phases_bulk(
     if records:
         has_legacy_payload = await _table_has_column(conn, "session_phases", "payload_json")
         columns = session_phase_insert_columns(has_legacy_payload=has_legacy_payload)
-        placeholders = ", ".join("?" for _ in columns)
         await conn.executemany(
-            f"""
-            INSERT INTO session_phases (
-                {", ".join(columns)}
-            ) VALUES ({placeholders})
-            """,
+            build_insert_sql("session_phases", columns),
             [
                 session_phase_insert_values(
                     record,
