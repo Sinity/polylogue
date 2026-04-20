@@ -76,7 +76,7 @@ class TestHandleQueryMode:
         mock_ctx.meta = {}
 
         with (
-            patch("polylogue.cli.query.execute_query") as mock_execute,
+            patch("polylogue.cli.query.execute_query_request") as mock_execute,
             patch("polylogue.cli.click_app._show_stats") as mock_stats,
         ):
             _handle_query_mode(mock_ctx)
@@ -99,7 +99,7 @@ class TestHandleQueryMode:
         mock_ctx.meta = {"polylogue_query_terms": ("error", "handling")}
 
         with (
-            patch("polylogue.cli.query.execute_query") as mock_execute,
+            patch("polylogue.cli.query.execute_query_request") as mock_execute,
             patch("polylogue.cli.click_app._show_stats") as mock_stats,
         ):
             from polylogue.cli.click_app import _handle_query_mode
@@ -163,13 +163,16 @@ class TestHandleQueryMode:
         mock_ctx.obj = MagicMock()
         mock_ctx.meta = {"polylogue_query_terms": ("python", "error")}
 
-        with patch("polylogue.cli.query.execute_query") as mock_execute, patch("polylogue.cli.click_app._show_stats"):
+        with (
+            patch("polylogue.cli.query.execute_query_request") as mock_execute,
+            patch("polylogue.cli.click_app._show_stats"),
+        ):
             from polylogue.cli.click_app import _handle_query_mode
 
             _handle_query_mode(mock_ctx)
 
-        params = mock_execute.call_args[0][1]
-        assert params["query"] == ("python", "error")
+        request = mock_execute.call_args[0][1]
+        assert request.query_params()["query"] == ("python", "error")
 
 
 class TestQueryFirstGroupParseArgs:
@@ -183,18 +186,18 @@ class TestQueryFirstGroupParseArgs:
     def test_positional_args_become_query_terms(self, cli_runner: CliRunner) -> None:
         from polylogue.cli.click_app import cli
 
-        with patch("polylogue.cli.query.execute_query") as mock_execute:
+        with patch("polylogue.cli.query.execute_query_request") as mock_execute:
             cli_runner.invoke(cli, ["hello", "world", "--plain"], catch_exceptions=False)
-        _, params = mock_execute.call_args[0]
-        assert set(params.get("query", ())) == {"hello", "world"}
+        request = mock_execute.call_args[0][1]
+        assert set(request.query_params().get("query", ())) == {"hello", "world"}
 
     def test_query_option_before_bare_word_stays_query_mode(self, cli_runner: CliRunner) -> None:
         """Filter options followed by a bare word (not a subcommand name) stay in query mode."""
         from polylogue.cli.click_app import cli
 
-        with patch("polylogue.cli.query.execute_query") as mock_execute:
+        with patch("polylogue.cli.query.execute_query_request") as mock_execute:
             cli_runner.invoke(cli, ["-p", "claude-ai", "my_search", "--plain"], catch_exceptions=False)
-        _, params = mock_execute.call_args[0]
+        params = mock_execute.call_args[0][1].query_params()
         assert params.get("provider") == "claude-ai"
         assert params.get("query") == ("my_search",)
 
@@ -209,22 +212,22 @@ class TestQueryFirstGroupParseArgs:
     def test_option_args_preserved(self, cli_runner: CliRunner) -> None:
         from polylogue.cli.click_app import cli
 
-        with patch("polylogue.cli.query.execute_query") as mock_execute:
+        with patch("polylogue.cli.query.execute_query_request") as mock_execute:
             cli_runner.invoke(cli, ["-p", "claude-ai", "search_term", "--plain"], catch_exceptions=False)
-        _, params = mock_execute.call_args[0]
+        params = mock_execute.call_args[0][1].query_params()
         assert params.get("provider") == "claude-ai"
         assert "search_term" in params.get("query", ())
 
     def test_mixed_options_and_positionals(self, cli_runner: CliRunner) -> None:
         from polylogue.cli.click_app import cli
 
-        with patch("polylogue.cli.query.execute_query") as mock_execute:
+        with patch("polylogue.cli.query.execute_query_request") as mock_execute:
             cli_runner.invoke(
                 cli,
                 ["error", "-p", "claude-ai", "handling", "--latest", "--plain"],
                 catch_exceptions=False,
             )
-        _, params = mock_execute.call_args[0]
+        params = mock_execute.call_args[0][1].query_params()
         assert params.get("provider") == "claude-ai"
         assert params.get("latest") is True
         assert set(params.get("query", ())) == {"error", "handling"}
@@ -285,18 +288,18 @@ class TestQueryFirstGroupInvoke:
     def test_stats_by_subcommand_preserves_grouped_stats_mode(self, cli_runner: CliRunner) -> None:
         from polylogue.cli.click_app import cli
 
-        with patch("polylogue.cli.query.execute_query") as mock_execute:
+        with patch("polylogue.cli.query.execute_query_request") as mock_execute:
             result = cli_runner.invoke(cli, ["--plain", "stats", "--by", "provider"], catch_exceptions=False)
 
         assert result.exit_code == 0
-        _, params = mock_execute.call_args[0]
+        params = mock_execute.call_args[0][1].query_params()
         assert params["stats_by"] == "provider"
         assert params["stats_only"] is False
 
     def test_query_mode_with_positional_args(self, cli_runner: CliRunner) -> None:
         from polylogue.cli.click_app import cli
 
-        with patch("polylogue.cli.query.execute_query") as mock_exec:
+        with patch("polylogue.cli.query.execute_query_request") as mock_exec:
             cli_runner.invoke(cli, ["hello", "--plain"], catch_exceptions=False)
         mock_exec.assert_called_once()
 
