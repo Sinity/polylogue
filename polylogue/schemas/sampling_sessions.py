@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import contextlib
-import json
+from collections.abc import Iterator
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
 
+from polylogue.lib.json import JSONDocument, json_document, loads
 from polylogue.schemas.observation import ProviderConfig, extract_schema_units_from_payload
+from polylogue.schemas.observation_models import SchemaUnit
 from polylogue.types import Provider
 
 
@@ -19,7 +20,7 @@ def _iter_schema_units_from_sessions(
     max_sessions: int | None,
     config: ProviderConfig,
     max_samples: int | None = None,
-) -> Any:
+) -> Iterator[SchemaUnit]:
     """Yield clusterable schema units from filesystem session files."""
     provider_name = Provider.from_string(provider_name)
     if not session_dir.exists():
@@ -35,16 +36,15 @@ def _iter_schema_units_from_sessions(
         jsonl_files = jsonl_files[::step][:max_sessions]
 
     for path in jsonl_files:
-        records: list[dict[str, Any]] = []
+        records: list[JSONDocument] = []
         try:
             with path.open(encoding="utf-8") as handle:
                 for line in handle:
                     if not line.strip():
                         continue
-                    with contextlib.suppress(json.JSONDecodeError):
-                        parsed = json.loads(line)
-                        if isinstance(parsed, dict):
-                            records.append(parsed)
+                    with contextlib.suppress(ValueError):
+                        if record := json_document(loads(line)):
+                            records.append(record)
         except OSError:
             continue
 
@@ -66,7 +66,7 @@ def _iter_samples_from_sessions(
     session_dir: Path,
     *,
     max_sessions: int | None,
-) -> Any:
+) -> Iterator[JSONDocument]:
     """Yield individual sample dicts from session files."""
     if not session_dir.exists():
         return
@@ -86,10 +86,9 @@ def _iter_samples_from_sessions(
                 for line in handle:
                     if not line.strip():
                         continue
-                    with contextlib.suppress(json.JSONDecodeError):
-                        parsed = json.loads(line)
-                        if isinstance(parsed, dict):
-                            yield parsed
+                    with contextlib.suppress(ValueError):
+                        if record := json_document(loads(line)):
+                            yield record
         except OSError:
             continue
 

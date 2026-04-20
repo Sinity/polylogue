@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
-
+from polylogue.schemas.audit_walkers import SchemaNode, _walk_values
 from polylogue.schemas.field_stats import FieldStats
 from polylogue.schemas.privacy import (
     _is_content_field,
@@ -20,33 +19,13 @@ from polylogue.schemas.redaction_report import (
 def _build_redaction_report(
     provider: str,
     stats: dict[str, FieldStats],
-    schema: dict[str, Any],
+    schema: SchemaNode,
     *,
-    privacy_config: Any | None = None,
+    privacy_config: object | None = None,
     privacy_level: str = "standard",
 ) -> SchemaReport:
     report = SchemaReport(provider=provider, privacy_level=privacy_level)
-    schema_values: dict[str, set[str]] = {}
-
-    def _collect_schema_values(s: dict[str, Any], path: str = "$") -> None:
-        if not isinstance(s, dict):
-            return
-        vals = s.get("x-polylogue-values")
-        if isinstance(vals, list):
-            schema_values[path] = {str(v) for v in vals}
-        if "properties" in s:
-            for name, prop in s["properties"].items():
-                _collect_schema_values(prop, f"{path}.{name}")
-        if isinstance(s.get("additionalProperties"), dict):
-            _collect_schema_values(s["additionalProperties"], f"{path}.*")
-        if isinstance(s.get("items"), dict):
-            _collect_schema_values(s["items"], f"{path}[*]")
-        for kw in ("anyOf", "oneOf", "allOf"):
-            for sub in s.get(kw, []):
-                if isinstance(sub, dict):
-                    _collect_schema_values(sub, path)
-
-    _collect_schema_values(schema)
+    schema_values = {path: set(values) for path, values in _walk_values(schema)}
 
     for path, fs in stats.items():
         if not fs.is_enum_like or not fs.observed_values:
