@@ -48,6 +48,12 @@ _json_value = st.recursive(
 )
 
 
+def _loaded_document(payload: str | bytes) -> core_json.JSONDocument:
+    result = core_json.loads(payload)
+    assert core_json.is_json_document(result)
+    return result
+
+
 # ---------------------------------------------------------------------------
 # Law 1: JSON roundtrip for basic serializable types
 # ---------------------------------------------------------------------------
@@ -78,7 +84,7 @@ def test_decimal_encodes_to_float(d: Decimal) -> None:
     """Decimal always encodes to float — never to string, never raises.
     The encoded value equals float(d)."""
     output = core_json.dumps({"v": d})
-    result = core_json.loads(output)
+    result = _loaded_document(output)
     assert isinstance(result["v"], float)
     assert result["v"] == float(d)
 
@@ -175,7 +181,7 @@ def test_dumps_custom_type_default_handler() -> Any:
 
     payload_obj = CustomType(42)
     output = core_json.dumps(payload_obj, default=custom_handler)
-    data = core_json.loads(output)
+    data = _loaded_document(output)
     assert data == {"custom": 42}
 
 
@@ -187,7 +193,7 @@ def test_dumps_custom_fallback_to_encoder() -> None:
 
     payload = {"decimal": Decimal("1.5")}
     output = core_json.dumps(payload, default=custom_handler)
-    data = core_json.loads(output)
+    data = _loaded_document(output)
     assert data["decimal"] == 1.5
 
 
@@ -200,7 +206,7 @@ def test_dumps_custom_handler_takes_precedence_for_decimal() -> Any:
         raise TypeError("Not handled")
 
     output = core_json.dumps({"decimal": Decimal("1.5")}, default=custom_handler)
-    data = core_json.loads(output)
+    data = _loaded_document(output)
     assert data["decimal"] == "decimal:1.5"
 
 
@@ -249,7 +255,7 @@ def test_dumps_fallback_uses_stdlib_encoder_when_orjson_option_rejects_object() 
         default=custom_handler,
         option=orjson.OPT_NON_STR_KEYS,
     )
-    data = core_json.loads(output)
+    data = _loaded_document(output)
     assert data == {"payload": {"custom": 7}}
 
 
@@ -308,7 +314,7 @@ def test_encoder_decimal_serialized_when_custom_fails() -> Any:
 
     payload = {"value": Decimal("1.5")}
     output = core_json.dumps(payload, default=custom_handler)
-    data = core_json.loads(output)
+    data = _loaded_document(output)
     assert data["value"] == 1.5
 
 

@@ -10,6 +10,7 @@ from typing import IO, BinaryIO, TypeAlias, cast
 
 from polylogue.config import Source
 from polylogue.lib.artifact_taxonomy import classify_artifact
+from polylogue.lib.json import JSONValue, is_json_value
 from polylogue.lib.json import dumps_bytes as json_dumps_bytes
 from polylogue.lib.metrics import read_current_rss_mb, read_peak_rss_self_mb
 from polylogue.logging import get_logger
@@ -35,7 +36,11 @@ AcquisitionObservation: TypeAlias = dict[str, object]
 ObservationCallback: TypeAlias = Callable[[AcquisitionObservation], None]
 StatusCallback: TypeAlias = Callable[[str], None]
 CursorState: TypeAlias = CursorStatePayload
-DetectedEntryPayload: TypeAlias = tuple[Provider, object, float]
+DetectedEntryPayload: TypeAlias = tuple[Provider, JSONValue, float]
+
+
+def _artifact_payload(value: object) -> JSONValue:
+    return value if is_json_value(value) else {}
 
 
 def _heartbeat_label(source_path: str) -> str:
@@ -163,12 +168,13 @@ def _iter_entry_payloads(
     last_detected_provider: Provider | None = None
     provider_locked = False
     for payload in _decoders._iter_json_stream(handle, stream_name):
+        normalized_payload = _artifact_payload(payload)
         if provider_locked:
             provider = current_provider
             detect_provider_ms = 0.0
         else:
             detect_start = time.perf_counter()
-            detected_provider = detect_provider(payload)
+            detected_provider = detect_provider(normalized_payload)
             detect_provider_ms = (time.perf_counter() - detect_start) * 1000.0
             provider = detected_provider or current_provider
             if detected_provider is not None and detected_provider is not Provider.UNKNOWN:
@@ -177,7 +183,7 @@ def _iter_entry_payloads(
                     provider_locked = True
                 else:
                     last_detected_provider = detected_provider
-        yield (provider, payload, detect_provider_ms)
+        yield (provider, normalized_payload, detect_provider_ms)
 
 
 def _make_split_entry_raw_data(

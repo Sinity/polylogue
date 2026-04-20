@@ -41,7 +41,11 @@ def json_document_list(value: object) -> JSONDocumentList:
     """Coerce a value into a list of string-keyed JSON objects."""
     if not isinstance(value, list):
         return []
-    return [json_document(item) for item in value]
+    return [document for item in value if (document := json_document(item))]
+
+
+def _reject_non_finite_token(token: str) -> JSONValue:
+    raise ValueError(f"invalid non-finite JSON token: {token}")
 
 
 def _default_encoder(user_default: JSONEncoder | None = None) -> JSONEncoder:
@@ -89,8 +93,8 @@ def loads(obj: str | bytes | bytearray) -> JSONValue:
         return cast(JSONValue, orjson.loads(obj))
     except (orjson.JSONDecodeError, ValueError) as exc:
         try:
-            return cast(JSONValue, json.loads(obj))
-        except json.JSONDecodeError:
+            return cast(JSONValue, json.loads(obj, parse_constant=_reject_non_finite_token))
+        except (json.JSONDecodeError, ValueError):
             raise exc from None
 
 

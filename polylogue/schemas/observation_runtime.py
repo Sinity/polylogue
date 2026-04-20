@@ -6,12 +6,13 @@ from pathlib import Path
 from typing import TypeAlias
 
 from polylogue.lib.artifact_taxonomy import classify_artifact
+from polylogue.lib.json import JSONDocument, JSONValue, is_json_value, json_document
 from polylogue.lib.raw_payload import extract_payload_samples, record_bucket_key
 from polylogue.schemas.observation_identity import derive_bundle_scope, schema_cluster_id
 from polylogue.schemas.observation_models import ProviderConfig, SchemaUnit
 from polylogue.types import Provider
 
-SchemaSample: TypeAlias = dict[str, object]
+SchemaSample: TypeAlias = JSONDocument
 
 _SCHEMA_SAMPLE_STRING_LIMIT = 1024
 
@@ -27,6 +28,9 @@ def extract_schema_units_from_payload(
     max_samples: int | None = None,
 ) -> list[SchemaUnit]:
     """Extract clusterable schema units from one decoded payload."""
+    if not is_json_value(payload):
+        return []
+    normalized_payload: JSONValue = payload
     provider_token = Provider.from_string(provider_name)
     effective_max_samples = max_samples if max_samples is not None else config.schema_sample_cap
     bundle_scope = derive_bundle_scope(provider_token, source_path)
@@ -34,7 +38,7 @@ def extract_schema_units_from_payload(
 
     if config.sample_granularity == "record":
         artifact = classify_artifact(
-            payload,
+            normalized_payload,
             provider=provider_token,
             source_path=source_path,
         )
@@ -43,7 +47,7 @@ def extract_schema_units_from_payload(
 
         samples = _compact_schema_samples(
             extract_payload_samples(
-                payload,
+                normalized_payload,
                 sample_granularity="record",
                 max_samples=effective_max_samples,
                 record_type_key=config.record_type_key,
@@ -54,7 +58,7 @@ def extract_schema_units_from_payload(
 
         return [
             SchemaUnit(
-                cluster_payload=payload,
+                cluster_payload=normalized_payload,
                 schema_samples=samples,
                 artifact_kind=artifact.cohort,
                 conversation_id=raw_id,
@@ -62,7 +66,7 @@ def extract_schema_units_from_payload(
                 source_path=source_path_text,
                 bundle_scope=bundle_scope,
                 observed_at=observed_at,
-                exact_structure_id=schema_cluster_id(payload, artifact.cohort),
+                exact_structure_id=schema_cluster_id(normalized_payload, artifact.cohort),
                 profile_tokens=_record_profile_tokens(
                     samples,
                     record_type_key=config.record_type_key,
@@ -72,7 +76,7 @@ def extract_schema_units_from_payload(
 
     documents = _compact_schema_samples(
         extract_payload_samples(
-            payload,
+            normalized_payload,
             sample_granularity="document",
             max_samples=effective_max_samples,
         )
@@ -103,7 +107,7 @@ def extract_schema_units_from_payload(
     return units
 
 
-def _compact_schema_value(value: object) -> object:
+def _compact_schema_value(value: JSONValue) -> JSONValue:
     if isinstance(value, str):
         return value[:_SCHEMA_SAMPLE_STRING_LIMIT] if len(value) > _SCHEMA_SAMPLE_STRING_LIMIT else value
     if isinstance(value, list):
@@ -118,7 +122,7 @@ def _compact_schema_samples(samples: list[SchemaSample]) -> list[SchemaSample]:
     for sample in samples:
         compacted_sample = _compact_schema_value(sample)
         if isinstance(compacted_sample, dict):
-            compacted.append(compacted_sample)
+            compacted.append(json_document(compacted_sample))
     return compacted
 
 

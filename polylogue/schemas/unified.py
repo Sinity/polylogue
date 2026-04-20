@@ -52,10 +52,6 @@ from polylogue.types import Provider
 logger = logging.getLogger(__name__)
 
 
-def _object_record(value: JSONDocument) -> dict[str, object]:
-    return dict(value)
-
-
 def extract_harmonized_message(provider: Provider | str, raw: JSONDocument) -> HarmonizedMessage:
     """Extract ``HarmonizedMessage`` from a provider-native message payload.
 
@@ -93,7 +89,7 @@ def try_schema_extraction(provider: Provider | str, raw: JSONDocument) -> Harmon
         )
         if schema is None:
             return None
-        return extract_message_from_schema(_object_record(raw), schema=schema, provider=p)
+        return extract_message_from_schema(raw, schema=schema, provider=p)
     except Exception:
         return None
 

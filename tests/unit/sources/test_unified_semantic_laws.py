@@ -11,6 +11,7 @@ import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
+from polylogue.lib.json import JSONDocument, json_document, json_document_list
 from polylogue.lib.provider_semantics import (
     extract_chatgpt_text,
     extract_claude_code_text,
@@ -70,10 +71,8 @@ from tests.infra.strategies import (
 _VALID_VIEWPORT_ROLES = {"user", "assistant", "system", "tool", "unknown", "model"}
 
 
-JsonScalar: TypeAlias = str | int | float | bool | None
-JsonValue: TypeAlias = JsonScalar | dict[str, "JsonValue"] | list["JsonValue"]
-RawPayload: TypeAlias = dict[str, JsonValue]
-RawContent: TypeAlias = list[RawPayload]
+RawPayload: TypeAlias = JSONDocument
+RawContent: TypeAlias = list[JSONDocument]
 SemanticCase: TypeAlias = tuple[str, RawPayload]
 
 
@@ -96,9 +95,7 @@ def _provider(value: str | Provider) -> Provider:
 
 
 def _as_dict(value: object) -> RawPayload:
-    if not isinstance(value, dict):
-        return {}
-    return {key: value for key, value in value.items() if isinstance(key, str)}
+    return json_document(value)
 
 
 def _as_list(value: object) -> list[object]:
@@ -106,7 +103,11 @@ def _as_list(value: object) -> list[object]:
 
 
 def _content_blocks(value: list[object]) -> RawContent:
-    return [_as_dict(item) for item in value if isinstance(item, dict)]
+    return json_document_list(value)
+
+
+def _doc(value: object) -> JSONDocument:
+    return json_document(value)
 
 
 def _build_viewport_record(provider: str, raw: RawPayload) -> ViewportRecord:
@@ -126,16 +127,18 @@ def _build_viewport_record(provider: str, raw: RawPayload) -> ViewportRecord:
 def _structured_provider_meta(record: ViewportRecord) -> RawPayload:
     meta = record.to_meta()
     provider_meta: RawPayload = {
-        "content_blocks": [block.model_dump(mode="json") for block in record.extract_content_blocks()],
-        "reasoning_traces": [trace.model_dump(mode="json") for trace in record.extract_reasoning_traces()],
-        "tool_calls": [call.model_dump(mode="json") for call in record.extract_tool_calls()],
+        "content_blocks": [json_document(block.model_dump(mode="json")) for block in record.extract_content_blocks()],
+        "reasoning_traces": [
+            json_document(trace.model_dump(mode="json")) for trace in record.extract_reasoning_traces()
+        ],
+        "tool_calls": [json_document(call.model_dump(mode="json")) for call in record.extract_tool_calls()],
     }
     if meta.model is not None:
         provider_meta["model"] = meta.model
     if meta.tokens is not None:
-        provider_meta["tokens"] = meta.tokens.model_dump(mode="json")
+        provider_meta["tokens"] = json_document(meta.tokens.model_dump(mode="json"))
     if meta.cost is not None:
-        provider_meta["cost"] = meta.cost.model_dump(mode="json")
+        provider_meta["cost"] = json_document(meta.cost.model_dump(mode="json"))
     if meta.duration_ms is not None:
         provider_meta["duration_ms"] = meta.duration_ms
     return provider_meta
@@ -484,7 +487,7 @@ def test_provider_adapter_viewport_contract(case: SemanticCase) -> None:
 
     if isinstance(record, ChatGPTMessage):
         assert record.role_normalized in {"user", "assistant", "system", "tool", "unknown"}
-        assert record.text_content == extract_chatgpt_text(record.content.model_dump(mode="python"))
+        assert record.text_content == extract_chatgpt_text(_doc(record.content.model_dump(mode="python")))
         assert blocks == record.to_content_blocks()
         assert not traces
         assert not calls
@@ -619,10 +622,10 @@ def test_is_message_record_contract(provider: str, raw: RawPayload, expected: bo
     ("label", "action", "match"),
     [
         ("missing-role", lambda: _missing_role(), "Message has no role"),
-        ("unknown-provider", lambda: extract_harmonized_message("unknown_provider", {}), "Unknown provider"),
+        ("unknown-provider", lambda: extract_harmonized_message("unknown_provider", _doc({})), "Unknown provider"),
         (
             "claude-code-empty-message",
-            lambda: extract_harmonized_message("claude-code", {"uuid": "m1", "type": "human", "message": {}}),
+            lambda: extract_harmonized_message("claude-code", _doc({"uuid": "m1", "type": "human", "message": {}})),
             "no role",
         ),
     ],
@@ -723,13 +726,15 @@ def test_coercion_and_token_cost_internals_contract() -> None:
     assert [item.text for item in coerced_blocks] == ["kept-block", "dict-block", None]
 
     # --- extract_token_usage with cache fields ---
-    usage = {
-        "input_tokens": 10,
-        "output_tokens": 12,
-        "cache_read_input_tokens": 3,
-        "cache_creation_input_tokens": 4,
-        "total_tokens": 29,
-    }
+    usage = _doc(
+        {
+            "input_tokens": 10,
+            "output_tokens": 12,
+            "cache_read_input_tokens": 3,
+            "cache_creation_input_tokens": 4,
+            "total_tokens": 29,
+        }
+    )
     tokens = extract_token_usage(usage)
     assert tokens is not None
     assert tokens.input_tokens == 10
@@ -739,36 +744,38 @@ def test_coercion_and_token_cost_internals_contract() -> None:
     assert tokens.total_tokens == 29
 
     # --- _extract_generic_tokens ---
-    assert _extract_generic_tokens({"usage": usage}) == extract_token_usage(usage)
-    assert _extract_generic_tokens({"tokens": {"output_tokens": 7}}) == TokenUsage(output_tokens=7)
-    assert _extract_generic_tokens({"tokenCount": 9}) == TokenUsage(output_tokens=9)
-    assert _extract_generic_tokens({"tokens": {"output_tokens": "bad"}}) is None
+    assert _extract_generic_tokens(_doc({"usage": usage})) == extract_token_usage(usage)
+    assert _extract_generic_tokens(_doc({"tokens": _doc({"output_tokens": 7})})) == TokenUsage(output_tokens=7)
+    assert _extract_generic_tokens(_doc({"tokenCount": 9})) == TokenUsage(output_tokens=9)
+    assert _extract_generic_tokens(_doc({"tokens": _doc({"output_tokens": "bad"})})) is None
 
     # --- _extract_generic_cost ---
-    assert _extract_generic_cost({"cost": {"total_usd": 0.25}}) == CostInfo(total_usd=0.25)
-    assert _extract_generic_cost({"costUSD": 1.5}) == CostInfo(total_usd=1.5)
-    assert _extract_generic_cost({"cost": {"total_usd": "bad"}}) is None
+    assert _extract_generic_cost(_doc({"cost": _doc({"total_usd": 0.25})})) == CostInfo(total_usd=0.25)
+    assert _extract_generic_cost(_doc({"costUSD": 1.5})) == CostInfo(total_usd=1.5)
+    assert _extract_generic_cost(_doc({"cost": _doc({"total_usd": "bad"})})) is None
 
 
 def test_harmonization_pipeline_internals_contract() -> None:
     """Consolidated: _harmonize_extracted_provider_meta, _has_extracted_viewports, _overlay_message_context."""
     # --- _harmonize_extracted_provider_meta ---
-    provider_meta = {
-        "content_blocks": [
-            {"type": "text", "text": "plain text", "raw": {"text": "plain text"}},
-            {"type": "thinking", "text": "private reasoning", "raw": {"thinking": "private reasoning"}},
-            {
-                "type": "tool_use",
-                "tool_call": {"name": "Read", "id": "tool-1", "input": {"path": "README.md"}},
-                "raw": {"type": "tool_use"},
-            },
-        ],
-        "tokens": {"output_tokens": 5},
-        "costUSD": 0.25,
-        "durationMs": 12,
-        "sender": "assistant",
-        "created_at": "2025-01-01T00:00:00Z",
-    }
+    provider_meta = _doc(
+        {
+            "content_blocks": [
+                {"type": "text", "text": "plain text", "raw": {"text": "plain text"}},
+                {"type": "thinking", "text": "private reasoning", "raw": {"thinking": "private reasoning"}},
+                {
+                    "type": "tool_use",
+                    "tool_call": {"name": "Read", "id": "tool-1", "input": {"path": "README.md"}},
+                    "raw": {"type": "tool_use"},
+                },
+            ],
+            "tokens": {"output_tokens": 5},
+            "costUSD": 0.25,
+            "durationMs": 12,
+            "sender": "assistant",
+            "created_at": "2025-01-01T00:00:00Z",
+        }
+    )
 
     harmonized = _harmonize_extracted_provider_meta(
         Provider.CLAUDE_CODE,
@@ -790,13 +797,13 @@ def test_harmonization_pipeline_internals_contract() -> None:
     assert harmonized.timestamp is not None
 
     # --- _has_extracted_viewports ---
-    assert _has_extracted_viewports({"content_blocks": [], "duration_ms": 1}) is True
-    assert _has_extracted_viewports({"sender": "assistant", "text": "hello"}) is False
+    assert _has_extracted_viewports(_doc({"content_blocks": [], "duration_ms": 1})) is True
+    assert _has_extracted_viewports(_doc({"sender": "assistant", "text": "hello"})) is False
 
     # --- _overlay_message_context ---
     message = extract_harmonized_message(
         "claude-ai",
-        {"uuid": "m1", "sender": "assistant", "text": "hello", "created_at": "2025-01-01T00:00:00Z"},
+        _doc({"uuid": "m1", "sender": "assistant", "text": "hello", "created_at": "2025-01-01T00:00:00Z"}),
     )
     unknown = message.model_copy(update={"id": None, "role": "unknown", "text": "", "timestamp": None})
 
@@ -868,16 +875,18 @@ def test_generic_content_extraction_contract() -> None:
 def test_extract_from_provider_meta_integration_contract() -> None:
     """Consolidated: extract_from_provider_meta with plain blocks, structured blocks+tools, and multi-provider overlay."""
     # --- Plain content blocks with tokens/cost/duration ---
-    provider_meta_plain = {
-        "content_blocks": [
-            {"type": "text", "text": "plain text"},
-            {"type": "code", "text": "print('x')", "language": "python"},
-            {"type": "tool_result", "text": "tool output"},
-        ],
-        "tokens": {"output_tokens": 5},
-        "cost": {"total_usd": 0.25},
-        "duration_ms": 12,
-    }
+    provider_meta_plain = _doc(
+        {
+            "content_blocks": [
+                {"type": "text", "text": "plain text"},
+                {"type": "code", "text": "print('x')", "language": "python"},
+                {"type": "tool_result", "text": "tool output"},
+            ],
+            "tokens": {"output_tokens": 5},
+            "cost": {"total_usd": 0.25},
+            "duration_ms": 12,
+        }
+    )
 
     harmonized = extract_from_provider_meta(
         "claude-code",
@@ -895,19 +904,21 @@ def test_extract_from_provider_meta_integration_contract() -> None:
     assert harmonized.duration_ms == 12
 
     # --- Structured blocks with tool_calls and reasoning_traces ---
-    provider_meta_structured = {
-        "content_blocks": [
-            {"type": "text", "text": "plain text"},
-            {"type": "tool_use", "tool_call": {"name": "Read", "id": "tool-1", "input": {"path": "README.md"}}},
-            {"type": "tool_result", "text": "tool output"},
-            {"type": "code", "text": "print('x')", "language": "python"},
-        ],
-        "reasoning_traces": [{"text": "reason", "provider": "claude-code"}],
-        "tool_calls": [{"name": "Read", "id": "tool-1", "input": {"path": "README.md"}, "provider": "claude-code"}],
-        "tokens": {"output_tokens": 5},
-        "cost": {"total_usd": 0.25},
-        "duration_ms": 12,
-    }
+    provider_meta_structured = _doc(
+        {
+            "content_blocks": [
+                {"type": "text", "text": "plain text"},
+                {"type": "tool_use", "tool_call": {"name": "Read", "id": "tool-1", "input": {"path": "README.md"}}},
+                {"type": "tool_result", "text": "tool output"},
+                {"type": "code", "text": "print('x')", "language": "python"},
+            ],
+            "reasoning_traces": [{"text": "reason", "provider": "claude-code"}],
+            "tool_calls": [{"name": "Read", "id": "tool-1", "input": {"path": "README.md"}, "provider": "claude-code"}],
+            "tokens": {"output_tokens": 5},
+            "cost": {"total_usd": 0.25},
+            "duration_ms": 12,
+        }
+    )
 
     harmonized2 = extract_from_provider_meta(
         "claude-code",
@@ -986,7 +997,7 @@ def test_extract_harmonized_message_fallback_contract() -> None:
         "content": {"parts": ["hello", {"text": "world"}]},
         "metadata": {"model_slug": "gpt-4o"},
     }
-    msg_cg = extract_harmonized_message("chatgpt", chatgpt_raw)
+    msg_cg = extract_harmonized_message("chatgpt", _doc(chatgpt_raw))
     assert msg_cg.id == "chatgpt-fallback"
     assert msg_cg.role.value == "assistant"
     assert msg_cg.text == "hello\nworld"
@@ -997,7 +1008,7 @@ def test_extract_harmonized_message_fallback_contract() -> None:
         "text": "print('ok')",
         "parts": ["ignored", {"text": "still ignored"}],
     }
-    assert extract_chatgpt_text(content_direct) == "print('ok')"
+    assert extract_chatgpt_text(_doc(content_direct)) == "print('ok')"
 
     # --- Claude Code: full semantic fields preserved ---
     cc_raw = {
@@ -1024,7 +1035,7 @@ def test_extract_harmonized_message_fallback_contract() -> None:
             ],
         },
     }
-    msg_cc = extract_harmonized_message("claude-code", cc_raw)
+    msg_cc = extract_harmonized_message("claude-code", _doc(cc_raw))
     assert msg_cc.id == "claude-fallback"
     assert msg_cc.role.value == "assistant"
     assert msg_cc.text == "hello"
@@ -1054,7 +1065,7 @@ def test_extract_harmonized_message_fallback_contract() -> None:
         ({"uuid": "m1", "type": "assistant", "message": "not-a-dict"}, "assistant"),
     ]
     for raw, expected_role in claude_code_role_fallbacks:
-        msg = extract_harmonized_message("claude-code", raw)
+        msg = extract_harmonized_message("claude-code", _doc(raw))
         assert msg.role.value == expected_role
         assert msg.id == "m1"
 

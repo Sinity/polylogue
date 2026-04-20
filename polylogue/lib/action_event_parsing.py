@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping, Sequence
-from typing import Any
 
+from polylogue.lib.json import JSONDocument, json_document
 from polylogue.lib.viewports import ToolCall, ToolCategory, classify_tool
 from polylogue.types import Provider
 
@@ -17,7 +17,7 @@ def _clean_str(value: object) -> str | None:
     return candidate or None
 
 
-def _extract_first_string(mapping: dict[str, Any], fields: tuple[str, ...]) -> str | None:
+def _extract_first_string(mapping: Mapping[str, object], fields: tuple[str, ...]) -> str | None:
     for field in fields:
         value = _clean_str(mapping.get(field))
         if value is not None:
@@ -25,16 +25,16 @@ def _extract_first_string(mapping: dict[str, Any], fields: tuple[str, ...]) -> s
     return None
 
 
-def _normalized_mapping(value: object) -> dict[str, Any]:
+def _normalized_mapping(value: object) -> JSONDocument:
     if isinstance(value, Mapping):
-        return dict(value)
+        return json_document(dict(value))
     if isinstance(value, str) and value.strip():
         try:
             parsed = json.loads(value)
         except json.JSONDecodeError:
             return {}
         if isinstance(parsed, Mapping):
-            return dict(parsed)
+            return json_document(dict(parsed))
     return {}
 
 
@@ -50,11 +50,11 @@ def _tool_category_from_semantic(value: object) -> ToolCategory | None:
 def build_tool_calls_from_content_blocks(
     *,
     provider: Provider | str | None,
-    content_blocks: Sequence[Mapping[str, Any]],
+    content_blocks: Sequence[Mapping[str, object]],
 ) -> tuple[ToolCall, ...]:
     """Normalize canonical ToolCall viewports from content blocks."""
     tool_result_outputs: dict[str, str] = {}
-    tool_use_blocks: list[Mapping[str, Any]] = []
+    tool_use_blocks: list[Mapping[str, object]] = []
     for block in content_blocks:
         block_type = str(block.get("type"))
         if block_type == "tool_result":

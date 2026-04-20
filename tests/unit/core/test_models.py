@@ -12,6 +12,7 @@ from unittest.mock import Mock
 
 import pytest
 
+from polylogue.lib.json import JSONDocument, JSONValue, json_document
 from polylogue.lib.messages import MessageCollection
 from polylogue.lib.models import Message
 from polylogue.lib.provider_identity import (
@@ -43,7 +44,7 @@ TOOL_FILE_OPS = [
     ("MultiEdit", True),
     ("Bash", False),
 ]
-TOOL_GIT_OPS = [
+TOOL_GIT_OPS: list[tuple[str, JSONDocument, bool]] = [
     ("Bash", {"command": "git commit -m 'test'"}, True),
     ("Read", {"command": "git status"}, False),
     ("Bash", {"command": "ls -la"}, False),
@@ -51,7 +52,7 @@ TOOL_GIT_OPS = [
     ("Bash", {"command": "  git push  "}, True),
     ("Bash", {}, False),
 ]
-TOOL_AFFECTED_PATHS = [
+TOOL_AFFECTED_PATHS: list[tuple[str, JSONDocument, list[str]]] = [
     ("Read", {"file_path": "/tmp/test.txt"}, ["/tmp/test.txt"]),
     ("Write", {"file_path": "/tmp/output.txt"}, ["/tmp/output.txt"]),
     ("Edit", {"file_path": "/tmp/code.py"}, ["/tmp/code.py"]),
@@ -76,8 +77,12 @@ MESSAGE_ROLE_CASES = [
 
 
 def _make_tool(tool_name: str, input_data: dict[str, object] | None = None) -> ToolCall:
-    tool_input = input_data or {}
+    tool_input = json_document(input_data)
     return ToolCall(name=tool_name, id="t1", input=tool_input, category=classify_tool(tool_name, tool_input))
+
+
+def _json_input(payload: dict[str, JSONValue]) -> JSONDocument:
+    return json_document(payload)
 
 
 class TestToolCallProperties:
@@ -119,21 +124,25 @@ class TestToolCallProperties:
         assert "./fixtures/sample.txt" in tool.affected_paths
 
     def test_affected_paths_uses_structured_metadata_files(self: Any) -> None:
+        bash_input = _json_input({"command": "git add pyproject.toml README.md"})
         tool = ToolCall(
             name="Bash",
             id="t1",
-            input={"command": "git add pyproject.toml README.md"},
-            category=classify_tool("Bash", {"command": "git add pyproject.toml README.md"}),
+            input=bash_input,
+            category=classify_tool("Bash", bash_input),
             raw={"metadata": {"files": ["pyproject.toml", "/workspace/polylogue/README.md"]}},
         )
         assert tool.affected_paths == ["pyproject.toml", "/workspace/polylogue/README.md"]
 
     def test_affected_paths_filters_noisy_structured_metadata_files(self: Any) -> None:
+        bash_input = _json_input(
+            {"command": "git add modules/services/sinex/bridge.nix && git commit -m \"$(cat <<'EOF'\""}
+        )
         tool = ToolCall(
             name="Bash",
             id="t1",
-            input={"command": "git add modules/services/sinex/bridge.nix && git commit -m \"$(cat <<'EOF'\""},
-            category=classify_tool("Bash", {"command": "git add modules/services/sinex/bridge.nix"}),
+            input=bash_input,
+            category=classify_tool("Bash", bash_input),
             raw={
                 "metadata": {
                     "files": [
@@ -364,8 +373,9 @@ class TestConversationFromRecords:
 
         assert conversation.id == "c1"
         assert conversation.provider == Provider.CLAUDE_AI
-        assert len(conversation.messages) == 1
-        hydrated_message = conversation.messages.to_list()[0]
+        hydrated_messages = conversation.messages.to_list()
+        assert len(hydrated_messages) == 1
+        hydrated_message = hydrated_messages[0]
         assert hydrated_message.role == Role.USER
         assert [attachment.name for attachment in hydrated_message.attachments] == ["file.txt"]
 
