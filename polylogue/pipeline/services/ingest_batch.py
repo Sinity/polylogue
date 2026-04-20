@@ -119,6 +119,14 @@ class _IngestBatchSummary:
     teardown_elapsed_s: float = 0.0
 
 
+@dataclass(frozen=True, slots=True)
+class _IngestWorkerRequest:
+    archive_root_str: str
+    blob_root_str: str
+    validation_mode: str
+    measure_ingest_result_size: bool
+
+
 # ---------------------------------------------------------------------------
 # SQL statements (copied from async query modules — sync versions)
 # ---------------------------------------------------------------------------
@@ -578,38 +586,35 @@ def _flush_pending_conversation_entries(
             materialized_ids.add(cdata.conversation_id)
 
 
+def _run_ingest_record(
+    raw_record: RawConversationRecord,
+    request: _IngestWorkerRequest,
+) -> IngestRecordResult:
+    return ingest_record(
+        raw_record,
+        request.archive_root_str,
+        request.validation_mode,
+        request.measure_ingest_result_size,
+        blob_root_str=request.blob_root_str,
+    )
+
+
 def _iter_ingest_results_sync(
     raw_records: list[RawConversationRecord],
     *,
-    archive_root_str: str,
-    blob_root_str: str,
-    validation_mode: str,
+    request: _IngestWorkerRequest,
     worker_count: int,
-    measure_ingest_result_size: bool,
 ) -> Iterable[IngestRecordResult]:
     if worker_count <= 1:
         for raw_record in raw_records:
-            yield ingest_record(
-                raw_record,
-                archive_root_str,
-                validation_mode,
-                measure_ingest_result_size,
-                blob_root_str=blob_root_str,
-            )
+            yield _run_ingest_record(raw_record, request)
         return
 
     try:
         with process_pool_executor(max_workers=worker_count) as executor:
             futures: dict[Future[IngestRecordResult], str] = {}
             for raw_record in raw_records:
-                future = executor.submit(
-                    ingest_record,
-                    raw_record,
-                    archive_root_str,
-                    validation_mode,
-                    measure_ingest_result_size,
-                    blob_root_str=blob_root_str,
-                )
+                future = executor.submit(_run_ingest_record, raw_record, request)
                 futures[future] = raw_record.raw_id
 
             for future in as_completed(futures):
@@ -623,13 +628,7 @@ def _iter_ingest_results_sync(
                     )
     except (TypeError, pickle.PicklingError):
         for raw_record in raw_records:
-            yield ingest_record(
-                raw_record,
-                archive_root_str,
-                validation_mode,
-                measure_ingest_result_size,
-                blob_root_str=blob_root_str,
-            )
+            yield _run_ingest_record(raw_record, request)
 
 
 def _resolved_ingest_worker_limit(value: int | None) -> int:
@@ -678,6 +677,12 @@ def _process_ingest_batch_sync(
     summary.raw_record_count = len(raw_records)
     summary.worker_count = _select_ingest_worker_count(raw_records, ingest_workers)
     summary.total_blob_mb = sum(r.blob_size for r in raw_records) / (1024 * 1024)
+    worker_request = _IngestWorkerRequest(
+        archive_root_str=archive_root_str,
+        blob_root_str=blob_root_str,
+        validation_mode=validation_mode,
+        measure_ingest_result_size=measure_ingest_result_size,
+    )
 
     t_start = time.perf_counter()
     setup_started = time.perf_counter()
@@ -694,11 +699,8 @@ def _process_ingest_batch_sync(
         result_iterator = iter(
             _iter_ingest_results_sync(
                 raw_records,
-                archive_root_str=archive_root_str,
-                blob_root_str=blob_root_str,
-                validation_mode=validation_mode,
+                request=worker_request,
                 worker_count=summary.worker_count,
-                measure_ingest_result_size=measure_ingest_result_size,
             )
         )
         while True:
