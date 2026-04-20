@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, Field
 
+from polylogue.pipeline.materialization_runtime import _timestamp_sort_key
 from polylogue.storage.state_views import ExistingConversation
 from polylogue.storage.store import (
     AttachmentRecord,
@@ -35,30 +36,6 @@ class SaveResult(BaseModel):
     skipped_conversations: int
     skipped_messages: int
     skipped_attachments: int
-
-
-def _timestamp_sort_key(ts: str | None) -> float | None:
-    """Convert a timestamp string to a numeric sort key."""
-    if ts is None:
-        return None
-    try:
-        value = float(ts)
-        if value > 32503680000:
-            value = value / 1000
-        return value
-    except (ValueError, TypeError):
-        pass
-
-    from datetime import datetime, timezone
-
-    try:
-        normalized = ts.replace("Z", "+00:00")
-        dt = datetime.fromisoformat(normalized)
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return dt.timestamp()
-    except (ValueError, TypeError):
-        return None
 
 
 @dataclass
