@@ -8,7 +8,7 @@ from io import BytesIO
 from itertools import chain
 from typing import TYPE_CHECKING, BinaryIO
 
-from polylogue.lib.artifact_taxonomy import classify_artifact
+from polylogue.lib.artifact_taxonomy import ArtifactClassification, classify_artifact
 from polylogue.lib.json import dumps_bytes as json_dumps_bytes
 from polylogue.logging import get_logger
 from polylogue.types import Provider
@@ -38,6 +38,24 @@ class _SniffResult:
     provider: Provider
     payloads: Iterable[JsonValue]
     grouped_payloads: list[JsonValue] | None = None
+
+    @property
+    def is_grouped(self) -> bool:
+        return self.grouped_payloads is not None
+
+
+@dataclass(frozen=True, slots=True)
+class _PreparedJsonlState:
+    sniff_handle: BinaryIO
+    pre_read_bytes: bytes | None
+    stream_start: int | None
+
+
+@dataclass(frozen=True, slots=True)
+class _ResolvedPayload:
+    provider: Provider
+    artifact: ArtifactClassification
+    schema_resolution: SchemaResolution | None
 
 
 class _ConversationEmitter:
@@ -87,56 +105,11 @@ class _ConversationEmitter:
             return
 
         if is_jsonl:
-            stream_start = self._capture_stream_start(handle) if pre_read_bytes is None else None
-            if pre_read_bytes is None and stream_start is None and self._ctx.capture_raw and precomputed_raw is None:
-                sniff_bytes = handle.read()
-                sniffed = self._sniff_jsonl_payloads(
-                    BytesIO(sniff_bytes),
-                    stream_name,
-                )
-                if sniffed.provider in GROUP_PROVIDERS:
-                    yield from self._emit_grouped(
-                        BytesIO(sniff_bytes),
-                        stream_name,
-                        sniff_bytes,
-                        precomputed_raw=precomputed_raw,
-                        precomputed_payloads=sniffed.grouped_payloads,
-                    )
-                    return
-                yield from self._emit_individual_payloads(
-                    sniffed.payloads,
-                    stream_name=stream_name,
-                )
-                return
-
-            sniff_handle = BytesIO(pre_read_bytes) if pre_read_bytes is not None else handle
-            sniffed = self._sniff_jsonl_payloads(
-                sniff_handle,
+            yield from self._emit_jsonl(
+                handle,
                 stream_name,
-            )
-            if sniffed.provider in GROUP_PROVIDERS:
-                grouped_bytes = pre_read_bytes
-                grouped_handle = sniff_handle
-                if (
-                    grouped_bytes is None
-                    and self._ctx.capture_raw
-                    and precomputed_raw is None
-                    and stream_start is not None
-                ):
-                    self._restore_stream_start(handle, stream_start)
-                    grouped_bytes = handle.read()
-                    grouped_handle = BytesIO(grouped_bytes)
-                yield from self._emit_grouped(
-                    grouped_handle,
-                    stream_name,
-                    grouped_bytes,
-                    precomputed_raw=precomputed_raw,
-                    precomputed_payloads=sniffed.grouped_payloads,
-                )
-                return
-            yield from self._emit_individual_payloads(
-                sniffed.payloads,
-                stream_name=stream_name,
+                pre_read_bytes=pre_read_bytes,
+                precomputed_raw=precomputed_raw,
             )
             return
 
@@ -169,20 +142,14 @@ class _ConversationEmitter:
             return
 
         raw_data = precomputed_raw or (self._make_raw(raw_bytes) if raw_bytes else None)
-        provider = detect_provider(payloads) or self._ctx.provider_hint
-        artifact = classify_artifact(
-            payloads,
-            provider=provider,
-            source_path=self._ctx.source_path_str,
-        )
-        if not artifact.parse_as_conversation:
+        resolved = self._resolve_payload(payloads)
+        if not resolved.artifact.parse_as_conversation:
             return
-        schema_resolution = self._resolve_schema(provider, payloads)
         for conv in parse_payload(
-            provider,
+            resolved.provider,
             payloads,
             self._ctx.fallback_id,
-            schema_resolution=schema_resolution,
+            schema_resolution=resolved.schema_resolution,
         ):
             yield (raw_data, self._maybe_enrich(conv))
 
@@ -216,31 +183,29 @@ class _ConversationEmitter:
         source_index = 0
         for payload in payloads:
             try:
-                provider = detect_provider(payload) or self._ctx.provider_hint
-                artifact = classify_artifact(
-                    payload,
-                    provider=provider,
-                    source_path=self._ctx.source_path_str,
-                )
-                if not artifact.parse_as_conversation:
+                resolved = self._resolve_payload(payload)
+                if not resolved.artifact.parse_as_conversation:
                     continue
-                schema_resolution = self._resolve_schema(provider, payload)
 
                 if whole_file_raw is not None:
                     raw_data: RawConversationData | None = whole_file_raw
                 elif self._ctx.capture_raw:
                     raw_bytes = json_dumps_bytes(payload)
-                    raw_data = self._make_raw(raw_bytes, source_index=source_index, provider_override=provider)
+                    raw_data = self._make_raw(
+                        raw_bytes,
+                        source_index=source_index,
+                        provider_override=resolved.provider,
+                    )
                 else:
                     raw_data = None
 
                 for conv in parse_payload(
-                    provider,
+                    resolved.provider,
                     payload,
                     self._ctx.fallback_id,
-                    schema_resolution=schema_resolution,
+                    schema_resolution=resolved.schema_resolution,
                 ):
-                    yield (raw_data, self._maybe_enrich(conv, provider))
+                    yield (raw_data, self._maybe_enrich(conv, resolved.provider))
                 source_index += 1
             except Exception:
                 logger.exception("Error processing payload from %s", stream_name)
@@ -275,6 +240,103 @@ class _ConversationEmitter:
                 grouped_payloads=buffered_payloads,
             )
         return _SniffResult(provider=detected_provider, payloads=iter(buffered_payloads))
+
+    def _prepare_jsonl_state(
+        self,
+        handle: BinaryIO,
+        *,
+        pre_read_bytes: bytes | None,
+    ) -> _PreparedJsonlState:
+        if pre_read_bytes is not None:
+            return _PreparedJsonlState(
+                sniff_handle=BytesIO(pre_read_bytes),
+                pre_read_bytes=pre_read_bytes,
+                stream_start=None,
+            )
+        return _PreparedJsonlState(
+            sniff_handle=handle,
+            pre_read_bytes=None,
+            stream_start=self._capture_stream_start(handle),
+        )
+
+    def _non_seekable_jsonl_sniff(
+        self,
+        handle: BinaryIO,
+        stream_name: str,
+    ) -> tuple[bytes, _SniffResult]:
+        sniff_bytes = handle.read()
+        return sniff_bytes, self._sniff_jsonl_payloads(BytesIO(sniff_bytes), stream_name)
+
+    def _grouped_jsonl_source(
+        self,
+        handle: BinaryIO,
+        state: _PreparedJsonlState,
+        *,
+        precomputed_raw: RawConversationData | None,
+    ) -> tuple[BinaryIO, bytes | None]:
+        grouped_bytes = state.pre_read_bytes
+        grouped_handle: BinaryIO = state.sniff_handle
+        if (
+            grouped_bytes is None
+            and self._ctx.capture_raw
+            and precomputed_raw is None
+            and state.stream_start is not None
+        ):
+            self._restore_stream_start(handle, state.stream_start)
+            grouped_bytes = handle.read()
+            grouped_handle = BytesIO(grouped_bytes)
+        return grouped_handle, grouped_bytes
+
+    def _emit_jsonl(
+        self,
+        handle: BinaryIO,
+        stream_name: str,
+        *,
+        pre_read_bytes: bytes | None,
+        precomputed_raw: RawConversationData | None,
+    ) -> Iterable[tuple[RawConversationData | None, ParsedConversation]]:
+        state = self._prepare_jsonl_state(handle, pre_read_bytes=pre_read_bytes)
+        if (
+            state.pre_read_bytes is None
+            and state.stream_start is None
+            and self._ctx.capture_raw
+            and precomputed_raw is None
+        ):
+            sniff_bytes, sniffed = self._non_seekable_jsonl_sniff(handle, stream_name)
+            if sniffed.is_grouped:
+                yield from self._emit_grouped(
+                    BytesIO(sniff_bytes),
+                    stream_name,
+                    sniff_bytes,
+                    precomputed_raw=precomputed_raw,
+                    precomputed_payloads=sniffed.grouped_payloads,
+                )
+                return
+            yield from self._emit_individual_payloads(
+                sniffed.payloads,
+                stream_name=stream_name,
+            )
+            return
+
+        sniffed = self._sniff_jsonl_payloads(state.sniff_handle, stream_name)
+        if sniffed.is_grouped:
+            grouped_handle, grouped_bytes = self._grouped_jsonl_source(
+                handle,
+                state,
+                precomputed_raw=precomputed_raw,
+            )
+            yield from self._emit_grouped(
+                grouped_handle,
+                stream_name,
+                grouped_bytes,
+                precomputed_raw=precomputed_raw,
+                precomputed_payloads=sniffed.grouped_payloads,
+            )
+            return
+        yield from self._emit_individual_payloads(
+            sniffed.payloads,
+            stream_name=stream_name,
+        )
 
     def _capture_stream_start(self, handle: BinaryIO) -> int | None:
         seekable = getattr(handle, "seekable", None)
@@ -314,6 +376,19 @@ class _ConversationEmitter:
                 exc,
             )
             return None
+
+    def _resolve_payload(self, payload: JsonValue) -> _ResolvedPayload:
+        provider = detect_provider(payload) or self._ctx.provider_hint
+        artifact = classify_artifact(
+            payload,
+            provider=provider,
+            source_path=self._ctx.source_path_str,
+        )
+        return _ResolvedPayload(
+            provider=provider,
+            artifact=artifact,
+            schema_resolution=self._resolve_schema(provider, payload),
+        )
 
     def _make_raw(
         self,

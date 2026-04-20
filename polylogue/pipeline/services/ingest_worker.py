@@ -13,13 +13,14 @@ import pickle
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from typing_extensions import TypedDict
 
-from polylogue.lib.artifact_taxonomy import classify_artifact
+from polylogue.lib.artifact_taxonomy import ArtifactClassification, classify_artifact
 from polylogue.lib.branch_type import BranchType
 from polylogue.lib.json import dumps as json_dumps
+from polylogue.lib.raw_payload_decode import RawPayloadEnvelope
 from polylogue.lib.roles import Role
 from polylogue.pipeline.materialization_runtime import (
     MaterializedConversation,
@@ -42,6 +43,7 @@ from polylogue.types import (
 )
 
 if TYPE_CHECKING:
+    from polylogue.schemas.packages import SchemaResolution
     from polylogue.schemas.runtime_registry import SchemaRegistry
     from polylogue.sources.parsers.base import ParsedConversation
 
@@ -189,6 +191,41 @@ class IngestRecordResult:
     serialized_size_bytes: int | None = None
 
 
+ParsePlanMode = Literal["payload", "stream"]
+
+
+@dataclass(frozen=True, slots=True)
+class _IngestContext:
+    raw_record: RawConversationRecord
+    raw_source: Path
+    archive_root: Path
+    validation_mode: ValidationMode
+    measure_serialized_size: bool
+    source_name: str
+    fallback_timestamp: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class _ParsePlan:
+    provider: Provider
+    payload_provider: str
+    artifact: ArtifactClassification
+    mode: ParsePlanMode
+    schema_payload: object | None
+    payload: object | None = None
+    stream_name: str | None = None
+    malformed_jsonl_lines: int = 0
+    malformed_jsonl_detail: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _PlanValidation:
+    status: ValidationStatus
+    schema_resolution: SchemaResolution | None = None
+    validation_error: str | None = None
+    parse_error: str | None = None
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -257,31 +294,67 @@ def _is_stream_record_provider(source_path: str | None, provider: str | Provider
     return Provider.from_string(provider) in STREAM_RECORD_PROVIDERS
 
 
-def _stream_grouped_jsonl_record(
-    raw_record: RawConversationRecord,
-    *,
-    raw_source: Path,
-    archive_root: Path,
+def _record_result(
+    context: _IngestContext,
     payload_provider: str | None,
-    validation_mode: ValidationMode,
-    measure_serialized_size: bool,
-) -> IngestRecordResult | None:
-    from polylogue.lib.raw_payload_decode import _sample_jsonl_payload_with_detail
-    from polylogue.schemas.validator import SchemaValidator
-    from polylogue.sources.dispatch import detect_provider, parse_stream_payload
+    *,
+    validation_status: ValidationStatus,
+    validation_error: str | None = None,
+    parse_error: str | None = None,
+    error: str | None = None,
+    conversations: list[ConversationData] | None = None,
+    include_source_name: bool = False,
+) -> IngestRecordResult:
+    return _finalize_result(
+        IngestRecordResult(
+            raw_id=context.raw_record.raw_id,
+            payload_provider=payload_provider,
+            validation_status=validation_status.value,
+            validation_error=validation_error,
+            parse_error=parse_error,
+            error=error,
+            conversations=conversations or [],
+            source_name=context.source_name if include_source_name else None,
+        ),
+        measure_serialized_size=context.measure_serialized_size,
+    )
 
-    stream_name = raw_record.source_path or raw_record.raw_id
+
+def _resolve_schema_resolution(
+    provider: Provider,
+    payload: object,
+    *,
+    source_path: str | None,
+) -> SchemaResolution | None:
+    if payload is None:
+        return None
+    return _runtime_schema_registry().resolve_payload(
+        provider,
+        payload,
+        source_path=source_path,
+    )
+
+
+def _build_stream_parse_plan(
+    context: _IngestContext,
+    *,
+    payload_provider: str | None,
+) -> _ParsePlan | None:
+    from polylogue.lib.raw_payload_decode import _sample_jsonl_payload_with_detail
+    from polylogue.sources.dispatch import detect_provider
+
+    stream_name = context.raw_record.source_path or context.raw_record.raw_id
 
     try:
         sample_payloads, malformed_lines, malformed_detail = _sample_jsonl_payload_with_detail(
-            raw_source,
+            context.raw_source,
             max_samples=64,
             jsonl_dict_only=True,
         )
     except Exception:
         return None
 
-    runtime_provider = Provider.from_string(payload_provider or raw_record.provider_name)
+    runtime_provider = Provider.from_string(payload_provider or context.raw_record.provider_name)
     detected_provider = Provider.from_string(payload_provider or runtime_provider)
     sniffed_provider = runtime_provider
     if sample_payloads:
@@ -294,140 +367,210 @@ def _stream_grouped_jsonl_record(
     artifact = classify_artifact(
         sample_payloads,
         provider=detected_provider,
-        source_path=raw_record.source_path,
+        source_path=context.raw_record.source_path,
     )
-    if not artifact.parse_as_conversation:
-        return _finalize_result(
-            IngestRecordResult(
-                raw_id=raw_record.raw_id,
-                payload_provider=str(detected_provider),
-                validation_status=ValidationStatus.SKIPPED.value,
-            ),
-            measure_serialized_size=measure_serialized_size,
+    return _ParsePlan(
+        provider=detected_provider,
+        payload_provider=str(detected_provider),
+        artifact=artifact,
+        mode="stream",
+        schema_payload=sample_payloads if artifact.schema_eligible else None,
+        stream_name=stream_name,
+        malformed_jsonl_lines=malformed_lines,
+        malformed_jsonl_detail=malformed_detail,
+    )
+
+
+def _build_envelope_parse_plan(
+    envelope: RawPayloadEnvelope,
+) -> _ParsePlan:
+    return _ParsePlan(
+        provider=envelope.provider,
+        payload_provider=str(envelope.provider),
+        artifact=envelope.artifact,
+        mode="payload",
+        schema_payload=envelope.payload if envelope.artifact.schema_eligible else None,
+        payload=envelope.payload,
+        malformed_jsonl_lines=envelope.malformed_jsonl_lines,
+        malformed_jsonl_detail=envelope.malformed_jsonl_detail,
+    )
+
+
+def _validate_parse_plan(
+    context: _IngestContext,
+    plan: _ParsePlan,
+) -> _PlanValidation:
+    from polylogue.schemas.validator import SchemaValidator
+
+    if context.validation_mode is ValidationMode.OFF:
+        return _PlanValidation(status=ValidationStatus.SKIPPED)
+    if not plan.artifact.schema_eligible or plan.schema_payload is None:
+        return _PlanValidation(status=ValidationStatus.PASSED)
+    if plan.malformed_jsonl_lines and context.validation_mode is ValidationMode.STRICT:
+        malformed_error = _format_malformed_jsonl_error(
+            malformed_lines=plan.malformed_jsonl_lines,
+            malformed_detail=plan.malformed_jsonl_detail,
+        )
+        return _PlanValidation(
+            status=ValidationStatus.FAILED,
+            validation_error=malformed_error,
+            parse_error=malformed_error,
         )
 
-    v_status = ValidationStatus.PASSED
-    v_error: str | None = None
-    schema_resolution = None
-
-    if validation_mode is not ValidationMode.OFF and artifact.schema_eligible:
-        if malformed_lines and validation_mode is ValidationMode.STRICT:
-            malformed_error = _format_malformed_jsonl_error(
-                malformed_lines=malformed_lines,
-                malformed_detail=malformed_detail,
-            )
-            return _finalize_result(
-                IngestRecordResult(
-                    raw_id=raw_record.raw_id,
-                    payload_provider=str(detected_provider),
-                    validation_status=ValidationStatus.FAILED.value,
-                    validation_error=malformed_error,
-                    parse_error=malformed_error,
-                    error=malformed_error,
-                ),
-                measure_serialized_size=measure_serialized_size,
-            )
-
-        schema_resolution = _runtime_schema_registry().resolve_payload(
-            detected_provider,
-            sample_payloads,
-            source_path=raw_record.source_path,
-        )
-
-        try:
-            validator = SchemaValidator.for_payload(
-                detected_provider,
-                sample_payloads,
-                source_path=raw_record.source_path,
-                schema_resolution=schema_resolution,
-            )
-        except (FileNotFoundError, ImportError):
-            validator = None
-            v_status = ValidationStatus.SKIPPED
-
-        if validator is not None:
-            validation_samples = validator.validation_samples(sample_payloads)
-            if validation_samples:
-                collected_errors: list[str] = []
-                for sample in validation_samples:
-                    sample_result = validator.validate(sample, include_drift=False)
-                    if not sample_result.is_valid:
-                        collected_errors.extend(sample_result.errors[:2])
-                if collected_errors and validation_mode is ValidationMode.STRICT:
-                    first_error = collected_errors[0]
-                    return _finalize_result(
-                        IngestRecordResult(
-                            raw_id=raw_record.raw_id,
-                            payload_provider=str(detected_provider),
-                            validation_status=ValidationStatus.FAILED.value,
-                            validation_error=f"Schema validation failed: {first_error}",
-                            error=f"Schema validation failed: {first_error}",
-                        ),
-                        measure_serialized_size=measure_serialized_size,
-                    )
-    elif validation_mode is ValidationMode.OFF:
-        v_status = ValidationStatus.SKIPPED
-
-    del sample_payloads
-    schema_resolution = None
+    schema_resolution = _resolve_schema_resolution(
+        plan.provider,
+        plan.schema_payload,
+        source_path=context.raw_record.source_path,
+    )
 
     try:
-        with raw_source.open("rb") as handle:
-            parsed_conversations = parse_stream_payload(
-                detected_provider,
-                _iter_json_stream(handle, stream_name),
-                _fallback_id(raw_record.source_path, raw_record.raw_id),
-            )
-    except Exception as exc:
-        return _finalize_result(
-            IngestRecordResult(
-                raw_id=raw_record.raw_id,
-                payload_provider=str(detected_provider),
-                validation_status=v_status.value,
-                parse_error=f"parse: {exc}",
-                error=f"parse: {exc}",
-            ),
-            measure_serialized_size=measure_serialized_size,
+        validator = SchemaValidator.for_payload(
+            plan.provider,
+            plan.schema_payload,
+            source_path=context.raw_record.source_path,
+            schema_resolution=schema_resolution,
+        )
+    except (FileNotFoundError, ImportError):
+        return _PlanValidation(
+            status=ValidationStatus.SKIPPED,
+            schema_resolution=schema_resolution,
         )
 
-    fallback_timestamp = raw_record.file_mtime
-    source_name = raw_record.source_name or raw_record.source_path or ""
+    validation_samples = validator.validation_samples(plan.schema_payload)
+    if validation_samples:
+        collected_errors: list[str] = []
+        for sample in validation_samples:
+            sample_result = validator.validate(sample, include_drift=False)
+            if not sample_result.is_valid:
+                collected_errors.extend(sample_result.errors[:2])
+        if collected_errors and context.validation_mode is ValidationMode.STRICT:
+            return _PlanValidation(
+                status=ValidationStatus.FAILED,
+                schema_resolution=schema_resolution,
+                validation_error=f"Schema validation failed: {collected_errors[0]}",
+            )
+
+    return _PlanValidation(
+        status=ValidationStatus.PASSED,
+        schema_resolution=schema_resolution,
+    )
+
+
+def _parse_plan_conversations(
+    context: _IngestContext,
+    plan: _ParsePlan,
+    *,
+    schema_resolution: SchemaResolution | None,
+) -> list[ParsedConversation]:
+    from polylogue.sources.dispatch import parse_payload, parse_stream_payload
+
+    resolved_schema = schema_resolution
+    if resolved_schema is None and plan.artifact.schema_eligible:
+        resolved_schema = _resolve_schema_resolution(
+            plan.provider,
+            plan.schema_payload,
+            source_path=context.raw_record.source_path,
+        )
+    fallback_id = _fallback_id(context.raw_record.source_path, context.raw_record.raw_id)
+    if plan.mode == "stream":
+        assert plan.stream_name is not None
+        with context.raw_source.open("rb") as handle:
+            return parse_stream_payload(
+                plan.provider,
+                _iter_json_stream(handle, plan.stream_name),
+                fallback_id,
+            )
+
+    return parse_payload(
+        plan.provider,
+        plan.payload,
+        fallback_id,
+        schema_resolution=resolved_schema,
+    )
+
+
+def _materialize_parsed_conversations(
+    context: _IngestContext,
+    plan: _ParsePlan,
+    *,
+    validation: _PlanValidation,
+    parsed_conversations: list[ParsedConversation],
+) -> IngestRecordResult:
     result_convos: list[ConversationData] = []
     for convo in parsed_conversations:
         normalized_convo = _normalized_conversation(
             convo,
-            fallback_timestamp=fallback_timestamp,
+            fallback_timestamp=context.fallback_timestamp,
         )
         try:
             cdata = _transform_to_tuples(
                 normalized_convo,
-                source_name=source_name,
-                archive_root=archive_root,
-                raw_id=raw_record.raw_id,
+                source_name=context.source_name,
+                archive_root=context.archive_root,
+                raw_id=context.raw_record.raw_id,
             )
             result_convos.append(cdata)
         except Exception as exc:
-            return _finalize_result(
-                IngestRecordResult(
-                    raw_id=raw_record.raw_id,
-                    payload_provider=str(detected_provider),
-                    validation_status=v_status.value,
-                    parse_error=f"transform: {exc}",
-                    error=f"transform: {exc}",
-                ),
-                measure_serialized_size=measure_serialized_size,
+            return _record_result(
+                context,
+                plan.payload_provider,
+                validation_status=validation.status,
+                parse_error=f"transform: {exc}",
+                error=f"transform: {exc}",
             )
 
-    return _finalize_result(
-        IngestRecordResult(
-            raw_id=raw_record.raw_id,
-            payload_provider=str(detected_provider),
-            validation_status=v_status.value,
-            validation_error=v_error,
-            conversations=result_convos,
-            source_name=source_name,
-        ),
-        measure_serialized_size=measure_serialized_size,
+    return _record_result(
+        context,
+        plan.payload_provider,
+        validation_status=validation.status,
+        validation_error=validation.validation_error,
+        conversations=result_convos,
+        include_source_name=True,
+    )
+
+
+def _run_parse_plan(
+    context: _IngestContext,
+    plan: _ParsePlan,
+) -> IngestRecordResult:
+    if not plan.artifact.parse_as_conversation:
+        return _record_result(
+            context,
+            plan.payload_provider,
+            validation_status=ValidationStatus.SKIPPED,
+        )
+
+    validation = _validate_parse_plan(context, plan)
+    if validation.validation_error is not None:
+        return _record_result(
+            context,
+            plan.payload_provider,
+            validation_status=validation.status,
+            validation_error=validation.validation_error,
+            parse_error=validation.parse_error,
+            error=validation.validation_error,
+        )
+
+    try:
+        parsed_conversations = _parse_plan_conversations(
+            context,
+            plan,
+            schema_resolution=validation.schema_resolution,
+        )
+    except Exception as exc:
+        return _record_result(
+            context,
+            plan.payload_provider,
+            validation_status=validation.status,
+            parse_error=f"parse: {exc}",
+            error=f"parse: {exc}",
+        )
+
+    return _materialize_parsed_conversations(
+        context,
+        plan,
+        validation=validation,
+        parsed_conversations=parsed_conversations,
     )
 
 
@@ -452,8 +595,6 @@ def ingest_record(
     """
     from polylogue.lib.raw_payload import build_raw_payload_envelope
     from polylogue.paths import blob_store_root
-    from polylogue.schemas.validator import SchemaValidator
-    from polylogue.sources.dispatch import parse_payload
 
     archive_root = Path(archive_root_str)
     validation_mode = ValidationMode.from_string(validation_mode_value)
@@ -465,191 +606,40 @@ def ingest_record(
     resolved_blob_root = Path(blob_root_str) if blob_root_str is not None else blob_store_root()
     blob_store = BlobStore(resolved_blob_root)
     raw_source = blob_store.blob_path(raw_record.raw_id)
+    context = _IngestContext(
+        raw_record=raw_record,
+        raw_source=raw_source,
+        archive_root=archive_root,
+        validation_mode=validation_mode,
+        measure_serialized_size=measure_serialized_size,
+        source_name=raw_record.source_name or raw_record.source_path or "",
+        fallback_timestamp=raw_record.file_mtime,
+    )
 
-    if _is_stream_record_provider(raw_record.source_path, stored_payload_provider or raw_record.provider_name):
-        streamed = _stream_grouped_jsonl_record(
-            raw_record,
-            raw_source=raw_source,
-            archive_root=archive_root,
-            payload_provider=stored_payload_provider,
-            validation_mode=validation_mode,
-            measure_serialized_size=measure_serialized_size,
-        )
-        if streamed is not None:
-            return streamed
+    if _is_stream_record_provider(raw_record.source_path, stored_payload_provider or raw_record.provider_name) and (
+        stream_plan := _build_stream_parse_plan(context, payload_provider=stored_payload_provider)
+    ):
+        return _run_parse_plan(context, stream_plan)
 
     # ── Phase 1: Decode blob (ONE decode, not two) ────────────────────
     try:
         envelope = build_raw_payload_envelope(
-            raw_source,
+            context.raw_source,
             source_path=raw_record.source_path,
             fallback_provider=raw_record.provider_name,
             payload_provider=stored_payload_provider,
         )
     except Exception as exc:
-        return _finalize_result(
-            IngestRecordResult(
-                raw_id=raw_record.raw_id,
-                payload_provider=stored_payload_provider,
-                validation_status=ValidationStatus.FAILED.value,
-                validation_error=f"decode: {exc}",
-                parse_error=f"decode: {exc}",
-                error=f"decode: {exc}",
-            ),
-            measure_serialized_size=measure_serialized_size,
+        return _record_result(
+            context,
+            stored_payload_provider,
+            validation_status=ValidationStatus.FAILED,
+            validation_error=f"decode: {exc}",
+            parse_error=f"decode: {exc}",
+            error=f"decode: {exc}",
         )
 
-    payload_provider = str(envelope.provider)
-
-    if not envelope.artifact.parse_as_conversation:
-        return _finalize_result(
-            IngestRecordResult(
-                raw_id=raw_record.raw_id,
-                payload_provider=payload_provider,
-                validation_status=ValidationStatus.SKIPPED.value,
-            ),
-            measure_serialized_size=measure_serialized_size,
-        )
-
-    # ── Phase 2: Validate schema (inline, reuses decoded payload) ─────
-    v_status = ValidationStatus.PASSED
-    v_error: str | None = None
-    schema_resolution = None
-
-    if validation_mode is not ValidationMode.OFF and envelope.artifact.schema_eligible:
-        malformed_lines = envelope.malformed_jsonl_lines
-        malformed_detail = envelope.malformed_jsonl_detail
-        if malformed_lines and validation_mode is ValidationMode.STRICT:
-            malformed_error = _format_malformed_jsonl_error(
-                malformed_lines=malformed_lines,
-                malformed_detail=malformed_detail,
-            )
-            return _finalize_result(
-                IngestRecordResult(
-                    raw_id=raw_record.raw_id,
-                    payload_provider=payload_provider,
-                    validation_status=ValidationStatus.FAILED.value,
-                    validation_error=malformed_error,
-                    parse_error=malformed_error,
-                    error=malformed_error,
-                ),
-                measure_serialized_size=measure_serialized_size,
-            )
-
-        schema_resolution = _runtime_schema_registry().resolve_payload(
-            envelope.provider,
-            envelope.payload,
-            source_path=raw_record.source_path,
-        )
-
-        try:
-            validator = SchemaValidator.for_payload(
-                envelope.provider,
-                envelope.payload,
-                source_path=raw_record.source_path,
-                schema_resolution=schema_resolution,
-            )
-        except (FileNotFoundError, ImportError):
-            validator = None
-            v_status = ValidationStatus.SKIPPED
-
-        if validator is not None:
-            samples = validator.validation_samples(envelope.payload)
-            if samples:
-                collected_errors: list[str] = []
-                for sample in samples:
-                    sample_result = validator.validate(sample, include_drift=False)
-                    if not sample_result.is_valid:
-                        collected_errors.extend(sample_result.errors[:2])
-
-                if collected_errors and validation_mode is ValidationMode.STRICT:
-                    first_error = collected_errors[0]
-                    return _finalize_result(
-                        IngestRecordResult(
-                            raw_id=raw_record.raw_id,
-                            payload_provider=payload_provider,
-                            validation_status=ValidationStatus.FAILED.value,
-                            validation_error=f"Schema validation failed: {first_error}",
-                            error=f"Schema validation failed: {first_error}",
-                        ),
-                        measure_serialized_size=measure_serialized_size,
-                    )
-    elif validation_mode is ValidationMode.OFF:
-        v_status = ValidationStatus.SKIPPED
-
-    # ── Phase 3: Parse (provider-specific conversation extraction) ─────
-    if schema_resolution is None and envelope.artifact.schema_eligible:
-        schema_resolution = _runtime_schema_registry().resolve_payload(
-            envelope.provider,
-            envelope.payload,
-            source_path=raw_record.source_path,
-        )
-
-    try:
-        parsed_conversations = parse_payload(
-            envelope.provider,
-            envelope.payload,
-            _fallback_id(raw_record.source_path, raw_record.raw_id),
-            schema_resolution=schema_resolution,
-        )
-    except Exception as exc:
-        return _finalize_result(
-            IngestRecordResult(
-                raw_id=raw_record.raw_id,
-                payload_provider=payload_provider,
-                validation_status=v_status.value,
-                parse_error=f"parse: {exc}",
-                error=f"parse: {exc}",
-            ),
-            measure_serialized_size=measure_serialized_size,
-        )
-
-    # The decoded payload can be much larger than the normalized conversation
-    # objects; drop it before tuple transformation to avoid overlapping heaps.
-    del envelope
-    schema_resolution = None
-
-    # Apply raw record defaults (timestamps) and transform immediately.
-    fallback_timestamp = raw_record.file_mtime
-    source_name = raw_record.source_name or raw_record.source_path or ""
-    result_convos: list[ConversationData] = []
-    for convo in parsed_conversations:
-        normalized_convo = _normalized_conversation(
-            convo,
-            fallback_timestamp=fallback_timestamp,
-        )
-        try:
-            cdata = _transform_to_tuples(
-                normalized_convo,
-                source_name=source_name,
-                archive_root=archive_root,
-                raw_id=raw_record.raw_id,
-            )
-            result_convos.append(cdata)
-        except Exception as exc:
-            return _finalize_result(
-                IngestRecordResult(
-                    raw_id=raw_record.raw_id,
-                    payload_provider=payload_provider,
-                    validation_status=v_status.value,
-                    parse_error=f"transform: {exc}",
-                    error=f"transform: {exc}",
-                ),
-                measure_serialized_size=measure_serialized_size,
-            )
-    del parsed_conversations
-
-    return _finalize_result(
-        IngestRecordResult(
-            raw_id=raw_record.raw_id,
-            payload_provider=payload_provider,
-            validation_status=v_status.value,
-            validation_error=v_error,
-            conversations=result_convos,
-            source_name=source_name,
-        ),
-        measure_serialized_size=measure_serialized_size,
-    )
+    return _run_parse_plan(context, _build_envelope_parse_plan(envelope))
 
 
 # ---------------------------------------------------------------------------
