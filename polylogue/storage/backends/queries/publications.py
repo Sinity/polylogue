@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import aiosqlite
 
+from polylogue.lib.json import json_document
 from polylogue.storage.backends.queries.mappers import _parse_json
 from polylogue.storage.store import PublicationRecord, _json_or_none
 
@@ -11,6 +12,14 @@ __all__ = [
     "get_latest_publication",
     "record_publication",
 ]
+
+
+def _json_object(value: object) -> dict[str, object]:
+    document = json_document(value)
+    result: dict[str, object] = {}
+    for key, item in document.items():
+        result[key] = item
+    return result
 
 
 async def get_latest_publication(
@@ -37,7 +46,9 @@ async def get_latest_publication(
         generated_at=row["generated_at"],
         output_dir=row["output_dir"],
         duration_ms=row["duration_ms"],
-        manifest=_parse_json(row["manifest_json"], field="manifest_json", record_id=row["publication_id"]),
+        manifest=_json_object(
+            _parse_json(row["manifest_json"], field="manifest_json", record_id=row["publication_id"])
+        ),
     )
 
 

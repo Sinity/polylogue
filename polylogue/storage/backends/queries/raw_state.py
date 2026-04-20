@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any
 
 import aiosqlite
 
@@ -47,7 +46,7 @@ async def apply_raw_state_update(
         return
 
     set_clauses: list[str] = []
-    params: list[Any] = []
+    params: list[object] = []
 
     if state.parsed_at is not UNSET:
         set_clauses.append("parsed_at = ?")
