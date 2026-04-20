@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import click
 
+from polylogue.cli.check_models import CheckCommandResult
 from polylogue.cli.check_support import format_count_mapping, run_vacuum
-from polylogue.cli.check_workflow import CheckCommandOptions, CheckCommandResult
+from polylogue.cli.check_workflow import CheckCommandOptions
 from polylogue.cli.types import AppEnv
 from polylogue.health import VerifyStatus
 
@@ -170,12 +171,12 @@ def append_artifact_observation_lines(lines: list[str], result: CheckCommandResu
 
     if result.cohort_rows is not None:
         lines.extend(["", f"Artifact cohorts: {len(result.cohort_rows):,} cohorts"])
-        for row in result.cohort_rows:
+        for cohort in result.cohort_rows:
             lines.append(
-                f"  {row.provider_name} {row.artifact_kind} {row.support_status} "
-                f"count={row.observation_count:,} cohort={row.cohort_id or '-'} "
-                f"version={row.resolved_package_version or '-'} "
-                f"element={row.resolved_element_kind or '-'}"
+                f"  {cohort.provider_name} {cohort.artifact_kind} {cohort.support_status} "
+                f"count={cohort.observation_count:,} cohort={cohort.cohort_id or '-'} "
+                f"version={cohort.resolved_package_version or '-'} "
+                f"element={cohort.resolved_element_kind or '-'}"
             )
 
 
@@ -214,8 +215,8 @@ def emit_maintenance_output(
         click.echo("")
         mode_label = "Preview of maintenance" if options.preview else "Running maintenance"
         click.echo(f"{mode_label}...")
-        if options.maintenance_targets:
-            click.echo(f"  Targets: {', '.join(options.maintenance_targets)}")
+        if result.maintenance_targets:
+            click.echo(f"  Targets: {', '.join(result.maintenance_targets)}")
         total_repaired = 0
         for repair in result.maintenance_results:
             if repair.repaired_count > 0 or not repair.success:

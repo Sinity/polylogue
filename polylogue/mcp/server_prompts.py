@@ -4,14 +4,91 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timedelta, timezone
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, TypeAlias
 
+from typing_extensions import TypedDict
+
+from polylogue.mcp.payloads import MCPFencedCodeBlock
 from polylogue.mcp.server_tools import build_query_spec
+from polylogue.types import Provider
 
 if TYPE_CHECKING:
     from mcp.server.fastmcp import FastMCP
 
+    from polylogue.lib.conversation_models import Conversation
+    from polylogue.lib.message_models import Message
     from polylogue.mcp.server_support import ServerCallbacks
+
+
+class ErrorContextPayload(TypedDict):
+    conversation_id: str
+    provider: Provider
+    timestamp: str | None
+    snippet: str
+
+
+class ExtractedCodeSnippetPayload(TypedDict):
+    language: str
+    code: str
+    conversation: str
+
+
+class ComparedMessagePayload(TypedDict):
+    role: str
+    text: str
+
+
+class MissingConversationPayload(TypedDict):
+    error: str
+
+
+class ConversationSummaryPayload(TypedDict):
+    id: str
+    provider: Provider
+    title: str
+    message_count: int
+    messages: list[ComparedMessagePayload]
+
+
+class ConversationPatternPayload(TypedDict):
+    id: str
+    provider: Provider
+    title: str
+    opening: list[str]
+
+
+CompareConversationPayload: TypeAlias = ConversationSummaryPayload | MissingConversationPayload
+
+
+def _message_role(message: Message) -> str:
+    role = message.role
+    return role.value if hasattr(role, "value") else str(role)
+
+
+def _summarize_conversation(conv: Conversation | None) -> CompareConversationPayload:
+    if conv is None:
+        return {"error": "not found"}
+    return {
+        "id": str(conv.id),
+        "provider": conv.provider,
+        "title": conv.display_title,
+        "message_count": len(conv.messages),
+        "messages": [
+            {
+                "role": _message_role(message) if message.role else "unknown",
+                "text": (message.text or "")[:200],
+            }
+            for message in conv.messages.to_list()[:10]
+        ],
+    }
+
+
+def _code_snippet_payload(block: MCPFencedCodeBlock, conversation_id: str) -> ExtractedCodeSnippetPayload:
+    return {
+        "language": block.get("language", ""),
+        "code": block.get("code", ""),
+        "conversation": conversation_id[:20],
+    }
 
 
 def register_prompts(mcp: FastMCP, hooks: ServerCallbacks) -> None:
@@ -32,7 +109,7 @@ def register_prompts(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         )
         convs = await spec.list(store)
 
-        error_contexts = []
+        error_contexts: list[ErrorContextPayload] = []
         for conv in convs:
             for msg in conv.messages:
                 if msg.text and ("error" in msg.text.lower() or "exception" in msg.text.lower()):
@@ -100,14 +177,13 @@ Focus on actionable insights and patterns, not exhaustive summaries.
         store = hooks.get_query_store()
         convs = await build_query_spec(limit=hooks.clamp_limit(limit)).list(store)
 
-        code_snippets: list[dict[str, str]] = []
+        code_snippets: list[ExtractedCodeSnippetPayload] = []
         for conv in convs:
             for msg in conv.messages:
                 if not msg.text:
                     continue
                 for block in hooks.extract_fenced_code(msg.text, language):
-                    block["conversation"] = str(conv.id)[:20]
-                    code_snippets.append(block)
+                    code_snippets.append(_code_snippet_payload(block, str(conv.id)))
                 if len(code_snippets) >= 15:
                     break
 
@@ -132,23 +208,6 @@ Code snippets:
         conv1 = await store.get_eager(id1)
         conv2 = await store.get_eager(id2)
 
-        def _summarize(conv: Any) -> dict[str, Any]:
-            if conv is None:
-                return {"error": "not found"}
-            return {
-                "id": str(conv.id),
-                "provider": conv.provider,
-                "title": conv.display_title,
-                "message_count": len(conv.messages),
-                "messages": [
-                    {
-                        "role": (m.role.value if hasattr(m.role, "value") else str(m.role)) if m.role else "unknown",
-                        "text": (m.text or "")[:200],
-                    }
-                    for m in conv.messages[:10]
-                ],
-            }
-
         return f"""Compare these two conversations and analyze:
 
 1. What topics/problems are discussed in each?
@@ -157,10 +216,10 @@ Code snippets:
 4. What can be learned from the differences?
 
 Conversation 1:
-{json.dumps(_summarize(conv1), indent=2)}
+{json.dumps(_summarize_conversation(conv1), indent=2)}
 
 Conversation 2:
-{json.dumps(_summarize(conv2), indent=2)}
+{json.dumps(_summarize_conversation(conv2), indent=2)}
 """
 
     @mcp.prompt()
@@ -172,7 +231,7 @@ Conversation 2:
         )
         convs = await spec.list(store)
 
-        summaries = []
+        summaries: list[ConversationPatternPayload] = []
         for conv in convs:
             first_msgs = [m.text[:150] for m in conv.messages.to_list()[:3] if m.text]
             summaries.append(

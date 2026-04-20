@@ -17,6 +17,7 @@ from rich.progress import TaskID
 
 from polylogue.ui import UI, _PlainProgressTracker, _RichProgressTracker, create_ui
 from polylogue.ui.facade import ConsoleFacade, PlainConsole, UIError, create_console_facade
+from polylogue.ui.facade_prompts import PromptStubEntry
 
 
 @pytest.fixture
@@ -127,7 +128,7 @@ class TestConsoleFacadePromptStubs:
 
         _write_stubs(mock_prompt_file, {"value": True})
         facade = ConsoleFacade(plain=True, prompt_stub_path=mock_prompt_file)
-        assert facade._pop_prompt_response("anything") == {"value": True}
+        assert facade._pop_prompt_response("anything") == PromptStubEntry(value=True, has_value=True)
 
         mock_prompt_file.write_text("")
         facade = ConsoleFacade(plain=True, prompt_stub_path=mock_prompt_file)

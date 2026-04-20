@@ -11,7 +11,7 @@ from collections.abc import Sequence
 from datetime import datetime
 from html import escape as html_escape
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, TypeAlias
 
 import click
 
@@ -45,6 +45,9 @@ if TYPE_CHECKING:
     from polylogue.lib.models import Conversation, ConversationSummary, Message
     from polylogue.protocols import ConversationOutputStore
     from polylogue.storage.store import MessageRecord
+
+QueryParams: TypeAlias = dict[str, object]
+ConversationStats: TypeAlias = dict[str, int]
 
 
 # ---------------------------------------------------------------------------
@@ -339,11 +342,11 @@ def format_summary_list(
 async def output_summary_list(
     env: AppEnv,
     summaries: list[ConversationSummary],
-    params: dict[str, object],
+    params: QueryParams,
     repo: ConversationOutputStore | None = None,
 ) -> None:
     """Output a list of conversation summaries with optional rich table rendering."""
-    output_format = str(params.get("output_format", "text"))
+    output_format = str(params.get("output_format") or "text")
     msg_counts: dict[str, int] = {}
     if repo:
         ids = [str(summary.id) for summary in summaries]
@@ -457,7 +460,7 @@ def render_stream_header(
     output_format: str,
     dialogue_only: bool,
     message_limit: int | None,
-    stats: dict[str, Any] | None,
+    stats: ConversationStats | None,
 ) -> str:
     """Render any stream prelude/header for the selected output format."""
     if hasattr(display_date, "strftime"):
@@ -521,7 +524,7 @@ def render_stream_transcript(
     output_format: str,
     dialogue_only: bool = False,
     message_limit: int | None = None,
-    stats: dict[str, Any] | None = None,
+    stats: ConversationStats | None = None,
 ) -> tuple[str, int]:
     """Render the full stream transcript deterministically for proof/tests."""
     parts = [
@@ -603,7 +606,7 @@ def write_message_streaming(message: Message | MessageRecord, output_format: str
         sys.stdout.flush()
 
 
-def no_results(env: AppEnv, params: dict[str, Any], *, exit_code: int = 2) -> None:
+def no_results(env: AppEnv, params: QueryParams, *, exit_code: int = 2) -> None:
     """Delegate the no-results contract to the canonical query helper."""
     from polylogue.cli.query import no_results as query_no_results
 
@@ -618,16 +621,17 @@ def no_results(env: AppEnv, params: dict[str, Any], *, exit_code: int = 2) -> No
 def output_results(
     env: AppEnv,
     results: list[Conversation],
-    params: dict[str, Any],
+    params: QueryParams,
 ) -> None:
     """Output query results."""
     if not results:
         no_results(env, params)
 
-    output_format = params.get("output_format", "markdown")
-    output_dest = params.get("output", "stdout")
-    list_mode = params.get("list_mode", False)
+    output_format = str(params.get("output_format") or "markdown")
+    output_dest = str(params.get("output") or "stdout")
+    list_mode = bool(params.get("list_mode", False))
     fields = params.get("fields")
+    fields_value = fields if isinstance(fields, str) else None
     destinations = [d.strip() for d in output_dest.split(",")] if output_dest else ["stdout"]
 
     if len(results) == 1 and not list_mode:
@@ -635,11 +639,11 @@ def output_results(
         if output_format == "markdown" and destinations == ["stdout"] and not env.ui.plain:
             _render_conversation_rich(env, conv)
             return
-        content = format_conversation(conv, output_format, fields)
+        content = format_conversation(conv, output_format, fields_value)
         _send_output(env, content, destinations, output_format, conv)
         return
 
-    content = _format_list(results, output_format, fields)
+    content = _format_list(results, output_format, fields_value)
     _send_output(env, content, destinations, output_format, None)
 
 

@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from polylogue.cli.machine_errors import emit_success
 
-from .check_workflow import CheckCommandOptions, CheckCommandResult
+from .check_models import CheckCommandResult
+from .check_workflow import CheckCommandOptions
 
 
 def emit_json_output(result: CheckCommandResult, options: CheckCommandOptions) -> None:
@@ -31,9 +32,9 @@ def emit_json_output(result: CheckCommandResult, options: CheckCommandOptions) -
         }
     if result.maintenance_results is not None:
         out["maintenance"] = {
-            "targets": list(options.maintenance_targets),
+            "targets": list(result.maintenance_targets),
             "items": [repair.to_dict() for repair in result.maintenance_results],
         }
     if result.vacuum_result is not None:
-        out["vacuum"] = result.vacuum_result
+        out["vacuum"] = result.vacuum_result.to_dict()
     emit_success(out)
