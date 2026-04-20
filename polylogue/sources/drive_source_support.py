@@ -7,7 +7,7 @@ from typing import TypeAlias
 from polylogue.lib.json import JSONValue, is_json_value, loads
 from polylogue.logging import get_logger
 
-from .drive_gateway import DrivePayloadRecord
+from .drive_gateway import DriveListFilesResponse, DrivePayloadRecord
 from .drive_types import (
     FOLDER_MIME_TYPE,
     GEMINI_PROMPT_MIME_TYPE,
@@ -29,6 +29,20 @@ def _json_sequence(value: object) -> DriveJSONSequence:
         if is_json_value(item):
             items.append(item)
     return items
+
+
+def _response_files(response: DriveListFilesResponse) -> list[JSONValue]:
+    return _json_sequence(response.get("files"))
+
+
+def _response_page_token(response: DriveListFilesResponse) -> str | None:
+    token = response.get("nextPageToken")
+    return token if isinstance(token, str) else None
+
+
+def _record_string(record: DrivePayloadRecord, key: str, *, default: str = "") -> str:
+    value = record.get(key)
+    return value if isinstance(value, str) else default
 
 
 def _parse_modified_time(raw: str | None) -> float | None:
@@ -110,10 +124,7 @@ def _needs_download(meta: DriveFile, dest: Path) -> bool:
 
 
 def _extract_meta_string(meta: DriveJSONRecord, key: str, *, file_id_fallback: str = "") -> str:
-    value = meta.get(key)
-    if isinstance(value, str):
-        return value
-    return file_id_fallback
+    return _record_string(meta, key, default=file_id_fallback)
 
 
 def _build_drive_file(meta: DriveJSONRecord, *, file_id_fallback: str = "") -> DriveFile:
@@ -136,8 +147,11 @@ __all__ = [
     "DriveJSONPayload",
     "DriveJSONRecord",
     "DriveJSONSequence",
+    "_record_string",
     "_build_drive_file",
     "_build_folder_lookup_query",
+    "_response_files",
+    "_response_page_token",
     "_is_supported_drive_payload",
     "_json_sequence",
     "_looks_like_id",

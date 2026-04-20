@@ -47,6 +47,7 @@ from polylogue.schemas.unified_provider_meta import (
     harmonize_parsed_message,
     is_message_record,
 )
+from polylogue.schemas.validator_resolution import resolve_payload_schema
 from polylogue.types import Provider
 
 logger = logging.getLogger(__name__)
@@ -76,20 +77,11 @@ def try_schema_extraction(provider: Provider | str, raw: JSONDocument) -> Harmon
     p = provider if isinstance(provider, Provider) else Provider.from_string(provider)
     try:
         from polylogue.schemas.extraction import extract_message_from_schema
-        from polylogue.schemas.runtime_registry import SchemaRegistry
 
-        registry = SchemaRegistry()
-        resolution = registry.resolve_payload(str(p), raw)
-        if resolution is None:
-            return None
-        schema = registry.get_element_schema(
-            resolution.provider,
-            version=resolution.package_version,
-            element_kind=resolution.element_kind,
-        )
-        if schema is None:
-            return None
+        _, schema, _ = resolve_payload_schema(p, raw)
         return extract_message_from_schema(raw, schema=schema, provider=p)
+    except FileNotFoundError:
+        return None
     except Exception:
         return None
 

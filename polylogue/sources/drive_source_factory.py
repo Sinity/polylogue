@@ -5,8 +5,7 @@ from pathlib import Path
 from .drive_auth import DriveAuthManager
 from .drive_gateway import (
     DriveServiceGateway,
-    _resolve_retries,
-    _resolve_retry_base,
+    resolve_drive_retry_policy,
 )
 from .drive_source_client import DriveSourceClient
 from .drive_types import DriveConfigLike, DriveUILike
@@ -22,6 +21,11 @@ def build_drive_source_client(
     config: DriveConfigLike | None = None,
 ) -> DriveSourceClient:
     """Build the canonical Drive source client from auth and gateway primitives."""
+    retry_policy = resolve_drive_retry_policy(
+        retries=retries,
+        retry_base=retry_base,
+        config=config,
+    )
     auth_manager = DriveAuthManager(
         ui=ui,
         credentials_path=credentials_path,
@@ -30,7 +34,6 @@ def build_drive_source_client(
     )
     gateway = DriveServiceGateway(
         auth_manager=auth_manager,
-        retries=_resolve_retries(retries, config),
-        retry_base=_resolve_retry_base(retry_base),
+        retry_policy=retry_policy,
     )
     return DriveSourceClient(gateway=gateway)

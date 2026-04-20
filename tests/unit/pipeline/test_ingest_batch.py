@@ -17,6 +17,7 @@ from polylogue.pipeline.services.ingest_batch import (
     _drain_ready_conversation_entries,
     _failed_raw_state_update,
     _IngestBatchSummary,
+    _IngestWorkerRequest,
     _iter_ingest_results_sync,
     _persist_batch_raw_state_updates,
     _RawIngestOutcome,
@@ -389,11 +390,13 @@ def test_iter_ingest_results_sync_runs_inline_for_single_worker(
     results = list(
         _iter_ingest_results_sync(
             raw_records,
-            archive_root_str="/tmp/archive",
-            blob_root_str="/tmp/blob-store",
-            validation_mode="strict",
+            request=_IngestWorkerRequest(
+                archive_root_str="/tmp/archive",
+                blob_root_str="/tmp/blob-store",
+                validation_mode="strict",
+                measure_ingest_result_size=False,
+            ),
             worker_count=1,
-            measure_ingest_result_size=False,
         )
     )
 

@@ -100,9 +100,11 @@ class TestGetSchema:
 
         retrieved = registry.get_schema("get-prov", version="v1")
         assert retrieved is not None
-        assert "a" in retrieved["properties"]
+        retrieved_properties = retrieved.get("properties")
+        assert isinstance(retrieved_properties, dict)
+        assert "a" in retrieved_properties
         # v1 should NOT have "b"
-        assert "b" not in retrieved["properties"]
+        assert "b" not in retrieved_properties
 
     def test_get_latest_returns_most_recent(self, registry: SchemaRegistry) -> None:
         schema_v1 = {"type": "object", "properties": {"old": {"type": "string"}}}
@@ -112,7 +114,9 @@ class TestGetSchema:
 
         latest = registry.get_schema("lat-prov", version="latest")
         assert latest is not None
-        assert "new" in latest["properties"]
+        latest_properties = latest.get("properties")
+        assert isinstance(latest_properties, dict)
+        assert "new" in latest_properties
 
     def test_get_nonexistent_version_returns_none(self, registry: SchemaRegistry) -> None:
         schema = {"type": "object", "properties": {"x": {"type": "string"}}}
@@ -154,7 +158,9 @@ class TestMetadataInjection:
         # Should be a valid ISO timestamp
         from datetime import datetime
 
-        datetime.fromisoformat(stored["x-polylogue-registered-at"])
+        registered_at = stored.get("x-polylogue-registered-at")
+        assert isinstance(registered_at, str)
+        datetime.fromisoformat(registered_at)
 
     def test_register_does_not_mutate_input(self, registry: SchemaRegistry) -> None:
         """The original dict passed in should not be modified."""

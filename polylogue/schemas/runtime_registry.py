@@ -9,12 +9,12 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, cast
 
 from polylogue.lib.provider_identity import canonical_schema_provider as _canonical_schema_provider
 from polylogue.lib.provider_identity import normalize_provider_token
 from polylogue.lib.raw_payload_decode import JSONRecord
 from polylogue.paths import data_home
+from polylogue.schemas.json_types import json_document
 from polylogue.schemas.observation import (
     derive_bundle_scope,
     extract_schema_units_from_payload,
@@ -25,6 +25,7 @@ from polylogue.schemas.packages import (
     SchemaElementManifest,
     SchemaPackageCatalog,
     SchemaResolution,
+    SchemaResolutionReason,
     SchemaVersionPackage,
 )
 from polylogue.types import Provider
@@ -32,10 +33,17 @@ from polylogue.types import Provider
 SCHEMA_DIR = Path(__file__).parent / "providers"
 SchemaProvider = Provider | str
 SchemaCacheKey = tuple[str, str, str | None]
-SchemaInputDocument = Mapping[str, Any]
-PublicSchemaDocument = dict[str, Any]
-SchemaDocument = JSONRecord
-ElementSchemaMap = dict[str, SchemaDocument]
+SchemaInputDocument = Mapping[str, object]
+PublicSchemaDocument = JSONRecord
+ElementSchemaMap = dict[str, PublicSchemaDocument]
+
+_PROFILE_SAMPLE_LIMIT = 64
+_RESOLUTION_PRIORITY: dict[SchemaResolutionReason, int] = {
+    "exact_structure": 3,
+    "bundle_scope": 2,
+    "profile_family": 1,
+    "package_default": 0,
+}
 
 
 def _provider_token(provider: str | Provider) -> str:
@@ -78,14 +86,14 @@ def _read_json_dict(path: Path) -> PublicSchemaDocument:
     loaded = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(loaded, dict):
         raise ValueError(f"Expected JSON object in {path}")
-    return loaded
+    return {str(key): value for key, value in loaded.items()}
 
 
 def _read_gzip_json_dict(path: Path) -> PublicSchemaDocument:
     loaded = json.loads(gzip.decompress(path.read_bytes()).decode("utf-8"))
     if not isinstance(loaded, dict):
         raise ValueError(f"Expected gzipped JSON object in {path}")
-    return loaded
+    return {str(key): value for key, value in loaded.items()}
 
 
 def _catalog_path(provider_dir: Path) -> Path:
@@ -125,6 +133,30 @@ class _SchemaEvidence:
     exact_structure_ids: list[str]
     profile_tokens: list[str]
     representative_paths: list[str]
+
+
+@dataclass(frozen=True)
+class _ObservedPayload:
+    artifact_kind: str
+    bundle_scope: str | None
+    exact_structure_id: str | None
+    profile_tokens: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class _ResolvedElement:
+    package: SchemaVersionPackage
+    element: SchemaElementManifest
+
+
+@dataclass(frozen=True)
+class _ResolutionCandidate:
+    reason: SchemaResolutionReason
+    resolved: _ResolvedElement
+    exact_structure_id: str | None
+    bundle_scope: str | None
+    observation_index: int
+    profile_score: float | None = None
 
 
 def _schema_evidence(schema: SchemaInputDocument) -> _SchemaEvidence:
@@ -174,8 +206,33 @@ def _resolved_package_version(catalog: SchemaPackageCatalog, version: str) -> st
     return version
 
 
-def _schema_document(schema: SchemaInputDocument) -> SchemaDocument:
-    return cast(SchemaDocument, dict(schema))
+def _package_rank_key(
+    catalog: SchemaPackageCatalog,
+    package: SchemaVersionPackage,
+) -> tuple[bool, bool, bool, int, str]:
+    version_score, version_text = _version_sort_key(package.version)
+    return (
+        package.version != (catalog.recommended_version or ""),
+        package.version != (catalog.default_version or ""),
+        package.version != (catalog.latest_version or ""),
+        -version_score,
+        version_text,
+    )
+
+
+def _candidate_sort_key(
+    candidate: _ResolutionCandidate,
+    *,
+    package_rank: Mapping[str, int],
+) -> tuple[int, int, float, int, str, str]:
+    return (
+        -_RESOLUTION_PRIORITY[candidate.reason],
+        package_rank[candidate.resolved.package.version],
+        -(candidate.profile_score or 0.0),
+        candidate.observation_index,
+        candidate.resolved.element.element_kind,
+        candidate.resolved.package.version,
+    )
 
 
 class SchemaRegistry:
@@ -344,7 +401,7 @@ class SchemaRegistry:
         for element in package.elements:
             if element.schema_file is None:
                 continue
-            schema = cast(dict[str, object], copy.deepcopy(element_schemas[element.element_kind]))
+            schema = copy.deepcopy(element_schemas[element.element_kind])
             schema["$id"] = f"polylogue://schemas/{provider_token}/{package.version}/{element.element_kind}"
             schema["x-polylogue-version"] = (
                 int(package.version[1:]) if package.version.startswith("v") else package.version
@@ -424,7 +481,7 @@ class SchemaRegistry:
                 )
             ],
         )
-        return package, {element_kind: _schema_document(schema)}
+        return package, {element_kind: json_document(copy.deepcopy(dict(schema)))}
 
     def register_schema(self, provider: str, schema: SchemaInputDocument) -> str:
         provider_token = _provider_token(provider)
@@ -438,7 +495,7 @@ class SchemaRegistry:
         package, schemas = self._single_element_package(
             provider_token,
             version=version,
-            schema=_schema_document(copy.deepcopy(schema)),
+            schema=copy.deepcopy(dict(schema)),
         )
         catalog = self.load_package_catalog(provider_token) or SchemaPackageCatalog(provider=provider_token)
         existing_packages = [item for item in catalog.packages if item.version != version]
@@ -454,6 +511,143 @@ class SchemaRegistry:
             self._package_dir(provider_token, version) / "elements" / f"{package.default_element_kind}.schema.json.gz"
         )
 
+    def _package_rank(self, catalog: SchemaPackageCatalog) -> dict[str, int]:
+        ranked = sorted(catalog.packages, key=lambda package: _package_rank_key(catalog, package))
+        return {package.version: index for index, package in enumerate(ranked)}
+
+    def _ranked_packages(self, catalog: SchemaPackageCatalog) -> list[SchemaVersionPackage]:
+        return sorted(catalog.packages, key=lambda package: _package_rank_key(catalog, package))
+
+    def _observed_payloads(
+        self,
+        provider: str,
+        payload: object,
+        *,
+        source_path: str | None,
+    ) -> list[_ObservedPayload]:
+        provider_token = _provider_token(provider)
+        config = resolve_provider_config(provider_token)
+        fallback_bundle_scope = derive_bundle_scope(provider_token, source_path)
+        units = extract_schema_units_from_payload(
+            payload,
+            provider_name=Provider.from_string(provider_token),
+            source_path=source_path,
+            raw_id=None,
+            observed_at=None,
+            config=config,
+            max_samples=_PROFILE_SAMPLE_LIMIT,
+        )
+        return [
+            _ObservedPayload(
+                artifact_kind=unit.artifact_kind,
+                bundle_scope=unit.bundle_scope or fallback_bundle_scope,
+                exact_structure_id=unit.exact_structure_id or None,
+                profile_tokens=unit.profile_tokens,
+            )
+            for unit in units
+        ]
+
+    def _resolve_observation(
+        self,
+        packages: Sequence[SchemaVersionPackage],
+        observation: _ObservedPayload,
+        *,
+        package_rank: Mapping[str, int],
+        observation_index: int,
+    ) -> _ResolutionCandidate | None:
+        candidates: list[_ResolutionCandidate] = []
+        observed_profile_tokens = set(observation.profile_tokens)
+        for package in packages:
+            element = package.element(observation.artifact_kind)
+            if element is None:
+                continue
+            resolved = _ResolvedElement(package=package, element=element)
+
+            if observation.exact_structure_id and observation.exact_structure_id in element.exact_structure_ids:
+                candidates.append(
+                    _ResolutionCandidate(
+                        reason="exact_structure",
+                        resolved=resolved,
+                        exact_structure_id=observation.exact_structure_id,
+                        bundle_scope=observation.bundle_scope,
+                        observation_index=observation_index,
+                    )
+                )
+            if observation.bundle_scope and observation.bundle_scope in package.element_bundle_scopes(
+                element.element_kind
+            ):
+                candidates.append(
+                    _ResolutionCandidate(
+                        reason="bundle_scope",
+                        resolved=resolved,
+                        exact_structure_id=observation.exact_structure_id,
+                        bundle_scope=observation.bundle_scope,
+                        observation_index=observation_index,
+                    )
+                )
+            if observed_profile_tokens and element.profile_tokens:
+                score = profile_similarity(set(element.profile_tokens), observed_profile_tokens)
+                if score > 0.0:
+                    candidates.append(
+                        _ResolutionCandidate(
+                            reason="profile_family",
+                            resolved=resolved,
+                            exact_structure_id=observation.exact_structure_id,
+                            bundle_scope=observation.bundle_scope,
+                            observation_index=observation_index,
+                            profile_score=score,
+                        )
+                    )
+
+        if not candidates:
+            return None
+
+        winner = min(
+            candidates,
+            key=lambda candidate: _candidate_sort_key(candidate, package_rank=package_rank),
+        )
+        return winner
+
+    def _default_resolution(
+        self,
+        provider: str,
+        *,
+        observations: Sequence[_ObservedPayload],
+        source_path: str | None,
+    ) -> SchemaResolution | None:
+        default_package = self.get_package(provider, version="default")
+        if default_package is None:
+            return None
+
+        matching_observation = next(
+            (
+                observation
+                for observation in observations
+                if default_package.element(observation.artifact_kind) is not None
+            ),
+            None,
+        )
+        if matching_observation is not None:
+            element = default_package.element(matching_observation.artifact_kind)
+            if element is not None:
+                return SchemaResolution(
+                    provider=provider,
+                    package_version=default_package.version,
+                    element_kind=element.element_kind,
+                    exact_structure_id=matching_observation.exact_structure_id,
+                    bundle_scope=matching_observation.bundle_scope,
+                    reason="package_default",
+                )
+
+        return SchemaResolution(
+            provider=provider,
+            package_version=default_package.version,
+            element_kind=default_package.default_element_kind,
+            exact_structure_id=None,
+            bundle_scope=derive_bundle_scope(provider, source_path),
+            reason="package_default",
+        )
+
     def resolve_payload(
         self,
         provider: str,
@@ -466,152 +660,42 @@ class SchemaRegistry:
         if catalog is None or not catalog.packages:
             return None
 
-        config = resolve_provider_config(provider_token)
-        units = extract_schema_units_from_payload(
-            payload,
-            provider_name=Provider.from_string(provider_token),
-            source_path=source_path,
-            raw_id=None,
-            observed_at=None,
-            config=config,
-            max_samples=64,
-        )
-        if not units:
-            default_package = self.get_package(provider_token, version="default")
-            if default_package is None:
-                return None
+        observations = self._observed_payloads(provider_token, payload, source_path=source_path)
+        ranked_packages = self._ranked_packages(catalog)
+        package_rank = self._package_rank(catalog)
+        best_candidate: _ResolutionCandidate | None = None
+        for index, observation in enumerate(observations):
+            candidate = self._resolve_observation(
+                ranked_packages,
+                observation,
+                package_rank=package_rank,
+                observation_index=index,
+            )
+            if candidate is None:
+                continue
+            if best_candidate is None:
+                best_candidate = candidate
+                continue
+            if _candidate_sort_key(candidate, package_rank=package_rank) < _candidate_sort_key(
+                best_candidate,
+                package_rank=package_rank,
+            ):
+                best_candidate = candidate
+
+        if best_candidate is not None:
             return SchemaResolution(
                 provider=provider_token,
-                package_version=default_package.version,
-                element_kind=default_package.default_element_kind,
-                exact_structure_id=None,
-                bundle_scope=derive_bundle_scope(provider_token, source_path),
-                reason="package_default",
+                package_version=best_candidate.resolved.package.version,
+                element_kind=best_candidate.resolved.element.element_kind,
+                exact_structure_id=best_candidate.exact_structure_id,
+                bundle_scope=best_candidate.bundle_scope,
+                reason=best_candidate.reason,
+                profile_score=best_candidate.profile_score,
             )
-
-        unit = units[0]
-        bundle_scope = unit.bundle_scope or derive_bundle_scope(provider_token, source_path)
-
-        bundle_resolution = self._resolve_by_bundle_scope(
-            catalog.packages,
-            unit.artifact_kind,
-            bundle_scope,
+        return self._default_resolution(
             provider_token,
-            unit.exact_structure_id,
-        )
-        if bundle_resolution is not None:
-            return bundle_resolution
-
-        exact_resolution = self._resolve_by_exact_structure(
-            catalog.packages,
-            unit.artifact_kind,
-            unit.exact_structure_id,
-            bundle_scope,
-            provider_token,
-        )
-        if exact_resolution is not None:
-            return exact_resolution
-
-        profile_resolution = self._resolve_by_profile_similarity(
-            catalog.packages,
-            unit.artifact_kind,
-            unit.profile_tokens,
-            unit.exact_structure_id,
-            bundle_scope,
-            provider_token,
-        )
-        if profile_resolution is not None:
-            return profile_resolution
-
-        default_package = self.get_package(provider_token, version="default")
-        if default_package is None:
-            return None
-        return SchemaResolution(
-            provider=provider_token,
-            package_version=default_package.version,
-            element_kind=default_package.default_element_kind,
-            exact_structure_id=unit.exact_structure_id,
-            bundle_scope=bundle_scope,
-            reason="package_default",
-        )
-
-    def _resolve_by_bundle_scope(
-        self,
-        packages: list[SchemaVersionPackage],
-        artifact_kind: str,
-        bundle_scope: str | None,
-        provider: str,
-        exact_structure_id: str | None,
-    ) -> SchemaResolution | None:
-        if bundle_scope is None:
-            return None
-        for package in packages:
-            if bundle_scope not in package.bundle_scopes:
-                continue
-            element = package.element(artifact_kind)
-            if element is None:
-                continue
-            return SchemaResolution(
-                provider=provider,
-                package_version=package.version,
-                element_kind=element.element_kind,
-                exact_structure_id=exact_structure_id,
-                bundle_scope=bundle_scope,
-                reason="bundle_scope",
-            )
-        return None
-
-    def _resolve_by_exact_structure(
-        self,
-        packages: list[SchemaVersionPackage],
-        artifact_kind: str,
-        exact_structure_id: str | None,
-        bundle_scope: str | None,
-        provider: str,
-    ) -> SchemaResolution | None:
-        for package in packages:
-            element = package.element(artifact_kind)
-            if element is None:
-                continue
-            if exact_structure_id in element.exact_structure_ids:
-                return SchemaResolution(
-                    provider=provider,
-                    package_version=package.version,
-                    element_kind=element.element_kind,
-                    exact_structure_id=exact_structure_id,
-                    bundle_scope=bundle_scope,
-                    reason="exact_structure",
-                )
-        return None
-
-    def _resolve_by_profile_similarity(
-        self,
-        packages: list[SchemaVersionPackage],
-        artifact_kind: str,
-        profile_tokens: Sequence[str],
-        exact_structure_id: str | None,
-        bundle_scope: str | None,
-        provider: str,
-    ) -> SchemaResolution | None:
-        best_match: tuple[float, SchemaVersionPackage, SchemaElementManifest] | None = None
-        observed_profile_tokens = set(profile_tokens)
-        for package in packages:
-            element = package.element(artifact_kind)
-            if element is None or not element.profile_tokens:
-                continue
-            score = profile_similarity(set(element.profile_tokens), observed_profile_tokens)
-            if best_match is None or score > best_match[0]:
-                best_match = (score, package, element)
-        if best_match is None or best_match[0] <= 0.0:
-            return None
-        _score, package, element = best_match
-        return SchemaResolution(
-            provider=provider,
-            package_version=package.version,
-            element_kind=element.element_kind,
-            exact_structure_id=exact_structure_id,
-            bundle_scope=bundle_scope,
-            reason="profile_family",
+            observations=observations,
+            source_path=source_path,
         )
 
     def match_payload_version(

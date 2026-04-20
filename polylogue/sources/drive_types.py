@@ -33,6 +33,12 @@ class DriveFile:
     size_bytes: int | None
 
 
+@dataclass(frozen=True, slots=True)
+class DriveRetryPolicy:
+    retries: int
+    retry_base: float
+
+
 class DriveConfigLike(Protocol):
     @property
     def credentials_path(self) -> str | PathLike[str] | None: ...
@@ -135,6 +141,7 @@ __all__ = [
     "DriveError",
     "DriveFile",
     "DriveNotFoundError",
+    "DriveRetryPolicy",
     "DriveTokenStoreLike",
     "DriveUILike",
 ]

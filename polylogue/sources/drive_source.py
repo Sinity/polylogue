@@ -5,8 +5,7 @@ from .drive_gateway import (
     DEFAULT_DRIVE_RETRIES,
     DEFAULT_DRIVE_RETRY_BASE,
     _import_module,
-    _resolve_retries,
-    _resolve_retry_base,
+    resolve_drive_retry_policy,
 )
 from .drive_source_client import DriveSourceClient
 from .drive_source_factory import build_drive_source_client
@@ -39,6 +38,5 @@ __all__ = [
     "_parse_downloaded_json_payload",
     "_parse_modified_time",
     "_parse_size",
-    "_resolve_retries",
-    "_resolve_retry_base",
+    "resolve_drive_retry_policy",
 ]

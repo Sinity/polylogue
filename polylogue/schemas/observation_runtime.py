@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TypeAlias
@@ -16,6 +17,8 @@ from polylogue.types import Provider
 SchemaSample: TypeAlias = JSONDocument
 
 _SCHEMA_SAMPLE_STRING_LIMIT = 1024
+_MAX_PROFILE_TOKENS = 160
+_MAX_NESTED_PROFILE_TOKENS = 8
 
 
 @dataclass(frozen=True)
@@ -227,16 +230,55 @@ def _coarse_type(value: object) -> str:
     return type(value).__name__
 
 
+def _nested_object_keys(value: object) -> tuple[str, ...]:
+    if not isinstance(value, dict):
+        return ()
+    return tuple(sorted(str(key) for key in value)[:_MAX_NESTED_PROFILE_TOKENS])
+
+
+def _nested_list_object_keys(value: object) -> tuple[str, ...]:
+    if not isinstance(value, list):
+        return ()
+    keys: set[str] = set()
+    for item in value[:_MAX_NESTED_PROFILE_TOKENS]:
+        if not isinstance(item, dict):
+            continue
+        keys.update(str(key) for key in item)
+        if len(keys) >= _MAX_NESTED_PROFILE_TOKENS:
+            break
+    return tuple(sorted(keys)[:_MAX_NESTED_PROFILE_TOKENS])
+
+
+def _append_tokens(tokens: list[str], values: Iterable[str]) -> None:
+    for value in values:
+        if value not in tokens:
+            tokens.append(value)
+        if len(tokens) >= _MAX_PROFILE_TOKENS:
+            return
+
+
 def _document_profile_tokens(sample: SchemaSample) -> tuple[str, ...]:
     tokens: list[str] = []
     for key, value in sorted(sample.items()):
-        tokens.append(f"field:{key}")
         value_type = _coarse_type(value)
-        if value_type in {"array", "object"}:
-            tokens.append(f"shape:{key}:{value_type}")
+        _append_tokens(
+            tokens,
+            (
+                f"field:{key}",
+                f"type:{key}:{value_type}",
+            ),
+        )
+        if value_type == "object":
+            _append_tokens(tokens, (f"shape:{key}:object",))
+            _append_tokens(tokens, (f"child:{key}:{child}" for child in _nested_object_keys(value)))
+        elif value_type == "array":
+            _append_tokens(tokens, (f"shape:{key}:array",))
+            _append_tokens(tokens, (f"item:{key}:{child}" for child in _nested_list_object_keys(value)))
         if key in {"mapping", "chat_messages", "chunkedPrompt", "chunks", "messages"}:
-            tokens.append(f"anchor:{key}")
-    return tuple(tokens[:96])
+            _append_tokens(tokens, (f"anchor:{key}",))
+        if len(tokens) >= _MAX_PROFILE_TOKENS:
+            break
+    return tuple(tokens[:_MAX_PROFILE_TOKENS])
 
 
 def _record_profile_tokens(
@@ -245,17 +287,27 @@ def _record_profile_tokens(
     record_type_key: str | None,
 ) -> tuple[str, ...]:
     bucket_keys: dict[str, set[str]] = {}
+    bucket_value_types: dict[str, dict[str, set[str]]] = {}
     for sample in samples[:512]:
         bucket = record_bucket_key(sample, record_type_key)
         keys = bucket_keys.setdefault(bucket, set())
+        value_types = bucket_value_types.setdefault(bucket, {})
         keys.update(str(key) for key in sample)
+        for key, value in sample.items():
+            value_types.setdefault(str(key), set()).add(_coarse_type(value))
 
     tokens: list[str] = []
     for bucket, keys in sorted(bucket_keys.items()):
-        tokens.append(f"bucket:{bucket}")
+        _append_tokens(tokens, (f"bucket:{bucket}",))
         for key in sorted(keys)[:24]:
-            tokens.append(f"field:{bucket}:{key}")
-    return tuple(tokens[:160])
+            _append_tokens(tokens, (f"field:{bucket}:{key}",))
+            for value_type in sorted(bucket_value_types.get(bucket, {}).get(key, ())):
+                _append_tokens(tokens, (f"type:{bucket}:{key}:{value_type}",))
+            if len(tokens) >= _MAX_PROFILE_TOKENS:
+                break
+        if len(tokens) >= _MAX_PROFILE_TOKENS:
+            break
+    return tuple(tokens[:_MAX_PROFILE_TOKENS])
 
 
 def _document_conversation_id(sample: SchemaSample, raw_id: str | None) -> str | None:
