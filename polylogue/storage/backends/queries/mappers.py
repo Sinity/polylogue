@@ -4,9 +4,14 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from typing import Any
+from typing import TypeVar, cast, overload
 
 from polylogue.errors import DatabaseError
+from polylogue.lib.json import JSONValue, loads
+
+_T = TypeVar("_T", bound=object)
+_RowValue = str | int | float | bytes | bytearray | None
+_JSONText = str | bytes | bytearray
 
 # ---------------------------------------------------------------------------
 # Shared row-mapper support helpers (formerly mappers_support.py)
@@ -15,20 +20,38 @@ from polylogue.errors import DatabaseError
 # ---------------------------------------------------------------------------
 
 
-def _parse_json(raw: str | None, *, field: str = "", record_id: str = "") -> Any:
+def _parse_json(
+    raw: _RowValue | None,
+    *,
+    field: str = "",
+    record_id: str = "",
+) -> JSONValue | None:
     """Parse a JSON string with diagnostic context on failure."""
+    if raw is None:
+        return None
+    if not isinstance(raw, _JSONText):
+        raise DatabaseError(f"Corrupt JSON in {field} for {record_id}: expected JSON text, got {type(raw).__name__}")
     if not raw:
         return None
+    raw_preview = raw[:80]
     try:
-        return json.loads(raw)
+        return loads(raw)
     except json.JSONDecodeError as exc:
-        raise DatabaseError(f"Corrupt JSON in {field} for {record_id}: {exc} (value starts: {raw[:80]!r})") from exc
+        raise DatabaseError(f"Corrupt JSON in {field} for {record_id}: {exc} (value starts: {raw_preview!r})") from exc
 
 
-def _row_get(row: sqlite3.Row, key: str, default: Any = None) -> Any:
+@overload
+def _row_get(row: sqlite3.Row, key: str, default: None = None) -> _RowValue | None: ...
+
+
+@overload
+def _row_get(row: sqlite3.Row, key: str, default: _T) -> _T: ...
+
+
+def _row_get(row: sqlite3.Row, key: str, default: _T | None = None) -> _RowValue | _T | None:
     """Get a column value, returning default if the column doesn't exist."""
     try:
-        return row[key]
+        return cast(_RowValue, row[key])
     except (KeyError, IndexError):
         return default
 
