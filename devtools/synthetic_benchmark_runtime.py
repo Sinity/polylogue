@@ -233,8 +233,8 @@ async def run_filter_scan_campaign(db_path: Path) -> CampaignResult:
         await backend.close()
 
 
-async def run_startup_health_campaign(db_path: Path) -> CampaignResult:
-    """Benchmark startup health check speed."""
+async def run_startup_readiness_campaign(db_path: Path) -> CampaignResult:
+    """Benchmark startup readiness check speed."""
     from polylogue.storage.backends.async_sqlite import SQLiteBackend
     from polylogue.storage.query_models import ConversationRecordQuery
 
@@ -258,7 +258,7 @@ async def run_startup_health_campaign(db_path: Path) -> CampaignResult:
         elapsed, _ = await _ameasure(backend.queries.get_latest_run())
         metrics["latest_run_s"] = round(elapsed, 4)
 
-        metrics["total_health_s"] = round(
+        metrics["total_readiness_s"] = round(
             metrics["backend_init_s"]
             + metrics["count_convs_s"]
             + metrics["stats_by_provider_s"]
@@ -268,7 +268,7 @@ async def run_startup_health_campaign(db_path: Path) -> CampaignResult:
         )
 
         return CampaignResult(
-            campaign_name="startup-health",
+            campaign_name="startup-readiness",
             scale_level="",
             metrics=metrics,
             db_stats=_db_row_counts(db_path),
@@ -357,7 +357,7 @@ SYNTHETIC_BENCHMARK_RUNNERS: dict[str, SyntheticBenchmarkRunner] = {
     "fts-rebuild": run_fts_rebuild_campaign,
     "incremental-index": run_incremental_index_campaign,
     "filter-scan": run_filter_scan_campaign,
-    "startup-health": run_startup_health_campaign,
+    "startup-readiness": run_startup_readiness_campaign,
     "action-event-materialization": run_action_event_materialization_campaign,
     "session-product-materialization": run_session_product_materialization_campaign,
 }
@@ -378,7 +378,7 @@ __all__ = [
     "run_fts_rebuild_campaign",
     "run_incremental_index_campaign",
     "run_session_product_materialization_campaign",
-    "run_startup_health_campaign",
+    "run_startup_readiness_campaign",
     "SYNTHETIC_BENCHMARK_RUNNERS",
     "SyntheticBenchmarkRunner",
 ]

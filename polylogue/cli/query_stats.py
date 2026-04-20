@@ -181,7 +181,7 @@ async def output_stats_sql(
                 0,
             ),
             "embedding_coverage_percent": round(getattr(archive_stats, "embedding_coverage", 0.0), 1),
-            "embedding_health_status": getattr(archive_stats, "embedding_health_status", None),
+            "embedding_readiness_status": getattr(archive_stats, "embedding_readiness_status", None),
             "retrieval_ready": getattr(archive_stats, "retrieval_ready", None),
         }
         structured_summary["embeddings"] = embeddings_payload

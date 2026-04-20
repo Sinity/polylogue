@@ -66,7 +66,7 @@ def test_scenario_metadata_payload_omits_empty_collections() -> None:
 
 def test_runtime_target_names_include_declared_runtime_specs() -> None:
     assert "action_event_rows" in runtime_artifact_target_names()
-    assert "project-action-event-health" in runtime_operation_target_names()
+    assert "project-action-event-readiness" in runtime_operation_target_names()
     assert "action-event-repair-loop" in runtime_path_target_names()
     assert "session_products" in runtime_maintenance_target_names()
     assert "cli.json-contract" in declared_operation_target_names()
@@ -78,13 +78,13 @@ def test_scenario_metadata_resolves_only_runtime_declared_targets() -> None:
         origin="generated.contract",
         path_targets=("action-event-repair-loop",),
         artifact_targets=("action_event_rows", "message_fts"),
-        operation_targets=("project-action-event-health", "benchmark.storage.crud"),
+        operation_targets=("project-action-event-readiness", "benchmark.storage.crud"),
         maintenance_targets=("action_event_read_model", "missing.target"),
     )
 
     assert metadata.runtime_path_targets() == ("action-event-repair-loop",)
     assert metadata.runtime_artifact_targets() == ("action_event_rows", "message_fts")
-    assert metadata.runtime_operation_targets() == ("project-action-event-health",)
+    assert metadata.runtime_operation_targets() == ("project-action-event-readiness",)
     assert metadata.runtime_maintenance_targets() == ("action_event_read_model",)
 
 
@@ -101,7 +101,7 @@ def test_scenario_metadata_resolves_runtime_specs() -> None:
         origin="generated.contract",
         path_targets=("action-event-repair-loop",),
         artifact_targets=("action_event_rows", "message_fts"),
-        operation_targets=("project-action-event-health", "benchmark.storage.crud"),
+        operation_targets=("project-action-event-readiness", "benchmark.storage.crud"),
         maintenance_targets=("action_event_read_model",),
     )
 
@@ -111,7 +111,7 @@ def test_scenario_metadata_resolves_runtime_specs() -> None:
         "message_fts",
     )
     assert tuple(operation.name for operation in metadata.resolve_runtime_operations()) == (
-        "project-action-event-health",
+        "project-action-event-readiness",
     )
     assert tuple(target.name for target in metadata.resolve_runtime_maintenance_targets()) == (
         "action_event_read_model",
@@ -121,14 +121,14 @@ def test_scenario_metadata_resolves_runtime_specs() -> None:
 def test_scenario_metadata_resolves_declared_operation_targets() -> None:
     metadata = ScenarioMetadata(
         origin="generated.contract",
-        operation_targets=("project-action-event-health", "benchmark.storage.crud", "missing.operation"),
+        operation_targets=("project-action-event-readiness", "benchmark.storage.crud", "missing.operation"),
     )
 
     assert metadata.declared_operation_targets() == (
-        "project-action-event-health",
+        "project-action-event-readiness",
         "benchmark.storage.crud",
     )
     assert tuple(operation.name for operation in metadata.resolve_declared_operations()) == (
-        "project-action-event-health",
+        "project-action-event-readiness",
         "benchmark.storage.crud",
     )

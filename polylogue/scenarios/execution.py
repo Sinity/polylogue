@@ -155,16 +155,16 @@ def _metadata_for_polylogue_doctor(argv: tuple[str, ...]) -> ScenarioMetadata:
     if targets:
         if "--repair" in argv and "--preview" not in argv:
             operations.extend(catalog.doctor_repair_operations_for_names(targets))
-        operations.extend(catalog.doctor_health_operations_for_names(targets))
+        operations.extend(catalog.doctor_readiness_operations_for_names(targets))
     else:
-        operations.append("project-archive-health")
+        operations.append("project-archive-readiness")
     return ScenarioMetadata(maintenance_targets=resolved_target_names).merged(_metadata_for_operations(*operations))
 
 
 def _metadata_for_polylogue_embed(argv: tuple[str, ...]) -> ScenarioMetadata:
     operations: list[str] = []
     if "--stats" in argv:
-        operations.extend(("project-retrieval-band-health", "query-embedding-status"))
+        operations.extend(("project-retrieval-band-readiness", "query-embedding-status"))
     else:
         operations.append("materialize-transcript-embeddings")
     if "--json" in argv:

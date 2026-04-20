@@ -902,12 +902,12 @@ class TestMutationTools:
 
         with (
             patch("polylogue.mcp.server._get_config") as mock_get_config,
-            patch("polylogue.health.get_health") as mock_get_health,
+            patch("polylogue.readiness.get_readiness") as mock_get_readiness,
         ):
             mock_get_config.return_value = MagicMock()
-            mock_get_health.return_value = mock_report
+            mock_get_readiness.return_value = mock_report
 
-            result = invoke_surface(mcp_server._tool_manager._tools["health_check"].fn)
+            result = invoke_surface(mcp_server._tool_manager._tools["readiness_check"].fn)
 
         parsed = json.loads(result)
         assert parsed["summary"] == "Healthy"

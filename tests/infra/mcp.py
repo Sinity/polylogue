@@ -28,7 +28,7 @@ EXPECTED_TOOL_NAMES = {
     "get_conversation_summary",
     "get_session_tree",
     "get_stats_by",
-    "health_check",
+    "readiness_check",
     "rebuild_index",
     "update_index",
     "export_conversation",
@@ -47,7 +47,7 @@ EXPECTED_RESOURCE_URIS = {
     "polylogue://stats",
     "polylogue://conversations",
     "polylogue://tags",
-    "polylogue://health",
+    "polylogue://readiness",
 }
 
 EXPECTED_RESOURCE_TEMPLATE_URIS = {

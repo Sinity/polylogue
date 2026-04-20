@@ -76,11 +76,11 @@ async def test_dispatch_execution_routes_runner_executions_through_resolver() ->
         return {"ok": True}
 
     def resolve_runner(name: str) -> ExecutionRunner:
-        assert name == "startup-health"
+        assert name == "startup-readiness"
         return fake_runner
 
     result = await dispatch_execution(
-        runner_execution("startup-health"),
+        runner_execution("startup-readiness"),
         runner_resolver=resolve_runner,
         runner_args=(Path("/tmp/benchmark.db"),),
     )
@@ -92,4 +92,4 @@ async def test_dispatch_execution_routes_runner_executions_through_resolver() ->
 @pytest.mark.asyncio
 async def test_dispatch_execution_rejects_runner_without_resolver() -> None:
     with pytest.raises(ValueError, match="runner_resolver"):
-        await dispatch_execution(runner_execution("startup-health"))
+        await dispatch_execution(runner_execution("startup-readiness"))

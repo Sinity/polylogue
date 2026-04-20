@@ -6,15 +6,15 @@ from typing import TYPE_CHECKING
 
 from polylogue.cli.check_models import VacuumResult
 from polylogue.cli.types import AppEnv
-from polylogue.health import HealthReport
 from polylogue.maintenance_targets import MaintenanceTargetMode, build_maintenance_target_catalog
+from polylogue.readiness import ReadinessReport
 from polylogue.storage.repair import RepairResult, preview_counts_from_archive_debt
 
 if TYPE_CHECKING:
     from polylogue.cli.check_workflow import CheckCommandOptions
 
 
-def build_preview_counts(report: HealthReport) -> dict[str, int]:
+def build_preview_counts(report: ReadinessReport) -> dict[str, int]:
     return preview_counts_from_archive_debt(report.archive_debt)
 
 
@@ -35,7 +35,7 @@ def resolve_selected_maintenance_targets(
 def persist_maintenance_run(
     env: AppEnv,
     *,
-    report: HealthReport,
+    report: ReadinessReport,
     options: CheckCommandOptions,
     targets: tuple[str, ...],
     maintenance_results: list[RepairResult],

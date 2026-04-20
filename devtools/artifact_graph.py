@@ -39,7 +39,9 @@ def render_artifact_graph(*, as_json: bool) -> str:
         artifacts = ", ".join(node.name for node in graph.artifacts_for_maintenance_target(target)) or "—"
         operations = (
             ", ".join(
-                operation for operation in (target.doctor_health_operation, target.doctor_repair_operation) if operation
+                operation
+                for operation in (target.doctor_readiness_operation, target.doctor_repair_operation)
+                if operation
             )
             or "—"
         )

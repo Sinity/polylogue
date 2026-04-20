@@ -12,8 +12,8 @@ from click.testing import CliRunner
 from polylogue.cli import cli
 from polylogue.cli.check_workflow import CheckCommandOptions, run_check_workflow
 from polylogue.cli.types import AppEnv
-from polylogue.health import HealthCheck, HealthReport, VerifyStatus
 from polylogue.lib.raw_payload_decode import JSONValue
+from polylogue.readiness import ReadinessCheck, ReadinessReport, VerifyStatus
 from polylogue.schemas.operator_models import (
     ArtifactCohortListResult,
     ArtifactObservationListResult,
@@ -94,17 +94,17 @@ def _extract_json(output: str) -> JsonObject:
     return data_object
 
 
-class TestHealthReportConstruction:
-    """Tests for proper HealthReport instantiation."""
+class TestReadinessReportConstruction:
+    """Tests for proper ReadinessReport instantiation."""
 
     def test_health_report_requires_summary(self) -> None:
-        """HealthReport derives summary dict from check statuses."""
+        """ReadinessReport derives summary dict from check statuses."""
         checks = [
-            HealthCheck("database", VerifyStatus.OK, summary="DB reachable"),
-            HealthCheck("archive", VerifyStatus.WARNING, summary="Not found"),
+            ReadinessCheck("database", VerifyStatus.OK, summary="DB reachable"),
+            ReadinessCheck("archive", VerifyStatus.WARNING, summary="Not found"),
         ]
 
-        report = HealthReport(checks=checks)
+        report = ReadinessReport(checks=checks)
 
         assert len(report.checks) == 2
         assert report.summary == {"ok": 1, "warning": 1, "error": 0}
@@ -112,13 +112,13 @@ class TestHealthReportConstruction:
     def test_health_report_summary_counts(self) -> None:
         """Summary should accurately reflect check status counts."""
         checks = [
-            HealthCheck("check1", VerifyStatus.OK),
-            HealthCheck("check2", VerifyStatus.OK),
-            HealthCheck("check3", VerifyStatus.WARNING),
-            HealthCheck("check4", VerifyStatus.ERROR),
+            ReadinessCheck("check1", VerifyStatus.OK),
+            ReadinessCheck("check2", VerifyStatus.OK),
+            ReadinessCheck("check3", VerifyStatus.WARNING),
+            ReadinessCheck("check4", VerifyStatus.ERROR),
         ]
 
-        report = HealthReport(checks=checks)
+        report = ReadinessReport(checks=checks)
 
         # Verify counts match
         assert report.summary["ok"] == 2
@@ -126,9 +126,9 @@ class TestHealthReportConstruction:
         assert report.summary["error"] == 1
 
     def test_health_report_to_dict_serialization(self) -> None:
-        """HealthReport should serialize to dict with all required fields."""
-        checks = [HealthCheck("test", VerifyStatus.OK, summary="OK")]
-        report = HealthReport(checks=checks)
+        """ReadinessReport should serialize to dict with all required fields."""
+        checks = [ReadinessCheck("test", VerifyStatus.OK, summary="OK")]
+        report = ReadinessReport(checks=checks)
 
         data = report.to_dict()
 
@@ -138,8 +138,8 @@ class TestHealthReportConstruction:
         assert data["summary"] == {"ok": 1, "warning": 0, "error": 0}
 
     def test_health_report_empty_checks(self) -> None:
-        """HealthReport with no checks should still have summary."""
-        report = HealthReport(checks=[])
+        """ReadinessReport with no checks should still have summary."""
+        report = ReadinessReport(checks=[])
 
         assert len(report.checks) == 0
         assert report.summary == {"ok": 0, "warning": 0, "error": 0}
@@ -365,8 +365,8 @@ class TestCheckCommand:
         assert "warning" in summary
         assert "error" in summary
 
-    def test_check_runtime_only_skips_archive_health(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        runtime_report = HealthReport(checks=[HealthCheck("runtime_only", VerifyStatus.OK, summary="runtime ok")])
+    def test_check_runtime_only_skips_archive_readiness(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        runtime_report = ReadinessReport(checks=[ReadinessCheck("runtime_only", VerifyStatus.OK, summary="runtime ok")])
         env = AppEnv(ui=create_ui(True))
         options = CheckCommandOptions(
             json_output=True,
@@ -396,10 +396,10 @@ class TestCheckCommand:
         )
 
         monkeypatch.setattr(
-            "polylogue.cli.check_workflow.get_health",
-            lambda config, *, deep=False: (_ for _ in ()).throw(AssertionError("archive health should be skipped")),
+            "polylogue.cli.check_workflow.get_readiness",
+            lambda config, *, deep=False: (_ for _ in ()).throw(AssertionError("archive readiness should be skipped")),
         )
-        monkeypatch.setattr("polylogue.cli.check_workflow.run_runtime_health", lambda config: runtime_report)
+        monkeypatch.setattr("polylogue.cli.check_workflow.run_runtime_readiness", lambda config: runtime_report)
 
         result = run_check_workflow(env, options)
 
