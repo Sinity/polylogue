@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import click
 
+from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.shell_completion_values import complete_open_targets
 from polylogue.cli.types import AppEnv
 
@@ -27,24 +28,21 @@ VERB_NAMES = frozenset({"list", "count", "stats", "open", "delete"})
 @click.pass_context
 def list_verb(ctx: click.Context, output_format: str | None, fields: str | None, limit: int | None) -> None:
     """List matched conversations."""
-    params = _parent_params(ctx)
-    params["list_mode"] = True
+    request = _parent_request(ctx).with_param_updates(list_mode=True)
     if output_format:
-        params["output_format"] = output_format
+        request = request.with_param_updates(output_format=output_format)
     if fields:
-        params["fields"] = fields
+        request = request.with_param_updates(fields=fields)
     if limit is not None:
-        params["limit"] = limit
-    _execute_query_verb(ctx, params)
+        request = request.with_param_updates(limit=limit)
+    _execute_query_verb(ctx, request)
 
 
 @click.command("count")
 @click.pass_context
 def count_verb(ctx: click.Context) -> None:
     """Print count of matched conversations."""
-    params = _parent_params(ctx)
-    params["count_only"] = True
-    _execute_query_verb(ctx, params)
+    _execute_query_verb(ctx, _parent_request(ctx).with_param_updates(count_only=True))
 
 
 @click.command("stats")
@@ -65,15 +63,14 @@ def count_verb(ctx: click.Context) -> None:
 @click.pass_context
 def stats_verb(ctx: click.Context, stats_by: str | None, output_format: str | None, limit: int | None) -> None:
     """Show statistics for matched conversations."""
-    params = _parent_params(ctx)
-    params["stats_only"] = stats_by is None
+    request = _parent_request(ctx).with_param_updates(stats_only=stats_by is None)
     if stats_by:
-        params["stats_by"] = stats_by
+        request = request.with_param_updates(stats_by=stats_by)
     if output_format:
-        params["output_format"] = output_format
+        request = request.with_param_updates(output_format=output_format)
     if limit is not None:
-        params["limit"] = limit
-    _execute_query_verb(ctx, params)
+        request = request.with_param_updates(limit=limit)
+    _execute_query_verb(ctx, request)
 
 
 @click.command("open")
@@ -82,14 +79,11 @@ def stats_verb(ctx: click.Context, stats_by: str | None, output_format: str | No
 @click.pass_context
 def open_verb(ctx: click.Context, print_path: bool, target_terms: tuple[str, ...]) -> None:
     """Open matched conversation in browser/editor."""
-    params = _parent_params(ctx)
-    params["open_result"] = True
-    params["print_path"] = print_path
+    request = _parent_request(ctx).with_param_updates(open_result=True, print_path=print_path)
     if not _parent_query_terms(ctx) and len(target_terms) == 1 and ":" in target_terms[0]:
-        params["conv_id"] = target_terms[0]
-        _execute_query_verb(ctx, params)
+        _execute_query_verb(ctx, request.with_param_updates(conv_id=target_terms[0]))
         return
-    _execute_query_verb(ctx, params, extra_query_terms=target_terms)
+    _execute_query_verb(ctx, request.append_query_terms(target_terms))
 
 
 @click.command("delete")
@@ -98,22 +92,21 @@ def open_verb(ctx: click.Context, print_path: bool, target_terms: tuple[str, ...
 @click.pass_context
 def delete_verb(ctx: click.Context, dry_run: bool, force: bool) -> None:
     """Delete matched conversations."""
-    params = _parent_params(ctx)
-    params["delete_matched"] = True
-    params["dry_run"] = dry_run
-    params["force"] = force
-    _execute_query_verb(ctx, params)
-
-
-def _parent_params(ctx: click.Context) -> dict[str, object]:
-    """Extract params from parent context."""
-    return dict(_require_parent_context(ctx).params)
+    _execute_query_verb(
+        ctx,
+        _parent_request(ctx).with_param_updates(delete_matched=True, dry_run=dry_run, force=force),
+    )
 
 
 def _parent_query_terms(ctx: click.Context) -> tuple[str, ...]:
     """Load query terms captured on the parent query context."""
     raw_terms = _require_parent_context(ctx).meta.get("polylogue_query_terms", ())
     return tuple(str(term) for term in raw_terms)
+
+
+def _parent_request(ctx: click.Context) -> RootModeRequest:
+    """Build the typed request from the parent query context."""
+    return RootModeRequest.from_context(_require_parent_context(ctx))
 
 
 def _require_parent_context(ctx: click.Context) -> click.Context:
@@ -126,16 +119,13 @@ def _require_parent_context(ctx: click.Context) -> click.Context:
 
 def _execute_query_verb(
     ctx: click.Context,
-    params: dict[str, object],
-    *,
-    extra_query_terms: tuple[str, ...] = (),
+    request: RootModeRequest,
 ) -> None:
     """Execute query with verb-modified params."""
-    from polylogue.cli.query import execute_query
+    from polylogue.cli.query import execute_query_request
 
     env: AppEnv = ctx.obj
-    params["query"] = _parent_query_terms(ctx) + extra_query_terms
-    execute_query(env, params)
+    execute_query_request(env, request)
 
 
 QUERY_VERBS = (list_verb, count_verb, stats_verb, open_verb, delete_verb)

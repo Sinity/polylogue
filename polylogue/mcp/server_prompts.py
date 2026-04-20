@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, TypeAlias
 from typing_extensions import TypedDict
 
 from polylogue.mcp.payloads import MCPFencedCodeBlock
-from polylogue.mcp.server_tools import build_query_spec
+from polylogue.mcp.query_contracts import build_query_spec
 from polylogue.types import Provider
 
 if TYPE_CHECKING:

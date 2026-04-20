@@ -12,7 +12,7 @@ from polylogue.mcp.payloads import (
     MCPTagCountsPayload,
     conversation_summary_list_payload,
 )
-from polylogue.mcp.server_tools import build_query_spec
+from polylogue.mcp.query_contracts import build_query_spec
 
 if TYPE_CHECKING:
     from mcp.server.fastmcp import FastMCP
