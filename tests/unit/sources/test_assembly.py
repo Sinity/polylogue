@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from polylogue.lib.roles import Role
-from polylogue.sources.assembly import get_assembly_spec
+from polylogue.sources.assembly import SidecarData, get_assembly_spec
 from polylogue.sources.assembly_claude_code import ClaudeCodeAssemblySpec
 from polylogue.sources.assembly_codex import CodexAssemblySpec, _parse_codex_session_index
 from polylogue.sources.parsers.base import ParsedConversation, ParsedMessage
@@ -48,13 +48,13 @@ def _provider_meta(conversation: ParsedConversation) -> dict[str, object]:
     return conversation.provider_meta
 
 
-def _thread_sidecars(thread_names: dict[str, str] | None = None) -> dict[str, dict[str, str]]:
+def _thread_sidecars(thread_names: dict[str, str] | None = None) -> SidecarData:
     return {"thread_names": {} if thread_names is None else thread_names}
 
 
 def _session_sidecars(
     session_index: dict[str, SessionIndexEntry] | None = None,
-) -> dict[str, dict[str, SessionIndexEntry]]:
+) -> SidecarData:
     return {"session_index": {} if session_index is None else session_index}
 
 

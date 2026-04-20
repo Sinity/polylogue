@@ -11,7 +11,9 @@ import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import cast
+
+from polylogue.lib.json import JSONDocument, JSONValue, is_json_value
 
 
 def _read_proc_status_kb(field_name: str) -> int | None:
@@ -58,6 +60,11 @@ def read_peak_rss_children_mb() -> float | None:
     return _read_rusage_peak_rss_mb(resource.RUSAGE_CHILDREN)
 
 
+def _slow_item_elapsed(item: JSONDocument) -> float:
+    elapsed = item.get("elapsed_s")
+    return float(elapsed) if isinstance(elapsed, int | float) else 0.0
+
+
 @dataclass
 class StageMetrics:
     """Per-stage timing and throughput metrics."""
@@ -67,7 +74,7 @@ class StageMetrics:
     start_time: float = field(default_factory=time.perf_counter)
     end_time: float | None = None
     sub_timings: dict[str, float] = field(default_factory=dict)
-    details: dict[str, Any] = field(default_factory=dict)
+    details: JSONDocument = field(default_factory=dict)
     rss_start_mb: float | None = None
     rss_end_mb: float | None = None
     peak_rss_self_mb: float | None = None
@@ -107,8 +114,8 @@ class StageMetrics:
         )
         return self
 
-    def to_dict(self) -> dict[str, Any]:
-        result = {
+    def to_dict(self) -> JSONDocument:
+        result: JSONDocument = {
             "stage": self.name,
             "items": self.items_processed,
             "elapsed_ms": round(self.elapsed_ms, 1),
@@ -140,21 +147,22 @@ class SlowItemTracker:
     def __init__(self, threshold_s: float = 5.0, max_items: int = 50) -> None:
         self.threshold_s = threshold_s
         self.max_items = max_items
-        self.items: list[dict[str, Any]] = []
+        self.items: list[JSONDocument] = []
 
-    def record(self, item_id: str, stage: str, elapsed_s: float, **extra: Any) -> None:
+    def record(self, item_id: str, stage: str, elapsed_s: float, **extra: object) -> None:
         if elapsed_s >= self.threshold_s and len(self.items) < self.max_items:
-            self.items.append(
-                {
-                    "id": item_id,
-                    "stage": stage,
-                    "elapsed_s": round(elapsed_s, 2),
-                    **extra,
-                }
-            )
+            payload: JSONDocument = {
+                "id": item_id,
+                "stage": stage,
+                "elapsed_s": round(elapsed_s, 2),
+            }
+            for key, value in extra.items():
+                if is_json_value(value):
+                    payload[key] = value
+            self.items.append(payload)
 
-    def to_list(self) -> list[dict[str, Any]]:
-        return sorted(self.items, key=lambda x: x["elapsed_s"], reverse=True)
+    def to_list(self) -> list[JSONDocument]:
+        return sorted(self.items, key=_slow_item_elapsed, reverse=True)
 
 
 class PipelineMetrics:
@@ -175,15 +183,16 @@ class PipelineMetrics:
     def total_elapsed_s(self) -> float:
         return time.perf_counter() - self._pipeline_start
 
-    def to_summary(self) -> dict[str, Any]:
+    def to_summary(self) -> JSONDocument:
         """Export full metrics for logging/persistence."""
+        slow_items = cast(list[JSONValue], list(self.slow_items.to_list()))
         return {
             "total_duration_ms": round(self.total_elapsed_s * 1000, 1),
             "current_rss_mb": read_current_rss_mb(),
             "peak_rss_self_mb": read_peak_rss_self_mb(),
             "peak_rss_children_mb": read_peak_rss_children_mb(),
             "stages": {name: m.to_dict() for name, m in self.stages.items()},
-            "slow_items": self.slow_items.to_list(),
+            "slow_items": slow_items,
         }
 
 

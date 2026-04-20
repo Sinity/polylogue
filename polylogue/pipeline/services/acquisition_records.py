@@ -4,17 +4,24 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+from typing_extensions import TypedDict
+
 from polylogue.lib.provider_identity import canonical_acquisition_provider
 from polylogue.sources.parsers.base import RawConversationData
 from polylogue.storage.cursor_state import CursorStatePayload
 from polylogue.storage.store import RawConversationRecord
 
 
+class ScanCounts(TypedDict):
+    scanned: int
+    errors: int
+
+
 class ScanResult:
     """Result of scanning raw payloads from sources without persisting them."""
 
     def __init__(self) -> None:
-        self.counts: dict[str, int] = {
+        self.counts: ScanCounts = {
             "scanned": 0,
             "errors": 0,
         }
@@ -60,4 +67,4 @@ def make_raw_record(
     )
 
 
-__all__ = ["ScanResult", "make_raw_record"]
+__all__ = ["ScanCounts", "ScanResult", "make_raw_record"]

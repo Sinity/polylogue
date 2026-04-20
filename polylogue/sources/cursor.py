@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from polylogue.logging import get_logger
+from polylogue.sources.assembly import SidecarData
 from polylogue.storage.cursor_state import CursorFailurePayload, CursorStatePayload
 from polylogue.types import Provider
 
@@ -128,7 +129,7 @@ class _ParseContext:
     fallback_id: str  # path.stem, used as fallback conversation ID
     file_mtime: str | None
     capture_raw: bool
-    sidecar_data: dict[str, object]
+    sidecar_data: SidecarData
 
 
 __all__ = [

@@ -13,6 +13,7 @@ import pytest
 
 from polylogue.config import Config, Source
 from polylogue.lib.raw_payload_decode import JSONValue
+from polylogue.pipeline.payload_types import ParseBatchObservation
 from polylogue.pipeline.services.acquisition import AcquireResult, AcquisitionService
 from polylogue.pipeline.services.acquisition_records import ScanResult
 from polylogue.pipeline.services.parsing import ParseResult, ParsingService
@@ -27,6 +28,21 @@ from polylogue.types import Provider
 WorkspacePaths = dict[str, Path]
 ConversationPayload = dict[str, JSONValue]
 VisitSourcesCallback = Callable[[RawConversationRecord], Awaitable[None]]
+
+
+def _parse_batch_observation(
+    *,
+    elapsed_ms: float,
+    blob_mb: float,
+    rss_end_mb: float,
+    peak_rss_growth_mb: float,
+) -> ParseBatchObservation:
+    return {
+        "elapsed_ms": elapsed_ms,
+        "blob_mb": blob_mb,
+        "rss_end_mb": rss_end_mb,
+        "peak_rss_growth_mb": peak_rss_growth_mb,
+    }
 
 
 class TestParseResultMerge:
@@ -99,7 +115,7 @@ class TestParsingServiceParseSources:
 
         acquire_result = AcquireResult()
         acquire_result.raw_ids = ["raw-1", "raw-2"]
-        acquire_result.counts["acquired"] = 2
+        acquire_result.acquired = 2
 
         with patch(
             "polylogue.pipeline.services.acquisition.AcquisitionService.acquire_sources",
@@ -149,12 +165,12 @@ class TestParsingServiceParseSources:
 
         parse_result = ParseResult()
         parse_result.batch_observations = [
-            {
-                "elapsed_ms": 123.4,
-                "blob_mb": 1.5,
-                "rss_end_mb": 42.0,
-                "peak_rss_growth_mb": 12.5,
-            }
+            _parse_batch_observation(
+                elapsed_ms=123.4,
+                blob_mb=1.5,
+                rss_end_mb=42.0,
+                peak_rss_growth_mb=12.5,
+            )
         ]
 
         with patch(
@@ -188,7 +204,7 @@ class TestParsingServiceParseSources:
 
         acquire_result = AcquireResult()
         acquire_result.raw_ids = ["raw-1", "raw-2", "raw-1"]
-        acquire_result.counts["acquired"] = 3
+        acquire_result.acquired = 3
 
         parse_backlog_calls: list[list[str]] = []
         validation_backlog_calls: list[list[str]] = []
@@ -237,7 +253,7 @@ class TestParsingServiceParseSources:
         service = ParsingService(repository=mock_repository, archive_root=Path("/tmp/archive"), config=mock_config)
 
         acquire_result = AcquireResult()
-        acquire_result.counts["skipped"] = 5
+        acquire_result.skipped = 5
         with patch(
             "polylogue.pipeline.services.acquisition.AcquisitionService.acquire_sources",
             new=AsyncMock(return_value=acquire_result),

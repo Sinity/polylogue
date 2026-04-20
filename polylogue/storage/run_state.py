@@ -153,6 +153,24 @@ class PlanCounts(_SparseIntMap):
     render: int | None = None
     index: int | None = None
 
+    def to_payload(self) -> PlanCountsPayload:
+        payload: PlanCountsPayload = {}
+        if self.scan is not None:
+            payload["scan"] = self.scan
+        if self.store_raw is not None:
+            payload["store_raw"] = self.store_raw
+        if self.validate_count is not None:
+            payload["validate"] = self.validate_count
+        if self.parse is not None:
+            payload["parse"] = self.parse
+        if self.materialize is not None:
+            payload["materialize"] = self.materialize
+        if self.render is not None:
+            payload["render"] = self.render
+        if self.index is not None:
+            payload["index"] = self.index
+        return payload
+
 
 class PlanDetails(_SparseIntMap):
     new_raw: int | None = None
@@ -162,6 +180,24 @@ class PlanDetails(_SparseIntMap):
     backlog_parse: int | None = None
     preview_invalid: int | None = None
     preview_skipped_no_schema: int | None = None
+
+    def to_payload(self) -> PlanDetailsPayload:
+        payload: PlanDetailsPayload = {}
+        if self.new_raw is not None:
+            payload["new_raw"] = self.new_raw
+        if self.existing_raw is not None:
+            payload["existing_raw"] = self.existing_raw
+        if self.duplicate_raw is not None:
+            payload["duplicate_raw"] = self.duplicate_raw
+        if self.backlog_validate is not None:
+            payload["backlog_validate"] = self.backlog_validate
+        if self.backlog_parse is not None:
+            payload["backlog_parse"] = self.backlog_parse
+        if self.preview_invalid is not None:
+            payload["preview_invalid"] = self.preview_invalid
+        if self.preview_skipped_no_schema is not None:
+            payload["preview_skipped_no_schema"] = self.preview_skipped_no_schema
+        return payload
 
 
 class RunCounts(_SparseIntMap):
@@ -188,11 +224,49 @@ class RunCounts(_SparseIntMap):
     new_conversations: int | None = None
     changed_conversations: int | None = None
 
+    def to_payload(self) -> RunCountsPayload:
+        payload: RunCountsPayload = {}
+        for field_name in (
+            "conversations",
+            "messages",
+            "attachments",
+            "skipped_conversations",
+            "skipped_messages",
+            "skipped_attachments",
+            "acquired",
+            "skipped",
+            "acquire_errors",
+            "validated",
+            "validation_invalid",
+            "validation_drift",
+            "validation_skipped_no_schema",
+            "validation_errors",
+            "materialized",
+            "rendered",
+            "render_failures",
+            "parse_failures",
+            "schemas_generated",
+            "schemas_failed",
+            "new_conversations",
+            "changed_conversations",
+        ):
+            value = getattr(self, field_name)
+            if value is not None:
+                payload[field_name] = value
+        return payload
+
 
 class DriftBucket(_DenseIntMap):
     conversations: int = 0
     messages: int = 0
     attachments: int = 0
+
+    def to_payload(self) -> DriftBucketPayload:
+        return {
+            "conversations": self.conversations,
+            "messages": self.messages,
+            "attachments": self.attachments,
+        }
 
 
 class RunDrift(BaseModel):
@@ -203,10 +277,13 @@ class RunDrift(BaseModel):
     changed: DriftBucket = Field(default_factory=DriftBucket)
 
     def to_dict(self) -> RunDriftPayload:
+        return self.to_payload()
+
+    def to_payload(self) -> RunDriftPayload:
         return {
-            "new": cast(DriftBucketPayload, self.new.to_dict()),
-            "removed": cast(DriftBucketPayload, self.removed.to_dict()),
-            "changed": cast(DriftBucketPayload, self.changed.to_dict()),
+            "new": self.new.to_payload(),
+            "removed": self.removed.to_payload(),
+            "changed": self.changed.to_payload(),
         }
 
     def __getitem__(self, key: str) -> DriftBucket:

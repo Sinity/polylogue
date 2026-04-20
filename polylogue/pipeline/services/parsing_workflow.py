@@ -13,6 +13,7 @@ from collections.abc import AsyncIterator, Iterable, Iterator
 from typing import TYPE_CHECKING
 
 from polylogue.logging import get_logger
+from polylogue.pipeline.payload_types import ParseBatchObservation, ParseBatchObservationSummary
 from polylogue.pipeline.run_support import PARSE_STAGES
 from polylogue.pipeline.services.parsing_models import IngestResult, IngestState, ParseResult
 
@@ -94,12 +95,12 @@ def _append_unique_raw_ids(
 
 
 def _summarize_batch_observations(
-    batch_observations: list[dict[str, object]],
-) -> dict[str, object]:
+    batch_observations: list[ParseBatchObservation],
+) -> ParseBatchObservationSummary:
     if not batch_observations:
         return {}
 
-    def _observation_float(observation: dict[str, object], field: str) -> float | None:
+    def _observation_float(observation: ParseBatchObservation, field: str) -> float | None:
         value = observation.get(field)
         if value is None:
             return None
@@ -126,18 +127,26 @@ def _summarize_batch_observations(
         if elapsed_ms is not None and elapsed_ms >= 2000.0:
             slow_batch_count += 1
 
-    return {
+    summary: ParseBatchObservationSummary = {
         "batch_count": len(batch_observations),
         "slow_batch_count": slow_batch_count,
-        "max_elapsed_ms": _max_float("elapsed_ms"),
-        "max_blob_mb": _max_float("blob_mb"),
-        "max_result_mb": _max_float("max_result_mb"),
-        "max_current_rss_mb": _max_float("max_current_rss_mb"),
-        "max_rss_end_mb": _max_float("rss_end_mb"),
-        "max_rss_delta_mb": _max_float("rss_delta_mb"),
-        "max_peak_rss_growth_mb": _max_float("peak_rss_growth_mb"),
         "batches": batch_observations,
     }
+    if (value := _max_float("elapsed_ms")) is not None:
+        summary["max_elapsed_ms"] = value
+    if (value := _max_float("blob_mb")) is not None:
+        summary["max_blob_mb"] = value
+    if (value := _max_float("max_result_mb")) is not None:
+        summary["max_result_mb"] = value
+    if (value := _max_float("max_current_rss_mb")) is not None:
+        summary["max_current_rss_mb"] = value
+    if (value := _max_float("rss_end_mb")) is not None:
+        summary["max_rss_end_mb"] = value
+    if (value := _max_float("rss_delta_mb")) is not None:
+        summary["max_rss_delta_mb"] = value
+    if (value := _max_float("peak_rss_growth_mb")) is not None:
+        summary["max_peak_rss_growth_mb"] = value
+    return summary
 
 
 async def ingest_sources(

@@ -5,10 +5,15 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from polylogue.pipeline.payload_types import AcquireDiagnostics
 from polylogue.types import Provider, ValidationStatus
 
 if TYPE_CHECKING:
     from polylogue.sources.parsers.base import ParsedConversation
+
+
+def _empty_acquire_diagnostics() -> AcquireDiagnostics:
+    return {}
 
 
 @dataclass(slots=True)
@@ -19,7 +24,7 @@ class AcquireResult:
     skipped: int = 0
     errors: int = 0
     raw_ids: list[str] = field(default_factory=list)
-    diagnostics: dict[str, object] = field(default_factory=dict)
+    diagnostics: AcquireDiagnostics = field(default_factory=_empty_acquire_diagnostics)
 
     @property
     def counts(self) -> dict[str, int]:
