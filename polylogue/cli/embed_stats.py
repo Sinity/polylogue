@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING, Protocol, TypedDict
+from typing import TYPE_CHECKING, Protocol
 
 import click
+from typing_extensions import TypedDict
 
 if TYPE_CHECKING:
     from polylogue.config import Config

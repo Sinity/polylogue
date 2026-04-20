@@ -11,7 +11,7 @@ from typing import cast
 from unittest.mock import MagicMock
 
 import pytest
-from hypothesis import given, settings
+from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
 from polylogue.sources.drive_gateway import DriveServiceGateway
@@ -169,7 +169,7 @@ def test_needs_download_contract(tmp_path: Path) -> None:
     st.lists(json_document_strategy(), min_size=0, max_size=8),
     st.sampled_from(("session.jsonl", "session.jsonl.txt", "session.ndjson", "SESSION.JSONL")),
 )
-@settings(max_examples=35)
+@settings(max_examples=35, suppress_health_check=[HealthCheck.too_slow])
 def test_parse_downloaded_json_payload_preserves_newline_delimited_documents(
     documents: list[dict[str, object]], name: str
 ) -> None:
