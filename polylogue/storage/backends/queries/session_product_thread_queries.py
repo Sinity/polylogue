@@ -5,6 +5,7 @@ from __future__ import annotations
 import aiosqlite
 
 from polylogue.storage.backends.queries.mappers import _row_to_work_thread_record
+from polylogue.storage.query_models import WorkThreadListQuery
 from polylogue.storage.session_product_storage import work_thread_insert_values
 from polylogue.storage.store import WorkThreadRecord
 
@@ -29,40 +30,35 @@ async def get_work_thread(
 
 async def list_work_threads(
     conn: aiosqlite.Connection,
-    *,
-    since: str | None = None,
-    until: str | None = None,
-    limit: int | None = 50,
-    offset: int = 0,
-    query: str | None = None,
+    query: WorkThreadListQuery,
 ) -> list[WorkThreadRecord]:
     params: list[object] = []
-    if query:
+    if query.query:
         from_clause = """
             FROM work_threads wt
             JOIN work_threads_fts
               ON work_threads_fts.thread_id = wt.thread_id
         """
         where = ["work_threads_fts MATCH ?"]
-        params.append(query)
+        params.append(query.query)
         order_by = "ORDER BY bm25(work_threads_fts), COALESCE(wt.end_time, wt.start_time, wt.materialized_at) DESC, wt.thread_id"
     else:
         from_clause = "FROM work_threads wt"
         where = []
         order_by = "ORDER BY COALESCE(wt.end_time, wt.start_time, wt.materialized_at) DESC, wt.thread_id"
-    if since:
+    if query.since:
         where.append("COALESCE(wt.end_time, wt.start_time, wt.materialized_at) >= ?")
-        params.append(since)
-    if until:
+        params.append(query.since)
+    if query.until:
         where.append("COALESCE(wt.start_time, wt.end_time, wt.materialized_at) <= ?")
-        params.append(until)
+        params.append(query.until)
     sql = "SELECT wt.* " + from_clause
     if where:
         sql += " WHERE " + " AND ".join(where)
     sql += f" {order_by}"
-    if limit is not None:
+    if query.limit is not None:
         sql += " LIMIT ? OFFSET ?"
-        params.extend([limit, offset])
+        params.extend([query.limit, query.offset])
     cursor = await conn.execute(sql, tuple(params))
     rows = await cursor.fetchall()
     return [_row_to_work_thread_record(row) for row in rows]
