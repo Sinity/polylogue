@@ -6,6 +6,7 @@ from collections import deque
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import cast
 
 import questionary
 from rich import box
@@ -17,6 +18,7 @@ from polylogue.ui.facade_console import ConsoleLike, PlainConsole
 from polylogue.ui.facade_prompts import (
     _NO_STUB_RESPONSE,
     PromptStubEntry,
+    _NoStubResponse,
     consume_choose_stub,
     consume_confirm_stub,
     consume_input_stub,
@@ -70,13 +72,10 @@ class ConsoleFacade:
         if self.plain:
             self.console = PlainConsole()
         else:
-            self.console = Console(no_color=False, force_terminal=True, theme=self.theme)
+            self.console = cast(ConsoleLike, Console(no_color=False, force_terminal=True, theme=self.theme))
         self._panel_box = box.ROUNDED
         self._banner_box = box.DOUBLE
         self._prompt_responses = load_prompt_responses(UIError, prompt_stub_path=self.prompt_stub_path)
-
-    def _load_prompt_responses(self) -> deque[PromptStubEntry]:
-        return load_prompt_responses(UIError, prompt_stub_path=self.prompt_stub_path)
 
     def _pop_prompt_response(self, kind: str) -> PromptStubEntry | None:
         return pop_prompt_response(self._prompt_responses, kind, UIError)
@@ -84,13 +83,13 @@ class ConsoleFacade:
     def _require_plain_prompt_tty(self, prompt_topic: str) -> None:
         require_plain_prompt_tty(prompt_topic, UIError)
 
-    def _consume_confirm_stub(self, *, default: bool) -> object:
+    def _consume_confirm_stub(self, *, default: bool) -> bool | _NoStubResponse:
         return consume_confirm_stub(self._prompt_responses, default=default, ui_error_cls=UIError)
 
-    def _consume_choose_stub(self, options: list[str]) -> object:
+    def _consume_choose_stub(self, options: list[str]) -> str | None | _NoStubResponse:
         return consume_choose_stub(self._prompt_responses, options, UIError)
 
-    def _consume_input_stub(self, *, default: str | None) -> object:
+    def _consume_input_stub(self, *, default: str | None) -> str | None | _NoStubResponse:
         return consume_input_stub(self._prompt_responses, default=default, ui_error_cls=UIError)
 
     def banner(self, title: str, subtitle: str | None = None) -> None:
