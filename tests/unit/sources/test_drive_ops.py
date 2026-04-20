@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from polylogue.config import Source
+from polylogue.schemas.json_types import JSONDocument, JSONValue
 from polylogue.sources import DriveFile, download_drive_files, iter_drive_conversations
 from polylogue.sources.drive import _apply_drive_attachments
 from polylogue.sources.parsers.base import ParsedAttachment, ParsedConversation
@@ -46,7 +47,7 @@ def _conversation(*attachments: ParsedAttachment) -> ParsedConversation:
 @dataclass
 class _DriveConversationClient:
     files: list[DriveFile]
-    payloads: dict[str, object]
+    payloads: dict[str, JSONValue]
     payload_failures: dict[str, Exception] = field(default_factory=dict)
     attachment_meta: dict[str, DriveFile] = field(default_factory=dict)
     download_to_path_calls: list[tuple[str, Path]] = field(default_factory=list)
@@ -61,7 +62,7 @@ class _DriveConversationClient:
     def iter_json_files(self, folder_id: str) -> Iterable[DriveFile]:
         yield from self.files
 
-    def download_json_payload(self, file_id: str, *, name: str) -> object:
+    def download_json_payload(self, file_id: str, *, name: str) -> JSONValue:
         if file_id in self.payload_failures:
             raise self.payload_failures[file_id]
         return self.payloads[file_id]
@@ -195,7 +196,7 @@ def test_iter_drive_conversations_returns_empty_without_folder(tmp_path: Path) -
 
 
 def test_iter_drive_conversations_tracks_cursor_and_attachment_downloads(tmp_path: Path) -> None:
-    payload = {
+    payload: JSONDocument = {
         "title": "Drive Chat",
         "chunkedPrompt": {
             "chunks": [
@@ -240,7 +241,7 @@ def test_iter_drive_conversations_tracks_cursor_and_attachment_downloads(tmp_pat
 
 
 def test_iter_drive_conversations_tracks_payload_failures_and_continues(tmp_path: Path) -> None:
-    good_payload = {"chunkedPrompt": {"chunks": [{"role": "user", "text": "ok"}]}}
+    good_payload: JSONDocument = {"chunkedPrompt": {"chunks": [{"role": "user", "text": "ok"}]}}
     client = _DriveConversationClient(
         files=[
             DriveFile("good", "good.json", "application/json", None, None),
