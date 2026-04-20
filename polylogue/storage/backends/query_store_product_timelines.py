@@ -11,6 +11,7 @@ import aiosqlite
 from polylogue.storage.backends.queries import (
     session_product_timeline_reads as session_product_timelines_q,
 )
+from polylogue.storage.query_models import SessionTimelineListQuery
 from polylogue.storage.store import SessionPhaseRecord, SessionWorkEventRecord
 
 
@@ -32,6 +33,20 @@ class SQLiteQueryStoreProductTimelinesMixin:
         async with self._connection_factory() as conn:
             return await session_product_timelines_q.get_session_phases(conn, conversation_id)
 
+    async def _list_session_work_events_query(
+        self,
+        query: SessionTimelineListQuery,
+    ) -> list[SessionWorkEventRecord]:
+        async with self._connection_factory() as conn:
+            return await session_product_timelines_q.list_work_events(conn, query)
+
+    async def _list_session_phases_query(
+        self,
+        query: SessionTimelineListQuery,
+    ) -> list[SessionPhaseRecord]:
+        async with self._connection_factory() as conn:
+            return await session_product_timelines_q.list_session_phases(conn, query)
+
     async def list_session_work_events(
         self,
         *,
@@ -44,9 +59,8 @@ class SQLiteQueryStoreProductTimelinesMixin:
         offset: int = 0,
         query: str | None = None,
     ) -> list[SessionWorkEventRecord]:
-        async with self._connection_factory() as conn:
-            return await session_product_timelines_q.list_work_events(
-                conn,
+        return await self._list_session_work_events_query(
+            SessionTimelineListQuery(
                 conversation_id=conversation_id,
                 provider=provider,
                 since=since,
@@ -56,6 +70,7 @@ class SQLiteQueryStoreProductTimelinesMixin:
                 offset=offset,
                 query=query,
             )
+        )
 
     async def list_session_phases(
         self,
@@ -68,9 +83,8 @@ class SQLiteQueryStoreProductTimelinesMixin:
         limit: int | None = 50,
         offset: int = 0,
     ) -> list[SessionPhaseRecord]:
-        async with self._connection_factory() as conn:
-            return await session_product_timelines_q.list_session_phases(
-                conn,
+        return await self._list_session_phases_query(
+            SessionTimelineListQuery(
                 conversation_id=conversation_id,
                 provider=provider,
                 since=since,
@@ -79,6 +93,7 @@ class SQLiteQueryStoreProductTimelinesMixin:
                 limit=limit,
                 offset=offset,
             )
+        )
 
 
 __all__ = ["SQLiteQueryStoreProductTimelinesMixin"]

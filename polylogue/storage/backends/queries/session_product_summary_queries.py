@@ -8,6 +8,10 @@ from polylogue.storage.backends.queries.mappers import (
     _row_to_day_session_summary_record,
     _row_to_session_tag_rollup_record,
 )
+from polylogue.storage.query_models import (
+    DaySessionSummaryListQuery,
+    SessionTagRollupListQuery,
+)
 from polylogue.storage.session_product_storage import (
     day_session_summary_insert_values,
     session_tag_rollup_insert_values,
@@ -24,26 +28,22 @@ __all__ = [
 
 async def list_session_tag_rollup_rows(
     conn: aiosqlite.Connection,
-    *,
-    provider: str | None = None,
-    since: str | None = None,
-    until: str | None = None,
-    query: str | None = None,
+    query: SessionTagRollupListQuery,
 ) -> list[SessionTagRollupRecord]:
     params: list[object] = []
     where: list[str] = []
-    if provider:
+    if query.provider:
         where.append("provider_name = ?")
-        params.append(provider)
-    if since:
+        params.append(query.provider)
+    if query.since:
         where.append("bucket_day >= date(?)")
-        params.append(since)
-    if until:
+        params.append(query.since)
+    if query.until:
         where.append("bucket_day <= date(?)")
-        params.append(until)
-    if query:
+        params.append(query.until)
+    if query.query:
         where.append("LOWER(tag) LIKE ?")
-        params.append(f"%{query.strip().lower()}%")
+        params.append(f"%{query.query.strip().lower()}%")
 
     sql = """
         SELECT *
@@ -60,22 +60,19 @@ async def list_session_tag_rollup_rows(
 
 async def list_day_session_summaries(
     conn: aiosqlite.Connection,
-    *,
-    provider: str | None = None,
-    since: str | None = None,
-    until: str | None = None,
+    query: DaySessionSummaryListQuery,
 ) -> list[DaySessionSummaryRecord]:
     params: list[object] = []
     where: list[str] = []
-    if provider:
+    if query.provider:
         where.append("provider_name = ?")
-        params.append(provider)
-    if since:
+        params.append(query.provider)
+    if query.since:
         where.append("day >= date(?)")
-        params.append(since)
-    if until:
+        params.append(query.since)
+    if query.until:
         where.append("day <= date(?)")
-        params.append(until)
+        params.append(query.until)
 
     sql = """
         SELECT *

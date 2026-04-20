@@ -5,6 +5,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from polylogue.lib.threads import WorkThread
+from polylogue.storage.product_read_support import hydrate_optional, hydrate_sequence
+from polylogue.storage.query_models import WorkThreadListQuery
 from polylogue.storage.session_product_threads import hydrate_work_thread
 from polylogue.storage.store import WorkThreadRecord
 
@@ -21,7 +23,13 @@ class RepositoryProductThreadReadMixin:
 
     async def get_work_thread(self, thread_id: str) -> WorkThread | None:
         record = await self.get_work_thread_record(thread_id)
-        return hydrate_work_thread(record) if record is not None else None
+        return hydrate_optional(record, hydrate_work_thread)
+
+    async def _list_work_thread_records_query(
+        self,
+        query: WorkThreadListQuery,
+    ) -> list[WorkThreadRecord]:
+        return await self.queries._list_work_threads_query(query)
 
     async def list_work_threads(
         self,
@@ -32,14 +40,16 @@ class RepositoryProductThreadReadMixin:
         offset: int = 0,
         query: str | None = None,
     ) -> list[WorkThread]:
-        records = await self.queries.list_work_threads(
-            since=since,
-            until=until,
-            limit=limit,
-            offset=offset,
-            query=query,
+        records = await self._list_work_thread_records_query(
+            WorkThreadListQuery(
+                since=since,
+                until=until,
+                limit=limit,
+                offset=offset,
+                query=query,
+            )
         )
-        return [hydrate_work_thread(record) for record in records]
+        return hydrate_sequence(records, hydrate_work_thread)
 
     async def list_work_thread_records(
         self,
@@ -50,12 +60,14 @@ class RepositoryProductThreadReadMixin:
         offset: int = 0,
         query: str | None = None,
     ) -> list[WorkThreadRecord]:
-        return await self.queries.list_work_threads(
-            since=since,
-            until=until,
-            limit=limit,
-            offset=offset,
-            query=query,
+        return await self._list_work_thread_records_query(
+            WorkThreadListQuery(
+                since=since,
+                until=until,
+                limit=limit,
+                offset=offset,
+                query=query,
+            )
         )
 
 

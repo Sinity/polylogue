@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import aiosqlite
 
-from polylogue.storage.backends.queries.mappers import _parse_json
+from polylogue.storage.backends.queries.mappers import _json_object, _parse_json
 from polylogue.storage.store import AttachmentRecord
 from polylogue.types import ConversationId
 
@@ -17,10 +17,12 @@ def _build_attachment_record(row: aiosqlite.Row, *, conversation_id: str) -> Att
         mime_type=row["mime_type"],
         size_bytes=row["size_bytes"],
         path=row["path"],
-        provider_meta=_parse_json(
-            row["provider_meta"],
-            field="provider_meta",
-            record_id=row["attachment_id"],
+        provider_meta=_json_object(
+            _parse_json(
+                row["provider_meta"],
+                field="provider_meta",
+                record_id=row["attachment_id"],
+            )
         ),
     )
 

@@ -37,4 +37,6 @@ def test_record_and_fetch_latest_publication_roundtrip(tmp_path: Path) -> None:
     assert loaded is not None
     assert loaded.publication_id == record.publication_id
     assert loaded.duration_ms == 1234
-    assert loaded.manifest["outputs"]["total_index_pages"] == 3
+    outputs = loaded.manifest.get("outputs")
+    assert isinstance(outputs, dict)
+    assert outputs["total_index_pages"] == 3

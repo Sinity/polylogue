@@ -23,6 +23,11 @@ from polylogue.storage.backends.query_store_product_profiles import (
 from polylogue.storage.backends.query_store_product_timelines import (
     SQLiteQueryStoreProductTimelinesMixin,
 )
+from polylogue.storage.query_models import (
+    DaySessionSummaryListQuery,
+    SessionTagRollupListQuery,
+    WorkThreadListQuery,
+)
 from polylogue.storage.session_product_runtime import SessionProductStatusSnapshot
 from polylogue.storage.store import (
     ActionEventRecord,
@@ -83,6 +88,13 @@ class SQLiteQueryStore(
         async with self._connection_factory() as conn:
             return await session_product_threads_q.get_work_thread(conn, thread_id)
 
+    async def _list_work_threads_query(
+        self,
+        query: WorkThreadListQuery,
+    ) -> list[WorkThreadRecord]:
+        async with self._connection_factory() as conn:
+            return await session_product_threads_q.list_work_threads(conn, query)
+
     async def list_work_threads(
         self,
         *,
@@ -92,17 +104,24 @@ class SQLiteQueryStore(
         offset: int = 0,
         query: str | None = None,
     ) -> list[WorkThreadRecord]:
-        async with self._connection_factory() as conn:
-            return await session_product_threads_q.list_work_threads(
-                conn,
+        return await self._list_work_threads_query(
+            WorkThreadListQuery(
                 since=since,
                 until=until,
                 limit=limit,
                 offset=offset,
                 query=query,
             )
+        )
 
     # -- Summaries (formerly query_store_product_summaries.py) --------------
+
+    async def _list_session_tag_rollup_rows_query(
+        self,
+        query: SessionTagRollupListQuery,
+    ) -> list[SessionTagRollupRecord]:
+        async with self._connection_factory() as conn:
+            return await session_product_summaries_q.list_session_tag_rollup_rows(conn, query)
 
     async def list_session_tag_rollup_rows(
         self,
@@ -112,14 +131,21 @@ class SQLiteQueryStore(
         until: str | None = None,
         query: str | None = None,
     ) -> list[SessionTagRollupRecord]:
-        async with self._connection_factory() as conn:
-            return await session_product_summaries_q.list_session_tag_rollup_rows(
-                conn,
+        return await self._list_session_tag_rollup_rows_query(
+            SessionTagRollupListQuery(
                 provider=provider,
                 since=since,
                 until=until,
                 query=query,
             )
+        )
+
+    async def _list_day_session_summaries_query(
+        self,
+        query: DaySessionSummaryListQuery,
+    ) -> list[DaySessionSummaryRecord]:
+        async with self._connection_factory() as conn:
+            return await session_product_summaries_q.list_day_session_summaries(conn, query)
 
     async def list_day_session_summaries(
         self,
@@ -128,13 +154,13 @@ class SQLiteQueryStore(
         since: str | None = None,
         until: str | None = None,
     ) -> list[DaySessionSummaryRecord]:
-        async with self._connection_factory() as conn:
-            return await session_product_summaries_q.list_day_session_summaries(
-                conn,
+        return await self._list_day_session_summaries_query(
+            DaySessionSummaryListQuery(
                 provider=provider,
                 since=since,
                 until=until,
             )
+        )
 
 
 __all__ = ["SQLiteQueryStore"]

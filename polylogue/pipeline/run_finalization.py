@@ -116,7 +116,7 @@ async def persist_run_result(
             run_id=str(run_payload["run_id"]),
             timestamp=str(run_payload["timestamp"]),
             plan_snapshot=plan.model_dump(mode="json") if plan else None,
-            counts=dict(run_payload["counts"]),
+            counts=run_payload["counts"],
             drift=dict(run_payload["drift"]),
             indexed=index_outcome.indexed,
             duration_ms=duration_ms,
