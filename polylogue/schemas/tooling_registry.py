@@ -11,16 +11,21 @@ from typing import TYPE_CHECKING, TypeAlias
 from polylogue.schemas.json_types import JSONDocument, JSONValue, json_document, json_document_list
 from polylogue.schemas.observation import schema_cluster_id
 from polylogue.schemas.packages import SchemaPackageCatalog, SchemaVersionPackage
-from polylogue.schemas.runtime_registry import ElementSchemaMap, PublicSchemaDocument, canonical_schema_provider
+from polylogue.schemas.runtime_registry import (
+    ElementSchemaMap,
+    PublicSchemaDocument,
+    SchemaInputDocument,
+    canonical_schema_provider,
+)
 from polylogue.schemas.tooling_diff import diff_schemas
 from polylogue.schemas.tooling_models import ClusterManifest, PropertyChange, SchemaCluster, SchemaDiff
 from polylogue.types import Provider
 
-SchemaPayload: TypeAlias = JSONDocument
-ObservedSchemaSample: TypeAlias = JSONValue
+SchemaPayload: TypeAlias = SchemaInputDocument
+ObservedSchemaSample: TypeAlias = object
 
 
-def _dominant_keys(sample: ObservedSchemaSample) -> list[str]:
+def _dominant_keys(sample: object) -> list[str]:
     document = json_document(sample)
     if document:
         return sorted(document)
@@ -42,7 +47,7 @@ class SchemaRegistryToolingMixin:
             provider: str,
             *,
             version: str,
-            schema: SchemaPayload,
+            schema: SchemaInputDocument,
             element_kind: str = "conversation_document",
             first_seen: str | None = None,
             last_seen: str | None = None,
@@ -65,7 +70,7 @@ class SchemaRegistryToolingMixin:
             element_kind: str | None = None,
         ) -> PublicSchemaDocument | None: ...
 
-        def register_schema(self, provider: str, schema: SchemaPayload) -> str: ...
+        def register_schema(self, provider: str, schema: SchemaInputDocument) -> str: ...
 
     def replace_provider_schemas(
         self,

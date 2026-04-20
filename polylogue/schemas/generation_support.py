@@ -10,16 +10,17 @@ from polylogue.schemas.field_stats import FieldStats
 from polylogue.schemas.generation_field_annotations import annotate_schema, remove_nested_required
 from polylogue.schemas.generation_redaction import _build_redaction_report
 from polylogue.schemas.generation_semantic_relations import annotate_semantic_and_relational
-from polylogue.schemas.json_types import JSONDocument, JSONValue, json_document
+from polylogue.schemas.json_types import JSONDocument, json_document
 
 SchemaPayload: TypeAlias = JSONDocument
-SchemaMapping: TypeAlias = Mapping[str, JSONValue]
+SchemaMapping: TypeAlias = Mapping[str, object]
 SchemaCollection: TypeAlias = Sequence[SchemaMapping]
 FieldStatsMapping: TypeAlias = Mapping[str, FieldStats]
 
 
 class PrivacyConfigLike(Protocol):
-    level: str
+    @property
+    def level(self) -> str: ...
 
 
 GENSON_AVAILABLE = _dynamic_keys.GENSON_AVAILABLE

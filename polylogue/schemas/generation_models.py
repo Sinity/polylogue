@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import random
+from collections.abc import Mapping
 from collections import Counter
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
@@ -63,7 +64,7 @@ class _ClusterAccumulator:
     representative_paths: list[str] = field(default_factory=list)
     profile_token_counts: Counter[str] = field(default_factory=Counter)
     member_profiles: set[tuple[str, ...]] = field(default_factory=set)
-    reservoir_samples: list[JSONDocument] = field(default_factory=list)
+    reservoir_samples: list[Mapping[str, object]] = field(default_factory=list)
     reservoir_conv_ids: list[str | None] = field(default_factory=list)
     rng: random.Random = field(default_factory=lambda: random.Random(42))
     exact_structure_ids: set[str] = field(default_factory=set)

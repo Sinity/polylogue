@@ -16,18 +16,19 @@ from polylogue.schemas.generation_support import (
     _remove_nested_required,
     collapse_dynamic_keys,
 )
-from polylogue.schemas.json_types import JSONDocument, JSONValue, json_document
+from polylogue.schemas.json_types import JSONDocument, json_document
 from polylogue.schemas.observation import ProviderConfig
 from polylogue.schemas.redaction_report import SchemaReport
 from polylogue.schemas.shape_fingerprint import _structure_fingerprint
 
-SchemaInput: TypeAlias = Mapping[str, JSONValue]
+SchemaInput: TypeAlias = Mapping[str, object]
 SchemaPayload: TypeAlias = JSONDocument
 MutableSchemaPayload: TypeAlias = JSONDocument
 
 
 class PrivacyConfigLike(Protocol):
-    level: str
+    @property
+    def level(self) -> str: ...
 
 
 _STRUCTURE_EXEMPLARS_PER_FINGERPRINT = 8

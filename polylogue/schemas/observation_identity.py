@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 
-from polylogue.schemas.json_types import JSONValue
 from polylogue.schemas.observation_models import PROVIDERS, ProviderConfig
 from polylogue.types import Provider
 
@@ -33,7 +32,7 @@ def fingerprint_hash(fingerprint: object) -> str:
     return hashlib.sha256(raw).hexdigest()[:16]
 
 
-def schema_cluster_id(cluster_payload: JSONValue, artifact_kind: str) -> str:
+def schema_cluster_id(cluster_payload: object, artifact_kind: str) -> str:
     """Compute a stable cluster identifier for a schema unit."""
     from polylogue.schemas.shape_fingerprint import _structure_fingerprint
 

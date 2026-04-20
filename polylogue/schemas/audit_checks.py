@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 from polylogue.lib.outcomes import OutcomeCheck as CheckResult
 from polylogue.lib.outcomes import OutcomeStatus
 from polylogue.schemas.audit_walkers import _HEX_RE, _UUID_RE, SchemaNode, _walk_semantic_roles, _walk_values
@@ -9,11 +11,12 @@ from polylogue.schemas.json_types import json_document, json_document_list
 from polylogue.schemas.privacy import _is_safe_enum_value, _looks_high_entropy_token
 
 
-def check_privacy_guards(schema: SchemaNode) -> CheckResult:
+def check_privacy_guards(schema: Mapping[str, object] | SchemaNode) -> CheckResult:
     """Check that no UUIDs, hashes, or PII leak through enum values."""
     violations: list[str] = []
+    root = json_document(schema)
 
-    for path, values in _walk_values(schema):
+    for path, values in _walk_values(root):
         for v in values:
             if _UUID_RE.match(v):
                 violations.append(f"{path}: UUID leak {v!r}")
@@ -38,8 +41,8 @@ def check_privacy_guards(schema: SchemaNode) -> CheckResult:
     )
 
 
-def _schema_node_at_path(schema: SchemaNode, path: str) -> SchemaNode:
-    current = schema
+def _schema_node_at_path(schema: Mapping[str, object] | SchemaNode, path: str) -> SchemaNode:
+    current = json_document(schema)
     for part in path.split(".")[1:]:
         if part == "*":
             current = json_document(current.get("additionalProperties"))
@@ -54,14 +57,15 @@ def _schema_node_at_path(schema: SchemaNode, path: str) -> SchemaNode:
     return current
 
 
-def check_semantic_roles(schema: SchemaNode) -> CheckResult:
+def check_semantic_roles(schema: Mapping[str, object] | SchemaNode) -> CheckResult:
     """Check semantic role assignments for sanity."""
     issues: list[str] = []
-    roles = _walk_semantic_roles(schema)
+    root = json_document(schema)
+    roles = _walk_semantic_roles(root)
 
     for path, role, _confidence in roles:
         if role == "conversation_title":
-            current = _schema_node_at_path(schema, path)
+            current = _schema_node_at_path(root, path)
             fmt = current.get("x-polylogue-format")
 
             if fmt in ("uuid4", "uuid", "hex-id"):
@@ -93,7 +97,7 @@ def check_semantic_roles(schema: SchemaNode) -> CheckResult:
     )
 
 
-def check_annotation_coverage(schema: SchemaNode) -> CheckResult:
+def check_annotation_coverage(schema: Mapping[str, object] | SchemaNode) -> CheckResult:
     """Check that schema has adequate annotation coverage."""
     total_fields = 0
     annotated_fields = 0
@@ -127,7 +131,7 @@ def check_annotation_coverage(schema: SchemaNode) -> CheckResult:
             for child in json_document_list(node.get(keyword)):
                 _count(child)
 
-    _count(schema)
+    _count(json_document(schema))
 
     if total_fields == 0:
         return CheckResult(
@@ -155,16 +159,17 @@ def check_annotation_coverage(schema: SchemaNode) -> CheckResult:
     )
 
 
-def check_cross_provider_consistency(schemas: dict[str, SchemaNode]) -> CheckResult:
+def check_cross_provider_consistency(schemas: Mapping[str, Mapping[str, object] | SchemaNode]) -> CheckResult:
     """Check consistency across all provider schemas."""
     issues: list[str] = []
 
     for provider, schema in schemas.items():
-        roles = _walk_semantic_roles(schema)
+        root = json_document(schema)
+        roles = _walk_semantic_roles(root)
         if not roles:
             issues.append(f"{provider}: no semantic roles")
 
-        if not schema.get("x-polylogue-sample-count"):
+        if not root.get("x-polylogue-sample-count"):
             issues.append(f"{provider}: missing sample count")
 
     if issues:

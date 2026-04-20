@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import datetime, timezone
 
 from polylogue.schemas.generation_models import _ClusterAccumulator, _ProfileSummary
@@ -193,7 +194,7 @@ def _refine_coarse_clusters(
 
 def _update_cluster_reservoir(
     acc: _ClusterAccumulator,
-    sample: dict[str, object],
+    sample: Mapping[str, object],
     conversation_id: str | None,
     *,
     reservoir_size: int,

@@ -62,7 +62,7 @@ def resolve_provider_schema(
 
 def resolve_payload_schema(
     provider: str | Provider,
-    payload: JSONValue,
+    payload: object,
     *,
     source_path: str | None = None,
     schema_resolution: SchemaResolution | None = None,
