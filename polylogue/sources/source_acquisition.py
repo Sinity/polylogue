@@ -14,7 +14,7 @@ from polylogue.lib.json import dumps_bytes as json_dumps_bytes
 from polylogue.lib.metrics import read_current_rss_mb, read_peak_rss_self_mb
 from polylogue.logging import get_logger
 from polylogue.storage.blob_store import BlobStore, get_blob_store
-from polylogue.storage.state_views import CursorStatePayload
+from polylogue.storage.cursor_state import CursorStatePayload
 from polylogue.types import Provider
 
 from . import cursor as _cursor

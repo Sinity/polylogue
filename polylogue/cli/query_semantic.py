@@ -15,7 +15,7 @@ if TYPE_CHECKING:
     from polylogue.lib.models import Conversation, ConversationSummary
     from polylogue.lib.query_spec import ConversationQuerySpec
     from polylogue.lib.semantic_facts import ConversationSemanticFacts
-    from polylogue.storage.repository import ConversationRepository
+    from polylogue.protocols import ConversationSemanticStatsStore
     from polylogue.storage.store import AttachmentRecord
 
 
@@ -134,7 +134,7 @@ def filtered_action_events(
 
 
 async def _load_semantic_stats_conversations(
-    repo: ConversationRepository,
+    repo: ConversationSemanticStatsStore,
     conversation_ids: list[str],
 ) -> list[Conversation]:
     if not conversation_ids:
@@ -173,7 +173,7 @@ async def _load_semantic_stats_conversations(
 async def output_stats_by_semantic_summaries(
     env: AppEnv,
     summaries: list[ConversationSummary],
-    repo: ConversationRepository,
+    repo: ConversationSemanticStatsStore,
     dimension: str,
     *,
     selection: ConversationQuerySpec | None = None,
@@ -194,7 +194,7 @@ async def output_stats_by_semantic_summaries(
 async def output_stats_by_semantic_query(
     env: AppEnv,
     conversation_ids: list[str],
-    repo: ConversationRepository,
+    repo: ConversationSemanticStatsStore,
     dimension: str,
     *,
     selection: ConversationQuerySpec | None = None,
@@ -215,7 +215,7 @@ async def output_stats_by_semantic_query(
 async def output_stats_by_semantic_ids(
     env: AppEnv,
     conversation_ids: list[str],
-    repo: ConversationRepository,
+    repo: ConversationSemanticStatsStore,
     dimension: str,
     *,
     selection: ConversationQuerySpec | None = None,
@@ -236,15 +236,7 @@ async def output_stats_by_semantic_ids(
     matched_facts = 0
     matched_messages = 0
     key_func = (lambda action: action.kind.value) if dimension == "action" else normalized_tool_name
-    action_event_status_result: Awaitable[dict[str, int | bool]] | dict[str, int | bool] | object
-    action_event_status_result = repo.get_action_event_read_model_status()
-    if isinstance(action_event_status_result, Awaitable):
-        action_event_status = await action_event_status_result
-    elif isinstance(action_event_status_result, dict):
-        action_event_status = action_event_status_result
-    else:
-        action_event_status = {}
-    action_read_model_ready = bool(action_event_status.get("ready", False))
+    action_read_model_ready = (await repo.get_action_event_artifact_state()).ready
 
     for offset in range(0, len(conversation_ids), batch_size):
         batch_ids = conversation_ids[offset : offset + batch_size]

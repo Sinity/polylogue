@@ -39,8 +39,8 @@ from polylogue.pipeline.services.ingest_worker import (
     _make_ref_id,
 )
 from polylogue.storage.backends.connection import open_connection
+from polylogue.storage.raw_state_models import RawConversationStateUpdate
 from polylogue.storage.session_product_refresh import SessionProductRefreshChunkObservation
-from polylogue.storage.state_views import RawConversationStateUpdate
 from polylogue.types import AttachmentId, ContentBlockType, ContentHash, ConversationId, MessageId
 
 

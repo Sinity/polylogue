@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from polylogue.storage.state_views import RawConversationState
+from polylogue.storage.raw_state_models import RawConversationState
 from polylogue.types import ValidationStatus
 
 _PARSEABLE_VALIDATION_STATUSES = (

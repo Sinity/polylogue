@@ -1,45 +1,15 @@
-"""Non-durable storage and pipeline state views.
-
-These models are not direct table rows. They represent aggregate views,
-pipeline/operator artifacts, or transient lookup state layered on top of the
-durable storage records in ``store.py``.
-"""
+"""Non-durable planning and run-result views layered above archive storage."""
 
 from __future__ import annotations
 
 from collections.abc import ItemsView, KeysView, Mapping, ValuesView
-from dataclasses import dataclass
 from typing import cast
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from typing_extensions import TypedDict
 
-from polylogue.storage.store import AttachmentRecord, ConversationRecord, MessageRecord
-from polylogue.types import (
-    ArtifactSupportStatus,
-    PlanStage,
-    Provider,
-    ValidationMode,
-    ValidationStatus,
-)
-
-
-class CursorFailurePayload(TypedDict):
-    path: str
-    error: str
-
-
-class CursorStatePayload(TypedDict, total=False):
-    file_count: int
-    error_count: int
-    latest_mtime: float
-    latest_file_name: str
-    latest_path: str
-    latest_file_id: str
-    latest_error: str
-    latest_error_file: str
-    failed_count: int
-    failed_files: list[CursorFailurePayload]
+from polylogue.storage.cursor_state import CursorStatePayload
+from polylogue.types import PlanStage
 
 
 class PlanCountsPayload(TypedDict, total=False):
@@ -267,47 +237,12 @@ class RunDrift(BaseModel):
         return super().__eq__(other)
 
 
-class ArtifactCohortSummary(BaseModel):
-    """Aggregate summary for one observed artifact cohort."""
-
-    provider_name: str
-    payload_provider: Provider | None = None
-    artifact_kind: str
-    support_status: ArtifactSupportStatus
-    cohort_id: str | None = None
-    observation_count: int = 0
-    unique_raw_ids: int = 0
-    first_observed_at: str | None = None
-    last_observed_at: str | None = None
-    bundle_scope_count: int = 0
-    sample_source_paths: list[str] = Field(default_factory=list)
-    resolved_package_version: str | None = None
-    resolved_element_kind: str | None = None
-    resolution_reason: str | None = None
-    link_group_count: int = 0
-    linked_sidecar_count: int = 0
-
-    @field_validator("payload_provider", mode="before")
-    @classmethod
-    def coerce_cohort_payload_provider(cls, v: object) -> Provider | None:
-        if v is None:
-            return None
-        if isinstance(v, Provider):
-            return v
-        return Provider.from_string(str(v))
-
-    @field_validator("support_status", mode="before")
-    @classmethod
-    def coerce_cohort_support_status(cls, v: object) -> ArtifactSupportStatus:
-        return ArtifactSupportStatus.from_string(str(v))
-
-
 class PlanResult(BaseModel):
     timestamp: int
     stage: PlanStage = PlanStage.ALL
     stage_sequence: list[PlanStage] = Field(default_factory=list)
-    counts: PlanCounts = Field(default_factory=lambda: PlanCounts())
-    details: PlanDetails = Field(default_factory=lambda: PlanDetails())
+    counts: PlanCounts = Field(default_factory=PlanCounts)
+    details: PlanDetails = Field(default_factory=PlanDetails)
     sources: list[str]
     cursors: dict[str, CursorStatePayload] = Field(default_factory=dict)
 
@@ -350,80 +285,10 @@ class PlanResult(BaseModel):
         return payload
 
 
-class RawConversationState(BaseModel):
-    raw_id: str
-    source_name: str | None = None
-    source_path: str | None = None
-    parsed_at: str | None = None
-    parse_error: str | None = None
-    payload_provider: Provider | None = None
-    validation_status: ValidationStatus | None = None
-    validation_provider: Provider | None = None
-
-    @field_validator("payload_provider", "validation_provider", mode="before")
-    @classmethod
-    def coerce_optional_provider(cls, v: object) -> Provider | None:
-        if v is None:
-            return None
-        if isinstance(v, Provider):
-            return v
-        return Provider.from_string(str(v))
-
-    @field_validator("validation_status", mode="before")
-    @classmethod
-    def coerce_state_validation_status(cls, v: object) -> ValidationStatus | None:
-        if v is None:
-            return None
-        return ValidationStatus.from_string(str(v))
-
-
-class _RawStateUnset:
-    """Sentinel for update fields that should remain unchanged."""
-
-    __slots__ = ()
-
-    def __repr__(self) -> str:
-        return "UNSET"
-
-
-UNSET = _RawStateUnset()
-
-
-@dataclass(frozen=True)
-class RawConversationStateUpdate:
-    """Typed raw-state mutation payload used by update_raw_state calls."""
-
-    parsed_at: str | None | _RawStateUnset = UNSET
-    parse_error: str | None | _RawStateUnset = UNSET
-    payload_provider: Provider | str | None | _RawStateUnset = UNSET
-    validation_status: ValidationStatus | str | None | _RawStateUnset = UNSET
-    validation_error: str | None | _RawStateUnset = UNSET
-    validation_drift_count: int | None | _RawStateUnset = UNSET
-    validation_provider: Provider | str | None | _RawStateUnset = UNSET
-    validation_mode: ValidationMode | str | None | _RawStateUnset = UNSET
-
-    @property
-    def has_values(self) -> bool:
-        """Return whether any field is explicitly provided."""
-        return any(
-            value is not UNSET
-            for value in (
-                self.parsed_at,
-                self.parse_error,
-                self.payload_provider,
-                self.validation_status,
-                self.validation_error,
-                self.validation_drift_count,
-                self.validation_provider,
-                self.validation_mode,
-            )
-        )
-
-
 class RunResult(BaseModel):
     run_id: str
-    counts: RunCounts = Field(default_factory=lambda: RunCounts())
-    drift: RunDrift = Field(default_factory=lambda: RunDrift())
+    counts: RunCounts = Field(default_factory=RunCounts)
+    drift: RunDrift = Field(default_factory=RunDrift)
     indexed: bool
     index_error: str | None
     duration_ms: int
@@ -460,35 +325,14 @@ class RunResult(BaseModel):
         return failures
 
 
-class ExistingConversation(BaseModel):
-    conversation_id: str
-    content_hash: str
-
-
-@dataclass(frozen=True)
-class ConversationRenderProjection:
-    """Repository-owned render projection preserving raw attachment layout."""
-
-    conversation: ConversationRecord
-    messages: list[MessageRecord]
-    attachments: list[AttachmentRecord]
-
-
 __all__ = [
-    "ArtifactCohortSummary",
-    "ConversationRenderProjection",
-    "CursorFailurePayload",
-    "CursorStatePayload",
     "DriftBucket",
     "DriftBucketPayload",
-    "ExistingConversation",
     "PlanCounts",
     "PlanCountsPayload",
     "PlanDetails",
     "PlanDetailsPayload",
     "PlanResult",
-    "RawConversationState",
-    "RawConversationStateUpdate",
     "RenderFailurePayload",
     "RunCounts",
     "RunCountsPayload",

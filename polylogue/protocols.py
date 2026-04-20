@@ -15,14 +15,25 @@ from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from polylogue.storage.store import (
     ArtifactObservationRecord,
+    AttachmentRecord,
+    ConversationRecord,
     MessageRecord,
     RawConversationRecord,
 )
 from polylogue.types import Provider, ValidationMode, ValidationStatus
 
 if TYPE_CHECKING:
+    import aiosqlite
+
+    from polylogue.lib.action_events import ActionEvent
     from polylogue.lib.conversation_models import Conversation, ConversationSummary
     from polylogue.lib.message_models import Message
+    from polylogue.lib.session_profile import SessionProfile
+    from polylogue.lib.stats import ArchiveStats
+    from polylogue.storage.action_event_artifacts import ActionEventArtifactState
+    from polylogue.storage.backends.queries.stats import AggregateMessageStats
+    from polylogue.storage.query_models import ConversationRecordQuery
+    from polylogue.storage.repository_contracts import RepositoryBackendProtocol
     from polylogue.types import ConversationId
 
 
@@ -200,6 +211,125 @@ class SearchStore(Protocol):
 
 
 @runtime_checkable
+class ActionEventArtifactReader(Protocol):
+    """Read-only action-event artifact readiness surface."""
+
+    async def get_action_event_artifact_state(self) -> ActionEventArtifactState: ...
+
+
+@runtime_checkable
+class ConversationQueryRuntimeStore(
+    ConversationReader,
+    SearchStore,
+    ActionEventArtifactReader,
+    Protocol,
+):
+    """Repository/query runtime surface consumed by canonical query execution."""
+
+    async def list_summaries_by_query(
+        self,
+        query: ConversationRecordQuery,
+    ) -> list[ConversationSummary]: ...
+
+    async def list_by_query(
+        self,
+        query: ConversationRecordQuery,
+    ) -> list[Conversation]: ...
+
+    async def count_by_query(self, query: ConversationRecordQuery) -> int: ...
+
+    async def delete_conversation(self, conversation_id: str) -> bool: ...
+
+    async def search_actions(
+        self,
+        query: str,
+        limit: int = 20,
+        providers: builtins.list[str] | None = None,
+    ) -> list[Conversation]: ...
+
+
+@runtime_checkable
+class ArchiveMessageQueryStore(Protocol):
+    """Low-level archive/message query band used by CLI output and stats helpers."""
+
+    async def get_conversation(self, conversation_id: str) -> ConversationRecord | None: ...
+
+    async def get_messages(self, conversation_id: str) -> list[MessageRecord]: ...
+
+    async def get_conversation_stats(self, conversation_id: str) -> dict[str, int]: ...
+
+    async def get_message_counts_batch(self, conversation_ids: list[str]) -> dict[str, int]: ...
+
+    async def aggregate_message_stats(
+        self,
+        conversation_ids: list[str] | None = None,
+    ) -> AggregateMessageStats: ...
+
+
+@runtime_checkable
+class SemanticArchiveQueryStore(ArchiveMessageQueryStore, Protocol):
+    """Archive query band needed to hydrate semantic facts in batch."""
+
+    async def get_conversations_batch(self, ids: list[str]) -> list[ConversationRecord]: ...
+
+    async def get_messages_batch(
+        self,
+        conversation_ids: list[str],
+    ) -> dict[str, list[MessageRecord]]: ...
+
+    async def get_attachments_batch(
+        self,
+        conversation_ids: list[str],
+    ) -> dict[str, list[AttachmentRecord]]: ...
+
+
+@runtime_checkable
+class ConversationOutputStore(ConversationReader, Protocol):
+    """Conversation output surface used by streaming and summary display helpers."""
+
+    @property
+    def queries(self) -> SemanticArchiveQueryStore: ...
+
+
+@runtime_checkable
+class ConversationSemanticStatsStore(ActionEventArtifactReader, Protocol):
+    """Semantic stats surface for action-event-backed grouped output."""
+
+    @property
+    def queries(self) -> SemanticArchiveQueryStore: ...
+
+    async def get_action_events_batch(
+        self,
+        conversation_ids: list[str],
+    ) -> dict[str, tuple[ActionEvent, ...]]: ...
+
+
+@runtime_checkable
+class ConversationArchiveStatsStore(
+    ConversationOutputStore,
+    ConversationSemanticStatsStore,
+    Protocol,
+):
+    """Archive stats/profile surface consumed by grouped CLI output helpers."""
+
+    @property
+    def backend(self) -> RepositoryBackendProtocol: ...
+
+    async def get_archive_stats(
+        self,
+        *,
+        conn: aiosqlite.Connection | None = None,
+    ) -> ArchiveStats: ...
+
+    async def get_session_profiles_batch(
+        self,
+        conversation_ids: list[str],
+    ) -> dict[str, SessionProfile]: ...
+
+    async def get_many(self, conversation_ids: list[str]) -> list[Conversation]: ...
+
+
+@runtime_checkable
 class TagStore(Protocol):
     """Tag and metadata management interface."""
 
@@ -258,6 +388,13 @@ __all__ = [
     "ProgressCallback",
     "ConversationReader",
     "SearchStore",
+    "ActionEventArtifactReader",
+    "ConversationQueryRuntimeStore",
+    "ArchiveMessageQueryStore",
+    "SemanticArchiveQueryStore",
+    "ConversationOutputStore",
+    "ConversationSemanticStatsStore",
+    "ConversationArchiveStatsStore",
     "TagStore",
     "RawPersistenceStore",
     "RawValidationStore",

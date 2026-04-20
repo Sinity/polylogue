@@ -26,8 +26,8 @@ from polylogue.rendering.renderers.html_template import get_cached_template
 
 if TYPE_CHECKING:
     from polylogue.lib.models import Conversation
+    from polylogue.storage.archive_views import ConversationRenderProjection
     from polylogue.storage.backends.async_sqlite import SQLiteBackend
-    from polylogue.storage.state_views import ConversationRenderProjection
 
 
 class HTMLRenderer:

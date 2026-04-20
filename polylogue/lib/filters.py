@@ -19,8 +19,7 @@ from polylogue.lib.query_plan_execution import (
 
 if TYPE_CHECKING:
     from polylogue.lib.conversation_models import Conversation, ConversationSummary
-    from polylogue.protocols import VectorProvider
-    from polylogue.storage.repository import ConversationRepository
+    from polylogue.protocols import ConversationQueryRuntimeStore, VectorProvider
 
 
 class ConversationFilter(ConversationFilterBuilderMixin):
@@ -28,7 +27,7 @@ class ConversationFilter(ConversationFilterBuilderMixin):
 
     def __init__(
         self,
-        repository: ConversationRepository,
+        repository: ConversationQueryRuntimeStore,
         vector_provider: VectorProvider | None = None,
         *,
         query_plan: ConversationQueryPlan | None = None,
@@ -39,7 +38,7 @@ class ConversationFilter(ConversationFilterBuilderMixin):
     @classmethod
     def from_query_plan(
         cls,
-        repository: ConversationRepository,
+        repository: ConversationQueryRuntimeStore,
         query_plan: ConversationQueryPlan,
     ) -> ConversationFilter:
         return cls(repository, vector_provider=query_plan.vector_provider, query_plan=query_plan)

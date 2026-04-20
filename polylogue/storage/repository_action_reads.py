@@ -9,6 +9,7 @@ from polylogue.storage.action_event_rows import hydrate_action_events
 from polylogue.storage.store import ActionEventRecord
 
 if TYPE_CHECKING:
+    from polylogue.storage.action_event_artifacts import ActionEventArtifactState
     from polylogue.storage.backends.query_store import SQLiteQueryStore
 
 
@@ -16,8 +17,8 @@ class RepositoryActionReadMixin:
     if TYPE_CHECKING:
         queries: SQLiteQueryStore
 
-    async def get_action_event_read_model_status(self) -> dict[str, int | bool]:
-        return await self.queries.get_action_event_read_model_status()
+    async def get_action_event_artifact_state(self) -> ActionEventArtifactState:
+        return await self.queries.get_action_event_artifact_state()
 
     async def get_action_event_records(self, conversation_id: str) -> list[ActionEventRecord]:
         return await self.queries.get_action_events(conversation_id)

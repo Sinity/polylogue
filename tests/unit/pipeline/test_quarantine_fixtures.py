@@ -37,7 +37,7 @@ import pytest
 from polylogue.pipeline.services.ingest_worker import ingest_record
 from polylogue.storage.blob_store import get_blob_store
 from polylogue.storage.raw_ingest_artifacts import RawIngestArtifactState
-from polylogue.storage.state_views import RawConversationState
+from polylogue.storage.raw_state_models import RawConversationState
 from polylogue.storage.store import RawConversationRecord
 from polylogue.types import ValidationStatus
 

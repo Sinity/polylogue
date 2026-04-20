@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 
 from polylogue.lib.provider_identity import canonical_acquisition_provider
 from polylogue.sources.parsers.base import RawConversationData
-from polylogue.storage.state_views import CursorStatePayload
+from polylogue.storage.cursor_state import CursorStatePayload
 from polylogue.storage.store import RawConversationRecord
 
 

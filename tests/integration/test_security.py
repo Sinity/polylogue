@@ -11,7 +11,7 @@ import pytest
 from polylogue.paths import Source
 from polylogue.sources.decoders import MAX_UNCOMPRESSED_SIZE
 from polylogue.sources.source_parsing import iter_source_conversations
-from polylogue.storage.state_views import CursorFailurePayload, CursorStatePayload
+from polylogue.storage.cursor_state import CursorFailurePayload, CursorStatePayload
 
 
 def _empty_cursor_state() -> CursorStatePayload:

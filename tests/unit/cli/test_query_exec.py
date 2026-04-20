@@ -25,10 +25,20 @@ from polylogue.lib.models import ConversationSummary
 from polylogue.lib.models import Message as MessageModel
 from polylogue.paths import conversation_render_root
 from polylogue.services import build_runtime_services
+from polylogue.storage.action_event_artifacts import ActionEventArtifactState
 from polylogue.types import ConversationId, Provider
 from tests.infra.builders import make_conv, make_msg
 
 pytestmark = pytest.mark.query_routing
+
+
+def _ready_action_event_state() -> ActionEventArtifactState:
+    return ActionEventArtifactState(
+        source_conversations=1,
+        materialized_conversations=1,
+        materialized_rows=1,
+        fts_rows=1,
+    )
 
 
 def _make_msg(
@@ -82,6 +92,8 @@ def _make_env(*, repo: MagicMock | None = None, config: MagicMock | None = None)
             queries.get_message_counts_batch = AsyncMock(return_value={})
         if not isinstance(queries.aggregate_message_stats, AsyncMock):
             queries.aggregate_message_stats = AsyncMock(return_value={})
+        if not isinstance(repo.get_action_event_artifact_state, AsyncMock):
+            repo.get_action_event_artifact_state = AsyncMock(return_value=_ready_action_event_state())
     return AppEnv(ui=ui, services=build_runtime_services(config=config, repository=repo))
 
 
@@ -340,6 +352,7 @@ async def test_query_plan_filters_ordered_action_sequence() -> None:
     )
 
     repo = MagicMock()
+    repo.get_action_event_artifact_state = AsyncMock(return_value=_ready_action_event_state())
     repo.list_by_query = AsyncMock(return_value=[matching, non_matching])
     plan = ConversationQuerySpec(action_sequence=("file_read", "file_edit", "shell")).to_plan()
 
@@ -394,6 +407,7 @@ async def test_query_plan_filters_action_text_terms() -> None:
     )
 
     repo = MagicMock()
+    repo.get_action_event_artifact_state = AsyncMock(return_value=_ready_action_event_state())
     repo.list_by_query = AsyncMock(return_value=[matching, non_matching])
     plan = ConversationQuerySpec(action_text_terms=("pytest -q", "semantic_facts.py")).to_plan()
 
@@ -470,6 +484,7 @@ async def test_query_plan_action_retrieval_lane_matches_tool_command_text() -> N
         ],
     )
     repo = MagicMock()
+    repo.get_action_event_artifact_state = AsyncMock(return_value=_ready_action_event_state())
     repo.search = AsyncMock(return_value=[])
     repo.search_actions = AsyncMock(return_value=[matching])
     plan = ConversationQuerySpec(
@@ -507,7 +522,14 @@ async def test_query_plan_action_retrieval_lane_falls_back_when_action_read_mode
         ],
     )
     repo = MagicMock()
-    repo.get_action_event_read_model_status = AsyncMock(return_value={"ready": False})
+    repo.get_action_event_artifact_state = AsyncMock(
+        return_value=ActionEventArtifactState(
+            source_conversations=1,
+            materialized_conversations=0,
+            materialized_rows=0,
+            fts_rows=0,
+        )
+    )
     repo.search = AsyncMock(return_value=[])
     repo.search_actions = AsyncMock(return_value=[])
     repo.list_by_query = AsyncMock(return_value=[matching])
@@ -555,6 +577,7 @@ async def test_query_plan_hybrid_retrieval_lane_combines_text_and_action_hits() 
     )
 
     repo = MagicMock()
+    repo.get_action_event_artifact_state = AsyncMock(return_value=_ready_action_event_state())
     repo.search = AsyncMock(return_value=[text_hit])
     repo.search_actions = AsyncMock(return_value=[action_hit])
     repo.search_similar = AsyncMock(return_value=[])
@@ -614,7 +637,14 @@ async def test_query_plan_path_filters_fall_back_to_full_list_when_action_read_m
     )
 
     repo = MagicMock()
-    repo.get_action_event_read_model_status = AsyncMock(return_value={"ready": False})
+    repo.get_action_event_artifact_state = AsyncMock(
+        return_value=ActionEventArtifactState(
+            source_conversations=1,
+            materialized_conversations=0,
+            materialized_rows=0,
+            fts_rows=0,
+        )
+    )
     repo.list_by_query = AsyncMock(return_value=[matching, non_matching])
     plan = ConversationQuerySpec(path_terms=("/tmp/a.py",), limit=10).to_plan()
 
@@ -628,7 +658,14 @@ async def test_async_execute_query_uses_action_event_stats_lane_for_semantic_sta
     from polylogue.cli.query import async_execute_query
 
     repo = MagicMock()
-    repo.get_action_event_read_model_status = AsyncMock(return_value={"ready": True})
+    repo.get_action_event_artifact_state = AsyncMock(
+        return_value=ActionEventArtifactState(
+            source_conversations=1,
+            materialized_conversations=1,
+            materialized_rows=1,
+            fts_rows=1,
+        )
+    )
     repo.queries.list_conversations = AsyncMock(return_value=[SimpleNamespace(conversation_id="conv-semantic-1")])
     env = _make_env(repo=repo, config=MagicMock())
 

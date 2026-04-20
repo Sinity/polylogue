@@ -17,7 +17,7 @@ if TYPE_CHECKING:
     from polylogue.lib.filters import ConversationFilter
     from polylogue.lib.models import Conversation, ConversationSummary
     from polylogue.lib.query_spec import ConversationQuerySpec
-    from polylogue.storage.repository import ConversationRepository
+    from polylogue.protocols import ConversationArchiveStatsStore
 
 
 # ---------------------------------------------------------------------------
@@ -108,7 +108,7 @@ def _emit_grouped_no_results(
 async def output_stats_sql(
     env: AppEnv,
     filter_chain: ConversationFilter,
-    repo: ConversationRepository,
+    repo: ConversationArchiveStatsStore,
     *,
     output_format: str = "markdown",
 ) -> None:
@@ -615,7 +615,7 @@ def output_stats_by_conversations(
 async def output_stats_by_profile_summaries(
     env: AppEnv,
     summaries: list[ConversationSummary],
-    repo: ConversationRepository,
+    repo: ConversationArchiveStatsStore,
     dimension: str,
     *,
     selection: ConversationQuerySpec | None = None,
@@ -636,7 +636,7 @@ async def output_stats_by_profile_summaries(
 async def output_stats_by_profile_query(
     env: AppEnv,
     conversation_ids: list[str],
-    repo: ConversationRepository,
+    repo: ConversationArchiveStatsStore,
     dimension: str,
     *,
     selection: ConversationQuerySpec | None = None,
@@ -657,7 +657,7 @@ async def output_stats_by_profile_query(
 async def output_stats_by_profile_ids(
     env: AppEnv,
     conversation_ids: list[str],
-    repo: ConversationRepository,
+    repo: ConversationArchiveStatsStore,
     dimension: str,
     *,
     selection: ConversationQuerySpec | None = None,

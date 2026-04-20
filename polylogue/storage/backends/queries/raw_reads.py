@@ -10,7 +10,7 @@ import aiosqlite
 from polylogue.storage.backends.connection import _build_source_scope_filter
 from polylogue.storage.backends.queries.mappers import _row_to_raw_conversation
 from polylogue.storage.backends.queries.raw_state import EFFECTIVE_RAW_PROVIDER_SQL
-from polylogue.storage.state_views import RawConversationState
+from polylogue.storage.raw_state_models import RawConversationState
 from polylogue.storage.store import RawConversationRecord
 
 

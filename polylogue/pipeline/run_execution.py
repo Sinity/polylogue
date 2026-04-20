@@ -26,14 +26,14 @@ from polylogue.pipeline.run_support import (
 )
 from polylogue.storage.backends import create_backend
 from polylogue.storage.repository import ConversationRepository
-from polylogue.storage.state_views import RunResult
+from polylogue.storage.run_state import RunResult
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
     from polylogue.protocols import ProgressCallback
     from polylogue.storage.backends.async_sqlite import SQLiteBackend
-    from polylogue.storage.state_views import PlanResult
+    from polylogue.storage.run_state import PlanResult
 
 logger = get_logger(__name__)
 

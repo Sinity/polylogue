@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 from pydantic import BaseModel, Field
 
 from polylogue.pipeline.materialization_runtime import _timestamp_sort_key
-from polylogue.storage.state_views import ExistingConversation
+from polylogue.storage.archive_views import ExistingConversation
 from polylogue.storage.store import (
     AttachmentRecord,
     ContentBlockRecord,

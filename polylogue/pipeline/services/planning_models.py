@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from polylogue.storage.state_views import PlanResult
+from polylogue.storage.run_state import PlanResult
 
 
 @dataclass

@@ -10,7 +10,8 @@ from pathlib import Path
 from polylogue.config import Source
 from polylogue.lib.run_activity import conversation_activity_counts
 from polylogue.lib.timestamps import format_timestamp
-from polylogue.storage.state_views import CursorStatePayload, PlanCounts, PlanDetails, RunCounts
+from polylogue.storage.cursor_state import CursorStatePayload
+from polylogue.storage.run_state import PlanCounts, PlanDetails, RunCounts
 
 _FALSEY_ENV_VALUES = frozenset({"0", "false", "no"})
 

@@ -43,7 +43,7 @@ logger = get_logger(__name__)
 if TYPE_CHECKING:
     from polylogue.cli.types import AppEnv
     from polylogue.lib.models import Conversation, ConversationSummary, Message
-    from polylogue.storage.repository import ConversationRepository
+    from polylogue.protocols import ConversationOutputStore
     from polylogue.storage.store import MessageRecord
 
 
@@ -340,7 +340,7 @@ async def output_summary_list(
     env: AppEnv,
     summaries: list[ConversationSummary],
     params: dict[str, object],
-    repo: ConversationRepository | None = None,
+    repo: ConversationOutputStore | None = None,
 ) -> None:
     """Output a list of conversation summaries with optional rich table rendering."""
     output_format = str(params.get("output_format", "text"))
@@ -548,7 +548,7 @@ def render_stream_transcript(
 
 async def stream_conversation(
     env: AppEnv,
-    repo: ConversationRepository,
+    repo: ConversationOutputStore,
     conversation_id: str,
     *,
     output_format: str = "plaintext",

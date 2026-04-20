@@ -12,7 +12,7 @@ from polylogue.storage.search_providers.hybrid import reciprocal_rank_fusion
 if TYPE_CHECKING:
     from polylogue.lib.models import Conversation
     from polylogue.lib.query_plan import ConversationQueryPlan
-    from polylogue.storage.repository import ConversationRepository
+    from polylogue.protocols import ConversationQueryRuntimeStore
 
 
 def search_query_text(plan: ConversationQueryPlan) -> str:
@@ -61,7 +61,7 @@ def conversation_action_search_score(
 
 async def search_action_results_fallback(
     plan: ConversationQueryPlan,
-    repository: ConversationRepository,
+    repository: ConversationQueryRuntimeStore,
     *,
     limit: int,
 ) -> list[Conversation]:
@@ -109,7 +109,7 @@ async def search_action_results_fallback(
 
 async def search_action_results(
     plan: ConversationQueryPlan,
-    repository: ConversationRepository,
+    repository: ConversationQueryRuntimeStore,
     *,
     limit: int,
 ) -> list[Conversation]:
@@ -127,7 +127,7 @@ async def search_action_results(
 
 async def search_hybrid_results(
     plan: ConversationQueryPlan,
-    repository: ConversationRepository,
+    repository: ConversationQueryRuntimeStore,
     *,
     limit: int,
 ) -> list[Conversation]:
@@ -168,7 +168,7 @@ async def search_hybrid_results(
 
 async def fetch_batched_filtered_conversations(
     plan: ConversationQueryPlan,
-    repository: ConversationRepository,
+    repository: ConversationQueryRuntimeStore,
 ) -> list[Conversation]:
     from polylogue.lib.query_retrieval_candidates import (
         candidate_batch_limit,

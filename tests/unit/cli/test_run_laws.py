@@ -30,7 +30,7 @@ from polylogue.cli.run_observers import (
 from polylogue.cli.run_workflow import display_result as _display_result
 from polylogue.cli.run_workflow import run_sync_once as _run_sync_once
 from polylogue.config import Config, get_config
-from polylogue.storage.state_views import (
+from polylogue.storage.run_state import (
     PlanCounts,
     PlanDetails,
     PlanResult,

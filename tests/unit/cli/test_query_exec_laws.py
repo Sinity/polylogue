@@ -50,6 +50,7 @@ from polylogue.lib.query_spec import ConversationQuerySpec, QuerySpecError
 from polylogue.lib.roles import Role
 from polylogue.schemas.json_types import JSONDocument
 from polylogue.services import build_runtime_services
+from polylogue.storage.action_event_artifacts import ActionEventArtifactState
 from polylogue.storage.store import ContentBlockRecord, ConversationRecord, MessageRecord
 from polylogue.types import ContentBlockType, ContentHash, ConversationId, MessageId, Provider, SemanticBlockType
 from tests.infra.builders import make_conv, make_msg
@@ -68,6 +69,15 @@ pytestmark = pytest.mark.query_routing
 SearchWorkspace = dict[str, Path]
 
 
+def _ready_action_event_state() -> ActionEventArtifactState:
+    return ActionEventArtifactState(
+        source_conversations=1,
+        materialized_conversations=1,
+        materialized_rows=1,
+        fts_rows=1,
+    )
+
+
 def _make_env(*, repo: MagicMock | None = None, config: MagicMock | None = None) -> AppEnv:
     ui = MagicMock()
     ui.plain = True
@@ -83,6 +93,8 @@ def _make_env(*, repo: MagicMock | None = None, config: MagicMock | None = None)
             queries.get_message_counts_batch = AsyncMock(return_value={})
         if not isinstance(queries.aggregate_message_stats, AsyncMock):
             queries.aggregate_message_stats = AsyncMock(return_value={})
+        if not isinstance(repo.get_action_event_artifact_state, AsyncMock):
+            repo.get_action_event_artifact_state = AsyncMock(return_value=_ready_action_event_state())
     return AppEnv(ui=ui, services=build_runtime_services(config=config, repository=repo))
 
 
@@ -677,6 +689,14 @@ def test_output_stats_by_summaries_empty_json_contract(capsys: pytest.CaptureFix
 async def test_output_stats_by_semantic_summaries_json_contract() -> None:
     env = _make_env()
     repo = MagicMock()
+    repo.get_action_event_artifact_state = AsyncMock(
+        return_value=ActionEventArtifactState(
+            source_conversations=1,
+            materialized_conversations=0,
+            materialized_rows=0,
+            fts_rows=0,
+        )
+    )
     repo.queries.get_conversations_batch = AsyncMock(
         side_effect=[
             [

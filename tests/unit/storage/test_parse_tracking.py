@@ -23,7 +23,7 @@ from polylogue.storage.backends.schema import (
     _ensure_raw_source_mtime_index,
     _ensure_schema,
 )
-from polylogue.storage.state_views import RawConversationStateUpdate
+from polylogue.storage.raw_state_models import RawConversationStateUpdate
 from polylogue.storage.store import RawConversationRecord
 
 # ─── Backend method tests ──────────────────────────────────────────────────

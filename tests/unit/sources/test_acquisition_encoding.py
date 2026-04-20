@@ -12,7 +12,7 @@ from pathlib import Path
 
 from polylogue.config import Source
 from polylogue.sources.parsers.base import ParsedConversation, RawConversationData
-from polylogue.storage.state_views import CursorFailurePayload, CursorStatePayload
+from polylogue.storage.cursor_state import CursorFailurePayload, CursorStatePayload
 from tests.infra.encoding_fixtures import EncodingFixtureBuilder
 
 

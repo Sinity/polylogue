@@ -44,7 +44,7 @@ from polylogue.pipeline.observers import (
 from polylogue.pipeline.run_support import RUN_STAGE_CHOICES, expand_requested_stage, normalize_stage_sequence
 from polylogue.pipeline.runner import plan_sources
 from polylogue.sources import DriveError
-from polylogue.storage.state_views import RunResult
+from polylogue.storage.run_state import RunResult
 from polylogue.sync_bridge import run_coroutine_sync
 
 INTERACTIVE_RUN_STAGE_CHOICES: tuple[str, ...] = (
