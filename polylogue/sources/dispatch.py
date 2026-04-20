@@ -1,11 +1,12 @@
-"""Provider detection and payload dispatch for source parsing."""
+"""Provider detection and payload lowering for source parsing."""
 
 from __future__ import annotations
 
 import json
 from collections.abc import Callable, Iterable
+from dataclasses import dataclass
 from io import BytesIO
-from typing import TYPE_CHECKING, TypeAlias
+from typing import TYPE_CHECKING, Literal, TypeAlias
 
 from polylogue.lib.payload_coercion import PayloadMapping, is_payload_mapping, optional_string
 from polylogue.logging import get_logger
@@ -26,6 +27,21 @@ _MAX_PARSE_DEPTH = 10
 
 PayloadRecord: TypeAlias = dict[str, object]
 ProviderParser: TypeAlias = Callable[[PayloadRecord, str], ParsedConversation]
+LoweredPayloadMode: TypeAlias = Literal[
+    "single_record",
+    "bundle_record",
+    "grouped_records",
+    "chunked_prompt",
+    "generic_messages",
+]
+
+
+@dataclass(frozen=True, slots=True)
+class LoweredPayloadSpec:
+    provider: Provider
+    fallback_id: str
+    mode: LoweredPayloadMode
+    payload: PayloadRecord | list[object]
 
 
 def _payload_mapping(value: object) -> PayloadMapping | None:
@@ -86,33 +102,6 @@ def _detect_provider_from_sequence(payloads: list[object]) -> Provider | None:
     if codex.looks_like(payloads):
         return Provider.CODEX
     return None
-
-
-def _parse_bundle_items(
-    payloads: list[object],
-    fallback_id: str,
-    parser: ProviderParser,
-) -> list[ParsedConversation]:
-    results: list[ParsedConversation] = []
-    for index, item in enumerate(payloads):
-        if record := _payload_record(item):
-            results.append(parser(record, f"{fallback_id}-{index}"))
-    return results
-
-
-def _parse_grouped_records(
-    payload: object,
-    fallback_id: str,
-    parser: Callable[[list[object], str], ParsedConversation],
-) -> list[ParsedConversation]:
-    payloads = _payload_list(payload)
-    if payloads is not None:
-        return [parser(payloads, fallback_id)]
-
-    if record := _payload_record(payload):
-        messages = _payload_messages(record)
-        return [parser(messages if messages is not None else [record], fallback_id)]
-    return []
 
 
 def detect_provider(payload: object, path: object | None = None) -> Provider | None:
@@ -176,9 +165,219 @@ def _schema_guided_payload(
     return payload
 
 
+def _lower_bundle_specs(
+    provider: Provider,
+    payloads: list[object],
+    fallback_id: str,
+) -> list[LoweredPayloadSpec]:
+    specs: list[LoweredPayloadSpec] = []
+    for index, item in enumerate(payloads):
+        if record := _payload_record(item):
+            specs.append(
+                LoweredPayloadSpec(
+                    provider=provider,
+                    fallback_id=f"{fallback_id}-{index}",
+                    mode="bundle_record",
+                    payload=record,
+                )
+            )
+    return specs
+
+
+def _lower_grouped_spec(
+    provider: Provider,
+    payload: object,
+    fallback_id: str,
+) -> list[LoweredPayloadSpec]:
+    payloads = _payload_list(payload)
+    if payloads is not None:
+        return [
+            LoweredPayloadSpec(provider=provider, fallback_id=fallback_id, mode="grouped_records", payload=payloads)
+        ]
+
+    record = _payload_record(payload)
+    if record is None:
+        return []
+
+    messages = _payload_messages(record)
+    grouped_payload = messages if messages is not None else [record]
+    return [
+        LoweredPayloadSpec(provider=provider, fallback_id=fallback_id, mode="grouped_records", payload=grouped_payload)
+    ]
+
+
+def _lower_drive_like_specs(
+    runtime_provider: Provider,
+    payload: object,
+    fallback_id: str,
+    *,
+    depth: int,
+    schema_resolution: SchemaResolution | None,
+) -> list[LoweredPayloadSpec]:
+    payloads = _payload_list(payload)
+    if payloads is not None:
+        if _looks_like_chunked_conversation_list(payloads):
+            nested_specs: list[LoweredPayloadSpec] = []
+            for index, item in enumerate(payloads):
+                nested_specs.extend(
+                    _lower_payload_specs(
+                        runtime_provider,
+                        item,
+                        f"{fallback_id}-{index}",
+                        depth=depth + 1,
+                        schema_resolution=schema_resolution,
+                    )
+                )
+            return nested_specs
+        return [
+            LoweredPayloadSpec(
+                provider=runtime_provider,
+                fallback_id=fallback_id,
+                mode="chunked_prompt",
+                payload=payloads,
+            )
+        ]
+
+    record = _payload_record(payload)
+    if record is None:
+        return []
+
+    if _payload_messages(record) is not None:
+        return [
+            LoweredPayloadSpec(
+                provider=runtime_provider,
+                fallback_id=fallback_id,
+                mode="generic_messages",
+                payload=record,
+            )
+        ]
+    if chatgpt.looks_like(record):
+        return [
+            LoweredPayloadSpec(
+                provider=Provider.CHATGPT,
+                fallback_id=fallback_id,
+                mode="single_record",
+                payload=record,
+            )
+        ]
+    if _looks_like_chunked_conversation(record):
+        return [
+            LoweredPayloadSpec(
+                provider=runtime_provider,
+                fallback_id=fallback_id,
+                mode="chunked_prompt",
+                payload=record,
+            )
+        ]
+    return []
+
+
+def _lower_payload_specs(
+    provider: str | Provider,
+    payload: object,
+    fallback_id: str,
+    *,
+    depth: int = 0,
+    schema_resolution: SchemaResolution | None = None,
+) -> list[LoweredPayloadSpec]:
+    runtime_provider = Provider.from_string(provider)
+    if depth > _MAX_PARSE_DEPTH:
+        logger.warning("Recursion depth exceeded parsing %s (provider=%s)", fallback_id, provider)
+        return []
+
+    shaped_payload = _schema_guided_payload(runtime_provider, payload, schema_resolution)
+    record = _payload_record(shaped_payload)
+    if record is not None and (conversations := _payload_conversations(record)):
+        lowered_specs: list[LoweredPayloadSpec] = []
+        for index, item in enumerate(conversations):
+            if item_record := _payload_record(item):
+                lowered_specs.extend(
+                    _lower_payload_specs(
+                        runtime_provider,
+                        item_record,
+                        f"{fallback_id}-{index}",
+                        depth=depth + 1,
+                        schema_resolution=schema_resolution,
+                    )
+                )
+        return lowered_specs
+
+    payloads = _payload_list(shaped_payload)
+
+    if runtime_provider is Provider.CHATGPT:
+        if payloads is not None:
+            return _lower_bundle_specs(runtime_provider, payloads, fallback_id)
+        return (
+            [
+                LoweredPayloadSpec(
+                    provider=runtime_provider, fallback_id=fallback_id, mode="single_record", payload=record
+                )
+            ]
+            if record is not None
+            else []
+        )
+
+    if runtime_provider is Provider.CLAUDE_AI:
+        if payloads is not None:
+            return _lower_bundle_specs(runtime_provider, payloads, fallback_id)
+        return (
+            [
+                LoweredPayloadSpec(
+                    provider=runtime_provider, fallback_id=fallback_id, mode="single_record", payload=record
+                )
+            ]
+            if record is not None
+            else []
+        )
+
+    if runtime_provider is Provider.CLAUDE_CODE:
+        return _lower_grouped_spec(runtime_provider, shaped_payload, fallback_id)
+
+    if runtime_provider is Provider.CODEX:
+        return _lower_grouped_spec(runtime_provider, shaped_payload, fallback_id)
+
+    if runtime_provider in (Provider.GEMINI, Provider.DRIVE):
+        return _lower_drive_like_specs(
+            runtime_provider,
+            shaped_payload,
+            fallback_id,
+            depth=depth,
+            schema_resolution=schema_resolution,
+        )
+
+    if record is not None and _payload_messages(record) is not None:
+        return [
+            LoweredPayloadSpec(
+                provider=runtime_provider,
+                fallback_id=fallback_id,
+                mode="generic_messages",
+                payload=record,
+            )
+        ]
+    if record is not None and chatgpt.looks_like(record):
+        return [
+            LoweredPayloadSpec(
+                provider=Provider.CHATGPT,
+                fallback_id=fallback_id,
+                mode="single_record",
+                payload=record,
+            )
+        ]
+    if record is not None and _looks_like_chunked_conversation(record):
+        return [
+            LoweredPayloadSpec(
+                provider=runtime_provider,
+                fallback_id=fallback_id,
+                mode="chunked_prompt",
+                payload=record,
+            )
+        ]
+    return []
+
+
 def _generic_messages_conversation(
     provider: Provider,
-    payload: PayloadMapping,
+    payload: PayloadRecord,
     fallback_id: str,
 ) -> ParsedConversation | None:
     messages_payload = _payload_messages(payload)
@@ -198,6 +397,38 @@ def _generic_messages_conversation(
     )
 
 
+def _parse_lowered_spec(spec: LoweredPayloadSpec) -> list[ParsedConversation]:
+    if spec.provider is Provider.CHATGPT:
+        record = _payload_record(spec.payload)
+        return [chatgpt.parse(record, spec.fallback_id)] if record is not None else []
+
+    if spec.provider is Provider.CLAUDE_AI:
+        record = _payload_record(spec.payload)
+        return [claude.parse_ai(record, spec.fallback_id)] if record is not None else []
+
+    if spec.provider is Provider.CLAUDE_CODE:
+        payloads = _payload_list(spec.payload)
+        return [claude.parse_code(payloads, spec.fallback_id)] if payloads is not None else []
+
+    if spec.provider is Provider.CODEX:
+        payloads = _payload_list(spec.payload)
+        return [codex.parse(payloads, spec.fallback_id)] if payloads is not None else []
+
+    if spec.mode == "chunked_prompt":
+        record = _payload_record(spec.payload)
+        payload = record if record is not None else {"chunks": _payload_list(spec.payload) or []}
+        return [drive.parse_chunked_prompt(spec.provider, payload, spec.fallback_id)]
+
+    if spec.mode == "generic_messages":
+        record = _payload_record(spec.payload)
+        generic = (
+            _generic_messages_conversation(spec.provider, record, spec.fallback_id) if record is not None else None
+        )
+        return [generic] if generic is not None else []
+
+    return []
+
+
 def parse_payload(
     provider: str | Provider,
     payload: object,
@@ -207,77 +438,17 @@ def parse_payload(
     schema_resolution: SchemaResolution | None = None,
 ) -> list[ParsedConversation]:
     """Dispatch parsed payload to the appropriate provider parser."""
-    runtime_provider = Provider.from_string(provider)
-    if _depth > _MAX_PARSE_DEPTH:
-        logger.warning("Recursion depth exceeded parsing %s (provider=%s)", fallback_id, provider)
-        return []
-
-    shaped_payload = _schema_guided_payload(runtime_provider, payload, schema_resolution)
-
-    if record := _payload_mapping(shaped_payload):
-        if conversations := _payload_conversations(record):
-            results: list[ParsedConversation] = []
-            for index, item in enumerate(conversations):
-                if item_record := _payload_mapping(item):
-                    results.extend(
-                        parse_payload(
-                            runtime_provider,
-                            item_record,
-                            f"{fallback_id}-{index}",
-                            _depth + 1,
-                            schema_resolution=schema_resolution,
-                        )
-                    )
-            return results
-    else:
-        record = None
-
-    payloads = _payload_list(shaped_payload)
-
-    if runtime_provider is Provider.CHATGPT:
-        if payloads is not None:
-            return _parse_bundle_items(payloads, fallback_id, chatgpt.parse)
-        return [chatgpt.parse(dict(record), fallback_id)] if record is not None else []
-
-    if runtime_provider is Provider.CLAUDE_AI:
-        if payloads is not None:
-            return _parse_bundle_items(payloads, fallback_id, claude.parse_ai)
-        return [claude.parse_ai(dict(record), fallback_id)] if record is not None else []
-
-    if runtime_provider is Provider.CLAUDE_CODE:
-        return _parse_grouped_records(shaped_payload, fallback_id, claude.parse_code)
-
-    if runtime_provider is Provider.CODEX:
-        return _parse_grouped_records(shaped_payload, fallback_id, codex.parse)
-
-    if runtime_provider in (Provider.GEMINI, Provider.DRIVE) and payloads is not None:
-        if _looks_like_chunked_conversation_list(payloads):
-            chunked_results: list[ParsedConversation] = []
-            for index, item in enumerate(payloads):
-                chunked_results.extend(
-                    parse_payload(
-                        runtime_provider,
-                        item,
-                        f"{fallback_id}-{index}",
-                        _depth + 1,
-                        schema_resolution=schema_resolution,
-                    )
-                )
-            return chunked_results
-        return [drive.parse_chunked_prompt(runtime_provider, {"chunks": payloads}, fallback_id)]
-
-    if record is None:
-        return []
-
-    generic = _generic_messages_conversation(runtime_provider, record, fallback_id)
-    if generic is not None:
-        return [generic]
-
-    if chatgpt.looks_like(record):
-        return [chatgpt.parse(dict(record), fallback_id)]
-    if _looks_like_chunked_conversation(record):
-        return [drive.parse_chunked_prompt(runtime_provider, dict(record), fallback_id)]
-    return []
+    lowered_specs = _lower_payload_specs(
+        provider,
+        payload,
+        fallback_id,
+        depth=_depth,
+        schema_resolution=schema_resolution,
+    )
+    conversations: list[ParsedConversation] = []
+    for spec in lowered_specs:
+        conversations.extend(_parse_lowered_spec(spec))
+    return conversations
 
 
 def parse_stream_payload(
@@ -310,18 +481,39 @@ def parse_drive_payload(
         if payloads and all(isinstance(item, str) or _payload_record(item) is not None for item in payloads):
             first_record = _payload_mapping(payloads[0]) if payloads else None
             if first_record is None or "role" in first_record or "text" in first_record:
-                return [drive.parse_chunked_prompt(runtime_provider, {"chunks": payloads}, fallback_id)]
+                spec = LoweredPayloadSpec(
+                    provider=runtime_provider,
+                    fallback_id=fallback_id,
+                    mode="chunked_prompt",
+                    payload=payloads,
+                )
+                return _parse_lowered_spec(spec)
 
-        nested_results: list[ParsedConversation] = []
+        nested_conversations: list[ParsedConversation] = []
         for index, item in enumerate(payloads):
-            nested_results.extend(parse_drive_payload(runtime_provider, item, f"{fallback_id}-{index}", _depth + 1))
-        return nested_results
+            nested_conversations.extend(
+                parse_drive_payload(
+                    runtime_provider,
+                    item,
+                    f"{fallback_id}-{index}",
+                    _depth + 1,
+                )
+            )
+        return nested_conversations
 
-    if record := _payload_mapping(payload):
+    if record := _payload_record(payload):
         if "chunkedPrompt" in record or "chunks" in record:
-            return [drive.parse_chunked_prompt(runtime_provider, dict(record), fallback_id)]
+            spec = LoweredPayloadSpec(
+                provider=runtime_provider,
+                fallback_id=fallback_id,
+                mode="chunked_prompt",
+                payload=record,
+            )
+            return _parse_lowered_spec(spec)
+
         detected = detect_provider(record) or runtime_provider
-        return parse_payload(detected, record, fallback_id)
+        return parse_payload(detected, record, fallback_id, _depth + 1)
+
     return []
 
 
