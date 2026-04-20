@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 from polylogue.logging import get_logger
 from polylogue.pipeline.services.acquisition_records import make_raw_record
 from polylogue.sources.parsers.base import RawConversationData
+from polylogue.storage.state_views import CursorStatePayload
 from polylogue.storage.store import RawConversationRecord
 
 if TYPE_CHECKING:
@@ -76,7 +77,7 @@ async def iter_drive_raw_stream(
     *,
     known_mtimes: dict[str, str] | None = None,
     ui: DriveUILike | None = None,
-    cursor_state: dict[str, object] | None = None,
+    cursor_state: CursorStatePayload | None = None,
     drive_config: DriveConfigLike | None = None,
 ) -> AsyncIterator[RawConversationData]:
     """Stream Drive payloads as raw records without touching the local cache."""
@@ -111,7 +112,7 @@ async def iter_raw_record_stream(
     *,
     known_mtimes: dict[str, str] | None = None,
     ui: DriveUILike | None = None,
-    cursor_state: dict[str, object] | None = None,
+    cursor_state: CursorStatePayload | None = None,
     drive_config: DriveConfigLike | None = None,
     observation_callback: ObservationCallback | None = None,
     progress_callback: Callable[[int, str | None], None] | None = None,

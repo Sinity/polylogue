@@ -3,9 +3,9 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
 from polylogue.logging import get_logger
+from polylogue.storage.state_views import CursorStatePayload
 from polylogue.types import Provider
 
 from ..assets import asset_path
@@ -122,7 +122,7 @@ def iter_drive_conversations(
     ui: DriveUILike | None = None,
     client: DriveSourceAPI | None = None,
     download_assets: bool = True,
-    cursor_state: dict[str, Any] | None = None,
+    cursor_state: CursorStatePayload | None = None,
     drive_config: DriveConfigLike | None = None,
 ) -> Iterable[ParsedConversation]:
     if not source.folder:
@@ -172,7 +172,7 @@ def iter_drive_raw_data(
     source: Source,
     ui: DriveUILike | None = None,
     client: DriveSourceAPI | None = None,
-    cursor_state: dict[str, Any] | None = None,
+    cursor_state: CursorStatePayload | None = None,
     drive_config: DriveConfigLike | None = None,
     known_mtimes: dict[str, str] | None = None,
 ) -> Iterable[RawConversationData]:

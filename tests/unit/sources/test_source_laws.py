@@ -78,6 +78,7 @@ from polylogue.sources.source_parsing import (
 )
 from polylogue.sources.source_walk import _has_supported_extension
 from polylogue.storage.blob_store import BlobStore, Heartbeat
+from polylogue.storage.state_views import CursorFailurePayload, CursorStatePayload
 from polylogue.types import Provider
 from tests.infra.source_builders import GenericConversationBuilder, make_claude_chat_message
 from tests.infra.strategies import (
@@ -152,15 +153,9 @@ def _parsed_conversation(
     )
 
 
-def _failed_files(cursor_state: Mapping[str, object]) -> list[FailedFile]:
-    failed_files = cursor_state.get("failed_files", [])
-    if not isinstance(failed_files, list):
-        return []
-    return [
-        FailedFile(path=str(item["path"]), error=str(item["error"]))
-        for item in failed_files
-        if isinstance(item, dict) and "path" in item and "error" in item
-    ]
+def _failed_files(cursor_state: CursorStatePayload) -> list[FailedFile]:
+    failed_files: list[CursorFailurePayload] = cursor_state.get("failed_files", [])
+    return [FailedFile(path=str(item["path"]), error=str(item["error"])) for item in failed_files]
 
 
 def _numeric_observation_value(observation: Mapping[str, object], key: str) -> float:
@@ -177,6 +172,10 @@ _CANONICAL_PROVIDERS = (
     Provider.CODEX.value,
     Provider.GEMINI.value,
 )
+
+
+def _empty_cursor_state() -> CursorStatePayload:
+    return {}
 
 
 @given(
@@ -506,7 +505,7 @@ def test_source_iteration_preserves_claude_attachment_metadata_contract(tmp_path
 
 
 def test_iter_source_conversations_handles_empty_directories_contract(tmp_path: Path) -> None:
-    cursor_state: dict[str, object] = {}
+    cursor_state: CursorStatePayload = _empty_cursor_state()
 
     assert list(iter_source_conversations(Source(name="test", path=tmp_path), cursor_state=cursor_state)) == []
     assert cursor_state["file_count"] == 0
@@ -519,7 +518,7 @@ def test_source_iteration_continues_after_invalid_json_contract(tmp_path: Path, 
     (tmp_path / "invalid.json").write_text("{ broken json", encoding="utf-8")
     _write_generic_conversation(tmp_path / "valid2.json", "valid2", "bye")
 
-    cursor_state: dict[str, object] = {}
+    cursor_state: CursorStatePayload = _empty_cursor_state()
     if iterator == "parsed":
         results = list(iter_source_conversations(Source(name="test", path=tmp_path), cursor_state=cursor_state))
         conversation_ids = [conversation.provider_conversation_id for conversation in results]
@@ -544,7 +543,7 @@ def test_iter_source_conversations_tracks_file_disappearance_contract(
 ) -> None:
     first = _write_generic_conversation(tmp_path / "first.json", "first")
     second = _write_generic_conversation(tmp_path / "second.json", "second")
-    cursor_state: dict[str, object] = {}
+    cursor_state: CursorStatePayload = _empty_cursor_state()
     original_open = Path.open
 
     def flaky_open(
@@ -755,7 +754,7 @@ def test_iter_source_conversations_with_raw_tracks_unicode_decode_failures_contr
     bad_file = tmp_path / "bad_encoding.json"
     bad_file.write_bytes(b"\xff\xfe invalid utf-8 { bad json")
 
-    cursor_state: dict[str, object] = {}
+    cursor_state: CursorStatePayload = _empty_cursor_state()
     results = list(iter_source_conversations_with_raw(Source(name="test", path=tmp_path), cursor_state=cursor_state))
 
     assert results == []
@@ -779,7 +778,7 @@ def test_source_iteration_ignores_stat_failures_for_optional_mtime_contract(
 
     monkeypatch.setattr(Path, "stat", flaky_stat)
 
-    parsed_cursor: dict[str, object] = {}
+    parsed_cursor: CursorStatePayload = _empty_cursor_state()
     raw_items = list(iter_source_conversations_with_raw(Source(name="test", path=source_dir), capture_raw=True))
     parsed_items = list(iter_source_conversations(Source(name="test", path=source_dir), cursor_state=parsed_cursor))
 
@@ -978,7 +977,7 @@ def test_has_supported_extension_contract(filename: str, expected: bool) -> None
 
 
 def test_record_cursor_failure_updates_state_exactly() -> None:
-    cursor_state = {"failed_files": [], "failed_count": 0}
+    cursor_state: CursorStatePayload = {"failed_files": [], "failed_count": 0}
 
     _record_cursor_failure(cursor_state, "/tmp/data.json", "broken")
 
@@ -1000,7 +999,7 @@ def test_initialize_cursor_state_tracks_latest_path_and_mtime(tmp_path: Path) ->
     os.utime(older, (1000, 1000))
     os.utime(newer, (2000, 2000))
 
-    cursor_state: dict[str, object] = {}
+    cursor_state: CursorStatePayload = _empty_cursor_state()
     _initialize_cursor_state(cursor_state, [older, newer])
 
     assert cursor_state["file_count"] == 2
@@ -1201,7 +1200,7 @@ def _parse_context(
     source_path: str,
     fallback_id: str,
     capture_raw: bool = True,
-    sidecar_data: JSONDocument | None = None,
+    sidecar_data: dict[str, object] | None = None,
 ) -> _ParseContext:
     return _ParseContext(
         provider_hint=Provider.from_string(provider_hint),
@@ -1643,7 +1642,7 @@ def test_zip_entry_validator_policy_contract(
     expected_failed_count: int,
     expected_failed_fragment: str | None,
 ) -> None:
-    cursor_state = {"failed_files": [], "failed_count": 0}
+    cursor_state: CursorStatePayload = {"failed_files": [], "failed_count": 0}
     validator = _ZipEntryValidator(
         source_name,
         cursor_state=cursor_state,
@@ -1707,7 +1706,7 @@ def test_iter_drive_raw_data_contract() -> None:
         files,
         raw_bytes={"chatgpt-1": b'{"id":"chatgpt-1"}', "gemini-1": b'{"role":"model"}'},
     )
-    cursor_state: dict[str, object] = {}
+    cursor_state: CursorStatePayload = _empty_cursor_state()
 
     items = list(iter_drive_raw_data(source=source, client=client, cursor_state=cursor_state))
 
@@ -1734,7 +1733,7 @@ def test_iter_drive_raw_data_skips_known_mtimes_and_tracks_failures() -> None:
         raw_bytes={"old": b"{}", "new": b'{"id":"new"}'},
         failures={"bad": RuntimeError("download failed")},
     )
-    cursor_state: dict[str, object] = {}
+    cursor_state: CursorStatePayload = _empty_cursor_state()
 
     items = list(
         iter_drive_raw_data(
@@ -2047,7 +2046,7 @@ def test_iter_source_raw_data_skips_zero_byte_plain_files_and_tracks_failure(tmp
     empty = tmp_path / "empty.jsonl"
     empty.write_bytes(b"")
 
-    cursor_state: dict[str, object] = {}
+    cursor_state: CursorStatePayload = _empty_cursor_state()
     items = list(iter_source_raw_data(Source(name="codex", path=empty), cursor_state=cursor_state))
 
     assert items == []
@@ -2090,7 +2089,7 @@ def test_iter_source_raw_data_skips_zero_byte_zip_entries_and_tracks_failure(tmp
     with zipfile.ZipFile(archive_path, "w") as zf:
         zf.writestr("nested/empty.jsonl", b"")
 
-    cursor_state: dict[str, object] = {}
+    cursor_state: CursorStatePayload = _empty_cursor_state()
     items = list(iter_source_raw_data(Source(name="codex", path=archive_path), cursor_state=cursor_state))
 
     assert items == []
@@ -2152,7 +2151,7 @@ def test_iter_source_raw_data_tracks_read_failures_without_stopping(
 
     monkeypatch.setattr(BlobStore, "write_from_path", flaky_write)
 
-    cursor_state: dict[str, object] = {}
+    cursor_state: CursorStatePayload = _empty_cursor_state()
     items = list(iter_source_raw_data(Source(name="chatgpt", path=tmp_path), cursor_state=cursor_state))
 
     assert [item.source_path for item in items] == [str(good)]

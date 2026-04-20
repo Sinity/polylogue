@@ -5,11 +5,12 @@ from __future__ import annotations
 import zipfile
 from collections.abc import Iterable
 from pathlib import Path
-from typing import Any, BinaryIO, cast
+from typing import BinaryIO, cast
 
 from polylogue.lib.artifact_taxonomy import classify_artifact_path
 from polylogue.logging import get_logger
 from polylogue.storage.blob_store import get_blob_store
+from polylogue.storage.state_views import CursorStatePayload
 from polylogue.types import Provider
 
 from .cursor import _record_cursor_failure
@@ -30,7 +31,7 @@ class ZipEntryValidator:
         self,
         provider_hint: str | Provider,
         *,
-        cursor_state: dict[str, Any] | None,
+        cursor_state: CursorStatePayload | None,
         zip_path: Path,
         conversation_only: bool = False,
     ) -> None:
@@ -100,7 +101,7 @@ def process_zip(
     should_group: bool,
     file_mtime: str | None,
     capture_raw: bool,
-    cursor_state: dict[str, Any] | None,
+    cursor_state: CursorStatePayload | None,
 ) -> Iterable[tuple[RawConversationData | None, ParsedConversation]]:
     """Process a ZIP file, yielding conversations from its entries."""
     del should_group
