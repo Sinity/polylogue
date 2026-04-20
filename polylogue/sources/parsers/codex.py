@@ -47,6 +47,46 @@ def _latest_timestamp(*values: str | None) -> str | None:
     return candidates[-1][1]
 
 
+def _validate_record(item: object, *, index: int, context: str = "record") -> CodexRecord | None:
+    if not isinstance(item, dict):
+        return None
+    try:
+        return CodexRecord.model_validate(item)
+    except ValidationError as exc:
+        logger.debug("Skipping invalid %s at index %d: %s", context, index, exc)
+        return None
+
+
+def _payload_record(record: CodexRecord, *, index: int, context: str) -> CodexRecord | None:
+    payload = record.payload
+    if not isinstance(payload, dict):
+        return None
+    return _validate_record(payload, index=index, context=context)
+
+
+def _session_meta_record(record: CodexRecord, *, index: int) -> CodexRecord | None:
+    if record.type == "session_meta":
+        return _payload_record(record, index=index, context="session_meta payload")
+    if record.id and record.timestamp and not record.type:
+        return record
+    return None
+
+
+def _message_record(record: CodexRecord, *, index: int) -> CodexRecord | None:
+    if record.format_type == "state":
+        return None
+    if record.type == "response_item":
+        inner = _payload_record(record, index=index, context="response_item payload")
+        return inner if inner is not None and inner.is_message else None
+    return record if record.is_message else None
+
+
+def _git_context(record: CodexRecord) -> dict[str, object] | None:
+    if record.git is None:
+        return None
+    return record.git.model_dump(exclude_none=True) or None
+
+
 def looks_like(payload: Sequence[object]) -> bool:
     """Detect Codex JSONL format using typed validation.
 
@@ -62,20 +102,14 @@ def looks_like(payload: Sequence[object]) -> bool:
     if not isinstance(payload, list):
         return False
 
-    for item in payload:
-        if not isinstance(item, dict):
+    for idx, item in enumerate(payload, start=1):
+        record = _validate_record(item, index=idx)
+        if record is None:
             continue
-
-        try:
-            record = CodexRecord.model_validate(item)
-            # Check for known Codex format indicators
-            if record.format_type in ("envelope", "direct", "state"):
-                return True
-            # Session metadata (first line of intermediate format)
-            if record.id and record.timestamp:
-                return True
-        except ValidationError:
-            continue
+        if record.format_type in ("envelope", "direct", "state"):
+            return True
+        if record.id and record.timestamp:
+            return True
 
     return False
 
@@ -104,13 +138,8 @@ def _parse_records(records: Iterable[object], fallback_id: str) -> ParsedConvers
     session_instructions: str | None = None  # System instructions from session metadata
 
     for idx, item in enumerate(records, start=1):
-        if not isinstance(item, dict):
-            continue
-
-        try:
-            record = CodexRecord.model_validate(item)
-        except ValidationError as exc:
-            logger.debug("Skipping invalid record at index %d: %s", idx, exc)
+        record = _validate_record(item, index=idx)
+        if record is None:
             continue
 
         # Handle compaction events (before message check so they don't fall through)
@@ -147,72 +176,33 @@ def _parse_records(records: Iterable[object], fallback_id: str) -> ParsedConvers
             )
             continue
 
-        # Handle session metadata (envelope format)
-        if record.type == "session_meta" and record.payload:
-            meta_id = record.payload.get("id")
+        session_meta = _session_meta_record(record, index=idx)
+        if session_meta is not None:
+            meta_id = session_meta.id
             if meta_id and meta_id not in session_metas_seen:
                 session_metas_seen.append(meta_id)
-                # First session_meta sets the conversation ID and captures session-level data
                 if len(session_metas_seen) == 1:
-                    session_id = str(meta_id)
-                    session_timestamp = _normalize_timestamp(record.payload.get("timestamp"))
-            # Capture git/instructions from envelope payload (may appear in inner record)
-            inner = CodexRecord.model_validate(record.payload) if isinstance(record.payload, dict) else None
-            if inner and inner.git and not session_git:
-                session_git = inner.git.model_dump(exclude_none=True) or None
-            if inner and inner.instructions and not session_instructions:
-                session_instructions = inner.instructions
+                    session_id = meta_id
+                    session_timestamp = _normalize_timestamp(session_meta.timestamp)
+            git_context = _git_context(session_meta)
+            if git_context and not session_git:
+                session_git = git_context
+            if session_meta.instructions and not session_instructions:
+                session_instructions = session_meta.instructions
             continue
 
-        # Handle session metadata (intermediate format - first line with id+timestamp)
-        if record.id and record.timestamp and not record.type:
-            if record.id not in session_metas_seen:
-                session_metas_seen.append(record.id)
-                if len(session_metas_seen) == 1:
-                    session_id = record.id
-                    session_timestamp = _normalize_timestamp(record.timestamp)
-            # Capture git/instructions from top-level record
-            if record.git and not session_git:
-                session_git = record.git.model_dump(exclude_none=True) or None
-            if record.instructions and not session_instructions:
-                session_instructions = record.instructions
-            continue
-
-        # Skip state markers
-        if record.format_type == "state":
-            continue
-
-        # Handle messages - either from envelope or direct format
-        if record.type == "response_item" and record.payload:
-            # Envelope format: unwrap payload and create new record for message
-            inner_payload = record.payload
-            if inner_payload.get("type") == "message":
-                try:
-                    record = CodexRecord.model_validate(inner_payload)
-                except ValidationError as exc:
-                    logger.debug("Skipping invalid envelope payload at index %d: %s", idx, exc)
-                    continue
-
-        # Parse message records using typed properties
-        if record.is_message:
-            raw_role = record.effective_role
-            text = record.text_content
-            timestamp = _normalize_timestamp(record.timestamp)
+        message_record = _message_record(record, index=idx)
+        if message_record is not None:
+            raw_role = message_record.effective_role
+            text = message_record.text_content
+            timestamp = _normalize_timestamp(message_record.timestamp)
 
             if not raw_role or raw_role == "unknown" or not text:
                 continue
             role = Role.normalize(raw_role)
 
-            # Get message ID from the record
-            msg_id = record.id or f"msg-{idx}"
-
-            # Build content blocks from the raw content field
-            raw_content = None
-            if record.content:
-                raw_content = record.content
-            elif record.payload and isinstance(record.payload, dict):
-                raw_content = record.payload.get("content")
-            content_blocks = content_blocks_from_segments(raw_content) if raw_content else []
+            msg_id = message_record.id or f"msg-{idx}"
+            content_blocks = content_blocks_from_segments(message_record.effective_content)
             if not content_blocks and text:
                 from .base import ParsedContentBlock
 

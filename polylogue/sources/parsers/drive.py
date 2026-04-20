@@ -50,6 +50,109 @@ def _attachment_from_doc(doc: JSONDocument | str, message_id: str | None) -> Par
     return _attachment_from_doc_impl(doc, message_id)
 
 
+def _gemini_content_block_payloads(message: GeminiMessage, text: str | None) -> list[JSONDocument]:
+    content_block_payloads = [
+        block_payload
+        for content_block in message.extract_content_blocks()
+        if (block_payload := _viewport_block_payload(content_block)) is not None
+    ]
+    if content_block_payloads:
+        return content_block_payloads
+    if not text:
+        return []
+    return [{"type": "thinking" if message.isThought else "text", "text": text}]
+
+
+def _typed_gemini_meta(chunk_obj: JSONDocument, message: GeminiMessage, text: str | None) -> dict[str, object]:
+    meta: dict[str, object] = {"raw": chunk_obj}
+
+    if message.isThought:
+        meta["isThought"] = True
+    if message.tokenCount is not None:
+        meta["tokenCount"] = message.tokenCount
+    if message.finishReason:
+        meta["finishReason"] = message.finishReason
+    if message.thinkingBudget is not None:
+        meta["thinkingBudget"] = message.thinkingBudget
+    if message.safetyRatings:
+        meta["safetyRatings"] = list(message.safetyRatings)
+    if message.grounding:
+        meta["grounding"] = (
+            message.grounding.model_dump() if hasattr(message.grounding, "model_dump") else message.grounding
+        )
+    if message.branchParent:
+        meta["branchParent"] = (
+            message.branchParent.model_dump() if hasattr(message.branchParent, "model_dump") else message.branchParent
+        )
+    if message.branchChildren:
+        meta["branchChildren"] = message.branchChildren
+    if message.executableCode:
+        meta["executableCode"] = message.executableCode
+    if message.codeExecutionResult:
+        meta["codeExecutionResult"] = message.codeExecutionResult
+    if message.errorMessage:
+        meta["errorMessage"] = message.errorMessage
+    if message.isEdited:
+        meta["isEdited"] = True
+
+    meta["content_blocks"] = _gemini_content_block_payloads(message, text)
+
+    reasoning_traces = message.extract_reasoning_traces()
+    if reasoning_traces:
+        meta["reasoning_traces"] = [
+            {"text": trace.text, "token_count": trace.token_count, "provider": trace.provider}
+            for trace in reasoning_traces
+        ]
+    return meta
+
+
+def _fallback_gemini_meta(chunk_obj: JSONDocument, text: str | None) -> dict[str, object]:
+    meta: dict[str, object] = {"raw": chunk_obj}
+    if chunk_obj.get("isThought"):
+        meta["isThought"] = True
+    token_count = chunk_obj.get("tokenCount")
+    if token_count:
+        meta["tokenCount"] = token_count
+
+    fallback_content_blocks: list[JSONDocument] = []
+    if text:
+        block_type = "thinking" if chunk_obj.get("isThought") else "text"
+        fallback_content_blocks.append({"type": block_type, "text": text})
+
+    exec_code = chunk_obj.get("executableCode")
+    if isinstance(exec_code, dict) and exec_code:
+        meta["executableCode"] = exec_code
+        code = exec_code.get("code")
+        if isinstance(code, str) and code:
+            fallback_content_blocks.append({"type": "code", "text": code})
+
+    exec_result = chunk_obj.get("codeExecutionResult")
+    if isinstance(exec_result, dict) and exec_result:
+        meta["codeExecutionResult"] = exec_result
+        output = exec_result.get("output")
+        outcome = exec_result.get("outcome")
+        if isinstance(output, str) and output:
+            fallback_content_blocks.append({"type": "tool_result", "text": output})
+        elif isinstance(outcome, str) and outcome:
+            fallback_content_blocks.append({"type": "tool_result", "text": f"[{outcome}]"})
+
+    error_msg = chunk_obj.get("errorMessage")
+    if isinstance(error_msg, str) and error_msg:
+        meta["errorMessage"] = error_msg
+
+    meta["content_blocks"] = fallback_content_blocks
+    return meta
+
+
+def _append_attachment_blocks(meta: dict[str, object], chunk_attachments: list[ParsedAttachment]) -> None:
+    meta_blocks = meta.get("content_blocks")
+    attachment_blocks = _attachment_block_payloads(chunk_attachments)
+    if isinstance(meta_blocks, list):
+        meta_blocks.extend(attachment_blocks)
+        return
+    meta["content_blocks"] = attachment_blocks
+
+
 def parse_chunked_prompt(provider: Provider | str, payload: JSONDocument, fallback_id: str) -> ParsedConversation:
     runtime_provider = Provider.from_string(provider)
     prompt = json_document(payload.get("chunkedPrompt"))
@@ -88,98 +191,16 @@ def parse_chunked_prompt(provider: Provider | str, payload: JSONDocument, fallba
         observed_timestamps.append(message_timestamp)
         used_typed_model = False
 
-        # Try to parse via the rich GeminiMessage typed model for structured extraction
-        meta: dict[str, object] = {"raw": chunk_obj}
+        # Try to parse via the rich GeminiMessage typed model for structured extraction.
         try:
-            gem = GeminiMessage.model_validate(chunk_obj)
+            gemini_message = GeminiMessage.model_validate(chunk_obj)
             used_typed_model = True
-            # Extract rich metadata from the typed model
-            if gem.isThought:
-                meta["isThought"] = True
-            if gem.tokenCount is not None:
-                meta["tokenCount"] = gem.tokenCount
-            if gem.finishReason:
-                meta["finishReason"] = gem.finishReason
-            if gem.thinkingBudget is not None:
-                meta["thinkingBudget"] = gem.thinkingBudget
-            if gem.safetyRatings:
-                meta["safetyRatings"] = list(gem.safetyRatings)
-            if gem.grounding:
-                meta["grounding"] = (
-                    gem.grounding.model_dump() if hasattr(gem.grounding, "model_dump") else gem.grounding
-                )
-            if gem.branchParent:
-                meta["branchParent"] = (
-                    gem.branchParent.model_dump() if hasattr(gem.branchParent, "model_dump") else gem.branchParent
-                )
-            if gem.branchChildren:
-                meta["branchChildren"] = gem.branchChildren
-            if gem.executableCode:
-                meta["executableCode"] = gem.executableCode
-            if gem.codeExecutionResult:
-                meta["codeExecutionResult"] = gem.codeExecutionResult
-            if gem.errorMessage:
-                meta["errorMessage"] = gem.errorMessage
-            if gem.isEdited:
-                meta["isEdited"] = True
-
-            # Extract structured content blocks via the typed model
-            content_block_payloads: list[JSONDocument] = [
-                block_payload
-                for cb in gem.extract_content_blocks()
-                if (block_payload := _viewport_block_payload(cb)) is not None
-            ]
-            if not content_block_payloads:
-                # Fallback: basic block from text
-                content_block_payloads = (
-                    [{"type": "thinking" if gem.isThought else "text", "text": text}] if text else []
-                )
-            meta["content_blocks"] = content_block_payloads
-
-            # Extract reasoning traces if present
-            traces = gem.extract_reasoning_traces()
-            if traces:
-                meta["reasoning_traces"] = [
-                    {"text": t.text, "token_count": t.token_count, "provider": t.provider} for t in traces
-                ]
+            meta = _typed_gemini_meta(chunk_obj, gemini_message, text)
         except (ValidationError, Exception):
-            # Fallback: basic extraction for non-conforming chunks
-            if chunk_obj.get("isThought"):
-                meta["isThought"] = True
-            token_count = chunk_obj.get("tokenCount")
-            if token_count:
-                meta["tokenCount"] = token_count
-            fallback_content_blocks: list[JSONDocument] = []
-            if text:
-                block_type = "thinking" if chunk_obj.get("isThought") else "text"
-                fallback_content_blocks.append({"type": block_type, "text": text})
-            exec_code = chunk_obj.get("executableCode")
-            if isinstance(exec_code, dict) and exec_code:
-                meta["executableCode"] = exec_code
-                code = exec_code.get("code")
-                if isinstance(code, str) and code:
-                    fallback_content_blocks.append({"type": "code", "text": code})
-            exec_result = chunk_obj.get("codeExecutionResult")
-            if isinstance(exec_result, dict) and exec_result:
-                meta["codeExecutionResult"] = exec_result
-                output = exec_result.get("output")
-                outcome = exec_result.get("outcome")
-                if isinstance(output, str) and output:
-                    fallback_content_blocks.append({"type": "tool_result", "text": output})
-                elif isinstance(outcome, str) and outcome:
-                    fallback_content_blocks.append({"type": "tool_result", "text": f"[{outcome}]"})
-            error_msg = chunk_obj.get("errorMessage")
-            if isinstance(error_msg, str) and error_msg:
-                meta["errorMessage"] = error_msg
-            meta["content_blocks"] = fallback_content_blocks
+            meta = _fallback_gemini_meta(chunk_obj, text)
 
         if chunk_attachments and not used_typed_model:
-            meta_blocks = meta.get("content_blocks")
-            attachment_blocks = _attachment_block_payloads(chunk_attachments)
-            if isinstance(meta_blocks, list):
-                meta_blocks.extend(attachment_blocks)
-            else:
-                meta["content_blocks"] = attachment_blocks
+            _append_attachment_blocks(meta, chunk_attachments)
 
         if not text and not chunk_attachments and not meta.get("content_blocks"):
             continue

@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import TypeAlias
+from typing import TypeAlias, cast
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from polylogue.lib.json import json_document
 from polylogue.lib.roles import Role
 from polylogue.lib.timestamps import parse_timestamp
 from polylogue.lib.viewports import (
@@ -29,7 +30,7 @@ GeminiBranchChildren: TypeAlias = list[GeminiDictValue]
 
 def _normalize_mapping(payload: BaseModel | GeminiDictValue) -> GeminiDictValue:
     if isinstance(payload, BaseModel):
-        return payload.model_dump()
+        return cast(GeminiDictValue, json_document(payload.model_dump()))
     return payload
 
 
@@ -58,7 +59,21 @@ def _get_str_or_none(value: object) -> str | None:
 
 
 def _string_or_empty_dict(value: object) -> GeminiDictValue:
-    return value if isinstance(value, dict) else {}
+    return cast(GeminiDictValue, json_document(value))
+
+
+def _part_record(part: GeminiPartValue) -> GeminiDictValue:
+    if isinstance(part, GeminiPart):
+        return cast(GeminiDictValue, json_document(part.model_dump()))
+    return part
+
+
+def _drive_document_record(value: GeminiDictValue | str | None) -> GeminiDictValue | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return {"id": value}
+    return value
 
 
 class GeminiMessage(BaseModel):
@@ -169,7 +184,7 @@ class GeminiMessage(BaseModel):
             )
 
         for part in self.parts:
-            raw_part = _normalize_mapping(part) if not isinstance(part, GeminiPart) else part.model_dump()
+            raw_part = _part_record(part)
             part_text = _part_text(part)
             if part_text:
                 blocks.append(
@@ -217,13 +232,14 @@ class GeminiMessage(BaseModel):
                 )
 
         if self.driveDocument:
-            raw_doc = self.driveDocument if isinstance(self.driveDocument, dict) else {"id": self.driveDocument}
-            blocks.append(
-                ContentBlock(
-                    type=ContentType.FILE,
-                    raw={"driveDocument": raw_doc},
+            raw_doc = _drive_document_record(self.driveDocument)
+            if raw_doc is not None:
+                blocks.append(
+                    ContentBlock(
+                        type=ContentType.FILE,
+                        raw={"driveDocument": raw_doc},
+                    )
                 )
-            )
 
         if self.inlineFile:
             mime_type = _get_str_or_none(self.inlineFile.get("mimeType"))
