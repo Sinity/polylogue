@@ -2,32 +2,44 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Protocol, TypeAlias
 
-from polylogue.lib.json import JSONDocument
 from polylogue.lib.roles import Role
 from polylogue.lib.viewports import ReasoningTrace, TokenUsage, ToolCall
 from polylogue.types import Provider
 
-ContentBlockSequence: TypeAlias = Sequence[JSONDocument]
+ContentBlockSequence: TypeAlias = Sequence[Mapping[str, object]]
 
 
 class TextMessageLike(Protocol):
-    text: str | None
+    @property
+    def text(self) -> str | None: ...
 
 
 class HarmonizedMessageLike(Protocol):
-    tool_calls: Sequence[ToolCall] | None
-    reasoning_traces: Sequence[ReasoningTrace] | None
-    tokens: TokenUsage | None
-    model: object | None
+    @property
+    def tool_calls(self) -> Sequence[ToolCall] | None: ...
+
+    @property
+    def reasoning_traces(self) -> Sequence[ReasoningTrace] | None: ...
+
+    @property
+    def tokens(self) -> TokenUsage | None: ...
+
+    @property
+    def model(self) -> object | None: ...
 
 
 class SemanticMessageLike(TextMessageLike, Protocol):
-    provider: Provider | str | None
-    harmonized: HarmonizedMessageLike | None
-    content_blocks: ContentBlockSequence
+    @property
+    def provider(self) -> Provider | str | None: ...
+
+    @property
+    def harmonized(self) -> HarmonizedMessageLike | None: ...
+
+    @property
+    def content_blocks(self) -> ContentBlockSequence: ...
 
 
 def normalized_role_label(value: object) -> str:

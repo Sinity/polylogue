@@ -29,13 +29,12 @@ async def get_latest_run(conn: aiosqlite.Connection) -> RunRecord | None:
     row = await cursor.fetchone()
     if not row:
         return None
+    counts_payload = _parse_json(row["counts_json"], field="counts_json", record_id=row["run_id"])
     return RunRecord(
         run_id=row["run_id"],
         timestamp=row["timestamp"],
         plan_snapshot=_json_object(_parse_json(row["plan_snapshot"], field="plan_snapshot", record_id=row["run_id"])),
-        counts=RunCounts.model_validate(
-            _parse_json(row["counts_json"], field="counts_json", record_id=row["run_id"]) or {}
-        ).to_payload(),
+        counts=RunCounts.model_validate(counts_payload).to_payload() if counts_payload is not None else None,
         drift=_json_object(_parse_json(row["drift_json"], field="drift_json", record_id=row["run_id"])),
         indexed=bool(row["indexed"]) if row["indexed"] is not None else None,
         duration_ms=row["duration_ms"],

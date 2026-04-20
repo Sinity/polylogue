@@ -56,8 +56,11 @@ class ActionEvent:
 
 
 class ActionEventMessageLike(Protocol):
-    id: object
-    timestamp: datetime | None
+    @property
+    def id(self) -> object: ...
+
+    @property
+    def timestamp(self) -> datetime | None: ...
 
 
 def build_action_event(

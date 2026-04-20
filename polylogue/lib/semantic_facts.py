@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import Counter
-from collections.abc import Sequence
+from collections.abc import Collection, Iterator, Sequence
 from datetime import datetime
 from typing import Protocol
 
@@ -35,57 +35,129 @@ from polylogue.lib.semantic_fact_support import (
 
 
 class ProjectionAttachmentLike(Protocol):
-    message_id: str | None
+    @property
+    def message_id(self) -> str | None: ...
 
 
 class ProjectionMessageLike(TextMessageLike, Protocol):
-    message_id: str
-    role: object
-    sort_key: float | None
-    has_thinking: int | bool
-    has_tool_use: int | bool
+    @property
+    def message_id(self) -> str: ...
+
+    @property
+    def role(self) -> object: ...
+
+    @property
+    def sort_key(self) -> float | None: ...
+
+    @property
+    def has_thinking(self) -> int | bool: ...
+
+    @property
+    def has_tool_use(self) -> int | bool: ...
 
 
 class ProjectionLike(Protocol):
-    messages: Sequence[ProjectionMessageLike]
-    attachments: Sequence[ProjectionAttachmentLike]
+    @property
+    def messages(self) -> Collection[ProjectionMessageLike]: ...
+
+    @property
+    def attachments(self) -> Collection[ProjectionAttachmentLike]: ...
+
+
+class SemanticConversationMessagesLike(Protocol):
+    def __iter__(self) -> Iterator[SemanticConversationMessageLike]: ...
+
+    def __len__(self) -> int: ...
 
 
 class SemanticConversationLike(Protocol):
-    id: object
-    provider: object
-    display_title: str
-    display_date: datetime | None
-    created_at: datetime | None
-    updated_at: datetime | None
-    messages: Sequence[SemanticConversationMessageLike]
+    @property
+    def id(self) -> object: ...
+
+    @property
+    def provider(self) -> object: ...
+
+    @property
+    def display_title(self) -> str: ...
+
+    @property
+    def display_date(self) -> datetime | None: ...
+
+    @property
+    def created_at(self) -> datetime | None: ...
+
+    @property
+    def updated_at(self) -> datetime | None: ...
+
+    @property
+    def messages(self) -> SemanticConversationMessagesLike: ...
 
 
 class SemanticConversationMessageLike(SemanticMessageLike, Protocol):
-    id: object
-    role: object
-    timestamp: datetime | None
-    branch_index: int
-    attachments: Sequence[object]
-    word_count: int
-    is_user: bool
-    is_assistant: bool
-    is_dialogue: bool
-    is_context_dump: bool
-    is_thinking: bool
-    is_tool_use: bool
-    is_substantive: bool
+    @property
+    def id(self) -> object: ...
+
+    @property
+    def role(self) -> object: ...
+
+    @property
+    def timestamp(self) -> datetime | None: ...
+
+    @property
+    def branch_index(self) -> int: ...
+
+    @property
+    def attachments(self) -> Sequence[object]: ...
+
+    @property
+    def word_count(self) -> int: ...
+
+    @property
+    def is_user(self) -> bool: ...
+
+    @property
+    def is_assistant(self) -> bool: ...
+
+    @property
+    def is_dialogue(self) -> bool: ...
+
+    @property
+    def is_context_dump(self) -> bool: ...
+
+    @property
+    def is_thinking(self) -> bool: ...
+
+    @property
+    def is_tool_use(self) -> bool: ...
+
+    @property
+    def is_substantive(self) -> bool: ...
 
 
 class SemanticSummaryLike(Protocol):
-    id: object
-    provider: object
-    display_title: str
-    display_date: datetime | None
-    created_at: datetime | None
-    updated_at: datetime | None
-    tags: Sequence[str]
-    summary: str | None
+    @property
+    def id(self) -> object: ...
+
+    @property
+    def provider(self) -> object: ...
+
+    @property
+    def display_title(self) -> str: ...
+
+    @property
+    def display_date(self) -> datetime | None: ...
+
+    @property
+    def created_at(self) -> datetime | None: ...
+
+    @property
+    def updated_at(self) -> datetime | None: ...
+
+    @property
+    def tags(self) -> Sequence[str]: ...
+
+    @property
+    def summary(self) -> str | None: ...
 
 
 def build_projection_semantic_facts(projection: ProjectionLike) -> ProjectionSemanticFacts:
