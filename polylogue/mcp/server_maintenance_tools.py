@@ -18,8 +18,7 @@ def register_maintenance_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         async def run() -> str:
             from polylogue.pipeline.services.indexing import IndexService
 
-            repo = hooks.get_repo()
-            service = IndexService(config=hooks.get_config(), backend=repo.backend)
+            service = IndexService(config=hooks.get_config(), backend=hooks.get_backend())
             success = await service.rebuild_index()
             status_info = await service.get_index_status()
             index_exists_value = status_info.get("exists", False)
@@ -40,8 +39,7 @@ def register_maintenance_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         async def run() -> str:
             from polylogue.pipeline.services.indexing import IndexService
 
-            repo = hooks.get_repo()
-            service = IndexService(config=hooks.get_config(), backend=repo.backend)
+            service = IndexService(config=hooks.get_config(), backend=hooks.get_backend())
             success = await service.update_index(conversation_ids)
             return hooks.json_payload(
                 MCPMutationStatusPayload(
@@ -58,7 +56,7 @@ def register_maintenance_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         async def run() -> str:
             from polylogue.rendering.formatting import format_conversation
 
-            conv = await hooks.get_repo().view(id)
+            conv = await hooks.get_archive_ops().get_conversation(id)
             if conv is None:
                 return hooks.error_json(f"Conversation not found: {id}")
             valid_formats = {

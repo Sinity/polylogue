@@ -14,8 +14,7 @@ if TYPE_CHECKING:
     from polylogue.lib.filters import ConversationFilter
     from polylogue.lib.models import Conversation, ConversationSummary
     from polylogue.lib.query_spec import ConversationQuerySpec
-    from polylogue.protocols import ConversationQueryRuntimeStore
-    from polylogue.storage.repository import ConversationRepository
+    from polylogue.protocols import ConversationQueryRuntimeStore, TagStore
 
 
 async def resolve_stream_target(
@@ -62,7 +61,7 @@ async def apply_modifiers(
     env: AppEnv,
     results: Sequence[Conversation | ConversationSummary],
     params: dict[str, Any],
-    repo: ConversationRepository | None = None,
+    repo: TagStore | None = None,
 ) -> None:
     """Apply metadata modifiers to matched conversations."""
     repo = repo or env.repository

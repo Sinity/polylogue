@@ -131,16 +131,16 @@ class TestResourceSurfaces:
     def test_stats_returns_archive_statistics(self: object, mcp_server: Any) -> None:
         from polylogue.lib.stats import ArchiveStats
 
-        with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
-            mock_repo = MagicMock()
-            mock_repo.get_archive_stats = AsyncMock(
+        with patch("polylogue.mcp.server._get_archive_ops") as mock_get_archive_ops:
+            mock_ops = MagicMock()
+            mock_ops.storage_stats = AsyncMock(
                 return_value=ArchiveStats(
                     total_conversations=2,
                     total_messages=4,
                     providers={"chatgpt": 2},
                 )
             )
-            mock_get_repo.return_value = mock_repo
+            mock_get_archive_ops.return_value = mock_ops
 
             result = invoke_surface(mcp_server._resource_manager._resources["polylogue://stats"].fn)
 
@@ -154,11 +154,8 @@ class TestResourceSurfaces:
         simple_conversation: Conversation,
         mcp_server: Any,
     ) -> None:
-        with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
-            mock_repo = MagicMock()
-            mock_repo.list.return_value = [simple_conversation]
-            mock_get_repo.return_value = mock_repo
-
+        with patch("polylogue.mcp.server._get_query_store") as mock_get_query_store:
+            mock_get_query_store.return_value = MagicMock()
             with patch("polylogue.lib.filters.ConversationFilter") as mock_filter_cls:
                 mock_filter_cls.return_value = make_mock_filter(results=[simple_conversation])
 
@@ -175,10 +172,10 @@ class TestResourceSurfaces:
         simple_conversation: Conversation,
         mcp_server: Any,
     ) -> None:
-        with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
-            mock_repo = MagicMock()
-            mock_repo.get = AsyncMock(return_value=simple_conversation)
-            mock_get_repo.return_value = mock_repo
+        with patch("polylogue.mcp.server._get_archive_ops") as mock_get_archive_ops:
+            mock_ops = MagicMock()
+            mock_ops.get_conversation = AsyncMock(return_value=simple_conversation)
+            mock_get_archive_ops.return_value = mock_ops
 
             result = invoke_surface(
                 mcp_server._resource_manager._templates["polylogue://conversation/{conv_id}"].fn,
@@ -190,10 +187,10 @@ class TestResourceSurfaces:
         assert "messages" in conv
 
     def test_conversation_resource_not_found(self: object, mcp_server: Any) -> None:
-        with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
-            mock_repo = MagicMock()
-            mock_repo.get = AsyncMock(return_value=None)
-            mock_get_repo.return_value = mock_repo
+        with patch("polylogue.mcp.server._get_archive_ops") as mock_get_archive_ops:
+            mock_ops = MagicMock()
+            mock_ops.get_conversation = AsyncMock(return_value=None)
+            mock_get_archive_ops.return_value = mock_ops
 
             result = invoke_surface(
                 mcp_server._resource_manager._templates["polylogue://conversation/{conv_id}"].fn,
@@ -204,10 +201,10 @@ class TestResourceSurfaces:
         assert "error" in result_dict
 
     def test_tags_resource(self: object, mcp_server: Any) -> None:
-        with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
-            mock_repo = make_repo_mock()
-            mock_repo.list_tags.return_value = {"feature": 10, "bug": 5}
-            mock_get_repo.return_value = mock_repo
+        with patch("polylogue.mcp.server._get_tag_store") as mock_get_tag_store:
+            mock_tag_store = make_repo_mock()
+            mock_tag_store.list_tags.return_value = {"feature": 10, "bug": 5}
+            mock_get_tag_store.return_value = mock_tag_store
 
             result = invoke_surface(mcp_server._resource_manager._resources["polylogue://tags"].fn)
 
@@ -246,11 +243,8 @@ class TestPromptSurfaces:
     ) -> None:
         simple_conversation.messages.to_list()[0].text = "Got an error while running"
 
-        with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
-            mock_repo = MagicMock()
-            mock_repo.list.return_value = [simple_conversation]
-            mock_get_repo.return_value = mock_repo
-
+        with patch("polylogue.mcp.server._get_query_store") as mock_get_query_store:
+            mock_get_query_store.return_value = MagicMock()
             with patch("polylogue.lib.filters.ConversationFilter") as mock_filter_cls:
                 mock_filter_cls.return_value = make_mock_filter(results=[simple_conversation])
 
@@ -272,11 +266,8 @@ class TestPromptSurfaces:
         ]
         big_conv = make_conv(id="big", provider=Provider.UNKNOWN, title="Errors", messages=msgs)
 
-        with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
-            mock_repo = MagicMock()
-            mock_repo.list.return_value = [big_conv]
-            mock_get_repo.return_value = mock_repo
-
+        with patch("polylogue.mcp.server._get_query_store") as mock_get_query_store:
+            mock_get_query_store.return_value = MagicMock()
             with patch("polylogue.lib.filters.ConversationFilter") as mock_filter_cls:
                 mock_filter_cls.return_value = make_mock_filter(results=[big_conv])
 
@@ -286,11 +277,8 @@ class TestPromptSurfaces:
 
     @pytest.mark.asyncio
     async def test_analyze_errors_no_matches(self: object, mcp_server: Any) -> None:
-        with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
-            mock_repo = MagicMock()
-            mock_repo.list.return_value = []
-            mock_get_repo.return_value = mock_repo
-
+        with patch("polylogue.mcp.server._get_query_store") as mock_get_query_store:
+            mock_get_query_store.return_value = MagicMock()
             with patch("polylogue.lib.filters.ConversationFilter") as mock_filter_cls:
                 mock_filter_cls.return_value = make_mock_filter(results=[])
 
@@ -300,11 +288,8 @@ class TestPromptSurfaces:
 
     @pytest.mark.asyncio
     async def test_summarize_week_empty(self: object, mcp_server: Any) -> None:
-        with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
-            mock_repo = MagicMock()
-            mock_repo.list.return_value = []
-            mock_get_repo.return_value = mock_repo
-
+        with patch("polylogue.mcp.server._get_query_store") as mock_get_query_store:
+            mock_get_query_store.return_value = MagicMock()
             with patch("polylogue.lib.filters.ConversationFilter") as mock_filter_cls:
                 mock_filter_cls.return_value = make_mock_filter(results=[])
 
@@ -322,11 +307,8 @@ class TestPromptSurfaces:
             messages=[make_msg(id="m1", role=Role.USER, text="Just text, no code")],
         )
 
-        with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
-            mock_repo = MagicMock()
-            mock_repo.list.return_value = [conv]
-            mock_get_repo.return_value = mock_repo
-
+        with patch("polylogue.mcp.server._get_query_store") as mock_get_query_store:
+            mock_get_query_store.return_value = MagicMock()
             with patch("polylogue.lib.filters.ConversationFilter") as mock_filter_cls:
                 mock_filter_cls.return_value = make_mock_filter(results=[conv])
 
@@ -349,11 +331,8 @@ class TestPromptSurfaces:
             ],
         )
 
-        with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
-            mock_repo = MagicMock()
-            mock_repo.list.return_value = [conv]
-            mock_get_repo.return_value = mock_repo
-
+        with patch("polylogue.mcp.server._get_query_store") as mock_get_query_store:
+            mock_get_query_store.return_value = MagicMock()
             with patch("polylogue.lib.filters.ConversationFilter") as mock_filter_cls:
                 mock_filter_cls.return_value = make_mock_filter(results=[conv])
 
@@ -370,11 +349,8 @@ class TestPromptSurfaces:
             messages=[make_msg(id="m1", role=Role.ASSISTANT, text=None)],
         )
 
-        with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
-            mock_repo = MagicMock()
-            mock_repo.list.return_value = [conv]
-            mock_get_repo.return_value = mock_repo
-
+        with patch("polylogue.mcp.server._get_query_store") as mock_get_query_store:
+            mock_get_query_store.return_value = MagicMock()
             with patch("polylogue.lib.filters.ConversationFilter") as mock_filter_cls:
                 mock_filter_cls.return_value = make_mock_filter(results=[conv])
 
@@ -387,10 +363,10 @@ class TestPromptSurfaces:
         simple_conversation: Conversation,
         mcp_server: Any,
     ) -> None:
-        with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
-            mock_repo = make_repo_mock()
-            mock_repo.view.side_effect = [simple_conversation, simple_conversation]
-            mock_get_repo.return_value = mock_repo
+        with patch("polylogue.mcp.server._get_query_store") as mock_get_query_store:
+            mock_query_store = make_repo_mock()
+            mock_query_store.get_eager = AsyncMock(side_effect=[simple_conversation, simple_conversation])
+            mock_get_query_store.return_value = mock_query_store
 
             result = invoke_surface(
                 mcp_server._prompt_manager._prompts["compare_conversations"].fn,
@@ -409,11 +385,10 @@ class TestPromptSurfaces:
         mcp_server: Any,
     ) -> None:
         with (
-            patch("polylogue.mcp.server._get_repo") as mock_get_repo,
+            patch("polylogue.mcp.server._get_query_store") as mock_get_query_store,
             patch("polylogue.lib.filters.ConversationFilter") as mock_filter_cls,
         ):
-            mock_repo = make_repo_mock()
-            mock_get_repo.return_value = mock_repo
+            mock_get_query_store.return_value = MagicMock()
             mock_filter_cls.return_value = make_mock_filter(results=[simple_conversation])
 
             result = await invoke_surface_async(mcp_server._prompt_manager._prompts["extract_patterns"].fn)
@@ -425,12 +400,12 @@ class TestPromptSurfaces:
 class TestExportConversationTool:
     def test_export_markdown(self: object, simple_conversation: Conversation, mcp_server: Any) -> None:
         with (
-            patch("polylogue.mcp.server._get_repo") as mock_get_repo,
+            patch("polylogue.mcp.server._get_archive_ops") as mock_get_archive_ops,
             patch("polylogue.rendering.formatting.format_conversation") as mock_format,
         ):
-            mock_repo = make_repo_mock()
-            mock_repo.view.return_value = simple_conversation
-            mock_get_repo.return_value = mock_repo
+            mock_ops = MagicMock()
+            mock_ops.get_conversation = AsyncMock(return_value=simple_conversation)
+            mock_get_archive_ops.return_value = mock_ops
             mock_format.return_value = "# Test Conversation\n\nFormatted content"
 
             result = invoke_surface(
@@ -446,10 +421,10 @@ class TestExportConversationTool:
         assert call_args[0][1] == "markdown"
 
     def test_export_not_found(self: object, mcp_server: Any) -> None:
-        with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
-            mock_repo = make_repo_mock()
-            mock_repo.view.return_value = None
-            mock_get_repo.return_value = mock_repo
+        with patch("polylogue.mcp.server._get_archive_ops") as mock_get_archive_ops:
+            mock_ops = MagicMock()
+            mock_ops.get_conversation = AsyncMock(return_value=None)
+            mock_get_archive_ops.return_value = mock_ops
 
             result = invoke_surface(mcp_server._tool_manager._tools["export_conversation"].fn, id="nonexistent")
 
@@ -463,12 +438,12 @@ class TestExportConversationTool:
         mcp_server: Any,
     ) -> None:
         with (
-            patch("polylogue.mcp.server._get_repo") as mock_get_repo,
+            patch("polylogue.mcp.server._get_archive_ops") as mock_get_archive_ops,
             patch("polylogue.rendering.formatting.format_conversation") as mock_format,
         ):
-            mock_repo = make_repo_mock()
-            mock_repo.view.return_value = simple_conversation
-            mock_get_repo.return_value = mock_repo
+            mock_ops = MagicMock()
+            mock_ops.get_conversation = AsyncMock(return_value=simple_conversation)
+            mock_get_archive_ops.return_value = mock_ops
             mock_format.return_value = "# Content"
 
             invoke_surface(

@@ -9,7 +9,7 @@ import click
 if TYPE_CHECKING:
     from polylogue.lib.models import Conversation
     from polylogue.protocols import VectorProvider
-    from polylogue.storage.repository import ConversationRepository
+    from polylogue.storage.repository_contracts import RepositoryBackendProtocol
     from polylogue.storage.store import MessageRecord
 
 
@@ -38,9 +38,18 @@ class _HasUI(Protocol):
     ui: _EmbedUI
 
 
+class _EmbedConversationStore(Protocol):
+    @property
+    def backend(self) -> RepositoryBackendProtocol: ...
+
+    async def get_messages(self, conversation_id: str) -> list[MessageRecord]: ...
+
+    async def view(self, conversation_id: str) -> Conversation | None: ...
+
+
 def embed_single(
     env: object,
-    repo: ConversationRepository,
+    repo: _EmbedConversationStore,
     vec_provider: VectorProvider,
     conversation_id: str,
 ) -> None:
@@ -51,7 +60,7 @@ def embed_single(
         conv = await repo.view(conversation_id)
         if conv is None:
             return None
-        messages = await repo.queries.get_messages(str(conv.id))
+        messages = await repo.get_messages(str(conv.id))
         return conv, messages
 
     result = run_coroutine_sync(_fetch())
@@ -77,7 +86,7 @@ def embed_single(
 
 def embed_batch(
     env: object,
-    repo: ConversationRepository,
+    repo: _EmbedConversationStore,
     vec_provider: VectorProvider,
     *,
     rebuild: bool = False,
@@ -124,7 +133,7 @@ def embed_batch(
     error_count = 0
 
     def _embed_one(conversation_id: str) -> bool:
-        messages = run_coroutine_sync(repo.queries.get_messages(conversation_id))
+        messages = run_coroutine_sync(repo.get_messages(conversation_id))
         if messages:
             vec_provider.upsert(conversation_id, messages)
             return True
