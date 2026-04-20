@@ -9,9 +9,10 @@ from __future__ import annotations
 
 from collections.abc import ItemsView, KeysView, Mapping, ValuesView
 from dataclasses import dataclass
-from typing import TypedDict, cast
+from typing import cast
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+from typing_extensions import TypedDict
 
 from polylogue.storage.store import AttachmentRecord, ConversationRecord, MessageRecord
 from polylogue.types import (

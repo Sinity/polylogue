@@ -12,13 +12,14 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, TypedDict, cast
+from typing import Any, cast
 from unittest.mock import AsyncMock
 
 import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 from pydantic import ValidationError
+from typing_extensions import TypedDict
 
 from polylogue.lib.conversation_models import Conversation
 from polylogue.lib.messages import MessageCollection

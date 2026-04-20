@@ -11,7 +11,9 @@ import re
 import subprocess
 import sys
 from pathlib import Path
-from typing import TextIO, TypedDict
+from typing import TextIO
+
+from typing_extensions import TypedDict
 
 from devtools.command_catalog import control_plane_command
 from devtools.generated_surfaces import GENERATED_SURFACES, GeneratedSurface

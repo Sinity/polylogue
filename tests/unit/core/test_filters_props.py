@@ -19,12 +19,13 @@ from __future__ import annotations
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Literal, NotRequired, TypeAlias, TypedDict
+from typing import Literal, NotRequired, TypeAlias
 from unittest.mock import patch
 
 import pytest
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
+from typing_extensions import TypedDict
 
 from polylogue.cli.filter_picker import pick_filter
 from polylogue.lib.conversation_models import Conversation

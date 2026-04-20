@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from typing import NotRequired, TypedDict, cast
+from typing import NotRequired, cast
+
+from typing_extensions import TypedDict
 
 from polylogue.lib.payload_coercion import is_payload_mapping, mapping_or_empty, optional_string
 from polylogue.lib.raw_payload_decode import JSONRecord, JSONValue
