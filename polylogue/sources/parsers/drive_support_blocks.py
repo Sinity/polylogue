@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import cast
 
+from polylogue.lib.json import JSONDocument, json_document, json_document_list
+from polylogue.lib.viewports import ContentBlock
 from polylogue.types import ContentBlockType
 
 from .base import ParsedContentBlock
 
 
-def viewport_block_payload(block: Any) -> dict[str, object] | None:
+def viewport_block_payload(block: ContentBlock) -> JSONDocument | None:
     raw_type = block.type.value if hasattr(block.type, "value") else str(block.type)
     block_type = {
         "file": "document",
@@ -21,16 +23,16 @@ def viewport_block_payload(block: Any) -> dict[str, object] | None:
     }.get(raw_type, raw_type)
     if block_type not in {"text", "thinking", "tool_use", "tool_result", "image", "code", "document"}:
         return None
-    payload: dict[str, object] = {"type": block_type}
+    payload: JSONDocument = {"type": block_type}
     if block.text is not None:
         payload["text"] = block.text
     if block.language:
         payload["language"] = block.language
     if block.mime_type:
         payload["media_type"] = block.mime_type
-    metadata: dict[str, object] = {}
+    metadata: JSONDocument = {}
     if isinstance(block.raw, dict) and block.raw:
-        metadata.update(block.raw)
+        metadata.update(json_document(block.raw))
     if getattr(block, "url", None):
         metadata["url"] = block.url
     if metadata:
@@ -39,27 +41,26 @@ def viewport_block_payload(block: Any) -> dict[str, object] | None:
 
 
 def parsed_content_blocks_from_meta(blocks: object) -> list[ParsedContentBlock]:
-    if not isinstance(blocks, list):
-        return []
     parsed: list[ParsedContentBlock] = []
-    for block in blocks:
-        if not isinstance(block, dict):
-            continue
+    for block in json_document_list(blocks):
         block_type = block.get("type")
         if not isinstance(block_type, str) or not block_type:
             continue
-        meta_value = block.get("metadata")
-        metadata: dict[str, object] | None = dict(meta_value) if isinstance(meta_value, dict) else None
+        metadata = json_document(block.get("metadata"))
+        block_text = block.get("text")
+        text = block_text if isinstance(block_text, str) else None
+        raw_media_type = block.get("media_type")
+        media_type = raw_media_type if isinstance(raw_media_type, str) else None
         language = block.get("language")
         if isinstance(language, str) and language:
-            metadata = dict(metadata or {})
+            metadata = dict(metadata)
             metadata.setdefault("language", language)
         parsed.append(
             ParsedContentBlock(
                 type=ContentBlockType.from_string(block_type),
-                text=block.get("text") if isinstance(block.get("text"), str) else None,
-                media_type=block.get("media_type") if isinstance(block.get("media_type"), str) else None,
-                metadata=metadata,
+                text=text,
+                media_type=media_type,
+                metadata=cast(dict[str, object] | None, metadata or None),
             )
         )
     return parsed

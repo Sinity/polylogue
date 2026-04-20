@@ -11,7 +11,9 @@ from tenacity import (
     stop_after_attempt,
     wait_exponential,
 )
+from typing_extensions import TypedDict
 
+from polylogue.lib.json import JSONDocument, JSONDocumentList
 from polylogue.logging import get_logger
 
 from .drive_types import (
@@ -27,7 +29,13 @@ logger = get_logger(__name__)
 P = ParamSpec("P")
 T = TypeVar("T")
 T_co = TypeVar("T_co", covariant=True)
-DrivePayloadRecord: TypeAlias = dict[str, object]
+DrivePayloadRecord: TypeAlias = JSONDocument
+
+
+class DriveListFilesResponse(TypedDict, total=False):
+    files: JSONDocumentList
+    nextPageToken: str
+
 
 DEFAULT_DRIVE_RETRIES = 3
 DEFAULT_DRIVE_RETRY_BASE = 0.5
@@ -55,7 +63,7 @@ class _DriveFilesResource(Protocol):
         fields: str,
         pageToken: str | None,  # noqa: N803
         pageSize: int,  # noqa: N803
-    ) -> _ExecutableRequest[DrivePayloadRecord]: ...  # noqa: N803
+    ) -> _ExecutableRequest[DriveListFilesResponse]: ...  # noqa: N803
 
     def get_media(self, *, fileId: str) -> object: ...  # noqa: N803
 
@@ -173,10 +181,10 @@ class DriveServiceGateway:
         fields: str,
         page_token: str | None,
         page_size: int,
-    ) -> DrivePayloadRecord:
+    ) -> DriveListFilesResponse:
         service = self._service_handle()
 
-        def _load_page() -> DrivePayloadRecord:
+        def _load_page() -> DriveListFilesResponse:
             return service.files().list(q=q, fields=fields, pageToken=page_token, pageSize=page_size).execute()
 
         return self.call_with_retry(_load_page)

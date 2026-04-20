@@ -6,7 +6,7 @@ with automatic validation and normalization.
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from datetime import datetime
 
 from pydantic import ValidationError
@@ -47,7 +47,7 @@ def _latest_timestamp(*values: str | None) -> str | None:
     return candidates[-1][1]
 
 
-def looks_like(payload: list[object]) -> bool:
+def looks_like(payload: Sequence[object]) -> bool:
     """Detect Codex JSONL format using typed validation.
 
     Newest format (envelope with typed payloads):

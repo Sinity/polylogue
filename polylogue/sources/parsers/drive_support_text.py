@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import datetime
 
 from polylogue.lib.timestamps import parse_timestamp
@@ -28,7 +29,7 @@ def extract_text_from_chunk(chunk: object) -> str | None:
     return None
 
 
-def chunk_timestamp(chunk: dict[str, object], default_timestamp: str | None) -> str | None:
+def chunk_timestamp(chunk: Mapping[str, object], default_timestamp: str | None) -> str | None:
     for key in ("createTime", "timestamp", "updateTime"):
         value = chunk.get(key)
         if isinstance(value, str) and value:

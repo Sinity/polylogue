@@ -9,7 +9,7 @@ import zipfile
 from collections.abc import Iterable, Mapping
 from io import BytesIO
 from pathlib import Path
-from typing import IO, BinaryIO
+from typing import IO, BinaryIO, cast
 from unittest.mock import MagicMock
 
 import ijson
@@ -20,7 +20,7 @@ from typing_extensions import TypedDict
 
 from polylogue.config import Source
 from polylogue.lib.roles import Role, normalize_role
-from polylogue.schemas.json_types import JSONDocument
+from polylogue.schemas.json_types import JSONDocument, JSONValue
 from polylogue.sources import decoders as decoders_module
 from polylogue.sources import dispatch as dispatch_module
 from polylogue.sources import source_acquisition
@@ -1687,9 +1687,9 @@ class _StubDriveRawClient:
             raise self.failures[file_id]
         return self.raw_bytes[file_id]
 
-    def download_json_payload(self, file_id: str, *, name: str) -> object:
+    def download_json_payload(self, file_id: str, *, name: str) -> JSONValue:
         del name
-        return json.loads(self.download_bytes(file_id))
+        return cast(JSONValue, json.loads(self.download_bytes(file_id)))
 
     def download_to_path(self, file_id: str, dest: Path) -> DriveFile:
         if file_id in self.failures:
