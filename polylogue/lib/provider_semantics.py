@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 from polylogue.lib.json import JSONDocument, json_document
 from polylogue.lib.viewports import (
     ContentBlock,
@@ -36,6 +38,13 @@ def _string_field(block: JSONDocument, key: str) -> str | None:
     return value if isinstance(value, str) else None
 
 
+def _content_block_record(value: object) -> JSONDocument | None:
+    record = json_document(value)
+    if record or isinstance(value, Mapping):
+        return record
+    return None
+
+
 def extract_reasoning_traces(content: list[JSONDocument] | None, provider: Provider | str) -> list[ReasoningTrace]:
     """Extract reasoning traces from provider content blocks."""
     if not content:
@@ -43,7 +52,10 @@ def extract_reasoning_traces(content: list[JSONDocument] | None, provider: Provi
 
     normalized_provider = provider if isinstance(provider, Provider) else Provider.from_string(provider)
     traces: list[ReasoningTrace] = []
-    for block in content:
+    for raw_block in content:
+        block = _content_block_record(raw_block)
+        if block is None:
+            continue
         block_type = block.get("type")
         text: str | None = None
         if block_type == "thinking":
@@ -64,7 +76,10 @@ def extract_tool_calls(content: list[JSONDocument] | None, provider: Provider | 
 
     normalized_provider = provider if isinstance(provider, Provider) else Provider.from_string(provider)
     calls: list[ToolCall] = []
-    for block in content:
+    for raw_block in content:
+        block = _content_block_record(raw_block)
+        if block is None:
+            continue
         if block.get("type") != "tool_use":
             continue
 
@@ -90,7 +105,10 @@ def extract_content_blocks(content: list[JSONDocument] | None) -> list[ContentBl
         return []
 
     blocks: list[ContentBlock] = []
-    for block in content:
+    for raw_block in content:
+        block = _content_block_record(raw_block)
+        if block is None:
+            continue
         block_type = block.get("type", "text")
         if block_type == "text":
             blocks.append(ContentBlock(type=ContentType.TEXT, text=_string_field(block, "text"), raw=block))
@@ -144,7 +162,10 @@ def extract_display_text_from_content_blocks(content: list[JSONDocument] | None)
         return ""
 
     parts: list[str] = []
-    for block in content:
+    for raw_block in content:
+        block = _content_block_record(raw_block)
+        if block is None:
+            continue
         if block.get("type") not in {"text", "code", "tool_result", "thinking"}:
             continue
         text = _string_field(block, "text")
@@ -159,7 +180,10 @@ def extract_claude_code_text(content: list[JSONDocument] | None) -> str:
         return ""
 
     parts = []
-    for block in content:
+    for raw_block in content:
+        block = _content_block_record(raw_block)
+        if block is None:
+            continue
         if block.get("type") == "text":
             text = _string_field(block, "text")
             if text:
@@ -194,7 +218,10 @@ def extract_codex_text(content: list[JSONDocument] | None) -> str:
         return ""
 
     parts = []
-    for block in content:
+    for raw_block in content:
+        block = _content_block_record(raw_block)
+        if block is None:
+            continue
         text = _string_field(block, "text") or _string_field(block, "input_text") or _string_field(block, "output_text")
         if text:
             parts.append(text)

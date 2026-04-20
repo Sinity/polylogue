@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
 
+from polylogue.lib.json import JSONDocument, json_document_list
 from polylogue.lib.provider_semantics import extract_display_text_from_content_blocks
 from polylogue.lib.roles import Role
 from polylogue.lib.viewports import ContentType, ReasoningTrace
@@ -20,9 +20,35 @@ from polylogue.schemas.unified_provider_meta_coercion import (
 from polylogue.types import Provider
 
 
+def _object_record(value: JSONDocument) -> dict[str, object]:
+    return dict(value)
+
+
+def _string_value(value: object) -> str | None:
+    return value if isinstance(value, str) else None
+
+
+def _int_value(value: object) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    return None
+
+
+def _timestamp_candidate(value: object) -> str | float | int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (str, float, int)):
+        return value
+    return None
+
+
 def _harmonize_extracted_provider_meta(
     provider: Provider,
-    provider_meta: dict[str, Any],
+    provider_meta: JSONDocument,
     *,
     message_id: str | None = None,
     role: str | None = None,
@@ -62,9 +88,8 @@ def _harmonize_extracted_provider_meta(
         if isinstance(provider_meta.get("text"), str):
             resolved_text = str(provider_meta["text"])
         else:
-            raw_content_blocks = provider_meta.get("content_blocks")
             resolved_text = extract_display_text_from_content_blocks(
-                raw_content_blocks if isinstance(raw_content_blocks, list) else None
+                json_document_list(provider_meta.get("content_blocks"))
             )
 
     resolved_timestamp = timestamp
@@ -75,24 +100,25 @@ def _harmonize_extracted_provider_meta(
             provider_meta.get("create_time"),
             provider_meta.get("updated_at"),
         ):
-            if candidate is not None:
-                resolved_timestamp = candidate
+            normalized_candidate = _timestamp_candidate(candidate)
+            if normalized_candidate is not None:
+                resolved_timestamp = normalized_candidate
                 break
 
     return HarmonizedMessage(
-        id=message_id or provider_meta.get("id") or provider_meta.get("uuid"),
+        id=message_id or _string_value(provider_meta.get("id")) or _string_value(provider_meta.get("uuid")),
         role=Role.normalize(resolved_role or _missing_role()),
         text=resolved_text or "",
         timestamp=_coerce_timestamp(resolved_timestamp),
         reasoning_traces=reasoning_traces,
         tool_calls=tool_calls,
         content_blocks=content_blocks,
-        model=provider_meta.get("model") or provider_meta.get("model_slug"),
+        model=_string_value(provider_meta.get("model")) or _string_value(provider_meta.get("model_slug")),
         tokens=_extract_generic_tokens(provider_meta),
         cost=_extract_generic_cost(provider_meta),
-        duration_ms=provider_meta.get("durationMs") or provider_meta.get("duration_ms"),
+        duration_ms=_int_value(provider_meta.get("durationMs")) or _int_value(provider_meta.get("duration_ms")),
         provider=provider,
-        raw=provider_meta,
+        raw=_object_record(provider_meta),
     )
 
 
@@ -104,7 +130,7 @@ def _overlay_message_context(
     text: str | None = None,
     timestamp: datetime | str | float | int | None = None,
 ) -> HarmonizedMessage:
-    updates: dict[str, Any] = {}
+    updates: dict[str, object] = {}
 
     if message.id is None and message_id is not None:
         updates["id"] = message_id

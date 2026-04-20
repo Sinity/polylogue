@@ -19,10 +19,10 @@ extraction works on raw records (pre-parse or during parse).
 from __future__ import annotations
 
 import logging
-from typing import Any
 
 from pydantic import ValidationError
 
+from polylogue.lib.json import JSONDocument
 from polylogue.lib.provider_semantics import (
     extract_chatgpt_text,
     extract_claude_code_text,
@@ -52,7 +52,11 @@ from polylogue.types import Provider
 logger = logging.getLogger(__name__)
 
 
-def extract_harmonized_message(provider: Provider | str, raw: dict[str, Any]) -> HarmonizedMessage:
+def _object_record(value: JSONDocument) -> dict[str, object]:
+    return dict(value)
+
+
+def extract_harmonized_message(provider: Provider | str, raw: JSONDocument) -> HarmonizedMessage:
     """Extract ``HarmonizedMessage`` from a provider-native message payload.
 
     This operates on already-extracted message dicts (post-parse), not on
@@ -66,7 +70,7 @@ def extract_harmonized_message(provider: Provider | str, raw: dict[str, Any]) ->
         return extract_fallback_message(p, raw)
 
 
-def try_schema_extraction(provider: Provider | str, raw: dict[str, Any]) -> HarmonizedMessage | None:
+def try_schema_extraction(provider: Provider | str, raw: JSONDocument) -> HarmonizedMessage | None:
     """Record-level schema extraction. Returns None if unavailable.
 
     This is for raw wire-format records (pre-parse). Parsers can call
@@ -89,7 +93,7 @@ def try_schema_extraction(provider: Provider | str, raw: dict[str, Any]) -> Harm
         )
         if schema is None:
             return None
-        return extract_message_from_schema(raw, schema=schema, provider=p)
+        return extract_message_from_schema(_object_record(raw), schema=schema, provider=p)
     except Exception:
         return None
 
