@@ -5,18 +5,19 @@ from __future__ import annotations
 from sqlite3 import Connection
 
 from polylogue.storage.backends.connection import _build_provider_scope_filter
+from polylogue.storage.search_models import ConversationSearchResult
 
 
-def _resolve_ranked_conversation_ids(
+def _resolve_ranked_conversation_hits(
     conn: Connection,
     *,
     message_results: list[tuple[str, float]],
     limit: int,
     scope_names: list[str] | None,
-) -> list[str]:
+) -> ConversationSearchResult:
     """Resolve ranked message hits into unique conversation IDs in SQL."""
     if not message_results or limit <= 0:
-        return []
+        return ConversationSearchResult(hits=[])
 
     values_sql = ", ".join("(?, ?)" for _ in message_results)
     params: list[object] = []
@@ -65,7 +66,22 @@ def _resolve_ranked_conversation_ids(
         """,
         tuple(params),
     ).fetchall()
-    return [row["conversation_id"] for row in rows]
+    return ConversationSearchResult.from_ids([row["conversation_id"] for row in rows])
 
 
-__all__ = ["_resolve_ranked_conversation_ids"]
+def _resolve_ranked_conversation_ids(
+    conn: Connection,
+    *,
+    message_results: list[tuple[str, float]],
+    limit: int,
+    scope_names: list[str] | None,
+) -> list[str]:
+    return _resolve_ranked_conversation_hits(
+        conn,
+        message_results=message_results,
+        limit=limit,
+        scope_names=scope_names,
+    ).conversation_ids()
+
+
+__all__ = ["_resolve_ranked_conversation_hits", "_resolve_ranked_conversation_ids"]

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -23,4 +24,33 @@ class SearchResult:
     hits: list[SearchHit]
 
 
-__all__ = ["SearchHit", "SearchResult"]
+@dataclass(frozen=True)
+class ConversationSearchHit:
+    conversation_id: str
+    rank: int
+    score: float | None = None
+
+
+@dataclass(frozen=True)
+class ConversationSearchResult:
+    hits: list[ConversationSearchHit]
+
+    @classmethod
+    def from_ids(cls, conversation_ids: Sequence[str]) -> ConversationSearchResult:
+        return cls(
+            hits=[
+                ConversationSearchHit(conversation_id=conversation_id, rank=rank)
+                for rank, conversation_id in enumerate(conversation_ids, start=1)
+            ]
+        )
+
+    def conversation_ids(self) -> list[str]:
+        return [hit.conversation_id for hit in self.hits]
+
+
+__all__ = [
+    "ConversationSearchHit",
+    "ConversationSearchResult",
+    "SearchHit",
+    "SearchResult",
+]

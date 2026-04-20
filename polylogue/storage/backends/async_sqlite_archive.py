@@ -10,6 +10,7 @@ from polylogue.storage.backends.queries import attachments as attachments_q
 from polylogue.storage.backends.queries import conversations as conversations_q
 from polylogue.storage.backends.queries import messages as messages_q
 from polylogue.storage.backends.queries.stats import AggregateMessageStats
+from polylogue.storage.search_models import ConversationSearchResult
 from polylogue.storage.session_product_runtime import SessionProductStatusSnapshot
 from polylogue.storage.store import AttachmentRecord, ContentBlockRecord, ConversationRecord, MessageRecord
 
@@ -146,6 +147,15 @@ class SQLiteArchiveMixin:
     async def search_conversations(self, query: str, limit: int = 100, providers: list[str] | None = None) -> list[str]:
         """Search conversations using the canonical ranked FTS conversation query."""
         return await self.queries.search_conversations(query, limit, providers)
+
+    async def search_conversation_hits(
+        self,
+        query: str,
+        limit: int = 100,
+        providers: list[str] | None = None,
+    ) -> ConversationSearchResult:
+        """Search conversations while preserving ordered conversation-hit metadata."""
+        return await self.queries.search_conversation_hits(query, limit, providers)
 
     async def iter_messages(
         self,
