@@ -6,11 +6,11 @@ from typing import TYPE_CHECKING
 from textual.containers import Container
 from textual.widgets import Markdown as MarkdownWidget
 
+from polylogue.protocols import ConversationArchiveReadStore
 from polylogue.rendering.core import format_conversation_markdown
 
 if TYPE_CHECKING:
     from polylogue.lib.conversation_models import Conversation
-    from polylogue.storage.repository import ConversationRepository
 
 
 ConversationMarkdownFormatter = Callable[["Conversation"], str]
@@ -21,12 +21,12 @@ class RepositoryBoundContainer(Container):
 
     def __init__(
         self,
-        repository: ConversationRepository | None = None,
+        repository: ConversationArchiveReadStore | None = None,
     ) -> None:
         super().__init__()
         self._repository = repository
 
-    def _get_repo(self, owner_name: str) -> ConversationRepository:
+    def _get_repo(self, owner_name: str) -> ConversationArchiveReadStore:
         """Return the injected repository or fail with a screen-specific message."""
         if self._repository is None:
             raise RuntimeError(f"{owner_name} widget requires an injected repository")

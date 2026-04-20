@@ -574,7 +574,7 @@ async def async_execute_query(env: AppEnv, params: dict[str, Any]) -> None:
 
     if route == QueryRoute.SUMMARY_STATS:
         summaries = await filter_chain.list_summaries()
-        msg_counts = await repo.queries.get_message_counts_batch([str(summary.id) for summary in summaries])
+        msg_counts = await repo.get_message_counts_batch([str(summary.id) for summary in summaries])
         _query_output.output_stats_by_summaries(
             env,
             summaries,
@@ -599,18 +599,16 @@ async def async_execute_query(env: AppEnv, params: dict[str, Any]) -> None:
             )
             return
         if await _await_if_needed(query_plan.can_use_action_event_stats_with(repo)) is True:
-            records_result = repo.queries.list_conversations(query_plan.record_query.with_limit(query_plan.limit))
-            if inspect.isawaitable(records_result):
-                records = await records_result
-                await _query_output.output_stats_by_semantic_query(
-                    env,
-                    [record.conversation_id for record in records],
-                    repo,
-                    plan.stats_dimension or "all",
-                    selection=plan.selection,
-                    output_format=plan.output.output_format,
-                )
-                return
+            summaries = await repo.list_summaries_by_query(query_plan.record_query.with_limit(query_plan.limit))
+            await _query_output.output_stats_by_semantic_summaries(
+                env,
+                summaries,
+                repo,
+                plan.stats_dimension or "all",
+                selection=plan.selection,
+                output_format=plan.output.output_format,
+            )
+            return
 
     if route == QueryRoute.STATS_BY and plan.stats_dimension in {"repo", "work-kind"}:
         if filter_chain.can_use_summaries():
@@ -625,10 +623,10 @@ async def async_execute_query(env: AppEnv, params: dict[str, Any]) -> None:
             )
             return
         query_plan = filter_chain.build_query_plan()
-        records = await repo.queries.list_conversations(query_plan.record_query.with_limit(query_plan.limit))
-        await _query_output.output_stats_by_profile_query(
+        summaries = await repo.list_summaries_by_query(query_plan.record_query.with_limit(query_plan.limit))
+        await _query_output.output_stats_by_profile_summaries(
             env,
-            [record.conversation_id for record in records],
+            summaries,
             repo,
             plan.stats_dimension or "all",
             selection=plan.selection,

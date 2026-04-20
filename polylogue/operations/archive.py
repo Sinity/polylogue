@@ -36,6 +36,7 @@ from polylogue.archive_products import (
     WorkThreadProduct,
     WorkThreadProductQuery,
 )
+from polylogue.lib.conversation_models import ConversationSummary
 from polylogue.lib.query_spec import ConversationQuerySpec
 from polylogue.maintenance_targets import build_maintenance_target_catalog
 from polylogue.paths import conversation_render_root
@@ -198,6 +199,14 @@ class ArchiveSearchMixin:
     async def get_conversation(self, conversation_id: str) -> Conversation | None:
         return await self.repository.view(conversation_id)
 
+    async def get_conversation_summary(self, conversation_id: str) -> ConversationSummary | None:
+        full_id = await self.repository.resolve_id(conversation_id) or conversation_id
+        return await self.repository.get_summary(str(full_id))
+
+    async def get_conversation_stats(self, conversation_id: str) -> dict[str, int]:
+        full_id = await self.repository.resolve_id(conversation_id) or conversation_id
+        return await self.repository.get_conversation_stats(str(full_id))
+
     async def get_conversations(self, conversation_ids: list[str]) -> list[Conversation]:
         return await self.repository.get_many(conversation_ids)
 
@@ -211,6 +220,15 @@ class ArchiveSearchMixin:
 
     async def query_conversations(self, spec: ConversationQuerySpec) -> list[Conversation]:
         return await spec.list(self.repository)
+
+    async def get_session_tree(self, conversation_id: str) -> list[Conversation]:
+        return await self.repository.get_session_tree(conversation_id)
+
+    async def get_stats_by(self, group_by: str = "provider") -> dict[str, int]:
+        return await self.repository.get_stats_by(group_by)
+
+    async def list_tags(self, *, provider: str | None = None) -> dict[str, int]:
+        return await self.repository.list_tags(provider=provider)
 
     async def search(
         self,
@@ -290,7 +308,7 @@ class ArchiveStatsMixin:
 
     async def summary_stats(self) -> ArchiveStats:
         storage_snapshot = await self.storage_stats()
-        aggregate_stats = await self.repository.queries.aggregate_message_stats()
+        aggregate_stats = await self.repository.aggregate_message_stats()
         tags = await self.repository.list_tags()
         recent = await self.list_conversations(limit=5)
 

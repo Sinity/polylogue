@@ -6,7 +6,7 @@ from textual.app import App, ComposeResult
 from textual.widgets import Footer, Header
 
 if TYPE_CHECKING:
-    from polylogue.storage.repository import ConversationRepository
+    from polylogue.protocols import ConversationArchiveReadStore
 
 
 class PolylogueApp(App[None]):
@@ -20,7 +20,7 @@ class PolylogueApp(App[None]):
 
     def __init__(
         self,
-        repository: ConversationRepository | None = None,
+        repository: ConversationArchiveReadStore | None = None,
     ) -> None:
         super().__init__()
         self._repository = repository

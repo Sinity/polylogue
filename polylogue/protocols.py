@@ -31,9 +31,10 @@ if TYPE_CHECKING:
     from polylogue.lib.session_profile import SessionProfile
     from polylogue.lib.stats import ArchiveStats
     from polylogue.storage.action_event_artifacts import ActionEventArtifactState
+    from polylogue.storage.archive_views import ConversationRenderProjection
     from polylogue.storage.backends.queries.stats import AggregateMessageStats
     from polylogue.storage.query_models import ConversationRecordQuery
-    from polylogue.storage.repository_contracts import RepositoryBackendProtocol
+    from polylogue.storage.store import ConversationRecord
     from polylogue.types import ConversationId
 
 
@@ -252,8 +253,6 @@ class ConversationQueryRuntimeStore(
 class ArchiveMessageQueryStore(Protocol):
     """Low-level archive/message query band used by CLI output and stats helpers."""
 
-    async def get_conversation(self, conversation_id: str) -> ConversationRecord | None: ...
-
     async def get_messages(self, conversation_id: str) -> list[MessageRecord]: ...
 
     async def get_conversation_stats(self, conversation_id: str) -> dict[str, int]: ...
@@ -264,6 +263,8 @@ class ArchiveMessageQueryStore(Protocol):
         self,
         conversation_ids: list[str] | None = None,
     ) -> AggregateMessageStats: ...
+
+    async def get_stats_by(self, group_by: str = "provider") -> dict[str, int]: ...
 
 
 @runtime_checkable
@@ -287,16 +288,31 @@ class SemanticArchiveQueryStore(ArchiveMessageQueryStore, Protocol):
 class ConversationOutputStore(ConversationReader, Protocol):
     """Conversation output surface used by streaming and summary display helpers."""
 
-    @property
-    def queries(self) -> SemanticArchiveQueryStore: ...
+    async def get_render_projection(
+        self,
+        conversation_id: str,
+    ) -> ConversationRenderProjection | None: ...
+
+    async def get_conversation_stats(self, conversation_id: str) -> dict[str, int]: ...
+
+    async def get_message_counts_batch(self, conversation_ids: list[str]) -> dict[str, int]: ...
 
 
 @runtime_checkable
 class ConversationSemanticStatsStore(ActionEventArtifactReader, Protocol):
     """Semantic stats surface for action-event-backed grouped output."""
 
-    @property
-    def queries(self) -> SemanticArchiveQueryStore: ...
+    async def get_conversations_batch(self, ids: list[str]) -> list[ConversationRecord]: ...
+
+    async def get_messages_batch(
+        self,
+        conversation_ids: list[str],
+    ) -> dict[str, list[MessageRecord]]: ...
+
+    async def get_attachments_batch(
+        self,
+        conversation_ids: list[str],
+    ) -> dict[str, list[AttachmentRecord]]: ...
 
     async def get_action_events_batch(
         self,
@@ -312,14 +328,18 @@ class ConversationArchiveStatsStore(
 ):
     """Archive stats/profile surface consumed by grouped CLI output helpers."""
 
-    @property
-    def backend(self) -> RepositoryBackendProtocol: ...
+    async def aggregate_message_stats(
+        self,
+        conversation_ids: list[str] | None = None,
+    ) -> AggregateMessageStats: ...
 
     async def get_archive_stats(
         self,
         *,
         conn: aiosqlite.Connection | None = None,
     ) -> ArchiveStats: ...
+
+    async def get_stats_by(self, group_by: str = "provider") -> dict[str, int]: ...
 
     async def get_session_profiles_batch(
         self,
@@ -340,6 +360,21 @@ class TagStore(Protocol):
     async def update_metadata(self, conversation_id: str, key: str, value: object) -> None: ...
 
     async def delete_metadata(self, conversation_id: str, key: str) -> None: ...
+
+    async def add_tag(self, conversation_id: str, tag: str) -> None: ...
+
+    async def remove_tag(self, conversation_id: str, tag: str) -> None: ...
+
+
+@runtime_checkable
+class ConversationArchiveReadStore(ConversationReader, SearchStore, Protocol):
+    """Small read-side surface used by UI and resource adapters."""
+
+    async def get_archive_stats(
+        self,
+        *,
+        conn: aiosqlite.Connection | None = None,
+    ) -> ArchiveStats: ...
 
 
 @runtime_checkable

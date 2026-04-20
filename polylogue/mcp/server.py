@@ -13,7 +13,6 @@ from polylogue.mcp.server_support import (
     _error_json,
     _extract_fenced_code,
     _get_config,
-    _get_repo,
     _get_runtime_services,
     _json_payload,
     _safe_call,
@@ -21,20 +20,45 @@ from polylogue.mcp.server_support import (
 )
 from polylogue.mcp.server_tools import register_tools
 from polylogue.operations import ArchiveOperations
+from polylogue.protocols import ConversationQueryRuntimeStore, TagStore
 from polylogue.services import RuntimeServices
+from polylogue.storage.backends.async_sqlite import SQLiteBackend
+from polylogue.storage.repository import ConversationRepository
 
 if TYPE_CHECKING:
     from mcp.server.fastmcp import FastMCP
 
 
+def _get_repo() -> ConversationRepository:
+    """Return the canonical server-level repository injection seam."""
+    return _get_runtime_services().get_repository()
+
+
+def _get_query_store() -> ConversationQueryRuntimeStore:
+    """Return the query/runtime store used by read-heavy MCP surfaces."""
+    return _get_repo()
+
+
+def _get_tag_store() -> TagStore:
+    """Return the tag/metadata store used by mutation/resource surfaces."""
+    return _get_repo()
+
+
+def _get_backend() -> SQLiteBackend:
+    """Return the backend bound to the injected repository when available."""
+    backend = getattr(_get_repo(), "backend", None)
+    if isinstance(backend, SQLiteBackend):
+        return backend
+    return _get_runtime_services().get_backend()
+
+
 def _get_archive_ops() -> ArchiveOperations:
     """Return canonical archive operations for MCP read surfaces."""
-    repo = _get_repo()
     services = _get_runtime_services()
     return ArchiveOperations(
         config=services.config if services is not None else None,
-        repository=repo,
-        backend=getattr(repo, "backend", None),
+        repository=_get_repo(),
+        backend=_get_backend(),
     )
 
 
@@ -57,7 +81,9 @@ def build_server() -> FastMCP:
         safe_call=lambda fn_name, fn: _safe_call(fn_name, fn),
         async_safe_call=lambda fn_name, fn: _async_safe_call(fn_name, fn),
         error_json=lambda message, **extra: _error_json(message, **extra),
-        get_repo=lambda: _get_repo(),
+        get_query_store=lambda: _get_query_store(),
+        get_tag_store=lambda: _get_tag_store(),
+        get_backend=lambda: _get_backend(),
         get_config=lambda: _get_config(),
         get_archive_ops=lambda: _get_archive_ops(),
         extract_fenced_code=_extract_fenced_code,

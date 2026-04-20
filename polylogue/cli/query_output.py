@@ -347,7 +347,7 @@ async def output_summary_list(
     msg_counts: dict[str, int] = {}
     if repo:
         ids = [str(summary.id) for summary in summaries]
-        msg_counts = await repo.queries.get_message_counts_batch(ids)
+        msg_counts = await repo.get_message_counts_batch(ids)
 
     fields = params.get("fields")
     fields_value = str(fields) if isinstance(fields, str) else None
@@ -556,12 +556,13 @@ async def stream_conversation(
     message_limit: int | None = None,
 ) -> int:
     """Stream conversation messages to stdout without buffering."""
-    conv_record = await repo.queries.get_conversation(conversation_id)
-    if not conv_record:
+    projection = await repo.get_render_projection(conversation_id)
+    if projection is None:
         click.echo(f"Conversation not found: {conversation_id}", err=True)
         raise SystemExit(1)
+    conv_record = projection.conversation
 
-    stats = await repo.queries.get_conversation_stats(conversation_id)
+    stats = await repo.get_conversation_stats(conversation_id)
     sys.stdout.write(
         render_stream_header(
             conversation_id=conversation_id,
