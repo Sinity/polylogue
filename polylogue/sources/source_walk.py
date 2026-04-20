@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from polylogue.config import Source
-from polylogue.storage.state_views import CursorStatePayload
+from polylogue.storage.cursor_state import CursorStatePayload
 from polylogue.types import Provider
 
 from . import cursor as _cursor

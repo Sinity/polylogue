@@ -16,7 +16,7 @@ from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.repository import ConversationRepository
 
 if TYPE_CHECKING:
-    from polylogue.storage.state_views import ConversationRenderProjection
+    from polylogue.storage.archive_views import ConversationRenderProjection
 
 
 @dataclass

@@ -7,6 +7,7 @@ from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, cast
 
 from polylogue.lib.conversation_models import Conversation, ConversationSummary
+from polylogue.protocols import ConversationQueryRuntimeStore
 from polylogue.storage.query_models import ConversationRecordQuery
 
 if TYPE_CHECKING:
@@ -207,9 +208,8 @@ class RepositoryArchiveQueryMixin:
 
     def filter(self) -> ConversationFilter:
         from polylogue.lib import filters
-        from polylogue.storage.repository import ConversationRepository
 
-        return filters.ConversationFilter(cast(ConversationRepository, self))
+        return filters.ConversationFilter(cast(ConversationQueryRuntimeStore, self))
 
 
 __all__ = ["RepositoryArchiveQueryMixin"]

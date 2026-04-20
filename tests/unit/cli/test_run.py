@@ -18,7 +18,7 @@ from polylogue.cli.types import AppEnv
 from polylogue.sources import DriveError
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.repository import ConversationRepository
-from polylogue.storage.state_views import (
+from polylogue.storage.run_state import (
     DriftBucket,
     PlanCounts,
     PlanDetails,

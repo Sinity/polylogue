@@ -11,7 +11,7 @@ from polylogue.pipeline.run_support import expand_requested_stage, normalize_sta
 from polylogue.pipeline.stage_models import ValidateResult
 from polylogue.protocols import ProgressCallback
 from polylogue.storage.raw_ingest_artifacts import RawIngestArtifactState
-from polylogue.storage.state_views import PlanCounts, PlanDetails, PlanResult
+from polylogue.storage.run_state import PlanCounts, PlanDetails, PlanResult
 from polylogue.storage.store import RawConversationRecord
 from polylogue.types import PlanStage
 

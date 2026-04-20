@@ -13,7 +13,7 @@ from polylogue.lib.run_activity import conversation_activity_counts
 from polylogue.logging import get_logger
 
 if TYPE_CHECKING:
-    from polylogue.storage.state_views import RunResult
+    from polylogue.storage.run_state import RunResult
 
 logger = get_logger(__name__)
 

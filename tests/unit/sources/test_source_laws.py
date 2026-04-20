@@ -79,7 +79,7 @@ from polylogue.sources.source_parsing import (
 )
 from polylogue.sources.source_walk import _has_supported_extension
 from polylogue.storage.blob_store import BlobStore, Heartbeat
-from polylogue.storage.state_views import CursorFailurePayload, CursorStatePayload
+from polylogue.storage.cursor_state import CursorFailurePayload, CursorStatePayload
 from polylogue.types import Provider
 from tests.infra.source_builders import GenericConversationBuilder, make_claude_chat_message
 from tests.infra.strategies import (

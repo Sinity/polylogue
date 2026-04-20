@@ -12,7 +12,7 @@ from polylogue.schemas.generation_models import GenerationResult
 from polylogue.schemas.packages import SchemaPackageCatalog, SchemaResolution, SchemaVersionPackage
 from polylogue.schemas.tooling_registry import ClusterManifest, SchemaDiff
 from polylogue.schemas.verification_models import ArtifactProofReport
-from polylogue.storage.state_views import ArtifactCohortSummary
+from polylogue.storage.artifact_views import ArtifactCohortSummary
 from polylogue.storage.store import ArtifactObservationRecord
 
 JSONPrimitive: TypeAlias = str | int | float | bool | None

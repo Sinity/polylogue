@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 from polylogue.config import Config
 from polylogue.pipeline.run_support import run_coroutine_sync, select_sources
 from polylogue.storage.backends import create_backend
-from polylogue.storage.state_views import PlanResult
+from polylogue.storage.run_state import PlanResult
 
 if TYPE_CHECKING:
     from collections.abc import Sequence

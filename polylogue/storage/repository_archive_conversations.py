@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 
 from polylogue.lib.conversation_models import Conversation, ConversationSummary
 from polylogue.lib.message_models import Message
+from polylogue.storage.archive_views import ConversationRenderProjection
 from polylogue.storage.hydrators import (
     conversation_from_records,
     conversation_summary_from_record,
@@ -15,7 +16,6 @@ from polylogue.storage.hydrators import (
 )
 from polylogue.storage.query_models import ConversationRecordQuery
 from polylogue.storage.repository_contracts import RepositoryBackendProtocol
-from polylogue.storage.state_views import ConversationRenderProjection
 from polylogue.storage.store import ConversationRecord
 
 if TYPE_CHECKING:

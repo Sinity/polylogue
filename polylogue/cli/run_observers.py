@@ -11,7 +11,7 @@ from typing import Any, Protocol
 from polylogue.cli.formatting import format_counts
 from polylogue.cli.types import AppEnv
 from polylogue.pipeline.observers import RunObserver
-from polylogue.storage.state_views import RunResult
+from polylogue.storage.run_state import RunResult
 
 _PROGRESS_FRACTION_RE = re.compile(r"(?P<completed>\d[\d,]*)/(?P<total>\d[\d,]*)")
 

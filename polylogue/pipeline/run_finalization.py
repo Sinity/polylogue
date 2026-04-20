@@ -11,7 +11,7 @@ from typing_extensions import TypedDict
 from polylogue.pipeline.run_support import write_run_json
 from polylogue.storage.backends import create_backend
 from polylogue.storage.backends.queries import runs as runs_q
-from polylogue.storage.state_views import RunCountsPayload, RunDrift, RunDriftPayload, RunResult
+from polylogue.storage.run_state import RunCountsPayload, RunDrift, RunDriftPayload, RunResult
 from polylogue.storage.store import RunRecord
 
 if TYPE_CHECKING:
@@ -21,7 +21,7 @@ if TYPE_CHECKING:
     from polylogue.pipeline.run_state import RunExecutionState
     from polylogue.storage.backends.async_sqlite import SQLiteBackend
     from polylogue.storage.repository import ConversationRepository
-    from polylogue.storage.state_views import PlanResult
+    from polylogue.storage.run_state import PlanResult
 
 
 class RunPayload(TypedDict):

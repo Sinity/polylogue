@@ -13,7 +13,7 @@ from polylogue.config import Source, get_config
 from polylogue.pipeline.observers import ExecObserver, NotificationObserver, WebhookObserver
 from polylogue.pipeline.runner import latest_run, plan_sources, run_sources
 from polylogue.storage.backends.connection import open_connection
-from polylogue.storage.state_views import (
+from polylogue.storage.run_state import (
     DriftBucket,
     RenderFailurePayload,
     RunCounts,

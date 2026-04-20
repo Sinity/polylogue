@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING
 from polylogue.logging import get_logger
 from polylogue.pipeline.services.acquisition_records import make_raw_record
 from polylogue.sources.parsers.base import RawConversationData
-from polylogue.storage.state_views import CursorStatePayload
+from polylogue.storage.cursor_state import CursorStatePayload
 from polylogue.storage.store import RawConversationRecord
 
 if TYPE_CHECKING:

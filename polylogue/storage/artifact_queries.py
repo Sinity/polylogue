@@ -6,8 +6,8 @@ import sqlite3
 from typing import Any
 
 from polylogue.lib.artifact_taxonomy import ArtifactKind
+from polylogue.storage.artifact_views import ArtifactCohortSummary
 from polylogue.storage.backends.queries.mappers import _row_to_artifact_observation
-from polylogue.storage.state_views import ArtifactCohortSummary
 from polylogue.storage.store import ArtifactObservationRecord
 from polylogue.types import ArtifactSupportStatus, Provider
 

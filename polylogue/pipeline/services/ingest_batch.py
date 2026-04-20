@@ -45,7 +45,7 @@ from polylogue.storage.conversation_replacement import (
     recount_and_prune_attachments_sync,
     replace_conversation_runtime_state_sync,
 )
-from polylogue.storage.state_views import RawConversationStateUpdate
+from polylogue.storage.raw_state_models import RawConversationStateUpdate
 from polylogue.storage.store import RawConversationRecord
 
 if TYPE_CHECKING:

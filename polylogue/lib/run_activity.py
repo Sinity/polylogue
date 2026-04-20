@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-from polylogue.storage.state_views import RunCounts, RunDrift
+from polylogue.storage.run_state import RunCounts, RunDrift
 
 
 def _int_value(mapping: Mapping[str, object] | RunCounts, key: str) -> int:

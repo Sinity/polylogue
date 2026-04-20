@@ -25,8 +25,8 @@ from polylogue.schemas.verification_models import (
     ProviderSchemaVerification,
     SchemaVerificationReport,
 )
+from polylogue.storage.artifact_views import ArtifactCohortSummary
 from polylogue.storage.backends.connection import open_connection
-from polylogue.storage.state_views import ArtifactCohortSummary
 from polylogue.storage.store import ArtifactObservationRecord
 from polylogue.types import ArtifactSupportStatus, Provider
 from polylogue.ui import create_ui
