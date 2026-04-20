@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from datetime import datetime
 from types import SimpleNamespace
-from typing import Any, Protocol, cast
+from typing import Protocol, TypeAlias, cast
 
 import pytest
 from hypothesis import given, settings
@@ -70,7 +70,11 @@ from tests.infra.strategies import (
 _VALID_VIEWPORT_ROLES = {"user", "assistant", "system", "tool", "unknown", "model"}
 
 
-RawPayload = dict[str, object]
+JsonScalar: TypeAlias = str | int | float | bool | None
+JsonValue: TypeAlias = JsonScalar | dict[str, "JsonValue"] | list["JsonValue"]
+RawPayload: TypeAlias = dict[str, JsonValue]
+RawContent: TypeAlias = list[RawPayload]
+SemanticCase: TypeAlias = tuple[str, RawPayload]
 
 
 class ViewportRecord(Protocol):
@@ -92,15 +96,17 @@ def _provider(value: str | Provider) -> Provider:
 
 
 def _as_dict(value: object) -> RawPayload:
-    return cast(RawPayload, value) if isinstance(value, dict) else {}
+    if not isinstance(value, dict):
+        return {}
+    return {key: value for key, value in value.items() if isinstance(key, str)}
 
 
 def _as_list(value: object) -> list[object]:
-    return cast(list[object], value) if isinstance(value, list) else []
+    return list(value) if isinstance(value, list) else []
 
 
-def _typed_content(value: list[object]) -> list[dict[str, Any]]:
-    return cast(list[dict[str, Any]], value)
+def _content_blocks(value: list[object]) -> RawContent:
+    return [_as_dict(item) for item in value if isinstance(item, dict)]
 
 
 def _build_viewport_record(provider: str, raw: RawPayload) -> ViewportRecord:
@@ -117,9 +123,9 @@ def _build_viewport_record(provider: str, raw: RawPayload) -> ViewportRecord:
     raise AssertionError(f"unexpected provider {provider}")
 
 
-def _structured_provider_meta(record: ViewportRecord) -> dict[str, object]:
+def _structured_provider_meta(record: ViewportRecord) -> RawPayload:
     meta = record.to_meta()
-    provider_meta: dict[str, object] = {
+    provider_meta: RawPayload = {
         "content_blocks": [block.model_dump(mode="json") for block in record.extract_content_blocks()],
         "reasoning_traces": [trace.model_dump(mode="json") for trace in record.extract_reasoning_traces()],
         "tool_calls": [call.model_dump(mode="json") for call in record.extract_tool_calls()],
@@ -210,7 +216,7 @@ def _expected_reasoning_texts(content: list[object]) -> list[str]:
     return texts
 
 
-def _expected_tool_blocks(content: list[object]) -> list[dict[str, object]]:
+def _expected_tool_blocks(content: list[object]) -> RawContent:
     return [block for block in content if isinstance(block, dict) and block.get("type") == "tool_use"]
 
 
@@ -236,7 +242,7 @@ def _expected_content_types(content: list[object]) -> list[ContentType]:
 
 @given(provider_semantic_case_strategy())
 @settings(max_examples=40, deadline=None)
-def test_unified_semantic_equivalence_for_rich_provider_cases(case: tuple[str, dict[str, object]]) -> None:
+def test_unified_semantic_equivalence_for_rich_provider_cases(case: SemanticCase) -> None:
     provider, raw = case
     record = _build_viewport_record(provider, raw)
     meta = record.to_meta()
@@ -268,7 +274,7 @@ def test_unified_semantic_equivalence_for_rich_provider_cases(case: tuple[str, d
 
 @given(provider_semantic_case_strategy())
 @settings(max_examples=30, deadline=None)
-def test_harmonize_parsed_message_matches_bulk_harmonize(case: tuple[str, dict[str, object]]) -> None:
+def test_harmonize_parsed_message_matches_bulk_harmonize(case: SemanticCase) -> None:
     provider, raw = case
     record = _build_viewport_record(provider, raw)
     meta = record.to_meta()
@@ -321,7 +327,7 @@ def test_harmonized_message_provider_coercion_contract(provider_str: str) -> Non
     st.sampled_from(["claude-code", "claude-ai", "chatgpt", "gemini", "codex"]),
 )
 def test_typed_content_blocks_extract_without_crash(
-    content: list[dict[str, object]],
+    content: RawContent,
     provider: str,
 ) -> None:
     """Typed content block strategies always produce extractable blocks."""
@@ -349,7 +355,7 @@ def test_extract_reasoning_traces_preserve_reasoning_blocks_contract(
     content: list[object],
     provider: str,
 ) -> None:
-    traces = extract_reasoning_traces(_typed_content(content), provider)
+    traces = extract_reasoning_traces(_content_blocks(content), provider)
     assert [trace.text for trace in traces] == _expected_reasoning_texts(content)
     assert all(str(trace.provider) == provider for trace in traces)
 
@@ -369,7 +375,7 @@ def test_extract_tool_calls_preserve_tool_use_blocks_contract(
     content: list[object],
     provider: str,
 ) -> None:
-    calls = extract_tool_calls(_typed_content(content), provider)
+    calls = extract_tool_calls(_content_blocks(content), provider)
     expected = _expected_tool_blocks(content)
     assert [call.name for call in calls] == [str(block.get("name", "")) for block in expected]
     assert [call.id for call in calls] == [block.get("id") for block in expected]
@@ -392,7 +398,7 @@ def test_extract_tool_calls_preserve_tool_use_blocks_contract(
 def test_extract_content_blocks_preserve_recognized_block_order_contract(
     content: list[object],
 ) -> None:
-    blocks = extract_content_blocks(_typed_content(content))
+    blocks = extract_content_blocks(_content_blocks(content))
     assert [block.type for block in blocks] == _expected_content_types(content)
 
 
@@ -420,7 +426,7 @@ def test_extract_codex_text_prefers_first_available_text_field_contract(content:
         text = block.get("text", "") or block.get("input_text", "") or block.get("output_text", "")
         if isinstance(text, str) and text:
             expected.append(text)
-    assert extract_codex_text(_typed_content(content)) == "\n".join(expected)
+    assert extract_codex_text(_content_blocks(content)) == "\n".join(expected)
 
 
 @given(
@@ -432,11 +438,11 @@ def test_extract_codex_text_prefers_first_available_text_field_contract(content:
 )
 @settings(max_examples=20, deadline=None)
 def test_rich_semantic_cases_are_message_records(
-    chatgpt_raw: dict[str, object],
-    claude_ai_raw: dict[str, object],
-    claude_code_raw: dict[str, object],
-    codex_raw: dict[str, object],
-    gemini_raw: dict[str, object],
+    chatgpt_raw: RawPayload,
+    claude_ai_raw: RawPayload,
+    claude_code_raw: RawPayload,
+    codex_raw: RawPayload,
+    gemini_raw: RawPayload,
 ) -> None:
     assert is_message_record("chatgpt", chatgpt_raw)
     assert is_message_record("claude-ai", claude_ai_raw)
@@ -447,7 +453,7 @@ def test_rich_semantic_cases_are_message_records(
 
 @given(provider_semantic_case_strategy())
 @settings(max_examples=40, deadline=None)
-def test_rich_provider_block_classification_contract(case: tuple[str, dict[str, object]]) -> None:
+def test_rich_provider_block_classification_contract(case: SemanticCase) -> None:
     provider, raw = case
     record = _build_viewport_record(provider, raw)
 
@@ -456,7 +462,7 @@ def test_rich_provider_block_classification_contract(case: tuple[str, dict[str, 
 
 @given(provider_semantic_case_strategy())
 @settings(max_examples=40, deadline=None)
-def test_provider_adapter_viewport_contract(case: tuple[str, dict[str, object]]) -> None:
+def test_provider_adapter_viewport_contract(case: SemanticCase) -> None:
     provider, raw = case
     record = _build_viewport_record(provider, raw)
     meta = record.to_meta()
@@ -523,7 +529,7 @@ def test_provider_adapter_viewport_contract(case: tuple[str, dict[str, object]])
 
 @given(provider_semantic_case_strategy())
 @settings(max_examples=40, deadline=None)
-def test_rich_provider_meta_contract(case: tuple[str, dict[str, object]]) -> None:
+def test_rich_provider_meta_contract(case: SemanticCase) -> None:
     provider, raw = case
     record = _build_viewport_record(provider, raw)
     meta = record.to_meta()
@@ -563,7 +569,7 @@ def test_rich_provider_meta_contract(case: tuple[str, dict[str, object]]) -> Non
 
 @given(provider_semantic_case_strategy())
 @settings(max_examples=30, deadline=None)
-def test_structured_provider_meta_overlay_contract(case: tuple[str, dict[str, object]]) -> None:
+def test_structured_provider_meta_overlay_contract(case: SemanticCase) -> None:
     provider, raw = case
     record = _build_viewport_record(provider, raw)
     meta = record.to_meta()
@@ -605,7 +611,7 @@ def test_structured_provider_meta_overlay_contract(case: tuple[str, dict[str, ob
         ("gemini", {"role": "model"}, True),
     ],
 )
-def test_is_message_record_contract(provider: str, raw: dict[str, object], expected: bool) -> None:
+def test_is_message_record_contract(provider: str, raw: RawPayload, expected: bool) -> None:
     assert is_message_record(provider, raw) is expected
 
 
@@ -831,9 +837,9 @@ def test_generic_content_extraction_contract() -> None:
         {"type": "code", "code": "print('ok')", "language": "python"},
     ]
 
-    blocks = extract_content_blocks(_typed_content(content))
-    traces = extract_reasoning_traces(_typed_content(content), Provider.CLAUDE_CODE)
-    calls = extract_tool_calls(_typed_content(content), Provider.CLAUDE_CODE)
+    blocks = extract_content_blocks(_content_blocks(content))
+    traces = extract_reasoning_traces(_content_blocks(content), Provider.CLAUDE_CODE)
+    calls = extract_tool_calls(_content_blocks(content), Provider.CLAUDE_CODE)
 
     assert [block.type for block in blocks] == [
         ContentType.TEXT,
@@ -856,7 +862,7 @@ def test_generic_content_extraction_contract() -> None:
         {"type": "text", "text": "world"},
         "ignored",
     ]
-    assert extract_claude_code_text(_typed_content(cc_content)) == "hello\nworld"
+    assert extract_claude_code_text(_content_blocks(cc_content)) == "hello\nworld"
 
 
 def test_extract_from_provider_meta_integration_contract() -> None:
@@ -922,7 +928,7 @@ def test_extract_from_provider_meta_integration_contract() -> None:
     ]
 
     # --- Multi-provider overlay: DB fields fill in when provider_meta lacks them ---
-    overlay_cases: list[tuple[str, dict[str, object], str, str, str, str]] = [
+    overlay_cases: list[tuple[str, RawPayload, str, str, str, str]] = [
         ("claude-ai", {"sender": "human", "text": ""}, "db-message-id", "user", "DB fallback text", "claude-ai"),
         (
             "gemini",
@@ -1043,7 +1049,7 @@ def test_extract_harmonized_message_fallback_contract() -> None:
     assert msg_cc.tool_calls[0].input == {"path": "README.md"}
 
     # --- Claude Code: type field fallback for role ---
-    claude_code_role_fallbacks: list[tuple[dict[str, object], str]] = [
+    claude_code_role_fallbacks: list[tuple[RawPayload, str]] = [
         ({"uuid": "m1", "type": "human", "message": "not-a-dict"}, "user"),
         ({"uuid": "m1", "type": "assistant", "message": "not-a-dict"}, "assistant"),
     ]
@@ -1053,7 +1059,7 @@ def test_extract_harmonized_message_fallback_contract() -> None:
         assert msg.id == "m1"
 
     # --- Malformed payloads across providers ---
-    malformed_cases: list[tuple[str, dict[str, object], str, str, str, str | None]] = [
+    malformed_cases: list[tuple[str, RawPayload, str, str, str, str | None]] = [
         (
             "claude-ai",
             {"sender": "human", "text": "Fallback Claude AI text", "created_at": "2024-01-15T10:30:00Z"},

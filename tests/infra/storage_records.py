@@ -9,7 +9,7 @@ import threading
 from collections.abc import Mapping
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Final, cast
+from typing import TYPE_CHECKING, Final, TypeAlias
 from uuid import uuid4
 
 from polylogue.lib.branch_type import BranchType
@@ -38,10 +38,25 @@ from polylogue.types import (
     ValidationStatus,
 )
 
+if TYPE_CHECKING:
+    from polylogue.lib.conversation_models import Conversation
+
+JSONRecord: TypeAlias = dict[str, object]
+MessageMapping: TypeAlias = Mapping[str, object]
+
+
+class _AutoTimestampSentinel:
+    """Marker for builders that should synthesize a fresh timestamp."""
+
+
+class _AutoMessageIdSentinel:
+    """Marker for builders that should target the most recent message."""
+
+
 # Thread-safety lock for writes (matches store.py pattern)
 _WRITE_LOCK = threading.Lock()
-_AUTO_TIMESTAMP: Final[object] = object()
-_AUTO_MESSAGE_ID: Final[object] = object()
+_AUTO_TIMESTAMP: Final = _AutoTimestampSentinel()
+_AUTO_MESSAGE_ID: Final = _AutoMessageIdSentinel()
 
 
 def _conversation_id(value: str) -> ConversationId:
@@ -68,8 +83,62 @@ def _optional_int(value: object) -> int | None:
     return value if isinstance(value, int) else None
 
 
-def _optional_dict(value: object) -> dict[str, object] | None:
-    return cast(dict[str, object], value) if isinstance(value, dict) else None
+def _optional_dict(value: object) -> JSONRecord | None:
+    if not isinstance(value, Mapping):
+        return None
+    result: JSONRecord = {}
+    for key, item in value.items():
+        if not isinstance(key, str):
+            return None
+        result[key] = item
+    return result
+
+
+def _coerce_str(value: object, default: str) -> str:
+    return value if isinstance(value, str) else default
+
+
+def _coerce_int(value: object, default: int) -> int:
+    return value if isinstance(value, int) else default
+
+
+def _coerce_sort_key(value: object, default: float | None) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return default
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value)
+        except ValueError:
+            return default
+    return default
+
+
+def _coerce_content_hash(value: object, default: str) -> ContentHash:
+    return _content_hash(_coerce_str(value, default))
+
+
+def _resolve_timestamp(value: str | None | _AutoTimestampSentinel) -> str | None:
+    return datetime.now(timezone.utc).isoformat() if isinstance(value, _AutoTimestampSentinel) else value
+
+
+def _resolve_attachment_message_id(
+    *,
+    value: str | None | _AutoMessageIdSentinel,
+    messages: list[MessageRecord],
+) -> str | None:
+    if isinstance(value, _AutoMessageIdSentinel):
+        return str(messages[-1].message_id) if messages else None
+    return value
+
+
+def _coerce_builder_timestamp(value: object) -> str | None | _AutoTimestampSentinel:
+    if isinstance(value, str) or value is None:
+        return value
+    return _AUTO_TIMESTAMP
 
 
 def _content_block_record(
@@ -104,7 +173,7 @@ def _content_block_record(
 
 def _content_block_from_mapping(
     *,
-    block: Mapping[str, object],
+    block: MessageMapping,
     message_id: str,
     conversation_id: str,
     block_index: int,
@@ -586,7 +655,7 @@ class ConversationBuilder:
         self.conv = self.conv.model_copy(update={"updated_at": updated_at, "sort_key": _timestamp_sort_key(updated_at)})
         return self
 
-    def metadata(self, metadata: dict[str, object] | None) -> ConversationBuilder:
+    def metadata(self, metadata: JSONRecord | None) -> ConversationBuilder:
         self.conv = self.conv.model_copy(update={"metadata": metadata})
         return self
 
@@ -603,11 +672,11 @@ class ConversationBuilder:
         message_id: str | None = None,
         role: str | None = "user",
         text: str = "Test message",
-        timestamp: str | None | object = _AUTO_TIMESTAMP,
-        **kwargs: Any,
+        timestamp: str | None | _AutoTimestampSentinel = _AUTO_TIMESTAMP,
+        **kwargs: object,
     ) -> ConversationBuilder:
         msg_id = f"m{len(self.messages) + 1}" if message_id is None else message_id
-        ts = datetime.now(timezone.utc).isoformat() if timestamp is _AUTO_TIMESTAMP else cast(str | None, timestamp)
+        ts = _resolve_timestamp(timestamp)
 
         provider_meta = _optional_dict(kwargs.pop("provider_meta", None))
         extra_blocks = _normalize_content_blocks(
@@ -631,38 +700,42 @@ class ConversationBuilder:
             else 0
         )
         has_thinking = 1 if ContentBlockType.THINKING in block_types else 0
+        default_sort_key = _timestamp_sort_key(ts) if ts is not None else None
+        default_content_hash = uuid4().hex[:16]
 
-        msg = MessageRecord(
-            message_id=_message_id(msg_id),
-            conversation_id=self.conv.conversation_id,
-            role=role_value,
-            text=text,
-            sort_key=kwargs.pop("sort_key", _timestamp_sort_key(ts) if ts is not None else None),
-            content_hash=_content_hash(cast(str, kwargs.pop("content_hash", uuid4().hex[:16]))),
-            content_blocks=all_blocks,
-            word_count=cast(int, kwargs.pop("word_count", word_count)),
-            has_tool_use=cast(int, kwargs.pop("has_tool_use", has_tool_use)),
-            has_thinking=cast(int, kwargs.pop("has_thinking", has_thinking)),
-            **kwargs,
-        )
+        payload: JSONRecord = {
+            "message_id": _message_id(msg_id),
+            "conversation_id": self.conv.conversation_id,
+            "role": role_value,
+            "text": text,
+            "sort_key": _coerce_sort_key(
+                kwargs.pop("sort_key", default_sort_key),
+                default_sort_key,
+            ),
+            "content_hash": _coerce_content_hash(
+                kwargs.pop("content_hash", default_content_hash), default_content_hash
+            ),
+            "content_blocks": all_blocks,
+            "word_count": _coerce_int(kwargs.pop("word_count", word_count), word_count),
+            "has_tool_use": _coerce_int(kwargs.pop("has_tool_use", has_tool_use), has_tool_use),
+            "has_thinking": _coerce_int(kwargs.pop("has_thinking", has_thinking), has_thinking),
+        }
+        payload.update(kwargs)
+        msg = MessageRecord.model_validate(payload)
         self.messages.append(msg)
         return self
 
     def add_attachment(
         self,
         attachment_id: str | None = None,
-        message_id: str | None | object = _AUTO_MESSAGE_ID,
+        message_id: str | None | _AutoMessageIdSentinel = _AUTO_MESSAGE_ID,
         mime_type: str = "application/octet-stream",
         size_bytes: int = 1024,
         path: str | None = None,
-        provider_meta: dict[str, object] | None = None,
+        provider_meta: JSONRecord | None = None,
     ) -> ConversationBuilder:
         att_id = f"att{len(self.attachments) + 1}" if attachment_id is None else attachment_id
-        resolved_message_id = (
-            str(self.messages[-1].message_id)
-            if self.messages and message_id is _AUTO_MESSAGE_ID
-            else cast(str | None, message_id)
-        )
+        resolved_message_id = _resolve_attachment_message_id(value=message_id, messages=self.messages)
         att = AttachmentRecord(
             attachment_id=_attachment_id(att_id),
             conversation_id=self.conv.conversation_id,
@@ -685,7 +758,7 @@ class ConversationBuilder:
             )
         return self.conv
 
-    async def build(self) -> object:
+    async def build(self) -> Conversation | None:
         from polylogue.storage.backends.async_sqlite import SQLiteBackend
         from polylogue.storage.repository import ConversationRepository
 
@@ -710,19 +783,24 @@ def make_conversation(
     title: str = "Test Conversation",
     created_at: str | None = None,
     updated_at: str | None = None,
-    **kwargs: Any,
+    **kwargs: object,
 ) -> ConversationRecord:
     now = datetime.now(timezone.utc).isoformat()
-    return ConversationRecord(
-        conversation_id=_conversation_id(conversation_id),
-        provider_name=provider_name,
-        provider_conversation_id=cast(str, kwargs.pop("provider_conversation_id", f"ext-{conversation_id}")),
-        title=title,
-        created_at=created_at or now,
-        updated_at=updated_at or now,
-        content_hash=_content_hash(cast(str, kwargs.pop("content_hash", uuid4().hex))),
-        **kwargs,
-    )
+    default_content_hash = uuid4().hex
+    payload: JSONRecord = {
+        "conversation_id": _conversation_id(conversation_id),
+        "provider_name": provider_name,
+        "provider_conversation_id": _coerce_str(
+            kwargs.pop("provider_conversation_id", f"ext-{conversation_id}"),
+            f"ext-{conversation_id}",
+        ),
+        "title": title,
+        "created_at": created_at or now,
+        "updated_at": updated_at or now,
+        "content_hash": _coerce_content_hash(kwargs.pop("content_hash", default_content_hash), default_content_hash),
+    }
+    payload.update(kwargs)
+    return ConversationRecord.model_validate(payload)
 
 
 def make_message(
@@ -731,7 +809,7 @@ def make_message(
     role: str = "user",
     text: str | None = "Test message",
     timestamp: str | None = None,
-    **kwargs: Any,
+    **kwargs: object,
 ) -> MessageRecord:
     ts = timestamp or datetime.now(timezone.utc).isoformat()
     provider_meta = _optional_dict(kwargs.pop("provider_meta", None))
@@ -754,20 +832,26 @@ def make_message(
         1 if (block_types & {ContentBlockType.TOOL_USE, ContentBlockType.TOOL_RESULT}) or role_value is Role.TOOL else 0
     )
     has_thinking = 1 if ContentBlockType.THINKING in block_types else 0
+    default_sort_key = _timestamp_sort_key(ts) if ts is not None else None
+    default_content_hash = uuid4().hex[:16]
 
-    return MessageRecord(
-        message_id=_message_id(message_id),
-        conversation_id=_conversation_id(conversation_id),
-        role=role_value,
-        text=text,
-        sort_key=kwargs.pop("sort_key", _timestamp_sort_key(ts) if ts is not None else None),
-        content_hash=_content_hash(cast(str, kwargs.pop("content_hash", uuid4().hex[:16]))),
-        content_blocks=all_blocks,
-        word_count=cast(int, kwargs.pop("word_count", word_count)),
-        has_tool_use=cast(int, kwargs.pop("has_tool_use", has_tool_use)),
-        has_thinking=cast(int, kwargs.pop("has_thinking", has_thinking)),
-        **kwargs,
-    )
+    payload: JSONRecord = {
+        "message_id": _message_id(message_id),
+        "conversation_id": _conversation_id(conversation_id),
+        "role": role_value,
+        "text": text,
+        "sort_key": _coerce_sort_key(
+            kwargs.pop("sort_key", default_sort_key),
+            default_sort_key,
+        ),
+        "content_hash": _coerce_content_hash(kwargs.pop("content_hash", default_content_hash), default_content_hash),
+        "content_blocks": all_blocks,
+        "word_count": _coerce_int(kwargs.pop("word_count", word_count), word_count),
+        "has_tool_use": _coerce_int(kwargs.pop("has_tool_use", has_tool_use), has_tool_use),
+        "has_thinking": _coerce_int(kwargs.pop("has_thinking", has_thinking), has_thinking),
+    }
+    payload.update(kwargs)
+    return MessageRecord.model_validate(payload)
 
 
 def make_attachment(
@@ -777,21 +861,22 @@ def make_attachment(
     mime_type: str = "application/octet-stream",
     size_bytes: int = 1024,
     name: str | None = None,
-    **kwargs: Any,
+    **kwargs: object,
 ) -> AttachmentRecord:
     provider_meta = _optional_dict(kwargs.pop("provider_meta", None))
     if name and provider_meta is None:
         provider_meta = {"name": name}
 
-    return AttachmentRecord(
-        attachment_id=_attachment_id(attachment_id),
-        conversation_id=_conversation_id(conversation_id),
-        message_id=None if message_id is None else _message_id(message_id),
-        mime_type=mime_type,
-        size_bytes=size_bytes,
-        provider_meta=provider_meta,
-        **kwargs,
-    )
+    payload: JSONRecord = {
+        "attachment_id": _attachment_id(attachment_id),
+        "conversation_id": _conversation_id(conversation_id),
+        "message_id": None if message_id is None else _message_id(message_id),
+        "mime_type": mime_type,
+        "size_bytes": size_bytes,
+        "provider_meta": provider_meta,
+    }
+    payload.update(kwargs)
+    return AttachmentRecord.model_validate(payload)
 
 
 def make_raw_conversation(
@@ -805,37 +890,38 @@ def make_raw_conversation(
     validation_status: str | ValidationStatus | None = None,
     validation_provider: str | Provider | None = None,
     validation_mode: str | ValidationMode | None = None,
-    **kwargs: Any,
+    **kwargs: object,
 ) -> RawConversationRecord:
     timestamp = acquired_at or datetime.now(timezone.utc).isoformat()
-    return RawConversationRecord(
-        raw_id=raw_id,
-        provider_name=provider_name,
-        source_path=source_path,
-        blob_size=blob_size,
-        acquired_at=timestamp,
-        payload_provider=(
+    payload: JSONRecord = {
+        "raw_id": raw_id,
+        "provider_name": provider_name,
+        "source_path": source_path,
+        "blob_size": blob_size,
+        "acquired_at": timestamp,
+        "payload_provider": (
             payload_provider
             if isinstance(payload_provider, Provider) or payload_provider is None
             else Provider.from_string(payload_provider)
         ),
-        validation_status=(
+        "validation_status": (
             validation_status
             if isinstance(validation_status, ValidationStatus) or validation_status is None
             else ValidationStatus.from_string(validation_status)
         ),
-        validation_provider=(
+        "validation_provider": (
             validation_provider
             if isinstance(validation_provider, Provider) or validation_provider is None
             else Provider.from_string(validation_provider)
         ),
-        validation_mode=(
+        "validation_mode": (
             validation_mode
             if isinstance(validation_mode, ValidationMode) or validation_mode is None
             else ValidationMode.from_string(validation_mode)
         ),
-        **kwargs,
-    )
+    }
+    payload.update(kwargs)
+    return RawConversationRecord.model_validate(payload)
 
 
 class DbFactory:
@@ -850,10 +936,10 @@ class DbFactory:
         id: str | None = None,
         provider: str = "test",
         title: str = "Test Conversation",
-        messages: list[dict[str, object]] | None = None,
+        messages: list[JSONRecord] | None = None,
         created_at: datetime | None = None,
         updated_at: datetime | None = None,
-        metadata: dict[str, object] | None = None,
+        metadata: JSONRecord | None = None,
     ) -> str:
         cid = id or str(uuid4())
         created_iso = (created_at or datetime.now(timezone.utc)).isoformat()
@@ -893,7 +979,7 @@ class DbFactory:
                 message_id=message_id,
                 role=_optional_str(msg.get("role")) or "user",
                 text=text_value,
-                timestamp=msg.get("timestamp", _AUTO_TIMESTAMP),
+                timestamp=_coerce_builder_timestamp(msg.get("timestamp", _AUTO_TIMESTAMP)),
                 **message_kwargs,
             )
 

@@ -14,7 +14,7 @@ Coverage includes:
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import TypeAlias
 
 import pytest
 
@@ -62,6 +62,16 @@ CLAUDE_AI_ROLE_MAPPING = [
     ("", "unknown"),
 ]
 
+ChatGPTPartsInput: TypeAlias = list[object]
+GeminiPartsInput: TypeAlias = list[GeminiPart | dict[str, object]]
+GeminiThoughtSignatureInput: TypeAlias = list[GeminiThoughtSignature | dict[str, object] | str]
+ClaudeCodeMessageInput: TypeAlias = dict[str, object] | ClaudeCodeMessageContent | ClaudeCodeUserMessage | None
+RawRecordKwargs: TypeAlias = dict[str, object]
+ChatGPTConversationMessages: TypeAlias = list[tuple[str, str]]
+ProviderViewportRecord: TypeAlias = (
+    ClaudeCodeRecord | ClaudeAIChatMessage | ChatGPTMessage | GeminiMessage | CodexRecord
+)
+
 
 class TestChatGPTMessageTextContent:
     """Regression tests for ChatGPTMessage.text_content."""
@@ -77,7 +87,7 @@ class TestChatGPTMessageTextContent:
         ],
         ids=["string_parts", "none_parts", "dict_none_text", "dict_valid_text", "empty_parts"],
     )
-    def test_text_content_with_parts(self: Any, parts: Any, expected: Any) -> None:
+    def test_text_content_with_parts(self, parts: ChatGPTPartsInput, expected: str) -> None:
         msg = ChatGPTMessage(
             id="1",
             author=ChatGPTAuthor(role="user"),
@@ -85,11 +95,11 @@ class TestChatGPTMessageTextContent:
         )
         assert msg.text_content == expected
 
-    def test_text_content_no_content(self: Any) -> None:
+    def test_text_content_no_content(self) -> None:
         msg = ChatGPTMessage(id="1", author=ChatGPTAuthor(role="user"))
         assert msg.text_content == ""
 
-    def test_text_content_direct_text(self: Any) -> None:
+    def test_text_content_direct_text(self) -> None:
         msg = ChatGPTMessage(
             id="1",
             author=ChatGPTAuthor(role="user"),
@@ -98,55 +108,58 @@ class TestChatGPTMessageTextContent:
         assert msg.text_content == "Direct text"
 
     @pytest.mark.parametrize("role_in,expected", CHATGPT_ROLE_MAPPING)
-    def test_role_normalized(self: Any, role_in: Any, expected: Any) -> None:
-        msg = ChatGPTMessage(id="1", author=ChatGPTAuthor(role=role_in))
+    def test_role_normalized(self, role_in: str | None, expected: str) -> None:
+        msg = ChatGPTMessage(
+            id="1",
+            author=ChatGPTAuthor(role="user").model_copy(update={"role": role_in}),
+        )
         assert msg.role_normalized == expected
 
 
 class TestGeminiMessageTextContent:
     """Regression tests for GeminiMessage.text_content."""
 
-    def test_text_content_from_text_field(self: Any) -> None:
+    def test_text_content_from_text_field(self) -> None:
         msg = GeminiMessage(text="Hello", role="user")
         assert msg.text_content == "Hello"
 
-    def test_text_content_from_parts_dict_none_text(self: Any) -> None:
+    def test_text_content_from_parts_dict_none_text(self) -> None:
         """Regression: dict part with 'text' key but None value must not crash."""
         msg = GeminiMessage(text="", role="user", parts=[{"text": None}, {"text": "ok"}])
         assert msg.text_content == "ok"
 
-    def test_text_content_from_parts_typed(self: Any) -> None:
+    def test_text_content_from_parts_typed(self) -> None:
         from polylogue.sources.providers.gemini import GeminiPart
 
         msg = GeminiMessage(text="", role="model", parts=[GeminiPart(text="typed")])
         assert msg.text_content == "typed"
 
     @pytest.mark.parametrize("role_in,expected", GEMINI_ROLE_MAPPING)
-    def test_role_normalized(self: Any, role_in: Any, expected: Any) -> None:
-        msg = GeminiMessage(text="x", role=role_in)
+    def test_role_normalized(self, role_in: str | None, expected: str) -> None:
+        msg = GeminiMessage(text="x", role="user").model_copy(update={"role": role_in})
         assert msg.role_normalized == expected
 
-    def test_extract_content_blocks_dict_none_text(self: Any) -> None:
+    def test_extract_content_blocks_dict_none_text(self) -> None:
         """Regression: extract_content_blocks with None text in dict part must not crash."""
         msg = GeminiMessage(text="", role="user", parts=[{"text": None}, {"text": "ok"}])
         blocks = msg.extract_content_blocks()
         text_blocks = [b for b in blocks if b.text == "ok"]
         assert len(text_blocks) == 1
 
-    def test_extract_content_blocks_file_data(self: Any) -> None:
+    def test_extract_content_blocks_file_data(self) -> None:
         """File-only parts (inlineData) produce a FILE content block."""
         msg = GeminiMessage(text="", role="user", parts=[{"inlineData": {"mimeType": "image/png"}}])
         blocks = msg.extract_content_blocks()
         assert len(blocks) == 1
         assert blocks[0].type.value == "file"
 
-    def test_thinking_message(self: Any) -> None:
+    def test_thinking_message(self) -> None:
         msg = GeminiMessage(text="Thinking...", role="model", isThought=True)
         traces = msg.extract_reasoning_traces()
         assert len(traces) == 1
         assert traces[0].text == "Thinking..."
 
-    def test_role_none_defaults_to_unknown(self: Any) -> None:
+    def test_role_none_defaults_to_unknown(self) -> None:
         msg = GeminiMessage(text="hi", role="user").model_copy(update={"role": None})
         assert msg.role_normalized == "unknown"
 
@@ -160,7 +173,7 @@ class TestClaudeCodeRecordRole:
     """Test type→role mapping for all record types."""
 
     @pytest.mark.parametrize("record_type,expected_role", CLAUDE_CODE_TYPE_ROLE_MAPPING)
-    def test_type_role_mapping(self: Any, record_type: Any, expected_role: Any) -> None:
+    def test_type_role_mapping(self, record_type: str, expected_role: str) -> None:
         record = ClaudeCodeRecord(type=record_type)
         assert record.role == expected_role
 
@@ -169,7 +182,7 @@ class TestClaudeCodeRecordTimestamp:
     """Test timestamp parsing from various formats."""
 
     @pytest.mark.parametrize("timestamp,expected_year,test_id", CLAUDE_CODE_TIMESTAMP_PARSING)
-    def test_timestamp_parsing(self: Any, timestamp: Any, expected_year: Any, test_id: Any) -> None:
+    def test_timestamp_parsing(self, timestamp: str | float | None, expected_year: int | None, test_id: str) -> None:
         record = ClaudeCodeRecord(type="user", timestamp=timestamp)
         ts = record.parsed_timestamp
         if expected_year is None:
@@ -188,17 +201,17 @@ class TestClaudeCodeRecordBooleanFlags:
     """
 
     @pytest.mark.parametrize("record_type,expected", CLAUDE_CODE_IS_ACTUAL_MESSAGE)
-    def test_is_actual_message(self: Any, record_type: Any, expected: Any) -> None:
+    def test_is_actual_message(self, record_type: str, expected: bool) -> None:
         record = ClaudeCodeRecord(type=record_type)
         assert record.is_actual_message is expected
 
     @pytest.mark.parametrize("record_type,expected", CLAUDE_CODE_IS_CONTEXT_COMPACTION)
-    def test_is_context_compaction(self: Any, record_type: Any, expected: Any) -> None:
+    def test_is_context_compaction(self, record_type: str, expected: bool) -> None:
         record = ClaudeCodeRecord(type=record_type)
         assert record.is_context_compaction is expected
 
     @pytest.mark.parametrize("record_type,expected", CLAUDE_CODE_IS_TOOL_PROGRESS)
-    def test_is_tool_progress(self: Any, record_type: Any, expected: Any) -> None:
+    def test_is_tool_progress(self, record_type: str, expected: bool) -> None:
         record = ClaudeCodeRecord(type=record_type)
         assert record.is_tool_progress is expected
 
@@ -237,11 +250,11 @@ class TestClaudeCodeRecordTextContent2:
     ]
 
     @pytest.mark.parametrize("message,expected,test_id", CLAUDE_CODE_TEXT_CONTENT_CASES)
-    def test_text_content(self: Any, message: Any, expected: Any, test_id: Any) -> None:
+    def test_text_content(self, message: ClaudeCodeMessageInput, expected: str, test_id: str) -> None:
         record = ClaudeCodeRecord(type="user" if message is None else "assistant", message=message)
         assert record.text_content == expected
 
-    def test_top_level_content_field_for_summary_records(self: Any) -> None:
+    def test_top_level_content_field_for_summary_records(self) -> None:
         """Summary/system records with top-level content field return it as text."""
         record = ClaudeCodeRecord.model_validate({"type": "summary", "content": "Compacted conversation context"})
         assert record.text_content == "Compacted conversation context"
@@ -250,11 +263,11 @@ class TestClaudeCodeRecordTextContent2:
 class TestClaudeCodeRecordContentBlocksRaw2:
     """Test raw content block extraction."""
 
-    def test_no_message_returns_empty_list(self: Any) -> None:
+    def test_no_message_returns_empty_list(self) -> None:
         record = ClaudeCodeRecord(type="user", message=None)
         assert record.content_blocks_raw == []
 
-    def test_dict_message_with_list_content(self: Any) -> None:
+    def test_dict_message_with_list_content(self) -> None:
         blocks = [{"type": "text", "text": "hello"}, {"type": "tool_use", "name": "Read"}]
         record = ClaudeCodeRecord(
             type="assistant",
@@ -262,7 +275,7 @@ class TestClaudeCodeRecordContentBlocksRaw2:
         )
         assert record.content_blocks_raw == blocks
 
-    def test_dict_message_with_string_content(self: Any) -> None:
+    def test_dict_message_with_string_content(self) -> None:
         """String content is not a list, returns empty."""
         record = ClaudeCodeRecord(
             type="user",
@@ -270,7 +283,7 @@ class TestClaudeCodeRecordContentBlocksRaw2:
         )
         assert record.content_blocks_raw == []
 
-    def test_typed_message_with_list_content(self: Any) -> None:
+    def test_typed_message_with_list_content(self) -> None:
         msg = ClaudeCodeMessageContent(
             role="assistant",
             content=[{"type": "text", "text": "hello"}],
@@ -283,7 +296,7 @@ class TestClaudeCodeRecordContentBlocksRaw2:
 class TestClaudeCodeRecordToMeta2:
     """Test harmonized metadata generation."""
 
-    def test_basic_meta(self: Any) -> None:
+    def test_basic_meta(self) -> None:
         record = ClaudeCodeRecord(type="user", uuid="msg-1")
         meta = record.to_meta()
         assert meta.id == "msg-1"
@@ -292,18 +305,18 @@ class TestClaudeCodeRecordToMeta2:
         assert meta.tokens is None
         assert meta.cost is None
 
-    def test_meta_with_cost(self: Any) -> None:
+    def test_meta_with_cost(self) -> None:
         record = ClaudeCodeRecord(type="assistant", uuid="msg-2", costUSD=0.05)
         meta = record.to_meta()
         assert meta.cost is not None
         assert meta.cost.total_usd == 0.05
 
-    def test_meta_with_duration(self: Any) -> None:
+    def test_meta_with_duration(self) -> None:
         record = ClaudeCodeRecord(type="assistant", uuid="msg-3", durationMs=1500)
         meta = record.to_meta()
         assert meta.duration_ms == 1500
 
-    def test_meta_with_typed_message_usage(self: Any) -> None:
+    def test_meta_with_typed_message_usage(self) -> None:
         """Token usage from ClaudeCodeMessageContent is extracted."""
         usage = ClaudeCodeUsage(
             input_tokens=100,
@@ -325,7 +338,7 @@ class TestClaudeCodeRecordToMeta2:
         assert meta.tokens.cache_write_tokens == 20
         assert meta.model == "claude-sonnet-4-20250514"
 
-    def test_meta_with_dict_message_usage(self: Any) -> None:
+    def test_meta_with_dict_message_usage(self) -> None:
         """Token usage from dict message is extracted."""
         record = ClaudeCodeRecord(
             type="assistant",
@@ -346,7 +359,7 @@ class TestClaudeCodeRecordToMeta2:
         assert meta.tokens.output_tokens == 100
         assert meta.model == "claude-opus-4-20250514"
 
-    def test_meta_with_dict_message_no_usage(self: Any) -> None:
+    def test_meta_with_dict_message_no_usage(self) -> None:
         """Dict message without usage field returns None tokens."""
         record = ClaudeCodeRecord(
             type="assistant",
@@ -359,7 +372,7 @@ class TestClaudeCodeRecordToMeta2:
 class TestClaudeCodeToolUseConversion:
     """Test tool_use → ToolCall conversion."""
 
-    def test_to_tool_call(self: Any) -> None:
+    def test_to_tool_call(self) -> None:
         tool_use = ClaudeCodeToolUse(
             id="toolu_123",
             name="Read",
@@ -372,7 +385,7 @@ class TestClaudeCodeToolUseConversion:
         assert tc.provider == "claude-code"
         assert tc.category is not None
 
-    def test_to_tool_call_empty_input(self: Any) -> None:
+    def test_to_tool_call_empty_input(self) -> None:
         tool_use = ClaudeCodeToolUse(id="toolu_456", name="UnknownTool", input={})
         tc = tool_use.to_tool_call()
         assert tc.name == "UnknownTool"
@@ -382,14 +395,14 @@ class TestClaudeCodeToolUseConversion:
 class TestClaudeCodeThinkingBlockConversion:
     """Test thinking block → ReasoningTrace conversion."""
 
-    def test_to_reasoning_trace(self: Any) -> None:
+    def test_to_reasoning_trace(self) -> None:
         block = ClaudeCodeThinkingBlock(thinking="Let me think about this problem step by step.")
         trace = block.to_reasoning_trace()
         assert trace.text == "Let me think about this problem step by step."
         assert trace.provider == "claude-code"
         assert trace.raw is not None
 
-    def test_to_reasoning_trace_empty(self: Any) -> None:
+    def test_to_reasoning_trace_empty(self) -> None:
         block = ClaudeCodeThinkingBlock(thinking="")
         trace = block.to_reasoning_trace()
         assert trace.text == ""
@@ -398,7 +411,7 @@ class TestClaudeCodeThinkingBlockConversion:
 class TestClaudeCodeUsageConversion:
     """Test usage → TokenUsage conversion."""
 
-    def test_to_token_usage_full(self: Any) -> None:
+    def test_to_token_usage_full(self) -> None:
         usage = ClaudeCodeUsage(
             input_tokens=500,
             output_tokens=200,
@@ -411,7 +424,7 @@ class TestClaudeCodeUsageConversion:
         assert tu.cache_read_tokens == 100
         assert tu.cache_write_tokens == 50
 
-    def test_to_token_usage_partial(self: Any) -> None:
+    def test_to_token_usage_partial(self) -> None:
         """Missing fields are None, not 0."""
         usage = ClaudeCodeUsage(input_tokens=100, output_tokens=50)
         tu = usage.to_token_usage()
@@ -420,7 +433,7 @@ class TestClaudeCodeUsageConversion:
         assert tu.cache_read_tokens is None
         assert tu.cache_write_tokens is None
 
-    def test_to_token_usage_all_none(self: Any) -> None:
+    def test_to_token_usage_all_none(self) -> None:
         usage = ClaudeCodeUsage()
         tu = usage.to_token_usage()
         assert tu.input_tokens is None
@@ -430,7 +443,7 @@ class TestClaudeCodeUsageConversion:
 class TestClaudeCodeRecordViewportMethods:
     """Test extract_reasoning_traces, extract_tool_calls, extract_content_blocks."""
 
-    def test_extract_reasoning_traces_with_thinking(self: Any) -> None:
+    def test_extract_reasoning_traces_with_thinking(self) -> None:
         record = ClaudeCodeRecord(
             type="assistant",
             message={
@@ -445,7 +458,7 @@ class TestClaudeCodeRecordViewportMethods:
         assert len(traces) >= 1
         assert any("Analyzing" in t.text for t in traces)
 
-    def test_extract_reasoning_traces_none(self: Any) -> None:
+    def test_extract_reasoning_traces_none(self) -> None:
         record = ClaudeCodeRecord(
             type="assistant",
             message={
@@ -456,7 +469,7 @@ class TestClaudeCodeRecordViewportMethods:
         traces = record.extract_reasoning_traces()
         assert traces == []
 
-    def test_extract_tool_calls(self: Any) -> None:
+    def test_extract_tool_calls(self) -> None:
         record = ClaudeCodeRecord(
             type="assistant",
             message={
@@ -470,7 +483,7 @@ class TestClaudeCodeRecordViewportMethods:
         assert len(calls) == 1
         assert calls[0].name == "Bash"
 
-    def test_extract_tool_calls_empty(self: Any) -> None:
+    def test_extract_tool_calls_empty(self) -> None:
         record = ClaudeCodeRecord(
             type="user",
             message={"role": "user", "content": "just text"},
@@ -478,7 +491,7 @@ class TestClaudeCodeRecordViewportMethods:
         calls = record.extract_tool_calls()
         assert calls == []
 
-    def test_extract_content_blocks(self: Any) -> None:
+    def test_extract_content_blocks(self) -> None:
         record = ClaudeCodeRecord(
             type="assistant",
             message={
@@ -496,7 +509,7 @@ class TestClaudeCodeRecordViewportMethods:
 class TestGeminiTextContentExtra:
     """Test GeminiMessage.text_content with parts variations."""
 
-    def test_text_content_direct_text(self: Any) -> None:
+    def test_text_content_direct_text(self) -> None:
         msg = GeminiMessage(text="Direct text", role="user")
         assert msg.text_content == "Direct text"
 
@@ -511,11 +524,11 @@ class TestGeminiTextContentExtra:
         ],
         ids=["typed_parts", "dict_parts", "mixed_parts", "no_text_keys", "empty_list"],
     )
-    def test_text_content_from_parts(self: Any, parts: Any, expected: Any) -> None:
+    def test_text_content_from_parts(self, parts: GeminiPartsInput, expected: str) -> None:
         msg = GeminiMessage(text="", role="user", parts=parts)
         assert msg.text_content == expected
 
-    def test_text_content_parts_dict_with_non_string_text(self: Any) -> None:
+    def test_text_content_parts_dict_with_non_string_text(self) -> None:
         """Coverage for line 135: coerce non-string text to str."""
         msg = GeminiMessage(
             text="",
@@ -525,7 +538,7 @@ class TestGeminiTextContentExtra:
         content = msg.text_content
         assert isinstance(content, str)
 
-    def test_text_content_parts_dict_with_none_text(self: Any) -> None:
+    def test_text_content_parts_dict_with_none_text(self) -> None:
         msg = GeminiMessage(
             text="",
             role="user",
@@ -533,7 +546,7 @@ class TestGeminiTextContentExtra:
         )
         assert msg.text_content == "Valid"
 
-    def test_text_content_parts_typed_none_text(self: Any) -> None:
+    def test_text_content_parts_typed_none_text(self) -> None:
         msg = GeminiMessage(
             text="",
             role="user",
@@ -541,7 +554,7 @@ class TestGeminiTextContentExtra:
         )
         assert msg.text_content == "Valid"
 
-    def test_text_content_prefers_text_over_parts(self: Any) -> None:
+    def test_text_content_prefers_text_over_parts(self) -> None:
         msg = GeminiMessage(
             text="Direct",
             role="user",
@@ -553,7 +566,7 @@ class TestGeminiTextContentExtra:
 class TestGeminiToMetaExtra:
     """Test GeminiMessage.to_meta conversion."""
 
-    def test_to_meta_basic(self: Any) -> None:
+    def test_to_meta_basic(self) -> None:
         msg = GeminiMessage(text="hello", role="user")
         meta = msg.to_meta()
         assert meta.role == "user"
@@ -569,7 +582,7 @@ class TestGeminiToMetaExtra:
         ],
         ids=["with_count", "zero_count", "none_count"],
     )
-    def test_to_meta_token_count(self: Any, tokenCount: Any, has_tokens: Any, expected_output: Any) -> None:
+    def test_to_meta_token_count(self, tokenCount: int | None, has_tokens: bool, expected_output: int | None) -> None:
         msg = GeminiMessage(text="hello", role="user", tokenCount=tokenCount)
         meta = msg.to_meta()
         if has_tokens:
@@ -578,7 +591,7 @@ class TestGeminiToMetaExtra:
         else:
             assert meta.tokens is None
 
-    def test_to_meta_uses_chunk_timestamp_when_present(self: Any) -> None:
+    def test_to_meta_uses_chunk_timestamp_when_present(self) -> None:
         msg = GeminiMessage(text="", role="user", createTime="2024-06-15T10:30:00Z")
         meta = msg.to_meta()
         assert meta.timestamp is not None
@@ -588,12 +601,12 @@ class TestGeminiToMetaExtra:
 class TestGeminiExtractReasoningTracesExtra:
     """Test GeminiMessage.extract_reasoning_traces."""
 
-    def test_extract_reasoning_traces_no_thought(self: Any) -> None:
+    def test_extract_reasoning_traces_no_thought(self) -> None:
         msg = GeminiMessage(text="Regular response", role="user", isThought=False)
         traces = msg.extract_reasoning_traces()
         assert len(traces) == 0
 
-    def test_extract_reasoning_traces_thought_with_text(self: Any) -> None:
+    def test_extract_reasoning_traces_thought_with_text(self) -> None:
         msg = GeminiMessage(
             text="Thinking...",
             role="model",
@@ -606,7 +619,7 @@ class TestGeminiExtractReasoningTracesExtra:
         assert traces[0].token_count == 1000
         assert traces[0].provider == "gemini"
 
-    def test_extract_reasoning_traces_thought_without_text(self: Any) -> None:
+    def test_extract_reasoning_traces_thought_without_text(self) -> None:
         """Regression: isThought=True but no text should not create trace."""
         msg = GeminiMessage(text="", role="model", isThought=True)
         traces = msg.extract_reasoning_traces()
@@ -620,7 +633,9 @@ class TestGeminiExtractReasoningTracesExtra:
         ],
         ids=["string_sigs", "dict_sigs"],
     )
-    def test_extract_reasoning_traces_with_signatures(self: Any, signatures: Any, expected_in_raw: Any) -> None:
+    def test_extract_reasoning_traces_with_signatures(
+        self, signatures: GeminiThoughtSignatureInput, expected_in_raw: list[object]
+    ) -> None:
         """Coverage for line 157-162: various signature types."""
         msg = GeminiMessage(
             text="Thought",
@@ -632,7 +647,7 @@ class TestGeminiExtractReasoningTracesExtra:
         assert len(traces) == 1
         assert traces[0].raw["thoughtSignatures"] == expected_in_raw
 
-    def test_extract_reasoning_traces_with_model_signatures(self: Any) -> None:
+    def test_extract_reasoning_traces_with_model_signatures(self) -> None:
         """Coverage for line 159-160: BaseModel signature handling."""
         sig = GeminiThoughtSignature()
         msg = GeminiMessage(
@@ -645,7 +660,7 @@ class TestGeminiExtractReasoningTracesExtra:
         assert len(traces) == 1
         assert len(traces[0].raw["thoughtSignatures"]) == 1
 
-    def test_extract_reasoning_traces_budget_none(self: Any) -> None:
+    def test_extract_reasoning_traces_budget_none(self) -> None:
         msg = GeminiMessage(
             text="Thought",
             role="model",
@@ -709,11 +724,11 @@ class TestGeminiExtractContentBlocksExtra:
 
     @pytest.mark.parametrize("kwargs,expected_len,expected_type,test_id", GEMINI_EXTRACT_CONTENT_BLOCKS_CASES)
     def test_extract_content_blocks(
-        self: Any, kwargs: Any, expected_len: Any, expected_type: Any, test_id: Any
+        self, kwargs: RawRecordKwargs, expected_len: int | None, expected_type: str | None, test_id: str
     ) -> None:
         from polylogue.lib.viewports import ContentType
 
-        msg = GeminiMessage(**kwargs)
+        msg = GeminiMessage.model_validate(kwargs)
         blocks = msg.extract_content_blocks()
         if expected_len is not None:
             assert len(blocks) == expected_len
@@ -723,7 +738,7 @@ class TestGeminiExtractContentBlocksExtra:
         elif expected_type == "thinking":
             assert blocks[0].type == ContentType.THINKING
 
-    def test_extract_content_blocks_drive_inline_and_youtube(self: Any) -> None:
+    def test_extract_content_blocks_drive_inline_and_youtube(self) -> None:
         from polylogue.lib.viewports import ContentType
 
         msg = GeminiMessage(
@@ -750,8 +765,8 @@ class TestClaudeAIChatMessageRoleNormalizedAndTimestamp:
     """Test ClaudeAIChatMessage role_normalized and parsed_timestamp."""
 
     @pytest.mark.parametrize("sender,expected", CLAUDE_AI_ROLE_MAPPING, ids=["human", "assistant", "system", "empty"])
-    def test_role_normalized(self: Any, sender: Any, expected: Any) -> None:
-        msg = ClaudeAIChatMessage(uuid="1", text="hi", sender=sender)
+    def test_role_normalized(self, sender: str | None, expected: str) -> None:
+        msg = ClaudeAIChatMessage(uuid="1", text="hi", sender="human").model_copy(update={"sender": sender})
         assert msg.role_normalized == expected
 
     @pytest.mark.parametrize(
@@ -765,7 +780,7 @@ class TestClaudeAIChatMessageRoleNormalizedAndTimestamp:
             ("2024-06-15 10:30:00", None, "malformed_iso"),
         ],
     )
-    def test_parsed_timestamp(self: Any, created_at: Any, expect_datetime: Any, test_id: Any) -> None:
+    def test_parsed_timestamp(self, created_at: str | None, expect_datetime: bool | None, test_id: str) -> None:
         msg = ClaudeAIChatMessage(
             uuid="1",
             text="hi",
@@ -792,7 +807,9 @@ class TestClaudeAIChatMessageToMeta:
             ("msg-3", "human", "bad-date", False, "invalid_timestamp"),
         ],
     )
-    def test_to_meta(self: Any, uuid_: Any, sender: Any, created_at: Any, expect_timestamp: Any, test_id: Any) -> None:
+    def test_to_meta(
+        self, uuid_: str, sender: str, created_at: str | None, expect_timestamp: bool, test_id: str
+    ) -> None:
         msg = ClaudeAIChatMessage(uuid=uuid_, text="hi", sender=sender, created_at=created_at)
         meta = msg.to_meta()
         assert meta.id == uuid_
@@ -819,7 +836,7 @@ class TestClaudeAIChatMessageToContentBlocks:
             ("", "human", "empty_text"),
         ],
     )
-    def test_to_content_blocks(self: Any, text: Any, sender: Any, test_id: Any) -> None:
+    def test_to_content_blocks(self, text: str, sender: str, test_id: str) -> None:
         from polylogue.lib.viewports import ContentType
 
         msg = ClaudeAIChatMessage(uuid="1", text=text, sender=sender)
@@ -839,7 +856,7 @@ class TestClaudeAIConversationProperties:
             ("", "", "title_empty_name"),
         ],
     )
-    def test_title(self: Any, name: Any, expected_title: Any, test_id: Any) -> None:
+    def test_title(self, name: str, expected_title: str, test_id: str) -> None:
         conv = ClaudeAIConversation(
             uuid="c-1",
             name=name,
@@ -856,13 +873,13 @@ class TestClaudeAIConversationProperties:
             ("not-a-date", False, "invalid"),
         ],
     )
-    def test_created_datetime(self: Any, date_str: Any, expect_valid: Any, test_id: Any) -> None:
+    def test_created_datetime(self, date_str: str | None, expect_valid: bool, test_id: str) -> None:
         conv = ClaudeAIConversation(
             uuid="c-1",
             name="Test",
-            created_at=date_str,
+            created_at="2024-01-01T00:00:00Z",
             updated_at="2024-06-15T10:30:00Z",
-        )
+        ).model_copy(update={"created_at": date_str})
         dt = conv.created_datetime
         if expect_valid:
             assert dt is not None
@@ -877,13 +894,13 @@ class TestClaudeAIConversationProperties:
             ("bad-date", False, "invalid"),
         ],
     )
-    def test_updated_datetime(self: Any, updated_date: Any, expect_valid: Any, test_id: Any) -> None:
+    def test_updated_datetime(self, updated_date: str | None, expect_valid: bool, test_id: str) -> None:
         conv = ClaudeAIConversation(
             uuid="c-1",
             name="Test",
             created_at="2024-01-01T00:00:00Z",
-            updated_at=updated_date,
-        )
+            updated_at="2024-06-15T10:30:00Z",
+        ).model_copy(update={"updated_at": updated_date})
         dt = conv.updated_datetime
         if expect_valid:
             assert dt is not None
@@ -895,7 +912,7 @@ class TestClaudeAIConversationProperties:
 class TestClaudeAIConversationMessages:
     """Test ClaudeAIConversation.messages property."""
 
-    def test_messages_alias(self: Any) -> None:
+    def test_messages_alias(self) -> None:
         """Coverage for line 125: messages alias returns chat_messages."""
         conv = ClaudeAIConversation(
             uuid="c-1",
@@ -912,7 +929,7 @@ class TestClaudeAIConversationMessages:
         assert messages[0].text == "hi"
         assert messages[1].text == "hello"
 
-    def test_messages_empty(self: Any) -> None:
+    def test_messages_empty(self) -> None:
         conv = ClaudeAIConversation(
             uuid="c-1",
             name="Test",
@@ -926,7 +943,7 @@ class TestClaudeAIConversationMessages:
 class TestClaudeAIConversationIntegration:
     """Integration tests for full conversation workflow."""
 
-    def test_full_conversation_workflow(self: Any) -> None:
+    def test_full_conversation_workflow(self) -> None:
         """Test a complete conversation with all features."""
         conv = ClaudeAIConversation(
             uuid="conv-full",
@@ -960,7 +977,7 @@ class TestClaudeAIConversationIntegration:
             blocks = msg.to_content_blocks()
             assert len(blocks) > 0
 
-    def test_conversation_with_invalid_timestamps(self: Any) -> None:
+    def test_conversation_with_invalid_timestamps(self) -> None:
         """Test conversation with unparseable timestamps."""
         conv = ClaudeAIConversation(
             uuid="conv-bad",
@@ -995,31 +1012,31 @@ class TestNormalizeRole:
     """
 
     @pytest.mark.parametrize("input_role,expected,description", NORMALIZE_ROLE_CANONICAL)
-    def test_canonical_mapping(self: Any, input_role: Any, expected: Any, description: Any) -> None:
+    def test_canonical_mapping(self, input_role: str, expected: str, description: str) -> None:
         from polylogue.lib.roles import normalize_role
 
         assert normalize_role(input_role) == expected
 
-    def test_empty_raises(self: Any) -> None:
+    def test_empty_raises(self) -> None:
         from polylogue.lib.roles import normalize_role
 
         with pytest.raises(ValueError, match="cannot be empty"):
             normalize_role("")
 
-    def test_whitespace_raises(self: Any) -> None:
+    def test_whitespace_raises(self) -> None:
         from polylogue.lib.roles import normalize_role
 
         with pytest.raises(ValueError, match="cannot be empty"):
             normalize_role("   ")
 
-    def test_role_enum_normalize_unknown(self: Any) -> None:
+    def test_role_enum_normalize_unknown(self) -> None:
         from polylogue.lib.roles import Role
 
         result = Role.normalize("unrecognized")
         assert result == Role.UNKNOWN
         assert result.value == "unknown"
 
-    def test_parsed_message_uses_normalized_role(self: Any) -> None:
+    def test_parsed_message_uses_normalized_role(self) -> None:
         """ParsedMessage from parsers should have normalized roles."""
         from polylogue.lib.roles import Role
         from polylogue.sources.parsers.base import ParsedMessage
@@ -1037,7 +1054,7 @@ class TestNormalizeRole:
 # =============================================================================
 
 
-def _make_provider_record_with_role(provider: str, raw_role: str) -> Any:
+def _make_provider_record_with_role(provider: str, raw_role: str) -> ProviderViewportRecord:
     """Construct the canonical record type for each provider with the given role."""
     if provider == "claude-code":
         # ClaudeCodeRecord.role_normalized delegates to .role which is derived from .type
@@ -1063,7 +1080,7 @@ class TestUnifiedRoleNormalization:
         UNIFIED_ROLE_NORMALIZATION,
         ids=[row[3] for row in UNIFIED_ROLE_NORMALIZATION],
     )
-    def test_unified_role_normalization(self: Any, provider: Any, raw_role: Any, expected: Any, desc: Any) -> None:
+    def test_unified_role_normalization(self, provider: str, raw_role: str, expected: str, desc: str) -> None:
         """All providers map roles correctly."""
         record = _make_provider_record_with_role(provider, raw_role)
         assert record.role_normalized == expected
@@ -1078,9 +1095,9 @@ class TestUnifiedRoleNormalization:
 class TestChatGPTIterUserAssistantPairs:
     """Tests for ChatGPTConversation.iter_user_assistant_pairs()."""
 
-    def _make_conv(self: Any, messages: Any) -> Any:
+    def _make_conv(self, messages: ChatGPTConversationMessages) -> ChatGPTConversation:
         """Helper to build a ChatGPTConversation with given messages inline."""
-        mapping = {}
+        mapping: dict[str, ChatGPTNode] = {}
         prev_id = None
         for i, (role, text) in enumerate(messages):
             node_id = f"node-{i}"
@@ -1146,7 +1163,11 @@ class TestChatGPTIterUserAssistantPairs:
         ],
     )
     def test_pair_scenarios(
-        self: Any, messages: Any, expected_count: Any, expected_user_text: Any, expected_assistant_text: Any
+        self,
+        messages: ChatGPTConversationMessages,
+        expected_count: int,
+        expected_user_text: str | None,
+        expected_assistant_text: str | None,
     ) -> None:
         """Test various message pairing scenarios."""
         conv = self._make_conv(messages)
@@ -1157,13 +1178,13 @@ class TestChatGPTIterUserAssistantPairs:
         if expected_assistant_text is not None:
             assert pairs[0][1].text_content == expected_assistant_text
 
-    def test_empty_conversation(self: Any) -> None:
+    def test_empty_conversation(self) -> None:
         """No messages yields no pairs."""
         conv = self._make_conv([])
         pairs = list(conv.iter_user_assistant_pairs())
         assert len(pairs) == 0
 
-    def test_single_message_no_pair(self: Any) -> None:
+    def test_single_message_no_pair(self) -> None:
         """Single message yields no pairs."""
         conv = self._make_conv([("user", "alone")])
         pairs = list(conv.iter_user_assistant_pairs())
@@ -1182,7 +1203,9 @@ class TestChatGPTContentBlocks:
             ("multimodal_image", [], None, ContentType.UNKNOWN),
         ],
     )
-    def test_content_type_mapping(self: Any, content_type: Any, parts: Any, language: Any, expected_type: Any) -> None:
+    def test_content_type_mapping(
+        self, content_type: str, parts: ChatGPTPartsInput, language: str | None, expected_type: ContentType
+    ) -> None:
         """Test various content types map to expected ContentType."""
         msg = ChatGPTMessage(
             id="m1",
@@ -1195,7 +1218,7 @@ class TestChatGPTContentBlocks:
         if language:
             assert blocks[0].language == language
 
-    def test_no_content_returns_empty(self: Any) -> None:
+    def test_no_content_returns_empty(self) -> None:
         """No content returns empty list."""
         msg = ChatGPTMessage(id="m1", author=ChatGPTAuthor(role="user"), content=None)
         blocks = msg.to_content_blocks()
@@ -1215,7 +1238,9 @@ class TestChatGPTTextExtractionEdge:
             (None, [{"other": "value"}, "text"], "text"),
         ],
     )
-    def test_text_extraction_scenarios(self: Any, text_field: Any, parts: Any, expected_text: Any) -> None:
+    def test_text_extraction_scenarios(
+        self, text_field: str | None, parts: ChatGPTPartsInput | None, expected_text: str | None
+    ) -> None:
         """Test various text extraction scenarios."""
         msg = ChatGPTMessage(
             id="m1",
@@ -1229,7 +1254,7 @@ class TestChatGPTTextExtractionEdge:
         else:
             assert text == expected_text
 
-    def test_no_content(self: Any) -> None:
+    def test_no_content(self) -> None:
         """No content returns empty string."""
         msg = ChatGPTMessage(id="m1", author=ChatGPTAuthor(role="user"), content=None)
         assert msg.text_content == ""
@@ -1238,7 +1263,7 @@ class TestChatGPTTextExtractionEdge:
 class TestChatGPTTreeTraversal:
     """Tests for ChatGPTConversation.messages tree traversal."""
 
-    def test_branching_follows_first_child(self: Any) -> None:
+    def test_branching_follows_first_child(self) -> None:
         """Branching tree follows first child path."""
         mapping = {
             "root": ChatGPTNode(id="root", parent=None, children=["a", "b"]),
@@ -1288,7 +1313,7 @@ class TestChatGPTTreeTraversal:
         assert "response" in texts
         assert "branch B" not in texts
 
-    def test_cycle_detection(self: Any) -> None:
+    def test_cycle_detection(self) -> None:
         """Cycle in tree doesn't cause infinite loop."""
         mapping = {
             "a": ChatGPTNode(
@@ -1324,7 +1349,7 @@ class TestChatGPTTreeTraversal:
         msgs = conv.messages
         assert len(msgs) == 2
 
-    def test_no_root_node(self: Any) -> None:
+    def test_no_root_node(self) -> None:
         """All nodes have parents -- no root found."""
         mapping = {
             "a": ChatGPTNode(id="a", parent="b", children=[]),
@@ -1341,7 +1366,7 @@ class TestChatGPTTreeTraversal:
         )
         assert conv.messages == []
 
-    def test_root_only(self: Any) -> None:
+    def test_root_only(self) -> None:
         """Root node with no message and no children."""
         mapping = {
             "root": ChatGPTNode(id="root", parent=None, children=[]),
@@ -1357,7 +1382,7 @@ class TestChatGPTTreeTraversal:
         )
         assert conv.messages == []
 
-    def test_client_created_root_detection(self: Any) -> None:
+    def test_client_created_root_detection(self) -> None:
         """Parent 'client-created-root' is recognized as root."""
         mapping = {
             "node1": ChatGPTNode(
@@ -1388,7 +1413,7 @@ class TestChatGPTTreeTraversal:
 class TestChatGPTTimestampEdgeCases:
     """Tests for timestamp edge cases."""
 
-    def test_invalid_create_time(self: Any) -> None:
+    def test_invalid_create_time(self) -> None:
         """Invalid timestamp returns None."""
         msg = ChatGPTMessage(
             id="m1",
@@ -1397,7 +1422,7 @@ class TestChatGPTTimestampEdgeCases:
         )
         assert msg.timestamp is None
 
-    def test_conversation_invalid_create_time(self: Any) -> None:
+    def test_conversation_invalid_create_time(self) -> None:
         """Conversation with invalid timestamp returns None."""
         conv = ChatGPTConversation(
             id="c1",
@@ -1411,7 +1436,7 @@ class TestChatGPTTimestampEdgeCases:
         assert conv.created_at is None
         assert conv.updated_at is None
 
-    def test_valid_timestamp_conversion(self: Any) -> None:
+    def test_valid_timestamp_conversion(self) -> None:
         """Valid timestamp converts correctly."""
         msg = ChatGPTMessage(
             id="m1",
@@ -1442,9 +1467,9 @@ class TestCodexRecordEdgeCases:
             ({}, "unknown"),
         ],
     )
-    def test_format_detection(self: Any, record_kwargs: Any, expected_format: Any) -> None:
+    def test_format_detection(self, record_kwargs: RawRecordKwargs, expected_format: str) -> None:
         """Test format_type detection for various record configurations."""
-        rec = CodexRecord(**record_kwargs)
+        rec = CodexRecord.model_validate(record_kwargs)
         assert rec.format_type == expected_format
 
     @pytest.mark.parametrize(
@@ -1458,24 +1483,24 @@ class TestCodexRecordEdgeCases:
             ({}, False),
         ],
     )
-    def test_is_message_detection(self: Any, record_kwargs: Any, expected_is_message: Any) -> None:
+    def test_is_message_detection(self, record_kwargs: RawRecordKwargs, expected_is_message: bool) -> None:
         """Test is_message detection for various record types."""
-        rec = CodexRecord(**record_kwargs)
+        rec = CodexRecord.model_validate(record_kwargs)
         assert rec.is_message is expected_is_message
 
-    def test_envelope_content(self: Any) -> None:
+    def test_envelope_content(self) -> None:
         """Content from envelope payload."""
         rec = CodexRecord(type="response_item", payload={"content": [{"type": "output_text", "text": "hello"}]})
         content = rec.effective_content
         assert len(content) == 1
         assert content[0]["text"] == "hello"
 
-    def test_envelope_non_list_content(self: Any) -> None:
+    def test_envelope_non_list_content(self) -> None:
         """Envelope payload content that's not a list returns empty."""
         rec = CodexRecord(type="response_item", payload={"content": "just a string"})
         assert rec.effective_content == []
 
-    def test_direct_content_blocks(self: Any) -> None:
+    def test_direct_content_blocks(self) -> None:
         """Content from direct format CodexContentBlock."""
         rec = CodexRecord(
             type="message",
@@ -1487,7 +1512,7 @@ class TestCodexRecordEdgeCases:
         assert content[0]["type"] == "output_text"
         assert content[0]["text"] == "hi"
 
-    def test_direct_content_dicts(self: Any) -> None:
+    def test_direct_content_dicts(self) -> None:
         """Content from direct format raw dicts."""
         rec = CodexRecord(
             type="message",
@@ -1497,7 +1522,7 @@ class TestCodexRecordEdgeCases:
         content = rec.effective_content
         assert content[0]["text"] == "question"
 
-    def test_no_content(self: Any) -> None:
+    def test_no_content(self) -> None:
         """Record with no content returns empty list."""
         rec = CodexRecord(type="session_meta", payload={})
         assert rec.effective_content == []
@@ -1509,7 +1534,7 @@ class TestCodexRecordEdgeCases:
             ("2024-06-15T10:30:00Z", 2024),
         ],
     )
-    def test_valid_timestamp_parsing(self: Any, timestamp: Any, expected_year: Any) -> None:
+    def test_valid_timestamp_parsing(self, timestamp: str, expected_year: int) -> None:
         """Test parsing of valid timestamp formats."""
         rec = CodexRecord(timestamp=timestamp)
         ts = rec.parsed_timestamp
@@ -1524,7 +1549,7 @@ class TestCodexRecordEdgeCases:
             ("", "empty"),
         ],
     )
-    def test_invalid_timestamp_parsing(self: Any, timestamp: Any, description: Any) -> None:
+    def test_invalid_timestamp_parsing(self, timestamp: str | None, description: str) -> None:
         """Test that invalid timestamps return None."""
         rec = CodexRecord(timestamp=timestamp) if timestamp is not None else CodexRecord()
         assert rec.parsed_timestamp is None
@@ -1537,12 +1562,12 @@ class TestCodexRecordEdgeCases:
             ([{"type": "text", "text": "plain"}], "plain"),
         ],
     )
-    def test_text_extraction_by_type(self: Any, payload_content: Any, expected_text: Any) -> None:
+    def test_text_extraction_by_type(self, payload_content: list[dict[str, str]], expected_text: str) -> None:
         """Test text extraction from various content field names."""
         rec = CodexRecord(type="response_item", payload={"content": payload_content})
         assert rec.text_content == expected_text
 
-    def test_multiple_blocks_joined(self: Any) -> None:
+    def test_multiple_blocks_joined(self) -> None:
         """Multiple content blocks joined with newline."""
         rec = CodexRecord(
             type="response_item",
@@ -1556,7 +1581,7 @@ class TestCodexRecordEdgeCases:
         assert "line1" in rec.text_content
         assert "line2" in rec.text_content
 
-    def test_empty_content_text(self: Any) -> None:
+    def test_empty_content_text(self) -> None:
         """No content returns empty string."""
         rec = CodexRecord()
         assert rec.text_content == ""
@@ -1570,7 +1595,7 @@ class TestCodexRecordEdgeCases:
         ],
     )
     def test_content_block_extraction(
-        self: Any, payload_content: Any, expected_type: Any, expected_language: Any
+        self, payload_content: list[dict[str, str]], expected_type: ContentType, expected_language: str | None
     ) -> None:
         """Test extraction and type mapping of content blocks."""
         rec = CodexRecord(type="response_item", payload={"content": payload_content})
@@ -1580,7 +1605,7 @@ class TestCodexRecordEdgeCases:
         if expected_language:
             assert blocks[0].language == expected_language
 
-    def test_non_dict_block_skipped(self: Any) -> None:
+    def test_non_dict_block_skipped(self) -> None:
         """Non-dict content items are skipped."""
         rec = CodexRecord(
             type="response_item", payload={"content": ["just a string", {"type": "text", "text": "real"}]}
@@ -1597,18 +1622,18 @@ class TestCodexRecordEdgeCases:
             ({"type": "response_item", "payload": {}}, "unknown"),
         ],
     )
-    def test_effective_role(self: Any, record_kwargs: Any, expected_effective_role: Any) -> None:
+    def test_effective_role(self, record_kwargs: RawRecordKwargs, expected_effective_role: str) -> None:
         """Test effective_role extraction from various record formats."""
-        rec = CodexRecord(**record_kwargs)
+        rec = CodexRecord.model_validate(record_kwargs)
         assert rec.effective_role == expected_effective_role
 
-    def test_to_meta_unknown_role_normalized(self: Any) -> None:
+    def test_to_meta_unknown_role_normalized(self) -> None:
         """Unknown roles map to 'unknown' in MessageMeta."""
         rec = CodexRecord(type="response_item", payload={"role": "admin"})
         meta = rec.to_meta()
         assert meta.role == "unknown"
 
-    def test_to_meta_system_role(self: Any) -> None:
+    def test_to_meta_system_role(self) -> None:
         """System role preserved."""
         rec = CodexRecord(role="system")
         meta = rec.to_meta()

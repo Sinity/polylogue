@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+from typing import TypeAlias
 
 import pytest
 
@@ -17,6 +18,52 @@ from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.repository import ConversationRepository
 from polylogue.storage.store import RawConversationRecord
 from polylogue.types import Provider, ValidationStatus
+
+JsonScalar: TypeAlias = str | int | float | bool | None
+JsonValue: TypeAlias = JsonScalar | dict[str, "JsonValue"] | list["JsonValue"]
+JsonObject: TypeAlias = dict[str, JsonValue]
+JsonArray: TypeAlias = list[JsonValue]
+
+
+def _require_json_object(value: object) -> JsonObject:
+    assert isinstance(value, dict)
+    return value
+
+
+def _require_json_array(value: object) -> JsonArray:
+    assert isinstance(value, list)
+    return value
+
+
+def _require_int(value: object) -> int:
+    assert isinstance(value, int)
+    return value
+
+
+def _require_str(value: object) -> str:
+    assert isinstance(value, str)
+    return value
+
+
+def _require_bool(value: object) -> bool:
+    assert isinstance(value, bool)
+    return value
+
+
+def _require_number(value: object) -> int | float:
+    assert isinstance(value, int | float)
+    return value
+
+
+def _json_path(value: object, *keys: str) -> object:
+    current: object = value
+    for key in keys:
+        current = _require_json_object(current)[key]
+    return current
+
+
+def _load_json_object(text: str) -> JsonObject:
+    return _require_json_object(json.loads(text))
 
 
 class _Args(argparse.Namespace):
@@ -209,28 +256,36 @@ async def _seed_archive_source(tmp_path: Path) -> tuple[Path, Path]:
 
 async def test_run_probe_emits_real_pipeline_summary(tmp_path: Path) -> None:
     summary = await run_probe(_Args(tmp_path / "probe"))
-    acquisition_details = summary["run_payload"]["metrics"]["stages"]["ingest"]["details"]["acquisition"]
-    ingest_details = summary["run_payload"]["metrics"]["stages"]["ingest"]["details"]["batch_observations"]
+    run_payload = _require_json_object(summary["run_payload"])
+    metrics = _require_json_object(run_payload["metrics"])
+    stages = _require_json_object(metrics["stages"])
+    ingest = _require_json_object(stages["ingest"])
+    details = _require_json_object(ingest["details"])
+    acquisition_details = _require_json_object(details["acquisition"])
+    ingest_details = _require_json_object(details["batch_observations"])
 
-    assert summary["probe"]["provider"] == "chatgpt"
-    assert summary["probe"]["corpus_source"] == "default"
-    assert summary["probe"]["stage_sequence"] == ["acquire", "parse"]
-    assert summary["result"]["run_path"] is not None
-    assert summary["run_payload"]["metrics"]["total_duration_ms"] is not None
-    assert summary["run_payload"]["metrics"]["peak_rss_self_mb"] is not None
-    assert summary["run_payload"]["metrics"]["peak_rss_children_mb"] is not None
-    assert "index" not in summary["run_payload"]["metrics"]["stages"]
+    assert _json_path(summary, "probe", "provider") == "chatgpt"
+    assert _json_path(summary, "probe", "corpus_source") == "default"
+    assert _json_path(summary, "probe", "stage_sequence") == ["acquire", "parse"]
+    assert _json_path(summary, "result", "run_path") is not None
+    assert metrics["total_duration_ms"] is not None
+    assert metrics["peak_rss_self_mb"] is not None
+    assert metrics["peak_rss_children_mb"] is not None
+    assert "index" not in stages
     assert isinstance(acquisition_details, dict)
-    assert ingest_details["batch_count"] == 1
+    assert _require_int(ingest_details["batch_count"]) == 1
     assert ingest_details["max_current_rss_mb"] is not None
-    assert len(ingest_details["batches"]) == 1
-    assert ingest_details["batches"][0]["max_current_rss_mb"] is not None
-    assert ingest_details["batches"][0]["result_wait_elapsed_ms"] >= 0
-    assert ingest_details["batches"][0]["write_elapsed_ms"] >= 0
-    assert ingest_details["batches"][0]["commit_elapsed_ms"] >= 0
-    assert ingest_details["batches"][0]["raw_state_update_elapsed_ms"] >= 0
-    assert summary["db_stats"]["raw_conversations_count"] >= 1
-    assert len(summary["raw_fanout"]) == summary["db_stats"]["raw_conversations_count"]
+    batches = _require_json_array(ingest_details["batches"])
+    assert len(batches) == 1
+    first_batch = _require_json_object(batches[0])
+    assert first_batch["max_current_rss_mb"] is not None
+    assert _require_number(first_batch["result_wait_elapsed_ms"]) >= 0
+    assert _require_number(first_batch["write_elapsed_ms"]) >= 0
+    assert _require_number(first_batch["commit_elapsed_ms"]) >= 0
+    assert _require_number(first_batch["raw_state_update_elapsed_ms"]) >= 0
+    raw_count = _require_int(_json_path(summary, "db_stats", "raw_conversations_count"))
+    assert raw_count >= 1
+    assert len(_require_json_array(summary["raw_fanout"])) == raw_count
 
 
 async def test_run_probe_can_stage_real_source_subset(tmp_path: Path) -> None:
@@ -255,17 +310,21 @@ async def test_run_probe_can_stage_real_source_subset(tmp_path: Path) -> None:
 
     summary = await run_probe(args)
 
-    assert summary["probe"]["input_mode"] == "source-subset"
-    assert summary["probe"]["source_name"] == "inbox"
-    assert summary["probe"]["stage_sequence"] == ["acquire", "parse"]
-    assert summary["source_inputs"]["input_count"] == 2
-    assert summary["source_inputs"]["staged_file_count"] == 2
-    assert summary["source_inputs"]["total_bytes"] == total_bytes
-    assert summary["provenance"]["git_commit"] is not None
-    assert isinstance(summary["provenance"]["worktree_dirty"], bool)
-    assert len(summary["provenance"]["source_inputs_sha256"]) == 64
-    assert len(summary["provenance"]["source_input_fingerprints"]) == 2
-    assert all(len(entry["sha256"]) == 64 for entry in summary["provenance"]["source_input_fingerprints"])
+    source_inputs = _require_json_object(summary["source_inputs"])
+    provenance = _require_json_object(summary["provenance"])
+
+    assert _json_path(summary, "probe", "input_mode") == "source-subset"
+    assert _json_path(summary, "probe", "source_name") == "inbox"
+    assert _json_path(summary, "probe", "stage_sequence") == ["acquire", "parse"]
+    assert _require_int(source_inputs["input_count"]) == 2
+    assert _require_int(source_inputs["staged_file_count"]) == 2
+    assert _require_int(source_inputs["total_bytes"]) == total_bytes
+    assert provenance["git_commit"] is not None
+    assert isinstance(_require_bool(provenance["worktree_dirty"]), bool)
+    assert len(_require_str(provenance["source_inputs_sha256"])) == 64
+    fingerprints = _require_json_array(provenance["source_input_fingerprints"])
+    assert len(fingerprints) == 2
+    assert all(len(_require_str(_require_json_object(entry)["sha256"])) == 64 for entry in fingerprints)
 
 
 def test_write_probe_sources_threads_through_corpus_source(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -340,12 +399,14 @@ async def test_run_probe_applies_ingest_tuning_overrides(tmp_path: Path) -> None
     args.ingest_workers = 1
 
     summary = await run_probe(args)
-    ingest_details = summary["run_payload"]["metrics"]["stages"]["ingest"]["details"]["batch_observations"]
+    ingest_details = _require_json_object(
+        _json_path(summary, "run_payload", "metrics", "stages", "ingest", "details", "batch_observations")
+    )
 
-    assert summary["probe"]["raw_batch_size"] == 1
-    assert summary["probe"]["ingest_workers"] == 1
-    assert ingest_details["batch_count"] == 2
-    assert all(batch["workers"] == 1 for batch in ingest_details["batches"])
+    assert _json_path(summary, "probe", "raw_batch_size") == 1
+    assert _json_path(summary, "probe", "ingest_workers") == 1
+    assert _require_int(ingest_details["batch_count"]) == 2
+    assert all(_require_json_object(batch)["workers"] == 1 for batch in _require_json_array(ingest_details["batches"]))
 
 
 async def test_run_probe_can_measure_ingest_result_sizes(tmp_path: Path) -> None:
@@ -369,12 +430,15 @@ async def test_run_probe_can_measure_ingest_result_sizes(tmp_path: Path) -> None
     args.measure_ingest_result_size = True
 
     summary = await run_probe(args)
-    batch = summary["run_payload"]["metrics"]["stages"]["ingest"]["details"]["batch_observations"]
+    batch = _require_json_object(
+        _json_path(summary, "run_payload", "metrics", "stages", "ingest", "details", "batch_observations")
+    )
 
-    assert summary["probe"]["measure_ingest_result_size"] is True
+    assert _json_path(summary, "probe", "measure_ingest_result_size") is True
     assert batch["max_result_mb"] is not None
-    assert batch["batches"][0]["result_mb"] > 0
-    assert batch["batches"][0]["max_result_mb"] > 0
+    first_batch = _require_json_object(_require_json_array(batch["batches"])[0])
+    assert _require_number(first_batch["result_mb"]) > 0
+    assert _require_number(first_batch["max_result_mb"]) > 0
 
 
 async def test_run_probe_rejects_source_subset_without_source_paths(tmp_path: Path) -> None:
@@ -410,12 +474,12 @@ def test_main_writes_json_summary(tmp_path: Path, capsys: pytest.CaptureFixture[
         ]
     )
 
-    printed = json.loads(capsys.readouterr().out)
-    written = json.loads(json_out.read_text())
+    printed = _load_json_object(capsys.readouterr().out)
+    written = _load_json_object(json_out.read_text())
 
     assert exit_code == 0
-    assert printed["paths"]["workdir"] == str(workdir.resolve())
-    assert written["result"]["run_path"] is not None
+    assert _json_path(printed, "paths", "workdir") == str(workdir.resolve())
+    assert _json_path(written, "result", "run_path") is not None
 
 
 def test_main_runs_source_subset_mode(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -446,11 +510,11 @@ def test_main_runs_source_subset_mode(tmp_path: Path, capsys: pytest.CaptureFixt
         ]
     )
 
-    printed = json.loads(capsys.readouterr().out)
+    printed = _load_json_object(capsys.readouterr().out)
 
     assert exit_code == 0
-    assert printed["probe"]["input_mode"] == "source-subset"
-    assert printed["db_stats"]["raw_conversations_count"] == 1
+    assert _json_path(printed, "probe", "input_mode") == "source-subset"
+    assert _json_path(printed, "db_stats", "raw_conversations_count") == 1
 
 
 def test_main_uses_ephemeral_workdir_when_omitted(capsys: pytest.CaptureFixture[str]) -> None:
@@ -469,11 +533,11 @@ def test_main_uses_ephemeral_workdir_when_omitted(capsys: pytest.CaptureFixture[
         ]
     )
 
-    printed = json.loads(capsys.readouterr().out)
+    printed = _load_json_object(capsys.readouterr().out)
 
     assert exit_code == 0
-    assert "polylogue-pipeline-probe-" in printed["paths"]["workdir"]
-    assert printed["result"]["run_path"] is not None
+    assert "polylogue-pipeline-probe-" in _require_str(_json_path(printed, "paths", "workdir"))
+    assert _json_path(printed, "result", "run_path") is not None
 
 
 def test_main_returns_nonzero_when_budget_is_exceeded(capsys: pytest.CaptureFixture[str]) -> None:
@@ -496,11 +560,11 @@ def test_main_returns_nonzero_when_budget_is_exceeded(capsys: pytest.CaptureFixt
         ]
     )
 
-    printed = json.loads(capsys.readouterr().out)
+    printed = _load_json_object(capsys.readouterr().out)
 
     assert exit_code == 1
-    assert printed["budgets"]["ok"] is False
-    assert len(printed["budgets"]["violations"]) >= 1
+    assert _json_path(printed, "budgets", "ok") is False
+    assert len(_require_json_array(_json_path(printed, "budgets", "violations"))) >= 1
 
 
 async def test_run_probe_can_sample_archive_subset_and_persist_manifest(tmp_path: Path) -> None:
@@ -514,19 +578,20 @@ async def test_run_probe_can_sample_archive_subset_and_persist_manifest(tmp_path
     )
 
     summary = await run_probe(args)
-    manifest = json.loads(manifest_out.read_text(encoding="utf-8"))
+    manifest = _load_json_object(manifest_out.read_text(encoding="utf-8"))
 
-    assert summary["probe"]["input_mode"] == "archive-subset"
-    assert summary["sample"]["selected_count"] == 2
-    assert summary["sample"]["provider_counts"] == {"chatgpt": 1, "codex": 1}
-    assert summary["db_stats"]["raw_conversations_count"] == 2
-    assert summary["db_stats"]["conversations_count"] == 2
-    assert len(summary["raw_fanout"]) == 2
-    assert sum(item["conversation_count"] for item in summary["raw_fanout"]) == 2
-    assert summary["paths"]["manifest_path"].endswith("archive-subset-manifest.json")
-    assert len(summary["provenance"]["manifest_sha256"]) == 64
+    assert _json_path(summary, "probe", "input_mode") == "archive-subset"
+    assert _json_path(summary, "sample", "selected_count") == 2
+    assert _json_path(summary, "sample", "provider_counts") == {"chatgpt": 1, "codex": 1}
+    assert _json_path(summary, "db_stats", "raw_conversations_count") == 2
+    assert _json_path(summary, "db_stats", "conversations_count") == 2
+    raw_fanout = _require_json_array(summary["raw_fanout"])
+    assert len(raw_fanout) == 2
+    assert sum(_require_int(_require_json_object(item)["conversation_count"]) for item in raw_fanout) == 2
+    assert _require_str(_json_path(summary, "paths", "manifest_path")).endswith("archive-subset-manifest.json")
+    assert len(_require_str(_json_path(summary, "provenance", "manifest_sha256"))) == 64
     assert manifest["sample_per_provider"] == 1
-    assert len(manifest["records"]) == 2
+    assert len(_require_json_array(manifest["records"])) == 2
 
 
 async def test_run_probe_can_replay_archive_subset_manifest(tmp_path: Path) -> None:
@@ -551,9 +616,9 @@ async def test_run_probe_can_replay_archive_subset_manifest(tmp_path: Path) -> N
 
     summary = await run_probe(replay_args)
 
-    assert summary["sample"]["selected_count"] == 2
-    assert summary["sample"]["sample_per_provider"] == 1
-    assert summary["sample"]["provider_counts"] == {"chatgpt": 1, "codex": 1}
+    assert _json_path(summary, "sample", "selected_count") == 2
+    assert _json_path(summary, "sample", "sample_per_provider") == 1
+    assert _json_path(summary, "sample", "provider_counts") == {"chatgpt": 1, "codex": 1}
 
 
 async def test_run_probe_rejects_empty_archive_subset(tmp_path: Path) -> None:
