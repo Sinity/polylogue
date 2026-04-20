@@ -201,7 +201,19 @@ class DaySessionSummaryListQuery:
     until: str | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class ArtifactObservationListQuery:
+    """Canonical durable-artifact observation selection for storage reads."""
+
+    providers: tuple[str, ...] = ()
+    support_statuses: tuple[str, ...] = ()
+    artifact_kinds: tuple[str, ...] = ()
+    limit: int | None = None
+    offset: int = 0
+
+
 __all__ = [
+    "ArtifactObservationListQuery",
     "ConversationCountQueryKwargs",
     "ConversationListQueryKwargs",
     "ConversationRecordQuery",
