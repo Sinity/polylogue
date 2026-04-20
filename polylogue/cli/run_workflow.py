@@ -22,6 +22,7 @@ from polylogue.cli.run_watch_workflow import WatchDisplayObserver, WatchStatusOb
 from polylogue.config import Config
 from polylogue.lib.timestamps import format_timestamp
 from polylogue.pipeline.observers import CompositeObserver, RunObserver
+from polylogue.pipeline.payload_types import SiteBuildOptions
 from polylogue.pipeline.run_support import expand_requested_stage
 from polylogue.pipeline.runner import run_sources
 from polylogue.protocols import ProgressCallback
@@ -39,7 +40,7 @@ def execute_sync_once(
     render_format: str,
     plan_snapshot: PlanResult | None = None,
     progress_callback: ProgressCallback | None = None,
-    site_options: dict[str, object] | None = None,
+    site_options: SiteBuildOptions | None = None,
 ) -> RunResult:
     return run_coroutine_sync(
         run_sources(
@@ -67,7 +68,7 @@ def run_with_progress(
     render_format: str,
     plan_snapshot: PlanResult | None = None,
     observer: RunObserver | None = None,
-    site_options: dict[str, object] | None = None,
+    site_options: SiteBuildOptions | None = None,
 ) -> RunResult:
     with progress_observer(env) as progress_observer_handle:
         progress_bridge = (
@@ -99,7 +100,7 @@ def run_sync_once(
     render_format: str,
     plan_snapshot: PlanResult | None = None,
     observer: RunObserver | None = None,
-    site_options: dict[str, object] | None = None,
+    site_options: SiteBuildOptions | None = None,
 ) -> RunResult:
     try:
         result = run_with_progress(

@@ -6,10 +6,9 @@ can implement for sidecar discovery and post-parse enrichment.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Protocol, TypeAlias
+from typing import TYPE_CHECKING, Protocol, TypeAlias
 
 from typing_extensions import TypedDict
 
@@ -20,15 +19,20 @@ from .parsers.base import ParsedConversation
 if TYPE_CHECKING:
     from .parsers.claude_index import SessionIndexEntry
 
-SidecarData: TypeAlias = dict[str, Any]
+ClaudeCodeSessionIndex: TypeAlias = dict[str, "SessionIndexEntry"]
+CodexThreadNames: TypeAlias = dict[str, str]
 
 
 class _ClaudeCodeSidecarData(TypedDict, total=False):
-    session_index: dict[str, SessionIndexEntry]
+    session_index: ClaudeCodeSessionIndex
 
 
 class _CodexSidecarData(TypedDict, total=False):
-    thread_names: dict[str, str]
+    thread_names: CodexThreadNames
+
+
+class SidecarData(_ClaudeCodeSidecarData, _CodexSidecarData, total=False):
+    pass
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,7 +56,7 @@ class ProviderAssemblySpec(Protocol):
     def enrich_conversation(
         self,
         conv: ParsedConversation,
-        sidecar_data: Mapping[str, Any],
+        sidecar_data: SidecarData,
     ) -> ParsedConversation:
         """Enrich a parsed conversation using discovered sidecar data."""
         ...
@@ -72,6 +76,8 @@ def get_assembly_spec(provider: Provider) -> ProviderAssemblySpec | None:
 
 
 __all__ = [
+    "ClaudeCodeSessionIndex",
+    "CodexThreadNames",
     "ProviderAssemblySpec",
     "SidecarData",
     "_CodexSidecarData",

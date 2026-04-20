@@ -4,10 +4,16 @@ import asyncio
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
+
+from polylogue.pipeline.payload_types import IngestDiagnostics, ParseBatchObservation
 
 if TYPE_CHECKING:
     from polylogue.pipeline.stage_models import AcquireResult, ValidateResult
+
+
+def _empty_ingest_diagnostics() -> IngestDiagnostics:
+    return {}
 
 
 class IngestPhase(str, Enum):
@@ -104,7 +110,7 @@ class ParseResult:
         # Tracks conversation IDs whose content changed so downstream
         # materialization can refresh derived session-product rows explicitly.
         self._changed_conversation_ids: list[str] = []
-        self.batch_observations: list[dict[str, Any]] = []
+        self.batch_observations: list[ParseBatchObservation] = []
 
     async def merge_result(
         self,
@@ -138,7 +144,7 @@ class IngestResult:
     parse_result: ParseResult
     parse_raw_ids: list[str]
     timings: dict[str, float] = field(default_factory=dict)
-    diagnostics: dict[str, Any] = field(default_factory=dict)
+    diagnostics: IngestDiagnostics = field(default_factory=_empty_ingest_diagnostics)
 
 
 __all__ = ["IngestPhase", "IngestResult", "IngestState", "ParseResult"]

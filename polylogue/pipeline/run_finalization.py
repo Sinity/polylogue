@@ -3,15 +3,16 @@
 from __future__ import annotations
 
 import time
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 from uuid import uuid4
 
 from typing_extensions import TypedDict
 
+from polylogue.lib.json import JSONDocument
 from polylogue.pipeline.run_support import write_run_json
 from polylogue.storage.backends import create_backend
 from polylogue.storage.backends.queries import runs as runs_q
-from polylogue.storage.run_state import RunCountsPayload, RunDrift, RunDriftPayload, RunResult
+from polylogue.storage.run_state import DriftBucketPayload, RunCountsPayload, RunDrift, RunDriftPayload, RunResult
 from polylogue.storage.store import RunRecord
 
 if TYPE_CHECKING:
@@ -32,7 +33,44 @@ class RunPayload(TypedDict):
     indexed: bool
     index_error: str | None
     duration_ms: int
-    metrics: dict[str, object]
+    metrics: JSONDocument
+
+
+def _counts_document(payload: RunCountsPayload) -> JSONDocument:
+    document: JSONDocument = {}
+    for key, value in payload.items():
+        if isinstance(value, int):
+            document[key] = value
+    return document
+
+
+def _drift_bucket_document(payload: DriftBucketPayload) -> JSONDocument:
+    return {
+        "conversations": payload["conversations"],
+        "messages": payload["messages"],
+        "attachments": payload["attachments"],
+    }
+
+
+def _drift_document(payload: RunDriftPayload) -> JSONDocument:
+    return {
+        "new": _drift_bucket_document(payload["new"]),
+        "removed": _drift_bucket_document(payload["removed"]),
+        "changed": _drift_bucket_document(payload["changed"]),
+    }
+
+
+def _run_payload_document(payload: RunPayload) -> JSONDocument:
+    return {
+        "run_id": payload["run_id"],
+        "timestamp": payload["timestamp"],
+        "counts": _counts_document(payload["counts"]),
+        "drift": _drift_document(payload["drift"]),
+        "indexed": payload["indexed"],
+        "index_error": payload["index_error"],
+        "duration_ms": payload["duration_ms"],
+        "metrics": payload["metrics"],
+    }
 
 
 def build_run_payload(
@@ -44,12 +82,11 @@ def build_run_payload(
 ) -> RunPayload:
     """Create the canonical persisted payload for a completed pipeline run."""
     drift = state.finalize()
-    counts = cast(RunCountsPayload, state.counts.to_dict())
     return {
         "run_id": uuid4().hex,
         "timestamp": int(time.time()),
-        "counts": counts,
-        "drift": drift.to_dict(),
+        "counts": state.counts.to_payload(),
+        "drift": drift.to_payload(),
         "indexed": index_outcome.indexed,
         "index_error": index_outcome.error,
         "duration_ms": duration_ms,
@@ -79,13 +116,13 @@ async def persist_run_result(
             run_id=str(run_payload["run_id"]),
             timestamp=str(run_payload["timestamp"]),
             plan_snapshot=plan.model_dump(mode="json") if plan else None,
-            counts=cast(dict[str, object], dict(run_payload["counts"])),
-            drift=cast(dict[str, object], dict(run_payload["drift"])),
+            counts=dict(run_payload["counts"]),
+            drift=dict(run_payload["drift"]),
             indexed=index_outcome.indexed,
             duration_ms=duration_ms,
         ),
     )
-    run_path = write_run_json(config.archive_root, cast(dict[str, object], dict(run_payload)))
+    run_path = write_run_json(config.archive_root, _run_payload_document(run_payload))
     return RunResult(
         run_id=str(run_payload["run_id"]),
         counts=state.counts.model_copy(deep=True),

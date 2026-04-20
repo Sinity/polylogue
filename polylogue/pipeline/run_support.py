@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import TypeVar
 
 from polylogue.config import Config, Source
-from polylogue.lib.json import dumps
+from polylogue.lib.json import JSONDocument, dumps
 from polylogue.sync_bridge import run_coroutine_sync
 
 T = TypeVar("T")
@@ -80,12 +80,15 @@ def normalize_stage_sequence(
     return normalized
 
 
-def write_run_json(archive_root: Path, payload: dict[str, object]) -> Path:
+def write_run_json(archive_root: Path, payload: JSONDocument) -> Path:
     """Write run result JSON to the runs directory."""
     runs_dir = archive_root / "runs"
     runs_dir.mkdir(parents=True, exist_ok=True)
-    run_id = payload.get("run_id", "unknown")
-    run_path = runs_dir / f"run-{payload['timestamp']}-{run_id}.json"
+    run_id_value = payload.get("run_id")
+    run_id = run_id_value if isinstance(run_id_value, str) and run_id_value else "unknown"
+    timestamp_value = payload.get("timestamp")
+    timestamp = int(timestamp_value) if isinstance(timestamp_value, int) else 0
+    run_path = runs_dir / f"run-{timestamp}-{run_id}.json"
     run_path.write_text(dumps(payload, option=None), encoding="utf-8")
     return run_path
 

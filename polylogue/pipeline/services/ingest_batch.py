@@ -19,7 +19,7 @@ from concurrent.futures import Future, as_completed
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, TypeAlias
+from typing import TYPE_CHECKING
 
 from polylogue.lib.metrics import (
     read_current_rss_mb,
@@ -28,6 +28,7 @@ from polylogue.lib.metrics import (
 )
 from polylogue.logging import get_logger
 from polylogue.paths import blob_store_root
+from polylogue.pipeline.payload_types import MaterializeStageObservation, ParseBatchObservation
 from polylogue.pipeline.services.ingest_worker import (
     ConversationData,
     ConversationTuple,
@@ -60,8 +61,6 @@ _DEFAULT_INGEST_WORKER_LIMIT = 8
 _INGEST_SOFT_BLOB_LIMIT_BYTES = 48 * 1024 * 1024
 _INGEST_HIGH_BLOB_LIMIT_BYTES = 96 * 1024 * 1024
 _INGEST_EXTREME_BLOB_LIMIT_BYTES = 256 * 1024 * 1024
-
-BatchObservation: TypeAlias = dict[str, object]
 
 
 @dataclass(slots=True)
@@ -783,8 +782,8 @@ def _build_batch_memory_observation(
     peak_rss_self_end_mb: float | None,
     peak_rss_children_mb: float | None,
     max_current_rss_mb: float | None,
-) -> BatchObservation:
-    observation: BatchObservation = {}
+) -> ParseBatchObservation:
+    observation: ParseBatchObservation = {}
     if rss_start_mb is not None:
         observation["rss_start_mb"] = rss_start_mb
     if rss_end_mb is not None:
@@ -813,7 +812,7 @@ async def process_ingest_batch(
     batch_ids: list[str],
     result: ParseResult,
     progress_callback: ProgressCallback | None,
-) -> BatchObservation | None:
+) -> ParseBatchObservation | None:
     """Process a batch of raw records through the unified ingest pipeline.
 
     1. Submit all records to ProcessPool (decode + validate + parse + transform)
@@ -896,7 +895,7 @@ async def process_ingest_batch(
     rss_end_mb = read_current_rss_mb()
     peak_rss_self_end_mb = read_peak_rss_self_mb()
     peak_rss_children_mb = read_peak_rss_children_mb()
-    observation: BatchObservation = {
+    observation: ParseBatchObservation = {
         "records": batch_summary.raw_record_count,
         "blob_mb": round(batch_summary.total_blob_mb, 1),
         "result_mb": round(batch_summary.total_result_bytes / (1024 * 1024), 3),
@@ -1028,7 +1027,7 @@ async def _persist_batch_raw_state_updates(
 async def refresh_session_products_bulk(
     backend: SQLiteBackend,
     changed_conversation_ids: list[str],
-) -> BatchObservation | None:
+) -> MaterializeStageObservation | None:
     """Bulk session product refresh — once after all batches, not per-batch."""
     if not changed_conversation_ids:
         return None
@@ -1078,7 +1077,7 @@ async def refresh_session_products_bulk(
         chunk_hydrate_values = [chunk.hydrate_ms for chunk in chunk_observations]
         chunk_build_values = [chunk.build_ms for chunk in chunk_observations]
         chunk_write_values = [chunk.write_ms for chunk in chunk_observations]
-        observation: BatchObservation = {
+        observation: MaterializeStageObservation = {
             "conversations": len(changed_conversation_ids),
             "unique_thread_roots": len(thread_root_ids),
             "unique_provider_days": len(affected_groups),

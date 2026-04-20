@@ -18,6 +18,10 @@ _SUPPORTED_DOUBLE_EXTENSIONS = frozenset({".jsonl.txt"})
 _SKIP_DIRS = frozenset({"analysis", "__pycache__", ".git", "node_modules"})
 
 
+def _empty_sidecar_data() -> SidecarData:
+    return {}
+
+
 def _has_supported_extension(path: Path) -> bool:
     name_lower = path.name.lower()
     for ext in _SUPPORTED_DOUBLE_EXTENSIONS:
@@ -53,7 +57,7 @@ class _SourceWalkSetup:
     paths: list[Path]
     paths_to_process: list[tuple[Path, str | None]]
     skipped_mtime: int
-    sidecar_data: SidecarData = field(default_factory=dict)
+    sidecar_data: SidecarData = field(default_factory=_empty_sidecar_data)
 
 
 def _setup_source_walk(
@@ -73,7 +77,7 @@ def _setup_source_walk(
         include_file_mtime=include_mtime,
         known_mtimes=known_mtimes,
     )
-    sidecar_data: SidecarData = {}
+    sidecar_data = _empty_sidecar_data()
     if discover_sidecars:
         provider = Provider.from_string(source.name)
         spec = get_assembly_spec(provider)

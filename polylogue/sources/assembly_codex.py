@@ -5,11 +5,11 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, cast
 
+from polylogue.lib.json import json_document
 from polylogue.logging import get_logger
 
-from .assembly import SidecarData
+from .assembly import CodexThreadNames, SidecarData
 from .parsers.base import ParsedConversation
 
 logger = get_logger(__name__)
@@ -38,7 +38,7 @@ def _parse_codex_session_index(sessions_root: Path) -> dict[str, str]:
                 parsed = json.loads(line)
                 if not isinstance(parsed, dict):
                     continue
-                entry = cast(Mapping[str, object], parsed)
+                entry = json_document(parsed)
                 tid = _coerce_codex_session_id(entry)
                 name = _coerce_codex_thread_name(entry)
                 if tid and name:
@@ -72,10 +72,10 @@ class CodexAssemblySpec:
     def enrich_conversation(
         self,
         conv: ParsedConversation,
-        sidecar_data: Mapping[str, Any],
+        sidecar_data: SidecarData,
     ) -> ParsedConversation:
         """Enrich a Codex conversation with thread name or first-user-message title."""
-        thread_names = _coerce_thread_names(sidecar_data.get("thread_names"))
+        thread_names: CodexThreadNames = sidecar_data.get("thread_names", {})
         cid = conv.provider_conversation_id
 
         # Try thread name from side index
@@ -120,17 +120,6 @@ class CodexAssemblySpec:
                     )
 
         return conv
-
-
-def _coerce_thread_names(value: object | None) -> dict[str, str]:
-    """Best-effort coercion to a thread-name sidecar map."""
-    if not isinstance(value, dict):
-        return {}
-    result: dict[str, str] = {}
-    for thread_id, thread_name in value.items():
-        if isinstance(thread_id, str) and isinstance(thread_name, str):
-            result[thread_id] = thread_name
-    return result
 
 
 def _coerce_codex_session_id(entry: Mapping[str, object]) -> str | None:

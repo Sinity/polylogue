@@ -6,9 +6,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from typing_extensions import TypedDict
-
 from polylogue.config import Config
+from polylogue.pipeline.payload_types import (
+    MaterializeStageObservation,
+    RenderStageObservation,
+    SiteBuildOptions,
+)
 from polylogue.pipeline.run_support import PARSE_STAGES
 from polylogue.storage.run_state import RenderFailurePayload
 from polylogue.types import SearchProvider
@@ -22,6 +25,7 @@ if TYPE_CHECKING:
     from polylogue.protocols import ProgressCallback
     from polylogue.storage.backends.async_sqlite import SQLiteBackend
     from polylogue.storage.repository import ConversationRepository
+    from polylogue.storage.session_product_runtime import SessionProductCounts
 
 
 @dataclass(slots=True)
@@ -29,7 +33,7 @@ class RenderStageOutcome:
     rendered_count: int
     failures: list[RenderFailurePayload]
     total: int
-    observation: dict[str, object] | None = None
+    observation: RenderStageObservation | None = None
 
 
 @dataclass(slots=True)
@@ -42,7 +46,7 @@ class SchemaGenerationOutcome:
 class MaterializeStageOutcome:
     item_count: int
     rebuilt: bool
-    observation: dict[str, object] | None = None
+    observation: MaterializeStageObservation | None = None
 
 
 @dataclass(slots=True)
@@ -67,15 +71,7 @@ class EmbedStageOutcome:
     stats_only: bool = False
 
 
-class _SiteOptions(TypedDict, total=False):
-    output: Path
-    title: str
-    search: bool
-    search_provider: str | SearchProvider
-    dashboard: bool
-
-
-def _site_option_path(options: dict[str, object], key: str, *, default: Path) -> Path:
+def _site_option_path(options: SiteBuildOptions, key: str, *, default: Path) -> Path:
     value = options.get(key)
     if isinstance(value, Path):
         return value
@@ -84,18 +80,18 @@ def _site_option_path(options: dict[str, object], key: str, *, default: Path) ->
     return default
 
 
-def _site_option_str(options: dict[str, object], key: str, *, default: str) -> str:
+def _site_option_str(options: SiteBuildOptions, key: str, *, default: str) -> str:
     value = options.get(key)
     return value if isinstance(value, str) and value.strip() else default
 
 
-def _site_option_bool(options: dict[str, object], key: str, *, default: bool) -> bool:
+def _site_option_bool(options: SiteBuildOptions, key: str, *, default: bool) -> bool:
     value = options.get(key)
     return value if isinstance(value, bool) else default
 
 
 def _site_option_search_provider(
-    options: dict[str, object],
+    options: SiteBuildOptions,
     *,
     default: SearchProvider,
 ) -> SearchProvider:
@@ -105,6 +101,22 @@ def _site_option_search_provider(
     if isinstance(value, str) and value.strip():
         return SearchProvider.from_string(value)
     return default
+
+
+def _materialize_rebuild_observation(
+    *,
+    mode: str,
+    counts: SessionProductCounts,
+) -> MaterializeStageObservation:
+    return {
+        "mode": mode,
+        "profiles": counts.profiles,
+        "work_events": counts.work_events,
+        "phases": counts.phases,
+        "threads": counts.threads,
+        "tag_rollups": counts.tag_rollups,
+        "day_summaries": counts.day_summaries,
+    }
 
 
 async def execute_acquire_stage(
@@ -211,7 +223,7 @@ async def execute_materialize_stage(
             return MaterializeStageOutcome(
                 item_count=len(conversation_ids),
                 rebuilt=True,
-                observation={"mode": "rebuild-from-empty", **counts.to_dict()},
+                observation=_materialize_rebuild_observation(mode="rebuild-from-empty", counts=counts),
             )
 
         observation = await refresh_session_products_bulk(backend, conversation_ids)
@@ -255,7 +267,7 @@ async def execute_materialize_stage(
     return MaterializeStageOutcome(
         item_count=counts.profiles,
         rebuilt=True,
-        observation={"mode": "rebuild", **counts.to_dict()},
+        observation=_materialize_rebuild_observation(mode="rebuild", counts=counts),
     )
 
 
@@ -300,7 +312,7 @@ async def execute_render_stage(
         total=render_total,
         progress_callback=progress_callback,
     )
-    observation: dict[str, object] = {"workers": render_result.worker_count}
+    observation: RenderStageObservation = {"workers": render_result.worker_count}
     if render_result.rss_start_mb is not None:
         observation["rss_start_mb"] = render_result.rss_start_mb
     if render_result.rss_end_mb is not None:
@@ -383,14 +395,14 @@ async def execute_site_stage(
     *,
     backend: SQLiteBackend,
     repository: ConversationRepository,
-    site_options: dict[str, object] | None = None,
+    site_options: SiteBuildOptions | None = None,
     progress_callback: ProgressCallback | None = None,
 ) -> SiteStageOutcome:
     """Build a static HTML site from the archive."""
     from polylogue.paths import data_home
     from polylogue.site.builder import SiteBuilder, SiteConfig
 
-    opts = site_options or {}
+    opts: SiteBuildOptions = site_options or {}
     output_path = _site_option_path(opts, "output", default=data_home() / "site")
     config = SiteConfig(
         title=_site_option_str(opts, "title", default="Polylogue Archive"),
