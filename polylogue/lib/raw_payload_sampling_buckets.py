@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from collections import Counter
-from typing import Any
+
+from polylogue.lib.json import JSONDocument, is_json_document, json_document
 
 RECORD_CANDIDATE_KEYS = frozenset(
     {
@@ -22,15 +23,14 @@ RECORD_CANDIDATE_KEYS = frozenset(
 )
 
 
-def is_record_candidate(item: dict[str, Any]) -> bool:
+def is_record_candidate(item: JSONDocument) -> bool:
     """Return whether a decoded object looks like a record-oriented payload item."""
     if any(key in item for key in RECORD_CANDIDATE_KEYS):
         return True
-    payload = item.get("payload")
-    return isinstance(payload, dict)
+    return is_json_document(item.get("payload"))
 
 
-def record_bucket_key(sample: dict[str, Any], record_type_key: str | None = None) -> str:
+def record_bucket_key(sample: JSONDocument, record_type_key: str | None = None) -> str:
     """Return a stratification key for record-oriented payload samples."""
     if record_type_key:
         value = sample.get(record_type_key)
@@ -40,8 +40,8 @@ def record_bucket_key(sample: dict[str, Any], record_type_key: str | None = None
         value = sample.get(key)
         if isinstance(value, str) and value:
             return f"{key}:{value}"
-    payload = sample.get("payload")
-    if isinstance(payload, dict):
+    payload = json_document(sample.get("payload"))
+    if payload:
         value = payload.get("type")
         if isinstance(value, str) and value:
             return f"payload.type:{value}"
@@ -80,12 +80,12 @@ def bucket_target_counts(bucket_counts: Counter[str], limit: int) -> Counter[str
 
 
 def take_bucketed_samples(
-    buckets: dict[str, list[dict[str, Any]]],
+    buckets: dict[str, list[JSONDocument]],
     limit: int,
-) -> list[dict[str, Any]]:
+) -> list[JSONDocument]:
     """Take a stratified sample across pre-bucketed payload records."""
     ordered_keys = sorted(buckets, key=lambda key: len(buckets[key]), reverse=True)
-    selected: list[dict[str, Any]] = []
+    selected: list[JSONDocument] = []
 
     for key in ordered_keys:
         if len(selected) >= limit:

@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+
+from polylogue.lib.json import JSONDocument, JSONValue, json_document
 
 _PATH_ONLY_SIDECARS = {
     "bridge-pointer.json": "bridge pointer sidecar",
@@ -30,7 +31,7 @@ def path_only_sidecars() -> dict[str, str]:
     return _PATH_ONLY_SIDECARS
 
 
-def looks_like_conversation_document(payload: dict[str, Any]) -> bool:
+def looks_like_conversation_document(payload: JSONDocument) -> bool:
     if isinstance(payload.get("mapping"), dict):
         return True
     if isinstance(payload.get("chat_messages"), list):
@@ -44,27 +45,27 @@ def looks_like_conversation_document(payload: dict[str, Any]) -> bool:
     return isinstance(messages, list) and any(looks_like_message_entry(item) for item in messages[:12])
 
 
-def looks_like_record_stream(payload: list[dict[str, Any]]) -> bool:
+def looks_like_record_stream(payload: list[JSONDocument]) -> bool:
     if not payload:
         return False
     recordish = sum(1 for item in payload if looks_like_record_entry(item))
     return recordish / max(len(payload), 1) >= 0.5
 
 
-def looks_like_record_entry(payload: dict[str, Any]) -> bool:
+def looks_like_record_entry(payload: JSONDocument) -> bool:
     if any(key in payload for key in _RECORDISH_KEYS):
         return True
     if "role" in payload and any(key in payload for key in ("content", "text")) and len(payload) <= 16:
         return True
-    nested_message = payload.get("message")
-    return isinstance(nested_message, dict) and any(key in nested_message for key in _MESSAGE_KEYS)
+    nested_message = json_document(payload.get("message"))
+    return bool(nested_message) and any(key in nested_message for key in _MESSAGE_KEYS)
 
 
-def looks_like_message_entry(payload: Any) -> bool:
+def looks_like_message_entry(payload: object) -> bool:
     return isinstance(payload, dict) and any(key in payload for key in _MESSAGE_KEYS)
 
 
-def looks_metadataish_dict(payload: dict[str, Any]) -> bool:
+def looks_metadataish_dict(payload: JSONDocument) -> bool:
     if not payload:
         return True
     if len(payload) > 20:
@@ -76,7 +77,7 @@ def looks_metadataish_dict(payload: dict[str, Any]) -> bool:
     return all(is_scalarish(value) for value in payload.values())
 
 
-def looks_metadataish_list(payload: list[Any]) -> bool:
+def looks_metadataish_list(payload: list[JSONValue]) -> bool:
     if not payload:
         return True
     if len(payload) > 512:
@@ -87,7 +88,7 @@ def looks_metadataish_list(payload: list[Any]) -> bool:
     )
 
 
-def is_scalarish(value: Any, *, depth: int = 0) -> bool:
+def is_scalarish(value: object, *, depth: int = 0) -> bool:
     if isinstance(value, _SCALAR_TYPES):
         return True
     if depth >= 2:

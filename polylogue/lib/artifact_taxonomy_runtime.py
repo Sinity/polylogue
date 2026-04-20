@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
 
 from polylogue.lib.artifact_taxonomy_models import ArtifactClassification, ArtifactKind
 from polylogue.lib.artifact_taxonomy_support import (
@@ -16,6 +15,7 @@ from polylogue.lib.artifact_taxonomy_support import (
     normalize_source_path,
     path_only_sidecars,
 )
+from polylogue.lib.json import JSONDocument, JSONValue, json_document
 from polylogue.types import Provider
 
 
@@ -56,7 +56,7 @@ def classify_artifact_path(
 
 
 def classify_artifact(
-    payload: Any,
+    payload: JSONValue,
     *,
     provider: str | Provider,
     source_path: str | Path | None = None,
@@ -82,12 +82,13 @@ def classify_artifact(
 
 
 def _classify_list(
-    payload: list[Any],
+    payload: list[JSONValue],
     *,
     provider: Provider,
     source_path: str | Path | None,
 ) -> ArtifactClassification:
-    dict_items = [item for item in payload[:32] if isinstance(item, dict)]
+    dict_items = [json_document(item) for item in payload[:32]]
+    dict_items = [item for item in dict_items if item]
     if not payload:
         return ArtifactClassification(
             provider=provider,
@@ -141,7 +142,7 @@ def _classify_list(
 
 
 def _classify_dict(
-    payload: dict[str, Any],
+    payload: JSONDocument,
     *,
     provider: Provider,
     source_path: str | Path | None,

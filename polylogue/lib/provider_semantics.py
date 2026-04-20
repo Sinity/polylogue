@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
-
+from polylogue.lib.json import JSONDocument, json_document
 from polylogue.lib.viewports import (
     ContentBlock,
     ContentType,
@@ -18,8 +17,9 @@ def content_text(value: object) -> str | None:
     """Extract text from string, dict, or list payloads used in content blocks."""
     if isinstance(value, str):
         return value
-    if isinstance(value, dict):
-        text = value.get("text")
+    record = json_document(value)
+    if record:
+        text = record.get("text")
         return text if isinstance(text, str) else None
     if isinstance(value, list):
         parts: list[str] = []
@@ -31,7 +31,12 @@ def content_text(value: object) -> str | None:
     return None
 
 
-def extract_reasoning_traces(content: list[dict[str, Any]] | None, provider: Provider | str) -> list[ReasoningTrace]:
+def _string_field(block: JSONDocument, key: str) -> str | None:
+    value = block.get(key)
+    return value if isinstance(value, str) else None
+
+
+def extract_reasoning_traces(content: list[JSONDocument] | None, provider: Provider | str) -> list[ReasoningTrace]:
     """Extract reasoning traces from provider content blocks."""
     if not content:
         return []
@@ -39,15 +44,12 @@ def extract_reasoning_traces(content: list[dict[str, Any]] | None, provider: Pro
     normalized_provider = provider if isinstance(provider, Provider) else Provider.from_string(provider)
     traces: list[ReasoningTrace] = []
     for block in content:
-        if not isinstance(block, dict):
-            continue
-
         block_type = block.get("type")
-        text = None
+        text: str | None = None
         if block_type == "thinking":
-            text = block.get("thinking") or block.get("text")
+            text = content_text(block.get("thinking")) or _string_field(block, "text")
         elif block.get("isThought"):
-            text = block.get("text")
+            text = _string_field(block, "text")
 
         if text:
             traces.append(ReasoningTrace(text=text, provider=normalized_provider, raw=block))
@@ -55,7 +57,7 @@ def extract_reasoning_traces(content: list[dict[str, Any]] | None, provider: Pro
     return traces
 
 
-def extract_tool_calls(content: list[dict[str, Any]] | None, provider: Provider | str) -> list[ToolCall]:
+def extract_tool_calls(content: list[JSONDocument] | None, provider: Provider | str) -> list[ToolCall]:
     """Extract tool calls from provider content blocks."""
     if not content:
         return []
@@ -63,16 +65,15 @@ def extract_tool_calls(content: list[dict[str, Any]] | None, provider: Provider 
     normalized_provider = provider if isinstance(provider, Provider) else Provider.from_string(provider)
     calls: list[ToolCall] = []
     for block in content:
-        if not isinstance(block, dict) or block.get("type") != "tool_use":
+        if block.get("type") != "tool_use":
             continue
 
-        name = block.get("name", "")
-        input_data = block.get("input", {})
-        normalized_input = input_data if isinstance(input_data, dict) else {}
+        name = _string_field(block, "name") or ""
+        normalized_input = json_document(block.get("input"))
         calls.append(
             ToolCall(
                 name=name,
-                id=block.get("id"),
+                id=_string_field(block, "id"),
                 input=normalized_input,
                 category=classify_tool(name, normalized_input),
                 provider=normalized_provider,
@@ -83,37 +84,33 @@ def extract_tool_calls(content: list[dict[str, Any]] | None, provider: Provider 
     return calls
 
 
-def extract_content_blocks(content: list[dict[str, Any]] | None) -> list[ContentBlock]:
+def extract_content_blocks(content: list[JSONDocument] | None) -> list[ContentBlock]:
     """Extract harmonized content blocks with type classification."""
     if not content:
         return []
 
     blocks: list[ContentBlock] = []
     for block in content:
-        if not isinstance(block, dict):
-            continue
-
         block_type = block.get("type", "text")
         if block_type == "text":
-            blocks.append(ContentBlock(type=ContentType.TEXT, text=block.get("text"), raw=block))
+            blocks.append(ContentBlock(type=ContentType.TEXT, text=_string_field(block, "text"), raw=block))
         elif block_type == "thinking":
             blocks.append(
                 ContentBlock(
                     type=ContentType.THINKING,
-                    text=block.get("thinking") or block.get("text"),
+                    text=content_text(block.get("thinking")) or _string_field(block, "text"),
                     raw=block,
                 )
             )
         elif block_type == "tool_use":
-            name = block.get("name", "")
-            input_data = block.get("input", {})
-            normalized_input = input_data if isinstance(input_data, dict) else {}
+            name = _string_field(block, "name") or ""
+            normalized_input = json_document(block.get("input"))
             blocks.append(
                 ContentBlock(
                     type=ContentType.TOOL_USE,
                     tool_call=ToolCall(
                         name=name,
-                        id=block.get("id"),
+                        id=_string_field(block, "id"),
                         input=normalized_input,
                         category=classify_tool(name, normalized_input),
                     ),
@@ -124,7 +121,7 @@ def extract_content_blocks(content: list[dict[str, Any]] | None) -> list[Content
             blocks.append(
                 ContentBlock(
                     type=ContentType.TOOL_RESULT,
-                    text=content_text(block.get("content")) or content_text(block.get("text")) or "",
+                    text=content_text(block.get("content")) or _string_field(block, "text") or "",
                     raw=block,
                 )
             )
@@ -132,8 +129,8 @@ def extract_content_blocks(content: list[dict[str, Any]] | None) -> list[Content
             blocks.append(
                 ContentBlock(
                     type=ContentType.CODE,
-                    text=block.get("text") or block.get("code"),
-                    language=block.get("language"),
+                    text=_string_field(block, "text") or _string_field(block, "code"),
+                    language=_string_field(block, "language"),
                     raw=block,
                 )
             )
@@ -141,41 +138,41 @@ def extract_content_blocks(content: list[dict[str, Any]] | None) -> list[Content
     return blocks
 
 
-def extract_display_text_from_content_blocks(content: list[dict[str, Any]] | None) -> str:
+def extract_display_text_from_content_blocks(content: list[JSONDocument] | None) -> str:
     """Rebuild human-readable text from stored structured content blocks."""
     if not content:
         return ""
 
     parts: list[str] = []
     for block in content:
-        if not isinstance(block, dict):
-            continue
         if block.get("type") not in {"text", "code", "tool_result", "thinking"}:
             continue
-        text = block.get("text")
-        if isinstance(text, str) and text:
+        text = _string_field(block, "text")
+        if text:
             parts.append(text)
     return "\n".join(parts)
 
 
-def extract_claude_code_text(content: list[dict[str, Any]] | None) -> str:
+def extract_claude_code_text(content: list[JSONDocument] | None) -> str:
     """Extract text from Claude Code content blocks, excluding non-text blocks."""
     if not content:
         return ""
 
     parts = []
     for block in content:
-        if isinstance(block, dict) and block.get("type") == "text":
-            parts.append(block.get("text", ""))
+        if block.get("type") == "text":
+            text = _string_field(block, "text")
+            if text:
+                parts.append(text)
     return "\n".join(filter(None, parts))
 
 
-def extract_chatgpt_text(content: dict[str, Any] | None) -> str:
+def extract_chatgpt_text(content: JSONDocument | None) -> str:
     """Extract text from ChatGPT content structures."""
     if not content:
         return ""
-    direct_text = content.get("text")
-    if isinstance(direct_text, str) and direct_text:
+    direct_text = _string_field(content, "text")
+    if direct_text:
         return direct_text
     parts = content.get("parts", [])
     if not isinstance(parts, list):
@@ -191,16 +188,14 @@ def extract_chatgpt_text(content: dict[str, Any] | None) -> str:
     return "\n".join(texts)
 
 
-def extract_codex_text(content: list[dict[str, Any]] | None) -> str:
+def extract_codex_text(content: list[JSONDocument] | None) -> str:
     """Extract text from Codex content blocks."""
     if not content or not isinstance(content, list):
         return ""
 
     parts = []
     for block in content:
-        if not isinstance(block, dict):
-            continue
-        text = block.get("text", "") or block.get("input_text", "") or block.get("output_text", "")
+        text = _string_field(block, "text") or _string_field(block, "input_text") or _string_field(block, "output_text")
         if text:
             parts.append(text)
     return "\n".join(parts)

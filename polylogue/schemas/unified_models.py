@@ -80,4 +80,7 @@ def extract_token_usage(usage: dict[str, Any] | None) -> TokenUsage | None:
     )
 
 
+HarmonizedMessage.model_rebuild()
+
+
 __all__ = ["HarmonizedMessage", "_missing_role", "extract_token_usage"]
