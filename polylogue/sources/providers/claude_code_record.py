@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import TypeAlias
 
 from pydantic import BaseModel, ConfigDict
 
+from polylogue.lib.json import JSONDocument, JSONDocumentList, json_document, json_document_list
 from polylogue.lib.provider_semantics import (
     extract_claude_code_text,
     extract_content_blocks,
@@ -25,7 +26,50 @@ from polylogue.lib.viewports import (
 )
 from polylogue.types import Provider
 
-from .claude_code_models import ClaudeCodeMessageContent, ClaudeCodeUserMessage
+from .claude_code_models import ClaudeCodeMessageContent, ClaudeCodeUsage, ClaudeCodeUserMessage
+
+ClaudeCodeMessagePayload: TypeAlias = ClaudeCodeMessageContent | ClaudeCodeUserMessage | dict[str, object] | None
+
+
+def _usage_int(record: JSONDocument, key: str) -> int | None:
+    value = record.get(key)
+    return value if isinstance(value, int) else None
+
+
+def _message_record(message: ClaudeCodeMessagePayload) -> JSONDocument:
+    if isinstance(message, BaseModel):
+        return json_document(message.model_dump())
+    return json_document(message)
+
+
+def _message_role(message: ClaudeCodeMessagePayload) -> str | None:
+    role = _message_record(message).get("role")
+    return role if isinstance(role, str) else None
+
+
+def _message_content_value(message: ClaudeCodeMessagePayload) -> object:
+    if isinstance(message, BaseModel):
+        return getattr(message, "content", None)
+    return _message_record(message).get("content")
+
+
+def _message_content_blocks(message: ClaudeCodeMessagePayload) -> JSONDocumentList:
+    return json_document_list(_message_content_value(message))
+
+
+def _message_usage(message: ClaudeCodeMessagePayload) -> ClaudeCodeUsage | JSONDocument | None:
+    if isinstance(message, ClaudeCodeMessageContent):
+        return message.usage
+    if isinstance(message, BaseModel):
+        usage = _message_record(message).get("usage")
+        return usage if isinstance(usage, dict) else None
+    usage = _message_record(message).get("usage")
+    return usage if isinstance(usage, dict) else None
+
+
+def _message_model(message: ClaudeCodeMessagePayload) -> str | None:
+    value = _message_record(message).get("model")
+    return value if isinstance(value, str) else None
 
 
 class ClaudeCodeRecord(BaseModel):
@@ -39,7 +83,7 @@ class ClaudeCodeRecord(BaseModel):
     parentUuid: str | None = None
     timestamp: str | int | float | None = None
     sessionId: str | None = None
-    message: ClaudeCodeMessageContent | ClaudeCodeUserMessage | dict[str, Any] | None = None
+    message: ClaudeCodeMessagePayload = None
     cwd: str | None = None
     gitBranch: str | None = None
     version: str | None = None
@@ -58,11 +102,7 @@ class ClaudeCodeRecord(BaseModel):
 
     @property
     def role(self) -> str:
-        message_role = None
-        if isinstance(self.message, dict):
-            message_role = self.message.get("role")
-        elif self.message is not None:
-            message_role = getattr(self.message, "role", None)
+        message_role = _message_role(self.message)
         if isinstance(message_role, str) and message_role:
             try:
                 normalized_role = normalize_role(message_role)
@@ -92,32 +132,18 @@ class ClaudeCodeRecord(BaseModel):
             top_content = getattr(self, "content", None)
             return top_content if isinstance(top_content, str) else ""
 
-        msg = self.message
-        content = msg.get("content", "") if isinstance(msg, dict) else getattr(msg, "content", None)
+        content = _message_content_value(self.message)
 
         if isinstance(content, str):
             return content
-        if isinstance(content, list):
-            return extract_claude_code_text(content)
+        blocks = json_document_list(content)
+        if blocks:
+            return extract_claude_code_text(blocks)
         return ""
 
     @property
-    def content_blocks_raw(self) -> list[dict[str, Any]]:
-        if not self.message:
-            return []
-
-        if isinstance(self.message, dict):
-            content = self.message.get("content", [])
-            if isinstance(content, list):
-                return content
-            return []
-
-        if hasattr(self.message, "content"):
-            content = self.message.content
-            if isinstance(content, list):
-                return content
-
-        return []
+    def content_blocks_raw(self) -> JSONDocumentList:
+        return _message_content_blocks(self.message)
 
     def extract_reasoning_traces(self) -> list[ReasoningTrace]:
         return extract_reasoning_traces(self.content_blocks_raw, "claude-code")
@@ -130,27 +156,22 @@ class ClaudeCodeRecord(BaseModel):
 
     def to_meta(self) -> MessageMeta:
         tokens = None
-        if isinstance(self.message, ClaudeCodeMessageContent) and self.message.usage:
-            tokens = self.message.usage.to_token_usage()
-        elif isinstance(self.message, dict):
-            usage_raw = self.message.get("usage", {})
-            if usage_raw:
-                tokens = TokenUsage(
-                    input_tokens=usage_raw.get("input_tokens"),
-                    output_tokens=usage_raw.get("output_tokens"),
-                    cache_read_tokens=usage_raw.get("cache_read_input_tokens"),
-                    cache_write_tokens=usage_raw.get("cache_creation_input_tokens"),
-                )
+        usage = _message_usage(self.message)
+        if isinstance(usage, ClaudeCodeUsage):
+            tokens = usage.to_token_usage()
+        elif isinstance(usage, dict):
+            tokens = TokenUsage(
+                input_tokens=_usage_int(usage, "input_tokens"),
+                output_tokens=_usage_int(usage, "output_tokens"),
+                cache_read_tokens=_usage_int(usage, "cache_read_input_tokens"),
+                cache_write_tokens=_usage_int(usage, "cache_creation_input_tokens"),
+            )
 
         cost = None
         if self.costUSD is not None:
             cost = CostInfo(total_usd=self.costUSD)
 
-        model = None
-        if isinstance(self.message, ClaudeCodeMessageContent):
-            model = self.message.model
-        elif isinstance(self.message, dict):
-            model = self.message.get("model")
+        model = _message_model(self.message)
 
         return MessageMeta(
             id=self.uuid,

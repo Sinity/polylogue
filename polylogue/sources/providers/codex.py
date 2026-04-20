@@ -12,10 +12,11 @@ Codex sessions can have multiple format generations:
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Literal
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
+from polylogue.lib.json import JSONDocument, JSONDocumentList, json_document, json_document_list
 from polylogue.lib.provider_semantics import extract_codex_text
 from polylogue.lib.roles import Role, normalize_role
 from polylogue.lib.timestamps import parse_timestamp
@@ -51,6 +52,22 @@ class CodexGitInfo(BaseModel):
     repository_url: str | None = None
 
 
+CodexPayloadRecord = dict[str, object]
+
+
+def _content_text(record: JSONDocument) -> str | None:
+    for key in ("text", "input_text", "output_text", "code"):
+        value = record.get(key)
+        if isinstance(value, str):
+            return value
+    return None
+
+
+def _content_language(record: JSONDocument) -> str | None:
+    value = record.get("language")
+    return value if isinstance(value, str) else None
+
+
 class CodexRecord(BaseModel):
     """A single record from a Codex JSONL session.
 
@@ -66,7 +83,7 @@ class CodexRecord(BaseModel):
     type: str | None = None
     """Record type: session_meta, response_item, message, etc."""
 
-    payload: dict[str, Any] | None = None
+    payload: CodexPayloadRecord | None = None
     """Payload for envelope format."""
 
     # Direct format fields
@@ -76,7 +93,7 @@ class CodexRecord(BaseModel):
     role: str | None = None
     """Role for direct message format."""
 
-    content: list[CodexContentBlock | dict[str, Any]] | None = None
+    content: list[CodexContentBlock | CodexPayloadRecord] | None = None
     """Content blocks for direct message format."""
 
     # Session metadata
@@ -152,7 +169,8 @@ class CodexRecord(BaseModel):
     def effective_role(self) -> str:
         """Get normalized role from any format."""
         if self.format_type == "envelope" and self.payload:
-            return str(self.payload.get("role", "unknown"))
+            value = self.payload.get("role")
+            return value if isinstance(value, str) else "unknown"
         if self.role:
             return self.role
         return "unknown"
@@ -166,15 +184,19 @@ class CodexRecord(BaseModel):
             return "unknown"
 
     @property
-    def effective_content(self) -> list[dict[str, Any]]:
+    def effective_content(self) -> JSONDocumentList:
         """Get content blocks from any format."""
         if self.format_type == "envelope" and self.payload:
-            content = self.payload.get("content", [])
-            if isinstance(content, list):
-                return content
-            return []
+            return json_document_list(self.payload.get("content"))
         if self.content:
-            return [c.model_dump() if isinstance(c, CodexContentBlock) else c for c in self.content]
+            records: JSONDocumentList = []
+            for item in self.content:
+                record = (
+                    json_document(item.model_dump()) if isinstance(item, CodexContentBlock) else json_document(item)
+                )
+                if record:
+                    records.append(record)
+            return records
         return []
 
     @property
@@ -210,16 +232,14 @@ class CodexRecord(BaseModel):
         """Extract harmonized content blocks."""
         blocks = []
         for raw in self.effective_content:
-            if not isinstance(raw, dict):
-                continue
-
-            block_type = raw.get("type", "")
+            block_type_value = raw.get("type")
+            block_type = block_type_value if isinstance(block_type_value, str) else ""
 
             if block_type in ("input_text", "output_text", "text"):
                 blocks.append(
                     ContentBlock(
                         type=ContentType.TEXT,
-                        text=raw.get("text") or raw.get("input_text") or raw.get("output_text"),
+                        text=_content_text(raw),
                         raw=raw,
                     )
                 )
@@ -227,8 +247,8 @@ class CodexRecord(BaseModel):
                 blocks.append(
                     ContentBlock(
                         type=ContentType.CODE,
-                        text=raw.get("text") or raw.get("code"),
-                        language=raw.get("language"),
+                        text=_content_text(raw),
+                        language=_content_language(raw),
                         raw=raw,
                     )
                 )
@@ -236,7 +256,7 @@ class CodexRecord(BaseModel):
                 blocks.append(
                     ContentBlock(
                         type=ContentType.UNKNOWN,
-                        text=raw.get("text"),
+                        text=_content_text(raw),
                         raw=raw,
                     )
                 )
