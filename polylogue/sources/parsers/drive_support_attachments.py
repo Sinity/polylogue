@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import base64
 import binascii
-from typing import TypeAlias, cast
+from typing import TypeAlias
 
 from polylogue.lib.hashing import hash_payload, hash_text_short
 from polylogue.lib.json import JSONDocument, JSONValue, is_json_document
@@ -17,11 +17,15 @@ _YOUTUBE_WATCH_URL = "https://www.youtube.com/watch?v={video_id}"
 DrivePayload: TypeAlias = JSONDocument
 DriveDocSource: TypeAlias = str | DrivePayload
 DrivePayloadSequence: TypeAlias = list[DriveDocSource]
-DriveDocMetadata: TypeAlias = JSONDocument
+DriveDocMetadata: TypeAlias = dict[str, object]
 
 
 def _as_drive_payload(payload: object) -> DrivePayload | None:
     return payload if is_json_document(payload) else None
+
+
+def _as_document_metadata(document: JSONDocument) -> DriveDocMetadata:
+    return dict(document)
 
 
 def _collect_doc_fields(payload: DrivePayload) -> DrivePayloadSequence:
@@ -88,7 +92,7 @@ def attachment_from_doc(doc: DriveDocSource, message_id: str | None) -> ParsedAt
             mime_type=None,
             size_bytes=None,
             path=None,
-            provider_meta=cast(dict[str, object], meta),
+            provider_meta=_as_document_metadata(meta),
         )
     if not is_json_document(doc):
         return None
@@ -105,7 +109,7 @@ def attachment_from_doc(doc: DriveDocSource, message_id: str | None) -> ParsedAt
         mime_type=mime_val,
         size_bytes=size_bytes,
         path=None,
-        provider_meta=cast(dict[str, object], dict(doc)),
+        provider_meta=_as_document_metadata(doc),
     )
 
 
@@ -133,7 +137,7 @@ def attachment_from_inline_file(
         mime_type=mime_type if isinstance(mime_type, str) else None,
         size_bytes=size_bytes,
         path=None,
-        provider_meta=cast(dict[str, object], provider_meta),
+        provider_meta=provider_meta,
     )
 
 
@@ -151,7 +155,8 @@ def attachment_from_youtube_video(
     else:
         attachment_id = f"youtube-video-{hash_payload(video_dict)}"
         url = None
-    provider_meta: DriveDocMetadata = {"attachment_kind": "youtube_video", **video_dict}
+    provider_meta: DriveDocMetadata = {"attachment_kind": "youtube_video"}
+    provider_meta.update(_as_document_metadata(video_dict))
     if url is not None:
         provider_meta["url"] = url
     return ParsedAttachment(
@@ -161,7 +166,7 @@ def attachment_from_youtube_video(
         mime_type="video/youtube",
         size_bytes=None,
         path=None,
-        provider_meta=cast(dict[str, object], provider_meta),
+        provider_meta=provider_meta,
     )
 
 
@@ -187,7 +192,7 @@ def attachment_block_payloads(attachments: list[ParsedAttachment]) -> list[Drive
     blocks: list[DriveDocMetadata] = []
 
     def _metadata_for_block(attachment: ParsedAttachment) -> DriveDocMetadata:
-        metadata: DriveDocMetadata = dict(cast(JSONDocument, attachment.provider_meta or {}))
+        metadata: DriveDocMetadata = dict(attachment.provider_meta or {})
         if attachment.name:
             metadata.setdefault("name", attachment.name)
         return metadata

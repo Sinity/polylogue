@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import TypeAlias, cast
+from typing import TypeAlias
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -28,9 +28,15 @@ GeminiDictValue: TypeAlias = dict[str, object]
 GeminiBranchChildren: TypeAlias = list[GeminiDictValue]
 
 
+def _json_object(value: object) -> GeminiDictValue:
+    result: GeminiDictValue = {}
+    result.update(json_document(value))
+    return result
+
+
 def _normalize_mapping(payload: BaseModel | GeminiDictValue) -> GeminiDictValue:
     if isinstance(payload, BaseModel):
-        return cast(GeminiDictValue, json_document(payload.model_dump()))
+        return _json_object(payload.model_dump())
     return payload
 
 
@@ -59,12 +65,12 @@ def _get_str_or_none(value: object) -> str | None:
 
 
 def _string_or_empty_dict(value: object) -> GeminiDictValue:
-    return cast(GeminiDictValue, json_document(value))
+    return _json_object(value)
 
 
 def _part_record(part: GeminiPartValue) -> GeminiDictValue:
     if isinstance(part, GeminiPart):
-        return cast(GeminiDictValue, json_document(part.model_dump()))
+        return _json_object(part.model_dump())
     return part
 
 

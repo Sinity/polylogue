@@ -3,15 +3,18 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TypeAlias
 
 from polylogue.logging import get_logger
 
 from .base import ParsedConversation
 
 logger = get_logger(__name__)
+
+SessionIndexMapping: TypeAlias = Mapping[str, object]
 
 
 @dataclass
@@ -31,19 +34,19 @@ class SessionIndexEntry:
     file_mtime: int | None = None
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> SessionIndexEntry:
+    def from_dict(cls, data: SessionIndexMapping) -> SessionIndexEntry:
         return cls(
-            session_id=data.get("sessionId", ""),
-            full_path=data.get("fullPath", ""),
-            first_prompt=data.get("firstPrompt"),
-            summary=data.get("summary"),
-            message_count=data.get("messageCount", 0),
-            created=data.get("created"),
-            modified=data.get("modified"),
-            git_branch=data.get("gitBranch"),
-            project_path=data.get("projectPath"),
-            is_sidechain=data.get("isSidechain", False),
-            file_mtime=data.get("fileMtime"),
+            session_id=_session_index_text(data, "sessionId"),
+            full_path=_session_index_text(data, "fullPath"),
+            first_prompt=_session_index_optional_text(data, "firstPrompt"),
+            summary=_session_index_optional_text(data, "summary"),
+            message_count=_session_index_int(data, "messageCount"),
+            created=_session_index_optional_text(data, "created"),
+            modified=_session_index_optional_text(data, "modified"),
+            git_branch=_session_index_optional_text(data, "gitBranch"),
+            project_path=_session_index_optional_text(data, "projectPath"),
+            is_sidechain=_session_index_bool(data, "isSidechain"),
+            file_mtime=_session_index_optional_int(data, "fileMtime"),
         )
 
 
@@ -52,12 +55,12 @@ def parse_sessions_index(index_path: Path) -> dict[str, SessionIndexEntry]:
         return {}
     try:
         data = json.loads(index_path.read_text(encoding="utf-8"))
-        entries = data.get("entries", [])
-        return {
-            entry["sessionId"]: SessionIndexEntry.from_dict(entry)
-            for entry in entries
-            if isinstance(entry, dict) and "sessionId" in entry
-        }
+        entries: dict[str, SessionIndexEntry] = {}
+        for entry in _session_index_entries(data):
+            session_id = _session_index_text(entry, "sessionId")
+            if session_id:
+                entries[session_id] = SessionIndexEntry.from_dict(entry)
+        return entries
     except (json.JSONDecodeError, KeyError, TypeError) as exc:
         logger.debug("Failed to parse sessions-index.json: %s", exc)
         return {}
@@ -66,6 +69,40 @@ def parse_sessions_index(index_path: Path) -> dict[str, SessionIndexEntry]:
 def find_sessions_index(session_path: Path) -> Path | None:
     index_path = session_path.parent / "sessions-index.json"
     return index_path if index_path.exists() else None
+
+
+def _session_index_entries(data: object) -> list[SessionIndexMapping]:
+    if not isinstance(data, Mapping):
+        return []
+    entries = data.get("entries")
+    if not isinstance(entries, list):
+        return []
+    return [entry for entry in entries if isinstance(entry, Mapping) and "sessionId" in entry]
+
+
+def _session_index_text(data: SessionIndexMapping, key: str) -> str:
+    value = data.get(key)
+    return value if isinstance(value, str) else ""
+
+
+def _session_index_optional_text(data: SessionIndexMapping, key: str) -> str | None:
+    value = data.get(key)
+    return value if isinstance(value, str) else None
+
+
+def _session_index_int(data: SessionIndexMapping, key: str) -> int:
+    value = data.get(key)
+    return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+
+def _session_index_optional_int(data: SessionIndexMapping, key: str) -> int | None:
+    value = data.get(key)
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _session_index_bool(data: SessionIndexMapping, key: str) -> bool:
+    value = data.get(key)
+    return value if isinstance(value, bool) else False
 
 
 _GIT_BRANCH_PREFIXES = frozenset(

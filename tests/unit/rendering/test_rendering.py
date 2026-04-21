@@ -9,13 +9,22 @@ import json
 from datetime import datetime, timezone
 from typing import cast
 
+import pytest
+
 from polylogue.lib.models import Conversation, ConversationSummary, Message
+from polylogue.rendering.block_models import RenderableBlock
+from polylogue.rendering.blocks import (
+    render_blocks_html,
+    render_blocks_markdown,
+    render_blocks_plaintext,
+)
 from polylogue.rendering.core import format_conversation_markdown
 from polylogue.rendering.renderers.html import (
     _attach_branches,
     render_conversation_html,
 )
-from polylogue.types import ConversationId, Provider
+from polylogue.types import ContentBlockType, ConversationId, Provider
+from polylogue.ui.facade_console import PlainConsole
 from tests.infra.builders import make_conv, make_msg
 
 # =============================================================================
@@ -48,6 +57,16 @@ def _make_conv(messages: list[Message], title: str | None = "Branch Test") -> Co
         title=title,
         messages=messages,
     )
+
+
+def _make_media_block(
+    block_type: str,
+    *,
+    name: str,
+    url: str | None = None,
+    mime_type: str | None = None,
+) -> RenderableBlock:
+    return RenderableBlock(type=block_type, name=name, url=url, mime_type=mime_type)
 
 
 class TestAttachBranches:
@@ -177,6 +196,58 @@ class TestBranchRendering:
         assert "A1" in html
         assert "A2 alt" in html
         assert html.index("<details") < html.index("A2 alt")
+
+
+class TestMediaBlockRendering:
+    """Tests for structured media/document/file rendering across surfaces."""
+
+    def test_media_blocks_render_across_markdown_html_and_plaintext(self) -> None:
+        blocks = [
+            _make_media_block(
+                ContentBlockType.IMAGE.value,
+                name="Preview image",
+                url="https://example.com/image.png",
+                mime_type="image/png",
+            ),
+            _make_media_block(
+                ContentBlockType.DOCUMENT.value,
+                name="Spec",
+                url="https://example.com/spec.pdf",
+                mime_type="application/pdf",
+            ),
+            _make_media_block("file", name="Archive", mime_type="text/plain"),
+        ]
+
+        markdown = render_blocks_markdown(blocks)
+        html = render_blocks_html(blocks)
+        plaintext = render_blocks_plaintext(blocks)
+
+        assert "[Preview image](https://example.com/image.png) (image/png)" in markdown
+        assert "[Spec](https://example.com/spec.pdf) (application/pdf)" in markdown
+        assert "[Archive] (text/plain)" in markdown
+
+        assert '<div class="media-block" data-type="image">' in html
+        assert '<a class="media-link" href="https://example.com/image.png">Preview image</a>' in html
+        assert '<div class="media-block" data-type="document">' in html
+        assert '<a class="media-link" href="https://example.com/spec.pdf">Spec</a>' in html
+        assert '<div class="media-block" data-type="file">' in html
+        assert '<span class="media-name">Archive</span>' in html
+
+        assert "Preview image https://example.com/image.png (image/png)" in plaintext
+        assert "Spec https://example.com/spec.pdf (application/pdf)" in plaintext
+        assert "Archive (text/plain)" in plaintext
+
+
+class TestPlainConsoleLiteralOutput:
+    """PlainConsole must preserve non-markup literal string content."""
+
+    def test_prints_strings_literally(self, capsys: pytest.CaptureFixture[str]) -> None:
+        console = PlainConsole()
+        console.print("[bold]literal[/bold]", "```python\nprint(1)\n```")
+        output = capsys.readouterr().out
+        assert "literal" in output
+        assert "```python" in output
+        assert "print(1)" in output
 
 
 # =============================================================================

@@ -3,7 +3,7 @@ from __future__ import annotations
 import importlib
 from collections.abc import Callable
 from types import ModuleType
-from typing import ParamSpec, Protocol, TypeAlias, TypeVar, cast
+from typing import ParamSpec, Protocol, TypeAlias, TypeVar
 
 from tenacity import (
     retry_if_exception_type,
@@ -180,7 +180,7 @@ class DriveServiceGateway:
             return self._service
 
         discovery = _import_module("googleapiclient.discovery")
-        build = cast(_DriveServiceBuilder, discovery.build)
+        build: _DriveServiceBuilder = discovery.build
         creds = self._auth_manager.load_credentials()
         self._service = build("drive", "v3", credentials=creds, cache_discovery=False)
         return self._service
@@ -225,7 +225,7 @@ class DriveServiceGateway:
     def download_file(self, file_id: str, handle: _BinaryWritable) -> None:
         """Download file content into a writable binary handle."""
         http_module = _import_module("googleapiclient.http")
-        downloader_cls = cast(MediaDownloadFactory, http_module.MediaIoBaseDownload)
+        downloader_cls: MediaDownloadFactory = http_module.MediaIoBaseDownload
         service = self._service_handle()
         request = service.files().get_media(fileId=file_id)
         self._download_request(request, handle, downloader_cls, file_id=file_id)

@@ -6,7 +6,7 @@ import time
 import zipfile
 from collections.abc import Callable, Iterable
 from pathlib import Path
-from typing import IO, BinaryIO, TypeAlias, cast
+from typing import IO, TypeAlias
 
 from polylogue.config import Source
 from polylogue.lib.artifact_taxonomy import classify_artifact
@@ -106,7 +106,7 @@ def _observe_acquisition(
 
 def _stream_fileobj_to_blob(
     blob_store: BlobStore,
-    handle: BinaryIO,
+    handle: IO[bytes],
     *,
     status_callback: StatusCallback | None,
     source_name: str,
@@ -160,7 +160,7 @@ def _raw_data_record(
 
 
 def _iter_entry_payloads(
-    handle: BinaryIO | IO[bytes],
+    handle: IO[bytes],
     *,
     stream_name: str,
     provider_hint: Provider,
@@ -268,7 +268,7 @@ def iter_source_raw_data(
                             with zf.open(info.filename) as handle:
                                 blob_hash, blob_size = _stream_fileobj_to_blob(
                                     blob_store,
-                                    cast(BinaryIO, handle),
+                                    handle,
                                     status_callback=status_callback,
                                     source_name=source.name,
                                     source_path=entry_path,
@@ -296,7 +296,7 @@ def iter_source_raw_data(
 
                         with zf.open(info.filename) as handle:
                             for payload_provider, payload, detect_provider_ms in _iter_entry_payloads(
-                                cast(BinaryIO, handle),
+                                handle,
                                 stream_name=info.filename,
                                 provider_hint=entry_provider_hint,
                             ):
@@ -364,7 +364,7 @@ def iter_source_raw_data(
                         with zf.open(info.filename) as handle:
                             blob_hash, blob_size = _stream_fileobj_to_blob(
                                 blob_store,
-                                cast(BinaryIO, handle),
+                                handle,
                                 status_callback=status_callback,
                                 source_name=source.name,
                                 source_path=entry_path,

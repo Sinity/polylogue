@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from typing import cast
-
 from polylogue.lib.json import JSONDocument, json_document, json_document_list
 from polylogue.lib.viewports import ContentBlock
 from polylogue.types import ContentBlockType
@@ -52,15 +50,17 @@ def parsed_content_blocks_from_meta(blocks: object) -> list[ParsedContentBlock]:
         raw_media_type = block.get("media_type")
         media_type = raw_media_type if isinstance(raw_media_type, str) else None
         language = block.get("language")
+        metadata_out: dict[str, object] = {}
+        for key, value in metadata.items():
+            metadata_out[key] = value
         if isinstance(language, str) and language:
-            metadata = dict(metadata)
-            metadata.setdefault("language", language)
+            metadata_out.setdefault("language", language)
         parsed.append(
             ParsedContentBlock(
                 type=ContentBlockType.from_string(block_type),
                 text=text,
                 media_type=media_type,
-                metadata=cast(dict[str, object] | None, metadata or None),
+                metadata=metadata_out or None,
             )
         )
     return parsed

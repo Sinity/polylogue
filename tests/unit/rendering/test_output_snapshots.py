@@ -16,6 +16,7 @@ syrupy = pytest.importorskip("syrupy")
 
 from polylogue.lib.models import Conversation, Message
 from polylogue.rendering.renderers.html import render_conversation_html
+from polylogue.types import ContentBlockType
 from tests.infra.builders import make_conv as build_conv
 from tests.infra.builders import make_msg as build_msg
 
@@ -94,3 +95,29 @@ def test_conversation_with_followup_html_snapshot(snapshot: object) -> None:
     conv = _make_conv(msgs, title="Followup After Branch")
     html = render_conversation_html(conv)
     assert html == snapshot
+
+
+def test_media_blocks_render_in_conversation_html() -> None:
+    """Structured media blocks should survive the HTML boundary."""
+    msgs = [
+        build_msg(
+            id="m1",
+            role="assistant",
+            text="This fallback text should not be rendered",
+            content_blocks=[
+                {
+                    "type": ContentBlockType.DOCUMENT.value,
+                    "name": "Spec",
+                    "url": "https://example.com/spec.pdf",
+                    "mime_type": "application/pdf",
+                }
+            ],
+        )
+    ]
+    conv = _make_conv(msgs, title="Media Conversation")
+    html = render_conversation_html(conv)
+    assert "media-block" in html
+    assert 'data-type="document"' in html
+    assert 'href="https://example.com/spec.pdf"' in html
+    assert "Spec" in html
+    assert "This fallback text should not be rendered" not in html

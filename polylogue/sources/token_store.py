@@ -8,8 +8,9 @@ Provides a protocol for token persistence with two implementations:
 from __future__ import annotations
 
 from contextlib import suppress
+from importlib import import_module
 from pathlib import Path
-from typing import Protocol
+from typing import Protocol, runtime_checkable
 
 from polylogue.logging import get_logger
 
@@ -30,6 +31,19 @@ class TokenStore(Protocol):
     def delete(self, key: str) -> None:
         """Delete token data by key."""
         ...
+
+
+@runtime_checkable
+class KeyringModule(Protocol):
+    """Typed subset of the keyring module used by Polylogue."""
+
+    def get_keyring(self) -> object: ...
+
+    def get_password(self, service_name: str, key: str) -> str | None: ...
+
+    def set_password(self, service_name: str, key: str, value: str) -> None: ...
+
+    def delete_password(self, service_name: str, key: str) -> None: ...
 
 
 class FileTokenStore:
@@ -77,20 +91,23 @@ class KeyringTokenStore:
         self._keyring = self._try_import_keyring()
 
     @staticmethod
-    def _try_import_keyring() -> object | None:
+    def _try_import_keyring() -> KeyringModule | None:
         try:
-            import keyring
+            candidate = import_module("keyring")
+            keyring = candidate if isinstance(candidate, KeyringModule) else None
+            if keyring is None:
+                return None
 
             # Test that keyring backend is functional
             keyring.get_keyring()
-            return keyring  # type: ignore[no-any-return]
+            return keyring
         except Exception:
             return None
 
     def load(self, key: str) -> str | None:
         if self._keyring is not None:
             try:
-                data: str | None = self._keyring.get_password(self._SERVICE_NAME, key)  # type: ignore[attr-defined]
+                data = self._keyring.get_password(self._SERVICE_NAME, key)
                 if data is not None:
                     return data
             except Exception as exc:
@@ -100,7 +117,7 @@ class KeyringTokenStore:
     def save(self, key: str, data: str) -> None:
         if self._keyring is not None:
             try:
-                self._keyring.set_password(self._SERVICE_NAME, key, data)  # type: ignore[attr-defined]
+                self._keyring.set_password(self._SERVICE_NAME, key, data)
                 return
             except Exception as exc:
                 logger.debug("Keyring save failed for %s, falling back to file: %s", key, exc)
@@ -109,7 +126,7 @@ class KeyringTokenStore:
     def delete(self, key: str) -> None:
         if self._keyring is not None:
             with suppress(Exception):
-                self._keyring.delete_password(self._SERVICE_NAME, key)  # type: ignore[attr-defined]
+                self._keyring.delete_password(self._SERVICE_NAME, key)
         self._fallback.delete(key)
 
 
