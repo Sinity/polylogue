@@ -426,9 +426,12 @@ async def test_validation_law_matches_mode_and_payload_contract(case: Validation
     backend = MagicMock(spec=SQLiteBackend)
     backend.queries = MagicMock()
     service = ValidationService(backend=backend)
-    service.repository.get_raw_conversations_batch = AsyncMock(return_value=[raw_record])  # type: ignore[method-assign]
-    service.repository.mark_raw_validated = AsyncMock()  # type: ignore[method-assign]
-    service.repository.mark_raw_parsed = AsyncMock()  # type: ignore[method-assign]
+    get_batch = AsyncMock(return_value=[raw_record])
+    mark_validated = AsyncMock()
+    mark_parsed = AsyncMock()
+    object.__setattr__(service.repository, "get_raw_conversations_batch", get_batch)
+    object.__setattr__(service.repository, "mark_raw_validated", mark_validated)
+    object.__setattr__(service.repository, "mark_raw_parsed", mark_parsed)
 
     class _SyntheticValidator:
         provider = provider_name
@@ -466,13 +469,13 @@ async def test_validation_law_matches_mode_and_payload_contract(case: Validation
     assert result.parseable_raw_ids == ([raw_id] if expected["parseable"] else [])
     assert result.invalid_raw_ids == ([] if expected["parseable"] else [raw_id])
 
-    validate_calls = service.repository.mark_raw_validated.await_args_list
+    validate_calls = mark_validated.await_args_list
     assert len(validate_calls) >= 1
     assert validate_calls[0].args[0] == raw_id
     validation_kwargs = validate_calls[0].kwargs
     assert validation_kwargs["status"] == ValidationStatus.from_string(expected["status"])
 
-    parse_calls = service.repository.mark_raw_parsed.await_args_list
+    parse_calls = mark_parsed.await_args_list
     if expected["mark_raw_parsed"]:
         assert len(parse_calls) == 1
         assert parse_calls[0].args[0] == raw_id

@@ -87,7 +87,8 @@ class TestMarkRawParsed:
 
         rec = await backend.get_raw_conversation("test-raw")
         assert rec is not None
-        assert len(rec.parse_error) == 2000  # type: ignore[arg-type]
+        assert rec.parse_error is not None
+        assert len(rec.parse_error) == 2000
 
 
 class TestUpdateRawState:

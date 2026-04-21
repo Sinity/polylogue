@@ -60,6 +60,10 @@ def _messages_db(msg_to_conv: dict[str, str]) -> sqlite3.Connection:
     return conn
 
 
+def _stub_search_scored(provider: HybridSearchProvider, results: list[tuple[str, float]]) -> None:
+    object.__setattr__(provider, "search_scored", MagicMock(return_value=results))
+
+
 # ---------------------------------------------------------------------------
 # Law 1: RRF score for any rank is positive
 # ---------------------------------------------------------------------------
@@ -292,9 +296,7 @@ def test_search_conversations_deduplicates() -> None:
     conn = _messages_db({"msg1": "conv_A", "msg2": "conv_A", "msg3": "conv_B"})
     fts.db_path = conn
 
-    provider.search_scored = MagicMock(  # type: ignore[method-assign]
-        return_value=[("msg1", 0.9), ("msg2", 0.8), ("msg3", 0.7)]
-    )
+    _stub_search_scored(provider, [("msg1", 0.9), ("msg2", 0.8), ("msg3", 0.7)])
     result = provider.search_conversations("test", limit=10)
     assert result == ["conv_A", "conv_B"]
     assert result.count("conv_A") == 1, "conv_A must appear only once"
@@ -304,7 +306,7 @@ def test_search_conversations_empty_results_skips_db_lookup() -> None:
     """No message hits should return early without opening a DB connection."""
     fts, vec = _make_providers()
     provider = HybridSearchProvider(fts, vec)
-    provider.search_scored = MagicMock(return_value=[])  # type: ignore[method-assign]
+    _stub_search_scored(provider, [])
 
     with patch("polylogue.storage.search_providers.hybrid.open_connection") as open_conn:
         assert provider.search_conversations("test", limit=10) == []
@@ -318,9 +320,7 @@ def test_search_conversations_respects_limit() -> None:
     conn = _messages_db({f"msg{i}": f"conv_{i}" for i in range(10)})
     fts.db_path = conn
 
-    provider.search_scored = MagicMock(  # type: ignore[method-assign]
-        return_value=[(f"msg{i}", 1.0 - i * 0.05) for i in range(10)]
-    )
+    _stub_search_scored(provider, [(f"msg{i}", 1.0 - i * 0.05) for i in range(10)])
     result = provider.search_conversations("test", limit=3)
     assert len(result) <= 3
 
@@ -351,9 +351,7 @@ def test_search_conversations_provider_filter() -> None:
     conn.commit()
     fts.db_path = conn
 
-    provider.search_scored = MagicMock(  # type: ignore[method-assign]
-        return_value=[("msg1", 0.9), ("msg2", 0.8)]
-    )
+    _stub_search_scored(provider, [("msg1", 0.9), ("msg2", 0.8)])
     result = provider.search_conversations("test", limit=10, providers=["chatgpt"])
     assert "conv_chatgpt" in result
     assert "conv_claude" not in result
@@ -371,9 +369,7 @@ def test_search_conversations_limit_zero_returns_empty() -> None:
     conn = _messages_db({"msg1": "conv_A", "msg2": "conv_B"})
     fts.db_path = conn
 
-    provider.search_scored = MagicMock(  # type: ignore[method-assign]
-        return_value=[("msg1", 0.9), ("msg2", 0.8)]
-    )
+    _stub_search_scored(provider, [("msg1", 0.9), ("msg2", 0.8)])
     result = provider.search_conversations("test", limit=0)
     assert result == [], f"limit=0 must return empty list, got {result}"
 
@@ -417,9 +413,7 @@ def test_search_conversations_empty_providers_equivalent_to_none() -> None:
     conn = _messages_db({"msg1": "conv_A"})
     fts.db_path = conn
 
-    provider.search_scored = MagicMock(  # type: ignore[method-assign]
-        return_value=[("msg1", 0.9)]
-    )
+    _stub_search_scored(provider, [("msg1", 0.9)])
     result_empty_list = provider.search_conversations("test", limit=10, providers=[])
     result_none = provider.search_conversations("test", limit=10, providers=None)
     # Both must behave identically — no filter applied
@@ -434,9 +428,7 @@ def test_search_conversations_orphan_message_ids_skipped() -> None:
     conn = _messages_db({"msg2": "conv_B"})
     fts.db_path = conn
 
-    provider.search_scored = MagicMock(  # type: ignore[method-assign]
-        return_value=[("msg1", 0.9), ("msg2", 0.8), ("msg3", 0.7)]
-    )
+    _stub_search_scored(provider, [("msg1", 0.9), ("msg2", 0.8), ("msg3", 0.7)])
     result = provider.search_conversations("test", limit=10)
     assert result == ["conv_B"], "Orphan message IDs must be silently skipped"
 
