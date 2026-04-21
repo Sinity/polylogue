@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import sqlite3
-from typing import Any, cast
+from pathlib import Path
+from typing import cast
 
 import pytest
 from hypothesis import HealthCheck, given, settings
@@ -21,39 +22,39 @@ from tests.infra.strategies.adversarial import (
 
 
 @pytest.fixture
-async def temp_repo(tmp_path: Any) -> Any:
+async def temp_repo(tmp_path: Path) -> ConversationRepository:
     db_path = tmp_path / "test.db"
     backend = SQLiteBackend(db_path=db_path)
     return ConversationRepository(backend=backend)
 
 
-async def test_conversation_id_sql_injection_select(temp_repo: Any) -> None:
+async def test_conversation_id_sql_injection_select(temp_repo: ConversationRepository) -> None:
     assert await temp_repo.view("' OR '1'='1") is None
 
 
-async def test_conversation_id_sql_injection_drop_table(temp_repo: Any) -> None:
+async def test_conversation_id_sql_injection_drop_table(temp_repo: ConversationRepository) -> None:
     assert await temp_repo.view("'; DROP TABLE conversations--") is None
     assert isinstance(await temp_repo.list(), list)
 
 
-async def test_conversation_id_sql_injection_union(temp_repo: Any) -> None:
+async def test_conversation_id_sql_injection_union(temp_repo: ConversationRepository) -> None:
     assert await temp_repo.view("1 UNION SELECT * FROM sqlite_master--") is None
 
 
-async def test_message_id_sql_injection(temp_repo: Any) -> None:
+async def test_message_id_sql_injection(temp_repo: ConversationRepository) -> None:
     assert isinstance(await temp_repo.list(), list)
 
 
-async def test_provider_name_sql_injection(temp_repo: Any) -> None:
+async def test_provider_name_sql_injection(temp_repo: ConversationRepository) -> None:
     assert await temp_repo.list(provider="doesnotexist") == []
 
 
-async def test_conversation_title_sql_injection(temp_repo: Any) -> None:
+async def test_conversation_title_sql_injection(temp_repo: ConversationRepository) -> None:
     assert isinstance(await temp_repo.list(), list)
     assert isinstance(await temp_repo.list(), list)
 
 
-async def test_multiple_injection_attempts_in_sequence(temp_repo: Any) -> None:
+async def test_multiple_injection_attempts_in_sequence(temp_repo: ConversationRepository) -> None:
     for malicious_id in [
         "' OR '1'='1",
         "'; DROP TABLE conversations--",
@@ -64,7 +65,7 @@ async def test_multiple_injection_attempts_in_sequence(temp_repo: Any) -> None:
     assert isinstance(await temp_repo.list(), list)
 
 
-async def test_stored_xss_in_conversation_content(temp_repo: Any) -> None:
+async def test_stored_xss_in_conversation_content(temp_repo: ConversationRepository) -> None:
     xss_payload = "<script>alert('XSS')</script>"
     backend = temp_repo.backend
     conv_record = make_conversation("xss-test", title="XSS Test")
@@ -97,25 +98,25 @@ def test_escape_fts5_security_contract(raw_query: str, expected: str, should_com
             _assert_fts5_match_executes(escaped)
 
 
-async def test_empty_string_parameters_handled(temp_repo: Any) -> None:
+async def test_empty_string_parameters_handled(temp_repo: ConversationRepository) -> None:
     assert await temp_repo.view("") is None
     assert isinstance(await temp_repo.list(provider=""), list)
 
 
-async def test_none_parameters_handled(temp_repo: Any) -> None:
+async def test_none_parameters_handled(temp_repo: ConversationRepository) -> None:
     try:
-        conv = await temp_repo.view(cast(Any, None))
+        conv = await temp_repo.view(cast(str, None))
         assert conv is None
     except (TypeError, ValueError):
         pass
 
 
-async def test_very_long_string_parameters(temp_repo: Any) -> None:
+async def test_very_long_string_parameters(temp_repo: ConversationRepository) -> None:
     assert await temp_repo.view("a" * 10000) is None
     assert isinstance(await temp_repo.list(provider="x" * 1000), list)
 
 
-async def test_unicode_in_parameters(temp_repo: Any) -> None:
+async def test_unicode_in_parameters(temp_repo: ConversationRepository) -> None:
     for value in ["文件", "файл", "🎉🎊", "café"]:
         assert await temp_repo.view(value) is None
 
@@ -142,7 +143,9 @@ def test_control_chars_in_queries_handled(text_with_control: str) -> None:
 
 @given(sql_injection_strategy())
 @settings(max_examples=50, deadline=None, suppress_health_check=[HealthCheck.function_scoped_fixture])
-async def test_repository_survives_injection_property(temp_repo: Any, injection_payload: str) -> None:
+async def test_repository_survives_injection_property(
+    temp_repo: ConversationRepository, injection_payload: str
+) -> None:
     assert await temp_repo.view(injection_payload) is None
     result = await temp_repo.list(provider=injection_payload[:50])
     assert isinstance(result, list)

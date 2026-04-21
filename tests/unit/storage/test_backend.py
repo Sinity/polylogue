@@ -7,9 +7,10 @@ import importlib
 import sqlite3
 import threading
 import time
+from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, cast
+from typing import Protocol, cast
 
 import aiosqlite
 import pytest
@@ -35,6 +36,12 @@ from tests.infra.storage_records import (
     make_message,
     make_raw_conversation,
 )
+
+
+class MutableSchemaBackend(Protocol):
+    """Subset used by concurrency tests to wrap schema initialization."""
+
+    _ensure_schema: Callable[[aiosqlite.Connection], Awaitable[None]]
 
 
 def _table_names(conn: sqlite3.Connection) -> set[str]:
@@ -588,7 +595,7 @@ async def test_async_read_connection_closes_cleanly_after_pool_teardown(tmp_path
         await original_ensure_schema(conn)
 
     backend._schema_ensured = False
-    cast(Any, backend)._ensure_schema = counting_ensure_schema
+    cast(MutableSchemaBackend, backend)._ensure_schema = counting_ensure_schema
     await asyncio.gather(*[backend.queries.list_conversations(ConversationRecordQuery()) for _ in range(20)])
     assert init_count == 0
 
@@ -603,7 +610,7 @@ async def test_async_read_connection_closes_cleanly_after_pool_teardown(tmp_path
         events.append("end")
 
     slow_backend._schema_ensured = False
-    cast(Any, slow_backend)._ensure_schema = slow_ensure_schema
+    cast(MutableSchemaBackend, slow_backend)._ensure_schema = slow_ensure_schema
     await asyncio.gather(slow_backend.get_conversation("a"), slow_backend.get_conversation("b"))
     assert events.count("start") == 1
     assert events.count("end") == 1

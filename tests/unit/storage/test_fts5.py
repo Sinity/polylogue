@@ -10,8 +10,8 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Any
 from unittest.mock import patch
 
 import hypothesis.strategies as st
@@ -22,6 +22,7 @@ from polylogue.config import Config, IndexConfig
 from polylogue.pipeline.prepare import RecordBundle, save_bundle
 from polylogue.storage.backends.connection import open_connection
 from polylogue.storage.index import rebuild_index, update_index_for_conversations
+from polylogue.storage.repository import ConversationRepository
 from polylogue.storage.search import escape_fts5_query, search_messages
 from polylogue.storage.search_providers import create_vector_provider
 from polylogue.storage.search_providers.fts5 import FTS5Provider
@@ -42,7 +43,9 @@ from tests.infra.strategies import fts5_match_text_strategy, search_query_strate
 # ============================================================================
 
 
-async def test_search_respects_limit(workspace_env: dict[str, Path], storage_repository: Any) -> None:
+async def test_search_respects_limit(
+    workspace_env: dict[str, Path], storage_repository: ConversationRepository
+) -> None:
     """search_messages() respects limit parameter."""
     for i in range(10):
         conv = make_conversation(f"conv{i}", title=f"Conv {i}")
@@ -57,7 +60,9 @@ async def test_search_respects_limit(workspace_env: dict[str, Path], storage_rep
     assert len(results.hits) == 3
 
 
-async def test_search_includes_snippet(workspace_env: dict[str, Path], storage_repository: Any) -> None:
+async def test_search_includes_snippet(
+    workspace_env: dict[str, Path], storage_repository: ConversationRepository
+) -> None:
     """search_messages() includes text snippet in results."""
     conv = make_conversation("conv1")
     msg = make_message("msg1", "conv1", text="The quick brown fox jumps over the lazy dog")
@@ -75,7 +80,7 @@ async def test_search_includes_snippet(workspace_env: dict[str, Path], storage_r
 
 async def test_search_includes_conversation_metadata(
     workspace_env: dict[str, Path],
-    storage_repository: Any,
+    storage_repository: ConversationRepository,
 ) -> None:
     """search_messages() includes conversation metadata in results."""
     conv = make_conversation(
@@ -100,7 +105,7 @@ async def test_search_includes_conversation_metadata(
 
 async def test_search_returns_best_message_per_conversation(
     workspace_env: dict[str, Path],
-    storage_repository: Any,
+    storage_repository: ConversationRepository,
 ) -> None:
     """search_messages() picks the strongest per-conversation hit deterministically."""
     archive_root = workspace_env["archive_root"]
@@ -148,7 +153,7 @@ SEARCH_WITH_SPECIAL_TEXT_CASES = [
 @pytest.mark.parametrize("text,search_term,description", SEARCH_WITH_SPECIAL_TEXT_CASES)
 async def test_search_with_special_text(
     workspace_env: dict[str, Path],
-    storage_repository: Any,
+    storage_repository: ConversationRepository,
     text: str,
     search_term: str,
     description: str,
@@ -229,7 +234,7 @@ def test_action_event_status_ignores_orphan_tool_sources(test_conn: sqlite3.Conn
 
 async def test_search_returns_searchresult_object(
     workspace_env: dict[str, Path],
-    storage_repository: Any,
+    storage_repository: ConversationRepository,
 ) -> None:
     """search_messages() returns SearchResult with hits list."""
     conv = make_conversation("conv1")
@@ -312,7 +317,7 @@ def test_update_index_deletes_old_entries_from_conversation(test_conn: sqlite3.C
 
 async def test_rebuild_index_populates_action_search_rows(
     workspace_env: dict[str, Path],
-    storage_repository: Any,
+    storage_repository: ConversationRepository,
 ) -> None:
     """rebuild_index() also populates persisted action-event search rows."""
     conv = make_conversation("conv-actions", title="Action indexing")
@@ -528,7 +533,7 @@ def test_batch_index_10k_messages(test_conn: sqlite3.Connection) -> None:
 
 async def test_batch_index_search_returns_correct_provider(
     workspace_env: dict[str, Path],
-    storage_repository: Any,
+    storage_repository: ConversationRepository,
 ) -> None:
     """Verify batch indexing allows retrieving correct provider_name via search."""
     # Create conversations with different providers
@@ -770,10 +775,16 @@ class TestCreateVectorProvider:
 
                 original_import = builtins.__import__
 
-                def mock_import(name: str, *args: Any, **kwargs: Any) -> Any:
+                def mock_import(
+                    name: str,
+                    globals_: dict[str, object] | None = None,
+                    locals_: dict[str, object] | None = None,
+                    fromlist: tuple[str, ...] = (),
+                    level: int = 0,
+                ) -> object:
                     if name == "sqlite_vec":
                         raise ImportError("No module named 'sqlite_vec'")
-                    return original_import(name, *args, **kwargs)
+                    return original_import(name, globals_, locals_, fromlist, level)
 
                 with patch.object(builtins, "__import__", mock_import):
                     provider = create_vector_provider()
@@ -793,10 +804,16 @@ class TestCreateVectorProvider:
 
         original_import = builtins.__import__
 
-        def mock_import(name: str, *args: Any, **kwargs: Any) -> Any:
+        def mock_import(
+            name: str,
+            globals_: dict[str, object] | None = None,
+            locals_: dict[str, object] | None = None,
+            fromlist: tuple[str, ...] = (),
+            level: int = 0,
+        ) -> object:
             if name == "sqlite_vec":
                 raise ImportError("No module named 'sqlite_vec'")
-            return original_import(name, *args, **kwargs)
+            return original_import(name, globals_, locals_, fromlist, level)
 
         with (
             patch.dict("sys.modules", {"sqlite_vec": None}),
@@ -848,7 +865,7 @@ class TestFTS5Provider:
     async def populated_fts(
         self: object,
         workspace_env: dict[str, Path],
-        storage_repository: Any,
+        storage_repository: ConversationRepository,
         fts_provider: FTS5Provider,
     ) -> FTS5Provider:
         """FTS provider with indexed test data."""
@@ -917,7 +934,7 @@ class TestFTS5Provider:
         self: object,
         workspace_env: dict[str, Path],
         fts_provider: FTS5Provider,
-        storage_repository: Any,
+        storage_repository: ConversationRepository,
     ) -> None:
         """Calling index multiple times is safe (idempotent)."""
         conv = make_conversation(
@@ -943,7 +960,7 @@ class TestFTS5Provider:
         self: object,
         workspace_env: dict[str, Path],
         fts_provider: FTS5Provider,
-        storage_repository: Any,
+        storage_repository: ConversationRepository,
     ) -> None:
         """Incremental indexing removes old entries before inserting."""
         conv = make_conversation(
@@ -977,7 +994,7 @@ class TestFTS5Provider:
         self: object,
         workspace_env: dict[str, Path],
         fts_provider: FTS5Provider,
-        storage_repository: Any,
+        storage_repository: ConversationRepository,
     ) -> None:
         """Messages with empty text are not indexed."""
         conv = make_conversation(
@@ -1063,7 +1080,7 @@ class TestSearchProviderInit:
         assert isinstance(provider, FTS5Provider)
 
 
-async def _seed_conversation(storage_repository: Any) -> None:
+async def _seed_conversation(storage_repository: ConversationRepository) -> None:
     """Helper to seed a test conversation."""
     await save_bundle(
         RecordBundle(
@@ -1075,7 +1092,7 @@ async def _seed_conversation(storage_repository: Any) -> None:
     )
 
 
-async def test_search_after_index(workspace_env: dict[str, Path], storage_repository: Any) -> None:
+async def test_search_after_index(workspace_env: dict[str, Path], storage_repository: ConversationRepository) -> None:
     """Test searching after building the index."""
     await _seed_conversation(storage_repository)
     rebuild_index()
@@ -1131,7 +1148,7 @@ def test_search_invalid_query_reports_error(
             return StubCursor()
 
     @contextmanager
-    def stub_open_connection(_: object) -> Any:
+    def stub_open_connection(_: object) -> Iterator[StubConn]:
         yield StubConn()
 
     monkeypatch.setattr("polylogue.storage.search.open_connection", stub_open_connection)
@@ -1144,7 +1161,7 @@ def test_search_invalid_query_reports_error(
 
 async def test_search_prefers_legacy_render_when_present(
     workspace_env: dict[str, Path],
-    storage_repository: Any,
+    storage_repository: ConversationRepository,
 ) -> None:
     """Test that search returns legacy render paths when they exist."""
     archive_root = workspace_env["archive_root"]
@@ -1201,7 +1218,7 @@ SEARCH_SINCE_VALID_CASES = [
 )
 async def test_search_since_filters(
     workspace_env: dict[str, Path],
-    storage_repository: Any,
+    storage_repository: ConversationRepository,
     conv_id: str,
     old_ts: str,
     new_ts: str,
@@ -1230,7 +1247,7 @@ async def test_search_since_filters(
 
 async def test_search_since_handles_mixed_timestamp_formats(
     workspace_env: dict[str, Path],
-    storage_repository: Any,
+    storage_repository: ConversationRepository,
 ) -> None:
     """--since works with mix of ISO and numeric timestamps in same DB."""
     archive_root = workspace_env["archive_root"]
@@ -1285,7 +1302,7 @@ SEARCH_SINCE_ERROR_CASES = [
 @pytest.mark.parametrize("invalid_date,expected_error", SEARCH_SINCE_ERROR_CASES)
 async def test_search_since_invalid_date_raises_error(
     workspace_env: dict[str, Path],
-    storage_repository: Any,
+    storage_repository: ConversationRepository,
     invalid_date: str,
     expected_error: str,
 ) -> None:
@@ -1305,7 +1322,7 @@ async def test_search_since_invalid_date_raises_error(
 
 async def test_search_since_boundary_condition(
     workspace_env: dict[str, Path],
-    storage_repository: Any,
+    storage_repository: ConversationRepository,
 ) -> None:
     """Messages at or after --since timestamp are included, earlier ones excluded."""
     archive_root = workspace_env["archive_root"]
