@@ -13,7 +13,8 @@ import json
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+
+from polylogue.lib.json import JSONDocument
 
 
 def generate_valid_jsonl_record(
@@ -22,7 +23,7 @@ def generate_valid_jsonl_record(
     provider: str = "codex",
     base_ts: float = 1700000000.0,
     session_id: str | None = None,
-) -> dict[str, Any]:
+) -> JSONDocument:
     """Generate a single valid JSONL record for a given provider."""
     ts = base_ts + index * 60  # 1-minute intervals
     role = "user" if index % 2 == 0 else "assistant"
@@ -147,9 +148,9 @@ def corrupt_line_wrong_envelope(lines: list[str], index: int) -> list[str]:
     return result
 
 
-def generate_timestamp_patterns() -> dict[str, list[dict[str, Any]]]:
+def generate_timestamp_patterns() -> dict[str, list[JSONDocument]]:
     """Generate records with extreme timestamp patterns for chronology testing."""
-    patterns: dict[str, list[dict[str, Any]]] = {}
+    patterns: dict[str, list[JSONDocument]] = {}
 
     # 1970-adjacent
     patterns["epoch_near_zero"] = [_make_ts_record(i, ts=86400 + i * 3600) for i in range(5)]
@@ -218,7 +219,7 @@ def generate_timestamp_patterns() -> dict[str, list[dict[str, Any]]]:
     return patterns
 
 
-def _make_ts_record(index: int, ts: float) -> dict[str, Any]:
+def _make_ts_record(index: int, ts: float) -> JSONDocument:
     """Make a codex-shaped record with a specific timestamp."""
     role = "user" if index % 2 == 0 else "assistant"
     return {

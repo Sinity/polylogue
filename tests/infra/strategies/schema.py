@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any
+from typing import TypeAlias
 
 from hypothesis import strategies as st
 
+from polylogue.lib.json import JSONDocument
 from tests.infra.strategies.sources import json_document_strategy
 
+JSONRecord: TypeAlias = dict[str, object]
 _STATIC_KEY_ALPHABET = "abcdefghijklmnopqrstuvwxyz_"
 _RECORD_VARIANTS: tuple[tuple[str, str], ...] = (
     ("type", "session_meta"),
@@ -25,7 +28,7 @@ class SessionJsonlFileSpec:
 
     relative_path: str
     text: str
-    expected_documents: tuple[dict[str, Any], ...]
+    expected_documents: tuple[JSONDocument, ...]
 
 
 @st.composite
@@ -68,10 +71,10 @@ def static_key_strategy(draw: st.DrawFn) -> str:
 
 
 @st.composite
-def nested_required_schema_strategy(draw: st.DrawFn, *, max_depth: int = 3) -> dict[str, Any]:
+def nested_required_schema_strategy(draw: st.DrawFn, *, max_depth: int = 3) -> JSONRecord:
     """Generate a JSON-schema-like tree with required fields at every object node."""
 
-    def _node(depth: int) -> dict[str, Any]:
+    def _node(depth: int) -> JSONRecord:
         if depth <= 0:
             return {"type": draw(st.sampled_from(("string", "integer", "boolean")))}
 
@@ -110,7 +113,7 @@ def record_payload_strategy(
     max_variants: int = 4,
     min_records_per_variant: int = 1,
     max_records_per_variant: int = 6,
-) -> list[dict[str, Any]]:
+) -> list[JSONRecord]:
     """Generate heterogeneous record payloads for record-granularity validation laws."""
     variants = draw(
         st.lists(
@@ -120,11 +123,11 @@ def record_payload_strategy(
             unique=True,
         )
     )
-    payload: list[dict[str, Any]] = []
+    payload: list[JSONRecord] = []
     for key, value in variants:
         count = draw(st.integers(min_value=min_records_per_variant, max_value=max_records_per_variant))
         for index in range(count):
-            record: dict[str, Any] = (
+            record: JSONRecord = (
                 {"payload": {"type": value}, "idx": index} if key == "payload.type" else {key: value, "idx": index}
             )
             payload.append(record)
@@ -182,7 +185,7 @@ def session_jsonl_tree_strategy(
     return tuple(files)
 
 
-def record_variant_signature(record: dict[str, Any]) -> str:
+def record_variant_signature(record: Mapping[str, object]) -> str:
     """Return the same stratification signature family used by record sampling."""
     for key in ("type", "record_type"):
         value = record.get(key)
@@ -196,9 +199,9 @@ def record_variant_signature(record: dict[str, Any]) -> str:
     return "unknown"
 
 
-def expected_session_documents(files: tuple[SessionJsonlFileSpec, ...]) -> list[dict[str, Any]]:
+def expected_session_documents(files: tuple[SessionJsonlFileSpec, ...]) -> list[JSONDocument]:
     """Return session-loader output order when file mtimes follow tuple order."""
-    documents: list[dict[str, Any]] = []
+    documents: list[JSONDocument] = []
     for file_spec in reversed(files):
         documents.extend(file_spec.expected_documents)
     return documents

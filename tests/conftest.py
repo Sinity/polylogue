@@ -5,7 +5,8 @@ import os
 import sqlite3
 from collections.abc import AsyncIterator, Callable, Iterator, Mapping
 from pathlib import Path
-from typing import Any
+from types import ModuleType
+from typing import TYPE_CHECKING
 
 import pytest
 from hypothesis import HealthCheck, settings
@@ -16,6 +17,14 @@ from polylogue.lib.models import Conversation
 from polylogue.scenarios import CorpusSpec, build_default_corpus_specs
 from polylogue.storage.store import RawConversationRecord
 from tests.infra.builders import make_conv, make_msg
+
+if TYPE_CHECKING:
+    from click.testing import CliRunner
+
+    from polylogue.paths import Source
+    from polylogue.storage.backends import SQLiteBackend
+    from polylogue.storage.repository import ConversationRepository
+    from tests.infra.storage_records import ConversationBuilder
 
 # ---------------------------------------------------------------------------
 # Scale markers for data-gravity and long-haul validation (Workstream H)
@@ -138,7 +147,7 @@ def db_without_fts(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
-def storage_repository(workspace_env: dict[str, Path]) -> Any:
+def storage_repository(workspace_env: dict[str, Path]) -> ConversationRepository:
     """Storage repository with its own write lock.
 
     Use this fixture in tests that need thread-safe storage operations.
@@ -331,12 +340,12 @@ def mock_media_downloader(monkeypatch: pytest.MonkeyPatch) -> dict[str, object]:
     from tests.infra.drive_mocks import MockMediaIoBaseDownload
 
     # Patch the _import_module function to return mock for MediaIoBaseDownload
+    class MockHttpModule(ModuleType):
+        MediaIoBaseDownload: type[MockMediaIoBaseDownload]
 
-    def mock_import_module(name: str) -> Any:
+    def mock_import_module(name: str) -> ModuleType:
         if name == "googleapiclient.http":
-            import types
-
-            mock_http: Any = types.ModuleType("googleapiclient.http")
+            mock_http = MockHttpModule("googleapiclient.http")
             mock_http.MediaIoBaseDownload = MockMediaIoBaseDownload
             return mock_http
         # Fall through to original for other modules
@@ -370,7 +379,7 @@ def db_path(workspace_env: Mapping[str, Path]) -> Path:
 
 
 @pytest.fixture
-def conversation_builder(db_path: Path) -> Callable[[str], Any]:
+def conversation_builder(db_path: Path) -> Callable[[str], ConversationBuilder]:
     """Fixture that provides ConversationBuilder factory.
 
     Usage in tests:
@@ -381,7 +390,7 @@ def conversation_builder(db_path: Path) -> Callable[[str], Any]:
     """
     from tests.infra.storage_records import ConversationBuilder
 
-    def _builder(conversation_id: str = "test-conv") -> Any:
+    def _builder(conversation_id: str = "test-conv") -> ConversationBuilder:
         return ConversationBuilder(db_path, conversation_id)
 
     return _builder
@@ -420,7 +429,7 @@ def test_conn(test_db: Path) -> Iterator[sqlite3.Connection]:
 
 
 @pytest.fixture
-async def sqlite_backend(tmp_path: Path) -> AsyncIterator[Any]:
+async def sqlite_backend(tmp_path: Path) -> AsyncIterator[SQLiteBackend]:
     """Create a SQLite backend for testing."""
 
     from polylogue.storage.backends import SQLiteBackend
@@ -467,7 +476,7 @@ def sample_conversation() -> Conversation:
 
 
 @pytest.fixture
-def cli_runner() -> Any:
+def cli_runner() -> CliRunner:
     """Create a CliRunner for testing CLI commands.
 
     Replaces duplicate definitions across CLI test files.
@@ -590,7 +599,7 @@ def seeded_db(tmp_path_factory: pytest.TempPathFactory) -> Path:
 
 
 @pytest.fixture
-def seeded_repository(seeded_db: Path) -> Any:
+def seeded_repository(seeded_db: Path) -> ConversationRepository:
     """Repository backed by the seeded database.
 
     Use this when tests need a ConversationRepository with real provider data.
@@ -659,7 +668,7 @@ from tests.infra.corpus_fixtures import corpus_seeded_db  # noqa: F401
 
 
 @pytest.fixture
-def synthetic_source(tmp_path: Path) -> Callable[[str, int, range, int], Any]:
+def synthetic_source(tmp_path: Path) -> Callable[[str, int, range, int], Source]:
     """Factory fixture that generates synthetic Source objects for any provider.
 
     Writes SyntheticCorpus output to temp files, returning Source objects that

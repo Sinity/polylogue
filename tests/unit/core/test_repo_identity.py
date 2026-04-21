@@ -175,7 +175,7 @@ def test_build_session_profile_normalizes_repo_roots_from_workdirs_and_tool_path
     profile = build_session_profile(conversation)
 
     assert profile.repo_paths == (str(REPO_ROOT), str(sinnix_repo))
-    assert profile.repo_names == ("polylogue", "sinnix")
+    assert profile.repo_names == (REPO_ROOT.name, "sinnix")
 
 
 def test_extract_attribution_preserves_repo_name_from_provider_git_remote() -> None:
