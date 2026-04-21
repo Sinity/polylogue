@@ -103,6 +103,9 @@ Options:
                                   --latest or -i ID. Incompatible with
                                   --transform
   -d, --dialogue-only             Show only user/assistant messages
+  --message-role TEXT             Show only selected message roles (repeatable
+                                  or comma-separated: user, assistant, system,
+                                  tool, unknown)
   --set TEXT...                   Set metadata key value
   --add-tag TEXT                  Add tags (comma-separated)
   --plain                         Force non-interactive plain output

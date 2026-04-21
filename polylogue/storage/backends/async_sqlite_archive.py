@@ -6,6 +6,7 @@ from collections.abc import AsyncIterator
 from contextlib import AbstractAsyncContextManager
 from typing import TYPE_CHECKING
 
+from polylogue.lib.message_roles import MessageRoleFilter
 from polylogue.storage.backends.queries import attachments as attachments_q
 from polylogue.storage.backends.queries import conversations as conversations_q
 from polylogue.storage.backends.queries import messages as messages_q
@@ -167,6 +168,7 @@ class SQLiteArchiveMixin:
         *,
         chunk_size: int = 100,
         dialogue_only: bool = False,
+        message_roles: MessageRoleFilter = (),
         limit: int | None = None,
     ) -> AsyncIterator[MessageRecord]:
         """Stream messages in chunks instead of loading all at once."""
@@ -177,6 +179,7 @@ class SQLiteArchiveMixin:
                     conversation_id,
                     chunk_size=chunk_size,
                     dialogue_only=dialogue_only,
+                    message_roles=message_roles,
                     limit=limit,
                 ):
                     yield msg
@@ -184,6 +187,7 @@ class SQLiteArchiveMixin:
         async for msg in self.queries.iter_messages(
             conversation_id,
             dialogue_only=dialogue_only,
+            message_roles=message_roles,
             limit=limit,
         ):
             yield msg

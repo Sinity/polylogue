@@ -36,6 +36,8 @@ from polylogue.cli.query_stats import (
     output_stats_sql,
 )
 from polylogue.lib.json import JSONDocument
+from polylogue.lib.message_roles import MessageRoleFilter, message_role_count_key, message_role_labels
+from polylogue.lib.roles import Role
 from polylogue.logging import get_logger
 from polylogue.rendering.formatting import format_conversation
 from polylogue.surface_payloads import ConversationListRowPayload
@@ -51,6 +53,7 @@ if TYPE_CHECKING:
 
 ConversationStats: TypeAlias = dict[str, int]
 MACHINE_OUTPUT_FORMATS = frozenset({"json", "yaml", "csv"})
+DIALOGUE_MESSAGE_ROLES: MessageRoleFilter = (Role.USER, Role.ASSISTANT)
 
 
 def _display_date(value: datetime | None, date_format: str = "%Y-%m-%d") -> str:
@@ -84,6 +87,21 @@ def _stream_date_parts(display_date: object | None) -> tuple[str | None, str | N
         value = str(display_date)
         return value, value
     return None, None
+
+
+def _role_filter_label(message_roles: MessageRoleFilter) -> str:
+    if message_roles == DIALOGUE_MESSAGE_ROLES:
+        return "dialogue"
+    labels = message_role_labels(message_roles)
+    if len(labels) == 1:
+        return labels[0]
+    return "selected-role"
+
+
+def _role_filter_count(stats: ConversationStats, message_roles: MessageRoleFilter) -> int:
+    if message_roles == DIALOGUE_MESSAGE_ROLES:
+        return stats.get("dialogue_messages", 0)
+    return sum(stats.get(message_role_count_key(role), 0) for role in message_roles)
 
 
 # ---------------------------------------------------------------------------
@@ -474,6 +492,7 @@ def render_stream_header(
     display_date: object | None,
     output_format: str,
     dialogue_only: bool,
+    message_roles: MessageRoleFilter,
     message_limit: int | None,
     stats: ConversationStats | None,
 ) -> str:
@@ -488,8 +507,10 @@ def render_stream_header(
             lines.append(f"**Provider**: {provider}")
         if display_date_text is not None or provider:
             lines.append("")
-        if dialogue_only and stats:
-            line = f"_Showing {stats['dialogue_messages']} dialogue messages"
+        if message_roles and stats:
+            shown = _role_filter_count(stats, message_roles)
+            label = _role_filter_label(message_roles)
+            line = f"_Showing {shown} {label} messages"
             if message_limit:
                 line += f" (limit: {message_limit})"
             line += f" of {stats['total_messages']} total_"
@@ -504,6 +525,7 @@ def render_stream_header(
             "provider": provider,
             "date": display_date_value,
             "dialogue_only": dialogue_only,
+            "message_roles": list(message_role_labels(message_roles)),
             "message_limit": message_limit,
             "stats": stats,
         }
@@ -530,10 +552,13 @@ def render_stream_transcript(
     messages: list[Message],
     output_format: str,
     dialogue_only: bool = False,
+    message_roles: MessageRoleFilter = (),
     message_limit: int | None = None,
     stats: ConversationStats | None = None,
 ) -> tuple[str, int]:
     """Render the full stream transcript deterministically for proof/tests."""
+    effective_roles = message_roles or (DIALOGUE_MESSAGE_ROLES if dialogue_only else ())
+    filtered_messages = [message for message in messages if not effective_roles or message.role in effective_roles]
     parts = [
         render_stream_header(
             conversation_id=conversation_id,
@@ -542,12 +567,13 @@ def render_stream_transcript(
             display_date=display_date,
             output_format=output_format,
             dialogue_only=dialogue_only,
+            message_roles=effective_roles,
             message_limit=message_limit,
             stats=stats,
         )
     ]
     emitted = 0
-    for message in messages[: message_limit if message_limit is not None else None]:
+    for message in filtered_messages[: message_limit if message_limit is not None else None]:
         chunk = render_stream_message(message, output_format)
         if chunk:
             parts.append(chunk)
@@ -563,6 +589,7 @@ async def stream_conversation(
     *,
     output_format: str = "plaintext",
     dialogue_only: bool = False,
+    message_roles: MessageRoleFilter = (),
     message_limit: int | None = None,
 ) -> int:
     """Stream conversation messages to stdout without buffering."""
@@ -573,6 +600,7 @@ async def stream_conversation(
     conv_record = projection.conversation
 
     stats = await repo.get_conversation_stats(conversation_id)
+    effective_roles = message_roles or (DIALOGUE_MESSAGE_ROLES if dialogue_only else ())
     sys.stdout.write(
         render_stream_header(
             conversation_id=conversation_id,
@@ -581,6 +609,7 @@ async def stream_conversation(
             display_date=(getattr(conv_record, "updated_at", None) or getattr(conv_record, "created_at", None)),
             output_format=output_format,
             dialogue_only=dialogue_only,
+            message_roles=effective_roles,
             message_limit=message_limit,
             stats=stats,
         )
@@ -591,6 +620,7 @@ async def stream_conversation(
     async for message in repo.iter_messages(
         conversation_id,
         dialogue_only=dialogue_only,
+        message_roles=effective_roles,
         limit=message_limit,
     ):
         chunk = render_stream_message(message, output_format)

@@ -9,7 +9,9 @@ from typing import TYPE_CHECKING, Self
 
 from polylogue.lib.branch_type import BranchType
 from polylogue.lib.message_models import DialoguePair, Message
+from polylogue.lib.message_roles import normalize_message_roles
 from polylogue.lib.messages import MessageCollection
+from polylogue.lib.roles import Role
 from polylogue.types import ConversationId
 
 if TYPE_CHECKING:
@@ -84,14 +86,12 @@ class ConversationRuntimeMixin:
         filtered_messages = [message for message in self.messages if predicate(message)]
         return self.model_copy(update={"messages": MessageCollection(messages=filtered_messages)})
 
-    def user_only(self) -> Self:
-        return self.filter(lambda message: message.is_user)
-
-    def assistant_only(self) -> Self:
-        return self.filter(lambda message: message.is_assistant)
+    def with_roles(self, roles: object) -> Self:
+        selected_roles = normalize_message_roles(roles)
+        return self.filter(lambda message: message.role in selected_roles)
 
     def dialogue_only(self) -> Self:
-        return self.filter(lambda message: message.is_dialogue)
+        return self.with_roles((Role.USER, Role.ASSISTANT))
 
     def without_noise(self) -> Self:
         return self.filter(lambda message: not message.is_noise)

@@ -50,6 +50,7 @@ class RootModeRequest:
                 "limit",
                 "stream",
                 "dialogue_only",
+                "message_role",
             )
         )
 
