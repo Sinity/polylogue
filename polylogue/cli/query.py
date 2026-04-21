@@ -28,9 +28,9 @@ from polylogue.cli.query_contracts import (
 from polylogue.cli.query_feedback import emit_no_results
 from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.types import AppEnv
+from polylogue.lib.json import JSONDocument
 from polylogue.lib.query_spec import QuerySpecError
 from polylogue.logging import get_logger
-from polylogue.schemas.json_types import JSONDocument
 from polylogue.surface_payloads import ConversationListRowPayload
 from polylogue.sync_bridge import run_coroutine_sync
 

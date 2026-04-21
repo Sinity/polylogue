@@ -7,13 +7,12 @@ import shutil
 import sqlite3
 import sys
 import time
-from collections.abc import Mapping
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TypeAlias
 
 from polylogue.config import Config
+from polylogue.lib.json import JSONDocument, json_document
 from polylogue.lib.outcomes import OutcomeCheck, OutcomeReport, OutcomeStatus
 from polylogue.maintenance_models import DerivedModelStatus
 from polylogue.maintenance_targets import build_maintenance_target_catalog
@@ -25,9 +24,6 @@ VerifyStatus = OutcomeStatus
 
 READINESS_TTL_SECONDS = 600
 _MAINTENANCE_TARGET_CATALOG = build_maintenance_target_catalog()
-
-JSONScalar: TypeAlias = str | int | float | bool | None
-JSONValue: TypeAlias = JSONScalar | list["JSONValue"] | Mapping[str, "JSONValue"]
 
 _DERIVED_MODEL_READINESS_CHECKS: tuple[tuple[str, str], ...] = (
     ("action_event_read_model", "action_events"),
@@ -65,24 +61,26 @@ class ReadinessReport(OutcomeReport):
     def provenance(self) -> _ReportProvenance:
         return _ReportProvenance()
 
-    def to_dict(self) -> dict[str, object]:
-        return {
-            "timestamp": self.timestamp,
-            "provenance": self.provenance.to_dict(),
-            "checks": [
-                {
-                    "name": check.name,
-                    "status": check.status.value,
-                    "count": check.count,
-                    "detail": check.summary,
-                    "breakdown": check.breakdown,
-                }
-                for check in self.checks
-            ],
-            "derived_models": {name: status.to_dict() for name, status in sorted(self.derived_models.items())},
-            "archive_debt": {name: status.to_dict() for name, status in sorted(self.archive_debt.items())},
-            "summary": self.summary,
-        }
+    def to_dict(self) -> JSONDocument:
+        return json_document(
+            {
+                "timestamp": self.timestamp,
+                "provenance": self.provenance.to_dict(),
+                "checks": [
+                    {
+                        "name": check.name,
+                        "status": check.status.value,
+                        "count": check.count,
+                        "detail": check.summary,
+                        "breakdown": check.breakdown,
+                    }
+                    for check in self.checks
+                ],
+                "derived_models": {name: status.to_dict() for name, status in sorted(self.derived_models.items())},
+                "archive_debt": {name: status.to_dict() for name, status in sorted(self.archive_debt.items())},
+                "summary": self.summary,
+            }
+        )
 
 
 @dataclass(frozen=True)
@@ -91,8 +89,8 @@ class _ReportProvenance:
 
     source: str = "live"
 
-    def to_dict(self) -> dict[str, object]:
-        return {"source": self.source}
+    def to_dict(self) -> JSONDocument:
+        return json_document({"source": self.source})
 
 
 def _summarize_db_error(exc: Exception) -> str:

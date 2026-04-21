@@ -44,10 +44,10 @@ from polylogue.cli.query_output import (
     output_stats_sql,
 )
 from polylogue.cli.types import AppEnv
+from polylogue.lib.json import JSONDocument
 from polylogue.lib.models import Conversation
 from polylogue.lib.query_spec import ConversationQuerySpec, QuerySpecError
 from polylogue.lib.roles import Role
-from polylogue.schemas.json_types import JSONDocument
 from polylogue.services import build_runtime_services
 from polylogue.storage.action_event_artifacts import ActionEventArtifactState
 from polylogue.storage.store import ContentBlockRecord, ConversationRecord, MessageRecord

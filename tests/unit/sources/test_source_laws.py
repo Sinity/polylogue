@@ -19,9 +19,8 @@ from hypothesis import strategies as st
 from typing_extensions import TypedDict
 
 from polylogue.config import Source
-from polylogue.lib.json import is_json_value
+from polylogue.lib.json import JSONDocument, JSONValue, is_json_value
 from polylogue.lib.roles import Role, normalize_role
-from polylogue.schemas.json_types import JSONDocument, JSONValue
 from polylogue.sources import decoders as decoders_module
 from polylogue.sources import dispatch as dispatch_module
 from polylogue.sources import source_acquisition

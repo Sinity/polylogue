@@ -5,8 +5,8 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import overload
 
+from polylogue.lib.json import JSONDocument, JSONValue
 from polylogue.schemas.field_stats import FieldStats
-from polylogue.schemas.json_types import JSONDocument, JSONValue
 from polylogue.schemas.privacy import (
     _is_content_field,
     _is_safe_enum_value,
