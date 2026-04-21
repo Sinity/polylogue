@@ -7,7 +7,7 @@ and that output directories can be customized.
 from __future__ import annotations
 
 import json
-from typing import Any
+from pathlib import Path
 
 from polylogue.scenarios import AssertionSpec, polylogue_execution
 from polylogue.showcase.exercises import Exercise
@@ -61,14 +61,14 @@ def _make_result(exercises: list[Exercise] | None = None) -> ShowcaseResult:
 class TestJsonEnvelopeValidation:
     """JSON report has correct envelope structure."""
 
-    def test_json_report_is_valid_json(self: Any) -> None:
+    def test_json_report_is_valid_json(self: object) -> None:
         """generate_json_report produces parseable JSON."""
         result = _make_result()
         report_json = generate_json_report(result)
         data = json.loads(report_json)
         assert isinstance(data, dict)
 
-    def test_json_report_has_required_fields(self: Any) -> None:
+    def test_json_report_has_required_fields(self: object) -> None:
         """JSON report contains total, passed, failed, skipped, exercises."""
         result = _make_result()
         data = json.loads(generate_json_report(result))
@@ -76,7 +76,7 @@ class TestJsonEnvelopeValidation:
         for field in ("total", "passed", "failed", "skipped", "exercises", "total_duration_ms"):
             assert field in data, f"Missing field: {field}"
 
-    def test_json_report_exercise_entries(self: Any) -> None:
+    def test_json_report_exercise_entries(self: object) -> None:
         """Each exercise entry has required keys."""
         result = _make_result()
         data = json.loads(generate_json_report(result))
@@ -87,7 +87,7 @@ class TestJsonEnvelopeValidation:
                 f"Entry {entry['name']} missing keys: {required_keys - set(entry.keys())}"
             )
 
-    def test_json_report_counts_match(self: Any) -> None:
+    def test_json_report_counts_match(self: object) -> None:
         """Report counts match actual results."""
         result = _make_result()
         data = json.loads(generate_json_report(result))
@@ -101,7 +101,7 @@ class TestJsonEnvelopeValidation:
 class TestCustomOutputRoot:
     """Reports can be saved to a custom output directory."""
 
-    def test_save_reports_creates_files(self: Any, tmp_path: Any) -> None:
+    def test_save_reports_creates_files(self: object, tmp_path: Path) -> None:
         """save_reports writes all three report files."""
         result = _make_result()
         result.output_dir = tmp_path
@@ -112,7 +112,7 @@ class TestCustomOutputRoot:
         assert (tmp_path / "showcase-report.json").exists()
         assert (tmp_path / "showcase-cookbook.md").exists()
 
-    def test_save_reports_json_is_valid(self: Any, tmp_path: Any) -> None:
+    def test_save_reports_json_is_valid(self: object, tmp_path: Path) -> None:
         """Saved JSON report is parseable."""
         result = _make_result()
         result.output_dir = tmp_path
@@ -122,7 +122,7 @@ class TestCustomOutputRoot:
         data = json.loads((tmp_path / "showcase-report.json").read_text())
         assert data["total"] == 2
 
-    def test_summary_contains_group_counts(self: Any) -> None:
+    def test_summary_contains_group_counts(self: object) -> None:
         """Summary text includes group-level pass/fail counts."""
         result = _make_result()
         summary = generate_summary(result)
@@ -131,7 +131,7 @@ class TestCustomOutputRoot:
         assert "sources" in summary
         assert "TOTAL" in summary
 
-    def test_cookbook_includes_exercise_output(self: Any) -> None:
+    def test_cookbook_includes_exercise_output(self: object) -> None:
         """Cookbook contains exercise descriptions and commands."""
         result = _make_result()
         cookbook = generate_cookbook(result)

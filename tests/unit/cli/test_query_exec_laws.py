@@ -9,7 +9,7 @@ import json
 import tempfile
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, cast
+from typing import cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -56,6 +56,11 @@ from polylogue.ui.facade_console import ConsoleLike
 from tests.infra.builders import make_conv, make_msg
 from tests.infra.strategies import (
     ConversationSummarySpec,
+    QueryDeleteCase,
+    QueryMutationCase,
+    SendOutputCase,
+    SummaryOutputCase,
+    SummaryStatsCase,
     build_conversation_summary,
     build_message_counts,
     query_delete_case_strategy,
@@ -109,7 +114,7 @@ def _fields_arg(fields: tuple[str, ...] | None) -> str | None:
     return None if not fields else ",".join(fields)
 
 
-def _structured_rows(case: Any) -> list[JSONDocument]:
+def _structured_rows(case: SummaryOutputCase) -> list[JSONDocument]:
     rows = [summary_to_dict(build_conversation_summary(spec), spec.message_count) for spec in case.summaries]
     if case.selected_fields:
         selected = set(case.selected_fields)
@@ -117,7 +122,7 @@ def _structured_rows(case: Any) -> list[JSONDocument]:
     return rows
 
 
-def _csv_rows(case: Any) -> list[dict[str, str]]:
+def _csv_rows(case: SummaryOutputCase) -> list[dict[str, str]]:
     rows: list[dict[str, str]] = []
     for spec in case.summaries:
         summary = build_conversation_summary(spec)
@@ -412,7 +417,7 @@ def _summary_group_key(spec: ConversationSummarySpec, dimension: str) -> str:
 
 @settings(max_examples=60, deadline=None)
 @given(case=query_mutation_case_strategy())
-def test_apply_modifiers_contract(case: Any) -> None:
+def test_apply_modifiers_contract(case: QueryMutationCase) -> None:
     repo = MagicMock()
     repo.update_metadata = AsyncMock()
     repo.add_tag = AsyncMock()
@@ -459,7 +464,7 @@ def test_apply_modifiers_contract(case: Any) -> None:
 
 @settings(max_examples=60, deadline=None)
 @given(case=query_delete_case_strategy())
-def test_delete_conversations_contract(case: Any) -> None:
+def test_delete_conversations_contract(case: QueryDeleteCase) -> None:
     repo = MagicMock()
     repo.delete_conversation = AsyncMock(side_effect=list(case.delete_results))
     env = _make_env(repo=repo)
@@ -508,7 +513,7 @@ def test_delete_conversations_contract(case: Any) -> None:
 @settings(max_examples=40, deadline=None)
 @given(case=summary_output_case_strategy())
 @pytest.mark.parametrize("output_format", ["json", "yaml", "csv", "text"])
-def test_output_summary_list_contract(case: Any, output_format: str) -> None:
+def test_output_summary_list_contract(case: SummaryOutputCase, output_format: str) -> None:
     repo = MagicMock()
     repo.get_message_counts_batch = AsyncMock(return_value=build_message_counts(case.summaries))
     env = _make_env(repo=repo)
@@ -516,7 +521,7 @@ def test_output_summary_list_contract(case: Any, output_format: str) -> None:
     output = _output_spec(output_format=output_format)
     if output_format in {"json", "yaml"}:
         output = _output_spec(output_format=output_format, fields=_fields_arg(case.selected_fields))
-    cast(Any, env.ui).plain = output_format == "text"
+    cast(MagicMock, env.ui).plain = output_format == "text"
 
     with patch("click.echo") as mock_echo:
         mock_echo = cast(MagicMock, mock_echo)
@@ -541,7 +546,7 @@ def test_output_summary_list_contract(case: Any, output_format: str) -> None:
     suppress_health_check=[HealthCheck.function_scoped_fixture],
 )
 @given(case=send_output_case_strategy())
-def test_send_output_routes_destination_contract(case: Any) -> None:
+def test_send_output_routes_destination_contract(case: SendOutputCase) -> None:
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)
         env = _make_env()
@@ -624,7 +629,7 @@ def test_resolve_query_route_uses_full_stats_for_tool_dimension() -> None:
 
 @settings(max_examples=40, deadline=None)
 @given(case=summary_stats_case_strategy())
-def test_output_stats_by_summaries_contract(case: Any) -> None:
+def test_output_stats_by_summaries_contract(case: SummaryStatsCase) -> None:
     env, buffer = _make_recording_env()
     summaries = [build_conversation_summary(spec) for spec in case.summaries]
     msg_counts = build_message_counts(case.summaries)
@@ -1026,7 +1031,7 @@ def test_output_results_projection_contract(
 ) -> None:
     del label
     env = _make_env()
-    cast(Any, env.ui).plain = plain
+    cast(MagicMock, env.ui).plain = plain
     output = QueryOutputSpec.from_params(params)
 
     with (

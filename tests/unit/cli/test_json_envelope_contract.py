@@ -12,7 +12,7 @@ pure output formatting, independent of path caching).
 from __future__ import annotations
 
 import json
-from typing import Any, cast
+from typing import TypeAlias, cast
 
 import pytest
 from click.testing import CliRunner
@@ -25,6 +25,7 @@ from polylogue.cli.machine_errors import (
 )
 
 pytestmark = pytest.mark.machine_contract
+JSONEnvelope: TypeAlias = dict[str, object]
 
 
 # ---------------------------------------------------------------------------
@@ -35,7 +36,7 @@ pytestmark = pytest.mark.machine_contract
 class TestEmitSuccess:
     """Tests for the emit_success() helper."""
 
-    def test_emit_success_writes_envelope(self: Any, capsys: Any) -> None:
+    def test_emit_success_writes_envelope(self: object, capsys: pytest.CaptureFixture[str]) -> None:
         """emit_success() writes the success envelope to stdout."""
         emit_success({"count": 42})
         captured = capsys.readouterr()
@@ -43,14 +44,14 @@ class TestEmitSuccess:
         assert parsed["status"] == "ok"
         assert parsed["result"] == {"count": 42}
 
-    def test_emit_success_none_result(self: Any, capsys: Any) -> None:
+    def test_emit_success_none_result(self: object, capsys: pytest.CaptureFixture[str]) -> None:
         """emit_success(None) writes empty result."""
         emit_success(None)
         captured = capsys.readouterr()
         parsed = json.loads(captured.out)
         assert parsed == {"status": "ok", "result": {}}
 
-    def test_emit_success_empty_result(self: Any, capsys: Any) -> None:
+    def test_emit_success_empty_result(self: object, capsys: pytest.CaptureFixture[str]) -> None:
         """emit_success({}) writes empty result."""
         emit_success({})
         captured = capsys.readouterr()
@@ -63,7 +64,7 @@ class TestEmitSuccess:
 # ---------------------------------------------------------------------------
 
 
-def _parse_json_output(output: str) -> dict[str, Any]:
+def _parse_json_output(output: str) -> JSONEnvelope:
     """Parse JSON from CLI output, stripping any log lines."""
     # CLI may emit structlog lines to stderr; stdout should be clean JSON.
     # But CliRunner mixes output, so find the JSON object.
@@ -81,10 +82,16 @@ def _parse_json_output(output: str) -> dict[str, Any]:
     parsed = json.loads(json_text)
     if not isinstance(parsed, dict):
         raise ValueError(f"Expected object envelope, got {type(parsed).__name__}")
-    return cast(dict[str, Any], parsed)
+    return cast(JSONEnvelope, parsed)
 
 
-def _invoke_json_command(args: list[str], monkeypatch: Any) -> dict[str, Any] | None:
+def _result_payload(data: JSONEnvelope) -> JSONEnvelope:
+    result = data["result"]
+    assert isinstance(result, dict)
+    return cast(JSONEnvelope, result)
+
+
+def _invoke_json_command(args: list[str], monkeypatch: pytest.MonkeyPatch) -> JSONEnvelope | None:
     """Invoke a CLI command with --json flag, return parsed output or None on skip.
 
     Returns None (and calls pytest.skip) if the command fails due to DB errors
@@ -108,7 +115,7 @@ def _invoke_json_command(args: list[str], monkeypatch: Any) -> dict[str, Any] | 
 class TestCheckJsonEnvelope:
     """check --json wraps output in success envelope."""
 
-    def test_check_json_has_status_ok(self: Any, monkeypatch: Any) -> None:
+    def test_check_json_has_status_ok(self: object, monkeypatch: pytest.MonkeyPatch) -> None:
         """polylogue check --json output has status: ok."""
         parsed = _invoke_json_command(["doctor", "--json"], monkeypatch)
         assert parsed is not None
@@ -119,13 +126,13 @@ class TestCheckJsonEnvelope:
 class TestTagsJsonEnvelope:
     """tags --json wraps output in success envelope."""
 
-    def test_tags_json_has_status_ok(self: Any, monkeypatch: Any) -> None:
+    def test_tags_json_has_status_ok(self: object, monkeypatch: pytest.MonkeyPatch) -> None:
         """polylogue tags --json output has status: ok."""
         parsed = _invoke_json_command(["tags", "--json"], monkeypatch)
         assert parsed is not None
         assert parsed["status"] == "ok"
         assert "result" in parsed
-        assert "tags" in parsed["result"]
+        assert "tags" in _result_payload(parsed)
 
 
 # ---------------------------------------------------------------------------
@@ -146,7 +153,7 @@ class TestErrorEnvelopeContract:
             ("unsupported_environment", "No TTY"),
         ],
     )
-    def test_error_envelope_shape(self: Any, code: Any, message: Any) -> None:
+    def test_error_envelope_shape(self: object, code: str, message: str) -> None:
         """Error envelope has required fields."""
         err = MachineError(code=code, message=message)
         d = err.to_dict()
@@ -154,7 +161,7 @@ class TestErrorEnvelopeContract:
         assert d["code"] == code
         assert d["message"] == message
 
-    def test_error_envelope_is_valid_json(self: Any) -> None:
+    def test_error_envelope_is_valid_json(self: object) -> None:
         """Error envelope serializes to valid JSON."""
         err = MachineError(
             code="runtime_error",
@@ -171,21 +178,21 @@ class TestErrorEnvelopeContract:
 class TestSuccessEnvelopeContract:
     """MachineSuccess always has status: ok and result."""
 
-    def test_success_envelope_shape(self: Any) -> None:
+    def test_success_envelope_shape(self: object) -> None:
         """Success envelope has status: ok and result."""
         s = success({"data": [1, 2, 3]})
         d = s.to_dict()
         assert d["status"] == "ok"
         assert d["result"]["data"] == [1, 2, 3]
 
-    def test_success_envelope_is_valid_json(self: Any) -> None:
+    def test_success_envelope_is_valid_json(self: object) -> None:
         """Success envelope serializes to valid JSON."""
         s = success({"nested": {"deep": True}})
         text = json.dumps(s.to_dict())
         parsed = json.loads(text)
         assert parsed["status"] == "ok"
 
-    def test_success_none_gives_empty_result(self: Any) -> None:
+    def test_success_none_gives_empty_result(self: object) -> None:
         """success(None) produces empty result dict."""
         s = success(None)
         assert s.to_dict() == {"status": "ok", "result": {}}
@@ -199,17 +206,17 @@ class TestSuccessEnvelopeContract:
 class TestStatusFieldInvariant:
     """Both envelope types always include status as a string."""
 
-    def test_error_status_is_string(self: Any) -> None:
+    def test_error_status_is_string(self: object) -> None:
         err = MachineError(code="x", message="y")
         assert isinstance(err.to_dict()["status"], str)
         assert err.to_dict()["status"] == "error"
 
-    def test_success_status_is_string(self: Any) -> None:
+    def test_success_status_is_string(self: object) -> None:
         s = success()
         assert isinstance(s.to_dict()["status"], str)
         assert s.to_dict()["status"] == "ok"
 
-    def test_error_and_success_status_are_disjoint(self: Any) -> None:
+    def test_error_and_success_status_are_disjoint(self: object) -> None:
         """Error and success envelopes have distinct status values."""
         err_status = MachineError(code="x", message="y").to_dict()["status"]
         ok_status = success().to_dict()["status"]
