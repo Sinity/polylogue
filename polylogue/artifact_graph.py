@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
 
 from polylogue.artifacts import (
     ArtifactLayer,
@@ -12,6 +11,7 @@ from polylogue.artifacts import (
     build_runtime_artifact_nodes,
     build_runtime_artifact_paths,
 )
+from polylogue.lib.json import JSONDocument, json_document
 from polylogue.maintenance_targets import MaintenanceTargetSpec, build_maintenance_target_catalog
 from polylogue.operations import OperationSpec, build_runtime_operation_catalog
 
@@ -76,13 +76,15 @@ class ArtifactGraph:
     def maintenance_targets_for_operation_names(self, names: tuple[str, ...]) -> tuple[MaintenanceTargetSpec, ...]:
         return build_maintenance_target_catalog().maintenance_targets_for_operation_names(names)
 
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "nodes": [node.to_dict() for node in self.nodes],
-            "paths": [path.to_dict() for path in self.paths],
-            "operations": [operation.to_dict() for operation in self.operations],
-            "maintenance_targets": [target.to_dict() for target in self.maintenance_targets],
-        }
+    def to_dict(self) -> JSONDocument:
+        return json_document(
+            {
+                "nodes": [node.to_dict() for node in self.nodes],
+                "paths": [path.to_dict() for path in self.paths],
+                "operations": [operation.to_dict() for operation in self.operations],
+                "maintenance_targets": [target.to_dict() for target in self.maintenance_targets],
+            }
+        )
 
 
 def build_artifact_graph() -> ArtifactGraph:

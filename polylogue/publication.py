@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 from pathlib import Path
-from typing import Any
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -71,7 +70,7 @@ class PublicationRunSummary(BaseModel):
 
     run_id: str
     timestamp: str
-    counts: dict[str, Any] | None = None
+    counts: dict[str, object] | None = None
     indexed: bool | None = None
     duration_ms: int | None = None
 
@@ -159,7 +158,7 @@ class SitePublicationManifest(BaseModel):
     generated_at: str
     output_dir: str
     duration_ms: int
-    config: dict[str, Any]
+    config: dict[str, object]
     archive: ArchivePublicationSummary
     outputs: SiteOutputSummary
     latest_run: PublicationRunSummary | None = None

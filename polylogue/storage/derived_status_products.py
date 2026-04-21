@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 from polylogue.maintenance_models import DerivedModelStatus
 from polylogue.storage.action_event_artifacts import ActionEventArtifactState
 from polylogue.storage.store import ACTION_EVENT_MATERIALIZER_VERSION, SESSION_PRODUCT_MATERIALIZER_VERSION
@@ -23,8 +25,7 @@ def pending_docs(source_docs: int, materialized_docs: int) -> int:
 def build_action_statuses(metrics: dict[str, int | bool]) -> dict[str, DerivedModelStatus]:
     state = ActionEventArtifactState.from_metrics(metrics)
     action_rows_status = state.row_status()
-    action_rows_payload = action_rows_status.to_dict()
-    action_rows_payload["materializer_version"] = ACTION_EVENT_MATERIALIZER_VERSION
+    action_rows_status = replace(action_rows_status, materializer_version=ACTION_EVENT_MATERIALIZER_VERSION)
     message_fts_exact_counts = bool(metrics.get("message_fts_exact_counts", True))
     return {
         "messages_fts": DerivedModelStatus(
@@ -47,7 +48,7 @@ def build_action_statuses(metrics: dict[str, int | bool]) -> dict[str, DerivedMo
             materialized_rows=int(metrics["message_fts_rows"]),
             pending_rows=pending_rows(int(metrics["message_source_rows"]), int(metrics["message_fts_rows"])),
         ),
-        "action_events": DerivedModelStatus(**action_rows_payload),
+        "action_events": action_rows_status,
         "action_events_fts": state.fts_status(),
     }
 

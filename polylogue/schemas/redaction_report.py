@@ -8,7 +8,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Literal
+from typing import Literal
+
+from polylogue.schemas.json_types import JSONDocument, json_document
 
 
 @dataclass
@@ -153,40 +155,42 @@ class SchemaReport:
 
         return "\n".join(lines)
 
-    def to_json(self) -> dict[str, Any]:
+    def to_json(self) -> JSONDocument:
         """Structured JSON representation."""
-        return {
-            "provider": self.provider,
-            "timestamp": self.timestamp,
-            "privacy_level": self.privacy_level,
-            "summary": {
-                "total_fields": self.total_fields,
-                "fields_with_enums": self.fields_with_enums,
-                "total_values_considered": self.total_values_considered,
-                "total_included": self.total_included,
-                "total_rejected": self.total_rejected,
-            },
-            "rejection_reasons": self.rejection_reasons,
-            "borderline_decisions": [
-                {
-                    "path": d.path,
-                    "value": d.value,
-                    "count": d.count,
-                    "reason": d.reason,
-                }
-                for d in self.borderline_decisions
-            ],
-            "field_reports": [
-                {
-                    "path": fr.path,
-                    "included_count": len(fr.included_values),
-                    "rejected_count": len(fr.rejected),
-                    "content_field_blocked": fr.content_field_blocked,
-                    "identifier_field_blocked": fr.identifier_field_blocked,
-                }
-                for fr in self.field_reports
-            ],
-        }
+        return json_document(
+            {
+                "provider": self.provider,
+                "timestamp": self.timestamp,
+                "privacy_level": self.privacy_level,
+                "summary": {
+                    "total_fields": self.total_fields,
+                    "fields_with_enums": self.fields_with_enums,
+                    "total_values_considered": self.total_values_considered,
+                    "total_included": self.total_included,
+                    "total_rejected": self.total_rejected,
+                },
+                "rejection_reasons": self.rejection_reasons,
+                "borderline_decisions": [
+                    {
+                        "path": d.path,
+                        "value": d.value,
+                        "count": d.count,
+                        "reason": d.reason,
+                    }
+                    for d in self.borderline_decisions
+                ],
+                "field_reports": [
+                    {
+                        "path": fr.path,
+                        "included_count": len(fr.included_values),
+                        "rejected_count": len(fr.rejected),
+                        "content_field_blocked": fr.content_field_blocked,
+                        "identifier_field_blocked": fr.identifier_field_blocked,
+                    }
+                    for fr in self.field_reports
+                ],
+            }
+        )
 
 
 __all__ = [

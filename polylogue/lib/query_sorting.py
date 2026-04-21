@@ -5,19 +5,20 @@ from __future__ import annotations
 import random
 from collections.abc import Callable
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any, TypeVar
+from typing import TYPE_CHECKING, TypeAlias, TypeVar
 
 if TYPE_CHECKING:
     from polylogue.lib.models import Conversation, ConversationSummary
     from polylogue.lib.query_plan import ConversationQueryPlan
 
 _T = TypeVar("_T")
+SortKey: TypeAlias = datetime | float | int | str
 
 
 def sort_generic(
     plan: ConversationQueryPlan,
     items: list[_T],
-    key_fn: Callable[[_T], Any],
+    key_fn: Callable[[_T], SortKey],
 ) -> list[_T]:
     if plan.sort == "random":
         shuffled = list(items)
@@ -32,7 +33,7 @@ def sort_conversations(
 ) -> list[Conversation]:
     dt_min = datetime.min.replace(tzinfo=timezone.utc)
 
-    def _key(conversation: Conversation) -> Any:
+    def _key(conversation: Conversation) -> SortKey:
         if plan.sort == "date":
             return conversation.updated_at or dt_min
         if plan.sort == "messages":

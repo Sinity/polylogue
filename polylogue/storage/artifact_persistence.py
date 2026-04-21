@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import sqlite3
-from typing import Any
 
 from polylogue.storage.artifact_inspection import inspect_raw_artifact
 from polylogue.storage.backends.queries.mappers import _row_to_raw_conversation
@@ -126,7 +125,7 @@ def ensure_artifact_observations(
                 ")"
             )
         where_clauses = [f"({' OR '.join(state_clauses)})", "r.rowid > ?"]
-        params: list[Any] = [last_rowid]
+        params: list[object] = [last_rowid]
         if providers:
             placeholders = ",".join("?" for _ in providers)
             where_clauses.append(f"COALESCE(r.payload_provider, r.provider_name) IN ({placeholders})")
