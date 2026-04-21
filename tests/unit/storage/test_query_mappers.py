@@ -7,7 +7,7 @@ Functions: _parse_json, _row_get, _row_to_conversation, _row_to_message, _row_to
 from __future__ import annotations
 
 import sqlite3
-from typing import Any, cast
+from typing import cast
 
 import pytest
 
@@ -61,32 +61,32 @@ def make_row(columns: dict[str, object]) -> sqlite3.Row:
 class TestParseJson:
     """Tests for _parse_json helper."""
 
-    def test_valid_json_string(self: Any) -> None:
+    def test_valid_json_string(self: object) -> None:
         """Valid JSON string returns parsed data."""
         result = _parse_json('{"key": "value"}', field="test_field", record_id="rec1")
         assert result == {"key": "value"}
 
-    def test_none_returns_none(self: Any) -> None:
+    def test_none_returns_none(self: object) -> None:
         """None input returns None."""
         result = _parse_json(None, field="test_field", record_id="rec1")
         assert result is None
 
-    def test_empty_string_returns_none(self: Any) -> None:
+    def test_empty_string_returns_none(self: object) -> None:
         """Empty string returns None."""
         result = _parse_json("", field="test_field", record_id="rec1")
         assert result is None
 
-    def test_corrupt_json_raises_database_error(self: Any) -> None:
+    def test_corrupt_json_raises_database_error(self: object) -> None:
         """Corrupt JSON raises DatabaseError with diagnostic context."""
         with pytest.raises(DatabaseError, match="Corrupt JSON"):
             _parse_json("{invalid json}", field="provider_meta", record_id="conv-123")
 
-    def test_database_error_includes_field_name(self: Any) -> None:
+    def test_database_error_includes_field_name(self: object) -> None:
         """DatabaseError message includes the field name for diagnostics."""
         with pytest.raises(DatabaseError, match="provider_meta"):
             _parse_json("not valid", field="provider_meta", record_id="conv-1")
 
-    def test_database_error_includes_record_id(self: Any) -> None:
+    def test_database_error_includes_record_id(self: object) -> None:
         """DatabaseError message includes the record ID for diagnostics."""
         with pytest.raises(DatabaseError, match="conv-999"):
             _parse_json("{bad}", field="meta", record_id="conv-999")
@@ -100,19 +100,19 @@ class TestParseJson:
 class TestRowGet:
     """Tests for _row_get helper."""
 
-    def test_existing_key_returns_value(self: Any) -> None:
+    def test_existing_key_returns_value(self: object) -> None:
         """Returns value for an existing column key."""
         row = make_row({"name": "test", "value": "42"})
         assert _row_get(row, "name") == "test"
         assert _row_get(row, "value") == "42"
 
-    def test_missing_key_returns_default(self: Any) -> None:
+    def test_missing_key_returns_default(self: object) -> None:
         """Returns default for a missing column key."""
         row = make_row({"name": "test"})
         assert _row_get(row, "nonexistent") is None
         assert _row_get(row, "nonexistent", "fallback") == "fallback"
 
-    def test_default_none(self: Any) -> None:
+    def test_default_none(self: object) -> None:
         """Default is None when not specified."""
         row = make_row({"x": "1"})
         assert _row_get(row, "missing") is None
@@ -126,7 +126,7 @@ class TestRowGet:
 class TestRowToConversation:
     """Tests for _row_to_conversation mapper."""
 
-    def test_maps_required_fields(self: Any) -> None:
+    def test_maps_required_fields(self: object) -> None:
         """All required fields are mapped from row to ConversationRecord."""
         row = make_row(
             {
@@ -153,7 +153,7 @@ class TestRowToConversation:
         assert result.title == "Test Chat"
         assert result.content_hash == "abcdef1234567890"
 
-    def test_maps_json_provider_meta(self: Any) -> None:
+    def test_maps_json_provider_meta(self: object) -> None:
         """JSON provider_meta is parsed from string."""
         import json
 
@@ -188,7 +188,7 @@ class TestRowToConversation:
 class TestRowToMessage:
     """Tests for _row_to_message mapper."""
 
-    def test_maps_required_fields(self: Any) -> None:
+    def test_maps_required_fields(self: object) -> None:
         """All required fields are mapped from row to MessageRecord."""
         row = make_row(
             {
@@ -216,7 +216,7 @@ class TestRowToMessage:
         assert result.text == "Hello world"
         assert result.branch_index == 0
 
-    def test_null_branch_index_defaults_to_zero(self: Any) -> None:
+    def test_null_branch_index_defaults_to_zero(self: object) -> None:
         """Null branch_index from DB maps to 0."""
         row = make_row(
             {
@@ -248,7 +248,7 @@ class TestRowToMessage:
 class TestRowToRawConversation:
     """Tests for _row_to_raw_conversation mapper."""
 
-    def test_maps_all_fields(self: Any) -> None:
+    def test_maps_all_fields(self: object) -> None:
         """All fields are mapped from row to RawConversationRecord."""
         row = make_row(
             {

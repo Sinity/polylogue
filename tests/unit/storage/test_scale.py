@@ -19,9 +19,9 @@ from __future__ import annotations
 import asyncio
 import time
 from pathlib import Path
-from typing import Any
 
 import pytest
+from typing_extensions import TypedDict, Unpack
 
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.backends.connection import open_connection
@@ -36,7 +36,18 @@ from tests.infra.storage_records import make_content_block, make_conversation, m
 SCALE_COUNT = 200
 
 
-def _record_query(**kwargs: Any) -> ConversationRecordQuery:
+class RecordQueryKwargs(TypedDict, total=False):
+    provider: str
+    since: str
+    until: str
+    path_terms: tuple[str, ...]
+    action_terms: tuple[str, ...]
+    tool_terms: tuple[str, ...]
+    limit: int
+    has_tool_use: bool
+
+
+def _record_query(**kwargs: Unpack[RecordQueryKwargs]) -> ConversationRecordQuery:
     return ConversationRecordQuery(**kwargs)
 
 

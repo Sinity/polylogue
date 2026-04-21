@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import sqlite3
 from dataclasses import dataclass
-from typing import Any
+from typing import cast
 
 import pytest
 
 from polylogue.lib.conversation_models import Conversation
 from polylogue.lib.messages import MessageCollection
+from polylogue.storage.backends.query_store import SQLiteQueryStore
 from polylogue.storage.repository_archive_search import RepositoryArchiveSearchMixin
 from polylogue.storage.search_models import ConversationSearchResult
 from polylogue.storage.search_providers.hybrid_conversations import (
@@ -57,10 +58,10 @@ class _FakeQueries:
 
 
 class _FakeRepo(RepositoryArchiveSearchMixin):
-    queries: Any
+    queries: SQLiteQueryStore
 
     def __init__(self, queries: _FakeQueries) -> None:
-        self.queries = queries
+        self.queries = cast(SQLiteQueryStore, queries)
         self.ordered_ids_seen: list[str] | None = None
 
     async def _hydrate_conversations(

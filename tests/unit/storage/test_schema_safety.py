@@ -14,7 +14,7 @@ are invisible in unit tests with small datasets.
 from __future__ import annotations
 
 import sqlite3
-from typing import Any
+from pathlib import Path
 
 import pytest
 
@@ -72,7 +72,7 @@ class TestSchemaDDLParity:
         assert isinstance(SCHEMA_VERSION, int)
         assert SCHEMA_VERSION > 0
 
-    def test_schema_ddl_applied_to_fresh_database(self, tmp_path: Any) -> None:
+    def test_schema_ddl_applied_to_fresh_database(self, tmp_path: Path) -> None:
         """SCHEMA_DDL must apply cleanly to a fresh database."""
         db_path = tmp_path / "fresh.db"
         conn = sqlite3.connect(str(db_path))
@@ -88,7 +88,7 @@ class TestSchemaDDLParity:
         finally:
             conn.close()
 
-    def test_schema_ddl_is_idempotent(self, tmp_path: Any) -> None:
+    def test_schema_ddl_is_idempotent(self, tmp_path: Path) -> None:
         """Applying SCHEMA_DDL twice must not error."""
         db_path = tmp_path / "idempotent.db"
         conn = sqlite3.connect(str(db_path))
@@ -119,7 +119,7 @@ class TestMigrationRollbackSafety:
     instead of `executescript()`.
     """
 
-    def test_executescript_implicit_commit_behavior(self, tmp_path: Any) -> None:
+    def test_executescript_implicit_commit_behavior(self, tmp_path: Path) -> None:
         """Document that executescript() commits before executing.
 
         This test documents the SQLite behavior that caused the bug.
@@ -152,7 +152,7 @@ class TestMigrationRollbackSafety:
         finally:
             conn.close()
 
-    def test_execute_preserves_transaction(self, tmp_path: Any) -> None:
+    def test_execute_preserves_transaction(self, tmp_path: Path) -> None:
         """execute() within BEGIN/ROLLBACK correctly rolls back."""
         db_path = tmp_path / "test.db"
         conn = sqlite3.connect(str(db_path))
@@ -174,7 +174,7 @@ class TestMigrationRollbackSafety:
         finally:
             conn.close()
 
-    def test_fresh_db_schema_matches_migrated_db(self, tmp_path: Any) -> None:
+    def test_fresh_db_schema_matches_migrated_db(self, tmp_path: Path) -> None:
         """A fresh database and a migrated database must have the same schema.
 
         This catches drift between the DDL (for fresh installs) and the
@@ -232,7 +232,7 @@ class TestMigrationRollbackSafety:
 class TestSQLEdgeCases:
     """SQL edge cases that caused production bugs."""
 
-    def test_offset_without_limit_is_error(self, tmp_path: Any) -> None:
+    def test_offset_without_limit_is_error(self, tmp_path: Path) -> None:
         """SQLite requires LIMIT when using OFFSET. Verify our code handles this."""
         db_path = tmp_path / "test.db"
         conn = sqlite3.connect(str(db_path))
@@ -253,7 +253,7 @@ class TestSQLEdgeCases:
         finally:
             conn.close()
 
-    def test_like_wildcards_in_search(self, tmp_path: Any) -> None:
+    def test_like_wildcards_in_search(self, tmp_path: Path) -> None:
         """LIKE patterns with % and _ must be escaped properly.
 
         Regression: commit 177195c — unescaped LIKE wildcards in title search
@@ -289,7 +289,7 @@ class TestSQLEdgeCases:
         finally:
             conn.close()
 
-    def test_like_underscore_wildcard(self, tmp_path: Any) -> None:
+    def test_like_underscore_wildcard(self, tmp_path: Path) -> None:
         """Underscore in LIKE is a single-char wildcard, must be escaped."""
         db_path = tmp_path / "test.db"
         conn = sqlite3.connect(str(db_path))
@@ -330,7 +330,7 @@ class TestFTS5CountGuard:
     COUNT(*) on the regular messages table instead.
     """
 
-    def test_count_on_regular_table_not_fts(self, test_db: Any) -> None:
+    def test_count_on_regular_table_not_fts(self, test_db: Path) -> None:
         """Message count must come from the messages table, not messages_fts."""
         from polylogue.storage.backends.connection import open_connection
 
@@ -429,7 +429,7 @@ class TestFetchLimitPagination:
     This tests the low-level pagination SQL pattern used in async_sqlite.py.
     """
 
-    def test_limit_offset_returns_exact_count(self, tmp_path: Any) -> None:
+    def test_limit_offset_returns_exact_count(self, tmp_path: Path) -> None:
         """LIMIT N OFFSET M returns exactly N rows when enough data exists."""
         db_path = tmp_path / "test.db"
         conn = sqlite3.connect(str(db_path))
@@ -466,7 +466,7 @@ class TestFetchLimitPagination:
         finally:
             conn.close()
 
-    def test_limit_with_fewer_rows_than_limit(self, tmp_path: Any) -> None:
+    def test_limit_with_fewer_rows_than_limit(self, tmp_path: Path) -> None:
         """When total rows < limit, return all rows without error."""
         db_path = tmp_path / "test.db"
         conn = sqlite3.connect(str(db_path))
@@ -485,7 +485,7 @@ class TestFetchLimitPagination:
         finally:
             conn.close()
 
-    def test_offset_beyond_data_returns_empty(self, tmp_path: Any) -> None:
+    def test_offset_beyond_data_returns_empty(self, tmp_path: Path) -> None:
         """OFFSET past all data returns empty, not error."""
         db_path = tmp_path / "test.db"
         conn = sqlite3.connect(str(db_path))
@@ -518,7 +518,7 @@ class TestAnalyticsQueryPlan:
     would require a full table scan.
     """
 
-    def test_provider_group_by_uses_index(self, tmp_path: Any) -> None:
+    def test_provider_group_by_uses_index(self, tmp_path: Path) -> None:
         """GROUP BY provider_name should use idx_conversations_provider."""
         db_path = tmp_path / "test.db"
         conn = sqlite3.connect(str(db_path))
@@ -536,7 +536,7 @@ class TestAnalyticsQueryPlan:
         finally:
             conn.close()
 
-    def test_messages_by_conversation_uses_index(self, tmp_path: Any) -> None:
+    def test_messages_by_conversation_uses_index(self, tmp_path: Path) -> None:
         """WHERE conversation_id = ? should use idx_messages_conversation."""
         db_path = tmp_path / "test.db"
         conn = sqlite3.connect(str(db_path))
@@ -553,7 +553,7 @@ class TestAnalyticsQueryPlan:
         finally:
             conn.close()
 
-    def test_conversation_count_is_cheap(self, tmp_path: Any) -> None:
+    def test_conversation_count_is_cheap(self, tmp_path: Path) -> None:
         """COUNT(*) on conversations table should not require FTS scan."""
         db_path = tmp_path / "test.db"
         conn = sqlite3.connect(str(db_path))

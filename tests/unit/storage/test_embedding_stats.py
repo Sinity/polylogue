@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import sqlite3
-from typing import Any
 
 import aiosqlite
 import pytest
@@ -54,7 +53,7 @@ def test_read_embedding_stats_sync_counts_available_tables() -> None:
 
 def test_read_embedding_stats_sync_propagates_non_missing_operational_errors() -> None:
     class LockedConnection:
-        def execute(self: Any, sql: str) -> None:  # pragma: no cover - trivial stub
+        def execute(self: object, sql: str) -> None:  # pragma: no cover - trivial stub
             raise sqlite3.OperationalError("database is locked")
 
     with pytest.raises(sqlite3.OperationalError, match="database is locked"):
@@ -63,7 +62,7 @@ def test_read_embedding_stats_sync_propagates_non_missing_operational_errors() -
 
 def test_read_embedding_stats_sync_treats_missing_vec_module_as_optional() -> None:
     class VeclessConnection:
-        def execute(self: Any, sql: str) -> None:
+        def execute(self: object, sql: str) -> None:
             if "message_embeddings" in sql:
                 raise sqlite3.OperationalError("no such module: vec0")
             raise sqlite3.OperationalError("no such table: embedding_status")
@@ -144,10 +143,10 @@ def test_read_embedding_stats_sync_exposes_retrieval_bands_when_archive_tables_e
 def test_read_embedding_stats_sync_can_skip_retrieval_band_status(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    def fail_action_status(_conn: Any) -> None:
+    def fail_action_status(_conn: object) -> None:
         raise AssertionError("action-event status should not be read")
 
-    def fail_session_status(_conn: Any) -> None:
+    def fail_session_status(_conn: object) -> None:
         raise AssertionError("session-product status should not be read")
 
     conn = sqlite3.connect(":memory:")
@@ -206,7 +205,7 @@ async def test_read_embedding_stats_async_missing_tables_returns_zeroes() -> Non
 async def test_read_embedding_stats_async_derives_pending_from_total_conversations(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    async def fake_action_status(_conn: Any) -> Any:
+    async def fake_action_status(_conn: object) -> dict[str, int | bool]:
         return {
             "count": 0,
             "action_fts_count": 0,
@@ -214,7 +213,7 @@ async def test_read_embedding_stats_async_derives_pending_from_total_conversatio
             "stale_count": 0,
         }
 
-    async def fake_session_status(_conn: Any) -> Any:
+    async def fake_session_status(_conn: object) -> SessionProductStatusSnapshot:
         return SessionProductStatusSnapshot(
             profile_row_count=0,
             profile_evidence_fts_count=0,
@@ -259,10 +258,10 @@ async def test_read_embedding_stats_async_derives_pending_from_total_conversatio
 async def test_read_embedding_stats_async_can_skip_retrieval_band_status(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    async def fail_action_status(_conn: Any) -> None:
+    async def fail_action_status(_conn: object) -> None:
         raise AssertionError("action-event status should not be read")
 
-    async def fail_session_status(_conn: Any) -> None:
+    async def fail_session_status(_conn: object) -> None:
         raise AssertionError("session-product status should not be read")
 
     async with aiosqlite.connect(":memory:") as conn:

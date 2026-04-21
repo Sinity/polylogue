@@ -6,7 +6,7 @@ agree with each other and with the underlying stored data.
 
 from __future__ import annotations
 
-from typing import Any
+from pathlib import Path
 
 import pytest
 
@@ -14,7 +14,7 @@ from tests.infra.storage_records import ConversationBuilder, db_setup
 
 
 @pytest.fixture()
-def populated_db(workspace_env: Any) -> Any:
+def populated_db(workspace_env: dict[str, Path]) -> Path:
     """Create a DB with conversations across multiple providers, with FTS indexed."""
     db_path = db_setup(workspace_env)
 
@@ -60,7 +60,7 @@ def populated_db(workspace_env: Any) -> Any:
 
 
 class TestProviderFilterSubset:
-    def test_provider_filter_returns_subset(self: Any, populated_db: Any) -> None:
+    def test_provider_filter_returns_subset(self: object, populated_db: Path) -> None:
         from polylogue.storage.backends.connection import open_connection
 
         with open_connection(populated_db) as conn:
@@ -79,7 +79,7 @@ class TestProviderFilterSubset:
             assert len(claude_ids) == 2
             assert len(all_ids) == 4
 
-    def test_all_providers_partition_total(self: Any, populated_db: Any) -> None:
+    def test_all_providers_partition_total(self: object, populated_db: Path) -> None:
         """Union of all per-provider sets equals the full set."""
         from polylogue.storage.backends.connection import open_connection
 
@@ -111,7 +111,7 @@ class TestProviderFilterSubset:
 
 
 class TestFTSIndexCompleteness:
-    def test_fts_message_count_matches_messages_table(self: Any, populated_db: Any) -> None:
+    def test_fts_message_count_matches_messages_table(self: object, populated_db: Path) -> None:
         from polylogue.storage.backends.connection import open_connection
 
         with open_connection(populated_db) as conn:
@@ -127,7 +127,7 @@ class TestFTSIndexCompleteness:
 
             assert fts_count == msg_count, f"FTS row count ({fts_count}) != messages table count ({msg_count})"
 
-    def test_fts_search_returns_subset_of_messages(self: Any, populated_db: Any) -> None:
+    def test_fts_search_returns_subset_of_messages(self: object, populated_db: Path) -> None:
         from polylogue.storage.backends.connection import open_connection
 
         with open_connection(populated_db) as conn:
@@ -155,7 +155,7 @@ class TestFTSIndexCompleteness:
 
 
 class TestCountListAgreement:
-    def test_count_matches_list_length(self: Any, populated_db: Any) -> None:
+    def test_count_matches_list_length(self: object, populated_db: Path) -> None:
         from polylogue.storage.backends.connection import open_connection
 
         with open_connection(populated_db) as conn:
@@ -164,7 +164,7 @@ class TestCountListAgreement:
 
             assert count == len(rows), f"COUNT(*) ({count}) != len(SELECT) ({len(rows)})"
 
-    def test_per_provider_count_matches_filtered_list(self: Any, populated_db: Any) -> None:
+    def test_per_provider_count_matches_filtered_list(self: object, populated_db: Path) -> None:
         from polylogue.storage.backends.connection import open_connection
 
         with open_connection(populated_db) as conn:
@@ -185,7 +185,7 @@ class TestCountListAgreement:
 
 
 class TestMessageStatsConsistency:
-    def test_conversation_stats_match_actual_messages(self: Any, populated_db: Any) -> None:
+    def test_conversation_stats_match_actual_messages(self: object, populated_db: Path) -> None:
         from polylogue.storage.backends.connection import open_connection
 
         with open_connection(populated_db) as conn:

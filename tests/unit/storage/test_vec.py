@@ -4,15 +4,48 @@ from __future__ import annotations
 
 import sqlite3
 import struct
-from typing import Any
+from collections.abc import Callable
+from pathlib import Path
+from typing import Protocol, TypeAlias, cast
 from unittest.mock import MagicMock, patch
 
 import httpx
 import pytest
 
 from polylogue.lib.roles import Role
+from polylogue.storage.search_providers.sqlite_vec import SqliteVecProvider
 from polylogue.storage.store import MessageRecord
 from polylogue.types import ContentHash, ConversationId, MessageId
+
+Embedding: TypeAlias = list[float]
+SearchRows: TypeAlias = list[tuple[str, float]]
+
+
+class EmbeddingFetcher(Protocol):
+    def __call__(self, texts: list[str], input_type: str = "document") -> list[Embedding]: ...
+
+
+class MutableSqliteVecProvider(Protocol):
+    db_path: Path
+    voyage_key: str
+    model: str
+    dimension: int
+    _vec_available: bool | None
+    _tables_ensured: bool
+    _ensure_vec_available: Callable[[], None]
+    _ensure_tables: Callable[[], None]
+    _get_embeddings: EmbeddingFetcher
+    _get_connection: Callable[[], sqlite3.Connection]
+
+    def _should_embed_message(self, msg: MessageRecord) -> bool: ...
+
+    def upsert(self, conversation_id: str, messages: list[MessageRecord]) -> None: ...
+
+    def query(self, text: str, limit: int = 10) -> SearchRows: ...
+
+    def query_by_provider(self, text: str, provider: str, limit: int = 10) -> SearchRows: ...
+
+    def get_embedding_stats(self) -> dict[str, int]: ...
 
 
 def make_message(
@@ -35,14 +68,12 @@ def make_message(
 
 
 @pytest.fixture
-def provider_cls() -> Any:
-    from polylogue.storage.search_providers.sqlite_vec import SqliteVecProvider
-
+def provider_cls() -> type[SqliteVecProvider]:
     return SqliteVecProvider
 
 
 @pytest.fixture
-def mock_provider(tmp_path: Any, provider_cls: Any) -> Any:
+def mock_provider(tmp_path: Path, provider_cls: type[SqliteVecProvider]) -> MutableSqliteVecProvider:
     provider = object.__new__(provider_cls)
     provider.db_path = tmp_path / "test.db"
     provider.voyage_key = "test-voyage-key"
@@ -50,18 +81,18 @@ def mock_provider(tmp_path: Any, provider_cls: Any) -> Any:
     provider.dimension = 1024
     provider._vec_available = None
     provider._tables_ensured = True
-    return provider
+    return cast(MutableSqliteVecProvider, provider)
 
 
-def test_get_embeddings_request_contract(mock_provider: Any) -> None:
+def test_get_embeddings_request_contract(mock_provider: MutableSqliteVecProvider) -> None:
     """Embedding requests must send the canonical payload, headers, and optional dimension."""
     cases = [
-        {"dimension": 1024, "input_type": "document", "expected_dimension": None},
-        {"dimension": 512, "input_type": "query", "expected_dimension": 512},
+        (1024, "document", None),
+        (512, "query", 512),
     ]
 
-    for case in cases:
-        mock_provider.dimension = case["dimension"]
+    for dimension, input_type, expected_dimension in cases:
+        mock_provider.dimension = dimension
         captured_payload: dict[str, object] = {}
         captured_headers: dict[str, str] = {}
         response = MagicMock()
@@ -69,14 +100,19 @@ def test_get_embeddings_request_contract(mock_provider: Any) -> None:
         response.raise_for_status = MagicMock()
 
         def capture_post(
-            *args: Any,
-            _captured_payload: Any = captured_payload,
-            _captured_headers: Any = captured_headers,
-            _response: Any = response,
-            **kwargs: Any,
-        ) -> Any:
-            _captured_payload.update(kwargs.get("json", {}))
-            _captured_headers.update(kwargs.get("headers", {}))
+            *args: object,
+            _captured_payload: dict[str, object] = captured_payload,
+            _captured_headers: dict[str, str] = captured_headers,
+            _response: MagicMock = response,
+            **kwargs: object,
+        ) -> MagicMock:
+            del args
+            payload = kwargs.get("json")
+            assert isinstance(payload, dict)
+            _captured_payload.update({str(key): value for key, value in payload.items()})
+            headers = kwargs.get("headers")
+            assert isinstance(headers, dict)
+            _captured_headers.update({str(key): str(value) for key, value in headers.items()})
             return _response
 
         with patch("httpx.Client") as mock_client_cls:
@@ -86,29 +122,34 @@ def test_get_embeddings_request_contract(mock_provider: Any) -> None:
             client.__exit__ = MagicMock(return_value=False)
             mock_client_cls.return_value = client
 
-            result = mock_provider._get_embeddings(["test text"], input_type=case["input_type"])
+            result = mock_provider._get_embeddings(["test text"], input_type=input_type)
 
         assert result == [[0.1, 0.2, 0.3]]
         assert captured_payload["input"] == ["test text"]
         assert captured_payload["model"] == mock_provider.model
-        assert captured_payload["input_type"] == case["input_type"]
-        if case["expected_dimension"] is None:
+        assert captured_payload["input_type"] == input_type
+        if expected_dimension is None:
             assert "output_dimension" not in captured_payload
         else:
-            assert captured_payload["output_dimension"] == case["expected_dimension"]
+            assert captured_payload["output_dimension"] == expected_dimension
         assert captured_headers["Authorization"] == f"Bearer {mock_provider.voyage_key}"
 
 
 @pytest.mark.slow
-def test_get_embeddings_batches_large_input(mock_provider: Any) -> None:
+def test_get_embeddings_batches_large_input(mock_provider: MutableSqliteVecProvider) -> None:
     """Large requests must batch without dropping embeddings."""
     from polylogue.storage.search_providers.sqlite_vec import BATCH_SIZE
 
     texts = [f"text {i} is a long enough message for embedding purposes" for i in range(BATCH_SIZE + 10)]
     call_sizes: list[int] = []
 
-    def fake_post(*args: Any, **kwargs: Any) -> Any:
-        batch_size = len(kwargs.get("json", {}).get("input", []))
+    def fake_post(*args: object, **kwargs: object) -> MagicMock:
+        del args
+        payload = kwargs.get("json")
+        assert isinstance(payload, dict)
+        input_payload = payload.get("input")
+        assert isinstance(input_payload, list)
+        batch_size = len(input_payload)
         call_sizes.append(batch_size)
         response = MagicMock()
         response.json.return_value = {"data": [{"embedding": [0.1] * 3} for _ in range(batch_size)]}
@@ -143,7 +184,11 @@ def test_get_embeddings_batches_large_input(mock_provider: Any) -> None:
     ],
     ids=["http-status", "timeout"],
 )
-def test_get_embeddings_error_contract(mock_provider: Any, error: Any, pattern: Any) -> None:
+def test_get_embeddings_error_contract(
+    mock_provider: MutableSqliteVecProvider,
+    error: httpx.HTTPError,
+    pattern: str,
+) -> None:
     """HTTP-layer failures must surface as sanitized sqlite-vec errors."""
     from polylogue.storage.search_providers.sqlite_vec import SqliteVecError
 
@@ -158,7 +203,7 @@ def test_get_embeddings_error_contract(mock_provider: Any, error: Any, pattern: 
             mock_provider._get_embeddings(["test text"])
 
 
-def test_get_embeddings_error_does_not_leak_api_key(mock_provider: Any) -> None:
+def test_get_embeddings_error_does_not_leak_api_key(mock_provider: MutableSqliteVecProvider) -> None:
     """Sanitized errors must not expose the configured API key."""
     from polylogue.storage.search_providers.sqlite_vec import SqliteVecError
 
@@ -193,7 +238,12 @@ def test_get_embeddings_error_does_not_leak_api_key(mock_provider: Any) -> None:
         ("user", "12345678901234567890", True),
     ],
 )
-def test_should_embed_message_contract(mock_provider: Any, role: Any, text: Any, should_embed: Any) -> None:
+def test_should_embed_message_contract(
+    mock_provider: MutableSqliteVecProvider,
+    role: str,
+    text: str,
+    should_embed: bool,
+) -> None:
     """Only semantically useful messages should be embedded."""
     assert mock_provider._should_embed_message(make_message(role=role, text=text)) is should_embed
 
@@ -203,21 +253,28 @@ def test_should_embed_message_contract(mock_provider: Any, role: Any, text: Any,
     [([], False), ([make_message(text="short")], True)],
     ids=["empty", "no-embeddable"],
 )
-def test_upsert_noop_contract(mock_provider: Any, messages: Any, should_ensure: Any) -> None:
+def test_upsert_noop_contract(
+    mock_provider: MutableSqliteVecProvider,
+    messages: list[MessageRecord],
+    should_ensure: bool,
+) -> None:
     """Upsert should short-circuit on empty or non-embeddable input."""
-    mock_provider._ensure_vec_available = MagicMock()
-    mock_provider._ensure_tables = MagicMock()
-    mock_provider._get_connection = MagicMock()
+    ensure_vec_available = MagicMock()
+    ensure_tables = MagicMock()
+    get_connection = MagicMock()
+    mock_provider._ensure_vec_available = ensure_vec_available
+    mock_provider._ensure_tables = ensure_tables
+    mock_provider._get_connection = get_connection
 
     mock_provider.upsert("conv-1", messages)
 
     if should_ensure:
-        mock_provider._ensure_vec_available.assert_called_once()
-        mock_provider._ensure_tables.assert_called_once()
+        ensure_vec_available.assert_called_once()
+        ensure_tables.assert_called_once()
     else:
-        mock_provider._ensure_vec_available.assert_not_called()
-        mock_provider._ensure_tables.assert_not_called()
-    mock_provider._get_connection.assert_not_called()
+        ensure_vec_available.assert_not_called()
+        ensure_tables.assert_not_called()
+    get_connection.assert_not_called()
 
 
 @pytest.mark.parametrize(
@@ -225,7 +282,11 @@ def test_upsert_noop_contract(mock_provider: Any, messages: Any, should_ensure: 
     [("claude-ai", "claude-ai"), (None, "unknown")],
     ids=["provider-row", "missing-provider-row"],
 )
-def test_upsert_persistence_contract(mock_provider: Any, provider_name: Any, expected_provider: Any) -> None:
+def test_upsert_persistence_contract(
+    mock_provider: MutableSqliteVecProvider,
+    provider_name: str | None,
+    expected_provider: str,
+) -> None:
     """Upsert must filter messages, persist embeddings, and stamp provider metadata."""
     messages = [
         make_message(message_id="m1", text="This is a long embeddable message."),
@@ -237,11 +298,12 @@ def test_upsert_persistence_contract(mock_provider: Any, provider_name: Any, exp
     mock_provider._ensure_vec_available = MagicMock()
     mock_provider._ensure_tables = MagicMock()
 
-    def capture_embeddings(texts: Any, **kwargs: Any) -> Any:
+    def capture_embeddings(texts: list[str], input_type: str = "document") -> list[Embedding]:
+        del input_type
         embeddings_called_with.extend(texts)
         return [[0.1, 0.2] for _ in texts]
 
-    def capture_execute(sql: Any, params: Any = None) -> Any:
+    def capture_execute(sql: str, params: tuple[object, ...] | None = None) -> MagicMock:
         insert_calls.append((sql, params))
         cursor = MagicMock()
         if "SELECT provider_name FROM conversations" in sql:
@@ -270,7 +332,7 @@ def test_upsert_persistence_contract(mock_provider: Any, provider_name: Any, exp
     assert len(status_updates) == 1
 
 
-def test_upsert_closes_connection_on_embedding_error(mock_provider: Any) -> None:
+def test_upsert_closes_connection_on_embedding_error(mock_provider: MutableSqliteVecProvider) -> None:
     """Connection cleanup must happen even when embedding generation fails."""
     mock_provider._ensure_vec_available = MagicMock()
     mock_provider._ensure_tables = MagicMock()
@@ -290,17 +352,22 @@ def test_upsert_closes_connection_on_embedding_error(mock_provider: Any) -> None
     ],
     ids=["query", "query-by-provider", "query-empty", "query-by-provider-empty"],
 )
-def test_query_route_contract(mock_provider: Any, method_name: Any, provider: Any, embedding_result: Any) -> None:
+def test_query_route_contract(
+    mock_provider: MutableSqliteVecProvider,
+    method_name: str,
+    provider: str | None,
+    embedding_result: list[Embedding],
+) -> None:
     """Query methods must generate query embeddings, optionally filter by provider, and close connections."""
     mock_provider._ensure_vec_available = MagicMock()
     embedding_calls: list[tuple[list[str], str | None]] = []
     executed_queries: list[tuple[str, tuple[object, ...] | None]] = []
 
-    def capture_embeddings(texts: Any, input_type: Any = None) -> Any:
+    def capture_embeddings(texts: list[str], input_type: str = "document") -> list[Embedding]:
         embedding_calls.append((texts, input_type))
         return embedding_result
 
-    def capture_execute(sql: Any, params: Any = None) -> Any:
+    def capture_execute(sql: str, params: tuple[object, ...] | None = None) -> MagicMock:
         executed_queries.append((sql, params))
         row_1 = MagicMock(spec=sqlite3.Row)
         row_1.__getitem__.side_effect = lambda key: "msg-1" if key == "message_id" else 0.5
@@ -317,6 +384,7 @@ def test_query_route_contract(mock_provider: Any, method_name: Any, provider: An
     if method_name == "query":
         result = mock_provider.query("search text", limit=10)
     else:
+        assert provider is not None
         result = mock_provider.query_by_provider("search text", provider=provider, limit=10)
 
     assert embedding_calls == [(["search text"], "query")]
@@ -338,11 +406,17 @@ def test_query_route_contract(mock_provider: Any, method_name: Any, provider: An
     [(42, 5, False), (0, 0, False), (0, 0, True)],
     ids=["counts", "zeros", "missing-tables"],
 )
-def test_get_embedding_stats_contract(mock_provider: Any, msg_count: Any, pending: Any, operational_error: Any) -> None:
+def test_get_embedding_stats_contract(
+    mock_provider: MutableSqliteVecProvider,
+    msg_count: int,
+    pending: int,
+    operational_error: bool,
+) -> None:
     """Stats queries must tolerate absent tables and always close the connection."""
     connection = MagicMock()
 
-    def execute(sql: Any, params: Any = None) -> Any:
+    def execute(sql: str, params: tuple[object, ...] | None = None) -> MagicMock:
+        del params
         if operational_error:
             raise sqlite3.OperationalError("Table not found")
         if "sqlite_master" in sql and "conversations" in sql:
@@ -369,7 +443,10 @@ def test_get_embedding_stats_contract(mock_provider: Any, msg_count: Any, pendin
     ids=["cached-available", "cached-unavailable", "probe-available", "probe-unavailable"],
 )
 def test_ensure_vec_available_contract(
-    mock_provider: Any, initial_state: Any, probed_state: Any, should_raise: Any
+    mock_provider: MutableSqliteVecProvider,
+    initial_state: bool | None,
+    probed_state: bool,
+    should_raise: bool,
 ) -> None:
     """Availability probing should cache the result and raise with a helpful message when unavailable."""
     from polylogue.storage.search_providers.sqlite_vec import SqliteVecError
@@ -378,7 +455,7 @@ def test_ensure_vec_available_contract(
     connection = MagicMock()
     connection.close = MagicMock()
 
-    def get_connection() -> Any:
+    def get_connection() -> MagicMock:
         mock_provider._vec_available = probed_state
         return connection
 
