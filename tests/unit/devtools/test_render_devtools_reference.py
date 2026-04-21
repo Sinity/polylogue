@@ -18,6 +18,10 @@ def test_build_command_catalog_includes_discovery_and_commands() -> None:
         "| `devtools scenario-projections` | Render the authored scenario-bearing verification projections. |"
         in rendered
     )
+    assert (
+        "| `devtools regression-capture` | Capture pipeline-probe summaries as durable local regression cases. |"
+        in rendered
+    )
     assert "| `devtools render-all` |" in rendered
     assert "Common forms: `devtools status`" in rendered
 

@@ -20,6 +20,7 @@ from typing import NotRequired, Protocol
 
 from typing_extensions import TypedDict
 
+from devtools.regression_cases import DEFAULT_REGRESSION_CASE_DIR, RegressionCase, RegressionCaseStore
 from polylogue.config import Config, Source
 from polylogue.lib.json import JSONDocument, JSONValue, is_json_document, json_document, loads, require_json_document
 from polylogue.paths import blob_store_root, db_path
@@ -149,6 +150,13 @@ class BudgetReport(TypedDict):
     violations: list[str]
 
 
+class RegressionCaseSummary(TypedDict):
+    case_id: str
+    name: str
+    path: str
+    tags: list[str]
+
+
 class ProbeSummary(TypedDict):
     probe: JSONDocument
     paths: JSONDocument
@@ -161,6 +169,7 @@ class ProbeSummary(TypedDict):
     source_inputs: NotRequired[SourceInputsSummary]
     sample: NotRequired[ArchiveSubsetSampleSummary]
     budgets: NotRequired[BudgetReport]
+    regression_case: NotRequired[RegressionCaseSummary]
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -313,6 +322,32 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--json-out",
         type=Path,
         help="Optional path for the JSON summary.",
+    )
+    parser.add_argument(
+        "--capture-regression",
+        metavar="NAME",
+        help=(
+            "Capture the emitted probe summary as a durable regression case under "
+            ".local/regression-cases or --regression-output-dir."
+        ),
+    )
+    parser.add_argument(
+        "--regression-output-dir",
+        type=Path,
+        default=DEFAULT_REGRESSION_CASE_DIR,
+        help=f"Output directory for --capture-regression (default: {DEFAULT_REGRESSION_CASE_DIR}).",
+    )
+    parser.add_argument(
+        "--regression-tag",
+        action="append",
+        default=[],
+        help="Tag to attach to the captured regression case. Repeatable.",
+    )
+    parser.add_argument(
+        "--regression-note",
+        action="append",
+        default=[],
+        help="Note to attach to the captured regression case. Repeatable.",
     )
     parser.add_argument(
         "--max-total-ms",
@@ -1378,8 +1413,33 @@ def _build_budget_report(summary: ProbeSummary, request: PipelineProbeRequest) -
     }
 
 
+def _capture_regression_case(summary: ProbeSummary, args: argparse.Namespace) -> RegressionCaseSummary | None:
+    name = getattr(args, "capture_regression", None)
+    if not isinstance(name, str) or not name.strip():
+        return None
+    output_dir = getattr(args, "regression_output_dir", DEFAULT_REGRESSION_CASE_DIR)
+    if not isinstance(output_dir, Path):
+        output_dir = Path(str(output_dir))
+    tags = tuple(str(tag) for tag in getattr(args, "regression_tag", []) or [])
+    notes = tuple(str(note) for note in getattr(args, "regression_note", []) or [])
+    case = RegressionCase.from_probe_summary(
+        name=name,
+        summary=json_document(summary),
+        tags=tags,
+        notes=notes,
+    )
+    path = RegressionCaseStore(output_dir).write(case)
+    return {
+        "case_id": case.case_id,
+        "name": case.name,
+        "path": str(path),
+        "tags": list(case.tags),
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
-    request = _request_from_args(_parse_args(argv))
+    args = _parse_args(argv)
+    request = _request_from_args(args)
     active_request = request
     if request.workdir is None:
         with tempfile.TemporaryDirectory(prefix="polylogue-pipeline-probe-") as tempdir:
@@ -1392,6 +1452,9 @@ def main(argv: list[str] | None = None) -> int:
     budget_report = _build_budget_report(summary, active_request)
     if budget_report is not None:
         summary["budgets"] = budget_report
+    regression_case = _capture_regression_case(summary, args)
+    if regression_case is not None:
+        summary["regression_case"] = regression_case
     encoded = json.dumps(summary, indent=2, sort_keys=True)
     if active_request.json_out is not None:
         json_out = Path(active_request.json_out)
