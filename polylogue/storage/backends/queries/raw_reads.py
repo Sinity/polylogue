@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Sequence
-from typing import cast
+from collections.abc import AsyncIterator, Iterable, Sequence
 
 import aiosqlite
 
@@ -12,6 +11,15 @@ from polylogue.storage.backends.queries.mappers import _row_to_raw_conversation
 from polylogue.storage.backends.queries.raw_state import EFFECTIVE_RAW_PROVIDER_SQL
 from polylogue.storage.raw_state_models import RawConversationState
 from polylogue.storage.store import RawConversationRecord
+
+
+def _raw_rows(rows: Iterable[object]) -> list[aiosqlite.Row]:
+    typed_rows: list[aiosqlite.Row] = []
+    for row in rows:
+        if not isinstance(row, aiosqlite.Row):
+            raise TypeError(f"expected aiosqlite.Row, got {type(row).__name__}")
+        typed_rows.append(row)
+    return typed_rows
 
 
 def _raw_select_query(
@@ -254,7 +262,7 @@ async def iter_raw_conversations(
         params.extend([chunk_size, offset])
 
         cursor = await conn.execute(query_with_limit, tuple(params))
-        rows = cast(list[aiosqlite.Row], await cursor.fetchall())
+        rows = _raw_rows(await cursor.fetchall())
         if not rows:
             break
         for row in rows:

@@ -9,7 +9,7 @@ used in production.
 from __future__ import annotations
 
 from collections.abc import Iterator, Sized
-from typing import TYPE_CHECKING, Protocol, cast
+from typing import TYPE_CHECKING, Protocol
 
 from pydantic import GetCoreSchemaHandler, GetJsonSchemaHandler
 from pydantic_core import core_schema
@@ -126,8 +126,10 @@ class MessageCollection(Sized):
         """JSON schema: array of Message objects."""
         from polylogue.lib.message_models import Message
 
-        message_handler = cast("_MessageJsonSchemaHandler", handler)
-        return {"type": "array", "items": message_handler.resolve_ref_schema(message_handler.generate(Message))}
+        generate_schema = getattr(handler, "generate", None)
+        if not callable(generate_schema):
+            raise TypeError("Pydantic JSON schema handler does not expose generate()")
+        return {"type": "array", "items": handler.resolve_ref_schema(generate_schema(Message))}
 
 
 __all__ = ["MessageCollection"]

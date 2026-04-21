@@ -5,12 +5,13 @@ from __future__ import annotations
 import logging
 import sys
 from io import TextIOBase
-from typing import Protocol, TextIO, cast
+from typing import Protocol, TextIO, cast, runtime_checkable
 
 import structlog
 from structlog.types import Processor
 
 
+@runtime_checkable
 class BoundLoggerLike(Protocol):
     """Logger methods used by first-party call sites."""
 
@@ -83,4 +84,7 @@ def configure_logging(verbose: bool = False, json_logs: bool = False) -> None:
 
 
 def get_logger(name: str | None = None) -> BoundLoggerLike:
-    return cast(BoundLoggerLike, structlog.get_logger(name))
+    logger = structlog.get_logger(name)
+    if not isinstance(logger, BoundLoggerLike):
+        raise TypeError(f"structlog returned {type(logger).__name__}, expected BoundLoggerLike")
+    return logger

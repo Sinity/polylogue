@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from typing import TypeVar, cast, overload
+from typing import TypeGuard, TypeVar, overload
 
 from polylogue.errors import DatabaseError
 from polylogue.lib.json import JSONValue, json_document, loads
@@ -13,6 +13,10 @@ _T = TypeVar("_T", bound=object)
 _RowValue = str | int | float | bytes | bytearray | None
 _JSONText = str | bytes | bytearray
 JSONObject = dict[str, object]
+
+
+def _is_row_value(value: object) -> TypeGuard[_RowValue]:
+    return value is None or isinstance(value, (str, int, float, bytes, bytearray))
 
 
 def _parse_json(
@@ -46,9 +50,12 @@ def _row_get(row: sqlite3.Row, key: str, default: _T) -> _T: ...
 def _row_get(row: sqlite3.Row, key: str, default: _T | None = None) -> _RowValue | _T | None:
     """Get a column value, returning default if the column doesn't exist."""
     try:
-        return cast(_RowValue, row[key])
+        value = row[key]
     except (KeyError, IndexError):
         return default
+    if _is_row_value(value):
+        return value
+    raise DatabaseError(f"Unexpected SQLite row value for {key}: {type(value).__name__}")
 
 
 def _row_text(row: sqlite3.Row, key: str) -> str | None:

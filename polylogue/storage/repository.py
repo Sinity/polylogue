@@ -10,7 +10,7 @@ fetching of conversations, messages, and attachments together.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
 
@@ -78,7 +78,7 @@ class ConversationRepository(
             db_path: Optional path to database file. Used if backend is None.
         """
         active_backend = backend if backend is not None else SQLiteBackend(db_path=db_path)
-        self._backend = active_backend
+        self._backend: SQLiteBackend = active_backend
         self.queries = active_backend.queries
 
     async def __aenter__(self) -> ConversationRepository:
@@ -92,7 +92,7 @@ class ConversationRepository(
     @property
     def backend(self) -> SQLiteBackend:
         """Access the underlying async storage backend."""
-        return cast(SQLiteBackend, self._backend)
+        return self._backend
 
     async def close(self) -> None:
         """Close database connections and release resources."""

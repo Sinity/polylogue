@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import builtins
 from collections.abc import AsyncIterator
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 
 from polylogue.lib.conversation_models import Conversation, ConversationSummary
 from polylogue.protocols import ConversationQueryRuntimeStore
@@ -222,10 +222,10 @@ class RepositoryArchiveQueryMixin:
             )
         )
 
-    def filter(self) -> ConversationFilter:
+    def filter(self: ConversationQueryRuntimeStore) -> ConversationFilter:
         from polylogue.lib import filters
 
-        return filters.ConversationFilter(cast(ConversationQueryRuntimeStore, self))
+        return filters.ConversationFilter(self)
 
 
 __all__ = ["RepositoryArchiveQueryMixin"]

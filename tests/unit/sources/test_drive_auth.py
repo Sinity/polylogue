@@ -21,7 +21,7 @@ from polylogue.sources.drive_auth import (
     default_credentials_path,
     default_token_path,
 )
-from polylogue.sources.drive_types import DriveAuthError
+from polylogue.sources.drive_types import DriveAuthError, DriveCredentialLike
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -197,7 +197,7 @@ def test_resolve_token_path_contract(
 
 
 class _StubFlow:
-    def __init__(self, *, credentials: object, fetch_error: Exception | None = None) -> None:
+    def __init__(self, *, credentials: DriveCredentialLike, fetch_error: Exception | None = None) -> None:
         self.credentials = credentials
         self.fetch_error = fetch_error
         self.fetch_codes: list[str] = []
@@ -228,7 +228,7 @@ def test_run_manual_auth_flow_contract(
     fetch_error: Exception | None,
     expected_message: str | None,
 ) -> None:
-    creds = object()
+    creds = _creds(valid=True, expired=False)
     flow = _StubFlow(credentials=creds, fetch_error=fetch_error)
     prompter = FakeAuthPrompter(code)
     mgr = _auth_manager_with_prompter(prompter, token_path=tmp_path / "token.json")
@@ -246,7 +246,7 @@ def test_run_manual_auth_flow_contract(
 
 
 def test_run_manual_auth_flow_no_prompter_cancels(tmp_path: Path) -> None:
-    flow = _StubFlow(credentials=object())
+    flow = _StubFlow(credentials=_creds(valid=True, expired=False))
     mgr = _auth_manager_with_prompter(None, token_path=tmp_path / "token.json")
 
     with pytest.raises(DriveAuthError, match="Drive authorization cancelled"):
