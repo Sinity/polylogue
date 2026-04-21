@@ -11,7 +11,6 @@ from __future__ import annotations
 import os
 import stat
 from pathlib import Path
-from typing import Any
 
 import pytest
 
@@ -35,7 +34,7 @@ class TestSanitizePathTraversal:
             "..\\..\\system32",
         ],
     )
-    def test_traversal_inputs_are_blocked(self: Any, raw_path: Any) -> None:
+    def test_traversal_inputs_are_blocked(self, raw_path: str) -> None:
         result = sanitize_path(raw_path)
         assert result is not None
         assert result.startswith("_blocked_")
@@ -48,7 +47,7 @@ class TestSanitizePathTraversal:
             "file\x7fname",
         ],
     )
-    def test_control_characters_are_removed(self: Any, raw_path: Any) -> None:
+    def test_control_characters_are_removed(self, raw_path: str) -> None:
         result = sanitize_path(raw_path)
         assert result is not None
         assert not any((ord(c) < 32 or ord(c) == 127) for c in result)
@@ -66,13 +65,13 @@ class TestSanitizePathTraversal:
             ),
         ],
     )
-    def test_safe_paths_remain_usable(self: Any, raw_path: Any, checks: Any) -> None:
+    def test_safe_paths_remain_usable(self, raw_path: str, checks: tuple[str, ...]) -> None:
         result = sanitize_path(raw_path)
         assert result is not None
         for check in checks:
             assert check in result or result.startswith(check)
 
-    def test_none_returns_none(self: Any) -> None:
+    def test_none_returns_none(self) -> None:
         assert sanitize_path(None) is None
 
 
@@ -84,24 +83,24 @@ class TestSanitizePathTraversal:
 class TestFileTokenStoreSecurity:
     """Token store must prevent path traversal via key and set secure permissions."""
 
-    def test_slash_in_key_sanitized(self: Any, tmp_path: Path) -> None:
+    def test_slash_in_key_sanitized(self, tmp_path: Path) -> None:
         store = FileTokenStore(tmp_path)
         path = store._path_for_key("../../etc/passwd")
         # Must stay within the store directory
         assert tmp_path in path.parents or path.parent == tmp_path
 
-    def test_backslash_in_key_sanitized(self: Any, tmp_path: Path) -> None:
+    def test_backslash_in_key_sanitized(self, tmp_path: Path) -> None:
         store = FileTokenStore(tmp_path)
         path = store._path_for_key("..\\..\\secret")
         assert tmp_path in path.parents or path.parent == tmp_path
 
-    def test_dot_dot_in_key_sanitized(self: Any, tmp_path: Path) -> None:
+    def test_dot_dot_in_key_sanitized(self, tmp_path: Path) -> None:
         store = FileTokenStore(tmp_path)
         path = store._path_for_key("../secret_token")
         # Double-dot should be replaced with underscore
         assert ".." not in str(path.name)
 
-    def test_save_creates_file_with_0600(self: Any, tmp_path: Path) -> None:
+    def test_save_creates_file_with_0600(self, tmp_path: Path) -> None:
         store = FileTokenStore(tmp_path)
         store.save("test-token", '{"access_token": "secret"}')
 
@@ -110,18 +109,18 @@ class TestFileTokenStoreSecurity:
         mode = oct(stat.S_IMODE(os.stat(path).st_mode))
         assert mode == "0o600"
 
-    def test_save_and_load_roundtrip(self: Any, tmp_path: Path) -> None:
+    def test_save_and_load_roundtrip(self, tmp_path: Path) -> None:
         store = FileTokenStore(tmp_path)
         data = '{"access_token": "abc123", "refresh_token": "xyz789"}'
         store.save("oauth-token", data)
         loaded = store.load("oauth-token")
         assert loaded == data
 
-    def test_load_nonexistent_returns_none(self: Any, tmp_path: Path) -> None:
+    def test_load_nonexistent_returns_none(self, tmp_path: Path) -> None:
         store = FileTokenStore(tmp_path)
         assert store.load("nonexistent") is None
 
-    def test_delete_removes_file(self: Any, tmp_path: Path) -> None:
+    def test_delete_removes_file(self, tmp_path: Path) -> None:
         store = FileTokenStore(tmp_path)
         store.save("deleteme", "data")
         path = store._path_for_key("deleteme")
@@ -129,11 +128,11 @@ class TestFileTokenStoreSecurity:
         store.delete("deleteme")
         assert not path.exists()
 
-    def test_delete_nonexistent_no_error(self: Any, tmp_path: Path) -> None:
+    def test_delete_nonexistent_no_error(self, tmp_path: Path) -> None:
         store = FileTokenStore(tmp_path)
         store.delete("doesnt-exist")  # Should not raise
 
-    def test_key_with_special_chars(self: Any, tmp_path: Path) -> None:
+    def test_key_with_special_chars(self, tmp_path: Path) -> None:
         store = FileTokenStore(tmp_path)
         store.save("token/with/slashes", "data")
         loaded = store.load("token/with/slashes")
@@ -154,7 +153,7 @@ class TestRegexReDoSSafety:
     test runner will flag it.
     """
 
-    def test_path_pattern_adversarial_input(self: Any) -> None:
+    def test_path_pattern_adversarial_input(self) -> None:
         """_PATH_PATTERN must handle long strings without backtracking."""
         import time
 
@@ -168,7 +167,7 @@ class TestRegexReDoSSafety:
         elapsed = time.monotonic() - start
         assert elapsed < 1.0, f"_PATH_PATTERN took {elapsed:.2f}s on adversarial input"
 
-    def test_path_pattern_many_quoted_segments(self: Any) -> None:
+    def test_path_pattern_many_quoted_segments(self) -> None:
         """Quoted path segments must not cause exponential matching."""
         import time
 
@@ -182,7 +181,7 @@ class TestRegexReDoSSafety:
         assert elapsed < 1.0, f"_PATH_PATTERN took {elapsed:.2f}s on quoted paths"
         assert len(results) == 500
 
-    def test_uuid_pattern_adversarial_input(self: Any) -> None:
+    def test_uuid_pattern_adversarial_input(self) -> None:
         """UUID_PATTERN must reject near-miss inputs quickly."""
         import time
 
@@ -200,7 +199,7 @@ class TestRegexReDoSSafety:
         elapsed = time.monotonic() - start
         assert elapsed < 1.0, f"UUID_PATTERN took {elapsed:.2f}s on 3000 near-miss inputs"
 
-    def test_fts5_special_adversarial_input(self: Any) -> None:
+    def test_fts5_special_adversarial_input(self) -> None:
         """FTS5 escape patterns must handle pathological input."""
         import time
 

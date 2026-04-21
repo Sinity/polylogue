@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
-from typing import Any, cast
+from typing import cast
 
 import pytest
 
 import devtools.__main__ as devtools_main
-from devtools.command_catalog import COMMANDS
+from devtools.command_catalog import COMMANDS, CommandSpec
 
 
 def test_list_commands_json_includes_generated_surface(capsys: pytest.CaptureFixture[str]) -> None:
@@ -41,7 +41,7 @@ def test_global_json_flag_is_forwarded_to_command(monkeypatch: pytest.MonkeyPatc
         def resolve_main() -> Callable[[list[str] | None], int]:
             return fake_main
 
-    monkeypatch.setitem(COMMANDS, "status", cast(Any, FakeSpec()))
+    monkeypatch.setitem(COMMANDS, "status", cast(CommandSpec, FakeSpec()))
 
     assert devtools_main.main(["--json", "status"]) == 0
     assert captured == [["--json"]]

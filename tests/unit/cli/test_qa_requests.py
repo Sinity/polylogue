@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
@@ -125,7 +124,7 @@ def test_execute_snapshot_plan_uses_fallback_report_dir(
         label: str,
         output_root: Path,
         json_output: bool,
-        env: Any,
+        env: object,
     ) -> None:
         captured.update(
             source_dir=source_dir,

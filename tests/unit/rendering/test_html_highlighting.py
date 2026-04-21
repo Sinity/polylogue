@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+import pytest
 
 from polylogue.rendering.renderers.html_highlighting import (
     HTML_RENDER_CACHE_TEXT_MAX_CHARS,
@@ -59,7 +59,9 @@ def test_html_message_renderer_preserves_hard_breaks_via_markdown_it() -> None:
     assert "<br />" in rendered
 
 
-def test_html_message_renderer_oversized_markdown_like_text_bypasses_markdown_it(monkeypatch: Any) -> None:
+def test_html_message_renderer_oversized_markdown_like_text_bypasses_markdown_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     renderer = HTMLMessageRenderer()
     oversized = "# heading\n" + ("x" * HTML_RENDER_MARKDOWN_MAX_CHARS)
 

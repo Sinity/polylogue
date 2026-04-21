@@ -6,13 +6,17 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from sqlite3 import Connection
-from typing import Any, TypeVar
+from typing import Protocol, TypeVar
 
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.backends.connection import open_connection
 from polylogue.storage.repository import ConversationRepository
 
 T = TypeVar("T")
+
+
+class BenchmarkFixture(Protocol):
+    def __call__(self, func: Callable[[], T]) -> T: ...
 
 
 @dataclass
@@ -40,7 +44,7 @@ def open_bench_store(db_path: Path) -> Iterator[BenchAsyncStore]:
 
 
 def benchmark_store_call(
-    benchmark: Any,
+    benchmark: BenchmarkFixture,
     db_path: Path,
     operation: Callable[[BenchAsyncStore], Awaitable[T]],
 ) -> None:
@@ -50,7 +54,7 @@ def benchmark_store_call(
 
 
 def benchmark_connection_call(
-    benchmark: Any,
+    benchmark: BenchmarkFixture,
     db_path: Path,
     operation: Callable[[Connection], T],
 ) -> None:

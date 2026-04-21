@@ -6,7 +6,7 @@ import asyncio
 from collections.abc import Iterator
 from contextlib import ExitStack
 from pathlib import Path
-from typing import Any, cast
+from typing import cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -28,6 +28,7 @@ from polylogue.storage.run_state import (
     RunDrift,
     RunResult,
 )
+from polylogue.ui import UI
 from tests.infra.storage_records import DbFactory
 
 PatchMap = dict[str, MagicMock]
@@ -169,7 +170,7 @@ def _make_prompt_env(*, plain: bool, choice: str | None = None) -> AppEnv:
     ui = MagicMock()
     ui.plain = plain
     ui.choose = MagicMock(return_value=choice)
-    return AppEnv(ui=cast(Any, ui))
+    return AppEnv(ui=cast(UI, ui))
 
 
 def _invoke_run_direct(

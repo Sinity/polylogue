@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import cast
 from unittest.mock import MagicMock
 
 from polylogue.lib.json import JSONDocument, JSONDocumentList, json_document_list
+from polylogue.showcase.exercise_models import Exercise
 from polylogue.showcase.report_files import generate_manifest
 from polylogue.showcase.runner import ExerciseResult, ShowcaseResult
 from polylogue.showcase.showcase_report_text import generate_showcase_markdown
@@ -22,7 +23,7 @@ def _make_exercise(
     group: str = "structural",
     tier: int = 1,
     description: str = "A test exercise",
-) -> Any:
+) -> Exercise:
     ex = MagicMock()
     ex.name = name
     ex.group = group
@@ -30,7 +31,7 @@ def _make_exercise(
     ex.description = description
     ex.args = []
     ex.output_ext = ".txt"
-    return ex
+    return cast(Exercise, ex)
 
 
 def _make_result(
@@ -198,7 +199,7 @@ class TestGenerateManifest:
         assert manifest["entry_count"] == 0
         assert manifest["entries"] == []
 
-    def test_captures_files_with_hashes(self, tmp_path: Any) -> None:
+    def test_captures_files_with_hashes(self, tmp_path: Path) -> None:
         # Create some files in the output dir
         (tmp_path / "report.json").write_text('{"a": 1}')
         (tmp_path / "summary.txt").write_text("pass")
@@ -215,7 +216,7 @@ class TestGenerateManifest:
             assert isinstance(sha256, str)
             assert len(sha256) == 64  # SHA-256 hex length
 
-    def test_without_hashes(self, tmp_path: Any) -> None:
+    def test_without_hashes(self, tmp_path: Path) -> None:
         (tmp_path / "file.txt").write_text("hello")
 
         sr = _make_showcase([], output_dir=tmp_path)
@@ -224,7 +225,7 @@ class TestGenerateManifest:
         assert manifest["entry_count"] == 1
         assert "sha256" not in _manifest_entries(manifest)[0]
 
-    def test_manifest_serializes_to_json(self, tmp_path: Any) -> None:
+    def test_manifest_serializes_to_json(self, tmp_path: Path) -> None:
         (tmp_path / "data.json").write_text("{}")
 
         sr = _make_showcase([], output_dir=tmp_path)

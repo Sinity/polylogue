@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from pathlib import Path
 
 from polylogue.scenarios import polylogue_execution
 from polylogue.showcase.exercises import Exercise, vhs_exercises
@@ -133,7 +133,7 @@ class TestGenerateAllTapes:
         assert "cap" in tapes
         assert "nocap" not in tapes
 
-    def test_writes_to_output_dir(self, tmp_path: Any) -> None:
+    def test_writes_to_output_dir(self, tmp_path: Path) -> None:
         exs = [
             Exercise(
                 name="write-test",
