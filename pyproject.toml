@@ -154,6 +154,7 @@ disallow_any_generics = true
 disallow_incomplete_defs = true
 disallow_untyped_defs = true
 cache_dir = ".cache/mypy"
+mypy_path = "stubs"
 plugins = []
 files = [
   "polylogue",

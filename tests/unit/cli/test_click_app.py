@@ -6,7 +6,6 @@ import json
 import os
 import sys
 from pathlib import Path
-from typing import cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -80,7 +79,7 @@ class TestHandleQueryMode:
             patch("polylogue.cli.click_app._show_stats") as mock_stats,
         ):
             _handle_query_mode(mock_ctx)
-            return cast(MagicMock, mock_execute), cast(MagicMock, mock_stats)
+            return mock_execute, mock_stats
 
     def test_no_args_shows_stats(self) -> None:
         mock_execute, mock_stats = self._call(self._make_params())

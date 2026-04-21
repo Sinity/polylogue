@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import cast
-from unittest.mock import MagicMock
 
 from polylogue.lib.json import JSONDocument, JSONDocumentList, json_document_list
 from polylogue.showcase.exercise_models import Exercise
@@ -24,14 +22,7 @@ def _make_exercise(
     tier: int = 1,
     description: str = "A test exercise",
 ) -> Exercise:
-    ex = MagicMock()
-    ex.name = name
-    ex.group = group
-    ex.tier = tier
-    ex.description = description
-    ex.args = []
-    ex.output_ext = ".txt"
-    return cast(Exercise, ex)
+    return Exercise(name=name, group=group, tier=tier, description=description, output_ext=".txt")
 
 
 def _make_result(

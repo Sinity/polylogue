@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 from collections.abc import Callable
 from pathlib import Path
-from typing import cast
 
 import pytest
 
@@ -46,6 +45,12 @@ def _parse_single(source_name: str, source_path: Path) -> ParsedConversation:
     conversations = list(iter_source_conversations(Source(name=source_name, path=source_path)))
     assert len(conversations) == 1
     return conversations[0]
+
+
+def _require_conversation(value: Conversation | None) -> Conversation:
+    if value is None:
+        raise AssertionError("expected seeded conversation")
+    return value
 
 
 def _codex_continuation_payload(*, child_id: str, parent_id: str) -> list[dict[str, object]]:
@@ -120,16 +125,14 @@ def _chatgpt_branch_payload(*, title: str = "Branched Conversation") -> dict[str
 
 
 async def _seed_branch_archive(db_path: Path) -> dict[str, str]:
-    root = cast(
-        Conversation,
+    root = _require_conversation(
         await ConversationBuilder(db_path, "root")
         .provider("codex")
         .title("Root")
         .add_message("root-user", role="user", text="Root")
         .build(),
     )
-    continuation = cast(
-        Conversation,
+    continuation = _require_conversation(
         await ConversationBuilder(db_path, "continuation")
         .provider("codex")
         .title("Continuation")
@@ -138,8 +141,7 @@ async def _seed_branch_archive(db_path: Path) -> dict[str, str]:
         .add_message("cont-user", role="user", text="Continue")
         .build(),
     )
-    sidechain = cast(
-        Conversation,
+    sidechain = _require_conversation(
         await ConversationBuilder(db_path, "sidechain")
         .provider("claude-code")
         .title("Sidechain")
@@ -149,8 +151,7 @@ async def _seed_branch_archive(db_path: Path) -> dict[str, str]:
         .add_message("side-assistant", role="assistant", text="Side answer", provider_meta={"isSidechain": True})
         .build(),
     )
-    grandchild = cast(
-        Conversation,
+    grandchild = _require_conversation(
         await ConversationBuilder(db_path, "grandchild")
         .provider("codex")
         .title("Grandchild")
@@ -159,8 +160,7 @@ async def _seed_branch_archive(db_path: Path) -> dict[str, str]:
         .add_message("grand-user", role="user", text="Grandchild")
         .build(),
     )
-    branched = cast(
-        Conversation,
+    branched = _require_conversation(
         await ConversationBuilder(db_path, "branching")
         .provider("chatgpt")
         .title("Branched")

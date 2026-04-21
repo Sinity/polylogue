@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from types import ModuleType
-from typing import cast
 from unittest.mock import MagicMock
 
 import pytest
@@ -20,6 +19,25 @@ from polylogue.sources.drive_gateway import (
 )
 from polylogue.sources.drive_types import DriveAuthError, DriveNotFoundError, DriveRetryPolicy
 from tests.infra.drive_mocks import MockDriveService, MockMediaIoBaseDownload
+
+
+def _as_drive_service(value: object) -> _DriveService:
+    if not isinstance(value, _DriveService):
+        raise TypeError(f"expected _DriveService, got {type(value).__name__}")
+    return value
+
+
+def _as_mock(value: object) -> MagicMock:
+    if not isinstance(value, MagicMock):
+        raise TypeError(f"expected MagicMock, got {type(value).__name__}")
+    return value
+
+
+def _fake_module(**attrs: object) -> ModuleType:
+    module = ModuleType("fake_google_module")
+    for name, value in attrs.items():
+        setattr(module, name, value)
+    return module
 
 
 def _gateway(*, retries: int = 0, retry_base: float = 0.0) -> DriveServiceGateway:
@@ -149,30 +167,34 @@ def test_call_with_retry_contract(
 
 def test_service_handle_returns_cached_service_when_not_expired(monkeypatch: pytest.MonkeyPatch) -> None:
     gw = _gateway()
-    service = MagicMock()
+    service = MockDriveService()
+    service._http = MagicMock()
     service._http.credentials.expired = False
-    gw._service = cast(_DriveService, service)
-    assert gw._service_handle() is service
+    cached_service = _as_drive_service(service)
+    gw._service = cached_service
+    assert gw._service_handle() is cached_service
 
 
 def test_service_handle_rebuilds_on_expired_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
     gw = _gateway()
-    expired = MagicMock()
+    expired = MockDriveService()
+    expired._http = MagicMock()
     expired._http.credentials.expired = True
-    gw._service = cast(_DriveService, expired)
+    gw._service = _as_drive_service(expired)
     creds = object()
-    rebuilt = object()
-    load_credentials = cast(MagicMock, gw._auth_manager.load_credentials)
+    rebuilt = MockDriveService()
+    load_credentials = _as_mock(gw._auth_manager.load_credentials)
     load_credentials.return_value = creds
-    build = MagicMock(return_value=rebuilt)
+    rebuilt_service = _as_drive_service(rebuilt)
+    build = MagicMock(return_value=rebuilt_service)
 
     def fake_import(name: str) -> ModuleType:
         if name == "googleapiclient.discovery":
-            return cast(ModuleType, MagicMock(build=build))
+            return _fake_module(build=build)
         raise AssertionError(name)
 
     monkeypatch.setattr("polylogue.sources.drive_gateway._import_module", fake_import)
-    assert gw._service_handle() is rebuilt
+    assert gw._service_handle() is rebuilt_service
     load_credentials.assert_called_once_with()
     build.assert_called_once_with("drive", "v3", credentials=creds, cache_discovery=False)
 
@@ -181,13 +203,13 @@ def test_service_handle_builds_and_caches_service(monkeypatch: pytest.MonkeyPatc
     gw = _gateway()
     creds = object()
     built = object()
-    load_credentials = cast(MagicMock, gw._auth_manager.load_credentials)
+    load_credentials = _as_mock(gw._auth_manager.load_credentials)
     load_credentials.return_value = creds
     build = MagicMock(return_value=built)
 
     def fake_import(name: str) -> ModuleType:
         if name == "googleapiclient.discovery":
-            return cast(ModuleType, MagicMock(build=build))
+            return _fake_module(build=build)
         raise AssertionError(name)
 
     monkeypatch.setattr("polylogue.sources.drive_gateway._import_module", fake_import)
@@ -210,7 +232,7 @@ def test_download_file_writes_content(monkeypatch: pytest.MonkeyPatch) -> None:
     import io
 
     gw = _gateway()
-    gw._service = cast(_DriveService, MockDriveService(file_content={"file-1": b"hello-bytes"}))
+    gw._service = _as_drive_service(MockDriveService(file_content={"file-1": b"hello-bytes"}))
 
     monkeypatch.setattr(
         "polylogue.sources.drive_gateway._import_module",

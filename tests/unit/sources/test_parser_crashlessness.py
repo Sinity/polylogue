@@ -11,7 +11,6 @@ Unacceptable: AttributeError, IndexError, RecursionError (bugs).
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import cast
 
 import pytest
 from hypothesis import HealthCheck, given, settings
@@ -30,17 +29,17 @@ class ProviderParser(TypedDict):
 
 def _payload_dict(payload: object) -> dict[str, object]:
     assert isinstance(payload, dict)
-    return cast(dict[str, object], payload)
+    return {str(key): value for key, value in payload.items()}
 
 
 def _payload_json_document(payload: object) -> JSONDocument:
     assert isinstance(payload, dict)
-    return cast(JSONDocument, payload)
+    return {str(key): value for key, value in payload.items()}
 
 
 def _payload_list(payload: object) -> list[object]:
     assert isinstance(payload, list)
-    return cast(list[object], payload)
+    return list(payload)
 
 
 def _parse_chatgpt(payload: object) -> object:

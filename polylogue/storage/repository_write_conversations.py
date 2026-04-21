@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import builtins
-from typing import cast
 
 from polylogue.lib.conversation_models import Conversation
-from polylogue.lib.json import json_document
+from polylogue.lib.hashing import hash_payload
+from polylogue.lib.json import JSONValue, json_document
 from polylogue.storage.action_event_rows import attach_blocks_to_messages, build_action_event_records
 from polylogue.storage.backends.queries import action_events as action_events_q
 from polylogue.storage.backends.queries import attachments as attachments_q
@@ -40,6 +40,64 @@ def provider_conversation_id(conversation_id: str, provider: str | None) -> str:
     return conversation_id[len(prefix) :] if conversation_id.startswith(prefix) else conversation_id
 
 
+def _normalize_hash_value(value: object) -> JSONValue:
+    if value is None:
+        return "__POLYLOGUE_NULL__"
+    if value == "":
+        return "__POLYLOGUE_EMPTY__"
+    if isinstance(value, (str, int, float, bool)):
+        return value
+    return str(value)
+
+
+def _content_hash_from_metadata_or_domain(conversation: Conversation, metadata: dict[str, object]) -> str:
+    existing = metadata.get("content_hash")
+    if isinstance(existing, str) and existing.strip():
+        return existing
+
+    messages_payload: list[dict[str, JSONValue]] = []
+    for message in conversation.messages:
+        messages_payload.append(
+            {
+                "id": str(message.id),
+                "role": str(message.role),
+                "text": _normalize_hash_value(message.text),
+                "timestamp": _normalize_hash_value(message.timestamp.isoformat() if message.timestamp else None),
+            }
+        )
+    attachments_payload = sorted(
+        [
+            {
+                "id": _normalize_hash_value(attachment.id),
+                "message_id": _normalize_hash_value(message.id),
+                "name": _normalize_hash_value(attachment.name),
+                "mime_type": _normalize_hash_value(attachment.mime_type),
+                "size_bytes": _normalize_hash_value(attachment.size_bytes),
+            }
+            for message in conversation.messages
+            for attachment in message.attachments
+        ],
+        key=lambda item: (
+            str(item.get("message_id") or ""),
+            str(item.get("id") or ""),
+            str(item.get("name") or ""),
+        ),
+    )
+    return hash_payload(
+        {
+            "title": _normalize_hash_value(conversation.title),
+            "created_at": _normalize_hash_value(
+                conversation.created_at.isoformat() if conversation.created_at else None
+            ),
+            "updated_at": _normalize_hash_value(
+                conversation.updated_at.isoformat() if conversation.updated_at else None
+            ),
+            "messages": messages_payload,
+            "attachments": attachments_payload,
+        }
+    )
+
+
 def conversation_to_record(conversation: Conversation) -> ConversationRecord:
     from polylogue.types import ContentHash, ConversationId
 
@@ -52,7 +110,7 @@ def conversation_to_record(conversation: Conversation) -> ConversationRecord:
     provider_meta.update(json_document(metadata.get("provider_meta")))
 
     return ConversationRecord(
-        conversation_id=cast(ConversationId, str(conversation.id)),
+        conversation_id=ConversationId(str(conversation.id)),
         provider_name=conversation.provider,
         provider_conversation_id=provider_conversation_id(
             conversation_id=str(conversation.id),
@@ -61,7 +119,7 @@ def conversation_to_record(conversation: Conversation) -> ConversationRecord:
         title=conversation.title or "",
         created_at=created_at_str,
         updated_at=updated_at_str,
-        content_hash=cast(ContentHash, metadata_record.get("content_hash", "")),
+        content_hash=ContentHash(_content_hash_from_metadata_or_domain(conversation, metadata_record)),
         provider_meta=provider_meta,
         metadata=metadata_record,
     )

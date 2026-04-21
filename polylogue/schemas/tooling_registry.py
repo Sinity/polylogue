@@ -6,9 +6,9 @@ import json
 from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, TypeAlias, cast
+from typing import TYPE_CHECKING, TypeAlias
 
-from polylogue.lib.json import json_document, json_document_list
+from polylogue.lib.json import json_document, json_document_list, require_json_value
 from polylogue.schemas.observation import schema_cluster_id
 from polylogue.schemas.observation_models import SchemaClusterPayload
 from polylogue.schemas.packages import SchemaPackageCatalog, SchemaVersionPackage
@@ -42,7 +42,7 @@ def _cluster_payload(sample: object) -> SchemaClusterPayload:
         return document
     documents = json_document_list(sample)
     if documents:
-        return cast(SchemaClusterPayload, documents)
+        return require_json_value(documents, context="schema cluster payload")
     if sample is None or isinstance(sample, (str, int, float, bool)):
         return sample
     return None

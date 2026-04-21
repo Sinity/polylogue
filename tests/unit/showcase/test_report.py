@@ -12,8 +12,6 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping
 from pathlib import Path
-from typing import cast
-from unittest.mock import MagicMock
 
 from hypothesis import given, settings
 from hypothesis import strategies as st
@@ -44,14 +42,7 @@ from polylogue.showcase.showcase_report_payloads import (
 
 
 def _make_exercise(name: str = "ex", group: str = "structural", tier: int = 1) -> Exercise:
-    ex = MagicMock()
-    ex.name = name
-    ex.group = group
-    ex.tier = tier
-    ex.description = "A test exercise"
-    ex.args = []
-    ex.output_ext = ".txt"
-    return cast(Exercise, ex)
+    return Exercise(name=name, group=group, tier=tier, description="A test exercise", output_ext=".txt")
 
 
 def _make_result(passed: bool = True, skipped: bool = False, error: str | None = None) -> ExerciseResult:

@@ -13,10 +13,10 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
-from typing import cast
 
 from polylogue.lib.attachment_models import Attachment
 from polylogue.lib.conversation_models import Conversation, ConversationSummary
+from polylogue.lib.json import loads
 from polylogue.lib.message_models import Message
 from polylogue.lib.messages import MessageCollection
 from polylogue.lib.roles import Role
@@ -42,8 +42,8 @@ def _parse_json_blob(raw: object) -> object | None:
     if not isinstance(raw, str):
         return raw
     try:
-        return cast(object, json.loads(raw))
-    except json.JSONDecodeError:
+        return loads(raw)
+    except (json.JSONDecodeError, ValueError):
         return raw
 
 

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import cast
 from unittest.mock import MagicMock
 
 import pytest
@@ -10,6 +9,11 @@ import pytest
 from polylogue.cli.qa_finalization import finalize_qa_run
 from polylogue.cli.qa_requests import QACaptureMode, QAFinalizationPlan, QASnapshotPlan
 from polylogue.showcase.qa_runner import QAResult
+
+
+def _string_payload(value: object) -> str:
+    assert isinstance(value, str)
+    return value
 
 
 def test_finalize_qa_run_emits_json_and_executes_snapshot(
@@ -56,7 +60,7 @@ def test_finalize_qa_run_emits_json_and_executes_snapshot(
 
     finalize_qa_run(result, plan=plan, archive_root=tmp_path / "archive", env=env)
 
-    assert json.loads(cast(str, emitted["json_payload"]))["overall_status"] == "ok"
+    assert json.loads(_string_payload(emitted["json_payload"]))["overall_status"] == "ok"
     assert emitted["capture_showcase_result"] is showcase_result
     assert emitted["capture_json_output"] is True
     assert emitted["fallback_source_dir"] == tmp_path / "report"

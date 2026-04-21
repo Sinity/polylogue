@@ -1,206 +1,201 @@
-"""Retrieval readiness laws: prove index/query semantics are consistent.
+"""Retrieval readiness laws over shared archive scenarios.
 
-These laws verify that FTS indexes, provider filters, and query surfaces
-agree with each other and with the underlying stored data.
+These tests prove provider filters, FTS search, counts, and aggregate archive
+facts agree across direct SQL, hydrated records, repository, and facade
+surfaces.
 """
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator, Mapping
 from pathlib import Path
 
 import pytest
 
-from tests.infra.storage_records import ConversationBuilder, db_setup
+from tests.infra.archive_scenarios import ArchiveScenario, ScenarioMessage, seed_workspace_scenarios
+from tests.infra.oracles import assert_archive_surfaces_agree, assert_provider_partition_exhaustive
+from tests.infra.query_cases import ArchiveQueryCase
+from tests.infra.surfaces import ArchiveSurfaceSet, build_archive_surface_set
 
 
 @pytest.fixture()
-def populated_db(workspace_env: dict[str, Path]) -> Path:
-    """Create a DB with conversations across multiple providers, with FTS indexed."""
-    db_path = db_setup(workspace_env)
-
-    (
-        ConversationBuilder(db_path, "chatgpt-1")
-        .provider("chatgpt")
-        .title("ChatGPT conversation about testing")
-        .add_message(role="user", text="How do I write property tests?")
-        .add_message(role="assistant", text="Property tests verify invariants using random inputs")
-        .save()
+def retrieval_archive(workspace_env: Mapping[str, Path]) -> tuple[Path, tuple[ArchiveScenario, ...]]:
+    """Seed provider-diverse conversations with stable search terms."""
+    scenarios = (
+        ArchiveScenario(
+            name="chatgpt-retrieval-1",
+            provider="chatgpt",
+            title="ChatGPT conversation about testing",
+            messages=(
+                ScenarioMessage(role="user", text="How do I write property tests?", message_id="chatgpt-u1"),
+                ScenarioMessage(
+                    role="assistant",
+                    text="Property tests verify invariants using random inputs",
+                    message_id="chatgpt-a1",
+                ),
+            ),
+        ),
+        ArchiveScenario(
+            name="claude-retrieval-1",
+            provider="claude-code",
+            title="Claude Code session on refactoring",
+            messages=(
+                ScenarioMessage(role="user", text="Refactor the storage module", message_id="claude1-u1"),
+                ScenarioMessage(role="assistant", text="I will restructure the query layer", message_id="claude1-a1"),
+                ScenarioMessage(role="user", text="Also fix the property tests", message_id="claude1-u2"),
+            ),
+        ),
+        ArchiveScenario(
+            name="claude-retrieval-2",
+            provider="claude-code",
+            title="Claude debugging memory leak",
+            messages=(
+                ScenarioMessage(role="user", text="Memory keeps growing during ingest", message_id="claude2-u1"),
+                ScenarioMessage(role="assistant", text="The blob store path has a leak", message_id="claude2-a1"),
+            ),
+        ),
+        ArchiveScenario(
+            name="codex-retrieval-1",
+            provider="codex",
+            title="Codex adding authentication",
+            messages=(ScenarioMessage(role="user", text="Add OAuth2 authentication", message_id="codex-u1"),),
+        ),
     )
-    (
-        ConversationBuilder(db_path, "claude-1")
-        .provider("claude-code")
-        .title("Claude Code session on refactoring")
-        .add_message(role="user", text="Refactor the storage module")
-        .add_message(role="assistant", text="I will restructure the query layer")
-        .add_message(role="user", text="Also fix the property tests")
-        .save()
+    db_path, _ = seed_workspace_scenarios(workspace_env, scenarios)
+    return db_path, scenarios
+
+
+@pytest.fixture()
+async def retrieval_surfaces(
+    workspace_env: Mapping[str, Path],
+    retrieval_archive: tuple[Path, tuple[ArchiveScenario, ...]],
+) -> AsyncIterator[ArchiveSurfaceSet]:
+    db_path, scenarios = retrieval_archive
+    surfaces = build_archive_surface_set(
+        db_path=db_path,
+        archive_root=workspace_env["archive_root"],
+        scenarios=scenarios,
     )
-    (
-        ConversationBuilder(db_path, "claude-2")
-        .provider("claude-code")
-        .title("Claude debugging memory leak")
-        .add_message(role="user", text="Memory keeps growing during ingest")
-        .add_message(role="assistant", text="The blob store path has a leak")
-        .save()
+    try:
+        yield surfaces
+    finally:
+        await surfaces.close()
+
+
+def _provider_cases() -> tuple[ArchiveQueryCase, ...]:
+    return (
+        ArchiveQueryCase(
+            name="provider-chatgpt",
+            provider="chatgpt",
+            expected_ids=("chatgpt-retrieval-1",),
+        ),
+        ArchiveQueryCase(
+            name="provider-claude",
+            provider="claude-code",
+            expected_ids=("claude-retrieval-1", "claude-retrieval-2"),
+        ),
+        ArchiveQueryCase(
+            name="provider-codex",
+            provider="codex",
+            expected_ids=("codex-retrieval-1",),
+        ),
     )
-    (
-        ConversationBuilder(db_path, "codex-1")
-        .provider("codex")
-        .title("Codex adding authentication")
-        .add_message(role="user", text="Add OAuth2 authentication")
-        .save()
+
+
+def _search_cases() -> tuple[ArchiveQueryCase, ...]:
+    return (
+        ArchiveQueryCase(
+            name="search-property",
+            search_text="property",
+            expected_ids=("chatgpt-retrieval-1", "claude-retrieval-1"),
+        ),
+        ArchiveQueryCase(
+            name="search-memory",
+            search_text="memory",
+            expected_ids=("claude-retrieval-2",),
+        ),
+        ArchiveQueryCase(
+            name="search-authentication",
+            search_text="authentication",
+            expected_ids=("codex-retrieval-1",),
+        ),
     )
 
-    return db_path
+
+class TestRetrievalSurfaceAgreement:
+    @pytest.mark.asyncio()
+    async def test_archive_facts_agree_across_surfaces(self, retrieval_surfaces: ArchiveSurfaceSet) -> None:
+        facts = [await surface.archive_facts() for surface in retrieval_surfaces.surfaces]
+
+        assert_archive_surfaces_agree(*facts)
+        assert facts[0].total_conversations == 4
+        assert facts[0].total_messages == 8
+        assert facts[0].provider_counts == {"chatgpt": 1, "claude-code": 2, "codex": 1}
+
+    @pytest.mark.asyncio()
+    async def test_provider_filters_partition_the_archive(self, retrieval_surfaces: ArchiveSurfaceSet) -> None:
+        all_ids = set((await retrieval_surfaces.surfaces[0].archive_facts()).conversation_ids)
+        ids_by_provider: dict[str, tuple[str, ...]] = {}
+
+        for case in _provider_cases():
+            assert case.provider is not None
+            projected_ids = [await surface.query_ids(case) for surface in retrieval_surfaces.surfaces]
+            expected_ids = tuple(sorted(case.expected_ids))
+            for surface, ids in zip(retrieval_surfaces.surfaces, projected_ids, strict=True):
+                assert ids == expected_ids, f"{surface.name} returned {ids} for {case.name}"
+                assert await surface.query_count(case) == len(expected_ids)
+            ids_by_provider[case.provider] = expected_ids
+
+        assert_provider_partition_exhaustive(all_conversation_ids=all_ids, ids_by_provider=ids_by_provider)
+
+    @pytest.mark.asyncio()
+    async def test_fts_search_is_consistent_across_surfaces(self, retrieval_surfaces: ArchiveSurfaceSet) -> None:
+        for case in _search_cases():
+            expected_ids = tuple(sorted(case.expected_ids))
+            for surface in retrieval_surfaces.surfaces:
+                ids = await surface.query_ids(case)
+                assert ids == expected_ids, f"{surface.name} returned {ids} for {case.name}"
+                assert await surface.query_count(case) == len(expected_ids)
 
 
-# ---------------------------------------------------------------------------
-# Law 1: Provider filter results are strict subsets of unfiltered
-# ---------------------------------------------------------------------------
-
-
-class TestProviderFilterSubset:
-    def test_provider_filter_returns_subset(self: object, populated_db: Path) -> None:
+class TestRetrievalIndexInvariants:
+    def test_fts_index_contains_exactly_text_messages(
+        self,
+        retrieval_archive: tuple[Path, tuple[ArchiveScenario, ...]],
+    ) -> None:
         from polylogue.storage.backends.connection import open_connection
 
-        with open_connection(populated_db) as conn:
-            all_ids = {
-                r["conversation_id"] for r in conn.execute("SELECT conversation_id FROM conversations").fetchall()
+        db_path, _ = retrieval_archive
+        with open_connection(db_path) as conn:
+            expected_text_messages = {
+                str(row["message_id"])
+                for row in conn.execute("SELECT message_id FROM messages WHERE text IS NOT NULL").fetchall()
             }
-            claude_ids = {
-                r["conversation_id"]
-                for r in conn.execute(
-                    "SELECT conversation_id FROM conversations WHERE provider_name = ?",
-                    ("claude-code",),
-                ).fetchall()
+            indexed_messages = {
+                str(row["message_id"]) for row in conn.execute("SELECT message_id FROM messages_fts").fetchall()
             }
 
-            assert claude_ids.issubset(all_ids), "Provider-filtered results must be a subset of all"
-            assert len(claude_ids) == 2
-            assert len(all_ids) == 4
+        assert indexed_messages == expected_text_messages
 
-    def test_all_providers_partition_total(self: object, populated_db: Path) -> None:
-        """Union of all per-provider sets equals the full set."""
+    @pytest.mark.asyncio()
+    async def test_repository_message_counts_match_storage_facts(
+        self,
+        retrieval_archive: tuple[Path, tuple[ArchiveScenario, ...]],
+    ) -> None:
         from polylogue.storage.backends.connection import open_connection
+        from tests.infra.archive_scenarios import repository_for_scenario_db
 
-        with open_connection(populated_db) as conn:
-            all_ids = {
-                r["conversation_id"] for r in conn.execute("SELECT conversation_id FROM conversations").fetchall()
-            }
+        db_path, scenarios = retrieval_archive
+        expected_counts: dict[str, int] = {}
+        with open_connection(db_path) as conn:
+            for scenario in scenarios:
+                facts = scenario.facts_from_connection(conn)
+                expected_counts[facts.conversation_id] = facts.message_count
 
-            providers = [
-                r["provider_name"] for r in conn.execute("SELECT DISTINCT provider_name FROM conversations").fetchall()
-            ]
+        repository = repository_for_scenario_db(db_path)
+        try:
+            observed_counts = await repository.get_message_counts_batch(list(expected_counts))
+        finally:
+            await repository.close()
 
-            union = set()
-            for p in providers:
-                ids = {
-                    r["conversation_id"]
-                    for r in conn.execute(
-                        "SELECT conversation_id FROM conversations WHERE provider_name = ?", (p,)
-                    ).fetchall()
-                }
-                union |= ids
-
-            assert union == all_ids, "Union of provider partitions must equal total"
-
-
-# ---------------------------------------------------------------------------
-# Law 2: FTS index contains exactly the indexable messages
-# ---------------------------------------------------------------------------
-
-
-class TestFTSIndexCompleteness:
-    def test_fts_message_count_matches_messages_table(self: object, populated_db: Path) -> None:
-        from polylogue.storage.backends.connection import open_connection
-
-        with open_connection(populated_db) as conn:
-            msg_count = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
-
-            fts_exists = conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name='messages_fts'"
-            ).fetchone()
-            if fts_exists is None:
-                pytest.skip("FTS table not present")
-
-            fts_count = conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0]
-
-            assert fts_count == msg_count, f"FTS row count ({fts_count}) != messages table count ({msg_count})"
-
-    def test_fts_search_returns_subset_of_messages(self: object, populated_db: Path) -> None:
-        from polylogue.storage.backends.connection import open_connection
-
-        with open_connection(populated_db) as conn:
-            fts_exists = conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name='messages_fts'"
-            ).fetchone()
-            if fts_exists is None:
-                pytest.skip("FTS table not present")
-
-            all_msg_ids = {r["message_id"] for r in conn.execute("SELECT message_id FROM messages").fetchall()}
-
-            fts_hits = conn.execute("SELECT rowid FROM messages_fts WHERE messages_fts MATCH 'property'").fetchall()
-            fts_msg_ids = set()
-            for hit in fts_hits:
-                row = conn.execute("SELECT message_id FROM messages WHERE rowid = ?", (hit[0],)).fetchone()
-                if row:
-                    fts_msg_ids.add(row["message_id"])
-
-            assert fts_msg_ids.issubset(all_msg_ids), "FTS hits must reference existing messages"
-
-
-# ---------------------------------------------------------------------------
-# Law 3: List count agrees with actual list length
-# ---------------------------------------------------------------------------
-
-
-class TestCountListAgreement:
-    def test_count_matches_list_length(self: object, populated_db: Path) -> None:
-        from polylogue.storage.backends.connection import open_connection
-
-        with open_connection(populated_db) as conn:
-            count = conn.execute("SELECT COUNT(*) FROM conversations").fetchone()[0]
-            rows = conn.execute("SELECT conversation_id FROM conversations").fetchall()
-
-            assert count == len(rows), f"COUNT(*) ({count}) != len(SELECT) ({len(rows)})"
-
-    def test_per_provider_count_matches_filtered_list(self: object, populated_db: Path) -> None:
-        from polylogue.storage.backends.connection import open_connection
-
-        with open_connection(populated_db) as conn:
-            for provider in ("chatgpt", "claude-code", "codex"):
-                count = conn.execute(
-                    "SELECT COUNT(*) FROM conversations WHERE provider_name = ?", (provider,)
-                ).fetchone()[0]
-                rows = conn.execute(
-                    "SELECT conversation_id FROM conversations WHERE provider_name = ?", (provider,)
-                ).fetchall()
-
-                assert count == len(rows), f"Provider {provider}: COUNT={count}, len(rows)={len(rows)}"
-
-
-# ---------------------------------------------------------------------------
-# Law 4: Message stats agree with stored messages
-# ---------------------------------------------------------------------------
-
-
-class TestMessageStatsConsistency:
-    def test_conversation_stats_match_actual_messages(self: object, populated_db: Path) -> None:
-        from polylogue.storage.backends.connection import open_connection
-
-        with open_connection(populated_db) as conn:
-            stats_exists = conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name='conversation_stats'"
-            ).fetchone()
-            if stats_exists is None:
-                pytest.skip("conversation_stats table not present")
-
-            for row in conn.execute(
-                "SELECT cs.conversation_id, cs.message_count, "
-                "(SELECT COUNT(*) FROM messages m WHERE m.conversation_id = cs.conversation_id) AS actual_count "
-                "FROM conversation_stats cs"
-            ).fetchall():
-                assert row["message_count"] == row["actual_count"], (
-                    f"Stats message_count ({row['message_count']}) != actual ({row['actual_count']}) "
-                    f"for {row['conversation_id']}"
-                )
+        assert observed_counts == expected_counts

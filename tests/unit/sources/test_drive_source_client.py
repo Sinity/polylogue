@@ -7,14 +7,12 @@ import os
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
-from typing import cast
 from unittest.mock import MagicMock
 
 import pytest
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
-from polylogue.sources.drive_gateway import DriveServiceGateway
 from polylogue.sources.drive_source import (
     DriveSourceClient,
     _build_folder_lookup_query,
@@ -48,7 +46,7 @@ def _source_client(
         file_content=file_content,
         download_error=download_error,
     )
-    return DriveSourceClient(gateway=cast(DriveServiceGateway, gw))
+    return DriveSourceClient(gateway=gw)
 
 
 # ---------------------------------------------------------------------------

@@ -32,8 +32,8 @@ def _complete_providers(
 
 def _validate_provider_tokens(
     ctx: click.Context,
-    param: click.Parameter,
-    value: str | None,  # noqa: ARG001
+    _param: click.Parameter,
+    value: str | None,
 ) -> str | None:
     if not value:
         return value

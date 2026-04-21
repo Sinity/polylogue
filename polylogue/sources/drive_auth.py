@@ -3,7 +3,6 @@ from __future__ import annotations
 import os
 import shutil
 from pathlib import Path
-from typing import cast
 
 from polylogue.logging import get_logger
 
@@ -147,7 +146,7 @@ class DriveAuthManager:
         )
 
     def _run_manual_auth_flow(self, flow: DriveAuthFlowLike) -> DriveCredentialLike:
-        return cast(DriveCredentialLike, run_manual_auth_flow(flow=flow, prompter=self._prompter))
+        return run_manual_auth_flow(flow=flow, prompter=self._prompter)
 
     def load_credentials(self) -> DriveCredentialLike:
         """Load or acquire Google OAuth credentials. Triggers interactive auth if needed."""

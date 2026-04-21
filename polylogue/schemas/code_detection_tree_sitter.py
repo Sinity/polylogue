@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+import importlib.util
+from collections.abc import Sequence
 from functools import lru_cache
-from typing import Protocol, cast
+from typing import Protocol, TypeGuard
 
 _TS_GRAMMAR_MAP: dict[str, str] = {
     "python": "tree_sitter_python",
@@ -29,15 +30,21 @@ class TreeSitterNodeLike(Protocol):
     children: Sequence[TreeSitterNodeLike]
 
 
+def _is_node_like(node: object) -> TypeGuard[TreeSitterNodeLike]:
+    type_attr = "type"
+    missing_attr = "is_missing"
+    try:
+        node_type = getattr(node, type_attr)
+        is_missing = getattr(node, missing_attr)
+    except AttributeError:
+        return False
+    return hasattr(node, "children") and isinstance(node_type, str) and isinstance(is_missing, bool)
+
+
 @lru_cache(maxsize=1)
 def tree_sitter_available() -> bool:
     """Check if the tree-sitter Python bindings are importable."""
-    try:
-        import tree_sitter  # noqa: F401
-
-        return True
-    except ImportError:
-        return False
+    return importlib.util.find_spec("tree_sitter") is not None
 
 
 @lru_cache(maxsize=32)
@@ -59,8 +66,8 @@ def get_ts_language(lang: str) -> object | None:
         lang_fn = getattr(mod, "language", None)
         if not callable(lang_fn):
             return None
-        language_factory = cast(Callable[[], object], lang_fn)
-        return cast(object, Language(language_factory()))
+        language: object = Language(lang_fn())
+        return language
     except Exception:
         return None
 
@@ -88,7 +95,10 @@ def ts_error_ratio(code: str, lang: str) -> float | None:
             for child in node.children:
                 _walk(child)
 
-        _walk(cast(TreeSitterNodeLike, tree.root_node))
+        root = tree.root_node
+        if not _is_node_like(root):
+            return None
+        _walk(root)
 
         if total_nodes == 0:
             return 1.0

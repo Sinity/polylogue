@@ -5,7 +5,7 @@ from __future__ import annotations
 import sqlite3
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import TypeAlias, cast
+from typing import TypeAlias
 
 import aiosqlite
 
@@ -78,6 +78,14 @@ def _coerce_int(value: object) -> int:
     return 0
 
 
+def _sql_row(row: object) -> SqlRow | None:
+    if row is None:
+        return None
+    if isinstance(row, (sqlite3.Row, tuple)):
+        return row
+    return None
+
+
 def _row_int(row: SqlRow | None, key: int | str) -> int:
     if row is None:
         return 0
@@ -108,7 +116,7 @@ async def _count_async(
     sql: str,
     params: Sequence[object] = (),
 ) -> int:
-    row = cast(SqlRow | None, await (await conn.execute(sql, params)).fetchone())
+    row = _sql_row(await (await conn.execute(sql, params)).fetchone())
     return _row_int(row, 0)
 
 

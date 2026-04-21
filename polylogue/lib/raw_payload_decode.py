@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from io import BytesIO, StringIO
 from pathlib import Path
 from typing import Literal, TypeAlias
 
@@ -11,6 +10,7 @@ import orjson
 
 from polylogue.lib.artifact_taxonomy import ArtifactClassification, classify_artifact
 from polylogue.lib.json import JSONDocument, JSONValue, is_json_value, loads
+from polylogue.lib.raw_payload_streams import raw_line_stream
 from polylogue.sources.dispatch import detect_provider
 from polylogue.types import Provider
 
@@ -50,16 +50,8 @@ def _decode_jsonl_payload(
     first_line = True
     line_number = 0
 
-    fh = (
-        open(raw, "rb")  # noqa: SIM115 — caller-managed context
-        if isinstance(raw, Path)
-        else BytesIO(raw)
-        if isinstance(raw, bytes)
-        else StringIO(raw)
-    )
-
-    try:
-        for raw_line in fh:
+    with raw_line_stream(raw) as stream:
+        for raw_line in stream:
             line_number += 1
             try:
                 line = raw_line.decode("utf-8") if isinstance(raw_line, bytes) else raw_line
@@ -84,9 +76,6 @@ def _decode_jsonl_payload(
             if jsonl_dict_only and not isinstance(parsed, dict):
                 continue
             lines.append(parsed)
-    finally:
-        if isinstance(raw, Path):
-            fh.close()
 
     if not lines:
         raise ValueError("No valid JSONL records found")
@@ -112,16 +101,8 @@ def _sample_jsonl_payload_with_detail(
     first_line = True
     line_number = 0
 
-    fh = (
-        open(raw, "rb")  # noqa: SIM115 — caller-managed context
-        if isinstance(raw, Path)
-        else BytesIO(raw)
-        if isinstance(raw, bytes)
-        else StringIO(raw)
-    )
-
-    try:
-        for raw_line in fh:
+    with raw_line_stream(raw) as stream:
+        for raw_line in stream:
             line_number += 1
             try:
                 line = raw_line.decode("utf-8") if isinstance(raw_line, bytes) else raw_line
@@ -148,9 +129,6 @@ def _sample_jsonl_payload_with_detail(
             valid_records += 1
             if len(samples) < max_samples:
                 samples.append(parsed)
-    finally:
-        if isinstance(raw, Path):
-            fh.close()
 
     if valid_records == 0:
         raise ValueError("No valid JSONL records found")

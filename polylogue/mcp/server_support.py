@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Protocol, TypeVar, cast, overload
+from typing import TYPE_CHECKING, Protocol, TypeVar, overload
 
 from pydantic import BaseModel
 
@@ -34,10 +34,6 @@ class ErrorJSONSerializer(Protocol):
 
 class FencedCodeExtractor(Protocol):
     def __call__(self, text: str, language: str = "") -> list[MCPFencedCodeBlock]: ...
-
-
-class ToJSONPayload(Protocol):
-    def to_json(self, *, exclude_none: bool = False) -> str: ...
 
 
 @dataclass(frozen=True)
@@ -75,7 +71,10 @@ def _json_payload(payload: BaseModel, *, exclude_none: bool = False) -> str:
     """Serialize a typed MCP payload with canonical JSON formatting."""
     to_json = getattr(payload, "to_json", None)
     if callable(to_json):
-        return cast(ToJSONPayload, payload).to_json(exclude_none=exclude_none)
+        result = to_json(exclude_none=exclude_none)
+        if isinstance(result, str):
+            return result
+        raise TypeError(f"{type(payload).__name__}.to_json() returned {type(result).__name__}, expected str")
     return serialize_surface_payload(payload, exclude_none=exclude_none)
 
 

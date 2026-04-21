@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from typing import cast
 
 import pytest
 
@@ -33,7 +32,8 @@ def _make_row(columns: dict[str, object]) -> sqlite3.Row:
     row = conn.execute("SELECT * FROM t").fetchone()
     conn.close()
     assert row is not None
-    return cast(sqlite3.Row, row)
+    assert isinstance(row, sqlite3.Row)
+    return row
 
 
 def _typed_payload_columns(mode: str, *names: str) -> dict[str, object]:

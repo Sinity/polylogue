@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import sqlite3
-from typing import cast
 
 import aiosqlite
 import pytest
@@ -53,22 +52,30 @@ def test_read_embedding_stats_sync_counts_available_tables() -> None:
 
 
 def test_read_embedding_stats_sync_propagates_non_missing_operational_errors() -> None:
-    class LockedConnection:
-        def execute(self: object, sql: str) -> None:  # pragma: no cover - trivial stub
+    class LockedConnection(sqlite3.Connection):
+        def execute(self, sql: str, parameters: object = (), /) -> sqlite3.Cursor:  # pragma: no cover - trivial stub
+            del sql, parameters
             raise sqlite3.OperationalError("database is locked")
 
+    conn = sqlite3.connect(":memory:", factory=LockedConnection)
     with pytest.raises(sqlite3.OperationalError, match="database is locked"):
-        read_embedding_stats_sync(cast(sqlite3.Connection, LockedConnection()))
+        read_embedding_stats_sync(conn)
+    conn.close()
 
 
 def test_read_embedding_stats_sync_treats_missing_vec_module_as_optional() -> None:
-    class VeclessConnection:
-        def execute(self: object, sql: str) -> None:
+    class VeclessConnection(sqlite3.Connection):
+        def execute(self, sql: str, parameters: object = (), /) -> sqlite3.Cursor:
+            del parameters
             if "message_embeddings" in sql:
                 raise sqlite3.OperationalError("no such module: vec0")
             raise sqlite3.OperationalError("no such table: embedding_status")
 
-    stats = read_embedding_stats_sync(cast(sqlite3.Connection, VeclessConnection()))
+    conn = sqlite3.connect(":memory:", factory=VeclessConnection)
+    try:
+        stats = read_embedding_stats_sync(conn)
+    finally:
+        conn.close()
 
     assert stats.embedded_conversations == 0
     assert stats.embedded_messages == 0

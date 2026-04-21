@@ -19,7 +19,6 @@ import json
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import cast
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -299,16 +298,21 @@ STATS_CASES = (
 def _make_msg(
     role: str = "user",
     text: str | None = "Hello",
-    **kwargs: object,
+    *,
+    id: str | None = None,
+    timestamp: datetime | None = None,
+    attachments: list[Attachment] | None = None,
+    content_blocks: list[dict[str, object]] | None = None,
+    provider_meta: dict[str, object] | None = None,
 ) -> Message:
     return build_msg(
-        id=str(kwargs.get("id", f"msg-{role}")),
+        id=id or f"msg-{role}",
         role=Role.normalize(role),
         text=text,
-        timestamp=cast(datetime | None, kwargs.get("timestamp")),
-        attachments=cast(list[Attachment], kwargs.get("attachments", [])),
-        content_blocks=cast(list[dict[str, object]], kwargs.get("content_blocks", [])),
-        provider_meta=cast(dict[str, object] | None, kwargs.get("provider_meta")),
+        timestamp=timestamp,
+        attachments=attachments or [],
+        content_blocks=content_blocks or [],
+        provider_meta=provider_meta,
     )
 
 
@@ -317,7 +321,10 @@ def _make_conv(
     provider: str = "claude-ai",
     title: str | None = "Example Conversation",
     messages: list[Message] | None = None,
-    **kwargs: object,
+    created_at: datetime | None = None,
+    updated_at: datetime | None = None,
+    tags: list[str] | None = None,
+    summary: str = "Synthetic summary",
 ) -> Conversation:
     default_messages: Sequence[Message] | MessageCollection | None = messages
     if default_messages is None:
@@ -330,11 +337,11 @@ def _make_conv(
         provider=Provider.from_string(provider),
         title=title,
         messages=default_messages,
-        created_at=cast(datetime | None, kwargs.get("created_at")),
-        updated_at=cast(datetime | None, kwargs.get("updated_at")),
+        created_at=created_at,
+        updated_at=updated_at,
         metadata={
-            "tags": cast(list[str], kwargs.get("tags", ["law", "example"])),
-            "summary": cast(str, kwargs.get("summary", "Synthetic summary")),
+            "tags": tags or ["law", "example"],
+            "summary": summary,
         },
     )
 

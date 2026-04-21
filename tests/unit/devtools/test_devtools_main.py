@@ -1,8 +1,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Callable
-from typing import cast
+from types import ModuleType
 
 import pytest
 
@@ -36,12 +35,15 @@ def test_global_json_flag_is_forwarded_to_command(monkeypatch: pytest.MonkeyPatc
         captured.append(argv)
         return 0
 
-    class FakeSpec:
-        @staticmethod
-        def resolve_main() -> Callable[[list[str] | None], int]:
-            return fake_main
+    fake_module = ModuleType("_polylogue_devtools_test_fake")
+    fake_module.__dict__["main"] = fake_main
+    monkeypatch.setitem(__import__("sys").modules, fake_module.__name__, fake_module)
 
-    monkeypatch.setitem(COMMANDS, "status", cast(CommandSpec, FakeSpec()))
+    monkeypatch.setitem(
+        COMMANDS,
+        "status",
+        CommandSpec("status", "core", "fake status", fake_module.__name__),
+    )
 
     assert devtools_main.main(["--json", "status"]) == 0
     assert captured == [["--json"]]

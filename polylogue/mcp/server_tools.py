@@ -83,7 +83,7 @@ def register_query_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         action_text: str | None = None,
         tool: str | None = None,
         exclude_tool: str | None = None,
-        sort: str = "updated",
+        sort: str | None = None,
         has_tool_use: bool = False,
         has_thinking: bool = False,
         min_messages: int | None = None,

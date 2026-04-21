@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import cast
 
 from polylogue.scenarios import (
     CorpusSpec,
@@ -19,6 +18,19 @@ class _ExecutableFixture(ExecutableScenario):
         return ScenarioProjectionSourceKind.VALIDATION_LANE
 
 
+def _dict_payload(value: object) -> dict[str, object]:
+    assert isinstance(value, dict)
+    return {str(key): item for key, item in value.items()}
+
+
+def _dict_list_payload(value: object) -> list[dict[str, object]]:
+    assert isinstance(value, list)
+    payloads: list[dict[str, object]] = []
+    for item in value:
+        payloads.append(_dict_payload(item))
+    return payloads
+
+
 def test_executable_scenario_exposes_pytest_targets() -> None:
     scenario = _ExecutableFixture(
         name="machine-contract",
@@ -30,7 +42,7 @@ def test_executable_scenario_exposes_pytest_targets() -> None:
     )
 
     projection = scenario.to_projection_entry()
-    execution_payload = cast(dict[str, object], projection.source_payload["execution"])
+    execution_payload = _dict_payload(projection.source_payload["execution"])
 
     assert scenario.tests == ("tests/unit/cli/test_machine_contract.py",)
     assert projection.source_kind is ScenarioProjectionSourceKind.VALIDATION_LANE
@@ -51,7 +63,7 @@ def test_executable_scenario_projection_payload_preserves_corpus_specs() -> None
     )
 
     projection = scenario.to_projection_entry()
-    corpus_specs = cast(list[dict[str, object]], projection.source_payload["corpus_specs"])
+    corpus_specs = _dict_list_payload(projection.source_payload["corpus_specs"])
 
     assert corpus_specs[0]["provider"] == "chatgpt"
 

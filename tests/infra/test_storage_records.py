@@ -6,7 +6,7 @@ import sqlite3
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Literal, cast
+from typing import Literal
 
 import pytest
 
@@ -28,16 +28,18 @@ def test_store_records_commits_within_lock(monkeypatch: pytest.MonkeyPatch) -> N
             self.held = False
             return False
 
-    class DummyConn:
-        def __init__(self, lock: TrackingLock) -> None:
-            self._lock = lock
-            self.commit_states: list[bool] = []
+    class TrackingConnection(sqlite3.Connection):
+        _lock: TrackingLock
+        commit_states: list[bool]
 
         def commit(self) -> None:
             self.commit_states.append(self._lock.held)
+            super().commit()
 
     lock = TrackingLock()
-    conn = DummyConn(lock)
+    conn = sqlite3.connect(":memory:", factory=TrackingConnection)
+    conn._lock = lock
+    conn.commit_states = []
 
     @contextmanager
     def fake_connection_context(passed_conn: sqlite3.Connection) -> Iterator[sqlite3.Connection]:
@@ -54,12 +56,13 @@ def test_store_records_commits_within_lock(monkeypatch: pytest.MonkeyPatch) -> N
         conversation=make_conversation("test:1", title="Test", content_hash="abc123"),
         messages=[make_message("test:1:msg1", "test:1", text="Hello")],
         attachments=[],
-        conn=cast(sqlite3.Connection, conn),
+        conn=conn,
     )
 
     assert result["conversations"] == 1
     assert result["messages"] == 1
     assert conn.commit_states == [True]
+    conn.close()
 
 
 def test_concurrent_store_records_no_deadlock(workspace_env: Mapping[str, Path]) -> None:

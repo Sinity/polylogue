@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
-from typing import TypeAlias, cast
+from typing import TypeAlias
 
 PayloadDict: TypeAlias = dict[str, object]
 PayloadMap: TypeAlias = Mapping[str, object]
@@ -85,7 +85,7 @@ def payload_mapping(value: object) -> PayloadMap | None:
         return None
     if not all(isinstance(key, str) for key in value):
         return None
-    return cast(PayloadMap, value)
+    return {str(key): item for key, item in value.items()}
 
 
 def canonical_payload_json(payload: PayloadMap) -> str:

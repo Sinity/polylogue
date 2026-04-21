@@ -13,7 +13,6 @@ import json
 from datetime import datetime, timezone
 from io import BytesIO
 from pathlib import Path
-from typing import cast
 
 from hypothesis import given, settings
 
@@ -96,7 +95,7 @@ def _iter_jsonl_stream(data: bytes, name: str = "test.jsonl") -> list[object]:
 
 def _as_record(value: object) -> dict[str, object]:
     assert isinstance(value, dict)
-    return cast(dict[str, object], value)
+    return {str(key): item for key, item in value.items()}
 
 
 def _timestamp_value(record: dict[str, object]) -> TimestampInput:

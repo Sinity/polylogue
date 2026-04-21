@@ -6,7 +6,7 @@ import sqlite3
 
 from polylogue.lib.branch_type import BranchType
 from polylogue.lib.roles import Role
-from polylogue.storage.backends.queries.mappers import (
+from polylogue.storage.backends.queries.mappers_support import (
     _json_object,
     _json_text_tuple,
     _parse_json,

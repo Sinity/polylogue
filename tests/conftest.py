@@ -18,6 +18,8 @@ from polylogue.scenarios import CorpusSpec, build_default_corpus_specs
 from polylogue.storage.store import RawConversationRecord
 from tests.infra.builders import make_conv, make_msg
 
+pytest_plugins = ("tests.infra.corpus_fixtures",)
+
 if TYPE_CHECKING:
     from click.testing import CliRunner
 
@@ -662,9 +664,6 @@ def raw_synthetic_samples() -> list[RawConversationRecord]:
 # =============================================================================
 # SYNTHETIC SOURCE FIXTURE (replaces FIXTURES_DIR-based sources)
 # =============================================================================
-
-
-from tests.infra.corpus_fixtures import corpus_seeded_db  # noqa: F401
 
 
 @pytest.fixture

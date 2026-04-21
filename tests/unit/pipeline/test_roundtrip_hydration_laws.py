@@ -7,8 +7,6 @@ in the suite — a failure here means the archive silently loses data.
 
 from __future__ import annotations
 
-import json
-import sqlite3
 from collections import Counter
 from pathlib import Path
 from typing import TypeAlias
@@ -17,14 +15,8 @@ import pytest
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
-from polylogue.lib.conversation_models import Conversation
-from polylogue.pipeline.prepare_models import TransformResult
-from polylogue.pipeline.prepare_transform import transform_to_records
 from polylogue.schemas.synthetic.core import SyntheticCorpus
-from polylogue.sources.dispatch import detect_provider, parse_payload
-from polylogue.sources.parsers.base import ParsedConversation
-from polylogue.storage.hydrators import conversation_from_records
-from polylogue.storage.store import AttachmentRecord
+from tests.infra.pipeline_roundtrip import parse_and_transform_payload, save_transform_and_hydrate
 from tests.infra.storage_records import db_setup
 
 # ---------------------------------------------------------------------------
@@ -58,70 +50,6 @@ def synthetic_payload(
 
 
 # ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
-def _decode_payload(raw_bytes: bytes) -> object:
-    """Decode raw bytes, handling both JSON and JSONL (Codex/Claude Code)."""
-    text = raw_bytes.decode("utf-8")
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        lines = [json.loads(line) for line in text.strip().splitlines() if line.strip()]
-        return lines
-
-
-def _parse_and_transform(
-    provider_name: str,
-    raw_bytes: bytes,
-    archive_root: Path,
-    unique_id: str = "default",
-) -> tuple[ParsedConversation, TransformResult]:
-    """Run the full parse → transform path, returning (parsed, transform_result)."""
-    payload = _decode_payload(raw_bytes)
-    detected = detect_provider(payload)
-    assert detected is not None, f"Provider detection failed for {provider_name}"
-
-    parsed_list = parse_payload(detected, payload, f"rt-{unique_id}")
-    assert len(parsed_list) >= 1, "Parser returned no conversations"
-    parsed = parsed_list[0]
-
-    result = transform_to_records(parsed, f"test-{provider_name}", archive_root=archive_root)
-    return parsed, result
-
-
-def _save_and_hydrate(result: TransformResult, db_conn: sqlite3.Connection) -> Conversation:
-    """Save records to DB and hydrate back to domain model."""
-    from polylogue.storage.backends.queries.mappers_archive import (
-        _row_to_conversation,
-        _row_to_message,
-    )
-    from tests.infra.storage_records import store_records
-
-    bundle = result.bundle
-    store_records(
-        conversation=bundle.conversation,
-        messages=bundle.messages,
-        attachments=bundle.attachments,
-        conn=db_conn,
-    )
-
-    cid = bundle.conversation.conversation_id
-    conv_row = db_conn.execute("SELECT * FROM conversations WHERE conversation_id = ?", (cid,)).fetchone()
-    assert conv_row is not None, f"Conversation {cid} not found in DB"
-    conv_record = _row_to_conversation(conv_row)
-
-    msg_rows = db_conn.execute("SELECT * FROM messages WHERE conversation_id = ? ORDER BY sort_key", (cid,)).fetchall()
-    msg_records = [_row_to_message(r) for r in msg_rows]
-
-    att_records: list[AttachmentRecord] = []
-
-    hydrated = conversation_from_records(conv_record, msg_records, att_records)
-    return hydrated
-
-
-# ---------------------------------------------------------------------------
 # Law 1: Message count preserved through the full pipeline
 # ---------------------------------------------------------------------------
 
@@ -135,10 +63,11 @@ class TestMessageCountPreservation:
     )
     def test_message_count_preserved(self: object, data: SyntheticPayload, workspace_env: dict[str, Path]) -> None:
         provider_name, raw_bytes, unique_id = data
-        parsed, result = _parse_and_transform(provider_name, raw_bytes, workspace_env["archive_root"], unique_id)
+        roundtrip = parse_and_transform_payload(provider_name, raw_bytes, workspace_env["archive_root"], unique_id)
 
-        assert len(result.bundle.messages) == len(parsed.messages), (
-            f"Transform changed message count: {len(parsed.messages)} → {len(result.bundle.messages)}"
+        assert len(roundtrip.transform.bundle.messages) == len(roundtrip.parsed.messages), (
+            f"Transform changed message count: {len(roundtrip.parsed.messages)} → "
+            f"{len(roundtrip.transform.bundle.messages)}"
         )
 
     @given(data=synthetic_payload())
@@ -156,11 +85,11 @@ class TestMessageCountPreservation:
         from polylogue.storage.backends.connection import open_connection
 
         with open_connection(db_path) as conn:
-            parsed, result = _parse_and_transform(provider_name, raw_bytes, workspace_env["archive_root"], unique_id)
-            hydrated = _save_and_hydrate(result, conn)
+            roundtrip = parse_and_transform_payload(provider_name, raw_bytes, workspace_env["archive_root"], unique_id)
+            hydrated = save_transform_and_hydrate(roundtrip.transform, conn)
 
-            assert len(list(hydrated.messages)) == len(parsed.messages), (
-                f"Hydration changed message count: {len(parsed.messages)} → {len(list(hydrated.messages))}"
+            assert len(list(hydrated.messages)) == len(roundtrip.parsed.messages), (
+                f"Hydration changed message count: {len(roundtrip.parsed.messages)} → {len(list(hydrated.messages))}"
             )
 
 
@@ -183,10 +112,10 @@ class TestRolePreservation:
         from polylogue.storage.backends.connection import open_connection
 
         with open_connection(db_path) as conn:
-            parsed, result = _parse_and_transform(provider_name, raw_bytes, workspace_env["archive_root"], unique_id)
-            hydrated = _save_and_hydrate(result, conn)
+            roundtrip = parse_and_transform_payload(provider_name, raw_bytes, workspace_env["archive_root"], unique_id)
+            hydrated = save_transform_and_hydrate(roundtrip.transform, conn)
 
-            parsed_roles = Counter(str(m.role) for m in parsed.messages)
+            parsed_roles = Counter(str(m.role) for m in roundtrip.parsed.messages)
             hydrated_roles = Counter(str(m.role) for m in hydrated.messages)
             assert parsed_roles == hydrated_roles, f"Role multiset changed: {parsed_roles} → {hydrated_roles}"
 
@@ -210,10 +139,12 @@ class TestTitleStability:
         from polylogue.storage.backends.connection import open_connection
 
         with open_connection(db_path) as conn:
-            parsed, result = _parse_and_transform(provider_name, raw_bytes, workspace_env["archive_root"], unique_id)
-            hydrated = _save_and_hydrate(result, conn)
+            roundtrip = parse_and_transform_payload(provider_name, raw_bytes, workspace_env["archive_root"], unique_id)
+            hydrated = save_transform_and_hydrate(roundtrip.transform, conn)
 
-            assert hydrated.title == parsed.title, f"Title changed: {parsed.title!r} → {hydrated.title!r}"
+            assert hydrated.title == roundtrip.parsed.title, (
+                f"Title changed: {roundtrip.parsed.title!r} → {hydrated.title!r}"
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -230,8 +161,8 @@ class TestContentHashDeterminism:
     )
     def test_same_payload_same_hash(self: object, data: SyntheticPayload, tmp_path: Path) -> None:
         provider_name, raw_bytes, unique_id = data
-        _, result1 = _parse_and_transform(provider_name, raw_bytes, tmp_path, unique_id)
-        _, result2 = _parse_and_transform(provider_name, raw_bytes, tmp_path, unique_id)
+        result1 = parse_and_transform_payload(provider_name, raw_bytes, tmp_path, unique_id).transform
+        result2 = parse_and_transform_payload(provider_name, raw_bytes, tmp_path, unique_id).transform
 
         assert result1.content_hash == result2.content_hash, "Same payload produced different content hashes"
 
@@ -256,7 +187,9 @@ class TestIdempotentReimport:
         from tests.infra.storage_records import store_records
 
         with open_connection(db_path) as conn:
-            _, result = _parse_and_transform(provider_name, raw_bytes, workspace_env["archive_root"], unique_id)
+            result = parse_and_transform_payload(
+                provider_name, raw_bytes, workspace_env["archive_root"], unique_id
+            ).transform
             bundle = result.bundle
 
             store_records(
@@ -296,11 +229,11 @@ class TestProviderIdentity:
         from polylogue.storage.backends.connection import open_connection
 
         with open_connection(db_path) as conn:
-            parsed, result = _parse_and_transform(provider_name, raw_bytes, workspace_env["archive_root"], unique_id)
-            hydrated = _save_and_hydrate(result, conn)
+            roundtrip = parse_and_transform_payload(provider_name, raw_bytes, workspace_env["archive_root"], unique_id)
+            hydrated = save_transform_and_hydrate(roundtrip.transform, conn)
 
-            assert str(hydrated.provider) == str(parsed.provider_name), (
-                f"Provider changed: {parsed.provider_name!r} → {hydrated.provider!r}"
+            assert str(hydrated.provider) == str(roundtrip.parsed.provider_name), (
+                f"Provider changed: {roundtrip.parsed.provider_name!r} → {hydrated.provider!r}"
             )
 
 
@@ -318,8 +251,8 @@ class TestConversationIdDeterminism:
     )
     def test_same_payload_same_cid(self: object, data: SyntheticPayload, tmp_path: Path) -> None:
         provider_name, raw_bytes, unique_id = data
-        _, result1 = _parse_and_transform(provider_name, raw_bytes, tmp_path, unique_id)
-        _, result2 = _parse_and_transform(provider_name, raw_bytes, tmp_path, unique_id)
+        result1 = parse_and_transform_payload(provider_name, raw_bytes, tmp_path, unique_id).transform
+        result2 = parse_and_transform_payload(provider_name, raw_bytes, tmp_path, unique_id).transform
 
         assert result1.candidate_cid == result2.candidate_cid, "Same payload produced different conversation IDs"
 
@@ -341,11 +274,11 @@ def test_provider_completes_full_roundtrip(provider_name: str, workspace_env: di
     from polylogue.storage.backends.connection import open_connection
 
     with open_connection(db_path) as conn:
-        parsed, result = _parse_and_transform(
+        roundtrip = parse_and_transform_payload(
             provider_name, raw_bytes, workspace_env["archive_root"], f"{provider_name}-42"
         )
-        hydrated = _save_and_hydrate(result, conn)
+        hydrated = save_transform_and_hydrate(roundtrip.transform, conn)
 
         assert hydrated is not None
         assert len(list(hydrated.messages)) > 0
-        assert hydrated.title is not None or parsed.title is None
+        assert hydrated.title is not None or roundtrip.parsed.title is None

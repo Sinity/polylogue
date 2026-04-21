@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import TYPE_CHECKING, TypeAlias, cast
+from typing import TYPE_CHECKING, TypeAlias
 from unittest.mock import MagicMock
 
 import pytest
@@ -425,10 +425,11 @@ async def test_worker_failure_recovery(
 ) -> None:
     """Inject error in repo → assert app stays usable with error notification."""
     # Create a repo that raises on get_archive_stats
-    broken_repo = MagicMock()
+    broken_repo = MagicMock(spec=ConversationArchiveReadStore)
     broken_repo.get_archive_stats.side_effect = RuntimeError("DB exploded")
 
-    app = PolylogueApp(repository=cast(ConversationArchiveReadStore, broken_repo))
+    assert isinstance(broken_repo, ConversationArchiveReadStore)
+    app = PolylogueApp(repository=broken_repo)
     async with app.run_test() as pilot:
         await _wait_workers(pilot)
 

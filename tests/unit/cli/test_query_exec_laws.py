@@ -9,7 +9,6 @@ import json
 import tempfile
 from pathlib import Path
 from types import SimpleNamespace
-from typing import cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -108,6 +107,18 @@ def _make_env(*, repo: MagicMock | None = None, config: MagicMock | None = None)
         if not isinstance(repo.get_action_event_artifact_state, AsyncMock):
             repo.get_action_event_artifact_state = AsyncMock(return_value=_ready_action_event_state())
     return AppEnv(ui=ui, services=build_runtime_services(config=config, repository=repo))
+
+
+def _as_mock(value: object) -> MagicMock:
+    if not isinstance(value, MagicMock):
+        raise TypeError(f"expected MagicMock, got {type(value).__name__}")
+    return value
+
+
+def _as_console_like(value: object) -> ConsoleLike:
+    if not isinstance(value, ConsoleLike):
+        raise TypeError(f"expected ConsoleLike, got {type(value).__name__}")
+    return value
 
 
 def _fields_arg(fields: tuple[str, ...] | None) -> str | None:
@@ -328,7 +339,7 @@ def _sample_semantic_conversation() -> Conversation:
 def _make_recording_env() -> tuple[AppEnv, io.StringIO]:
     buffer = io.StringIO()
     env = _make_env()
-    env.ui.console = cast(ConsoleLike, Console(file=buffer, width=120, force_terminal=False, color_system=None))
+    env.ui.console = _as_console_like(Console(file=buffer, width=120, force_terminal=False, color_system=None))
     return env, buffer
 
 
@@ -422,8 +433,8 @@ def test_apply_modifiers_contract(case: QueryMutationCase) -> None:
     repo.update_metadata = AsyncMock()
     repo.add_tag = AsyncMock()
     env = _make_env(repo=repo)
-    mock_confirm = cast(MagicMock, env.ui.confirm)
-    mock_print = cast(MagicMock, env.ui.console.print)
+    mock_confirm = _as_mock(env.ui.confirm)
+    mock_print = _as_mock(env.ui.console.print)
     mock_confirm.return_value = case.confirm
     results = [build_conversation_summary(spec) for spec in case.summaries]
     mutation = _mutation_spec(
@@ -434,7 +445,7 @@ def test_apply_modifiers_contract(case: QueryMutationCase) -> None:
     )
 
     with patch("click.echo") as mock_echo:
-        mock_echo = cast(MagicMock, mock_echo)
+        mock_echo = _as_mock(mock_echo)
         asyncio.run(apply_modifiers(env, results, mutation, repo))
 
     should_confirm = len(results) > 10 and not case.force and not case.dry_run
@@ -468,13 +479,13 @@ def test_delete_conversations_contract(case: QueryDeleteCase) -> None:
     repo = MagicMock()
     repo.delete_conversation = AsyncMock(side_effect=list(case.delete_results))
     env = _make_env(repo=repo)
-    mock_confirm = cast(MagicMock, env.ui.confirm)
+    mock_confirm = _as_mock(env.ui.confirm)
     mock_confirm.return_value = case.confirm
     results = [build_conversation_summary(spec) for spec in case.summaries]
     mutation = _mutation_spec(dry_run=case.dry_run, force=case.force, delete_matched=True)
 
     with patch("click.echo") as mock_echo:
-        mock_echo = cast(MagicMock, mock_echo)
+        mock_echo = _as_mock(mock_echo)
         asyncio.run(delete_conversations(env, results, mutation, repo))
 
     should_confirm = not case.force and not case.dry_run
@@ -521,10 +532,10 @@ def test_output_summary_list_contract(case: SummaryOutputCase, output_format: st
     output = _output_spec(output_format=output_format)
     if output_format in {"json", "yaml"}:
         output = _output_spec(output_format=output_format, fields=_fields_arg(case.selected_fields))
-    cast(MagicMock, env.ui).plain = output_format == "text"
+    _as_mock(env.ui).plain = output_format == "text"
 
     with patch("click.echo") as mock_echo:
-        mock_echo = cast(MagicMock, mock_echo)
+        mock_echo = _as_mock(mock_echo)
         asyncio.run(_output_summary_list(env, summaries, output, repo))
 
     if output_format == "json":
@@ -567,9 +578,9 @@ def test_send_output_routes_destination_contract(case: SendOutputCase) -> None:
             patch("polylogue.cli.query_output._open_in_browser") as mock_browser,
             patch("polylogue.cli.query_output._copy_to_clipboard") as mock_clipboard,
         ):
-            mock_echo = cast(MagicMock, mock_echo)
-            mock_browser = cast(MagicMock, mock_browser)
-            mock_clipboard = cast(MagicMock, mock_clipboard)
+            mock_echo = _as_mock(mock_echo)
+            mock_browser = _as_mock(mock_browser)
+            mock_clipboard = _as_mock(mock_clipboard)
             _send_output(env, content, _delivery_targets(*destinations), case.output_format, None)
 
         assert mock_echo.call_count == (1 if case.to_stdout else 0)
@@ -686,11 +697,11 @@ def test_output_stats_by_summaries_json_contract() -> None:
     msg_counts = {"conv-a": 3, "conv-b": 4}
 
     with patch("click.echo") as mock_echo:
-        mock_echo = cast(MagicMock, mock_echo)
+        mock_echo = _as_mock(mock_echo)
         output_stats_by_summaries(env, summaries, msg_counts, "provider", output_format="json")
 
     payload = json.loads(mock_echo.call_args.args[0])
-    cast(MagicMock, env.ui.console.print).assert_not_called()
+    _as_mock(env.ui.console.print).assert_not_called()
     assert payload == {
         "dimension": "provider",
         "multi_membership": False,
@@ -831,7 +842,7 @@ async def test_output_stats_by_semantic_summaries_json_contract() -> None:
     ]
 
     with patch("click.echo") as mock_echo:
-        mock_echo = cast(MagicMock, mock_echo)
+        mock_echo = _as_mock(mock_echo)
         await output_stats_by_semantic_summaries(
             env,
             summaries,
@@ -843,7 +854,7 @@ async def test_output_stats_by_semantic_summaries_json_contract() -> None:
         )
 
     payload = json.loads(mock_echo.call_args.args[0])
-    cast(MagicMock, env.ui.console.print).assert_not_called()
+    _as_mock(env.ui.console.print).assert_not_called()
     assert payload == {
         "dimension": "action",
         "multi_membership": True,
@@ -987,10 +998,10 @@ def test_output_results_no_results_contract() -> None:
         patch("polylogue.cli.query_output.format_conversation") as mock_format,
         pytest.raises(SystemExit) as exc_info,
     ):
-        mock_no_results = cast(MagicMock, mock_no_results)
-        mock_render = cast(MagicMock, mock_render)
-        mock_send = cast(MagicMock, mock_send)
-        mock_format = cast(MagicMock, mock_format)
+        mock_no_results = _as_mock(mock_no_results)
+        mock_render = _as_mock(mock_render)
+        mock_send = _as_mock(mock_send)
+        mock_format = _as_mock(mock_format)
         output_results(env, [], output)
 
     assert exc_info.value.code == 2
@@ -1031,7 +1042,7 @@ def test_output_results_projection_contract(
 ) -> None:
     del label
     env = _make_env()
-    cast(MagicMock, env.ui).plain = plain
+    _as_mock(env.ui).plain = plain
     output = QueryOutputSpec.from_params(params)
 
     with (
@@ -1040,10 +1051,10 @@ def test_output_results_projection_contract(
         patch("polylogue.cli.query_output.format_conversation", return_value="<html>ok</html>") as mock_format,
         patch("polylogue.cli.query_output._format_list", return_value="formatted-list") as mock_format_list,
     ):
-        mock_render = cast(MagicMock, mock_render)
-        mock_send = cast(MagicMock, mock_send)
-        mock_format = cast(MagicMock, mock_format)
-        mock_format_list = cast(MagicMock, mock_format_list)
+        mock_render = _as_mock(mock_render)
+        mock_send = _as_mock(mock_send)
+        mock_format = _as_mock(mock_format)
+        mock_format_list = _as_mock(mock_format_list)
         output_results(env, conversations, output)
 
     if expected == "render-rich":
@@ -1136,7 +1147,7 @@ def test_project_query_results_contract() -> None:
 )
 def test_async_execute_query_action_routing_contract(case: str, expected_helper: str) -> None:
     env = _make_env(repo=MagicMock(), config=MagicMock())
-    repo = cast(MagicMock, env.repository)
+    repo = _as_mock(env.repository)
     summary = build_conversation_summary(_sample_summary_spec())
     plan = _build_plan(case)
     filter_chain = MagicMock()
@@ -1144,7 +1155,7 @@ def test_async_execute_query_action_routing_contract(case: str, expected_helper:
     filter_chain.can_use_summaries.return_value = True
     filter_chain.list_summaries = AsyncMock(return_value=[summary])
     filter_chain.list = AsyncMock(return_value=[MagicMock()])
-    selection = cast(MagicMock, plan.selection)
+    selection = _as_mock(plan.selection)
     selection.build_filter.return_value = filter_chain
 
     with (
@@ -1171,11 +1182,11 @@ def test_async_execute_query_action_routing_contract(case: str, expected_helper:
         ) as mock_stream_target,
         patch("polylogue.cli.query_output.stream_conversation", new_callable=AsyncMock) as mock_stream_conversation,
     ):
-        mock_echo = cast(MagicMock, mock_echo)
-        mock_output_stats_by_summaries = cast(MagicMock, mock_output_stats_by_summaries)
-        mock_output_stats_by = cast(MagicMock, mock_output_stats_by)
-        mock_open_result = cast(MagicMock, mock_open_result)
-        mock_output_results = cast(MagicMock, mock_output_results)
+        mock_echo = _as_mock(mock_echo)
+        mock_output_stats_by_summaries = _as_mock(mock_output_stats_by_summaries)
+        mock_output_stats_by = _as_mock(mock_output_stats_by)
+        mock_open_result = _as_mock(mock_open_result)
+        mock_output_results = _as_mock(mock_output_results)
         repo.get_message_counts_batch = AsyncMock(return_value={str(summary.id): 2})
         asyncio.run(async_execute_query(env, {"limit": 7}))
 
@@ -1254,7 +1265,7 @@ def test_async_execute_query_open_falls_back_to_full_results_without_summaries_c
     filter_chain.can_use_summaries.return_value = False
     filter_chain.list_summaries = AsyncMock(return_value=[])
     filter_chain.list = AsyncMock(return_value=[MagicMock()])
-    selection = cast(MagicMock, plan.selection)
+    selection = _as_mock(plan.selection)
     selection.build_filter.return_value = filter_chain
 
     with (
@@ -1277,7 +1288,7 @@ def test_async_execute_query_stats_by_falls_back_to_full_results_without_summari
     filter_chain.can_use_summaries.return_value = False
     filter_chain.list = AsyncMock(return_value=[_sample_conversation()])
     filter_chain.list_summaries = AsyncMock(return_value=[build_conversation_summary(_sample_summary_spec())])
-    selection = cast(MagicMock, plan.selection)
+    selection = _as_mock(plan.selection)
     selection.build_filter.return_value = filter_chain
 
     with (
@@ -1303,7 +1314,7 @@ def test_async_execute_query_semantic_stats_by_uses_summary_batches_contract() -
     filter_chain.can_use_summaries.return_value = True
     filter_chain.list = AsyncMock(return_value=[_sample_conversation()])
     filter_chain.list_summaries = AsyncMock(return_value=[build_conversation_summary(_sample_summary_spec())])
-    selection = cast(MagicMock, plan.selection)
+    selection = _as_mock(plan.selection)
     selection.build_filter.return_value = filter_chain
 
     with (
@@ -1330,7 +1341,7 @@ def test_async_execute_query_semantic_stats_by_falls_back_without_summaries_cont
     filter_chain.can_use_summaries.return_value = False
     filter_chain.list = AsyncMock(return_value=[_sample_conversation()])
     filter_chain.list_summaries = AsyncMock(return_value=[build_conversation_summary(_sample_summary_spec())])
-    selection = cast(MagicMock, plan.selection)
+    selection = _as_mock(plan.selection)
     selection.build_filter.return_value = filter_chain
 
     with (
@@ -1357,7 +1368,7 @@ def test_async_execute_query_profile_stats_by_uses_summary_batches_contract() ->
     filter_chain.can_use_summaries.return_value = True
     filter_chain.list = AsyncMock(return_value=[_sample_conversation()])
     filter_chain.list_summaries = AsyncMock(return_value=[build_conversation_summary(_sample_summary_spec())])
-    selection = cast(MagicMock, plan.selection)
+    selection = _as_mock(plan.selection)
     selection.build_filter.return_value = filter_chain
 
     with (
@@ -1383,7 +1394,7 @@ def test_async_execute_query_summary_list_no_results_contract() -> None:
     filter_chain = MagicMock()
     filter_chain.can_use_summaries.return_value = True
     filter_chain.list_summaries = AsyncMock(return_value=[])
-    selection = cast(MagicMock, plan.selection)
+    selection = _as_mock(plan.selection)
     selection.build_filter.return_value = filter_chain
 
     with (
@@ -1403,7 +1414,7 @@ def test_async_execute_query_summary_list_no_results_contract() -> None:
 def test_async_execute_query_query_spec_error_contract() -> None:
     env = _make_env(repo=MagicMock(), config=MagicMock())
     plan = _build_plan("show")
-    selection = cast(MagicMock, plan.selection)
+    selection = _as_mock(plan.selection)
     selection.build_filter.side_effect = QuerySpecError("since", "not-a-date")
 
     with (
@@ -1413,7 +1424,7 @@ def test_async_execute_query_query_spec_error_contract() -> None:
         patch("click.echo") as mock_echo,
         pytest.raises(SystemExit) as exc_info,
     ):
-        mock_echo = cast(MagicMock, mock_echo)
+        mock_echo = _as_mock(mock_echo)
         asyncio.run(async_execute_query(env, {}))
 
     assert exc_info.value.code == 1
@@ -1475,7 +1486,7 @@ def test_no_results_contract(params: dict[str, object], expected_lines: list[str
         no_results(env, params)
 
     assert exc_info.value.code == 2
-    observed_lines = [call.args[0] for call in cast(MagicMock, env.ui.console.print).call_args_list if call.args]
+    observed_lines = [call.args[0] for call in _as_mock(env.ui.console.print).call_args_list if call.args]
     assert observed_lines == expected_lines
 
 
@@ -1565,7 +1576,7 @@ async def test_output_stats_sql_uses_summary_pushdown_contract() -> None:
     filter_chain.list_summaries.assert_awaited_once()
     filter_chain.count.assert_not_called()
     repo.aggregate_message_stats.assert_awaited_once_with(["conv-a", "conv-b"])
-    printed = [call.args[0] for call in cast(MagicMock, env.ui.console.print).call_args_list if call.args]
+    printed = [call.args[0] for call in _as_mock(env.ui.console.print).call_args_list if call.args]
     assert printed == [
         "\nConversations: 2\n",
         "Messages: 9 total (4 user, 5 assistant)",
@@ -1601,7 +1612,7 @@ async def test_output_stats_sql_empty_paths_contract(
 
     await output_stats_sql(env, filter_chain, repo)
 
-    cast(MagicMock, env.ui.console.print).assert_called_once_with(expected_message)
+    _as_mock(env.ui.console.print).assert_called_once_with(expected_message)
 
 
 @pytest.mark.asyncio
@@ -1681,7 +1692,7 @@ async def test_output_stats_sql_archive_scope_includes_embedding_state() -> None
 
     repo.get_archive_stats.assert_awaited_once_with()
     repo.aggregate_message_stats.assert_awaited_once_with()
-    printed = [call.args[0] for call in cast(MagicMock, env.ui.console.print).call_args_list if call.args]
+    printed = [call.args[0] for call in _as_mock(env.ui.console.print).call_args_list if call.args]
     assert printed == [
         "\nConversations: 2\n",
         "Messages: 9 total (4 user, 5 assistant)",
@@ -1728,10 +1739,10 @@ async def test_output_stats_sql_json_contract() -> None:
     )
 
     with patch("click.echo") as mock_echo:
-        mock_echo = cast(MagicMock, mock_echo)
+        mock_echo = _as_mock(mock_echo)
         await output_stats_sql(env, filter_chain, repo, output_format="json")
 
-    cast(MagicMock, env.ui.console.print).assert_not_called()
+    _as_mock(env.ui.console.print).assert_not_called()
     repo.get_archive_stats.assert_awaited_once_with()
     repo.aggregate_message_stats.assert_awaited_once_with()
     payload = json.loads(mock_echo.call_args.args[0])

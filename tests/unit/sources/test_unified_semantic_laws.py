@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from datetime import datetime
 from types import SimpleNamespace
-from typing import Protocol, TypeAlias, cast
+from typing import Protocol, TypeAlias
 
 import pytest
 from hypothesis import given, settings
@@ -77,9 +77,14 @@ SemanticCase: TypeAlias = tuple[str, RawPayload]
 
 
 class ViewportRecord(Protocol):
-    text_content: str
-    role_normalized: str
-    parsed_timestamp: datetime | None
+    @property
+    def text_content(self) -> str: ...
+
+    @property
+    def role_normalized(self) -> str | Role: ...
+
+    @property
+    def parsed_timestamp(self) -> datetime | None: ...
 
     def to_meta(self) -> MessageMeta: ...
 
@@ -112,15 +117,15 @@ def _doc(value: object) -> JSONDocument:
 
 def _build_viewport_record(provider: str, raw: RawPayload) -> ViewportRecord:
     if provider == "chatgpt":
-        return cast(ViewportRecord, ChatGPTMessage.model_validate(raw))
+        return ChatGPTMessage.model_validate(raw)
     if provider == "claude-ai":
-        return cast(ViewportRecord, ClaudeAIChatMessage.model_validate(raw))
+        return ClaudeAIChatMessage.model_validate(raw)
     if provider == "claude-code":
-        return cast(ViewportRecord, ClaudeCodeRecord.model_validate(raw))
+        return ClaudeCodeRecord.model_validate(raw)
     if provider == "codex":
-        return cast(ViewportRecord, CodexRecord.model_validate(raw))
+        return CodexRecord.model_validate(raw)
     if provider == "gemini":
-        return cast(ViewportRecord, GeminiMessage.model_validate(raw))
+        return GeminiMessage.model_validate(raw)
     raise AssertionError(f"unexpected provider {provider}")
 
 
@@ -487,7 +492,9 @@ def test_provider_adapter_viewport_contract(case: SemanticCase) -> None:
 
     if isinstance(record, ChatGPTMessage):
         assert record.role_normalized in {"user", "assistant", "system", "tool", "unknown"}
-        assert record.text_content == extract_chatgpt_text(_doc(record.content.model_dump(mode="python")))
+        content = record.content
+        assert content is not None
+        assert record.text_content == extract_chatgpt_text(_doc(content.model_dump(mode="python")))
         assert blocks == record.to_content_blocks()
         assert not traces
         assert not calls

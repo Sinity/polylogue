@@ -6,7 +6,6 @@ import importlib
 from collections import OrderedDict
 from collections.abc import Callable, Iterable
 from dataclasses import asdict, dataclass
-from typing import cast
 
 CommandMain = Callable[[list[str] | None], int]
 CONTROL_PLANE = "devtools"
@@ -41,7 +40,17 @@ class CommandSpec:
 
     def resolve_main(self) -> CommandMain:
         module = importlib.import_module(self.module)
-        return cast(CommandMain, getattr(module, self.entrypoint))
+        entrypoint = getattr(module, self.entrypoint)
+        if not callable(entrypoint):
+            raise TypeError(f"{self.module}.{self.entrypoint} is not callable")
+
+        def _main(argv: list[str] | None = None) -> int:
+            result = entrypoint(argv)
+            if not isinstance(result, int):
+                raise TypeError(f"{self.module}.{self.entrypoint} returned {type(result).__name__}, expected int")
+            return result
+
+        return _main
 
     def to_dict(self) -> dict[str, object]:
         data = asdict(self)

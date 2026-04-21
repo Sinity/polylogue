@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import logging
 import sys
-from typing import Protocol, TextIO, cast
+from collections.abc import Iterable, Iterator
+from types import TracebackType
+from typing import BinaryIO, Protocol, TextIO
 
 import structlog
 from structlog.types import Processor
@@ -26,7 +28,7 @@ class BoundLoggerLike(Protocol):
     def exception(self, message: str, *args: object, **event_kw: object) -> object: ...
 
 
-class _StderrProxy:
+class _StderrProxy(TextIO):
     """File-like proxy that always delegates to the current sys.stderr.
 
     structlog's PrintLoggerFactory captures the file object at creation
@@ -38,8 +40,18 @@ class _StderrProxy:
     def write(self, s: str) -> int:
         return sys.stderr.write(s)
 
+    def writelines(self, lines: Iterable[str]) -> None:
+        sys.stderr.writelines(lines)
+
     def flush(self) -> None:
         sys.stderr.flush()
+
+    def close(self) -> None:
+        sys.stderr.close()
+
+    @property
+    def closed(self) -> bool:
+        return sys.stderr.closed
 
     def isatty(self) -> bool:
         return sys.stderr.isatty()
@@ -47,8 +59,73 @@ class _StderrProxy:
     def fileno(self) -> int:
         return sys.stderr.fileno()
 
+    def read(self, n: int = -1, /) -> str:
+        return sys.stderr.read(n)
 
-_stderr_proxy = cast(TextIO, _StderrProxy())
+    def readable(self) -> bool:
+        return sys.stderr.readable()
+
+    def readline(self, limit: int = -1, /) -> str:
+        return sys.stderr.readline(limit)
+
+    def readlines(self, hint: int = -1, /) -> list[str]:
+        return sys.stderr.readlines(hint)
+
+    def seek(self, offset: int, whence: int = 0, /) -> int:
+        return sys.stderr.seek(offset, whence)
+
+    def seekable(self) -> bool:
+        return sys.stderr.seekable()
+
+    def tell(self) -> int:
+        return sys.stderr.tell()
+
+    def truncate(self, size: int | None = None, /) -> int:
+        return sys.stderr.truncate(size)
+
+    def writable(self) -> bool:
+        return sys.stderr.writable()
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(sys.stderr)
+
+    def __next__(self) -> str:
+        return next(sys.stderr)
+
+    def __enter__(self) -> TextIO:
+        return self
+
+    def __exit__(
+        self,
+        type: type[BaseException] | None,
+        value: BaseException | None,
+        traceback: TracebackType | None,
+        /,
+    ) -> None:
+        return None
+
+    @property
+    def buffer(self) -> BinaryIO:
+        return sys.stderr.buffer
+
+    @property
+    def encoding(self) -> str:
+        return sys.stderr.encoding
+
+    @property
+    def errors(self) -> str | None:
+        return sys.stderr.errors
+
+    @property
+    def line_buffering(self) -> bool:
+        return bool(sys.stderr.line_buffering)
+
+    @property
+    def newlines(self) -> object:
+        return sys.stderr.newlines
+
+
+_stderr_proxy = _StderrProxy()
 
 
 # Configure structlog
@@ -82,4 +159,5 @@ def configure_logging(verbose: bool = False, json_logs: bool = False) -> None:
 
 
 def get_logger(name: str | None = None) -> BoundLoggerLike:
-    return cast(BoundLoggerLike, structlog.get_logger(name))
+    logger: BoundLoggerLike = structlog.get_logger(name)
+    return logger

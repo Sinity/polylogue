@@ -10,7 +10,6 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from pathlib import Path
-from typing import cast
 
 import pytest
 
@@ -20,6 +19,22 @@ from polylogue.storage.backends.connection import open_connection
 from polylogue.storage.index import rebuild_index
 from polylogue.storage.repository import ConversationRepository
 from tests.infra.storage_records import ConversationBuilder
+
+
+def _metadata_payload(value: object) -> dict[str, object]:
+    assert isinstance(value, dict)
+    return {str(key): item for key, item in value.items()}
+
+
+def _message_specs(value: object) -> list[dict[str, object]]:
+    if value is None:
+        return []
+    assert isinstance(value, list)
+    messages: list[dict[str, object]] = []
+    for item in value:
+        assert isinstance(item, dict)
+        messages.append({str(key): field for key, field in item.items()})
+    return messages
 
 
 @pytest.fixture
@@ -113,7 +128,7 @@ def make_filter_repo(tmp_path: Path) -> Callable[[list[dict[str, object]]], Conv
             if title := spec.get("title"):
                 builder = builder.title(str(title))
             if metadata := spec.get("metadata"):
-                builder = builder.metadata(cast(dict[str, object], metadata))
+                builder = builder.metadata(_metadata_payload(metadata))
             if created_at := spec.get("created_at"):
                 builder = builder.created_at(str(created_at))
             if branch_type := spec.get("branch_type"):
@@ -121,7 +136,7 @@ def make_filter_repo(tmp_path: Path) -> Callable[[list[dict[str, object]]], Conv
             if parent := spec.get("parent_conversation"):
                 builder = builder.parent_conversation(str(parent))
 
-            for msg in cast(list[dict[str, object]], spec.get("messages", [])):
+            for msg in _message_specs(spec.get("messages")):
                 builder = builder.add_message(
                     str(msg["id"]),
                     role=str(msg.get("role", "user")),

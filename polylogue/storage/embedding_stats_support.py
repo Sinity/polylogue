@@ -3,14 +3,25 @@
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Mapping
-from typing import cast
+from collections.abc import Iterable, Mapping
 
 import aiosqlite
 
 from polylogue.storage.session_product_runtime import SessionProductStatusSnapshot
 
 StatsRow = sqlite3.Row | tuple[object, ...]
+
+
+def _stats_row(row: object) -> StatsRow | None:
+    if row is None:
+        return None
+    if isinstance(row, (sqlite3.Row, tuple)):
+        return row
+    return None
+
+
+def _sqlite_rows(rows: Iterable[object]) -> list[sqlite3.Row]:
+    return [row for row in rows if isinstance(row, sqlite3.Row)]
 
 
 def _coerce_int(value: object, *, default: int = 0) -> int:
@@ -179,7 +190,7 @@ def optional_count_sync(conn: sqlite3.Connection, sql: str) -> int:
 
 def optional_row_sync(conn: sqlite3.Connection, sql: str) -> StatsRow | None:
     try:
-        return cast(StatsRow | None, conn.execute(sql).fetchone())
+        return _stats_row(conn.execute(sql).fetchone())
     except sqlite3.OperationalError as exc:
         if is_missing_table_error(exc):
             return None
@@ -209,7 +220,7 @@ async def optional_count_async(conn: aiosqlite.Connection, sql: str) -> int:
 async def optional_row_async(conn: aiosqlite.Connection, sql: str) -> StatsRow | None:
     try:
         cursor = await conn.execute(sql)
-        return cast(StatsRow | None, await cursor.fetchone())
+        return _stats_row(await cursor.fetchone())
     except sqlite3.OperationalError as exc:
         if is_missing_table_error(exc):
             return None
@@ -219,7 +230,7 @@ async def optional_row_async(conn: aiosqlite.Connection, sql: str) -> StatsRow |
 async def optional_rows_async(conn: aiosqlite.Connection, sql: str) -> list[sqlite3.Row]:
     try:
         cursor = await conn.execute(sql)
-        return cast(list[sqlite3.Row], await cursor.fetchall())
+        return _sqlite_rows(await cursor.fetchall())
     except sqlite3.OperationalError as exc:
         if is_missing_table_error(exc):
             return []

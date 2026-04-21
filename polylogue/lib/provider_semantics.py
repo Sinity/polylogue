@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 
 from polylogue.lib.json import JSONDocument, json_document
 from polylogue.lib.viewports import (
@@ -33,7 +33,7 @@ def content_text(value: object) -> str | None:
     return None
 
 
-def _string_field(block: JSONDocument, key: str) -> str | None:
+def _string_field(block: Mapping[str, object], key: str) -> str | None:
     value = block.get(key)
     return value if isinstance(value, str) else None
 
@@ -45,7 +45,7 @@ def _content_block_record(value: object) -> JSONDocument | None:
     return None
 
 
-def extract_reasoning_traces(content: list[JSONDocument] | None, provider: Provider | str) -> list[ReasoningTrace]:
+def extract_reasoning_traces(content: Sequence[object] | None, provider: Provider | str) -> list[ReasoningTrace]:
     """Extract reasoning traces from provider content blocks."""
     if not content:
         return []
@@ -69,7 +69,7 @@ def extract_reasoning_traces(content: list[JSONDocument] | None, provider: Provi
     return traces
 
 
-def extract_tool_calls(content: list[JSONDocument] | None, provider: Provider | str) -> list[ToolCall]:
+def extract_tool_calls(content: Sequence[object] | None, provider: Provider | str) -> list[ToolCall]:
     """Extract tool calls from provider content blocks."""
     if not content:
         return []
@@ -99,7 +99,7 @@ def extract_tool_calls(content: list[JSONDocument] | None, provider: Provider | 
     return calls
 
 
-def extract_content_blocks(content: list[JSONDocument] | None) -> list[ContentBlock]:
+def extract_content_blocks(content: Sequence[object] | None) -> list[ContentBlock]:
     """Extract harmonized content blocks with type classification."""
     if not content:
         return []
@@ -156,7 +156,7 @@ def extract_content_blocks(content: list[JSONDocument] | None) -> list[ContentBl
     return blocks
 
 
-def extract_display_text_from_content_blocks(content: list[JSONDocument] | None) -> str:
+def extract_display_text_from_content_blocks(content: Sequence[object] | None) -> str:
     """Rebuild human-readable text from stored structured content blocks."""
     if not content:
         return ""
@@ -174,7 +174,7 @@ def extract_display_text_from_content_blocks(content: list[JSONDocument] | None)
     return "\n".join(parts)
 
 
-def extract_claude_code_text(content: list[JSONDocument] | None) -> str:
+def extract_claude_code_text(content: Sequence[object] | None) -> str:
     """Extract text from Claude Code content blocks, excluding non-text blocks."""
     if not content:
         return ""
@@ -191,7 +191,7 @@ def extract_claude_code_text(content: list[JSONDocument] | None) -> str:
     return "\n".join(filter(None, parts))
 
 
-def extract_chatgpt_text(content: JSONDocument | None) -> str:
+def extract_chatgpt_text(content: Mapping[str, object] | None) -> str:
     """Extract text from ChatGPT content structures."""
     if not content:
         return ""
@@ -212,7 +212,7 @@ def extract_chatgpt_text(content: JSONDocument | None) -> str:
     return "\n".join(texts)
 
 
-def extract_codex_text(content: list[JSONDocument] | None) -> str:
+def extract_codex_text(content: Sequence[object] | None) -> str:
     """Extract text from Codex content blocks."""
     if not content or not isinstance(content, list):
         return ""

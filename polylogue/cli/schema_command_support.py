@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import cast
 
 from polylogue.schemas.operator_models import JSONDocument
 from polylogue.schemas.privacy_config import PrivacyConfig, PrivacyConfigSection, PrivacyLevel
@@ -26,6 +25,16 @@ def _privacy_config_payload(config: PrivacyConfig) -> JSONDocument:
     return payload
 
 
+def _privacy_level(value: str) -> PrivacyLevel:
+    if value == "strict":
+        return "strict"
+    if value == "standard":
+        return "standard"
+    if value == "permissive":
+        return "permissive"
+    return "standard"
+
+
 def build_schema_privacy_config(
     *,
     privacy: str | None,
@@ -44,8 +53,8 @@ def build_schema_privacy_config(
                 project_path=privacy_config_path.parent,
             )
         )
-    if cli_overrides:
-        return _privacy_config_payload(PrivacyConfig(level=cast(PrivacyLevel, privacy)))
+    if privacy is not None:
+        return _privacy_config_payload(PrivacyConfig(level=_privacy_level(privacy)))
     return None
 
 

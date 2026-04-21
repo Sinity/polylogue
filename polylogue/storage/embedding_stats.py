@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import sqlite3
 from dataclasses import dataclass, replace
-from typing import cast
 
 import aiosqlite
 
@@ -54,8 +53,8 @@ class _EmbeddingStatsParts:
     total_conversations: int = 0
 
 
-def _row_count(row: StatsRow | None) -> int:
-    if row is None:
+def _row_count(row: object) -> int:
+    if row is None or not isinstance(row, (sqlite3.Row, tuple)):
         return 0
     value = row[0]
     if value is None:
@@ -77,7 +76,13 @@ def _row_count(row: StatsRow | None) -> int:
 def _bounds_value(bounds: StatsRow | None, *, index: int, key: str) -> str | None:
     if bounds is None:
         return None
-    value = (bounds[index] if index < len(bounds) else None) if isinstance(bounds, tuple) else cast(object, bounds[key])
+    if isinstance(bounds, tuple):
+        value = bounds[index] if index < len(bounds) else None
+    else:
+        try:
+            value = bounds[key]
+        except (IndexError, KeyError):
+            return None
     if value is None:
         return None
     return str(value)
@@ -131,12 +136,11 @@ def _with_total_conversations(parts: _EmbeddingStatsParts, total_conversations: 
 
 
 def _total_conversations_sync(conn: sqlite3.Connection) -> int:
-    return _row_count(cast(StatsRow | None, conn.execute("SELECT COUNT(*) FROM conversations").fetchone()))
+    return _row_count(conn.execute("SELECT COUNT(*) FROM conversations").fetchone())
 
 
 async def _total_conversations_async(conn: aiosqlite.Connection) -> int:
-    row = cast(StatsRow | None, await (await conn.execute("SELECT COUNT(*) FROM conversations")).fetchone())
-    return _row_count(row)
+    return _row_count(await (await conn.execute("SELECT COUNT(*) FROM conversations")).fetchone())
 
 
 def _snapshot(

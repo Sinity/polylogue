@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import cast
 
 from polylogue.lib.raw_payload_decode import JSONValue, build_raw_payload_envelope, sample_jsonl_payload
 
@@ -9,6 +8,11 @@ from polylogue.lib.raw_payload_decode import JSONValue, build_raw_payload_envelo
 def _as_dict(sample: JSONValue) -> dict[str, JSONValue]:
     assert isinstance(sample, dict)
     return sample
+
+
+def _optional_int(value: JSONValue) -> int | None:
+    assert value is None or isinstance(value, int)
+    return value
 
 
 def test_sample_jsonl_payload_accepts_lone_surrogates_via_stdlib_fallback(tmp_path: Path) -> None:
@@ -20,7 +24,7 @@ def test_sample_jsonl_payload_accepts_lone_surrogates_via_stdlib_fallback(tmp_pa
     dict_samples = [_as_dict(sample) for sample in samples]
 
     assert malformed == 0
-    assert [cast(int | None, sample.get("ok")) for sample in dict_samples if "ok" in sample] == [1, 2]
+    assert [_optional_int(sample.get("ok")) for sample in dict_samples if "ok" in sample] == [1, 2]
     assert any(sample.get("text") == "broken \udce2 surrogate" for sample in dict_samples)
 
 
