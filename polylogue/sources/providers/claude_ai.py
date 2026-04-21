@@ -7,7 +7,7 @@ Derived from schema package: polylogue/schemas/providers/claude-ai/versions/v1/e
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import TypeAlias
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -15,6 +15,8 @@ from polylogue.lib.roles import Role
 from polylogue.lib.timestamps import parse_timestamp
 from polylogue.lib.viewports import ContentBlock, ContentType, MessageMeta, ReasoningTrace, ToolCall
 from polylogue.types import Provider
+
+ClaudeAIObject: TypeAlias = dict[str, object]
 
 
 class ClaudeAIChatMessage(BaseModel):
@@ -37,10 +39,10 @@ class ClaudeAIChatMessage(BaseModel):
     updated_at: str | None = None
     """Update timestamp (ISO format)."""
 
-    attachments: list[dict[str, Any]] = Field(default_factory=list)
+    attachments: list[ClaudeAIObject] = Field(default_factory=list)
     """File attachments."""
 
-    files: list[dict[str, Any]] = Field(default_factory=list)
+    files: list[ClaudeAIObject] = Field(default_factory=list)
     """Associated files."""
 
     @property
@@ -113,7 +115,7 @@ class ClaudeAIConversation(BaseModel):
     chat_messages: list[ClaudeAIChatMessage] = Field(default_factory=list)
     """Messages in the conversation."""
 
-    account: dict[str, Any] | None = None
+    account: ClaudeAIObject | None = None
     """Account information."""
 
     summary: str | None = None

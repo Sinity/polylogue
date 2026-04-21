@@ -6,6 +6,7 @@ import io
 from typing import Protocol, runtime_checkable
 
 from rich.console import Console as RichConsole
+from rich.errors import MarkupError
 from rich.table import Table
 from rich.text import Text
 
@@ -19,7 +20,10 @@ def _render_plain_object(obj: object) -> str:
     if isinstance(obj, Text):
         return obj.plain
     if isinstance(obj, str):
-        return obj
+        try:
+            return Text.from_markup(obj).plain
+        except MarkupError:
+            return obj
 
     if isinstance(obj, Table):
         buf = io.StringIO()

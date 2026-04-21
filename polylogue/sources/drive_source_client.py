@@ -6,7 +6,7 @@ import os
 import tempfile
 from collections.abc import Iterable
 from pathlib import Path
-from typing import BinaryIO, cast
+from typing import Protocol
 
 from polylogue.lib.json import JSONDocument, JSONValue
 from polylogue.logging import get_logger
@@ -31,6 +31,10 @@ from .drive_types import (
 )
 
 logger = get_logger(__name__)
+
+
+class _WritableBinaryHandle(Protocol):
+    def write(self, data: bytes) -> object: ...
 
 
 class DriveSourceClient:
@@ -58,8 +62,6 @@ class DriveSourceClient:
         if not matches:
             raise DriveNotFoundError(f"Folder not found: {folder_ref}")
         first = matches[0]
-        if not isinstance(first, dict):
-            return folder_ref
         file_id = _record_string(first, "id", default=folder_ref)
         return file_id or folder_ref
 
@@ -93,8 +95,6 @@ class DriveSourceClient:
                 page_size=1000,
             )
             for item in _response_files(response):
-                if not isinstance(item, dict):
-                    continue
                 item_payload: JSONDocument = item
                 name = _record_string(item_payload, "name")
                 mime_type = _record_string(item_payload, "mimeType")
@@ -134,7 +134,8 @@ class DriveSourceClient:
                 try:
                     with tempfile.NamedTemporaryFile(dir=dest.parent, delete=False) as handle:
                         tmp_path = Path(handle.name)
-                        self._gateway.download_file(file_id, cast(BinaryIO, handle))
+                        writable_handle: _WritableBinaryHandle = handle
+                        self._gateway.download_file(file_id, writable_handle)
                     tmp_path.replace(dest)
                 except Exception:
                     if tmp_path is not None:
