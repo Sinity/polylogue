@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from contextlib import AbstractContextManager
 from datetime import datetime, timezone
 from functools import partial
-from typing import Any
+from pathlib import Path
+from typing import TYPE_CHECKING, Protocol
 from unittest.mock import patch
 
 import pytest
@@ -20,15 +22,28 @@ from polylogue.schemas.verification_requests import SchemaVerificationRequest
 from polylogue.storage.backends.connection import open_connection
 from polylogue.types import Provider
 
+if TYPE_CHECKING:
+    from polylogue.paths import Source
 
-def _patch_validator_registry(mock_schema_dir: Any) -> Any:
+
+class SyntheticSourceFactory(Protocol):
+    def __call__(
+        self,
+        provider: str,
+        count: int = ...,
+        messages_per_conversation: range = ...,
+        seed: int = ...,
+    ) -> Source: ...
+
+
+def _patch_validator_registry(mock_schema_dir: Path) -> AbstractContextManager[object]:
     return patch(
         "polylogue.schemas.validator.SchemaRegistry",
         partial(SchemaRegistry, storage_root=mock_schema_dir),
     )
 
 
-def test_schema_validator_loads_provider(mock_schema_dir: Any) -> None:
+def test_schema_validator_loads_provider(mock_schema_dir: Path) -> None:
     """SchemaValidator.for_provider loads the requested schema."""
     with _patch_validator_registry(mock_schema_dir):
         SchemaValidator._cache.clear()
@@ -39,7 +54,7 @@ def test_schema_validator_loads_provider(mock_schema_dir: Any) -> None:
             SchemaValidator.for_provider("nonexistent")
 
 
-def test_validate_valid_data(mock_schema_dir: Any) -> None:
+def test_validate_valid_data(mock_schema_dir: Path) -> None:
     """Valid payloads should pass with no errors or drift."""
     with _patch_validator_registry(mock_schema_dir):
         validator = SchemaValidator.for_provider("chatgpt")
@@ -50,7 +65,7 @@ def test_validate_valid_data(mock_schema_dir: Any) -> None:
     assert not result.drift_warnings
 
 
-def test_validate_detects_errors(mock_schema_dir: Any) -> None:
+def test_validate_detects_errors(mock_schema_dir: Path) -> None:
     """Validation should report required-field and type errors."""
     with _patch_validator_registry(mock_schema_dir):
         validator = SchemaValidator.for_provider("chatgpt")
@@ -64,7 +79,7 @@ def test_validate_detects_errors(mock_schema_dir: Any) -> None:
     assert any("123" in error for error in wrong_type.errors)
 
 
-def test_validate_detects_drift(mock_schema_dir: Any) -> None:
+def test_validate_detects_drift(mock_schema_dir: Path) -> None:
     """Strict mode should surface unexpected fields as drift."""
     with _patch_validator_registry(mock_schema_dir):
         validator = SchemaValidator.for_provider("codex", strict=True)
@@ -75,7 +90,7 @@ def test_validate_detects_drift(mock_schema_dir: Any) -> None:
     assert "extra" in result.drift_warnings[0]
 
 
-def test_schema_validator_loads_canonical_claude_ai_provider(mock_schema_dir: Any) -> None:
+def test_schema_validator_loads_canonical_claude_ai_provider(mock_schema_dir: Path) -> None:
     """Schema validation should use the canonical Claude AI provider token."""
     schema = {
         "type": "object",
@@ -93,7 +108,7 @@ def test_schema_validator_loads_canonical_claude_ai_provider(mock_schema_dir: An
     assert "uuid" in json_document(validator.schema["properties"])
 
 
-def test_schema_validator_accepts_provider_enum(mock_schema_dir: Any) -> None:
+def test_schema_validator_accepts_provider_enum(mock_schema_dir: Path) -> None:
     """Known provider enums should flow through validator lookup without string routing."""
     schema = {
         "type": "object",
@@ -124,7 +139,7 @@ def test_validation_samples_record_mode_skips_non_record_documents() -> None:
     assert validator.validation_samples({"version": 1, "entries": []}, max_samples=16) == []
 
 
-def test_schema_validator_prefers_registry_latest(monkeypatch: Any) -> Any:
+def test_schema_validator_prefers_registry_latest(monkeypatch: pytest.MonkeyPatch) -> None:
     """Latest registry schemas should override packaged fallback files."""
     fake_schema = {
         "type": "object",
@@ -133,7 +148,7 @@ def test_schema_validator_prefers_registry_latest(monkeypatch: Any) -> Any:
     }
 
     class _FakeRegistry:
-        def get_schema(self: Any, provider: str, version: str = "latest") -> Any:
+        def get_schema(self, provider: str, version: str = "latest") -> dict[str, object] | None:
             if provider == "chatgpt" and version == "latest":
                 return fake_schema
             return None
@@ -279,7 +294,7 @@ def test_looks_dynamic_key_matches_expected_identifier_patterns() -> None:
     assert not validator._looks_dynamic_key("message_text")
 
 
-def test_available_providers(mock_schema_dir: Any) -> None:
+def test_available_providers(mock_schema_dir: Path) -> None:
     """available_providers should reflect packaged schema files."""
     with _patch_validator_registry(mock_schema_dir):
         providers = SchemaValidator.available_providers()
@@ -289,7 +304,7 @@ def test_available_providers(mock_schema_dir: Any) -> None:
     assert "nonexistent" not in providers
 
 
-def test_validate_helper(mock_schema_dir: Any) -> None:
+def test_validate_helper(mock_schema_dir: Path) -> None:
     """validate_provider_export should delegate to SchemaValidator cleanly."""
     with _patch_validator_registry(mock_schema_dir):
         result = validate_provider_export({"id": "123"}, "chatgpt")
@@ -489,7 +504,11 @@ class TestSyntheticRoundTrip:
     """Synthetic data should remain parser-compatible for supported providers."""
 
     @pytest.mark.parametrize("provider", ["chatgpt", "claude-code", "claude-ai", "codex", "gemini"])
-    def test_synthetic_parses_successfully(self: Any, provider: str, synthetic_source: Any) -> None:
+    def test_synthetic_parses_successfully(
+        self,
+        provider: str,
+        synthetic_source: SyntheticSourceFactory,
+    ) -> None:
         from polylogue.sources import iter_source_conversations
 
         source = synthetic_source(provider, count=3, seed=42)
@@ -525,7 +544,7 @@ def test_validation_result_properties() -> None:
 
 def _insert_raw_record(
     *,
-    db_path: Any,
+    db_path: Path,
     raw_id: str,
     provider_name: str,
     payload_provider: str | None = None,
@@ -566,14 +585,17 @@ def _insert_raw_record(
     return actual_raw_id
 
 
-def test_verify_raw_corpus_reports_valid_synthetic_chatgpt(db_path: Any, monkeypatch: Any) -> Any:
+def test_verify_raw_corpus_reports_valid_synthetic_chatgpt(
+    db_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     class _AlwaysValidValidator:
         provider = "chatgpt"
 
-        def validation_samples(self: Any, payload: Any, max_samples: Any = 16) -> Any:
+        def validation_samples(self, payload: object, max_samples: int = 16) -> list[object]:
             return [payload] if isinstance(payload, dict) else []
 
-        def validate(self: Any, _sample: Any) -> Any:
+        def validate(self, _sample: object) -> ValidationResult:
             return ValidationResult(is_valid=True)
 
     monkeypatch.setattr(
@@ -612,7 +634,7 @@ def test_verify_raw_corpus_reports_valid_synthetic_chatgpt(db_path: Any, monkeyp
     assert stats.decode_errors == 0
 
 
-def test_verify_raw_corpus_counts_missing_schema_as_skipped(db_path: Any) -> None:
+def test_verify_raw_corpus_counts_missing_schema_as_skipped(db_path: Path) -> None:
     _insert_raw_record(
         db_path=db_path,
         raw_id="raw-inbox-1",
@@ -636,14 +658,17 @@ def test_verify_raw_corpus_counts_missing_schema_as_skipped(db_path: Any) -> Non
 
 
 @pytest.mark.slow
-def test_verify_raw_corpus_uses_persisted_payload_provider_for_filters(db_path: Any, monkeypatch: Any) -> Any:
+def test_verify_raw_corpus_uses_persisted_payload_provider_for_filters(
+    db_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     class _AlwaysValidValidator:
         provider = "chatgpt"
 
-        def validation_samples(self: Any, payload: Any, max_samples: Any = 16) -> Any:
+        def validation_samples(self, payload: object, max_samples: int = 16) -> list[object]:
             return [payload] if isinstance(payload, dict) else []
 
-        def validate(self: Any, _sample: Any) -> Any:
+        def validate(self, _sample: object) -> ValidationResult:
             return ValidationResult(is_valid=True)
 
     monkeypatch.setattr(
@@ -671,7 +696,7 @@ def test_verify_raw_corpus_uses_persisted_payload_provider_for_filters(db_path: 
     assert report.providers["chatgpt"].valid_records == 1
 
 
-def test_verify_raw_corpus_counts_malformed_jsonl_as_decode_error(db_path: Any) -> None:
+def test_verify_raw_corpus_counts_malformed_jsonl_as_decode_error(db_path: Path) -> None:
     raw_id = _insert_raw_record(
         db_path=db_path,
         raw_id="raw-codex-1",
@@ -709,7 +734,7 @@ def test_verify_raw_corpus_counts_malformed_jsonl_as_decode_error(db_path: Any) 
     assert row[3] is None
 
 
-def test_verify_raw_corpus_quarantine_malformed_updates_validation_state(db_path: Any) -> None:
+def test_verify_raw_corpus_quarantine_malformed_updates_validation_state(db_path: Path) -> None:
     raw_id = _insert_raw_record(
         db_path=db_path,
         raw_id="raw-codex-q1",
@@ -756,7 +781,7 @@ def test_verify_raw_corpus_quarantine_malformed_updates_validation_state(db_path
     assert isinstance(row[6], str) and "Malformed JSONL lines" in row[6]
 
 
-def test_verify_raw_corpus_quarantine_empty_payload_updates_validation_state(db_path: Any) -> None:
+def test_verify_raw_corpus_quarantine_empty_payload_updates_validation_state(db_path: Path) -> None:
     raw_id = _insert_raw_record(
         db_path=db_path,
         raw_id="raw-codex-empty",
@@ -801,14 +826,17 @@ def test_verify_raw_corpus_quarantine_empty_payload_updates_validation_state(db_
     assert isinstance(row[6], str) and "zero-length" in row[6]
 
 
-def test_verify_raw_corpus_honors_record_limit_and_offset(db_path: Any, monkeypatch: Any) -> Any:
+def test_verify_raw_corpus_honors_record_limit_and_offset(
+    db_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     class _AlwaysValidValidator:
         provider = "chatgpt"
 
-        def validation_samples(self: Any, payload: Any, max_samples: Any = 16) -> Any:
+        def validation_samples(self, payload: object, max_samples: int = 16) -> list[object]:
             return [payload] if isinstance(payload, dict) else []
 
-        def validate(self: Any, _sample: Any) -> Any:
+        def validate(self, _sample: object) -> ValidationResult:
             return ValidationResult(is_valid=True)
 
     monkeypatch.setattr(
