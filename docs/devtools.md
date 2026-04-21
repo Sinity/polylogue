@@ -59,6 +59,7 @@ These are the commands worth remembering during normal repo work:
 | `devtools artifact-graph` | Render the runtime artifact, operation, and scenario-coverage map. |
 | `devtools pipeline-probe` | Run typed pipeline probes against synthetic, staged, or archive-subset inputs. |
 | `devtools query-memory-budget` | Measure query-memory envelopes on generated fixtures. |
+| `devtools regression-capture` | Capture pipeline-probe summaries as durable local regression cases. |
 | `devtools run-validation-lanes` | Run named validation lanes. |
 | `devtools scenario-projections` | Render the authored scenario-bearing verification projections. |
 | `devtools verify` | Run the local verification baseline before pushing or creating a PR. |

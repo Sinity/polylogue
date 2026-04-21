@@ -162,6 +162,17 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         examples=("devtools query-memory-budget --max-rss-mb 1536 -- polylogue --plain stats",),
     ),
     CommandSpec(
+        "regression-capture",
+        "verification",
+        "Capture pipeline-probe summaries as durable local regression cases.",
+        "devtools.regression_capture",
+        use_when="Turn a live or probe failure JSON summary into a replayable local regression artifact.",
+        examples=(
+            "devtools regression-capture --input probe.json --name parse-drift",
+            "devtools pipeline-probe --json | devtools regression-capture --name parse-drift --tag live",
+        ),
+    ),
+    CommandSpec(
         "inject-semantic-annotations",
         "maintenance",
         "Annotate baseline provider schemas with semantic-role metadata.",
