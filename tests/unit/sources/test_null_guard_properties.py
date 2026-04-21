@@ -30,13 +30,14 @@ from polylogue.lib.messages import MessageCollection
 from polylogue.lib.models import Conversation, ConversationSummary, Message
 from polylogue.lib.roles import Role
 from polylogue.lib.timestamps import parse_timestamp
+from polylogue.sources.providers.gemini import GeminiMessage, GeminiPart
 from polylogue.types import ConversationId, Provider
 
 TimestampInput: TypeAlias = str | int | float | None
 SparseProviderMeta: TypeAlias = dict[str, object] | None
 SparseMetadata: TypeAlias = dict[str, object]
 SparseMessagePayload: TypeAlias = dict[str, object] | None
-GeminiPartPayload: TypeAlias = dict[str, object]
+GeminiPartPayload: TypeAlias = GeminiPart | dict[str, object]
 
 # =============================================================================
 # Hypothesis strategies for sparse/adversarial provider data
@@ -375,8 +376,6 @@ class TestGeminiNonePartsProperty:
         parts: list[GeminiPartPayload],
     ) -> None:
         """Gemini text_content must handle any combination of text + parts."""
-        from polylogue.sources.providers.gemini import GeminiMessage
-
         msg = GeminiMessage(
             text=text or "",  # GeminiMessage requires text field
             role="model",
