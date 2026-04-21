@@ -20,16 +20,23 @@ Covers:
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any
+from typing import TypeAlias
 
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
+from hypothesis.strategies import SearchStrategy
 
 from polylogue.lib.messages import MessageCollection
 from polylogue.lib.models import Conversation, ConversationSummary, Message
 from polylogue.lib.roles import Role
 from polylogue.lib.timestamps import parse_timestamp
 from polylogue.types import ConversationId, Provider
+
+TimestampInput: TypeAlias = str | int | float | None
+SparseProviderMeta: TypeAlias = dict[str, object] | None
+SparseMetadata: TypeAlias = dict[str, object]
+SparseMessagePayload: TypeAlias = dict[str, object] | None
+GeminiPartPayload: TypeAlias = dict[str, object]
 
 # =============================================================================
 # Hypothesis strategies for sparse/adversarial provider data
@@ -71,7 +78,7 @@ _timestamp_or_none = st.one_of(
     ),
 )
 
-_provider_meta_or_none: Any = st.one_of(
+_provider_meta_or_none: SearchStrategy[SparseProviderMeta] = st.one_of(
     st.none(),
     st.just({}),
     st.fixed_dictionaries(
@@ -164,7 +171,7 @@ class TestMessageNoneGuardProperties:
 
     @given(msg=sparse_message())
     @settings(max_examples=200, suppress_health_check=_SPARSE_MESSAGE_HEALTH_CHECKS)
-    def test_word_count_never_crashes(self: Any, msg: Message) -> None:
+    def test_word_count_never_crashes(self, msg: Message) -> None:
         """word_count must return int matching len(text.split()), even with None text."""
         result = msg.word_count
         assert isinstance(result, int)
@@ -173,52 +180,52 @@ class TestMessageNoneGuardProperties:
 
     @given(msg=sparse_message())
     @settings(max_examples=200, suppress_health_check=_SPARSE_MESSAGE_HEALTH_CHECKS)
-    def test_is_tool_use_never_crashes(self: Any, msg: Message) -> None:
+    def test_is_tool_use_never_crashes(self, msg: Message) -> None:
         """is_tool_use must return bool, even with None content_blocks."""
         result = msg.is_tool_use
         assert isinstance(result, bool)
 
     @given(msg=sparse_message())
     @settings(max_examples=200, suppress_health_check=_SPARSE_MESSAGE_HEALTH_CHECKS)
-    def test_is_thinking_never_crashes(self: Any, msg: Message) -> None:
+    def test_is_thinking_never_crashes(self, msg: Message) -> None:
         """is_thinking must return bool, even with None/missing fields."""
         result = msg.is_thinking
         assert isinstance(result, bool)
 
     @given(msg=sparse_message())
     @settings(max_examples=200, suppress_health_check=_SPARSE_MESSAGE_HEALTH_CHECKS)
-    def test_is_substantive_never_crashes(self: Any, msg: Message) -> None:
+    def test_is_substantive_never_crashes(self, msg: Message) -> None:
         result = msg.is_substantive
         assert isinstance(result, bool)
 
     @given(msg=sparse_message())
     @settings(max_examples=200, suppress_health_check=_SPARSE_MESSAGE_HEALTH_CHECKS)
-    def test_is_noise_never_crashes(self: Any, msg: Message) -> None:
+    def test_is_noise_never_crashes(self, msg: Message) -> None:
         result = msg.is_noise
         assert isinstance(result, bool)
 
     @given(msg=sparse_message())
     @settings(max_examples=200, suppress_health_check=_SPARSE_MESSAGE_HEALTH_CHECKS)
-    def test_is_context_dump_never_crashes(self: Any, msg: Message) -> None:
+    def test_is_context_dump_never_crashes(self, msg: Message) -> None:
         result = msg.is_context_dump
         assert isinstance(result, bool)
 
     @given(msg=sparse_message())
     @settings(max_examples=200, suppress_health_check=_SPARSE_MESSAGE_HEALTH_CHECKS)
-    def test_extract_thinking_never_crashes(self: Any, msg: Message) -> None:
+    def test_extract_thinking_never_crashes(self, msg: Message) -> None:
         """extract_thinking must return str or None, never crash."""
         result = msg.extract_thinking()
         assert result is None or isinstance(result, str)
 
     @given(msg=sparse_message())
     @settings(max_examples=200, suppress_health_check=_SPARSE_MESSAGE_HEALTH_CHECKS)
-    def test_cost_usd_never_crashes(self: Any, msg: Message) -> None:
+    def test_cost_usd_never_crashes(self, msg: Message) -> None:
         result = msg.cost_usd
         assert result is None or isinstance(result, float)
 
     @given(msg=sparse_message())
     @settings(max_examples=200, suppress_health_check=_SPARSE_MESSAGE_HEALTH_CHECKS)
-    def test_duration_ms_never_crashes(self: Any, msg: Message) -> None:
+    def test_duration_ms_never_crashes(self, msg: Message) -> None:
         result = msg.duration_ms
         assert result is None or isinstance(result, int)
 
@@ -233,14 +240,14 @@ class TestConversationNoneGuardProperties:
 
     @given(conv=sparse_conversation())
     @settings(max_examples=100, suppress_health_check=_SPARSE_CONVERSATION_HEALTH_CHECKS)
-    def test_display_date_never_crashes(self: Any, conv: Conversation) -> None:
+    def test_display_date_never_crashes(self, conv: Conversation) -> None:
         """display_date with None updated_at/created_at must not crash."""
         result = conv.display_date
         assert result is None or isinstance(result, datetime)
 
     @given(conv=sparse_conversation())
     @settings(max_examples=100, suppress_health_check=_SPARSE_CONVERSATION_HEALTH_CHECKS)
-    def test_tags_never_crashes(self: Any, conv: Conversation) -> None:
+    def test_tags_never_crashes(self, conv: Conversation) -> None:
         """tags property must handle None/missing metadata."""
         result = conv.tags
         assert isinstance(result, list)
@@ -248,7 +255,7 @@ class TestConversationNoneGuardProperties:
 
     @given(conv=sparse_conversation())
     @settings(max_examples=100, suppress_health_check=_SPARSE_CONVERSATION_HEALTH_CHECKS)
-    def test_len_messages_never_crashes(self: Any, conv: Conversation) -> None:
+    def test_len_messages_never_crashes(self, conv: Conversation) -> None:
         """len(messages) matches the count of message objects in the conversation."""
         result = len(conv.messages)
         assert isinstance(result, int)
@@ -256,7 +263,7 @@ class TestConversationNoneGuardProperties:
 
     @given(conv=sparse_conversation())
     @settings(max_examples=100, suppress_health_check=_SPARSE_CONVERSATION_HEALTH_CHECKS)
-    def test_iter_messages_never_crashes(self: Any, conv: Conversation) -> None:
+    def test_iter_messages_never_crashes(self, conv: Conversation) -> None:
         """Iterating messages must not crash."""
         for msg in conv.messages:
             assert isinstance(msg, Message)
@@ -277,7 +284,7 @@ class TestSortMixedTimestamps:
 
     @given(convs=st.lists(sparse_conversation(), min_size=2, max_size=20))
     @settings(max_examples=50, suppress_health_check=_SPARSE_CONVERSATION_HEALTH_CHECKS)
-    def test_sort_by_display_date_never_crashes(self: Any, convs: list[Conversation]) -> None:
+    def test_sort_by_display_date_never_crashes(self, convs: list[Conversation]) -> None:
         """Sorting by display_date must handle None values gracefully."""
         _epoch = datetime.min.replace(tzinfo=timezone.utc)
         # This is the exact pattern from facade.py that was crashing
@@ -290,7 +297,7 @@ class TestSortMixedTimestamps:
 
     @given(convs=st.lists(sparse_conversation(), min_size=0, max_size=15))
     @settings(max_examples=50, suppress_health_check=_SPARSE_CONVERSATION_HEALTH_CHECKS)
-    def test_sort_stability_with_all_none(self: Any, convs: list[Conversation]) -> None:
+    def test_sort_stability_with_all_none(self, convs: list[Conversation]) -> None:
         """When all timestamps are None, sort must preserve relative order."""
         _epoch = datetime.min.replace(tzinfo=timezone.utc)
         # Force all timestamps to None
@@ -327,7 +334,7 @@ class TestChatGPTNonePartsProperty:
         )
     )
     @settings(max_examples=200)
-    def test_chatgpt_parts_extraction_never_crashes(self: Any, parts: Any) -> None:
+    def test_chatgpt_parts_extraction_never_crashes(self, parts: list[object]) -> None:
         """ChatGPT text extraction from parts must never crash."""
         from polylogue.sources.providers.chatgpt import ChatGPTAuthor, ChatGPTContent, ChatGPTMessage
 
@@ -362,7 +369,11 @@ class TestGeminiNonePartsProperty:
         ),
     )
     @settings(max_examples=200)
-    def test_gemini_text_extraction_never_crashes(self: Any, text: Any, parts: Any) -> None:
+    def test_gemini_text_extraction_never_crashes(
+        self,
+        text: str | None,
+        parts: list[GeminiPartPayload],
+    ) -> None:
         """Gemini text_content must handle any combination of text + parts."""
         from polylogue.sources.providers.gemini import GeminiMessage
 
@@ -414,7 +425,11 @@ class TestClaudeCodeNoneGuardProperty:
         ),
     )
     @settings(max_examples=200)
-    def test_claude_code_text_content_never_crashes(self: Any, record_type: Any, message: Any) -> None:
+    def test_claude_code_text_content_never_crashes(
+        self,
+        record_type: str,
+        message: SparseMessagePayload,
+    ) -> None:
         """text_content must handle any record type with any message shape."""
         from polylogue.sources.providers.claude_code import ClaudeCodeRecord
 
@@ -435,7 +450,11 @@ class TestClaudeCodeNoneGuardProperty:
         ),
     )
     @settings(max_examples=100)
-    def test_claude_code_content_blocks_raw_never_crashes(self: Any, record_type: Any, message: Any) -> None:
+    def test_claude_code_content_blocks_raw_never_crashes(
+        self,
+        record_type: str,
+        message: SparseMessagePayload,
+    ) -> None:
         """content_blocks_raw must return list, never crash."""
         from polylogue.sources.providers.claude_code import ClaudeCodeRecord
 
@@ -447,7 +466,7 @@ class TestClaudeCodeNoneGuardProperty:
         record_type=st.sampled_from(["user", "assistant", "summary", "progress"]),
     )
     @settings(max_examples=50)
-    def test_claude_code_role_mapping_systematic(self: Any, record_type: Any) -> None:
+    def test_claude_code_role_mapping_systematic(self, record_type: str) -> None:
         """Every record type must map to a known role."""
         from polylogue.sources.providers.claude_code import ClaudeCodeRecord
 
@@ -478,7 +497,11 @@ class TestConversationSummaryNoneGuards:
     )
     @settings(max_examples=100)
     def test_display_title_never_crashes(
-        self: Any, title: Any, created_at: Any, updated_at: Any, metadata: Any
+        self,
+        title: str | None,
+        created_at: datetime | None,
+        updated_at: datetime | None,
+        metadata: SparseMetadata,
     ) -> None:
         summary = ConversationSummary(
             id=ConversationId("test-id"),
@@ -497,7 +520,11 @@ class TestConversationSummaryNoneGuards:
         updated_at=_timestamp_or_none,
     )
     @settings(max_examples=50)
-    def test_display_date_never_crashes(self: Any, created_at: Any, updated_at: Any) -> None:
+    def test_display_date_never_crashes(
+        self,
+        created_at: datetime | None,
+        updated_at: datetime | None,
+    ) -> None:
         summary = ConversationSummary(
             id=ConversationId("test-id"),
             provider=Provider.CHATGPT,
@@ -529,7 +556,7 @@ class TestParseTimestampProperty:
         )
     )
     @settings(max_examples=300)
-    def test_parse_timestamp_never_crashes(self: Any, value: Any) -> None:
+    def test_parse_timestamp_never_crashes(self, value: TimestampInput) -> None:
         """parse_timestamp must return datetime or None, never raise."""
         result = parse_timestamp(value)
         assert result is None or isinstance(result, datetime)
@@ -541,7 +568,7 @@ class TestParseTimestampProperty:
         )
     )
     @settings(max_examples=200)
-    def test_parse_timestamp_numeric_always_utc_or_none(self: Any, value: Any) -> None:
+    def test_parse_timestamp_numeric_always_utc_or_none(self, value: int | float) -> None:
         """When a numeric value produces a datetime, it must be UTC-aware."""
         result = parse_timestamp(value)
         if result is not None:
@@ -549,7 +576,7 @@ class TestParseTimestampProperty:
 
     @given(value=st.text(min_size=1, max_size=50).filter(lambda s: s.replace(".", "").isdigit()))
     @settings(max_examples=100)
-    def test_digit_strings_either_none_or_utc(self: Any, value: Any) -> None:
+    def test_digit_strings_either_none_or_utc(self, value: str) -> None:
         """Digit-only strings must produce None or UTC-aware datetime."""
         result = parse_timestamp(value)
         if result is not None:

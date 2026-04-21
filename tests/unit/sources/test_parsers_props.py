@@ -16,14 +16,16 @@ Source-detection/container-shape laws live in ``test_source_laws.py``.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import Any, cast
+from typing import TypeAlias, TypedDict, cast
 
 import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
+from hypothesis.strategies import SearchStrategy
 
+from polylogue.lib.json import JSONDocument, json_document
 from polylogue.paths import Source
 from polylogue.schemas.synthetic import SyntheticCorpus
 from polylogue.sources import iter_source_conversations
@@ -45,57 +47,113 @@ from tests.infra.strategies import (
 from tests.infra.strategies.providers import claude_code_session_strategy, codex_session_strategy
 
 NormalizedTimestampInput = int | float | str | None
+ParserPayload: TypeAlias = object
 
 
-def _chatgpt_message_node_count(export: dict[str, Any]) -> int:
-    mapping = export.get("mapping", {})
+class AttachmentMeta(TypedDict):
+    id: str
+    name: str
+    mime_type: str
+    size: int
+
+
+def _chatgpt_message_node_count(payload: ParserPayload) -> int:
+    export = json_document(payload)
+    mapping = json_document(export.get("mapping"))
     return sum(
         1
         for node in mapping.values()
         if isinstance(node, dict)
-        and isinstance(node.get("message"), dict)
-        and node["message"].get("content", {}).get("parts")
+        and (message := json_document(node.get("message")))
+        and json_document(message.get("content")).get("parts")
     )
 
 
-def _claude_ai_message_count(export: dict[str, Any]) -> int:
-    return sum(1 for msg in export.get("chat_messages", []) if isinstance(msg, dict) and msg.get("text"))
+def _claude_ai_message_count(payload: ParserPayload) -> int:
+    export = json_document(payload)
+    messages = export.get("chat_messages")
+    return sum(1 for msg in messages if isinstance(msg, dict) and msg.get("text")) if isinstance(messages, list) else 0
 
 
-def _jsonl_record_count(records: list[dict[str, Any]]) -> int:
-    return len([record for record in records if isinstance(record, dict)])
+def _jsonl_record_count(payload: ParserPayload) -> int:
+    return len([record for record in payload if isinstance(record, dict)]) if isinstance(payload, list) else 0
 
 
-def _gemini_chunk_count(export: dict[str, Any]) -> int:
-    chunks = export.get("chunkedPrompt", {}).get("chunks", [])
+def _gemini_chunk_count(payload: ParserPayload) -> int:
+    export = json_document(payload)
+    chunks = json_document(export.get("chunkedPrompt")).get("chunks")
+    if not isinstance(chunks, list):
+        return 0
     return len([c for c in chunks if isinstance(c, dict) and c.get("text") and c.get("role")])
+
+
+def _payload_sequence(payload: ParserPayload) -> Sequence[object]:
+    if not isinstance(payload, Sequence) or isinstance(payload, (str, bytes, bytearray)):
+        return ()
+    return payload
+
+
+def _looks_like_sequence(predicate: Callable[[Sequence[object]], bool], payload: ParserPayload) -> bool:
+    return predicate(_payload_sequence(payload))
+
+
+def _payload_id(payload: ParserPayload) -> str:
+    document = json_document(payload)
+    return str(document.get("id") or document.get("uuid") or document.get("conversation_id") or "fallback")
+
+
+def _payload_title(payload: ParserPayload) -> str:
+    document = json_document(payload)
+    return str(document.get("title") or document.get("name") or "fallback")
+
+
+def _parse_chatgpt(payload: ParserPayload) -> ParsedConversation:
+    return chatgpt.parse(json_document(payload), "fallback")
+
+
+def _parse_claude_ai(payload: ParserPayload) -> ParsedConversation:
+    return claude.parse_ai(json_document(payload), "fallback")
+
+
+def _parse_claude_code(payload: ParserPayload) -> ParsedConversation:
+    return claude.parse_code(_payload_sequence(payload), "fallback")
+
+
+def _parse_codex(payload: ParserPayload) -> ParsedConversation:
+    return codex.parse(_payload_sequence(payload), "fallback")
+
+
+def _parse_gemini(payload: ParserPayload) -> ParsedConversation:
+    return drive.parse_chunked_prompt("gemini", json_document(payload), "fallback")
 
 
 @dataclass(frozen=True)
 class ParserCase:
     name: str
-    strategy: Any
-    parse: Callable[[Any], ParsedConversation]
-    looks_like: Callable[[Any], bool]
+    strategy: SearchStrategy[ParserPayload]
+    parse: Callable[[ParserPayload], ParsedConversation]
+    looks_like: Callable[[ParserPayload], bool]
     expected_provider: str
-    message_cap: Callable[[Any], int]
-    id_oracle: Callable[[Any], str] | None = None
-    title_oracle: Callable[[Any], str] | None = None
-    extra_assertion: Callable[[Any, ParsedConversation], None] | None = None
+    message_cap: Callable[[ParserPayload], int]
+    id_oracle: Callable[[ParserPayload], str] | None = None
+    title_oracle: Callable[[ParserPayload], str] | None = None
+    extra_assertion: Callable[[ParserPayload, ParsedConversation], None] | None = None
 
 
-def _assert_claude_code_cleanup(_payload: Any, result: ParsedConversation) -> None:
+def _assert_claude_code_cleanup(_payload: ParserPayload, result: ParsedConversation) -> None:
     for message in result.messages:
         assert message.provider_meta is None
         assert isinstance(message.content_blocks, list)
         assert message.timestamp is None or isinstance(message.timestamp, str)
 
 
-def _assert_codex_text_recovery(payload: list[dict[str, Any]], result: ParsedConversation) -> None:
+def _assert_codex_text_recovery(payload: ParserPayload, result: ParsedConversation) -> None:
     if not result.messages:
         return
     for message in result.messages:
         assert message.provider_meta is None
+    if not isinstance(payload, list):
+        return
     response_items = [
         record.get("payload", record)
         for record in payload
@@ -106,11 +164,17 @@ def _assert_codex_text_recovery(payload: list[dict[str, Any]], result: ParsedCon
     if not response_items:
         return
     first = response_items[0]
-    expected_text = "\n".join(
-        item.get("text", "")
-        for item in first.get("content", [])
-        if isinstance(item, dict) and item.get("type") == "input_text"
-    )
+    content = first.get("content")
+    if not isinstance(content, list):
+        return
+    expected_parts: list[str] = []
+    for item in content:
+        if not isinstance(item, dict) or item.get("type") != "input_text":
+            continue
+        text = item.get("text")
+        if isinstance(text, str):
+            expected_parts.append(text)
+    expected_text = "\n".join(expected_parts)
     if expected_text:
         assert result.messages[0].text == expected_text
 
@@ -119,31 +183,27 @@ PARSER_CASES: tuple[ParserCase, ...] = (
     ParserCase(
         name="chatgpt",
         strategy=chatgpt_export_strategy(min_messages=1, max_messages=10),
-        parse=lambda payload: chatgpt.parse(payload, "fallback"),
+        parse=_parse_chatgpt,
         looks_like=chatgpt.looks_like,
         expected_provider="chatgpt",
         message_cap=_chatgpt_message_node_count,
-        id_oracle=lambda export: str(
-            export.get("id") or export.get("uuid") or export.get("conversation_id") or "fallback"
-        ),
-        title_oracle=lambda export: str(export.get("title") or export.get("name") or "fallback"),
+        id_oracle=_payload_id,
+        title_oracle=_payload_title,
     ),
     ParserCase(
         name="claude-ai",
         strategy=claude_ai_export_strategy(min_messages=1, max_messages=10),
-        parse=lambda payload: claude.parse_ai(payload, "fallback"),
+        parse=_parse_claude_ai,
         looks_like=claude.looks_like_ai,
         expected_provider="claude-ai",
         message_cap=_claude_ai_message_count,
-        id_oracle=lambda export: str(
-            export.get("id") or export.get("uuid") or export.get("conversation_id") or "fallback"
-        ),
+        id_oracle=_payload_id,
     ),
     ParserCase(
         name="claude-code",
         strategy=claude_code_session_strategy(min_messages=1, max_messages=10),
-        parse=lambda payload: claude.parse_code(payload, "fallback"),
-        looks_like=claude.looks_like_code,
+        parse=_parse_claude_code,
+        looks_like=lambda payload: _looks_like_sequence(claude.looks_like_code, payload),
         expected_provider="claude-code",
         message_cap=_jsonl_record_count,
         extra_assertion=_assert_claude_code_cleanup,
@@ -151,8 +211,8 @@ PARSER_CASES: tuple[ParserCase, ...] = (
     ParserCase(
         name="codex",
         strategy=codex_session_strategy(min_messages=1, max_messages=10, use_envelope=True),
-        parse=lambda payload: codex.parse(payload, "fallback"),
-        looks_like=codex.looks_like,
+        parse=_parse_codex,
+        looks_like=lambda payload: _looks_like_sequence(codex.looks_like, payload),
         expected_provider="codex",
         message_cap=_jsonl_record_count,
         extra_assertion=_assert_codex_text_recovery,
@@ -160,7 +220,7 @@ PARSER_CASES: tuple[ParserCase, ...] = (
     ParserCase(
         name="gemini",
         strategy=gemini_export_strategy(min_messages=1, max_messages=10),
-        parse=lambda payload: drive.parse_chunked_prompt("gemini", payload, "fallback"),
+        parse=_parse_gemini,
         looks_like=drive.looks_like,
         expected_provider="gemini",
         message_cap=_gemini_chunk_count,
@@ -198,7 +258,7 @@ def test_provider_looks_like_accepts_generated_payloads(case: ParserCase, data: 
 
 @given(st.lists(message_strategy(), min_size=0, max_size=20))
 @settings(max_examples=50)
-def test_extract_messages_from_list_never_invents_messages(messages: list[dict[str, Any]]) -> None:
+def test_extract_messages_from_list_never_invents_messages(messages: list[JSONDocument]) -> None:
     result = extract_messages_from_list(cast(list[object], messages))
     expected = sum(1 for msg in messages if isinstance(msg, dict) and (msg.get("text") or msg.get("content")))
     assert len(result) <= expected
@@ -206,7 +266,7 @@ def test_extract_messages_from_list_never_invents_messages(messages: list[dict[s
 
 @given(message_strategy())
 @settings(max_examples=50)
-def test_extract_messages_from_list_normalizes_role(msg: dict[str, Any]) -> None:
+def test_extract_messages_from_list_normalizes_role(msg: JSONDocument) -> None:
     result = extract_messages_from_list(cast(list[object], [msg]))
     if result:
         assert result[0].role in {"user", "assistant", "system", "tool", "message"}
@@ -214,7 +274,7 @@ def test_extract_messages_from_list_normalizes_role(msg: dict[str, Any]) -> None
 
 @given(chatgpt_message_node_strategy())
 @settings(max_examples=30)
-def test_chatgpt_node_contract(node: dict[str, Any]) -> None:
+def test_chatgpt_node_contract(node: JSONDocument) -> None:
     export: dict[str, object] = {"mapping": {str(node["id"]): node}, "id": "test"}
     result = chatgpt.parse(export, "fallback")
     assert all(message.role in {"user", "assistant", "system", "tool", "message"} for message in result.messages)
@@ -222,7 +282,7 @@ def test_chatgpt_node_contract(node: dict[str, Any]) -> None:
 
 @given(claude_code_message_strategy())
 @settings(max_examples=30)
-def test_claude_code_message_type_contract(msg: dict[str, Any]) -> None:
+def test_claude_code_message_type_contract(msg: JSONDocument) -> None:
     result = claude.parse_code(cast(list[object], [msg]), "fallback")
     if not result.messages:
         return
@@ -230,8 +290,9 @@ def test_claude_code_message_type_contract(msg: dict[str, Any]) -> None:
     # ClaudeCodeRecord.role precedence: message.role > type field.
     # When message.role is present and valid, it overrides the type field.
     inner_role = None
-    if isinstance(msg.get("message"), dict):
-        inner_role = msg["message"].get("role")
+    message = msg.get("message")
+    if isinstance(message, dict):
+        inner_role = message.get("role")
     if isinstance(inner_role, str) and inner_role in {"user", "assistant", "system", "tool"}:
         assert parsed.role == inner_role
     elif msg.get("type") == "user":
@@ -242,7 +303,7 @@ def test_claude_code_message_type_contract(msg: dict[str, Any]) -> None:
 
 @given(codex_message_strategy())
 @settings(max_examples=30)
-def test_codex_message_text_contract(msg: dict[str, Any]) -> None:
+def test_codex_message_text_contract(msg: JSONDocument) -> None:
     session = cast(
         list[object],
         [
@@ -253,11 +314,16 @@ def test_codex_message_text_contract(msg: dict[str, Any]) -> None:
     result = codex.parse(session, "fallback")
     if not result.messages:
         return
-    expected_text = "\n".join(
-        item.get("text", "")
-        for item in msg.get("content", [])
-        if isinstance(item, dict) and item.get("type") == "input_text"
-    )
+    content = msg.get("content")
+    expected_parts: list[str] = []
+    if isinstance(content, list):
+        for item in content:
+            if not isinstance(item, dict) or item.get("type") != "input_text":
+                continue
+            text = item.get("text")
+            if isinstance(text, str):
+                expected_parts.append(text)
+    expected_text = "\n".join(expected_parts)
     if expected_text:
         assert result.messages[0].text == expected_text
 
@@ -306,7 +372,7 @@ def test_timestamp_normalization_handles_milliseconds(epoch_ms: int) -> None:
         }
     )
 )
-def test_attachment_extraction_preserves_metadata(attachment_meta: dict[str, Any]) -> None:
+def test_attachment_extraction_preserves_metadata(attachment_meta: AttachmentMeta) -> None:
     result = attachment_from_meta(attachment_meta, "msg-1", 1)
 
     assert result is not None
@@ -329,7 +395,7 @@ def test_attachment_extraction_preserves_metadata(attachment_meta: dict[str, Any
 @pytest.fixture(params=sorted(SyntheticCorpus.available_providers()) or ["chatgpt"])
 def provider_conversations(
     request: pytest.FixtureRequest,
-    synthetic_source: Callable[..., Any],
+    synthetic_source: Callable[..., object],
 ) -> tuple[str, list[ParsedConversation]]:
     """Parse synthetic data for each available provider."""
     provider = str(request.param)
