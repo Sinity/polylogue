@@ -29,6 +29,25 @@ _MAINTENANCE_TARGET_CATALOG = build_maintenance_target_catalog()
 JSONScalar: TypeAlias = str | int | float | bool | None
 JSONValue: TypeAlias = JSONScalar | list["JSONValue"] | Mapping[str, "JSONValue"]
 
+_DERIVED_MODEL_READINESS_CHECKS: tuple[tuple[str, str], ...] = (
+    ("action_event_read_model", "action_events"),
+    ("action_event_fts", "action_events_fts"),
+    ("fts_sync", "messages_fts"),
+    ("retrieval_evidence", "retrieval_evidence"),
+    ("retrieval_inference", "retrieval_inference"),
+    ("retrieval_enrichment", "retrieval_enrichment"),
+    ("session_profile_rows", "session_profile_rows"),
+    ("session_profile_evidence_fts", "session_profile_evidence_fts"),
+    ("session_profile_inference_fts", "session_profile_inference_fts"),
+    ("session_profile_enrichment_fts", "session_profile_enrichment_fts"),
+    ("session_work_event_inference", "session_work_event_inference"),
+    ("session_work_event_inference_fts", "session_work_event_inference_fts"),
+    ("session_tag_rollups", "session_tag_rollups"),
+    ("session_phase_inference", "session_phase_inference"),
+    ("day_session_summaries", "day_session_summaries"),
+    ("week_session_summaries", "week_session_summaries"),
+)
+
 
 @dataclass
 class ReadinessReport(OutcomeReport):
@@ -89,29 +108,21 @@ def _open_readiness_probe_connection(db_path: Path) -> AbstractContextManager[sq
     return open_read_connection(db_path)
 
 
-# ---------------------------------------------------------------------------
-# Archive readiness (database, derived models, orphans, providers)
-# ---------------------------------------------------------------------------
-
-
-def run_archive_readiness(config: Config, *, deep: bool = False, probe_only: bool = False) -> ReadinessReport:
-    from polylogue.storage.backends.schema import assert_supported_archive_layout
-    from polylogue.storage.derived_status import collect_derived_model_statuses_sync
-    from polylogue.storage.fts_lifecycle import message_fts_readiness_sync
-    from polylogue.storage.repair import collect_archive_debt_statuses_sync
-
+def _config_path_checks(config: Config) -> list[ReadinessCheck]:
     checks: list[ReadinessCheck] = []
-    checks.append(ReadinessCheck("config", VerifyStatus.OK, summary="XDG defaults active"))
-
     for path_name in ("archive_root", "render_root"):
         path = getattr(config, path_name)
         if path.exists():
             checks.append(ReadinessCheck(path_name, VerifyStatus.OK, summary=str(path)))
         else:
             checks.append(ReadinessCheck(path_name, VerifyStatus.WARNING, summary=f"Missing {path}"))
+    return checks
 
-    # --- database reachability ---
-    db_error: str | None = None
+
+def _database_probe_checks(config: Config, *, deep: bool) -> tuple[list[ReadinessCheck], str | None]:
+    from polylogue.storage.backends.schema import assert_supported_archive_layout
+
+    checks: list[ReadinessCheck] = []
     try:
         with _open_readiness_probe_connection(config.db_path) as conn:
             assert_supported_archive_layout(conn)
@@ -128,16 +139,175 @@ def run_archive_readiness(config: Config, *, deep: bool = False, probe_only: boo
     except Exception as exc:
         db_error = _summarize_db_error(exc)
         checks.append(ReadinessCheck("database", VerifyStatus.ERROR, summary=f"DB error: {db_error}"))
+        return checks, db_error
+    return checks, None
+
+
+def _skipped_index_check(db_error: str) -> ReadinessCheck:
+    return ReadinessCheck(
+        "index",
+        VerifyStatus.WARNING,
+        summary=f"Skipped: database unavailable ({db_error})",
+    )
+
+
+def _message_index_check(conn: sqlite3.Connection, *, exact_counts: bool) -> ReadinessCheck:
+    from polylogue.storage.fts_lifecycle import message_fts_readiness_sync
+
+    index_readiness = message_fts_readiness_sync(conn, verify_total_rows=exact_counts)
+    if not index_readiness["exists"]:
+        return ReadinessCheck("index", VerifyStatus.WARNING, summary="index not built")
+
+    indexed_rows = int(index_readiness["indexed_rows"])
+    total_rows = int(index_readiness["total_rows"])
+    if bool(index_readiness["ready"]):
+        return ReadinessCheck(
+            "index",
+            VerifyStatus.OK,
+            count=indexed_rows if exact_counts else 0,
+            summary=(f"messages indexed: {indexed_rows}" if exact_counts else "messages FTS present"),
+        )
+    return ReadinessCheck(
+        "index",
+        VerifyStatus.WARNING,
+        count=indexed_rows if exact_counts else 0,
+        summary=(
+            f"messages indexed: {indexed_rows:,}/{total_rows:,}"
+            if exact_counts
+            else "messages FTS missing or empty; use --deep to verify full coverage"
+        ),
+    )
+
+
+def _archive_debt_checks(archive_debt: dict[str, ArchiveDebtStatus], *, deep: bool) -> list[ReadinessCheck]:
+    checks: list[ReadinessCheck] = []
+    for spec in _MAINTENANCE_TARGET_CATALOG.archive_readiness_specs(deep=deep):
+        debt = archive_debt.get(spec.name)
+        if debt is None:
+            continue
+        unready_status = spec.archive_readiness_unready_status or VerifyStatus.WARNING
+        checks.append(
+            ReadinessCheck(
+                debt.name,
+                VerifyStatus.OK if debt.healthy else unready_status,
+                count=debt.issue_count,
+                summary=debt.detail,
+            )
+        )
+    return checks
+
+
+def _duplicate_conversations_check(conn: sqlite3.Connection) -> ReadinessCheck:
+    duplicate_count = conn.execute(
+        """
+        SELECT COUNT(*) FROM (
+            SELECT conversation_id FROM conversations GROUP BY conversation_id HAVING COUNT(*) > 1
+        )
+        """
+    ).fetchone()[0]
+    return ReadinessCheck(
+        "duplicate_conversations",
+        VerifyStatus.OK if duplicate_count == 0 else VerifyStatus.ERROR,
+        count=duplicate_count,
+        summary="No duplicates" if duplicate_count == 0 else f"{duplicate_count} duplicate conversation IDs",
+    )
+
+
+def _provider_distribution_check(conn: sqlite3.Connection) -> ReadinessCheck:
+    provider_rows = conn.execute(
+        """
+        SELECT provider_name, COUNT(*) AS count
+        FROM conversations
+        GROUP BY provider_name
+        ORDER BY count DESC, provider_name ASC
+        """
+    ).fetchall()
+    provider_breakdown = {str(row["provider_name"]): int(row["count"]) for row in provider_rows}
+    return ReadinessCheck(
+        "provider_distribution",
+        VerifyStatus.OK,
+        count=sum(provider_breakdown.values()),
+        summary=f"{len(provider_breakdown)} provider(s) represented",
+        breakdown=provider_breakdown,
+    )
+
+
+def _derived_model_checks(derived_statuses: dict[str, DerivedModelStatus]) -> list[ReadinessCheck]:
+    checks: list[ReadinessCheck] = []
+    for name, status_key in _DERIVED_MODEL_READINESS_CHECKS:
+        status = derived_statuses.get(status_key)
+        if status is None:
+            continue
+        checks.append(
+            ReadinessCheck(
+                name,
+                VerifyStatus.OK if status.ready else VerifyStatus.WARNING,
+                count=status.materialized_documents or status.materialized_rows or status.pending_rows,
+                summary=status.detail,
+            )
+        )
+    return checks
+
+
+def _transcript_embedding_checks(derived_statuses: dict[str, DerivedModelStatus]) -> list[ReadinessCheck]:
+    transcript_embeddings = derived_statuses.get("transcript_embeddings")
+    if transcript_embeddings is None:
+        return []
+
+    freshness_status = (
+        VerifyStatus.OK
+        if transcript_embeddings.materialized_rows == 0
+        or (transcript_embeddings.stale_rows == 0 and transcript_embeddings.missing_provenance_rows == 0)
+        else VerifyStatus.WARNING
+    )
+    freshness_summary = (
+        "No embedded messages to assess freshness"
+        if transcript_embeddings.materialized_rows == 0
+        else (
+            f"Transcript embeddings fresh ({transcript_embeddings.materialized_rows:,} messages)"
+            if freshness_status is VerifyStatus.OK
+            else (
+                f"Transcript embeddings stale ({transcript_embeddings.stale_rows:,} stale, "
+                f"{transcript_embeddings.missing_provenance_rows:,} missing provenance)"
+            )
+        )
+    )
+    return [
+        ReadinessCheck(
+            "transcript_embeddings",
+            VerifyStatus.OK if transcript_embeddings.ready else VerifyStatus.WARNING,
+            count=transcript_embeddings.pending_documents,
+            summary=transcript_embeddings.detail,
+        ),
+        ReadinessCheck(
+            "transcript_embedding_freshness",
+            freshness_status,
+            count=transcript_embeddings.stale_rows,
+            summary=freshness_summary,
+        ),
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Archive readiness (database, derived models, orphans, providers)
+# ---------------------------------------------------------------------------
+
+
+def run_archive_readiness(config: Config, *, deep: bool = False, probe_only: bool = False) -> ReadinessReport:
+    from polylogue.storage.derived_status import collect_derived_model_statuses_sync
+    from polylogue.storage.repair import collect_archive_debt_statuses_sync
+
+    checks: list[ReadinessCheck] = []
+    checks.append(ReadinessCheck("config", VerifyStatus.OK, summary="XDG defaults active"))
+    checks.extend(_config_path_checks(config))
+
+    # --- database reachability ---
+    db_checks, db_error = _database_probe_checks(config, deep=deep)
+    checks.extend(db_checks)
 
     # --- index ---
     if db_error is not None:
-        checks.append(
-            ReadinessCheck(
-                "index",
-                VerifyStatus.WARNING,
-                summary=f"Skipped: database unavailable ({db_error})",
-            )
-        )
+        checks.append(_skipped_index_check(db_error))
         return ReadinessReport(checks=checks)
 
     # --- derived models, debt, duplicates, providers ---
@@ -145,34 +315,7 @@ def run_archive_readiness(config: Config, *, deep: bool = False, probe_only: boo
     archive_debt: dict[str, ArchiveDebtStatus] = {}
     with _open_readiness_probe_connection(config.db_path) as conn:
         exact_index_counts = deep or not probe_only
-        index_readiness = message_fts_readiness_sync(conn, verify_total_rows=exact_index_counts)
-        if not index_readiness["exists"]:
-            checks.append(ReadinessCheck("index", VerifyStatus.WARNING, summary="index not built"))
-        else:
-            indexed_rows = int(index_readiness["indexed_rows"])
-            total_rows = int(index_readiness["total_rows"])
-            if bool(index_readiness["ready"]):
-                checks.append(
-                    ReadinessCheck(
-                        "index",
-                        VerifyStatus.OK,
-                        count=indexed_rows if exact_index_counts else 0,
-                        summary=(f"messages indexed: {indexed_rows}" if exact_index_counts else "messages FTS present"),
-                    )
-                )
-            else:
-                checks.append(
-                    ReadinessCheck(
-                        "index",
-                        VerifyStatus.WARNING,
-                        count=indexed_rows if exact_index_counts else 0,
-                        summary=(
-                            f"messages indexed: {indexed_rows:,}/{total_rows:,}"
-                            if exact_index_counts
-                            else "messages FTS missing or empty; use --deep to verify full coverage"
-                        ),
-                    )
-                )
+        checks.append(_message_index_check(conn, exact_counts=exact_index_counts))
 
         derived_statuses = collect_derived_model_statuses_sync(conn, verify_full=deep)
         archive_debt = collect_archive_debt_statuses_sync(
@@ -181,119 +324,13 @@ def run_archive_readiness(config: Config, *, deep: bool = False, probe_only: boo
             include_expensive=deep,
             probe_only=probe_only,
         )
-        for spec in _MAINTENANCE_TARGET_CATALOG.archive_readiness_specs(deep=deep):
-            debt = archive_debt.get(spec.name)
-            if debt is None:
-                continue
-            unready_status = spec.archive_readiness_unready_status or VerifyStatus.WARNING
-            checks.append(
-                ReadinessCheck(
-                    debt.name,
-                    VerifyStatus.OK if debt.healthy else unready_status,
-                    count=debt.issue_count,
-                    summary=debt.detail,
-                )
-            )
+        checks.extend(_archive_debt_checks(archive_debt, deep=deep))
 
-        dup_conv = conn.execute(
-            """
-            SELECT COUNT(*) FROM (
-                SELECT conversation_id FROM conversations GROUP BY conversation_id HAVING COUNT(*) > 1
-            )
-            """
-        ).fetchone()[0]
-        checks.append(
-            ReadinessCheck(
-                "duplicate_conversations",
-                VerifyStatus.OK if dup_conv == 0 else VerifyStatus.ERROR,
-                count=dup_conv,
-                summary="No duplicates" if dup_conv == 0 else f"{dup_conv} duplicate conversation IDs",
-            )
-        )
+        checks.append(_duplicate_conversations_check(conn))
 
-        provider_rows = conn.execute(
-            """
-            SELECT provider_name, COUNT(*) AS count
-            FROM conversations
-            GROUP BY provider_name
-            ORDER BY count DESC, provider_name ASC
-            """
-        ).fetchall()
-        provider_breakdown = {str(row["provider_name"]): int(row["count"]) for row in provider_rows}
-        checks.append(
-            ReadinessCheck(
-                "provider_distribution",
-                VerifyStatus.OK,
-                count=sum(provider_breakdown.values()),
-                summary=f"{len(provider_breakdown)} provider(s) represented",
-                breakdown=provider_breakdown,
-            )
-        )
-        for name, status_key in (
-            ("action_event_read_model", "action_events"),
-            ("action_event_fts", "action_events_fts"),
-            ("fts_sync", "messages_fts"),
-            ("retrieval_evidence", "retrieval_evidence"),
-            ("retrieval_inference", "retrieval_inference"),
-            ("retrieval_enrichment", "retrieval_enrichment"),
-            ("session_profile_rows", "session_profile_rows"),
-            ("session_profile_evidence_fts", "session_profile_evidence_fts"),
-            ("session_profile_inference_fts", "session_profile_inference_fts"),
-            ("session_profile_enrichment_fts", "session_profile_enrichment_fts"),
-            ("session_work_event_inference", "session_work_event_inference"),
-            ("session_work_event_inference_fts", "session_work_event_inference_fts"),
-            ("session_tag_rollups", "session_tag_rollups"),
-            ("session_phase_inference", "session_phase_inference"),
-            ("day_session_summaries", "day_session_summaries"),
-            ("week_session_summaries", "week_session_summaries"),
-        ):
-            status = derived_statuses.get(status_key)
-            if status is None:
-                continue
-            checks.append(
-                ReadinessCheck(
-                    name,
-                    VerifyStatus.OK if status.ready else VerifyStatus.WARNING,
-                    count=status.materialized_documents or status.materialized_rows or status.pending_rows,
-                    summary=status.detail,
-                )
-            )
-
-        transcript_embeddings = derived_statuses.get("transcript_embeddings")
-        if transcript_embeddings is not None:
-            checks.append(
-                ReadinessCheck(
-                    "transcript_embeddings",
-                    VerifyStatus.OK if transcript_embeddings.ready else VerifyStatus.WARNING,
-                    count=transcript_embeddings.pending_documents,
-                    summary=transcript_embeddings.detail,
-                )
-            )
-            freshness_status = (
-                VerifyStatus.OK
-                if transcript_embeddings.materialized_rows == 0
-                or (transcript_embeddings.stale_rows == 0 and transcript_embeddings.missing_provenance_rows == 0)
-                else VerifyStatus.WARNING
-            )
-            checks.append(
-                ReadinessCheck(
-                    "transcript_embedding_freshness",
-                    freshness_status,
-                    count=transcript_embeddings.stale_rows,
-                    summary=(
-                        "No embedded messages to assess freshness"
-                        if transcript_embeddings.materialized_rows == 0
-                        else (
-                            f"Transcript embeddings fresh ({transcript_embeddings.materialized_rows:,} messages)"
-                            if freshness_status is VerifyStatus.OK
-                            else (
-                                f"Transcript embeddings stale ({transcript_embeddings.stale_rows:,} stale, "
-                                f"{transcript_embeddings.missing_provenance_rows:,} missing provenance)"
-                            )
-                        )
-                    ),
-                )
-            )
+        checks.append(_provider_distribution_check(conn))
+        checks.extend(_derived_model_checks(derived_statuses))
+        checks.extend(_transcript_embedding_checks(derived_statuses))
 
     # --- source checks ---
     checks.extend(_build_source_readiness_checks(config))

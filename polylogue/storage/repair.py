@@ -19,12 +19,29 @@ from polylogue.maintenance_targets import (
 )
 from polylogue.protocols import ProgressCallback
 from polylogue.storage.action_event_artifacts import ActionEventArtifactState
+from polylogue.storage.session_product_runtime import SessionProductReadyFlag, SessionProductStatusSnapshot
 
 logger = get_logger(__name__)
 _MAINTENANCE_TARGET_CATALOG = build_maintenance_target_catalog()
 
 JSONScalar: TypeAlias = str | int | float | bool | None
 JSONValue: TypeAlias = JSONScalar | list["JSONValue"] | dict[str, "JSONValue"]
+
+_SESSION_PRODUCT_READY_FLAGS: tuple[SessionProductReadyFlag, ...] = (
+    "profile_rows_ready",
+    "profile_merged_fts_ready",
+    "profile_evidence_fts_ready",
+    "profile_inference_fts_ready",
+    "profile_enrichment_fts_ready",
+    "work_event_inference_rows_ready",
+    "work_event_inference_fts_ready",
+    "phase_inference_rows_ready",
+    "threads_ready",
+    "threads_fts_ready",
+    "tag_rollups_ready",
+    "day_summaries_ready",
+    "week_summaries_ready",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -52,6 +69,16 @@ class RepairResult:
             "success": self.success,
             "detail": self.detail,
         }
+
+
+@dataclass(slots=True, frozen=True)
+class _SessionProductRepairAssessment:
+    row_debt: int
+    fts_debt: int
+
+    @property
+    def pending(self) -> int:
+        return self.row_debt + self.fts_debt
 
 
 # ---------------------------------------------------------------------------
@@ -165,6 +192,78 @@ def session_product_repair_count(derived_statuses: dict[str, DerivedModelStatus]
         total += max(0, int(s.stale_rows or 0))
         total += max(0, int(s.orphan_rows or 0))
     return total
+
+
+def _positive_count(value: int) -> int:
+    return max(0, value)
+
+
+def _fts_repair_count(*, source_rows: int, indexed_rows: int, duplicates: int) -> int:
+    return _positive_count(source_rows - indexed_rows) + _positive_count(duplicates)
+
+
+def _session_product_row_repair_count(status: SessionProductStatusSnapshot) -> int:
+    return (
+        status.missing_profile_row_count
+        + status.stale_profile_row_count
+        + status.orphan_profile_row_count
+        + status.stale_work_event_inference_count
+        + status.orphan_work_event_inference_count
+        + status.stale_phase_inference_count
+        + status.orphan_phase_inference_count
+        + status.stale_thread_count
+        + status.orphan_thread_count
+        + status.stale_tag_rollup_count
+        + status.stale_day_summary_count
+    )
+
+
+def _session_product_fts_repair_count(status: SessionProductStatusSnapshot) -> int:
+    return sum(
+        (
+            _fts_repair_count(
+                source_rows=status.profile_row_count,
+                indexed_rows=status.profile_merged_fts_count,
+                duplicates=status.profile_merged_fts_duplicate_count,
+            ),
+            _fts_repair_count(
+                source_rows=status.profile_row_count,
+                indexed_rows=status.profile_evidence_fts_count,
+                duplicates=status.profile_evidence_fts_duplicate_count,
+            ),
+            _fts_repair_count(
+                source_rows=status.profile_row_count,
+                indexed_rows=status.profile_inference_fts_count,
+                duplicates=status.profile_inference_fts_duplicate_count,
+            ),
+            _fts_repair_count(
+                source_rows=status.profile_row_count,
+                indexed_rows=status.profile_enrichment_fts_count,
+                duplicates=status.profile_enrichment_fts_duplicate_count,
+            ),
+            _fts_repair_count(
+                source_rows=status.work_event_inference_count,
+                indexed_rows=status.work_event_inference_fts_count,
+                duplicates=status.work_event_inference_fts_duplicate_count,
+            ),
+            _fts_repair_count(
+                source_rows=status.thread_count,
+                indexed_rows=status.thread_fts_count,
+                duplicates=status.thread_fts_duplicate_count,
+            ),
+        )
+    )
+
+
+def _assess_session_product_repairs(status: SessionProductStatusSnapshot) -> _SessionProductRepairAssessment:
+    return _SessionProductRepairAssessment(
+        row_debt=_session_product_row_repair_count(status),
+        fts_debt=_session_product_fts_repair_count(status),
+    )
+
+
+def _session_product_status_ready(status: SessionProductStatusSnapshot) -> bool:
+    return all(status.ready_flag(flag) for flag in _SESSION_PRODUCT_READY_FLAGS)
 
 
 def action_event_repair_count(derived_statuses: dict[str, DerivedModelStatus]) -> int:
@@ -608,52 +707,16 @@ def repair_session_products(
     try:
         with connection_context(None) as conn:
             status = session_product_status_sync(conn)
-            profile_merged_fts_pending = max(0, status.profile_row_count - status.profile_merged_fts_count)
-            profile_merged_fts_duplicates = max(0, status.profile_merged_fts_duplicate_count)
-            profile_evidence_fts_pending = max(0, status.profile_row_count - status.profile_evidence_fts_count)
-            profile_evidence_fts_duplicates = max(0, status.profile_evidence_fts_duplicate_count)
-            profile_inference_fts_pending = max(0, status.profile_row_count - status.profile_inference_fts_count)
-            profile_inference_fts_duplicates = max(0, status.profile_inference_fts_duplicate_count)
-            profile_enrichment_fts_pending = max(0, status.profile_row_count - status.profile_enrichment_fts_count)
-            profile_enrichment_fts_duplicates = max(0, status.profile_enrichment_fts_duplicate_count)
-            work_event_fts_pending = max(0, status.work_event_inference_count - status.work_event_inference_fts_count)
-            work_event_fts_duplicates = max(0, status.work_event_inference_fts_duplicate_count)
-            thread_fts_pending = max(0, status.thread_count - status.thread_fts_count)
-            thread_fts_duplicates = max(0, status.thread_fts_duplicate_count)
-            pending = (
-                status.missing_profile_row_count
-                + status.stale_profile_row_count
-                + status.orphan_profile_row_count
-                + status.stale_work_event_inference_count
-                + status.orphan_work_event_inference_count
-                + status.stale_phase_inference_count
-                + status.orphan_phase_inference_count
-                + status.stale_thread_count
-                + status.orphan_thread_count
-                + status.stale_tag_rollup_count
-                + status.stale_day_summary_count
-                + profile_merged_fts_pending
-                + profile_merged_fts_duplicates
-                + profile_evidence_fts_pending
-                + profile_evidence_fts_duplicates
-                + profile_inference_fts_pending
-                + profile_inference_fts_duplicates
-                + profile_enrichment_fts_pending
-                + profile_enrichment_fts_duplicates
-                + work_event_fts_pending
-                + work_event_fts_duplicates
-                + thread_fts_pending
-                + thread_fts_duplicates
-            )
+            assessment = _assess_session_product_repairs(status)
 
             if dry_run:
                 return _repair_result(
                     "session_products",
-                    repaired_count=pending,
+                    repaired_count=assessment.pending,
                     success=True,
                     detail="Would: session products already ready"
-                    if pending == 0
-                    else f"Would: rebuild session products ({pending:,} pending items)",
+                    if assessment.pending == 0
+                    else f"Would: rebuild session products ({assessment.pending:,} pending items)",
                 )
 
             rebuilt = rebuild_session_products_sync(
@@ -663,21 +726,7 @@ def repair_session_products(
             )
             conn.commit()
             refreshed = session_product_status_sync(conn)
-            success = (
-                refreshed.profile_rows_ready
-                and refreshed.profile_merged_fts_ready
-                and refreshed.profile_evidence_fts_ready
-                and refreshed.profile_inference_fts_ready
-                and refreshed.profile_enrichment_fts_ready
-                and refreshed.work_event_inference_rows_ready
-                and refreshed.work_event_inference_fts_ready
-                and refreshed.phase_inference_rows_ready
-                and refreshed.threads_ready
-                and refreshed.threads_fts_ready
-                and refreshed.tag_rollups_ready
-                and refreshed.day_summaries_ready
-                and refreshed.week_summaries_ready
-            )
+            success = _session_product_status_ready(refreshed)
             return _repair_result(
                 "session_products",
                 repaired_count=rebuilt.total(),

@@ -18,13 +18,16 @@ from polylogue.cli.check_models import CheckCommandResult, VacuumResult
 from polylogue.cli.check_validation import validate_check_options as _validate_check_options
 from polylogue.cli.helpers import load_effective_config
 from polylogue.cli.types import AppEnv
-from polylogue.readiness import get_readiness, run_runtime_readiness
+from polylogue.config import Config
+from polylogue.protocols import ProgressCallback
+from polylogue.readiness import ReadinessReport, get_readiness, run_runtime_readiness
 from polylogue.schemas.operator_workflow import (
     list_artifact_cohorts,
     list_artifact_observations,
     run_artifact_proof,
     run_schema_verification,
 )
+from polylogue.schemas.verification_models import SchemaVerificationReport
 from polylogue.schemas.verification_requests import (
     ArtifactObservationQuery,
     ArtifactProofRequest,
@@ -69,6 +72,12 @@ class CheckCommandOptions:
     maintenance_targets: tuple[str, ...]
 
 
+@dataclass(frozen=True)
+class _MaintenanceRunInputs:
+    selected_targets: tuple[str, ...]
+    preview_counts: dict[str, int] | None
+
+
 def validate_check_options(options: CheckCommandOptions) -> None:
     _validate_check_options(options)
 
@@ -88,6 +97,116 @@ def _runtime_only_requested(options: CheckCommandOptions) -> bool:
     )
 
 
+def _provider_filter(values: tuple[str, ...]) -> list[str] | None:
+    return list(values) if values else None
+
+
+def _artifact_query(options: CheckCommandOptions) -> ArtifactObservationQuery:
+    return ArtifactObservationQuery(
+        providers=_provider_filter(options.artifact_providers),
+        support_statuses=list(options.artifact_statuses) if options.artifact_statuses else None,
+        artifact_kinds=list(options.artifact_kinds) if options.artifact_kinds else None,
+        record_limit=options.artifact_limit,
+        record_offset=options.artifact_offset,
+    )
+
+
+def _run_blob_store_check(env: AppEnv, config: Config) -> None:
+    from polylogue.storage.blob_store import get_blob_store
+
+    blob_store = get_blob_store()
+    db_raw_ids: set[str] = set()
+    with connection_context(config.db_path) as conn:
+        for row in conn.execute("SELECT raw_id FROM raw_conversations"):
+            db_raw_ids.add(row[0])
+    disk_hashes = set(blob_store.iter_all())
+    missing = db_raw_ids - disk_hashes
+    orphaned = disk_hashes - db_raw_ids
+    env.ui.console.print(f"Blob store: {len(disk_hashes)} blobs on disk, {len(db_raw_ids)} raw records in DB")
+    if missing:
+        env.ui.console.print(f"  MISSING: {len(missing)} blobs referenced in DB but not on disk")
+        for h in sorted(missing)[:10]:
+            env.ui.console.print(f"    {h[:16]}...")
+    if orphaned:
+        env.ui.console.print(f"  Orphaned: {len(orphaned)} blobs on disk not in DB")
+    if not missing and not orphaned:
+        env.ui.console.print("  All blobs verified.")
+
+
+def _run_schema_verification(options: CheckCommandOptions, config: Config) -> SchemaVerificationReport:
+    report = run_schema_verification(
+        SchemaVerificationRequest(
+            providers=_provider_filter(options.schema_providers),
+            max_samples=parse_schema_samples(options.schema_samples),
+            record_limit=options.schema_record_limit,
+            record_offset=options.schema_record_offset,
+            quarantine_malformed=options.schema_quarantine_malformed,
+            progress_callback=make_schema_progress_callback(),
+        ),
+        db_path=config.db_path,
+    )
+    print(file=sys.stderr)
+    return report
+
+
+def _session_product_progress_callback(
+    options: CheckCommandOptions,
+    selected_targets: tuple[str, ...],
+) -> ProgressCallback | None:
+    if (
+        options.repair
+        and not options.preview
+        and not options.json_output
+        and (not selected_targets or "session_products" in selected_targets)
+    ):
+        return make_session_product_progress_callback()
+    return None
+
+
+def _maintenance_run_inputs(options: CheckCommandOptions, report: ReadinessReport) -> _MaintenanceRunInputs:
+    return _MaintenanceRunInputs(
+        selected_targets=_resolve_selected_maintenance_targets(options),
+        preview_counts=_build_preview_counts(report) if options.preview else None,
+    )
+
+
+def _run_maintenance(
+    config: Config,
+    result: CheckCommandResult,
+    options: CheckCommandOptions,
+    inputs: _MaintenanceRunInputs,
+) -> None:
+    result.maintenance_targets = inputs.selected_targets
+    result.maintenance_results = run_selected_maintenance(
+        config,
+        repair=options.repair,
+        cleanup=options.cleanup,
+        dry_run=options.preview,
+        preview_counts=inputs.preview_counts,
+        targets=inputs.selected_targets,
+        session_product_progress_callback=_session_product_progress_callback(options, inputs.selected_targets),
+    )
+
+
+def _persist_maintenance_run(
+    env: AppEnv,
+    *,
+    report: ReadinessReport,
+    result: CheckCommandResult,
+    options: CheckCommandOptions,
+    inputs: _MaintenanceRunInputs,
+) -> None:
+    persist_maintenance_run(
+        env,
+        report=report,
+        options=options,
+        targets=inputs.selected_targets,
+        maintenance_results=result.maintenance_results or [],
+        vacuum_result=result.vacuum_result,
+        preview_counts=inputs.preview_counts,
+    )
+
+
 def run_check_workflow(env: AppEnv, options: CheckCommandOptions) -> CheckCommandResult:
     config = load_effective_config(env)
     if _runtime_only_requested(options):
@@ -99,49 +218,21 @@ def run_check_workflow(env: AppEnv, options: CheckCommandOptions) -> CheckComman
         probe_only=not (options.deep or options.repair or options.cleanup),
     )
     result = CheckCommandResult(report=report)
+    maintenance_inputs: _MaintenanceRunInputs | None = None
 
     if options.runtime:
         result.runtime_report = run_runtime_readiness(config)
 
     if options.check_blob:
-        from polylogue.storage.blob_store import get_blob_store
-
-        blob_store = get_blob_store()
-        db_raw_ids: set[str] = set()
-        with connection_context(config.db_path) as conn:
-            for row in conn.execute("SELECT raw_id FROM raw_conversations"):
-                db_raw_ids.add(row[0])
-        disk_hashes = set(blob_store.iter_all())
-        missing = db_raw_ids - disk_hashes
-        orphaned = disk_hashes - db_raw_ids
-        env.ui.console.print(f"Blob store: {len(disk_hashes)} blobs on disk, {len(db_raw_ids)} raw records in DB")
-        if missing:
-            env.ui.console.print(f"  MISSING: {len(missing)} blobs referenced in DB but not on disk")
-            for h in sorted(missing)[:10]:
-                env.ui.console.print(f"    {h[:16]}...")
-        if orphaned:
-            env.ui.console.print(f"  Orphaned: {len(orphaned)} blobs on disk not in DB")
-        if not missing and not orphaned:
-            env.ui.console.print("  All blobs verified.")
+        _run_blob_store_check(env, config)
 
     if options.check_schemas:
-        result.schema_report = run_schema_verification(
-            SchemaVerificationRequest(
-                providers=list(options.schema_providers) if options.schema_providers else None,
-                max_samples=parse_schema_samples(options.schema_samples),
-                record_limit=options.schema_record_limit,
-                record_offset=options.schema_record_offset,
-                quarantine_malformed=options.schema_quarantine_malformed,
-                progress_callback=make_schema_progress_callback(),
-            ),
-            db_path=config.db_path,
-        )
-        print(file=sys.stderr)
+        result.schema_report = _run_schema_verification(options, config)
 
     if options.check_proof:
         result.proof_report = run_artifact_proof(
             ArtifactProofRequest(
-                providers=list(options.artifact_providers) if options.artifact_providers else None,
+                providers=_provider_filter(options.artifact_providers),
                 record_limit=options.artifact_limit,
                 record_offset=options.artifact_offset,
             ),
@@ -150,49 +241,19 @@ def run_check_workflow(env: AppEnv, options: CheckCommandOptions) -> CheckComman
 
     if options.check_artifacts:
         result.artifact_rows = list_artifact_observations(
-            ArtifactObservationQuery(
-                providers=list(options.artifact_providers) if options.artifact_providers else None,
-                support_statuses=list(options.artifact_statuses) if options.artifact_statuses else None,
-                artifact_kinds=list(options.artifact_kinds) if options.artifact_kinds else None,
-                record_limit=options.artifact_limit,
-                record_offset=options.artifact_offset,
-            ),
+            _artifact_query(options),
             db_path=config.db_path,
         ).rows
 
     if options.check_cohorts:
         result.cohort_rows = list_artifact_cohorts(
-            ArtifactObservationQuery(
-                providers=list(options.artifact_providers) if options.artifact_providers else None,
-                support_statuses=list(options.artifact_statuses) if options.artifact_statuses else None,
-                artifact_kinds=list(options.artifact_kinds) if options.artifact_kinds else None,
-                record_limit=options.artifact_limit,
-                record_offset=options.artifact_offset,
-            ),
+            _artifact_query(options),
             db_path=config.db_path,
         ).rows
 
     if options.repair or options.cleanup:
-        preview_counts = _build_preview_counts(report) if options.preview else None
-        selected_targets = _resolve_selected_maintenance_targets(options)
-        result.maintenance_targets = selected_targets
-        session_product_progress_callback = None
-        if (
-            options.repair
-            and not options.preview
-            and not options.json_output
-            and (not selected_targets or "session_products" in selected_targets)
-        ):
-            session_product_progress_callback = make_session_product_progress_callback()
-        result.maintenance_results = run_selected_maintenance(
-            config,
-            repair=options.repair,
-            cleanup=options.cleanup,
-            dry_run=options.preview,
-            preview_counts=preview_counts,
-            targets=selected_targets,
-            session_product_progress_callback=session_product_progress_callback,
-        )
+        maintenance_inputs = _maintenance_run_inputs(options, report)
+        _run_maintenance(config, result, options, maintenance_inputs)
 
     if (options.repair or options.cleanup) and options.vacuum:
         if options.preview:
@@ -200,17 +261,13 @@ def run_check_workflow(env: AppEnv, options: CheckCommandOptions) -> CheckComman
         elif options.json_output:
             result.vacuum_result = vacuum_database(env)
 
-    if result.maintenance_results is not None:
-        selected_targets = _resolve_selected_maintenance_targets(options)
-        preview_counts = _build_preview_counts(report) if options.preview else None
-        persist_maintenance_run(
+    if result.maintenance_results is not None and maintenance_inputs is not None:
+        _persist_maintenance_run(
             env,
             report=report,
+            result=result,
             options=options,
-            targets=selected_targets,
-            maintenance_results=result.maintenance_results,
-            vacuum_result=result.vacuum_result,
-            preview_counts=preview_counts,
+            inputs=maintenance_inputs,
         )
 
     return result
