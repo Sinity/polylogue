@@ -12,8 +12,8 @@ commands that read/write from it.
 from __future__ import annotations
 
 import json
+from contextlib import AbstractContextManager
 from pathlib import Path
-from typing import Any
 from unittest.mock import patch
 
 import pytest
@@ -132,7 +132,7 @@ def seeded_registry(schema_storage: Path) -> SchemaRegistry:
     return registry
 
 
-def _patch_registry(registry: SchemaRegistry) -> Any:
+def _patch_registry(registry: SchemaRegistry) -> AbstractContextManager[object]:
     """Context manager to patch SchemaRegistry() calls to return our seeded instance."""
     return patch(
         "polylogue.schemas.registry.SchemaRegistry",
