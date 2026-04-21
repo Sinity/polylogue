@@ -122,20 +122,21 @@ class ArchiveScenario:
 
     def facts_from_connection(self, conn: sqlite3.Connection) -> ConversationFacts:
         """Read scenario facts directly from storage records."""
-        conv_record, msg_records, attachment_records = self._records_from_connection(conn)
+        conv_record, msg_records, attachment_records = self.records_from_connection(conn)
         return ConversationFacts.from_records(conv_record, msg_records, attachment_records)
 
     def hydrated_facts_from_connection(self, conn: sqlite3.Connection) -> ConversationFacts:
         """Hydrate storage records and extract domain-level scenario facts."""
-        conv_record, msg_records, attachment_records = self._records_from_connection(conn)
+        conv_record, msg_records, attachment_records = self.records_from_connection(conn)
         return ConversationFacts.from_domain_conversation(
             conversation_from_records(conv_record, msg_records, attachment_records)
         )
 
-    def _records_from_connection(
+    def records_from_connection(
         self,
         conn: sqlite3.Connection,
     ) -> tuple[ConversationRecord, list[MessageRecord], list[AttachmentRecord]]:
+        """Read scenario storage records from a SQLite connection."""
         conv_row = conn.execute(
             "SELECT * FROM conversations WHERE conversation_id = ?",
             (self.resolved_conversation_id,),
